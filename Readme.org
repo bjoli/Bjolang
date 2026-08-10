@@ -1,0 +1,529 @@
+* Bjolang - a language
+
+I think we have all had the thought: all programming languages suck in at least one way. Not all of us think it is a big deal, but some of us feel the urge to try our wings at designing a language. This is my 95% vibe coded try. Not really meant for real use, but to see if my thoughts made any sense.
+
+* Elevator pitch
+Bjolang is a scheme-inspired language with local HM type inference that compiles to constipated c#. It has traits instead of classes, meaning you don't ever have to think about two-way interop. The default data structures are immutable. A fast RRB tree (Vec), a very fast CHAMP (hash table), a linked list (List). There are more datastructures coming (ordered map, deque, queue).
+
+It also fakes Brand/higher kinded types by inlining traits when the trait is known at compile time, giving us among other things, a Monad trait. It is eager and non-curried, but has a lambda shorthand.
+
+* Greatest hits
+
+The things I am most smug about, in descending order of smugness.
+
+*** Concurrency: bjoroutines and first-class events
+
+Bjolang has ConcurrentML. Not "a Task wrapper", not "async/await with extra steps" — actual synchronous rendezvous channels and withdrawable events.
+
+
+#+begin_src scheme
+;; A suspending function. defbjo defines a bjoroutine
+(: producer (-> (Chan int) int void))
+(defbjo (producer ch n)
+  (let lp ((i 0))
+    (if (= i n)
+        (sync (chan-send ch -1))
+        (let ((sent (sync (chan-send ch i))))
+          (lp (+ i 1))))))
+
+;; A select-style worker. `chan-recv` returns an event -- it does not
+;; suspend -- which is why two of them can be built and handed to `choose`
+;; before either has happened.
+(type (: WorkerMsg (Union (Job int) Quit)))
+(: worker (-> (Chan int) (Chan bool) (Chan int) void))
+(defbjo (worker jobs cancel results)
+  (let lp ((total 0))
+    (match (sync (choose (wrap (chan-recv jobs)   (fun (j) (Job j)))
+                         (wrap (chan-recv cancel) (fun (c) Quit))))
+      ((Job j) (lp (+ total j)))
+      (Quit    (sync (chan-send results total))))))
+
+;; A timeout is just another branch. `guard` rebuilds the event at each
+;; sync, so the deadline is not stale after the first iteration.
+(sync (choose (wrap (chan-recv ready)  (fun (v) (Job v)))
+              (wrap (timeout 30000)    (fun (u) Quit))))
+
+;; `always` and `never` are the unit and zero.
+(sync (choose (never) (always 5))) ;; => 5
+#+end_src
+
+Spawning: ~(bjo expr)~ enqueues and returns a ~(Promise %a)~ without ever suspending, so a plain ~defun~ may spawn. Only /joining/ needs a bjoroutine, because joining is what waits. Operands are evaluated in the parent, so a spawn is not a race with itself.
+
+#+begin_src scheme
+(: start-work (-> int (Promise int)))
+(defun (start-work x) (bjo (work x))) ;; note: defun, not defbjo
+
+;; Failure arrives as a value. "the operation failed" and "the fiber died"
+;; are different facts, and a supervisor needs the difference.
+(match (sync (promise-join p))
+  ((Ok v)  v)
+  ((Err e) 0))
+#+end_src
+
+Cancellation is ambient and hierarchical, and it is both an event and a poll, because sometimes you are inside a ~choose~ and sometimes you are inside a tight loop:
+
+#+begin_src scheme
+(def (cancel! tok) (make-cancel))   ;; a thunk and a token, split deliberately
+
+;; as an event, inside a choose
+(wrap (cancelled ct) (fun (u) Quit))
+
+;; as a poll, inside a loop that never syncs
+(: count-until-cancelled (-> CancelToken int int))
+(defun (count-until-cancelled ct limit)
+  (let lp ((i 0))
+    (if (or (= i limit) (cancelled? ct)) i (lp (+ i 1)))))
+
+;; scope trees, and an ambient token every callee inherits for free
+(def linked (link-cancel parent-tok child-tok))
+(parameterize ((current-cancel child-tok))
+  (do-the-thing))
+#+end_src
+
+*** Calling .NET async without ever meeting a Task
+
+~Task~ is not a Bjolang type. You define #:async on import.
+
+#+begin_src scheme
+(import/extern
+  (pause (: System.Threading.Tasks.Task.Delay (-> int void) #:async))
+  ;; no CancellationToken overload exists? say so.
+  (raw-pause (: System.Threading.Tasks.Task.Delay (-> int void)
+                #:async #:uncancellable))
+  ;; failures as values instead of as stack unwinding
+  (fetch (: System.IO.File.ReadAllTextAsync (-> string string)
+            #:async #:exceptions (System.IO.IOException))))
+
+;; a .NET async call as a losable branch
+(sync (choose (wrap (task->event (fetch "/etc/hostname")) (fun (s) (Job 1)))
+              (wrap (timeout 30000)                       (fun (u) Quit))))
+#+end_src
+
+*** Nothing gets dropped by accident
+
+Every non-~void~ value in statement position must say so out loud. ~ignore~  — it is a trait method, which means types get to decide what discarding /means/.
+
+#+begin_src scheme
+(ignore (+ 1 2))              ;; blanket impl: drops it
+(ignore (.Append sb "a"))     ;; fluent .NET stops being a footgun
+(ignore (bjo (work 21)))      ;; Promise's impl detaches the fiber
+
+;; Receipt has its own impl, so the discard site actually runs code
+(def/impl (Discard Receipt)
+  (defun (ignore r) (set! receipts-filed (+ receipts-filed 1))))
+
+;; and Result is in the no-discard set, so this is a compile error:
+;; (ignore (open-input-file "x"))
+#+end_src
+
+*** Ports, and a dynamic environment that survives unwinding
+
+#+begin_src scheme
+;; Opening a file is a Result, not an exception you forgot to catch.
+(match (open-input-file path)
+  ((Ok r) (with-open ((in r))          ;; try/finally + Dispose
+            (port->lines in)))
+  ((Err e) []))
+
+(match (file->seq read-line "big.txt")
+  ((Ok lines) (seq-for-each #(println &) lines))
+  ((Err e)    (println "could not open it")))
+
+
+(def indent (make-parameter 0))
+
+(parameterize ((indent 3) (verbose? #t))
+  (println (banner)))
+
+;; Redirecting stdout is just rebinding a parameter.
+(parameterize ((current-output-port (cast TextOutputPort w)))
+  (println "goes to w"))
+#+end_src
+
+*** Pattern matching that knows about the CLR
+
+~(:is Type binder)~ is a .NET type test in pattern position, and the binder is narrowed to that type afterwards. Which also means ~try~ can discriminate on exception type the same way ~match~ does.
+
+#+begin_src scheme
+(match (thing :> Object)
+  ((:is System.String s) (string-length s))
+  ((:is Exception e)     (.-Message e))
+  (_                     "no idea"))
+
+(try (risky-thing)
+  #:catch ((:is System.IO.FileNotFoundException e) "missing")
+          ((:is Exception e)                       "other")
+  #:finally (cleanup))
+#+end_src
+
+*** Local generalization
+
+Local ~defun~ generalizes, so helpers stay polymorphic instead of getting pinned to whatever you happened to call them with first. Let-bound lambdas stay monomorphic, as ML intended.
+
+#+begin_src scheme
+(defun (main args)
+  (defun (twice f x) (f (f x)))     ;; generic, no signature needed
+  (println (twice #(+ &1 1) 0))
+  (println (twice #(string-append & "!") "hi"))
+  0)
+#+end_src
+
+* Examples
+
+Basic syntax
+#+begin_src scheme
+(: sum-file (-> string int))
+(defun (sum-file path)
+  (match (open-input-file path)
+    ((Ok port)
+     (loop (:for ints (in-port port #(parse-int (read-line &))))
+           (:acc sum (summing ints))))
+    ((Err err) 0)))
+#+end_src
+
+The looping construct is pretty ballers. It can do lazy stuff as well
+
+#+begin_src scheme
+(: get-num-seq (-> int int (Seq int)))
+(defun (get-num-seq a b)
+  (seql (:with a a b)
+        (:with b b (+ a b))
+        (:yield a)))
+
+(defun (main args)
+  (def fib-seq (get-num-seq 0 1)))
+  (def lucas-seq (get-num-seq 1 0))
+  (def first-hundred-linus-numbers
+    (loop (:for a (range 1 101))
+          (:for fib fib-seq)
+          (:for luc lucas-seq)
+          (:acc linus-numbers (vecing (+ fib luc)))))
+  ;; fold is a trait function. here it dispatches to vec-fold
+  (fold + 0 first-hundred-linus-numbers)
+  ; it also does subloops
+  (def a-vector
+    (loop (:for a '(1 2 3))
+          (:when (odd? a))
+          (:for b [1 2])
+          (:acc (vectoring (a . b)))))
+  ;; => [(1 1) (1 2) (3 1) (3 2)]
+
+  1)
+
+#+end_src
+
+All main data structures except array are immutable. Vec is an rrb tree, list is of course a singly linked list. Map is a champ. Arrays are regular c# arrays
+
+#+begin_src scheme
+
+(defun (main args)
+  (def a-vec [1 2 3 4 5])
+  (def b-vec (vec-add a-vec 9000))
+  (println (vec-length a-vec)) ;; => 5
+  (println (vec-length b-vec)) ;; => 6
+  
+#+end_src
+
+
+
+* Planned features
+
+ ~if-let~ / ~some-let*~ / ~some->~, comprehension syntax based on ~loop~, and a ~seq~ trait so ~seq-map~ and friends work lazily on every collection.
+
+
+
+* Limitations
+
+** Entry point
+Since it compiles to c# it needs an entry point. That is the (defun (main args) ...) function. 
+
+* Further code
+*** Traits
+Bjolang has traits. Traits can be regular traits, which means they are usable on concrete types (fast calls) or in dynamic contexts (as fast as C# Interfaces). There are also inlinable traits. These are traits that only work when the type is known at compile time, and are inlined at the call site. This is because c# cannot represent something like the Monad trait with interfaces. Inlining solves this. These traits are painfully monomorphic.
+
+#+begin_src scheme
+;; The simplest kind of trait is something like a trait that
+;; turns any thing into a string:
+(def/trait (Printable %i)
+  (: ->str (-> %i string)))
+
+(def/impl (Printable int)
+  (defun (->str i) (int->string i)))
+
+;; More complex traits also work:
+(def/trait (Foldable %col)
+  ;; associated type
+  (type %item)
+  ;; fold is a function that takes:
+  ;; 1. a function that takes an accumulator type, an item type and
+  ;;    returns an item type.
+  ;; 2. an accumulator type
+  ;; 3. a collection type
+  ;; 4. and returns an accumulator type.
+  (: fold (-> (-> %acc %item %acc) %acc %col %acc)))
+
+;; Implement the trait for a List with a generic in it
+(def/impl (Foldable (List %a))
+  ;; the associated type %item is the same as the %a in the list
+  (type %item %a)
+  (defun (fold f acc col)
+    (list-foldl f acc col)))
+
+;; fold is now a function that works on a list and any other data
+;; type for which Foldable is defined.
+(fold #(+ % 1) 0 '(1 2 3 4))
+
+;; This is a "fake hkt" trait: it only works when types are
+;; know at compile time and in monomorphic functions.
+(def/trait (Functor (%f %a))
+  (: fmap (-> (-> %a %b) (%f %a)  (%f %b))))
+
+(def/impl (Functor (List %a))
+  (defun (fmap g xs) (list-map g xs))) 
+
+(def/impl (Functor (Option %a))
+  (defun (fmap g o)
+    (match o ((Some v) (Some (g v))) (None None))))
+
+(defun (main args)
+  (def a-list '(1 2 3 4))
+  (def an-option (Option 5))
+  ;; these both work
+  (def b (fmap #(+ &1 1) a-list))
+  (def c (fmap #(+ &1 1) an-option))
+
+  (defun (bump bomp)
+    (fmap (fun (arg) (+ arg 1)) bomp))
+
+  ;; Works, BUT locks bump into the type (List int)
+  (def d (bump a-list))
+  ;; Which means this fails because any function written against
+  ;; an "inline" trait is going to be monomorphic. 
+  (def e (bump an-option))
+  0)
+
+#+end_src
+
+
+*** Do notation
+Look Ma, a Monad!
+
+#+BEGIN_SRC scheme
+(: calc (-> int (Option int)))
+(defun (calc n)
+  (do (:bind half (safe-div n 2))
+      (:let  doubled (* half 2))
+      (:bind third (safe-div doubled 3))
+      (:return (+ doubled third))))
+#+END_SRC
+
+*** The usual syntactic things in a modern lisp
+apart from (-> this is not actually implemented. )
+
+#+begin_src scheme
+(-> [1 2 3 4 5]
+    (map add1 &)
+    (fold + 0 &)
+    println)
+
+;; in fact, there is also a lambda shorthand:
+
+#(+ & 5) ;; => (fun (&1) (+ &1 5))
+#+end_src
+
+if-let, some-let* and things are going to be implemented.
+
+some-> will short-circuit in any of the calls returns none.
+
+*** Keyword arguments
+Unlike f#, bjolang has keyword arguments (but no optargs!):
+
+#+begin_src scheme
+(: key-fun (-> Int (#:what string) Void))
+(defun (key-fun times #:what (string-append "ban" "ana"))
+  (let loop ((times times))
+    (when (> times 0)
+      (println what)
+      (loop (- times 1)))))
+
+(key-fun 100) ;; prints "banana\n" 100 times
+(key-fun 10 #:what "orange") ;; prints "orange\n" 10 times
+#+end_src
+
+This is currently less efficient than non-kw functions, because every function call checks what was provided and re-evaluates the default argument expressions. It is just a series of ifs and evaluating the expressions, so it is not that bad, but perhaps something that could be added.
+
+*** Structs and records
+Have the same syntax, and both are constructed by naming the type — there is no
+f#-esque guessing at which type a bag of field names belongs to. This is a
+record example:
+
+#+begin_src scheme
+(type
+ (: Colors (Enum Red Green Brown Golden))
+ (: Fruit (Record
+           (: name String)
+           (: has-peel? Bool)
+           (: colour Colors))))
+ 
+(def banana (Fruit (name "banana") (has-peel? #t) (colour Golden)))
+;; record-set copies
+(def megaripe-banana (record-set banana (colour Brown))
+
+#+end_src
+
+
+*** A proper looping facility
+
+I got tired of shitty looping facilities a long time ago. I took Alex Shinn's (chibi loop) and made (goof loop) for guile scheme. Not only was it extensible and much more flexible than most looping facilities, it also had the fantastic feature that the code it produced was as fast as a hand-rolled loop (looking at you, python's for loop).
+
+Bjolangs loop is based on what I learned writing goof-loop, but instead of using macros, it uses traits meaning it sucks a bit more. 
+
+#+begin_src scheme
+(defun (main args)
+  (def my-vec (get-a-huge-vec))
+  (def my-list (get-an-equally-huge-list))
+  (loop (:for a my-vec)
+        (:for b my-vec)
+        (:break (= a (* b 2)))
+        (:when (not (= a b)))
+        (:acc acc (listing (+ a b)))))
+#+end_src
+
+It also supports subloops. Anything that isn't a for clause followed by a :for clause starts a subloop:
+
+#+begin_src scheme
+(defun (main args)
+  (loop (:for a '(1 2 3))
+        (:when (odd? a))
+        (:for b [1 2])
+        (:acc (vectoring (a . b)))))
+;; => [(1 1) (1 2) (3 1) (3 2)]
+#+end_src
+
+ And the best part? It is fast.
+
+ Oh, and it also has a seq version
+
+ #+begin_src scheme
+(defun (main args)
+  (def all-fibs
+    (seql (:with a 0L b)
+          (:with b 1L (+ a b))
+          (:yield a))))
+  (println "I wonder if we can print all the fibonacci numbers up to 2^64-1")
+  (seq-for-each #(println &) all-fibs))
+ #+end_src
+
+*** Dotnet interop
+If you want to call c# it is possible:
+
+#+begin_src scheme
+(import/extern
+  (console-write-line (: System.Console.WriteLine (-> string void)))
+  (concat2 (: System.String.Concat (-> string string string))))
+
+(console-write-line (concat2 "hej" " hej"))
+
+;; The alias is `console-write-line` rather than `write-line` on purpose: the
+;; prelude binds `write-line` as the port operation, and an ordinary binding
+;; wins over an extern alias.
+
+;; and for classes
+
+
+(import/class
+  (StreamWriter (: System.IO.StreamWriter (-> string StreamWriter))))
+
+(def my-stream (StreamWriter. "a-file"))
+(.Write my-stream "banana")
+(.Flush my-stream)
+(.Dispose my-stream)
+#+end_src
+
+*** Constructorless DSLs
+
+Lists, quasiquoted lists and vectors do not need constructors in some circumstances, giving us nice small DSLs, like the (run ...) function DSL:
+
+#+begin_src scheme
+
+(:stream-rot13 (-> InputPort OutputPort Void))
+;; implementation left as an exercise for the reader
+
+(run/strings '(pipe (cat "encrypted-file.txt") ,stream-rot13 (grep "bomb")))
+;; Without the constructor insertions it would be:
+(run/strings (ProcList (ProcSym 'pipe)
+               (ProcList (ProcSym 'cat) (ProcString "encrypted-file.txt"))
+               (ProcProc stream-rot13)
+               (ProcList (ProcSym 'grep) (ProcString "bomb")))))
+#+end_src
+
+* TODO
+
+These are things I found while spelunking:
+
+- Check that the Map higher order wrappers are not slowing things down too much
+- Make it possible to shadow trait methods and not have the typechecker vomit.
+- output LINE-directives so that we can see which code generated the bad c# output if roslyn fails
+- A standard library that doesn't suck.
+- seq being a trait: seq-map(etc) should work on every collection lazily.
+- Annotations using @[c# annotation verbatim here] so that I can piggyback on c# json libraries.
+
+
+** Things I need in the standard library
+
+string cursors
+
+typed string interpolation
+
+Stringbuilders.
+
+IO for working with files
+
+io for working with network thingies
+
+Deque and Heap, preferrably with transient interfaces
+
+Process notation, maybe taken from scsh.
+
+String functions in general. Add (stringing c) to loop.
+
+Maybe I should just steal all the functions from r6rs and bolt them onto what I can find in dotnet. Or maybe steal something from racket.
+
+STRING FORMATTING. Alex Shinn is the answer yet again. (show #t etc ...) and divide them into shorter forms showt and showf and make them the "default" print functions. I really like the showt name...
+
+** Syntax ideas
+@-expr from racket?
+
+comprehensions based on loop. This is simple. I should do it now (early august 2026):
+
+#+begin_src scheme
+{listing (+ a 5) :for a b}
+;; would become
+(loop (:for a b)
+      (:acc gensym-here (listing (+ a 5))))
+
+;; but also allow for more
+{vecing (abs (- b f) :when (sun-and-moon-in-zenith) :for b (get-infinite-seq) :break (> b 2) :for f (stuffy-stuff b)))}
+;; which becomes
+(loop (:for b (get-infinite-seq))
+      (:break (> b 2))
+      (:for f (stuffy-stuff b))
+      (:acc gensym-here (abs (- b f)) :when (sun-and-moon-in-zenith)))
+
+;; The seql version would just {seqing expr :for ...}
+#+end_src
+
+Extend do notation to be more usable. :match :traverse :and<- ( :and<- seems _very hard_ atm).
+
+(with-return ...) that allows for (return ...). Disallowed in loops and seq. 
+
+
+** Things to fix:
+
+Naming a local variable list, will produce local shadowing and a c# exception. I need to hook in the alpharenamer.
+
+'(1 2 3) and (list 1 2 3) produces different code.
+
+[1 2 3 4] should codegen an array that is put directly into the tail, or split and inserted in chunks of 32. 
+
+Prelude should always be imported. 
