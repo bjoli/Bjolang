@@ -1,0 +1,162 @@
+;; Must-use: every value that is computed and then dropped has to say so.
+;;
+;; F#'s rule, and universal — no opt-in, no per-type attribute, no per-module
+;; flag. A value in statement position must have type `void`, or be handed to
+;; `ignore`. The cost is real: every fluent .NET call needs ceremony. It is
+;; accepted because a silently discarded `HashSet.Add` returning `false` is a
+;; genuine bug class *and* an invisible one — nothing in the source says a value
+;; went missing — and because a rule with exceptions is a rule people have to
+;; learn the shape of. See concurrency-design.md §8.2.
+;;
+;; Two things kept the noise down rather than the rule being weakened. The
+;; builder mutators return `void` now (§8.1), which removes the largest single
+;; source of discards; and `void` is a real type, so `(display x)` and friends
+;; need no ceremony at all.
+;;
+;; `ignore` is not a sigil and not a compiler primitive. It is a trait method,
+;; which is what lets a discard *mean* something for the types where dropping is
+;; not the whole story:
+;;
+;;   level 1  no impl of its own — the blanket applies, the value is dropped
+;;   level 2  an impl of its own — `ignore` runs it; `Promise` detaches
+;;   level 3  named in the no-discard set — `ignore` is an error, which is what
+;;            `Result` is: a discarded error has no defensible default
+;;
+;; The third level needs the one name this check knows. `ignore` answers `void`,
+;; so a value handed to it is not in statement position and the walk would never
+;; see it — level three would be defeated by four characters. See
+;; `errors/ignore_result.bjo`.
+
+(import (std prelude))
+
+(import/class
+  (StringBuilder (: System.Text.StringBuilder (-> StringBuilder))))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; ---------------------------------------------------------------------------
+;; Level 2: a discard that means something
+;; ---------------------------------------------------------------------------
+;;
+;; The impl lives here rather than in the trait's module, which the orphan rule
+;; allows because this is the *type's* module. Any module that can mention both
+;; `Discard` and `Receipt` already depends on both, so adding this cannot change
+;; what a call somewhere else resolves to.
+
+(type (: Receipt (Union (Slip int))))
+
+(def/mutable receipts-filed 0)
+
+(def/impl (Discard Receipt)
+  (defun (ignore r) (set! receipts-filed (+ receipts-filed 1))))
+
+;; A generic function that discards. The constraint is not optional — the rule
+;; holds at a type variable too — and it becomes a dictionary parameter filled
+;; in at each call site.
+;;
+;; This is the property §0.2 buys, and the whole reason `Discard` is safe as a
+;; specialized trait even though its impls differ in *behaviour* rather than
+;; merely in speed: a blanket is only ever selected at a ground constructor, so
+;; a `Receipt` routed through this generic body still files its receipt. Nothing
+;; here knows that receipts exist.
+(: drop-it (-> %a void) (where (Discard %a)))
+(defun (drop-it x)
+  (ignore x))
+
+;; ---------------------------------------------------------------------------
+;; The shapes that are statement position
+;; ---------------------------------------------------------------------------
+;;
+;; Exactly three, and the first covers almost everything: a body of several
+;; forms is a chain of bindings nobody can name, so a loop's `:do` clauses, a
+;; `seq` body's leading forms and a `do` block's `:then`s all arrive as the same
+;; node.
+
+(def/mutable steps 0)
+
+(: bump (-> int void))
+(defun (bump n)
+  (set! steps (+ steps n)))
+
+;; A `when` body has no branch to return to, so its value is dropped by
+;; construction — which is why it is checked even though nothing was sequenced.
+(: bump-when (-> bool void))
+(defun (bump-when p)
+  (when p (bump 1)))
+
+;; A builder, mutated in place. Nothing here needs `ignore`, and that is §8.1
+;; earning its keep: these used to hand the builder back so it could thread
+;; through a loop slot, which made every ordinary call site ceremony.
+(: collect-to (-> int (List int)))
+(defun (collect-to n)
+  (let ((b (listbuilder-empty)))
+    (let go ((i 0))
+      (if (= i n)
+          (listbuilder->list b)
+          (let ()
+            (listbuilder-add! b i)
+            (go (+ i 1)))))))
+
+(: work (-> int int))
+(defbjo (work x) (* x 2))
+
+(defbjo (main args)
+  ;; Level 1: the blanket. `.Append` hands the builder back so that calls can be
+  ;; chained; nothing here wants the chain.
+  (def sb (StringBuilder.))
+  (ignore (.Append sb "a"))
+  (ignore (.Append sb "b"))
+  (expect "a discarded fluent call" (.ToString sb) "ab")
+
+  ;; And on an ordinary value, where it means exactly nothing.
+  (ignore (+ 1 2))
+  (expect "the blanket drops" (int->string 1) "1")
+
+  ;; Level 2, resolved statically.
+  (set! receipts-filed 0)
+  (ignore (Slip 1))
+  (ignore (Slip 2))
+  (expect "a Discard impl runs at the discard site" (int->string receipts-filed) "2")
+
+  ;; Level 2, resolved through a dictionary. The generic body is the same one
+  ;; that drops an int, and it still files the receipt.
+  (set! receipts-filed 0)
+  (drop-it (Slip 3))
+  (expect "and through a dictionary too" (int->string receipts-filed) "1")
+
+  (set! receipts-filed 0)
+  (drop-it 7)
+  (drop-it "not a receipt")
+  (expect "while the blanket is what everything else gets"
+          (int->string receipts-filed) "0")
+
+  ;; A promise's impl is `detach`: "I know this can fail and I still do not want
+  ;; the result", which routes a failure to the scheduler's unhandled hook
+  ;; rather than losing it silently. Dropping the handle instead is the quiet
+  ;; bug that impl exists to prevent.
+  (ignore (bjo (work 21)))
+  (expect "a promise is detached rather than dropped" "detached" "detached")
+
+  ;; The `void` carve-out: no ceremony for anything that already yields nothing.
+  (set! steps 0)
+  (bump 2)
+  (bump-when true)
+  (bump-when false)
+  (expect "void needs no ceremony" (int->string steps) "3")
+
+  ;; Builders, likewise.
+  (expect "a builder mutator is void" (int->string (list-length (collect-to 4))) "4")
+
+  ;; A `#:finally` runs for its effect, so its value is dropped by construction
+  ;; and needs saying — here by using a `void` call, which is the other way to
+  ;; satisfy the rule.
+  (set! steps 0)
+  (def guarded (try (bump 5) #:finally (bump 1)))
+  (expect "a finally clause is statement position" (int->string steps) "6")
+  0)

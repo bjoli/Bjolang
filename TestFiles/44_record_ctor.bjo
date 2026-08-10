@@ -1,0 +1,66 @@
+;; Record and struct construction names its type: the type name is the
+;; constructor, and the fields are named arguments to it.
+(import (std prelude))
+
+(type (: Car (Record (: brand string) (: year int))))
+
+;; A struct sharing a field name with the record above. Nothing here is
+;; ambiguous — each construction says which type it means.
+(type (: Bike (Struct (: brand string) (: gears int))))
+
+(type (: (Boxed %a) (Record (: item %a) (: count int))))
+
+(: expect (-> string bool void))
+(defun (expect label ok)
+  (if ok
+      (println (string-append "ok " label))
+      (println (string-append "FAILURE: " label))))
+
+;; A signature makes the target's type known, so `record-get` never guesses.
+(: car-year (-> Car int))
+(defun (car-year c) (record-get c year))
+
+(: bike-brand (-> Bike string))
+(defun (bike-brand b) (struct-get b brand))
+
+(defun (main args)
+  ;; A local lambda has no signature, so when its body is checked the target's
+  ;; type is still an unknown. `gears` belongs to exactly one type, so the old
+  ;; field-name guess still resolves it — that fallback is only reached here,
+  ;; where there is genuinely nothing else to go on.
+  (def gears-of (fun (b) (struct-get b gears)))
+
+  (def c (Car (brand "banana") (year 3000)))
+  (expect "brand" (equal? (record-get c brand) "banana"))
+  (expect "year" (= (car-year c) 3000))
+
+  ;; Fields in an order other than the declared one. The constructor a record
+  ;; compiles to takes them positionally, so this is where a reordering bug
+  ;; would show up.
+  (def c2 (Car (year 1999) (brand "kiwi")))
+  (expect "reordered brand" (equal? (record-get c2 brand) "kiwi"))
+  (expect "reordered year" (= (car-year c2) 1999))
+
+  ;; The same field name on a different type.
+  (def b (Bike (brand "mango") (gears 21)))
+  (expect "shared field name" (equal? (bike-brand b) "mango"))
+  (expect "own field" (= (gears-of b) 21))
+
+  ;; Updates keep working, and resolve against the target's own type.
+  (def c3 (record-set c (year 2024)))
+  (expect "update" (= (car-year c3) 2024))
+  (expect "update leaves original" (= (car-year c) 3000))
+
+  (def b2 (struct-set b (brand "papaya") (gears 7)))
+  (expect "struct update" (equal? (bike-brand b2) "papaya"))
+  (expect "struct update 2" (= (gears-of b2) 7))
+
+  ;; A generic record: the type arguments come from the fields given.
+  (def boxed (Boxed (item "fig") (count 2)))
+  (expect "generic field" (equal? (record-get boxed item) "fig"))
+  (expect "generic count" (= (record-get boxed count) 2))
+
+  ;; Nested construction.
+  (def nested (Boxed (item (Car (brand "plum") (year 1970))) (count 1)))
+  (expect "nested" (equal? (record-get (record-get nested item) brand) "plum"))
+  0)

@@ -1,0 +1,215 @@
+;; Bjoroutines: the execution model, before there is anything to suspend on.
+;;
+;; A bjoroutine is declared, not inferred. `defbjo` is to `defun` what
+;; `bjoroutine` is to `fun`, and what it changes is the emitted C#: a
+;; `Fiber<T>` and an async state machine instead of a plain `T`. The call site
+;; looks exactly like any other call — there is no `await` in the language, and
+;; that is the whole point of the direct style.
+;;
+;; What is deliberately absent here: anything that actually suspends. `bjo`,
+;; `sync`, channels and promises are steps 5 and 6. Every bjoroutine below runs
+;; to completion without ever yielding, which is a real state machine doing a
+;; real (if trivial) job, and is exactly what makes the *colouring* testable on
+;; its own.
+;;
+;; The rules being pinned, all four of them:
+;;
+;;   1. A `defbjo` may call a `defbjo`. The call is a yield point and compiles
+;;      to an `await`.
+;;   2. A yield point is legal only *directly* inside a bjoroutine body. An
+;;      ordinary `(fun ...)`, a body-local `(defun ...)` and a `(seq ...)` each
+;;      become a C# member of their own and cannot suspend — see
+;;      `errors/bjo_in_lambda.bjo` and friends.
+;;   3. A bjoroutine's *type* carries the colour, so passing one where an
+;;      ordinary function is wanted is a type error rather than a codegen
+;;      failure — `errors/bjo_as_value.bjo`.
+;;   4. The colour survives a compiled module boundary, spelled `-bjo->` in the
+;;      published signature — `74_lib.bjo`.
+
+(import "74_lib.bjo")
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; ---------------------------------------------------------------------------
+;; The signature is an ordinary arrow
+;; ---------------------------------------------------------------------------
+
+;; `(-> int int)`, the same as any function of that shape. An arrow says what a
+;; function takes and returns; the definer says whether calling it suspends.
+;; The two are only joined up by the compiler.
+(: double (-> int int))
+(defbjo (double x) (* x 2))
+
+;; A bjoroutine calling a bjoroutine. Both of these compile to `await`.
+(: quadruple (-> int int))
+(defbjo (quadruple x) (double (double x)))
+
+;; And one calling an ordinary function, which does not.
+(: shout (-> string string))
+(defun (shout s) (string-append s "!"))
+
+(: greet (-> string string))
+(defbjo (greet who) (shout (string-append "hello " who)))
+
+;; ---------------------------------------------------------------------------
+;; Mutual recursion across the colour
+;; ---------------------------------------------------------------------------
+;;
+;; `even-bjo?` is forward-referenced by `odd-bjo?`, so the forward binding built
+;; from the signature has to know the colour before either body is checked.
+;; Built as an ordinary arrow it would be called without an `await`, and nothing
+;; would complain until Roslyn.
+
+(: odd-bjo? (-> int bool))
+(defbjo (odd-bjo? n)
+  (if (= n 0) false (even-bjo? (- n 1))))
+
+(: even-bjo? (-> int bool))
+(defbjo (even-bjo? n)
+  (if (= n 0) true (odd-bjo? (- n 1))))
+
+;; ---------------------------------------------------------------------------
+;; A bjoroutine that hands back nothing
+;; ---------------------------------------------------------------------------
+
+(def/mutable counter 0)
+
+;; `Fiber<void>` is not a type, so this is `Fiber<Bjoml.Unit>` — the second
+;; reason unit had to become a real value before any of this could work.
+(: bump (-> int void))
+(defbjo (bump n) (set! counter (+ counter n)))
+
+(: bump-twice (-> int void))
+(defbjo (bump-twice n)
+  (bump n)
+  (bump n))
+
+;; ---------------------------------------------------------------------------
+;; Loops, which is what §3.1 tells you to write instead
+;; ---------------------------------------------------------------------------
+;;
+;; A lambda passed to a higher-order function cannot suspend, so the answer the
+;; design offers is "write the loop instead". That is only an answer if a loop
+;; can actually suspend — and whether it can is not decided until loop lowering
+;; has either promoted it to a `while` in this very method or left it as a C#
+;; local function. `ColourCheck` runs after that pass for exactly this reason,
+;; and asks `LoopLowering` the same question the emitter will ask.
+
+;; A named `let`: one member, entered by an immediate call, so it is inlined.
+(: sum-doubled (-> int int))
+(defbjo (sum-doubled n)
+  (let go ((i 0) (acc 0))
+    (if (= i n) acc (go (+ i 1) (+ acc (double i))))))
+
+;; The general `(loop ...)` form, with a sequence and an accumulator. Its
+;; members are inlined for the same reason.
+(: double-all (-> (List int) (List int)))
+(defbjo (double-all xs)
+  (loop (:for x xs)
+        (:acc out (listing (double x)))))
+
+;; Self-recursion in the bjoroutine itself, which lowering turns into
+;; `TLoop(_, None)` — the loop *is* this method's body.
+(: countdown (-> int int int))
+(defbjo (countdown n acc)
+  (if (= n 0) acc (countdown (- n 1) (+ acc (double n)))))
+
+;; ---------------------------------------------------------------------------
+;; A yield point inside a `(do ...)` block
+;; ---------------------------------------------------------------------------
+;;
+;; This works, and it works for a reason worth stating. `:bind` desugars to a
+;; call to `bind` with the rest of the block as a lambda — an *ordinary* lambda,
+;; which by every rule above cannot suspend. But `Option`'s `bind` mentions its
+;; continuation exactly once, so trait inlining substitutes it and beta
+;; reduction fires: by the time the colour check runs there is no lambda left,
+;; only straight-line code in this method.
+;;
+;; So the answer depends on the monad, which is what the design's §8.5 says. On
+;; `List`, `bind` calls its continuation once per element, the occurrence check
+;; refuses to substitute, the lambda survives, and the same block is rejected —
+;; see `errors/bjo_in_do_over_list.bjo`.
+;;
+;; None of this was arranged. It falls out of the colour check running after
+;; inlining rather than during type checking.
+
+(: safe-div (-> int int (Option int)))
+(defun (safe-div a b) (if (= b 0) None (Some (/ a b))))
+
+(: halve-then-double (-> int (Option int)))
+(defbjo (halve-then-double n)
+  (do (:bind half (safe-div n 2))
+      (:return (double half))))
+
+;; ---------------------------------------------------------------------------
+;; A suspending lambda
+;; ---------------------------------------------------------------------------
+;;
+;; `(bjoroutine ...)` is the lambda form. It cannot be passed to `map` — its
+;; type is not `(-> %a %b)` — but it can be bound and called, and inside a
+;; bjoroutine that call is a yield point like any other.
+
+(: apply-bjo (-> int int))
+(defbjo (apply-bjo x)
+  (let ((f (bjoroutine (n) (+ n 1))))
+    (f (f x))))
+
+;; ---------------------------------------------------------------------------
+;; The entry point may itself be a bjoroutine
+;; ---------------------------------------------------------------------------
+;;
+;; Which is the only way into fiber-land today: without `bjo` there is no other
+;; caller a yield point could legally sit under. The generated entry point
+;; drives it with `Bjo.RunToCompletion`, on the one thread in the process that
+;; is certainly not a pool thread.
+
+(defbjo (main args)
+  (expect "a bjoroutine call returns its payload" (int->string (double 21)) "42")
+  (expect "a bjoroutine calling a bjoroutine" (int->string (quadruple 3)) "12")
+  (expect "and calling an ordinary function" (greet "world") "hello world!")
+
+  ;; Mutual recursion, deep enough that both directions really run.
+  (expect "mutually recursive bjoroutines" (if (odd-bjo? 101) "odd" "even") "odd")
+  (expect "and the other way" (if (even-bjo? 40) "even" "odd") "even")
+
+  ;; Unit-returning, called for effect.
+  (set! counter 0)
+  (bump 5)
+  (bump-twice 10)
+  (expect "a void bjoroutine runs" (int->string counter) "25")
+
+  ;; Yield points inside loops. 0+2+4+6+8 = 20.
+  (expect "a yield point in a named let" (int->string (sum-doubled 5)) "20")
+  (expect "and in a (loop ...)"
+          (int->string (list-length (double-all (list 1 2 3)))) "3")
+  (expect "and in a self-recursive bjoroutine"
+          (int->string (countdown 4 0)) "20")
+
+  ;; A yield point inside a `do` block over a monad whose `bind` uses its
+  ;; continuation once, so inlining leaves straight-line code behind.
+  (expect "a yield point in a (do ...) over Option"
+          (match (halve-then-double 10) ((Some v) (int->string v)) (None "none"))
+          "10")
+  (expect "and the short-circuiting branch"
+          (match (halve-then-double 3) ((Some v) (int->string v)) (None "none"))
+          "2")
+
+  ;; A `(bjoroutine ...)` lambda, bound and called.
+  (expect "a suspending lambda" (int->string (apply-bjo 5)) "7")
+
+  ;; Across a compiled module boundary: `74_lib` published `triple` as
+  ;; `(-bjo-> int int)`, and reading that back is what makes this call a yield
+  ;; point here.
+  (expect "an imported bjoroutine" (int->string (triple 14)) "42")
+  (expect "an imported bjoroutine calling one of its own"
+          (int->string (nonuple 2)) "18")
+
+  ;; An ordinary function imported from the same module still is one.
+  (expect "an imported ordinary function" (lib-shout "still sync") "still sync!")
+  0)

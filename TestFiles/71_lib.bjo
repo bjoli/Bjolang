@@ -1,0 +1,18 @@
+;; A library publishing a trait with a blanket implementation.
+;;
+;; Both levels have to survive the assembly boundary: the blanket is compiled
+;; into *this* assembly as `Shape_Blanket<T_a>`, and the importing module has to
+;; learn from the export metadata both that the blanket exists and that `int`
+;; has an implementation of its own that beats it.
+(export shape)
+
+(def/trait (Shape %a)
+  (: shape (-> %a string)))
+
+;; The blanket, which only this module may write — it is the one that declares
+;; the trait.
+(def/impl (Shape %a)
+  (defun (shape x) "blob"))
+
+(def/impl (Shape int)
+  (defun (shape x) "number"))

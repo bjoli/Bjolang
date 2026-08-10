@@ -1,0 +1,172 @@
+;; The three things that were left: `blocking`, `spawn-evt`, `async-seq->chan`.
+;;
+;; Each exists because of a way the .NET world does not fit the CML one, and
+;; each is the *last* resort in its area rather than the ordinary path.
+;;
+;;   `blocking`        — synchronous BCL code parks the thread it runs on, and a
+;;                       fiber's thread is a pool thread. §7.5.
+;;   `spawn-evt`       — a joined promise cannot be withdrawn, so losing a
+;;                       `choose` on one stops you listening without stopping
+;;                       the work. §7.4.
+;;   `async-seq->chan` — an `IAsyncEnumerable` composes with nothing; a channel
+;;                       composes with everything. §7.6.
+
+(import (std prelude))
+
+(import/extern
+  ;; Synchronous on purpose: this is what `blocking` is for. `Thread.Sleep`
+  ;; parks the thread it is called on, which inside a fiber would be a pool
+  ;; thread that other fibers are queued behind.
+  (sleep-blocking (: System.Threading.Thread.Sleep (-> int void)))
+
+  ;; A real async stream from the BCL. Imported *without* `#:async`, because it
+  ;; hands back an `IAsyncEnumerable` rather than a task and there is nothing to
+  ;; await — which is exactly why it needs turning into a channel before it can
+  ;; be used with anything else.
+  ;;
+  ;; `#:cancellable` because its `CancellationToken` parameter is not optional:
+  ;; every overload takes one, so without the ambient token being threaded in
+  ;; this method would be uncallable rather than merely uncancellable.
+  (file-lines-async (: System.IO.File.ReadLinesAsync (-> string (AsyncSeq string))
+                       #:cancellable))
+
+  (write-file (: System.IO.File.WriteAllTextAsync (-> string string void) #:async))
+  (delete-file (: System.IO.File.Delete (-> string void))))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+(type (: Outcome (Union (Got string) TimedOut Ended)))
+
+;; ---------------------------------------------------------------------------
+;; `spawn-evt`: a child that is actually stopped when its branch loses
+;; ---------------------------------------------------------------------------
+;;
+;; The difference from `(promise-join (bjo (f x)))` is not visible in the type,
+;; which is why it needs its own form. A joined promise cannot be withdrawn: a
+;; losing `choose` drops the result and the child runs on, holding whatever it
+;; held. `spawn-evt` spawns under a cancellation token of its own and fires it
+;; from the nack.
+;;
+;; This worker notices, because it syncs. Cancellation is still cooperative —
+;; a child that never syncs and never checks `cancelled?` runs to completion no
+;; matter who lost what.
+
+(def/mutable ran-to-completion 0)
+
+(: patient-worker (-> int string))
+(defbjo (patient-worker rounds)
+  (let go ((i 0))
+    (if (= i rounds)
+        (let ()
+          (set! ran-to-completion (+ ran-to-completion 1))
+          "finished")
+        ;; Racing the ambient token on every round is what "cooperative" means
+        ;; in practice: the cancellation is noticed at a yield point, and this
+        ;; loop has one per round.
+        (match (sync (choose (wrap (timeout 20) (fun (u) (Got "tick")))
+                             (wrap (cancelled (parameter-ref current-cancel))
+                                   (fun (u) Ended))))
+          ((Got t) (go (+ i 1)))
+          (Ended "cancelled")
+          (TimedOut "unreachable")))))
+
+;; ---------------------------------------------------------------------------
+;; `async-seq->chan`: a stream that composes
+;; ---------------------------------------------------------------------------
+;;
+;; The pair is a channel and a promise, because `Channel` has no close — and a
+;; close would be the wrong answer anyway, since it cannot say *why* it closed.
+;; The rendezvous makes the pair exact rather than racy: the pump cannot finish
+;; until its last send was taken, so a fired promise means a genuinely empty
+;; channel and this loop never has to guess.
+
+(: drain (-> (Chan string) (Promise Unit) string))
+(defbjo (drain ch done)
+  (let go ((acc ""))
+    (match (sync (choose (wrap (chan-recv ch) (fun (line) (Got line)))
+                         (wrap (promise-join done) (fun (r) Ended))))
+      ((Got line) (go (string-append acc line)))
+      (Ended acc)
+      (TimedOut acc))))
+
+(defbjo (main args)
+  ;; ---- blocking -----------------------------------------------------------
+  ;;
+  ;; The fiber suspends on the *result*; the parking happens on a thread the
+  ;; pool can grow to replace. Without this, twenty of these would be twenty
+  ;; pool threads asleep with everything else queued behind them.
+  (expect "a blocking call, moved off the fiber"
+          (match (sync (blocking (fun () (napping 20)))) ((Ok s) s) ((Err e) "failed"))
+          "napped")
+
+  ;; Failure is a value, as everywhere else that resolves at sync time: this
+  ;; runs on a pool thread rather than on the syncing fiber's stack, so it must
+  ;; not raise.
+  (expect "and a blocking call that throws"
+          (match (sync (blocking (fun () (throw-away)))) ((Ok s) "returned") ((Err e) "failed"))
+          "failed")
+
+  ;; ---- spawn-evt ----------------------------------------------------------
+  ;;
+  ;; Winning: one round, so the child finishes and its value comes back.
+  (set! ran-to-completion 0)
+  (expect "a spawn-evt that wins"
+          (match (sync (choose (wrap (spawn-evt (patient-worker 1))
+                                     (fun (r) (match r ((Ok s) (Got s)) ((Err e) (Got "err")))))
+                               (wrap (timeout 10000) (fun (u) TimedOut))))
+            ((Got s) s)
+            (TimedOut "timed out")
+            (Ended "ended"))
+          "finished")
+  (expect "and it really did run" (int->string ran-to-completion) "1")
+
+  ;; Losing: a thousand rounds is twenty seconds of work, and the timeout takes
+  ;; it out after fifty milliseconds. The count below is what proves the child
+  ;; stopped rather than merely stopped being listened to.
+  (set! ran-to-completion 0)
+  (expect "a spawn-evt that loses"
+          (match (sync (choose (wrap (spawn-evt (patient-worker 1000))
+                                     (fun (r) (Got "child won")))
+                               (wrap (timeout 50) (fun (u) TimedOut))))
+            ((Got s) s)
+            (TimedOut "timed out")
+            (Ended "ended"))
+          "timed out")
+
+  ;; Long enough that a child which had *not* been cancelled would still be
+  ;; going, and not long enough for one that had been to have finished anyway.
+  (def settle (sync (timeout 200)))
+  (expect "and the child was cancelled, not just ignored"
+          (int->string ran-to-completion) "0")
+
+  ;; ---- async-seq->chan ----------------------------------------------------
+  (def path "81_stream.txt")
+  (write-file path "alpha\nbeta\ngamma\n")
+
+  (def (lines done) (async-seq->chan (file-lines-async path)))
+  (expect "a .NET async stream, drained through a channel" (drain lines done) "alphabetagamma")
+
+  ;; The promise carries the end of the stream, so a second drain of the same
+  ;; pair ends immediately: the channel is empty and the promise has fired.
+  ;; This is §4.4's persistence, in the one place where it is the point.
+  (expect "and the done promise is persistent" (drain lines done) "")
+
+  (delete-file path)
+  0)
+
+;; Two ordinary functions, down here because `blocking` takes a thunk and a
+;; thunk wants something to call.
+(: napping (-> int string))
+(defun (napping ms)
+  (sleep-blocking ms)
+  "napped")
+
+(: throw-away (-> string))
+(defun (throw-away)
+  (.Substring "abc" 99))

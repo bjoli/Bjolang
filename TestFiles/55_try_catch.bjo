@@ -1,0 +1,85 @@
+;; `try` — the general form of "these failures are values".
+;;
+;; `#:exceptions` on an import decorates one call. `try` guards an arbitrary
+;; expression, which is what stdlib code actually needs: one guard around
+;; open-then-read-then-close, rather than three Results to unwrap before
+;; anything has happened.
+;;
+;; `#:finally` runs however the body leaves — normally, caught, or still on its
+;; way out — and `with-open` is that plus `.Dispose`.
+(import (std prelude))
+
+(import/class
+  (StreamWriter (: System.IO.StreamWriter (-> string StreamWriter)))
+  (StreamReader (: System.IO.StreamReader (-> string StreamReader)))
+  (StringBuilder (: System.Text.StringBuilder (-> StringBuilder))))
+
+(import/extern
+  (file-delete! (: System.IO.File.Delete (-> string void)))
+  (file-exists? (: System.IO.File.Exists (-> string bool))))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; One guard around the whole region, not around each call.
+(: slurp (-> string (Result System.Exception string)))
+(defun (slurp path)
+  (try (with-open ((r (StreamReader. path)))
+         (.ReadToEnd r))
+    #:catch (System.IO.FileNotFoundException System.IO.DirectoryNotFoundException)))
+
+;; The shape a stdlib wrapper wants: no exceptions in the surface API at all.
+(: read-or (-> string string string))
+(defun (read-or path fallback)
+  (match (slurp path)
+    ((Ok text) text)
+    ((Err e) fallback)))
+
+(defun (main)
+  (def path "55_try_catch.tmp")
+
+  (with-open ((w (StreamWriter. path)))
+    (.Write w "slurped"))
+
+  (expect "with-open wrote and disposed" (read-or path "missing") "slurped")
+  (expect "guarded region recovers" (read-or "nonexistent.file" "missing") "missing")
+
+  ;; A guarded region of ordinary Bjolang, with no interop in it at all.
+  ;; The denominator is computed so that C# cannot fold it: dividing by a
+  ;; *literal* zero is a compile-time error over there, not an exception.
+  (def zero (string-length ""))
+  (match (try (/ 10 zero) #:catch (System.DivideByZeroException))
+    ((Ok v) (println "FAILURE: division by zero did not throw"))
+    ((Err e) (println "ok: caught a Bjolang expression")))
+
+  (match (try (+ 20 22) #:catch (System.DivideByZeroException))
+    ((Ok v) (expect "unguarded path still returns" (int->string v) "42"))
+    ((Err e) (println "FAILURE: caught something that did not throw")))
+
+  ;; `#:finally` runs on the way out, including out of a failure.
+  (def sb (StringBuilder.))
+  (match (try (.Substring "abc" 99)
+           #:catch (System.ArgumentOutOfRangeException)
+           ;; A #:finally runs for its effect, so its value is dropped by
+           ;; construction and §8.2 wants that said.
+           #:finally (ignore (.Append sb "cleaned")))
+    ((Ok v) (println "FAILURE: Substring out of range did not throw"))
+    ((Err e) (println "ok: caught with a finally attached")))
+  (expect "finally ran" (.ToString sb) "cleaned")
+
+  ;; A void body gives a Result of the unit value.
+  (match (try (.Write (StreamWriter. path) "x") #:catch (System.IO.IOException))
+    ((Ok _) (println "ok: void body wraps to unit"))
+    ((Err e) (println "FAILURE: writing should have succeeded")))
+
+  (file-delete! path)
+  (if (file-exists? path)
+      (println "FAILURE: the temp file was not deleted")
+      (println "ok: cleaned up"))
+
+  0)

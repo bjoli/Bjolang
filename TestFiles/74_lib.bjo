@@ -1,0 +1,24 @@
+;; A library whose exports include bjoroutines.
+;;
+;; The colour has to survive being written to metadata and read back, because
+;; the importing module has no `defbjo` to read it off — only a published type.
+;; So the serializer spells a suspending arrow `-bjo->`, and `74_bjoroutine.bjo`
+;; calling `triple` is a yield point *because of what the signature says*.
+;;
+;; Reading it back is also the only forward-compatibility story that matters:
+;; an arrow with no marker is an ordinary one, so every `.dll` compiled before
+;; bjoroutines existed still reads.
+
+(export triple nonuple lib-shout)
+
+(: lib-shout (-> string string))
+(defun (lib-shout s) (string-append s "!"))
+
+(: triple (-> int int))
+(defbjo (triple x) (* x 3))
+
+;; Suspends twice, once into a bjoroutine of its own module. The `await` for
+;; this one is emitted here, at definition, and the `await` for `nonuple` is
+;; emitted at the call site in the importing module.
+(: nonuple (-> int int))
+(defbjo (nonuple x) (triple (triple x)))

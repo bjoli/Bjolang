@@ -1,0 +1,58 @@
+;; The emptiness predicates, as one family.
+;;
+;; Every collection answers the same question under the same name: `-empty?`.
+;; Two of them are new — `vec-empty?` and `string-empty?` — and the point of
+;; testing them together is that the family is what makes them worth having.
+;;
+;; Watch the `Vec` pair: `vec-empty` is the *constructor* and `vec-empty?` the
+;; predicate. The names are one character apart and mean opposite kinds of
+;; thing, which is why the constructor is exercised here too — a test that only
+;; called the predicate would not notice them being swapped.
+;;
+;; `seq-empty?` is in the list but is not quite the same operation: it pulls an
+;; element to find out. That is harmless for a sequence over a `Vec`, and is a
+;; trap for a one-shot sequence over a port; the difference belongs to the
+;; source, not to the predicate.
+
+(: expect (-> string bool bool void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " label))))
+
+(defun (main)
+  ;; --- Vec ----------------------------------------------------------------
+  (expect "empty vec" (vec-empty? (vec-empty)) #t)
+  (expect "literal empty vec" (vec-empty? []) #t)
+  (expect "populated vec" (vec-empty? [1 2 3]) #f)
+  (expect "one-element vec" (vec-empty? [1]) #f)
+
+  ;; Emptied by removal, not by construction: the count is a stored field, so
+  ;; this is the case where a wrong answer would come from the field going
+  ;; stale rather than from the predicate.
+  (expect "popped to empty" (vec-empty? (vec-pop [1])) #t)
+  (expect "popped, still full" (vec-empty? (vec-pop [1 2])) #f)
+  (expect "removed to empty" (vec-empty? (vec-remove-at [7] 0)) #t)
+
+  ;; And the other way: adding to an empty one.
+  (expect "added to empty" (vec-empty? (vec-add (vec-empty) 1)) #f)
+
+  ;; --- string -------------------------------------------------------------
+  (expect "empty string" (string-empty? "") #t)
+  (expect "non-empty string" (string-empty? "x") #f)
+  (expect "whitespace is not empty" (string-empty? " ") #f)
+  (expect "two empties appended" (string-empty? (string-append "" "")) #t)
+  (expect "something appended" (string-empty? (string-append "" "a")) #f)
+
+  ;; --- The rest of the family ---------------------------------------------
+  (expect "empty list" (list-empty? (list-empty)) #t)
+  (expect "populated list" (list-empty? (list 1 2)) #f)
+  (expect "empty map" (map-empty? (map-empty)) #t)
+  (expect "populated map" (map-empty? (map-set (map-empty) 1 "one")) #f)
+  (expect "empty seq" (seq-empty? (seq-empty)) #t)
+  (expect "populated seq" (seq-empty? (vec->seq [1])) #f)
+
+  ;; The predicates agree with the counts they are shorthand for.
+  (expect "vec agrees with count" (vec-empty? []) (= (vec-length []) 0))
+  (expect "string agrees with length" (string-empty? "") (= (string-length "") 0))
+  0)

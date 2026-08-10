@@ -1,0 +1,19 @@
+;; A body-local `defbjo`.
+;;
+;; A local definition is compiled to a C# *local function*, and a local function
+;; inside an async method is not itself async. Rejected in the parser, by name,
+;; rather than allowed through to fail somewhere the user cannot see it.
+;;
+;; There is no deep reason it must stay this way — a local bjoroutine could be
+;; lifted, or emitted as an async local function — but neither is written, and
+;; a form that silently compiles to the wrong thing is worse than one that says
+;; no.
+
+;; EXPECT-ERROR: bjoroutine may only be defined at the top level
+
+(: outer (-> int int))
+(defbjo (outer x)
+  (defbjo (inner n) (* n 2))
+  (inner x))
+
+(defun (main args) 0)

@@ -1,0 +1,19 @@
+;; A value computed in the middle of a body and dropped.
+;;
+;; The commonest shape by far, and the one the rule is for: nothing in the
+;; source says anything went missing. A `HashSet.Add` that returns `false`, a
+;; `StringBuilder.Append` whose chain nobody wanted, a function that was meant
+;; to be called for its effect and returns a status — they all read the same as
+;; a statement, and only the type knows better.
+;;
+;; The fix is four characters and it is greppable: `(ignore (+ 1 2))`.
+
+;; EXPECT-ERROR: has type int and is discarded
+;; EXPECT-ERROR: write `(ignore ...)` around it
+
+(import (std prelude))
+
+(defun (main args)
+  (+ 1 2)
+  (println "unreachable by the type checker, but reached by the reader")
+  0)

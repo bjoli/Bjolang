@@ -1,0 +1,109 @@
+;; Lazy sequences: (seq ...), (yield v), (yield-from s), and the seq-* library.
+(import (std prelude))
+
+;; A `seq` body runs a `yield` at a time, as the sequence is consumed.
+(: countdown (-> int (Seq int)))
+(defun (countdown n)
+  (seq
+    (let loop ((i n))
+      (when (> i 0)
+        (yield i)
+        (loop (- i 1))))
+    (yield 0)))
+
+;; `yield-from` splices another sequence in element by element.
+(: bookended (-> (Seq int)))
+(defun (bookended)
+  (seq
+    (yield 100)
+    (yield-from (countdown 3))
+    (yield 200)))
+
+;; Nothing here is ever fully evaluated: the sequence is infinite, and only as
+;; many elements as are asked for are ever produced.
+(: naturals (-> (Seq int)))
+(defun (naturals)
+  (seq
+    (let loop ((i 0))
+      (yield i)
+      (loop (+ i 1)))))
+
+;; The generator says what the next element is and what state follows it, or
+;; None to stop. This is `seq-unfold`'s whole contract.
+(: step (-> int (Option (Tuple int int))))
+(defun (step s)
+  (if (< s 5)
+      (Some (Tuple (* s s) (+ s 1)))
+      None))
+
+;; A loop whose body is a `match`, inside a sequence. The arm that ends the loop
+;; is inside a C# switch, so leaving the loop from there cannot be a `break`.
+(: walk (-> (List int) (Seq int)))
+(defun (walk xs)
+  (seq
+    (let loop ((rest xs))
+      (match rest
+        ((Nil) (display ""))
+        ((Cons h t)
+          (yield h)
+          (yield (* h 100))
+          (loop t))))))
+
+;; Halves an even number, and answers None for an odd one.
+(: halve (-> int (Option int)))
+(defun (halve n)
+  (if (= 0 (% n 2))
+      (Some (/ n 2))
+      None))
+
+(: show (-> string (Seq int) void))
+(defun (show label s)
+  (display label)
+  (display ":")
+  (seq-for-each (fun (x) (display (string-append " " (int->string x)))) s)
+  (newline))
+
+(defun (main)
+  (show "countdown" (countdown 3))
+  (show "bookended" (bookended))
+
+  ;; Laziness: taking 5 of an endless sequence terminates.
+  (show "naturals" (seq-take (naturals) 5))
+  (show "skipped" (seq-take (seq-skip (naturals) 10) 3))
+
+  (show "walk" (walk (Cons 1 (Cons 2 (Cons 3 Nil)))))
+  (show "unfold" (seq-unfold step 0))
+  (show "mapped" (seq-map (fun (x) (* x 2)) (countdown 3)))
+  (show "filtered" (seq-filter (fun (x) (= 0 (% x 3))) (seq-range 0 10)))
+  (show "appended" (seq-append (countdown 1) (seq-range 7 9)))
+  (show "tail" (seq-tail (countdown 3)))
+  (show "empty" (seq-empty))
+
+  (println (seq-fold + 0 (seq-range 1 101)))
+  (println (seq-head (naturals)))
+  (println (seq-length (bookended)))
+
+  ;; A `seq` is an expression: it can be bound, and it closes over its scope.
+  (def factor 7)
+  (def scaled (seq (yield-from (seq-map (fun (x) (* x factor)) (seq-range 1 4)))))
+  (show "scaled" scaled)
+  ;; ...and re-enumerating it runs the body again from the start.
+  (show "scaled again" scaled)
+
+  ;; Round trips through the eager collections.
+  (show "from list" (list->seq (Cons 4 (Cons 5 (Cons 6 Nil)))))
+  (println (list-length (seq->list (seq-range 0 4))))
+  (show "from vec" (vec->seq [8 9]))
+  (println (vec-length (seq->vec (seq-range 0 3))))
+
+  (println (if (seq-empty? (seq-empty)) "empty? yes" "empty? no"))
+  (println (if (seq-empty? (countdown 1)) "nonempty? no" "nonempty? yes"))
+
+  ;; Option, which `seq-unfold` is defined in terms of.
+  (println (option-get (halve 10)))
+  (println (option-get-or (halve 7) -1))
+  (println (if (some? (halve 4)) "some? yes" "some? no"))
+  (println (if (none? (halve 7)) "none? yes" "none? no"))
+  (println (match (halve 12) ((Some v) v) (None -1)))
+  (println (match (halve 13) ((Some v) v) (None -1)))
+  0)

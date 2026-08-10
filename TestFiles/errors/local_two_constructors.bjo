@@ -1,0 +1,18 @@
+(import (std prelude))
+
+(def/trait (Functor (%f %a))
+  (: fmap (-> (%f %a) (-> %a %b) (%f %b))))
+
+(def/impl (Functor (List %a))
+  (defun (fmap xs g) (list-map xs g)))
+
+(def/impl (Functor (Option %a))
+  (defun (fmap o g)
+    (match o ((Some v) (Some (g v))) (None None))))
+
+(defun (main)
+  (defun (bump fa) (fmap fa (fun (n) (+ n 1))))
+  ;; Two different constructors through one monomorphic helper.
+  (def a (bump (Cons 1 Nil)))
+  (def b (bump (Some 5)))
+  0)

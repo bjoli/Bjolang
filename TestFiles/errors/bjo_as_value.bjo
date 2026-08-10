@@ -1,0 +1,24 @@
+;; Passing a bjoroutine where an ordinary function is expected.
+;;
+;; This half of the higher-order restriction needs no rule of its own. A
+;; bjoroutine's type *is* different — the arrow carries the colour — so
+;; `twice`'s `(-> int int)` parameter and `fetch`'s suspending arrow simply do
+;; not unify, and the complaint comes out of the unifier like any other type
+;; error.
+;;
+;; That is the payoff for putting the effect on the arrow rather than on the
+;; function: the one place it has to be checked is the one place types already
+;; meet.
+
+;; EXPECT-ERROR: bjoroutine cannot be used where an ordinary function is expected
+
+(: fetch (-> int int))
+(defbjo (fetch x) (* x 2))
+
+(: twice (-> (-> int int) int int))
+(defun (twice f x) (f (f x)))
+
+(: go (-> int int))
+(defbjo (go x) (twice fetch x))
+
+(defun (main args) 0)

@@ -1,0 +1,84 @@
+;; std/ports.bjo — draining and streaming a textual port.
+;;
+;; The port vocabulary itself — `TextInputPort`, `TextOutputPort`, the `open-*`
+;; family, `read-line`, `read-all`, `port->lines`, `write-line` and the rest —
+;; is in `std/prelude`, which every program is linked against: opening a file
+;; and reading a line from it are as much the language as `print` is, and a
+;; header line is a poor price for them.
+;;
+;; What is left here is the part that takes the *reader procedure* as an
+;; argument, and so is a library rather than a vocabulary: a program that only
+;; wants lines never needs it, and one that reads records, headers or chunks
+;; asks for it by name.
+;;
+;; The reader is any `(-> TextInputPort %a)` — `read-line` and `read-all` are
+;; the stock two — and the element type follows it rather than being `string`
+;; by fiat.
+
+(export
+  ;; Draining
+  port->list port->vec
+  ;; Streaming
+  port->seq file->seq)
+
+(import (std prelude))
+
+;; `Exception` is only needed to spell `file->seq`'s `Result`. The alias is
+;; module-local wherever it is written, so importing the class again here is
+;; not a duplicate of the prelude's — it is the same name being made writable
+;; in a second module.
+(import/class
+  (Exception (: System.Exception)))
+
+;; ---------------------------------------------------------------------------
+;; Draining
+;; ---------------------------------------------------------------------------
+;;
+;; Every remaining item, as a collection. `port->lines` in the prelude is the
+;; `read-line` case, done in the runtime; these are for every other reader.
+;;
+
+
+(: port->list (-> (-> TextInputPort %a) TextInputPort (List %a)))
+(defun (port->list reader p)
+  (loop (:with i 1 1)
+        (:break (port-eof? p))
+        (:acc lst (listing (reader p)))))
+
+(: port->vec (-> (-> TextInputPort %a) TextInputPort (Vec %a)))
+(defun (port->vec reader p)
+  (loop (:with i 1 1)
+        (:break (port-eof? p))
+        (:acc vec (vecing (reader p)))))
+
+;; ---------------------------------------------------------------------------
+;; Streaming
+;; ---------------------------------------------------------------------------
+
+;; The items, pulled one at a time — the form for input too large to hold.
+;;
+;; The port stays the caller's: neither opened nor closed here, valid only
+;; while the port is, and interleaving with any other read of the same port.
+;;
+;; **Good for one walk.** A second enumeration yields nothing.
+;;
+;; `:break` is checked before the yield, so the last line is produced and the
+;; end of input is not read past; the `:with` is just a counter.
+(: port->seq (-> (-> TextInputPort %a) TextInputPort (Seq %a)))
+(defun (port->seq reader p)
+  (seql (:with i 0 0)
+        (:break (port-eof? p))
+        (:yield (reader p))))
+
+;; The contents of a file, pulled through `reader` one item at a time and
+;; closed for you. It can be re-enumerated.
+;; Reach for `open-input-file` with `with-open` when the port is wanted for
+;; anything beyond its contents.
+(: file->seq (-> (-> TextInputPort %a) string (Result Exception (Seq %a))))
+(defun (file->seq reader path)
+  (match (open-input-file path)
+    ((Ok probe)
+      (let ()
+        (close-input-port probe)
+        (Ok (file-read/seq reader path))))
+    ((Err e) (Err e))))

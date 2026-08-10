@@ -1,0 +1,85 @@
+;; Default method bodies in `def/trait`.
+;;
+;; A default is spliced into every impl that does not write the method itself,
+;; and is then checked *there*, against that impl's instantiation of the
+;; signature. So it is not one body shared by every implementor: it is one body
+;; re-checked per implementor, which is what lets a single default mean
+;; something different at each of them.
+;;
+;; That is the whole point of the `magnitude` default below. `System.Math.Abs`
+;; is an overload set, not a function, and no signature in this type system can
+;; name it. Written once as a default, it resolves to `Abs(int)` in the `int`
+;; impl and `Abs(double)` in the `double` one — from argument types that do not
+;; exist until the implementor is known.
+(import (std prelude))
+
+(import/extern
+  (clr-abs (: System.Math.Abs)))
+
+(: expect (-> string string string void))
+(defun (expect label-text actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label-text))
+      (println (string-append "FAILURE: " (string-append label-text
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; Both methods are defaulted. `twice` calls `magnitude`, so a default may name
+;; another method of its own trait — it is resolved at the impl, like everything
+;; else in the body.
+(def/trait (Magnitude %a)
+  (: magnitude (-> %a %a))
+  (: twice (-> %a %a))
+  (defun (magnitude x) (clr-abs x))
+  (defun (twice x) (+ (magnitude x) (magnitude x))))
+
+;; Nothing to write: both bodies are inherited, at two different overloads of
+;; `Math.Abs` and two different `+`.
+(def/impl (Magnitude int))
+(def/impl (Magnitude double))
+
+;; An impl that overrides one default and inherits the other. `twice` is still
+;; the trait's body, but the `magnitude` it calls is this one.
+(def/impl (Magnitude long)
+  (defun (magnitude x) 7L))
+
+;; A trait where the default is the *derived* method and the impls supply the
+;; primitive one — the usual reason to want defaults at all.
+(def/trait (Tagged %a)
+  (: tag (-> %a string))
+  (: label (-> %a string))
+  (defun (label x) (string-append "<" (string-append (tag x) ">"))))
+
+(def/impl (Tagged int)
+  (defun (tag x) "int"))
+
+(def/impl (Tagged string)
+  (defun (tag x) "string")
+  (defun (label x) "OVERRIDDEN"))
+
+;; Reached through a dictionary rather than devirtualized, so the inherited
+;; method has to be a real method on the impl class and not only something the
+;; inliner knows how to splice.
+(: label-of (-> %a string) (where (Tagged %a)))
+(defun (label-of x)
+  (label x))
+
+(defun (main)
+  ;; The same default body, resolved at three different types.
+  (expect "default at int" (int->string (magnitude -5)) "5")
+  (expect "default at double" (double->string (magnitude -2.5)) "2.5")
+  (expect "default calling a default" (int->string (twice -5)) "10")
+  (expect "default at double, twice" (double->string (twice -2.5)) "5")
+
+  ;; The override wins, and the inherited `twice` picks it up.
+  (expect "override at long" (long->string (magnitude -3000000000L)) "7")
+  (expect "inherited method calls override" (long->string (twice -3000000000L)) "14")
+
+  ;; A default over a method the impl supplies.
+  (expect "derived default" (label 1) "<int>")
+  (expect "overridden derived" (label "x") "OVERRIDDEN")
+
+  ;; The same, through a trait dictionary.
+  (expect "default via dictionary" (label-of 1) "<int>")
+  (expect "override via dictionary" (label-of "x") "OVERRIDDEN")
+  0)

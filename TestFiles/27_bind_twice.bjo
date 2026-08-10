@@ -1,0 +1,45 @@
+;; A `bind` that mentions its continuation twice.
+;;
+;; Substituting a lambda used more than once duplicates it, and in a `(do ...)`
+;; block the continuation is the *entire rest of the block* — so substituting
+;; here would give code size exponential in nesting depth. The occurrence check
+;; refuses, the argument is let-bound instead, and the compiler says so: the
+;; result is correct, but a loop written through this monad will not be a loop.
+(import (std prelude))
+
+(def/trait (Monad (%m %a))
+  (: pure (-> %a (%m %a)))
+  (: bind (-> (%m %a) (-> %a (%m %b)) (%m %b))))
+
+(type (: (Duo %a) (Union (MkDuo %a %a))))
+
+(def/impl (Monad (Duo %a))
+  (defun (pure x) (MkDuo x x))
+  (defun (bind m k)
+    (match m
+      ((MkDuo a b)
+        (match (k a)
+          ((MkDuo p _)
+            (match (k b)
+              ((MkDuo _ q) (MkDuo p q)))))))))
+
+(: scaled (-> (Duo int)))
+(defun (scaled)
+  (do (:bind x (MkDuo 1 2))
+      (:return (* x 10))))
+
+(: nested (-> (Duo int)))
+(defun (nested)
+  (do (:bind x (MkDuo 1 2))
+      (:bind y (MkDuo 3 4))
+      (:return (+ x y))))
+
+(: render (-> (Duo int) string))
+(defun (render d)
+  (match d
+    ((MkDuo a b) (string-append (int->string a) (string-append "/" (int->string b))))))
+
+(defun (main)
+  (println (render (scaled)))
+  (println (render (nested)))
+  0)

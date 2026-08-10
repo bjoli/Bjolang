@@ -1,0 +1,32 @@
+(import (std prelude))
+
+;; Regression test: a local binding that shadows an enclosing loop's name and is
+;; called in tail position.
+;;
+;; The call to `loop` in the inner `let` body is a call to the *local* binding,
+;; not to the named let, so it is an ordinary call and must not be turned into a
+;; jump. The tail-recursion analysis used to compare callee names without
+;; honouring shadowing, mark this call, and then reject the program with a
+;; spurious "Tail Call Error"; loop lowering, which does honour shadowing,
+;; had already declined to lower it.
+(: shadowed (-> int int))
+(defun (shadowed n)
+  (let loop ((i n))
+    (if (= i 0)
+        0
+        (let ((loop (fun (y) (* y 2))))
+          (loop i)))))
+
+;; The same named let *without* the shadowing binding must still become a jump,
+;; so this also guards against fixing the false positive by disabling lowering.
+(: counted (-> int int))
+(defun (counted n)
+  (let loop ((i n) (acc 0))
+    (if (= i 0)
+        acc
+        (loop (- i 1) (+ acc 1)))))
+
+(defun (main args)
+  (println (shadowed 21))
+  (println (counted 1000000))
+  0)

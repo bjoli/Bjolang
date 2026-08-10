@@ -1,0 +1,30 @@
+;; A yield point inside a `(do ...)` block over `List`.
+;;
+;; `:bind` desugars to a call to `bind` with the rest of the block as an
+;; ordinary lambda, and whether that lambda survives depends on the monad.
+;;
+;; `Option`'s `bind` mentions its continuation once, so trait inlining
+;; substitutes it and beta reduction leaves straight-line code — which is why
+;; the same shape is *allowed* in `74_main.bjo`. `List`'s `bind` calls its
+;; continuation once per element, the occurrence check refuses to substitute a
+;; term used more than once, and the lambda is still there when the colour check
+;; runs. A suspension inside it has nowhere to live.
+;;
+;; The design's §8.5 asks for a message naming the monad and saying why. This is
+;; not that message yet — it is the general one — but it is the right verdict,
+;; and it is a verdict rather than a Roslyn failure in generated code.
+
+;; EXPECT-ERROR: calling 'fetch' is a yield point
+;; EXPECT-ERROR: yield point is not allowed here
+
+(import (std prelude))
+
+(: fetch (-> int int))
+(defbjo (fetch x) (* x 2))
+
+(: multi (-> int (List int)))
+(defbjo (multi n)
+  (do (:bind x (Cons n (Cons (+ n 1) Nil)))
+      (:return (fetch x))))
+
+(defun (main args) 0)

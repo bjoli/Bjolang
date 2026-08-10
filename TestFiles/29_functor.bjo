@@ -1,0 +1,30 @@
+(import (std prelude))
+
+;; Functor is the same shape as bind: the hole occurs twice, at two different
+;; arguments.
+(def/trait (Functor (%f %a))
+  (: fmap (-> (%f %a) (-> %a %b) (%f %b))))
+
+(def/impl (Functor (List %a))
+  (defun (fmap xs g) (list-map g xs)))
+
+(def/impl (Functor (Option %a))
+  (defun (fmap o g)
+    (match o ((Some v) (Some (g v))) (None None))))
+
+(type (: (Pair %a) (Union (MkPair %a %a))))
+
+(def/impl (Functor (Pair %a))
+  (defun (fmap p g)
+    (match p ((MkPair a b) (MkPair (g a) (g b))))))
+
+(: show-list (-> (List string) string))
+(defun (show-list xs)
+  (list-foldl (fun (acc x) (string-append acc (string-append " " x))) "" xs))
+
+(defun (main)
+  ;; Changes the element type: List int -> List string
+  (println (show-list (fmap (Cons 1 (Cons 2 Nil)) int->string)))
+  (println (match (fmap (Some 21) (fun (n) (* n 2))) ((Some v) (int->string v)) (None "none")))
+  (println (match (fmap (MkPair 3 4) int->string) ((MkPair a b) (string-append a b))))
+  0)

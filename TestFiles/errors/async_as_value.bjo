@@ -1,0 +1,22 @@
+;; An async import used as a value.
+;;
+;; A .NET method group is never a value, and an import with a declared signature
+;; gets around that by eta-expanding into a lambda that calls it. That way out is
+;; closed here: the lambda would be an ordinary `(fun ...)` whose body is a yield
+;; point, which is §3.1's higher-order restriction — the arrow `(-> int int)`
+;; does not say its function may suspend, so `list-map` is emitted once, for the
+;; ordinary case.
+;;
+;; Said at the use rather than left to `ColourCheck`, which would report an
+;; error against a lambda the user never wrote.
+
+;; EXPECT-ERROR: calling it is a yield point, so it cannot be used as a value
+
+(import (std prelude))
+
+(import/extern
+  (sleep (: System.Threading.Tasks.Task.Delay (-> int void) #:async)))
+
+(defbjo (main args)
+  (def waits (list-map sleep (list 1 2 3)))
+  0)

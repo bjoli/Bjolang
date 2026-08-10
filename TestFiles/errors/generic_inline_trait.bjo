@@ -1,0 +1,19 @@
+;; EXPECT-ERROR: 'bind' cannot be used at a generic type; 'Monad' is an inline-only trait
+;;
+;; There is no dictionary for an inline trait — that is the whole point of one —
+;; so a function generic in the monad has nothing to dispatch through.
+(import (std prelude))
+
+(def/trait (Monad (%m %a))
+  (: pure (-> %a (%m %a)))
+  (: bind (-> (%m %a) (-> %a (%m %b)) (%m %b))))
+
+(def/impl (Monad (List %a))
+  (defun (pure x) (Cons x Nil))
+  (defun (bind m k) (list-foldr (fun (x acc) (k x)) Nil m)))
+
+(: twice (-> %m (-> int %m) %m))
+(defun (twice m k)
+  (bind m k))
+
+(defun (main) 0)

@@ -1,0 +1,25 @@
+(def/trait (Foldable %col)
+  (type %item)
+  (: fold (-> (-> %acc %item %acc) %acc %col %acc)))
+
+(def/impl (Foldable (List %a))
+  (type %item %a)
+  (defun (fold f acc col)
+    (list-foldl f acc col)))
+
+(def/impl (Foldable (Vec %a))
+  (type %item %a)
+  (defun (fold f acc col)
+    (vec-fold f acc col)))
+
+;; A Map's item is its pair, so `map-fold`'s folder is already the shape this
+;; trait asks for.
+(def/impl (Foldable (Map %k %v))
+  (type %item (Tuple %k %v))
+  (defun (fold f acc col)
+    (map-fold f acc col)))
+
+;; (def/impl (Foldable TextInputPort)
+;;   (type %item %a)
+;;   (defun (fold f init port)
+;;     (port-fold f init port)))

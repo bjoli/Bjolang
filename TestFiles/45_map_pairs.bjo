@@ -1,0 +1,106 @@
+;; A Map's element is its (key . value) pair, and every higher-order function
+;; over a Map takes that pair as one argument. That is what lets a Map be passed
+;; to a trait whose signature mentions a single element type.
+(import (std prelude))
+
+(: expect (-> string bool void))
+(defun (expect label ok)
+  (if ok
+      (println (string-append "ok " label))
+      (println (string-append "FAILURE: " label))))
+
+(: sample (-> (Map string int)))
+(defun (sample)
+  (map-set (map-set (map-set (map-empty) "a" 1) "b" 2) "c" 3))
+
+;; The pair destructures in a callback exactly as it does anywhere else.
+(: total (-> (Map string int) int))
+(defun (total m)
+  (map-fold (fun (acc kv)
+              (def (_ . v) kv)
+              (+ acc v))
+            0 m))
+
+;; The same fold reached through Foldable. The trait has one %item, so the
+;; folder it takes is a one-argument function — which is the whole reason the
+;; callbacks take pairs.
+(: total-via-trait (-> (Map string int) int))
+(defun (total-via-trait m)
+  (fold (fun (acc kv)
+          (def (_ . v) kv)
+          (+ acc v))
+        0 m))
+
+;; Keys are reachable from the pair just as well as values.
+(: key-lengths (-> (Map string int) int))
+(defun (key-lengths m)
+  (map-fold (fun (acc kv)
+              (def (k . _) kv)
+              (+ acc (string-length k)))
+            0 m))
+
+(defun (main args)
+  (def m (sample))
+
+  (expect "fold" (= (total m) 6))
+  (expect "fold via Foldable" (= (total-via-trait m) 6))
+  (expect "keys reachable" (= (key-lengths m) 3))
+
+  ;; map-map sees the pair and returns the new value.
+  (def tagged (map-map (fun (kv)
+                         (def (k . v) kv)
+                         (string-append k (int->string v)))
+                       m))
+  (expect "map-map" (equal? (map-ref tagged "b") "b2"))
+
+  ;; map-filter sees the pair too.
+  (def big (map-filter (fun (kv)
+                         (def (_ . v) kv)
+                         (> v 1))
+                       m))
+  (expect "map-filter count" (= (map-length big) 2))
+  (expect "map-filter kept" (= (map-ref big "c") 3))
+
+  ;; The merge resolver gets the key and both colliding values as a triple.
+  (def other (map-set (map-set (map-empty) "c" 30) "d" 40))
+  (def merged (map-merge-with (fun (kvv)
+                                (def (_ a b) kvv)
+                                (+ a b))
+                              m other))
+  (expect "merge-with collision" (= (map-ref merged "c") 33))
+  (expect "merge-with untouched" (= (map-ref merged "a") 1))
+  (expect "merge-with added" (= (map-ref merged "d") 40))
+
+  ;; map-iter short-circuits on false, and its callback takes the pair.
+  (expect "iter all" (map-iter (fun (kv)
+                                 (def (_ . v) kv)
+                                 (> v 0))
+                               m))
+  (expect "iter stops" (not (map-iter (fun (kv)
+                                        (def (_ . v) kv)
+                                        (> v 2))
+                                      m)))
+
+  ;; map-for-each is the same shape, for effect.
+  (def/mutable seen 0)
+  (map-for-each (fun (kv)
+                  (def (_ . v) kv)
+                  (set! seen (+ seen v)))
+                m)
+  (expect "for-each" (= seen 6))
+
+  ;; Functor is the exception: its (-> %a %b) has room for one element type and
+  ;; that is the value, so map-map-values is what it needs. Keys ride along.
+  (def doubled (map-map-values (fun (v) (* v 2)) m))
+  (expect "map-map-values" (= (map-ref doubled "b") 4))
+
+  ;; Through the trait, changing the value type as it goes.
+  (def shown (map (fun (v) (int->string v)) m))
+  (expect "Functor via trait" (equal? (map-ref shown "c") "3"))
+
+  ;; Functor still works for the other instances.
+  (expect "Functor on Option"
+          (match (map (fun (n) (* n 2)) (Some 21))
+            ((Some v) (= v 42))
+            (None false)))
+  0)

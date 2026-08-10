@@ -1,0 +1,28 @@
+(import (std prelude))
+
+;; Exercises the quoted-list branch of Pipeline.read, which shares its range
+;; computation and dot-to-Tuple rewrite with the plain parenthesized branch.
+;; Nothing else in the corpus uses '(...).
+;; Tuple destructuring in a *body*, not at the top level.
+;;
+;; `(def (a b) e)` is a `def` whose second element is a list, which the body's
+;; `collectDefs` does not accept — and a `def` it does not accept consumes
+;; nothing, so this used to send the parser into an infinite recursion that
+;; ended as a stack overflow rather than as a diagnostic.
+(: swapped (-> (Tuple int string) string))
+(defun (swapped pair)
+  (def (n s) pair)
+  (string-append s (int->string n)))
+
+(defun (main args)
+  (def lst '(5 6 7))
+
+  (displayln (match lst
+               ((Cons hd tl) "starts-with-5")
+               (Nil "empty")))
+
+  (displayln (swapped (Tuple 7 "n")))
+
+  (def (a b) (Tuple 1 2))
+  (displayln (int->string (+ a b)))
+  0)

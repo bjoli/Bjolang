@@ -1,0 +1,250 @@
+;; `(:with var start update [end])` — a loop variable that carries its own state
+;; instead of drawing it from a cursor. Structurally a `:for` in every respect:
+;; it belongs to a level, advances in lockstep with that level, and its `end` is
+;; one of the level's termination tests.
+(import (std prelude))
+
+(: expect (-> string bool void))
+(defun (expect label ok)
+  (if ok
+      (println (string-append "ok " label))
+      (println (string-append "FAILURE: " label))))
+
+(: show (-> (List int) string))
+(defun (show xs)
+  (list-foldl (fun (acc x) (string-append acc (string-append " " (int->string x)))) "" xs))
+
+(: same? (-> (List int) (List int) bool))
+(defun (same? a b)
+  (equal? (show a) (show b)))
+
+;; ---------------------------------------------------------------------------
+;; The recurrence
+;; ---------------------------------------------------------------------------
+
+(: fibs (-> int (List int)))
+(defun (fibs n)
+  (loop (:with a 0 b)
+        (:with b 1 (+ a b))
+        (:for i (range 0 n))
+        (:acc out (listing a))
+        => out))
+
+;; The same thing with no `:for` at all: a `:with` with an `end` bounds the
+;; level by itself.
+(: fibs-under (-> int (List int)))
+(defun (fibs-under limit)
+  (loop (:with a 0 b (> a limit))
+        (:with b 1 (+ a b))
+        (:acc out (listing a))
+        => out))
+
+;; One clause, one slot: a tuple pattern carries the whole state.
+(: fibs-tupled (-> int (List int)))
+(defun (fibs-tupled n)
+  (loop (:with (Tuple a b) (Tuple 0 1) (Tuple b (+ a b)))
+        (:for i (range 0 n))
+        (:acc out (listing a))
+        => out))
+
+;; ---------------------------------------------------------------------------
+;; Updates are simultaneous
+;; ---------------------------------------------------------------------------
+
+;; Every update in a level is computed before any slot is written, so this is a
+;; swap rather than two names converging on one value.
+(: swapping (-> (List int)))
+(defun (swapping)
+  (loop (:with a 0 b)
+        (:with b 1 a)
+        (:for i (range 0 4))
+        (:acc out (listing a))
+        => out))
+
+;; The sequential reading of the same recurrence, spelled out: a `:let` names
+;; the new value of `a`, and both updates use it. `a` still advances to `b`, but
+;; `b` now advances by the *new* `a` rather than the old one, so this doubles
+;; where the simultaneous version fibonaccis. This is the contrast the rule is
+;; about — clause order in the body does not change it, because an update is
+;; evaluated at the end of the iteration where every binding is in scope.
+(: doubling (-> int (List int)))
+(defun (doubling n)
+  (loop (:with a 0 a-next)
+        (:with b 1 (+ a-next b))
+        (:for i (range 0 n))
+        (:let a-next b)
+        (:acc out (listing a))
+        => out))
+
+;; ---------------------------------------------------------------------------
+;; A `:with` iterates, so it does not break `:for` adjacency
+;; ---------------------------------------------------------------------------
+
+;; One level, three clauses in lockstep — not three levels. The level ends with
+;; the shortest of them, so five xs and three ys give three iterations.
+(: lockstep (-> (List int)))
+(defun (lockstep)
+  (loop (:for x '(1 2 3 4 5))
+        (:with a 0 (+ a 10))
+        (:for y (range 0 3))
+        (:acc out (listing (+ x (+ a y))))
+        => out))
+
+;; `(:subloop)` is still how two iterating clauses are separated.
+(: nested (-> (Tuple int int)))
+(defun (nested)
+  (loop (:for x (range 0 3))
+        (:subloop)
+        (:with a 0 (+ a 1))
+        (:for y (range 0 2))
+        (:acc sum (summing a))
+        (:acc runs (summing 1))
+        => (Tuple sum runs)))
+
+;; ---------------------------------------------------------------------------
+;; Termination tests run in clause order
+;; ---------------------------------------------------------------------------
+
+;; A sequence whose `done?` is effectful — an enumerator-backed cursor really
+;; does advance in `done?`, so which test runs first is observable. The tally
+;; rides along in a one-element array, which a struct can hold by reference.
+(type (: Probe (Struct (: limit int) (: tally (Array int)))))
+
+(: probe (-> int Probe))
+(defun (probe limit)
+  (def t (make-array 1))
+  (array-set! t 0 0)
+  (Probe (limit limit) (tally t)))
+
+(def/impl (Iterable Probe)
+  (type %elem int)
+  (type %cursor int)
+  (defun (start s) 0)
+  (defun (done? s c)
+    (def t (record-get s tally))
+    (array-set! t 0 (+ 1 (array-ref t 0)))
+    (>= c (record-get s limit)))
+  (defun (current s c) c)
+  (defun (next s c) (+ c 1)))
+
+;; `end` written first: when it holds the level is over and the `:for`'s `done?`
+;; never runs, so the cursor is left un-advanced.
+(: with-first (-> (Tuple int int)))
+(defun (with-first)
+  (def p (probe 100))
+
+  (def n
+    (loop (:with a 0 (+ a 1) (>= a 2))
+          (:for x p)
+          (:acc c (counting x))
+          => c))
+
+  (Tuple n (array-ref (record-get p tally) 0)))
+
+;; The same tests, written the other way round: now `done?` runs on the
+;; iteration that `end` stops, one time more.
+(: for-first (-> (Tuple int int)))
+(defun (for-first)
+  (def p (probe 100))
+
+  (def n
+    (loop (:for x p)
+          (:with a 0 (+ a 1) (>= a 2))
+          (:acc c (counting x))
+          => c))
+
+  (Tuple n (array-ref (record-get p tally) 0)))
+
+;; ---------------------------------------------------------------------------
+;; Which edges update
+;; ---------------------------------------------------------------------------
+
+;; A skipped iteration still advances the level, exactly as its cursors do —
+;; otherwise this would never get past the first `a`.
+(: skipping (-> (List int)))
+(defun (skipping)
+  (loop (:with a 0 (+ a 1))
+        (:for i (range 0 6))
+        (:when (= 0 (% a 2)))
+        (:acc out (listing a))
+        => out))
+
+;; `:break` leaves through the finish block and updates nothing, so the last
+;; value accumulated is the one from the iteration before the break.
+(: breaking (-> (List int)))
+(defun (breaking)
+  (loop (:with a 0 (+ a 1))
+        (:for i (range 0 10))
+        (:break (= a 3))
+        (:acc out (listing a))
+        => out))
+
+;; ---------------------------------------------------------------------------
+;; A named loop may override a `:with`
+;; ---------------------------------------------------------------------------
+
+;; A `:with` is carried, so it *can* be jumped ahead — which is the thing a
+;; `:for` variable could never do.
+(: skipper (-> (List int)))
+(defun (skipper)
+  (loop lp (:with a 0 (+ a 1) (> a 20))
+           (:acc out (listing a))
+           (:do (if (= a 3) (lp #:a 10) (lp)))
+           => out))
+
+;; ---------------------------------------------------------------------------
+;; Loop-invariant, and deep
+;; ---------------------------------------------------------------------------
+
+;; Two expressions is a `:with` with no update: a loop-invariant binding, which
+;; contributes no override to the jump at all.
+(: invariant (-> int))
+(defun (invariant)
+  (loop (:with k 7)
+        (:for i (range 0 3))
+        (:acc total (summing k))
+        => total))
+
+;; Deep enough that anything but a jump would exhaust the stack.
+(: deep (-> int int))
+(defun (deep n)
+  (loop (:with a 0 (+ a 1))
+        (:for i (range 0 n))
+        (:acc last (folding 0 a))
+        => last))
+
+(defun (main args)
+  (expect "fibonacci" (same? (fibs 10) '(0 1 1 2 3 5 8 13 21 34)))
+  (expect "self-bounded" (same? (fibs-under 100) '(0 1 1 2 3 5 8 13 21 34 55 89)))
+  (expect "tuple pattern" (same? (fibs-tupled 10) '(0 1 1 2 3 5 8 13 21 34)))
+
+  (expect "simultaneous swap" (same? (swapping) '(0 1 0 1)))
+  (expect "sequential via :let" (same? (doubling 6) '(0 1 2 4 8 16)))
+  (expect "the two differ" (not (same? (doubling 6) (fibs 6))))
+
+  (expect "lockstep is one level" (same? (lockstep) '(1 13 25)))
+  (expect "lockstep ends with the shortest" (= 3 (list-length (lockstep))))
+
+  ;; `a` restarts on every entry to the subloop, so it is 0,1 three times over
+  ;; and sums to 3. The accumulator beside it is hoisted and counts all six.
+  (def (nested-sum nested-runs) (nested))
+  (expect "subloop resets its :with" (= nested-sum 3))
+  (expect "an accumulator beside it does not" (= nested-runs 6))
+
+  (def (wf-n wf-probes) (with-first))
+  (expect "end before for: two iterations" (= wf-n 2))
+  (expect "end before for: cursor left un-advanced" (= wf-probes 2))
+
+  (def (ff-n ff-probes) (for-first))
+  (expect "for before end: same two iterations" (= ff-n 2))
+  (expect "for before end: one probe more" (= ff-probes 3))
+
+  (expect ":when false still advances" (same? (skipping) '(0 2 4)))
+  (expect ":break updates nothing" (same? (breaking) '(0 1 2)))
+
+  (expect "named loop overrides a :with"
+          (same? (skipper) '(0 1 2 3 10 11 12 13 14 15 16 17 18 19 20)))
+
+  (expect "loop-invariant :with" (= 21 (invariant)))
+  (expect "deep iteration" (= 199999 (deep 200000)))
+  0)

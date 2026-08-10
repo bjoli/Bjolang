@@ -1,0 +1,67 @@
+;; Regression: the members of a mutually recursive group must be checked in
+;; *source* order.
+;;
+;; `Inference`'s `ELetRec` checks members in list order and relies on an earlier
+;; member's call site having pinned a later member's argument types — a body
+;; checked against bare metavariables cannot resolve an associated-type
+;; projection, which is fatal rather than merely imprecise. A loop's levels are
+;; emitted outermost-first, which is exactly the order that works.
+;;
+;; `LetRecify` used to order them with `Set.toList`, which sorts a set of strings
+;; ordinally. Every name in a loop group is a gensym `looplevel__N` with a
+;; decimal counter, so `looplevel__11` sorted before `looplevel__8` and the order
+;; depended on how many names the compilation happened to have invented earlier.
+;; A single extra declaration ahead of a nested loop was enough to break it.
+;;
+;; The shape below is the minimal reproduction: exactly one preceding loop, then
+;; a nested loop whose inner level reads a variable bound by the outer one.
+(import (std prelude))
+
+(: expect (-> string int int void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok " label))
+      (println (string-append "FAILURE: " label))))
+
+;; The declaration that used to shift the counter across a digit boundary.
+(: warmup (-> int))
+(defun (warmup)
+  (loop (:for i (range 0 3))
+        (:acc s (summing i))
+        => s))
+
+;; Two levels, and the inner one mentions the outer's variable — which is what
+;; needs the outer level to have been checked first.
+(: nested (-> int))
+(defun (nested)
+  (loop (:for x (range 0 4))
+        (:subloop)
+        (:for y (range 0 3))
+        (:acc t (summing (+ x y)))
+        => t))
+
+;; Three levels, for the same reason one step further in.
+(: deeper (-> int))
+(defun (deeper)
+  (loop (:for a (range 0 2))
+        (:subloop)
+        (:for b (range 0 2))
+        (:subloop)
+        (:for c (range 0 2))
+        (:acc t (summing (+ a (+ b c))))
+        => t))
+
+;; And through a sequence, which is where this was first noticed.
+(: emitted (-> (Seq int)))
+(defun (emitted)
+  (seq (loop (:for i (range 0 3))
+             (:do (yield i)))))
+
+(defun (main args)
+  (expect "warmup" (warmup) 3)
+  ;; x in 0..3, y in 0..2: sum of (x+y) over 12 pairs = 3*(0+1+2+3) + 4*(0+1+2)
+  (expect "nested after one loop" (nested) 30)
+  ;; a,b,c each in 0..1: each contributes 4 to the sum of 8 triples
+  (expect "three levels" (deeper) 12)
+  (expect "sequence still works" (seq-fold + 0 (emitted)) 3)
+  0)

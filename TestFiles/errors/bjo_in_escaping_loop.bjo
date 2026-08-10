@@ -1,0 +1,30 @@
+;; A yield point inside a loop that does *not* become a loop.
+;;
+;; This is the case that decides where the colour check has to live. `go` below
+;; is written exactly like the named `let` in `74_main.bjo`, which is allowed to
+;; suspend — but it is also *passed to* `apply2`, and a thing you pass has to be
+;; a value, so it cannot be a jump target. Loop lowering leaves it as a C# local
+;; function, and a local function inside an async method is not itself async.
+;;
+;; Two syntactically identical forms, two different answers, and nothing at type
+;; checking time can tell them apart. So the check runs after `LoopLowering` and
+;; asks it the same question the emitter asks — `isInlinedLoop` — rather than
+;; guessing. Guessing permissively puts this program's failure in generated C#;
+;; guessing conservatively rejects `sum-doubled`, which is the one workaround
+;; §3.1 offers for the higher-order restriction.
+
+;; EXPECT-ERROR: calling 'fetch' is a yield point
+;; EXPECT-ERROR: yield point is not allowed here
+
+(: fetch (-> int int))
+(defbjo (fetch x) (* x 2))
+
+(: apply2 (-> (-> int int) int int))
+(defun (apply2 f x) (f (f x)))
+
+(: escaping (-> int int))
+(defbjo (escaping n)
+  (let go ((i 0))
+    (if (> i n) (fetch i) (apply2 go (+ i 1)))))
+
+(defun (main args) 0)

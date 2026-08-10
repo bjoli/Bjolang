@@ -1,0 +1,50 @@
+;; The zero-element tuple.
+;;
+;; C# has no `ValueTuple<>` and no `()` expression, so the unit type and unit
+;; value each need a case of their own rather than falling out of the general
+;; tuple emission. This is not an exotic corner: `()` in source parses as an
+;; empty tuple, and so does a body with no forms in it, so a program can reach
+;; it without ever writing `(Tuple)`.
+(import (std prelude))
+
+;; As a value bound to a name.
+(: unit-value (-> (Tuple)))
+(defun (unit-value)
+  (Tuple))
+
+;; Through a parameter and back out as a result, which is where the *type* has
+;; to be spelled rather than just the value.
+(: identity-unit (-> (Tuple) (Tuple)))
+(defun (identity-unit u) u)
+
+;; Inside a data structure, where it is a type argument rather than a type.
+(: units (-> int (List (Tuple))))
+(defun (units n)
+  (let loop ((i 0) (acc Nil))
+    (if (= i n) acc (loop (+ i 1) (Cons (Tuple) acc)))))
+
+;; In a branch, so both arms have to agree on it.
+(: chosen (-> bool (Tuple)))
+(defun (chosen b)
+  (if b (Tuple) (identity-unit (Tuple))))
+
+;; `()` is the same value written the other way.
+(: parens (-> (Tuple)))
+(defun (parens) ())
+
+(: expect (-> string bool void))
+(defun (expect label ok)
+  (if ok
+      (println (string-append "ok " label))
+      (println (string-append "FAILURE: " label))))
+
+(defun (main)
+  (def u (unit-value))
+  (expect "identity" (= 0 (list-length (units 0))))
+  (expect "in-list" (= 3 (list-length (units 3))))
+  (def r (identity-unit u))
+  (def c (chosen true))
+  (def c2 (chosen false))
+  (def p (parens))
+  (expect "reached-end" true)
+  0)

@@ -1,0 +1,242 @@
+;; Calling .NET async: `#:async`, and what the emitter does for you.
+;;
+;; `Task` is never a Bjolang type. An `#:async` import's declared type is the
+;; task's *result*, calling it is a yield point, and the `await` is emitted for
+;; you — the same deal as calling a bjoroutine, and for the same reason: §1's
+;; direct style says suspension is invisible at the call site.
+;;
+;; That works at all because `FiberMethodBuilder.AwaitUnsafeOnCompleted` is
+;; generic over the awaiter, so a plain BCL task can be awaited inside a
+;; compiled bjoroutine with no CML involvement whatsoever — no promise, no
+;; `SyncState`, no nack node. §7.1: most BCL calls are "give me the bytes", not
+;; "race this against a cancel channel", so the direct call is the default and
+;; the event form is what you ask for.
+;;
+;; Two things the emitter adds, neither of them optional (§7.2):
+;;
+;;   * **`.ConfigureAwait(false)`.** A bare `TaskAwaiter` captures the ambient
+;;     `SynchronizationContext` and posts the continuation back to it; in a
+;;     WinForms or legacy ASP.NET host that serialises the whole fiber pool onto
+;;     one thread and can deadlock outright. It is the emitter's job because it
+;;     is not a decision any call site should be making.
+;;
+;;   * **The ambient cancellation token.** The overload taking a
+;;     `CancellationToken` is the one selected, and the token comes from
+;;     `current-cancel`. A token the caller has to remember to pass is a token
+;;     the caller forgets, and then a cancelled scope leaves an HTTP request
+;;     running. Where a method has no such overload, the import must say
+;;     `#:uncancellable` — see `errors/async_needs_uncancellable.bjo`.
+;;
+;; The last of those is tested here by cancelling a thirty-second sleep and
+;; watching it die, which is a claim about generated code that nothing else
+;; would catch.
+
+(import "79_lib.bjo")
+
+(import/extern
+  ;; Cancellable, like the library's, and imported again here to show that two
+  ;; modules resolving the same method against the same .NET metadata agree.
+  (pause (: System.Threading.Tasks.Task.Delay (-> int void) #:async))
+
+  ;; The same method, told not to thread a token. `#:uncancellable` is how you
+  ;; say "this one cannot be stopped", and saying it selects the overload
+  ;; without a token rather than the one with it.
+  (pause-forever (: System.Threading.Tasks.Task.Delay (-> int void)
+                    #:async #:uncancellable))
+
+  ;; An async call that can fail. `#:exceptions` works exactly as it does for a
+  ;; synchronous import — the failure becomes an `Err` — which needs the guard
+  ;; that wraps the call to be able to hold an `await`. It is emitted as a fiber
+  ;; of its own for that reason.
+  (read-file (: System.IO.File.ReadAllTextAsync (-> string string)
+                #:async #:exceptions (System.IO.IOException)))
+
+  ;; The same method again without `#:exceptions`, for the `task->event` tests
+  ;; below. An event carries failure as a value already — that is what its
+  ;; `(Result Exception %a)` payload is — so `#:exceptions` has nothing to add
+  ;; there and is not consulted. Two aliases rather than one so that each test
+  ;; says which of the two shapes it is about.
+  (fetch (: System.IO.File.ReadAllTextAsync (-> string string) #:async)))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; Cancellation arrives from .NET as an exception rather than as a value: the
+;; task faults, the await rethrows, and the fiber dies. Joining it is how a
+;; supervisor hears about that — failure is a value at the *join*, which is
+;; §4.3's whole point, and is why this can be tested without the process dying.
+(: sleep-forever (-> string))
+(defbjo (sleep-forever)
+  (pause 30000)
+  "finished")
+
+;; Not cancellable, and therefore not stoppable. Only ever called with a short
+;; delay here, since nothing could interrupt a long one.
+(: unstoppable (-> int string))
+(defbjo (unstoppable ms)
+  (pause-forever ms)
+  "finished")
+
+;; ---------------------------------------------------------------------------
+;; `task->event` — the call as an event
+;; ---------------------------------------------------------------------------
+;;
+;; A special form, and for the same reason `bjo` is one: its operand must *not*
+;; be evaluated where it stands. `(fetch url)` means "await this" everywhere
+;; else in the language, and here it has to mean "hand me the task, unstarted",
+;; so that the event can start it at the sync with a token of its own.
+;;
+;; That token is the whole point, and it is why `TaskInterop.FromTask` is not in
+;; the language. A task handed over already running cannot be withdrawn from a
+;; `choose`: losing would drop the result and leave the work going, which is a
+;; leak the type system cannot see. Here the branch owns a `CancellationToken`,
+;; and losing cancels it — the HTTP request actually stops.
+;;
+;; Two things follow that are worth stating outright.
+;;
+;;   * **Failure is a value.** The payload is `(Result Exception %a)` whether or
+;;     not the import said `#:exceptions`, because this resolves at sync time
+;;     rather than on the joining fiber's stack, and a raise there would land in
+;;     a channel's matching loop rather than anywhere useful.
+;;   * **It is not persistent.** Syncing the same event twice makes the call
+;;     twice: the generator runs at each publish, which is what lets a losing
+;;     branch be retried at all. A joined promise is the opposite — §4.4's trap
+;;     — and the two are easy to confuse because both are "an async thing as an
+;;     event".
+
+(type (: Fetched (Union (Got string) TimedOut Failed)))
+
+;; Syncs a `task->event` on a call that will not finish in any reasonable time,
+;; and reports what came back. Cancelled from outside, it comes back at once
+;; with an `Err`, because the branch's token is linked to the ambient one.
+(: patient (-> (Chan string) void))
+(defbjo (patient report)
+  (def outcome (sync (task->event (pause 30000))))
+  (sync (chan-send report (match outcome ((Ok u) "finished") ((Err e) "cancelled")))))
+
+(defbjo (main args)
+  ;; A bjoroutine from another module whose suspension is a .NET await. The call
+  ;; site looks like every other call.
+  (expect "a library bjoroutine that awaits a task" (int->string (nap 20)) "20")
+
+  ;; The republished alias, called directly. Without `#:async` surviving the
+  ;; metadata round trip this would not be a yield point and would not typecheck
+  ;; as returning nothing.
+  (sleep 10)
+  (expect "an #:async alias survives a module boundary" "awaited" "awaited")
+
+  ;; `#:exceptions` over an await, both ways.
+  (expect "an async call that succeeds"
+          (match (read-file "/etc/hostname") ((Ok t) "read") ((Err e) "failed"))
+          "read")
+  (expect "an async call that fails is an Err"
+          (match (read-file "/no/such/file/anywhere") ((Ok t) "read") ((Err e) "failed"))
+          "failed")
+
+  ;; `try` around an await, which needs the same async guard by a different
+  ;; route: the region being guarded is an arbitrary expression rather than one
+  ;; call.
+  (expect "a try around an await"
+          (match (try (read-file "/no/such/file/anywhere")
+                      #:catch (System.Exception))
+            ((Ok inner) "no throw")
+            ((Err e) "threw"))
+          "no throw")
+
+  ;; `#:uncancellable`, which selects the overload without a token.
+  (expect "an uncancellable async call" (unstoppable 10) "finished")
+
+  ;; Spawning one. `bjo` is colourless and an async import is just a yield
+  ;; point, so this is the ordinary "start it now, collect it later" shape —
+  ;; and while the task is in flight the pool thread is back in the pool.
+  (def p (bjo (nap 30)))
+  (def q (bjo (nap 30)))
+  (expect "two spawned tasks, joined"
+          (string-append (match (sync (promise-join p)) ((Ok v) (int->string v)) ((Err e) "err"))
+                         (match (sync (promise-join q)) ((Ok v) (int->string v)) ((Err e) "err")))
+          "3030")
+
+  ;; ---- The ambient token really does reach .NET ----------------------------
+  ;;
+  ;; Thirty seconds of sleep, cancelled from outside, finishing immediately.
+  ;; Nothing here passes a token to anything: `parameterize` puts it in the
+  ;; dynamic environment, `bjo` captures that, and the emitter reads it back at
+  ;; the call. If any link in that chain were missing this test would take half
+  ;; a minute and then say "finished".
+  ;;
+  ;; Deterministic in both orders. Cancel first and `AmbientCancellation` hands
+  ;; .NET a token that is already cancelled, so the delay never starts; cancel
+  ;; later and the token source fires and the running delay faults.
+  (def (cancel! tok) (make-cancel))
+  (def slow (parameterize ((current-cancel tok)) (bjo (sleep-forever))))
+  (def c (cancel!))
+  (expect "the ambient token cancels a .NET call"
+          (match (sync (promise-join slow)) ((Ok s) s) ((Err e) "cancelled"))
+          "cancelled")
+
+  ;; And with nothing parameterized there is no token at all — `None`, not a
+  ;; source nobody can fire — so an ordinary call is unaffected by any of this.
+  (expect "an uncancelled scope is unaffected"
+          (match (sync (promise-join (bjo (nap 10)))) ((Ok v) (int->string v)) ((Err e) "err"))
+          "10")
+
+  ;; ---- task->event --------------------------------------------------------
+  ;;
+  ;; Winning, against a timeout that will not fire.
+  (expect "a task->event that wins"
+          (match (sync (choose (wrap (task->event (fetch "/etc/hostname"))
+                                     (fun (r) (match r ((Ok t) (Got "read")) ((Err e) Failed))))
+                               (wrap (timeout 10000) (fun (u) TimedOut))))
+            ((Got s) s)
+            (TimedOut "timed out")
+            (Failed "failed"))
+          "read")
+
+  ;; Failure as a value, with no `#:exceptions` anywhere in sight. This alias
+  ;; does not have one, and the event's payload is a `Result` regardless.
+  (expect "a task->event carries failure as a value"
+          (match (sync (task->event (fetch "/no/such/file/anywhere")))
+            ((Ok t) "read")
+            ((Err e) "failed"))
+          "failed")
+
+  ;; Losing. The thirty-second call is started, published, and then withdrawn
+  ;; when the timeout wins; the nack fires and its token is cancelled.
+  ;;
+  ;; What this pins is that losing is *harmless* — no throw, no wedged sync, and
+  ;; the winner still wins. That the underlying call actually stopped is not
+  ;; observable from here, which is exactly why the next test exists: it puts
+  ;; the same machinery under an ambient token, where the cancellation *is*
+  ;; observable, in the value that comes back.
+  (expect "a losing task->event leaves the winner alone"
+          (match (sync (choose (wrap (task->event (pause 30000))
+                                     (fun (r) (Got "slept")))
+                               (wrap (timeout 50) (fun (u) TimedOut))))
+            ((Got s) s)
+            (TimedOut "timed out")
+            (Failed "failed"))
+          "timed out")
+
+  ;; The ambient token reaching a *synced* task->event, which is §7.3's "the CTS
+  ;; is driven by the nack **or** the ambient token". Nothing here loses a
+  ;; choose: there is one branch, and it is cancelled because the scope was.
+  ;;
+  ;; Raced against a timeout so that a broken link is a FAILURE line rather than
+  ;; a test that sits for thirty seconds.
+  (def (stop! scope) (make-cancel))
+  (def report (make-chan))
+  (def waiting (parameterize ((current-cancel scope)) (bjo (patient report))))
+  (def s2 (stop!))
+  (expect "the ambient token cancels a synced task->event"
+          (match (sync (choose (wrap (chan-recv report) (fun (m) (Got m)))
+                               (wrap (timeout 10000) (fun (u) TimedOut))))
+            ((Got m) m)
+            (TimedOut "timed out")
+            (Failed "failed"))
+          "cancelled")
+  0)

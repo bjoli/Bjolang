@@ -1,0 +1,207 @@
+#!/bin/bash
+
+# Find the directory where bjor is located (project root)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_FILE="$SCRIPT_DIR/Bjolang.fsproj"
+COMPILER_DLL="$SCRIPT_DIR/bin/Release/net10.0/Bjolang.dll"
+
+if [ $# -eq 0 ]; then
+    echo "Usage: bjor [options] <source.bjo> [program arguments...]"
+    echo "Run 'bjor --help' for more information."
+    exit 1
+fi
+
+# Show help if requested
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    echo "bjor - Bjolang Compiler & Runner"
+    echo ""
+    echo "Usage:"
+    echo "  bjor <file.bjo> [args...]    Run a Bjolang source file, compiling it first if"
+    echo "                               the binary is missing or out of date"
+    echo "  bjor -c <file.bjo> [args...] Compile unconditionally, then run"
+    echo "  bjor -d <file.bjo> [args...] Build unoptimized with debug symbols, dumping the"
+    echo "                               typed AST and generated C#; always recompiles"
+    echo "  bjor --lib <file.bjo>        Compile a Bjolang source file as a library"
+    echo "  bjor -h, --help              Show this help message"
+    echo ""
+    echo "Options must come before the source file; everything after it is passed"
+    echo "to the compiled program."
+    exit 0
+fi
+
+# Parse compiler flags vs source file
+COMPILER_ARGS=()
+FORCE_COMPILE=0
+DEBUG_MODE=0
+LIB_MODE=0
+FILE=""
+PROGRAM_ARGS=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --lib)
+            COMPILER_ARGS+=("$1")
+            LIB_MODE=1
+            shift
+            ;;
+        -c|--compile)
+            FORCE_COMPILE=1
+            shift
+            ;;
+        -d|--debug)
+            # A debug build is never served from the cache: the binary on disk
+            # was very likely optimized, and the dumps -d asks for are produced
+            # by the compile itself.
+            COMPILER_ARGS+=("$1")
+            DEBUG_MODE=1
+            FORCE_COMPILE=1
+            shift
+            ;;
+        *)
+            if [ -z "$FILE" ]; then
+                FILE="$1"
+                shift
+                # All remaining arguments belong to the compiled program
+                PROGRAM_ARGS=("$@")
+                break
+            fi
+            ;;
+    esac
+done
+
+if [ -z "$FILE" ]; then
+    echo "Error: No source file specified."
+    echo "Usage: bjor [options] <source.bjo> [program arguments...]"
+    exit 1
+fi
+
+# Prefer .bjo file extension if available
+if [[ "$FILE" != *.bjo ]] && [ -f "${FILE}.bjo" ]; then
+    FILE="${FILE}.bjo"
+fi
+
+if [ ! -f "$FILE" ]; then
+    echo "Error: Source file '$FILE' not found."
+    exit 1
+fi
+
+EXE_FILE="${FILE%.bjo}.exe"
+DLL_FILE="${FILE%.bjo}.dll"
+
+# The binary this invocation is about to produce or reuse. A source file with
+# no `main` compiles to a library even without --lib, so which one it is can
+# only be told from what is already on disk.
+OUT_FILE=""
+if [ $LIB_MODE -eq 1 ]; then
+    [ -f "$DLL_FILE" ] && OUT_FILE="$DLL_FILE"
+elif [ -f "$EXE_FILE" ]; then
+    OUT_FILE="$EXE_FILE"
+elif [ -f "$DLL_FILE" ]; then
+    OUT_FILE="$DLL_FILE"
+fi
+
+# Every source the binary was built from: the file itself plus everything it
+# imports or includes by path, transitively. A path is any string literal
+# naming a .bjo or .protobjo, which is what both forms spell, and paths are
+# relative to the file that mentions them.
+SOURCES=()
+
+collect_sources() {
+    local file="$1"
+    local resolved
+    resolved="$(cd "$(dirname "$file")" && pwd)/$(basename "$file")"
+
+    local seen
+    for seen in "${SOURCES[@]}"; do
+        [ "$seen" = "$resolved" ] && return
+    done
+    SOURCES+=("$resolved")
+
+    local dir
+    dir="$(dirname "$resolved")"
+
+    local rel
+    while read -r rel; do
+        [ -z "$rel" ] && continue
+        [ -f "$dir/$rel" ] && collect_sources "$dir/$rel"
+    done < <(grep -oE '"[^"]+\.(bjo|protobjo)"' "$file" 2>/dev/null | tr -d '"')
+}
+
+# Is the binary older than anything it was built from? Besides the sources
+# themselves that means the standard library it links against and the compiler
+# that produced it — a program built by a different compiler is stale even when
+# nothing the user wrote has changed.
+needs_compile() {
+    [ -z "$OUT_FILE" ] && return 0
+
+    # Symbols next to the binary mean the last build was a debug build. Running
+    # it now would quietly hand back the unoptimized, several-times-slower
+    # binary under a command that did not ask for one.
+    [ -f "${OUT_FILE%.*}.pdb" ] && return 0
+
+    collect_sources "$FILE"
+
+    local dep
+    for dep in "${SOURCES[@]}"; do
+        [ "$dep" -nt "$OUT_FILE" ] && return 0
+    done
+
+    for dep in "$SCRIPT_DIR"/lib/std/*.dll "$SCRIPT_DIR"/*.fs "$COMPILER_DLL"; do
+        [ -f "$dep" ] && [ "$dep" -nt "$OUT_FILE" ] && return 0
+    done
+
+    return 1
+}
+
+SHOULD_COMPILE=0
+if [ $FORCE_COMPILE -eq 1 ]; then
+    SHOULD_COMPILE=1
+elif needs_compile; then
+    SHOULD_COMPILE=1
+fi
+
+if [ $SHOULD_COMPILE -eq 1 ]; then
+    # Ensure F# Bjolang compiler binary is up-to-date
+    NEEDS_BUILD=0
+    if [ ! -f "$COMPILER_DLL" ]; then
+        NEEDS_BUILD=1
+    else
+        # Check if any source F# file is newer than compiler binary
+        NEWER_COUNT=$(find "$SCRIPT_DIR" -maxdepth 1 -name "*.fs" -newer "$COMPILER_DLL" 2>/dev/null | wc -l)
+        if [ "$NEWER_COUNT" -gt 0 ]; then
+            NEEDS_BUILD=1
+        fi
+    fi
+
+    if [ $NEEDS_BUILD -eq 1 ]; then
+        echo "Building Bjolang compiler..."
+        dotnet build "$PROJECT_FILE" -c Release -v q --nologo
+    fi
+
+    # Compile the file using the fast Bjolang compiler binary directly.
+    #
+    # The status is captured on its own line rather than tested with `if !`:
+    # inside the `then` branch of a negated `if`, `$?` is the *negation's*
+    # status, which is 0. Written that way this exited successfully after a
+    # failed compile — which let `build_std.sh` sail past a standard library
+    # that did not build and leave the previous `.dll` in place, so everything
+    # downstream linked a stale prelude and the test suite passed on it.
+    dotnet "$COMPILER_DLL" "${COMPILER_ARGS[@]}" "$FILE"
+    COMPILE_STATUS=$?
+    if [ $COMPILE_STATUS -ne 0 ]; then
+        exit $COMPILE_STATUS
+    fi
+fi
+
+# Execute output if an executable was created
+if [ $LIB_MODE -eq 0 ] && [ -f "$EXE_FILE" ]; then
+    dotnet "$EXE_FILE" "${PROGRAM_ARGS[@]}"
+elif [ -f "$DLL_FILE" ]; then
+    if [ $SHOULD_COMPILE -eq 1 ]; then
+        echo "Built library: $DLL_FILE"
+    else
+        echo "Up to date: $DLL_FILE"
+    fi
+else
+    echo "Compilation succeeded, but output binary was not found."
+fi

@@ -1,0 +1,123 @@
+;; `void` is a value type.
+;;
+;; What a Bjolang signature spells `void` is the *unit* type, backed by a
+;; one-field struct — not C#'s `void`, which is not a type in C#'s type system
+;; at all. `Unit` and `System.Void` are accepted as spellings of the same thing.
+;;
+;; The distinction only starts to bite at a *generic* function. `(-> %a %b)`
+;; becomes `Func<T_a, T_b>`, and there is no `T_b` that stands for `void`:
+;; `Action<T>` exists, but nothing at emission time can choose between the two
+;; from a type variable that has not been instantiated yet. With a real struct
+;; there is one answer and it is always the same one.
+;;
+;; The interop void still exists, and is now the only thing that is void: an
+;; expression that yields no C# value. It reaches a Bjolang signature through
+;; the boundary rule — a function declared to return `void` whose body ends in a
+;; `void` .NET call runs the call as a statement and produces the unit itself.
+
+(import/extern
+  (clr-write-line (: System.Console.WriteLine (-> string void))))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; ---------------------------------------------------------------------------
+;; The boundary
+;; ---------------------------------------------------------------------------
+
+;; Declared `void`, so it returns `Unit` — but its body is a .NET method that
+;; returns nothing at all. The call becomes a statement and the unit is produced
+;; from nothing, which is what a unit is for.
+(: shout (-> string void))
+(defun (shout s) (clr-write-line s))
+
+;; `Unit` names the same type, and so does `System.Void`.
+(: quiet (-> string Unit))
+(defun (quiet s) (shout s))
+
+(: silent (-> string System.Void))
+(defun (silent s) (quiet s))
+
+;; ---------------------------------------------------------------------------
+;; Statement-shaped forms are Unit too
+;; ---------------------------------------------------------------------------
+
+(def/mutable counter 0)
+
+;; A body ending in `set!`. The form yields nothing, and the function still owes
+;; its caller a unit.
+(: bump (-> int void))
+(defun (bump n) (set! counter (+ counter n)))
+
+;; And one ending in `when`, whose value is discarded by construction.
+(: bump-if (-> bool int void))
+(defun (bump-if p n)
+  (when p (bump n)))
+
+;; ---------------------------------------------------------------------------
+;; The case that motivates all of it
+;; ---------------------------------------------------------------------------
+
+;; A *generic* higher-order function. Nothing here says `%b` is unit, and that
+;; is the point: the delegate type is emitted once, before any call site is
+;; known, so it cannot depend on the answer.
+;;
+;; Which is also why it needs `(where (Discard %b))`. The first result is
+;; dropped, and §8.2's rule holds at type variables too — the constraint becomes
+;; a dictionary parameter filled in at each call site, so a `%b` that turns out
+;; to be a `Promise` would be *detached* rather than merely dropped, without
+;; this function knowing anything about promises. §0.2 is what makes that true:
+;; a blanket is only ever selected at a ground constructor.
+(: apply-twice (-> (-> %a %b) %a %b) (where (Discard %b)))
+(defun (apply-twice f x)
+  (ignore (f x))
+  (f x))
+
+(: sum-into (-> (List int) void))
+(defun (sum-into xs)
+  (list-for-each bump xs))
+
+(defun (main args)
+  (shout "shouted")
+  (silent "silenced")
+
+  ;; A lambda that ends in a void .NET call, passed where `(-> %a Unit)` is
+  ;; wanted. Before the unit type this was an `Action` in one place and a `Func`
+  ;; in the other, and the two did not meet.
+  (list-for-each (fun (s) (shout s)) (list "a" "b"))
+
+  ;; A named function used as a value at the same type.
+  (set! counter 0)
+  (sum-into (list 1 2 3))
+  (expect "for-each over a Unit-returning function" (int->string counter) "6")
+
+  ;; `%b` instantiated at unit. The result is an honest `Unit` value.
+  (set! counter 0)
+  (apply-twice bump 5)
+  (expect "generic (-> %a %b) at %b = Unit" (int->string counter) "10")
+
+  ;; The same generic function at a type that is not unit, so that the one
+  ;; delegate shape really is serving both.
+  (expect "and at %b = string" (apply-twice int->string 7) "7")
+
+  ;; `map` is `(-> (-> %a %b) (%f %a) (%f %b))`. At `%b = Unit` it builds a list
+  ;; of units — which is only expressible because unit is a value.
+  (set! counter 0)
+  (def units (map bump (list 1 2 3 4)))
+  (expect "Functor at Unit runs every element" (int->string counter) "10")
+  (expect "and gives back a list of units" (int->string (list-length units)) "4")
+
+  ;; Units compare equal, which falls out of the struct rather than being a
+  ;; special case anywhere.
+  (expect "units are equal" (if (equal? (bump 0) (bump 0)) "yes" "no") "yes")
+
+  (set! counter 0)
+  (bump-if true 3)
+  (bump-if false 100)
+  (expect "when-shaped body" (int->string counter) "3")
+  0)

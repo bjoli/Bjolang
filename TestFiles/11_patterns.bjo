@@ -1,0 +1,45 @@
+(import (std prelude))
+
+;; Tail-recursive match: must compile to a switch STATEMENT with `continue`.
+(: sum-len (-> (List int) int int))
+(defun (sum-len lst acc)
+  (match lst
+    ((Cons h t) (sum-len t (+ acc h)))
+    (Nil acc)))
+
+;; Match nested inside a call: must compile to a C# switch EXPRESSION.
+(: describe (-> (List int) string))
+(defun (describe lst)
+  (int->string
+    (match lst
+      (Nil 0)
+      ((Cons h t) 1))))
+
+;; Literal patterns plus a catch-all binding.
+(: classify (-> int string))
+(defun (classify n)
+  (match n
+    (0 "zero")
+    (1 "one")
+    (x (if (< x 0) "negative" "many"))))
+
+;; Nested constructor patterns.
+(: second (-> (List int) int))
+(defun (second lst)
+  (match lst
+    ((Cons a (Cons b rest)) b)
+    (_ (- 0 1))))
+
+(: main (-> int int))
+(defun (main args)
+  (def xs (Cons 1 (Cons 2 (Cons 3 Nil))))
+  (displayln (int->string (sum-len xs 0)))
+  (displayln (describe xs))
+  (displayln (describe Nil))
+  (displayln (classify 0))
+  (displayln (classify 1))
+  (displayln (classify 7))
+  (displayln (classify (- 0 5)))
+  (displayln (int->string (second xs)))
+  (displayln (int->string (second Nil)))
+  0)

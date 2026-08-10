@@ -1,0 +1,91 @@
+;; n-ary arithmetic and chained comparison.
+;;
+;; `+ - * / %` left-fold and `< > <= >= =` chain, both desugared in the parser
+;; to the binary applications the rest of the compiler already understands. So
+;; an operator is still emitted infix, still allocates nothing, and still works
+;; at whatever type C# has the operator on — no rest parameter and no trait.
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+(: expect-b (-> string bool bool void))
+(defun (expect-b label actual wanted)
+  (if (eq? actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " label))))
+
+;; A counter, so a chained comparison can be shown to evaluate each operand
+;; exactly once rather than once per comparison it appears in.
+(defun (main)
+  (def calls (make-array 1))
+  (array-set! calls 0 0)
+
+  (defun (tick x)
+    (array-set! calls 0 (+ (array-ref calls 0) 1))
+    x)
+
+  ;; ---- folding, at every arity -------------------------------------------
+  (expect "(+ 1 2 3 4)" (int->string (+ 1 2 3 4)) "10")
+  (expect "(+ 5)" (int->string (+ 5)) "5")
+  (expect "(+)" (int->string (+)) "0")
+  (expect "(* 2 3 4)" (int->string (* 2 3 4)) "24")
+  (expect "(*)" (int->string (*)) "1")
+
+  ;; Left-associative, so these are (- (- 10 1) 2) and (/ (/ 100 5) 2).
+  (expect "(- 10 1 2)" (int->string (- 10 1 2)) "7")
+  (expect "(/ 100 5 2)" (int->string (/ 100 5 2)) "10")
+  (expect "(% 17 10 4)" (int->string (% 17 10 4)) "3")
+
+  ;; ---- unary, as in Scheme ------------------------------------------------
+  (expect "(- 5)" (int->string (- 5)) "-5")
+  (expect "(- -5)" (int->string (- -5)) "5")
+  (expect "(- 2.5)" (double->string (- 2.5)) "-2.5")
+  (expect "(- 3000000000L)" (long->string (- 3000000000L)) "-3000000000")
+
+  ;; Negation keeps the operand's type rather than promoting to int, which is
+  ;; what the cast in codegen is for.
+  (def n 7)
+  (expect "(- n)" (int->string (- n)) "-7")
+
+  ;; Reciprocal. Integer division truncates, so this is 0 for ints — the same
+  ;; answer C# gives, not a rational.
+  (expect "(/ 2.0)" (double->string (/ 2.0)) "0.5")
+  (expect "(/ 4)" (int->string (/ 4)) "0")
+
+  ;; ---- chained comparison -------------------------------------------------
+  (expect-b "(< 1 2 3)" (< 1 2 3) true)
+  (expect-b "(< 1 3 2)" (< 1 3 2) false)
+  (expect-b "(< 3 2 1)" (< 3 2 1) false)
+  (expect-b "(> 3 2 1)" (> 3 2 1) true)
+  (expect-b "(<= 1 1 2)" (<= 1 1 2) true)
+  (expect-b "(>= 2 2 1)" (>= 2 2 1) true)
+  (expect-b "(= 1 1 1)" (= 1 1 1) true)
+  (expect-b "(= 1 1 2)" (= 1 1 2) false)
+  (expect-b "(< 1.5 2.5 3.5)" (< 1.5 2.5 3.5) true)
+
+  ;; Binary comparison is untouched.
+  (expect-b "(< 1 2)" (< 1 2) true)
+
+  ;; A middle operand appears in two comparisons but must run once.
+  (array-set! calls 0 0)
+  (expect-b "(< 0 (tick 5) 10)" (< 0 (tick 5) 10) true)
+  (expect "middle operand evaluated once" (int->string (array-ref calls 0)) "1")
+
+  ;; Short-circuiting still holds: the second comparison is never reached, so
+  ;; `tick` is not called at all.
+  (array-set! calls 0 0)
+  (expect-b "(< 5 1 (tick 9))" (< 5 1 (tick 9)) false)
+  (expect "short-circuit skips the tail" (int->string (array-ref calls 0)) "0")
+
+  ;; ---- operators as values ------------------------------------------------
+  ;; Desugaring happens only in head position, so a bare operator is still the
+  ;; binary function it always was.
+  (expect "(fold + 0 ...)" (int->string (fold + 0 (Cons 1 (Cons 2 (Cons 3 Nil))))) "6")
+
+  0)

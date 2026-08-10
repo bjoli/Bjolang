@@ -1,0 +1,56 @@
+;; Rest and keyword parameters at a polymorphic type.
+;;
+;; `FunMeta` records the types a function was *declared* with, and those still
+;; carry the declaration's own rigid type variables. Unifying an argument
+;; against one of them directly made every generic rest or keyword parameter
+;; unusable: the first call tried to unify `int` with `'a` itself rather than
+;; with a fresh instance of it, and failed with "Cannot unify TCon with TVar".
+;;
+;; The call site now unifies each keyword and rest slot against a fresh
+;; metavariable and lets the flat unification against the instantiated function
+;; type supply the real one. `FunMeta` is consulted only for the call's shape.
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; A rest parameter whose element type is a variable, used at three types and
+;; at zero length.
+(: count-of (-> #:rest %a int))
+(defun (count-of #:rest xs)
+  (array-length xs))
+
+;; A mandatory parameter and a rest parameter sharing one variable, so the
+;; rest elements are pinned to the first argument's type.
+(: first-of (-> %a #:rest %a %a))
+(defun (first-of x #:rest more) x)
+
+;; The same for keyword parameters, whose default here is the mandatory
+;; argument — so the defaulted call has to agree with it at every type.
+(: pick (-> %a (#:fallback %a) %a))
+(defun (pick x #:fallback x) fallback)
+
+(defun (main)
+  ;; One generic rest function, three element types, plus the empty call.
+  (expect "count-of int" (int->string (count-of 1 2 3)) "3")
+  (expect "count-of string" (int->string (count-of "a" "b")) "2")
+  (expect "count-of double" (int->string (count-of 1.5 2.5 3.5 4.5)) "4")
+  (expect "count-of empty" (int->string (count-of)) "0")
+
+  ;; The mandatory argument and the rest elements share a variable.
+  (expect "first-of int" (int->string (first-of 5 6 7)) "5")
+  (expect "first-of string" (first-of "x" "y") "x")
+  (expect "first-of no rest" (double->string (first-of 2.5)) "2.5")
+
+  ;; Generic keyword parameters, supplied and defaulted.
+  (expect "pick int supplied" (int->string (pick 1 #:fallback 99)) "99")
+  (expect "pick string supplied" (pick "a" #:fallback "z") "z")
+  (expect "pick double defaulted" (double->string (pick 2.5)) "2.5")
+  (expect "pick int defaulted" (int->string (pick 7)) "7")
+
+  0)

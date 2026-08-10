@@ -1,0 +1,217 @@
+;; Spawning and joining: `bjo`, `promise-join`, `sync`, `spawn-thunk`.
+;;
+;; Three things arrive together here and it is worth keeping them apart.
+;;
+;;   * `(bjo (f x))` starts work and hands back a `(Promise %a)`. It is
+;;     *colourless* — it enqueues and returns, never suspending — so an ordinary
+;;     `defun` may spawn.
+;;   * `(promise-join p)` is pure. It builds an `(Event ...)`, which is a
+;;     description of a synchronisation that has not happened yet. Building an
+;;     event never suspends; that split is what will make `choose` possible.
+;;   * `(sync ev)` is the yield point, and the only one besides calling a
+;;     bjoroutine. Its arrow is suspending, which is *all* that makes it one:
+;;     the emitter wraps the call in an `await` because of the type, not because
+;;     of the name.
+;;
+;; Failure arrives as a value. `(sync (promise-join p))` is
+;; `(Result Exception %a)` — "the operation failed" and "the fiber died" are
+;; different facts, and a supervisor needs the difference.
+
+(import (std prelude))
+
+(import/class
+  (Exception (: System.Exception)))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; ---------------------------------------------------------------------------
+;; The work
+;; ---------------------------------------------------------------------------
+
+(: work (-> int int))
+(defbjo (work x) (* x 2))
+
+;; A bjoroutine calling a bjoroutine, spawned as one unit.
+(: chained (-> int int))
+(defbjo (chained x) (work (work x)))
+
+;; Fails rather than returns. Nothing catches it, so the fiber dies and the
+;; failure is delivered to whoever joins.
+(: explode (-> int int))
+(defbjo (explode x) (/ x 0))
+
+;; An ordinary function, which `bjo` will run concurrently even though it can
+;; never suspend.
+(: slow-sum (-> int int))
+(defun (slow-sum n)
+  (let go ((i 0) (acc 0))
+    (if (> i n) acc (go (+ i 1) (+ acc i)))))
+
+;; ---------------------------------------------------------------------------
+;; `bjo` is colourless
+;; ---------------------------------------------------------------------------
+;;
+;; `Bjo.Spawn` only reads the current fiber context and enqueues; it never
+;; suspends, and it works outside a bjoroutine. So spawning does not infect its
+;; caller — this is a `defun`, and it starts a bjoroutine anyway. Joining is
+;; what needs a bjoroutine, because joining is what waits.
+
+(: start-work (-> int (Promise int)))
+(defun (start-work x) (bjo (work x)))
+
+;; ---------------------------------------------------------------------------
+;; Operands are evaluated in the parent
+;; ---------------------------------------------------------------------------
+;;
+;; The one thing worth knowing about `bjo` being a special form. `(bjo (f (g)))`
+;; runs `g` *here* and only `f` over there. If operands ran in the child then
+;; every spawn would race and evaluation order would depend on the scheduler.
+
+(def/mutable trace 0)
+
+(: note (-> int int))
+(defun (note x)
+  (set! trace (+ trace 1))
+  x)
+
+;; ---------------------------------------------------------------------------
+;; The dynamic environment is a spawn-time snapshot
+;; ---------------------------------------------------------------------------
+;;
+;; A child inherits the environment as it was when the spawn ran — not a live
+;; link to the parent's, and not the parent's *current* one either.
+;;
+;; This is the case that made `bjo` a correctness problem for the dynamic
+;; environment rather than only a new feature. The environment used to live in a
+;; plain static, on the explicit grounds that nothing created a thread; with
+;; fibers that is wrong twice over, because one fiber's `parameterize` would
+;; rebind every other fiber's, and a child on a pool thread would read whatever
+;; the variable held when it got there — usually the parent's *restored* value,
+;; since the parent's `finally` had already run. It now lives in BjoML's
+;; per-fiber context slot, which `Bjo.Spawn` captures. That capture is the
+;; snapshot.
+
+(def depth (make-parameter 1))
+
+(: read-depth (-> int int))
+(defbjo (read-depth x) (* x (parameter-ref depth)))
+
+;; ---------------------------------------------------------------------------
+;; Collecting many
+;; ---------------------------------------------------------------------------
+;;
+;; The two halves of §3.1's restriction, in one function. Spawning is a `map`,
+;; because `(fun (u) (bjo ...))` does not suspend — it only starts something.
+;; Collecting cannot be, because `sync` does suspend, so it is a loop.
+
+(: spawn-all (-> (List int) (List (Promise int))))
+(defun (spawn-all xs)
+  (list-map (fun (x) (bjo (work x))) xs))
+
+(: collect-all (-> (List (Promise int)) int))
+(defbjo (collect-all ps)
+  (let go ((remaining ps) (acc 0))
+    (match remaining
+      ((Nil) acc)
+      ((Cons p rest)
+       (go rest (+ acc (match (sync (promise-join p))
+                         ((Ok v) v)
+                         ((Err e) 0))))))))
+
+(defbjo (main args)
+  ;; Spawn, join, unwrap.
+  (def p (bjo (work 21)))
+  (expect "spawn and join"
+          (match (sync (promise-join p)) ((Ok v) (int->string v)) ((Err e) "err"))
+          "42")
+
+  ;; A promise joined from a bjoroutine that a plain `defun` started.
+  (expect "a defun may spawn"
+          (match (sync (promise-join (start-work 50))) ((Ok v) (int->string v)) ((Err e) "err"))
+          "100")
+
+  ;; The spawned body may itself suspend, which is the ordinary case.
+  (expect "the spawned body suspends"
+          (match (sync (promise-join (bjo (chained 5)))) ((Ok v) (int->string v)) ((Err e) "err"))
+          "20")
+
+  ;; And it may be an ordinary function, which never suspends but still runs
+  ;; concurrently.
+  (expect "spawning an ordinary function"
+          (match (sync (promise-join (bjo (slow-sum 100)))) ((Ok v) (int->string v)) ((Err e) "err"))
+          "5050")
+
+  ;; Failure is a value, not a throw at the join.
+  (expect "a dead fiber joins as Err"
+          (match (sync (promise-join (bjo (explode 1)))) ((Ok v) "ok") ((Err e) "err"))
+          "err")
+
+  ;; ...and the joining fiber carries on afterwards, which is the point of
+  ;; failure being a value.
+  (expect "and the joiner survives it"
+          (match (sync (promise-join (bjo (work 3)))) ((Ok v) (int->string v)) ((Err e) "err"))
+          "6")
+
+  ;; The argument runs before the spawn returns, on this fiber. Deterministic
+  ;; precisely because it does not run in the child.
+  (set! trace 0)
+  (def p2 (bjo (work (note 7))))
+  (expect "the operand ran in the parent" (int->string trace) "1")
+  (expect "and the child got its value"
+          (match (sync (promise-join p2)) ((Ok v) (int->string v)) ((Err e) "err"))
+          "14")
+
+  ;; `spawn-thunk`, for the higher-order case a special form cannot serve.
+  (expect "spawn-thunk"
+          (match (sync (promise-join (spawn-thunk (fun () (slow-sum 10)))))
+            ((Ok v) (int->string v)) ((Err e) "err"))
+          "55")
+
+  ;; Fan out with `map`, collect with a loop. 2*(1+2+3+4+5) = 30.
+  (expect "spawn with map, collect with a loop"
+          (int->string (collect-all (spawn-all (list 1 2 3 4 5))))
+          "30")
+
+  ;; Spawned inside a `parameterize`, the child sees the binding...
+  (def inside (parameterize ((depth 100)) (bjo (read-depth 3))))
+  (expect "a child inherits the environment at spawn time"
+          (match (sync (promise-join inside)) ((Ok v) (int->string v)) ((Err e) "err"))
+          "300")
+
+  ;; ...and spawned outside it, the child does not. The parent's `finally` has
+  ;; restored `depth` by now, and under the old plain-static environment this
+  ;; was exactly the value the *first* child would have raced to read.
+  (def outside (bjo (read-depth 3)))
+  (expect "and does not inherit one it was not spawned under"
+          (match (sync (promise-join outside)) ((Ok v) (int->string v)) ((Err e) "err"))
+          "3")
+
+  ;; A promise is persistent: once it has landed, every sync on it succeeds
+  ;; immediately with the same value. That is the definition, and it is also the
+  ;; trap — inside a `choose` loop such a branch wins every iteration.
+  (def p3 (bjo (work 4)))
+  (expect "a promise is persistent, sync 1"
+          (match (sync (promise-join p3)) ((Ok v) (int->string v)) ((Err e) "err"))
+          "8")
+  (expect "a promise is persistent, sync 2"
+          (match (sync (promise-join p3)) ((Ok v) (int->string v)) ((Err e) "err"))
+          "8")
+  (expect "and it knows it is done" (if (promise-done? p3) "yes" "no") "yes")
+
+  ;; Deliberately stopping listening. Dropping the handle instead would lose any
+  ;; exception inside it silently — nothing else is watching, so a fiber that
+  ;; died would simply never be mentioned. `detach` says "I know, and I still do
+  ;; not want the result", and routes a failure to the scheduler's
+  ;; unhandled-exception hook.
+  ;;
+  ;; This is what `(ignore p)` will mean once §8.2's `Discard` trait exists;
+  ;; until then it has to be named.
+  (detach (bjo (work 1)))
+  (expect "a detached promise is still a promise" "detached" "detached")
+  0)

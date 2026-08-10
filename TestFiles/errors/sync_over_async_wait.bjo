@@ -1,0 +1,24 @@
+;; `.Wait()` on a task.
+;;
+;; Inside a bjoroutine the thread being blocked is a thread-pool thread, and the
+;; continuation that would unblock it may need that very thread — which is a
+;; deadlock, not a slowdown. On a host with a different pool it is instead a
+;; slow leak of pool threads under load. Both failures happen in production and
+;; not in the test written for them, which is why this is refused rather than
+;; discouraged.
+
+;; EXPECT-ERROR: 'Wait' on a task blocks the thread it is called on
+;; EXPECT-ERROR: Import the method with #:async instead
+
+(import (std prelude))
+
+;; Imported *without* `#:async`, which is what makes a task reachable as a value
+;; at all. With it, the call would already be the result and there would be
+;; nothing to block on.
+(import/extern
+  (delay-task (: System.Threading.Tasks.Task.Delay)))
+
+(defun (main args)
+  (def t (delay-task 10))
+  (ignore (.Wait t))
+  0)

@@ -1,0 +1,30 @@
+;; A trait and an implementation published from a library, with the impl body
+;; calling a helper this module itself imported from a third one.
+(import "third.bjo")
+
+(export render unbox pure bind)
+
+(type (: (Box %a) (Union (MkBox %a))))
+
+(def/trait (Render %c)
+  (: render (-> %c string)))
+
+(: unbox (-> (Box %a) %a))
+(defun (unbox b)
+  (match b ((MkBox v) v)))
+
+(def/impl (Render (Box string))
+  ;; `decorate` is not defined here and not defined where this gets spliced.
+  ;; It belongs to `third`, and the template's qualification has to say so.
+  (defun (render b) (decorate (unbox b))))
+
+;; An *inline* trait published from a library. Its hole arity and its templated
+;; signatures have to survive the metadata round trip — there is no `HMType` that
+;; could carry `('m 'a)`, so they travel as templates and are read back as such.
+(def/trait (Monad (%m %a))
+  (: pure (-> %a (%m %a)))
+  (: bind (-> (%m %a) (-> %a (%m %b)) (%m %b))))
+
+(def/impl (Monad (Box %a))
+  (defun (pure x) (MkBox x))
+  (defun (bind m k) (k (unbox m))))

@@ -1,0 +1,23 @@
+(import (std prelude))
+
+(def/trait (Functor (%f %a))
+  (: fmap (-> (%f %a) (-> %a %b) (%f %b))))
+
+(def/impl (Functor (List %a))
+  (defun (fmap xs g) (list-map xs g)))
+
+(: show-list (-> (List string) string))
+(defun (show-list xs)
+  (list-foldl (fun (acc x) (string-append acc (string-append " " x))) "" xs))
+
+(defun (main)
+  ;; The *element* type is not pinned by the body here — only the constructor
+  ;; is at issue. Does holding the hole back also freeze the element type?
+  (defun (dup fa) (fmap fa (fun (x) x)))
+
+  (println (show-list (dup (Cons "a" (Cons "b" Nil)))))
+
+  ;; Same constructor, different element type. If only the hole is held back,
+  ;; this should still be fine.
+  (println (show-list (fmap (dup (Cons 1 (Cons 2 Nil))) int->string)))
+  0)

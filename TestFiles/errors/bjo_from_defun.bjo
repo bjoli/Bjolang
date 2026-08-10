@@ -1,0 +1,21 @@
+;; Calling a bjoroutine from an ordinary function.
+;;
+;; The direct style means the call site of a bjoroutine looks like any other
+;; call — there is no `await` to forget. The price of that is that the *caller*
+;; has to be a bjoroutine too, because the C# it compiles to is an `await` and
+;; an `await` needs an async method around it.
+;;
+;; Caught here rather than by Roslyn: the failure otherwise lands in generated
+;; code, in a method the user never wrote, naming a type (`Fiber<int>`) that
+;; does not exist in the language.
+
+;; EXPECT-ERROR: calling 'fetch' is a yield point
+;; EXPECT-ERROR: yield point is not allowed here
+
+(: fetch (-> int int))
+(defbjo (fetch x) (* x 2))
+
+(: use-it (-> int int))
+(defun (use-it x) (fetch x))
+
+(defun (main args) 0)

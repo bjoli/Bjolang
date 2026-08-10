@@ -1,0 +1,46 @@
+;; The consuming side of `71_lib`: two-level specificity across an assembly
+;; boundary.
+;;
+;; Three things are being checked, and only the first is obvious.
+;;
+;;   1. The blanket survives serialization. It is written into the metadata as
+;;      `(def/impl/extern (Shape 'a))` — a bare type variable where an impl
+;;      normally has a constructor — and read back into `BlanketImpls`.
+;;   2. The specific `int` impl still wins here. If the importer had learned
+;;      only that a blanket exists, `(shape 3)` would quietly answer "blob".
+;;   3. A type declared in *this* module, which `71_lib` could not have known
+;;      about, still reaches the blanket — whose code lives in the other
+;;      assembly, as `Shape_Blanket<T_a>`.
+(import "71_lib.bjo")
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+(type (: Widget (Struct (: size int))))
+
+;; An impl written here, for a type declared here, against the imported trait.
+;; It must beat the imported blanket exactly as `int`'s does.
+(def/impl (Shape Widget)
+  (defun (shape w) "widget"))
+
+;; And the same through a dictionary, so the choice is made at the
+;; instantiation site rather than at this definition.
+(: shape-of (-> %a string) (where (Shape %a)))
+(defun (shape-of x)
+  (string-append "a " (shape x)))
+
+(defun (main args)
+  (expect "imported specific impl" (shape 3) "number")
+  (expect "impl declared here" (shape (Widget (size 2))) "widget")
+  (expect "imported blanket, at a type the library never saw" (shape "text") "blob")
+  (expect "imported blanket, at double" (shape 1.5) "blob")
+
+  (expect "dictionary, imported specific" (shape-of 3) "a number")
+  (expect "dictionary, impl declared here" (shape-of (Widget (size 2))) "a widget")
+  (expect "dictionary, imported blanket" (shape-of "text") "a blob")
+  0)

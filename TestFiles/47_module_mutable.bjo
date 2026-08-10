@@ -1,0 +1,65 @@
+;; Module-level `def/mutable`: a static field rather than a `static readonly`
+;; one, assigned by the module's static constructor in declaration order.
+(import "47_lib.bjo")
+(import (std prelude))
+
+(: expect (-> string bool void))
+(defun (expect label ok)
+  (if ok
+      (println (string-append "ok " label))
+      (println (string-append "FAILURE: " label))))
+
+(def/mutable counter 0)
+
+;; Declaration order is initialization order, so each of these sees the one
+;; above it already assigned. Swept up a kind at a time they would not: a `def`
+;; reading a `def/mutable` would have seen the field's zero value instead.
+(def/mutable base "start")
+(def derived (string-append base "-derived"))
+(def/mutable copied derived)
+
+;; A mutable binding is not generalized — a cell that can be assigned has to
+;; have a settled type — so this one is pinned down by its uses below.
+(def/mutable pending Nil)
+
+(: bump (-> int))
+(defun (bump)
+  (set! counter (+ counter 1))
+  counter)
+
+;; A local mutable is not generalized either, for the same reason.
+(: local-cell (-> int))
+(defun (local-cell)
+  (def/mutable cell Nil)
+  (set! cell (Cons 7 (Cons 8 Nil)))
+  (list-length cell))
+
+(defun (main args)
+  (expect "initialized" (= 0 counter))
+  (expect "written by a function" (= 1 (bump)))
+  (expect "and again" (= 2 (bump)))
+  (expect "read back" (= 2 counter))
+
+  (set! counter 100)
+  (expect "written from outside" (= 100 counter))
+
+  ;; The initializer above ran after `base` was assigned, not before.
+  (expect "declaration order" (equal? derived "start-derived"))
+  (expect "and carries forward" (equal? copied "start-derived"))
+
+  ;; Reassigning the mutable does not disturb what was derived from it.
+  (set! base "changed")
+  (expect "later assignment is independent" (equal? derived "start-derived"))
+  (expect "the mutable itself changed" (equal? base "changed"))
+
+  (set! pending (Cons 1 (Cons 2 (Cons 3 Nil))))
+  (expect "monomorphic mutable" (= 3 (list-length pending)))
+  (expect "local mutable" (= 2 (local-cell)))
+
+  ;; Another module's mutable is that module's single field, not a copy.
+  (expect "cross-module tick" (= 1 (tick)))
+  (expect "cross-module tick again" (= 2 (tick)))
+  (expect "cross-module read" (= 2 reads))
+  (reset)
+  (expect "cross-module write" (= 0 reads))
+  0)

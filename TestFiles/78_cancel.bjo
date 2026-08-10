@@ -1,0 +1,220 @@
+;; Cancellation: a token is a promise, and a promise is already an event.
+;;
+;; There is no cancellation machinery here, and that is the result rather than a
+;; shortcut. §6.1 asks for "a persistent event that fires once"; a `Promise Unit`
+;; is precisely that, so cancelling is `TrySetResult`, asking is `IsCompleted`,
+;; waiting is `Join` and building a scope tree is `Forward`. Nothing in the
+;; scheduler had to learn a new concept.
+;;
+;; What the surface adds over the promise is two things.
+;;
+;;   * A **nominal type**. `CancelToken` is not `(Promise Unit)`, so
+;;     `promise-join` cannot be aimed at a token — which would hand back a
+;;     `(Result Exception Unit)` and invite a `match` on a failure that cannot
+;;     occur — and neither can `detach`, which would arm an unhandled-exception
+;;     report for a promise nothing ever fails. The distinction costs nothing at
+;;     runtime: the generated C# is a `Bjoml.Promise<Bjoml.Unit>` either way.
+;;
+;;   * A **split between the two rights**. `make-cancel` hands back a thunk and
+;;     a token, not one value that does both. Giving a worker its token lets it
+;;     watch its own deadline without also letting it cancel its siblings.
+;;
+;; The shape to take away is the worker below: cancellation is an ordinary
+;; `choose` branch. A fiber parked on a channel is interruptible *because* the
+;; token is an event, and interruptible-while-parked is the only kind of
+;; interruptible that costs nothing to have. .NET's equivalent needs someone to
+;; remember `ThrowIfCancellationRequested`; here you are cancellable at every
+;; `sync` without anyone remembering anything, and uncancellable only in a loop
+;; that has no `sync` at all — which is the limitation, and it is tested too.
+
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+(: yes-no (-> bool string))
+(defun (yes-no b) (if b "yes" "no"))
+
+(type (: Outcome (Union (Job int) Quit)))
+
+;; ---------------------------------------------------------------------------
+;; Cancellation is a `choose` branch
+;; ---------------------------------------------------------------------------
+;;
+;; The token goes *last*, and not for tidiness. `choose` publishes branches in
+;; order and stops at the first one already available, and a fired token is
+;; available forever — so written first it would win every iteration after the
+;; cancellation, which is right, but it would also win the iteration in which
+;; there was still a job waiting. Persistent branches last; §5.5.
+;;
+;; Note also that this loop *leaves* when it sees the token rather than going
+;; round again. Persistence makes that mandatory: a loop that carried on would
+;; spin, because the branch that woke it is available again immediately.
+
+(: worker (-> (Chan int) CancelToken (Chan int) void))
+(defbjo (worker jobs ct results)
+  (let go ((total 0))
+    (match (sync (choose (wrap (chan-recv jobs) (fun (j) (Job j)))
+                         (wrap (cancelled ct) (fun (u) Quit))))
+      ((Job j) (go (+ total j)))
+      (Quit (sync (chan-send results total))))))
+
+;; ---------------------------------------------------------------------------
+;; Cooperative, and only cooperative
+;; ---------------------------------------------------------------------------
+;;
+;; A bjoroutine notices cancellation at a yield point. A loop with no yield
+;; point has none, so it notices only where it is written to look — which is
+;; what `cancelled?` is for, and why it answers without suspending. This is
+;; §9's limitation 9 in one function: delete the `cancelled?` and this counts
+;; all the way to `limit` no matter who cancelled what.
+
+(: count-until-cancelled (-> CancelToken int int))
+(defun (count-until-cancelled ct limit)
+  (let go ((i 0))
+    (if (or (= i limit) (cancelled? ct))
+        i
+        (go (+ i 1)))))
+
+;; ---------------------------------------------------------------------------
+;; The ambient token
+;; ---------------------------------------------------------------------------
+;;
+;; `bjo` captures the dynamic environment, so a `parameterize` around a spawn
+;; hands the token to the whole subtree beneath it — Go's `context.Context`
+;; without a parameter in a single signature. `leaf` is a *grandchild* of the
+;; `parameterize` and never had the token passed to it.
+;;
+;; Snapshot-at-spawn is the correct semantics here for a reason that does not
+;; hold for a mutable cell: a token is an immutable handle, so the parent and
+;; the child looking at "the same token" really are looking at the same object,
+;; and the parent's `finally` restoring the binding does not take the child's
+;; token away.
+
+(: leaf (-> (Chan string) void))
+(defbjo (leaf report)
+  (def fired (sync (cancelled (parameter-ref current-cancel))))
+  (sync (chan-send report "leaf")))
+
+(: branch (-> (Chan string) void))
+(defbjo (branch report)
+  (def kid (bjo (leaf report)))
+  (def joined (sync (promise-join kid)))
+  (sync (chan-send report "branch")))
+
+;; Spawned *outside* the scope, and so under the root token rather than the
+;; scope's. Reports what it sees rather than waiting for it, because what it
+;; sees is "nothing has been cancelled" and waiting for that would not return.
+(: outsider (-> (Chan string) void))
+(defbjo (outsider report)
+  (sync (chan-send report (yes-no (cancelled? (parameter-ref current-cancel))))))
+
+;; Raced against a generous timeout wherever a test would otherwise be able to
+;; hang: a broken link should be a `FAILURE:` line, not a suite that never
+;; finishes.
+(: within (-> (Event Unit) int string))
+(defbjo (within ev ms)
+  (match (sync (choose (wrap ev (fun (u) (Job 0)))
+                       (wrap (timeout ms) (fun (u) Quit))))
+    ((Job n) "fired")
+    (Quit "timed out")))
+
+(defbjo (main args)
+  ;; ---- The pair, and the fact ----------------------------------------------
+  (def (cancel! tok) (make-cancel))
+  (expect "a fresh token has not fired" (yes-no (cancelled? tok)) "no")
+  (def c1 (cancel!))
+  (expect "and has, once the thunk is called" (yes-no (cancelled? tok)) "yes")
+
+  ;; Idempotent, because `TrySetResult` loses the race and says so. Worth
+  ;; pinning: the thunk gets handed to a nack, a supervisor and a `finally` at
+  ;; once, and none of them can know whether it has already run.
+  (def c2 (cancel!))
+  (expect "cancelling twice is a no-op" (yes-no (cancelled? tok)) "yes")
+
+  ;; Persistent, which is the design: cancellation is a *fact*, so every
+  ;; listener sees it and a listener that arrives late still sees it. The price
+  ;; is limitation 10 — this scope is finished, and carrying on needs a fresh
+  ;; token rather than a reset.
+  (expect "an already-cancelled token is available at once"
+          (within (cancelled tok) 5000) "fired")
+  (expect "and again, to every later listener"
+          (within (cancelled tok) 5000) "fired")
+
+  ;; ---- A worker taken down while parked ------------------------------------
+  ;;
+  ;; Each send is a rendezvous, so by the time the third returns the worker has
+  ;; taken all three and is back in the `choose` with nothing to receive. The
+  ;; cancellation is what wakes it. Deterministic in the other order too: if the
+  ;; worker republishes after the cancel, the token branch is already available.
+  (def (stop! wtok) (make-cancel))
+  (def jobs (make-chan))
+  (def results (make-chan))
+  (def w (bjo (worker jobs wtok results)))
+  (def j1 (sync (chan-send jobs 10)))
+  (def j2 (sync (chan-send jobs 20)))
+  (def j3 (sync (chan-send jobs 12)))
+  (def s (stop!))
+  (expect "a parked worker is cancellable" (int->string (sync (chan-recv results))) "42")
+
+  ;; ---- Polling, for the loop with no yield point ---------------------------
+  (def (nope quiet-tok) (make-cancel))
+  (expect "an uncancelled poll runs to the limit"
+          (int->string (count-until-cancelled quiet-tok 1000)) "1000")
+  (def (stop-now! fired-tok) (make-cancel))
+  (def n (stop-now!))
+  (expect "a cancelled poll stops at once"
+          (int->string (count-until-cancelled fired-tok 1000)) "0")
+
+  ;; ---- Linking ------------------------------------------------------------
+  ;;
+  ;; One-directional on purpose: a child that cancels itself must not take its
+  ;; parent's other children with it. A tree is repeated linking, and the leaf
+  ;; that fails cancels only what hangs below it.
+  ;;
+  ;; The link is asynchronous — `Forward` is a waiter, and a waiter is signalled
+  ;; through the scheduler — so this waits on the child's *event* rather than
+  ;; polling `cancelled?` straight after the parent's thunk. Polling here would
+  ;; be a race that usually passes, which is worse than one that never does.
+  (def (cancel-parent! parent-tok) (make-cancel))
+  (def (cancel-child! child-tok) (make-cancel))
+  (def linked (link-cancel parent-tok child-tok))
+  (def cp (cancel-parent!))
+  (expect "cancelling a parent cancels the linked child"
+          (within (cancelled child-tok) 5000) "fired")
+
+  ;; And not the other way round.
+  (def (cancel-p2! p2) (make-cancel))
+  (def (cancel-c2! c2) (make-cancel))
+  (def linked2 (link-cancel p2 c2))
+  (def cc (cancel-c2!))
+  (expect "cancelling a child leaves its parent alone" (yes-no (cancelled? p2)) "no")
+
+  ;; ---- The ambient token --------------------------------------------------
+  (expect "the default ambient token never fires"
+          (yes-no (cancelled? (parameter-ref current-cancel))) "no")
+
+  (def (cancel-scope! scope-tok) (make-cancel))
+  (def report (make-chan))
+  (def root (parameterize ((current-cancel scope-tok)) (bjo (branch report))))
+  (def cs (cancel-scope!))
+  (expect "a grandchild sees the ambient token" (sync (chan-recv report)) "leaf")
+  (expect "and its parent finishes after it" (sync (chan-recv report)) "branch")
+  (expect "the whole subtree came home"
+          (match (sync (promise-join root)) ((Ok u) "done") ((Err e) "failed"))
+          "done")
+
+  ;; Spawned outside the `parameterize`, a fiber gets the root token instead —
+  ;; the same rule as every other parameter, and the reason a scope has to be
+  ;; established *around* the spawn rather than before it. `scope-tok` has
+  ;; fired by now and this fiber is entirely unaffected, which is what makes a
+  ;; scope a scope.
+  (def out (bjo (outsider report)))
+  (expect "a fiber spawned outside the scope is not in it"
+          (sync (chan-recv report)) "no")
+  0)

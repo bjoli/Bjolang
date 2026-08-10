@@ -1,0 +1,54 @@
+;; BjoML — the concurrency runtime bjoroutines are built on — is linked into
+;; every compiled program and reflectable at compile time.
+;;
+;; This is the plumbing, not the language surface. Three separate things have to
+;; hold for it to pass, and each used to fail on its own:
+;;
+;;   1. `Bjoml.dll` builds. It is a submodule with a project of its own, and its
+;;      sources were being swept into `BjolangRuntime`'s compile glob — where its
+;;      package references do not apply, so the whole runtime failed to build.
+;;   2. The compiler can *reflect* on it. `Type.GetType` searches the core
+;;      library and the compiler's own assembly and nothing else, so every
+;;      runtime assembly is registered with the interop resolver at startup.
+;;      Without that, the `import/extern` below cannot find `Bjoml.Scheduler`.
+;;   3. A compiled program can *load* it. The generated project references it,
+;;      and the entry point's resolver probes the directory it was built in —
+;;      along with `Microsoft.Extensions.ObjectPool`, Bjoml's own dependency,
+;;      which is copied there for exactly this reason.
+;;
+;; What is deliberately *not* here: channels, promises, fibers, `bjo`. Every one
+;; of those is generic, and `(-> ...)` does not map to a .NET delegate, so none
+;; of them is reachable through ordinary interop. They need the compiler work in
+;; the design's steps 3-6 — the `Effect` field, `defbjo`, `bjo`, and the event
+;; surface — rather than an import.
+
+(import/class
+  (Scheduler (: Bjoml.Scheduler)))
+
+(import/extern
+  ;; Raises the pool's minimum thread count. Chosen because it is one of the few
+  ;; parts of BjoML that is neither generic nor delegate-taking, and because it
+  ;; is safe to call from a test: it starts no threads of its own.
+  (scheduler-start (: Bjoml.Scheduler.Start (-> int void))))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+(defun (main args)
+  ;; A static call into Bjoml. Reaching this at run time means the assembly was
+  ;; referenced at build time and found by the resolver at load time.
+  (scheduler-start 2)
+  (println "ok: Bjoml.Scheduler.Start")
+
+  ;; A constant read out of Bjoml's metadata. The value is checked rather than
+  ;; merely fetched, so this fails loudly if the name ever resolves against
+  ;; something that is not BjoML.
+  (expect "Bjoml.Scheduler.MaxInlineDepth"
+          (int->string Scheduler.MaxInlineDepth)
+          "50")
+  0)

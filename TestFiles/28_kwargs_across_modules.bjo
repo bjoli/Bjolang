@@ -1,0 +1,22 @@
+;; Keyword arguments actually passed, and passed across a module boundary.
+;;
+;; The suite used to exercise keyword parameters only through their defaults, so
+;; the mismatch between the name a call site wrote and the name the parameter was
+;; declared under never had a chance to show up.
+(import (std prelude))
+(import "inc/kwlib.bjo")
+
+(: local-scale (-> int (#:by int) int))
+(defun (local-scale n #:by 3)
+  (* n by))
+
+(defun (main)
+  ;; Defaults only.
+  (println (scale 5))
+  ;; One keyword, then the other, then both — and out of declaration order.
+  (println (scale 5 #:by 10))
+  (println (scale 5 #:offset 1))
+  (println (scale 5 #:offset 1 #:by 10))
+  (println (local-scale 7))
+  (println (local-scale 7 #:by 100))
+  0)

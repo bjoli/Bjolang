@@ -1,0 +1,245 @@
+* Modules, imports and includes
+
+Every ~.bjo~ file is one module. Its module name is the file name with ~.~ and
+~-~ replaced by ~_~, and it compiles to a C# static class named
+~<module>_Module~.
+
+There are three ways to pull in code from elsewhere, and they do different
+things.
+
+| Form                     | Creates a module?     | Makes names visible          | Links an assembly |
+|--------------------------+-----------------------+------------------------------+-------------------|
+| ~(import (std core))~    | yes, the imported one | its exports and re-exports   | yes               |
+| ~(include "helper.bjo")~ | no — splices into /this/ module | everything in the file       | n/a               |
+| transitive ~BjolangDeps~ | no                    | nothing                      | yes               |
+
+** ~export~
+
+#+BEGIN_SRC scheme
+(export print println)
+#+END_SRC
+
+Names a module's public surface. Every exported name *must have an explicit
+signature in the same module*:
+
+#+BEGIN_SRC scheme
+(: println (-> %a void))
+(defun (println x) ...)
+(export println)
+#+END_SRC
+
+This is deliberate. An exported type is part of a compiled DLL's metadata, so it
+has to be written down rather than inferred.
+
+** ~re-export~
+
+#+BEGIN_SRC scheme
+(re-export print println)
+#+END_SRC
+
+Publishes names this module imported from somewhere else. The local-signature
+rule does not apply, because a re-exported name already carries a signature from
+where it was defined; what is checked instead is that the name is actually in
+scope here.
+
+This is how an aggregate module works:
+
+#+BEGIN_SRC scheme
+;; std/prelude.bjo
+(import (std core) (std list) (std iter))
+
+(re-export print println)
+#+END_SRC
+
+Anything importing ~(std prelude)~ sees ~print~ and ~println~ — and nothing else
+from ~core~, ~list~ or ~iter~.
+
+** Exporting a trait
+
+A trait travels with its methods. Exporting or re-exporting *any* method of a
+trait publishes the whole trait: the ~def/trait~ itself and every implementation
+of it known to the compiling module.
+
+#+BEGIN_SRC scheme
+;; std/prelude.bjo
+(export fold)
+(include "Foldable.protobjo")
+#+END_SRC
+
+~prelude.dll~ then carries, in its metadata:
+
+#+BEGIN_SRC scheme
+(def/trait (Foldable 'col) (type 'item) (: fold (-> (-> 'acc 'item 'acc) 'acc 'col 'acc)))
+(def/impl/extern (Foldable (List 'a)) (type 'item 'a))
+(def/impl/extern (Foldable (Vec 'a)) (type 'item 'a))
+#+END_SRC
+
+~def/impl/extern~ is a ~def/impl~ without method bodies. It says only that the
+type implements the trait and what its associated types are — the methods are
+already compiled into the assembly that declared it. It exists for metadata;
+there is no reason to write one by hand.
+
+Note what a trait method's *signature* alone cannot say. ~fold~'s element type
+is the associated type ~%item~, which has no meaning without the trait, so a
+trait method is published by its ~def/trait~ and deliberately left out of the
+~(: name type)~ list — an entry there would shadow the real binding with a
+weaker one. An associated type appearing anywhere else in an exported signature
+is written ~(assoc Foldable item 'col)~.
+
+Both halves are needed by an importer. Without the trait, ~%item~ cannot be
+resolved to the caller's element type; without the implementations, a call has
+nothing to dispatch to.
+
+** Exporting a foreign import
+
+An ~import/extern~ alias may be exported. It is the one kind of name that
+crosses as an *import* rather than as a signature:
+
+#+BEGIN_SRC scheme
+(export num-max)
+(import/extern (num-max (: System.Math.Max)))
+#+END_SRC
+
+#+BEGIN_SRC scheme
+;; in the metadata
+(import/extern (num-max (: System.Math.Max)))
+#+END_SRC
+
+The reason is that ~System.Math.Max~ is an *overload set*, not a method. Which
+member of it a call means is decided from that call's argument types, so there
+is no single type to publish — and publishing one would pick whichever overload
+the exporting module happened to use. Sent as the import, the importing module
+resolves the overloads against the same .NET metadata, and ~(num-max 3 9)~ and
+~(num-max 1.5 2.5)~ are two different methods on its side just as they were on
+this one.
+
+An alias is *also* published when an exported body names one — an inline
+template, or a trait default. Those are published under a mangled name
+(~clr_import__maths__clr-abs~) and the body is rewritten to match, because a
+body is re-inferred where it is spliced: under its own name, a definition of it
+in the importing module would silently take over the meaning of the library's
+method. An alias exported deliberately keeps its own name, since that name is
+the one the importer is meant to write.
+
+A name defined in the importing module always wins over an imported alias.
+
+** Linking is not importing
+
+A compiled library records its dependencies in ~BjolangDeps~. Those assemblies
+are *referenced* when you build against the library, because that is where the
+code of anything re-exported through it actually lives — but their exports are
+not imported. Only what a module explicitly exports or re-exports is visible
+through it.
+
+Note the asymmetry that follows: at the C# level a ~using static~ is emitted for
+every linked assembly, so all of their static classes are technically in scope.
+Visibility is enforced by the Bjolang type checker, not by C#.
+
+#+BEGIN_QUOTE
+Historical note: this used to work the other way round. Importing a DLL pulled
+in the exports of everything it transitively depended on, which is why
+~(import (std prelude))~ gave you ~print~ and ~println~ even though
+~prelude.bjo~ re-exported nothing at all and ~prelude.dll~ carried no export
+metadata. The names were arriving from ~core~ directly; ~prelude~ was a
+dependency bundle rather than a module with a surface.
+#+END_QUOTE
+
+** ~include~
+
+#+BEGIN_SRC scheme
+(include "inc/math_helpers.bjo")
+#+END_SRC
+
+Splices the named file's top-level forms in at that position, as if they had
+been typed there. Paths resolve relative to the directory of the file doing the
+including, so a chain of includes follows the files.
+
+An include creates *no module*. That has two consequences:
+
+- The included definitions are in scope immediately. They do not need to be
+  exported, and they are not visible to anyone importing you unless you export
+  them yourself.
+- Everything ends up in one generated class.
+
+Includes nest, and an included file's own ~(import ...)~ forms become imports of
+the including module.
+
+Cycles, missing files and malformed forms are reported with a file and a line:
+
+#+BEGIN_SRC text
+Include Error: 'a.bjo' includes itself at b.bjo:1. Include chain: a.bjo -> b.bjo -> a.bjo
+Include Error: cannot find 'nope.bjo' included at m.bjo:1 (looked for /.../nope.bjo)
+Include Error: malformed include at m.bjo:1. Expected (include "path")
+#+END_SRC
+
+*** Prefer ~include~ over a source-level ~import~
+
+~(import "helper.bjo")~ — importing a ~.bjo~ for which no ~.dll~ exists — is
+currently *broken*. The file is type-checked and a ~using static~ is emitted
+for it, but the code generator only emits the last module, so the generated C#
+references a class that was never produced:
+
+#+BEGIN_SRC text
+error CS0246: The type or namespace name 'helper_Module' could not be found
+#+END_SRC
+
+See ~TestFiles/srcimport/~ for a reproduction. Until that is fixed, use
+~include~ to split a module across files, or compile the other file to a DLL
+first with ~--lib~ and import that.
+
+** The implicit prelude
+
+Every module the compiler loads from source gets ~(import (std prelude))~
+prepended to its forms. Writing it by hand is allowed and changes nothing — the
+implicit import is suppressed when an explicit one is already there, so the
+import graph keeps one edge rather than two.
+
+It is prepended rather than appended, so a later import still shadows a prelude
+name: the prelude is the earliest binding there is.
+
+Files under ~lib/~ are the exception, and are left exactly as written. The
+standard library has to state its own dependencies — ~prelude~ imports ~maths~,
+so an implicit ~prelude~ in ~maths~ would be a cycle — and ~build_std.sh~
+compiles it in that order.
+
+The point is that where a name happens to live is not the programmer's problem.
+~string-append~, ~int->string~, ~file-read-text~ and ~print~ are library
+functions written in Bjolang; ~+~, ~vec-get~ and ~display~ are compiler
+builtins. Nothing at a call site should have to know which is which.
+
+** Where a module import resolves
+
+~(import (std core))~ is resolved against the ~lib~ directory of the *compiler
+installation* — found by walking up from the compiler binary for a ~lib~ that
+contains ~std~ — and not against the working directory. A module path therefore
+names the same file wherever you invoke the compiler from. ~BJOLANG_LIB~ (a
+~lib~ directory) or ~BJOLANG_HOME~ (its parent) override the search.
+
+This matters more than it sounds. ~resolveImportPath~ prefers a ~.dll~ over a
+~.bjo~ of the same name, so as long as the standard library is found compiled,
+that is what gets linked. When it was resolved against the working directory,
+compiling from anywhere else found no ~std/prelude.dll~, fell back to
+~prelude.bjo~, and quietly compiled a second copy of the entire standard
+library into the program — with the source-import bug above waiting at the end
+of it.
+
+** Building the standard library
+
+~lib/std/*.bjo~ must be compiled to DLLs before anything can import them:
+
+#+BEGIN_SRC sh
+./build_std.sh
+#+END_SRC
+
+There is exactly one set of these DLLs. Nothing is ever copied next to a
+compiled program: a program's manifest names only itself, and its entry point
+installs an assembly resolver that loads dependencies from the directories they
+were built in. A compiled binary therefore points back at this checkout —
+setting ~BJOLANG_LIB~ redirects it at run time.
+
+~BjolangDeps~ stores *absolute* paths, and a dependency that no longer exists
+at its recorded path is silently skipped. Moving the checkout therefore breaks
+re-exported names with a confusing "Unbound variable" rather than a missing-file
+error, and already-built programs stop finding the standard library. Re-run
+~build_std.sh~ after relocating the tree, and rebuild anything compiled against
+it.

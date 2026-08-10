@@ -1,0 +1,67 @@
+;; Two-level trait specificity: an exact head constructor, then a blanket.
+;;
+;; `(def/impl (Describe %a) ...)` names a bare type variable rather than a
+;; constructor, so it applies at every type that has no implementation of its
+;; own. An implementation for a specific head still wins.
+;;
+;; The reason this is safe to specialize on — where Rust's equivalent is not —
+;; is that Bjolang passes dictionaries instead of monomorphising. A blanket is
+;; only ever *selected* at a ground constructor: inside a generic function the
+;; implementor is a type variable, the obligation stays unresolved, and the
+;; choice is deferred to a dictionary parameter filled in at the concrete
+;; instantiation site. So the impl is picked where the type is known, every
+;; time, and a blanket may differ in **behaviour** from a specific impl rather
+;; than merely being slower. That is what `describe-via-dict` below pins down.
+
+(: expect (-> string string string void))
+(defun (expect label-text actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label-text))
+      (println (string-append "FAILURE: " (string-append label-text
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+(def/trait (Describe %a)
+  (: describe (-> %a string)))
+
+;; The blanket. Only the module defining the trait may write one — see
+;; `errors/orphan_blanket.bjo` — because a blanket declared elsewhere would
+;; change what the trait means for modules that never heard of it.
+(def/impl (Describe %a)
+  (defun (describe x) "any"))
+
+;; Two specific impls, both of which must beat the blanket.
+(def/impl (Describe int)
+  (defun (describe x) (string-append "int " (int->string x))))
+
+(def/impl (Describe string)
+  (defun (describe x) (string-append "string " x)))
+
+;; A constrained generic function: the implementor is a type variable here, so
+;; nothing is resolved at this definition and `describe` goes out through a
+;; dictionary parameter.
+(: describe-via-dict (-> %a string) (where (Describe %a)))
+(defun (describe-via-dict x)
+  (string-append "via " (describe x)))
+
+;; Two levels of forwarding, so the dictionary has to be passed on rather than
+;; only constructed.
+(: describe-twice (-> %a string) (where (Describe %a)))
+(defun (describe-twice x)
+  (string-append (describe-via-dict x) (string-append " / " (describe x))))
+
+(defun (main args)
+  ;; Direct calls, statically resolved.
+  (expect "specific impl wins at int" (describe 7) "int 7")
+  (expect "specific impl wins at string" (describe "hi") "string hi")
+  (expect "blanket covers a type with no impl" (describe 2.5) "any")
+  (expect "blanket covers bool too" (describe true) "any")
+
+  ;; Through a dictionary. The point of these four: the *same* generic body
+  ;; produces a different answer per call site, and it is the specific impl
+  ;; that arrives whenever there is one — the blanket is never baked in.
+  (expect "dictionary picks the specific impl" (describe-via-dict 7) "via int 7")
+  (expect "dictionary picks the blanket" (describe-via-dict 2.5) "via any")
+  (expect "forwarded dictionary, specific" (describe-twice 7) "via int 7 / int 7")
+  (expect "forwarded dictionary, blanket" (describe-twice 2.5) "via any / any")
+  0)

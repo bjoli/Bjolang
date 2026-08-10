@@ -1,0 +1,136 @@
+;; The dynamic environment: parameters, and `parameterize`.
+;;
+;; A parameter is a *value* of type `(Param %a)`, read with `parameter-ref` and
+;; rebound for the extent of a body with `parameterize`. R7RS instead makes a
+;; parameter object callable and reads it by applying it, which is a convenience
+;; of dynamic typing; here one uniform reader keeps `(Param %a)` an ordinary
+;; type that can be passed to a function, stored in a record and returned.
+;;
+;; The three standard ports are parameters like any other. They differ only in
+;; where the runtime keeps them — a field on the environment rather than a slot
+;; in the champ, because `display` reads the output port on every call — and
+;; nothing about that shows here.
+;; `TextOutputPort` and the port operations come with the prelude, so there is
+;; no `(import (std ports))` here — that module is only the drains that take a
+;; reader procedure.
+(import (std prelude))
+
+(import/class
+  (StringWriter (: System.IO.StringWriter (-> StringWriter))))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; A parameter of a user's own. Module-level, and legal there because
+;; `(Param int)` is closed — the restriction is on *open* types.
+(: indent (Param int))
+(def indent (make-parameter 0))
+
+(: verbose? (Param bool))
+(def verbose? (make-parameter #f))
+
+;; The point of a dynamic environment: `describe` never mentions the parameter
+;; in its signature, and every caller between it and the `parameterize` is
+;; unchanged. Passing this explicitly is what dynamic binding buys you out of.
+(: describe (-> string))
+(defun (describe)
+  (string-append (int->string (parameter-ref indent))
+                 (if (parameter-ref verbose?) "/loud" "/quiet")))
+
+;; A named let in tail position *inside* the body, which lowers to a jump inside
+;; a try/finally. Worth pinning: `parameterize` desugars to the same try/finally
+;; `with-open` does, so whatever this does, both do.
+(: sum-to (-> int int))
+(defun (sum-to n)
+  (parameterize ((indent 1))
+    (let loop ((i 0) (acc 0))
+      (if (> i n)
+          acc
+          (loop (+ i 1) (+ acc (parameter-ref indent)))))))
+
+(defun (main)
+  ;; --- Reading an unbound parameter ---------------------------------------
+  ;;
+  ;; The initial value given to `make-parameter` is what a parameter reads
+  ;; before anything has bound it.
+  (expect "unbound reads its initial" (describe) "0/quiet")
+
+  ;; --- Binding, and restoring ---------------------------------------------
+  (parameterize ((indent 2))
+    (expect "bound inside" (describe) "2/quiet"))
+  (expect "restored after" (describe) "0/quiet")
+
+  ;; Two bindings at once, at two different types.
+  (parameterize ((indent 3) (verbose? #t))
+    (expect "two parameters" (describe) "3/loud"))
+  (expect "both restored" (describe) "0/quiet")
+
+  ;; --- Nesting ------------------------------------------------------------
+  (parameterize ((indent 1))
+    (parameterize ((indent 2))
+      (parameterize ((indent 3))
+        (expect "innermost wins" (describe) "3/quiet"))
+      (expect "unwound one level" (describe) "2/quiet"))
+    (expect "unwound two levels" (describe) "1/quiet"))
+  (expect "unwound entirely" (describe) "0/quiet")
+
+  ;; Bindings in one `parameterize` are sequential, not simultaneous: the
+  ;; second value expression sees the first already installed. R7RS leaves the
+  ;; order unspecified but installs none of them until all are evaluated; the
+  ;; `let*` reading is the one that matches the rest of the language.
+  (parameterize ((indent 5) (verbose? (= (parameter-ref indent) 5)))
+    (expect "bindings are sequential" (describe) "5/loud"))
+
+  ;; --- Capturing the output port ------------------------------------------
+  ;;
+  ;; `displayln` names no port and never did. It goes to whatever the dynamic
+  ;; environment says, so redirecting it needs no change at the call site — this
+  ;; is the thing keyword arguments could not buy, and why `#:port` was dropped.
+  (def w (StringWriter.))
+  (parameterize ((current-output-port (cast TextOutputPort w)))
+    (display "captured")
+    (newline)
+    (display "twice"))
+
+  (expect "output was captured" (.ToString w) "captured\ntwice")
+
+  ;; And the console got none of it: this line proves stdout came back, since
+  ;; the harness reads it.
+  (expect "stdout restored" "back on stdout" "back on stdout")
+
+  ;; A parameter is an ordinary value, so it can be handed to a function that
+  ;; does not know which one it is.
+  (expect "parameter passed as a value" (int->string (read-twice indent)) "0")
+
+  ;; --- Unwinding through a failure ----------------------------------------
+  ;;
+  ;; The restore is a `finally`, so an exception on its way out still puts the
+  ;; environment back. Without this, one failed call would leave every later
+  ;; `display` writing into a dead StringWriter.
+  (def w2 (StringWriter.))
+  (def outcome
+    (try (parameterize ((indent 9) (current-output-port (cast TextOutputPort w2)))
+           (.Substring "ab" 99))
+      #:catch (System.ArgumentOutOfRangeException)))
+
+  (match outcome
+    ((Ok s) (println "FAILURE: the body was supposed to throw"))
+    ((Err e) (println "ok: the body threw")))
+
+  (expect "restored after a throw" (describe) "0/quiet")
+  (expect "port restored after a throw" (.ToString w2) "")
+
+  ;; --- Tail calls under the restore ---------------------------------------
+  (expect "named let inside parameterize" (int->string (sum-to 4)) "5")
+
+  0)
+
+;; Takes the parameter itself, not its value.
+(: read-twice (-> (Param int) int))
+(defun (read-twice p)
+  (+ (parameter-ref p) (parameter-ref p)))

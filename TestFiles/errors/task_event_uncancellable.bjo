@@ -1,0 +1,23 @@
+;; `task->event` over an import that cannot be cancelled.
+;;
+;; The branch's own `CancellationToken` is the entire difference between this
+;; and handing over a task that is already running. Without one, losing the
+;; `choose` would stop you listening and leave the work going — which is the
+;; leak §7.3 keeps `FromTask` out of the language to prevent, and it would be a
+;; leak the type system cannot see.
+;;
+;; So `#:uncancellable` and `task->event` are incompatible by construction, and
+;; the place to say so is here rather than in a comment nobody reads.
+
+;; EXPECT-ERROR: is imported #:uncancellable
+;; EXPECT-ERROR: could not stop it
+
+(import (std prelude))
+
+(import/extern
+  (pause-forever (: System.Threading.Tasks.Task.Delay (-> int void)
+                    #:async #:uncancellable)))
+
+(defbjo (main args)
+  (def slept (sync (task->event (pause-forever 10))))
+  0)

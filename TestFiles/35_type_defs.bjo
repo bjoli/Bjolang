@@ -1,0 +1,51 @@
+(import (std prelude))
+
+(type
+  (: Color (Enum Red Green Blue))
+  (: Fruit (Record
+            (: Peel? bool)
+            (: Colour Color)))
+  (: UserId string)
+  (: (MyOption %a) (Union MyNone (MySome %a))))
+
+(: color->str (-> Color string))
+(defun (color->str c)
+  (match c
+    (Red "red")
+    (Green "green")
+    (Blue "blue")))
+
+(: opt->str (-> (MyOption int) string))
+(defun (opt->str o)
+  (match o
+    (MyNone "none")
+    ((MySome v) (int->string v))))
+
+;; A union case built *inside a lambda passed to a generic function*.
+;;
+;; `new MyOption.MySome(1)` has the case class as its C# type, not the union's.
+;; Everywhere else that is harmless — an assignment or an argument position
+;; supplies the target type and the upcast is implicit. Here there is nothing to
+;; supply it: `list-map`'s result type is inferred *from* the lambda, so it came
+;; out `SchemeList<MyOption.MySome>` and then would not convert to
+;; `SchemeList<MyOption>`, because C# generics are invariant.
+;;
+;; Both shapes are checked: a data case applied to an argument, and a nullary
+;; case used as a bare value, which are emitted by different code paths.
+(: wrap-all (-> (List int) (List (MyOption int))))
+(defun (wrap-all xs) (list-map (fun (x) (MySome x)) xs))
+
+(: blank-all (-> (List int) (List (MyOption int))))
+(defun (blank-all xs) (list-map (fun (x) MyNone) xs))
+
+(defun (main)
+  (def banana (Fruit (Peel? #t) (Colour Green)))
+  (def uid "user_123")
+  (println (color->str (record-get banana Colour)))
+  (println uid)
+  (println (opt->str MyNone))
+  (println (opt->str (MySome 42)))
+  (println (opt->str (list-head (wrap-all (list 7 8)))))
+  (println (opt->str (list-head (blank-all (list 7 8)))))
+  0)
+

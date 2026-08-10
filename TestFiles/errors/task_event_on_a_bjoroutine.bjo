@@ -1,0 +1,22 @@
+;; `task->event` over a bjoroutine.
+;;
+;; It only takes a call to an `#:async` import, because what it does is start a
+;; .NET task with a token of its own — and a bjoroutine is not a task and has no
+;; token to be given.
+;;
+;; The way to wait for a bjoroutine is to spawn it and join the promise. The
+;; diagnostic says so, and also says what that does *not* do: losing a `choose`
+;; on a join stops you listening without stopping the work, which is limitation
+;; 12 and the reason step 11's `spawn-evt` is on the list.
+
+;; EXPECT-ERROR: is not a method imported by import/extern
+;; EXPECT-ERROR: promise-join
+
+(import (std prelude))
+
+(: work (-> int int))
+(defbjo (work x) (* x 2))
+
+(defbjo (main args)
+  (def doubled (sync (task->event (work 21))))
+  0)

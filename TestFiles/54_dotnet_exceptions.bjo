@@ -1,0 +1,66 @@
+;; Foreign .NET interop: checked exceptions as `Result`.
+;;
+;; A `#:exceptions` clause names the failures that become values. Those — and
+;; only those — are caught and returned as `(Err e)`; anything else keeps
+;; unwinding, because an exception nobody named is a bug rather than a result.
+;;
+;; The wrapped call has type `(Result System.Exception %a)`, matched with the
+;; ordinary `Ok`/`Err` patterns. There are no special compiler rules for it.
+(import (std prelude))
+
+(import/class
+  (FileStream (: System.IO.FileStream (-> string FileMode FileStream)
+                 #:exceptions (System.IO.FileNotFoundException System.IO.DirectoryNotFoundException)))
+  ;; An enum has no constructor, but importing it makes `FileMode.Open` a name.
+  (FileMode (: System.IO.FileMode)))
+
+(import/extern
+  (read-all-text (: System.IO.File.ReadAllText (-> string string)
+                    #:exceptions (System.IO.FileNotFoundException)))
+  (write-all-text (: System.IO.File.WriteAllText (-> string string void)
+                     #:exceptions (System.IO.IOException)))
+  (file-delete! (: System.IO.File.Delete (-> string void))))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; A constructor that is declared to fail returns a Result, so opening a file
+;; is an ordinary two-armed match rather than a thing that might not return.
+(: try-open (-> string string))
+(defun (try-open path)
+  (match (FileStream. path FileMode.Open)
+    ((Ok fs) (let ()
+               (.Dispose fs)
+               "opened"))
+    ((Err e) "missing")))
+
+(: try-read (-> string string))
+(defun (try-read path)
+  (match (read-all-text path)
+    ((Ok text) text)
+    ((Err e) "missing")))
+
+(defun (main)
+  (def path "54_dotnet_exceptions.tmp")
+
+  ;; A wrapped call whose return type is void still produces a Result — of the
+  ;; unit value, since C# has no `Result<E, void>`.
+  (match (write-all-text path "guarded")
+    ((Ok _) (println "ok: wrote the file"))
+    ((Err e) (println "FAILURE: could not write the file")))
+
+  (expect "constructor succeeds" (try-open path) "opened")
+  (expect "extern succeeds" (try-read path) "guarded")
+
+  (file-delete! path)
+
+  ;; The declared failure, as a value rather than as a crash.
+  (expect "constructor fails" (try-open "nonexistent.file") "missing")
+  (expect "extern fails" (try-read "nonexistent.file") "missing")
+
+  0)

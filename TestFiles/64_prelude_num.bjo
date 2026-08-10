@@ -1,0 +1,33 @@
+;; `Num` re-exported through the prelude.
+;;
+;; This module never mentions `std/maths`. The trait, its implementations and
+;; the foreign imports its default bodies name all reach here through the
+;; re-export, and the impl classes themselves are linked from `maths.dll` as a
+;; transitive dependency.
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; A constraint on a trait this module got at second hand.
+(: furthest-from-zero (-> %a %a %a) (where (Num %a)))
+(defun (furthest-from-zero x y)
+  (max (abs x) (abs y)))
+
+(defun (main)
+  (expect "abs" (int->string (abs -5)) "5")
+  (expect "min" (int->string (min 3 9)) "3")
+  (expect "max" (double->string (max 1.5 2.5)) "2.5")
+  (expect "sqrt" (double->string (sqrt 9)) "3")
+
+  ;; Named in the re-export list only because the trait brings them anyway.
+  (expect "sign" (int->string (sign -42L)) "-1")
+  (expect "clamp" (int->string (clamp 99 3 9)) "9")
+
+  (expect "constrained generic" (int->string (furthest-from-zero -7 3)) "7")
+  0)

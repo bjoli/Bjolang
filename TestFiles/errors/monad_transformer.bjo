@@ -1,0 +1,16 @@
+(import (std prelude))
+
+(def/trait (Monad (%m %a))
+  (: pure (-> %a (%m %a)))
+  (: bind (-> (%m %a) (-> %a (%m %b)) (%m %b))))
+
+;; A monad transformer: the impl target itself needs `%m` to be a *constructor*
+;; variable, not a type. `ImplTarget.FixedPrefix` is an `HMType list`, and there
+;; is no HMType that stands for a type constructor.
+(type ((StateT %s %m %a) (: MkStateT (-> %s (%m (Tuple %a %s))))))
+
+(def/impl (Monad (StateT %s %m %a))
+  (defun (pure x) (MkStateT (fun (s) (pure (Tuple x s)))))
+  (defun (bind m k) m))
+
+(defun (main) 0)

@@ -1,0 +1,75 @@
+;; Inlining a recursive trait method, and the recursion guard that stops it.
+;;
+;; A resolved trait call is spliced *once*; the recursive edge inside the
+;; spliced body falls back to the impl's landing pad, which is emitted for every
+;; impl method whether or not anything is proven to need it.
+(import (std prelude))
+
+;; ---------------------------------------------------------------------------
+;; Self-recursion
+;; ---------------------------------------------------------------------------
+
+(def/trait (Show %c)
+  (: show (-> %c string)))
+
+(def/impl (Show (List int))
+  (defun (show xs)
+    (match xs
+      ((Nil) "]")
+      ((Cons h t) (string-append (int->string h) (string-append " " (show t)))))))
+
+;; ---------------------------------------------------------------------------
+;; Two mutually recursive methods of one trait
+;; ---------------------------------------------------------------------------
+
+(def/trait (Parity %c)
+  (: even? (-> %c bool))
+  (: odd? (-> %c bool)))
+
+(def/impl (Parity int)
+  ;; Neither method's key is held down while the *other* is being inlined, so
+  ;; each gets one copy of its partner spliced into it — and the edge that
+  ;; closes the cycle becomes a call.
+  (defun (even? n) (if (= n 0) true (odd? (- n 1))))
+  (defun (odd? n) (if (= n 0) false (even? (- n 1)))))
+
+;; ---------------------------------------------------------------------------
+;; Nested bindings that shadow the same name
+;; ---------------------------------------------------------------------------
+
+;; A `let` chain compiles to consecutive declarations in one C# block, so
+;; without renaming this is a duplicate local (CS0128) rather than merely a
+;; shadowed one (CS0136).
+(: shadowed (-> int int))
+(defun (shadowed n)
+  (let ((x n))
+    (let ((x (* x 2)))
+      (let ((x (+ x 1)))
+        (let ((y (let ((x (* x 10))) x)))
+          (+ x y))))))
+
+;; ---------------------------------------------------------------------------
+;; A scheme with more than ten type variables, calling a constrained function
+;; ---------------------------------------------------------------------------
+
+(: count (-> %c int) (where (Foldable %c)))
+(defun (count c)
+  (fold (fun (acc x) (+ acc 1)) 0 c))
+
+;; `instantiate` hands back one type argument per scheme variable, and both the
+;; dictionary lowering and the constraint forwarding zip that list against the
+;; scheme's variables in declaration order. Sorting it instead — which is what
+;; taking the values out of a map does — pairs `'t10` before `'t2` and routes
+;; the dictionary to the wrong variable.
+(: twelve (-> %a %b %c %d %e %f %g %h %i %j %k %l int) (where (Foldable %l)))
+(defun (twelve a b c d e f g h i j k l)
+  (count l))
+
+(defun (main)
+  (println (string-append "[ " (show (Cons 1 (Cons 2 (Cons 3 Nil))))))
+  (println (if (even? 10) "10 even" "10 odd"))
+  (println (if (odd? 7) "7 odd" "7 even"))
+  (println (if (even? 0) "0 even" "0 odd"))
+  (println (shadowed 3))
+  (println (twelve 1 "b" true 4 5 6 7 8 9 10 11 [1 2 3 4 5]))
+  0)

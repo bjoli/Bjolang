@@ -1,0 +1,123 @@
+;; std/maths.bjo — `System.Math`, in the two shapes it comes in.
+;;
+;; Most of it is one method over a double (`Sin`, `Log`, `Cbrt`), exported as
+;; the import itself; an int argument widens at the call as it would in C#.
+;;
+;; A handful are *overload sets*, one per numeric type with the type preserved:
+;; `(abs -5)` is an int, `(abs -2.5)` a double, and no single signature says
+;; that. Those become the `Num` trait below, which is also what lets them be
+;; named in generic code — resolving an overload set needs argument types a
+;; polymorphic body does not have.
+
+(export
+  ;; Num
+  abs sign min max clamp sqrt
+  ;; Exponential and logarithmic
+  cbrt exp pow log log2 log10
+  ;; Rounding
+  floor ceiling truncate round
+  ;; Trigonometric
+  sin cos tan asin acos atan atan2
+  ;; Hyperbolic
+  sinh cosh tanh asinh acosh atanh)
+
+;; ---------------------------------------------------------------------------
+;; Num
+;; ---------------------------------------------------------------------------
+
+;; The overload sets, unexported; the trait method of the same shape is the
+;; exported name. A default body is re-checked at every impl, so one line
+;; covers every implementor: `(clr-abs x)` is `Abs(int)` under `(Num int)` and
+;; `Abs(double)` under `(Num double)`.
+(import/extern
+  (clr-abs   (: System.Math.Abs))
+  (clr-sign  (: System.Math.Sign))
+  (clr-min   (: System.Math.Min))
+  (clr-max   (: System.Math.Max))
+  (clr-clamp (: System.Math.Clamp))
+  (clr-sqrt  (: System.Math.Sqrt)))
+
+;; Exactly what `System.Math` overloads *per numeric type*; everything else in
+;; this file is a double function needing no dispatch.
+;;
+;; `sign` and `sqrt` fix their result type and are still here: both are
+;; operations *on* a `Num`, which is what lets a `(where (Num %a))` function
+;; call them. A method's result need not mention the implementor.
+(def/trait (Num %a)
+  (: abs   (-> %a %a))
+  (: sign  (-> %a int))
+  (: min   (-> %a %a %a))
+  (: max   (-> %a %a %a))
+  (: clamp (-> %a %a %a %a))
+  (: sqrt  (-> %a double))
+
+  (defun (abs x) (clr-abs x))
+  (defun (sign x) (clr-sign x))
+  (defun (min a b) (clr-min a b))
+  (defun (max a b) (clr-max a b))
+  (defun (clamp x lo hi) (clr-clamp x lo hi))
+  ;; `Sqrt` is the one overload there is, so the integer implementors widen to
+  ;; it — the same conversion C# would perform, and emitted as one.
+  (defun (sqrt x) (clr-sqrt x)))
+
+;; The signed types only. `Math.Abs`/`Sign` have no unsigned overload, so
+;; `byte`, `ushort`, `uint` and `ulong` are not `Num` — `(abs b)` says so rather
+;; than widening behind your back. `short` is out because C# promotes it to int
+;; on every operation, making it a type you cannot do arithmetic in. `decimal`
+;; and `float` are out only until Bjolang can spell them; then they are impls
+;; and nothing else.
+(def/impl (Num int))
+(def/impl (Num long))
+(def/impl (Num double))
+
+;; Todo: `min`/`max` over a sequence. That is a function over a
+;; `Num`-constrained element type — `(: min-of (-> %s %a) (where (Num %a)))` —
+;; not a method here: a rest parameter is a calling convention, and a method's
+;; shape is fixed by the trait.
+
+;; ---------------------------------------------------------------------------
+;; The double functions
+;; ---------------------------------------------------------------------------
+
+;; One method each, so the import *is* the export: a wrapper would add nothing,
+;; and the importing module resolves against the same .NET metadata.
+
+;; Exponential and logarithmic. `pow` is (base, exponent); `log` is the natural
+;; logarithm at one argument and log-to-base at two, which is the overload set
+;; `Math.Log` already is.
+(import/extern
+  (cbrt  (: System.Math.Cbrt))
+  (exp   (: System.Math.Exp))
+  (pow   (: System.Math.Pow))
+  (log   (: System.Math.Log))
+  (log2  (: System.Math.Log2))
+  (log10 (: System.Math.Log10)))
+
+;; Rounding. Each has a decimal overload as well as a double one, so they stay
+;; imports rather than signatures — the argument type picks, and will pick
+;; decimal the day Bjolang can spell it.
+(import/extern
+  (floor    (: System.Math.Floor))
+  (ceiling  (: System.Math.Ceiling))
+  (truncate (: System.Math.Truncate))
+  (round    (: System.Math.Round)))
+
+;; Trigonometric. `atan2` takes (y, x), in that order, and is the one to reach
+;; for when the quadrant matters.
+(import/extern
+  (sin   (: System.Math.Sin))
+  (cos   (: System.Math.Cos))
+  (tan   (: System.Math.Tan))
+  (asin  (: System.Math.Asin))
+  (acos  (: System.Math.Acos))
+  (atan  (: System.Math.Atan))
+  (atan2 (: System.Math.Atan2)))
+
+;; Hyperbolic.
+(import/extern
+  (sinh  (: System.Math.Sinh))
+  (cosh  (: System.Math.Cosh))
+  (tanh  (: System.Math.Tanh))
+  (asinh (: System.Math.Asinh))
+  (acosh (: System.Math.Acosh))
+  (atanh (: System.Math.Atanh)))

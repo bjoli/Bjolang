@@ -1,0 +1,21 @@
+;; EXPECT-ERROR: declares a method 'pure', but 'Monad' already does
+(import (std prelude))
+
+;; The classic hierarchy: `pure` belongs to Applicative, and Monad wants it too.
+(def/trait (Applicative (%f %a))
+  (: pure (-> %a (%f %a))))
+
+(def/trait (Monad (%m %a))
+  (: pure (-> %a (%m %a)))
+  (: bind (-> (%m %a) (-> %a (%m %b)) (%m %b))))
+
+(def/impl (Applicative (List %a))
+  (defun (pure x) (Cons x Nil)))
+
+(def/impl (Monad (List %a))
+  (defun (pure x) (Cons x Nil))
+  (defun (bind m k) (list-foldr (fun (x acc) (k x)) Nil m)))
+
+(defun (main)
+  (def (: one (List int)) (pure 1))
+  0)

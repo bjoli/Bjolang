@@ -1,0 +1,712 @@
+;; std/prelude.bjo
+;; Standard library entry point
+(export
+  ;; Foldable
+  fold
+  ;; Functor
+  map
+  ;; Monad
+  bind pure
+  ;; Iterable
+  current done? next start
+  ;; Collecter
+  init step finish
+  ;; Collection
+  length empty? ->seq
+  ;; Discard — how a program says "computed, and deliberately not wanted"
+  ignore
+  ;; Range
+  range range-by
+
+  print println ->str
+
+  ;; Strings
+  string-append string-length
+  ;; Conversions
+  int->string long->string double->string byte->string number->string
+  string->int string->double
+  ;; Files
+  file-read-text file-write-text file-append-text file-exists? file-delete
+  ;; Paths
+  path-absolute path-combine path-filename path-file-extension
+  ;; Ports — opening
+  open-input-file open-input-string open-output-file
+  ;; Ports — closing
+  close-input-port close-output-port flush-port
+  ;; Ports — input
+  port-eof? read-line read-line/opt read-all port-fold
+  ;; Ports — output
+  write-string writeln)
+
+
+
+
+(include "Foldable.protobjo")
+(include "Monad.protobjo")
+
+;; Type to String Trait
+(def/trait (->str %a)
+  (: ->str (-> %a string)))
+
+;; Implementations for standard scalars
+(def/impl (->str string)
+  (defun (->str s) s))
+
+(def/impl (->str int)
+  (defun (->str n) (int->string n)))
+
+(def/impl (->str double)
+  (defun (->str n) (double->string n)))
+
+(def/impl (->str byte)
+  (defun (->str n) (byte->string n)))
+
+(def/impl (->str long)
+  (defun (->str n) (long->string n)))
+
+(def/impl (->str Keyword)
+  (defun (->str k) (keyword->string k)))
+
+(def/impl (->str Symbol)
+  (defun (->str s) (symbol->string s)))
+
+;; (def/impl (->str (List %a))
+;;   (defun (->str l)
+;;     (if (empty? l)
+;;         "()"
+;;         (with-output-to-str 
+;;           (print "(")
+;;           (print (car l))
+;;           (loop (:for elem (cdr l))
+;;                 (:do (print " ") (print (->str elem))))
+;;           (print ")")))))
+
+
+
+
+;; ---------------------------------------------------------------------------
+;; Discard
+;; ---------------------------------------------------------------------------
+;;
+;; `(ignore x)` is how a program says "I computed this and I do not want it".
+;; Under §8.2's must-use rule every value that is dropped has to say so, and
+;; this is the saying: an ordinary function, greppable, usable in a pipeline,
+;; with no lexer change and no sigil.
+;;
+;; It is a *trait* method rather than one function because some types need
+;; behaviour at the discard site and not merely permission to vanish. The three
+;; levels are:
+;;
+;;   no impl of its own — the blanket applies, and the value is dropped;
+;;   an impl of its own — `ignore` runs it, as `Promise` does below;
+;;   named in the compiler's no-discard set — `ignore` is an error, which is
+;;   what `Result` is, since a discarded error has no defensible default.
+;;
+;; That the specific impl is always the one that runs, even for a value routed
+;; through generic code, is the property §0.2 buys: a blanket is only ever
+;; selected at a ground constructor, and a type variable becomes a dictionary
+;; parameter filled in where the type is known.
+(def/trait (Discard %a)
+  (: ignore (-> %a void)))
+
+;; The blanket: level one, and the answer for almost everything. `unit` rather
+;; than `(Tuple)` — the empty tuple is a different type with a different C#
+;; spelling — and it is the one place in the language that needs a way to write
+;; the unit value without also doing something.
+(def/impl (Discard %a)
+  (defun (ignore x) unit))
+
+;; Level two. Dropping a promise loses any exception inside it silently: nothing
+;; else is watching, so a fiber that died is simply never mentioned. `(ignore p)`
+;; therefore means "detach deliberately", routing a failure to the scheduler's
+;; unhandled hook — the only reading of "discard this promise" that is not a
+;; quiet bug.
+;;
+;; Note how sparingly this level should be used. It is tempting to give every
+;; `IDisposable`-shaped import an impl that disposes; resist, because a discard
+;; that closes a stream is action at a distance and the reader of `(ignore s)`
+;; has no way to see it. Cleanup that matters deserves a name.
+(def/impl (Discard (Promise %a))
+  (defun (ignore p) (detach p)))
+
+;; Generic display functions utilizing the ->str trait
+(: print (-> %a void))
+(defun (print x)
+  (display (->str x)))
+
+(: println (-> %a void))
+(defun (println x)
+  (displayln (->str x)))
+
+
+;; ---------------------------------------------------------------------------
+;; Iterable
+;; ---------------------------------------------------------------------------
+
+;; First-order with two associated types, and an ordinary interface trait
+;; rather than an inline-only one: it never returns a sequence at a new element
+;; type, so there is no constructor variable to abstract over.
+;;
+;; Every method takes the sequence *and* the cursor, which keeps the cursor
+;; minimal — folding `s` into it would make a vector's cursor a (vector, index)
+;; pair rather than a bare int. `s` is loop-invariant and substituted away by
+;; the inliner, so the arguments that go unread cost nothing.
+;;
+;; The protocol's contract:
+;;   1. `done?` is called exactly once per iteration. Nothing peeks and nothing
+;;      tests at both top and bottom, which is what lets `done?` be effectful.
+;;   2. `current` is called only when the preceding `done?` returned false.
+;;   3. The cursor is used linearly: never copied, stepped twice, or captured.
+;;   4. `start` is called once per entry to the level owning the cursor.
+(def/trait (Iterable %s)
+  (type %elem)
+  (type %cursor)
+  (: start (-> %s %cursor))
+  (: done? (-> %s %cursor bool))
+  (: current (-> %s %cursor %elem))
+  (: next (-> %s %cursor %cursor)))
+
+(def/impl (Iterable (List %a))
+  (type %elem %a)
+  (type %cursor (List %a))
+  (defun (start s) s)
+  (defun (done? s c) (list-empty? c))
+  (defun (current s c) (list-head c))
+  (defun (next s c) (list-tail c)))
+
+;; A Vec is a tree, so walking it by index pays O(log32 n) per element. Its
+;; native enumerator descends once and then walks leaves, so the cursor is one
+;; of those.
+;; We re-use the cursor the c# library provides.
+(def/impl (Iterable (Vec %a))
+  (type %elem %a)
+  (type %cursor (VecCursor %a))
+  (defun (start s) (vec-cursor s))
+  (defun (done? s c) (vec-cursor-done? c))
+  (defun (current s c) (vec-cursor-current c))
+  (defun (next s c) c))
+
+;; A half-open range of ints. Its cursor is the number itself, so a loop over
+;; one is `c = lo`, `c < hi`, `c += by` — a hand-written `for`.
+;;
+;; `by` must be positive: coping with both directions means testing the sign
+;; every iteration, and counting down deserves its own sequence rather than a
+;; branch in the common path.
+(type (: Range (Struct (: lo int) (: hi int) (: by int))))
+
+(: range (-> int int Range))
+(defun (range lo hi)
+  (Range (lo lo) (hi hi) (by 1)))
+
+(: range-by (-> int int int Range))
+(defun (range-by lo hi by)
+  (Range (lo lo) (hi hi) (by by)))
+
+(def/impl (Iterable Range)
+  (type %elem int)
+  (type %cursor int)
+  (defun (start s) (record-get s lo))
+  (defun (done? s c) (>= c (record-get s hi)))
+  (defun (current s c) c)
+  (defun (next s c) (+ c (record-get s by))))
+
+;; A Map's elements are its pairs, in the trie's own order.
+(def/impl (Iterable (Map %k %v))
+  (type %elem (Tuple %k %v))
+  (type %cursor (MapCursor %k %v))
+  (defun (start s) (map-cursor s))
+  (defun (done? s c) (map-cursor-done? c))
+  (defun (current s c) (map-cursor-current c))
+  (defun (next s c) c))
+
+;; The same shape as the List impl: the cursor is the remaining sequence and
+;; every method reads `c`, never `s`. Reading `s` would restart from the head
+;; each iteration, forcing the same element forever.
+(def/impl (Iterable (Seq %a))
+  (type %elem %a)
+  (type %cursor (Seq %a))
+  (defun (start s) s)
+  (defun (done? s c) (seq-empty? c))
+  (defun (current s c) (seq-head c))
+  (defun (next s c) (seq-tail c)))
+
+;; ---------------------------------------------------------------------------
+;; Collector
+;; ---------------------------------------------------------------------------
+
+;; Also first-order with associated types, and it needs no bridge to a generic
+;; path: `init`/`step`/`finish` pass and return values with no cursor aliasing.
+(def/trait (Collector %c)
+  (type %elem)
+  (type %acc)
+  (type %out)
+  (: init (-> %c %acc))
+  (: step (-> %c %acc %elem %acc))
+  (: finish (-> %c %acc %out)))
+
+;; The stock collectors. Each one's *constructor* is the name written in an
+;; `:acc` clause, which is what makes a new accumulator an ordinary impl rather
+;; than a change to the compiler. The type parameter on `Listing` and
+;; `Counting` is a phantom, pinning `%elem` and nothing else.
+
+(type (: (Listing %a) (Union listing)))
+
+;; A builder rather than cons-and-reverse, which allocates a cell per element
+;; each way. The accumulator is mutated in place, and `step` hands back the same
+;; builder it was given — a loop slot carries it exactly as it would an
+;; immutable value, and the identity never changing is what makes the mutator's
+;; `Unit` return honest (§8.1).
+(def/impl (Collector (Listing %a))
+  (type %elem %a)
+  (type %acc (ListBuilder %a))
+  (type %out (List %a))
+  (defun (init c) (listbuilder-empty))
+  (defun (step c acc x) (listbuilder-add! acc x) acc)
+  (defun (finish c acc) (listbuilder->list acc)))
+
+;; The same, into a Vec — what to reach for when the result is going to be
+;; indexed rather than walked.
+(type (: (Vecing %a) (Union vecing)))
+
+(def/impl (Collector (Vecing %a))
+  (type %elem %a)
+  (type %acc (VecBuilder %a))
+  (type %out (Vec %a))
+  (defun (init c) (vecbuilder-empty))
+  (defun (step c acc x) (vecbuilder-add! acc x) acc)
+  (defun (finish c acc) (vecbuilder->vec acc)))
+
+;; Collects pairs into a Map. Its elements are `(Tuple key value)`, which is
+;; exactly what iterating a Map yields — so
+;; `(loop (:for kv m) (:acc out (mapping kv)))` copies one.
+;;
+;; `MapBuilder` appends into a flat buffer and sorts by hash once at the end,
+;; which is a good deal faster than inserting into the trie a key at a time.
+(type (: (Mapping %k %v) (Union mapping)))
+
+(def/impl (Collector (Mapping %k %v))
+  (type %elem (Tuple %k %v))
+  (type %acc (MapBuilder %k %v))
+  (type %out (Map %k %v))
+  (defun (init c) (mapbuilder-empty))
+  (defun (step c acc kv)
+    (def (k v) kv)
+    (mapbuilder-add! acc k v)
+    acc)
+  (defun (finish c acc) (mapbuilder->map acc)))
+
+(type (: Summing (Union summing)))
+
+(def/impl (Collector Summing)
+  (type %elem int)
+  (type %acc int)
+  (type %out int)
+  (defun (init c) 0)
+  (defun (step c acc x) (+ acc x))
+  (defun (finish c acc) acc))
+
+(type (: (Counting %a) (Union counting)))
+
+(def/impl (Collector (Counting %a))
+  (type %elem %a)
+  (type %acc int)
+  (type %out int)
+  (defun (init c) 0)
+  (defun (step c acc x) (+ acc 1))
+  (defun (finish c acc) acc))
+
+;; `folding` is the primitive the others could all be written in terms of: the
+;; accumulator simply becomes the step expression's value. Its seed is a
+;; *construction* argument, so it is written `(folding seed expr)`.
+(type (: (Folding %a) (Union (folding %a))))
+
+(def/impl (Collector (Folding %a))
+  (type %elem %a)
+  (type %acc %a)
+  (type %out %a)
+  (defun (init c) (match c ((folding s) s)))
+  (defun (step c acc x) x)
+  (defun (finish c acc) acc))
+
+
+(def/trait (Functor (%f %a))
+  (: map (-> (-> %a %b) (%f %a)  (%f %b))))
+
+(def/impl (Functor (List %a))
+  (defun (map g xs) (list-map g xs))) 
+
+(def/impl (Functor (Vec %a))
+  (defun (map g v) (vec-map g v)))
+
+;; `(Map %k %v)`'s abstracted argument is `%v`, so the functor moves values and
+;; leaves keys alone. `map-map` will not serve: it hands over the whole pair,
+;; and a functor's `(-> %a %b)` has room for one element type.
+(def/impl (Functor (Map %k %v))
+  (defun (map g m)
+    (map-map-values g m)))
+
+(def/impl (Functor (Option %a))
+  (defun (map g o)
+    (match o ((Some v) (Some (g v))) (None None))))
+
+
+;; ---------------------------------------------------------------------------
+;; Maths
+;; ---------------------------------------------------------------------------
+
+;; The rest of `System.Math` stays in `std/maths.bjo`; what is re-exported here
+;; is `Num`, general enough that a program should not have to ask for it.
+;;
+;; A trait travels with its methods, so re-exporting any one publishes `Num`
+;; whole.  We name all of them for clarity.
+(import (std maths))
+
+(re-export abs sign min max clamp sqrt)
+
+;; ---------------------------------------------------------------------------
+;; Strings, conversions, files and paths
+;; ---------------------------------------------------------------------------
+;; The wrapper is not ceremony: an `import/extern` alias is an
+;; overload set, which is not a value, so `(map int->string xs)` would not
+;; compile if the name were the import. The signature also pins the overload
+;; once here rather than at every call site.
+
+;; --- Strings ---
+
+(import/extern
+  (clr-concat        (: System.String.Concat))
+  (clr-parse-int     (: System.Int32.Parse))
+  (clr-parse-double  (: System.Double.Parse)))
+
+(: string-append (-> string string string))
+(defun (string-append a b) (clr-concat a b))
+
+;; `.Length` is a property, so there is no method to import — a one-line body
+;; reading the member is the whole of it.
+(: string-length (-> string int))
+(defun (string-length s) (.-Length s))
+
+;; --- Conversions ---
+;;
+;; `ToString` is an instance method on each of the numeric types, and interop
+;; resolves it against the argument's own type, so these are four bodies rather
+;; than one overload set.
+
+(: int->string (-> int string))
+(defun (int->string n) (.ToString n))
+
+(: long->string (-> long string))
+(defun (long->string n) (.ToString n))
+
+(: double->string (-> double string))
+(defun (double->string n) (.ToString n))
+
+(: byte->string (-> byte string))
+(defun (byte->string n) (.ToString n))
+
+;; `number->string` is declared over `int`, so it is the same operation as
+;; `int->string` and is kept as the name R7RS programs reach for.
+(: number->string (-> int string))
+(defun (number->string n) (int->string n))
+
+(: string->int (-> string int))
+(defun (string->int s) (clr-parse-int s))
+
+(: string->double (-> string double))
+(defun (string->double s) (clr-parse-double s))
+
+;; --- Files ---
+;;
+;; Whole-file operations, for when the contents fit in memory. The ports below
+;; are where to go when they do not.
+;;
+;; None returns a `Result`: they throw as the .NET methods do, and a caller who
+;; wants a value wraps the call in `try`. The port openers take the other route
+;; and return a `Result` directly.
+
+(import/extern
+  (clr-read-all-text   (: System.IO.File.ReadAllText))
+  (clr-write-all-text  (: System.IO.File.WriteAllText))
+  (clr-append-all-text (: System.IO.File.AppendAllText))
+  (clr-file-exists     (: System.IO.File.Exists))
+  (clr-file-delete     (: System.IO.File.Delete)))
+
+(: file-read-text (-> string string))
+(defun (file-read-text path) (clr-read-all-text path))
+
+;; Truncates the file if it is already there.
+(: file-write-text (-> string string void))
+(defun (file-write-text path contents) (clr-write-all-text path contents))
+
+(: file-append-text (-> string string void))
+(defun (file-append-text path contents) (clr-append-all-text path contents))
+
+(: file-exists? (-> string bool))
+(defun (file-exists? path) (clr-file-exists path))
+
+(: file-delete (-> string void))
+(defun (file-delete path) (clr-file-delete path))
+
+;; --- Paths ---
+;;
+;; Textual operations on path strings: none of them touches the file system.
+;;
+;; `path-directory` is *not* here — `GetDirectoryName` answers null for a root
+;; and for a bare filename, so it stays in the runtime with the rest of the
+;; sentinel-absorbing boundary code.
+
+(import/extern
+  (clr-full-path      (: System.IO.Path.GetFullPath))
+  (clr-path-combine   (: System.IO.Path.Combine))
+  (clr-file-name      (: System.IO.Path.GetFileName))
+  (clr-file-extension (: System.IO.Path.GetExtension)))
+
+(: path-absolute (-> string string))
+(defun (path-absolute path) (clr-full-path path))
+
+;; Variadic, and the array a `#:rest` parameter collects is handed straight to
+;; `Path.Combine(params string[])` — the same call C# would make.
+(: path-combine (-> #:rest string string))
+(defun (path-combine #:rest parts) (clr-path-combine parts))
+
+(: path-filename (-> string string))
+(defun (path-filename path) (clr-file-name path))
+
+(: path-file-extension (-> string string))
+(defun (path-file-extension path) (clr-file-extension path))
+
+;; ---------------------------------------------------------------------------
+;; Ports
+;; ---------------------------------------------------------------------------
+;;
+;; `ports-spec.md` carries the argument; these are the decisions it reached.
+;;
+;; - **A port is the .NET object.** `TextReader` already abstracts over file,
+;;   string and console, so it is imported *as* `TextInputPort`. `with-open`
+;;   then works unchanged, and `peek` needs no pushback buffer.
+;; - **Concrete readers are `cast` inside `open-*`.** HM has no subtyping, so a
+;;   `StreamReader` will not unify with `TextInputPort`; casting at the door is
+;;   what makes a file port and a string port one type to every caller.
+;; - **Input, output, text and binary are separate types.** Reading a byte from
+;;   a textual port is a type error here rather than R7RS's runtime surprise,
+;;   which is why `input-port?` and friends do not exist.
+;; - **Opening returns `Result`; operating throws.** A missing file is expected;
+;;   a device error mid-stream is not, and threading `Result` through every read
+;;   would poison the API for a case nobody handles.
+;; - **The base API fails, the `/opt` variants do not.** `read-line` throws at
+;;   end of input, guarded by `port-eof?`; `read-line/opt` is for when the check
+;;   and the read want to be one step.
+;;
+;; A port is as much a part of the language as `print` is, so the API a program
+;; opens, reads and writes with lives here. What stayed in `std/ports` is the
+;; part parameterised by a reader procedure — `port->list`, `port->vec`,
+;; `port->seq` and `file->seq` — which is a library, not a vocabulary.
+
+(import/class
+  ;; The port types themselves: abstract, so no constructor.
+  (TextReader (: System.IO.TextReader))
+  (TextWriter (: System.IO.TextWriter))
+
+  ;; The concrete readers and writers, upcast into the above by `open-*`.
+  ;; Only the listed exceptions become values; anything else keeps unwinding,
+  ;; which is the point — an exception nobody named is a bug, not a result.
+  (StreamReader (: System.IO.StreamReader (-> string StreamReader)
+                   #:exceptions (System.IO.FileNotFoundException
+                                 System.IO.DirectoryNotFoundException
+                                 System.UnauthorizedAccessException)))
+  (StringReader (: System.IO.StringReader (-> string StringReader)))
+  (StreamWriter (: System.IO.StreamWriter (-> string StreamWriter)
+                   #:exceptions (System.IO.DirectoryNotFoundException
+                                 System.UnauthorizedAccessException)))
+  (Exception (: System.Exception)))
+
+;; The port types, under exported names: an `import/class` alias is
+;; module-local, so callers could not write the type. Spelled as the .NET name
+;; rather than the alias above, because an exported alias serializes to
+;; whatever it points at — pointing it at a module-local alias would export a
+;; name the caller cannot resolve either.
+(type
+  (: TextInputPort System.IO.TextReader)
+  (: TextOutputPort System.IO.TextWriter))
+
+;; --- Opening ---
+
+;; Open a file for text input. `Err` carries the .NET exception, so an arm may
+;; tell one failure from another with `(:is System.IO.FileNotFoundException e)`.
+(: open-input-file (-> string (Result Exception TextInputPort)))
+(defun (open-input-file path)
+  (match (StreamReader. path)
+    ((Ok r) (Ok (cast TextInputPort r)))
+    ((Err e) (Err e))))
+
+;; A string as an input port. Cannot fail, so no `Result` — the asymmetry with
+;; `open-input-file` is the honest one.
+(: open-input-string (-> string TextInputPort))
+(defun (open-input-string contents)
+  (cast TextInputPort (StringReader. contents)))
+
+;; Open a file for text output, truncating it if it exists.
+(: open-output-file (-> string (Result Exception TextOutputPort)))
+(defun (open-output-file path)
+  (match (StreamWriter. path)
+    ((Ok w) (Ok (cast TextOutputPort w)))
+    ((Err e) (Err e))))
+
+;; --- Closing ---
+
+;; Rarely needed: `with-open` disposes a port however the body ends.
+;;
+;; Two functions rather than one `close-port`, because `.Dispose` needs a
+;; concrete receiver and HM has no bound for "any port". Typing it
+;; `System.IDisposable` only moves the cast to every call site.
+(: close-input-port (-> TextInputPort void))
+(defun (close-input-port p) (.Dispose p))
+
+(: close-output-port (-> TextOutputPort void))
+(defun (close-output-port p) (.Dispose p))
+
+(: flush-port (-> TextOutputPort void))
+(defun (flush-port p) (.Flush p))
+
+;; --- Input ---
+
+;; Whether the port has no more input. `Peek` reports -1 at end of input
+;; without consuming anything.
+(: port-eof? (-> TextInputPort bool))
+(defun (port-eof? p) (= (.Peek p) -1))
+
+;; The next line, without its newline. **Throws at end of input** — guard with
+;; `port-eof?`, or use `read-line/opt`.
+(: read-line (-> TextInputPort string))
+(defun (read-line p) (reader-read-line! p))
+
+;; The next line, or `None` at end of input, for when the check and the read
+;; want to be one step.
+(: read-line/opt (-> TextInputPort (Option string)))
+(defun (read-line/opt p)
+  (if (port-eof? p)
+      None
+      (Some (reader-read-line! p))))
+
+;; Everything remaining, as one string. Empty at end of input, which needs no
+;; `Option`: there is no difference between "no more input" and "the empty
+;; remainder" once the whole rest is what you asked for.
+(: read-all (-> TextInputPort string))
+(defun (read-all p) (.ReadToEnd p))
+
+(: port-fold (-> (-> TextInputPort %a %a) %a TextInputPort %a))
+(defun (port-fold f init port)
+  (let loop ((acc init))
+    (if (port-eof? port)
+        acc
+        (loop (f port init)))))
+
+
+;; --- Output ---
+
+(: write-string (-> TextOutputPort string void))
+(defun (write-string p s) (.Write p s))
+
+(: writeln (-> TextOutputPort string void))
+(defun (writeln p s) (.WriteLine p s))
+
+
+;; ---------------------------------------------------------------------------
+;; Collection
+;; ---------------------------------------------------------------------------
+;;
+;; What every collection can be *asked*: how many, whether any, and give me the
+;; elements. `Iterable` says how to walk one and `Foldable` how to consume one;
+;; this is the trait for the questions that need no walk to ask.
+;;
+;; First-order with one associated type, so it is an ordinary interface trait:
+;; `->seq` returns a `(Seq %content)` at the element type the collection already
+;; has, never at a new one, so there is no constructor variable to abstract over
+;; and no reason to make it inline-only.
+;;
+;; `%content` is the element type, and for a `(Map %k %v)` that is the pair —
+;; the same answer `Iterable`'s `%elem` and `Foldable`'s `%item` give, and what
+;; `map->seq` hands back.
+;;
+;; **`length` is not uniformly cheap, and the trait does not pretend otherwise.**
+;; `Vec` and `Map` store their count, so it is O(1); `List` walks; `Seq` walks
+;; *and*, over an effectful source, consumes. Generic code that only wants to
+;; know whether there is anything should ask `empty?`, which is O(1) everywhere
+;; except `Seq` — where it forces one element, for the same reason.
+;;
+;; Not implemented for `string` or `(Array %a)`: neither has a `->seq` to give.
+;; A string needs the cursor that does not exist yet — indexing UTF-16 by
+;; codepoint is O(n), which is why there is no `string-ref` either — and an
+;; array has no conversion at all. Both become members the day that changes.
+(def/trait (Collection %a)
+  (type %content)
+  (: length (-> %a int))
+  (: empty? (-> %a bool))
+  (: ->seq (-> %a (Seq %content))))
+
+(def/impl (Collection (List %a))
+  (type %content %a)
+  (defun (length lst)
+    (list-length lst))
+  (defun (empty? lst)
+    (list-empty? lst))
+  (defun (->seq lst)
+    (list->seq lst)))
+
+(def/impl (Collection (Vec %a))
+  (type %content %a)
+  (defun (length vec)
+    (vec-length vec))
+  (defun (empty? vec)
+    (vec-empty? vec))
+  (defun (->seq vec)
+    (vec->seq vec)))
+
+;; A map's element is its `(Tuple %k %v)` pair, so `(->seq m)` is a sequence of
+;; pairs and `(length m)` counts entries, not keys and values separately.
+(def/impl (Collection (Map %k %v))
+  (type %content (Tuple %k %v))
+  (defun (length m)
+    (map-length m))
+  (defun (empty? m)
+    (map-empty? m))
+  (defun (->seq m)
+    (map->seq m)))
+
+;; The one member that holds no elements: a `Range` computes its answers from
+;; `lo`, `hi` and `by` rather than looking at anything. `by` is positive by
+;; construction, so the length is the ceiling of the span divided by the step,
+;; and a range whose `hi` has already been passed is empty rather than negative.
+(def/impl (Collection Range)
+  (type %content int)
+  (defun (length r)
+    (def lo (record-get r lo))
+    (def hi (record-get r hi))
+    (def by (record-get r by))
+    (if (<= hi lo)
+        0
+        (/ (+ (- hi lo) (- by 1)) by)))
+  (defun (empty? r)
+    (>= (record-get r lo) (record-get r hi)))
+  (defun (->seq r)
+    (seql (:with i (record-get r lo) (+ i (record-get r by)))
+          (:break (>= i (record-get r hi)))
+          (:yield i))))
+
+;; `->seq` is the identity here, which is the point: generic code written
+;; against `Collection` accepts a sequence without a conversion.
+;;
+;; The other two are the honest ones rather than the cheap ones. `seq-length`
+;; walks and `seq-empty?` forces an element, and over a source that cannot be
+;; walked twice — a `port->seq` — asking either is asking for the data. That is
+;; a property of the source, not of `Seq`: the same questions over a
+;; `(list->seq xs)` are ordinary. Reach for `Iterable` when the walk itself is
+;; what you want, and `seq->vec` when you mean to ask more than once.
+(def/impl (Collection (Seq %a))
+  (type %content %a)
+  (defun (length s)
+    (seq-length s))
+  (defun (empty? s)
+    (seq-empty? s))
+  (defun (->seq s)
+    s))

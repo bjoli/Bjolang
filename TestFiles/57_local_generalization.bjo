@@ -1,0 +1,71 @@
+;; What a binding local to a function body may be polymorphic in.
+;;
+;; A local `defun` becomes a C# local function, which may have type parameters
+;; of its own — so it generalizes. Anything else becomes a plain local, and
+;; neither a delegate nor a collection local can be generic in C#, so it stays
+;; monomorphic. A local function constrained by a trait stays monomorphic too:
+;; a C# local function gets no dictionary parameter, so the constraint has
+;; nowhere to live.
+;;
+;; Getting that last one wrong used to attribute the constraint to the
+;; *enclosing* function, which then emitted a dictionary parameter mentioning a
+;; type parameter it never declared.
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; The helper uses the *enclosing* function's constrained type variable, so the
+;; constraint really does belong to `decorate` and really does become a
+;; dictionary parameter. This must keep working.
+(: decorate (-> %a string) (where (->str %a)))
+(defun (decorate v)
+  (defun (wrap) (string-append "<" (string-append (->str v) ">")))
+  (wrap))
+
+;; A local helper that is generic but *unconstrained* stays fully polymorphic:
+;; it is a C# local function and can declare its own type parameter.
+(: swap-fst (-> string))
+(defun (swap-fst)
+  (defun (fst t) (match t ((Tuple x y) x)))
+  (string-append (fst (Tuple "a" 1)) (int->string (fst (Tuple 2 "b")))))
+
+;; A local helper that dispatches on a trait. Its type variable is pinned by the
+;; call site and the call devirtualizes to a direct static call.
+(: doubled (-> string))
+(defun (doubled)
+  (defun (twice x) (string-append (->str x) (->str x)))
+  (string-append (twice 7) (twice 8)))
+
+;; A recursive constrained local helper, which loop lowering turns into a loop.
+(: countdown (-> string))
+(defun (countdown)
+  (defun (go n acc)
+    (if (= n 0)
+        acc
+        (go (- n 1) (string-append acc (->str n)))))
+  (go 3 ""))
+
+(defun (main)
+  ;; The dictionary path, at two different types.
+  (expect "constraint on the enclosing function, at int" (decorate 1) "<1>")
+  (expect "constraint on the enclosing function, at string" (decorate "a") "<a>")
+
+  (expect "unconstrained local helper is polymorphic" (swap-fst) "a2")
+  (expect "constrained local helper" (doubled) "7788")
+  (expect "recursive constrained local helper" (countdown) "321")
+
+  ;; A let-bound lambda is a delegate local: monomorphic, but perfectly usable.
+  (let ((id (fun (v) v)))
+    (expect "let-bound lambda" (id "same") "same"))
+
+  ;; So is a let-bound nullary constructor.
+  (let ((e Nil))
+    (expect "let-bound Nil" (int->string (list-length (cons 1 e))) "1"))
+
+  0)

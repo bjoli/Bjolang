@@ -1,0 +1,27 @@
+;; `sync` from an ordinary function.
+;;
+;; `bjo` is colourless — a `defun` may spawn, because spawning enqueues and
+;; returns. Joining is what waits, and waiting is where control leaves the
+;; fiber, so `sync` is a yield point and needs a bjoroutine around it.
+;;
+;; Nothing in the compiler knows the name `sync`. It is an ordinary prelude
+;; binding whose *arrow* is suspending, and the whole of what makes this an
+;; error is that type — the same rule that rejects a call to a `defbjo` in the
+;; same position, reached by the same code. That is why `sync` could be added
+;; without touching the colour checker at all.
+
+;; EXPECT-ERROR: calling 'sync' is a yield point
+;; EXPECT-ERROR: yield point is not allowed here
+
+(import (std prelude))
+
+(: work (-> int int))
+(defbjo (work x) (* x 2))
+
+(: blocking-join (-> int int))
+(defun (blocking-join x)
+  (match (sync (promise-join (bjo (work x))))
+    ((Ok v) v)
+    ((Err e) 0)))
+
+(defun (main args) 0)

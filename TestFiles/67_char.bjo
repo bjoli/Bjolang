@@ -1,0 +1,98 @@
+;; Characters: `#\a` literals, `char` in signatures, pattern matching, and the
+;; conversions.
+;;
+;; A Bjolang `char` is a Unicode *scalar value* backed by `Bjolang.Runtime.BjoChar`,
+;; not a C# `char`. A C# char is a 16-bit UTF-16 code unit and cannot hold an
+;; astral codepoint on its own, so an emoji written literally in source arrives
+;; as a surrogate pair and has to be recombined by the lexer into one codepoint.
+;;
+;; There is deliberately no `string-ref` or other index-based accessor. Indexing
+;; a UTF-16 string by codepoint is O(n), so a loop that looks linear is
+;; quadratic. String traversal belongs to a cursor.
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; `char` is an ordinary type name, usable in a signature.
+(: vowel? (-> char bool))
+(defun (vowel? c)
+  (match c
+    (#\a #t)
+    (#\e #t)
+    (#\i #t)
+    (#\o #t)
+    (#\u #t)
+    (_ #f)))
+
+;; Named characters and punctuation match like any other literal.
+(: describe (-> char string))
+(defun (describe c)
+  (match c
+    (#\space "space")
+    (#\newline "newline")
+    (#\tab "tab")
+    (#\( "open paren")
+    (#\; "semicolon")
+    (_ "other")))
+
+(defun (main)
+  ;; Literals and codepoints.
+  (expect "plain literal" (int->string (char->int #\a)) "97")
+  (expect "uppercase" (int->string (char->int #\A)) "65")
+  (expect "digit char" (int->string (char->int #\7)) "55")
+
+  ;; Named characters.
+  (expect "space" (int->string (char->int #\space)) "32")
+  (expect "newline" (int->string (char->int #\newline)) "10")
+  (expect "tab" (int->string (char->int #\tab)) "9")
+  (expect "null" (int->string (char->int #\null)) "0")
+  (expect "delete" (int->string (char->int #\delete)) "127")
+
+  ;; Hex escapes, lower and upper case digits.
+  (expect "hex 41" (int->string (char->int #\x41)) "65")
+  (expect "hex ff" (int->string (char->int #\xff)) "255")
+
+  ;; A character that is not a symbol character still lexes.
+  (expect "open paren" (int->string (char->int #\()) "40")
+  (expect "semicolon" (int->string (char->int #\;)) "59")
+  (expect "quote char" (int->string (char->int #\')) "39")
+
+  ;; Astral plane: one codepoint, spelled with a surrogate pair in the source.
+  (expect "emoji literal" (int->string (char->int #\😀)) "128512")
+  (expect "emoji hex" (int->string (char->int #\x1F600)) "128512")
+
+  ;; Equality. `=` emits C# `==`, which a record struct provides; `eq?`
+  ;; dispatches on IsValueType and compares by value.
+  (expect "= same" (if (= #\a #\a) "yes" "no") "yes")
+  (expect "= different" (if (= #\a #\b) "yes" "no") "no")
+  (expect "eq? same" (if (eq? #\z #\z) "yes" "no") "yes")
+  (expect "eq? different" (if (eq? #\z #\y) "yes" "no") "no")
+  (expect "= astral" (if (= #\😀 #\x1F600) "yes" "no") "yes")
+
+  ;; Round-tripping through int, including above the BMP.
+  (expect "int round trip" (int->string (char->int (int->char 65))) "65")
+  (expect "astral round trip" (int->string (char->int (int->char 128512))) "128512")
+
+  ;; char->string, where the astral case is the one that catches a 16-bit
+  ;; assumption: it must produce a two-code-unit string, not a broken half.
+  (expect "char->string ascii" (char->string #\a) "a")
+  (expect "char->string length" (int->string (string-length (char->string #\a))) "1")
+  (expect "char->string astral length"
+          (int->string (string-length (char->string #\😀)))
+          "2")
+
+  ;; Pattern matching.
+  (expect "vowel yes" (if (vowel? #\e) "yes" "no") "yes")
+  (expect "vowel no" (if (vowel? #\q) "yes" "no") "no")
+  (expect "describe space" (describe #\space) "space")
+  (expect "describe newline" (describe #\newline) "newline")
+  (expect "describe paren" (describe #\() "open paren")
+  (expect "describe other" (describe #\Z) "other")
+
+  0)

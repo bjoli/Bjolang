@@ -1,0 +1,23 @@
+;; `.GetAwaiter()`, the first half of `.GetAwaiter().GetResult()`.
+;;
+;; The awaiter is refused rather than the `GetResult` on it, because refusing
+;; only the second half leaves the first looking legal — and a hand-held awaiter
+;; has no use in a language with no `await` to write. The idiom exists in C# to
+;; get an unwrapped exception out of a blocking wait; here the answer to both
+;; halves of that is `#:async`.
+
+;; EXPECT-ERROR: 'GetAwaiter' on a task blocks the thread it is called on
+;; EXPECT-ERROR: Import the method with #:async instead
+
+(import (std prelude))
+
+;; Imported *without* `#:async`, which is what makes a task reachable as a value
+;; at all. With it, the call would already be the result and there would be
+;; nothing to block on.
+(import/extern
+  (delay-task (: System.Threading.Tasks.Task.Delay)))
+
+(defun (main args)
+  (def t (delay-task 10))
+  (ignore (.GetAwaiter t))
+  0)

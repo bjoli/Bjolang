@@ -1,0 +1,24 @@
+;; A trait implemented in a compiled module, inlined here.
+;;
+;; The impl body calls `decorate`, which `boxed` imported from `third` — so the
+;; spliced body has to name a module that this file never mentions. And it is
+;; spliced next to a local called `decorate` that means something else entirely.
+(import (std prelude))
+(import "inc/boxed.bjo")
+
+(: shout (-> string string))
+(defun (shout s) (string-append s "!"))
+
+(defun (main)
+  (println (render (MkBox "hello")))
+
+  ;; A local of the same name as the helper the spliced body reaches for.
+  (let ((decorate "not-a-function"))
+    (println (string-append decorate " "))
+    (println (render (MkBox (shout "still works")))))
+
+  ;; An inline trait, its implementation and a `(do ...)` block over it, all
+  ;; reaching this file through compiled metadata.
+  (println (render (do (:bind s (MkBox "boxed"))
+                       (:return (shout s)))))
+  0)

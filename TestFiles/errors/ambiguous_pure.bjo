@@ -1,0 +1,18 @@
+;; EXPECT-ERROR: cannot determine which 'Monad' instance 'pure' uses here
+;;
+;; `pure : 'a -> m 'a` mentions the constructor only in its *result*, so nothing
+;; about this call says which instance to use. This is exactly the `(do ...)`
+;; block with no `:bind` in it, and the message has to be one a user can act on.
+(import (std prelude))
+
+(def/trait (Monad (%m %a))
+  (: pure (-> %a (%m %a)))
+  (: bind (-> (%m %a) (-> %a (%m %b)) (%m %b))))
+
+(def/impl (Monad (List %a))
+  (defun (pure x) (Cons x Nil))
+  (defun (bind m k) (list-foldr (fun (x acc) (k x)) Nil m)))
+
+(defun (main)
+  (def anything (pure 5))
+  0)

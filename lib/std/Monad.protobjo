@@ -1,0 +1,22 @@
+;; An inline-only trait: `Monad`'s implementor is written *applied*, which no C#
+;; interface can express. There is no interface, no dictionary and no dynamic
+;; dispatch — every use is resolved statically and spliced.
+(def/trait (Monad (%m %a))
+  (: pure (-> %a (%m %a)))
+  (: bind (-> (%m %a) (-> %a (%m %b)) (%m %b))))
+
+(: list-append (-> (List %a) (List %a) (List %a)))
+(defun (list-append xs ys)
+  (list-foldr Cons ys xs))
+
+(def/impl (Monad (List %a))
+  (defun (pure x) (Cons x Nil))
+  (defun (bind m k)
+    (list-foldr (fun (x acc) (list-append (k x) acc)) Nil m)))
+
+(def/impl (Monad (Option %a))
+  (defun (pure x) (Some x))
+  (defun (bind m k)
+    (match m
+      ((Some v) (k v))
+      (None None))))

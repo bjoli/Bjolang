@@ -1,0 +1,98 @@
+(import (std prelude))
+
+(def (top-a . top-b) (10 . 20))
+
+(: test-match-dot (-> (int . int) int))
+(defun (test-match-dot pair)
+  (match pair
+    ((a . b) (+ a b))))
+
+(: test-match-tuple (-> (Tuple int int) int))
+(defun (test-match-tuple pair)
+  (match pair
+    ((Tuple a b) (* a b))))
+
+(: test-match-literal (-> (int . string) string))
+(defun (test-match-literal pair)
+  (match pair
+    ((1 . "one") "matched literal 1")
+    ((2 . s) (string-append "matched 2 and " s))
+    ((_ . _) "other")))
+
+(: test-match-nested (-> (int . (int . int)) int))
+(defun (test-match-nested triplet)
+  (match triplet
+    ((a . (b . c)) (+ a (+ b c)))))
+
+;; A tuple pattern of names and wildcards cannot fail — a tuple has one shape —
+;; so the match is exhaustive and must emit no fallback arm. C# proves the same
+;; thing and rejects one it can reach no way (CS8510), which is what makes this
+;; worth a test rather than a nicety.
+(: pair (-> (Tuple int int)))
+(defun (pair) (Tuple 3 4))
+
+;; The arm needs a statement, so this compiles as a switch *statement*, where an
+;; unreachable `default` is legal and still wanted for definite assignment.
+(: exhaustive-with-statements (-> int))
+(defun (exhaustive-with-statements)
+  (match (pair)
+    ((Tuple a b)
+     (def doubled (* a 2))
+     (+ doubled b))))
+
+;; A guard makes even a tuple clause refutable, so the second arm is live.
+(: guarded-tuple (-> int))
+(defun (guarded-tuple)
+  (match (pair)
+    ((Tuple a b) #:when (> a 10) (+ a b))
+    ((Tuple a b) (- b a))))
+
+(defun (main args)
+  ;; Top level def with dotted pair
+  (println top-a)
+  (println top-b)
+
+  ;; Match with dotted pair
+  (println (test-match-dot (5 . 7)))
+
+  ;; Match with (Tuple a b)
+  (println (test-match-tuple (Tuple 3 4)))
+
+  ;; Match literals / guards / fallthrough
+  (println (test-match-literal (1 . "one")))
+  (println (test-match-literal (2 . "two")))
+  (println (test-match-literal (3 . "three")))
+
+  ;; Match nested tuples
+  (println (test-match-nested (10 . (20 . 30))))
+
+  ;; Exhaustive tuple matches, in argument position so they really are C#
+  ;; switch *expressions* — the shape that rejects an unreachable arm.
+  (println (match (pair) ((Tuple a b) (+ a b))))
+  (println (match (pair) ((Tuple a _) a)))
+  (println (match (Tuple 1 (Tuple 2 3)) ((Tuple a (Tuple b c)) (+ a (+ b c)))))
+  ;; The clause after an irrefutable one is dead and is dropped.
+  (println (match (pair) ((Tuple a b) (+ a b)) (_ 999)))
+  (println (exhaustive-with-statements))
+  (println (guarded-tuple))
+
+  ;; Local def with dotted pair
+  (def (local-x . local-y) (50 . 60))
+  (println (+ local-x local-y))
+
+  ;; Let with dotted pair
+  (def result-let
+    (let (((lx . ly) (100 . 200)))
+      (+ lx ly)))
+  (println result-let)
+
+  ;; Backwards compatibility with (a b)
+  (def (compat-a compat-b) (7 . 8))
+  (println (+ compat-a compat-b))
+
+  (def result-compat-let
+    (let (((cl-a cl-b) (Tuple 30 40)))
+      (+ cl-a cl-b)))
+  (println result-compat-let)
+
+  0)

@@ -1,0 +1,34 @@
+;; The consuming side of `62_lib`.
+(import "62_lib.bjo")
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; A type of this module's own, implementing the imported trait. `describe` is
+;; not written here: it is the default body from `62_lib`, spliced in and
+;; checked at `Widget`.
+(type (: Widget (Union widget)))
+
+(def/impl (Tagged Widget)
+  (defun (tag x) "widget"))
+
+(defun (main)
+  ;; One imported name, two different overloads of `System.Math.Max`, chosen
+  ;; here rather than in the module that exported it.
+  (expect "imported alias at int" (int->string (num-max 3 9)) "9")
+  (expect "imported alias at double" (double->string (num-max 1.5 2.5)) "2.5")
+  (expect "imported alias at long" (long->string (num-max 3000000000L 2L)) "3000000000")
+
+  ;; The default body, inherited across a module boundary by an impl written
+  ;; here for a type the library has never heard of.
+  (expect "inherited default" (describe widget) "<widget>")
+
+  ;; The library's own impl, compiled there.
+  (expect "imported impl" (describe 7) "<int>")
+  0)

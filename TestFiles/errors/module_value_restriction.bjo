@@ -1,0 +1,19 @@
+(import (std prelude))
+
+;; The value restriction, at module level. An `Array` is a mutable cell, so
+;; generalizing `(make-array 1)` to `∀a. (Array a)` would let the same array be
+;; written at one type and read at another — `let r = ref [] in ...`, with
+;; `make-array` in place of `ref`.
+;;
+;; `def` used to generalize unconditionally here, so this was accepted by the
+;; frontend and only fell over in the C# backend with a complaint about a type
+;; named `T_t__1`. With the restriction in place it is a type error where the
+;; disagreement actually is.
+;;
+;; EXPECT-ERROR: Cannot unify TCon ("System.String", []) with TCon ("System.Int32", [])
+(def cell (make-array 1))
+
+(defun (main args)
+  (array-set! cell 0 42)                              ;; 'a := int
+  (displayln (string-append (array-ref cell 0) "!"))  ;; 'a := string
+  0)

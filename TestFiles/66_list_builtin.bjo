@@ -1,0 +1,98 @@
+;; `list`, the variadic list constructor, and what it means as a value.
+;;
+;; `list` is a prelude *function*, not a special form. Calling it variadically
+;; works the way every `#:rest` function works: `FunMeta` carries the shape of
+;; the call and the flat function type carries the types. Its type is therefore
+;; the unary `(-> (Array %a) (List %a))` that `#:rest` always resolves to, and
+;; that is what it means in value position.
+;;
+;; Three things here were broken before and are the point of the test:
+;;
+;;   - `def` never registered `FunMeta`, so aliasing a variadic function bound
+;;     its array form and `(f 1 2 3)` failed on arity.
+;;   - A rest call handed `TApply` its arguments spread flat and relied on C#
+;;     `params` to reassemble them. That works only when the callee is emitted
+;;     as a real `params` method; through a delegate it produced C# that did
+;;     not compile.
+;;   - `FunMetas` is keyed by name and shadowing did not clear it, so a local
+;;     binding named `list` still tried to spread into an array.
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+(: same? (-> (List int) (List int) bool))
+(defun (same? a b)
+  (if (list-empty? a)
+      (list-empty? b)
+      (if (list-empty? b)
+          #f
+          (if (= (list-head a) (list-head b))
+              (same? (list-tail a) (list-tail b))
+              #f))))
+
+;; An alias needs a signature: `def` cannot guess a call's shape, and a
+;; module-level value may not have an open type — a static field cannot be
+;; generic. So the element type is pinned here rather than left polymorphic.
+(: f (-> #:rest int (List int)))
+(def f list)
+
+;; The same function at the type it actually has. `#:rest` is a property of the
+;; call site, not of the type, so as a value `list` takes the array.
+(: g (-> (Array int) (List int)))
+(def g list)
+
+;; The shadow test lives in its own function on purpose. A Bjolang `let` becomes
+;; a C# local, and a C# local's declaration space is the whole enclosing method —
+;; so a local named `list` sitting beside calls to the prelude `list` in the same
+;; body emits C# that does not compile ("cannot use local variable before it is
+;; declared"), even though the Bjolang program is well typed and unambiguous.
+;; That is a code generator limitation, not a typing one, and it applies to
+;; shadowing any prelude function whose name is also called nearby.
+(: shadowed (-> int))
+(defun (shadowed)
+  (let ((list (fun (n) (+ n 1))))
+    (list 5)))
+
+(defun (main)
+  ;; Variadic calls, at several arities and element types.
+  (expect "three ints" (int->string (list-length (list 1 2 3))) "3")
+  (expect "empty" (int->string (list-length (list))) "0")
+  (expect "head" (int->string (list-head (list 7 8 9))) "7")
+  (expect "strings" (list-head (list "a" "b")) "a")
+
+  ;; The nested call is an ordinary argument, not a flattened one.
+  (expect "nested" (int->string (list-length (list (list 1 2) (list 3)))) "2")
+
+  ;; Same value as the Cons spelling it replaces.
+  (expect "agrees with Cons"
+          (if (same? (list 1 2 3) (Cons 1 (Cons 2 (Cons 3 Nil)))) "yes" "no")
+          "yes")
+
+  ;; The alias spreads at its own call sites.
+  (expect "aliased variadic" (int->string (list-length (f 1 2 3 4 5))) "5")
+  (expect "aliased empty" (int->string (list-length (f))) "0")
+  (expect "alias agrees with list"
+          (if (same? (f 1 2 3) (list 1 2 3)) "yes" "no")
+          "yes")
+
+  ;; Value position: `list` really is the array function.
+  (let ((arr (make-array 3)))
+    (array-set! arr 0 10)
+    (array-set! arr 1 20)
+    (array-set! arr 2 30)
+    (expect "array form" (if (same? (g arr) (list 10 20 30)) "yes" "no") "yes")
+    (expect "array form length" (int->string (list-length (g arr))) "3"))
+
+  ;; A local binding named `list` shadows the prelude one, and calling it is an
+  ;; ordinary unary call — no spreading, no array.
+  (expect "shadowed" (int->string (shadowed)) "6")
+
+  ;; The prelude binding is unaffected here.
+  (expect "unshadowed" (int->string (list-length (list 1 2))) "2")
+  0)

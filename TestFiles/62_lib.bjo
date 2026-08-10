@@ -1,0 +1,21 @@
+;; A library publishing two things a signature cannot describe.
+;;
+;;   * `num-max` is an `import/extern` alias exported outright. It names
+;;     `System.Math.Max`, which is an overload set rather than a method, so what
+;;     crosses the boundary is the *import* — the importing module re-resolves
+;;     the overloads against the same .NET metadata this one did.
+;;
+;;   * `Tagged` carries a default body, which travels with the trait so that an
+;;     importing module may implement it and inherit the default.
+(export tag describe num-max)
+
+(import/extern
+  (num-max (: System.Math.Max)))
+
+(def/trait (Tagged %a)
+  (: tag (-> %a string))
+  (: describe (-> %a string))
+  (defun (describe x) (string-append "<" (string-append (tag x) ">"))))
+
+(def/impl (Tagged int)
+  (defun (tag x) "int"))

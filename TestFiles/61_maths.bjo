@@ -1,0 +1,69 @@
+;; `std/maths.bjo` through its compiled .dll.
+;;
+;; The `Num` methods are overload sets that cross the boundary as a trait; the
+;; rest of `System.Math` crosses as the imports themselves.
+(import (std maths))
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; A `Num`-constrained function defined on this side of the boundary, dispatched
+;; through a dictionary built from the imported impls.
+;;
+;; Only trait methods are asked of `%a`: arithmetic on a constrained type
+;; variable is a separate matter, since `+` is not a member of any trait and C#
+;; has no operator to emit for an unconstrained generic parameter.
+(: spread (-> %a %a %a) (where (Num %a)))
+(defun (spread x y)
+  (max (abs x) (abs y)))
+
+(defun (main)
+  ;; One name, three types, three different .NET methods.
+  (expect "abs int" (int->string (abs -5)) "5")
+  (expect "abs long" (long->string (abs -3000000000L)) "3000000000")
+  (expect "abs double" (double->string (abs -2.5)) "2.5")
+
+  ;; The result type need not mention the implementor.
+  (expect "sign negative" (int->string (sign -2.5)) "-1")
+  (expect "sign zero" (int->string (sign 0)) "0")
+  (expect "sign positive" (int->string (sign 42L)) "1")
+  (expect "sqrt of an int" (double->string (sqrt 9)) "3")
+  (expect "sqrt of a double" (double->string (sqrt 2.25)) "1.5")
+
+  (expect "min int" (int->string (min 3 9)) "3")
+  (expect "max double" (double->string (max 1.5 2.5)) "2.5")
+  (expect "clamp below" (int->string (clamp 1 3 9)) "3")
+  (expect "clamp inside" (int->string (clamp 5 3 9)) "5")
+  (expect "clamp above" (int->string (clamp 99 3 9)) "9")
+
+  ;; Through a dictionary rather than devirtualized.
+  (expect "constrained generic, int" (int->string (spread -7 3)) "7")
+  (expect "constrained generic, double" (double->string (spread -1.5 2.5)) "2.5")
+
+  ;; The double functions: one method each, imported and re-exported as such.
+  (expect "floor" (double->string (floor 2.7)) "2")
+  (expect "ceiling" (double->string (ceiling 2.1)) "3")
+  (expect "truncate" (double->string (truncate -2.7)) "-2")
+  (expect "round" (double->string (round 2.5)) "2")
+  ;; 27 is not a case cube root gets exactly right — `Math.Cbrt(27.0)` is
+  ;; 3.0000000000000004 — so this asks for a power of two, which it does.
+  (expect "cbrt" (double->string (cbrt 8.0)) "2")
+  (expect "exp of zero" (double->string (exp 0.0)) "1")
+  (expect "pow" (double->string (pow 2.0 10.0)) "1024")
+  (expect "log2" (double->string (log2 8.0)) "3")
+  (expect "log10" (double->string (log10 1000.0)) "3")
+  (expect "log, natural" (double->string (log 1.0)) "0")
+  ;; The two-argument overload of the same name.
+  (expect "log, to base" (double->string (log 8.0 2.0)) "3")
+  (expect "sin of zero" (double->string (sin 0.0)) "0")
+  (expect "cos of zero" (double->string (cos 0.0)) "1")
+  (expect "atan2" (double->string (atan2 0.0 1.0)) "0")
+  (expect "sinh of zero" (double->string (sinh 0.0)) "0")
+  (expect "acosh of one" (double->string (acosh 1.0)) "0")
+  0)

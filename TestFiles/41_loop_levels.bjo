@@ -1,0 +1,194 @@
+;; Nested loop levels.
+;;
+;; Levels are implicit: a `:for` preceded by anything other than another `:for`
+;; opens a new one, and every other clause belongs to the level that was current
+;; at its own position. `(:subloop)` emits nothing at all — its entire purpose is
+;; to *not* be a `:for`, so that the next one starts a level.
+;;
+;; Every level is a member of one flat group, so each transition is a jump: into
+;; a subloop, back out of an exhausted one, and out of the whole loop from any
+;; depth. Nesting the groups instead would put a cross-level jump in the wrong
+;; switch.
+
+
+(import (std prelude))
+
+(: build-to (-> int (List int)))
+(defun (build-to n)
+  (let mk ((i 0) (acc Nil))
+    (if (= i n) acc (mk (+ i 1) (Cons i acc)))))
+
+;; ---------------------------------------------------------------------------
+;; Adjacency
+;; ---------------------------------------------------------------------------
+
+;; Broken by `:subloop`: a cartesian product.
+(: product (-> (List int) (List int) (List int)))
+(defun (product xs ys)
+  (loop (:for x xs)
+        (:subloop)
+        (:for y ys)
+        (:acc out (listing (+ (* 10 x) y)))))
+
+;; The same clauses without it: adjacent `:for`s pair up in lockstep instead,
+;; and the level ends with the shorter of them.
+(: lockstep (-> (List int) (List int) (List int)))
+(defun (lockstep xs ys)
+  (loop (:for x xs)
+        (:for y ys)
+        (:acc out (listing (+ (* 10 x) y)))))
+
+;; A `:let` breaks adjacency just as well, and is the usual reason to: the inner
+;; sequence names the outer variable, so it cannot be hoisted to the prologue
+;; and is evaluated at the jump that enters the level.
+(: expanded (-> (List int) (List int)))
+(defun (expanded xs)
+  (loop (:for x xs)
+        (:let inner (build-to x))
+        (:for y inner)
+        (:acc out (listing y))))
+
+;; Three levels.
+(: triple (-> int))
+(defun (triple)
+  (loop (:for a (Cons 1 (Cons 2 Nil)))
+        (:subloop)
+        (:for b (Cons 1 (Cons 2 (Cons 3 Nil))))
+        (:subloop)
+        (:for c (Cons 1 (Cons 2 (Cons 3 (Cons 4 Nil)))))
+        (:acc n (counting c))))
+
+;; ---------------------------------------------------------------------------
+;; Which level a clause belongs to
+;; ---------------------------------------------------------------------------
+
+;; An `:acc` above the inner `:for` belongs to the *outer* level, so it steps
+;; once per outer iteration rather than once per inner one.
+(: both-counts (-> (List int) (List int) (Tuple int int)))
+(defun (both-counts xs ys)
+  (loop (:for x xs)
+        (:acc outer (counting x))
+        (:subloop)
+        (:for y ys)
+        (:acc inner (counting y))))
+
+;; An accumulator declared inside a subloop persists across outer iterations: it
+;; is hoisted, and nothing resets it on re-entry.
+(: no-reset (-> (List int) (List int) int))
+(defun (no-reset xs ys)
+  (loop (:for x xs)
+        (:subloop)
+        (:for y ys)
+        (:acc total (summing y))
+        => total))
+
+;; ---------------------------------------------------------------------------
+;; Leaving a level, and leaving the loop
+;; ---------------------------------------------------------------------------
+
+;; `:break` from inside a subloop leaves the whole thing, through the finish
+;; block like every other exit.
+(: until-sum (-> (List int) (List int) (List int)))
+(defun (until-sum xs ys)
+  (loop (:for x xs)
+        (:subloop)
+        (:for y ys)
+        (:break (> (+ x y) 4))
+        (:acc out (listing (+ (* 10 x) y)))))
+
+;; `:end-subloop-if` abandons *this* level and resumes the enclosing one's next
+;; iteration — the same edge inner exhaustion takes, and a different jump from
+;; `:when`, which would only skip one inner iteration.
+(: capped (-> (List int) (List int) (List int)))
+(defun (capped xs ys)
+  (loop (:for x xs)
+        (:subloop)
+        (:for y ys)
+        (:end-subloop-if (> y 1))
+        (:acc out (listing (+ (* 10 x) y)))))
+
+;; ...whereas `:when` on the same condition keeps going round the inner level.
+(: filtered (-> (List int) (List int) (List int)))
+(defun (filtered xs ys)
+  (loop (:for x xs)
+        (:subloop)
+        (:for y ys)
+        (:when (not (> y 1)))
+        (:acc out (listing (+ (* 10 x) y)))))
+
+;; Deep enough that anything but a jump between levels would overflow.
+(: deep (-> int int))
+(defun (deep n)
+  (loop (:for x (build-to n))
+        (:subloop)
+        (:for y (Cons 1 (Cons 2 Nil)))
+        (:acc c (counting y))))
+
+;; A nested loop in *value* position rather than tail position.
+;;
+;; The group is emitted inline, as one `while (true) switch (state)` in the
+;; enclosing method rather than as a local function, so its exits are neither a
+;; `return` nor a `break` — a `break` would leave the dispatch `switch` and drop
+;; straight back into the `while` it was meant to end. They go through the
+;; group's exit label instead, and this is the shape that exercises it.
+(: offset-product (-> (List int) (List int) int))
+(defun (offset-product xs ys)
+  (def total
+    (loop (:for x xs)
+          (:subloop)
+          (:for y ys)
+          (:acc n (summing (* x y)))
+          => n))
+  (+ total 1000))
+
+;; ---------------------------------------------------------------------------
+
+(: expect (-> string int int void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok " label))
+      (println (string-append "FAILURE: " label))))
+
+(: show (-> (List int) string))
+(defun (show xs)
+  (list-foldl (fun (acc x) (string-append acc (string-append " " (int->string x)))) "" xs))
+
+(defun (main)
+  (def xs (Cons 1 (Cons 2 Nil)))
+  (def ys (Cons 1 (Cons 2 (Cons 3 Nil))))
+
+  (expect "product-count" (list-length (product xs ys)) 6)
+  (expect "product-first" (list-head (product xs ys)) 11)
+  (println (show (product xs ys)))
+
+  ;; (1+2) * (1+2+3) = 18, then the +1000 proves the loop handed a value back
+  ;; rather than leaving the enclosing function.
+  (expect "nested-in-value-position" (offset-product xs ys) 1018)
+
+  (expect "lockstep-count" (list-length (lockstep xs ys)) 2)
+  (println (show (lockstep xs ys)))
+
+  ;; build-to 2 is (1 0) and build-to 3 is (2 1 0).
+  (println (show (expanded (Cons 2 (Cons 3 Nil)))))
+  (expect "expanded-count" (list-length (expanded (Cons 2 (Cons 3 Nil)))) 5)
+
+  (expect "triple" (triple) 24)
+
+  (def (o i) (both-counts xs ys))
+  (expect "outer-acc-steps-per-outer" o 2)
+  (expect "inner-acc-steps-per-inner" i 6)
+
+  ;; (1+2+3) twice, because the accumulator does not reset on re-entry.
+  (expect "no-reset" (no-reset xs ys) 12)
+
+  (println (show (until-sum xs ys)))
+  (expect "break-from-subloop" (list-length (until-sum xs ys)) 5)
+
+  (println (show (capped xs ys)))
+  (expect "end-subloop-if" (list-length (capped xs ys)) 2)
+
+  (println (show (filtered xs ys)))
+  (expect "when-in-subloop" (list-length (filtered xs ys)) 2)
+
+  (expect "deep" (deep 100000) 200000)
+  0)

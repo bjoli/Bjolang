@@ -1,0 +1,226 @@
+;; Channels and the event combinators: the composition model.
+;;
+;; Bjoroutines are how work *executes*; events are how it *composes*. An
+;; `(Event %a)` is a first-class, withdrawable description of a synchronisation
+;; that has not happened yet — something you can pass around, store in a record,
+;; and combine with `choose`.
+;;
+;; The discipline that makes all of it work is one sentence: **building an event
+;; is pure, and syncing it is the yield point.** Every function here except
+;; `sync` is an ordinary arrow. That is what lets a composite be offered and then
+;; withdrawn, and withdrawable is what makes `choose` sound — exactly one branch
+;; commits, and the losers are removed from their channels rather than left
+;; parked waiting for a message nobody will send.
+;;
+;; It is also why events are deliberately not a monad. A `bind` would give a
+;; composite two commit points, and a two-commit event cannot be withdrawn: the
+;; first half could win, the branch could then lose, and a message would already
+;; have been taken from a channel with nobody to receive it. `wrap` is `map`,
+;; `choose` is the alternative, and there is no `bind` — see §2.
+
+(import (std prelude))
+
+(import/class
+  (Exception (: System.Exception))
+  ;; A clock, so that "the timer was rebuilt" is measured rather than asserted.
+  (Env (: System.Environment)))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; ---------------------------------------------------------------------------
+;; Rendezvous
+;; ---------------------------------------------------------------------------
+;;
+;; A channel is synchronous and unbuffered: a send and a receive meet, and
+;; neither completes until the other arrives. Backpressure is not a feature
+;; bolted on, it is what a rendezvous *is* — the producer below cannot run ahead
+;; of the consumer even by one item.
+
+(: producer (-> (Chan int) int void))
+(defbjo (producer ch n)
+  (let go ((i 0))
+    (if (= i n)
+        (sync (chan-send ch -1))
+        (let ((sent (sync (chan-send ch i))))
+          (go (+ i 1))))))
+
+(: consumer (-> (Chan int) int))
+(defbjo (consumer ch)
+  (let go ((acc 0))
+    (let ((v (sync (chan-recv ch))))
+      (if (< v 0) acc (go (+ acc v))))))
+
+;; ---------------------------------------------------------------------------
+;; A worker loop — the shape §5.2 is about
+;; ---------------------------------------------------------------------------
+;;
+;; Three things are true here and each is worth seeing separately.
+;;
+;;   * `chan-recv` *allocates an event*. It does not suspend. Only `sync` does,
+;;     which is why two of them can be built and handed to `choose` before
+;;     either has happened.
+;;   * Exactly one branch commits. The loser is withdrawn — removed from its
+;;     channel's taker queue — rather than left waiting.
+;;   * `wrap`'s function runs *after* the commit, on this fiber, so it is safe
+;;     to do real work in it. Here it only tags the branch, which is what makes
+;;     the `match` below able to tell them apart.
+
+(type (: WorkerMsg (Union (Job int) Quit)))
+
+(: worker (-> (Chan int) (Chan bool) (Chan int) void))
+(defbjo (worker jobs cancel results)
+  (let go ((total 0))
+    (match (sync (choose (wrap (chan-recv jobs) (fun (j) (Job j)))
+                         (wrap (chan-recv cancel) (fun (c) Quit))))
+      ((Job j) (go (+ total j)))
+      (Quit (sync (chan-send results total))))))
+
+;; Parks a single value on a channel and waits for it to be taken.
+(: feed (-> (Chan int) int void))
+(defbjo (feed ch v) (sync (chan-send ch v)))
+
+;; ---------------------------------------------------------------------------
+;; `guard` — build the event fresh at each sync
+;; ---------------------------------------------------------------------------
+;;
+;; What you need whenever the event depends on the *moment* of synchronisation
+;; rather than on the moment it was written. A timeout is the canonical case:
+;; built once and reused, its deadline is in the past after the first iteration
+;; and its branch wins every time thereafter.
+
+(def/mutable guard-runs 0)
+
+(: counting-event (-> (Event int)))
+(defun (counting-event)
+  (guard (fun ()
+           (set! guard-runs (+ guard-runs 1))
+           (always guard-runs))))
+
+;; ---------------------------------------------------------------------------
+;; `with-nack` — being told that you lost
+;; ---------------------------------------------------------------------------
+;;
+;; A nack fires when a branch loses. Use it whenever a branch acquires something
+;; that must be released if it does not win: a timer, a cancellation source, a
+;; tentative reservation on a server. Without it, every losing `choose` over
+;; such a branch leaks whatever it took.
+;;
+;; The nack callback itself must never run user code — it runs on a borrowed
+;; thread with whatever context that thread happened to have. So the work is
+;; done by a fiber the generator spawns, which waits on the nack like any other
+;; event. Waking a fiber is allowed; *being* the work is not.
+;;
+;; The nack is carried on a promise rather than a channel, deliberately: losing
+;; is a *fact*, so every listener must see it and a late listener must still see
+;; it. A channel-based nack would park an operation only one receiver could
+;; consume.
+
+(: on-nack (-> (Event Unit) (Chan string) void))
+(defbjo (on-nack nack report)
+  (let ((lost (sync nack)))
+    (sync (chan-send report "nacked"))))
+
+;; Never available, so it can never win — and therefore always loses, which is
+;; what makes this deterministic.
+(: always-loses (-> (Chan string) (Event int)))
+(defun (always-loses report)
+  (with-nack
+    (fun (nack)
+      (def watcher (bjo (on-nack nack report)))
+      (never))))
+
+(defbjo (main args)
+  ;; A full rendezvous. 0+1+2+3+4 = 10, and the producer runs to completion.
+  (def ch (make-chan))
+  (def prod (bjo (producer ch 5)))
+  (expect "producer and consumer rendezvous" (int->string (consumer ch)) "10")
+  (expect "and the producer finished"
+          (match (sync (promise-join prod)) ((Ok u) "done") ((Err e) "failed"))
+          "done")
+
+  ;; A select between two channels, driven to a clean shutdown.
+  (def jobs (make-chan))
+  (def cancel (make-chan))
+  (def results (make-chan))
+  (def w (bjo (worker jobs cancel results)))
+  (def j1 (sync (chan-send jobs 10)))
+  (def j2 (sync (chan-send jobs 20)))
+  (def j3 (sync (chan-send jobs 12)))
+  (def c (sync (chan-send cancel true)))
+  (expect "a choose over two channels" (int->string (sync (chan-recv results))) "42")
+
+  ;; `always` is available immediately; `never` never is.
+  (expect "always beats never" (int->string (sync (choose (never) (always 5)))) "5")
+
+  ;; `wrap` outside a loop, to show it is just `map` on an event.
+  (expect "wrap maps an event's value"
+          (sync (wrap (always 3) (fun (n) (string-append "n=" (int->string n)))))
+          "n=3")
+
+  ;; `guard` runs its thunk at *each* sync, so the two syncs see different
+  ;; events. Without it the value would be fixed when the event was built.
+  (set! guard-runs 0)
+  (def g (counting-event))
+  (expect "guard builds fresh, sync 1" (int->string (sync g)) "1")
+  (expect "guard builds fresh, sync 2" (int->string (sync g)) "2")
+
+  ;; A timeout, losing to a channel that already has a sender waiting.
+  ;;
+  ;; The timeout goes *second* deliberately. `choose` publishes in order and
+  ;; stops at the first available branch, so a timeout written first would be
+  ;; published, park a timer, and then be nacked — correct, but it would not be
+  ;; testing what this says it tests.
+  (def ready (make-chan))
+  (def feeder (bjo (feed ready 99)))
+  (expect "a channel beats a long timeout"
+          (match (sync (choose (wrap (chan-recv ready) (fun (v) (Job v)))
+                               (wrap (timeout 30000) (fun (u) Quit))))
+            ((Job v) (int->string v))
+            (Quit "timed out"))
+          "99")
+
+  ;; And a timeout winning, against a channel nobody will ever send on.
+  (expect "a timeout beats a silent channel"
+          (match (sync (choose (wrap (chan-recv (make-chan)) (fun (v) (Job v)))
+                               (wrap (timeout 50) (fun (u) Quit))))
+            ((Job v) (int->string v))
+            (Quit "timed out"))
+          "timed out")
+
+  ;; Relative, and rebuilt at each sync. Syncing the same event twice waits
+  ;; twice — which is the whole reason `timeout` is `guard`ed. Without that its
+  ;; deadline would be in the past the second time round, and inside a `choose`
+  ;; loop this branch would win every iteration after the first.
+  ;;
+  ;; This also happens to depend on the fix that put a body's `def`s back into
+  ;; source order: `started`, the two syncs and `elapsed` form three independent
+  ;; groups, and a reordering would time the wrong thing.
+  (def t (timeout 40))
+  (def started Env.TickCount)
+  (def t1 (sync t))
+  (def t2 (sync t))
+  (def elapsed (- Env.TickCount started))
+  (expect "a timeout is rebuilt at each sync"
+          (if (> elapsed 60) "waited twice" "waited once")
+          "waited twice")
+
+  ;; A published branch that loses is nacked.
+  ;;
+  ;; Branch order matters, and not incidentally: `choose` publishes in order and
+  ;; stops at the first branch that is already available. Written the other way
+  ;; round, `always` would commit and this branch's generator would never run at
+  ;; all — which is sound, since a branch that was never offered acquired
+  ;; nothing and so has nothing to release, but it does mean a nack is only ever
+  ;; a promise about branches that actually raced.
+  (def report (make-chan))
+  (expect "the winner still wins"
+          (int->string (sync (choose (always-loses report) (always 42))))
+          "42")
+  (expect "and the losing branch was told" (sync (chan-recv report)) "nacked")
+  0)

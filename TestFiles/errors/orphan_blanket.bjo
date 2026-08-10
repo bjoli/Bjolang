@@ -1,0 +1,18 @@
+;; A blanket implementation of a trait this module did not define.
+;;
+;; The orphan rule is what keeps two-level specificity from being action at a
+;; distance. Once impls can overlap, adding one here could change which impl a
+;; call in an unrelated module selects — and a blanket is the worst case, since
+;; it applies at *every* type with no impl of its own. Restricting a blanket to
+;; the trait's own module removes the possibility: any module that can see the
+;; blanket already depends on the module declaring it, so it recompiles.
+;;
+;; `->str` comes from `(std prelude)`, which is linked into every module.
+
+;; EXPECT-ERROR: Orphan Rule Violation
+;; EXPECT-ERROR: blanket implementation of '->str' may only be written in the module that defines the trait
+
+(def/impl (->str %a)
+  (defun (->str x) "anything"))
+
+(defun (main args) 0)

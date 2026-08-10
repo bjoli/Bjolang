@@ -1,0 +1,35 @@
+;; Top-level declarations may refer to each other out of order.
+;;
+;; A module-level function is compiled to a static method, and static methods
+;; can call each other in any order — the only thing that ever stood in the way
+;; was the type checker walking the declarations in sequence. Every function
+;; here is bound from its signature before any body is checked.
+
+;; Mutually recursive.
+(: ping (-> int int))
+(defun (ping n)
+  (if (< n 1) 0 (pong (- n 1))))
+
+(: pong (-> int int))
+(defun (pong n)
+  (+ 1 (ping n)))
+
+;; Forward reference to a polymorphic function defined further down.
+(: twice-through (-> int int))
+(defun (twice-through n)
+  (id (double n)))
+
+(: id (-> %a %a))
+(defun (id x) x)
+
+(: double (-> int int))
+(defun (double n) (* 2 n))
+
+;; A module-level value may call a function declared after it.
+(def answer (double 21))
+
+(defun (main args)
+  (displayln (int->string (ping 3)))           ;; 3
+  (displayln (int->string (twice-through 5)))  ;; 10
+  (displayln (int->string answer))             ;; 42
+  0)

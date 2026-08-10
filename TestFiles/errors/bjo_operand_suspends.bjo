@@ -1,0 +1,32 @@
+;; A yield point in an *operand* of `bjo`, from a function that cannot suspend.
+;;
+;; `(bjo (f x))` splits in two, and the halves have different colours. The call
+;; happens in the new fiber, which is async by construction, so it may suspend
+;; whatever the caller is — that is why `bjo` is colourless and an ordinary
+;; `defun` may spawn.
+;;
+;; The *operands* do not. They are evaluated where the form is written, on this
+;; fiber, which is the whole reason `bjo` is a special form: if they ran in the
+;; child then `(bjo (handle (next-job!)))` would race and evaluation order would
+;; depend on the scheduler. Being evaluated here means being subject to the
+;; colour here.
+;;
+;; So `(bjo (work (fetch x)))` inside a `defun` is two different answers to the
+;; same question about one line, and both are correct.
+
+;; EXPECT-ERROR: calling 'fetch' is a yield point
+;; EXPECT-ERROR: yield point is not allowed here
+
+(import (std prelude))
+
+(: fetch (-> int int))
+(defbjo (fetch x) (* x 2))
+
+(: work (-> int int))
+(defbjo (work x) (+ x 1))
+
+(: start (-> int (Promise int)))
+(defun (start x)
+  (bjo (work (fetch x))))
+
+(defun (main args) 0)

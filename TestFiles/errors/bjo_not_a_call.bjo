@@ -1,0 +1,23 @@
+;; `bjo` applied to something that is not a call.
+;;
+;; The form splits an application into operands evaluated here and a call made
+;; over there. There is nothing to split in a bare name, and letting one through
+;; would quietly mean "spawn a fiber that evaluates a variable", which is not
+;; something anyone wants to have written.
+;;
+;; The rejection also keeps the distinction between the special form and
+;; `spawn-thunk` visible. A special form is not a value, so `(map bjo thunks)`
+;; cannot work; `spawn-thunk` is the function to reach for, and the error says
+;; so rather than leaving the reader to find it.
+
+;; EXPECT-ERROR: Invalid bjo syntax
+;; EXPECT-ERROR: use spawn-thunk
+
+(import (std prelude))
+
+(: work (-> int int))
+(defbjo (work x) (* x 2))
+
+(defbjo (main args)
+  (def p (bjo work))
+  0)

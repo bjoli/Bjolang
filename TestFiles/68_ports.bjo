@@ -1,0 +1,250 @@
+;; Textual ports: file and string input, file output, EOF, and `with-open`.
+;;
+;; The point of the design is that a file port and a string port are the *same
+;; type*. `System.IO.TextReader` is imported as `TextInputPort` and the concrete
+;; readers are upcast into it inside `open-*`, because Hindley-Milner has no
+;; subtyping — a `StreamReader` does not unify with a `TextInputPort`, and
+;; declaring an extern's return type as the base class is rejected rather than
+;; silently widened.
+;;
+;; So `count-lines` below takes a `TextInputPort` and does not care where the
+;; text came from. That is the whole trick.
+(import (std prelude))
+(import (std ports))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; One function, both kinds of port. The base `read-line` throws at end of
+;; input, so the loop is driven by `port-eof?`.
+(: count-lines (-> TextInputPort int))
+(defun (count-lines p)
+  (let loop ((n 0))
+    (if (port-eof? p)
+        n
+        (let ()
+          ;; The line itself is genuinely not wanted here: this counts them.
+          (ignore (read-line p))
+          (loop (+ n 1))))))
+
+;; The `/opt` variant, where the check and the read are one step. Also pins
+;; that lines come back without their newline.
+(: join-lines (-> TextInputPort string))
+(defun (join-lines p)
+  (let loop ((acc ""))
+    (match (read-line/opt p)
+      ((Some l) (loop (string-append acc (string-append l "|"))))
+      (None acc))))
+
+(defun (main)
+  (def path "68_ports.tmp")
+
+  ;; --- String input ports -------------------------------------------------
+  (def p1 (open-input-string "alpha\nbeta\ngamma"))
+  (expect "string port lines" (int->string (count-lines p1)) "3")
+
+  (def p2 (open-input-string "alpha\nbeta\ngamma"))
+  (expect "lines have no newline" (join-lines p2) "alpha|beta|gamma|")
+
+  ;; A trailing newline does not produce a phantom final line.
+  (def p3 (open-input-string "one\ntwo\n"))
+  (expect "trailing newline" (int->string (count-lines p3)) "2")
+
+  (def p4 (open-input-string ""))
+  (expect "empty string port" (int->string (count-lines p4)) "0")
+
+  ;; --- EOF ----------------------------------------------------------------
+  (def p5 (open-input-string "only"))
+  (expect "not eof at start" (if (port-eof? p5) "eof" "more") "more")
+  (expect "the one line" (read-line p5) "only")
+  (expect "eof after last line" (if (port-eof? p5) "eof" "more") "eof")
+  (expect "read/opt past eof is None"
+          (match (read-line/opt p5) ((Some _) "some") (None "none"))
+          "none")
+
+  ;; The base `read-line` fails at end of input rather than inventing a value.
+  ;; `try` is how that failure becomes one.
+  (def p5b (open-input-string ""))
+  (expect "read-line past eof throws"
+          (match (try (read-line p5b) #:catch (System.IO.EndOfStreamException))
+            ((Ok _) "returned")
+            ((Err e) "threw"))
+          "threw")
+
+  ;; `port-eof?` peeks, so asking does not consume.
+  (def p6 (open-input-string "x\ny"))
+  (def _a (port-eof? p6))
+  (def _b (port-eof? p6))
+  (expect "port-eof? does not consume" (int->string (count-lines p6)) "2")
+
+  ;; --- read-all -----------------------------------------------------------
+  (def p7 (open-input-string "abc\ndef"))
+  (expect "read-all" (read-all p7) "abc\ndef")
+  (expect "read-all at eof is empty" (read-all p7) "")
+
+  ;; --- File output, then file input ---------------------------------------
+  (match (open-output-file path)
+    ((Ok w) (with-open ((out w))
+              (writeln out "first")
+              (writeln out "second")
+              (write-string out "third")))
+    ((Err e) (println "FAILURE: could not open the file for writing")))
+
+  (match (open-input-file path)
+    ((Ok r) (with-open ((in r))
+              (expect "round trip through a file" (join-lines in) "first|second|third|")))
+    ((Err e) (println "FAILURE: could not reopen the file")))
+
+  ;; The same function over a file port as over a string port.
+  (match (open-input-file path)
+    ((Ok r) (with-open ((in r))
+              (expect "file port lines" (int->string (count-lines in)) "3")))
+    ((Err e) (println "FAILURE: could not reopen the file")))
+
+  ;; --- Opening failures are values ----------------------------------------
+  (expect "missing file is Err"
+          (match (open-input-file "no_such_file_here.txt")
+            ((Ok _) "opened") ((Err e) "missing"))
+          "missing")
+
+  ;; And the exception is the real one, so an arm can tell them apart.
+  (expect "the failure is FileNotFound"
+          (match (open-input-file "no_such_file_here.txt")
+            ((Ok _) "opened")
+            ((Err (:is System.IO.FileNotFoundException _)) "not-found")
+            ((Err _) "other"))
+          "not-found")
+
+  ;; --- Draining -----------------------------------------------------------
+  (expect "port->list"
+          (int->string (list-length (port->list read-line (open-input-string "a\nb\nc"))))
+          "3")
+  (expect "port->vec"
+          (int->string (vec-length (port->vec read-line (open-input-string "a\nb\nc\nd"))))
+          "4")
+
+
+  ;; Order is preserved, and the newline is not part of a line.
+  (expect "port->list order"
+          (list-foldl (fun (acc l) (string-append acc l)) ""
+                      (port->list read-line (open-input-string "x\ny\nz")))
+          "xyz")
+  (expect "port->vec order"
+          (vec-fold (fun (acc l) (string-append acc l)) ""
+                    (port->vec read-line (open-input-string "x\ny\nz")))
+          "xyz")
+
+  (expect "drain of an empty port"
+          (int->string (list-length (port->list read-line (open-input-string ""))))
+          "0")
+
+  ;; Draining consumes, so a second drain of the same port is empty.
+  (def p9 (open-input-string "one\ntwo"))
+  (expect "first drain" (int->string (vec-length (port->vec read-line p9))) "2")
+  (expect "second drain is empty" (int->string (vec-length (port->vec read-line p9))) "0")
+
+  ;; A drain works the same over a file port.
+  (match (open-input-file path)
+    ((Ok r) (with-open ((in r))
+              (expect "drain a file port" (int->string (vec-length (port->vec read-line in))) "3")))
+    ((Err e) (println "FAILURE: could not reopen the file")))
+
+  ;; --- Streaming ----------------------------------------------------------
+  (expect "port->seq"
+          (seq-fold (fun (acc l) (string-append acc l)) ""
+                    (port->seq read-line (open-input-string "x\ny\nz")))
+          "xyz")
+
+  (expect "port->seq of an empty port"
+          (int->string (seq-length (port->seq read-line (open-input-string ""))))
+          "0")
+
+  ;; Laziness is the point: taking two from a port never reads the third line.
+  ;; The port is shared, so what is left in it afterwards is the evidence.
+  (def p10 (open-input-string "1\n2\n3\n4"))
+  (expect "seq-take pulls only what it needs"
+          (seq-fold (fun (acc l) (string-append acc l)) "" (seq-take (port->seq read-line p10) 2))
+          "12")
+  (expect "and the rest is still in the port" (read-line p10) "3")
+
+  ;; The sequence composes with the rest of the seq library.
+  (expect "port->seq through seq-map"
+          (seq-fold (fun (acc l) (string-append acc l)) ""
+                    (seq-map (fun (l) (string-append l "!"))
+                             (port->seq read-line (open-input-string "a\nb"))))
+          "a!b!")
+
+  ;; --- file->seq ----------------------------------------------------------
+  ;;
+  ;; The open happens eagerly and the reading lazily, so the failure lands at
+  ;; the call and is a `Result` like every other opener here — not a surprise
+  ;; thrown on the first pull.
+  (expect "file->seq"
+          (match (file->seq read-line path)
+            ((Ok lines) (seq-fold (fun (acc l) (string-append acc (string-append l "|"))) "" lines))
+            ((Err e) "FAILURE"))
+          "first|second|third|")
+
+  ;; The reader is the caller's, not baked in: any `(-> TextInputPort %a)` will
+  ;; do, and the element type follows it rather than being `string` by fiat.
+  (expect "file->seq honours the reader procedure"
+          (match (file->seq read-all path)
+            ((Ok chunks) (int->string (seq-length chunks)))
+            ((Err e) "FAILURE"))
+          "1")
+
+  ;; This is the property a `seql` over an already-open port cannot have: the
+  ;; sequence owns the file, so each enumeration opens it again and reads it
+  ;; from the start. Sharing one spent reader would make this 3.
+  (expect "file->seq is re-enumerable"
+          (match (file->seq read-line path)
+            ((Ok lines) (int->string (+ (seq-length lines) (seq-length lines))))
+            ((Err e) "FAILURE"))
+          "6")
+
+  ;; And that holds after a walk that stopped early and disposed the enumerator
+  ;; mid-file, which is where a shared reader would be left part-way through.
+  (expect "re-enumerable after stopping early"
+          (match (file->seq read-line path)
+            ((Ok lines)
+              (let ()
+                ;; Walked for its effect — the count is beside the point, which
+                ;; is that the enumerator was disposed part-way through.
+                (ignore (seq-length (seq-take lines 2)))
+                (seq-fold (fun (acc l) (string-append acc l)) "" lines)))
+            ((Err e) "FAILURE"))
+          "firstsecondthird")
+
+  (expect "missing file is Err, at the call"
+          (match (file->seq read-line "no_such_file_here.txt")
+            ((Ok _) "opened")
+            ((Err e) "missing"))
+          "missing")
+
+  (expect "and it is FileNotFound"
+          (match (file->seq read-line "no_such_file_here.txt")
+            ((Ok _) "opened")
+            ((Err (:is System.IO.FileNotFoundException _)) "not-found")
+            ((Err _) "other"))
+          "not-found")
+
+  ;; Reading is still lazy even though opening is not: taking two lines from a
+  ;; four-line file never reads the rest.
+  (expect "file->seq is lazy in the pulling"
+          (match (file->seq read-line path)
+            ((Ok lines) (seq-fold (fun (acc l) (string-append acc l)) "" (seq-take lines 2)))
+            ((Err e) "FAILURE"))
+          "firstsecond")
+
+  ;; --- Explicit closing ---------------------------------------------------
+  (def p8 (open-input-string "closeme"))
+  (close-input-port p8)
+  (expect "closed a string port" "ok" "ok")
+
+  (file-delete path)
+  0)

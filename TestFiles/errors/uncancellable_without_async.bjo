@@ -1,0 +1,16 @@
+;; `#:uncancellable` on an import that neither awaits nor takes a token.
+;;
+;; It says "do not thread the ambient cancellation token into this call", and
+;; there are exactly two kinds of call a token is threaded into: an `#:async`
+;; one, and a `#:cancellable` one. Without either, this reads as a promise about
+;; cancellation while meaning nothing at all, which is worse than being
+;; rejected.
+
+;; EXPECT-ERROR: without #:async or #:cancellable there is no token to thread
+
+(import (std prelude))
+
+(import/extern
+  (write-line (: System.Console.WriteLine (-> string void) #:uncancellable)))
+
+(defun (main args) 0)

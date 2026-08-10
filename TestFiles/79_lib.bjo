@@ -1,0 +1,29 @@
+;; A library that imports a .NET async method and exports it.
+;;
+;; `#:async` is a fact about the .NET method, so it has to survive being written
+;; to metadata and read back: an alias republished without it would be typed by
+;; the mangled name of a `Task` and would stop being a yield point, silently.
+;; `79_main.bjo` calls `sleep` directly, which is what pins that.
+;;
+;; Note what is *not* published: a signature. An import without one resolves its
+;; overload from the arguments at each call site, and inventing a type here would
+;; publish whichever overload this module happened to use.
+
+(export sleep nap)
+
+(import (std prelude))
+
+(import/extern
+  ;; The canonical async BCL shape: an overload taking a `CancellationToken`
+  ;; that the emitter fills from the ambient token, and a result — here none at
+  ;; all, since `Task.Delay` returns the non-generic `Task`.
+  (sleep (: System.Threading.Tasks.Task.Delay (-> int void) #:async)))
+
+;; A bjoroutine whose suspension happens to be a .NET await rather than a
+;; `sync`. The caller cannot tell, which is the whole of §7.1: awaiting a task
+;; needs no CML machinery, no promise and no nack node, so the direct call is
+;; the default and the event form is what you ask for.
+(: nap (-> int int))
+(defbjo (nap ms)
+  (sleep ms)
+  ms)

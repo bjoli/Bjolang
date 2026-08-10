@@ -1,0 +1,111 @@
+;; The `Collection` trait: `length`, `empty?` and `->seq` over every member.
+;;
+;; The point is the generic functions below. Each is written once, against a
+;; `(where (Collection %c))` constraint, and called at five different types —
+;; so what is being tested is that the dictionary arrives from the call site
+;; and that every impl answers the same question the same way.
+;;
+;; `size-of` and `via-seq` are deliberately two routes to one number: one asks
+;; the collection, the other walks the sequence it hands over. They must agree,
+;; which is the property that would break if an impl's `->seq` dropped or
+;; duplicated an element.
+
+(: expect (-> string int int void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append (int->string actual)
+                (string-append " but wanted " (int->string wanted)))))))))
+
+(: expect-bool (-> string bool bool void))
+(defun (expect-bool label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " label))))
+
+;; --- The generic half -------------------------------------------------------
+
+(: size-of (-> %c int) (where (Collection %c)))
+(defun (size-of c) (length c))
+
+(: none? (-> %c bool) (where (Collection %c)))
+(defun (none? c) (empty? c))
+
+;; The same count, arrived at through the sequence rather than from the
+;; collection itself.
+(: via-seq (-> %c int) (where (Collection %c)))
+(defun (via-seq c) (seq-length (->seq c)))
+
+;; A constraint travels up a chain of callers, so this one needs none of its
+;; own beyond what it inherits.
+(: agree? (-> %c bool))
+(defun (agree? c) (= (size-of c) (via-seq c)))
+
+;; --- Helpers over the element types ----------------------------------------
+
+(: add-int (-> int int int))
+(defun (add-int acc x) (+ acc x))
+
+(: add-key (-> int (Tuple int string) int))
+(defun (add-key acc kv)
+  (def (k v) kv)
+  (+ acc k))
+
+(: build-map (-> int (Map int string)))
+(defun (build-map n)
+  (loop (:for i (range 0 n))
+        (:acc m (folding (map-empty) (map-set m i "x")))))
+
+(defun (main)
+  (def lst (list 1 2 3))
+  (def v [10 20 30 40])
+  (def m (build-map 5))
+  (def r (range 0 7))
+  (def s (list->seq (list 1 2)))
+
+  ;; --- length -------------------------------------------------------------
+  (expect "list length" (size-of lst) 3)
+  (expect "vec length" (size-of v) 4)
+  (expect "map length" (size-of m) 5)
+  (expect "range length" (size-of r) 7)
+  (expect "seq length" (size-of s) 2)
+
+  ;; --- empty? -------------------------------------------------------------
+  (expect-bool "empty list" (none? (list-empty)) #t)
+  (expect-bool "full list" (none? lst) #f)
+  (expect-bool "empty vec" (none? (vec-empty)) #t)
+  (expect-bool "full vec" (none? v) #f)
+  (expect-bool "empty map" (none? (map-empty)) #t)
+  (expect-bool "full map" (none? m) #f)
+  (expect-bool "empty range" (none? (range 5 5)) #t)
+  (expect-bool "full range" (none? r) #f)
+  (expect-bool "empty seq" (none? (seq-empty)) #t)
+  (expect-bool "full seq" (none? s) #f)
+
+  ;; --- ->seq agrees with length -------------------------------------------
+  (expect-bool "list agrees" (agree? lst) #t)
+  (expect-bool "vec agrees" (agree? v) #t)
+  (expect-bool "map agrees" (agree? m) #t)
+  (expect-bool "range agrees" (agree? r) #t)
+
+  ;; --- ->seq yields the right elements ------------------------------------
+  (expect "list elements" (seq-fold add-int 0 (->seq lst)) 6)
+  (expect "vec elements" (seq-fold add-int 0 (->seq v)) 100)
+  ;; A map's element is its pair, so the fold destructures one.
+  (expect "map elements" (seq-fold add-key 0 (->seq m)) 10)
+  (expect "range elements" (seq-fold add-int 0 (->seq r)) 21)
+  ;; And for a sequence `->seq` is the identity, which is what lets generic
+  ;; code take one without a conversion.
+  (expect "seq elements" (seq-fold add-int 0 (->seq s)) 3)
+
+  ;; --- Range does its arithmetic ------------------------------------------
+  ;;
+  ;; A stepped range is the case a naive `hi - lo` gets wrong: 0, 3, 6, 9 is
+  ;; four elements, not ten and not three.
+  (expect "stepped range length" (size-of (range-by 0 10 3)) 4)
+  (expect "stepped range elements" (seq-fold add-int 0 (->seq (range-by 0 10 3))) 18)
+  (expect "stepped range, exact fit" (size-of (range-by 0 9 3)) 3)
+  (expect "backwards range" (size-of (range 5 2)) 0)
+  (expect-bool "backwards range is empty" (none? (range 5 2)) #t)
+  0)

@@ -1,0 +1,104 @@
+;; A named `let` used as a *value*, whose body is statement-shaped.
+;;
+;; The flat-loop path emits `while (true)` inline, and `BlockTarget` calls every
+;; case but `Effect` terminal — so discharging one inside an inlined loop leaves
+;; the loop. Two positions are targeted that way and are *not* terminal: a
+;; `let`'s binding, and an operand hoisted into a temporary. Both used to emit
+;; the assignment followed by a `break`, which is either a use of an unassigned
+;; local (CS0165) or, where the loop had a value, silently the wrong answer.
+;;
+;; Nothing here is monadic. It is only that a `(do ...)` block over a loop is
+;; the shortest way to write the shape by accident: `bind`'s inlined body binds
+;; its argument to a local, inside the loop, in the middle of the block.
+(import (std prelude))
+
+;; A let-shaped exit value: the binding is not terminal, the body is.
+(: sum-to (-> int int))
+(defun (sum-to n)
+  (+ 1 (let loop ((i 0) (acc 0))
+         (if (= i n)
+             (let ((doubled (* acc 2))) doubled)
+             (loop (+ i 1) (+ acc i))))))
+
+;; A match-shaped exit value, which reaches the same target by way of a hoist.
+(: unwrapped (-> int int))
+(defun (unwrapped n)
+  (+ 1 (let loop ((i 0))
+         (if (= i n)
+             (match (Some n) ((Some v) v) (None 0))
+             (loop (+ i 1))))))
+
+;; A let-shaped value in the *middle* of the loop body, which is where a `bind`
+;; that has been spliced puts one.
+(: stepped (-> int int))
+(defun (stepped n)
+  (let loop ((i 0) (acc 0))
+    (if (= i n)
+        acc
+        (let ((bumped (+ acc 2)))
+          (loop (+ i 1) bumped)))))
+
+(type
+  (: (Result %e %a) (Union
+    (Ok %a)
+    (Err %e))))
+
+(def/impl (Monad (Result %e %a))
+  (defun (pure x) (Ok x))
+  (defun (bind m k)
+    (match m
+      ((Ok v) (k v))
+      ((Err e) (Err e)))))
+
+(: check (-> int (Result string int)))
+(defun (check n)
+  (if (> n 1000000000) (Err "too big") (Ok (* n 2))))
+
+;; The monadic fold a `(:fold ...)` do-form would expand to: a loop in argument
+;; position, whose body binds monadically and whose tail call must still be a
+;; jump. Deep enough that a recursion which was not turned into a loop would
+;; overflow the stack rather than answer.
+(: fold-m (-> (List int) (Result string int)))
+(defun (fold-m xs)
+  (bind (let loop ((rest xs) (total 0))
+          (if (list-empty? rest)
+              (pure total)
+              (bind (let ((x (list-head rest))) (check x))
+                    (fun (v) (loop (list-tail rest) (+ total v))))))
+        (fun (total) (pure total))))
+
+;; The same shape collecting its results, which is `mapM`.
+(: map-m (-> (List int) (Result string int)))
+(defun (map-m xs)
+  (bind (let loop ((rest xs) (acc Nil))
+          (if (list-empty? rest)
+              (pure (list-reverse acc))
+              (bind (let ((x (list-head rest))) (check x))
+                    (fun (y) (loop (list-tail rest) (Cons y acc))))))
+        (fun (ys) (pure (list-length ys)))))
+
+(: build (-> int (List int)))
+(defun (build n)
+  (let loop ((i 0) (acc Nil))
+    (if (= i n) acc (loop (+ i 1) (Cons i acc)))))
+
+(: expect (-> string int int void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok " label))
+      (println (string-append "FAILURE: " label))))
+
+(: expect-result (-> string (Result string int) int void))
+(defun (expect-result label r wanted)
+  (match r
+    ((Ok v) (expect label v wanted))
+    ((Err e) (println (string-append "FAILURE: " (string-append label e))))))
+
+(defun (main)
+  (expect "sum-to" (sum-to 5) 21)          ;; (0+1+2+3+4)*2 + 1
+  (expect "unwrapped" (unwrapped 5) 6)
+  (expect "stepped" (stepped 5) 10)
+  (expect-result "fold-m" (fold-m (build 5)) 20)
+  (expect-result "map-m" (map-m (build 5)) 5)
+  (expect-result "map-m/deep" (map-m (build 200000)) 200000)
+  0)

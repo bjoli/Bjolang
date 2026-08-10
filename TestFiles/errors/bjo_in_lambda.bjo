@@ -1,0 +1,31 @@
+;; A suspending call inside an ordinary lambda — the higher-order restriction.
+;;
+;; `twice` takes an `(-> int int)`. Nothing in that arrow says the argument
+;; might suspend, so `twice` is emitted as an ordinary C# method whose
+;; `Func<int, int>` parameter cannot contain an `await`. The lambda handed to it
+;; is therefore ordinary too, and a yield point inside it has nowhere to live.
+;;
+;; This is the restriction the design's §3.1 keeps deliberately, and the two
+;; escape hatches it names are shipping `/bjo` variants of the combinators that
+;; need them, or effect polymorphism — which C# cannot express directly, since
+;; it cannot be generic over async-ness, so it would need a monomorphisation
+;; pass of its own.
+;;
+;; The loop is what you write instead: `(loop ...)` lowers to a `while` in the
+;; *enclosing* method, so a yield point inside one is still inside the
+;; bjoroutine.
+
+;; EXPECT-ERROR: calling 'fetch' is a yield point
+;; EXPECT-ERROR: yield point is not allowed here
+
+(: fetch (-> int int))
+(defbjo (fetch x) (* x 2))
+
+(: twice (-> (-> int int) int int))
+(defun (twice f x) (f (f x)))
+
+(: fetch-twice (-> int int))
+(defbjo (fetch-twice x)
+  (twice (fun (n) (fetch n)) x))
+
+(defun (main args) 0)

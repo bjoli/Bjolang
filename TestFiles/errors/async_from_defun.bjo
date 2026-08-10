@@ -1,0 +1,26 @@
+;; An `#:async` import called from an ordinary function.
+;;
+;; The same rule as calling a bjoroutine, and the same reason: the call compiles
+;; to an `await`, and an `await` needs an async method around it. What is worth
+;; pinning separately is that it arrives by a *different route*. A foreign call
+;; is not an application of anything the language has a type for, so there is no
+;; suspending arrow to notice — `ColourCheck` reads the fact off the call's own
+;; metadata instead, which the type checker put there.
+;;
+;; Caught here rather than in generated C#, where the complaint would name
+;; `Fiber<T>` and a method the user never wrote.
+
+;; EXPECT-ERROR: is a yield point
+;; EXPECT-ERROR: not allowed here
+
+(import (std prelude))
+
+(import/extern
+  (sleep (: System.Threading.Tasks.Task.Delay (-> int void) #:async)))
+
+(: nap (-> int int))
+(defun (nap ms)
+  (sleep ms)
+  ms)
+
+(defun (main args) 0)

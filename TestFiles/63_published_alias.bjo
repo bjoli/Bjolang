@@ -1,0 +1,30 @@
+;; A foreign import named by an exported body is published so the body can be
+;; spliced here — but never under the name it was written with.
+;;
+;; `std/maths`'s `Num` default is `(defun (abs x) (clr-abs x))`, and a spliced
+;; template is re-inferred in *this* module's scope. Published as `clr-abs`, the
+;; definition below would silently become the meaning of that `abs`. It is
+;; published under a mangled name instead, so the two cannot meet.
+(import (std maths))
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; The same name that default body uses internally.
+(: clr-abs (-> int int))
+(defun (clr-abs x) 99)
+
+(defun (main)
+  ;; This module's own definition, not the alias the prelude imported.
+  (expect "local definition wins" (int->string (clr-abs -5)) "99")
+
+  ;; ...and the prelude's `abs` still means System.Math.Abs.
+  (expect "imported default is not captured" (int->string (abs -5)) "5")
+  (expect "and still at double" (double->string (abs -2.5)) "2.5")
+  0)

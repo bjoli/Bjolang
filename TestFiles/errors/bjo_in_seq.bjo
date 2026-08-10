@@ -1,0 +1,24 @@
+;; A yield point inside a `(seq ...)`.
+;;
+;; A `seq` body is emitted as a C# iterator, and an iterator cannot be async:
+;; `yield return` and `await` are mutually exclusive in the same member. So the
+;; enclosing bjoroutine does not reach into a sequence body, for the same reason
+;; it does not reach into a lambda.
+;;
+;; The two `yield`s here mean different things and it is worth not confusing
+;; them. `(yield v)` hands a value to whoever is draining the sequence; a
+;; *yield point* is where control leaves the fiber. A sequence of values
+;; produced by suspending work is a channel — `async-seq->chan` in §7.6 — not a
+;; `seq`.
+
+;; EXPECT-ERROR: calling 'fetch' is a yield point
+;; EXPECT-ERROR: yield point is not allowed here
+
+(: fetch (-> int int))
+(defbjo (fetch x) (* x 2))
+
+(: numbers (-> int (Seq int)))
+(defbjo (numbers n)
+  (seq (yield (fetch n))))
+
+(defun (main args) 0)

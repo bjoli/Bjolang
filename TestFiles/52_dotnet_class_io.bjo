@@ -1,0 +1,55 @@
+;; Foreign .NET interop: classes, constructors, instance methods and properties.
+;;
+;; `import/class` registers the alias both as a type — so a signature may say
+;; `StreamWriter` — and as a constructor, written `StreamWriter.` in the Lisp
+;; tradition. Instance members are reached with `(.Method target args...)` and
+;; `(.-Property target)`.
+(import (std prelude))
+
+(import/class
+  (StreamWriter (: System.IO.StreamWriter (-> string StreamWriter)))
+  (StringBuilder (: System.Text.StringBuilder (-> StringBuilder))))
+
+(import/extern
+  (read-all-text (: System.IO.File.ReadAllText (-> string string)))
+  (file-delete! (: System.IO.File.Delete (-> string void))))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; The alias is a type, so it may be written in an ordinary signature.
+(: write-greeting (-> StreamWriter void))
+(defun (write-greeting w)
+  (.Write w "Bjolang interop")
+  (.Flush w))
+
+(defun (main)
+  (def path "51_dotnet_class_io.tmp")
+
+  (def w (StreamWriter. path))
+  (write-greeting w)
+  (.Dispose w)
+
+  (expect "round trip through StreamWriter" (read-all-text path) "Bjolang interop")
+  (file-delete! path)
+
+  ;; A constructor taking no arguments, then a chain of instance calls. Every
+  ;; one of these is a distinct overload chosen from its argument's type.
+  (def sb (StringBuilder.))
+  ;; `Append` returns the builder so that calls can be chained; nothing here
+  ;; wants the chain, and §8.2 says a dropped value has to say so.
+  (ignore (.Append sb "a"))
+  (ignore (.Append sb "b"))
+  (ignore (.Append sb "c"))
+  (expect "StringBuilder" (.ToString sb) "abc")
+
+  ;; A property read, and a method on the result of another method.
+  (expect "property read" (int->string (.-Length sb)) "3")
+  (expect "instance method on a string" (.Substring "abcdef" 2 3) "cde")
+
+  0)

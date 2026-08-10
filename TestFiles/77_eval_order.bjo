@@ -1,0 +1,86 @@
+;; A body's `def`s run in the order they are written.
+;;
+;; Consecutive `def`s in a body are collected into one mutually-recursive group,
+;; so that a pair of local `defun`s can call each other. The group is then split
+;; into strongly connected components and emitted innermost-last, which is what
+;; makes a local function visible to the ones that call it.
+;;
+;; Kosaraju's algorithm orders components that *depend* on each other. It says
+;; nothing about components that do not, and those used to come out in whatever
+;; order the traversal happened to discover them. For pure values that is
+;; invisible. For effectful ones it silently reorders evaluation — and a run of
+;; consecutive `def`s is exactly where side effects live.
+;;
+;; It was invisible for a long time because it only shows up when two adjacent
+;; `def`s are *independent*: as soon as the second mentions the first, the
+;; dependency pins the order and everything looks fine. Which is why the case
+;; that finally caught it was a concurrent one, where the reordering was not
+;; merely surprising but a deadlock — a channel send hoisted above the spawn of
+;; the fiber that was supposed to receive it, and a rendezvous send with no
+;; receiver never returns.
+
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+(def/mutable trace "")
+
+(: note (-> string int))
+(defun (note tag)
+  (set! trace (string-append trace tag))
+  0)
+
+;; Four independent bindings: none mentions any other, so nothing but source
+;; order can decide when each runs.
+(: independent (-> string))
+(defun (independent)
+  (set! trace "")
+  (def a (note "a"))
+  (def b (note "b"))
+  (def c (note "c"))
+  (def d (note "d"))
+  trace)
+
+;; A dependency still wins where there is one — it has to, since a binding
+;; cannot be used before it exists. `second` mentions `first`, and `lonely`
+;; mentions neither, so the only freedom is where `lonely` goes: written second,
+;; it runs second.
+(: dependent (-> string))
+(defun (dependent)
+  (set! trace "")
+  (def first (note "1"))
+  (def lonely (note "L"))
+  (def second (+ first (note "2")))
+  trace)
+
+;; Mutual recursion is the reason the grouping exists at all, and it still
+;; works: `even?` and `odd?` land in one component and see each other.
+(: parity (-> int string))
+(defun (parity n)
+  (defun (even? k) (if (= k 0) true (odd? (- k 1))))
+  (defun (odd? k) (if (= k 0) false (even? (- k 1))))
+  (if (even? n) "even" "odd"))
+
+;; A value that mentions a function defined *below* it. The dependency is real
+;; even though it is guarded by a lambda, so the function must still be bound
+;; first — this is the case where source order cannot be honoured, and must not
+;; be.
+(: forward-reference (-> int))
+(defun (forward-reference)
+  (def computed (helper 20))
+  (defun (helper k) (* k 2))
+  computed)
+
+(defun (main args)
+  (expect "independent defs run in source order" (independent) "abcd")
+  (expect "a dependency is still respected" (dependent) "1L2")
+  (expect "mutually recursive locals still see each other" (parity 10) "even")
+  (expect "and so does a guarded forward reference"
+          (int->string (forward-reference)) "40")
+  0)

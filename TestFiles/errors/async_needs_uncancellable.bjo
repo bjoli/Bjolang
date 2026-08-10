@@ -1,0 +1,23 @@
+;; An async import with nowhere to put the ambient token.
+;;
+;; §7.2's second rule is that the emitter fills in the `CancellationToken`, so a
+;; method with no token overload cannot have one filled in — and the import has
+;; to say so with `#:uncancellable`. Not inferred, deliberately: "this cannot be
+;; stopped" is a fact about the call that its reader needs and its writer knows,
+;; and the alternative is discovering it as a `choose` that leaks an operation
+;; nobody is listening to any more.
+;;
+;; `Task.WhenAll` is the example on purpose. §7.7 says not to import it at all —
+;; it collects every result and cancels nothing, which is the opposite of what a
+;; `choose` over several promises wants — and this is the first thing that
+;; happens if you try.
+
+;; EXPECT-ERROR: has no overload taking a System.Threading.CancellationToken
+;; EXPECT-ERROR: #:uncancellable
+
+(import (std prelude))
+
+(import/extern
+  (when-all (: System.Threading.Tasks.Task.WhenAll #:async)))
+
+(defbjo (main args) 0)

@@ -1,0 +1,21 @@
+;; `.Result` on a task.
+;;
+;; The same block as `.Wait()` wearing a property's clothes, and the more
+;; dangerous of the two for exactly that reason: it reads like a field access.
+;; Nothing about `(.-Result t)` suggests that the thread stops here.
+
+;; EXPECT-ERROR: 'Result' on a task blocks the thread it is called on
+;; EXPECT-ERROR: Import the method with #:async instead
+
+(import (std prelude))
+
+;; Imported *without* `#:async`, which is what makes a task reachable as a value
+;; at all. With it, the call would already be the result and there would be
+;; nothing to block on.
+(import/extern
+  (delay-task (: System.Threading.Tasks.Task.Delay)))
+
+(defun (main args)
+  (def t (delay-task 10))
+  (ignore (.-Result t))
+  0)

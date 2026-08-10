@@ -1,0 +1,80 @@
+;; Foreign calls whose arguments fit by *conversion* rather than exactly.
+;;
+;; Overload resolution has always accepted these — a numeric widening, a
+;; reference upcast, a box — and ranked them below an exact match. What used to
+;; happen next was that the selected parameter types were unified into the
+;; argument types, and unification is nominal equality, so every one of them
+;; failed with a diagnostic naming a type the caller never wrote.
+;;
+;; Now an argument whose type is already known is converted instead, and the
+;; conversion is written into the tree: the code generator emits a foreign call
+;; as receiver, name and arguments, so C# resolves the overload a second time
+;; from what it is given. `((double)(x))` is what keeps that second resolution
+;; landing on the same method this program was typed against.
+(import (std prelude))
+(import (std maths))
+
+(import/class
+  (StreamReader (: System.IO.StreamReader (-> string StreamReader))))
+
+(import/extern
+  ;; Two `object` parameters: an int argument has to box.
+  (concat (: System.String.Concat))
+  ;; A `TextReader` parameter, given a `StreamReader`: a reference upcast.
+  (synchronized (: System.IO.TextReader.Synchronized))
+  ;; The whole `Math.Max` overload set, called with mixed argument types.
+  (clr-max (: System.Math.Max)))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+(defun (main)
+  ;; --- Widening -----------------------------------------------------------
+  ;; Every one of these was a type error before: there is no `Sin(int)`, so the
+  ;; int argument reaches `Sin(double)` or nothing.
+  (expect "sin of an int" (double->string (sin 0)) "0")
+  (expect "cos of an int" (double->string (cos 0)) "1")
+  (expect "pow of two ints" (double->string (pow 2 10)) "1024")
+  (expect "log to an int base" (double->string (log 8 2)) "3")
+  (expect "cbrt of an int" (double->string (cbrt 8)) "2")
+
+  ;; Mixed argument types select the overload that fits both: `Max(long, long)`,
+  ;; with the int widened, rather than `Max(int, int)` — which the long does not
+  ;; fit — or `Max(double, double)`, which is a worse fit for both.
+  (expect "int and long" (long->string (clr-max 3 9000000000L)) "9000000000")
+
+  ;; An exact match still beats a widening, which is what the scores are for.
+  (expect "exact still wins" (int->string (clr-max 3 9)) "9")
+
+  ;; The other half, unchanged and worth pinning down. `n` has no declared type
+  ;; and nothing else to fix it, so it is the *overload* that settles it: `0` is
+  ;; an int and an exact fit, which makes `Max(int, int)` the best candidate,
+  ;; and unifying its parameters into the arguments is what makes `n` an int.
+  ;; That still happens for an argument left open — it is a *known* one that is
+  ;; now converted rather than unified.
+  (def at-least-zero (fun (n) (clr-max n 0)))
+  (expect "open argument pinned" (int->string (at-least-zero -5)) "0")
+  (expect "open argument pinned, positive" (int->string (at-least-zero 7)) "7")
+
+  ;; --- Boxing -------------------------------------------------------------
+  ;; `String.Concat` has no (int, int) overload, so these box into (object,
+  ;; object) — the worst-ranked fit there is, and still a fit.
+  (expect "boxing into object" (concat 1 2) "12")
+
+  ;; --- Reference upcast ---------------------------------------------------
+  (def path "65_foreign_conversions.tmp")
+  (file-write-text path "upcast")
+
+  (def reader (StreamReader. path))
+  ;; `Synchronized` takes a TextReader; this is a StreamReader.
+  (def guarded (synchronized reader))
+  (expect "reference upcast" (.ReadToEnd guarded) "upcast")
+  (.Dispose reader)
+
+  (file-delete path)
+  0)

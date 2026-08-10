@@ -1,0 +1,32 @@
+(def/trait (Foldable %col)
+  (type %item)
+  (: fold (-> (-> %acc %item %acc) %acc %col %acc)))
+
+
+(def/impl (Foldable (List %a))
+  (type %item %a)
+  (defun (fold f acc col)
+    (list-foldl f acc col)))
+
+(def/impl (Foldable (Vec %a))
+  (type %item %a)
+  (defun (fold f acc col)
+    (vec-fold f acc col)))
+
+(defun (main)
+  (def lst (Cons 1 (Cons 2 Nil)))
+  (def v [1 2 3])
+  (def s "test")
+
+  ;; These should compile to generic C# calls, and both results are *used*:
+  ;; §8.2's must-use rule wants a dropped value to say so with `ignore`, and
+  ;; this module imports nothing on purpose, so it has no `ignore` to say it
+  ;; with. Using the answers is the better fix anyway — 3 + 6 - 9 = 0.
+  ;;
+  ;; Foldable_List<int>.Instance.fold(...)
+  (def from-list (fold + 0 lst))
+
+  ;; Foldable_Vec<int>.Instance.fold(...)
+  (def from-vec (fold + 0 v))
+
+  (- (+ from-list from-vec) 9))

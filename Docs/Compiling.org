@@ -1,0 +1,91 @@
+* Compiling and running
+
+** ~bjor~
+
+~bjor~ compiles a file and runs it:
+
+#+BEGIN_SRC sh
+./bjor Playground/test.bjo          # compile if needed, then run
+./bjor Playground/test.bjo a b c    # arguments after the file go to the program
+./bjor -c Playground/test.bjo       # compile unconditionally
+./bjor -d Playground/test.bjo       # debug build (see below)
+./bjor --lib lib/std/list.bjo       # compile to a .dll, do not run
+#+END_SRC
+
+Options come *before* the source file; everything after it is passed to the
+compiled program.
+
+*** When it recompiles
+
+Nothing is rebuilt if the binary is newer than everything it was built from.
+That means the source file, every ~.bjo~ or ~.protobjo~ it imports or includes
+transitively, the standard library, and the compiler itself — a program built by
+a different compiler is stale even when nothing you wrote has changed.
+
+Two cases always recompile:
+
+- ~-c~, which is what it is for.
+- ~-d~, because the dumps a debug build produces are a product of compiling, and
+  because the binary sitting there is almost certainly an optimized one.
+
+A plain run also recompiles when it finds a ~.pdb~ beside the binary: symbols
+mean the last build was a debug build, and serving that to a command that did
+not ask for one would silently hand back the slower binary.
+
+** Compiler flags
+
+The compiler itself (~dotnet bin/Release/net10.0/Bjolang.dll~) takes:
+
+| Flag           | Effect                                                      |
+|----------------+-------------------------------------------------------------|
+| ~--lib~        | Compile to a ~.dll~ instead of an executable                |
+| ~-d~, ~--debug~ | Unoptimized, with symbols, plus ~ast_dump.txt~ and ~out.cs~ |
+| ~--help~       | Usage                                                       |
+
+A file with no ~main~ compiles to a library whether or not ~--lib~ was passed:
+an executable without an entry point does not link.
+
+The dumps land in the *working directory*, not next to the source.
+
+** Runtime assemblies
+
+Every compiled program links against a fixed set of support assemblies, named
+once in ~Paths.runtimeAssemblyNames~:
+
+| ~BjolangRuntime~ | the builtins — dynamic environment, cursors, conversions |
+| ~Collections~    | ~Vec~ (RRB tree)                                         |
+| ~SchemeList~     | ~List~                                                   |
+| ~Map~            | ~Map~ (CHAMP)                                            |
+| ~Bjoml~          | the concurrency runtime: fibers, promises, channels, CML events |
+
+Each is a submodule with a project of its own, referenced by
+~BjolangRuntime.csproj~ and *removed from its compile glob* — without the
+removal their sources are compiled a second time into ~BjolangRuntime~, which
+for a project with package references of its own simply fails.
+
+Three things follow from that list, and adding an assembly means doing all
+three:
+
+1. It is referenced when a program is compiled — by both the fast ~csc~ path and
+   the MSBuild fallback, which read the same list.
+2. Its directory is on the probe path of the resolver a compiled program
+   installs. Nothing is ever copied next to the output: an assembly has one home
+   and the program points back at it. A *package* dependency therefore has to be
+   copied into that directory, which is why ~BjolangRuntime.csproj~ restates
+   Bjoml's ~Microsoft.Extensions.ObjectPool~ reference and sets
+   ~CopyLocalLockFileAssemblies~.
+3. It is registered with the interop resolver before type checking, so
+   ~import/class~ and ~import/extern~ can name types in it. ~Type.GetType~
+   searches the core library and the compiler's own assembly and nothing else,
+   so without this a linked assembly is reachable at run time but not nameable
+   at compile time.
+
+** Optimization
+
+Output is optimized unless you pass ~-d~. The difference is not marginal: a
+debug build is marked debuggable, which tells the JIT not to optimize it, and
+the same generated C# then runs several times slower. A counting loop over
+4×10⁹ iterations measured 0.77 s optimized against 6.9 s unoptimized — the
+optimized figure being identical to the same loop written by hand in C#.
+
+Use ~-d~ to read the generated code or to step through it, not to run it.

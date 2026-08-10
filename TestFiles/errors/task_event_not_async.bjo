@@ -1,0 +1,20 @@
+;; `task->event` over a synchronous import.
+;;
+;; There is no task, so there is nothing to make an event of: an ordinary .NET
+;; call is made where it is written and is over by the time the next form runs.
+;; Nothing to race, nothing to withdraw, nothing to cancel.
+
+;; EXPECT-ERROR: imported without #:async
+;; EXPECT-ERROR: no task to wait for
+
+(import (std prelude))
+
+;; Not `write-line`: that is the prelude's port operation, and an ordinary
+;; binding wins over an extern alias — the file would then be rejected for
+;; the wrong reason, which this suite checks for.
+(import/extern
+  (console-write-line (: System.Console.WriteLine (-> string void))))
+
+(defbjo (main args)
+  (def written (sync (task->event (console-write-line "hello"))))
+  0)

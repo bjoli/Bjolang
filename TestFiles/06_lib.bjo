@@ -1,0 +1,22 @@
+;; No imports at all: the prelude is linked into every module, and the port
+;; vocabulary — `read-line` here — is part of it. `(std ports)` is only needed
+;; for the drains that take a reader procedure.
+(export poop-on-you)
+
+;; Standard input is a port like any other, reached through the dynamic
+;; environment rather than through a nullary `read-line` of its own — which is
+;; also what lets a test drive this with `(parameterize ((current-input-port
+;; (open-input-string "...")) ) ...)`.
+(: get-name (-> string))
+(defun (get-name)
+  (displayln "What is your name? ")
+  (def name (read-line (parameter-ref current-input-port)))
+  (if (equal? name "")
+      (get-name)
+      name))
+
+(: poop-on-you (-> System.Void))
+(defun (poop-on-you)
+  (def name (get-name))
+  (display "Poop on you, ")
+  (displayln name))

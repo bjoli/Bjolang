@@ -1,0 +1,165 @@
+;; Iterating and building the runtime's collections at their own speed.
+;;
+;; A Vec is a tree: indexing it is O(log32 n), so walking one by index pays that
+;; per element. Its cursor is now its native struct enumerator, wrapped in a
+;; class so that `MoveNext` advances the loop's cursor rather than a copy of it —
+;; one allocation on entry, none per element.
+;;
+;; The collectors accumulate into the collections' own builders. That is mutable
+;; accumulation, which is safe here because a loop slot is used linearly: there
+;; is no way to resume a loop twice and see the same accumulator again.
+(import (std prelude))
+
+;; ---------------------------------------------------------------------------
+;; Iterating
+;; ---------------------------------------------------------------------------
+
+(: sum-vec (-> (Vec int) int))
+(defun (sum-vec v)
+  (loop (:for x v)
+        (:acc total (summing x))))
+
+(: first-of-vec (-> (Vec int) int))
+(defun (first-of-vec v)
+  (loop (:for x v)
+        (:acc out (listing x))
+        => (list-head out)))
+
+;; A Map's elements are its pairs. The pattern destructures them.
+(: key-sum (-> (Map int int) int))
+(defun (key-sum m)
+  (loop (:for (Tuple k v) m)
+        (:acc total (summing k))))
+
+(: value-sum (-> (Map int int) int))
+(defun (value-sum m)
+  (loop (:for (Tuple k v) m)
+        (:acc total (summing v))))
+
+;; ---------------------------------------------------------------------------
+;; Building
+;; ---------------------------------------------------------------------------
+
+(: doubled (-> (Vec int) (Vec int)))
+(defun (doubled v)
+  (loop (:for x v)
+        (:acc out (vecing (* 2 x)))))
+
+(: listed (-> (Vec int) (List int)))
+(defun (listed v)
+  (loop (:for x v)
+        (:acc out (listing x))))
+
+;; A round trip: iterate a map and rebuild it. `mapping` takes the pair whole,
+;; which is exactly what iterating yields.
+(: copied (-> (Map int int) (Map int int)))
+(defun (copied m)
+  (loop (:for kv m)
+        (:acc out (mapping kv))))
+
+;; ...and one built from a different shape entirely.
+(: squares (-> (Vec int) (Map int int)))
+(defun (squares v)
+  (loop (:for x v)
+        (:acc out (mapping (Tuple x (* x x))))))
+
+;; ---------------------------------------------------------------------------
+;; Range
+;; ---------------------------------------------------------------------------
+
+;; A Range's cursor is the number itself, so a loop over one is `c = lo`,
+;; `c < hi`, `c += by` with the bounds read straight out of the record — no
+;; sequence object is consulted per element and nothing is allocated per step.
+(: sum-range (-> int int))
+(defun (sum-range n)
+  (loop (:for i (range 0 n))
+        (:acc total (summing i))))
+
+(: count-by (-> int int int int))
+(defun (count-by lo hi by)
+  (loop (:for i (range-by lo hi by))
+        (:acc n (counting i))))
+
+;; A record type reaches an importing module with its *fields*, not just its
+;; name. Without them `record-get` here fails outright, and an inline template
+;; that reads one cannot be re-inferred at the splice — so `Range`'s methods
+;; would quietly fall back to interface calls.
+(: upper (-> Range int))
+(defun (upper r)
+  (record-get r hi))
+
+;; ---------------------------------------------------------------------------
+
+(: build-map (-> int (Map int int)))
+(defun (build-map n)
+  (let mk ((i 0) (m (map-empty)))
+    (if (= i n) m (mk (+ i 1) (map-set m i (* i 10))))))
+
+;; The builder is named rather than threaded through the loop slot as the
+;; mutator's result: `vecbuilder-add!` answers `Unit` now (§8.1), and the
+;; builder it mutated is the one already in hand.
+(: build-vec (-> int (Vec int)))
+(defun (build-vec n)
+  (let mk ((i 0) (b (vecbuilder-empty)))
+    (if (= i n)
+        (vecbuilder->vec b)
+        (let ()
+          (vecbuilder-add! b i)
+          (mk (+ i 1) b)))))
+
+(: expect (-> string int int void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok " label))
+      (println (string-append "FAILURE: " label))))
+
+(defun (main)
+  (def v [10 20 30 40])
+
+  (expect "sum-vec" (sum-vec v) 100)
+  (expect "vec-order" (first-of-vec v) 10)
+
+  ;; The cursor is fresh on every entry: iterating twice gives the same answer.
+  (expect "sum-vec-again" (sum-vec v) 100)
+
+  (expect "vecing-count" (vec-length (doubled v)) 4)
+  (expect "vecing-order" (vec-get (doubled v) 0) 20)
+  (expect "vecing-last" (vec-get (doubled v) 3) 80)
+
+  (expect "listing-count" (list-length (listed v)) 4)
+  (expect "listing-order" (list-head (listed v)) 10)
+
+  (def m (build-map 5))
+  (expect "map-built" (map-length m) 5)
+  (expect "key-sum" (key-sum m) 10)
+  (expect "value-sum" (value-sum m) 100)
+
+  (def c (copied m))
+  (expect "mapping-count" (map-length c) 5)
+  (expect "mapping-value" (map-get c 3) 30)
+
+  (def sq (squares v))
+  (expect "squares-count" (map-length sq) 4)
+  (expect "squares-value" (map-get sq 30) 900)
+
+  ;; Large enough that an O(log32 n) index per element, or a cell per element
+  ;; on the way in and another on the way out, would be the difference.
+  ;; 0..19999 sums to 199990000, which is the most that still fits in an int.
+  (def medium (build-vec 20000))
+  (expect "medium-sum" (sum-vec medium) 199990000)
+
+  (def big (build-vec 200000))
+  (expect "big-count" (vec-length big) 200000)
+  (expect "big-vecing" (vec-length (doubled big)) 200000)
+  (expect "big-listing" (list-length (listed big)) 200000)
+
+  ;; 0..99 sums to 4950; 0,3,6,9 is four of them.
+  (expect "sum-range" (sum-range 100) 4950)
+  (expect "range-empty" (sum-range 0) 0)
+  (expect "count-by" (count-by 0 10 3) 4)
+  (expect "imported-record-field" (upper (range 2 7)) 7)
+
+  (def bigmap (squares big))
+  (expect "big-mapping" (map-length bigmap) 200000)
+  (expect "big-mapping-value" (map-get bigmap 1000) 1000000)
+  0)

@@ -1,0 +1,57 @@
+(import (std prelude))
+
+
+
+;; `bind`'s own `%b` is method-level, not the trait's target: it is exactly the
+;; restriction inline traits lift, and it reaches C# as a generic *method*
+;; parameter.
+(: pairs (-> (List int)))
+(defun (pairs)
+  (do (:bind x (Cons 1 (Cons 2 Nil)))
+      (:bind y (Cons 10 (Cons 20 Nil)))
+      (:return (+ x y))))
+
+;; The same block, at a different instance. Two `Monad` implementations coexist
+;; in one program, which is what keying the template registry on the constructor
+;; is for.
+(: safe-div (-> int int (Option int)))
+(defun (safe-div a b)
+  (if (= b 0) None (Some (/ a b))))
+
+(: calc (-> int (Option int)))
+(defun (calc n)
+  (do (:bind half (safe-div n 2))
+      (:let  doubled (* half 2))
+      (:bind third (safe-div doubled 3))
+      (:return (+ doubled third))))
+
+;; The last form of a block may be any `m a`, not necessarily a `:return`. That
+;; is what lets a monadic loop put its own recursive call in tail position.
+(: countdown (-> int (List int)))
+(defun (countdown n)
+  (if (= n 0)
+      (pure 0)
+      (do (:bind x (Cons n Nil))
+          (countdown (- x 1)))))
+
+(: show-list (-> (List int) string))
+(defun (show-list xs)
+  (list-foldl (fun (acc x) (string-append acc (string-append " " (int->string x)))) "" xs))
+
+(: show-option (-> (Option int) string))
+(defun (show-option o)
+  (match o
+    ((Some v) (int->string v))
+    (None "none")))
+
+(defun (main)
+  (println (show-list (pairs)))
+  (println (show-option (calc 12)))
+  (println (show-option (calc 0)))
+  (println (show-option (calc 3)))
+  (println (show-list (countdown 4)))
+  ;; `pure` mentions its constructor only in its result, so nothing about the
+  ;; call itself says which instance it is. The annotation on `one` does.
+  (def (: one (List int)) (pure 1))
+  (println (show-list one))
+  0)

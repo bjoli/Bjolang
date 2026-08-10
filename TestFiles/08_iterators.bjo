@@ -1,0 +1,60 @@
+;; The cursor protocol and the collector protocol, used directly.
+;;
+;; This test used to exercise an `Iterable` that returned a separate `Iterator`
+;; value, and had been failing with "Unbound variable: iterate" for long enough
+;; to be skipped by the runner: the old trait's methods were never exported.
+;; The protocol it now covers is the one `(loop ...)` is built on.
+(import (std prelude))
+
+;; A List's cursor is the list itself.
+(: sum-list (-> (List int) int))
+(defun (sum-list xs)
+  (let lp ((c (start xs)) (acc 0))
+    (if (done? xs c)
+        acc
+        (lp (next xs c) (+ acc (current xs c))))))
+
+;; A Vec's is a bare int, which is what passing the sequence to every method
+;; buys: no (vector, index) pair, no allocation per step.
+(: sum-vec (-> (Vec int) int))
+(defun (sum-vec v)
+  (let lp ((c (start v)) (acc 0))
+    (if (done? v c)
+        acc
+        (lp (next v c) (+ acc (current v c))))))
+
+;; The collector protocol, with the collector bound the way a loop prologue
+;; binds it. A plain `let` here would generalize `listing` to `forall a. Listing a`
+;; and codegen would emit a type parameter that was never declared.
+(: collect (-> (List int) (List int)))
+(defun (collect xs)
+  (let/mono col listing
+    (let lp ((c (start xs)) (acc (init col)))
+      (if (done? xs c)
+          (finish col acc)
+          (lp (next xs c) (step col acc (current xs c)))))))
+
+;; A collector with a construction argument.
+(: last-or (-> (List int) int int))
+(defun (last-or xs seed)
+  (let/mono col (folding seed)
+    (let lp ((c (start xs)) (acc (init col)))
+      (if (done? xs c)
+          (finish col acc)
+          (lp (next xs c) (step col acc (current xs c)))))))
+
+(: expect (-> string int int void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok " label))
+      (println (string-append "FAILURE: " label))))
+
+(defun (main)
+  (def xs (Cons 1 (Cons 2 (Cons 3 Nil))))
+  (expect "sum-list" (sum-list xs) 6)
+  (expect "sum-vec" (sum-vec [4 5 6]) 15)
+  (expect "collect" (list-length (collect xs)) 3)
+  (expect "collect-head" (list-head (collect xs)) 1)
+  (expect "folding" (last-or xs 0) 3)
+  (expect "folding-empty" (last-or Nil 99) 99)
+  0)

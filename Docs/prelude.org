@@ -1,0 +1,272 @@
+* Bjolang Prelude
+
+The prelude contains the default environment available to all Bjolang programs. These procedures are automatically in scope.
+
+Nothing here has to be imported. ~(std prelude)~ is linked into every module the compiler loads, so writing ~(import (std prelude))~ is allowed but redundant. (Modules under ~lib/~ are the exception: the standard library says what it depends on explicitly, since ~prelude~ itself imports ~maths~.)
+
+The prelude is nevertheless made of two halves, and it is worth knowing which is which when reading the sources:
+
+- The *builtin* environment (~Prelude.fs~, backed by ~BjolangRuntime~) holds what cannot be written in Bjolang: the operators, the generic collections, the dynamic environment, and the handful of places where a .NET ~null~ has to be turned into something the language can talk about.
+- ~lib/std/prelude.bjo~ is an ordinary Bjolang module. It holds everything that *is* just a .NET call — the string, conversion, file, path and port operations below — plus the traits (~->str~, ~Iterable~, ~Collector~, ~Functor~, ~Num~) and ~print~/~println~.
+
+Sections below are marked =(std prelude)= where they live in the second.
+
+** Core Values and Constants
+- ~true~ : Boolean true
+- ~false~ : Boolean false
+- ~void~ (also ~Unit~, ~System.Void~) : the unit type. A *value* type, not C#'s
+  ~void~ — see "~void~ is the unit type" in ~Syntax.org~ for why. Procedures
+  documented below as returning nothing return this.
+
+** I/O
+- ~(display x)~ : Prints ~x~ to standard output without a newline.
+- ~(displayln x)~ : Prints ~x~ to standard output with a newline.
+- ~(print x)~ : Generic print utilizing the ~->str~ trait. =(std prelude)=
+- ~(println x)~ : Generic println utilizing the ~->str~ trait. =(std prelude)=
+- ~(newline)~ : Prints a newline character.
+
+There is no nullary ~read-line~. Standard input is a port like any other, reached through the dynamic environment: ~(read-line (parameter-ref current-input-port))~, with ~read-line~ the port operation under "Ports" below. That is what makes input redirectable with ~parameterize~ instead of being wired to the console.
+
+** Math Operators
+Standard polymorphic math operators (deferred to C# for resolution):
+- ~(+ a b)~
+- ~(- a b)~
+- ~(* a b)~
+- ~(/ a b)~
+- ~(% a b)~
+
+** Comparison
+- ~(= a b)~
+- ~(< a b)~
+- ~(> a b)~
+- ~(<= a b)~
+- ~(>= a b)~
+- ~(eq? a b)~ : Pointer/Reference equality (structural for value types).
+- ~(equal? a b)~ : Structural/Generic equality.
+
+** String Operations
+- ~(string-append a b)~ : Concatenates strings ~a~ and ~b~. =(std prelude)=
+- ~(string-length s)~ : Returns the length of string ~s~. =(std prelude)=
+- ~(string-empty? s)~ : Returns true if ~s~ has no characters. Builtin rather than =(std prelude)=, so that it sits with ~list-empty?~, ~vec-empty?~ and ~map-empty?~ rather than alone in the library.
+
+** Conversions
+The numeric ones are =(std prelude)=; the keyword and symbol ones are builtin, since ~Keyword~, ~Symbol~ and ~char~ are not .NET types Bjolang can name.
+- ~(byte->string b)~
+- ~(int->string i)~ (also ~number->string~)
+- ~(long->string l)~
+- ~(double->string d)~
+- ~(string->int s)~
+- ~(string->double s)~
+- ~(keyword->string kw)~ : Returns the string name of a keyword.
+- ~(string->keyword s)~ : Interns a string as a ~Keyword~.
+- ~(symbol->string sym)~ : Returns the string name of a symbol.
+- ~(string->symbol s)~ : Interns a string as a ~Symbol~.
+
+** Files =(std prelude)=
+Whole-file operations, for when the contents fit in memory. They throw as the underlying .NET methods do; wrap a call in ~try~ to get a ~Result~ instead. Reach for the ports below when the file is too large to hold, or when the handle is wanted for more than its contents.
+- ~(file-read-text path)~ : The whole file, as one string.
+- ~(file-write-text path contents)~ : Writes ~contents~, truncating the file if it exists.
+- ~(file-append-text path contents)~ : Appends ~contents~.
+- ~(file-exists? path)~
+- ~(file-delete path)~
+- ~(file-read-lines/seq path)~ : The lines, pulled lazily. Builtin rather than =(std prelude)=, because interop cannot equate .NET's ~IEnumerable<string>~ with ~(Seq string)~.
+- ~(file-read/seq reader path)~ : The same, pulled through any ~(-> TextInputPort %a)~. Opens the file once per enumeration and disposes it, so the sequence may be walked more than once — which is what ~(std ports)~' ~file->seq~ is built on, and what a ~seql~ over an already-open port cannot do. Prefer ~file->seq~, which reports a missing file as a ~Result~ rather than throwing on the first pull.
+
+** Paths =(std prelude)=
+Textual operations on path strings; none of them touches the file system.
+- ~(path-absolute path)~
+- ~(path-combine part ...)~ : Variadic.
+- ~(path-filename path)~
+- ~(path-file-extension path)~
+- ~(path-directory path)~ : Builtin rather than =(std prelude)=: ~GetDirectoryName~ answers null for a root and for a bare filename, and that sentinel is turned into ~""~ at the boundary.
+
+** Ports =(std prelude)=
+Textual ports, in the R7RS shape. A port *is* the .NET object: ~TextInputPort~ is ~System.IO.TextReader~ and ~TextOutputPort~ is ~System.IO.TextWriter~, so a file port and a string port are the same type to every caller and ~with-open~ disposes either. Opening returns a ~Result~ because a missing file is expected; operating throws, because a device error mid-stream is not.
+
+Only the *reader-parameterised* drains — ~port->list~, ~port->vec~, ~port->seq~ and ~file->seq~ — are in ~(std ports)~ and have to be imported. Opening, reading, writing and closing are here, since a program that reads a file should not need a header line to do it.
+
+- ~(open-input-file path)~ : ~(Result Exception TextInputPort)~. The ~Err~ carries the real .NET exception, so an arm can say ~(:is System.IO.FileNotFoundException e)~.
+- ~(open-input-string contents)~ : A string as an input port. Cannot fail, so no ~Result~.
+- ~(open-output-file path)~ : ~(Result Exception TextOutputPort)~, truncating the file if it exists.
+- ~(close-input-port p)~ / ~(close-output-port p)~ : Rarely needed — ~with-open~ disposes a port however the body ends. Two functions rather than one, because ~.Dispose~ needs a concrete receiver.
+- ~(flush-port p)~
+- ~(port-eof? p)~ : Whether the port has no more input. Peeks, so asking consumes nothing.
+- ~(read-line p)~ : The next line, without its newline. *Throws at end of input* — guard with ~port-eof?~.
+- ~(read-line/opt p)~ : The next line, or ~None~ at end of input, for when the check and the read want to be one step.
+- ~(read-all p)~ : Everything remaining, as one string. Empty at end of input.
+- ~(port->lines p)~ : Every remaining line, as a ~(Vec string)~. The drain to reach for when the shape does not matter; it runs in the runtime, so each line is added once.
+- ~(write-string p s)~ / ~(write-line p s)~ : The port comes first, as it does for every operation here.
+
+Note that ~write-line~ is a prelude binding, and an ordinary binding wins over an ~import/extern~ alias of the same name — so a module that wants ~System.Console.WriteLine~ should alias it as something else, ~console-write-line~ say.
+
+** Keywords and Symbols
+Keywords (~:foo~ or ~#:foo~) and quoted symbols (~'foo~) are interned first-class types.
+- ~(keyword? x)~ : Returns true if ~x~ is a ~Keyword~.
+- ~(symbol? x)~ : Returns true if ~x~ is a ~Symbol~.
+- Keywords and symbols can be compared with ~(eq? a b)~ for $O(1)$ reference equality and used as map keys.
+
+** Lists (~SchemeList~)
+Built-in functional linked lists.
+- ~(Cons head tail)~, ~(cons head tail)~ : Constructs a list.
+- ~(Nil)~, ~(list-empty)~ : Returns an empty list.
+- ~(list-head lst)~ : Returns the first element.
+- ~(list-tail lst)~ : Returns the rest of the list.
+- ~(list-empty? lst)~ : Returns true if the list is empty.
+- ~(list-length lst)~ : Returns the number of elements. O(n) — a ~List~ stores no count. (There is no ~list-count~: it was the same walk under a second name.)
+- ~(list-reverse lst)~ : Reverses the list.
+- ~(list-map f lst)~ : Maps function ~f~ over the list.
+- ~(list-filter f lst)~ : Filters elements satisfying ~f~.
+- ~(list-foldl f init lst)~ : Left fold; ~f~ receives ~(acc item)~.
+- ~(list-foldr f init lst)~ : Right fold; ~f~ receives ~(item acc)~.
+- ~(list-for-each f lst)~ : Applies ~f~ to each element for side effects.
+- ~(list-ref lst index)~ : Gets the element at ~index~.
+
+** Vectors (~Vec~ / ~RrbList~)
+Persistent immutable vectors.
+- ~(vec-empty)~ : Returns an empty vector.
+- ~(vec-get vec index)~ : Gets the element at ~index~.
+- ~(vec-set vec index value)~ : Returns a new vector with ~value~ at ~index~.
+- ~(vec-add vec item)~ : Returns a new vector with ~item~ appended.
+- ~(vec-insert vec index item)~ : Returns a new vector with ~item~ inserted at ~index~.
+- ~(vec-remove-at vec index)~ : Returns a new vector with the element at ~index~ removed.
+- ~(vec-pop vec)~ : Returns a new vector with the last element removed.
+- ~(vec-pop-first vec)~ : Returns a new vector with the first element removed.
+- ~(vec-slice vec start count)~ : Returns a sub-vector.
+- ~(vec-merge vec other)~ : Concatenates two vectors.
+- ~(vec-merge/pure vec other)~ : Concatenates two vectors (pure).
+- ~(vec-split vec index)~ : Splits the vector into two vectors at ~index~.
+- ~(vec-map f vec)~ : Maps ~f~ over the vector.
+- ~(vec-filter f vec)~ : Filters the vector.
+- ~(vec-fold f init vec)~ : Left fold; ~f~ receives ~(acc item)~.
+- ~(vec-reduce f vec)~ : Reduces the vector.
+- ~(vec-for-each f vec)~ : Applies ~f~ for side effects.
+- ~(vec-for-each/range f vec start count)~ : Applies ~f~ over a range.
+- ~(vec-iter f vec)~ : Iterates with early exit (returns true if all elements matched).
+- ~(vec-length vec)~ : Returns the size of the vector. O(1) — a ~Vec~ stores its count.
+- ~(vec-empty? vec)~ : Returns true if the vector has no elements. O(1), off the same stored count. Note the pair: ~vec-empty~ *constructs* an empty vector, ~vec-empty?~ *asks*.
+- ~(vec-contains vec item)~ : Checks if ~item~ is in the vector.
+- ~(vec-compact vec)~ : Compacts the vector's internal structure.
+
+** Vector Builders
+Mutable builders for efficiently constructing vectors.
+- ~(vecbuilder-empty)~ : Creates an empty builder.
+- ~(vec->vecbuilder vec)~ : Creates a builder from a vector.
+- ~(vecbuilder-add! builder item)~ : Mutates the builder by appending ~item~.
+- ~(vecbuilder-set! builder index item)~ : Mutates the builder by setting ~item~ at ~index~.
+- ~(vecbuilder-get builder index)~ : Gets the element at ~index~.
+- ~(vecbuilder-length builder)~ : Returns the size.
+- ~(vecbuilder->vec builder)~ : Freezes the builder into an immutable vector.
+
+** List Builders
+Mutable builders (~SchemeListBuilder~) for efficiently constructing Scheme lists front-to-back in O(1) time per item.
+- ~(listbuilder-empty)~ : Creates an empty builder.
+- ~(list->builder list)~ / ~(list->listbuilder list)~ : Creates a builder initialized with a copy of the list.
+- ~(listbuilder-add! builder item)~ : Appends ~item~ to the end of the builder.
+- ~(listbuilder-add-range! builder seq)~ : Appends all elements in ~seq~ to the builder.
+- ~(listbuilder-length builder)~ : Returns the count of elements in the builder.
+- ~(listbuilder->list builder)~ : Freezes the builder into an immutable ~List~.
+
+** Maps (~Map~)
+High-performance immutable CHAMP (Compressed Hash-Array Mapped Prefix-tree) maps.
+- ~(map-empty)~ : Returns an empty map.
+- ~(map-ref map key)~ : Returns the value for ~key~; throws if not found.
+- ~(map-get map key)~ : Returns the value for ~key~; throws if not found.
+- ~(map-get-or map key default-val)~ : Returns the value for ~key~, or ~default-val~ if not found.
+- ~(map-try-get map key)~ : Returns ~(Some val)~ if found, or ~None~ if not.
+- ~(map-set map key value)~ : Returns a new map with ~key~ mapped to ~value~.
+- ~(map-add map key value)~ : Returns a new map with ~key~ mapped to ~value~.
+- ~(map-remove map key)~ : Returns a new map with ~key~ removed.
+- ~(map-contains? map key)~ : Returns true if ~key~ is in ~map~.
+- ~(map-has-key? map key)~ : Returns true if ~key~ is in ~map~.
+- ~(map-length map)~ : Returns the number of key-value pairs in ~map~.
+- ~(map-empty? map)~ : Returns true if ~map~ is empty.
+- ~(map-clear map)~ : Returns an empty map.
+- ~(map-keys map)~ : Returns a lazy sequence (~Seq~) of the map's keys.
+- ~(map-values map)~ : Returns a lazy sequence (~Seq~) of the map's values.
+- ~(map-merge map other)~ : Merges two maps, with entries in ~other~ taking precedence.
+
+A map's *element* is its ~(key . value)~ pair, which is what ~map->list~,
+~map->seq~, ~map-cursor-current~ and the ~#map(...)~ literal all deal in, and
+what ~Iterable~'s ~%elem~ and ~Foldable~'s ~%item~ are for ~(Map %k %v)~. So
+every callback below takes **one** argument, the pair, and destructures it:
+
+#+BEGIN_SRC scheme
+(map-fold (fun (acc kv) (def (_ . v) kv) (+ acc v)) 0 m)
+#+END_SRC
+
+A two-argument callback over a key and a value could not be passed where a trait
+expects a function of one ~%item~, which is why there is only the one form. The
+pair is a value tuple, so handing it over costs no allocation.
+
+- ~(map-merge-with f map other)~ : Merges two maps using resolver ~f~ for duplicate keys; ~f~ receives the triple ~(key val1 val2)~.
+- ~(map-for-each f map)~ : Applies ~(f pair)~ to each entry for side effects.
+- ~(map-iter f map)~ : Iterates with early exit; ~f~ receives the pair and returns a boolean.
+- ~(map-fold f init map)~ : Folds over the map; ~f~ receives ~(acc pair)~.
+- ~(map-filter f map)~ : Returns a new map containing only entries where ~(f pair)~ is true.
+- ~(map-map f map)~ : Returns a new map whose values are ~(f pair)~. The key is what the result is filed under, so the mapper cannot move it.
+- ~(map-map-values f map)~ : Returns a new map with each value replaced by ~(f value)~, keys untouched. This is the one ~Functor~ uses: its ~(-> %a %b)~ has room for a single element type, and for ~(Map %k %v)~ that is ~%v~.
+- ~(list->map lst)~ : Constructs a map from a list of ~(key . val)~ pairs/tuples.
+- ~(map->list map)~ : Converts the map to a list of pairs/tuples.
+- ~(vec->map vec)~ : Constructs a map from a vector of pairs/tuples.
+- ~(map->vec map)~ : Converts the map to a vector of pairs/tuples.
+- ~(seq->map seq)~ : Constructs a map from a sequence of pairs/tuples.
+- ~(map->seq map)~ : Converts the map to a sequence of pairs/tuples.
+
+** Options (~Option~)
+Optional value type representing presence (~Some~) or absence (~None~).
+- ~(Some val)~ : Wraps ~val~ in an option.
+- ~None~ : Represents no value.
+- ~(some? opt)~ : Returns true if ~opt~ is ~Some~.
+- ~(none? opt)~ : Returns true if ~opt~ is ~None~.
+- ~(option-get opt)~ : Returns the unwrapped value; throws if ~None~.
+- ~(option-get-or opt default-val)~ : Returns the unwrapped value, or ~default-val~ if ~None~.
+
+** Sequences (~Seq~)
+Lazy, demand-driven sequences.
+- ~(seq-empty)~ : Returns an empty sequence.
+- ~(seq-empty? s)~ : Returns true if the sequence is empty.
+- ~(seq-head s)~ : Returns the first element of the sequence.
+- ~(seq-tail s)~ : Returns the rest of the sequence.
+- ~(seq-map f s)~ : Lazily maps ~f~ over the sequence.
+- ~(seq-filter f s)~ : Lazily filters elements satisfying ~f~.
+- ~(seq-fold f init s)~ : Folds over the sequence; ~f~ receives ~(acc item)~.
+- ~(seq-unfold generator state)~ : Produces a sequence from ~state~ and a ~generator~ function returning ~(Some (Tuple next-item next-state))~ or ~None~.
+- ~(seq-take s n)~ : Takes the first ~n~ elements lazily.
+- ~(seq-skip s n)~ : Skips the first ~n~ elements lazily.
+- ~(seq-append s1 s2)~ : Lazily concatenates two sequences.
+- ~(seq-for-each f s)~ : Applies ~f~ to each element for side effects.
+- ~(seq-length s)~ : Consumes the sequence and returns the count.
+- ~(seq-range start count)~ : Returns a lazy integer range sequence.
+- ~(list->seq lst)~ : Converts a list to a lazy sequence.
+- ~(seq->list s)~ : Consumes a sequence into a list.
+- ~(vec->seq vec)~ : Converts a vector to a lazy sequence.
+- ~(seq->vec s)~ : Consumes a sequence into a vector.
+
+** Iterators
+Standard iterator protocol for collections.
+- ~(iterate col)~ : Returns an iterator for the collection.
+- ~(done? iter)~ : Returns true if the iterator is exhausted.
+- ~(current iter)~ : Returns the current element.
+- ~(next iter)~ : Advances the iterator.
+
+** Traits
+- ~->str~ : Trait for string representation with method ~(->str x)~. Implemented for ~string~, ~int~, ~double~, ~byte~, ~long~.
+- ~Iterator~ : Trait for iterators.
+- ~Iterable~ : Trait for iterable collections.
+- ~Foldable~ : ~(fold f init col)~, where ~f~ receives ~(acc item)~. Implemented
+  for ~(List %a)~, ~(Vec %a)~ and ~(Map %k %v)~. A map's ~%item~ is its
+  ~(Tuple %k %v)~ pair.
+- ~Collection~ : ~(length c)~, ~(empty? c)~ and ~(->seq c)~ — what a collection
+  can be *asked*, as opposed to walked (~Iterable~) or consumed (~Foldable~).
+  The associated ~%content~ is the element type, and for a ~(Map %k %v)~ that is
+  the pair. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~, ~Range~ and
+  ~(Seq %a)~; not for ~string~ or ~(Array %a)~, neither of which has a ~->seq~
+  to give. Note that ~length~ is O(1) only where the collection stores a count
+  (~Vec~, ~Map~, and ~Range~, which computes it): a ~List~ walks, and a ~Seq~
+  walks *and* consumes an effectful source.
+- ~Functor~ : ~(map f x)~, where ~f~ receives one element and returns its
+  replacement. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Option %a)~ and
+  ~(Map %k %v)~. The abstracted argument is the last one, so mapping a
+  ~(Map %k %v)~ moves the *values* and leaves the keys alone.
+gument is the last one, so mapping a
+  ~(Map %k %v)~ moves the *values* and leaves the keys alone.

@@ -1,0 +1,186 @@
+;; The general `(loop ...)` form: one level, lockstep sequences, accumulators.
+;;
+;; A loop is a left fold with early exit that always delivers a result: every
+;; exit runs the same finish block. Sequences are extended by writing an
+;; `Iterable` impl and accumulators by writing a `Collector` impl, so nothing
+;; here is special-cased in the compiler beyond the clause syntax itself.
+
+(import (std prelude))
+
+;; ---------------------------------------------------------------------------
+;; Sequences
+;; ---------------------------------------------------------------------------
+
+(: collect (-> (List int) (List int)))
+(defun (collect xs)
+  (loop (:for x xs)
+        (:acc out (listing x))
+        => out))
+
+;; A Vec's cursor is a bare int rather than a (vector, index) pair, which is
+;; what passing the sequence to every method buys.
+(: collect-vec (-> (Vec int) (List int)))
+(defun (collect-vec v)
+  (loop (:for x v)
+        (:acc out (listing x))))
+
+;; Consecutive `:for` clauses advance in lockstep at one level, and the level
+;; ends when the *first* of them is done — tested in clause order.
+;;
+;; The short sequence is second on purpose: `done?` short-circuits, so when it
+;; is exhausted the loop leaves without calling `current` on either. Reading a
+;; List past its end throws, so this terminating at all is the assertion.
+(: zipped (-> (Vec int) (List int) (List int)))
+(defun (zipped longer shorter)
+  (loop (:for a longer)
+        (:for b shorter)
+        (:acc out (listing (+ a b)))))
+
+;; A `:for` pattern destructures and must always match; it is not a filter.
+(: seconds (-> (List (Tuple int string)) (List string)))
+(defun (seconds pairs)
+  (loop (:for (Tuple n s) pairs)
+        (:acc out (listing s))))
+
+;; ---------------------------------------------------------------------------
+;; Evaluation counts
+;; ---------------------------------------------------------------------------
+
+;; The sequence expression belongs to the prologue: evaluated once on entry,
+;; never per iteration. Returns the number of times it was evaluated.
+(: seq-evals (-> (List int) int))
+(defun (seq-evals xs)
+  (def/mutable calls 0)
+  (defun (noisy ys) (set! calls (+ calls 1)) ys)
+
+  (def total
+    (loop (:for x (noisy xs))
+          (:acc t (summing x))))
+
+  calls)
+
+;; Clause order is significant: a `:when` between two `:let`s means the second
+;; does not evaluate on a skipped iteration. Returns how many times the `:let`
+;; below the `:when` ran, and the sum it produced.
+(: filtered-evals (-> (List int) (Tuple int int)))
+(defun (filtered-evals xs)
+  (def/mutable calls 0)
+  (defun (noisy x) (set! calls (+ calls 1)) x)
+
+  (def total
+    (loop (:for x xs)
+          (:let doubled (* x 2))
+          (:when (= 0 (% doubled 4)))
+          (:let counted (noisy doubled))
+          (:acc t (summing counted))))
+
+  (Tuple calls total))
+
+;; ---------------------------------------------------------------------------
+;; Accumulators
+;; ---------------------------------------------------------------------------
+
+;; Several accumulators and no `=>`: the result is a tuple of the finished
+;; values in declaration order. `#:when` gates only the step, and is intercepted
+;; by the loop rather than passed to the collector.
+(: partition (-> (List int) (Tuple (List int) (List int))))
+(defun (partition xs)
+  (loop (:for x xs)
+        (:acc yes (listing x) #:when (= 0 (% x 2)))
+        (:acc no (listing x) #:when (not (= 0 (% x 2))))))
+
+;; An accumulator is in scope inside the loop under its own name, holding the
+;; value as of that point in the clause list; in the finish block the same name
+;; is the *finished* value. `folding` is the primitive: the accumulator simply
+;; becomes the step expression.
+(: largest (-> (List int) int))
+(defun (largest xs)
+  (loop (:for x xs)
+        (:acc best (folding 0 (if (> x best) x best)))
+        => best))
+
+;; Two `listing` collectors in one function at two different element types. If a
+;; prologue binding generalized, the element type would never pin down and
+;; codegen would emit a type parameter that was never declared.
+(: both (-> (List int) (List string) (Tuple int int)))
+(defun (both xs ys)
+  (def is (loop (:for x xs) (:acc out (listing x))))
+  (def ss (loop (:for y ys) (:acc out (listing y))))
+  (Tuple (list-length is) (list-length ss)))
+
+;; No accumulators and no `=>`: pure effect, and types as void. The loop is a
+;; statement here, and `add-all` returns what it accumulated by hand.
+(: add-all (-> (List int) int))
+(defun (add-all xs)
+  (def/mutable side 0)
+
+  (loop (:for x xs)
+        (:do (set! side (+ side x))))
+
+  side)
+
+;; ---------------------------------------------------------------------------
+;; A loop as a value, iterating deeply
+;; ---------------------------------------------------------------------------
+
+(: build (-> int (List int)))
+(defun (build n)
+  (let lp ((i 0) (acc Nil))
+    (if (= i n) acc (lp (+ i 1) (Cons i acc)))))
+
+;; In expression position, and deep enough that anything but a jump would
+;; overflow the stack rather than answer.
+(: deep (-> int int))
+(defun (deep n)
+  (+ 1 (loop (:for x (build n))
+             (:acc c (counting x)))))
+
+;; ---------------------------------------------------------------------------
+
+(: expect (-> string int int void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok " label))
+      (println (string-append "FAILURE: " label))))
+
+(: show (-> (List int) string))
+(defun (show xs)
+  (list-foldl (fun (acc x) (string-append acc (string-append " " (int->string x)))) "" xs))
+
+(defun (main)
+  (def xs (Cons 1 (Cons 2 (Cons 3 (Cons 4 Nil)))))
+
+  (expect "collect" (list-length (collect xs)) 4)
+  (expect "collect-order" (list-head (collect xs)) 1)
+  (expect "collect-vec" (list-head (collect-vec [7 8 9])) 7)
+
+  ;; 4 elements against 2: stops at the shorter, and never reads past its end.
+  (expect "lockstep-length" (list-length (zipped [10 20 30 40] (Cons 1 (Cons 2 Nil)))) 2)
+  (expect "lockstep-value" (list-head (zipped [10 20 30 40] (Cons 1 (Cons 2 Nil)))) 11)
+
+  (println (list-foldl string-append "" (seconds (Cons (Tuple 1 "a") (Cons (Tuple 2 "b") Nil)))))
+
+  (expect "sequence-evaluated-once" (seq-evals xs) 1)
+
+  ;; doubled is 2,4,6,8; those divisible by 4 are 4 and 8, summing to 12 — so
+  ;; the `:let` below the `:when` ran on 2 of the 4 iterations.
+  (def (ran total) (filtered-evals xs))
+  (expect "when-skips-later-clauses" ran 2)
+  (expect "when-filters" total 12)
+
+  (def (yes no) (partition xs))
+  (expect "partition-yes" (list-length yes) 2)
+  (expect "partition-no" (list-length no) 2)
+  (println (string-append (show yes) (string-append " /" (show no))))
+
+  (expect "largest" (largest (Cons 3 (Cons 9 (Cons 4 Nil)))) 9)
+  (expect "largest-empty" (largest Nil) 0)
+
+  (def (ni ns) (both xs (Cons "a" (Cons "b" Nil))))
+  (expect "both-ints" ni 4)
+  (expect "both-strings" ns 2)
+
+  (expect "effect-only" (add-all xs) 10)
+
+  (expect "deep" (deep 200000) 200001)
+  0)

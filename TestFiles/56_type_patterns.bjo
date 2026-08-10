@@ -1,0 +1,77 @@
+;; `(:is Type binder)` — a .NET type test in pattern position.
+;;
+;; A guarded call gives back `(Result System.Exception %a)`, which says a
+;; failure happened but not which one. `:is` is how an `Err` arm tells them
+;; apart, binding the value at the *narrowed* type so the arm can use members
+;; the scrutinee's static type does not have.
+(import (std prelude))
+
+(import/class
+  (StringBuilder (: System.Text.StringBuilder (-> StringBuilder))))
+
+(import/extern
+  (file-delete! (: System.IO.File.Delete (-> string void))))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; One guard, several failures, told apart by type. The arms are tried in
+;; order, so the specific type has to precede the general one.
+(: classify (-> string string))
+(defun (classify path)
+  (match (try (file-read-text path)
+           #:catch (System.IO.FileNotFoundException
+                    System.IO.DirectoryNotFoundException
+                    System.ArgumentException))
+    ((Ok text) "read")
+    ((Err (:is System.IO.FileNotFoundException)) "no such file")
+    ((Err (:is System.IO.DirectoryNotFoundException)) "no such directory")
+    ((Err e) "other")))
+
+;; The binder is narrowed: `.-FileName` belongs to FileNotFoundException, not
+;; to System.Exception, so this only compiles because the pattern narrowed it.
+(: missing-file-name (-> string string))
+(defun (missing-file-name path)
+  (match (try (file-read-text path) #:catch (System.IO.FileNotFoundException))
+    ((Ok text) "")
+    ((Err (:is System.IO.FileNotFoundException e)) (.-FileName e))))
+
+;; A type test on an ordinary .NET value, with no exceptions involved: the
+;; scrutinee is `object`, and each arm narrows it.
+(: describe (-> System.Object string))
+(defun (describe o)
+  (match o
+    ((:is System.String s) (string-append "string of length " (int->string (.-Length s))))
+    ((:is System.Text.StringBuilder b) (string-append "builder saying " (.ToString b)))
+    (_ "something else")))
+
+(defun (main)
+  (def path "56_type_patterns.tmp")
+  (file-write-text path "here")
+
+  (expect "success" (classify path) "read")
+  (expect "missing file" (classify "definitely-not-here.txt") "no such file")
+  (expect "missing directory" (classify "no/such/dir/file.txt") "no such directory")
+  (expect "unrelated failure" (classify "") "other")
+
+  ;; `.-FileName` belongs to FileNotFoundException rather than to
+  ;; System.Exception, so reading it at all is the thing being tested. .NET
+  ;; resolves it to a full path, so only the tail is compared.
+  (if (.EndsWith (missing-file-name "definitely-not-here.txt") "definitely-not-here.txt")
+      (println "ok: narrowed binder")
+      (println "FAILURE: narrowed binder did not name the missing file"))
+
+  (expect "object is a string" (describe (cast System.Object "abcd")) "string of length 4")
+
+  (def sb (StringBuilder.))
+  (ignore (.Append sb "hi"))
+  (expect "object is a builder" (describe (cast System.Object sb)) "builder saying hi")
+  (expect "object is neither" (describe (cast System.Object 7)) "something else")
+
+  (file-delete! path)
+  0)

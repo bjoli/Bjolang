@@ -1,0 +1,59 @@
+;; Foreign .NET interop: overload resolution.
+;;
+;; `StringBuilder.Append` has around twenty overloads. Which one a call means is
+;; decided at compile time, from the Bjolang types of its arguments, against the
+;; real metadata — so `(.Append sb 42)` and `(.Append sb "42")` are two
+;; different methods and neither is a guess.
+(import (std prelude))
+
+(import/class
+  (StringBuilder (: System.Text.StringBuilder (-> StringBuilder))))
+
+(import/extern
+  ;; The same name at three different argument types, imported three times.
+  ;; Each clause pins its own overload with a signature.
+  (abs-int (: System.Math.Abs (-> int int)))
+  (abs-double (: System.Math.Abs (-> double double)))
+  (abs-long (: System.Math.Abs (-> long long))))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+(defun (main)
+  ;; An exact match always beats a widening: `Append(int)` rather than
+  ;; `Append(long)` or `Append(double)`, even though both would accept an int.
+  (def si (StringBuilder.))
+  (ignore (.Append si 42))
+  (expect "Append(int)" (.ToString si) "42")
+
+  (def ss (StringBuilder.))
+  (ignore (.Append ss "42"))
+  (expect "Append(string)" (.ToString ss) "42")
+
+  (def sb (StringBuilder.))
+  (ignore (.Append sb true))
+  (expect "Append(bool)" (.ToString sb) "True")
+
+  ;; A widening is used when no exact match exists: there is no
+  ;; `Append(byte-as-int)`, so this reaches `Append(int)`.
+  (def sd (StringBuilder.))
+  (ignore (.Append sd 2.5))
+  (expect "Append(double)" (.ToString sd) "2.5")
+
+  ;; Mixed overloads on a static method, told apart by their declared types.
+  (expect "Math.Abs(int)" (int->string (abs-int -3)) "3")
+  (expect "Math.Abs(long)" (long->string (abs-long -3000000000L)) "3000000000")
+  (expect "Math.Abs(double)" (double->string (abs-double -2.5)) "2.5")
+
+  ;; Two arguments, two different overloads of the same instance method.
+  (def sr (StringBuilder.))
+  (ignore (.Append sr "xy"))
+  (ignore (.Insert sr 0 "ab"))
+  (expect "Insert(int, string)" (.ToString sr) "abxy")
+
+  0)
