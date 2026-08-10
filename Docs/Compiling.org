@@ -1,5 +1,32 @@
 * Compiling and running
 
+** Building the repository
+
+From a fresh checkout, in this order:
+
+#+BEGIN_SRC sh
+git submodule update --init --recursive          # Collections, Map, SchemeList, Bjoml
+dotnet build BjolangRuntime/BjolangRuntime.csproj -c Release
+dotnet build -c Release                          # the compiler itself
+./build_std.sh                                   # lib/std/*.dll, in dependency order
+./run_tests.sh
+#+END_SRC
+
+The runtime assemblies come first because everything a compiled program links
+against lives in ~BjolangRuntime/bin/Release/net10.0~ — see "Runtime assemblies"
+below — and the standard library comes before the tests because a missing
+~lib/std/*.dll~ is not an error, merely a silent fallback to compiling the whole
+library into every program that imports it.
+
+*** Moving the repository
+
+A compiled Bjolang module records the *absolute paths* of its dependencies, so
+every ~.dll~ built in the old location is stale the moment the directory moves —
+it links against files that are no longer there, and the failure names a missing
+module class rather than the cause. After a move, delete the build output under
+~TestFiles~ and ~lib/std~ and run the sequence above; ~run_tests.sh~ rebuilds
+~TestFiles/inc~ itself.
+
 ** ~bjor~
 
 ~bjor~ compiles a file and runs it:

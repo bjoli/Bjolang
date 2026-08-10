@@ -37,6 +37,82 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# --- Fixture libraries -------------------------------------------------------
+#
+# `TestFiles/inc` holds the modules the "across a dll" tests link against. The
+# group runner never sees them — they carry no numeric prefix — so without this
+# nothing builds them, and the tests that import one fail with a missing module
+# class rather than anything that names the cause.
+#
+# They are rebuilt every run rather than reused, because a stale `.dll` is worse
+# than a missing one: a compiled module records the *absolute paths* of its own
+# dependencies, so one built in another directory links against files that are
+# no longer there. That is exactly what a move of the repository leaves behind.
+#
+# Which files are modules is read off the source: one with an `(export ...)` is
+# a module and gets compiled, and the rest are include fragments, spliced into
+# whoever includes them and not modules at all. Build order follows the
+# `(import "...")` edges between them, so a new fixture needs no edit here.
+INC_DIR="TestFiles/inc"
+
+build_fixture_libs() {
+    local pending=()
+    local f
+
+    for f in "$INC_DIR"/*.bjo; do
+        [ -f "$f" ] || continue
+        if grep -qE '^[[:space:]]*\(export' "$f"; then
+            pending+=("$f")
+            rm -f "${f%.bjo}.dll"
+        fi
+    done
+
+    [ ${#pending[@]} -eq 0 ] && return 0
+
+    local progress=1
+    while [ ${#pending[@]} -gt 0 ] && [ $progress -eq 1 ]; do
+        progress=0
+        local remaining=()
+
+        for f in "${pending[@]}"; do
+            # Ready once every sibling module it imports has been built.
+            local ready=1
+            local dep
+            while read -r dep; do
+                [ -z "$dep" ] && continue
+                if [ -f "$INC_DIR/$dep" ] && [ ! -f "$INC_DIR/${dep%.bjo}.dll" ]; then
+                    ready=0
+                fi
+            done < <(grep -oE '\(import[[:space:]]+"[^"]+\.bjo"' "$f" \
+                     | grep -oE '"[^"]+"' | tr -d '"' | xargs -r -n1 basename)
+
+            if [ $ready -eq 1 ]; then
+                if ! dotnet "$COMPILER_DLL" --lib "$f" > "$LOG_DIR/inc.log" 2>&1; then
+                    echo -e "${RED}Failed to build fixture library $f${NC}"
+                    cat "$LOG_DIR/inc.log"
+                    exit 1
+                fi
+                progress=1
+            else
+                remaining+=("$f")
+            fi
+        done
+
+        pending=("${remaining[@]}")
+    done
+
+    if [ ${#pending[@]} -gt 0 ]; then
+        echo -e "${RED}Could not resolve a build order for: ${pending[*]}${NC}"
+        echo -e "${RED}A cycle, or an import naming a file that is not there.${NC}"
+        exit 1
+    fi
+}
+
+echo -e "${BLUE}Building fixture libraries in $INC_DIR...${NC}"
+build_fixture_libs
+echo -e "${GREEN}Fixture libraries built.${NC}"
+echo ""
+
 # Helper function to run a prefix group
 run_prefix_group() {
     local prefix="$1"
