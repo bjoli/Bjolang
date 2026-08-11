@@ -1307,6 +1307,11 @@ let rec parseExpr (s: SExpr) : Expr =
             // Vec literal: [1 2 3] → EVec
             | "vec-literal" -> EVec(processArgs args, listRange)
 
+            // List special form: (list 1 2 3) → EList, same as [1 2 3] for vecs.
+            // `list` used as a bare value (not in call position) remains an
+            // ordinary identifier that references the prelude rest-arg function.
+            | "list" -> EList(processArgs args, listRange)
+
             // Arithmetic and comparison, at any arity. Handled here rather than
             // in `Inference` so that everything downstream — the type checker,
             // the inliner and the operator emission in `Codegen` — continues to

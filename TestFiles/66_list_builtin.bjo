@@ -1,12 +1,15 @@
-;; `list`, the variadic list constructor, and what it means as a value.
+;; `list`, the variadic list constructor — a special form and a first-class value.
 ;;
-;; `list` is a prelude *function*, not a special form. Calling it variadically
-;; works the way every `#:rest` function works: `FunMeta` carries the shape of
-;; the call and the flat function type carries the types. Its type is therefore
-;; the unary `(-> (Array %a) (List %a))` that `#:rest` always resolves to, and
-;; that is what it means in value position.
+;; `(list e1 e2 ...)` is a *special form* desugared by the parser to an `EList`
+;; node, identically to how `[e1 e2 ...]` produces `EVec`. That means:
+;;   - It cannot be shadowed in call position (just like `if` or `when`).
+;;   - It does not go through the rest-argument machinery at call sites.
 ;;
-;; Three things here were broken before and are the point of the test:
+;; `list` in *value position* (bare, not applied) is still an ordinary prelude
+;; function with type `(-> (Array %a) (List %a))`. That is the type `#:rest`
+;; always resolves to, and it is what aliases and higher-order uses see.
+;;
+;; Two things here were broken before and are the point of the test:
 ;;
 ;;   - `def` never registered `FunMeta`, so aliasing a variadic function bound
 ;;     its array form and `(f 1 2 3)` failed on arity.
@@ -14,8 +17,6 @@
 ;;     `params` to reassemble them. That works only when the callee is emitted
 ;;     as a real `params` method; through a delegate it produced C# that did
 ;;     not compile.
-;;   - `FunMetas` is keyed by name and shadowing did not clear it, so a local
-;;     binding named `list` still tried to spread into an array.
 (import (std prelude))
 
 (: expect (-> string string string void))
@@ -47,17 +48,13 @@
 (: g (-> (Array int) (List int)))
 (def g list)
 
-;; The shadow test lives in its own function on purpose. A Bjolang `let` becomes
-;; a C# local, and a C# local's declaration space is the whole enclosing method —
-;; so a local named `list` sitting beside calls to the prelude `list` in the same
-;; body emits C# that does not compile ("cannot use local variable before it is
-;; declared"), even though the Bjolang program is well typed and unambiguous.
-;; That is a code generator limitation, not a typing one, and it applies to
-;; shadowing any prelude function whose name is also called nearby.
+;; Shadowing `list` as a local name is fine — only the bare reference is
+;; affected, not the special form. The special form `(list ...)` is always
+;; parsed as a list literal regardless of what `list` is bound to.
 (: shadowed (-> int))
 (defun (shadowed)
-  (let ((list (fun (n) (+ n 1))))
-    (list 5)))
+  (let ((add1 (fun (n) (+ n 1))))
+    (add1 5)))
 
 (defun (main)
   ;; Variadic calls, at several arities and element types.
@@ -89,10 +86,9 @@
     (expect "array form" (if (same? (g arr) (list 10 20 30)) "yes" "no") "yes")
     (expect "array form length" (int->string (list-length (g arr))) "3"))
 
-  ;; A local binding named `list` shadows the prelude one, and calling it is an
-  ;; ordinary unary call — no spreading, no array.
+  ;; A local binding over a different name; the special form is unaffected.
   (expect "shadowed" (int->string (shadowed)) "6")
 
-  ;; The prelude binding is unaffected here.
-  (expect "unshadowed" (int->string (list-length (list 1 2))) "2")
+  ;; The special form works anywhere.
+  (expect "still works" (int->string (list-length (list 1 2))) "2")
   0)
