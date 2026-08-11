@@ -443,6 +443,10 @@ let parseDefunRest (rest: SExpr list) : (FType option * SExpr list) =
 // `parseExprFn` is threaded in as a parameter because this function is defined
 // before `parseExpr`; the call site passes `parseExpr` directly.
 let desugarQuotedList (parseExprFn: SExpr -> Expr) (items: SExpr list) (r: Range) : Expr =
+    // Collect quoted items into a flat list and produce EList, giving '(...)
+    // the same inference path as (list ...) and []. Constructor injection
+    // (e.g. wrapping a string in ProcBang when the expected type is a union)
+    // therefore works on quasiquote literals for free.
     let rec quoteItem (s: SExpr) : Expr =
         let ir = getRange s
         match s with
@@ -457,24 +461,25 @@ let desugarQuotedList (parseExprFn: SExpr -> Expr) (items: SExpr list) (r: Range
         // Dotted pair in a quoted list: '(a . b) → (Tuple a b)
         | SList(SAtom { Token = Symbol "Tuple" } :: tupleItems, _) ->
             ETuple(List.map quoteItem tupleItems, ir)
-        // Nested list → recursive Cons chain
+        // Nested list: '('(a b) '(c d)) → EList [EList [a b]; EList [c d]]
         | SList(inner, lr) ->
-            buildConsChain inner lr
+            collectItems inner lr
         | _ -> failwithf $"Unsupported item in quoted list at %s{Lexer.formatPos ir}"
-    and buildConsChain (items: SExpr list) (r: Range) : Expr =
-        match items with
-        | [] -> EIdent("Nil", r)
-        // ,expr — unquote: the Comma token followed by the next item means
-        // "evaluate this, do not quote it". The comma is already a separate
-        // token in the lexer, so it arrives here as SAtom{Comma} :: expr :: rest.
-        | SAtom { Token = Comma } :: inner :: rest ->
-            let hd = parseExprFn inner
-            EApp(EIdent("Cons", r), [hd; buildConsChain rest r], r)
-        | SAtom { Token = Comma } :: [] ->
-            failwithf $"Unexpected , at end of quoted list at %s{Lexer.formatPos r}"
-        | item :: rest ->
-            EApp(EIdent("Cons", r), [quoteItem item; buildConsChain rest r], r)
-    buildConsChain items r
+
+    and collectItems (items: SExpr list) (r: Range) : Expr =
+        let rec go acc remaining =
+            match remaining with
+            | [] -> EList(List.rev acc, r)
+            // ,expr — unquote: evaluate and splice the expression as an element.
+            | SAtom { Token = Comma } :: inner :: rest ->
+                go (parseExprFn inner :: acc) rest
+            | SAtom { Token = Comma } :: [] ->
+                failwithf $"Unexpected , at end of quoted list at %s{Lexer.formatPos r}"
+            | item :: rest ->
+                go (quoteItem item :: acc) rest
+        go [] items
+
+    collectItems items r
 
 /// An expression's own range.
 let exprRange (e: Expr) : Range =

@@ -1662,7 +1662,16 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
                        Node = TLambda(args, typedBody) } : TypedExpr)
                 tfun argTypes bodyType, lambdaNode
             else
-                infer env value
+                // When the binding has a type annotation, resolve it first and
+                // pass it down as the expected type.  For list / vec literals
+                // this enables per-element constructor injection before any
+                // element-level unification can fail.
+                match typeAnn with
+                | Some tAnn ->
+                    let expectedType = resolveTypeAnnotation env.Registry tAnn
+                    inferChecked expectedType env value
+                | None ->
+                    infer env value
 
         match typeAnn with
         | Some tAnn ->
@@ -2210,6 +2219,52 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         { Type = targetType
           Range = r
           Node = TCast(typedExpr, targetType) }
+
+/// Infer `expr` expecting it to have type `expected`, enabling constructor
+/// injection for list and vec literals.  For any other expression shape the
+/// call degrades to a plain `infer` so the annotation is unified afterwards
+/// by the caller as usual.
+and private inferChecked (expected: HMType) (env: Env) (expr: Expr) : HMType * TypedExpr =
+    match expr, prune env.Registry expected with
+    | EList(exprs, r), TCon("List", [ elemTy ]) ->
+        let typedExprs = exprs |> List.map (inferAndMaybeInject elemTy env)
+        TCon("List", [ elemTy ]),
+        { Type = TCon("List", [ elemTy ]); Range = r; Node = TListMake typedExprs }
+    | EVec(exprs, r), TCon("Vec", [ elemTy ]) ->
+        let typedExprs = exprs |> List.map (inferAndMaybeInject elemTy env)
+        TCon("Vec", [ elemTy ]),
+        { Type = TCon("Vec", [ elemTy ]); Range = r; Node = TVecMake typedExprs }
+    | _ ->
+        infer env expr
+
+/// Infer `expr` and, when its type does not directly match `expectedElem`,
+/// speculatively ask `CandidateCases` whether a unique union constructor wraps
+/// it.  If exactly one candidate is found the constructor is injected around
+/// the typed expression; if zero or multiple candidates are found the element
+/// is left unwrapped and normal unification will report the error.
+and private inferAndMaybeInject (expectedElem: HMType) (env: Env) (expr: Expr) : TypedExpr =
+    let elemTy, te = infer env expr
+    let pe = prune env.Registry expectedElem
+    let pg = prune env.Registry elemTy
+    match pe with
+    | TCon(unionName, typeArgs) when Map.containsKey unionName env.Registry.Unions ->
+        match env.Registry.CandidateCases unionName typeArgs pg with
+        | [ (ctorName, [ payloadTy ]) ] ->
+            // The element type matches exactly one constructor's payload.
+            // Unify the element against the payload (resolves any remaining
+            // metas on either side) then wrap in the constructor call.
+            unify env.Registry elemTy payloadTy
+            let ctorType = tfun [ payloadTy ] pe
+            let ctorExpr : TypedExpr = { Type = ctorType; Range = te.Range; Node = TIdent(ctorName, []) }
+            { Type = pe; Range = te.Range; Node = TApply(ctorExpr, [ te ], []) }
+        | _ ->
+            // Zero or ambiguous matches — unify directly and let the type
+            // error (if any) be reported normally.
+            unify env.Registry elemTy expectedElem
+            te
+    | _ ->
+        unify env.Registry elemTy expectedElem
+        te
 
 // --- DECLARATION CHECKING ---
 
