@@ -1,4 +1,7 @@
 using System.Runtime.CompilerServices;
+// `Rune` for the character operations, which classify by codepoint rather than
+// by UTF-16 code unit, and `StringBuilder` for the `Stringing` accumulator.
+using System.Text;
 using Unit = Bjoml.Unit;
 
 public static partial class BjolangRuntime {
@@ -125,6 +128,200 @@ public static partial class BjolangRuntime {
     // the numeric conversions moved to `std/prelude`.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static string charsubgtstring(Bjolang.Runtime.BjoChar c) => c.ToString();
+
+    // --- Character classification and case ---
+    //
+    // R6RS §11.11, and all of it here for the same reason `char->string` is: a
+    // `BjoChar` is not a type interop can resolve a method on, so none of this
+    // can be a `.NET` call written in `std/prelude`.
+    //
+    // Every one goes through `Rune`, so the classification is by *codepoint*
+    // and an astral character gets a real answer rather than whatever its high
+    // surrogate would have said. `char.IsLetter((char)c)` would be both wrong
+    // and silently wrong above the BMP.
+    //
+    // The case operations are invariant-culture on purpose. R6RS specifies the
+    // locale-independent Unicode mappings, and a `char-upcase` that answered
+    // differently in Turkey would make a program's meaning depend on the
+    // machine it runs on.
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Rune AsRune(Bjolang.Runtime.BjoChar c) => new Rune(c.Value);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Bjolang.Runtime.BjoChar OfRune(Rune r) => new Bjolang.Runtime.BjoChar((uint)r.Value);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Bjolang.Runtime.BjoChar charsubupcase(Bjolang.Runtime.BjoChar c) =>
+        OfRune(Rune.ToUpperInvariant(AsRune(c)));
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Bjolang.Runtime.BjoChar charsubdowncase(Bjolang.Runtime.BjoChar c) =>
+        OfRune(Rune.ToLowerInvariant(AsRune(c)));
+
+    // Unicode gives a handful of characters a titlecase form distinct from
+    // their uppercase one — the Latin digraphs, ǅ against Ǆ. .NET exposes that
+    // mapping only through `TextInfo.ToTitleCase` on a string, so this pays a
+    // small allocation to reach it; `char-upcase` is the one to use unless the
+    // digraphs are the point.
+    public static Bjolang.Runtime.BjoChar charsubtitlecase(Bjolang.Runtime.BjoChar c) {
+        var titled = System.Globalization.CultureInfo.InvariantCulture.TextInfo.ToTitleCase(c.ToString());
+        Rune.DecodeFromUtf16(titled, out Rune r, out _);
+        return OfRune(r);
+    }
+
+    // Simple case folding, for comparing without regard to case. Lowercasing is
+    // .NET's nearest offer: it agrees with Unicode's simple fold everywhere
+    // except a few characters — ﬁ and ß stay put, where a full fold would
+    // expand them — and a full fold cannot be a char-to-char function anyway,
+    // which is why R6RS's own `char-foldcase` is specified as the simple one.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Bjolang.Runtime.BjoChar charsubfoldcase(Bjolang.Runtime.BjoChar c) =>
+        OfRune(Rune.ToLowerInvariant(AsRune(c)));
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool charsubalphabetic_QMARK(Bjolang.Runtime.BjoChar c) => Rune.IsLetter(AsRune(c));
+
+    // R6RS reads "numeric" as the Nd/Nl/No categories, which is `Rune.IsNumber`
+    // — not `IsDigit`, which is Nd alone and would answer false for ½ or Ⅶ.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool charsubnumeric_QMARK(Bjolang.Runtime.BjoChar c) => Rune.IsNumber(AsRune(c));
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool charsubwhitespace_QMARK(Bjolang.Runtime.BjoChar c) => Rune.IsWhiteSpace(AsRune(c));
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool charsubuppersubcase_QMARK(Bjolang.Runtime.BjoChar c) => Rune.IsUpper(AsRune(c));
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool charsublowersubcase_QMARK(Bjolang.Runtime.BjoChar c) => Rune.IsLower(AsRune(c));
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool charsubtitlesubcase_QMARK(Bjolang.Runtime.BjoChar c) =>
+        Rune.GetUnicodeCategory(AsRune(c)) == System.Globalization.UnicodeCategory.TitlecaseLetter;
+
+    // The digit's value, or `None` for a character that is not a decimal digit.
+    // Narrower than `char-numeric?` deliberately: ½ is numeric and has no digit
+    // value, so the two questions get two answers.
+    public static Option<int> digitsubvalue(Bjolang.Runtime.BjoChar c) {
+        var r = AsRune(c);
+        if (Rune.GetUnicodeCategory(r) != System.Globalization.UnicodeCategory.DecimalDigitNumber) {
+            return None<int>();
+        }
+        return Some((int)Rune.GetNumericValue(r));
+    }
+
+    // The Unicode general category, as the two-letter symbol R6RS names: `Lu`,
+    // `Nd`, `Zs` and the rest. A symbol rather than a string because it is a
+    // fixed enumeration meant to be compared, which is what symbols are for.
+    public static Symbol charsubgeneralsubcategory(Bjolang.Runtime.BjoChar c) =>
+        Symbol.Intern(Rune.GetUnicodeCategory(AsRune(c)) switch {
+            System.Globalization.UnicodeCategory.UppercaseLetter        => "Lu",
+            System.Globalization.UnicodeCategory.LowercaseLetter        => "Ll",
+            System.Globalization.UnicodeCategory.TitlecaseLetter        => "Lt",
+            System.Globalization.UnicodeCategory.ModifierLetter         => "Lm",
+            System.Globalization.UnicodeCategory.OtherLetter            => "Lo",
+            System.Globalization.UnicodeCategory.NonSpacingMark         => "Mn",
+            System.Globalization.UnicodeCategory.SpacingCombiningMark   => "Mc",
+            System.Globalization.UnicodeCategory.EnclosingMark          => "Me",
+            System.Globalization.UnicodeCategory.DecimalDigitNumber     => "Nd",
+            System.Globalization.UnicodeCategory.LetterNumber           => "Nl",
+            System.Globalization.UnicodeCategory.OtherNumber            => "No",
+            System.Globalization.UnicodeCategory.ConnectorPunctuation   => "Pc",
+            System.Globalization.UnicodeCategory.DashPunctuation        => "Pd",
+            System.Globalization.UnicodeCategory.OpenPunctuation        => "Ps",
+            System.Globalization.UnicodeCategory.ClosePunctuation       => "Pe",
+            System.Globalization.UnicodeCategory.InitialQuotePunctuation=> "Pi",
+            System.Globalization.UnicodeCategory.FinalQuotePunctuation  => "Pf",
+            System.Globalization.UnicodeCategory.OtherPunctuation       => "Po",
+            System.Globalization.UnicodeCategory.MathSymbol             => "Sm",
+            System.Globalization.UnicodeCategory.CurrencySymbol         => "Sc",
+            System.Globalization.UnicodeCategory.ModifierSymbol         => "Sk",
+            System.Globalization.UnicodeCategory.OtherSymbol            => "So",
+            System.Globalization.UnicodeCategory.SpaceSeparator         => "Zs",
+            System.Globalization.UnicodeCategory.LineSeparator          => "Zl",
+            System.Globalization.UnicodeCategory.ParagraphSeparator     => "Zp",
+            System.Globalization.UnicodeCategory.Control                => "Cc",
+            System.Globalization.UnicodeCategory.Format                 => "Cf",
+            System.Globalization.UnicodeCategory.Surrogate              => "Cs",
+            System.Globalization.UnicodeCategory.PrivateUse             => "Co",
+            _                                                           => "Cn",
+        });
+
+    // --- String cursors ---
+    //
+    // Thin forwarders onto `Bjolang.Runtime.StringCursor`, where the reasoning
+    // and the decoding live. A cursor is an opaque offset into the string's
+    // storage; see that file for why there is no way to turn one into an int.
+    //
+    // This is what replaces `string-ref`. An index-based accessor over UTF-16
+    // is O(n) per lookup, so the obvious loop is quadratic; a cursor makes the
+    // same loop linear and costs a struct holding an int.
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Bjolang.Runtime.StringCursor stringsubcursorsubstart(string s) =>
+        Bjolang.Runtime.StringCursor.Start(s);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Bjolang.Runtime.StringCursor stringsubcursorsubend(string s) =>
+        Bjolang.Runtime.StringCursor.End(s);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool stringsubcursorsubend_QMARK(string s, Bjolang.Runtime.StringCursor c) =>
+        Bjolang.Runtime.StringCursor.AtEnd(s, c);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Bjolang.Runtime.BjoChar stringsubcursorsubref(string s, Bjolang.Runtime.StringCursor c) =>
+        Bjolang.Runtime.StringCursor.Ref(s, c);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Bjolang.Runtime.StringCursor stringsubcursorsubnext(string s, Bjolang.Runtime.StringCursor c) =>
+        Bjolang.Runtime.StringCursor.Next(s, c);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Bjolang.Runtime.StringCursor stringsubcursorsubprev(string s, Bjolang.Runtime.StringCursor c) =>
+        Bjolang.Runtime.StringCursor.Prev(s, c);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static string substringdivcursors(string s, Bjolang.Runtime.StringCursor start, Bjolang.Runtime.StringCursor end) =>
+        Bjolang.Runtime.StringCursor.Substring(s, start, end);
+
+    // The character count, which is a walk. `string-length` is the storage
+    // length and O(1); the two differ for any string with an astral character
+    // in it, and the names are meant to be told apart.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int stringsubcount(string s) => Bjolang.Runtime.StringCursor.Count(s);
+
+    // --- StringBuilder ---
+    //
+    // The accumulator behind the `Stringing` collector, and the same shape as
+    // the list and vec builders: `add!` mutates and returns `Unit`, so a loop
+    // slot carries the identity that never changes (§8.1).
+    //
+    // `AppendTo` rather than `Append(c.ToString())` — a `BjoChar` knows how to
+    // write itself as one or two UTF-16 units without allocating the string
+    // in between.
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static StringBuilder stringbuildersubempty() => new StringBuilder();
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Unit stringbuildersubadd_BANG(StringBuilder b, Bjolang.Runtime.BjoChar c) {
+        c.AppendTo(b);
+        return unit;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Unit stringbuildersubaddsubstring_BANG(StringBuilder b, string s) {
+        b.Append(s);
+        return unit;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int stringbuildersublength(StringBuilder b) => b.Length;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static string stringbuildersubgtstring(StringBuilder b) => b.ToString();
 
     // --- Strings ---
     //

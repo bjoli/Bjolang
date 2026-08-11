@@ -22,6 +22,16 @@
 
   ;; Strings
   string-append string-length
+  ;; Characters — R6RS §11.11. The classification and case procedures
+  ;; (char-upcase, char-alphabetic?, digit-value, ...) are builtins and need no
+  ;; export; these are the ones written in Bjolang.
+  char->integer integer->char
+  char=? char<? char>? char<=? char>=?
+  char-ci=? char-ci<? char-ci>? char-ci<=? char-ci>=?
+  ;; String cursors. The primitives are builtins; these are the derived ones.
+  string-cursor=? string-cursor<? string-cursor>? string-cursor<=? string-cursor>=?
+  string-fold string-fold-right string-for-each string-index
+  string->list list->string string->vec string-reverse
   ;; Conversions
   int->string long->string double->string byte->string number->string
   string->int string->double
@@ -69,6 +79,11 @@
 
 (def/impl (->str Symbol)
   (defun (->str s) (symbol->string s)))
+
+;; A character prints as itself, not as `#\a`: `->str` is what `display` and
+;; `print` are built on, and those write text rather than a reread-able datum.
+(def/impl (->str char)
+  (defun (->str c) (char->string c)))
 
 ;; (def/impl (->str (List %a))
 ;;   (defun (->str l)
@@ -219,6 +234,23 @@
   (defun (current s c) (map-cursor-current c))
   (defun (next s c) c))
 
+;; A string's elements are its *characters*, so a walk yields one `char` per
+;; codepoint and an astral character arrives whole rather than as two halves.
+;;
+;; This is the protocol at its plainest, and the contrast with `Vec` above is
+;; the point: a `StringCursor` is a position rather than a live enumerator, so
+;; `done?` merely asks and `next` genuinely returns the following cursor. That
+;; it is a bare offset is also what keeps the loop allocation-free — the whole
+;; cursor is an int in a struct, and the traversal is the `for` a C programmer
+;; would have written, minus the chance of stopping mid-character.
+(def/impl (Iterable string)
+  (type %elem char)
+  (type %cursor StringCursor)
+  (defun (start s) (string-cursor-start s))
+  (defun (done? s c) (string-cursor-end? s c))
+  (defun (current s c) (string-cursor-ref s c))
+  (defun (next s c) (string-cursor-next s c)))
+
 ;; The same shape as the List impl: the cursor is the remaining sequence and
 ;; every method reads `c`, never `s`. Reading `s` would restart from the head
 ;; each iteration, forcing the same element forever.
@@ -294,6 +326,18 @@
     (mapbuilder-add! acc k v)
     acc)
   (defun (finish c acc) (mapbuilder->map acc)))
+
+;; Characters into a string, through one buffer. `string-append` in a loop
+;; rebuilds the whole string per element and is quadratic.
+(type (: Stringing (Union stringing)))
+
+(def/impl (Collector Stringing)
+  (type %elem char)
+  (type %acc StringBuilder)
+  (type %out string)
+  (defun (init c) (stringbuilder-empty))
+  (defun (step c acc x) (stringbuilder-add! acc x) acc)
+  (defun (finish c acc) (stringbuilder->string acc)))
 
 (type (: Summing (Union summing)))
 
@@ -383,6 +427,13 @@
 
 ;; `.Length` is a property, so there is no method to import — a one-line body
 ;; reading the member is the whole of it.
+;;
+;; **This counts storage units, not characters.** Today that is UTF-16 code
+;; units, so a string holding one emoji has length 2; under UTF-8 storage the
+;; same string would measure 4. It is O(1) and it is the right number for
+;; sizing a buffer, and the wrong one for anything a reader would call "how
+;; long is this text" — `string-count` is that, and walks. The two names are
+;; meant to be told apart, which is why neither is called `size`.
 (: string-length (-> string int))
 (defun (string-length s) (.-Length s))
 
@@ -414,6 +465,209 @@
 
 (: string->double (-> string double))
 (defun (string->double s) (clr-parse-double s))
+
+;; ---------------------------------------------------------------------------
+;; Characters
+;; ---------------------------------------------------------------------------
+;;
+;; R6RS §11.11, over Unicode scalar values rather than UTF-16 code units. Every
+;; predicate asks about a *codepoint*, so an astral character gets a real answer
+;; instead of whatever its leading surrogate would have said — which is the bug
+;; `char.IsLetter` on a C# char produces, silently, only for text outside the
+;; BMP, and therefore only in production.
+;;
+;; The classification and case procedures are builtins: interop cannot resolve a
+;; method on a `BjoChar`, which is not a type Bjolang can name. What is written
+;; here is the part that needs no help — the comparisons, which are the ordinary
+;; operators at `char`, and the case-insensitive family, which is a fold
+;; followed by one of them.
+;;
+;; `char?` has no entry. Every other Scheme needs it because a value's type is
+;; a runtime question; here it is a static one, and the predicate could only
+;; ever answer `#t`.
+
+;; R6RS's spelling of the conversions. The same operations as `char->int` and
+;; `int->char`, kept under both names for the reason `number->string` is: a
+;; program ported from Scheme should not have to be rewritten to compile.
+(: char->integer (-> char int))
+(defun (char->integer c) (char->int c))
+
+(: integer->char (-> int char))
+(defun (integer->char n) (int->char n))
+
+;; Ordering is by codepoint, and `<` at `char` *is* the C# operator on the
+;; underlying value — so these are aliases rather than implementations.
+;;
+;; They are binary, where R6RS's are n-ary. The chaining `(< a b c)` gets is a
+;; parser desugar over the operator tokens, and it cannot extend to a named
+;; function without turning it into a `#:rest` fold that allocates an array and
+;; loses the short-circuit. Write `(< a b c)` when the chain is what you want;
+;; these names are for the two-argument case and for passing as a value.
+(: char=? (-> char char bool))
+(defun (char=? a b) (= a b))
+
+(: char<? (-> char char bool))
+(defun (char<? a b) (< a b))
+
+(: char>? (-> char char bool))
+(defun (char>? a b) (> a b))
+
+(: char<=? (-> char char bool))
+(defun (char<=? a b) (<= a b))
+
+(: char>=? (-> char char bool))
+(defun (char>=? a b) (>= a b))
+
+;; Case-insensitive comparison, by folding both sides first. `char-foldcase`
+;; rather than `char-downcase`: folding is the operation defined for comparing,
+;; and the two differ for exactly the characters that make it matter.
+(: char-ci=? (-> char char bool))
+(defun (char-ci=? a b) (= (char-foldcase a) (char-foldcase b)))
+
+(: char-ci<? (-> char char bool))
+(defun (char-ci<? a b) (< (char-foldcase a) (char-foldcase b)))
+
+(: char-ci>? (-> char char bool))
+(defun (char-ci>? a b) (> (char-foldcase a) (char-foldcase b)))
+
+(: char-ci<=? (-> char char bool))
+(defun (char-ci<=? a b) (<= (char-foldcase a) (char-foldcase b)))
+
+(: char-ci>=? (-> char char bool))
+(defun (char-ci>=? a b) (>= (char-foldcase a) (char-foldcase b)))
+
+;; ---------------------------------------------------------------------------
+;; String cursors
+;; ---------------------------------------------------------------------------
+;;
+;; A cursor is a position in a string, and it is what replaces the `string-ref`
+;; this language deliberately does not have. Indexing UTF-16 by codepoint is
+;; O(n), so the innocent `(loop (i 0)) (string-ref s i)` is quadratic; the same
+;; loop over a cursor is linear, and a cursor is a struct holding an int.
+;;
+;; **A cursor is opaque.** There is no `string-cursor->index` and no way to
+;; build one except from a string, so the offset inside is free to mean UTF-16
+;; code units today and UTF-8 bytes later without a single Bjolang program
+;; noticing. That is the entire reason the type exists rather than the API
+;; simply taking ints, and it is why no procedure here will ever hand the
+;; number back.
+;;
+;; Every operation takes the string as well as the cursor, because the cursor
+;; carries no reference to it. Pairing them would double the struct to re-check
+;; something the caller already knows, and it is the same bargain the `Iterable`
+;; protocol strikes by passing `s` and `c` to every method.
+;;
+;; The primitives — `string-cursor-start`, `-end`, `-end?`, `-ref`, `-next`,
+;; `-prev`, `substring/cursors` and `string-count` — are builtins. What follows
+;; is what can be said in terms of them.
+
+;; Cursor comparison. `=` and `<` at `StringCursor` are the C# operators on the
+;; offset, so these are aliases; the named forms exist because `(string-cursor<?
+;; a b)` says what it means and `(< a b)` on two opaque values does not.
+;;
+;; Only meaningful between two cursors on the *same* string. Nothing checks it,
+;; exactly as nothing checks that two ints index the same array.
+(: string-cursor=? (-> StringCursor StringCursor bool))
+(defun (string-cursor=? a b) (= a b))
+
+(: string-cursor<? (-> StringCursor StringCursor bool))
+(defun (string-cursor<? a b) (< a b))
+
+(: string-cursor>? (-> StringCursor StringCursor bool))
+(defun (string-cursor>? a b) (> a b))
+
+(: string-cursor<=? (-> StringCursor StringCursor bool))
+(defun (string-cursor<=? a b) (<= a b))
+
+(: string-cursor>=? (-> StringCursor StringCursor bool))
+(defun (string-cursor>=? a b) (>= a b))
+
+;; --- Traversal -------------------------------------------------------------
+
+;; Left fold: the folder takes the accumulator first, as everywhere else in this
+;; library. One pass, no allocation beyond whatever the folder does itself.
+(: string-fold (-> (-> %a char %a) %a string %a))
+(defun (string-fold f init s)
+  (let loop ((c (string-cursor-start s)) (acc init))
+    (if (string-cursor-end? s c)
+        acc
+        (loop (string-cursor-next s c) (f acc (string-cursor-ref s c))))))
+
+;; Right fold, with the element first — the same argument order `list-foldr`
+;; takes, for the same reason.
+;;
+;; Walking backwards rather than recursing forwards: `string-cursor-prev`
+;; decodes one character backwards in constant time, so this stays a loop and
+;; costs no stack, where the natural recursive spelling would be O(n) frames
+;; deep in a string of n characters.
+(: string-fold-right (-> (-> char %a %a) %a string %a))
+(defun (string-fold-right f init s)
+  (let loop ((c (string-cursor-end s)) (acc init))
+    (if (string-cursor=? c (string-cursor-start s))
+        acc
+        (let ((p (string-cursor-prev s c)))
+          (loop p (f (string-cursor-ref s p) acc))))))
+
+(: string-for-each (-> (-> char void) string void))
+(defun (string-for-each f s)
+  (let loop ((c (string-cursor-start s)))
+    (unless (string-cursor-end? s c)
+      (f (string-cursor-ref s c))
+      (loop (string-cursor-next s c)))))
+
+;; The first character satisfying `pred`, as a cursor — `None` if there is none.
+;;
+;; A cursor rather than an index, which is what makes the result *usable*: it
+;; can be handed straight to `substring/cursors` or stepped on from, where an
+;; integer would have to be converted back at O(n) and could not be converted
+;; back at all.
+(: string-index (-> (-> char bool) string (Option StringCursor)))
+(defun (string-index pred s)
+  (let loop ((c (string-cursor-start s)))
+    (if (string-cursor-end? s c)
+        None
+        (if (pred (string-cursor-ref s c))
+            (Some c)
+            (loop (string-cursor-next s c))))))
+
+;; --- Conversions -----------------------------------------------------------
+
+(: string->list (-> string (List char)))
+(defun (string->list s)
+  (string-fold-right cons Nil s))
+
+(: list->string (-> (List char) string))
+(defun (list->string cs)
+  (let ((b (stringbuilder-empty)))
+    (list-for-each #(stringbuilder-add! b &1) cs)
+    (stringbuilder->string b)))
+
+(: string->vec (-> string (Vec char)))
+(defun (string->vec s)
+  (let ((b (vecbuilder-empty)))
+    (string-for-each #(vecbuilder-add! b &1) s)
+    (vecbuilder->vec b)))
+
+;; Reversing by character, so a string ending in an astral character comes back
+;; with that character intact rather than with its two halves swapped — which is
+;; what reversing the storage would do, and is the classic way to corrupt text
+;; while appearing to work on everything the author tested.
+(: string-reverse (-> string string))
+(defun (string-reverse s)
+  (let ((b (stringbuilder-empty)))
+    (let loop ((c (string-cursor-end s)))
+      (unless (string-cursor=? c (string-cursor-start s))
+        (let ((p (string-cursor-prev s c)))
+          (stringbuilder-add! b (string-cursor-ref s p))
+          (loop p))))
+    (stringbuilder->string b)))
+
+;; A string folds over its characters, so `fold` from `Foldable` and the
+;; `string-fold` above are the same operation under the trait.
+(def/impl (Foldable string)
+  (type %item char)
+  (defun (fold f acc col)
+    (string-fold f acc col)))
 
 ;; --- Files ---
 ;;
@@ -634,10 +888,13 @@
 ;; know whether there is anything should ask `empty?`, which is O(1) everywhere
 ;; except `Seq` — where it forces one element, for the same reason.
 ;;
-;; Not implemented for `string` or `(Array %a)`: neither has a `->seq` to give.
-;; A string needs the cursor that does not exist yet — indexing UTF-16 by
-;; codepoint is O(n), which is why there is no `string-ref` either — and an
-;; array has no conversion at all. Both become members the day that changes.
+;; `string` is a member, and its `length` is the character count rather than the
+;; storage count — the trait's `%content` is `char`, so any other answer would
+;; disagree with what `->seq` hands over. That makes it O(n), which is the
+;; trait's own point about `length` restated: ask `empty?` when the question is
+;; only whether there is anything.
+;;
+;; `(Array %a)` is still not a member: it has no `->seq` to give.
 (def/trait (Collection %a)
   (type %content)
   (: length (-> %a int))
@@ -692,6 +949,21 @@
     (seql (:with i (record-get r lo) (+ i (record-get r by)))
           (:break (>= i (record-get r hi)))
           (:yield i))))
+
+;; A string's content is its characters. `length` is `string-count` — the walk —
+;; rather than `string-length`, so that it agrees with the sequence `->seq`
+;; produces; `empty?` stays O(1), since a string with no storage has no
+;; characters in any encoding.
+(def/impl (Collection string)
+  (type %content char)
+  (defun (length s)
+    (string-count s))
+  (defun (empty? s)
+    (string-empty? s))
+  (defun (->seq s)
+    (seql (:with c (string-cursor-start s) (string-cursor-next s c))
+          (:break (string-cursor-end? s c))
+          (:yield (string-cursor-ref s c)))))
 
 ;; `->seq` is the identity here, which is the point: generic code written
 ;; against `Collection` accepts a sequence without a conversion.

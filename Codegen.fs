@@ -108,6 +108,11 @@ let mapPrimitiveType (name: string) =
     | "MapBuilder" -> "Map.MapBuilder"
     | "VecCursor" -> "BjolangRuntime.VecCursor"
     | "MapCursor" -> "BjolangRuntime.MapCursor"
+    // Fully qualified for the same reason `BjoChar` is: it lives in the
+    // `Bjolang.Runtime` namespace rather than nested in the static class the
+    // generated file has a `using static` for.
+    | "StringCursor" -> "Bjolang.Runtime.StringCursor"
+    | "StringBuilder" -> "System.Text.StringBuilder"
     | "VecBuilder" -> "Collections.RrbBuilder"
     | "List" -> "SchemeList.SchemeList"
     // A `seq` is a C# iterator, so its type is the one C# iterators produce.

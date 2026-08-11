@@ -12,6 +12,21 @@ let makeListBuilderType a = TCon("ListBuilder", [a])
 let makeMapBuilderType k v = TCon("MapBuilder", [k; v])
 let makeVecCursorType a = TCon("VecCursor", [a])
 let makeMapCursorType k v = TCon("MapCursor", [k; v])
+
+/// A position in a string, and the reason there is no `string-ref`.
+///
+/// Opaque, and takes no type argument: it is an offset into the string's own
+/// storage, which today counts UTF-16 code units and after a move to UTF-8
+/// would count bytes. Nothing in the language can read that number — there is
+/// no cursor-to-int conversion, and the only way to make one is from a string —
+/// so the change is invisible to every Bjolang program. That is the whole
+/// point of the type, and why it is nominal rather than an alias for `int`.
+let stringCursorType = TCon("StringCursor", [])
+
+/// The accumulator behind the `Stringing` collector. A `System.Text.StringBuilder`,
+/// named here because `std/prelude` has to write the type in an impl's
+/// `(type %acc ...)` clause.
+let stringBuilderType = TCon("StringBuilder", [])
 let makeListType a = TCon("List", [a])
 let makeSeqType a = TCon("Seq", [a])
 let makeOptionType a = TCon("Option", [a])
@@ -83,7 +98,7 @@ let textOutputPortType = TCon("System.IO.TextWriter", [])
 
 let emptyRegistry : TraitRegistry =
     { LocalTraits = Set.empty
-      LocalTypes = Set.ofList ["List"; "Vec"; "VecBuilder"; "ListBuilder"; "MapBuilder"; "VecCursor"; "MapCursor"; "Seq"; "Option"; "Result"; "Map"; "Keyword"; "Symbol"; "Array"; "Param"; "DynEnv"; "Promise"; "Event"; "Chan"; "CancelToken"; "AsyncSeq"]
+      LocalTypes = Set.ofList ["List"; "Vec"; "VecBuilder"; "ListBuilder"; "MapBuilder"; "VecCursor"; "MapCursor"; "StringCursor"; "StringBuilder"; "Seq"; "Option"; "Result"; "Map"; "Keyword"; "Symbol"; "Array"; "Param"; "DynEnv"; "Promise"; "Event"; "Chan"; "CancelToken"; "AsyncSeq"]
       Traits = Map.empty
       TraitMethods = Map.empty
       Implementations = Map.empty
@@ -344,6 +359,65 @@ let prelude : Env =
         "char->int", {Scheme = Scheme([], [], makeFunType [charType] intType); IsMutable = false }
         "int->char", {Scheme = Scheme([], [], makeFunType [intType] charType); IsMutable = false }
         "char->string", {Scheme = Scheme([], [], makeFunType [charType] stringType); IsMutable = false }
+
+        // Classification and case, R6RS §11.11. Builtins rather than
+        // `std/prelude` calls for the same reason `char->string` is: interop
+        // cannot resolve a method on a `BjoChar`, which is not a type Bjolang
+        // can name.
+        //
+        // The *comparisons* are deliberately absent. `BjoChar` has C#
+        // comparison operators, and `<` is typed `(-> %a %a bool)` and emitted
+        // as the operator, so `char<?` is an ordinary alias in the library and
+        // chains n-arily with no help from here.
+        "char-upcase", {Scheme = Scheme([], [], makeFunType [charType] charType); IsMutable = false }
+        "char-downcase", {Scheme = Scheme([], [], makeFunType [charType] charType); IsMutable = false }
+        "char-titlecase", {Scheme = Scheme([], [], makeFunType [charType] charType); IsMutable = false }
+        "char-foldcase", {Scheme = Scheme([], [], makeFunType [charType] charType); IsMutable = false }
+        "char-alphabetic?", {Scheme = Scheme([], [], makeFunType [charType] boolType); IsMutable = false }
+        "char-numeric?", {Scheme = Scheme([], [], makeFunType [charType] boolType); IsMutable = false }
+        "char-whitespace?", {Scheme = Scheme([], [], makeFunType [charType] boolType); IsMutable = false }
+        "char-upper-case?", {Scheme = Scheme([], [], makeFunType [charType] boolType); IsMutable = false }
+        "char-lower-case?", {Scheme = Scheme([], [], makeFunType [charType] boolType); IsMutable = false }
+        "char-title-case?", {Scheme = Scheme([], [], makeFunType [charType] boolType); IsMutable = false }
+        // `Option` rather than a sentinel: "not a digit" is a real answer, and
+        // -1 would be one the type does not mention.
+        "digit-value", {Scheme = Scheme([], [], makeFunType [charType] (makeOptionType intType)); IsMutable = false }
+        "char-general-category", {Scheme = Scheme([], [], makeFunType [charType] symbolType); IsMutable = false }
+
+        // --- String cursors ---
+        //
+        // A position in a string, and what replaces the `string-ref` that is
+        // deliberately missing. Every operation takes the string as well as the
+        // cursor, because the cursor is a bare offset and decoding needs the
+        // text — which is also the shape `Iterable` wants, its methods all
+        // taking the sequence and the cursor both.
+        //
+        // There is no cursor-to-int and no int-to-cursor, and that is the
+        // design rather than an omission: a cursor is only ever made from a
+        // string and only ever moved one character at a time, so every value
+        // that exists sits on a character boundary, and the offset inside can
+        // change meaning when the storage does. Cursor *comparison* comes from
+        // the C# operators, exactly as for `char`.
+        "string-cursor-start", {Scheme = Scheme([], [], makeFunType [stringType] stringCursorType); IsMutable = false }
+        "string-cursor-end", {Scheme = Scheme([], [], makeFunType [stringType] stringCursorType); IsMutable = false }
+        "string-cursor-end?", {Scheme = Scheme([], [], makeFunType [stringType; stringCursorType] boolType); IsMutable = false }
+        "string-cursor-ref", {Scheme = Scheme([], [], makeFunType [stringType; stringCursorType] charType); IsMutable = false }
+        "string-cursor-next", {Scheme = Scheme([], [], makeFunType [stringType; stringCursorType] stringCursorType); IsMutable = false }
+        "string-cursor-prev", {Scheme = Scheme([], [], makeFunType [stringType; stringCursorType] stringCursorType); IsMutable = false }
+        "substring/cursors", {Scheme = Scheme([], [], makeFunType [stringType; stringCursorType; stringCursorType] stringType); IsMutable = false }
+        // The character count, as against `string-length`'s storage count. Two
+        // names because they are two questions with two answers and two costs:
+        // this one walks.
+        "string-count", {Scheme = Scheme([], [], makeFunType [stringType] intType); IsMutable = false }
+
+        // StringBuilder, the accumulator behind the `Stringing` collector. Same
+        // shape as the other builders: `add!` mutates and answers `Unit`, and
+        // the identity it hands back never changes (§8.1).
+        "stringbuilder-empty", {Scheme = Scheme([], [], makeFunType [] stringBuilderType); IsMutable = false }
+        "stringbuilder-add!", {Scheme = Scheme([], [], makeFunType [stringBuilderType; charType] unitType); IsMutable = false }
+        "stringbuilder-add-string!", {Scheme = Scheme([], [], makeFunType [stringBuilderType; stringType] unitType); IsMutable = false }
+        "stringbuilder-length", {Scheme = Scheme([], [], makeFunType [stringBuilderType] intType); IsMutable = false }
+        "stringbuilder->string", {Scheme = Scheme([], [], makeFunType [stringBuilderType] stringType); IsMutable = false }
 
         "keyword?", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"] boolType); IsMutable = false }
         "symbol?", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"] boolType); IsMutable = false }

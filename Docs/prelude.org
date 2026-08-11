@@ -46,8 +46,89 @@ Standard polymorphic math operators (deferred to C# for resolution):
 
 ** String Operations
 - ~(string-append a b)~ : Concatenates strings ~a~ and ~b~. =(std prelude)=
-- ~(string-length s)~ : Returns the length of string ~s~. =(std prelude)=
+- ~(string-length s)~ : The length of ~s~ in *storage units*. O(1). Today those are UTF-16 code units, so a string holding one emoji has length 2. =(std prelude)=
+- ~(string-count s)~ : The number of *characters* in ~s~. O(n), because it walks. The same emoji string counts 1.
 - ~(string-empty? s)~ : Returns true if ~s~ has no characters. Builtin rather than =(std prelude)=, so that it sits with ~list-empty?~, ~vec-empty?~ and ~map-empty?~ rather than alone in the library.
+
+~string-length~ and ~string-count~ are two questions with two answers and two costs, which is why neither is called ~size~. Reach for ~string-length~ to size a buffer and ~string-count~ for anything a reader would call "how long is this text".
+
+There is no ~string-ref~, and no other index-based accessor. Indexing UTF-16 by codepoint is O(n), so a loop that looks linear is quadratic; string traversal belongs to a cursor.
+
+** Characters
+A ~char~ is a Unicode *scalar value* — a codepoint — backed by ~Bjolang.Runtime.BjoChar~, not a C# ~char~. A C# ~char~ is a 16-bit UTF-16 code unit and cannot hold an astral codepoint on its own, so every predicate here classifies by codepoint and an emoji gets a real answer rather than whatever its leading surrogate would have said.
+
+These are builtin rather than =(std prelude)= wherever they touch the value: interop cannot resolve a method on a ~BjoChar~, which is not a .NET type Bjolang can name.
+
+There is no ~char?~. Every other Scheme needs one because a value's type is a runtime question; here it is a static one, and the predicate could only ever answer true.
+
+*** Conversions
+- ~(char->int c)~ / ~(char->integer c)~ : The codepoint. The second is R6RS's spelling of the first. =(std prelude)= for the R6RS name.
+- ~(int->char n)~ / ~(integer->char n)~ : The character with codepoint ~n~.
+- ~(char->string c)~ : A one-character string. For an astral character that string has ~string-length~ 2 and ~string-count~ 1.
+
+*** Comparison =(std prelude)=
+- ~(char=? a b)~, ~(char<? a b)~, ~(char>? a b)~, ~(char<=? a b)~, ~(char>=? a b)~ : Ordering by codepoint.
+- ~(char-ci=? a b)~, ~(char-ci<? a b)~, ~(char-ci>? a b)~, ~(char-ci<=? a b)~, ~(char-ci>=? a b)~ : The same, after ~char-foldcase~ on both sides.
+
+These are *binary*, where R6RS's are n-ary. The operators themselves work at ~char~ — ~BjoChar~ has the C# comparison operators — so ~(< a b c)~ chains as it does for numbers, and that is the n-ary route. A named function cannot chain: it would have to become a ~#:rest~ fold, which allocates an array and loses the short-circuit.
+
+*** Case
+- ~(char-upcase c)~, ~(char-downcase c)~, ~(char-titlecase c)~, ~(char-foldcase c)~
+
+All four use the invariant culture, because R6RS specifies the locale-independent Unicode mappings — a ~char-upcase~ that answered differently in Turkey would make a program mean different things on different machines. ~char-foldcase~ is Unicode *simple* case folding, which is what a char-to-char function can express; use it rather than ~char-downcase~ when the purpose is comparison. ~char-titlecase~ differs from ~char-upcase~ only for the handful of digraphs Unicode gives a distinct titlecase form.
+
+*** Classification
+- ~(char-alphabetic? c)~, ~(char-numeric? c)~, ~(char-whitespace? c)~
+- ~(char-upper-case? c)~, ~(char-lower-case? c)~, ~(char-title-case? c)~
+- ~(digit-value c)~ : ~(Some n)~ for a decimal digit, ~None~ otherwise. Narrower than ~char-numeric?~ on purpose: ½ is numeric and has no digit value, so the two questions get two answers. An ~Option~ rather than -1, which would be a sentinel the type does not mention.
+- ~(char-general-category c)~ : The Unicode general category as a ~Symbol~ — ~'Lu~, ~'Ll~, ~'Nd~, ~'Zs~ and the rest. A symbol because it is a fixed enumeration meant to be compared.
+
+~char-numeric?~ is the Nd/Nl/No categories, not Nd alone, so it answers true for ½ and Ⅶ.
+
+** String Cursors
+A cursor is a position in a string: a struct holding an offset into that string's storage, pointing at the first unit of a character. It is what replaces the ~string-ref~ that deliberately does not exist — the same traversal that would be quadratic by index is linear by cursor, and a cursor costs an int.
+
+*A cursor is opaque.* There is no ~string-cursor->index~, no ~index->string-cursor~, and no way to build one except from a string. That is the point of the type rather than an omission: because no program can read the number, the offset is free to count UTF-16 code units today and UTF-8 bytes after a change of storage, and no Bjolang source has to change. A cursor is only ever produced by ~string-cursor-start~ or ~string-cursor-end~ and only ever moved by ~string-cursor-next~ or ~string-cursor-prev~, so every cursor that exists sits on a character boundary by construction.
+
+Every operation takes the string *and* the cursor, because the cursor carries no reference to it — the same bargain ~Iterable~ strikes by passing ~s~ and ~c~ to each method. Comparing cursors from two different strings is meaningless and unchecked, exactly as it is for two ints indexing different arrays.
+
+*** Primitives
+- ~(string-cursor-start s)~ : A cursor on the first character.
+- ~(string-cursor-end s)~ : The past-the-end cursor. Not a character position; it is the bound a traversal stops at.
+- ~(string-cursor-end? s c)~ : Whether ~c~ has reached the end.
+- ~(string-cursor-ref s c)~ : The character at ~c~. Throws at the end — guard with ~string-cursor-end?~.
+- ~(string-cursor-next s c)~ : The cursor on the next character. Steps over *all* the storage units that character occupies.
+- ~(string-cursor-prev s c)~ : The cursor on the previous character. O(1) — it decodes backwards rather than rescanning from the start.
+- ~(substring/cursors s start end)~ : The text between two cursors, ~end~ exclusive.
+
+*** Comparison =(std prelude)=
+- ~(string-cursor=? a b)~, ~(string-cursor<? a b)~, ~(string-cursor>? a b)~, ~(string-cursor<=? a b)~, ~(string-cursor>=? a b)~
+
+Aliases for the operators, which work at ~StringCursor~ directly. The named forms exist because ~(string-cursor<? a b)~ says what it means where ~(< a b)~ on two opaque values does not.
+
+*** Traversal =(std prelude)=
+- ~(string-fold f init s)~ : Left fold; ~f~ receives ~(acc char)~.
+- ~(string-fold-right f init s)~ : Right fold; ~f~ receives ~(char acc)~. Walks backwards with ~string-cursor-prev~, so it is a loop rather than n stack frames.
+- ~(string-for-each f s)~ : Applies ~f~ to each character for side effects.
+- ~(string-index pred s)~ : The first character satisfying ~pred~, as ~(Some cursor)~, or ~None~. A cursor rather than an index is what makes the result usable — it can go straight to ~substring/cursors~, where an integer could not be converted back at all.
+
+*** Conversions =(std prelude)=
+- ~(string->list s)~ : ~(List char)~.
+- ~(list->string cs)~ : Builds a string from ~(List char)~.
+- ~(string->vec s)~ : ~(Vec char)~.
+- ~(string-reverse s)~ : Reverses by *character*, so a string ending in an astral character comes back with that character intact rather than with its two halves swapped.
+
+A string is also ~Iterable~, ~Foldable~ and a ~Collection~, so ~(loop (:for c s) ...)~, ~(fold f init s)~ and ~(length s)~ all work and all deal in characters. See the trait notes below.
+
+** String Builders
+The accumulator behind the ~Stringing~ collector, and the same shape as the vector and list builders.
+- ~(stringbuilder-empty)~ : Creates an empty builder.
+- ~(stringbuilder-add! b c)~ : Appends a character, encoding it however the storage requires.
+- ~(stringbuilder-add-string! b s)~ : Appends a string.
+- ~(stringbuilder-length b)~ : The length so far, in storage units.
+- ~(stringbuilder->string b)~ : Freezes the builder into a string.
+
+Use one — or a ~(:acc out (stringing c))~ clause — rather than ~string-append~ in a loop: appending rebuilds the whole string per element and is quadratic.
 
 ** Conversions
 The numeric ones are =(std prelude)=; the keyword and symbol ones are builtin, since ~Keyword~, ~Symbol~ and ~char~ are not .NET types Bjolang can name.
@@ -250,23 +331,32 @@ Standard iterator protocol for collections.
 - ~(next iter)~ : Advances the iterator.
 
 ** Traits
-- ~->str~ : Trait for string representation with method ~(->str x)~. Implemented for ~string~, ~int~, ~double~, ~byte~, ~long~.
+- ~->str~ : Trait for string representation with method ~(->str x)~. Implemented for ~string~, ~int~, ~double~, ~byte~, ~long~, ~char~, ~Keyword~ and ~Symbol~. A ~char~ prints as itself, not as ~#\a~: ~->str~ is what ~display~ and ~print~ are built on, and those write text rather than a reread-able datum.
 - ~Iterator~ : Trait for iterators.
-- ~Iterable~ : Trait for iterable collections.
+- ~Iterable~ : ~(start s)~, ~(done? s c)~, ~(current s c)~ and ~(next s c)~ —
+  how to walk a collection, and what a ~(:for ...)~ clause uses. Implemented for
+  ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~, ~(Seq %a)~, ~Range~ and ~string~. A
+  string's ~%cursor~ is a ~StringCursor~ and its ~%elem~ is ~char~, so
+  ~(loop (:for c "a😀b") ...)~ runs three times and hands over whole characters.
 - ~Foldable~ : ~(fold f init col)~, where ~f~ receives ~(acc item)~. Implemented
-  for ~(List %a)~, ~(Vec %a)~ and ~(Map %k %v)~. A map's ~%item~ is its
-  ~(Tuple %k %v)~ pair.
+  for ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~ and ~string~. A map's ~%item~ is its
+  ~(Tuple %k %v)~ pair; a string's is ~char~, so ~fold~ over one is
+  ~string-fold~.
 - ~Collection~ : ~(length c)~, ~(empty? c)~ and ~(->seq c)~ — what a collection
   can be *asked*, as opposed to walked (~Iterable~) or consumed (~Foldable~).
   The associated ~%content~ is the element type, and for a ~(Map %k %v)~ that is
-  the pair. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~, ~Range~ and
-  ~(Seq %a)~; not for ~string~ or ~(Array %a)~, neither of which has a ~->seq~
-  to give. Note that ~length~ is O(1) only where the collection stores a count
-  (~Vec~, ~Map~, and ~Range~, which computes it): a ~List~ walks, and a ~Seq~
-  walks *and* consumes an effectful source.
+  the pair. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~, ~Range~,
+  ~(Seq %a)~ and ~string~; not for ~(Array %a)~, which has no ~->seq~ to give.
+  Note that ~length~ is O(1) only where the collection stores a count
+  (~Vec~, ~Map~, and ~Range~, which computes it): a ~List~ walks, a ~Seq~
+  walks *and* consumes an effectful source, and a ~string~ walks because its
+  ~%content~ is ~char~ and so ~length~ must be ~string-count~ rather than
+  ~string-length~.
 - ~Functor~ : ~(map f x)~, where ~f~ receives one element and returns its
   replacement. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Option %a)~ and
   ~(Map %k %v)~. The abstracted argument is the last one, so mapping a
   ~(Map %k %v)~ moves the *values* and leaves the keys alone.
-gument is the last one, so mapping a
-  ~(Map %k %v)~ moves the *values* and leaves the keys alone.
+- ~Collector~ : ~(init c)~, ~(step c acc x)~ and ~(finish c acc)~ — the
+  accumulators an ~:acc~ clause names. The stock ones are ~listing~, ~vecing~,
+  ~mapping~, ~stringing~, ~summing~, ~counting~ and ~folding~; ~stringing~
+  collects ~char~ into a ~string~ through a ~StringBuilder~.

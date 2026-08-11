@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <NuGetAudit>false</NuGetAudit>
+    <!-- A library does not copy its package assemblies to the output directory
+         by default. This one has to: its output directory is what a compiled
+         Bjolang program probes at run time, so anything not here is not found. -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Every one of these is a submodule with a project of its own. Without
+         the removals their sources are swept up by this project's own glob and
+         compiled a second time — which for Bjoml also fails outright, since its
+         package references belong to its project and not to this one. -->
+    <Compile Remove="RrbList\**" />
+    <Compile Remove="Map\**" />
+    <Compile Remove="SchemeList\**" />
+    <Compile Remove="Bjoml\**" />
+    <EmbeddedResource Remove="RrbList\**" />
+    <EmbeddedResource Remove="Map\**" />
+    <EmbeddedResource Remove="SchemeList\**" />
+    <EmbeddedResource Remove="Bjoml\**" />
+    <None Remove="RrbList\**" />
+    <None Remove="Map\**" />
+    <None Remove="SchemeList\**" />
+    <None Remove="Bjoml\**" />
+    <ProjectReference Include="RrbList/src/Collections/Collections.csproj" />
+    <ProjectReference Include="SchemeList/src/SchemeList/SchemeList.csproj" />
+    <ProjectReference Include="Map/Map/Map.csproj" />
+    <ProjectReference Include="Bjoml/Bjoml/Bjoml.csproj" />
+    <!-- Bjoml's own dependency, restated here so that MSBuild copies it next to
+         `BjolangRuntime.dll`. A compiled Bjolang program installs a resolver
+         that probes the directories its linked assemblies live in, and nothing
+         else — a package assembly sitting in the NuGet cache is not on that
+         path, so the first Bjoml code path touching it would fail at run time
+         rather than at build time. -->
+    <PackageReference Include="Microsoft.Extensions.ObjectPool" Version="10.0.9" />
+  </ItemGroup>
+</Project>
