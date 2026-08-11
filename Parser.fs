@@ -952,6 +952,11 @@ let rec parseExpr (s: SExpr) : Expr =
             // unbound-variable error instead of a loop diagnostic.
             | "seql" -> desugarSeqLoop args listRange
 
+            // The head the reader puts on a `{...}` form. Claimed outright for
+            // the same reason `seql` is; a program cannot write braces by
+            // accident.
+            | "comprehension" -> desugarComprehension args listRange
+
             | "yield" ->
                 match args with
                 | [ value ] -> EYield(parseExpr value, listRange)
@@ -1579,6 +1584,97 @@ and private desugarSeqLoop (allForms: SExpr list) (r: Range) : Expr =
         | Some e -> ELet("_", false, [], None, loopExpr, EYield(parseExpr e, getRange e), r)
 
     ESeq(body, r)
+
+/// Desugars `{collector expr clause...}`, which the reader hands over as
+/// `(comprehension collector expr clause...)`.
+///
+/// The whole construct is one rewrite:
+///
+///     {listing (* a a) (:for a (range 0 100))}
+///     => (loop (:for a (range 0 100)) (:acc G (listing (* a a))) => G)
+///
+/// Everything before the first clause is the accumulator form, *verbatim*. That
+/// is what lets a collector take however many construction arguments it likes
+/// without this function knowing any of their arities:
+///
+///     {folding 0 a (:for a xs)}  => (:acc G (folding 0 a))
+///
+/// The clauses are passed through untouched and in order, which is the point of
+/// taking them parenthesized: everything `loop` already understands — `:when`,
+/// `:break`, `:let`, `:with`, `:final`, `:subloop` — works here on the day this
+/// is written, and keeps meaning exactly what it means in a loop. There is no
+/// second dialect of clause to learn.
+///
+/// The one thing lifted out of the accumulator form is a *loose* `:when` at the
+/// end, which becomes the `#:when` on the generated `:acc`:
+///
+///     {listing a (:for a xs) :when (even? a)}
+///     => (loop (:for a xs) (:acc G (listing a) #:when (even? a)) => G)
+///
+/// A parenthesized `(:when ...)` is the loop's own clause and skips the rest of
+/// the iteration; the loose one only gates the step. The parentheses are what
+/// tell them apart, which is also what keeps the loose form from being a second
+/// spelling of the same thing.
+///
+/// The accumulator's name is invented, and that is what forbids a second one:
+/// a comprehension is an expression that produces a value, and with the name
+/// out of reach there is nothing for a `(:acc ...)` of the caller's own to be
+/// combined with. Writing one is an error rather than a silent second result.
+and private desugarComprehension (allForms: SExpr list) (r: Range) : Expr =
+    let at t = SAtom { Token = t; Range = r }
+    let isLoose = function SAtom { Token = Keyword _ } -> true | _ -> false
+    let opensClauses = function SList(SAtom { Token = Keyword _ } :: _, _) -> true | f -> isLoose f
+
+    // Everything up to the first clause is the accumulator form, verbatim. A
+    // clause is keyword-*headed*, which is what tells the `(:for ...)` ending
+    // the form apart from the `(* a a)` inside it.
+    let accParts, tail =
+        match allForms |> List.tryFindIndex opensClauses with
+        | Some i -> List.take i allForms, List.skip i allForms
+        | None -> allForms, []
+
+    if List.length accParts < 2 then
+        failwithf
+            $"Invalid comprehension at line %d{r.Start.Line}. Expected {{collector expr clause...}}, as in {{listing (* a a) (:for a (range 0 100))}}."
+
+    // A loose `:when` may end the form, and gates the accumulation; a
+    // parenthesized `(:when ...)` is the loop's own and skips the iteration.
+    let clauses, accWhen =
+        match tail |> List.tryFindIndex isLoose with
+        | None -> tail, None
+        | Some i ->
+            match tail[i] with
+            | SAtom { Token = Keyword "when" } when i = tail.Length - 2 -> List.take i tail, Some tail[i + 1]
+            | SAtom { Token = Keyword k; Range = kr } ->
+                failwithf
+                    $"':%s{k}' at line %d{kr.Start.Line} must be written (:%s{k} ...). Only a trailing ':when' may be loose, and it gates the accumulation."
+            | _ -> tail, None
+
+    // One result, named by the collector — so there is nothing for a second
+    // accumulator or a finish expression to do. Anything else that is not a
+    // clause `parseLoopClause` rejects, with the message it already has.
+    clauses
+    |> List.iter (function
+        | SList(SAtom { Token = Keyword "acc" } :: _, cr)
+        | SAtom { Token = Symbol "=>"; Range = cr } ->
+            failwithf
+                $"A comprehension at line %d{cr.Start.Line} has one result, and its collector names it: (:acc ...) and => mean nothing here. Write a (loop ...) for more than one."
+        | _ -> ())
+
+    match accParts with
+    // `seqing` yields rather than folds, so it is a `seql` with no accumulator.
+    | [ SAtom { Token = Symbol "seqing" }; expr ] ->
+        let guard = accWhen |> Option.toList |> List.map (fun c -> SList([ at (Keyword "when"); c ], r))
+        desugarSeqLoop (clauses @ guard @ [ SList([ at (Keyword "yield"); expr ], getRange expr) ]) r
+
+    | SAtom { Token = Symbol "seqing" } :: _ ->
+        failwithf $"{{seqing ...}} at line %d{r.Start.Line} takes exactly one expression to yield."
+
+    | _ ->
+        let name = Gensym.fresh "comp"
+        let guard = accWhen |> Option.toList |> List.collect (fun c -> [ at (Keyword "when"); c ])
+        let acc = SList([ at (Keyword "acc"); at (Symbol name); SList(accParts, r) ] @ guard, r)
+        desugarLoop (clauses @ [ acc; at (Symbol "=>"); at (Symbol name) ]) r
 
 /// Desugars `(loop clause... [=> expr])`.
 ///

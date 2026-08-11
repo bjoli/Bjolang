@@ -746,6 +746,48 @@ conditionally. ~:final~ is not a mechanism of its own: it is a ~:break~ on a
 hidden accumulator holding the previous iteration's verdict, which is what makes
 it one iteration later than a ~:break~ on the same predicate.
 
+*** Comprehensions
+~{collector expr clause...}~ is a ~loop~ with its accumulator implied. It is one
+rewrite and nothing else:
+#+BEGIN_SRC scheme
+{listing (* a a) (:for a (range 0 100))}
+;; is exactly
+(loop (:for a (range 0 100))
+      (:acc g (listing (* a a)))
+      => g)
+#+END_SRC
+
+The clauses are the loop's own, parenthesized, in order, and untouched — so
+~:when~, ~:break~, ~:let~, ~:with~, ~:final~ and ~:subloop~ all work and all
+mean what they mean in a ~loop~. There is no second dialect of clause.
+#+BEGIN_SRC scheme
+{vecing a (:for a (range 0 20)) (:when (= 0 (% a 2)))}
+{summing (* a b) (:for a (range 1 4)) (:subloop) (:for b (range 1 4))}
+{stringing (char-upcase c) (:for c "hello")}
+#+END_SRC
+
+The accumulator's name is *invented*, which is what makes a comprehension an
+expression: there is exactly one result, and nothing to name it. A ~(:acc ...)~
+of your own inside the braces is an error, and so is a ~=>~ — both say "I want
+more than one result", which is what ~loop~ is for.
+
+A collector that takes a construction argument carries it in the head, exactly
+as it does in an ~:acc~ clause:
+#+BEGIN_SRC scheme
+{(folding 0) a (:for a xs)}     ;; => (:acc g (folding 0 a))
+#+END_SRC
+
+~seqing~ is the lazy one. It is not a ~Collector~ — it yields — so it becomes a
+~seql~ rather than a fold, and the sequence is produced on demand:
+#+BEGIN_SRC scheme
+{seqing (* a a) (:for a (range 0 1000000))}
+;; is exactly
+(seql (:for a (range 0 1000000)) (:yield (* a a)))
+#+END_SRC
+
+Since a comprehension is an ordinary expression, one nests inside another
+without ceremony — the invented names cannot collide.
+
 *** Named loops
 A name before the clauses hands the continue edge to the loop's *final* ~:do~.
 Tail calling the name is the jump; completing without one leaves the loop —

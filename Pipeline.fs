@@ -84,6 +84,7 @@ let rec read (tokens: LexedToken list) : SExpr list * LexedToken list =
         | [] -> List.rev acc, []
         | { Token = RParen } :: rest -> List.rev acc, rest
         | { Token = RBracket } :: rest -> List.rev acc, rest
+        | { Token = RBrace } :: rest -> List.rev acc, rest
 
         // Quoted list: '(items...) → (quoted-list items...)
         | { Token = Quote; Range = qr } :: { Token = LParen; Range = r } :: rest ->
@@ -115,6 +116,17 @@ let rec read (tokens: LexedToken list) : SExpr list * LexedToken list =
         | { Token = LParen; Range = r } :: rest ->
             let node, afterList = readForm r r id rest
             loop (node :: acc) afterList
+
+        // Comprehension: {collector expr clause...} → (comprehension collector expr clause...)
+        //
+        // Read as an ordinary list under a reserved head, exactly as a vec
+        // literal is; the parser is where it becomes a loop.
+        | { Token = LBrace; Range = r } :: rest ->
+            let innerNodes, afterList = read rest
+            let endRange = if List.isEmpty afterList then r else (List.head afterList).Range
+            let listRange = unionLexerRanges r endRange
+            let headToken = { Token = Lexer.Symbol "comprehension"; Range = r }
+            loop (SList(SAtom headToken :: innerNodes, listRange) :: acc) afterList
 
         // Vec literal: [items...] → (vec-literal items...)
         | { Token = LBracket; Range = r } :: rest ->

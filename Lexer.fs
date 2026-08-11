@@ -26,6 +26,8 @@ module Lexer =
         | RParen
         | LBracket
         | RBracket
+        | LBrace
+        | RBrace
         | Comma
         | Colon
         | Dot
@@ -50,7 +52,7 @@ module Lexer =
 
         let isSymbolChar c =
             not (Char.IsWhiteSpace c)
-            && not (List.contains c [ '('; ')'; '['; ']'; ','; ':'; '"'; ';'; '\'' ])
+            && not (List.contains c [ '('; ')'; '['; ']'; '{'; '}'; ','; ':'; '"'; ';'; '\'' ])
 
         let rec following charList pos =
             if List.isEmpty charList then
@@ -130,6 +132,12 @@ module Lexer =
                 | ')' -> emit RParen 1
                 | '[' -> emit LBracket 1
                 | ']' -> emit RBracket 1
+                // Braces open a comprehension. They are delimiters rather than
+                // symbol characters, which is a change: `{listing` would
+                // otherwise lex as one symbol. Nothing in the language used a
+                // brace before this.
+                | '{' -> emit LBrace 1
+                | '}' -> emit RBrace 1
                 | ',' -> emit Comma 1
                 // There are two types of keywords right now...
                 | ':' when pos + 1 < length && isSymbolChar input[pos + 1] ->

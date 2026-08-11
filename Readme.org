@@ -497,23 +497,26 @@ STRING FORMATTING. Alex Shinn is the answer yet again. (show #t etc ...) and div
 ** Syntax ideas
 @-expr from racket?
 
-comprehensions based on loop. This is simple. I should do it now (early august 2026):
+Comprehensions based on loop: *done*. The clauses ended up parenthesized rather
+than flat, which is why every loop clause works inside braces without the
+comprehension knowing any of them by name — and why ~:when~ keeps its ordinary
+meaning instead of being hoisted onto the accumulator. See ~Syntax.org~.
 
 #+begin_src scheme
-{listing (+ a 5) :for a b}
-;; would become
-(loop (:for a b)
-      (:acc gensym-here (listing (+ a 5))))
+{listing (* a a) (:for a (range 0 100))}
+;; becomes
+(loop (:for a (range 0 100))
+      (:acc gensym-here (listing (* a a)))
+      => gensym-here)
 
-;; but also allow for more
-{vecing (abs (- b f) :when (sun-and-moon-in-zenith) :for b (get-infinite-seq) :break (> b 2) :for f (stuffy-stuff b)))}
-;; which becomes
-(loop (:for b (get-infinite-seq))
-      (:break (> b 2))
-      (:for f (stuffy-stuff b))
-      (:acc gensym-here (abs (- b f)) :when (sun-and-moon-in-zenith)))
+;; every loop clause works, in order
+{vecing (abs (- b f)) (:for b (get-infinite-seq))
+                      (:break (> b 2))
+                      (:subloop)
+                      (:for f (stuffy-stuff b))
+                      (:when (sun-and-moon-in-zenith))}
 
-;; The seql version would just {seqing expr :for ...}
+;; and the seql version is {seqing expr (:for ...)}
 #+end_src
 
 Extend do notation to be more usable. :match :traverse :and<- ( :and<- seems _very hard_ atm).
