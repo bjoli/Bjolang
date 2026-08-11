@@ -1,0 +1,120 @@
+#+TITLE: Todo
+#+STARTUP: showall
+
+Known gaps, written down where they were found rather than in a commit message.
+
+* Source mapping (~#line~)
+
+Statement-level directives are emitted from ~generateBlock~, and both build
+configurations now carry a portable pdb, so stack traces name ~.bjo~ files and
+lines. What is not done:
+
+** Hoisted temporaries are attributed to the statement that produced them
+~emitStatement~ builds into a scratch buffer and then prepends a ~prelude~ of
+hoisted statements. The hoists are compiler glue with no honest source line, but
+they inherit the directive of whatever preceded them. They want ~#line hidden~
+around the prelude. Three sibling sites buffer the same way (~hoistToTemp~, and
+the two buffered-scratch paths in ~generateLocalFunction~).
+
+Harmless today — the line they inherit is the statement they belong to, which is
+close enough to be useful — but it is luck rather than design.
+
+** Directives are emitted unconditionally
+No suppression when the line has not changed since the last one, so the
+generated C# carries more directives than it needs. Correct, just larger. A
+dedup needs care: scratch buffers are relocated after the fact, so a
+module-level "last line emitted" would be wrong the moment a buffer moves.
+
+** Column spans are not used
+C# 10+ takes ~#line (l1,c1)-(l2,c2) "file"~, and ~Lexer.Range~ already carries
+~End~ as well as ~Start~. Using it would give column-accurate squiggles for
+nothing beyond the formatting change.
+
+** Inlined trait methods report the impl, not the call site
+~TraitInline~ splices an impl body into a caller, and the spliced nodes keep the
+impl's ranges. A failure inside an inlined ~fold~ names the ~def/impl~. That is
+defensible — it is where the code is written — but a caller reading the trace
+has no way to see which call site reached it.
+
+** The pdb no longer distinguishes a ~-d~ build
+Optimized builds used to delete their pdb, and its absence was how a caller
+could tell which way a binary was built. Both configurations now keep one.
+Nothing depended on the signal, but it is gone.
+
+* Diagnostics
+
+** Errors raised outside ~infer~ depend on their own call site for a location
+~infer~ attaches ~file.bjo:N~ to any diagnostic that arrives without one, which
+covers type errors. Reports from generalization, trait registration and parts of
+declaration checking are outside that wrapper and carry a location only if the
+site supplied one. Threading a ~Range~ into ~unify~ would close this, at the
+cost of inventing a location at the several call sites that have no natural one.
+
+** ~unify~ reports the two types, not the path to the mismatch
+Two large types differing deep inside are printed whole, and the reader finds
+the difference. Reporting the innermost disagreeing pair, or marking it, would
+be better.
+
+* Characters and strings
+
+** ~char-foldcase~ is simple lowercasing
+.NET exposes no simple case-folding table, so ~ToLowerInvariant~ stands in. It
+agrees with Unicode's simple fold except for characters like ß and ﬁ, where a
+full fold expands — which no char-to-char function can express in any case.
+
+** ~Collection~ is still not implemented for ~(Array %a)~
+It has no ~->seq~ to give.
+
+* Emacs mode (~bjomode.el~)
+
+Indentation follows Scheme's rules: bodies two, ~if~ four, everything else
+aligned under the first argument. Reindenting ~lib/std/prelude.bjo~ and
+~TestFiles/08_iterators.bjo~ from scratch reproduces them exactly.
+
+** A named loop aligns under the name, not the first clause
+~(loop lp (:for x xs) ...)~ puts the clauses under ~lp~, where the sources put
+them under ~(:for~. Standard Lisp alignment gives the former, and the latter
+needs a custom indenter that returns the column of the *second* argument —
+~lisp-indent-specform~ cannot express it. Named ~let~ is special-cased already
+(~bjo-let-indent~) because its body is a body; a named loop's clauses align, so
+it needs different machinery for one rarely-used form.
+
+** A ~match~ arm's body aligns under the pattern
+~((Ok probe) body)~ is a list with a list at its head, so the body lines up
+under ~(Ok probe)~. Emacs does the same for a ~cond~ clause. Some sources
+indent it two from the arm's own paren instead.
+
+** Library functions that read as body forms are not known
+~with-nack~ takes a function and looks like a body form, but it is an ordinary
+call, so its argument aligns under the head. Only forms the parser gives a
+meaning to are in ~bjo-indent-forms~; adding library names there would mean
+tracking the library from the mode.
+
+** No completion, no imenu, no eldoc
+Font lock and indentation only.
+
+* Operators
+
+An unapplied operator is eta-expanded into the lambda it stands for, so its type
+comes from the use site. Two things that leaves.
+
+** A local binding that shadows an operator is ignored
+~(let ((+ my-add)) (+ 1 2))~ compiles, and prints 3 rather than calling
+~my-add~: the operator arms in ~generateApply~ match on the name alone and emit
+infix whatever the name is bound to. ~conBaseName~ consults a ~shadowedBuiltins~
+set for type constructors; nothing does for operators, and ~Inference~ resolved
+the binding correctly before ~Codegen~ threw the answer away.
+
+Silent, which is the bad part. Rejecting the shadowing outright would also do.
+
+** A polymorphic operator value is a C# error, not a Bjolang one
+Reachable only by asking for one in a signature —
+~(: get-plus (-> (-> %a %a %a)))~ — which emits ~Func<T_a, T_a, T_a>~ with
+~a + b~ in the body, and C# says ~Operator '+' cannot be applied to operands of
+type 'T_a'~. The other routes are already closed by rules that predate this:
+~(def plus +)~ with no signature is caught by the module-level value rule, and a
+~defun~ needs a signature at all.
+
+The message is the gap, not the rejection — there is nothing a C# type parameter
+could mean here. It is the same wall generic arithmetic hits everywhere else.
+

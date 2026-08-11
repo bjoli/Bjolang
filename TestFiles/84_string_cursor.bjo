@@ -1,0 +1,253 @@
+;; R6RS character procedures, and string cursors.
+;;
+;; The cursor is the answer to the question `67_char.bjo` left open: there is no
+;; `string-ref`, because indexing UTF-16 by codepoint is O(n) and makes an
+;; index loop quadratic. A cursor is an *opaque* position — a struct holding an
+;; offset into the string's storage — so the same traversal is linear, and the
+;; offset is free to mean UTF-16 code units today and UTF-8 bytes later without
+;; any program here changing.
+;;
+;; The astral cases are the ones that matter. A character is a Unicode scalar
+;; value, so an emoji is one `char` occupying two units of UTF-16 storage: any
+;; test below that distinguishes `string-length` from `string-count`, or that
+;; reverses a string, is checking that nothing is counting or cutting in the
+;; wrong currency.
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+(: expect-int (-> string int int void))
+(defun (expect-int label actual wanted)
+  (expect label (int->string actual) (int->string wanted)))
+
+(: expect-bool (-> string bool bool void))
+(defun (expect-bool label actual wanted)
+  (expect label (if actual "yes" "no") (if wanted "yes" "no")))
+
+(: expect-char (-> string char char void))
+(defun (expect-char label actual wanted)
+  (expect label (char->string actual) (char->string wanted)))
+
+;; A folder that counts. Named rather than written `#(+ &1 1)`, because a
+;; shorthand's arity is the highest `&n` it mentions — that one is unary, and a
+;; folder takes the accumulator *and* the element.
+(: tally (-> int char int))
+(defun (tally acc c) (+ acc 1))
+
+;; Walk a string with the raw cursor API and count what comes past. The loop a
+;; cursor is *for*: one `next` per character, no indexing, no rescanning.
+(: count-by-cursor (-> string int))
+(defun (count-by-cursor s)
+  (let loop ((c (string-cursor-start s)) (n 0))
+    (if (string-cursor-end? s c)
+        n
+        (loop (string-cursor-next s c) (+ n 1)))))
+
+;; The same walk backwards, which `string-cursor-prev` makes O(1) per step.
+(: count-backwards (-> string int))
+(defun (count-backwards s)
+  (let loop ((c (string-cursor-end s)) (n 0))
+    (if (string-cursor=? c (string-cursor-start s))
+        n
+        (loop (string-cursor-prev s c) (+ n 1)))))
+
+(defun (main)
+  ;; ---- R6RS comparisons ---------------------------------------------------
+  (expect-bool "char=? same" (char=? #\a #\a) #t)
+  (expect-bool "char=? different" (char=? #\a #\b) #f)
+  (expect-bool "char<?" (char<? #\a #\b) #t)
+  (expect-bool "char>?" (char>? #\b #\a) #t)
+  (expect-bool "char<=? equal" (char<=? #\a #\a) #t)
+  (expect-bool "char>=? equal" (char>=? #\a #\a) #t)
+
+  ;; `<` is the operator, so it chains n-arily where the named forms are binary.
+  (expect-bool "chained <" (< #\a #\b #\c) #t)
+  (expect-bool "chained < broken" (< #\a #\c #\b) #f)
+
+  ;; Ordering is by codepoint. Comparing UTF-16 text would sort the emoji by its
+  ;; high surrogate (0xD83D) and put it *below* U+FFFD; by codepoint it is above
+  ;; every BMP character.
+  (expect-bool "astral orders above ascii" (char<? #\z #\😀) #t)
+
+  ;; ---- Case-insensitive comparison ----------------------------------------
+  (expect-bool "char-ci=? across case" (char-ci=? #\A #\a) #t)
+  (expect-bool "char-ci=? different" (char-ci=? #\A #\b) #f)
+  (expect-bool "char-ci<?" (char-ci<? #\A #\b) #t)
+  (expect-bool "char-ci>=?" (char-ci>=? #\B #\a) #t)
+
+  ;; ---- Case conversion ----------------------------------------------------
+  (expect-char "char-upcase" (char-upcase #\a) #\A)
+  (expect-char "char-downcase" (char-downcase #\Z) #\z)
+  (expect-char "char-foldcase" (char-foldcase #\A) #\a)
+  (expect-char "char-upcase non-letter" (char-upcase #\7) #\7)
+  ;; Beyond ASCII, which is where a byte-wise implementation would give up.
+  (expect-char "char-upcase accented" (char-upcase #\é) #\É)
+  (expect-char "char-downcase greek" (char-downcase #\Σ) #\σ)
+
+  ;; ---- Classification -----------------------------------------------------
+  (expect-bool "alphabetic yes" (char-alphabetic? #\a) #t)
+  (expect-bool "alphabetic no" (char-alphabetic? #\1) #f)
+  (expect-bool "alphabetic non-ascii" (char-alphabetic? #\é) #t)
+  (expect-bool "numeric yes" (char-numeric? #\7) #t)
+  (expect-bool "numeric no" (char-numeric? #\a) #f)
+  (expect-bool "whitespace space" (char-whitespace? #\space) #t)
+  (expect-bool "whitespace newline" (char-whitespace? #\newline) #t)
+  (expect-bool "whitespace no" (char-whitespace? #\a) #f)
+  (expect-bool "upper-case yes" (char-upper-case? #\A) #t)
+  (expect-bool "upper-case no" (char-lower-case? #\A) #f)
+  (expect-bool "lower-case yes" (char-lower-case? #\a) #t)
+
+  ;; `digit-value` is narrower than `char-numeric?`, and the pair of answers
+  ;; here is the reason both exist.
+  (expect-int "digit-value 7" (option-get-or (digit-value #\7) -1) 7)
+  (expect-int "digit-value non-digit" (option-get-or (digit-value #\a) -1) -1)
+  (expect-bool "digit-value none? on letter" (none? (digit-value #\a)) #t)
+
+  ;; ---- General category ---------------------------------------------------
+  (expect "category lowercase" (symbol->string (char-general-category #\a)) "Ll")
+  (expect "category uppercase" (symbol->string (char-general-category #\A)) "Lu")
+  (expect "category digit" (symbol->string (char-general-category #\7)) "Nd")
+  (expect "category space" (symbol->string (char-general-category #\space)) "Zs")
+
+  ;; ---- Cursors, the basics ------------------------------------------------
+  (expect-char "ref at start" (string-cursor-ref "hello" (string-cursor-start "hello")) #\h)
+  (expect-char "ref after next"
+               (string-cursor-ref "hello" (string-cursor-next "hello" (string-cursor-start "hello")))
+               #\e)
+  (expect-bool "end? at end" (string-cursor-end? "hi" (string-cursor-end "hi")) #t)
+  (expect-bool "end? at start" (string-cursor-end? "hi" (string-cursor-start "hi")) #f)
+  ;; An empty string is where start and end coincide.
+  (expect-bool "empty string is immediately done"
+               (string-cursor-end? "" (string-cursor-start "")) #t)
+
+  ;; Cursor comparison, which is what bounds a hand-written traversal.
+  (expect-bool "cursor=? start end on empty"
+               (string-cursor=? (string-cursor-start "") (string-cursor-end "")) #t)
+  (expect-bool "cursor<? start before end"
+               (string-cursor<? (string-cursor-start "hi") (string-cursor-end "hi")) #t)
+
+  ;; ---- Storage units against characters -----------------------------------
+  ;;
+  ;; The heart of it. "a😀b" is three characters in four UTF-16 code units, and
+  ;; every operation below has to agree about which of those two numbers it
+  ;; deals in.
+  (expect-int "string-length counts storage" (string-length "a😀b") 4)
+  (expect-int "string-count counts characters" (string-count "a😀b") 3)
+  (expect-int "cursor walk counts characters" (count-by-cursor "a😀b") 3)
+  (expect-int "backward walk agrees" (count-backwards "a😀b") 3)
+  (expect-int "ascii: the two agree" (string-length "abc") (string-count "abc"))
+
+  ;; The emoji arrives whole from the middle of the string, not as a surrogate.
+  (expect-char "astral char read whole"
+               (string-cursor-ref "a😀b"
+                 (string-cursor-next "a😀b" (string-cursor-start "a😀b")))
+               #\😀)
+  ;; And one `next` steps over both of its storage units.
+  (expect-char "next steps over the whole character"
+               (string-cursor-ref "a😀b"
+                 (string-cursor-next "a😀b"
+                   (string-cursor-next "a😀b" (string-cursor-start "a😀b"))))
+               #\b)
+
+  ;; ---- substring/cursors --------------------------------------------------
+  (expect "substring whole"
+          (substring/cursors "hello" (string-cursor-start "hello") (string-cursor-end "hello"))
+          "hello")
+  (expect "substring empty at start"
+          (substring/cursors "hello" (string-cursor-start "hello") (string-cursor-start "hello"))
+          "")
+  (expect "substring drops first char"
+          (substring/cursors "hello"
+            (string-cursor-next "hello" (string-cursor-start "hello"))
+            (string-cursor-end "hello"))
+          "ello")
+
+  ;; ---- Folds --------------------------------------------------------------
+  (expect-int "string-fold counts" (string-fold tally 0 "hello") 5)
+  (expect-int "string-fold over astral" (string-fold tally 0 "a😀b") 3)
+  ;; Left and right fold differ in the order they visit, which is the whole
+  ;; point of having both: consing on the way left reverses, on the way right
+  ;; does not.
+  (expect "string-fold builds reversed"
+          (list->string (string-fold #(cons &2 &1) Nil "abc"))
+          "cba")
+  (expect "string-fold-right preserves order"
+          (list->string (string-fold-right cons Nil "abc"))
+          "abc")
+
+  ;; ---- for-each -----------------------------------------------------------
+  (let ((b (stringbuilder-empty)))
+    (string-for-each #(stringbuilder-add! b (char-upcase &1)) "hi there")
+    (expect "string-for-each" (stringbuilder->string b) "HI THERE"))
+
+  ;; ---- Conversions --------------------------------------------------------
+  (expect "string->list and back" (list->string (string->list "round trip")) "round trip")
+  (expect "round trip keeps astral" (list->string (string->list "a😀b")) "a😀b")
+  (expect-int "string->list length" (list-length (string->list "a😀b")) 3)
+  (expect-int "string->vec length" (vec-length (string->vec "a😀b")) 3)
+  (expect-char "string->vec element" (vec-get (string->vec "a😀b") 1) #\😀)
+
+  ;; Reversing by character. Reversing the *storage* would split the emoji into
+  ;; two surrogates and swap them, producing text no longer well-formed — this
+  ;; is the test that catches it.
+  (expect "string-reverse ascii" (string-reverse "abc") "cba")
+  (expect "string-reverse astral" (string-reverse "a😀b") "b😀a")
+  (expect "string-reverse empty" (string-reverse "") "")
+
+  ;; ---- string-index -------------------------------------------------------
+  ;; The result is a cursor, so it can be used to cut without converting back.
+  (expect "index finds and slices"
+          (substring/cursors "hello world"
+            (option-get (string-index char-whitespace? "hello world"))
+            (string-cursor-end "hello world"))
+          " world")
+  (expect-bool "index missing" (none? (string-index char-numeric? "no digits here")) #t)
+
+  ;; ---- Iterating a string with `loop` -------------------------------------
+  ;;
+  ;; `:for` over a string uses the `Iterable` impl and `:acc ... (stringing ...)`
+  ;; the `Collector` one, so neither the loop nor the accumulator knows anything
+  ;; about encodings.
+  (expect "loop over string"
+          (loop (:for c "hello")
+                (:acc out (stringing (char-upcase c)))
+                => out)
+          "HELLO")
+  (expect "loop keeps astral whole"
+          (loop (:for c "a😀b")
+                (:acc out (stringing c))
+                => out)
+          "a😀b")
+  (expect-int "loop counts characters"
+              (loop (:for c "a😀b")
+                    (:acc n (counting c))
+                    => n)
+              3)
+  ;; Filtering mid-loop, to show the character is an ordinary value.
+  (expect "loop filters"
+          (loop (:for c "h3ll0 w0rld")
+                (:when (char-alphabetic? c))
+                (:acc out (stringing c))
+                => out)
+          "hllwrld")
+
+  ;; ---- The Collection and Foldable traits ---------------------------------
+  ;;
+  ;; `length` is the character count, so that it agrees with what `->seq` gives.
+  (expect-int "Collection length" (length "a😀b") 3)
+  (expect-bool "Collection empty? yes" (empty? "") #t)
+  (expect-bool "Collection empty? no" (empty? "a") #f)
+  (expect-int "Collection ->seq agrees" (seq-length (->seq "a😀b")) 3)
+  (expect-int "Foldable fold" (fold tally 0 "hello") 5)
+
+  ;; ---- ->str --------------------------------------------------------------
+  (expect "->str of a char" (->str #\a) "a")
+  (expect "->str of an astral char" (->str #\😀) "😀")
+
+  0)

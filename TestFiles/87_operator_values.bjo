@@ -1,0 +1,113 @@
+;; An operator used as a value.
+;;
+;; Applied, an operator is emitted as C# syntax and needs no name. Passed as a
+;; value it has none — C# has no `+` to hand over — so the parser rewrites it
+;; into the lambda it stands for, and the application inside that lambda is
+;; emitted infix like any other.
+;;
+;; The rewrite happens where a bare symbol becomes an expression, which by
+;; construction is never the head of an application: the head is built by the
+;; list branch. So nothing here depends on types, and every operator works at
+;; every type its C# counterpart does — where `+` as a value used to be the
+;; runtime's `add(int, int)` and worked at `int` alone.
+
+(import (std prelude))
+
+(import/extern
+  (to-byte (: System.Convert.ToByte)))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+(: expect-int (-> string int int void))
+(defun (expect-int label actual wanted)
+  (expect label (int->string actual) (int->string wanted)))
+
+(: expect-long (-> string long long void))
+(defun (expect-long label actual wanted)
+  (expect label (long->string actual) (long->string wanted)))
+
+(: expect-byte (-> string byte byte void))
+(defun (expect-byte label actual wanted)
+  (expect label (byte->string actual) (byte->string wanted)))
+
+(: expect-true (-> string bool void))
+(defun (expect-true label actual)
+  (expect label (if actual "true" "false") "true"))
+
+;; Higher-order functions of the shapes an operator can fill, so the tests say
+;; "this value was called" rather than relying on what the prelude happens to do.
+(: apply2 (-> (-> int int int) int int int))
+(defun (apply2 f a b) (f a b))
+
+(: apply1 (-> (-> int int) int int))
+(defun (apply1 f x) (f x))
+
+(: compare2 (-> (-> int int bool) int int bool))
+(defun (compare2 f a b) (f a b))
+
+(: apply2-byte (-> (-> byte byte byte) byte byte byte))
+(defun (apply2-byte f a b) (f a b))
+
+;; A signature pins the type before generalization, which is what lets an
+;; operator be bound at the top level at all.
+(: plus (-> int int int))
+(def plus +)
+
+(defun (main args)
+
+  ;; ---- Passed to a function of our own ------------------------------------
+  (expect-int "+" (apply2 + 2 3) 5)
+  (expect-int "-" (apply2 - 2 3) -1)
+  (expect-int "*" (apply2 * 2 3) 6)
+  (expect-int "/" (apply2 / 7 2) 3)
+  (expect-int "%" (apply2 % 7 2) 1)
+  (expect-int "bitwise-xor" (apply2 bitwise-xor 12 10) 6)
+  (expect-int "shift-left" (apply2 shift-left 1 4) 16)
+  (expect-int "shift-right" (apply2 shift-right -8 1) -4)
+
+  ;; The unary ones. `negate` is what `(- x)` desugars to, and is a name a
+  ;; program may also write.
+  (expect-int "negate" (apply1 negate 5) -5)
+  (expect-int "bitwise-not" (apply1 bitwise-not 12) -13)
+
+  ;; A comparison yields bool, so it fills a different shape.
+  (expect-true "<" (compare2 < 3 4))
+  (expect-true "=" (compare2 = 3 3))
+  (expect-true ">=" (compare2 >= 4 4))
+
+  ;; ---- The same operator at more than one type ----------------------------
+  (expect-int "fold + at int" (fold + 0 [1 2 3 4]) 10)
+  (expect-true "fold + at double" (= 4.0 (fold + 0.0 [1.5 2.5])))
+  (expect-long "fold * at long" (fold * 1L [2L 3L 4L]) 24L)
+
+  ;; And at `byte`, where C# promotes the operands to int and the result is cast
+  ;; back — inside the lambda, exactly as it is when written out.
+  (expect-byte "+ at byte" (apply2-byte + (to-byte 200) (to-byte 100)) (to-byte 44))
+  (expect-byte "bitwise-and at byte"
+               (apply2-byte bitwise-and (to-byte 200) (to-byte 60))
+               (to-byte 8))
+
+  ;; ---- Passed to the prelude's own higher-order functions -----------------
+  (expect-int "fold bitwise-ior" (fold bitwise-ior 0 [1 2 4 8]) 15)
+  (expect-int "fold bitwise-and" (fold bitwise-and 255 [60 12]) 12)
+  (expect-int "vec-map negate" (vec-fold + 0 (vec-map negate [1 2 3])) -6)
+  (expect-int "vec-reduce" (vec-reduce bitwise-xor [1 2 4 8]) 15)
+
+  ;; ---- Bound to a name ----------------------------------------------------
+  (expect-int "top-level def with a signature" (plus 2 3) 5)
+
+  (let ((f *))
+    (expect-int "let-bound" (f 6 7) 42))
+
+  ;; Nothing about the rewrite is special to a call: the value can be stored and
+  ;; handed on.
+  (let ((ops [+ - *]))
+    (expect-int "held in a vec" ((vec-get ops 2) 6 7) 42))
+
+  0)

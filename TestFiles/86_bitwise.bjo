@@ -1,0 +1,116 @@
+;; Bitwise operators.
+;;
+;; Typed `(-> %a %a %a)` and emitted as the C# operator, so the operand type
+;; decides the meaning: `shift-right` is arithmetic on a signed type and logical
+;; on an unsigned one, exactly as `>>` is, and `shift-right-logical` is `>>>`.
+;;
+;; The `byte` cases are the promotion. C# widens a `byte` operand to `int`
+;; before applying any operator, so the result is cast back to the type Bjolang
+;; gave the expression, and wraps there.
+
+(import (std prelude))
+
+;; `byte` has no literal syntax, so one is made by conversion.
+(import/extern
+  (to-byte (: System.Convert.ToByte)))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+(: expect-int (-> string int int void))
+(defun (expect-int label actual wanted)
+  (expect label (int->string actual) (int->string wanted)))
+
+(: expect-long (-> string long long void))
+(defun (expect-long label actual wanted)
+  (expect label (long->string actual) (long->string wanted)))
+
+(: expect-byte (-> string byte byte void))
+(defun (expect-byte label actual wanted)
+  (expect label (byte->string actual) (byte->string wanted)))
+
+;; Branchless absolute value, and the reason an arithmetic right shift exists:
+;; `(shift-right x 31)` is all ones for a negative int and all zeros otherwise.
+(: mask-abs (-> int int))
+(defun (mask-abs x)
+  (let ((m (shift-right x 31)))
+    (bitwise-xor (+ x m) m)))
+
+;; Sign-extends the low `n` bits of `x`. Logical shift would zero-extend and give
+;; a different answer for a field whose top bit is set.
+(: sign-extend (-> int int int))
+(defun (sign-extend x n)
+  (shift-right (shift-left x (- 32 n)) (- 32 n)))
+
+(defun (main args)
+
+  ;; ---- The three binaries -------------------------------------------------
+  (expect-int "and" (bitwise-and 12 10) 8)
+  (expect-int "ior" (bitwise-ior 12 10) 14)
+  (expect-int "xor" (bitwise-xor 12 10) 6)
+  (expect-int "not" (bitwise-not 12) -13)
+  (expect-int "not zero" (bitwise-not 0) -1)
+  (expect-int "not is an involution" (bitwise-not (bitwise-not 12)) 12)
+
+  ;; ---- n-ary, left-folded -------------------------------------------------
+  (expect-int "and folds" (bitwise-and 255 60 12) 12)
+  (expect-int "ior folds" (bitwise-ior 1 2 4 8) 15)
+  (expect-int "xor folds" (bitwise-xor 1 2 4 8) 15)
+  (expect-int "xor cancels" (bitwise-xor 5 5 7) 7)
+  (expect-int "one argument is itself" (bitwise-and 9) 9)
+  (expect-int "and is the fold" (bitwise-and 255 60 12) (bitwise-and (bitwise-and 255 60) 12))
+
+  ;; ---- Shifts -------------------------------------------------------------
+  (expect-int "left" (shift-left 1 4) 16)
+  (expect-int "right" (shift-right 256 4) 16)
+  (expect-int "nested" (bitwise-ior (shift-left 1 8) 255) 511)
+
+  ;; C# masks the count to the operand's width, so a shift by 32 of an int is a
+  ;; shift by 0 rather than zero.
+  (expect-int "the count is masked to the width" (shift-left 1 32) 1)
+
+  ;; ---- Arithmetic vs logical ----------------------------------------------
+  (expect-int "right keeps the sign" (shift-right -8 1) -4)
+  (expect-int "right of -1 is -1" (shift-right -1 20) -1)
+  (expect-int "logical shifts zeroes in" (shift-right-logical -8 1) 2147483644)
+  (expect-int "logical of -1" (shift-right-logical -1 28) 15)
+  (expect-int "the two agree on a positive"
+              (shift-right 256 4)
+              (shift-right-logical 256 4))
+
+  ;; `>>` rounds toward negative infinity where `/` truncates toward zero, which
+  ;; is the difference that matters when the value is an index.
+  (expect-int "right is floor division" (shift-right -7 1) -4)
+  (expect-int "/ truncates" (/ -7 2) -3)
+
+  (expect-int "sign mask, negative" (shift-right -5 31) -1)
+  (expect-int "sign mask, positive" (shift-right 5 31) 0)
+  (expect-int "branchless abs of a negative" (mask-abs -42) 42)
+  (expect-int "branchless abs of a positive" (mask-abs 42) 42)
+
+  (expect-int "sign-extend a set top bit" (sign-extend 13 4) -3)
+  (expect-int "sign-extend a clear top bit" (sign-extend 5 4) 5)
+
+  ;; ---- long ---------------------------------------------------------------
+  (expect-long "and at long" (bitwise-and 4294967295L 255L) 255L)
+  (expect-long "left past 32 bits" (shift-left 1L 40) 1099511627776L)
+  (expect-long "right keeps the sign at long" (shift-right -8L 1) -4L)
+
+  ;; ---- byte, where C# promotes to int and the result is cast back ----------
+  (expect-byte "and at byte" (bitwise-and (to-byte 200) (to-byte 60)) (to-byte 8))
+  (expect-byte "ior at byte" (bitwise-ior (to-byte 200) (to-byte 60)) (to-byte 252))
+  (expect-byte "not at byte wraps" (bitwise-not (to-byte 5)) (to-byte 250))
+  (expect-byte "left at byte wraps" (shift-left (to-byte 200) 1) (to-byte 144))
+
+  ;; A byte is unsigned, so its `>>` is the logical one.
+  (expect-byte "right at byte is logical" (shift-right (to-byte 200) 2) (to-byte 50))
+
+  ;; Arithmetic promotes the same way, and did so before these operators existed.
+  (expect-byte "+ at byte wraps" (+ (to-byte 200) (to-byte 100)) (to-byte 44))
+
+  0)

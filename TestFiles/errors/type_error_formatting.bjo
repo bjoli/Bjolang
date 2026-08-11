@@ -1,0 +1,25 @@
+;; What a type error looks like.
+;;
+;; The types are printed as a signature spells them, so `char` rather than
+;; `TCon ("Char", [])`, and an unsolved variable is `?a` — distinct from a
+;; declared `%a`, and the same name wherever it recurs in the pair.
+;;
+;; A mismatched arity is stated outright: two arrows printed one above the other
+;; are the hardest case to read, and the wrong number of arguments is the
+;; commonest way to reach one.
+;;
+;; The absence of an F# stack trace is the other half of it, and cannot be
+;; asserted here — a test can only require that a substring is present. It is
+;; covered by the message being all there is.
+
+;; EXPECT-ERROR: Type error: these types do not match.
+;; EXPECT-ERROR: (-> ?a char ?a)
+;; EXPECT-ERROR: The first takes 2 arguments, the second 1 argument.
+
+(import (std prelude))
+
+(defun (main args)
+  ;; `string-fold`'s folder takes the accumulator and the character; a `#(...)`
+  ;; shorthand's arity is the highest `&n` it mentions, so this one is unary.
+  (println (string-fold #(+ &1 1) 0 "hello"))
+  0)

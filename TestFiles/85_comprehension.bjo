@@ -1,0 +1,162 @@
+;; Comprehensions: `{collector expr clause...}`.
+;;
+;; One rewrite, and nothing else:
+;;
+;;   {listing (* a a) (:for a (range 0 10))}
+;;   => (loop (:for a (range 0 10)) (:acc G (listing (* a a))) => G)
+;;
+;; The clauses are handed to the loop desugarer untouched and in order, so every
+;; clause `loop` understands works here and means the same thing. That is what
+;; taking them parenthesized buys: there is no second dialect to learn, and
+;; `:break`, `:let`, `:with` and `:subloop` needed no work to support.
+;;
+;; Most tests below assert the comprehension equals the hand-written loop rather
+;; than a literal, which is the property that actually matters: the sugar has to
+;; be the loop, not merely resemble it.
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+(: expect-int (-> string int int void))
+(defun (expect-int label actual wanted)
+  (expect label (int->string actual) (int->string wanted)))
+
+;; Rendering a list of ints, so two of them can be compared as strings.
+(: show-list (-> (List int) string))
+(defun (show-list xs)
+  {stringing c (:for s (list-map int->string xs)) (:subloop) (:for c (string-append s "."))})
+
+(defun (main)
+  ;; ---- The basic shape ----------------------------------------------------
+  (expect-int "listing length" (list-length {listing (* a a) (:for a (range 0 10))}) 10)
+  (expect "listing agrees with the loop"
+          (show-list {listing (* a a) (:for a (range 0 10))})
+          (show-list (loop (:for a (range 0 10))
+                           (:acc out (listing (* a a)))
+                           => out)))
+
+  ;; ---- Every stock collector ----------------------------------------------
+  (expect-int "summing" {summing a (:for a (range 0 100))} 4950)
+  (expect-int "counting" {counting a (:for a (range 0 7))} 7)
+  (expect-int "vecing" (vec-length {vecing a (:for a (range 0 20))}) 20)
+  (expect "stringing" {stringing (char-upcase c) (:for c "hello")} "HELLO")
+  (expect-int "mapping"
+              (map-length {mapping (Tuple a (* a a)) (:for a (range 0 5))})
+              5)
+
+  ;; Everything before the first clause is the accumulator form verbatim, so a
+  ;; collector's construction arguments are simply written before the
+  ;; expression — nothing has to know how many of them there are.
+  (expect-int "folding keeps the last" {folding 0 a (:for a (range 0 5))} 4)
+  (expect-int "folding on an empty range" {folding 99 a (:for a (range 0 0))} 99)
+
+  ;; ---- The loose :when ----------------------------------------------------
+  ;;
+  ;; A `:when` written flat between the accumulator form and the first clause
+  ;; guards the *accumulation* — it becomes the `#:when` on the generated
+  ;; `:acc`. Parenthesized and among the clauses, it is the loop's own and skips
+  ;; the rest of the iteration.
+  (expect-int "loose :when gates the step"
+              (vec-length {vecing a :when (= 0 (% a 2)) (:for a (range 0 20))})
+              10)
+  (expect "loose :when equals the hand-written #:when"
+          (show-list {listing a :when (= 0 (% a 2)) (:for a (range 0 10))})
+          (show-list (loop (:for a (range 0 10))
+                           (:acc out (listing a) #:when (= 0 (% a 2)))
+                           => out)))
+  (expect-int "loose :when with a collector that has arguments"
+              {folding 0 a :when (= 0 (% a 2)) (:for a (range 0 10))}
+              8)
+
+  ;; The difference the parentheses make. A parenthesized `(:when ...)` skips
+  ;; the rest of the iteration, so a later `(:break ...)` never sees the odd
+  ;; numbers; the loose one runs every clause and only gates the step.
+  (expect-int "parenthesized :when skips the rest of the iteration"
+              {counting a (:for a (range 0 10)) (:when (= 0 (% a 2)))}
+              5)
+  (expect-int "loose :when still runs the clauses"
+              {counting a :when (= 0 (% a 2)) (:for a (range 0 10))}
+              5)
+
+  ;; ---- Clauses pass straight through --------------------------------------
+  (expect-int "with :when"
+              (vec-length {vecing a (:for a (range 0 20)) (:when (= 0 (% a 2)))})
+              10)
+  (expect-int "with :break"
+              {summing a (:for a (range 0 100)) (:break (> a 5))}
+              15)
+  (expect-int "with :let"
+              {summing b (:for a (range 0 5)) (:let b (* a 10))}
+              100)
+  (expect-int "with :final"
+              {counting a (:for a (range 0 100)) (:final (>= a 3))}
+              4)
+
+  ;; `:with` carries state across iterations, so a comprehension can express a
+  ;; recurrence — this is the Fibonacci loop with its accumulator implied.
+  (expect "with :with"
+          (show-list {listing a (:with a 0 b) (:with b 1 (+ a b)) (:for i (range 0 8))})
+          (show-list (loop (:with a 0 b)
+                           (:with b 1 (+ a b))
+                           (:for i (range 0 8))
+                           (:acc out (listing a))
+                           => out)))
+
+  ;; ---- Levels -------------------------------------------------------------
+  ;;
+  ;; Two `:for` clauses in a row iterate in lockstep; `(:subloop)` between them
+  ;; is what nests one inside the other. The comprehension inherits both
+  ;; readings because it inherits the clause list wholesale.
+  (expect-int "parallel :for clauses zip"
+              {counting (Tuple a b) (:for a (range 0 5)) (:for b (range 0 3))}
+              3)
+  (expect-int "subloop nests"
+              {counting (Tuple a b) (:for a (range 0 5)) (:subloop) (:for b (range 0 3))}
+              15)
+  (expect-int "nested sum"
+              {summing (* a b) (:for a (range 1 4)) (:subloop) (:for b (range 1 4))}
+              36)
+
+  ;; ---- seqing -------------------------------------------------------------
+  ;;
+  ;; Not a collector: it yields, so it becomes a `seql` rather than a fold and
+  ;; is lazy like any other sequence.
+  (expect-int "seqing length" (seq-length {seqing (* a a) (:for a (range 0 6))}) 6)
+  (expect-int "seqing with a loose :when"
+              (seq-length {seqing a :when (= 0 (% a 2)) (:for a (range 0 10))})
+              5)
+  (expect-int "seqing is lazy"
+              (seq-length (seq-take {seqing (* a a) (:for a (range 0 1000000))} 4))
+              4)
+  (expect "seqing agrees with seql"
+          (show-list (seq->list {seqing (* a a) (:for a (range 0 5))}))
+          (show-list (seq->list (seql (:for a (range 0 5)) (:yield (* a a))))))
+
+  ;; ---- Over other collections --------------------------------------------
+  ;;
+  ;; `:for` is `Iterable`, so anything walkable is a source — including a
+  ;; string, whose elements are characters.
+  (expect-int "over a list" {summing a (:for a (list 1 2 3 4))} 10)
+  (expect-int "over a string" {counting c (:for c "a😀b")} 3)
+  (expect "string in, string out"
+          {stringing c (:for c "a😀b") (:when (char-alphabetic? c))}
+          "ab")
+
+  ;; ---- Nesting comprehensions --------------------------------------------
+  ;;
+  ;; A comprehension is an ordinary expression, so one can be the source of
+  ;; another, and the invented accumulator names cannot collide.
+  (expect-int "comprehension as a source"
+              {summing a (:for a {listing (* a a) (:for a (range 0 5))})}
+              30)
+  (expect-int "comprehension in the expression"
+              {summing {summing b (:for b (range 0 a))} (:for a (range 0 5))}
+              10)
+
+  0)
