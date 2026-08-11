@@ -434,31 +434,46 @@ let parseDefunRest (rest: SExpr list) : (FType option * SExpr list) =
     | body -> (None, body)
 
 
-// Desugar a quoted list '(1 2 3) into (Cons 1 (Cons 2 (Cons 3 Nil)))
-// Nested lists are recursively quoted: '(1 (2 3)) → (Cons 1 (Cons (Cons 2 (Cons 3 Nil)) Nil))
-// Dotted pairs (a . b) within quoted lists become tuples
-let desugarQuotedList (items: SExpr list) (r: Range) : Expr =
+// Desugar a quoted list '(a ,x b) into (Cons 'a (Cons x (Cons 'b Nil))).
+//
+// Symbols are literal Symbol data — '(a b c) gives three symbol values, not
+// three variable references. To splice a computed value, prefix it with `,`:
+// '(a ,x b) evaluates x and conses it between the two symbols.
+//
+// `parseExprFn` is threaded in as a parameter because this function is defined
+// before `parseExpr`; the call site passes `parseExpr` directly.
+let desugarQuotedList (parseExprFn: SExpr -> Expr) (items: SExpr list) (r: Range) : Expr =
     let rec quoteItem (s: SExpr) : Expr =
         let ir = getRange s
         match s with
         | SAtom { Token = NumberLit n } -> EInt(n, ir)
         | SAtom { Token = StringLit str } -> EString(str, ir)
-        | SAtom { Token = Symbol sym } -> EIdent(sym, ir)
+        | SAtom { Token = CharLit c } -> EChar(c, ir)
+        | SAtom { Token = Keyword kw } -> EKeyword(kw, ir)
+        // A symbol in a quoted list is a literal Symbol value, not a variable
+        // reference — write ,(expr) to splice the value of a variable.
+        | SAtom { Token = Symbol sym } -> EQuotedSymbol(sym, ir)
         | SAtom { Token = QuotedSymbol sym } -> EQuotedSymbol(sym, ir)
-        // Nested list → recursive Cons chain
+        // Dotted pair in a quoted list: '(a . b) → (Tuple a b)
         | SList(SAtom { Token = Symbol "Tuple" } :: tupleItems, _) ->
-            // Dotted pair in a quoted list: '(a . b) → (Tuple a b)
             ETuple(List.map quoteItem tupleItems, ir)
-        | SList(inner, _) ->
-            buildConsChain inner ir
+        // Nested list → recursive Cons chain
+        | SList(inner, lr) ->
+            buildConsChain inner lr
         | _ -> failwithf $"Unsupported item in quoted list at %s{Lexer.formatPos ir}"
     and buildConsChain (items: SExpr list) (r: Range) : Expr =
         match items with
         | [] -> EIdent("Nil", r)
+        // ,expr — unquote: the Comma token followed by the next item means
+        // "evaluate this, do not quote it". The comma is already a separate
+        // token in the lexer, so it arrives here as SAtom{Comma} :: expr :: rest.
+        | SAtom { Token = Comma } :: inner :: rest ->
+            let hd = parseExprFn inner
+            EApp(EIdent("Cons", r), [hd; buildConsChain rest r], r)
+        | SAtom { Token = Comma } :: [] ->
+            failwithf $"Unexpected , at end of quoted list at %s{Lexer.formatPos r}"
         | item :: rest ->
-            let hd = quoteItem item
-            let tl = buildConsChain rest r
-            EApp(EIdent("Cons", r), [hd; tl], r)
+            EApp(EIdent("Cons", r), [quoteItem item; buildConsChain rest r], r)
     buildConsChain items r
 
 /// An expression's own range.
@@ -1287,7 +1302,7 @@ let rec parseExpr (s: SExpr) : Expr =
             | "Tuple" -> ETuple(processArgs args, listRange)
 
             // Quoted list literal: '(1 2 3) → Cons chain
-            | "quoted-list" -> desugarQuotedList args listRange
+            | "quoted-list" -> desugarQuotedList parseExpr args listRange
 
             // Vec literal: [1 2 3] → EVec
             | "vec-literal" -> EVec(processArgs args, listRange)
