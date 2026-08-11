@@ -9,6 +9,8 @@
   bind pure
   ;; Iterable
   current done? next start
+  ;; Cursor — a position, where Iterable is a walk
+  cursor-start cursor-end cursor-end? cursor-ref cursor-next cursor-prev
   ;; Collecter
   init step finish
   ;; Collection
@@ -263,6 +265,33 @@
   (defun (next s c) (seq-tail c)))
 
 ;; ---------------------------------------------------------------------------
+;; Cursor
+;; ---------------------------------------------------------------------------
+
+;; A position, where `Iterable` is a walk. An `Iterable` cursor may be a live
+;; enumerator, so it is used linearly; a `Cursor` is a value, and may be held,
+;; compared, and stepped backwards.
+(def/trait (Cursor %s)
+  (type %elem)
+  (type %cursor)
+  (: cursor-start (-> %s %cursor))
+  (: cursor-end (-> %s %cursor))
+  (: cursor-end? (-> %s %cursor bool))
+  (: cursor-ref (-> %s %cursor %elem))
+  (: cursor-next (-> %s %cursor %cursor))
+  (: cursor-prev (-> %s %cursor %cursor)))
+
+(def/impl (Cursor string)
+  (type %elem char)
+  (type %cursor StringCursor)
+  (defun (cursor-start s) (string-cursor-start s))
+  (defun (cursor-end s) (string-cursor-end s))
+  (defun (cursor-end? s c) (string-cursor-end? s c))
+  (defun (cursor-ref s c) (string-cursor-ref s c))
+  (defun (cursor-next s c) (string-cursor-next s c))
+  (defun (cursor-prev s c) (string-cursor-prev s c)))
+
+;; ---------------------------------------------------------------------------
 ;; Collector
 ;; ---------------------------------------------------------------------------
 
@@ -405,7 +434,7 @@
 ;; whole.  We name all of them for clarity.
 (import (std maths))
 
-(re-export abs sign min max clamp sqrt)
+(re-export abs sign min max clamp sqrt zero?)
 
 ;; ---------------------------------------------------------------------------
 ;; Strings, conversions, files and paths

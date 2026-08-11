@@ -76,6 +76,29 @@ let inline indent (ctx: CodegenContext) =
 let withIndent (ctx: CodegenContext) (f: CodegenContext -> unit) =
     f { ctx with IndentLevel = ctx.IndentLevel + 1 }
 
+/// `#line`, mapping the C# that follows back to the Bjolang that produced it.
+///
+/// Emitted per statement rather than per method: a directive holds until the
+/// next one, so one per method would map the twentieth generated line of a body
+/// to the twentieth line of the source function — usually past the end of it.
+///
+/// A range with no file is skipped rather than guessed at. Nothing in the
+/// compiler builds one today, but a wrong `#line` is worse than none: it sends
+/// a reader to a line that has nothing to do with the error.
+let lineDirective (ctx: CodegenContext) (r: Lexer.Range) =
+    if not (String.IsNullOrEmpty r.File) then
+        let path = r.File.Replace("\\", "\\\\").Replace("\"", "\\\"")
+        ctx.Builder.AppendLine($"#line {r.Start.Line} \"{path}\"") |> ignore
+
+/// Ends the reach of the preceding `#line`.
+///
+/// A directive holds until the next one, so generated scaffolding that follows
+/// a method — the entry point, a trait singleton — would otherwise be numbered
+/// as a continuation of whatever source that method came from, and report lines
+/// past the end of the file. Scaffolding has no source, and this says so.
+let hiddenDirective (ctx: CodegenContext) =
+    ctx.Builder.AppendLine("#line hidden") |> ignore
+
 /// A user-facing code generation failure. A loud error at compile time beats
 /// invalid generated C#, a silent wrong answer, or a stack overflow at run time.
 let codegenError (where: Lexer.Range) (message: string) : 'a =
@@ -1707,6 +1730,8 @@ and private emitStatement (ctx: CodegenContext) (build: CodegenContext -> unit) 
     ctx.Builder.Append(scratch) |> ignore
 
 and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) : unit =
+    lineDirective ctx expr.Range
+
     match expr.Node with
     | TRecur (index, args) -> generateRecur ctx target expr index args
 
@@ -2817,6 +2842,7 @@ let private generateMethod
         generateFunctionBody c body)
     indent ctx
     appendLine ctx "}"
+    hiddenDirective ctx
 
 let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
     match decl with

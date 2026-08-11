@@ -777,8 +777,14 @@ let main argv =
                             // several times slower. It is off only under `-d`,
                             // where stepping through the code matters more than
                             // how fast it runs.
+                            // Symbols in both configurations. `#line` maps the
+                            // generated C# back to the Bjolang it came from,
+                            // and a stack trace can only follow that mapping if
+                            // there is a pdb to carry it. Portable symbols cost
+                            // a file beside the output and nothing at run time —
+                            // `-optimize+` still applies.
                             let codeGenArgs =
-                                if options.Debug then "-optimize- -debug:portable" else "-optimize+"
+                                if options.Debug then "-optimize- -debug:portable" else "-optimize+ -debug:portable"
 
                             let cscArgs = $"exec \"{cscDll}\" -noconfig -nullable:enable {codeGenArgs} -target:{target} -out:\"{targetPath}\" \"{csFile}\" {userRefs} {bclRefs}"
                             let psi = System.Diagnostics.ProcessStartInfo("dotnet", cscArgs)
@@ -813,15 +819,11 @@ let main argv =
                             if p.ExitCode = 0 then
                                 let assemblyBaseName = Path.GetFileNameWithoutExtension(targetPath)
 
-                                // An optimized build has no symbols, so a
-                                // leftover one from an earlier `-d` build would
-                                // describe code that no longer exists. Its
-                                // absence is also how a caller can tell which
-                                // way this binary was built.
-                                if not options.Debug then
-                                    let stalePdb = Path.ChangeExtension(targetPath, ".pdb")
-                                    if File.Exists(stalePdb) then
-                                        try File.Delete(stalePdb) with | _ -> ()
+                                // Both configurations emit symbols now, so the
+                                // pdb is kept: it is what carries the `#line`
+                                // mapping into a stack trace, and without it a
+                                // trace names generated methods and no source
+                                // at all. `-optimize+` still applies.
                                 if not isLibrary then
                                     let runtimeConfigPath = Path.ChangeExtension(targetPath, ".runtimeconfig.json")
                                     let runtimeConfigContent = "{\n  \"runtimeOptions\": {\n    \"tfm\": \"net10.0\",\n    \"framework\": {\n      \"name\": \"Microsoft.NETCore.App\",\n      \"version\": \"10.0.0\"\n    }\n  }\n}"
