@@ -102,15 +102,6 @@ public static partial class BjolangRuntime {
     public static bool eq_QMARK<T>(T a, T b) =>
         typeof(T).IsValueType ? EqualityComparer<T>.Default.Equals(a, b) : ReferenceEquals(a, b);
     
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int sub(int a, int b) => a - b;
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int add(int a, int b) => a + b;
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int mul(int a, int b) => a * b;
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int div(int a, int b) => a / b;
-    
     // --- Characters ---
     //
     // A BjoChar is a Unicode scalar value, not a UTF-16 code unit, so these

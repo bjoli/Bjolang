@@ -892,6 +892,51 @@ let rec generatePattern (ctx: CodegenContext) (pat: TypedPattern) : unit =
         failwithf $"Applied patterns are not supported by the C# backend (line %d{pat.Range.Start.Line})"
 
 // ---------------------------------------------------------------------------
+// Operators
+// ---------------------------------------------------------------------------
+
+/// The binary operators that yield a value, as Bjolang name -> C# spelling.
+///
+/// The comparisons are not here: they yield `bool`, so `castPromoted` below has
+/// nothing to undo for them.
+let private infixOperators =
+    Map [ "+", "+"
+          "-", "-"
+          "*", "*"
+          "/", "/"
+          "%", "%"
+          "bitwise-and", "&"
+          "bitwise-ior", "|"
+          "bitwise-xor", "^"
+          "shift-left", "<<"
+          "shift-right", ">>"
+          "shift-right-logical", ">>>" ]
+
+/// Does C# widen this type to `int` before applying an operator to it?
+///
+/// A solved metavariable is followed rather than pruned: `prune` wants a trait
+/// registry, which nothing at emission time has, and the answer is the same.
+let rec private promotesToInt (t: HMType) =
+    match t with
+    | TCon((TypeConstants.ByteName | TypeConstants.Int16Name | TypeConstants.UInt16Name), []) -> true
+    | TMeta { Value = Some inner } -> promotesToInt inner
+    | _ -> false
+
+/// Emits `body`, cast back to `t` where C# promoted the operands out of it.
+///
+/// `-(byte)5` and `(byte)5 & (byte)3` are both `int` in C#, but Bjolang has
+/// typed the expression `byte`, and without the cast the generated code would
+/// not compile. `unchecked` because narrowing a result back into a smaller type
+/// has to wrap rather than throw.
+let private castPromoted (ctx: CodegenContext) (t: HMType) (body: unit -> unit) =
+    if promotesToInt t then
+        append ctx $"unchecked((%s{typeToString t})("
+        body ()
+        append ctx "))"
+    else
+        body ()
+
+// ---------------------------------------------------------------------------
 // Expressions and statements
 // ---------------------------------------------------------------------------
 
@@ -1518,25 +1563,32 @@ and private generateApply
             emit ctx
         append ctx ")"
 
-    // Unary arithmetic. `(- x)` and `(/ x)` desugar to these in the parser, so
-    // by the time codegen runs an arithmetic operator is always binary.
-    //
-    // The result is cast back to the operand's own type because C# promotes the
-    // operand of a unary minus to `int`: `-(byte)5` is an `int` in C#, but
-    // Bjolang has typed the expression `byte`, and without the cast the
-    // generated code would not compile. `unchecked` because narrowing a
-    // negation back into an unsigned type has to wrap rather than throw.
-    | TIdent ("negate", _) when args.Length = 1 && kwArgs.IsEmpty ->
-        append ctx $"unchecked((%s{typeToString expr.Type})(-("
-        (prepareOperands ctx args).Head ctx
-        append ctx ")))"
+    // Unary operators. `(- x)` and `(/ x)` desugar to `negate` and `recip` in
+    // the parser, so by the time codegen runs an arithmetic operator is always
+    // binary.
+    | TIdent (("negate" | "recip" | "bitwise-not") as name, _) when args.Length = 1 && kwArgs.IsEmpty ->
+        let operand = (prepareOperands ctx args).Head
 
-    | TIdent ("recip", _) when args.Length = 1 && kwArgs.IsEmpty ->
-        append ctx $"unchecked((%s{typeToString expr.Type})(1 / ("
-        (prepareOperands ctx args).Head ctx
-        append ctx ")))"
+        castPromoted ctx expr.Type (fun () ->
+            match name with
+            | "negate" -> append ctx "(-("
+            | "recip" -> append ctx "(1 / ("
+            | _ -> append ctx "(~("
 
-    | TIdent (name, _) when List.contains name ["+"; "-"; "*"; "/"; "%"; "<"; ">"; "<="; ">="] && args.Length = 2 && kwArgs.IsEmpty ->
+            operand ctx
+            append ctx "))")
+
+    | TIdent (name, _) when Map.containsKey name infixOperators && args.Length = 2 && kwArgs.IsEmpty ->
+        let emitters = prepareOperands ctx args
+
+        castPromoted ctx expr.Type (fun () ->
+            append ctx "("
+            emitters[0] ctx
+            append ctx $" %s{infixOperators[name]} "
+            emitters[1] ctx
+            append ctx ")")
+
+    | TIdent (name, _) when List.contains name ["<"; ">"; "<="; ">="] && args.Length = 2 && kwArgs.IsEmpty ->
         let emitters = prepareOperands ctx args
         append ctx "("
         emitters[0] ctx

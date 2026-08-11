@@ -151,6 +151,26 @@ let prelude : Env =
         "negate", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"] (TVar "a")); IsMutable = false }
         "recip",  {Scheme = Scheme(["a"], [], makeFunType [TVar "a"] (TVar "a")); IsMutable = false }
 
+        // Bitwise operators, typed and emitted exactly as the arithmetic ones
+        // are: C# resolves each from the operand type, so they work on every
+        // integral type including the unsigned ones `Num` leaves out. That is
+        // why they are primitives rather than a trait — bit twiddling is where
+        // `uint` and `ulong` live.
+        "bitwise-and", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
+        "bitwise-ior", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
+        "bitwise-xor", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
+        "bitwise-not", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"] (TVar "a")); IsMutable = false }
+
+        // Shifts. The count is an `int` whatever is being shifted, and C# masks
+        // it to the operand's width, so `(shift-left 1 32)` is 1 and not 0.
+        //
+        // `shift-right` is C#'s `>>`: arithmetic on a signed type, logical on an
+        // unsigned one. `shift-right-logical` is `>>>`, which shifts zeroes in
+        // whatever the operand's sign.
+        "shift-left", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; intType] (TVar "a")); IsMutable = false }
+        "shift-right", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; intType] (TVar "a")); IsMutable = false }
+        "shift-right-logical", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; intType] (TVar "a")); IsMutable = false }
+
         // Comparison Operators
         "=", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] boolType); IsMutable = false }
         "<", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] boolType); IsMutable = false }

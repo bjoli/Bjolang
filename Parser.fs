@@ -618,9 +618,38 @@ let private loopClauseRange (c: LoopClause) : Range =
 // n-ary arithmetic and comparison
 // ---------------------------------------------------------------------------
 
-/// The arithmetic operators, which left-fold, and the comparisons, which chain.
-let private foldingOps = [ "+"; "-"; "*"; "/"; "%" ]
+/// The arithmetic and bitwise operators, which left-fold, and the comparisons,
+/// which chain.
+let private foldingOps =
+    [ "+"; "-"; "*"; "/"; "%"; "bitwise-and"; "bitwise-ior"; "bitwise-xor" ]
 let private chainingOps = [ "<"; ">"; "<="; ">="; "=" ]
+
+/// The operators `Codegen` emits as C# syntax, and how many operands each takes.
+///
+/// Applied, an operator becomes infix and never needs a name. Written as a value
+/// it has none to be — C# has no `+` to pass — so it becomes the lambda it
+/// stands for, and the ordinary application inside that lambda is emitted infix
+/// like any other. `negate`, `recip` and `bitwise-not` are the unary ones.
+let private operatorArity =
+    Map [ "+", 2
+          "-", 2
+          "*", 2
+          "/", 2
+          "%", 2
+          "=", 2
+          "<", 2
+          ">", 2
+          "<=", 2
+          ">=", 2
+          "bitwise-and", 2
+          "bitwise-ior", 2
+          "bitwise-xor", 2
+          "shift-left", 2
+          "shift-right", 2
+          "shift-right-logical", 2
+          "negate", 1
+          "recip", 1
+          "bitwise-not", 1 ]
 
 /// Is re-evaluating this expression free and side-effect free?
 ///
@@ -665,7 +694,10 @@ let private desugarNaryOp (op: string) (args: Expr list) (r: Range) : Expr =
         | [ single ] ->
             match op with
             | "+"
-            | "*" -> single
+            | "*"
+            | "bitwise-and"
+            | "bitwise-ior"
+            | "bitwise-xor" -> single
             | "-" -> EApp(EIdent("negate", r), [ single ], r)
             | "/" -> EApp(EIdent("recip", r), [ single ], r)
             | _ -> arityError "at least two arguments"
@@ -726,6 +758,15 @@ let rec parseExpr (s: SExpr) : Expr =
     | SAtom { Token = CharLit c } -> EChar(c, r)
     | SAtom { Token = QuotedSymbol sym } -> EQuotedSymbol(sym, r)
     | SAtom { Token = Keyword sym } -> EKeyword(sym, r)
+
+    // An operator used as a value, which is the only position this case sees:
+    // the head of an application is built by the `SList` branch below and never
+    // arrives here. So no analysis is needed to tell the two apart, and none of
+    // this depends on types.
+    | Ident sym when Map.containsKey sym operatorArity ->
+        let ps = List.init operatorArity[sym] (fun _ -> Gensym.fresh "op")
+        EFun(ps, EApp(EIdent(sym, r), ps |> List.map (fun p -> EIdent(p, r)), r), Ordinary, r)
+
     | Ident sym -> EIdent(sym, r)
 
     | SList(head :: args, listRange) ->
@@ -1605,16 +1646,17 @@ and private desugarSeqLoop (allForms: SExpr list) (r: Range) : Expr =
 /// is written, and keeps meaning exactly what it means in a loop. There is no
 /// second dialect of clause to learn.
 ///
-/// The one thing lifted out of the accumulator form is a *loose* `:when` at the
-/// end, which becomes the `#:when` on the generated `:acc`:
+/// Between the accumulator form and the first clause there may be a *loose*
+/// `:when`, which becomes the `#:when` on the generated `:acc`:
 ///
-///     {listing a (:for a xs) :when (even? a)}
+///     {listing a :when (even? a) (:for a xs)}
 ///     => (loop (:for a xs) (:acc G (listing a) #:when (even? a)) => G)
 ///
 /// A parenthesized `(:when ...)` is the loop's own clause and skips the rest of
-/// the iteration; the loose one only gates the step. The parentheses are what
-/// tell them apart, which is also what keeps the loose form from being a second
-/// spelling of the same thing.
+/// the iteration; the loose one only gates the step. They are different things,
+/// so they are written in different places: the loose one belongs to the
+/// accumulator and sits with it, and among the clauses — where it would read as
+/// one more clause — it is an error.
 ///
 /// The accumulator's name is invented, and that is what forbids a second one:
 /// a comprehension is an expression that produces a value, and with the name
@@ -1637,18 +1679,29 @@ and private desugarComprehension (allForms: SExpr list) (r: Range) : Expr =
         failwithf
             $"Invalid comprehension at %s{Lexer.formatPos r}. Expected {{collector expr clause...}}, as in {{listing (* a a) (:for a (range 0 100))}}."
 
-    // A loose `:when` may end the form, and gates the accumulation; a
-    // parenthesized `(:when ...)` is the loop's own and skips the iteration.
+    // A loose `:when` gates the accumulation; a parenthesized `(:when ...)` is
+    // the loop's own and skips the iteration. It belongs to the head, so that is
+    // where it is written — between the accumulator form and the first clause.
     let clauses, accWhen =
-        match tail |> List.tryFindIndex isLoose with
-        | None -> tail, None
-        | Some i ->
-            match tail[i] with
-            | SAtom { Token = Keyword "when" } when i = tail.Length - 2 -> List.take i tail, Some tail[i + 1]
-            | SAtom { Token = Keyword k; Range = kr } ->
-                failwithf
-                    $"':%s{k}' at %s{Lexer.formatPos kr} must be written (:%s{k} ...). Only a trailing ':when' may be loose, and it gates the accumulation."
-            | _ -> tail, None
+        match tail with
+        | SAtom { Token = Keyword "when"; Range = kr } :: rest ->
+            match rest with
+            | guard :: clauses when not (opensClauses guard) -> clauses, Some guard
+            | _ -> failwithf $"':when' at %s{Lexer.formatPos kr} has no condition."
+        | _ -> tail, None
+
+    // Among the clauses, position no longer tells the two apart: a loose `:when`
+    // there reads as one more clause and means something else. It is refused
+    // rather than given a second spelling.
+    for form in clauses do
+        match form with
+        | SAtom { Token = Keyword "when"; Range = kr } ->
+            failwithf
+                $"':when' at %s{Lexer.formatPos kr} must be written (:when ...) here. The loose ':when' gates the accumulation and goes before the first clause: {{listing a :when (even? a) (:for a xs)}}."
+        | SAtom { Token = Keyword k; Range = kr } ->
+            failwithf
+                $"':%s{k}' at %s{Lexer.formatPos kr} must be written (:%s{k} ...). Only ':when' may be loose, and only before the first clause."
+        | _ -> ()
 
     // One result, named by the collector — so there is nothing for a second
     // accumulator or a finish expression to do. Anything else that is not a

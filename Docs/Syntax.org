@@ -766,15 +766,31 @@ mean what they mean in a ~loop~. There is no second dialect of clause.
 {stringing (char-upcase c) (:for c "hello")}
 #+END_SRC
 
+Between the accumulator form and the first clause there may be a *loose*
+~:when~, written without parentheses. It gates the accumulation — it becomes the
+~#:when~ on the generated ~:acc~ — where a parenthesized ~(:when ...)~ among the
+clauses is the loop's own and skips the rest of the iteration.
+#+BEGIN_SRC scheme
+{listing a :when (even? a) (:for a xs)}
+;; is exactly
+(loop (:for a xs) (:acc g (listing a) #:when (even? a)) => g)
+#+END_SRC
+
+The two are different things, so they are written in different places. Side by
+side among the clauses they would differ by a pair of parentheses and nothing
+else, so a loose ~:when~ there is an error — and it is the only keyword that may
+be loose anywhere.
+
 The accumulator's name is *invented*, which is what makes a comprehension an
 expression: there is exactly one result, and nothing to name it. A ~(:acc ...)~
 of your own inside the braces is an error, and so is a ~=>~ — both say "I want
 more than one result", which is what ~loop~ is for.
 
-A collector that takes a construction argument carries it in the head, exactly
-as it does in an ~:acc~ clause:
+A collector that takes a construction argument carries it in the head: whatever
+stands before the first clause is the accumulator form, verbatim, so nothing has
+to know how many arguments a collector takes.
 #+BEGIN_SRC scheme
-{(folding 0) a (:for a xs)}     ;; => (:acc g (folding 0 a))
+{folding 0 a (:for a xs)}     ;; => (:acc g (folding 0 a))
 #+END_SRC
 
 ~seqing~ is the lazy one. It is not a ~Collector~ — it yields — so it becomes a

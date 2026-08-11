@@ -1,0 +1,63 @@
+
+;; All top level definitions need a type declaration
+
+(: the-int-list (List int))
+(def the-int-list (list 1 2 3 4 5))
+
+;; Function signatures are
+;; (-> mandatory-arg-type ... (:keyword type) ... #:rest rest-type ReturnType)
+(: print-string-list (-> int #:rest string Unit))
+(defun (print-string-list times #:rest strings)
+  (loop (:for i (range 0 times))
+        :subloop
+        (:for s strings)
+        (:do (println s))))
+;; (print-string-list 2 '("hej" "tja"))
+;; => hej\n tja\n hej\n tja\n
+(: greet (-> Unit))
+(defun (greet)
+  ;; local bindings
+  (let ((name (read-line)))
+    (print "Hej")
+    (println name)))
+
+;; the language is mostly monomorphic, but has traits.
+;; This is a trait that says whether the type is sad
+(def/trait (Sad %a)
+  (: is-sad? (-> %a bool)))
+
+;; a list is a happy data type
+(def/impl (Sad (List %a))
+  (defun (is-sad? lst) #f))
+
+;; Strings however are c# utf16 strings, so they are very sad
+(def/impl (Sad string)
+  (defun (is-sad? str) #t))
+
+;; now we can use is-sad? on both lists and strings
+(: list-is-sad? bool)
+(def list-is-sad? (is-sad? '(1 2 3 4))) ;; => #f
+
+
+
+;; A dotnet program needs an entrypoint. main.
+;; it does not need types
+(defun (main args)
+  ;; local functions and variables do not need types
+  ;; variables unify their types at the first definition
+  (def b (vecbuilder-empty))
+  (vecbuilder-add! 5) ;; turns b into (Vecbuilder int)
+  ;; mutable variables
+  (def/mutable mutInt 0)
+  (set! mutInt 6)
+  ;; any expression that returns a value other than void and int has
+  ;; to be wrapped in (ignore ...)
+  (ignore (+ 1 2))
+  ;; some return values cannot be ignored, like (Result ...).
+  ;; this would not compile, because it could contain an Error.
+  ;;(ignore (function-that-returns-result "banana"))
+  
+  ;; The last value of a function is the return value
+  ;; main returns an int.
+  0
+)
