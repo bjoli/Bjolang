@@ -39,7 +39,9 @@ let desugarMapLiteral (headRange: Lexer.Range) (entriesSList: SExpr) : SExpr =
             | SList([ SAtom { Token = Lexer.Symbol "vec-literal" }; k; v ], er) -> (k, v, er)
             | bad ->
                 let er = getRange bad
-                failwithf "Invalid map entry at line %d, col %d. Expected (key value), [key value], or (key . value)" er.Start.Line er.Start.Column
+                failwithf
+                    "Invalid map entry at %s. Expected (key value), [key value], or (key . value)"
+                    (Lexer.formatPos er)
 
         let pairs = List.map parsePair entries
         let nilToken = SAtom { Token = Lexer.Symbol "Nil"; Range = listRange }
@@ -216,7 +218,7 @@ let private parseInlineImpls (source: string) (metadata: string) : Decl list =
                 paramNodes
                 |> List.map (function
                     | SAtom { Token = Lexer.Symbol p } -> p
-                    | bad -> failwithf $"Malformed inline template parameter in metadata at line %d{(getRange bad).Start.Line}")
+                    | bad -> failwithf $"Malformed inline template parameter in metadata at %s{Lexer.formatPos (getRange bad)}")
 
             let qualification =
                 qualNodes
@@ -224,7 +226,7 @@ let private parseInlineImpls (source: string) (metadata: string) : Decl list =
                     | SList([ SAtom { Token = Lexer.StringLit name }; SAtom { Token = Lexer.StringLit emitted } ], _) ->
                         name, emitted
                     | bad ->
-                        failwithf $"Malformed inline template qualification in metadata at line %d{(getRange bad).Start.Line}")
+                        failwithf $"Malformed inline template qualification in metadata at %s{Lexer.formatPos (getRange bad)}")
 
             Some(
                 DInlineImpl(
@@ -589,7 +591,6 @@ let runFullFrontendPipeline (mainFilePath: string) =
         printfn "=== Frontend pipeline complete ==="
         Some (env, uniquifiedAst, dllDeps)
     with ex ->
-        printfn $"Compilation Panicked: %s{ex.Message}"
-        printfn $"Stack Trace: %s{ex.StackTrace}"
+        Diagnostics.reportFailure ex
         None
 

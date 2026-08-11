@@ -13,7 +13,9 @@ The things I am most smug about, in descending order of smugness.
 
 *** Concurrency: bjoroutines and first-class events
 
-Bjolang has ConcurrentML. Not "a Task wrapper", not "async/await with extra steps" — actual synchronous rendezvous channels and withdrawable events.
+Bjolang has ConcurrentML. And by that I mean: WOOP WOOP WAKE UP, BJOLANG HAS CONCURRENTML. No async. No Task. No go channels or goroutines. We have bjo channels and bjoroutines. And not only that, it competes with go on allocations and speed.
+
+It is fully cooperative, and yields control when calling other bjoroutines or when syncing on channels. 
 
 
 #+begin_src scheme
@@ -47,11 +49,11 @@ Bjolang has ConcurrentML. Not "a Task wrapper", not "async/await with extra step
 (sync (choose (never) (always 5))) ;; => 5
 #+end_src
 
-Spawning: ~(bjo expr)~ enqueues and returns a ~(Promise %a)~ without ever suspending, so a plain ~defun~ may spawn. Only /joining/ needs a bjoroutine, because joining is what waits. Operands are evaluated in the parent, so a spawn is not a race with itself.
+Spawning: ~(bjo expr)~ enqueues and returns a ~(Promise %a)~ without ever suspending, so a plain ~defun~ may spawn. Only /joining/ needs a bjoroutine, because joining is what waits. Operands to any (bjo ...) is evaluated before spawning.
 
 #+begin_src scheme
 (: start-work (-> int (Promise int)))
-(defun (start-work x) (bjo (work x))) ;; note: defun, not defbjo
+(defun (start-work x) (bjo (work x)))
 
 ;; Failure arrives as a value. "the operation failed" and "the fiber died"
 ;; are different facts, and a supervisor needs the difference.
@@ -82,7 +84,7 @@ Cancellation is ambient and hierarchical, and it is both an event and a poll, be
 
 *** Calling .NET async without ever meeting a Task
 
-~Task~ is not a Bjolang type. You define #:async on import.
+~Task~ is not a Bjolang type. You define #:async on import and use them as CML functions.
 
 #+begin_src scheme
 (import/extern
@@ -96,12 +98,12 @@ Cancellation is ambient and hierarchical, and it is both an event and a poll, be
 
 ;; a .NET async call as a losable branch
 (sync (choose (wrap (task->event (fetch "/etc/hostname")) (fun (s) (Job 1)))
-              (wrap (timeout 30000)                       (fun (u) Quit))))
+              (wrap (pause 30000)                       (fun (u) Quit))))
 #+end_src
 
 *** Nothing gets dropped by accident
 
-Every non-~void~ value in statement position must be used. If not you need to use (ignore ...). Ignore is a trait function, so it can do the right thing. 
+Every non-~void~ (or non-unit) value in statement position must be used. If not you need to use (ignore ...). Ignore is a trait function, so it can do the right thing when ignoring things like promises.
 
 #+begin_src scheme
 (defun (main args )
@@ -179,7 +181,7 @@ Basic syntax
 (defun (sum-file path)
   (match (open-input-file path)
     ((Ok port)
-     (loop (:for ints (in-port port #(parse-int (read-line &))))
+     (loop (:for ints (port->seq port #(parse-int (read-line &)))
            (:acc sum (summing ints))))
     ((Err err) 0)))
 #+end_src

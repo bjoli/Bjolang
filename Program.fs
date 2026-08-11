@@ -891,6 +891,6 @@ let main argv =
             printfn "Compilation failed."
             1
     with ex ->
-        printfn $"Compilation failed: %s{ex.Message}"
-        printfn "%s" ex.StackTrace
+        Diagnostics.reportFailure ex
+        printfn "Compilation failed."
         1

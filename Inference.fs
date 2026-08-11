@@ -207,7 +207,7 @@ let rec checkPattern (env: Env) (expectedType: HMType) (pat: Pattern) : TypedPat
         let binding = 
             match Map.tryFind name env.Bindings with
             | Some b -> b
-            | None -> failwithf $"Pattern Error: Unknown constructor '%s{name}' at line %d{r.Start.Line}"
+            | None -> failwithf $"Pattern Error: Unknown constructor '%s{name}' at %s{Lexer.formatPos r}"
 
         let consType, _, _ = instantiate env.Registry binding.Scheme
 
@@ -219,7 +219,7 @@ let rec checkPattern (env: Env) (expectedType: HMType) (pat: Pattern) : TypedPat
         unify env.Registry expectedType returnType
 
         if args.Length <> argTypes.Length then
-            failwithf $"Pattern Error: Constructor {name} expects {argTypes.Length} arguments but got {args.Length} at line {r.Start.Line}"
+            failwithf $"Pattern Error: Constructor {name} expects {argTypes.Length} arguments but got {args.Length} at %s{Lexer.formatPos r}"
 
         let mutable currentEnv = Map.empty
         let typedArgs =
@@ -413,7 +413,8 @@ let rec private hmToTpl (t: HMType) : TplType =
     | TVar n -> TplVar n
     | TFun(args, ret, eff) -> TplFun(List.map hmToTpl args, hmToTpl ret, eff)
     | TTuple ts -> TplTuple(List.map hmToTpl ts)
-    | other -> failwithf $"Type Error: %A{other} may not appear in an inline trait's signature"
+    | other ->
+        failwithf $"Type error: %s{DotNetInterop.showType other} may not appear in an inline trait's signature"
 
 /// Reads a trait signature that mentions the implementor *applied*.
 ///
@@ -1080,7 +1081,24 @@ let private demandedEffect (env: Env) (targetType: HMType) : Effect =
     | TFun(_, _, eff) -> eff
     | _ -> ESync
 
+/// Infers a type, attaching a source location to any diagnostic that lacks one.
+///
+/// `unify` is where most type errors are raised and it is given two types and
+/// nothing else — no range reaches it, and threading one to every call site
+/// would mean inventing a location at the several that have no natural one.
+/// Catching here instead costs nothing on the path where nothing throws, and
+/// names the innermost expression whose inference failed, which is the smallest
+/// piece of source that can be blamed.
+///
+/// The `when` is doing real work: a filter runs before the stack unwinds, so an
+/// exception that is not a diagnostic is never caught here and keeps its trace.
 let rec infer (env: Env) (expr: Expr) : HMType * TypedExpr =
+    try
+        inferNode env expr
+    with ex when Diagnostics.needsLocation ex ->
+        raise (Diagnostics.withLocation (exprRange expr) ex)
+
+and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     match expr with
     | EInt(value, r) ->
         let inferredType = inferNumericType value
@@ -1495,7 +1513,7 @@ let rec infer (env: Env) (expr: Expr) : HMType * TypedExpr =
                 let valType, typedVal = infer env value
                 splitArgs positional ((kwName, (valType, typedVal)) :: keywords) rest
             | EKeyword(kwName, kr) :: [] when isDeclaredKw kwName ->
-                failwithf $"Keyword argument '#:%s{kwName}' is missing a value at line %d{kr.Start.Line}"
+                failwithf $"Keyword argument '#:%s{kwName}' is missing a value at %s{Lexer.formatPos kr}"
             | arg :: rest ->
                 let argType, typedArg = infer env arg
                 splitArgs ((argType, typedArg) :: positional) keywords rest
@@ -1567,7 +1585,7 @@ let rec infer (env: Env) (expr: Expr) : HMType * TypedExpr =
                          Node = TArrayMake(restArgs |> List.map snd) }: TypedExpr) ]
                 | None ->
                     if not restArgs.IsEmpty then
-                        failwithf $"Too many arguments at line %d{r.Start.Line}"
+                        failwithf $"Too many arguments at %s{Lexer.formatPos r}"
                     [], []
 
             let allFlatTypes = (mandatoryArgs |> List.map fst) @ kwArgTypes @ restArgTypes
@@ -1589,7 +1607,7 @@ let rec infer (env: Env) (expr: Expr) : HMType * TypedExpr =
         | _ ->
             // No FunMeta or no keyword args: simple positional call
             if not keywordArgs.IsEmpty then
-                failwithf $"Keyword arguments used on a function without keyword parameter metadata at line %d{r.Start.Line}"
+                failwithf $"Keyword arguments used on a function without keyword parameter metadata at %s{Lexer.formatPos r}"
 
             unify
                 env.Registry
@@ -1793,7 +1811,7 @@ let rec infer (env: Env) (expr: Expr) : HMType * TypedExpr =
         let binding = lookup env name
 
         if not binding.IsMutable then
-            failwithf $"Type Error: Cannot mutate immutable variable '%s{name}' at line %d{r.Start.Line}"
+            failwithf $"Type Error: Cannot mutate immutable variable '%s{name}' at %s{Lexer.formatPos r}"
 
         let targetType, _, _ = instantiate env.Registry binding.Scheme
         unify env.Registry valType targetType
@@ -2149,7 +2167,7 @@ let rec infer (env: Env) (expr: Expr) : HMType * TypedExpr =
         let fieldType =
             match Map.tryFind field expectedFieldsInstantiated with
             | Some t -> t
-            | None -> failwithf $"Type Error: Field '%s{field}' does not belong to record '%s{recordTypeName}' at line %d{r.Start.Line}"
+            | None -> failwithf $"Type Error: Field '%s{field}' does not belong to record '%s{recordTypeName}' at %s{Lexer.formatPos r}"
 
         fieldType,
         { Type = fieldType
@@ -2177,7 +2195,7 @@ let rec infer (env: Env) (expr: Expr) : HMType * TypedExpr =
                 let exprType, typedExpr = infer env expr
                 match Map.tryFind name expectedFieldsInstantiated with
                 | Some expectedType -> unify env.Registry exprType expectedType
-                | None -> failwithf $"Type Error: Field '%s{name}' does not belong to record '%s{recordTypeName}' at line %d{r.Start.Line}"
+                | None -> failwithf $"Type Error: Field '%s{name}' does not belong to record '%s{recordTypeName}' at %s{Lexer.formatPos r}"
                 name, typedExpr)
 
         targetType,
@@ -2952,13 +2970,13 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                             | Some tpl -> instantiateTemplate implTarget tpl
                             | None ->
                                 failwithf
-                                    $"Method '%s{name}' is not a member of trait '%s{traitName}' at line %d{methodRange.Start.Line}"
+                                    $"Method '%s{name}' is not a member of trait '%s{traitName}' at %s{Lexer.formatPos methodRange}"
                         | InterfaceTrait ->
                             match Map.tryFind name traitInfo.Signatures with
                             | Some sigType -> applySubst sigType
                             | None ->
                                 failwithf
-                                    $"Method '%s{name}' is not a member of trait '%s{traitName}' at line %d{methodRange.Start.Line}"
+                                    $"Method '%s{name}' is not a member of trait '%s{traitName}' at %s{Lexer.formatPos methodRange}"
 
                     // After substituting the implementor var and associated types,
                     // the signature may still contain TVars from two sources:
@@ -3009,8 +3027,8 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
 
             if not isImplemented then
                 failwithf
-                    "Implementation of trait '%s' is missing required method '%s' at line %d"
-                    traitName requiredMethod r.Start.Line
+                    "Implementation of trait '%s' is missing required method '%s' at %s"
+                    traitName requiredMethod (Lexer.formatPos r)
 
         // Register every method as an inline template — interface traits
         // included. A statically resolvable call is inlined whatever the kind of

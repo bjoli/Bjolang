@@ -11,13 +11,14 @@ module Lexer =
     /// ambiguous.
     type Range = { Start: Position; End: Position; File: string }
 
-    /// A location for a diagnostic, as `file.bjo:12`.
-    let formatPos (r: Range) =
-        let name =
-            if String.IsNullOrEmpty r.File then "<unknown>"
-            else IO.Path.GetFileName r.File
+    let private fileLabel (file: string) =
+        if String.IsNullOrEmpty file then "<unknown>" else IO.Path.GetFileName file
 
-        $"%s{name}:%d{r.Start.Line}"
+    /// A location for a diagnostic, as `file.bjo:12`.
+    let formatPos (r: Range) = $"%s{fileLabel r.File}:%d{r.Start.Line}"
+
+    /// The same, inside the tokenizer, where there is no `Range` to hand yet.
+    let formatAt (file: string) (line: int) (col: int) = $"%s{fileLabel file}:%d{line}:%d{col}"
 
     type Token =
         | Hash
@@ -170,7 +171,7 @@ module Lexer =
                 | '"' ->
                     let rec readString p =
                         if p >= length then
-                            failwithf $"Unterminated string at line %d{line}, col %d{col}"
+                            failwithf $"Unterminated string at %s{formatAt file line col}"
                         elif input[p] = '"' then
                             p + 1
                         elif input[p] = '\\' && p + 1 < length then
@@ -298,16 +299,16 @@ module Lexer =
                                     | true, value when value >= 0 && value <= 0x10FFFF -> value
                                     | _ ->
                                         failwithf
-                                            $"Invalid character literal #\\%s{name} at line %d{line}, col %d{col}: not a Unicode scalar value."
+                                            $"Invalid character literal #\\%s{name} at %s{formatAt file line col}: not a Unicode scalar value."
                                 | _ ->
                                     failwithf
-                                        $"Unknown character name #\\%s{name} at line %d{line}, col %d{col}."
+                                        $"Unknown character name #\\%s{name} at %s{formatAt file line col}."
 
                             emit (CharLit codepoint) len
                         elif pos + 2 < length then
                             emit (CharLit(int input[pos + 2])) 3
                         else
-                            failwithf $"Unterminated character literal at line %d{line}, col %d{col}."
+                            failwithf $"Unterminated character literal at %s{formatAt file line col}."
 
                     | _ -> // Fallback for booleans (#t, #f) or symbols starting with #
                         let nextPos = readSymbol pos

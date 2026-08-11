@@ -54,7 +54,8 @@ let rec prune (registry: TraitRegistry) (t: HMType) : HMType =
         | TFun _ ->
             match registry.ResolveAssociatedType traitName assocName prunedImpl with
             | Some resolved -> prune registry resolved
-            | None -> failwithf $"Missing implementation of %s{traitName} for %A{prunedImpl}"
+            | None ->
+                failwithf $"Missing implementation of %s{traitName} for %s{DotNetInterop.showType prunedImpl}"
         // If still generic, keep deferred
         | _ -> TAssoc(traitName, assocName, prunedImpl)
     | _ -> t
@@ -206,7 +207,20 @@ let rec unify (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
         unify registry ret1 ret2
     | TTuple args1, TTuple args2 when args1.Length = args2.Length -> List.iter2 (unify registry) args1 args2
     | TAssoc(tn1, an1, impl1), TAssoc(tn2, an2, impl2) when tn1 = tn2 && an1 = an2 -> unify registry impl1 impl2
-    | _ -> failwithf $"Type error: Cannot unify %A{t1} with %A{t2}"
+    | _ ->
+        let shown = DotNetInterop.showTypesTogether [ t1; t2 ]
+
+        // Arity is called out because it is the common case and the hardest to
+        // read off two arrows printed one above the other.
+        let note =
+            let args n = if n = 1 then "1 argument" else $"%d{n} arguments"
+
+            match t1, t2 with
+            | TFun(a1, _, _), TFun(a2, _, _) when a1.Length <> a2.Length ->
+                $"\n  The first takes %s{args a1.Length}, the second %s{args a2.Length}."
+            | _ -> ""
+
+        failwithf $"Type error: these types do not match.\n  %s{shown[0]}\n  %s{shown[1]}%s{note}"
 
 let rec freeVars (registry: TraitRegistry) (t: HMType) : MetaVar list =
     match prune registry t with

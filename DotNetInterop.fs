@@ -193,28 +193,59 @@ let isUnresolved (t: HMType) : bool =
     | TMeta _ -> true
     | _ -> false
 
-/// A Bjolang-facing rendering of a type, for diagnostics.
-let rec showType (t: HMType) : string =
-    match pruneLocal t with
-    | TCon("Array", [ e ]) -> $"(Array %s{showType e})"
-    | TCon(name, []) ->
-        match name with
-        | "System.Int32" -> "int"
-        | "System.Int64" -> "long"
-        | "System.Double" -> "double"
-        | "System.String" -> "string"
-        | "System.Boolean" -> "bool"
-        | "System.Byte" -> "byte"
-        | "System.Void" -> "void"
-        | "System.Object" -> "object"
-        | other -> other
-    | TCon(name, args) -> "(" + name + " " + String.Join(" ", args |> List.map showType) + ")"
-    | TFun(args, ret, eff) ->
-        "(" + arrowHead eff + " " + String.Join(" ", (args @ [ ret ]) |> List.map showType) + ")"
-    | TTuple items -> "(Tuple " + String.Join(" ", items |> List.map showType) + ")"
-    | TVar n -> "%" + n.TrimStart('\'')
-    | TMeta _ -> "?"
-    | TAssoc(tn, an, impl) -> $"(assoc %s{tn} %s{an} %s{showType impl})"
+/// Renders types as Bjolang spells them, for diagnostics.
+///
+/// Every type in one call shares a naming table, so a variable on both sides of
+/// a mismatch is visibly the same variable. An unsolved one is `?a`, `?b`, ...
+/// rather than `%a`: a declared type variable and one the compiler is still
+/// looking for are different things, and a reader should not have to guess
+/// which a name is.
+let showTypesTogether (ts: HMType list) : string list =
+    let names = System.Collections.Generic.Dictionary<int, string>()
+
+    let nameOf (id: int) =
+        match names.TryGetValue id with
+        | true, n -> n
+        | _ ->
+            let i = names.Count
+            let n = "?" + string (char (int 'a' + i % 26)) + (if i < 26 then "" else string (i / 26))
+            names[id] <- n
+            n
+
+    let rec go (t: HMType) : string =
+        match pruneLocal t with
+        | TCon("Array", [ e ]) -> $"(Array %s{go e})"
+        // Spelled as a signature spells it, which is not always the name the
+        // constructor carries: `char` is `TCon("Char")` and `void` is
+        // `TCon("Unit")`.
+        | TCon(name, []) ->
+            match name with
+            | "System.Int32" -> "int"
+            | "System.Int64" -> "long"
+            | "System.Int16" -> "short"
+            | "System.UInt16" -> "ushort"
+            | "System.UInt32" -> "uint"
+            | "System.UInt64" -> "ulong"
+            | "System.Double" -> "double"
+            | "System.String" -> "string"
+            | "System.Boolean" -> "bool"
+            | "System.Byte" -> "byte"
+            | "System.Object" -> "object"
+            | "System.Void"
+            | "Unit" -> "void"
+            | "Char" -> "char"
+            | other -> other
+        | TCon(name, args) -> "(" + name + " " + String.Join(" ", args |> List.map go) + ")"
+        | TFun(args, ret, eff) -> "(" + arrowHead eff + " " + String.Join(" ", (args @ [ ret ]) |> List.map go) + ")"
+        | TTuple items -> "(Tuple " + String.Join(" ", items |> List.map go) + ")"
+        | TVar n -> "%" + n.TrimStart('\'')
+        | TMeta m -> nameOf m.Id
+        | TAssoc(tn, an, impl) -> $"(assoc %s{tn} %s{an} %s{go impl})"
+
+    ts |> List.map go
+
+let showType (t: HMType) : string =
+    showTypesTogether [ t ] |> List.head
 
 // ---------------------------------------------------------------------------
 // Overload resolution

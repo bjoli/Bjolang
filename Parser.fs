@@ -253,7 +253,7 @@ let rec parsePattern (s: SExpr) : Pattern =
         PTypeTest(typeName, Some binder, r)
     | SList(SAtom { Token = Keyword "is" } :: _, _) ->
         failwithf
-            $"Invalid :is pattern at line %d{r.Start.Line}. Expected (:is Fully.Qualified.Type) or (:is Fully.Qualified.Type binding-name)."
+            $"Invalid :is pattern at %s{Lexer.formatPos r}. Expected (:is Fully.Qualified.Type) or (:is Fully.Qualified.Type binding-name)."
 
     // Special handling for List/Vec patterns and the spread operator
     | SList(SAtom { Token = Symbol "List" } :: args, _) ->
@@ -274,7 +274,7 @@ let rec parsePattern (s: SExpr) : Pattern =
 
     | SList([], _) -> PList([], None, r) // Empty list pattern
 
-    | _ -> failwithf $"Invalid pattern at line %d{r.Start.Line}"
+    | _ -> failwithf $"Invalid pattern at %s{Lexer.formatPos r}"
 
 /// Splits the arguments of a sequence pattern into its fixed leading elements
 /// plus an optional trailing rest pattern introduced by `...`.
@@ -286,13 +286,13 @@ and parseSpreadArgs (r: Range) (args: SExpr list) : Pattern list * Pattern optio
         // Matches `c ...` at the end of the sequence
         | [ tailItem; SAtom { Token = Spread } ] -> (List.rev acc, Some(parsePattern tailItem))
         // Fails if spread is used incorrectly (e.g., in the middle of the sequence)
-        | SAtom { Token = Spread } :: _ -> failwithf $"Invalid use of spread operator at line %d{r.Start.Line}"
+        | SAtom { Token = Spread } :: _ -> failwithf $"Invalid use of spread operator at %s{Lexer.formatPos r}"
         | head :: tail -> go (parsePattern head :: acc) tail
 
     go [] args
 
 let parseArrowType (colour: Colour) (items: SExpr list) (r: Range) : FType =
-    if items.IsEmpty then failwithf $"Arrow type must have at least a return type at line %d{r.Start.Line}"
+    if items.IsEmpty then failwithf $"Arrow type must have at least a return type at %s{Lexer.formatPos r}"
     let returnTypeExpr = List.last items
     let argItems = List.take (items.Length - 1) items
 
@@ -309,20 +309,20 @@ let parseArrowType (colour: Colour) (items: SExpr list) (r: Range) : FType =
         // constructor named `m`.
         | SList(SAtom { Token = QuotedSymbol sym } :: typeArgs, _) ->
             TApp("'" + sym, List.map parseArrowTypeInner typeArgs, r)
-        | _ -> failwithf $"Invalid type syntax in arrow type at line %d{r.Start.Line}"
+        | _ -> failwithf $"Invalid type syntax in arrow type at %s{Lexer.formatPos r}"
 
     let rec collectArgs mandatory keywords argItems =
         match argItems with
         | [] -> TArrow(List.rev mandatory, List.rev keywords, None, parseArrowTypeInner returnTypeExpr, colour, r)
         | [SAtom { Token = Keyword "rest" }] ->
-            failwithf $"Expected rest element type after #:rest at line %d{r.Start.Line}"
+            failwithf $"Expected rest element type after #:rest at %s{Lexer.formatPos r}"
         | SAtom { Token = Keyword "rest" } :: restTypeExpr :: [] ->
             TArrow(List.rev mandatory, List.rev keywords, Some (parseArrowTypeInner restTypeExpr), parseArrowTypeInner returnTypeExpr, colour, r)
         | SList(SAtom { Token = Keyword name } :: [ typeExpr ], _) :: rest ->
             collectArgs mandatory ((name, parseArrowTypeInner typeExpr) :: keywords) rest
         | item :: rest when keywords.IsEmpty ->
             collectArgs (parseArrowTypeInner item :: mandatory) keywords rest
-        | _ -> failwithf $"Mandatory types must come before keyword/rest types in arrow type at line %d{r.Start.Line}"
+        | _ -> failwithf $"Mandatory types must come before keyword/rest types in arrow type at %s{Lexer.formatPos r}"
 
     collectArgs [] [] argItems
 
@@ -344,7 +344,7 @@ let rec parseType (s: SExpr) : FType =
     // `(%m %a)` — a type variable applied to arguments. See `parseArrowTypeInner`.
     | SList(SAtom { Token = QuotedSymbol sym } :: typeArgs, _) ->
         TApp("'" + sym, List.map parseType typeArgs, r)
-    | _ -> failwithf $"Invalid type syntax at line %d{r.Start.Line}"
+    | _ -> failwithf $"Invalid type syntax at %s{Lexer.formatPos r}"
 
 let parseUnionCase (s: SExpr) : UnionCase =
     let r = getRange s
@@ -355,7 +355,7 @@ let parseUnionCase (s: SExpr) : UnionCase =
     | SList(SAtom { Token = Symbol name } :: tTypes, _) -> DataCase(name, List.map parseType tTypes, r)
     | _ ->
         printfn $"%A{s}"
-        failwithf $"Invalid union case at line %d{r.Start.Line}"
+        failwithf $"Invalid union case at %s{Lexer.formatPos r}"
 
 let parseRecordField (s: SExpr) : RecordField =
     let r = getRange s
@@ -365,7 +365,7 @@ let parseRecordField (s: SExpr) : RecordField =
         { Name = name
           Type = parseType tType
           Range = r }
-    | _ -> failwithf $"Invalid record field at line %d{r.Start.Line}"
+    | _ -> failwithf $"Invalid record field at %s{Lexer.formatPos r}"
 
 let parseTypeDefHead (head: SExpr) : string * string list =
     match head with
@@ -374,9 +374,9 @@ let parseTypeDefHead (head: SExpr) : string * string list =
         let parseTypeArg = function
             | SAtom { Token = QuotedSymbol ta } -> ta
             | SAtom { Token = Symbol s } -> s // Just in case they are not quoted
-            | _ -> failwithf $"Invalid type argument at line %d{(getRange head).Start.Line}"
+            | _ -> failwithf $"Invalid type argument at %s{Lexer.formatPos (getRange head)}"
         name, List.map parseTypeArg args
-    | _ -> failwithf $"Invalid type definition head at line %d{(getRange head).Start.Line}"
+    | _ -> failwithf $"Invalid type definition head at %s{Lexer.formatPos (getRange head)}"
 
 let parseTypeDef (s: SExpr) : TypeDef =
     let r = getRange s
@@ -418,7 +418,7 @@ let parseTypeDef (s: SExpr) : TypeDef =
           TypeArgs = typeArgs
           Kind = Alias(parseType aliasType)
           Range = r }
-    | _ -> failwithf $"Invalid type definition at line %d{r.Start.Line}"
+    | _ -> failwithf $"Invalid type definition at %s{Lexer.formatPos r}"
 
 let parseDefunArg (arg: SExpr) : (string * FType option) =
     match arg with
@@ -451,7 +451,7 @@ let desugarQuotedList (items: SExpr list) (r: Range) : Expr =
             ETuple(List.map quoteItem tupleItems, ir)
         | SList(inner, _) ->
             buildConsChain inner ir
-        | _ -> failwithf $"Unsupported item in quoted list at line %d{ir.Start.Line}"
+        | _ -> failwithf $"Unsupported item in quoted list at %s{Lexer.formatPos ir}"
     and buildConsChain (items: SExpr list) (r: Range) : Expr =
         match items with
         | [] -> EIdent("Nil", r)
@@ -651,7 +651,7 @@ let private desugarNaryOp (op: string) (args: Expr list) (r: Range) : Expr =
 
     let arityError (wanted: string) =
         failwithf
-            $"Syntax error at line %d{r.Start.Line}: '%s{op}' takes %s{wanted}, but was given %d{args.Length}."
+            $"Syntax error at %s{Lexer.formatPos r}: '%s{op}' takes %s{wanted}, but was given %d{args.Length}."
 
     if List.contains op foldingOps then
         match args with
@@ -736,7 +736,7 @@ let rec parseExpr (s: SExpr) : Expr =
                 match args with
                 | [ typeSExpr; valSExpr ] ->
                     ECast(parseType typeSExpr, parseExpr valSExpr, r)
-                | _ -> failwithf $"Invalid cast syntax at line %d{r.Start.Line}. Expected: (cast <type> <expr>)"
+                | _ -> failwithf $"Invalid cast syntax at %s{Lexer.formatPos r}. Expected: (cast <type> <expr>)"
             | "let" ->
                 match args with
                 | SList(bindings, _) :: bodyExprs ->
@@ -788,7 +788,7 @@ let rec parseExpr (s: SExpr) : Expr =
                 match args with
                 | [ Ident name; value; body ] -> ELetMono(name, parseExpr value, parseExpr body, listRange)
                 | _ ->
-                    failwithf $"Invalid let/mono syntax at line %d{r.Start.Line}. Expected: (let/mono name value body)"
+                    failwithf $"Invalid let/mono syntax at %s{Lexer.formatPos r}. Expected: (let/mono name value body)"
 
             | "letrec" ->
                 match args with
@@ -805,7 +805,7 @@ let rec parseExpr (s: SExpr) : Expr =
             | "set!" ->
                 match args with
                 | [ Ident target; valExpr ] -> ESet(target, parseExpr valExpr, r)
-                | _ -> failwithf $"Invalid set! syntax at line %d{r.Start.Line}. Expected: (set! name value)"
+                | _ -> failwithf $"Invalid set! syntax at %s{Lexer.formatPos r}. Expected: (set! name value)"
             | "->" ->
                 match args with
                 | init :: steps ->
@@ -839,12 +839,12 @@ let rec parseExpr (s: SExpr) : Expr =
                             else
                                 match items with
                                 | head :: tail -> SList(head :: prev :: tail, stepR)
-                                | [] -> failwithf $"Invalid empty list in -> macro at line %d{stepR.Start.Line}"
-                        | _ -> failwithf $"Invalid step in -> macro at line %d{(getRange step).Start.Line}"
+                                | [] -> failwithf $"Invalid empty list in -> macro at %s{Lexer.formatPos stepR}"
+                        | _ -> failwithf $"Invalid step in -> macro at %s{Lexer.formatPos (getRange step)}"
 
                     let threadExpr = steps |> List.fold buildThread init
                     parseExpr threadExpr
-                | _ -> failwithf $"-> requires at least one argument at line %d{r.Start.Line}"
+                | _ -> failwithf $"-> requires at least one argument at %s{Lexer.formatPos r}"
             | "if" ->
                 match args with
                 | [ cond; t; f ] -> EIf(parseExpr cond, parseExpr t, parseExpr f, r)
@@ -859,20 +859,20 @@ let rec parseExpr (s: SExpr) : Expr =
                 match args with
                 | cond :: bodyExprs when not bodyExprs.IsEmpty ->
                     EWhen(parseExpr cond, parseBody bodyExprs listRange, false, listRange)
-                | _ -> failwithf $"Invalid when syntax at line %d{r.Start.Line}. Expected: (when cond body...)"
+                | _ -> failwithf $"Invalid when syntax at %s{Lexer.formatPos r}. Expected: (when cond body...)"
 
             | "unless" ->
                 match args with
                 | cond :: bodyExprs when not bodyExprs.IsEmpty ->
                     EWhen(parseExpr cond, parseBody bodyExprs listRange, true, listRange)
-                | _ -> failwithf $"Invalid unless syntax at line %d{r.Start.Line}. Expected: (unless cond body...)"
+                | _ -> failwithf $"Invalid unless syntax at %s{Lexer.formatPos r}. Expected: (unless cond body...)"
 
             // A `seq` body is a block like any other, but it is *not* run where
             // it is written: the form evaluates to a sequence, and the body runs
             // a `yield` at a time as that sequence is consumed.
             | "seq" ->
                 match args with
-                | [] -> failwithf $"Invalid seq syntax at line %d{r.Start.Line}. Expected: (seq body...)"
+                | [] -> failwithf $"Invalid seq syntax at %s{Lexer.formatPos r}. Expected: (seq body...)"
                 | bodyExprs -> ESeq(parseBody bodyExprs listRange, listRange)
 
             // `(bjo (f x y))`. The operand must be a call: `bjo` splits it into
@@ -883,7 +883,7 @@ let rec parseExpr (s: SExpr) : Expr =
                 | [ SList(_ :: _, _) as call ] -> EBjo(parseExpr call, listRange)
                 | _ ->
                     failwithf
-                        $"Invalid bjo syntax at line %d{r.Start.Line}. Expected: (bjo (f args...)) — one call, whose operands are evaluated here and whose call happens in the new fiber. For a thunk you already have, use spawn-thunk."
+                        $"Invalid bjo syntax at %s{Lexer.formatPos r}. Expected: (bjo (f args...)) — one call, whose operands are evaluated here and whose call happens in the new fiber. For a thunk you already have, use spawn-thunk."
 
             // `(spawn-evt (worker q))` — start this when the event is synced,
             // and cancel it if the branch loses.
@@ -911,7 +911,7 @@ let rec parseExpr (s: SExpr) : Expr =
                     )
                 | _ ->
                     failwithf
-                        $"Invalid spawn-evt syntax at line %d{r.Start.Line}. Expected: (spawn-evt (f args...)) — one call, spawned when the event is synced and cancelled if its branch loses. To spawn eagerly and keep listening whatever happens, use (promise-join (bjo (f args...)))."
+                        $"Invalid spawn-evt syntax at %s{Lexer.formatPos r}. Expected: (spawn-evt (f args...)) — one call, spawned when the event is synced and cancelled if its branch loses. To spawn eagerly and keep listening whatever happens, use (promise-join (bjo (f args...)))."
 
             // `(task->event (fetch url))`. A special form for the same reason
             // `bjo` is: the operand must *not* be evaluated where it is
@@ -923,7 +923,7 @@ let rec parseExpr (s: SExpr) : Expr =
                 | [ SList(_ :: _, _) as call ] -> ETaskEvent(parseExpr call, listRange)
                 | _ ->
                     failwithf
-                        $"Invalid task->event syntax at line %d{r.Start.Line}. Expected: (task->event (f args...)) — one call to a method imported #:async, whose arguments are evaluated here and whose call is made when the event is synced."
+                        $"Invalid task->event syntax at %s{Lexer.formatPos r}. Expected: (task->event (f args...)) — one call to a method imported #:async, whose arguments are evaluated here and whose call is made when the event is synced."
 
             // A monadic block. `(seq ...)` was already taken by lazy sequences,
             // so the form is spelled `do`.
@@ -939,7 +939,7 @@ let rec parseExpr (s: SExpr) : Expr =
             // `pure`. `(:return e)` is sugar for `(pure e)` in tail position.
             | "do" ->
                 match args with
-                | [] -> failwithf $"Invalid do syntax at line %d{r.Start.Line}. Expected: (do form...)"
+                | [] -> failwithf $"Invalid do syntax at %s{Lexer.formatPos r}. Expected: (do form...)"
                 | forms -> desugarDo forms listRange
 
             // Guarded rather than claimed outright: `(loop (+ i 1))` is how a
@@ -960,12 +960,12 @@ let rec parseExpr (s: SExpr) : Expr =
             | "yield" ->
                 match args with
                 | [ value ] -> EYield(parseExpr value, listRange)
-                | _ -> failwithf $"Invalid yield syntax at line %d{r.Start.Line}. Expected: (yield value)"
+                | _ -> failwithf $"Invalid yield syntax at %s{Lexer.formatPos r}. Expected: (yield value)"
 
             | "yield-from" ->
                 match args with
                 | [ source ] -> EYieldFrom(parseExpr source, listRange)
-                | _ -> failwithf $"Invalid yield-from syntax at line %d{r.Start.Line}. Expected: (yield-from seq)"
+                | _ -> failwithf $"Invalid yield-from syntax at %s{Lexer.formatPos r}. Expected: (yield-from seq)"
 
             | "and" ->
                 let rec buildAnd items =
@@ -988,7 +988,7 @@ let rec parseExpr (s: SExpr) : Expr =
             | "not" ->
                 match args with
                 | [arg] -> EIf(parseExpr arg, EIdent("false", listRange), EIdent("true", listRange), listRange)
-                | _ -> failwithf $"Invalid not syntax at line %d{r.Start.Line}"
+                | _ -> failwithf $"Invalid not syntax at %s{Lexer.formatPos r}"
 
             | "fun"
             | "bjoroutine" ->
@@ -1023,10 +1023,10 @@ let rec parseExpr (s: SExpr) : Expr =
                             // Standard clause: (pattern body...)
                             | SList(pattern :: bodyExprs, _) ->
                                 (parsePattern pattern, None, parseBody bodyExprs rClause)
-                            | _ -> failwithf $"Invalid match clause at line %d{rClause.Start.Line}")
+                            | _ -> failwithf $"Invalid match clause at %s{Lexer.formatPos rClause}")
 
                     EMatch(target, parsedClauses, r)
-                | _ -> failwithf $"Invalid match syntax at line %d{r.Start.Line}"
+                | _ -> failwithf $"Invalid match syntax at %s{Lexer.formatPos r}"
 
             // Construction is spelled with the type name — `(Car (brand "x")
             // (year 3000))` — so there is no anonymous `record` form to infer a
@@ -1042,7 +1042,7 @@ let rec parseExpr (s: SExpr) : Expr =
                     |> String.concat " "
 
                 failwithf
-                    $"Invalid %s{sym} at line %d{r.Start.Line}: record and struct construction names its type, so write (TypeName %s{shown}) instead of (%s{sym} %s{shown})."
+                    $"Invalid %s{sym} at %s{Lexer.formatPos r}: record and struct construction names its type, so write (TypeName %s{shown}) instead of (%s{sym} %s{shown})."
 
             // `struct*` forms are accepted synonyms for the `record*` forms.
             | "record-set" | "struct-set" ->
@@ -1054,16 +1054,16 @@ let rec parseExpr (s: SExpr) : Expr =
                             | SList([ Ident k; v ], _) -> (k, parseExpr v)
                             | bad ->
                                 failwithf
-                                    $"Invalid %s{sym} field at line %d{(getRange bad).Start.Line}: expected (field-name value)")
+                                    $"Invalid %s{sym} field at %s{Lexer.formatPos (getRange bad)}: expected (field-name value)")
 
                     ERecordUpdate(baseRec, parsedFields, r)
-                | _ -> failwithf $"Invalid %s{sym} syntax at line %d{r.Start.Line}: expected (%s{sym} target (field value) ...)"
+                | _ -> failwithf $"Invalid %s{sym} syntax at %s{Lexer.formatPos r}: expected (%s{sym} target (field value) ...)"
 
             | "record-get" | "struct-get" ->
                 match args with
                 | [ target; Ident field ] ->
                     EGetField(parseExpr target, field, r)
-                | _ -> failwithf $"Invalid %s{sym} syntax at line %d{r.Start.Line}: expected (%s{sym} target field-name)"
+                | _ -> failwithf $"Invalid %s{sym} syntax at %s{Lexer.formatPos r}: expected (%s{sym} target field-name)"
 
             // `(try body... #:catch (E1 E2 ...) #:finally cleanup...)`
             //
@@ -1081,7 +1081,7 @@ let rec parseExpr (s: SExpr) : Expr =
                 let bodyForms, clauseForms = split [] args
 
                 if bodyForms.IsEmpty then
-                    failwithf $"Invalid try at line %d{r.Start.Line}: it has no body."
+                    failwithf $"Invalid try at %s{Lexer.formatPos r}: it has no body."
 
                 // The clauses, read in whichever order they were written.
                 let rec readClauses catchNames finallyForms remaining =
@@ -1089,11 +1089,11 @@ let rec parseExpr (s: SExpr) : Expr =
                     | [] -> catchNames, finallyForms
                     | SAtom { Token = Keyword "catch" } :: SList(names, _) :: rest ->
                         if Option.isSome catchNames then
-                            failwithf $"Invalid try at line %d{r.Start.Line}: #:catch is given twice."
+                            failwithf $"Invalid try at %s{Lexer.formatPos r}: #:catch is given twice."
 
                         if names.IsEmpty then
                             failwithf
-                                $"Invalid try at line %d{r.Start.Line}: #:catch names no exception types. Leave it off to let everything propagate."
+                                $"Invalid try at %s{Lexer.formatPos r}: #:catch names no exception types. Leave it off to let everything propagate."
 
                         let parsed =
                             names
@@ -1101,32 +1101,32 @@ let rec parseExpr (s: SExpr) : Expr =
                                 | SAtom { Token = Symbol n } -> n
                                 | bad ->
                                     failwithf
-                                        $"Invalid try at line %d{(getRange bad).Start.Line}: #:catch takes fully qualified .NET exception type names, as in System.IO.IOException.")
+                                        $"Invalid try at %s{Lexer.formatPos (getRange bad)}: #:catch takes fully qualified .NET exception type names, as in System.IO.IOException.")
 
                         readClauses (Some parsed) finallyForms rest
                     | SAtom { Token = Keyword "catch" } :: _ ->
                         failwithf
-                            $"Invalid try at line %d{r.Start.Line}: #:catch takes a parenthesized list of exception types."
+                            $"Invalid try at %s{Lexer.formatPos r}: #:catch takes a parenthesized list of exception types."
                     | SAtom { Token = Keyword "finally" } :: rest ->
                         if not (List.isEmpty finallyForms) then
-                            failwithf $"Invalid try at line %d{r.Start.Line}: #:finally is given twice."
+                            failwithf $"Invalid try at %s{Lexer.formatPos r}: #:finally is given twice."
 
                         // Everything up to the next clause keyword.
                         let cleanup, after = split [] rest
 
                         if cleanup.IsEmpty then
-                            failwithf $"Invalid try at line %d{r.Start.Line}: #:finally has no body."
+                            failwithf $"Invalid try at %s{Lexer.formatPos r}: #:finally has no body."
 
                         readClauses catchNames cleanup after
                     | bad :: _ ->
                         failwithf
-                            $"Invalid try at line %d{(getRange bad).Start.Line}: expected #:catch or #:finally."
+                            $"Invalid try at %s{Lexer.formatPos (getRange bad)}: expected #:catch or #:finally."
 
                 let catchNames, finallyForms = readClauses None [] clauseForms
 
                 if Option.isNone catchNames && List.isEmpty finallyForms then
                     failwithf
-                        $"Invalid try at line %d{r.Start.Line}: a try does nothing without #:catch or #:finally."
+                        $"Invalid try at %s{Lexer.formatPos r}: a try does nothing without #:catch or #:finally."
 
                 let body = parseBody bodyForms listRange
 
@@ -1152,7 +1152,7 @@ let rec parseExpr (s: SExpr) : Expr =
                 match args with
                 | SList(bindings, _) :: bodyForms ->
                     if bodyForms.IsEmpty then
-                        failwithf $"Invalid with-open at line %d{r.Start.Line}: it has no body."
+                        failwithf $"Invalid with-open at %s{Lexer.formatPos r}: it has no body."
 
                     let body = parseBody bodyForms listRange
 
@@ -1174,12 +1174,12 @@ let rec parseExpr (s: SExpr) : Expr =
                                 )
                             | bad ->
                                 failwithf
-                                    $"Invalid with-open binding at line %d{(getRange bad).Start.Line}: expected (name expression).")
+                                    $"Invalid with-open binding at %s{Lexer.formatPos (getRange bad)}: expected (name expression).")
                         bindings
                         body
                 | _ ->
                     failwithf
-                        $"Invalid with-open at line %d{r.Start.Line}: expected (with-open ((name expression) ...) body...)"
+                        $"Invalid with-open at %s{Lexer.formatPos r}: expected (with-open ((name expression) ...) body...)"
 
             // `(parameterize ((param value) ...) body...)` — install each
             // binding in the dynamic environment, and put it back however the
@@ -1205,7 +1205,7 @@ let rec parseExpr (s: SExpr) : Expr =
                 match args with
                 | SList(bindings, _) :: bodyForms ->
                     if bodyForms.IsEmpty then
-                        failwithf $"Invalid parameterize at line %d{r.Start.Line}: it has no body."
+                        failwithf $"Invalid parameterize at %s{Lexer.formatPos r}: it has no body."
 
                     let body = parseBody bodyForms listRange
 
@@ -1236,12 +1236,12 @@ let rec parseExpr (s: SExpr) : Expr =
                                 )
                             | bad ->
                                 failwithf
-                                    $"Invalid parameterize binding at line %d{(getRange bad).Start.Line}: expected (parameter expression).")
+                                    $"Invalid parameterize binding at %s{Lexer.formatPos (getRange bad)}: expected (parameter expression).")
                         bindings
                         body
                 | _ ->
                     failwithf
-                        $"Invalid parameterize at line %d{r.Start.Line}: expected (parameterize ((parameter expression) ...) body...)"
+                        $"Invalid parameterize at %s{Lexer.formatPos r}: expected (parameterize ((parameter expression) ...) body...)"
 
             | "Tuple" -> ETuple(processArgs args, listRange)
 
@@ -1278,9 +1278,9 @@ let rec parseExpr (s: SExpr) : Expr =
     | SList([], listRange) -> ETuple([], listRange)
 
     // Explicit token catches for better debugging
-    | SAtom { Token = Comma } -> failwithf $"Unexpected comma at line %d{r.Start.Line}"
-    | SAtom { Token = Quote } -> failwithf $"Unexpected quote at line %d{r.Start.Line}"
-    | _ -> failwithf $"Unexpected expression at line %d{r.Start.Line}"
+    | SAtom { Token = Comma } -> failwithf $"Unexpected comma at %s{Lexer.formatPos r}"
+    | SAtom { Token = Quote } -> failwithf $"Unexpected quote at %s{Lexer.formatPos r}"
+    | _ -> failwithf $"Unexpected expression at %s{Lexer.formatPos r}"
 
 /// Desugars a `(do ...)` block into `bind` / `pure`.
 ///
@@ -1294,15 +1294,15 @@ and desugarDo (forms: SExpr list) (fallbackRange: Range) : Expr =
         | _ -> None
 
     match forms with
-    | [] -> failwithf $"Invalid do syntax at line %d{fallbackRange.Start.Line}: the block is empty"
+    | [] -> failwithf $"Invalid do syntax at %s{Lexer.formatPos fallbackRange}: the block is empty"
 
     | [ last ] ->
         match named last with
         | Some("return", [ e ], r) -> EApp(EIdent("pure", r), [ parseExpr e ], r)
-        | Some("return", _, r) -> failwithf $"Invalid (:return ...) at line %d{r.Start.Line}. Expected: (:return expr)"
+        | Some("return", _, r) -> failwithf $"Invalid (:return ...) at %s{Lexer.formatPos r}. Expected: (:return expr)"
         | Some(("bind" | "let" | "then") as k, _, r) ->
             failwithf
-                $"A (do ...) block cannot end with (:%s{k} ...) at line %d{r.Start.Line}. Its last form is the block's value."
+                $"A (do ...) block cannot end with (:%s{k} ...) at %s{Lexer.formatPos r}. Its last form is the block's value."
         // Any `m a` may be the last form, which is what lets a monadic loop put
         // its own recursive call in tail position.
         | _ -> parseExpr last
@@ -1317,23 +1317,23 @@ and desugarDo (forms: SExpr list) (fallbackRange: Range) : Expr =
         | Some("bind", [ SAtom { Token = Symbol name }; e ], r) ->
             EApp(EIdent("bind", r), [ parseExpr e; EFun([ name ], continuation (), Ordinary, r) ], r)
         | Some("bind", _, r) ->
-            failwithf $"Invalid (:bind ...) at line %d{r.Start.Line}. Expected: (:bind name expr) — a plain identifier, not a pattern."
+            failwithf $"Invalid (:bind ...) at %s{Lexer.formatPos r}. Expected: (:bind name expr) — a plain identifier, not a pattern."
 
         | Some("let", [ SAtom { Token = Symbol name }; e ], r) ->
             ELet(name, false, [], None, parseExpr e, continuation (), r)
-        | Some("let", _, r) -> failwithf $"Invalid (:let ...) at line %d{r.Start.Line}. Expected: (:let name expr)"
+        | Some("let", _, r) -> failwithf $"Invalid (:let ...) at %s{Lexer.formatPos r}. Expected: (:let name expr)"
 
         // `>>`, and named for what it is. Calling it `:do` would invite reading
         // it as a variable-less `:bind`, which in a strict language it is not:
         // on `List`, `>>` multiplies out the elements it discards.
         | Some("then", [ e ], r) ->
             EApp(EIdent("bind", r), [ parseExpr e; EFun([ "_" ], continuation (), Ordinary, r) ], r)
-        | Some("then", _, r) -> failwithf $"Invalid (:then ...) at line %d{r.Start.Line}. Expected: (:then expr)"
+        | Some("then", _, r) -> failwithf $"Invalid (:then ...) at %s{Lexer.formatPos r}. Expected: (:then expr)"
 
         | Some("return", _, r) ->
-            failwithf $"(:return ...) at line %d{r.Start.Line} must be the last form of its (do ...) block."
+            failwithf $"(:return ...) at %s{Lexer.formatPos r} must be the last form of its (do ...) block."
 
-        | Some(k, _, r) -> failwithf $"Unknown (do ...) form ':%s{k}' at line %d{r.Start.Line}"
+        | Some(k, _, r) -> failwithf $"Unknown (do ...) form ':%s{k}' at %s{Lexer.formatPos r}"
 
         // A plain form in non-tail position is an ordinary statement, run for
         // its effect. It is *not* a variable-less bind.
@@ -1365,7 +1365,7 @@ and private parseLoopClause (s: SExpr) : LoopClause =
     | SList(SAtom { Token = Keyword "for" } :: rest, r) ->
         match rest with
         | [ pat; sequence ] -> LFor(pat, sequence, r)
-        | _ -> failwithf $"Invalid (:for ...) at line %d{r.Start.Line}. Expected: (:for pattern sequence)"
+        | _ -> failwithf $"Invalid (:for ...) at %s{Lexer.formatPos r}. Expected: (:for pattern sequence)"
 
     // Two expressions is a loop-invariant binding, three the usual recurrence,
     // four one that ends the level on its own. Nothing is optional in the
@@ -1378,23 +1378,23 @@ and private parseLoopClause (s: SExpr) : LoopClause =
         | [ pat; start; update; endCond ] -> LWith(pat, start, Some update, Some endCond, r)
         | _ ->
             failwithf
-                $"Invalid (:with ...) at line %d{r.Start.Line}. Expected: (:with pattern start [update [end]])"
+                $"Invalid (:with ...) at %s{Lexer.formatPos r}. Expected: (:with pattern start [update [end]])"
 
     | SList(SAtom { Token = Keyword "let" } :: rest, r) ->
         match rest with
         | [ pat; value ] -> LLet(pat, value, r)
-        | _ -> failwithf $"Invalid (:let ...) at line %d{r.Start.Line}. Expected: (:let pattern expr)"
+        | _ -> failwithf $"Invalid (:let ...) at %s{Lexer.formatPos r}. Expected: (:let pattern expr)"
 
     | SList(SAtom { Token = Keyword "do" } :: rest, r) ->
         if rest.IsEmpty then
-            failwithf $"Invalid (:do ...) at line %d{r.Start.Line}. Expected: (:do expr ...)"
+            failwithf $"Invalid (:do ...) at %s{Lexer.formatPos r}. Expected: (:do expr ...)"
 
         LDo(rest, r)
 
     | SList(SAtom { Token = Keyword "when" } :: rest, r) ->
         match rest with
         | [ cond ] -> LWhen(cond, r)
-        | _ -> failwithf $"Invalid (:when ...) at line %d{r.Start.Line}. Expected: (:when cond)"
+        | _ -> failwithf $"Invalid (:when ...) at %s{Lexer.formatPos r}. Expected: (:when cond)"
 
     | SList([ SAtom { Token = Keyword "subloop" } ], r) -> LSubloop r
 
@@ -1402,7 +1402,7 @@ and private parseLoopClause (s: SExpr) : LoopClause =
         match rest with
         | [ cond ] -> LEndSubloop(cond, r)
         | _ ->
-            failwithf $"Invalid (:end-subloop-if ...) at line %d{r.Start.Line}. Expected: (:end-subloop-if cond)"
+            failwithf $"Invalid (:end-subloop-if ...) at %s{Lexer.formatPos r}. Expected: (:end-subloop-if cond)"
 
     | SList(SAtom { Token = Keyword "acc" } :: SAtom { Token = Symbol name } :: collector :: rest, r) ->
         let modifier =
@@ -1411,12 +1411,12 @@ and private parseLoopClause (s: SExpr) : LoopClause =
             | [ SAtom { Token = Keyword "when" }; cond ] -> Some cond
             | _ ->
                 failwithf
-                    $"Invalid (:acc ...) at line %d{r.Start.Line}. Expected: (:acc name (collector ...) [#:when cond])"
+                    $"Invalid (:acc ...) at %s{Lexer.formatPos r}. Expected: (:acc name (collector ...) [#:when cond])"
 
         LAcc(name, collector, modifier, r)
 
     | SList(SAtom { Token = Keyword "acc" } :: _, r) ->
-        failwithf $"Invalid (:acc ...) at line %d{r.Start.Line}. Expected: (:acc name (collector ...) [#:when cond])"
+        failwithf $"Invalid (:acc ...) at %s{Lexer.formatPos r}. Expected: (:acc name (collector ...) [#:when cond])"
 
     // Both take a condition rather than being guarded by a preceding `:when`:
     // clauses do not compose, so there is no bare `(:break)` to be reached
@@ -1424,19 +1424,19 @@ and private parseLoopClause (s: SExpr) : LoopClause =
     | SList(SAtom { Token = Keyword "break" } :: rest, r) ->
         match rest with
         | [ cond ] -> LBreak(cond, r)
-        | _ -> failwithf $"Invalid (:break ...) at line %d{r.Start.Line}. Expected: (:break cond)"
+        | _ -> failwithf $"Invalid (:break ...) at %s{Lexer.formatPos r}. Expected: (:break cond)"
 
     | SList(SAtom { Token = Keyword "final" } :: rest, r) ->
         match rest with
         | [ cond ] -> LFinal(cond, r)
-        | _ -> failwithf $"Invalid (:final ...) at line %d{r.Start.Line}. Expected: (:final cond)"
+        | _ -> failwithf $"Invalid (:final ...) at %s{Lexer.formatPos r}. Expected: (:final cond)"
 
     | SList(SAtom { Token = Keyword k } :: _, r) ->
-        failwithf $"Unknown (loop ...) clause ':%s{k}' at line %d{r.Start.Line}"
+        failwithf $"Unknown (loop ...) clause ':%s{k}' at %s{Lexer.formatPos r}"
 
     | _ ->
         let r = getRange s
-        failwithf $"Expected a (loop ...) clause at line %d{r.Start.Line}, which is a keyword-headed list like (:for x xs)"
+        failwithf $"Expected a (loop ...) clause at %s{Lexer.formatPos r}, which is a keyword-headed list like (:for x xs)"
 
 /// Binds a `:for` or `:let` pattern.
 ///
@@ -1466,7 +1466,7 @@ and private bindLoopPattern (pat: SExpr) (value: Expr) (body: Expr) (r: Range) :
     | _ ->
         let pr = getRange pat
         failwithf
-            $"Invalid pattern at line %d{pr.Start.Line}: a (loop ...) pattern only destructures and must always match, so it has to be a name or (Tuple a b ...)."
+            $"Invalid pattern at %s{Lexer.formatPos pr}: a (loop ...) pattern only destructures and must always match, so it has to be a name or (Tuple a b ...)."
 
 /// Splits a collector form into the collector *value* and the per-iteration
 /// step expression.
@@ -1483,7 +1483,7 @@ and private splitCollector (s: SExpr) : Expr * SExpr =
             | [] -> List.rev positional, List.rev keywords
             | (SAtom { Token = Keyword _ } as k) :: value :: tl -> split positional ((k, value) :: keywords) tl
             | [ SAtom { Token = Keyword k } ] ->
-                failwithf $"Keyword argument '#:%s{k}' at line %d{r.Start.Line} has no value"
+                failwithf $"Keyword argument '#:%s{k}' at %s{Lexer.formatPos r} has no value"
             | SAtom { Token = Comma } :: tl -> split positional keywords tl
             | x :: tl -> split (x :: positional) keywords tl
 
@@ -1492,7 +1492,7 @@ and private splitCollector (s: SExpr) : Expr * SExpr =
         match List.rev positional with
         | [] ->
             failwithf
-                $"Collector at line %d{r.Start.Line} has no step expression. The last positional argument is what is accumulated each iteration, as in (listing x)."
+                $"Collector at %s{Lexer.formatPos r} has no step expression. The last positional argument is what is accumulated each iteration, as in (listing x)."
         | stepForm :: revConstruction ->
             let construction = List.rev revConstruction
 
@@ -1510,7 +1510,7 @@ and private splitCollector (s: SExpr) : Expr * SExpr =
     | _ ->
         let r = getRange s
         failwithf
-            $"Expected a collector at line %d{r.Start.Line}, as in (listing x) or (folding seed expr)"
+            $"Expected a collector at %s{Lexer.formatPos r}, as in (listing x) or (folding seed expr)"
 
 /// `(seql ...)` — a loop that produces a lazy sequence instead of a value.
 ///
@@ -1551,7 +1551,7 @@ and private desugarSeqLoop (allForms: SExpr list) (r: Range) : Expr =
         | Some i ->
             let ar = getRange allForms[i]
             failwithf
-                $"'=>' at line %d{ar.Start.Line} must be followed by exactly one expression, at the end of the seql."
+                $"'=>' at %s{Lexer.formatPos ar} must be followed by exactly one expression, at the end of the seql."
 
     let rewriteClause (s: SExpr) : SExpr =
         match s with
@@ -1563,16 +1563,16 @@ and private desugarSeqLoop (allForms: SExpr list) (r: Range) : Expr =
                       SList([ SAtom { Token = Symbol "yield"; Range = cr }; value ], cr) ],
                     cr
                 )
-            | _ -> failwithf $"Invalid (:yield ...) at line %d{cr.Start.Line}. Expected: (:yield expr)"
+            | _ -> failwithf $"Invalid (:yield ...) at %s{Lexer.formatPos cr}. Expected: (:yield expr)"
 
         | SList(SAtom { Token = Keyword "acc" } :: _, cr) ->
             failwithf
-                $"(:acc ...) at line %d{cr.Start.Line} has no meaning in a (seql ...): a seql yields its elements one at a time rather than accumulating a result. Use (:yield expr), or write a (loop ...) if you wanted the fold."
+                $"(:acc ...) at %s{Lexer.formatPos cr} has no meaning in a (seql ...): a seql yields its elements one at a time rather than accumulating a result. Use (:yield expr), or write a (loop ...) if you wanted the fold."
 
         | other -> other
 
     if clauseForms.IsEmpty then
-        failwithf $"Invalid seql at line %d{r.Start.Line}: it has no clauses"
+        failwithf $"Invalid seql at %s{Lexer.formatPos r}: it has no clauses"
 
     let loopExpr = desugarLoop (clauseForms |> List.map rewriteClause) r
 
@@ -1635,7 +1635,7 @@ and private desugarComprehension (allForms: SExpr list) (r: Range) : Expr =
 
     if List.length accParts < 2 then
         failwithf
-            $"Invalid comprehension at line %d{r.Start.Line}. Expected {{collector expr clause...}}, as in {{listing (* a a) (:for a (range 0 100))}}."
+            $"Invalid comprehension at %s{Lexer.formatPos r}. Expected {{collector expr clause...}}, as in {{listing (* a a) (:for a (range 0 100))}}."
 
     // A loose `:when` may end the form, and gates the accumulation; a
     // parenthesized `(:when ...)` is the loop's own and skips the iteration.
@@ -1647,7 +1647,7 @@ and private desugarComprehension (allForms: SExpr list) (r: Range) : Expr =
             | SAtom { Token = Keyword "when" } when i = tail.Length - 2 -> List.take i tail, Some tail[i + 1]
             | SAtom { Token = Keyword k; Range = kr } ->
                 failwithf
-                    $"':%s{k}' at line %d{kr.Start.Line} must be written (:%s{k} ...). Only a trailing ':when' may be loose, and it gates the accumulation."
+                    $"':%s{k}' at %s{Lexer.formatPos kr} must be written (:%s{k} ...). Only a trailing ':when' may be loose, and it gates the accumulation."
             | _ -> tail, None
 
     // One result, named by the collector — so there is nothing for a second
@@ -1658,7 +1658,7 @@ and private desugarComprehension (allForms: SExpr list) (r: Range) : Expr =
         | SList(SAtom { Token = Keyword "acc" } :: _, cr)
         | SAtom { Token = Symbol "=>"; Range = cr } ->
             failwithf
-                $"A comprehension at line %d{cr.Start.Line} has one result, and its collector names it: (:acc ...) and => mean nothing here. Write a (loop ...) for more than one."
+                $"A comprehension at %s{Lexer.formatPos cr} has one result, and its collector names it: (:acc ...) and => mean nothing here. Write a (loop ...) for more than one."
         | _ -> ())
 
     match accParts with
@@ -1668,7 +1668,7 @@ and private desugarComprehension (allForms: SExpr list) (r: Range) : Expr =
         desugarSeqLoop (clauses @ guard @ [ SList([ at (Keyword "yield"); expr ], getRange expr) ]) r
 
     | SAtom { Token = Symbol "seqing" } :: _ ->
-        failwithf $"{{seqing ...}} at line %d{r.Start.Line} takes exactly one expression to yield."
+        failwithf $"{{seqing ...}} at %s{Lexer.formatPos r} takes exactly one expression to yield."
 
     | _ ->
         let name = Gensym.fresh "comp"
@@ -1700,10 +1700,10 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
         | Some i when i = forms.Length - 2 -> forms |> List.take i, Some(List.last forms)
         | Some i ->
             let ar = getRange forms[i]
-            failwithf $"'=>' at line %d{ar.Start.Line} must be followed by exactly one result expression, at the end of the loop."
+            failwithf $"'=>' at %s{Lexer.formatPos ar} must be followed by exactly one result expression, at the end of the loop."
 
     if clauseForms.IsEmpty then
-        failwithf $"Invalid loop at line %d{r.Start.Line}: it has no clauses"
+        failwithf $"Invalid loop at %s{Lexer.formatPos r}: it has no clauses"
 
     let clauses = clauseForms |> List.map parseLoopClause
 
@@ -1712,7 +1712,7 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
     | c :: _ ->
         let cr = loopClauseRange c
         failwithf
-            $"A loop must begin with a (:for ...) or (:with ...) at line %d{cr.Start.Line}: every other clause belongs to the level open at its position, and before the first one there is none."
+            $"A loop must begin with a (:for ...) or (:with ...) at %s{Lexer.formatPos cr}: every other clause belongs to the level open at its position, and before the first one there is none."
     | [] -> ()
 
     // Level assignment, in one left-to-right pass. An *iterating* clause — a
@@ -2035,7 +2035,7 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
             match x with
             | EIdent(n, ir) when Set.contains n names && not (Set.contains n bound) ->
                 failwithf
-                    $"'%s{n}' at line %d{ir.Start.Line} is a (:with ...) variable, and a loop variable is not in scope after the loop: the finish block is reached from every exit, and an inner level's variables do not exist at an exit taken from an outer one. Carry it out with an accumulator — (:acc last (folding 0 %s{n})) — and name that in the '=>' instead."
+                    $"'%s{n}' at %s{Lexer.formatPos ir} is a (:with ...) variable, and a loop variable is not in scope after the loop: the finish block is reached from every exit, and an inner level's variables do not exist at an exit taken from an outer one. Carry it out with an accumulator — (:acc last (folding 0 %s{n})) — and name that in the '=>' instead."
             | EFun(args, body, _, _) -> go (Set.union bound (Set.ofList args)) body
             | ELet(n, _, args, _, value, body, _) ->
                 go (Set.union bound (Set.ofList args)) value
@@ -2204,7 +2204,7 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
         | LEndSubloop(cond, cr) :: tl ->
             if level = 0 then
                 failwithf
-                    $"(:end-subloop-if ...) at line %d{cr.Start.Line} is at the outermost level, where there is no enclosing loop to resume. Use (:when ...) to skip an iteration, or (:break ...) to leave the loop."
+                    $"(:end-subloop-if ...) at %s{Lexer.formatPos cr} is at the outermost level, where there is no enclosing loop to resume. Use (:when ...) to skip an iteration, or (:break ...) to leave the loop."
 
             EIf(parseExpr cond, exitLevel level cr, buildClauses level tl accsLeft, cr)
 
@@ -2281,14 +2281,14 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
                     let known = if known = "" then "(none)" else known
 
                     failwithf
-                        $"'%s{name}' at line %d{kr.Start.Line} has no slot called '#:%s{k}'. A named loop can override the slots it carries — %s{known} — but not a (:for ...) variable, which is derived from its cursor rather than carried. A variable you want to jump ahead is a (:with ...), not a (:for ...)."
+                        $"'%s{name}' at %s{Lexer.formatPos kr} has no slot called '#:%s{k}'. A named loop can override the slots it carries — %s{known} — but not a (:for ...) variable, which is derived from its cursor rather than carried. A variable you want to jump ahead is a (:with ...), not a (:for ...)."
 
                 go (Map.add k value acc) tl
-            | EKeyword(k, kr) :: [] -> failwithf $"'#:%s{k}' at line %d{kr.Start.Line} has no value"
+            | EKeyword(k, kr) :: [] -> failwithf $"'#:%s{k}' at %s{Lexer.formatPos kr} has no value"
             | other :: _ ->
                 let orr = exprRange other
                 failwithf
-                    $"'%s{name}' at line %d{orr.Start.Line} takes only keyword arguments: write ('%s{name}') to advance everything, or ('%s{name}' #:acc expr) to override one accumulator."
+                    $"'%s{name}' at %s{Lexer.formatPos orr} takes only keyword arguments: write ('%s{name}') to advance everything, or ('%s{name}' #:acc expr) to override one accumulator."
 
         go Map.empty args
 
@@ -2299,7 +2299,7 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
             match x with
             | EIdent(n, ir) when n = name ->
                 failwithf
-                    $"'%s{name}' at line %d{ir.Start.Line} is a loop name, which may only be tail called from the loop's last (:do ...). It is a jump, so it cannot be used as a value or called from anywhere else."
+                    $"'%s{name}' at %s{Lexer.formatPos ir} is a loop name, which may only be tail called from the loop's last (:do ...). It is a jump, so it cannot be used as a value or called from anywhere else."
             | _ -> exprChildren x |> List.iter go
 
         go e
@@ -2469,7 +2469,7 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
                 let r = getRange (List.head remaining)
 
                 failwithf
-                    $"Invalid def form at line %d{r.Start.Line}. Expected (def name expr), (def (: name type) expr), (def (a b ...) expr) or (defun (name args...) body)."
+                    $"Invalid def form at %s{Lexer.formatPos r}. Expected (def name expr), (def (: name type) expr), (def (a b ...) expr) or (defun (name args...) body)."
 
             ELetRec(defs, parseItems rest, fallbackRange)
 
@@ -2489,11 +2489,11 @@ let rec parseNewDefunArgs (args: SExpr list) : DefunArg list =
         KeywordArg(name, parseExpr defaultExpr) :: parseNewDefunArgs rest
     | SAtom { Token = Keyword "rest" } :: SAtom { Token = Symbol name } :: rest ->
         if not rest.IsEmpty then
-            failwithf $"Rest argument must be the last argument at line %d{(getRange (List.head rest)).Start.Line}"
+            failwithf $"Rest argument must be the last argument at %s{Lexer.formatPos (getRange (List.head rest))}"
         [RestArg name]
     | SAtom { Token = Keyword name } :: defaultExpr :: rest ->
         KeywordArg(name, parseExpr defaultExpr) :: parseNewDefunArgs rest
-    | bad :: _ -> failwithf $"Invalid defun argument at line %d{(getRange bad).Start.Line}"
+    | bad :: _ -> failwithf $"Invalid defun argument at %s{Lexer.formatPos (getRange bad)}"
 
 /// What a foreign import clause said, beyond its alias and target.
 ///
@@ -2532,7 +2532,7 @@ let parseForeignImportClause (formName: string) (s: SExpr) : string * string * F
 
     let malformed () : 'a =
         failwithf
-            $"Syntax error in %s{formName} at line %d{r.Start.Line}: expected (alias (: Fully.Qualified.Target type)), the type optionally followed by #:exceptions (ExceptionType ...), #:async and #:uncancellable."
+            $"Syntax error in %s{formName} at %s{Lexer.formatPos r}: expected (alias (: Fully.Qualified.Target type)), the type optionally followed by #:exceptions (ExceptionType ...), #:async and #:uncancellable."
 
     match s with
     | SList([ SAtom { Token = Symbol alias }
@@ -2557,7 +2557,7 @@ let parseForeignImportClause (formName: string) (s: SExpr) : string * string * F
             | SAtom { Token = Keyword "exceptions" } :: SList(names, _) :: tail ->
                 if names.IsEmpty then
                     failwithf
-                        $"Syntax error in %s{formName} at line %d{r.Start.Line}: #:exceptions names no exception types. Leave it off entirely to let everything propagate."
+                        $"Syntax error in %s{formName} at %s{Lexer.formatPos r}: #:exceptions names no exception types. Leave it off entirely to let everything propagate."
 
                 let exceptions =
                     names
@@ -2565,7 +2565,7 @@ let parseForeignImportClause (formName: string) (s: SExpr) : string * string * F
                         | SAtom { Token = Symbol n } -> n
                         | bad ->
                             failwithf
-                                $"Syntax error in %s{formName} at line %d{(getRange bad).Start.Line}: #:exceptions takes fully qualified .NET exception type names, as in System.IO.IOException.")
+                                $"Syntax error in %s{formName} at %s{Lexer.formatPos (getRange bad)}: #:exceptions takes fully qualified .NET exception type names, as in System.IO.IOException.")
 
                 readOptions { opts with Exceptions = exceptions } tail
             | SAtom { Token = Keyword "async" } :: tail -> readOptions { opts with IsAsync = true } tail
@@ -2611,16 +2611,16 @@ let rec parseDecl (s: SExpr) : Decl =
                 pathNodes
                 |> List.map (function
                     | SAtom { Token = Symbol p } -> p
-                    | _ -> failwithf $"Invalid import path element at line %d{r.Start.Line}")
+                    | _ -> failwithf $"Invalid import path element at %s{Lexer.formatPos r}")
                 |> ModulePath
-            | _ -> failwithf $"Invalid import syntax at line %d{r.Start.Line}"
+            | _ -> failwithf $"Invalid import syntax at %s{Lexer.formatPos r}"
 
         DImport(List.map parseImportPath imports, r)
 
     // (import/extern (write-line (: System.Console.WriteLine (-> string void))) ...)
     | SList(SAtom { Token = Symbol "import/extern" } :: clauses, _) ->
         if clauses.IsEmpty then
-            failwithf $"Syntax error in import/extern at line %d{r.Start.Line}: it imports nothing."
+            failwithf $"Syntax error in import/extern at %s{Lexer.formatPos r}: it imports nothing."
 
         let specs =
             clauses
@@ -2641,7 +2641,7 @@ let rec parseDecl (s: SExpr) : Decl =
     // (import/class (StreamWriter (: System.IO.StreamWriter (-> string StreamWriter))) ...)
     | SList(SAtom { Token = Symbol "import/class" } :: clauses, _) ->
         if clauses.IsEmpty then
-            failwithf $"Syntax error in import/class at line %d{r.Start.Line}: it imports nothing."
+            failwithf $"Syntax error in import/class at %s{Lexer.formatPos r}: it imports nothing."
 
         let specs =
             clauses
@@ -2652,7 +2652,7 @@ let rec parseDecl (s: SExpr) : Decl =
                 // would mean an import that reads as async and is not.
                 if opts.IsAsync || opts.Uncancellable || opts.Cancellable then
                     failwithf
-                        $"Syntax error in import/class at line %d{cr.Start.Line}: #:async, #:cancellable and #:uncancellable describe how a call is made, and a constructor is not made that way. They belong on an import/extern clause."
+                        $"Syntax error in import/class at %s{Lexer.formatPos cr}: #:async, #:cancellable and #:uncancellable describe how a call is made, and a constructor is not made that way. They belong on an import/extern clause."
 
                 { Alias = alias
                   ClrClass = target
@@ -2668,7 +2668,7 @@ let rec parseDecl (s: SExpr) : Decl =
             exports
             |> List.map (function
                 | SAtom { Token = Symbol e } -> e
-                | _ -> failwithf $"Invalid export item at line %d{r.Start.Line}")
+                | _ -> failwithf $"Invalid export item at %s{Lexer.formatPos r}")
 
         DExport(exportNames, r)
 
@@ -2677,7 +2677,7 @@ let rec parseDecl (s: SExpr) : Decl =
             reExports
             |> List.map (function
                 | SAtom { Token = Symbol e } -> e
-                | _ -> failwithf $"Invalid re-export item at line %d{r.Start.Line}")
+                | _ -> failwithf $"Invalid re-export item at %s{Lexer.formatPos r}")
 
         DReExport(reExportNames, r)
 
@@ -2737,13 +2737,13 @@ let rec parseDecl (s: SExpr) : Decl =
             | SList (SAtom { Token = QuotedSymbol v } :: holeArgs, hr) ->
                 if holeArgs.IsEmpty then
                     failwithf
-                        $"Syntax error in def/trait '%s{traitName}' at line %d{hr.Start.Line}: (%%%s{v}) applies the implementor to nothing. Write %%%s{v} instead."
+                        $"Syntax error in def/trait '%s{traitName}' at %s{Lexer.formatPos hr}: (%%%s{v}) applies the implementor to nothing. Write %%%s{v} instead."
                 for a in holeArgs do
                     match a with
                     | SAtom { Token = QuotedSymbol _ } -> ()
                     | _ ->
                         failwithf
-                            $"Syntax error in def/trait '%s{traitName}' at line %d{hr.Start.Line}: the implementor may only be applied to type variables."
+                            $"Syntax error in def/trait '%s{traitName}' at %s{Lexer.formatPos hr}: the implementor may only be applied to type variables."
                 v, holeArgs.Length
             | _ ->
                 failwithf
@@ -2832,6 +2832,6 @@ let rec parseDecl (s: SExpr) : Decl =
 
         DImplExtern (traitName, parseType targetTypeExpr, assocBindings, r)
 
-    | _ -> failwithf $"Unknown declaration at line %d{r.Start.Line}"
+    | _ -> failwithf $"Unknown declaration at %s{Lexer.formatPos r}"
 
 let parseModule (exprs: SExpr list) : Decl list = List.map parseDecl exprs

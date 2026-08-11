@@ -92,7 +92,7 @@ module DictionaryLowering =
                         | h :: _ -> prune env.Registry h
                         | [] ->
                             failwithf
-                                $"Trait method '%s{tref.Method}' has no implementor to dispatch on at line %d{expr.Range.Start.Line}"
+                                $"Trait method '%s{tref.Method}' has no implementor to dispatch on at %s{Lexer.formatPos expr.Range}"
 
                     match hole with
                     | TVar varName ->
@@ -100,7 +100,7 @@ module DictionaryLowering =
 
                         if not (Map.containsKey expectedDictName activeDicts) then
                             failwithf
-                                $"Missing dictionary '%s{expectedDictName}' for trait dispatch at line %d{expr.Range.Start.Line}"
+                                $"Missing dictionary '%s{expectedDictName}' for trait dispatch at %s{Lexer.formatPos expr.Range}"
 
                         let dictIdent =
                             { Type = dictionaryType env tref.Trait hole
@@ -112,7 +112,7 @@ module DictionaryLowering =
 
                     | other ->
                         failwithf
-                            $"Unsupported receiver type %A{other} for trait dispatch at line %d{expr.Range.Start.Line}"
+                            $"Unsupported receiver type %s{DotNetInterop.showType other} for trait dispatch at %s{Lexer.formatPos expr.Range}"
 
             { expr with Node = node }
 
@@ -186,7 +186,7 @@ module DictionaryLowering =
 
                                             if not (Map.containsKey expectedDictName activeDicts) then
                                                 failwithf
-                                                    $"Missing dictionary '%s{expectedDictName}' to forward for call to '%s{calleeName}' at line %d{expr.Range.Start.Line}"
+                                                    $"Missing dictionary '%s{expectedDictName}' to forward for call to '%s{calleeName}' at %s{Lexer.formatPos expr.Range}"
 
                                             { Type = dictionaryType env c.TraitName resolvedType
                                               Range = expr.Range
@@ -194,7 +194,7 @@ module DictionaryLowering =
                                             : TypedExpr
                                         | _ ->
                                             failwithf
-                                                $"Cannot resolve dictionary for type %A{resolvedType} at line %d{expr.Range.Start.Line}")
+                                                $"Cannot resolve dictionary for type %s{DotNetInterop.showType resolvedType} at %s{Lexer.formatPos expr.Range}")
 
                                 TApply(
                                     recurse target,

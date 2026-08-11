@@ -78,8 +78,8 @@ let withIndent (ctx: CodegenContext) (f: CodegenContext -> unit) =
 
 /// A user-facing code generation failure. A loud error at compile time beats
 /// invalid generated C#, a silent wrong answer, or a stack overflow at run time.
-let codegenError (line: int) (message: string) : 'a =
-    failwithf $"Codegen Error at line %d{line}: %s{message}"
+let codegenError (where: Lexer.Range) (message: string) : 'a =
+    failwithf $"Codegen Error at %s{Lexer.formatPos where}: %s{message}"
 
 let private freshName (prefix: string) = Gensym.fresh prefix
 
@@ -877,7 +877,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     | Some prelude when isStatementShaped expr -> append ctx (hoistToTemp ctx prelude expr)
     | None when containsHoist expr ->
         codegenError
-            expr.Range.Start.Line
+            expr.Range
             "this expression needs statements to evaluate, but it appears where C# has no statement position"
     | _ ->
 
@@ -1249,19 +1249,19 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
                 appendLine armCtx ","
             if not (live |> List.exists isIrrefutable) then
                 indent armCtx
-                appendLine armCtx $"_ => throw new Exception(\"Match failure at line %d{expr.Range.Start.Line}\")"
+                appendLine armCtx $"_ => throw new Exception(\"Match failure at %s{Lexer.formatPos expr.Range}\")"
         )
         indent ctx; append ctx "}"
 
     | TTypeEq _ ->
-        codegenError expr.Range.Start.Line "type equality tests are not supported by the C# backend"
+        codegenError expr.Range "type equality tests are not supported by the C# backend"
 
     // Every trait call has been turned into either a spliced body or a direct
     // call by the time code is generated: `TraitInline` takes the resolved ones
     // and `Lowering` takes the rest. One reaching here means neither did.
     | TTraitCall (tref, _, _) ->
         codegenError
-            expr.Range.Start.Line
+            expr.Range
             $"internal error: call to '{tref.Trait}.{tref.Method}' was never resolved to an implementation"
 
     | TThrow _
@@ -1281,7 +1281,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     | TYield _
     | TYieldFrom _ ->
         // Statement-shaped: `needsHoist` has already routed these away.
-        codegenError expr.Range.Start.Line "internal error: statement-shaped node reached expression emission"
+        codegenError expr.Range "internal error: statement-shaped node reached expression emission"
 
 /// Emits the receiver of a `.Member` access, parenthesized when C# needs it.
 ///
@@ -1811,7 +1811,7 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
                 for m in members do
                     if typeToString m.RetType <> retStr then
                         codegenError
-                            m.Body.Range.Start.Line
+                            m.Body.Range
                             $"'%s{entry.LoopName}' and '%s{m.LoopName}' tail-call each other but return %s{retStr} and %s{typeToString m.RetType}; a merged loop has one return type, so split the group so that they do not tail-call each other"
 
                 // `default!` is not cosmetic. Only the entry member's slots are
@@ -1910,7 +1910,7 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
                 generateBlock ctx target body
         | None ->
             codegenError
-                expr.Range.Start.Line
+                expr.Range
                 "internal error: a function-body loop was emitted outside of a function body"
 
     | TLet (name, isFun, _, value, body) ->
@@ -2212,7 +2212,7 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
 and private requireSeqScope (ctx: CodegenContext) (expr: TypedExpr) (formName: string) : unit =
     if not ctx.InSeq then
         codegenError
-            expr.Range.Start.Line
+            expr.Range
             $"'%s{formName}' is inside a function of its own — a lambda, or a loop that is used as a value — rather than directly in the body of its (seq ...); move it into the sequence's own body"
 
 /// Leaves an inlined loop, if that is what reaching this point means.
@@ -2374,7 +2374,7 @@ and private generateMatch
     let generateGuard (c: CodegenContext) (guard: TypedExpr) =
         if containsHoist guard then
             codegenError
-                guard.Range.Start.Line
+                guard.Range
                 "this `match` guard needs statements to evaluate, but C# gives `case ... when` no statement position; move the test into the arm body"
 
         append c " when "
@@ -2423,7 +2423,7 @@ and private generateMatch
                     emitBreak cb)
                 indent c; appendLine c "}"
             | None ->
-                appendLine c $"default: throw new Exception(\"Match failure at line %d{expr.Range.Start.Line}\");")
+                appendLine c $"default: throw new Exception(\"Match failure at %s{Lexer.formatPos expr.Range}\");")
 
         indent ctx; appendLine ctx "}"
 
@@ -2449,7 +2449,7 @@ and private generateRecur
         match ctx.Loop with
         | Some l -> l
         | None ->
-            codegenError expr.Range.Start.Line "internal error: a loop jump was emitted with no loop in scope"
+            codegenError expr.Range "internal error: a loop jump was emitted with no loop in scope"
 
     // A jump discards the enclosing block's remaining work. Under any target
     // (Return, Discard, Assign, DeclareAndAssign), the slot variables are updated
@@ -2460,7 +2460,7 @@ and private generateRecur
 
     if slots.Length <> args.Length then
         codegenError
-            expr.Range.Start.Line
+            expr.Range
             $"internal error: jump to '%s{member_.LoopName}' carries %d{args.Length} arguments for %d{slots.Length} slots"
 
     // The whole vector is evaluated before any slot is written: an argument may
@@ -2616,7 +2616,7 @@ and private generateMergedLoop (ctx: CodegenContext) (members: TLoopMember list)
     for m in members do
         if typeToString m.RetType <> retStr then
             codegenError
-                m.Body.Range.Start.Line
+                m.Body.Range
                 $"'%s{first.LoopName}' and '%s{m.LoopName}' tail-call each other but return %s{retStr} and %s{typeToString m.RetType}; a merged loop has one return type, so split the group so that they do not tail-call each other"
 
     let groupName = freshName "__group"
@@ -3080,7 +3080,8 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
             let tupleElemTypes (tupleType: HMType) =
                 match tupleType with
                 | TTuple ts -> ts
-                | _ -> failwithf $"Expected TTuple for TDefTuple but got %A{tupleType}"
+                | _ ->
+                    failwithf $"Expected a tuple in this binding but got %s{DotNetInterop.showType tupleType}"
 
             for d in valueDefs do
                 match d with
