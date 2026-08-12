@@ -1,0 +1,66 @@
+;; `Syntax` is a builtin union, backed by `Bjolang.Runtime.Syntax`. It is what a
+;; macro transformer takes and returns, but it is an ordinary value type: it can
+;; be built and matched with nothing macro-related in sight, which is what this
+;; file checks.
+;;
+;; The cases are SSym, SDatum, SInt, SStr, SChar, SKey and SList. `SSym` is an
+;; identifier and `SDatum` is a quoted symbol written as data; they carry the
+;; same payload and differ only in whether hygiene renames them.
+
+(: describe (-> Syntax string))
+(defun (describe s)
+  (match s
+    ((SSym name) (string-append "sym:" (symbol->string name)))
+    ((SDatum name) (string-append "datum:" (symbol->string name)))
+    ((SInt text) (string-append "int:" text))
+    ((SStr text) (string-append "str:" text))
+    ((SChar c) (string-append "char:" (char->string c)))
+    ((SKey k) (string-append "key:" (keyword->string k)))
+    ((SList items) (string-append "list:" (int->string (length items))))))
+
+;; The payload of SList is a real (List Syntax), so ordinary list functions work
+;; on it — which is what makes plain `match` usable for macro bodies before
+;; there is a `syntax-match`.
+(: leaves (-> Syntax int))
+(defun (leaves s)
+  (match s
+    ((SList items) (fold (fun (acc item) (+ acc (leaves item))) 0 items))
+    (_ 1)))
+
+(: check (-> string string string void))
+(defun (check what got want)
+  (unless (= got want)
+    (println (string-append "FAILURE: " (string-append what (string-append " gave " got))))))
+
+(defun (main args)
+  (def one (SInt "1"))
+  (def x (SSym 'x))
+  (def form (SList (list (SSym 'add) x one)))
+
+  (check "sym" (describe x) "sym:x")
+  (check "datum" (describe (SDatum 'x)) "datum:x")
+  (check "int" (describe one) "int:1")
+  (check "str" (describe (SStr "hi")) "str:hi")
+  (check "char" (describe (SChar #\q)) "char:q")
+  (check "key" (describe (SKey #:when)) "key:when")
+  (check "list" (describe form) "list:3")
+
+  ;; A nested form, counted through the list payload.
+  (def nested (SList (list (SSym 'f) form (SList (list (SSym 'g))))))
+  (check "leaves" (int->string (leaves nested)) "5")
+
+  ;; `syntax->string` renders back to something that reads as source. This is
+  ;; what a macro's error message quotes.
+  (check "render" (syntax->string form) "(add x 1)")
+  (check "render-nested" (syntax->string nested) "(f (add x 1) (g))")
+  (check "render-datum" (syntax->string (SDatum 'quoted)) "'quoted")
+  (check "render-str" (syntax->string (SStr "hi")) "\"hi\"")
+  (check "render-key" (syntax->string (SKey #:when)) "#:when")
+
+  ;; A value built here has no range: only the expander fills those in, from the
+  ;; call site of the macro that produced the node.
+  (check "no-file" (syntax-file form) "<unknown>")
+  (check "no-line" (int->string (syntax-line form)) "0")
+
+  (println "89 ok")
+  0)

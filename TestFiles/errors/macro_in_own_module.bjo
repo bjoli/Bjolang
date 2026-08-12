@@ -1,0 +1,15 @@
+;; A macro cannot be used in the module that defines it. The transformer runs
+;; inside the compiler, so it has to be compiled before whatever uses it is
+;; read — which cannot be true of the file it is written in.
+;;
+;; EXPECT-ERROR: is a macro defined in this module
+;; EXPECT-ERROR: Move it to a module of its own
+
+(def/macro (double form inject compare)
+  (match form
+    ((SList (Cons _ (Cons x Nil))) #'(* 2 ,x))
+    (_ (syntax-error form "double takes one argument"))))
+
+(defun (main args)
+  (println (int->string (double 21)))
+  0)

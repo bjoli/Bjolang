@@ -1,0 +1,54 @@
+;; a trait is a function that can be defined for different datatypes
+;; Take the Gettable trait:
+
+(def/trait (Gettable %a)
+  ;; The type of the position argument
+  (type pos)
+  ;; the item type it returns
+  (type item)
+  (: get (-> %a pos item)))
+
+(def/impl (Gettable (Vec %a))
+  ;; for a Vec the position is always int
+  (type pos int)
+  ;; the item is %a, the same %a as in (Vec %a) above
+  (type item %a)
+  (defun (get v i)
+    (vec-ref v i)))
+
+
+;; For cases where types are known, the trait is inlined
+;; which is why it is a good thing to keep the trait body short
+(: myvec (Vec int))
+(def myvec [1 2 3 4 5])
+
+(get myvec 2)
+;; inlines to ->
+(vec-ref myvec 2)
+;; which returns =>
+3
+
+;; Traits inlining do not matter above, but for some traits it does
+;; take the map trait (or the functor trait for you wonks). Imagine we want
+;; the map function to be a trait. We want to say it takes a collection
+;; and returns a different collection. For that we borrow the syntax from
+;; higher kinded types:
+(def/trait (Mappable (%f %a))
+  (: map (-> (-> %a %b) (%f %a)  (%f %b))))
+
+;; Mappable is a function on collection (%f %a) and it takes a function (-> %a %b).
+;; and returns (%f %b). That is all fine and dandy. But what happens when we try to
+;; map it to a c# interface?
+
+;; public interface IFunctor<F>
+;; {
+;;     // F<A> and F<B> are invalid becaus F is treated as a concrete type
+;;     // instead of a generic type constructor
+;;     F<B> Map<A,B>(F<A> sourc, Func<A, B> func);
+;; }
+;;
+;; even with c#11 it breaks, because you cannot enforce F<B>: F<B> and F<A> are distinct types.
+
+;; since bjolang compiles to c#, and traits compile to interfaces, this cannot be
+;; expressed. If we call map on an option or list or whatever, 
+;;

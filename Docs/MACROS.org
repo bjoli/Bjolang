@@ -1,0 +1,160 @@
+* Macros
+
+A macro is a function the compiler runs while it is parsing. It takes the form
+that was written and returns the form to read instead.
+
+#+BEGIN_SRC scheme
+;; in macros.bjo
+(def/macro (or-else form inject compare)
+  (match form
+    ((SList (Cons _ (Cons a (Cons b Nil))))
+     #'(let ((tmp ,a)) (if (= tmp 0) ,b tmp)))
+    (_ (syntax-error form "or-else takes two arguments"))))
+#+END_SRC
+
+#+BEGIN_SRC scheme
+;; anywhere else
+(import "macros.bjo")
+
+(or-else (lookup k) 0)
+#+END_SRC
+
+** A macro lives in another module
+
+A transformer is compiled code, so it has to exist before it can run. Its module
+is compiled to a ~.dll~, loaded into the compiler process, and the transformer
+invoked by reflection while the *using* module is being parsed. That is the
+Template Haskell arrangement and it has the same consequence: a macro cannot be
+used in the module that defines it, and an ~(include ...)~ does not help, since
+an included file becomes part of the including one.
+
+Using one where it is defined is reported as that, not as an unbound name.
+
+** ~Syntax~
+
+The type a transformer takes and returns. It is an ordinary Bjolang value: it
+can be built and matched anywhere, with no macro in sight.
+
+| Case              | Is                                             |
+|-------------------+------------------------------------------------|
+| ~(SSym s)~        | an identifier                                  |
+| ~(SDatum s)~      | a quoted symbol written as data — ~'foo~       |
+| ~(SInt text)~     | a numeric literal, as written                  |
+| ~(SStr text)~     | a string literal                               |
+| ~(SChar c)~       | a character literal                            |
+| ~(SKey k)~        | a keyword — ~#:when~                           |
+| ~(SList items)~   | a parenthesized form, holding a ~(List Syntax)~ |
+| ~(SPunct text)~   | ~,~ ~,@~ ~:~ ~.~ ~...~, which survive reading  |
+
+~SList~ carries a real list, so ~map~, ~fold~, ~length~ and the trailing rest
+pattern all work on a macro's input:
+
+#+BEGIN_SRC scheme
+(match form
+  ((SList (Cons _ (Cons only Nil))) ...)   ;; exactly one argument
+  ((SList (Cons _ rest)) ...))             ;; any number
+#+END_SRC
+
+~SSym~ and ~SDatum~ carry the same payload and differ in one thing: hygiene
+renames the first and never the second.
+
+Also available: ~(syntax->string s)~, which renders back to something that reads
+as source; ~(syntax-file s)~ and ~(syntax-line s)~; and ~(syntax-error form
+msg)~, which is how a transformer rejects its input. ~syntax-error~ types as a
+~Syntax~ so it can sit beside the arms that return one, and never returns — the
+expander catches it and reports it against the macro's call site.
+
+** ~#'~ builds a template
+
+~#'form~ is syntax-quote. It is spelled differently from ~'(...)~ because the
+two build different things: ~'(a b)~ is a list literal and is homogeneous, while
+a template is heterogeneous by nature.
+
+| In a template | Becomes                                    |
+|---------------+--------------------------------------------|
+| ~foo~         | ~(SSym 'foo)~ — an identifier, renamed     |
+| ~'foo~        | ~(SDatum 'foo)~ — a datum, never renamed   |
+| ~1~ ~"s"~ ~#\c~ ~#:k~ | the matching literal case          |
+| ~(a b)~       | a nested ~SList~                           |
+| ~,x~          | splices ~x~, which must be a ~Syntax~      |
+| ~,@xs~        | splices a ~(List Syntax)~ in place         |
+
+The distinction between ~foo~ and ~'foo~ is also why ~''foo~ is never needed,
+which is just as well, since it does not read.
+
+** Hygiene
+
+Everything the transformer *constructs* is renamed apart from the call site.
+Everything it took from the input is left exactly as written. Both halves matter:
+
+#+BEGIN_SRC scheme
+(def tmp 9)
+(or-else 0 tmp)   ;; 9
+#+END_SRC
+
+The template binds ~tmp~ and the caller passes one. Without renaming, the ~,b~
+spliced into the template would land inside the template's own ~let~ and read
+its temporary. With it, the template's ~tmp~ becomes a name nothing at the call
+site can spell, and the caller's ~tmp~ still means what it meant where it was
+written.
+
+Renaming is a fresh name per template identifier per invocation, so two
+expansions of the same macro never share one. A renamed identifier is then an
+*alias resolved at parse time*, in this order:
+
+1. If the expansion binds it, ordinary scoping does the work.
+2. Otherwise, if the macro's module exports it, it resolves to that module —
+   spelled ~Module_Module::name~, which no local at the call site can shadow.
+   This is what lets a template call a helper of its own module.
+3. Otherwise the rename is stripped: a prelude binding, a data constructor, or a
+   special form. Rule three is what lets a template write ~let~, ~if~ and ~->~
+   unchanged.
+
+Diagnostics report names with renames stripped, so a message names what was
+written rather than a name that appears in no source file.
+
+*** ~inject~
+
+The one deliberate hole, and the only way to make one. ~(inject 'it)~ builds an
+identifier that is *not* renamed, so it binds at the call site — which is how an
+anaphoric macro introduces a name the caller can see. It takes identifiers only.
+
+*** ~compare~
+
+~(compare a b)~ is true when two identifiers are the same one. It is base-name
+equality after mark stripping and not more: at parse time there is no call-site
+scope to consult, so ~(compare (car clause) #'else)~ is true when the caller
+wrote ~else~ even if the caller had locally rebound it. That covers the
+~cond~-like idiom it exists for; it is not denotational equality.
+
+** What a macro cannot do
+
+- *Appear anywhere but where a whole expression or declaration is expected.* Not
+  as a ~loop~ clause, a ~match~ arm, a ~let~ binding, a ~#:when~ guard, a
+  pattern, or a type: those are read structurally by their parent and never
+  reach the point where a head symbol is dispatched.
+- *Shadow a special form.* Expansion is tried after every special form has
+  failed to match, so a macro named ~if~ is never reached.
+- *See types.* Expansion happens at parse time, before inference.
+- *Be a value.* A macro name is not a binding at the call site: it cannot be
+  passed, stored, re-exported, or used as a trait method.
+- *Vary its signature.* A transformer takes exactly the form, ~inject~ and
+  ~compare~. Type parameters, trait constraints, keyword or rest arguments and
+  ~defbjo~ are rejected at the ~def/macro~, because each changes the emitted C#
+  method that the expander reflects on.
+
+Two more things worth knowing. Every node a transformer builds carries the *call
+site's* range, so a type error inside a large expansion reports one line. And the
+compiler runs user code: a transformer that does not terminate hangs the build,
+which is what the hundred-level expansion limit is for.
+
+** Where the pieces are
+
+| Piece                          | Lives in                        |
+|--------------------------------+---------------------------------|
+| the ~Syntax~ type              | ~BjolangRuntime/Syntax.cs~      |
+| ~#'~, ~,@~ and the desugaring  | ~Lexer.fs~, ~Pipeline.read~, ~Parser.desugarSyntaxQuote~ |
+| ~def/macro~                    | ~Parser.parseDeclForms~         |
+| marshalling, renaming, the call | ~Macro.fs~                     |
+| the ~BjolangMacros~ metadata   | ~Program.fs~, ~Pipeline.parseMacroEntries~ |
+| worked examples                | ~TestFiles/inc/macros.bjo~, ~TestFiles/91_macros.bjo~ |

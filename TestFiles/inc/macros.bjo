@@ -1,0 +1,46 @@
+;; A macro module. Macros must live in a module other than the one using them:
+;; the transformer runs inside the compiler, so it has to be compiled and loaded
+;; before the module that uses it is parsed.
+;;
+;; A transformer is an ordinary function of a fixed shape —
+;; (-> Syntax (-> Symbol Syntax) (-> Syntax Syntax bool) Syntax) — which
+;; `def/macro` writes the signature for. It is invoked by reflection, so the
+;; shape is not the programmer's to vary.
+
+(export macro-helper)
+
+;; `(or-else a b)` is `a` unless it is zero, in which case `b`. It is written as
+;; a macro rather than a function so that `b` is not evaluated when `a` decides
+;; the answer.
+;;
+;; Hygiene, the short version. `tmp` is written in the template, so the expander
+;; renames it apart from the call site and it cannot capture a `tmp` the caller
+;; wrote. `a` and `b` come out of the input form, so they are left exactly as
+;; they were written and still mean what they meant there.
+;;
+;; Note `tmp` is mentioned three times and `,a` once: that is the point of
+;; binding it, and it is what makes capture possible in the first place.
+(def/macro (or-else form inject compare)
+  (match form
+    ((SList (Cons _ (Cons a (Cons b Nil))))
+     #'(let ((tmp ,a)) (if (= tmp 0) ,b tmp)))
+    (_ (syntax-error form "or-else takes two arguments"))))
+
+;; A template referring to a helper defined in *this* module. The expansion
+;; lands in another module, where `macro-helper` is not in scope under that
+;; name — resolving it is the second of the three renaming rules.
+(: macro-helper (-> int int))
+(defun (macro-helper x) (* x 10))
+
+(def/macro (times-ten form inject compare)
+  (match form
+    ((SList (Cons _ (Cons x Nil))) #'(macro-helper ,x))
+    (_ (syntax-error form "times-ten takes one argument"))))
+
+;; Nothing in the template is a call to anything: `let`, `if` and `->` are
+;; special forms, and the third renaming rule is what lets a template use them
+;; unchanged.
+(def/macro (twice form inject compare)
+  (match form
+    ((SList (Cons _ (Cons x Nil))) #'(-> ,x (+ & &)))
+    (_ (syntax-error form "twice takes one argument"))))

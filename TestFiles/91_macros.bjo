@@ -1,0 +1,52 @@
+;; Macros, end to end. `TestFiles/inc/macros.bjo` is compiled to a .dll and
+;; loaded into the compiler, which runs its transformers while this file is
+;; being parsed.
+;;
+;; A macro must live in another module, and this is why: the transformer is
+;; compiled code, so it has to exist before it can run.
+
+(import "inc/macros.bjo")
+
+(: check (-> string int int void))
+(defun (check what got want)
+  (unless (= got want)
+    (println (string-append "FAILURE: " (string-append what (string-append " gave " (int->string got)))))))
+
+(defun (main args)
+  ;; The plain case. `(or-else a b)` expands to
+  ;; `(let ((tmp a)) (if (= tmp 0) b tmp))`.
+  (check "or-first" (or-else 1 2) 1)
+  (check "or-second" (or-else 0 7) 7)
+
+  ;; Hygiene, the capture direction. The template binds `tmp` and the caller
+  ;; passes one. Without renaming, the `,b` spliced into the template would land
+  ;; inside the template's own `let` and read its temporary — giving 0 here
+  ;; instead of 9.
+  (def tmp 9)
+  (check "no-capture" (or-else 0 tmp) 9)
+
+  ;; The same, with the caller's binding written as a `let` rather than a `def`.
+  (let ((tmp 4))
+    (check "input-keeps-meaning" (or-else 0 tmp) 4))
+
+  ;; Rule two: the template names `macro-helper`, which is defined in the macro
+  ;; module and not in scope here under that name. It resolves to the module
+  ;; that wrote it.
+  (check "module-binding" (times-ten 4) 40)
+
+  ;; And it still resolves when a local of the same name is in the way — the
+  ;; expansion refers to the macro module's binding, not to this one.
+  (let ((macro-helper (fun (x) (- 0 x))))
+    (check "not-shadowed" (times-ten 3) 30)
+    (check "local-still-works" (macro-helper 3) -3))
+
+  ;; Rule three: a template may write special forms unchanged. `twice` expands
+  ;; to a `->` thread, which is a parser special form, not a function.
+  (check "special-form" (twice 21) 42)
+
+  ;; Macros nest, and a macro call may appear anywhere an expression may.
+  (check "nested" (or-else (or-else 0 0) (times-ten 5)) 50)
+  (check "as-argument" (+ 1 (times-ten 2)) 21)
+
+  (println "91 ok")
+  0)

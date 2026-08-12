@@ -1,0 +1,25 @@
+;; `(import "x.bjo")` compiles `x.bjo` to `x.dll` and imports that. A module
+;; boundary is an assembly boundary: only exported names cross it, and every
+;; exported name needs a signature.
+;;
+;; This used to be broken — the file was type-checked but only the last module
+;; was emitted, so the generated C# named a class nothing had produced. See
+;; `TestFiles/srcimport/`, which was the reproduction and is now a fixture.
+
+(import "srcimport/helper.bjo")
+
+(: check (-> string int int void))
+(defun (check what got want)
+  (unless (= got want)
+    (println (string-append "FAILURE: " (string-append what (string-append " gave " (int->string got)))))))
+
+(defun (main args)
+  (check "imported" (twice 21) 42)
+
+  ;; The import is a real boundary, so a name of the same spelling defined here
+  ;; is a different binding and wins locally.
+  (let ((twice (fun (x) (+ x 1))))
+    (check "local-wins" (twice 21) 22))
+
+  (println "92 ok")
+  0)

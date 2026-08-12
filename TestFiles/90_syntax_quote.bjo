@@ -1,0 +1,60 @@
+;; `#'form` is syntax-quote: it builds the `Syntax` value that describes `form`.
+;;
+;; It is spelled differently from `'(...)` because the two build different
+;; things. `'(a b)` is a list literal and is homogeneous — every element shares
+;; a type — while a template is heterogeneous by nature, so everything inside
+;; `#'` becomes a `Syntax` and the whole thing types as one.
+;;
+;;   ,x   splices a Syntax value
+;;   ,@xs splices a (List Syntax)
+;;   'foo inside a template is a datum, not an identifier: it is never renamed.
+
+(: check (-> string string string void))
+(defun (check what got want)
+  (unless (= got want)
+    (println (string-append "FAILURE: " (string-append what (string-append " gave " got))))))
+
+(: render (-> string Syntax string void))
+(defun (render what s want) (check what (syntax->string s) want))
+
+(defun (main args)
+  ;; A bare identifier. This is the shape `inject` and `compare` are given.
+  (render "ident" #'foo "foo")
+
+  ;; A form. Nothing here is evaluated — `if` and `a` are identifiers in the
+  ;; template, not references to anything in scope.
+  (render "form" #'(if a b) "(if a b)")
+  (render "nested" #'(let ((x 1)) x) "(let ((x 1)) x)")
+
+  ;; Literals keep their kind.
+  (render "literals" #'(1 "s" #\c #:k) "(1 \"s\" #\\c #:k)")
+  (render "float" #'(1.5) "(1.5)")
+
+  ;; A quoted symbol inside a template is a datum. Note this is why `''foo` is
+  ;; never needed to write one.
+  (render "datum" #'(f 'lit) "(f 'lit)")
+
+  ;; Unquote splices a computed Syntax.
+  (def y (SSym 'y))
+  (render "unquote" #'(f ,y) "(f y)")
+  (render "unquote-twice" #'(f ,y ,y) "(f y y)")
+  (render "unquote-nested" #'(f (g ,y) h) "(f (g y) h)")
+
+  ;; Unquote-splicing contributes a whole list where its siblings contribute one
+  ;; element each.
+  (def args2 (list (SSym 'p) (SSym 'q)))
+  (render "splice" #'(f ,@args2) "(f p q)")
+  (render "splice-middle" #'(f ,@args2 g) "(f p q g)")
+  (render "splice-after" #'(f g ,@args2) "(f g p q)")
+  (render "splice-both" #'(f ,@args2 ,y ,@args2) "(f p q y p q)")
+  (render "splice-empty" #'(f ,@(list) g) "(f g)")
+
+  ;; An empty form, and a form that is only a splice.
+  (render "empty" #'() "()")
+  (render "only-splice" #'(,@args2) "(p q)")
+
+  ;; A template is an ordinary value: it can be built in a helper and returned.
+  (render "computed" (SList (list (SSym 'wrap) #'(inner 1))) "(wrap (inner 1))")
+
+  (println "90 ok")
+  0)
