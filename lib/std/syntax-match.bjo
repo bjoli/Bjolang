@@ -1,0 +1,443 @@
+;; std/syntax-match.bjo
+;;
+;; `syntax-match` is `match` with a pattern language for forms rather than for
+;; values. It is what a macro is written in:
+;;
+;;   (def/macro (my-let form inject compare)
+;;     (syntax-match form
+;;       ((_ ((name value) ...) body ...)
+;;        #'((fun (,@name) ,@body) ,@value))
+;;       (bad (syntax-error bad "my-let takes a binding list and a body."))))
+;;
+;; The same thing written against `Syntax` directly is a nest of `Cons`
+;; patterns, and the binding list above cannot be written at all: every element
+;; has to be destructured in turn, and any one of them may fail.
+;;
+;; It is an ordinary macro in an ordinary module, so it is subject to
+;; everything in Docs/MACROS.org — including that a macro cannot be used in the
+;; module that defines it. Nothing here uses a macro; it is written in plain
+;; `match`, which is what makes it the bottom of the stack.
+
+;; Nothing is imported, deliberately: this module is below the prelude, which
+;; imports it in order to write `cond` and its neighbours with it. What it needs
+;; of the library — two strings joined, a number spelled — is a .NET call and an
+;; interop alias, which are emitted in place and cost no module of their own.
+(import/extern
+  (str-concat (: System.String.Concat)))
+
+(export all-of)
+
+(: cat (-> string string string))
+(defun (cat a b) (str-concat a b))
+
+;; ---------------------------------------------------------------------------
+;; What the expansion calls
+;; ---------------------------------------------------------------------------
+
+;; `(all-of items f)` is `(Some ...)` when `f` accepts every item, and `None` at
+;; the first one it does not.
+;;
+;; This is what an ellipsis over a compound compiles to. `body ...` is the
+;; trailing rest pattern and needs nothing, but `((name value) ...)` is not a
+;; shape a pattern can express: each item has to be matched in turn, and the
+;; whole clause fails if one of them does not.
+(: all-of (-> (List %a) (-> %a (Option %b)) (Option (List %b))))
+(defun (all-of items f)
+  (match items
+    (Nil (Some Nil))
+    ((Cons item rest)
+     (match (f item)
+       (None None)
+       ((Some value)
+        (match (all-of rest f)
+          (None None)
+          ((Some values) (Some (Cons value values)))))))))
+
+;; ---------------------------------------------------------------------------
+;; Reading a pattern
+;; ---------------------------------------------------------------------------
+
+;; `...` survives reading as punctuation, which is what lets a pattern hold one.
+(: ellipsis? (-> Syntax bool))
+(defun (ellipsis? item)
+  (match item
+    ((SPunct text) (= text "..."))
+    (_ #f)))
+
+(: wildcard? (-> Syntax bool))
+(defun (wildcard? p)
+  (match p
+    ((SSym name) (= (symbol->string name) "_"))
+    (_ #f)))
+
+;; A pattern that cannot fail: a variable, or `_`.
+;;
+;; Worth naming, because two things turn on it. Repeating one is the trailing
+;; rest pattern rather than a fold, and a last clause spelled this way covers
+;; the input, so no fallthrough arm is added.
+(: irrefutable? (-> Syntax bool))
+(defun (irrefutable? p)
+  (match p
+    ((SSym _) #t)
+    (_ #f)))
+
+(: same-name? (-> Syntax Syntax bool))
+(defun (same-name? a b)
+  (match a
+    ((SSym x)
+     (match b
+       ((SSym y) (= (symbol->string x) (symbol->string y)))
+       (_ #f)))
+    (_ #f)))
+
+(: init-of (-> (List Syntax) (List Syntax)))
+(defun (init-of items)
+  (match items
+    (Nil Nil)
+    ((Cons _ Nil) Nil)
+    ((Cons item rest) (Cons item (init-of rest)))))
+
+(: last-of (-> (List Syntax) (Option Syntax)))
+(defun (last-of items)
+  (match items
+    (Nil None)
+    ((Cons item Nil) (Some item))
+    ((Cons _ rest) (last-of rest))))
+
+(: count-ellipses (-> (List Syntax) int))
+(defun (count-ellipses items)
+  (list-foldl (fun (n item) (if (ellipsis? item) (+ n 1) n)) 0 items))
+
+;; The pattern a trailing `...` repeats, if the form has one.
+;;
+;; `...` repeats what precedes it, so it may only come last: `(a ... b)` would
+;; mean matching a fixed number of items from the end, which is a different
+;; operation and not one this does. Saying so is better than the pattern
+;; quietly not matching.
+;;
+;; `syntax-error` never returns, which is what lets it stand where a value is
+;; expected.
+(: repeated-of (-> (List Syntax) Syntax (Option Syntax)))
+(defun (repeated-of items whole)
+  (let ((count (count-ellipses items)))
+    (if (= count 0)
+        None
+        (if (> count 1)
+            (Some (syntax-error whole "A form repeats only its last pattern, so it may hold only one `...`."))
+            (match (last-of items)
+              (None None)
+              ((Some final)
+               (if (not (ellipsis? final))
+                   (Some (syntax-error whole "`...` repeats the pattern before it, so it may only come last."))
+                   (match (last-of (init-of items))
+                     (None (Some (syntax-error whole "`...` repeats the pattern before it, and this form has none.")))
+                     ((Some repeated) (Some repeated))))))))))
+
+;; The items a form matches one for one: all of them, less a trailing
+;; `pattern ...`.
+(: fixed-of (-> (List Syntax) Syntax (List Syntax)))
+(defun (fixed-of items whole)
+  (match (repeated-of items whole)
+    (None items)
+    ((Some _) (init-of (init-of items)))))
+
+;; Every variable a pattern binds, in the order written.
+(: pattern-vars (-> Syntax (List Syntax)))
+(defun (pattern-vars p)
+  (match p
+    ((SSym _) (if (wildcard? p) Nil (list p)))
+    ((SList items)
+     (list-foldr (fun (item found) (syntax-splice (pattern-vars item) found)) Nil items))
+    (_ Nil)))
+
+(: bound-already? (-> Syntax (List Syntax) bool))
+(defun (bound-already? var seen)
+  (match seen
+    (Nil #f)
+    ((Cons other rest) (if (same-name? var other) #t (bound-already? var rest)))))
+
+(: uppercase-name? (-> Syntax bool))
+(defun (uppercase-name? var)
+  (match var
+    ((SSym name)
+     (let ((text (symbol->string name)))
+       (if (string-empty? text)
+           #f
+           (char-upper-case? (string-cursor-ref text (string-cursor-start text))))))
+    (_ #f)))
+
+;; Every variable the pattern binds, rejecting the two ways one can be wrong.
+;;
+;; An uppercase name is a type or a constructor everywhere else in the language,
+;; and here it is nearly always a literal that wanted a quote: `(Cons a b)`
+;; written as a pattern binds three variables and matches every three-element
+;; form, which is not what anyone means by it.
+(: checked-vars (-> Syntax (List Syntax)))
+(defun (checked-vars p)
+  (list-foldr
+    (fun (var seen)
+      (if (uppercase-name? var)
+          (Cons (syntax-error var "A pattern variable is lowercase; write 'name to match that identifier itself.") seen)
+          (if (bound-already? var seen)
+              (Cons (syntax-error var "This pattern binds the same name twice.") seen)
+              (Cons var seen))))
+    Nil
+    (pattern-vars p)))
+
+;; ---------------------------------------------------------------------------
+;; Names the expansion binds
+;; ---------------------------------------------------------------------------
+
+;; A name for a position in the pattern.
+;;
+;; The position is in the name because the expander renames a template
+;; identifier once per invocation, memoised by spelling: two of these are two
+;; names only if they are spelled differently, and the path through the pattern
+;; is what makes them so. What they are renamed *to* is the expander's business,
+;; and is why nothing a caller writes can collide with one.
+(: at-path (-> string string Syntax))
+(defun (at-path prefix path)
+  (SSym (string->symbol (cat prefix path))))
+
+(: sub-path (-> string int string))
+(defun (sub-path path index)
+  (cat path (cat "-" (.ToString index))))
+
+;; The path of the pattern a `...` repeats: the form's last item.
+(: repeated-path (-> (List Syntax) Syntax string string))
+(defun (repeated-path items whole path)
+  (sub-path path (list-length (fixed-of items whole))))
+
+;; ---------------------------------------------------------------------------
+;; What a pattern compiles to
+;; ---------------------------------------------------------------------------
+;;
+;; Three walks over one pattern, agreeing on the same paths:
+;;
+;;   `structural` is the `match` pattern — everything shape alone decides;
+;;   `checks`     is what shape cannot say: that a literal identifier is the one
+;;                meant, and that every item of an ellipsis over a compound
+;;                matched;
+;;   `value-of`   is where a variable's value comes from, which for a variable
+;;                under such an ellipsis is a fold rather than a binding.
+;;
+;; A clause becomes one `match` arm, so a check that fails falls through to the
+;; next clause exactly as a pattern that does not match would. That is what
+;; `#:when` is for and why the whole of a `syntax-match` is a single `match`.
+
+(: structural (-> Syntax string Syntax))
+(defun (structural p path)
+  (match p
+    ((SSym _) p)
+    ;; Bound rather than tested: identifiers compare by base name, which is a
+    ;; check rather than a shape.
+    ((SDatum _) (at-path "sm-lit" path))
+    ((SInt text) #'(SInt ,(SStr text)))
+    ((SStr _) #'(SStr ,p))
+    ((SChar _) #'(SChar ,p))
+    ((SKey _) #'(SKey ,p))
+    ((SList items) #'(SList ,(cons-chain (fixed-of items p) path 0 (tail-of items p path))))
+    (_ (syntax-error p "This is not a pattern."))))
+
+;; `(Cons p0 (Cons p1 tail))`, which is how a form of a known length is matched.
+(: cons-chain (-> (List Syntax) string int Syntax Syntax))
+(defun (cons-chain items path index tail)
+  (match items
+    (Nil tail)
+    ((Cons item rest)
+     #'(Cons ,(structural item (sub-path path index)) ,(cons-chain rest path (+ index 1) tail)))))
+
+;; What the cons chain ends in: `Nil` for a fixed-length form, the repeated
+;; pattern itself when it is a variable — that is the trailing rest pattern,
+;; which already means "bind the tail" — and otherwise a name for the tail, for
+;; the fold to walk.
+(: tail-of (-> (List Syntax) Syntax string Syntax))
+(defun (tail-of items whole path)
+  (match (repeated-of items whole)
+    (None #'Nil)
+    ((Some repeated)
+     (if (irrefutable? repeated) repeated (at-path "sm-rest" path)))))
+
+(: checks (-> Syntax string (List Syntax)))
+(defun (checks p path)
+  (match p
+    ((SDatum _) (list #'(syntax-ident=? ,(at-path "sm-lit" path) (SDatum ,p))))
+    ((SList items)
+     (syntax-splice (fixed-checks (fixed-of items p) path 0) (repeat-check items p path)))
+    (_ Nil)))
+
+(: fixed-checks (-> (List Syntax) string int (List Syntax)))
+(defun (fixed-checks items path index)
+  (match items
+    (Nil Nil)
+    ((Cons item rest)
+     (syntax-splice (checks item (sub-path path index)) (fixed-checks rest path (+ index 1))))))
+
+;; That every item a `...` repeats over really matches the pattern it repeats.
+;;
+;; Only for a compound: repeating a variable binds the tail whatever is in it.
+(: repeat-check (-> (List Syntax) Syntax string (List Syntax)))
+(defun (repeat-check items whole path)
+  (match (repeated-of items whole)
+    (None Nil)
+    ((Some repeated)
+     (if (irrefutable? repeated)
+         Nil
+         (list #'(some? ,(fold-over items whole path repeated #'#t)))))))
+
+;; `(all-of tail (fun (item) ...))` — the fold every ellipsis over a compound
+;; becomes. `value` is what one item contributes: `#t` when the fold is only
+;; checking, and the variable being collected when it is not.
+(: fold-over (-> (List Syntax) Syntax string Syntax Syntax Syntax))
+(defun (fold-over items whole path repeated value)
+  (let ((item (at-path "sm-item" path))
+        (inner (repeated-path items whole path)))
+    #'(all-of ,(at-path "sm-rest" path)
+              (fun (,item)
+                (match ,item
+                  (,(structural repeated inner) ,(answer (checks repeated inner) #'(Some ,value)))
+                  (_ None))))))
+
+;; The `(Some ...)` an item of a fold answers with, behind whatever tests its
+;; shape could not express.
+(: answer (-> (List Syntax) Syntax Syntax))
+(defun (answer tests some)
+  (if (list-empty? tests) some #'(if ,(conjunction tests) ,some None)))
+
+(: conjunction (-> (List Syntax) Syntax))
+(defun (conjunction tests)
+  (match tests
+    (Nil #'#t)
+    ((Cons only Nil) only)
+    (_ #'(and ,@tests))))
+
+;; Where a variable's value comes from, given that the structural pattern
+;; matched. `None` when the pattern does not bind it at all.
+;;
+;; A variable under an ellipsis over a compound is not bound by that pattern:
+;; the pattern binds the tail, and the variable is one entry per item of it, so
+;; its value is the fold that collects them. Nesting one inside another is why
+;; this recurses rather than looking one level deep.
+(: value-of (-> Syntax Syntax string (Option Syntax)))
+(defun (value-of p var path)
+  (match p
+    ((SSym _) (if (same-name? p var) (Some p) None))
+    ((SList items)
+     (match (fixed-value (fixed-of items p) var path 0)
+       ((Some found) (Some found))
+       (None (repeated-value items p var path))))
+    (_ None)))
+
+(: fixed-value (-> (List Syntax) Syntax string int (Option Syntax)))
+(defun (fixed-value items var path index)
+  (match items
+    (Nil None)
+    ((Cons item rest)
+     (match (value-of item var (sub-path path index))
+       ((Some found) (Some found))
+       (None (fixed-value rest var path (+ index 1)))))))
+
+(: repeated-value (-> (List Syntax) Syntax Syntax string (Option Syntax)))
+(defun (repeated-value items whole var path)
+  (match (repeated-of items whole)
+    (None None)
+    ((Some repeated)
+     (if (irrefutable? repeated)
+         ;; The tail binder, bound by the pattern like any other variable.
+         (if (same-name? repeated var) (Some repeated) None)
+         (match (value-of repeated var (repeated-path items whole path))
+           (None None)
+           ((Some inner)
+            ;; The fold has already been run by this clause's `#:when`, so it
+            ;; has an answer; `option-get` is what takes it.
+            (Some #'(option-get ,(fold-over items whole path repeated inner)))))))))
+
+;; ---------------------------------------------------------------------------
+;; A clause
+;; ---------------------------------------------------------------------------
+
+;; The bindings a clause needs: one for every variable its pattern did not bind
+;; by shape.
+(: binds (-> Syntax (List Syntax)))
+(defun (binds p)
+  (list-foldr
+    (fun (var bindings)
+      (match (value-of p var "")
+        (None bindings)
+        ((Some value)
+         (if (same-name? value var) bindings (Cons #'(,var ,value) bindings)))))
+    Nil
+    (checked-vars p)))
+
+(: single-body (-> (List Syntax) Syntax))
+(defun (single-body bodies)
+  (match bodies
+    ((Cons body Nil) body)
+    (_ #'(let () ,@bodies))))
+
+(: compile-clause (-> Syntax Syntax))
+(defun (compile-clause clause)
+  (match clause
+    ((SList (Cons p bodies))
+     (if (list-empty? bodies)
+         (syntax-error clause "A syntax-match clause is (pattern body ...), and this one has no body.")
+         (let ((tests (checks p ""))
+               (bindings (binds p))
+               (body (single-body bodies)))
+           (let ((whole (if (list-empty? bindings) body #'(let ,(SList bindings) ,body))))
+             (if (list-empty? tests)
+                 #'(,(structural p "") ,whole)
+                 #'(,(structural p "") #:when ,(conjunction tests) ,whole))))))
+    (_ (syntax-error clause "A syntax-match clause is (pattern body ...)."))))
+
+;; Whether the last clause matches whatever is left, which is the one case where
+;; no fallthrough arm is needed.
+;;
+;; Leaving it off is not only tidiness: `syntax-error` is a `Syntax`, so an
+;; unreachable arm that called it would pin the whole form to that type. Without
+;; one, a `syntax-match` that covers its input has the type of its clauses and
+;; can answer anything.
+(: covered? (-> (List Syntax) bool))
+(defun (covered? clauses)
+  (match (last-of clauses)
+    (None #f)
+    ((Some clause)
+     (match clause
+       ((SList (Cons p _)) (irrefutable? p))
+       (_ #f)))))
+
+(: arms (-> (List Syntax) (List Syntax)))
+(defun (arms clauses)
+  (syntax-splice
+    (list-map (fun (clause) (compile-clause clause)) clauses)
+    (if (covered? clauses)
+        Nil
+        ;; Reported against the form that did not match, which is the one thing
+        ;; a reader of the message needs and the only thing this knows.
+        (list #'(sm-unmatched (syntax-error sm-unmatched "No clause of this syntax-match matched."))))))
+
+;; ---------------------------------------------------------------------------
+;; The macro
+;; ---------------------------------------------------------------------------
+
+;; `(syntax-match subject clause ...)`, where a clause is `(pattern body ...)`.
+;;
+;; A pattern is one of:
+;;
+;;   _              anything, binding nothing
+;;   name           anything, binding it to `name`
+;;   'name          the identifier `name`, by base name — what `compare` tests
+;;   1 "s" #\c #:k  that literal
+;;   (p ...)        a form of exactly that many items
+;;   (p q ...)      a form of at least that many, the rest each matching `q`
+;;
+;; The last is the ellipsis. Over a variable it binds the tail, and over
+;; anything else every one of that pattern's variables is bound to a list of
+;; what it matched, one entry per item — nested as deeply as the pattern is.
+(def/macro (syntax-match form inject compare)
+  (match form
+    ((SList (Cons _ (Cons subject clauses)))
+     (if (list-empty? clauses)
+         (syntax-error form "syntax-match needs at least one clause.")
+         #'(match ,subject ,@(arms clauses))))
+    (_ (syntax-error form "syntax-match takes a subject and at least one clause: (syntax-match form (pattern body ...) ...)"))))

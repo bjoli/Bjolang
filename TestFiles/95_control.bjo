@@ -1,0 +1,114 @@
+;; The prelude's control macros: `cond`, `if-let`, `when-let` and `some->`.
+;;
+;; They arrive with the implicit `(import (std prelude))` that every file gets,
+;; so nothing here imports anything. They are macros — written with
+;; `syntax-match`, in `lib/std/prelude.bjo` — which is why they can take a
+;; branch that is not evaluated, and why `some->` can skip the rest of a chain.
+
+(: check (-> string int int void))
+(defun (check what got want)
+  (unless (= got want)
+    (println (string-append "FAILURE: " (string-append what (string-append " gave " (int->string got)))))))
+
+(: check-str (-> string string string void))
+(defun (check-str what got want)
+  (unless (= got want)
+    (println (string-append "FAILURE: " (string-append what (string-append " gave " got))))))
+
+;; Counts how often it is called, so an unevaluated branch can be seen not to
+;; have been.
+(def/mutable calls 0)
+
+(: bump (-> int int))
+(defun (bump n)
+  (set! calls (+ calls 1))
+  n)
+
+(: halve (-> int (Option int)))
+(defun (halve n)
+  (if (= (% n 2) 0) (Some (/ n 2)) None))
+
+(: at-least (-> int int (Option int)))
+(defun (at-least n floor)
+  (if (>= n floor) (Some n) None))
+
+;; A step that always succeeds, and says it ran.
+(: noted (-> int (Option int)))
+(defun (noted n)
+  (set! calls (+ calls 1))
+  (Some n))
+
+(: classify (-> int string))
+(defun (classify n)
+  (cond
+    ((< n 0) "negative")
+    ((= n 0) "zero")
+    ((< n 10) "small")
+    (else "large")))
+
+(defun (main args)
+  ;; --- cond ---------------------------------------------------------------
+  (check-str "cond-first" (classify -1) "negative")
+  (check-str "cond-middle" (classify 0) "zero")
+  (check-str "cond-third" (classify 3) "small")
+  (check-str "cond-else" (classify 99) "large")
+
+  ;; An arm may be several forms, and only the arm that is taken runs.
+  (set! calls 0)
+  (check "cond-body" (cond ((= 1 2) (bump 1)) ((= 1 1) (def a 3) (* a 4)) (else (bump 0))) 12)
+  (check "cond-lazy" calls 0)
+
+  ;; --- if-let -------------------------------------------------------------
+  (check "if-let-some" (if-let ((half (halve 8))) half -1) 4)
+  (check "if-let-none" (if-let ((half (halve 7))) half -1) -1)
+
+  ;; The name is bound in the `then` branch only, and the `else` branch is not
+  ;; evaluated when there was something to bind.
+  (set! calls 0)
+  (check "if-let-then-only" (if-let ((half (halve 10))) half (bump -1)) 5)
+  (check "if-let-lazy" calls 0)
+
+  ;; What it binds is the unwrapped value, so it nests without ceremony.
+  (check "if-let-nested"
+         (if-let ((first (halve 12)))
+           (if-let ((second (halve first)))
+             second
+             -1)
+           -2)
+         3)
+
+  ;; --- when-let -----------------------------------------------------------
+  (set! calls 0)
+  (when-let ((half (halve 8)))
+    (ignore (bump half))
+    ;; A `when-let` *is* a `when`: it answers nothing, so the body's last value
+    ;; is dropped and has to say so, exactly as it would inside a `when`.
+    (ignore (bump half)))
+  (check "when-let-some" calls 2)
+
+  (set! calls 0)
+  (when-let ((half (halve 7)))
+    (ignore (bump half)))
+  (check "when-let-none" calls 0)
+
+  ;; --- some-> -------------------------------------------------------------
+  ;; Each step answers an Option and receives what the one before unwrapped to.
+  (check "some-chain" (option-get-or (some-> 8 (halve)) 0) 4)
+  (check "some-chain-two" (option-get-or (some-> 8 (halve) (halve)) 0) 2)
+  (check "some-chain-three" (option-get-or (some-> 16 (halve) (halve) (halve)) 0) 2)
+
+  ;; Threading is `->`'s, so `&` says where the value goes when it is not the
+  ;; first argument.
+  (check "some-placeholder" (option-get-or (some-> 8 (halve) (at-least & 3)) 0) 4)
+  (check "some-placeholder-fails" (option-get-or (some-> 8 (halve) (at-least & 5)) 0) 0)
+
+  ;; A `None` anywhere stops the chain, and the steps after it do not run.
+  (set! calls 0)
+  (check "some-stops" (option-get-or (some-> 7 (halve) (noted) (halve)) 0) 0)
+  (check "some-stops-lazily" calls 0)
+
+  ;; With no steps there is nothing that could have failed.
+  (check "some-no-steps" (option-get-or (some-> 5) 0) 5)
+
+  (println "95 ok")
+  0)

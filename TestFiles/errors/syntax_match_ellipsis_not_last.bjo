@@ -1,0 +1,20 @@
+;; `...` repeats the pattern before it, so it can only be the last thing in a
+;; form. `(a ... b)` would mean matching a fixed number of items from the *end*,
+;; which is a different operation and not one this does — and a pattern that
+;; quietly never matched would be far worse than being told.
+;;
+;; EXPECT-ERROR: The macro 'syntax-match' failed
+;; EXPECT-ERROR: `...` repeats the pattern before it, so it may only come last.
+;; EXPECT-ERROR: (a ... b)
+
+(import (std syntax-match))
+
+(: leading (-> Syntax int))
+(defun (leading s)
+  (syntax-match s
+    ((a ... b) 1)
+    (_ 0)))
+
+(defun (main args)
+  (println (int->string (leading #'(f x))))
+  0)

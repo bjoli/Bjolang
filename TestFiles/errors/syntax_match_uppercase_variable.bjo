@@ -1,0 +1,21 @@
+;; An uppercase name in a pattern. Everywhere else in the language uppercase is
+;; a type or a constructor, and here it would be a variable like any other — so
+;; `(Cons a b)` written as a pattern binds three names and matches every
+;; three-element form, which is nobody's intent.
+;;
+;; The fix is in the message: a pattern matches an identifier by quoting it.
+;;
+;; EXPECT-ERROR: The macro 'syntax-match' failed
+;; EXPECT-ERROR: A pattern variable is lowercase; write 'name to match that identifier itself.
+
+(import (std syntax-match))
+
+(: pairs (-> Syntax int))
+(defun (pairs s)
+  (syntax-match s
+    ((Cons a b) 1)
+    (_ 0)))
+
+(defun (main args)
+  (println (int->string (pairs #'(f a b))))
+  0)

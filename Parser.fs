@@ -286,6 +286,9 @@ let noteIntroduced (names: string seq) =
 /// The name to dispatch a head symbol on: the third renaming rule, "strip the
 /// rename and dispatch as a special form".
 ///
+/// Three places dispatch on a head: the special-form chain in `parseExpr`, the
+/// operator table beside it, and a pattern's constructor in `parsePattern`.
+///
 /// Only the dispatch uses this. The identifier itself keeps its mark, so a
 /// template's reference to a binding of its own module is still resolvable by
 /// rule two.
@@ -296,6 +299,27 @@ let headName (sym: string) =
 
 let rec parsePattern (s: SExpr) : Pattern =
     let r = getRange s
+
+    // The third renaming rule, applied to a pattern's head.
+    //
+    // A constructor is never a binder, so the first two rules cannot reach one:
+    // nothing in the expansion binds it, and a macro module publishes bindings
+    // rather than constructors. Stripping is therefore the whole answer, and it
+    // has to happen here — `AlphaRename.freeNames` reports the names a pattern
+    // *binds* and never the constructor it matches, so a template's `(Cons a
+    // Nil)` would otherwise reach inference as `Cons__37`.
+    //
+    // A bare lowercase symbol is left alone: that is a binder, and its mark is
+    // what makes it uncapturable.
+    let s =
+        match s with
+        | SList(SAtom({ Token = Symbol sym } as head) :: args, lr) when headName sym <> sym ->
+            SList(SAtom { head with Token = Symbol(headName sym) } :: args, lr)
+        | SAtom({ Token = Symbol sym } as atom) when
+            sym.Length > 0 && System.Char.IsUpper sym[0] && headName sym <> sym
+            ->
+            SAtom { atom with Token = Symbol(headName sym) }
+        | _ -> s
 
     match s with
     | SAtom { Token = Symbol "_" } -> PWildcard r
@@ -2626,8 +2650,27 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
         withCollectors
 
 and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
+    // The third renaming rule, for the heads this function consumes.
+    //
+    // `def`, `defun`, `def/mutable` and `defbjo` never reach `parseExpr`'s
+    // special-form chain, because `parseBody` takes them first — so a template
+    // that writes `(let () (def x 1) x)` needs its mark stripped here or the
+    // `def` is read as a call to something named `def`.
+    //
+    // Only these four, and only the head. Every other identifier keeps its
+    // mark: that is what rule two resolves a macro module's own helper by, and
+    // what keeps a template's binder uncapturable.
+    let unmarkedHead (items: SExpr list) =
+        match items with
+        | SList(SAtom({ Token = Symbol sym } as head) :: rest, r) :: tail when sym <> headName sym ->
+            match headName sym with
+            | ("def" | "defun" | "defbjo" | "def/mutable") as stripped ->
+                SList(SAtom { head with Token = Symbol stripped } :: rest, r) :: tail
+            | _ -> items
+        | _ -> items
+
     let rec collectDefs acc remaining =
-        match remaining with
+        match unmarkedHead remaining with
         | SList(SAtom { Token = Symbol "def" } :: SAtom { Token = Symbol name } :: [ expr ], _) :: rest ->
             // isFun = false, args = []
             collectDefs ((name, false, [], None, parseExpr expr) :: acc) rest
@@ -2654,7 +2697,7 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         | _ -> (List.rev acc, remaining)
 
     and parseItems remaining =
-        match remaining with
+        match unmarkedHead remaining with
         | [] -> ETuple([], fallbackRange)
 
         | SList(SAtom { Token = Symbol "def/mutable" } :: SAtom { Token = Symbol name } :: [ expr ], r) :: rest ->
@@ -2830,6 +2873,18 @@ let parseForeignImportClause (formName: string) (s: SExpr) : string * string * F
 
 let rec parseDecl (s: SExpr) : Decl =
     let r = getRange s
+
+    // The third renaming rule, at the last of the three heads that dispatch on
+    // one. Unconditional here, unlike in `parseExpr`: a declaration's head is
+    // either one of the forms below or the name of a macro, and neither is a
+    // binding a mark could be resolving. A macro that expands to a `defun` — or
+    // to a `(: name type)` beside it — arrives with both renamed like anything
+    // else a template constructs.
+    let s =
+        match s with
+        | SList(SAtom({ Token = Symbol sym } as head) :: rest, lr) when sym <> headName sym ->
+            SList(SAtom { head with Token = Symbol(headName sym) } :: rest, lr)
+        | _ -> s
 
     match s with
     | SList([ SAtom { Token = Colon }; SAtom { Token = Symbol name }; tType ], _) ->

@@ -1,0 +1,109 @@
+;; Macros written with `syntax-match` rather than with `Cons` patterns by hand.
+;;
+;; `syntax-match` is itself a macro, from a module this one imports, so it is
+;; expanded while *this* file is parsed: what ends up in the `.dll` is the
+;; ordinary `match` it compiles to. Its `all-of` is called from that code, which
+;; is a call from here into `std/syntax-match` — the second renaming rule doing
+;; its job across a dll boundary.
+
+(import (std syntax-match))
+
+(export twice)
+
+;; A helper a template names. It is defined here and not where the expansion
+;; lands, which is the whole of rule two.
+(: twice (-> int int))
+(defun (twice n) (* n 2))
+
+;; `(my-or a b)` is `a` unless it is zero, in which case `b`. A macro so that
+;; `b` is not evaluated when `a` decides the answer.
+;;
+;; `tmp` is written in the template and so is renamed apart from the call site;
+;; `,a` and `,b` come from the input and are left exactly as written.
+(def/macro (my-or form inject compare)
+  (syntax-match form
+    ((_ a b) #'(let ((tmp ,a)) (if (= tmp 0) ,b tmp)))
+    (bad (syntax-error bad "my-or takes two arguments."))))
+
+;; `(my-let ((name value) ...) body ...)`.
+;;
+;; The ellipsis over a compound is the reason this file exists: `((name value)
+;; ...)` is not a shape a `match` pattern can express, so written against
+;; `Syntax` directly this would be a fold and a pair of lists by hand.
+;;
+;; It expands to an applied lambda rather than to a `let` because that needs no
+;; zip: the names are the parameters and the values are the arguments, and the
+;; arguments are evaluated outside the lambda, which is what makes it a `let`
+;; and not a `let*`.
+(def/macro (my-let form inject compare)
+  (syntax-match form
+    ((_ ((name value) ...) body ...)
+     #'((fun (,@name) ,@body) ,@value))
+    (bad (syntax-error bad "my-let takes a binding list and a body: (my-let ((name value) ...) body ...)"))))
+
+;; `(my-cond (test body ...) ... (else body ...))`.
+;;
+;; `'else` in a pattern matches that identifier and nothing else, which is the
+;; idiom `compare` exists for — written as a pattern rather than as a test.
+(def/macro (my-cond form inject compare)
+  (syntax-match form
+    ((_ clause ...) (cond-chain clause form))
+    (bad (syntax-error bad "my-cond takes clauses."))))
+
+(: cond-chain (-> (List Syntax) Syntax Syntax))
+(defun (cond-chain clauses whole)
+  (match clauses
+    (Nil (syntax-error whole "my-cond needs a final (else ...) clause: every branch has to answer something."))
+    ((Cons clause rest)
+     (syntax-match clause
+       (('else body ...) #'(let () ,@body))
+       ((test body ...) #'(if ,test (let () ,@body) ,(cond-chain rest whole)))
+       (bad (syntax-error bad "A my-cond clause is (test body ...) or (else body ...)."))))))
+
+;; Recursion, the `syntax-rules` shape: the template contains a call to the
+;; macro itself, and the expander meets it while reading the result. Each round
+;; takes one argument off, which is what makes it stop.
+;;
+;; `tmp` is renamed once per *invocation*, and each round is an invocation of its
+;; own, so the levels do not share one.
+(def/macro (any-of form inject compare)
+  (syntax-match form
+    ((_) #'0)
+    ((_ only) only)
+    ((_ first rest ...)
+     #'(let ((tmp ,first)) (if (= tmp 0) (any-of ,@rest) tmp)))))
+
+;; The same, expanding to a *definition* each round. `def` is read by
+;; `parseBody` rather than by the expression parser, and a template's `def`
+;; arrives renamed like everything else it constructs.
+;;
+;; Each binding is in scope for the next, so this is a `let*`.
+(def/macro (my-let* form inject compare)
+  (syntax-match form
+    ((_ () body) body)
+    ((_ ((name value) rest ...) body)
+     #'(let ()
+         (def ,name ,value)
+         (my-let* (,@rest) ,body)))
+    (bad (syntax-error bad "my-let* takes a binding list and one body form."))))
+
+;; A macro that expands to a call to itself on the *same* input never finishes.
+;; `TestFiles/errors/macro_runaway.bjo` is what the compiler does about it.
+(def/macro (forever form inject compare)
+  (syntax-match form
+    ((_ x) #'(forever ,x))
+    (bad (syntax-error bad "forever takes one argument."))))
+
+;; A macro with no clause for what it does not accept. `syntax-match` adds the
+;; arm that reports that, so writing one by hand only buys a better message.
+(def/macro (only-pair form inject compare)
+  (syntax-match form
+    ((_ a b) #'(+ ,a ,b))))
+
+;; `(double-all a b ...)` — the sum of twice each. The template names `twice`,
+;; and a call site that has a `twice` of its own still gets this one.
+(def/macro (double-all form inject compare)
+  (syntax-match form
+    ((_ first rest ...)
+     #'(+ (twice ,first) ,@(list-map (fun (each) #'(twice ,each)) rest)))
+    (bad (syntax-error bad "double-all takes at least one argument."))))

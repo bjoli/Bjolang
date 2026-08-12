@@ -1,0 +1,22 @@
+;; A pattern that binds one name twice. In Scheme's `syntax-rules` this is an
+;; error; here it would silently be a shadowing `let`, with the second
+;; occurrence winning and the first never mentioned.
+;;
+;; Note that it is *not* an "and these two must be equal" pattern. That is a
+;; comparison, and which comparison — spelling, base name, or the whole form —
+;; is not something a repeated variable says.
+;;
+;; EXPECT-ERROR: The macro 'syntax-match' failed
+;; EXPECT-ERROR: This pattern binds the same name twice.
+
+(import (std syntax-match))
+
+(: twins (-> Syntax int))
+(defun (twins s)
+  (syntax-match s
+    ((_ x x) 1)
+    (_ 0)))
+
+(defun (main args)
+  (println (int->string (twins #'(f a b))))
+  0)

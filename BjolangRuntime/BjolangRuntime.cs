@@ -1245,6 +1245,40 @@ public static partial class BjolangRuntime {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int syntaxsubline(Bjolang.Runtime.Syntax s) => s.Range.StartLine;
 
+    /// `(syntax-ident=? a b)`. Are these two the same identifier?
+    ///
+    /// The value-level `compare`: the same test, available to code rather than
+    /// only to a transformer's third parameter, which is what a `syntax-match`
+    /// pattern compiles a literal `'name` to. A quoted symbol counts as an
+    /// identifier, so a pattern's `'name` matches an input that wrote either
+    /// `name` or `'name` — one names a thing, and which spelling it was reached
+    /// by is not something a pattern should have to know.
+    ///
+    /// Base names, so a hygiene mark does not hide an identifier from the macro
+    /// it was handed to: a form built by one macro and passed to another arrives
+    /// renamed.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool syntaxsubidenteq_QMARK(Bjolang.Runtime.Syntax a, Bjolang.Runtime.Syntax b)
+    {
+        var an = a.IdentifierName;
+        var bn = b.IdentifierName;
+        return an is not null && bn is not null && BaseName(an) == BaseName(bn);
+    }
+
+    /// The name a hygiene mark was added to. Mirrors the compiler's
+    /// `Gensym.baseName`, which is where the `__N` suffix comes from.
+    private static string BaseName(string name)
+    {
+        var i = name.LastIndexOf("__", StringComparison.Ordinal);
+        if (i < 0 || i + 2 == name.Length) return name;
+
+        for (var j = i + 2; j < name.Length; j++)
+            if (!char.IsAsciiDigit(name[j]))
+                return name;
+
+        return name[..i];
+    }
+
     /// `(syntax-error form message)`. How a transformer rejects its input.
     ///
     /// Types as a `Syntax` so it can stand in a `match` arm beside the arms that

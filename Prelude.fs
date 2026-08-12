@@ -570,6 +570,11 @@ let prelude : Env =
         // stand beside the arms that return one; it never returns.
         "syntax-error", {Scheme = Scheme([], [], makeFunType [syntaxType; stringType] syntaxType); IsMutable = false }
 
+        // The value-level `compare`: base-name equality on identifiers, which a
+        // transformer gets as its third parameter and everything else has to
+        // ask for. A `syntax-match` pattern's `'name` compiles to a call here.
+        "syntax-ident=?", {Scheme = Scheme([], [], makeFunType [syntaxType; syntaxType] boolType); IsMutable = false }
+
         "syntax->string", {Scheme = Scheme([], [], makeFunType [syntaxType] stringType); IsMutable = false }
         "syntax-file", {Scheme = Scheme([], [], makeFunType [syntaxType] stringType); IsMutable = false }
         "syntax-line", {Scheme = Scheme([], [], makeFunType [syntaxType] intType); IsMutable = false }

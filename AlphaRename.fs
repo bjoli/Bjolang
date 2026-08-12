@@ -500,18 +500,31 @@ let freshenTyped (roots: string list) (expr: TypedExpr) : TypedExpr * Map<string
 // The global CS0136 pass
 // ---------------------------------------------------------------------------
 
-/// Freshens a binder only when its name is already in scope.
+/// Freshens a binder whose name something in this function has already taken.
 ///
 /// C# rejects a local that shadows an enclosing local or parameter (CS0136), and
 /// rejects two locals of one name in the same block (CS0128) — and a Bjolang
 /// `let` chain compiles to exactly that. Renaming only on collision keeps the
 /// generated code readable, and keeps this pass from being able to change
 /// anything that was already correct.
-let private shadowing (scope: Set<string>) (name: string) : string option =
-    if Set.contains name scope then
-        Some(Gensym.fresh (Gensym.baseName name))
-    else
+///
+/// What counts as a collision is the *whole function*, not the path from its
+/// root to the binder. Two sibling `let`s are separate scopes in Bjolang and
+/// neither can see the other, but a `let` body is emitted as statements in the
+/// block around it — so to C# they are one declaration space, and
+///
+///     (println (let () (def tmp 1) tmp))
+///     (let ((tmp 9)) (println tmp))
+///
+/// is two locals called `tmp` in one method. A macro makes this the common case
+/// rather than a curiosity: a template binds names the caller cannot see, and
+/// the caller binds names the template's author could not.
+let private shadowing (used: System.Collections.Generic.HashSet<string>) (_scope: Set<string>) (name: string) : string option =
+    if used.Add name then
         None
+    else
+        // Fresh, so it needs no checking against `used` itself.
+        Some(Gensym.fresh (Gensym.baseName name))
 
 /// Every top-level name in the program.
 ///
@@ -541,8 +554,12 @@ let rec private topLevelNames (decls: TDecl list) : Set<string> =
 /// binding would already have been made and would merely be preserved
 /// faithfully.
 let rec uniquifyDeclWith (globals: Set<string>) (decl: TDecl) : TDecl =
-    let inFunction (scope: Set<string>) (subst: Map<string, string>) (body: TypedExpr) =
-        renameCore shadowing scope subst body
+    /// One emitted method, and one set of names it has already used. Everything
+    /// that goes into the same C# member shares it — a keyword parameter's
+    /// default is evaluated in the method that declares it, not somewhere else.
+    let inFunction (scope: Set<string>) (subst: Map<string, string>) =
+        let used = System.Collections.Generic.HashSet<string>(scope)
+        fun (body: TypedExpr) -> renameCore (shadowing used) scope subst body
 
     match decl with
     | TModule(name, decls, r) -> TModule(name, decls |> List.map (uniquifyDeclWith globals), r)
@@ -573,15 +590,20 @@ let rec uniquifyDeclWith (globals: Set<string>) (decl: TDecl) : TDecl =
                   kwArgs |> List.map (fun (n, _, _) -> n) |> Set.ofList
                   restArg' |> Option.map fst |> Option.toList |> Set.ofList ]
 
+        // One set of used names for the whole method: a keyword parameter's
+        // default is evaluated inside the member that declares it, so a local it
+        // introduces shares a declaration space with the body's.
+        let inMethod = inFunction scope paramSubst
+
         TDefun(
             name,
             tyArgs,
             args',
-            kwArgs |> List.map (fun (n, t, e) -> n, t, inFunction scope paramSubst e),
+            kwArgs |> List.map (fun (n, t, e) -> n, t, inMethod e),
             restArg',
             retType,
             effect,
-            inFunction scope paramSubst body,
+            inMethod body,
             r
         )
 

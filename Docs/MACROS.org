@@ -30,6 +30,12 @@ an included file becomes part of the including one.
 
 Using one where it is defined is reported as that, not as an unbound name.
 
+A transformer may call anything its own module can — the prelude, a third
+module, its own helpers — because the compiler loads its module's dependencies
+alongside it. Note what that means: the compiler is running compiled Bjolang
+code, so a transformer that does not terminate hangs the build, and anything its
+module imports has to be loadable in the compiler's process.
+
 ** ~Syntax~
 
 The type a transformer takes and returns. It is an ordinary Bjolang value: it
@@ -59,7 +65,8 @@ pattern all work on a macro's input:
 renames the first and never the second.
 
 Also available: ~(syntax->string s)~, which renders back to something that reads
-as source; ~(syntax-file s)~ and ~(syntax-line s)~; and ~(syntax-error form
+as source; ~(syntax-file s)~ and ~(syntax-line s)~; ~(syntax-ident=? a b)~, which
+is ~compare~ as a function rather than as a parameter; and ~(syntax-error form
 msg)~, which is how a transformer rejects its input. ~syntax-error~ types as a
 ~Syntax~ so it can sit beside the arms that return one, and never returns — the
 expander catches it and reports it against the macro's call site.
@@ -81,6 +88,60 @@ a template is heterogeneous by nature.
 
 The distinction between ~foo~ and ~'foo~ is also why ~''foo~ is never needed,
 which is just as well, since it does not read.
+
+** ~syntax-match~ takes one apart
+
+~#'~ builds a form and ~syntax-match~ reads one. It is a macro like any other,
+in ~std/syntax-match~, and it is what a macro should be written in:
+
+#+BEGIN_SRC scheme
+(import (std syntax-match))
+
+(def/macro (my-let form inject compare)
+  (syntax-match form
+    ((_ ((name value) ...) body ...)
+     #'((fun (,@name) ,@body) ,@value))
+    (bad (syntax-error bad "my-let takes a binding list and a body."))))
+#+END_SRC
+
+A pattern is one of:
+
+| Pattern         | Matches                                                |
+|-----------------+--------------------------------------------------------|
+| ~_~             | anything, binding nothing                              |
+| ~name~          | anything, binding it to ~name~                         |
+| ~'name~         | the identifier ~name~ — what ~compare~ tests           |
+| ~1~ ~"s"~ ~#\c~ ~#:k~ | that literal                                     |
+| ~(p q)~         | a form of exactly that many items                      |
+| ~(p q ...)~     | a form of at least that many, the rest each matching ~q~ |
+
+The last is the ellipsis, and there are two kinds of it. Over a *variable* —
+~body ...~ — it binds the tail, which is the trailing rest pattern a ~match~
+already has. Over anything else — ~((name value) ...)~ — every remaining item has
+to match that pattern, and each of *its* variables is bound to a list of what it
+matched, one entry per item. That is not a shape a ~match~ pattern can express,
+which is the reason this exists: the same macro written against ~Syntax~ directly
+is a fold and two lists by hand.
+
+Ellipses nest. ~((head arg ...) ...)~ binds ~head~ to a list and ~arg~ to a list
+of lists, as deeply as the pattern goes.
+
+A clause becomes one arm of one ~match~, so a pattern's failure — of either kind
+— falls through to the next clause. The whole form is that ~match~ and nothing
+else: what a clause cannot say by shape becomes its ~#:when~, and an ellipsis
+over a compound becomes a fold through ~all-of~, which ~std/syntax-match~
+exports for that purpose.
+
+A last clause spelled ~_~ or a plain variable covers the input. Without one,
+~syntax-match~ adds an arm that reports the form no clause matched — so a macro
+that only accepts one shape need not write the rejection, though writing one buys
+a message that can name the macro.
+
+Two things it will not accept. A ~...~ anywhere but last, because it repeats what
+precedes it; and a pattern that binds one name twice, which would be a shadowing
+~let~ rather than the equality test it looks like. An uppercase name is refused
+too: it would be an ordinary variable, so ~(Cons a b)~ as a pattern would match
+every three-element form rather than a cons — write ~'Cons~ for the identifier.
 
 ** Hygiene
 
@@ -126,6 +187,62 @@ equality after mark stripping and not more: at parse time there is no call-site
 scope to consult, so ~(compare (car clause) #'else)~ is true when the caller
 wrote ~else~ even if the caller had locally rebound it. That covers the
 ~cond~-like idiom it exists for; it is not denotational equality.
+
+** Recursion
+
+Two different things go by that name here, and only one of them is Scheme's.
+
+*A template may call the macro it is in.* The expander reads what a transformer
+returns, so a macro call in the result is expanded like any other — which is how
+a form of any length is taken apart, one item per round:
+
+#+BEGIN_SRC scheme
+(def/macro (any-of form inject compare)
+  (syntax-match form
+    ((_) #'0)
+    ((_ only) only)
+    ((_ first rest ...)
+     #'(let ((tmp ,first)) (if (= tmp 0) (any-of ,@rest) tmp)))))
+#+END_SRC
+
+That is the ~syntax-rules~ shape, and it behaves the way it does there. Each
+round is a separate invocation, so each renames its own ~tmp~ and no level can
+capture another's or the caller's. Two macros may do it to each other, and a
+template may expand to a *definition* as well as to an expression: ~def~ and
+~defun~ are read by the body parser rather than by the expression parser, and a
+renamed one is understood in both places.
+
+Note that the recursion is the *expander's*, not the transformer's: the call in
+the template is expanded when the result is read, so nothing is nested inside
+anything at the time the transformer runs.
+
+*A transformer is a program, so it can just recurse.* This is the one
+~syntax-rules~ cannot do, and it is usually the better answer:
+
+#+BEGIN_SRC scheme
+(: cond-arms (-> (List Syntax) Syntax Syntax))
+(defun (cond-arms clauses whole)
+  (match clauses
+    (Nil (syntax-error whole "cond needs a final (else ...) clause."))
+    ((Cons clause rest)
+     (syntax-match clause
+       (('else body ...) (one-form body clause))
+       ((test body ...) #'(if ,test ,(one-form body clause) ,(cond-arms rest whole)))))))
+#+END_SRC
+
+One expansion instead of one per clause, an error message that can say what was
+wrong with the *seventh* clause, and no limit to how far it goes. ~cond~ in the
+prelude is written this way.
+
+Which is to say: reach for a template call when the recursion is on the shape of
+the form, and for an ordinary function when it is on a list you already hold.
+
+*Runaway expansion is caught.* A transformer that expands to a call to itself on
+the same input never finishes, and nothing else would notice — the parser would
+read expansions until the stack ran out, naming neither the macro nor the place.
+So expansion is counted per call site, which every node a transformer builds
+inherits, and the hundredth at one site is reported as a runaway. A recursion
+that takes something off each round never reaches it.
 
 ** What a macro cannot do
 

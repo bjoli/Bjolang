@@ -36,6 +36,9 @@
 (def/trait (Mappable (%f %a))
   (: map (-> (-> %a %b) (%f %a)  (%f %b))))
 
+(def/impl (Mappable (List %a))
+  (defun (map fun lst) (list-map fun lst)))
+
 ;; Mappable is a function on collection (%f %a) and it takes a function (-> %a %b).
 ;; and returns (%f %b). That is all fine and dandy. But what happens when we try to
 ;; map it to a c# interface?
@@ -48,7 +51,23 @@
 ;; }
 ;;
 ;; even with c#11 it breaks, because you cannot enforce F<B>: F<B> and F<A> are distinct types.
-
 ;; since bjolang compiles to c#, and traits compile to interfaces, this cannot be
 ;; expressed. If we call map on an option or list or whatever, 
 ;;
+;; Here is where inlining comes in! Inlining the trait body makes it a regular function call.
+;; The downside is that you cannot use map in generic places, regardless of interface constraints.
+(: doIt (-> %a %a))
+(defun (doIt something)
+  (map add1 something))
+
+;; because we first and foremost dont know what to inline.
+;; A trait like Foldable is however expressible and can be used dynamically (dispatch cost, people!)
+;;
+(def/trait (Foldable %col)
+  (type %item)
+  (: fold (-> (-> %acc %item %acc) %acc %col %acc)))
+
+(def/impl (Foldable (List %a))
+  (type %item %a)
+  (defun (fold f acc col)
+    (list-foldl f acc col)))

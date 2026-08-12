@@ -264,6 +264,57 @@ let private parseInlineImpls (source: string) (metadata: string) : Decl list =
             )
         | _ -> None)
 
+// ---------------------------------------------------------------------------
+// Making a macro module's dependencies loadable
+// ---------------------------------------------------------------------------
+
+/// Every Bjolang assembly this compilation knows a path for, by simple name.
+let private assemblyPaths = System.Collections.Generic.Dictionary<string, string>()
+
+let private noteAssemblyPath (path: string) =
+    let name = Path.GetFileNameWithoutExtension path
+
+    if not (assemblyPaths.ContainsKey name) then
+        assemblyPaths[name] <- path
+
+let mutable private resolverInstalled = false
+
+/// Lets a transformer call into the modules its own module was compiled against.
+///
+/// `Assembly.LoadFile` resolves the file it is handed and nothing else. A
+/// transformer's own code is therefore reachable, and so is anything in the
+/// runtime assemblies — `Program.main` loads those by name before any of this
+/// runs — but the first call into another Bjolang module used to fail: the CLR
+/// asks the default load context for `prelude`, which probes beside the
+/// *compiler* and does not find it. One `(string-append a b)` in a transformer
+/// was enough to produce "Could not load file or assembly 'prelude'" at the
+/// macro's call site, which named neither the cause nor the macro.
+///
+/// A compiled program installs the same resolver for the same reason
+/// (`Program.fs`): a Bjolang assembly does not sit next to whatever is running
+/// it. Resolution is by simple name, because that is all the CLR asks with, so
+/// two modules of one name in different directories answer with whichever was
+/// loaded first — the same collision that makes both of them `string_Module`.
+let private installAssemblyResolver () =
+    if not resolverInstalled then
+        resolverInstalled <- true
+
+        System.AppDomain.CurrentDomain.add_AssemblyResolve (
+            System.ResolveEventHandler(fun _ args ->
+                let simple = System.Reflection.AssemblyName(args.Name).Name
+
+                let path =
+                    match assemblyPaths.TryGetValue simple with
+                    | true, p -> Some p
+                    | _ ->
+                        let probe = Path.Combine(Paths.runtimeDir, simple + ".dll")
+                        if File.Exists probe then Some probe else None
+
+                match path with
+                | Some p -> System.Runtime.Loader.AssemblyLoadContext.Default.LoadFromAssemblyPath p
+                | None -> null)
+        )
+
 /// One macro an assembly publishes: the Bjolang name, and the module that
 /// defines it.
 type MacroEntry = { Name: string; ModuleName: string }
@@ -515,6 +566,10 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
     // is also what reports a macro used in the module that defines it.
     Macro.install ()
 
+    // Before the first `Assembly.LoadFile` below, since it is the assemblies
+    // loaded there whose dependencies would otherwise not resolve.
+    installAssemblyResolver ()
+
     let resolvedModules = System.Collections.Generic.Dictionary<string, LoadedModule>()
     let currentPath = System.Collections.Generic.HashSet<string>()
     let dllDeps = System.Collections.Generic.HashSet<string>()
@@ -529,6 +584,10 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
             let parsedDecls, deps =
                 if absPath.EndsWith(".dll") then
                     dllDeps.Add(absPath) |> ignore
+                    // Before the assembly is loaded: a transformer this one
+                    // publishes may call into any of these, and the resolver is
+                    // what makes that possible.
+                    noteAssemblyPath absPath
                     let asm = System.Reflection.Assembly.LoadFile(absPath)
                     let attr = asm.GetCustomAttributes(typeof<System.Reflection.AssemblyMetadataAttribute>, false)
                     
@@ -551,6 +610,7 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
                             let depPath = dep.Trim()
                             if depPath <> "" && System.IO.File.Exists(depPath) then
                                 dllDeps.Add(depPath) |> ignore
+                                noteAssemblyPath depPath
                     | None -> ()
                     
                     let exports =

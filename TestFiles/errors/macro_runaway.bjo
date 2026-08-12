@@ -1,0 +1,17 @@
+;; A macro may expand to a call to itself — `any-of` in `inc/sm_macros.bjo` does,
+;; and that is how a form of any length is taken apart. `forever` does it on the
+;; same input, so it never finishes.
+;;
+;; Nothing else in the compiler would notice. The parser would keep reading
+;; expansions until the stack ran out, and the failure would name neither the
+;; macro nor the call site — so expansion is counted per call site, which every
+;; node a transformer builds inherits.
+;;
+;; EXPECT-ERROR: 'forever' has expanded 100 times
+;; EXPECT-ERROR: macro_runaway.bjo:16
+
+(import "../inc/sm_macros.bjo")
+
+(defun (main args)
+  (println (int->string (forever 1)))
+  0)

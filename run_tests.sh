@@ -49,10 +49,13 @@ trap cleanup EXIT
 # dependencies, so one built in another directory links against files that are
 # no longer there. That is exactly what a move of the repository leaves behind.
 #
-# Which files are modules is read off the source: one with an `(export ...)` is
-# a module and gets compiled, and the rest are include fragments, spliced into
-# whoever includes them and not modules at all. Build order follows the
-# `(import "...")` edges between them, so a new fixture needs no edit here.
+# Which files are modules is read off the source: one with an `(export ...)` or
+# a `def/macro` is a module and gets compiled, and the rest are include
+# fragments, spliced into whoever includes them and not modules at all. A macro
+# counts because macros are published whether or not anything is exported, so a
+# fixture that is nothing but transformers has no `(export ...)` to find. Build
+# order follows the `(import "...")` edges between them, so a new fixture needs
+# no edit here.
 INC_DIR="TestFiles/inc"
 
 build_fixture_libs() {
@@ -61,7 +64,7 @@ build_fixture_libs() {
 
     for f in "$INC_DIR"/*.bjo; do
         [ -f "$f" ] || continue
-        if grep -qE '^[[:space:]]*\(export' "$f"; then
+        if grep -qE '^[[:space:]]*\((export|def/macro)' "$f"; then
             pending+=("$f")
             rm -f "${f%.bjo}.dll"
         fi

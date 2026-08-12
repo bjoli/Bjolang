@@ -293,6 +293,41 @@ pair is a value tuple, so handing it over costs no allocation.
 - ~(seq->map seq)~ : Constructs a map from a sequence of pairs/tuples.
 - ~(map->seq map)~ : Converts the map to a sequence of pairs/tuples.
 
+** Control =(std prelude)=
+
+Macros, not procedures — which is what lets them take a branch that is not
+evaluated. They are written with ~syntax-match~ in ~lib/std/prelude.bjo~; see
+~Docs/MACROS.org~ for what that means, and for why they cannot be passed to
+anything or stored in a variable.
+
+- ~(cond (test body ...) ... (else body ...))~ : ~if~ at any number of arms. The
+  final ~else~ is required rather than conventional: every arm answers a value of
+  one type, so there has to be a last answer. ~when~ and ~unless~ are the
+  one-armed forms and need none.
+- ~(if-let ((name expr)) then else)~ : ~then~ with ~name~ bound to what ~expr~
+  answered, if it answered ~(Some ...)~, and ~else~ if it was ~None~. The
+  binding is shaped like a ~let~'s, and there is exactly one of them.
+- ~(when-let ((name expr)) body ...)~ : the body with ~name~ bound, when there
+  was something to bind. It *is* a ~when~ — it answers nothing, and the body's
+  value is dropped, so a body that ends in a value has to ~ignore~ it.
+- ~(some-> value step ...)~ : ~->~ that stops at the first ~None~. Each step
+  answers an ~(Option ...)~ and is handed what the step before it unwrapped to,
+  so the whole answers one and nothing after a ~None~ runs. Threading is ~->~'s
+  own, ~&~ and all.
+
+#+BEGIN_SRC scheme
+(cond ((< n 0) "negative")
+      ((= n 0) "zero")
+      (else "positive"))
+
+(if-let ((half (halve n))) half 0)
+
+(when-let ((line (read-line/opt port)))
+  (println line))
+
+(some-> 16 (halve) (halve) (at-least & 3))   ;; (Some 4)
+#+END_SRC
+
 ** Options (~Option~)
 Optional value type representing presence (~Some~) or absence (~None~).
 - ~(Some val)~ : Wraps ~val~ in an option.
