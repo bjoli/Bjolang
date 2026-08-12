@@ -19,6 +19,9 @@
         <Compile Include="DotNetInterop.fs" />
         <Compile Include="TypeVisitor.fs" />
         <Compile Include="AlphaRename.fs" />
+        <!-- After AlphaRename, whose `freeNames` decides which of a macro
+             expansion's introduced names still need resolving. -->
+        <Compile Include="Macro.fs" />
         <Compile Include="Unification.fs" />
         <Compile Include="Inference.fs" />
         <!-- Before TraitInline, so the must-use check reports on the body as
@@ -35,6 +38,28 @@
         <Compile Include="Pipeline.fs"/>
         <Compile Include="Codegen.fs"/>
         <Compile Include="Program.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <!-- The compiler links the runtime, for one type only: `Syntax`, which
+             a macro transformer takes and returns. The expander builds those
+             values and reads them back across a reflection call, so it needs
+             the type statically rather than through more reflection.
+
+             This copies a second `BjolangRuntime.dll` next to the compiler,
+             which is deliberate: the alternative is depending on
+             `Paths.runtimeAssemblies` having been probed and loaded before the
+             first method mentioning `Syntax` is JITted. Two *files* are
+             harmless, because the default load context resolves by assembly
+             identity — whichever loads first is the one everything gets,
+             including a macro module loaded later with `Assembly.LoadFile`. Two
+             *identities* would not be, which is why nothing here renames it.
+
+             `Paths.runtimeDir` is unaffected: it probes for
+             `<ancestor>/BjolangRuntime/bin/Release/net10.0`, and the copy
+             beside the compiler does not match that shape. Generated programs
+             therefore still link the canonical build. -->
+        <ProjectReference Include="BjolangRuntime/BjolangRuntime.csproj" />
     </ItemGroup>
 
 </Project>

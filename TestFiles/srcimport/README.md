@@ -1,28 +1,22 @@
-# Source-level import reproduction (known bug, not fixed)
+# Source-level import fixture
 
-`importer.bjo` imports `helper.bjo` by relative path. No `helper.dll` exists, so
-`Pipeline.resolveImportPath` falls back to the `.bjo` source.
+`importer.bjo` imports `helper.bjo` by relative path. There is no `helper.dll`
+in the tree, so the compiler builds one and imports that.
 
-Compile it with:
+This directory was a reproduction of a bug: `(import "helper.bjo")` used to
+type-check the imported file and emit a `using static helper_Module;` for it,
+while `Codegen.generateProgram` emitted only `List.last decls` — so the
+generated C# named a class nothing had produced and `csc` rejected it with
+`CS0246`. The workaround was to compile the other file with `--lib` by hand, or
+to use `(include ...)` instead.
 
-    dotnet run TestFiles/srcimport/importer.bjo --debug
+`(import "x.bjo")` now means what it always looked like it meant: compile `x` to
+`x.dll` and import that. The sub-compilation runs in a process of its own,
+because the compiler keeps module-level mutable state — `Gensym`'s counter, the
+macro table — that a nested compilation would otherwise clobber.
 
-The frontend succeeds and reports three declarations, having type-checked
-`core`, `helper` and `importer`. But `Codegen.generateProgram` emits only
-`List.last decls`, while `moduleUsings` emits a `using static` for every import.
-The generated C# therefore contains
+`helper.bjo` also defines a name it does not export, which
+`TestFiles/errors/import_not_exported.bjo` relies on.
 
-    using static helper_Module;
-    ...
-    helper_Module.twice(21)
-
-with no `helper_Module` class anywhere, and the C# compiler rejects it:
-
-    error CS0246: The type or namespace name 'helper_Module' could not be found
-
-This is masked in ordinary use because `build_std.sh` pre-compiles the standard
-library to DLLs, and `resolveImportPath` prefers a `.dll` when one is present.
-Any genuine source-level import reproduces it.
-
-These files are deliberately not named `[0-9][0-9]_*.bjo`, so `run_tests.sh`
-and `snapshot_cs.sh` do not pick them up.
+`importer.bjo` carries no numeric prefix, so `run_tests.sh` does not pick it up;
+`TestFiles/92_source_import.bjo` is the test that does.

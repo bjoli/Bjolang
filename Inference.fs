@@ -2617,9 +2617,50 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
         let finalEnv, finalSigs, typedDecls =
             checkDeclGroup { env with CurrentModule = moduleName } sigs decls
 
-        { finalEnv with CurrentModule = env.CurrentModule }, finalSigs, [ TModule(moduleName, typedDecls, r) ]
+        // Every name this module defines is also reachable as
+        // `Module_Module::name`.
+        //
+        // That spelling is what a macro expansion uses for a binding of the
+        // macro's own module: the expansion lands somewhere else, where a local
+        // of the same name would otherwise take it over. `Codegen` already
+        // emits `::` as a class-qualified reference and `AlphaRename` already
+        // refuses to touch one, so the only thing missing was somewhere to look
+        // it up.
+        //
+        // Restricted to what the module actually defines rather than to
+        // everything in scope at its end, so `Foo_Module::print` is not a name
+        // just because `Foo` imported the prelude.
+        let definedHere =
+            decls
+            |> List.collect (function
+                | DDef(n, _, _)
+                | DDefMutable(n, _, _)
+                | DExtern(n, _, _, _) -> [ n ]
+                | DDefun(n, _, _, _, _) -> [ n ]
+                | DDefTuple(ns, _, _) -> ns
+                | _ -> [])
+
+        let qualified =
+            definedHere
+            |> List.fold
+                (fun acc n ->
+                    match Map.tryFind n finalEnv.Bindings with
+                    | Some binding -> Map.add (Naming.qualifiedBinding moduleName n) binding acc
+                    | None -> acc)
+                finalEnv.Bindings
+
+        { finalEnv with
+            Bindings = qualified
+            CurrentModule = env.CurrentModule },
+        finalSigs,
+        [ TModule(moduleName, typedDecls, r) ]
 
     | DImport(paths, r) -> env, sigs, [ TImport(paths, r) ]
+
+    // A macro is checked as the `defun` it also produced. This carries no body
+    // and contributes nothing to the program's runtime shape, so it stops here;
+    // what an importing compilation reads is the assembly's `BjolangMacros`.
+    | DMacro _ -> env, sigs, []
     | DExport(names, r) -> env, sigs, [ TExport(names, r) ]
 
     // `(import/class (Alias (: Clr.Class type #:exceptions (E ...))) ...)`

@@ -13,7 +13,7 @@ The things I am most smug about, in descending order of smugness.
 
 *** Concurrency: bjoroutines and first-class events
 
-Bjolang has ConcurrentML. And by that I mean: WOOP WOOP WAKE UP, BJOLANG HAS CONCURRENTML. No async. No Task. No go channels or goroutines. We have bjo channels and bjoroutines. And not only that, it competes with go on allocations and speed.
+Bjolang has ConcurrentML. And by that I mean: WOOP WOOP WAKE UP, BJOLANG HAS CONCURRENTML. No async. No Task. No go channels or goroutines. We have bjo channels and bjoroutines. And not only that, it competes with go on allocations and speed, while being actually expressive. 
 
 It is fully cooperative, and yields control when calling other bjoroutines or when syncing on channels. 
 
@@ -233,7 +233,7 @@ All main data structures except array are immutable. Vec is an rrb tree, list is
 
 * Planned features
 
- ~if-let~ / ~some-let*~ / ~some->~, comprehension syntax based on ~loop~, and a ~seq~ trait so ~seq-map~ and friends work lazily on every collection.
+ ~if-let~ / ~some-let*~ / ~some->~, comprehension syntax based on ~loop~, and a ~seq~ trait so ~seq-map~ and friends work lazily on every collection. I will probably do this when we have macros. 
 
 
 
@@ -371,7 +371,7 @@ record example:
            (: colour Colors))))
  
 (def banana (Fruit (name "banana") (has-peel? #t) (colour Golden)))
-;; record-set copies
+;; Records are immutable, so record-set copies
 (def megaripe-banana (record-set banana (colour Brown))
 
 #+end_src
@@ -447,7 +447,7 @@ If you want to call c# it is possible:
 
 *** Constructorless DSLs
 
-Lists, quasiquoted lists and vectors do not need constructors in some circumstances, giving us nice small DSLs, like the (run ...) function DSL:
+Lists, quasiquoted lists and vectors do not need constructors in some circumstances, giving us nice small DSLs, like the completely made up (run ...) function DSL:
 
 #+begin_src scheme
 
@@ -467,19 +467,17 @@ Lists, quasiquoted lists and vectors do not need constructors in some circumstan
 These are things I found while spelunking:
 
 - Check that the Map higher order wrappers are not slowing things down too much
+- run, run/string, run/strings.
 - Make it possible to shadow trait methods and not have the typechecker vomit.
 - output LINE-directives so that we can see which code generated the bad c# output if roslyn fails
 - A standard library that doesn't suck.
 - Annotations using @[c# annotation verbatim here] so that I can piggyback on c# json libraries.
+- vecbuilder and mapbuilder should be transientvec and transientmap. 
 
 
 ** Things I need in the standard library
 
-string cursors
-
 typed string interpolation
-
-Stringbuilders.
 
 IO for working with files
 
@@ -499,7 +497,7 @@ STRING FORMATTING. Alex Shinn is the answer yet again. (show #t etc ...) and div
 
 Extend do notation to be more usable. :match :traverse :and<- ( :and<- seems _very hard_ atm).
 
-(with-return ...) that allows for (return ...). Disallowed in loops and seq. 
+(with-return ...) that allows for (return ...). Disallowed in loops and seq. loops maybe allowed later. 
 
 
 ** Things to fix:
@@ -508,4 +506,6 @@ Naming a local variable list, will produce local shadowing and a c# exception. I
 
 '(1 2 3) and (list 1 2 3) produces different code.
 
-[1 2 3 4] should codegen an array that is put directly into the tail, or split and inserted in chunks of 32. 
+[1 2 3 4] should codegen an array that is put directly into the tail, or split and inserted in chunks of 32. This needs changes to RrbList.
+
+The (module ...) form does not restrict access currently. It is enforced at .dll boundarys (compilation units). It would be neat to be able to have several (module ...) in one file to limit visibility of parts of code that should not interact.

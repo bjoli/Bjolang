@@ -691,6 +691,31 @@ Every implementation method is also emitted as an ordinary method, whatever the
 kind of trait. That is what a recursive method inlines *into*: a resolved call is
 spliced once, and the edge that would close the cycle calls the method instead.
 
+** Macros
+A macro is a function the compiler runs while parsing. It takes the form that
+was written and returns the form to read instead.
+
+#+BEGIN_SRC scheme
+;; in a module of its own, because a transformer is compiled code and has to
+;; exist before it can run
+(def/macro (or-else form inject compare)
+  (match form
+    ((SList (Cons _ (Cons a (Cons b Nil))))
+     #'(let ((tmp ,a)) (if (= tmp 0) ,b tmp)))
+    (_ (syntax-error form "or-else takes two arguments"))))
+#+END_SRC
+
+~#'form~ is syntax-quote and builds a ~Syntax~ value; ~,x~ splices one and
+~,@xs~ splices a ~(List Syntax)~. It is spelled differently from ~'(...)~
+because a list literal is homogeneous and a template is not.
+
+Hygiene is implicit renaming: everything the transformer constructs is renamed
+apart from the call site, everything it took from the input is left as written.
+So the ~tmp~ above cannot capture a ~tmp~ the caller wrote, and a template may
+use ~let~, ~if~ and ~->~ unchanged.
+
+See ~Docs/MACROS.org~.
+
 ** Monadic blocks
 ~(do ...)~ desugars to ~bind~ and ~pure~. It is spelled ~do~ rather than ~seq~,
 which lazy sequences already own.

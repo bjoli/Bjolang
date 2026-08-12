@@ -217,6 +217,17 @@ type Decl =
     // DInlineImpl (TraitName, MethodName, Ctor, OriginModule, Params, Body, Qualification, Range)
     | DInlineImpl of string * string * string * string * string list * Expr * (string * string) list * Range
 
+    /// Records that a name defined in this module is a macro.
+    ///
+    /// `def/macro` also produces a `DSignature` and a `DDefun` — a transformer
+    /// is an ordinary function, and this says only that the compiler should run
+    /// it at parse time rather than let anyone call it. It carries no body for
+    /// the same reason: the body is the `DDefun`'s.
+    ///
+    /// It does not survive type checking. What survives is the assembly's
+    /// `BjolangMacros` metadata, which is what an importing compilation reads.
+    | DMacro of string * Range
+
     // DImpl (TraitName, TargetType, AssociatedTypeBindings, Methods, Range)
     | DImpl of string * FType * (string * FType) list * Decl list * Range
 
@@ -226,6 +237,60 @@ type Decl =
     // the methods themselves already live in that assembly.
     // DImplExtern (TraitName, TargetType, AssociatedTypeBindings, Range)
     | DImplExtern of string * FType * (string * FType) list * Range
+
+// ---------------------------------------------------------------------------
+// Macro expansion
+// ---------------------------------------------------------------------------
+
+/// What a macro expansion hands back.
+///
+/// `Resolve` runs on the *parsed* result rather than on the form, because the
+/// first of the three renaming rules is "if the name is bound in the current
+/// scope, use that binding" — and which names an expansion binds is not known
+/// until it has been parsed. `AlphaRename.freeNames` answers it exactly, so
+/// resolution is a post-pass and the parser needs no scope of its own.
+type Expansion =
+    { Form: SExpr
+      Resolve: Expr -> Expr }
+
+/// Set by `Pipeline` once the macro table is populated.
+///
+/// A mutable hook rather than a threaded context, for the same reason `Gensym`
+/// keeps one counter: `parseExpr` is a pure `SExpr -> Expr` called from several
+/// hundred places and from `Pipeline.parseInlineImpls`, which parses
+/// already-expanded metadata bodies and must keep working with no macros
+/// registered at all.
+let mutable expandHook: SExpr -> Expansion option = fun _ -> None
+
+/// Whether a head symbol names a macro, without running the transformer.
+///
+/// `parseBody` needs to know before it decides how to read a form, because a
+/// macro may expand to a `def` — and running the transformer twice to find out
+/// would run user code twice.
+let mutable isMacroName: string -> bool = fun _ -> false
+
+/// Names the expander has introduced.
+///
+/// A macro-introduced identifier is renamed apart from the call site, so a
+/// template's `let` arrives as `let__37` and head-symbol dispatch has to see
+/// through the mark. Only for names the expander actually made: `x__1` is a
+/// name a program may legitimately define, and stripping it would be wrong.
+///
+/// Never pruned. Every entry is unique by construction, so it can only ever
+/// answer for the expansion that created it.
+let mutable private introducedNames: Set<string> = Set.empty
+
+let noteIntroduced (names: string seq) =
+    introducedNames <- names |> Seq.fold (fun acc n -> Set.add n acc) introducedNames
+
+/// The name to dispatch a head symbol on: the third renaming rule, "strip the
+/// rename and dispatch as a special form".
+///
+/// Only the dispatch uses this. The identifier itself keeps its mark, so a
+/// template's reference to a binding of its own module is still resolvable by
+/// rule two.
+let headName (sym: string) =
+    if Set.contains sym introducedNames then Gensym.baseName sym else sym
 
 // --- Parser ---
 
@@ -433,6 +498,75 @@ let parseDefunRest (rest: SExpr list) : (FType option * SExpr list) =
     | SAtom { Token = Colon } :: t :: body -> (Some(parseType t), body)
     | body -> (None, body)
 
+
+/// Desugars a syntax template `#'(if ,c ,t ,f)` into the `Syntax` value it
+/// describes.
+///
+/// This is not `desugarQuotedList` with a different payload. `'(...)` builds an
+/// `EList`, which is homogeneous — every element has to share a type — and a
+/// template is heterogeneous by nature: a symbol, then whatever the unquotes
+/// splice in. Everything here is a `Syntax`, so the result types as one thing.
+///
+/// The two spellings are kept apart rather than switched on context. Deciding
+/// by "is this inside a `def/macro`" would mean a helper function in the same
+/// module got list semantics for the same `'(...)` its caller got template
+/// semantics for, which is not a property a reader can see locally.
+///
+/// A `Symbol` becomes `SSym`, an *identifier*, which hygiene renames. A
+/// `QuotedSymbol` — `'foo` written inside the template — becomes `SDatum`,
+/// which it never renames: that is a value, not a reference to a binding. This
+/// is also why `''foo` is not needed, and it is just as well, since it does not
+/// read.
+let desugarSyntaxQuote (parseExprFn: SExpr -> Expr) (template: SExpr) (r: Range) : Expr =
+    let call name args range = EApp(EIdent(name, range), args, range)
+
+    let rec go (s: SExpr) : Expr =
+        let ir = getRange s
+
+        match s with
+        | SAtom { Token = NumberLit n } -> call "SInt" [ EString(n, ir) ] ir
+        | SAtom { Token = StringLit str } -> call "SStr" [ EString(str, ir) ] ir
+        | SAtom { Token = CharLit c } -> call "SChar" [ EChar(c, ir) ] ir
+        | SAtom { Token = Keyword k } -> call "SKey" [ EKeyword(k, ir) ] ir
+        | SAtom { Token = QuotedSymbol sym } -> call "SDatum" [ EQuotedSymbol(sym, ir) ] ir
+        | SAtom { Token = Symbol sym } -> call "SSym" [ EQuotedSymbol(sym, ir) ] ir
+        | SAtom { Token = Comma } ->
+            failwithf $"Unexpected , at %s{Lexer.formatPos ir}: nothing to unquote."
+        | SAtom { Token = CommaAt } ->
+            failwithf $"Unexpected ,@ at %s{Lexer.formatPos ir}: nothing to splice."
+        | SAtom _ -> failwithf $"Unsupported item in a syntax template at %s{Lexer.formatPos ir}"
+        | SList(items, lr) -> call "SList" [ items0 items lr ] lr
+
+    /// The children of one form, as a `(List Syntax)`.
+    ///
+    /// `,@` is why this is a fold rather than a map: a splice contributes a
+    /// whole list where its siblings contribute one element each, so the result
+    /// is built by appending runs rather than by consing uniformly.
+    and items0 (items: SExpr list) (lr: Range) : Expr =
+        let rec go' remaining (pending: Expr list) : Expr =
+            /// Everything gathered since the last splice, as a list literal.
+            let flush (tail: Expr) =
+                if List.isEmpty pending then tail
+                else call "syntax-splice" [ EList(List.rev pending, lr); tail ] lr
+
+            match remaining with
+            | [] ->
+                if List.isEmpty pending then EList([], lr) else EList(List.rev pending, lr)
+
+            | SAtom { Token = Comma } :: inner :: rest -> go' rest (parseExprFn inner :: pending)
+            | [ SAtom { Token = Comma } ] ->
+                failwithf $"Unexpected , at end of a syntax template at %s{Lexer.formatPos lr}"
+
+            | SAtom { Token = CommaAt } :: inner :: rest ->
+                flush (call "syntax-splice" [ parseExprFn inner; go' rest [] ] lr)
+            | [ SAtom { Token = CommaAt } ] ->
+                failwithf $"Unexpected ,@ at end of a syntax template at %s{Lexer.formatPos lr}"
+
+            | item :: rest -> go' rest (go item :: pending)
+
+        go' items []
+
+    go template
 
 // Desugar a quoted list '(a ,x b) into (Cons 'a (Cons x (Cons 'b Nil))).
 //
@@ -783,16 +917,20 @@ let rec parseExpr (s: SExpr) : Expr =
     // the head of an application is built by the `SList` branch below and never
     // arrives here. So no analysis is needed to tell the two apart, and none of
     // this depends on types.
-    | Ident sym when Map.containsKey sym operatorArity ->
-        let ps = List.init operatorArity[sym] (fun _ -> Gensym.fresh "op")
-        EFun(ps, EApp(EIdent(sym, r), ps |> List.map (fun p -> EIdent(p, r)), r), Ordinary, r)
+    | Ident sym when Map.containsKey (headName sym) operatorArity ->
+        let op = headName sym
+        let ps = List.init operatorArity[op] (fun _ -> Gensym.fresh "op")
+        EFun(ps, EApp(EIdent(op, r), ps |> List.map (fun p -> EIdent(p, r)), r), Ordinary, r)
 
     | Ident sym -> EIdent(sym, r)
 
     | SList(head :: args, listRange) ->
         match head with
         | Ident sym ->
-            match sym with
+            // Dispatch sees through a macro's rename; the identifier does not.
+            // `sym` is what an application is built from, so a template's call
+            // to a binding of its own module keeps the mark that resolves it.
+            match headName sym with
             | "cast" ->
                 match args with
                 | [ typeSExpr; valSExpr ] ->
@@ -1309,6 +1447,15 @@ let rec parseExpr (s: SExpr) : Expr =
             // Quoted list literal: '(1 2 3) → Cons chain
             | "quoted-list" -> desugarQuotedList parseExpr args listRange
 
+            // The head the reader puts on a `#'` form, always with exactly one
+            // argument: `#'` is a prefix on the form after it.
+            | "syntax-quote" ->
+                match args with
+                | [ template ] -> desugarSyntaxQuote parseExpr template listRange
+                | _ ->
+                    failwithf
+                        $"Invalid syntax-quote at %s{Lexer.formatPos r}. Write #'form; the head is not meant to be written by hand."
+
             // Vec literal: [1 2 3] → EVec
             | "vec-literal" -> EVec(processArgs args, listRange)
 
@@ -1325,16 +1472,21 @@ let rec parseExpr (s: SExpr) : Expr =
             // Keyword arguments are meaningless on an operator, so a call
             // carrying one falls through to ordinary application and fails
             // there, where the message is about the real mistake.
-            | _ when
-                (List.contains sym foldingOps || List.contains sym chainingOps)
+            | op when
+                (List.contains op foldingOps || List.contains op chainingOps)
                 && not (args |> List.exists (function
                                              | SAtom { Token = Keyword _ } -> true
                                              | _ -> false))
                 ->
-                desugarNaryOp sym (processArgs args) listRange
+                desugarNaryOp op (processArgs args) listRange
 
-            // Standard function application
-            | _ -> EApp(EIdent(sym, getRange head), processArgs args, listRange)
+            // A macro, tried last so that a special form always wins. Anything
+            // reaching here is either a macro call or an ordinary application,
+            // and the head is the only thing that decides which.
+            | _ ->
+                match expandHook s with
+                | Some expansion -> expansion.Resolve(parseExpr expansion.Form)
+                | None -> EApp(EIdent(sym, getRange head), processArgs args, listRange)
 
 
         | _ ->
@@ -2551,6 +2703,19 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
 
             ELetRec(defs, parseItems rest, fallbackRange)
 
+        // A macro in body position, expanded here rather than left to
+        // `parseExpr`, because it may expand to a definition and `def` and
+        // `defun` are consumed by this function — `parseExpr` never sees one.
+        //
+        // The resolution pass wraps the *whole* remaining body, and must: if
+        // the expansion is a definition then everything after it is inside its
+        // scope, and whether an introduced name is free is only answerable
+        // there.
+        | (SList(SAtom { Token = Symbol h } :: _, _) as form) :: rest when isMacroName h ->
+            match expandHook form with
+            | Some expansion -> expansion.Resolve(parseItems (expansion.Form :: rest))
+            | None -> failwithf $"'%s{h}' is a macro but did not expand at %s{Lexer.formatPos (getRange form)}"
+
         | [ expr ] -> parseExpr expr
 
         | expr :: rest -> ELet("_", false, [], None, parseExpr expr, parseItems rest, fallbackRange)
@@ -2910,6 +3075,69 @@ let rec parseDecl (s: SExpr) : Decl =
 
         DImplExtern (traitName, parseType targetTypeExpr, assocBindings, r)
 
-    | _ -> failwithf $"Unknown declaration at %s{Lexer.formatPos r}"
+    // A macro in declaration position, reached only once every declaration
+    // form has failed to match, so a special form always wins.
+    | _ ->
+        match expandHook s with
+        | Some expansion -> parseDecl expansion.Form
+        | None -> failwithf $"Unknown declaration at %s{Lexer.formatPos r}"
 
-let parseModule (exprs: SExpr list) : Decl list = List.map parseDecl exprs
+/// The type every macro transformer has. Fixed, and not written by the user:
+/// the expander constructs the arguments and consumes the result, so there is
+/// nothing here for a program to choose.
+let macroTransformerType (r: Range) : FType =
+    let syntax = TName("Syntax", r)
+    let inject = TArrow([ TName("Symbol", r) ], [], None, syntax, Ordinary, r)
+    let compare = TArrow([ syntax; syntax ], [], None, TName("bool", r), Ordinary, r)
+    TArrow([ syntax; inject; compare ], [], None, syntax, Ordinary, r)
+
+/// The declarations one top-level form expands to.
+///
+/// Only `def/macro` gives more than one. It is not a new binding form: it is a
+/// signature the compiler writes, an ordinary `defun`, and a note that the name
+/// is a macro.
+///
+/// The signature is not the user's to write. A transformer is invoked by
+/// reflection against a signature the expander has to know exactly, and every
+/// way of varying it — a type parameter, a trait constraint, a keyword or rest
+/// argument, a `defbjo` colour — changes the emitted C# method
+/// (`T_` parameters, leading `_dict_*`, `__kw_*`, a `Fiber<T>` return). Fixing
+/// it here is what turns those into a syntax error rather than a
+/// `TargetParameterCountException` from inside the compiler.
+let parseDeclForms (s: SExpr) : Decl list =
+    match s with
+    | SList(SAtom { Token = Symbol "def/macro" } :: SList(head, _) :: body, r) ->
+        let name, argNames =
+            match head with
+            | SAtom { Token = Symbol name } :: rest ->
+                let args =
+                    rest
+                    |> List.map (function
+                        | SAtom { Token = Symbol a } -> a
+                        | bad ->
+                            failwithf
+                                $"Invalid def/macro parameter at %s{Lexer.formatPos (getRange bad)}. A transformer takes exactly three plain parameters: the form, inject and compare.")
+
+                name, args
+            | _ ->
+                failwithf
+                    $"Invalid def/macro at %s{Lexer.formatPos r}. Expected (def/macro (name form inject compare) body...)"
+
+        if argNames.Length <> 3 then
+            failwithf
+                $"Invalid def/macro '%s{name}' at %s{Lexer.formatPos r}: a transformer takes exactly three parameters — the form, inject and compare — and this one takes %d{argNames.Length}."
+
+        if body.IsEmpty then
+            failwithf $"Invalid def/macro '%s{name}' at %s{Lexer.formatPos r}: it has no body."
+
+        [ DSignature(name, macroTransformerType r, [], r)
+          DDefun(name, argNames |> List.map MandatoryArg, parseBody body r, Ordinary, r)
+          DMacro(name, r) ]
+
+    | SList(SAtom { Token = Symbol "def/macro" } :: _, r) ->
+        failwithf
+            $"Invalid def/macro at %s{Lexer.formatPos r}. Expected (def/macro (name form inject compare) body...)"
+
+    | other -> [ parseDecl other ]
+
+let parseModule (exprs: SExpr list) : Decl list = List.collect parseDeclForms exprs

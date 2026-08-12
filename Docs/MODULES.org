@@ -9,9 +9,26 @@ things.
 
 | Form                     | Creates a module?     | Makes names visible          | Links an assembly |
 |--------------------------+-----------------------+------------------------------+-------------------|
-| ~(import (std core))~    | yes, the imported one | its exports and re-exports   | yes               |
+| ~(import (std prelude))~ | yes, the imported one | its exports and re-exports   | yes               |
+| ~(import "helper.bjo")~  | yes, the imported one | its exports and re-exports   | yes               |
 | ~(include "helper.bjo")~ | no — splices into /this/ module | everything in the file       | n/a               |
 | transitive ~BjolangDeps~ | no                    | nothing                      | yes               |
+
+*An import is always a compiled unit.* ~(import "helper.bjo")~ compiles
+~helper.bjo~ to ~helper.dll~ and imports that, exactly as if the ~.dll~ had been
+there already. So the two spellings of ~import~ differ only in where the file is
+looked for, and the choice between ~import~ and ~include~ is a choice about
+whether there is a boundary at all:
+
+- an *import* is a boundary. Only exported names cross it, every exported name
+  needs a signature, and inlineable bodies cross as metadata — which is lossy,
+  since ~Codegen.isSerializableTemplate~ refuses some shapes and those fall back
+  to a call.
+- an *include* is not. Everything is in scope, nothing needs exporting, and an
+  inline template keeps its full body.
+
+Use ~include~ to split one module across files. Use ~import~ when the other file
+is a module in its own right.
 
 ** ~export~
 
@@ -172,20 +189,23 @@ Include Error: cannot find 'nope.bjo' included at m.bjo:1 (looked for /.../nope.
 Include Error: malformed include at m.bjo:1. Expected (include "path")
 #+END_SRC
 
-*** Prefer ~include~ over a source-level ~import~
+** Building an imported source module
 
-~(import "helper.bjo")~ — importing a ~.bjo~ for which no ~.dll~ exists — is
-currently *broken*. The file is type-checked and a ~using static~ is emitted
-for it, but the code generator only emits the last module, so the generated C#
-references a class that was never produced:
+~(import "helper.bjo")~ builds ~helper.dll~ if there is not a current one, and
+imports that. "Current" is by timestamp against the whole source closure — the
+file itself and everything it ~include~s — so editing any part of a module
+rebuilds it. Before this existed, ~resolveImportPath~ preferred any ~.dll~ that
+was present, and editing a library then quietly relinked the old one.
 
-#+BEGIN_SRC text
-error CS0246: The type or namespace name 'helper_Module' could not be found
-#+END_SRC
+The sub-compilation runs in a *process of its own*. The compiler keeps
+module-level mutable state that is not stacked — ~Gensym~'s counter, the macro
+table, ~Codegen~'s shadowed-builtin set — so a nested compilation would leave
+the outer one holding another module's macros and a counter that had moved.
 
-See ~TestFiles/srcimport/~ for a reproduction. Until that is fixed, use
-~include~ to split a module across files, or compile the other file to a DLL
-first with ~--lib~ and import that.
+Because the recursion crosses processes, the in-process cycle check cannot see
+it. The chain in flight is carried in ~BJOLANG_BUILD_CHAIN~, and a module
+imported from something it is itself building is reported rather than spawning
+compilers until something gives out.
 
 ** The implicit prelude
 
@@ -206,6 +226,27 @@ The point is that where a name happens to live is not the programmer's problem.
 ~string-append~, ~int->string~, ~file-read-text~ and ~print~ are library
 functions written in Bjolang; ~+~, ~vec-get~ and ~display~ are compiler
 builtins. Nothing at a call site should have to know which is which.
+
+** Macros travel as metadata
+
+A module that defines a ~def/macro~ publishes it in a fourth assembly
+attribute, ~BjolangMacros~:
+
+#+BEGIN_SRC scheme
+(macro "or-else" "macros")
+#+END_SRC
+
+The name, and the module that defines it. It is deliberately *not* an entry in
+~BjolangExports~: those are signatures, for names an importer may call, and a
+macro is not one. It is also read at a different time — before the importing
+module is parsed, because the expander has to know a name is a macro at the
+moment the parser meets it in head position. That is why dependency discovery
+reads ~(import ...)~ off the S-expressions rather than off the parsed
+declarations: reading needs no macros, parsing does.
+
+Every macro is published. There is no ~(export ...)~ for them, because a macro
+that no other module can reach is unusable — it cannot be used in the module
+that defines it. See ~Docs/MACROS.org~.
 
 ** Where a module import resolves
 

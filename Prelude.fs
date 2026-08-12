@@ -95,10 +95,19 @@ let dynEnvType = TCon("DynEnv", [])
 let textInputPortType = TCon("System.IO.TextReader", [])
 let textOutputPortType = TCon("System.IO.TextWriter", [])
 
+/// A piece of syntax: what a macro transformer takes and returns.
+///
+/// Backed by `Bjolang.Runtime.Syntax`, a C# union shaped like a generated one,
+/// for the same reason `Option` and `Result` are built in rather than declared:
+/// the compiler has to construct and read values of it — here, on both sides of
+/// a reflection call into a loaded macro module — and there is no source file it
+/// could hang a `def/type` on that would already exist when that happens.
+let syntaxType = TCon("Syntax", [])
+
 
 let emptyRegistry : TraitRegistry =
     { LocalTraits = Set.empty
-      LocalTypes = Set.ofList ["List"; "Vec"; "VecBuilder"; "ListBuilder"; "MapBuilder"; "VecCursor"; "MapCursor"; "StringCursor"; "StringBuilder"; "Seq"; "Option"; "Result"; "Map"; "Keyword"; "Symbol"; "Array"; "Param"; "DynEnv"; "Promise"; "Event"; "Chan"; "CancelToken"; "AsyncSeq"]
+      LocalTypes = Set.ofList ["List"; "Vec"; "VecBuilder"; "ListBuilder"; "MapBuilder"; "VecCursor"; "MapCursor"; "StringCursor"; "StringBuilder"; "Seq"; "Option"; "Result"; "Map"; "Keyword"; "Symbol"; "Array"; "Param"; "DynEnv"; "Promise"; "Event"; "Chan"; "CancelToken"; "AsyncSeq"; "Syntax"]
       Traits = Map.empty
       TraitMethods = Map.empty
       Implementations = Map.empty
@@ -460,6 +469,7 @@ let prelude : Env =
         "list-empty?", {Scheme = Scheme(["a"], [], makeFunType [makeListType (TVar "a")] boolType); IsMutable = false }
         "list-length", {Scheme = Scheme(["a"], [], makeFunType [makeListType (TVar "a")] intType); IsMutable = false }
         "list-reverse", {Scheme = Scheme(["a"], [], makeFunType [makeListType (TVar "a")] (makeListType (TVar "a"))); IsMutable = false }
+
         "list-map", {Scheme = Scheme(["a"; "b"], [], makeFunType [makeFunType [TVar "a"] (TVar "b"); makeListType (TVar "a")] (makeListType (TVar "b"))); IsMutable = false }
         "list-filter", {Scheme = Scheme(["a"], [], makeFunType [makeFunType [TVar "a"] boolType; makeListType (TVar "a")] (makeListType (TVar "a"))); IsMutable = false }
         // Folds take the function first, then the identity, then the
@@ -534,6 +544,35 @@ let prelude : Env =
         // compiling to their own union, unchanged.
         "Ok", {Scheme = Scheme(["e"; "a"], [], makeFunType [TVar "a"] (makeResultType (TVar "e") (TVar "a"))); IsMutable = false }
         "Err", {Scheme = Scheme(["e"; "a"], [], makeFunType [TVar "e"] (makeResultType (TVar "e") (TVar "a"))); IsMutable = false }
+
+        // Syntax. The cases of `Bjolang.Runtime.Syntax`, monomorphic because
+        // the type takes no argument: a form holds forms.
+        //
+        // `SSym` is an identifier and `SDatum` is a quoted symbol written as
+        // data. They carry the same payload and mean opposite things to
+        // hygiene: the first is renamed when a macro constructs it, the second
+        // never is, because it is a value rather than a reference to a binding.
+        "SSym", {Scheme = Scheme([], [], makeFunType [symbolType] syntaxType); IsMutable = false }
+        "SDatum", {Scheme = Scheme([], [], makeFunType [symbolType] syntaxType); IsMutable = false }
+        "SInt", {Scheme = Scheme([], [], makeFunType [stringType] syntaxType); IsMutable = false }
+        "SStr", {Scheme = Scheme([], [], makeFunType [stringType] syntaxType); IsMutable = false }
+        "SChar", {Scheme = Scheme([], [], makeFunType [charType] syntaxType); IsMutable = false }
+        "SKey", {Scheme = Scheme([], [], makeFunType [keywordType] syntaxType); IsMutable = false }
+        "SList", {Scheme = Scheme([], [], makeFunType [makeListType syntaxType] syntaxType); IsMutable = false }
+        "SPunct", {Scheme = Scheme([], [], makeFunType [stringType] syntaxType); IsMutable = false }
+
+        // What `,@` desugars to. Deliberately not a general `list-append`:
+        // `std/prelude` publishes one of those, and a builtin sharing its name
+        // is ambiguous to C# wherever both are in scope.
+        "syntax-splice", {Scheme = Scheme([], [], makeFunType [makeListType syntaxType; makeListType syntaxType] (makeListType syntaxType)); IsMutable = false }
+
+        // How a transformer rejects its input. Types as a `Syntax` so it can
+        // stand beside the arms that return one; it never returns.
+        "syntax-error", {Scheme = Scheme([], [], makeFunType [syntaxType; stringType] syntaxType); IsMutable = false }
+
+        "syntax->string", {Scheme = Scheme([], [], makeFunType [syntaxType] stringType); IsMutable = false }
+        "syntax-file", {Scheme = Scheme([], [], makeFunType [syntaxType] stringType); IsMutable = false }
+        "syntax-line", {Scheme = Scheme([], [], makeFunType [syntaxType] intType); IsMutable = false }
 
         // Seq operations. A Seq is lazy: nothing below that returns one does any
         // work until the result is consumed.

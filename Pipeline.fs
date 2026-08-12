@@ -58,6 +58,26 @@ let desugarMapLiteral (headRange: Lexer.Range) (entriesSList: SExpr) : SExpr =
         let listMapToken = SAtom { Token = Lexer.Symbol "list->map"; Range = headRange }
         SList([ listMapToken; consChain ], listRange)
 
+/// Folds `#'` into `(syntax-quote form)`.
+///
+/// `#'` is a prefix on the *form* after it, and which shapes a form can take is
+/// the reader's whole job — a list, a vector literal, a comprehension, an atom,
+/// or another `#'`. Rather than enumerate those at the token level, the reader
+/// emits `#'` as an ordinary atom and this runs once a level's forms are known,
+/// where "the next form" is just the next element.
+///
+/// Right to left, so `#'#'x` nests the way it reads.
+let rec private collapseSynQuote (nodes: SExpr list) : SExpr list =
+    match nodes with
+    | SAtom({ Token = SynQuote } as q) :: rest ->
+        match collapseSynQuote rest with
+        | form :: tail ->
+            let head = SAtom { Token = Lexer.Symbol "syntax-quote"; Range = q.Range }
+            SList([ head; form ], unionLexerRanges q.Range (getRange form)) :: tail
+        | [] -> failwithf $"Unexpected #' at end of form at %s{Lexer.formatPos q.Range}"
+    | node :: rest -> node :: collapseSynQuote rest
+    | [] -> []
+
 let rec read (tokens: LexedToken list) : SExpr list * LexedToken list =
     let isDot = function SAtom { Token = Dot } -> true | _ -> false
 
@@ -81,12 +101,14 @@ let rec read (tokens: LexedToken list) : SExpr list * LexedToken list =
 
         SList(finalNodes, listRange), afterList
 
+    // Every level ends at one of these four, so collapsing here covers all of
+    // them and nothing else has to know about `#'`.
     let rec loop acc remaining =
         match remaining with
-        | [] -> List.rev acc, []
-        | { Token = RParen } :: rest -> List.rev acc, rest
-        | { Token = RBracket } :: rest -> List.rev acc, rest
-        | { Token = RBrace } :: rest -> List.rev acc, rest
+        | [] -> collapseSynQuote (List.rev acc), []
+        | { Token = RParen } :: rest -> collapseSynQuote (List.rev acc), rest
+        | { Token = RBracket } :: rest -> collapseSynQuote (List.rev acc), rest
+        | { Token = RBrace } :: rest -> collapseSynQuote (List.rev acc), rest
 
         // Quoted list: '(items...) → (quoted-list items...)
         | { Token = Quote; Range = qr } :: { Token = LParen; Range = r } :: rest ->
@@ -242,6 +264,76 @@ let private parseInlineImpls (source: string) (metadata: string) : Decl list =
             )
         | _ -> None)
 
+/// One macro an assembly publishes: the Bjolang name, and the module that
+/// defines it.
+type MacroEntry = { Name: string; ModuleName: string }
+
+/// Reads the `BjolangMacros` metadata back.
+///
+/// Format is `(macro "name" "module")`, one per line. Deliberately not folded
+/// into `BjolangExports`: those entries are signatures, and this is read
+/// *before* the importing module is parsed — the expander has to know a name is
+/// a macro at the moment the parser meets it in head position.
+let private parseMacroEntries (source: string) (metadata: string) : MacroEntry list =
+    let forms, _ = Lexer.tokenize source metadata |> read
+
+    forms
+    |> List.choose (function
+        | SList([ SAtom { Token = Lexer.Symbol "macro" }
+                  SAtom { Token = Lexer.StringLit name }
+                  SAtom { Token = Lexer.StringLit moduleName } ],
+                _) -> Some { Name = name; ModuleName = moduleName }
+        | bad ->
+            failwithf $"Malformed macro entry in metadata at %s{Lexer.formatPos (getRange bad)}")
+
+/// Loads the transformers an imported assembly publishes and hands them to the
+/// expander.
+///
+/// This is the Template Haskell step: the assembly is already loaded (its
+/// metadata was just read off it), and a transformer is an ordinary
+/// `public static` method on the module class, so all that is left is to find
+/// it. `Exports` comes from the same assembly's declarations, because a
+/// template may only name an exported binding of its own module — anything else
+/// has nowhere for rule two to resolve to.
+let private registerMacros
+    (asm: System.Reflection.Assembly)
+    (entries: MacroEntry list)
+    (decls: Decl list)
+    : unit =
+
+    if not entries.IsEmpty then
+        let exports =
+            decls
+            |> List.choose (function
+                | DExtern(n, _, _, _) -> Some n
+                | DDefun(n, _, _, _, _) -> Some n
+                | DDef(n, _, _) -> Some n
+                | DDefMutable(n, _, _) -> Some n
+                | _ -> None)
+            |> Set.ofList
+
+        for entry in entries do
+            let className = Naming.moduleClassName entry.ModuleName
+            let clrType = asm.GetType className
+
+            if isNull clrType then
+                failwithf
+                    $"'%s{entry.Name}' is declared a macro by %s{asm.GetName().Name}, but the class '%s{className}' holding it is not in that assembly."
+
+            let method = clrType.GetMethod(Naming.sanitizeIdent entry.Name)
+
+            if isNull method then
+                failwithf
+                    $"'%s{entry.Name}' is declared a macro by %s{asm.GetName().Name}, but '%s{className}' has no method '%s{Naming.sanitizeIdent entry.Name}'."
+
+            Macro.register
+                { Name = entry.Name
+                  ModuleName = entry.ModuleName
+                  Exports = exports
+                  Method = method }
+
+        Macro.install ()
+
 let resolveImportPath (basePath: string) (importSpec: ImportSpec) : string option =
     match importSpec with
     | RelativePath p -> 
@@ -268,6 +360,77 @@ type LoadedModule = {
     ParsedDecls: Decl list
 }
 
+// ---------------------------------------------------------------------------
+// Building an imported source module
+// ---------------------------------------------------------------------------
+
+/// Compiles a `.bjo` to a `.dll` and returns its path.
+///
+/// A hook because `Pipeline.fs` is compiled before `Codegen.fs` and
+/// `Program.fs`, and the backend is where this lives. Set once, by
+/// `Program.main`.
+let mutable compileLibrary: string -> string =
+    fun path -> failwithf $"No backend is installed to compile '%s{path}'."
+
+/// Every file spliced into `path` by an `(include ...)`, transitively.
+///
+/// Needed for staleness: an included file is part of the module's source but is
+/// not the file the `.dll` is named after, so editing one has to force a
+/// rebuild just as editing the module itself does.
+let rec private includedFiles (seen: Set<string>) (path: string) : Set<string> =
+    if Set.contains path seen || not (File.Exists path) then
+        seen
+    else
+        let seen = Set.add path seen
+        let forms, _ = Lexer.tokenize path (File.ReadAllText path) |> read
+
+        forms
+        |> List.fold
+            (fun acc form ->
+                match form with
+                | SList([ SAtom { Token = Lexer.Symbol "include" }; SAtom { Token = Lexer.StringLit rel } ], _) ->
+                    includedFiles acc (Path.GetFullPath(Path.Combine(Path.GetDirectoryName(path: string), rel)))
+                | _ -> acc)
+            seen
+
+/// The `.dll` for an imported `.bjo`, built if there is not a current one.
+///
+/// `(import "x.bjo")` means a compiled unit, always. Merging the source into
+/// the importing assembly is what it used to mean, and it never worked: only
+/// the last module was emitted, so the generated C# referenced a class nothing
+/// produced. Compiling it separately is also what makes `include` a distinct
+/// thing rather than a slower spelling of the same one.
+///
+/// Staleness is by timestamp against the whole source closure. It is checked at
+/// all, which is new: `resolveImportPath` preferred any `.dll` that existed, so
+/// editing a library and rebuilding a program against it quietly linked the old
+/// one.
+let private ensureLibrary (bjoPath: string) : string =
+    let dllPath = Path.ChangeExtension(bjoPath, ".dll")
+
+    let upToDate =
+        File.Exists dllPath
+        && (let built = File.GetLastWriteTimeUtc dllPath
+
+            includedFiles Set.empty bjoPath
+            |> Set.forall (fun src -> File.GetLastWriteTimeUtc src <= built))
+
+    if upToDate then dllPath else compileLibrary bjoPath
+
+/// The path an import resolves to, which is always a `.dll`.
+///
+/// `resolveImportPath` prefers an existing `.dll` and stops there, which is not
+/// enough: with a `.bjo` beside it, the source is the truth and the `.dll` may
+/// be behind it. A `.dll` with no source is a prebuilt library and is taken as
+/// given.
+let private resolveDependency (basePath: string) (spec: ImportSpec) : string option =
+    resolveImportPath basePath spec
+    |> Option.map (fun resolved ->
+        let source =
+            if resolved.EndsWith ".dll" then Path.ChangeExtension(resolved, ".bjo") else resolved
+
+        if source.EndsWith ".bjo" && File.Exists source then ensureLibrary source else resolved)
+
 /// `(std prelude)`, which every program gets whether it asks or not.
 let private preludeSpec = ModulePath [ "std"; "prelude" ]
 
@@ -281,6 +444,27 @@ let private isStandardLibrary (absPath: string) =
     let lib = Paths.libDir.TrimEnd(Path.DirectorySeparatorChar) + string Path.DirectorySeparatorChar
     absPath.StartsWith(lib, StringComparison.Ordinal)
 
+/// The imports a file declares, read off its S-expressions.
+///
+/// Read before the file is parsed, and that is the point. A module's
+/// dependencies used to be collected from the `DImport`s in its *parsed*
+/// declarations, which is too late for macros: parsing a form whose head is a
+/// macro needs that macro's module already compiled and loaded. Reading
+/// S-expressions needs no macros, so the edges can be found first.
+///
+/// `Parser.parseDecl` is called rather than the shape being re-matched here, so
+/// that one place decides what an import path means. An import form contains no
+/// expressions and so cannot itself contain a macro call.
+let importsOf (forms: SExpr list) : ImportSpec list =
+    forms
+    |> List.collect (fun form ->
+        match form with
+        | SList(SAtom { Token = Lexer.Symbol "import" } :: _, _) ->
+            match Parser.parseDecl form with
+            | DImport(specs, _) -> specs
+            | _ -> []
+        | _ -> [])
+
 /// Adds the implicit `(import (std prelude))`.
 ///
 /// The prelude is *linked*, not imported: `string-append`, `int->string`,
@@ -293,22 +477,20 @@ let private isStandardLibrary (absPath: string) =
 /// still shadows a prelude name — later bindings win, and the prelude is the
 /// earliest thing there is. A file that already imports the prelude by hand is
 /// left alone, so the import graph has one edge rather than two.
-let private withImplicitPrelude (absPath: string) (decls: Decl list) : Decl list =
-    let alreadyImported =
-        decls
-        |> List.exists (function
-            | DImport(specs, _) -> specs |> List.contains preludeSpec
-            | _ -> false)
-
-    if alreadyImported || isStandardLibrary absPath then
-        decls
+///
+/// Done to the *forms* rather than to the declarations, because the import
+/// graph is now built before parsing and the prelude is one of its edges.
+let private withImplicitPrelude (absPath: string) (forms: SExpr list) : SExpr list =
+    if List.contains preludeSpec (importsOf forms) || isStandardLibrary absPath then
+        forms
     else
         let r =
             { Start = { Line = 1; Column = 1 }
               End = { Line = 1; Column = 1 }
               File = absPath }
 
-        DImport([ preludeSpec ], r) :: decls
+        let sym name = SAtom { Token = Lexer.Symbol name; Range = r }
+        SList([ sym "import"; SList([ sym "std"; sym "prelude" ], r) ], r) :: forms
 
 let wrapInModule (moduleName: string) (filePath: string) (decls: Decl list) : Decl list =
     // Find the first and last range to represent the module range
@@ -323,12 +505,16 @@ let wrapInModule (moduleName: string) (filePath: string) (decls: Decl list) : De
                 | DSignature(_, _, _, r) | DType(_, r) | DTypeRec(_, r) | DTrait(_, _, _, _, _, _, r) | DImpl(_, _, _, _, r)
                 | DImplExtern(_, _, _, r) | DInlineImpl(_, _, _, _, _, _, _, r)
                 | DModule(_, _, r) | DImport(_, r) | DExport(_, r) | DReExport(_, r) | DExtern(_, _, _, r)
-                | DImportExtern(_, r) | DImportClass(_, r) -> r
+                | DImportExtern(_, r) | DImportClass(_, r) | DMacro(_, r) -> r
             unionLexerRanges (getRange first) (getRange last)
     
     [ DModule(moduleName, decls, r) ]
 
 let loadModuleGraph (mainFilePath: string) : Decl list * string list =
+    // Unconditionally, not only when something publishes a macro: the expander
+    // is also what reports a macro used in the module that defines it.
+    Macro.install ()
+
     let resolvedModules = System.Collections.Generic.Dictionary<string, LoadedModule>()
     let currentPath = System.Collections.Generic.HashSet<string>()
     let dllDeps = System.Collections.Generic.HashSet<string>()
@@ -386,6 +572,16 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
                         |> Option.map (parseInlineImpls absPath)
                         |> Option.defaultValue []
 
+                    // The macros this assembly publishes.
+                    let macroEntries =
+                        attr
+                        |> Array.choose (fun a ->
+                            let meta = a :?> System.Reflection.AssemblyMetadataAttribute
+                            if meta.Key = "BjolangMacros" then Some meta.Value else None)
+                        |> Array.tryHead
+                        |> Option.map (parseMacroEntries absPath)
+                        |> Option.defaultValue []
+
                     match exports with
                     | Some metaStr ->
                         let tokens, _ = Lexer.tokenize absPath metaStr |> read
@@ -425,34 +621,75 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
                                     let constraints = Map.tryFind name constraintMap |> Option.defaultValue []
                                     DExtern(name, t, constraints, r)
                                 | d -> d)
+                        registerMacros asm macroEntries parsedDecls
                         // No module dependencies: a DLL's transitive deps are
                         // link-only and never enter the module graph. Inline
                         // templates come last: registering one is meaningless
                         // until the trait and impl it belongs to exist.
                         parsedDecls @ inlineImplDecls, []
                     | None ->
+                        registerMacros asm macroEntries []
                         inlineImplDecls, []
                 else
+                    // Reported rather than left to `File.ReadAllText`, whose
+                    // `FileNotFoundException` is not a diagnostic and so prints
+                    // a compiler stack trace at whoever mistyped a path.
+                    if not (File.Exists absPath) then
+                        failwithf
+                            "Import Error: cannot find '%s'. Paths in an (import \"...\") resolve relative to the file doing the importing."
+                            absPath
+
                     let sourceCode = File.ReadAllText(absPath)
-                    let tokens, _ = Lexer.tokenize absPath sourceCode |> read
+                    let forms, _ = Lexer.tokenize absPath sourceCode |> read
                     // Includes are spliced before anything looks at the forms, so
                     // an included file's own imports are picked up as this
                     // module's dependencies below.
-                    let tokens = expandIncludes [ absPath ] absPath tokens
+                    let forms = expandIncludes [ absPath ] absPath forms
                     // The implicit `(import (std prelude))` goes on *after*
                     // includes are spliced: an included file's forms land in
                     // this module, so this module's one import covers them.
-                    let parsedDecls = Parser.parseModule tokens |> withImplicitPrelude absPath
+                    let forms = withImplicitPrelude absPath forms
 
-                    let deps = 
-                        parsedDecls 
-                        |> List.choose (function DImport(specs, _) -> Some specs | _ -> None)
-                        |> List.concat
-                        |> List.choose (resolveImportPath absPath)
-                    parsedDecls, deps
+                    // Which of this module's own names are macros. Read off the
+                    // S-expressions, like the imports: a `def/macro` is
+                    // recognizable without parsing, and using one here has to
+                    // be reported as what it is rather than as an unbound name.
+                    let localMacros =
+                        forms
+                        |> List.choose (function
+                            | SList(SAtom { Token = Lexer.Symbol "def/macro" }
+                                    :: SList(SAtom { Token = Lexer.Symbol name } :: _, _)
+                                    :: _,
+                                    _) -> Some name
+                            | _ -> None)
+                        |> Set.ofList
 
-            for dep in deps do
-                load dep
+                    // Resolved *and built*: an imported `.bjo` becomes a `.dll`
+                    // here, so every edge in the graph names a compiled unit and
+                    // the topological sort below keys on the same paths.
+                    let deps = importsOf forms |> List.choose (resolveDependency absPath)
+
+                    // Dependencies are loaded *before* this module is parsed.
+                    //
+                    // This is the whole reordering: a dependency's `.dll` is
+                    // what says which of its names are macros, and the parser
+                    // has to know that at the moment it meets one in head
+                    // position. Parsing first and collecting `DImport`s
+                    // afterwards cannot work, however the expander is written.
+                    for dep in deps do
+                        load dep
+
+                    // Set immediately before parsing, and not earlier: loading a
+                    // dependency parses *that* module, whose own macros are a
+                    // different set.
+                    Macro.setLocalMacros localMacros
+                    let parsed = Parser.parseModule forms
+                    Macro.setLocalMacros Set.empty
+                    parsed, deps
+
+            // Dependencies were loaded above, before this module was parsed. A
+            // `.dll` has none to load: its transitive deps are link-only and
+            // never enter the module graph.
 
             let moduleName = Path.GetFileNameWithoutExtension(absPath).Replace(".", "_").Replace("-", "_")
             resolvedModules.[absPath] <- {
@@ -547,6 +784,18 @@ let runFullFrontendPipeline (mainFilePath: string) =
     try
         printfn "=== Step 1: Parsing & Module Resolution ==="
         let parsedModuleDecls, dllDeps = loadModuleGraph mainFilePath
+
+        // The macros *this* compilation publishes. The main module is last, and
+        // is the only one being compiled — everything before it arrived as a
+        // `.dll` and already declared its own macros in its own metadata.
+        //
+        // Read here rather than after type checking, because `DMacro` does not
+        // survive it: a macro is checked as the `defun` it also produced.
+        let declaredMacros =
+            match List.tryLast parsedModuleDecls with
+            | Some(DModule(_, decls, _)) -> decls |> List.choose (function DMacro(n, _) -> Some n | _ -> None)
+            | _ -> []
+
         let letrecifiedDecls = letrecifyModule parsedModuleDecls
 
         printfn "=== Step 2: Type Checking ==="
@@ -589,7 +838,7 @@ let runFullFrontendPipeline (mainFilePath: string) =
         let uniquifiedAst = AlphaRename.uniquifyProgram loopLoweredAst
 
         printfn "=== Frontend pipeline complete ==="
-        Some (env, uniquifiedAst, dllDeps)
+        Some (env, uniquifiedAst, dllDeps, declaredMacros)
     with ex ->
         Diagnostics.reportFailure ex
         None

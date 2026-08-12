@@ -161,6 +161,12 @@ let mapPrimitiveType (name: string) =
     | "AsyncSeq" -> "System.Collections.Generic.IAsyncEnumerable"
     | "Keyword" | "Bjolang.Keyword" -> "BjolangRuntime.Keyword"
     | "Symbol" | "Bjolang.Symbol" -> "BjolangRuntime.Symbol"
+    // A macro's input and output. Qualified for the same reason `BjoChar` is:
+    // it lives in `Bjolang.Runtime`, not in the static class the generated file
+    // has a `using static` for. Its cases are seeded into `UnionCases` in
+    // `generateProgram`, so patterns and construction take the ordinary union
+    // paths.
+    | "Syntax" -> "Bjolang.Runtime.Syntax"
     // Fully qualified: `BjoChar` lives in the `Bjolang.Runtime` namespace,
     // while `Keyword` and `Symbol` are nested in the global `BjolangRuntime`
     // static class that the generated file has a `using static` for.
@@ -610,8 +616,12 @@ let getUnionTypeString (hm: HMType) (parentName: string) : string =
     | None ->
         sanitizeIdent parentName
 
+/// Backslashes are doubled *first*, for the same reason `escapeAttribute` does
+/// it first: escaping only the quotes turns a `\` the source already had into
+/// the start of an escape sequence C# does not recognize, and `"a\c"` emits
+/// source that does not parse.
 let escapeStringLiteral (s: string) =
-    s.Replace("\"", "\\\"").Replace("\n", "\\n")
+    s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r").Replace("\t", "\\t")
 
 /// A pattern that cannot fail.
 ///
@@ -3213,7 +3223,19 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
 /// `linkedDlls` is every assembly this compilation references, and each one
 /// contributes a `using static` so that names re-exported through one DLL can
 /// still be found in the class that actually defines them.
-let generateProgram (exportMetadata: string) (inlineMetadata: string) (metadataDeps: string list) (linkedDlls: string list) (decls: TDecl list) : string =
+/// The cases of `Syntax`, which is a builtin union rather than a declared one.
+///
+/// Seeded rather than collected: the type is defined in `BjolangRuntime` and
+/// there is no `def/type` anywhere to read it off. With this in place the
+/// generic pattern and construction paths handle it exactly as they handle a
+/// union the program declared — `Bjolang.Runtime.Syntax.SList(var xs)` and
+/// `new Bjolang.Runtime.Syntax.SList(xs)` — and no special case is needed.
+let builtinUnionCases: Map<string, UnionCaseInfo> =
+    [ "SSym"; "SDatum"; "SInt"; "SStr"; "SChar"; "SKey"; "SList"; "SPunct" ]
+    |> List.map (fun name -> name, { ParentTypeName = "Syntax"; IsDataCase = true })
+    |> Map.ofList
+
+let generateProgram (exportMetadata: string) (inlineMetadata: string) (macroMetadata: string) (metadataDeps: string list) (linkedDlls: string list) (decls: TDecl list) : string =
     let unionCases =
         let rec collect decls =
             decls |> List.collect (function
@@ -3231,7 +3253,9 @@ let generateProgram (exportMetadata: string) (inlineMetadata: string) (metadataD
                 | TModule (_, innerDecls, _) -> collect innerDecls
                 | _ -> []
             )
-        collect decls |> Map.ofList
+        // A declared case of the same name wins, exactly as a declared *type*
+        // wins over a builtin in `shadowedBuiltins` below.
+        collect decls |> List.fold (fun acc (n, info) -> Map.add n info acc) builtinUnionCases
 
     // Anything the program declares a type of its own for stops being the
     // built-in of that name, everywhere.
@@ -3321,6 +3345,14 @@ let generateProgram (exportMetadata: string) (inlineMetadata: string) (metadataD
     if not (String.IsNullOrWhiteSpace(inlineMetadata)) then
         let escapedInline = escapeAttribute inlineMetadata
         appendLine ctx $"[assembly: System.Reflection.AssemblyMetadata(\"BjolangInlineImpls\", \"%s{escapedInline}\")]"
+
+    // Which of this assembly's methods are macro transformers. Read by an
+    // importing compilation *before* it parses its own source, which is the
+    // whole reason it is metadata rather than something derived from a
+    // signature.
+    if not (String.IsNullOrWhiteSpace(macroMetadata)) then
+        let escapedMacros = escapeAttribute macroMetadata
+        appendLine ctx $"[assembly: System.Reflection.AssemblyMetadata(\"BjolangMacros\", \"%s{escapedMacros}\")]"
     
     if not metadataDeps.IsEmpty then
         let depsStr = metadataDeps |> List.map System.IO.Path.GetFullPath |> String.concat ";"

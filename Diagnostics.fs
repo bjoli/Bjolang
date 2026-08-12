@@ -27,6 +27,24 @@ module Diagnostics =
     let withLocation (where: Lexer.Range) (ex: exn) : exn =
         System.Exception($"%s{ex.Message}\n  at %s{Lexer.formatPos where}")
 
+    /// An invented name's `__12` suffix, wherever one appears in a message.
+    let private invented = Regex(@"(?<=[A-Za-z0-9_?!*/<>=+'&.-])__\d+\b", RegexOptions.Compiled)
+
+    /// Strips the suffix `Gensym.fresh` adds.
+    ///
+    /// Every renaming in the compiler goes through `Gensym`, and none of the
+    /// names it invents is one the programmer wrote: a loop's copied slot, an
+    /// inlined body's freshened binder, and — the reason this exists — a macro
+    /// template's identifier, renamed apart from the call site so that it cannot
+    /// capture. Reporting `tmp__37` names a thing that appears in no source
+    /// file. Reporting `tmp` names what was written.
+    ///
+    /// Applied at the point of printing rather than at each of the several
+    /// hundred sites that raise, and only there: the names themselves have to
+    /// stay distinct right up until the message is built, since being distinct
+    /// is their whole purpose.
+    let humanize (message: string) = invented.Replace(message, "")
+
     /// Prints a failed compilation.
     ///
     /// A diagnostic is the message and nothing else: a stack trace through the
@@ -35,7 +53,7 @@ module Diagnostics =
     /// trace and says which of the two it is.
     let reportFailure (ex: exn) =
         printfn ""
-        printfn $"%s{ex.Message}"
+        printfn $"%s{humanize ex.Message}"
 
         if not (isDiagnostic ex) then
             printfn ""

@@ -62,7 +62,7 @@
     (type . 0) (type-rec . 0) (bjo . 0)
     ;; One distinguished form, then the body.
     (defun . 1) (defbjo . 1) (def . 1) (def/mutable . 1)
-    (def/trait . 1) (def/impl . 1) (def/impl/extern . 1)
+    (def/trait . 1) (def/impl . 1) (def/impl/extern . 1) (def/macro . 1)
     (when . 1) (unless . 1) (match . 1) (try . 1)
     (with-open . 1) (parameterize . 1) (fun . 1) (record . 1)
     ;; The name and the collector, then the body.
@@ -131,7 +131,9 @@ else aligns under its first argument."
 
 (defvar bjo-font-lock-keywords
   `(;; (defun (name args) ...) — the name is inside the parameter list.
-    ("(\\(defun\\|defbjo\\)\\_>\\s-*(\\s-*\\([^ \t\n()]+\\)"
+    ;; `def/macro' is written the same way and names a function too, even though
+    ;; the compiler is the only thing that ever calls it.
+    ("(\\(defun\\|defbjo\\|def/macro\\)\\_>\\s-*(\\s-*\\([^ \t\n()]+\\)"
      (1 font-lock-keyword-face)
      (2 font-lock-function-name-face))
 

@@ -30,6 +30,16 @@ module Lexer =
         | LBrace
         | RBrace
         | Comma
+        /// `,@` — unquote-splicing, inside a `#'` template. A token of its own
+        /// because `,@x` would otherwise lex as `Comma` followed by a symbol
+        /// literally named `@x`.
+        | CommaAt
+        /// `#'` — syntax-quote. Distinct from `Quote` because the two build
+        /// different things: `'(a b)` is a homogeneous list literal and
+        /// `#'(a b)` is a `Syntax` tree. Deciding between them by whether the
+        /// enclosing form is a `def/macro` would make the meaning of a helper
+        /// function's quote depend on which file it sits in.
+        | SynQuote
         | Colon
         | Dot
         | Spread
@@ -139,6 +149,7 @@ module Lexer =
                 // brace before this.
                 | '{' -> emit LBrace 1
                 | '}' -> emit RBrace 1
+                | ',' when pos + 1 < length && input[pos + 1] = '@' -> emit CommaAt 2
                 | ',' -> emit Comma 1
                 // There are two types of keywords right now...
                 | ':' when pos + 1 < length && isSymbolChar input[pos + 1] ->
@@ -243,6 +254,11 @@ module Lexer =
                     match input[pos + 1] with
                     | '(' -> emit Hash 1
                     | '[' -> emit Hash 1
+                    // `#'` — syntax-quote. Two characters, because `'` is not a
+                    // symbol character: without this arm `#'(a b)` lexes as a
+                    // symbol `#`, a `Quote` and an `LParen`, and the stray `#`
+                    // reaches the parser.
+                    | '\'' -> emit SynQuote 2
                     | ':' -> // Keywords (#:keyword)
                         let nextPos = readSymbol (pos + 2)
                         let len = nextPos - pos

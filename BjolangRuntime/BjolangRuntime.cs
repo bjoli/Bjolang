@@ -800,6 +800,8 @@ public static partial class BjolangRuntime {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static SchemeList.SchemeList<T> listsubreverse<T>(SchemeList.SchemeList<T> list) => SchemeList.SchemeList.Reverse(list);
 
+
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static SchemeList.SchemeList<U> listsubmap<T, U>(Func<T, U> selector, SchemeList.SchemeList<T> list) => SchemeList.SchemeList.Map(list, selector);
 
@@ -1226,5 +1228,47 @@ public static partial class BjolangRuntime {
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool symbol_QMARK(object? o) => o is Symbol;
+
+    // --- Syntax ---
+
+    /// `(syntax->string s)`. Renders a piece of syntax back to something that
+    /// reads as source, which is what a macro's error message wants to quote.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static string syntaxsubgtstring(Bjolang.Runtime.Syntax s) => s.ToString();
+
+    /// `(syntax-file s)` and `(syntax-line s)`. The range is otherwise opaque:
+    /// a macro has no business constructing one, and the expander fills in the
+    /// call site's range for everything a transformer builds.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static string syntaxsubfile(Bjolang.Runtime.Syntax s) => s.Range.File ?? "<unknown>";
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int syntaxsubline(Bjolang.Runtime.Syntax s) => s.Range.StartLine;
+
+    /// `(syntax-error form message)`. How a transformer rejects its input.
+    ///
+    /// Types as a `Syntax` so it can stand in a `match` arm beside the arms that
+    /// return one. It never does return: the expander catches this, unwraps the
+    /// reflection frame, and reports it against the macro's call site.
+    public static Bjolang.Runtime.Syntax syntaxsuberror(Bjolang.Runtime.Syntax form, string message) =>
+        throw new InvalidOperationException($"{message} — in {form}");
+
+    /// What `,@` compiles to: append, on the children of one template form.
+    ///
+    /// Monomorphic, and named for the one thing it is for, rather than being a
+    /// general `list-append`. `std/prelude` already publishes one of those (via
+    /// `Monad.protobjo`), and a builtin of the same name is ambiguous to C# at
+    /// every call site — both are in scope through `using static`. A splice
+    /// also must not depend on the prelude having been imported: `lib/` is
+    /// compiled without it.
+    public static SchemeList.SchemeList<Bjolang.Runtime.Syntax> syntaxsubsplice(
+        SchemeList.SchemeList<Bjolang.Runtime.Syntax> a,
+        SchemeList.SchemeList<Bjolang.Runtime.Syntax> b)
+    {
+        if (a.IsEmpty) return b;
+        var result = b;
+        foreach (var item in SchemeList.SchemeList.Reverse(a)) result = SchemeList.SchemeList.Cons(item, result);
+        return result;
+    }
 }
 

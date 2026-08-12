@@ -43,8 +43,75 @@ let rec parseArgs (args: string list) (opts: CompilerOptions) =
 open Bjolang
 open System.IO
 
+/// Compiles an imported `.bjo` to a `.dll`, in a process of its own.
+///
+/// Out of process, and that is not incidental. A sub-compilation shares
+/// `Gensym`'s counter, the macro table and `Codegen`'s shadowed-builtin set
+/// with the compilation that asked for it — all module-level mutable state,
+/// none of it stacked. Running it here would leave the outer compilation
+/// holding another module's macros and a counter that had moved. A process
+/// boundary is the cheapest correct isolation, and the compiler already starts
+/// one per C# build.
+/// The modules whose builds are already in flight, above this process.
+///
+/// Carried in the environment because the recursion crosses processes, and each
+/// one has a module graph of its own: without it, `a.bjo` importing `b.bjo`
+/// importing `a.bjo` spawns compilers until something gives out. The in-process
+/// cycle check cannot see past its own graph.
+let private buildChainVariable = "BJOLANG_BUILD_CHAIN"
+
+let private compileDependencyOutOfProcess (bjoPath: string) : string =
+    let dllPath = Path.ChangeExtension(bjoPath, ".dll")
+
+    let chain =
+        match System.Environment.GetEnvironmentVariable buildChainVariable with
+        | null | "" -> []
+        | v -> v.Split(';') |> Array.toList |> List.filter (fun s -> s <> "")
+
+    if List.contains bjoPath chain then
+        failwithf
+            "Import Error: '%s' is imported from a module it is itself building. Import chain: %s"
+            (Path.GetFileName bjoPath)
+            ((chain @ [ bjoPath ]) |> List.map Path.GetFileName |> String.concat " -> ")
+
+    printfn $"Building imported module %s{Path.GetFileName bjoPath}"
+
+    let self = System.Reflection.Assembly.GetEntryAssembly().Location
+
+    let psi =
+        if System.String.IsNullOrEmpty self then
+            // Published as a native host: the process itself is the compiler.
+            System.Diagnostics.ProcessStartInfo(
+                System.Environment.ProcessPath,
+                $"--lib \"{bjoPath}\"")
+        else
+            System.Diagnostics.ProcessStartInfo("dotnet", $"exec \"{self}\" --lib \"{bjoPath}\"")
+
+    psi.UseShellExecute <- false
+    psi.RedirectStandardOutput <- true
+    psi.RedirectStandardError <- true
+    psi.Environment[buildChainVariable] <- String.concat ";" (chain @ [ bjoPath ])
+
+    let p = System.Diagnostics.Process.Start(psi)
+    let stdout = p.StandardOutput.ReadToEnd()
+    let stderr = p.StandardError.ReadToEnd()
+    p.WaitForExit()
+
+    if p.ExitCode <> 0 || not (File.Exists dllPath) then
+        // The dependency's own diagnostics, passed through. They name its file
+        // and its lines, which is where the fault is.
+        failwithf
+            "Import Error: could not build '%s', which is imported here.\n%s%s"
+            (Path.GetFileName bjoPath)
+            (if System.String.IsNullOrWhiteSpace stdout then "" else stdout.TrimEnd() + "\n")
+            (if System.String.IsNullOrWhiteSpace stderr then "" else stderr.TrimEnd())
+
+    dllPath
+
 [<EntryPoint>]
 let main argv =
+    Pipeline.compileLibrary <- compileDependencyOutOfProcess
+
     // 1. Parse CLI arguments
     let options = parseArgs (Array.toList argv) defaultOptions
 
@@ -88,7 +155,7 @@ let main argv =
         // here we should add the complation to a library
         let result = Pipeline.runFullFrontendPipeline inputFilePath
         match result with
-        | Some (env, typedAst, dllDeps) ->
+        | Some (env, typedAst, dllDeps, declaredMacros) ->
             // A source file with no `main` is a library whether or not `--lib`
             // was passed: an entry point would call a method that does not
             // exist, and a C# `Exe` without a `Main` does not link at all.
@@ -540,10 +607,41 @@ let main argv =
                     |> String.concat "\n"
                 else ""
 
+            // The macros this assembly publishes, and the class holding them.
+            //
+            // Kept out of `BjolangExports` deliberately: those entries are
+            // signatures, and a macro is not a binding an importer may call. An
+            // importer needs one thing from this — that the name is a macro and
+            // where the transformer lives — and reads it before it parses a
+            // line of its own source.
+            //
+            // Every macro is published. There is no `(export ...)` for them,
+            // because a macro that cannot be used from anywhere is the one thing
+            // a macro cannot be: it is unusable in its own module by
+            // construction.
+            let macroMetadata =
+                if isLibrary && not declaredMacros.IsEmpty then
+                    // The Bjolang module name, not the C# class. The reader
+                    // needs both — the class to reflect on, and the module to
+                    // spell `Module_Module::helper` for a template that names
+                    // one of this module's own bindings — and `Naming` already
+                    // derives the second from the first.
+                    let moduleName =
+                        Path.GetFileNameWithoutExtension(inputFilePath).Replace(".", "_").Replace("-", "_")
+
+                    declaredMacros
+                    |> List.map (fun name -> $"(macro \"{name}\" \"{moduleName}\")")
+                    |> String.concat "\n"
+                else ""
+
+            if isLibrary && not declaredMacros.IsEmpty then
+                printfn "Publishing %d macro(s): %s" declaredMacros.Length (String.concat ", " declaredMacros)
+
             let csCode =
                 Codegen.generateProgram
                     exportMetadata
                     inlineMetadata
+                    macroMetadata
                     (if isLibrary then dllDeps else [])
                     dllDeps
                     typedAst
