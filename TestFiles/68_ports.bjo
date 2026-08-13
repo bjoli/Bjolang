@@ -32,6 +32,14 @@
           (ignore (read-line p))
           (loop (+ n 1))))))
 
+;; The output counterpart of `count-lines`, and the same point: a procedure that
+;; writes to a port does not learn where the text is going.
+(: write-greeting (-> TextOutputPort void))
+(defun (write-greeting p)
+  (write-string p "hello")
+  (write-string p " ")
+  (write-string p "world"))
+
 ;; The `/opt` variant, where the check and the read are one step. Also pins
 ;; that lines come back without their newline.
 (: join-lines (-> TextInputPort string))
@@ -105,6 +113,64 @@
     ((Ok r) (with-open ((in r))
               (expect "file port lines" (int->string (count-lines in)) "3")))
     ((Err e) (println "FAILURE: could not reopen the file")))
+
+  ;; --- String output ports ------------------------------------------------
+  ;;
+  ;; A port that collects what is written to it. `open-output-string` cannot
+  ;; fail, so it hands back the port rather than a `Result` — the same asymmetry
+  ;; with the file opener that `open-input-string` has.
+  (def out-path "68_ports_out.tmp")
+
+  (def out1 (open-output-string))
+  (write-string out1 "abc")
+  (write-string out1 "def")
+  (expect "a string port collects what is written" (get-output-string out1) "abcdef")
+
+  (expect "nothing written is the empty string" (get-output-string (open-output-string)) "")
+
+  ;; Asking is a look, not a close: the port stays open and keeps collecting.
+  (def out2 (open-output-string))
+  (write-string out2 "one")
+  (expect "the first look" (get-output-string out2) "one")
+  (write-string out2 "two")
+  (expect "the second includes the first" (get-output-string out2) "onetwo")
+
+  ;; What it collected reads back as a port. Written with `writeln` and read
+  ;; with `read-line/opt`, so the newline is the platform's and the test does
+  ;; not have to name it.
+  (def out3 (open-output-string))
+  (writeln out3 "first")
+  (writeln out3 "second")
+  (expect "round trip through a string port"
+          (join-lines (open-input-string (get-output-string out3)))
+          "first|second|")
+
+  ;; One procedure, both kinds of output port — the whole reason a port is one
+  ;; type. `write-greeting` is written against `TextOutputPort` and neither of
+  ;; these tells it anything more.
+  (def out4 (open-output-string))
+  (write-greeting out4)
+  (expect "a writer over a string port" (get-output-string out4) "hello world")
+
+  (match (open-output-file out-path)
+    ((Ok w) (with-open ((out w)) (write-greeting out)))
+    ((Err e) (println "FAILURE: could not open the output file")))
+  (expect "the same writer over a file port" (file-read-text out-path) "hello world")
+
+  ;; The one port operation whose wrong argument is not a type error. A file
+  ;; port and a string port are deliberately the same type, so nothing earlier
+  ;; can rule this out — and .NET would answer "System.IO.StreamWriter" rather
+  ;; than fail, so the check is made at the boundary instead.
+  (match (open-output-file out-path)
+    ((Ok w) (with-open ((out w))
+              (expect "get-output-string on a file port throws"
+                      (match (try (get-output-string out) #:catch (System.InvalidOperationException))
+                        ((Ok _) "returned")
+                        ((Err e) "threw"))
+                      "threw")))
+    ((Err e) (println "FAILURE: could not open the output file")))
+
+  (file-delete out-path)
 
   ;; --- Opening failures are values ----------------------------------------
   (expect "missing file is Err"

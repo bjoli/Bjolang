@@ -366,6 +366,10 @@ let prelude : Env =
         // end of input, and the two drains, which want the collection builders
         // directly.
         "reader-read-line!", {Scheme = Scheme([], [], makeFunType [TCon("System.IO.TextReader", [])] stringType); IsMutable = false }
+        // What `get-output-string` is built on. A builtin because the failure it
+        // has to report — a port that is not a string port — is a value rather
+        // than an exception on the .NET side.
+        "writer->string", {Scheme = Scheme([], [], makeFunType [TCon("System.IO.TextWriter", [])] stringType); IsMutable = false }
         "reader->list", {Scheme = Scheme([], [], makeFunType [TCon("System.IO.TextReader", [])] (makeListType stringType)); IsMutable = false }
         "reader->vec", {Scheme = Scheme([], [], makeFunType [TCon("System.IO.TextReader", [])] (makeVecType stringType)); IsMutable = false }
 

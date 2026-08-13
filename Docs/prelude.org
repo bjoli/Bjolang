@@ -162,6 +162,15 @@ Textual operations on path strings; none of them touches the file system.
 - ~(path-directory path)~ : Builtin rather than =(std prelude)=: ~GetDirectoryName~ answers null for a root and for a bare filename, and that sentinel is turned into ~""~ at the boundary.
 
 ** Ports =(std prelude)=
+Opening a file returns a ~Result~ because a missing file is expected; opening a string cannot fail and returns the port itself. A file port and a string port are the *same type*, so a procedure that reads or writes never learns where the text comes from or goes.
+
+- ~(open-output-string)~ : A port that collects what is written to it.
+- ~(get-output-string port)~ : Everything written to a string port so far. The
+  port stays open and keeps collecting, so asking twice with writes in between
+  includes the earlier text. *Throws* for a port that is not a string port —
+  the one port operation whose wrong argument is not a type error, since a file
+  port and a string port are deliberately one type.
+
 Textual ports, in the R7RS shape. A port *is* the .NET object: ~TextInputPort~ is ~System.IO.TextReader~ and ~TextOutputPort~ is ~System.IO.TextWriter~, so a file port and a string port are the same type to every caller and ~with-open~ disposes either. Opening returns a ~Result~ because a missing file is expected; operating throws, because a device error mid-stream is not.
 
 Only the *reader-parameterised* drains — ~port->list~, ~port->vec~, ~port->seq~ and ~file->seq~ — are in ~(std ports)~ and have to be imported. Opening, reading, writing and closing are here, since a program that reads a file should not need a header line to do it.

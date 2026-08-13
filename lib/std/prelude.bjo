@@ -42,13 +42,13 @@
   ;; Paths
   path-absolute path-combine path-filename path-file-extension
   ;; Ports — opening
-  open-input-file open-input-string open-output-file
+  open-input-file open-input-string open-output-file open-output-string
   ;; Ports — closing
   close-input-port close-output-port flush-port
   ;; Ports — input
   port-eof? read-line read-line/opt read-all port-fold
   ;; Ports — output
-  write-string writeln)
+  write-string writeln get-output-string)
 
 
 
@@ -82,21 +82,25 @@
 (def/impl (->str Symbol)
   (defun (->str s) (symbol->string s)))
 
-;; A character prints as itself, not as `#\a`: `->str` is what `display` and
-;; `print` are built on, and those write text rather than a reread-able datum.
-(def/impl (->str char)
-  (defun (->str c) (char->string c)))
+;; ;; A character prints as itself, not as `#\a`: `->str` is what `display` and
+;; ;; `print` are built on, and those write text rather than a reread-able datum.
+;; (def/impl (->str char)
+;;   (defun (->str c) (char->string c)))
 
-;; (def/impl (->str (List %a))
-;;   (defun (->str l)
-;;     (if (empty? l)
-;;         "()"
-;;         (with-output-to-str 
-;;           (print "(")
-;;           (print (car l))
-;;           (loop (:for elem (cdr l))
-;;                 (:do (print " ") (print (->str elem))))
-;;           (print ")")))))
+;;  (def/impl (->str (List %a))
+;;    (defun (->str l)
+;;      (if (list-empty? l)
+;;          "()"
+;;        (let ((sb (stringbuilder-empty)))
+;;          (def sb (stringbuilder-empty))
+;;          (stringbuilder-add-string! sb "(")
+;;          (stringbuilder-add-string! sb (->str (list-head l)))
+;;          (loop (:for elem l)
+;;                (:do (stringbuilder-add-string! sb " ")
+;;                     (stringbuilder-add-string! sb (->str elem))))
+;;          (stringbuilder-add-string! sb ")")
+;;          (stringbuilder->string sb)))))
+         
 
 
 
@@ -801,6 +805,8 @@
   (StreamWriter (: System.IO.StreamWriter (-> string StreamWriter)
                    #:exceptions (System.IO.DirectoryNotFoundException
                                  System.UnauthorizedAccessException)))
+  ;; Writes into a buffer of its own, so it takes nothing and cannot fail.
+  (StringWriter (: System.IO.StringWriter (-> StringWriter)))
   (Exception (: System.Exception)))
 
 ;; The port types, under exported names: an `import/class` alias is
@@ -834,6 +840,17 @@
   (match (StreamWriter. path)
     ((Ok w) (Ok (cast TextOutputPort w)))
     ((Err e) (Err e))))
+
+;; A port that collects what is written to it, to be asked for with
+;; `get-output-string`. The output counterpart of `open-input-string`, and it
+;; cannot fail for the same reason: there is nothing outside the process to go
+;; wrong with.
+;;
+;; It is a `TextOutputPort` like any other, which is the whole point — a
+;; procedure that writes to a port does not learn where the text is going.
+(: open-output-string (-> TextOutputPort))
+(defun (open-output-string)
+  (cast TextOutputPort (StringWriter.)))
 
 ;; --- Closing ---
 
@@ -892,6 +909,20 @@
 
 (: writeln (-> TextOutputPort string void))
 (defun (writeln p s) (.WriteLine p s))
+
+;; Everything written to a string port so far.
+;;
+;; The port stays open and keeps collecting, so this is a look rather than a
+;; close: asking twice with writes in between gives the second answer including
+;; the first.
+;;
+;; **Throws for a port that is not a string port.** That case cannot be a type
+;; error, because a file port and a string port are deliberately one type — so
+;; it is the one port operation where the wrong argument is only found at
+;; runtime. The alternative was letting .NET answer "System.IO.StreamWriter"
+;; and say nothing.
+(: get-output-string (-> TextOutputPort string))
+(defun (get-output-string p) (writer->string p))
 
 
 ;; ---------------------------------------------------------------------------

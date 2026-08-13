@@ -70,6 +70,22 @@ public static partial class BjolangRuntime {
         ?? throw new System.IO.EndOfStreamException(
             "read-line: the port is at end of input. Guard with (port-eof? p), or use read-line/opt.");
 
+    // What a string output port has accumulated.
+    //
+    // A builtin for the same reason the failing read is one: the .NET answer for
+    // the wrong receiver is not a failure but a *value*. `TextWriter` does not
+    // override `ToString`, so asking a file port would hand back
+    // "System.IO.StreamWriter" and never say a word — and a port is one type to
+    // every caller by design, so the type checker cannot rule the question out.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static string writersubgtstring(System.IO.TextWriter writer) =>
+        writer is System.IO.StringWriter sw
+            ? sw.ToString()
+            : throw new InvalidOperationException(
+                "get-output-string: this port is a "
+                + writer.GetType().Name
+                + ", not one from (open-output-string). Only a string port accumulates text to hand back.");
+
     // Draining a port into a collection, done here rather than as a Bjolang
     // loop so that the builder is used directly and each line is added once.
     public static SchemeList.SchemeList<string> readersubgtlist(System.IO.TextReader reader) {
