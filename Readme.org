@@ -101,6 +101,26 @@ Cancellation is ambient and hierarchical, and it is both an event and a poll, be
               (wrap (pause 30000)                       (fun (u) Quit))))
 #+end_src
 
+*** Macros
+Bjolang supports hygienic macros based on implicit-renaming. Together with syntax-match, thing brings about 90% of what syntax-case brings: An anaphoric if could look like this, for example:
+
+#+BEGIN_SRC scheme
+(def/macro (aif form compare inject)
+  (syntax-match form
+    ((_ test true-branch false-branch)
+     #'(match test
+        ((Some ,(inject 'it)) true-branch)
+        (_ false-branch)))
+    (_ (syntax-error "aif needs 3 forms"))))
+
+;; which is then used like this
+(aif (maybe-get-string)
+     (println it)
+     (println "fail"))
+#+END_SRC
+
+The main limitation is that macros cannot be used in the same module.
+
 *** Nothing gets dropped by accident
 
 Every non-~void~ (or non-unit) value in statement position must be used. If not you need to use (ignore ...). Ignore is a trait function, so it can do the right thing when ignoring things like promises.

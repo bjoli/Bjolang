@@ -53,7 +53,7 @@
 
 
 (import/extern
- (clr-tostring (: System.Convert.ToString)))
+  (clr-tostring (: System.Convert.ToString)))
 
 (include "Foldable.protobjo")
 (include "Monad.protobjo")
@@ -1061,8 +1061,8 @@
 ;; the one-armed forms, and neither needs one.
 (def/macro (cond form inject compare)
   (syntax-match form
-    ((_ clause ...) (cond-arms clause form))
-    (bad (syntax-error bad "cond takes clauses: (cond (test body ...) ... (else body ...))"))))
+                ((_ clause ...) (cond-arms clause form))
+                (bad (syntax-error bad "cond takes clauses: (cond (test body ...) ... (else body ...))"))))
 
 (: cond-arms (-> (List Syntax) Syntax Syntax))
 (defun (cond-arms clauses whole)
@@ -1071,12 +1071,12 @@
      (syntax-error whole "cond needs a final (else ...) clause: every arm answers something, so there has to be a last answer."))
     ((Cons clause rest)
      (syntax-match clause
-       ;; `'else` matches that identifier and nothing else. Note what it is not:
-       ;; a check against whatever `else` happens to mean at the call site,
-       ;; which is not a question that can be asked at parse time.
-       (('else body ...) (one-form body clause))
-       ((test body ...) #'(if ,test ,(one-form body clause) ,(cond-arms rest whole)))
-       (bad (syntax-error bad "A cond clause is (test body ...), or (else body ...) for the last one."))))))
+                   ;; `'else` matches that identifier and nothing else. Note what it is not:
+                   ;; a check against whatever `else` happens to mean at the call site,
+                   ;; which is not a question that can be asked at parse time.
+                   (('else body ...) (one-form body clause))
+                   ((test body ...) #'(if ,test ,(one-form body clause) ,(cond-arms rest whole)))
+                   (bad (syntax-error bad "A cond clause is (test body ...), or (else body ...) for the last one."))))))
 
 ;; Several forms as one. An `if` branch is an expression, where a `defun` body
 ;; and a `match` arm are bodies, and `(let () ...)` is how one becomes the other.
@@ -1095,9 +1095,9 @@
 ;; with a different name.
 (def/macro (if-let form inject compare)
   (syntax-match form
-    ((_ ((name value)) then else)
-     #'(match ,value ((Some ,name) ,then) (None ,else)))
-    (bad (syntax-error bad "if-let takes one binding, a then and an else: (if-let ((name expr)) then else)"))))
+                ((_ ((name value)) then else)
+                 #'(match ,value ((Some ,name) ,then) (None ,else)))
+                (bad (syntax-error bad "if-let takes one binding, a then and an else: (if-let ((name expr)) then else)"))))
 
 ;; `(when-let ((name expr)) body ...)`
 ;;
@@ -1110,14 +1110,14 @@
 ;; anywhere else in the language.
 (def/macro (when-let form inject compare)
   (syntax-match form
-    ((_ ((name value)) first body ...)
-     ;; `value` is bound before it is asked about, so it is evaluated once.
-     #'(let ((found ,value))
-         (when (some? found)
-           (let ((,name (option-ref found)))
-             ,first
-             ,@body))))
-    (bad (syntax-error bad "when-let takes one binding and a body: (when-let ((name expr)) body ...)"))))
+                ((_ ((name value)) first body ...)
+                 ;; `value` is bound before it is asked about, so it is evaluated once.
+                 #'(let ((found ,value))
+                     (when (some? found)
+                       (let ((,name (option-ref found)))
+                         ,first
+                         ,@body))))
+                (bad (syntax-error bad "when-let takes one binding and a body: (when-let ((name expr)) body ...)"))))
 
 ;; `(some-> value step ...)` — `->`, stopping at the first `None`.
 ;;
@@ -1127,8 +1127,8 @@
 ;; rather than reimplemented here.
 (def/macro (some-> form inject compare)
   (syntax-match form
-    ((_ value step ...) (some-steps value step))
-    (bad (syntax-error bad "some-> takes a value and steps: (some-> value (f &) (g &))"))))
+                ((_ value step ...) (some-steps value step))
+                (bad (syntax-error bad "some-> takes a value and steps: (some-> value (f &) (g &))"))))
 
 (: some-steps (-> Syntax (List Syntax) Syntax))
 (defun (some-steps value steps)
@@ -1143,8 +1143,8 @@
      ;; they are one idea, and the expander renames it apart from the call site
      ;; either way.
      #'(match (-> ,value ,step)
-         (None None)
-         ((Some it) ,(some-steps #'it rest))))))
+        (None None)
+        ((Some it) ,(some-steps #'it rest))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Container formats
@@ -1179,16 +1179,18 @@
 (: vec->str (-> (Vec %a) string) (where (->str %a)))
 (defun (vec->str v)
   (def sp (open-output-string))
-  (write-string sp "[")
+  (def out #(write-string sp &1))
+  (out "[")
   (if (= 0 (vec-length  v))
-      (write-string sp "")
+      (out "")
       (let ()
-        (write-string sp (->str (vec-ref v 0)))
+        (out (->str (vec-ref v 0)))
         (loop (:with i 0 (+ i 1))
               (:for elem v)
               (:when (> i 0))
-              (:do (write-string sp " ")
-                   (write-string sp (->str elem))))))
+              (:do (out " ")
+                   (out (->str elem))))))
+  (out "]")
   (get-output-string sp))
 
 (def/impl (->str (Vec %a))

@@ -19,4 +19,4 @@ macro table — that a nested compilation would otherwise clobber.
 `TestFiles/errors/import_not_exported.bjo` relies on.
 
 `importer.bjo` carries no numeric prefix, so `run_tests.sh` does not pick it up;
-`TestFiles/92_source_import.bjo` is the test that does.
+`TestFiles/092_source_import.bjo` is the test that does.

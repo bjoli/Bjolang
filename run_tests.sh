@@ -181,11 +181,11 @@ run_prefix_group() {
     return 0
 }
 
-# Find all unique 2-digit prefixes in TestFiles/
-prefixes=$(ls TestFiles/[0-9][0-9]_*.bjo 2>/dev/null | xargs -n1 basename | cut -c1-2 | sort -u)
+# Find all unique 3-digit prefixes in TestFiles/
+prefixes=$(ls TestFiles/[0-9][0-9][0-9]_*.bjo 2>/dev/null | xargs -n1 basename | cut -c1-3 | sort -u)
 
 if [ -z "$prefixes" ]; then
-    echo -e "${RED}No test files matching TestFiles/[0-9][0-9]_*.bjo found.${NC}"
+    echo -e "${RED}No test files matching TestFiles/[0-9][0-9][0-9]_*.bjo found.${NC}"
     exit 1
 fi
 
