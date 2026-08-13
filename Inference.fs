@@ -1234,6 +1234,17 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
             failwithf
                 $"Type Error at %s{where}: '%s{name}' names the .NET method '%s{info.ClrType}.%s{info.MethodName}', and a method group is not a value. To use it as one, give it a signature in its import/extern clause; otherwise call it directly."
 
+    // `apply` is a form, not a function, so it has no value form either.
+    //
+    // There is no `HMType` to bind it to: the arity it checks, the parameters
+    // it fills and the effect the call takes on are all read off whichever `f`
+    // it is applied to, and a bare `apply` has no `f` to read them from. Said
+    // here rather than left to `lookup`, which would report it as unbound and
+    // send the reader looking for a missing import.
+    | EIdent("apply", r) when not (Map.containsKey "apply" env.Bindings) ->
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: 'apply' is a form, not a value, so it has no value form. Write the call out — (apply f xs) — or wrap it in a lambda over a function you name there."
+
     | EIdent(name, r) ->
         let binding = lookup env name
         let t, tArgs, constraints = instantiate env.Registry binding.Scheme
@@ -1511,6 +1522,182 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
                         ReturnType = callResultType
                         Await = info.IsAsync
                         AmbientToken = threadsToken }
+            ) }
+
+    // `(apply f pos1 ... posN coll)` — spread a collection into `f`'s `#:rest`
+    // parameter.
+    //
+    // An intrinsic rather than a prelude binding because there is no `HMType`
+    // it could be given: how many arguments it accepts, which parameters they
+    // fill, and whether the resulting call suspends are all read off whatever
+    // `f` turns out to be.
+    //
+    // `f` has to be a bare name, and that is a real restriction rather than a
+    // simplification. Whether a parameter is a `#:rest` one is recorded in
+    // `FunMeta`, which `infer` looks up *by name*; the flat type says
+    // `(Array %a)` and an ordinary array parameter says exactly the same thing.
+    // So a computed callee — a parameter, a lambda, an element of a vec — has
+    // nothing that could distinguish the two, and spreading into a parameter
+    // that is not variadic is precisely the run-time failure this form exists
+    // to rule out. `addBinding` drops a shadowed name's `FunMeta` for the same
+    // reason, so a local `f` cannot inherit a global one's shape either.
+    | EApp(EIdent("apply", _), args, r) when not (Map.containsKey "apply" env.Bindings) ->
+        let where = Lexer.formatPos r
+
+        let calleeExpr, callArgs =
+            match args with
+            | f :: rest -> f, rest
+            | [] ->
+                failwithf
+                    $"Type Error at %s{where}: 'apply' needs a function and a collection, as (apply f coll)."
+
+        let calleeName =
+            match calleeExpr with
+            | EIdent(n, _) when Map.containsKey n env.Bindings -> n
+            | _ ->
+                failwithf
+                    $"Type Error at %s{where}: 'apply' needs a named function as its first argument. Whether a parameter is a #:rest one belongs to a function's declaration rather than to its type, so a computed function carries nothing that says how to spread into it."
+
+        let meta =
+            match Map.tryFind calleeName env.FunMetas with
+            | Some m when m.RestParam.IsSome -> m
+            | _ ->
+                failwithf
+                    $"Type Error at %s{where}: '%s{calleeName}' has no #:rest parameter, so there is nothing for 'apply' to spread a collection into. A collection's length is not part of its type, so filling fixed parameters from one would need an arity check at run time. Call '%s{calleeName}' directly with positional arguments instead."
+
+        // Keyword arguments are passed straight through. `FunMeta` is what says
+        // which names are keywords, and it is the callee's own — the same list
+        // an ordinary call site consults.
+        let isDeclaredKw kwName =
+            meta.KeywordParams |> List.exists (fun (k, _) -> k = kwName)
+
+        let rec splitArgs positional keywords remaining =
+            match remaining with
+            | [] -> List.rev positional, List.rev keywords
+            | EKeyword(kwName, _) :: value :: rest when isDeclaredKw kwName ->
+                splitArgs positional ((kwName, value) :: keywords) rest
+            | EKeyword(kwName, kr) :: [] when isDeclaredKw kwName ->
+                failwithf $"Keyword argument '#:%s{kwName}' is missing a value at %s{Lexer.formatPos kr}"
+            | arg :: rest -> splitArgs (arg :: positional) keywords rest
+
+        let positionalExprs, keywordExprs = splitArgs [] [] callArgs
+
+        // The *last* positional argument is the collection. A syntactic rule,
+        // not an inferred one: which argument is spread has to be legible from
+        // the call site alone, and a type-directed choice would change under a
+        // signature the reader cannot see.
+        let fixedExprs, collExpr =
+            match List.rev positionalExprs with
+            | last :: revFixed -> List.rev revFixed, last
+            | [] ->
+                failwithf
+                    $"Type Error at %s{where}: 'apply' needs a collection as its last argument, after any arguments filling '%s{calleeName}'s fixed parameters."
+
+        if fixedExprs.Length < meta.MandatoryCount then
+            failwithf
+                $"Type Error at %s{where}: '%s{calleeName}' has %d{meta.MandatoryCount} fixed parameter(s) and 'apply' was given %d{fixedExprs.Length}. Every fixed parameter has to be supplied positionally, before the collection."
+
+        if fixedExprs.Length > meta.MandatoryCount then
+            failwithf
+                $"Type Error at %s{where}: '%s{calleeName}' has %d{meta.MandatoryCount} fixed parameter(s) and 'apply' was given %d{fixedExprs.Length}. Everything before the collection fills a fixed parameter, one for one, and the collection is what fills the #:rest parameter."
+
+        let targetType, typedTarget = infer env calleeExpr
+        let fixedTyped = fixedExprs |> List.map (infer env)
+
+        // A literal collection is never built. The elements go straight into
+        // the rest array, which is the very node a direct call `(f a b c)`
+        // produces — so the two spellings compile to the same call.
+        let literalItems =
+            match collExpr with
+            | EList(items, _) -> Some items
+            | EVec(items, _) -> Some items
+            | _ -> None
+
+        let restElem, restNode =
+            match literalItems with
+            | Some items ->
+                let elemSlot = freshMeta ()
+
+                let typedItems =
+                    items
+                    |> List.map (fun item ->
+                        let itemType, typedItem = infer env item
+                        unify env.Registry itemType elemSlot
+                        typedItem)
+
+                elemSlot,
+                ({ Type = TCon("Array", [ elemSlot ])
+                   Range = r
+                   Node = TArrayMake typedItems }: TypedExpr)
+            | None ->
+                let collType, typedColl = infer env collExpr
+
+                // Named so the conversion is an ordinary typed call. Emitting it
+                // as C# text in `Codegen` instead would hide it from
+                // `containsAwait`, which walks the typed tree to decide whether
+                // the enclosing lambda has to be async.
+                let convert (fn: string) (elem: HMType) : TypedExpr =
+                    let arrayType = TCon("Array", [ elem ])
+
+                    { Type = arrayType
+                      Range = r
+                      Node =
+                        TApply(
+                            { Type = tfun [ typedColl.Type ] arrayType
+                              Range = r
+                              Node = TIdent(fn, []) },
+                            [ typedColl ],
+                            []
+                        ) }
+
+                match prune env.Registry collType with
+                // Passed through untouched: no conversion and no allocation,
+                // which is the case `apply` is actually worth having for.
+                | TCon("Array", [ elem ]) -> elem, typedColl
+                | TCon("Vec", [ elem ]) -> elem, convert "vec->array" elem
+                | TCon("List", [ elem ]) -> elem, convert "list->array" elem
+                | TMeta _ ->
+                    failwithf
+                        $"Type Error at %s{where}: 'apply' needs to know the last argument's type here to spread it, and nothing has fixed it yet. Annotate it as an Array, a Vec or a List."
+                | other ->
+                    failwithf
+                        $"Type Error at %s{where}: 'apply' can spread an Array, a Vec or a List, and the last argument is %s{DotNetInterop.showType other}."
+
+        // Each keyword slot gets a fresh metavariable rather than the type
+        // `FunMeta` recorded, for the reason the ordinary call path gives: the
+        // recorded type still carries the declaration's rigid `TVar`s, and the
+        // flat unification below is what gives the slot its real type.
+        let keywordTyped = keywordExprs |> List.map (fun (n, e) -> n, infer env e)
+
+        let kwSlots =
+            meta.KeywordParams
+            |> List.map (fun (kwName, _) ->
+                let slot = freshMeta ()
+
+                match keywordTyped |> List.tryFind (fun (n, _) -> n = kwName) with
+                | Some(_, (valType, _)) -> unify env.Registry valType slot
+                | None -> ()
+
+                slot)
+
+        let retType = freshMeta ()
+        let flatTypes = (fixedTyped |> List.map fst) @ kwSlots @ [ TCon("Array", [ restElem ]) ]
+
+        // The effect is the callee's own, copied rather than chosen. A pure `f`
+        // gives a pure node and a suspending one a suspending node, which is why
+        // there is one `apply` and not an `apply` plus an `apply/bjo`:
+        // `ColourCheck` and `Codegen` already read the effect off the callee's
+        // arrow, so neither needs to know this form exists.
+        unify env.Registry targetType (TFun(flatTypes, retType, demandedEffect env targetType))
+
+        retType,
+        { Type = retType
+          Range = r
+          Node =
+            TApply(
+                typedTarget,
+                (fixedTyped |> List.map snd) @ [ restNode ],
+                keywordTyped |> List.map (fun (n, (_, te)) -> n, te)
             ) }
 
     | EApp(target, args, r) ->

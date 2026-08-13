@@ -1,0 +1,21 @@
+;; `apply` through a function *parameter* rather than a name.
+;;
+;; The restriction that follows from how a rest parameter is represented.
+;; `#:rest %a` flattens to an ordinary `(Array %a)` in a function's type, and
+;; rest-ness itself is recorded in `FunMeta`, which is keyed by name. So a
+;; parameter carries nothing that separates a variadic function from one that
+;; genuinely takes an array — and `f` here could be either.
+;;
+;; Deferring the decision would not help: even once `f`'s metavariable resolves
+;; to an arrow, the arrow still does not say which of its parameters was written
+;; `#:rest`. There is no later point at which this becomes answerable.
+
+;; EXPECT-ERROR: has no #:rest parameter
+
+(import (std prelude))
+
+(: call-with (-> (-> (Array int) int) (List int) int))
+(defun (call-with f xs) (apply f xs))
+
+(defun (main args)
+  0)

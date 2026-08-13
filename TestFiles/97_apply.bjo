@@ -1,0 +1,120 @@
+;; `apply` — spreading a collection into a `#:rest` parameter.
+;;
+;; An intrinsic rather than a prelude function, because there is no type it
+;; could be given: the arity it checks and the effect the call takes on are both
+;; read off whichever `f` it is applied to.
+;;
+;; The first argument has to be a *named* function, and that is forced by how a
+;; rest parameter is represented. `#:rest %a` flattens to an ordinary
+;; `(Array %a)` in the function's type, and rest-ness itself lives in `FunMeta`,
+;; which is keyed by name. A computed callee therefore carries nothing that
+;; distinguishes a variadic function from one that genuinely takes an array —
+;; and spreading into the second is the run-time arity failure this form exists
+;; to rule out.
+
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; The function everything below spreads into. Its rest parameter is an
+;; `(Array string)` inside the body, which is what `#:rest` means.
+(: join (-> #:rest string string))
+(defun (join #:rest parts)
+  (let go ((i 0) (acc ""))
+    (if (>= i (array-length parts))
+        acc
+        (go (+ i 1) (string-append acc (array-ref parts i))))))
+
+;; One fixed parameter ahead of the rest one. The fixed argument is supplied
+;; positionally at the `apply` site, before the collection.
+(: labelled (-> string #:rest string string))
+(defun (labelled tag #:rest parts)
+  (string-append tag (apply join parts)))
+
+;; A keyword parameter alongside a rest one, to pin that keywords pass through
+;; unchanged rather than being counted as fixed arguments.
+(: decorate (-> string (#:sep string) #:rest string string))
+(defun (decorate tag #:sep "-" #:rest parts)
+  (let go ((i 0) (acc tag))
+    (if (>= i (array-length parts))
+        acc
+        (go (+ i 1) (string-append acc (string-append sep (array-ref parts i)))))))
+
+;; A suspending callee. `apply`'s effect is the callee's own, copied verbatim,
+;; so a call through it is a yield point exactly when a direct call would be.
+(: slow-join (-> #:rest string string))
+(defbjo (slow-join #:rest parts)
+  (apply join parts))
+
+(: three-strings (-> (Array string)))
+(defun (three-strings)
+  (def arr (make-array 3))
+  (array-set! arr 0 "a")
+  (array-set! arr 1 "b")
+  (array-set! arr 2 "c")
+  arr)
+
+(defbjo (main args)
+  ;; --- The three supported collection types --------------------------------
+  ;;
+  ;; An `Array` is passed straight through as the rest argument: no conversion
+  ;; and no allocation. A `Vec` is one bulk copy, a `List` one walk.
+  (def arr (three-strings))
+  (expect "apply over an Array" (apply join arr) "abc")
+
+  (def v ["d" "e" "f"])
+  (expect "apply over a Vec" (apply join v) "def")
+
+  (def l (list "g" "h" "i"))
+  (expect "apply over a List" (apply join l) "ghi")
+
+  ;; --- Fixed parameters ----------------------------------------------------
+  (expect "one fixed parameter" (apply labelled "tag:" arr) "tag:abc")
+
+  ;; --- Keyword arguments pass through --------------------------------------
+  ;;
+  ;; A keyword is not counted as a fixed argument: `decorate` has one fixed
+  ;; parameter, and `"x"` is it.
+  ;;
+  ;; Only the *supplied* case is exercised. Omitting a keyword that sits in
+  ;; front of a `#:rest` parameter does not compile, and does not for a direct
+  ;; call either — `Codegen` derives the mandatory/keyword split from the
+  ;; callee's flat arity and the number of keywords the *call* passed, so an
+  ;; omitted one shifts the rest array into its slot. `apply` inherits that
+  ;; exactly rather than adding to it.
+  (expect "keyword supplied" (apply decorate "x" arr #:sep "+") "x+a+b+c")
+
+  ;; --- Literal collections fuse --------------------------------------------
+  ;;
+  ;; No list and no vec is built for either of these: the elements go straight
+  ;; into the rest array, which is the node a direct call produces anyway. So
+  ;; `(apply join (list "j" "k"))` and `(join "j" "k")` compile to one call.
+  (expect "a literal list fuses" (apply join (list "j" "k")) "jk")
+  (expect "a literal vec fuses" (apply join ["l" "m"]) "lm")
+  (expect "a fused literal equals the direct call" (apply join (list "j" "k")) (join "j" "k"))
+
+  ;; --- Degenerate shapes that are still legal ------------------------------
+  (expect "an empty collection" (apply join (list)) "")
+  (expect "an empty array" (apply join (make-array 0)) "")
+
+  ;; --- A suspending callee -------------------------------------------------
+  ;;
+  ;; `slow-join` is a bjoroutine, so this call is a yield point and the
+  ;; enclosing `main` had to be one too. Nothing in the intrinsic knows about
+  ;; async: the effect came off `slow-join`'s own arrow.
+  (expect "apply to a bjoroutine" (apply slow-join arr) "abc")
+
+  ;; And through a spawn, where the whole application is what gets moved.
+  (expect "apply inside bjo"
+          (match (sync (promise-join (bjo (apply slow-join arr))))
+            ((Ok val) val)
+            ((Err e) "err"))
+          "abc")
+
+  0)

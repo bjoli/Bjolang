@@ -575,6 +575,35 @@ public static partial class BjolangRuntime {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int arraysublength<T>(T[] arr) => arr.Length;
 
+    // The collection-to-rest-array conversions behind `apply`. Neither is
+    // reachable from Bjolang source: `apply` is an intrinsic and builds the
+    // call to one of these itself, so there is no prelude binding to spell.
+    //
+    // An `Array` collection needs no entry here at all — it is passed straight
+    // through as the rest argument, which is the whole reason `apply` is worth
+    // having over rebuilding the call by hand.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static T[] vecsubgtarray<T>(Collections.RrbList<T> list) where T : notnull {
+        var arr = new T[Collections.RrbFun.Count(list)];
+        Collections.RrbFun.CopyTo(list, arr, 0);
+        return arr;
+    }
+
+    // Two walks, one allocation. Going via a `List<T>` would be one walk and
+    // two allocations, and the second is the one that costs — the array has to
+    // exist to be the rest parameter either way.
+    public static T[] listsubgtarray<T>(SchemeList.SchemeList<T> list) {
+        var arr = new T[SchemeList.SchemeList.Length(list)];
+        var cur = list;
+
+        for (int i = 0; i < arr.Length; i++) {
+            arr[i] = SchemeList.SchemeList.Head(cur);
+            cur = SchemeList.SchemeList.Tail(cur);
+        }
+
+        return arr;
+    }
+
     /// An optional value, and Bjolang's `(Option %a)`. A struct because it
     /// began as the carrier for an omitted keyword argument: `default` is
     /// `None`, so an unsupplied parameter costs nothing.

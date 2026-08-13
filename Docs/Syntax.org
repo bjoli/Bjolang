@@ -122,6 +122,62 @@ order**, so an initializer may read a binding declared above it and gets the
 assigned value rather than a default. It is a single field, so a module's state
 is shared with everything that imports it rather than copied per importer.
 
+** ~apply~ — spreading a collection into a rest parameter
+~apply~ calls a function whose last parameter is ~#:rest~, taking the rest
+elements from a collection instead of writing them out:
+#+BEGIN_SRC scheme
+(: write-line (-> Stream #:rest string void))
+
+(apply write-line out parts)   ;; out -> Stream, parts -> the rest parameter
+#+END_SRC
+
+The **last** argument is always the collection. That is a syntactic rule rather
+than an inferred one: which argument gets spread has to be legible from the call
+site alone, and a type-directed choice would change under a signature the reader
+cannot see. Everything before it fills a fixed parameter, one for one. Keyword
+arguments are passed through untouched and are not counted as fixed arguments.
+
+The collection may be an ~Array~, a ~Vec~ or a ~List~. Those are the three that
+can become a rest array without a run-time length check: each knows its own
+length and can be walked once. A ~Seq~ cannot, because producing the array would
+run it.
+
+A literal collection is not built at all — ~(apply join (list "a" "b"))~ and
+~(join "a" "b")~ compile to the same call.
+
+*** ~apply~ is a form, and its function must be named
+~apply~ has no type and no value form. The arity it checks, the parameters it
+fills and whether the call suspends are all read off the callee, and a bare
+~apply~ has no callee to read them from.
+
+The callee has to be written as a *name*. A ~#:rest~ parameter is not part of a
+function's type: ~(-> Stream #:rest string void)~ flattens to an ordinary
+~(Array string)~ parameter, and rest-ness is recorded separately, against the
+name. So a parameter, a lambda or any other computed callee carries nothing that
+separates a variadic function from one that genuinely takes an array — and
+spreading into the second is exactly the run-time arity failure this form exists
+to rule out. Deferring does not help: even once such a callee's type is known,
+the arrow still does not say which parameter was written ~#:rest~.
+
+Every shape that cannot be checked here is a compile error, so no ~apply~ fails
+at run time. A callee with no rest parameter, too few or too many arguments
+before the collection, an unsupported collection, and ~apply~ outside call
+position are all refused.
+
+The effect is the callee's own, copied rather than chosen: applying a
+bjoroutine is a yield point exactly where calling it directly would be, which is
+why there is one ~apply~ rather than an ~apply~ and an ~apply/bjo~.
+
+*** A rest parameter is read-only
+Treat the array a ~#:rest~ parameter arrives in as read-only. With an ~Array~
+collection it is passed straight through — no copy — so the callee's rest
+parameter *is* the caller's array, and writing to it through ~array-set!~ is
+visible to the caller. A direct call ~(f 1 2 3)~ builds a fresh array instead,
+so the two spellings differ precisely in what a mutation does.
+
+This is a convention, not something the compiler checks: there is no read-only
+qualifier on a type to hang it from. Copy the array first if you need to mutate.
+
 ** Control Flow
 Standard ~if~ expressions:
 #+BEGIN_SRC scheme
