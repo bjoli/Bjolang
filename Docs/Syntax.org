@@ -252,8 +252,8 @@ what state follows it — or ~None~ to stop:
   (None -1))
 #+END_SRC
 
-~some?~ and ~none?~ test it, ~option-get~ extracts the value and errors on
-~None~, and ~(option-get-or opt fallback)~ supplies a default instead.
+~some?~ and ~none?~ test it, ~option-ref~ extracts the value and errors on
+~None~, and ~(option-ref-or opt fallback)~ supplies a default instead.
 
 ** Results
 ~(Result %e %a)~ is either a value or an error. It is built with ~Ok~ and
@@ -582,6 +582,58 @@ Two restrictions follow, and both are checked:
   such as ~(def/trait (Monad (%m %a)) ...)~ is implemented at ~(F %a)~ — a
   constructor applied — and a blanket has no constructor to apply.
 
+*** Conditional implementations
+An implementation may hold only *where its own type arguments do*, by naming
+what it needs in a ~where~ clause — the same clause a signature takes.
+#+BEGIN_SRC scheme
+(def/impl (->str (List %a))
+  (where (->str %a))
+  (defun (->str xs) (list->str xs)))
+#+END_SRC
+
+The clause is not a note to the reader. Each constraint becomes a dictionary
+the implementation *carries*, so ~->str~ over ~(List int)~ is built out of the
+~int~ implementation and it is that one which formats each element. Without the
+clause the body could not call ~->str~ at ~%a~ at all, and it is told so:
+
+#+BEGIN_SRC text
+'->str' uses '->str' at '%a', which this implementation does not require.
+Add (where (->str %a)) to the implementation, and every use of it will have
+to supply one.
+#+END_SRC
+
+The last sentence is the point. A conditional implementation *extends* the
+guarantee above rather than weakening it: the element's implementation is still
+chosen where the element type is ground, whether that happens at the call
+itself or in a caller that passed a dictionary down. Nothing is decided at ~%a~,
+which is exactly why the blanket cannot silently swallow a type that has an
+implementation of its own.
+
+Written out, the three places evidence comes from:
+#+BEGIN_SRC scheme
+(->str (list 1 2))          ;; built here: List over int
+
+(: show (-> %a string))     ;; no clause written, one inferred:
+(defun (show x) (->str x))  ;; %a needs (->str %a), from the caller
+
+(show (list 1 2))           ;; and supplied here, as List over int
+#+END_SRC
+
+Three restrictions, all checked:
+
+- **A blanket may not be conditional.** Its target *is* the implementor, so the
+  constraint would be discharged at the very type it is proving — evidence with
+  no bottom. A conditional implementation is written at a constructor, where
+  each demand lands on a strictly smaller type and the recursion ends.
+- **A constraint may only name the implementation's own type variables.** They
+  are what the class is generic over; anything else is a dictionary no caller
+  could supply.
+- **The constrained trait may not have associated types, and may not be
+  inline-only.** An inline trait has no dictionary to carry at all; an
+  associated type would have to become a further parameter of the
+  implementation, which is not built. Constrain a function instead, where the
+  association becomes an ordinary type parameter.
+
 *** ~void~ is the unit type
 
 ~void~ in a signature is a *value* type, and ~Unit~ and ~System.Void~ are
@@ -640,14 +692,14 @@ There is no anonymous ~(record ...)~ form: nothing is ever inferred from *which
 fields you happened to mention*, so two types may share a field name without
 one of them becoming unreachable.
 
-~(record-get target field)~ and ~(record-set target (field value) ...)~ read and
+~(record-ref target field)~ and ~(record-set target (field value) ...)~ read and
 update. These resolve against the *target's own type* wherever it is known,
 which is everywhere the value was constructed, annotated, or given by a
 signature. Only where the target is still an unresolved type variable — the body
 of an un-annotated local lambda, say — do they fall back to looking the field
 name up, and that fallback is an error if more than one type declares the name.
 
-The ~struct*~ *expression* forms — ~(struct-get ...)~, ~(struct-set ...)~ —
+The ~struct*~ *expression* forms — ~(struct-ref ...)~, ~(struct-set ...)~ —
 remain plain synonyms of the ~record*~ forms and work on either kind.
 
 A trait written this way compiles to a C# interface, with each implementation a

@@ -163,7 +163,7 @@ let rec private checkDecl (decl: TDecl) : unit =
     | TDefMutable(_, value, _, _) -> checkExpr false value
 
     | TModule(_, decls, _) -> decls |> List.iter checkDecl
-    | TImpl(_, _, _, _, _, methods, _) -> methods |> List.iter checkDecl
+    | TImpl(_, _, _, _, _, _, methods, _) -> methods |> List.iter checkDecl
     | _ -> ()
 
 let run (decls: TDecl list) : unit = decls |> List.iter checkDecl

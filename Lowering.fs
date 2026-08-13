@@ -46,10 +46,138 @@ let dictionaryType (env: Env) (traitName: string) (implType: HMType) : HMType =
 
     TCon(traitName, implType :: assocArgs)
 
+/// Does this implementation stand on a `(where ...)`?
+///
+/// The one question every dispatch site has to ask before naming a class: a
+/// conditional impl is emitted without an `Instance`, so the landing pad that
+/// routes through one does not exist for it.
+let isConditional (env: Env) (traitName: string) (ctor: string) =
+    match Map.tryFind (traitName, ctor) env.Registry.ImplTargets with
+    | Some target -> not target.Constraints.IsEmpty
+    | None -> false
+
+/// What the code being lowered has to prove things with.
+///
+/// `Dicts` is what arrived by name: a constrained function's parameters, or a
+/// conditional impl's fields. `Self` is the enclosing implementation, if there
+/// is one — the dictionary for its own trait at its own target is the object
+/// the method is already running on, so a self-call must not build a second
+/// one per step.
+type Scope =
+    { Dicts: Map<string, string>
+      Self: (string * HMType) option }
+
+    static member Empty = { Dicts = Map.empty; Self = None }
+
+/// The name a conditional impl reads its own dictionary under. Emitted by
+/// `Codegen` as a property returning `this`, so it costs no storage and the
+/// call through it is a call on a sealed type of exactly known identity.
+let selfDictName (traitName: string) = dictParamName traitName "self"
+
+/// The dictionary that proves `traitName` at `implType`, as an expression.
+///
+/// Four shapes, and the recursion is what conditional impls buy:
+///
+///     ->str int             ToStr_Int::Instance
+///     ->str (List int)      ToStr_List<int>::Make(ToStr_Int::Instance)
+///     ->str 'a              _dict_->str_'a, from the enclosing scope
+///     the enclosing impl     _dict_->str_self, which is `this`
+///
+/// `scope` is what the enclosing function or impl class has to offer, so a
+/// variable bottoms out there. It terminates on everything else because a
+/// conditional impl constrains only its own target variables, and those stand
+/// for proper subterms of the type being proved.
+let rec buildEvidence
+    (env: Env)
+    (scope: Scope)
+    (traitName: string)
+    (implType: HMType)
+    (range: Lexer.Range)
+    (describe: string)
+    : TypedExpr =
+
+    let resolved = prune env.Registry implType
+    let dictType = dictionaryType env traitName resolved
+
+    let isSelf =
+        match scope.Self with
+        | Some(selfTrait, selfTarget) -> selfTrait = traitName && prune env.Registry selfTarget = resolved
+        | None -> false
+
+    match resolved with
+    | _ when isSelf ->
+        { Type = dictType
+          Range = range
+          Node = TIdent(selfDictName traitName, []) }
+
+    | TVar varName ->
+        let name = dictParamName traitName varName
+
+        if not (Map.containsKey name scope.Dicts) then
+            failwithf $"Missing dictionary '%s{name}' %s{describe} at %s{Lexer.formatPos range}"
+
+        { Type = dictType
+          Range = range
+          Node = TIdent(name, []) }
+
+    | TCon(typeName, tconArgs) ->
+        // The same two levels resolution uses — exact head, then the trait's
+        // blanket. This is the site that makes the §0.2 guarantee concrete: a
+        // value routed through a constrained generic function gets the impl
+        // chosen *here*, at the concrete instantiation, so it is the specific
+        // one whenever there is one.
+        let hasSpecific = Map.containsKey (traitName, typeName) env.Registry.ImplTargets
+
+        let ctor, classTyArgs =
+            if hasSpecific then
+                typeName, tconArgs
+            else
+                // The blanket's one class type parameter is the implementor
+                // itself, not the head's arguments.
+                BlanketCtor, [ resolved ]
+
+        let constraints =
+            match implFor env.Registry traitName resolved with
+            | Some(target, subst) ->
+                target.Constraints
+                |> List.map (fun c -> c.TraitName, substTypeVars subst c.TargetType)
+            | None ->
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos range}: no implementation of trait '%s{traitName}' for '%s{typeName}', needed %s{describe}."
+
+        if constraints.IsEmpty then
+            { Type = dictType
+              Range = range
+              Node = TIdent(implSingletonName traitName ctor, classTyArgs) }
+        else
+            // A conditional impl has no singleton — it does not exist until the
+            // dictionaries it stands on do — so the evidence is built by its
+            // factory out of the evidence for its where clause.
+            let subEvidence =
+                constraints
+                |> List.map (fun (cTrait, cType) -> buildEvidence env scope cTrait cType range describe)
+
+            let calleeType =
+                tfun (subEvidence |> List.map (fun e -> e.Type)) dictType
+
+            let callee =
+                { Type = calleeType
+                  Range = range
+                  Node = TIdent(implFactoryName traitName ctor, classTyArgs) }
+                : TypedExpr
+
+            { Type = dictType
+              Range = range
+              Node = TApply(callee, subEvidence, []) }
+
+    | other ->
+        failwithf
+            $"Cannot resolve dictionary for type %s{DotNetInterop.showType other} at %s{Lexer.formatPos range}"
+
 module DictionaryLowering =
 
-    let rec lowerExpr (env: Env) (activeDicts: Map<string, string>) (expr: TypedExpr) : TypedExpr =
-        let recurse e = lowerExpr env activeDicts e
+    let rec lowerExpr (env: Env) (scope: Scope) (expr: TypedExpr) : TypedExpr =
+        let recurse e = lowerExpr env scope e
 
         match expr.Node with
         // A trait call the inliner did not splice. The node says which trait it
@@ -61,6 +189,29 @@ module DictionaryLowering =
 
             let node =
                 match tref.Resolved with
+                | Some(ctor, tyArgs) when isConditional env tref.Trait ctor ->
+                    // A conditional impl, whose class has no `Instance` for a
+                    // landing pad to route through. The dictionary is built for
+                    // this one concrete type and dispatched on directly: still
+                    // static, since the type is exact and the class is sealed.
+                    let hole =
+                        match tref.Holes with
+                        | h :: _ -> prune env.Registry h
+                        | [] ->
+                            failwithf
+                                $"Trait method '%s{tref.Method}' has no implementor to dispatch on at %s{Lexer.formatPos expr.Range}"
+
+                    let dict =
+                        buildEvidence
+                            env
+                            scope
+                            tref.Trait
+                            hole
+                            expr.Range
+                            $"to call '%s{tref.Method}'"
+
+                    TInterfaceCall(dict.Type, tref.Method, dict, loweredArgs)
+
                 | Some(ctor, tyArgs) ->
                     // Static dispatch: the landing pad, named directly.
                     let kind =
@@ -94,25 +245,10 @@ module DictionaryLowering =
                             failwithf
                                 $"Trait method '%s{tref.Method}' has no implementor to dispatch on at %s{Lexer.formatPos expr.Range}"
 
-                    match hole with
-                    | TVar varName ->
-                        let expectedDictName = $"_dict_%s{tref.Trait}_%s{varName}"
+                    let dictIdent =
+                        buildEvidence env scope tref.Trait hole expr.Range "for trait dispatch"
 
-                        if not (Map.containsKey expectedDictName activeDicts) then
-                            failwithf
-                                $"Missing dictionary '%s{expectedDictName}' for trait dispatch at %s{Lexer.formatPos expr.Range}"
-
-                        let dictIdent =
-                            { Type = dictionaryType env tref.Trait hole
-                              Range = expr.Range
-                              Node = TIdent(expectedDictName, []) }
-                            : TypedExpr
-
-                        TInterfaceCall(dictIdent.Type, tref.Method, dictIdent, loweredArgs)
-
-                    | other ->
-                        failwithf
-                            $"Unsupported receiver type %s{DotNetInterop.showType other} for trait dispatch at %s{Lexer.formatPos expr.Range}"
+                    TInterfaceCall(dictIdent.Type, tref.Method, dictIdent, loweredArgs)
 
             { expr with Node = node }
 
@@ -151,50 +287,13 @@ module DictionaryLowering =
                                                 | None -> c.TargetType
                                             | _ -> prune env.Registry c.TargetType
 
-                                        match resolvedType with
-                                        | TCon(typeName, tconArgs) ->
-                                            // Static dispatch: pass the singleton Instance.
-                                            //
-                                            // The same two levels resolution
-                                            // uses — exact head, then the
-                                            // trait's blanket. This is the site
-                                            // that makes the §0.2 guarantee
-                                            // concrete: a value routed through
-                                            // a constrained generic function
-                                            // gets the impl chosen *here*, at
-                                            // the concrete instantiation, so it
-                                            // is the specific one whenever there
-                                            // is one.
-                                            let hasSpecific =
-                                                Map.containsKey (c.TraitName, typeName) env.Registry.ImplTargets
-
-                                            let instanceName, classTyArgs =
-                                                if hasSpecific then
-                                                    implSingletonName c.TraitName typeName, tconArgs
-                                                else
-                                                    // The blanket's one class type parameter is the
-                                                    // implementor itself, not the head's arguments.
-                                                    implSingletonName c.TraitName BlanketCtor, [ resolvedType ]
-
-                                            { Type = dictionaryType env c.TraitName resolvedType
-                                              Range = expr.Range
-                                              Node = TIdent(instanceName, classTyArgs) }
-                                            : TypedExpr
-                                        | TVar varName ->
-                                            // Forward the dictionary from our own parameters
-                                            let expectedDictName = $"_dict_%s{c.TraitName}_%s{varName}"
-
-                                            if not (Map.containsKey expectedDictName activeDicts) then
-                                                failwithf
-                                                    $"Missing dictionary '%s{expectedDictName}' to forward for call to '%s{calleeName}' at %s{Lexer.formatPos expr.Range}"
-
-                                            { Type = dictionaryType env c.TraitName resolvedType
-                                              Range = expr.Range
-                                              Node = TIdent(expectedDictName, []) }
-                                            : TypedExpr
-                                        | _ ->
-                                            failwithf
-                                                $"Cannot resolve dictionary for type %s{DotNetInterop.showType resolvedType} at %s{Lexer.formatPos expr.Range}")
+                                        buildEvidence
+                                            env
+                                            scope
+                                            c.TraitName
+                                            resolvedType
+                                            expr.Range
+                                            $"to call '%s{calleeName}'")
 
                                 TApply(
                                     recurse target,
@@ -213,11 +312,11 @@ module DictionaryLowering =
 
     let rec lowerDecl (env: Env) (decl: TDecl) : TDecl =
         match decl with
-        | TDef(name, value, t, r) -> TDef(name, lowerExpr env Map.empty value, t, r)
+        | TDef(name, value, t, r) -> TDef(name, lowerExpr env Scope.Empty value, t, r)
 
-        | TDefTuple(names, value, t, r) -> TDefTuple(names, lowerExpr env Map.empty value, t, r)
+        | TDefTuple(names, value, t, r) -> TDefTuple(names, lowerExpr env Scope.Empty value, t, r)
 
-        | TDefMutable(name, value, t, r) -> TDefMutable(name, lowerExpr env Map.empty value, t, r)
+        | TDefMutable(name, value, t, r) -> TDefMutable(name, lowerExpr env Scope.Empty value, t, r)
 
         | TDefun(name, tyArgs, args, kwArgs, restArg, retType, effect, body, r) ->
             // An inline trait's methods are never bound as values — there is no
@@ -259,14 +358,18 @@ module DictionaryLowering =
                             |> List.map (assocTypeVar typeVarName)
                         | _ -> [])
 
-                let activeDicts =
-                    dictParams
-                    |> List.fold (fun acc (dName, _) -> Map.add dName dName acc) Map.empty
+                // A function's dictionaries all arrive as parameters: there is
+                // no enclosing implementation for a call to be a self-call of.
+                let scope =
+                    { Scope.Empty with
+                        Dicts =
+                            dictParams
+                            |> List.fold (fun acc (dName, _) -> Map.add dName dName acc) Map.empty }
 
-                let loweredBody = lowerExpr env activeDicts body
+                let loweredBody = lowerExpr env scope body
 
                 let loweredKwArgs =
-                    kwArgs |> List.map (fun (n, t, e) -> n, t, lowerExpr env activeDicts e)
+                    kwArgs |> List.map (fun (n, t, e) -> n, t, lowerExpr env scope e)
 
                 TDefun(
                     name,
@@ -280,8 +383,39 @@ module DictionaryLowering =
                     r
                 )
 
-        | TImpl(traitName, kind, holeArity, targetType, assoc, methods, r) ->
-            TImpl(traitName, kind, holeArity, targetType, assoc, methods |> List.map (lowerDecl env), r)
+        | TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods, r) ->
+            // A conditional impl's methods dispatch through the class's fields
+            // rather than through parameters of their own. The names are the
+            // same either way, so a body reads identically whether it ended up
+            // in a constrained function or in an impl that carries the same
+            // evidence — and `lowerDecl`'s ordinary `TDefun` path, which would
+            // look the constraints up under the *trait method's* name and find
+            // none, is bypassed for exactly that reason.
+            let scope =
+                { Dicts = dicts |> List.fold (fun acc (name, _) -> Map.add name name acc) Map.empty
+                  // What this class is a dictionary *of*. A method dispatching
+                  // its own trait at its own target — the recursive step of
+                  // `size` over a list — is already holding the answer, and
+                  // rebuilding it would allocate one dictionary per element.
+                  Self = if dicts.IsEmpty then None else Some(traitName, targetType) }
+
+            let lowerMethod (m: TDecl) =
+                match m with
+                | TDefun(name, tyArgs, args, kwArgs, restArg, retType, effect, body, mr) ->
+                    TDefun(
+                        name,
+                        tyArgs,
+                        args,
+                        kwArgs |> List.map (fun (n, t, e) -> n, t, lowerExpr env scope e),
+                        restArg,
+                        retType,
+                        effect,
+                        lowerExpr env scope body,
+                        mr
+                    )
+                | other -> lowerDecl env other
+
+            TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods |> List.map lowerMethod, r)
 
         | TModule(name, decls, r) -> TModule(name, decls |> List.map (lowerDecl env), r)
 

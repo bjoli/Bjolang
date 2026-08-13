@@ -563,8 +563,8 @@ let rec uniquifyDeclWith (globals: Set<string>) (decl: TDecl) : TDecl =
 
     match decl with
     | TModule(name, decls, r) -> TModule(name, decls |> List.map (uniquifyDeclWith globals), r)
-    | TImpl(traitName, kind, holeArity, targetType, assoc, methods, r) ->
-        TImpl(traitName, kind, holeArity, targetType, assoc, methods |> List.map (uniquifyDeclWith globals), r)
+    | TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods, r) ->
+        TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods |> List.map (uniquifyDeclWith globals), r)
 
     | TDefun(name, tyArgs, args, kwArgs, restArg, retType, effect, body, r) ->
         // A positional parameter may be renamed; a keyword parameter may not,

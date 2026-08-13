@@ -228,15 +228,18 @@ type Decl =
     /// `BjolangMacros` metadata, which is what an importing compilation reads.
     | DMacro of string * Range
 
-    // DImpl (TraitName, TargetType, AssociatedTypeBindings, Methods, Range)
-    | DImpl of string * FType * (string * FType) list * Decl list * Range
+    // DImpl (TraitName, TargetType, AssociatedTypeBindings, Constraints, Methods, Range)
+    //
+    // The constraints are the impl's `(where (Trait %v) ...)`, spelled exactly
+    // as a signature's are: this impl holds only where those do.
+    | DImpl of string * FType * (string * FType) list * (string * string) list * Decl list * Range
 
     // A declaration-only implementation: it records that the target type
     // implements the trait, and what its associated types are, without carrying
     // any method bodies. This is what a compiled module's metadata exports —
     // the methods themselves already live in that assembly.
-    // DImplExtern (TraitName, TargetType, AssociatedTypeBindings, Range)
-    | DImplExtern of string * FType * (string * FType) list * Range
+    // DImplExtern (TraitName, TargetType, AssociatedTypeBindings, Constraints, Range)
+    | DImplExtern of string * FType * (string * FType) list * (string * string) list * Range
 
 // ---------------------------------------------------------------------------
 // Macro expansion
@@ -1282,7 +1285,7 @@ let rec parseExpr (s: SExpr) : Expr =
                     ERecordUpdate(baseRec, parsedFields, r)
                 | _ -> failwithf $"Invalid %s{sym} syntax at %s{Lexer.formatPos r}: expected (%s{sym} target (field value) ...)"
 
-            | "record-get" | "struct-get" ->
+            | "record-ref" | "struct-ref" ->
                 match args with
                 | [ target; Ident field ] ->
                     EGetField(parseExpr target, field, r)
@@ -3087,6 +3090,7 @@ let rec parseDecl (s: SExpr) : Decl =
         let targetType = parseType targetTypeExpr
 
         let mutable assocBindings = []
+        let mutable constraints = []
         let mutable methods = []
 
         for item in body do
@@ -3094,6 +3098,20 @@ let rec parseDecl (s: SExpr) : Decl =
             // Match: (type 'item targetType)
             | SList (SAtom { Token = Symbol "type" } :: SAtom { Token = QuotedSymbol assocName } :: boundTypeExpr :: [], _) ->
                 assocBindings <- (assocName, parseType boundTypeExpr) :: assocBindings
+
+            // Match: (where (TraitName %var) ...) — a conditional impl. The
+            // clause is read exactly as a signature's, so the two spellings
+            // cannot drift.
+            | SList (SAtom { Token = Symbol "where" } :: constraintExprs, wr) ->
+                for c in constraintExprs do
+                    match c with
+                    | SList ([ SAtom { Token = Symbol cTrait }; SAtom { Token = QuotedSymbol varName } ], _) ->
+                        constraints <- (cTrait, "'" + varName) :: constraints
+                    | SList ([ SAtom { Token = Symbol cTrait }; SAtom { Token = Symbol varName } ], _) ->
+                        constraints <- (cTrait, varName) :: constraints
+                    | _ ->
+                        failwithf
+                            $"Syntax error in def/impl for '%s{traitName}' at %s{Lexer.formatPos wr}: a where clause holds (TraitName %%var) constraints, and the variable must be one the impl's own target names."
 
             // Match: (defun ...)
             | SList (SAtom { Token = Symbol "defun" } :: _, _) as defunExpr ->
@@ -3108,9 +3126,9 @@ let rec parseDecl (s: SExpr) : Decl =
                 failwithf
                     $"Syntax Error at %s{Lexer.formatPos r}: a trait implementation's method cannot be a bjoroutine yet — a trait signature has no way to say that calling a method suspends."
 
-            | _ -> failwithf $"Syntax error in def/impl for '%s{traitName}': Expected (type ...) or (defun ...)."
+            | _ -> failwithf $"Syntax error in def/impl for '%s{traitName}': Expected (type ...), (where ...) or (defun ...)."
 
-        DImpl (traitName, targetType, List.rev assocBindings, List.rev methods, r)
+        DImpl (traitName, targetType, List.rev assocBindings, List.rev constraints, List.rev methods, r)
 
     // Parse: (def/impl/extern (Foldable (Vec 'a)) (type 'item 'a))
     //
@@ -3123,12 +3141,30 @@ let rec parseDecl (s: SExpr) : Decl =
 
         let assocBindings =
             body
-            |> List.map (function
+            |> List.choose (function
                 | SList (SAtom { Token = Symbol "type" } :: SAtom { Token = QuotedSymbol assocName } :: boundTypeExpr :: [], _) ->
-                    assocName, parseType boundTypeExpr
-                | _ -> failwithf $"Syntax error in def/impl/extern for '%s{traitName}': Expected (type ...).")
+                    Some(assocName, parseType boundTypeExpr)
+                | SList (SAtom { Token = Symbol "where" } :: _, _) -> None
+                | _ -> failwithf $"Syntax error in def/impl/extern for '%s{traitName}': Expected (type ...) or (where ...).")
 
-        DImplExtern (traitName, parseType targetTypeExpr, assocBindings, r)
+        // A conditional impl's `(where ...)` has to cross the module boundary
+        // with it: the importing side is where the dictionary for
+        // `(->str (List int))` is built, and it cannot build one without knowing
+        // that a `(->str int)` goes inside.
+        let constraints =
+            body
+            |> List.collect (function
+                | SList (SAtom { Token = Symbol "where" } :: constraintExprs, _) ->
+                    constraintExprs
+                    |> List.choose (function
+                        | SList ([ SAtom { Token = Symbol cTrait }; SAtom { Token = QuotedSymbol varName } ], _) ->
+                            Some(cTrait, "'" + varName)
+                        | SList ([ SAtom { Token = Symbol cTrait }; SAtom { Token = Symbol varName } ], _) ->
+                            Some(cTrait, varName)
+                        | _ -> None)
+                | _ -> [])
+
+        DImplExtern (traitName, parseType targetTypeExpr, assocBindings, constraints, r)
 
     // A macro in declaration position, reached only once every declaration
     // form has failed to match, so a special form always wins.

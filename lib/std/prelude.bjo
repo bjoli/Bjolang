@@ -1,5 +1,6 @@
 ;; std/prelude.bjo
 ;; Standard library entry point
+;; Macros defined here CANNOT be used in this file.
 (export
   ;; Foldable
   fold
@@ -20,7 +21,7 @@
   ;; Range
   range range-by
 
-  print println ->str
+  print println ->str list->str
 
   ;; Strings
   string-append string-length
@@ -51,7 +52,8 @@
   write-string writeln get-output-string)
 
 
-
+(import/extern
+ (clr-tostring (: System.Convert.ToString)))
 
 (include "Foldable.protobjo")
 (include "Monad.protobjo")
@@ -59,6 +61,10 @@
 ;; Type to String Trait
 (def/trait (->str %a)
   (: ->str (-> %a string)))
+
+(def/impl (->str %a)
+  (defun (->str u)
+    (clr-tostring (cast System.Object u))))
 
 ;; Implementations for standard scalars
 (def/impl (->str string)
@@ -82,27 +88,12 @@
 (def/impl (->str Symbol)
   (defun (->str s) (symbol->string s)))
 
-;; ;; A character prints as itself, not as `#\a`: `->str` is what `display` and
-;; ;; `print` are built on, and those write text rather than a reread-able datum.
-;; (def/impl (->str char)
-;;   (defun (->str c) (char->string c)))
 
-;;  (def/impl (->str (List %a))
-;;    (defun (->str l)
-;;      (if (list-empty? l)
-;;          "()"
-;;        (let ((sb (stringbuilder-empty)))
-;;          (def sb (stringbuilder-empty))
-;;          (stringbuilder-add-string! sb "(")
-;;          (stringbuilder-add-string! sb (->str (list-head l)))
-;;          (loop (:for elem l)
-;;                (:do (stringbuilder-add-string! sb " ")
-;;                     (stringbuilder-add-string! sb (->str elem))))
-;;          (stringbuilder-add-string! sb ")")
-;;          (stringbuilder->string sb)))))
-         
+(def/impl (->str Char)
+  (defun (->str c) (char->string c)))
 
-
+;; Container formats require loops to work, so they go further down
+;; after accumulation and iteration forms
 
 
 ;; ---------------------------------------------------------------------------
@@ -226,10 +217,10 @@
 (def/impl (Iterable Range)
   (type %elem int)
   (type %cursor int)
-  (defun (start s) (record-get s lo))
-  (defun (done? s c) (>= c (record-get s hi)))
+  (defun (start s) (record-ref s lo))
+  (defun (done? s c) (>= c (record-ref s hi)))
   (defun (current s c) c)
-  (defun (next s c) (+ c (record-get s by))))
+  (defun (next s c) (+ c (record-ref s by))))
 
 ;; A Map's elements are its pairs, in the trie's own order.
 (def/impl (Iterable (Map %k %v))
@@ -997,17 +988,17 @@
 (def/impl (Collection Range)
   (type %content int)
   (defun (length r)
-    (def lo (record-get r lo))
-    (def hi (record-get r hi))
-    (def by (record-get r by))
+    (def lo (record-ref r lo))
+    (def hi (record-ref r hi))
+    (def by (record-ref r by))
     (if (<= hi lo)
         0
         (/ (+ (- hi lo) (- by 1)) by)))
   (defun (empty? r)
-    (>= (record-get r lo) (record-get r hi)))
+    (>= (record-ref r lo) (record-ref r hi)))
   (defun (->seq r)
-    (seql (:with i (record-get r lo) (+ i (record-get r by)))
-          (:break (>= i (record-get r hi)))
+    (seql (:with i (record-ref r lo) (+ i (record-ref r by)))
+          (:break (>= i (record-ref r hi)))
           (:yield i))))
 
 ;; A string's content is its characters. `length` is `string-count` — the walk —
@@ -1123,7 +1114,7 @@
      ;; `value` is bound before it is asked about, so it is evaluated once.
      #'(let ((found ,value))
          (when (some? found)
-           (let ((,name (option-get found)))
+           (let ((,name (option-ref found)))
              ,first
              ,@body))))
     (bad (syntax-error bad "when-let takes one binding and a body: (when-let ((name expr)) body ...)"))))
@@ -1154,3 +1145,53 @@
      #'(match (-> ,value ,step)
          (None None)
          ((Some it) ,(some-steps #'it rest))))))
+
+;; ---------------------------------------------------------------------------
+;; Container formats
+;; ---------------------------------------------------------------------------
+
+;; `'(1 2 3)`, with every element formatted by its own `->str`.
+;;
+;; The where clause is the whole content of the type: this formats a list of
+;; anything formattable, which — since `->str` has a blanket — is every list,
+;; but the *element's* implementation is what runs, chosen where the element
+;; type is known. Written as a function as well as an implementation so that it
+;; can be called at a known element type without going through dispatch, which
+;; is what the implementation below then does.
+(: list->str (-> (List %a) string) (where (->str %a)))
+(defun (list->str l)
+  (if (list-empty? l)
+      "()"
+      (let ((sb (stringbuilder-empty)))
+        (stringbuilder-add-string! sb "'(")
+        (stringbuilder-add-string! sb (->str (list-head l)))
+        (loop (:for elem (list-tail l))
+              (:do (stringbuilder-add-string! sb " ")
+                   (stringbuilder-add-string! sb (->str elem))))
+        (stringbuilder-add-string! sb ")")
+        (stringbuilder->string sb))))
+
+(def/impl (->str (List %a))
+  (where (->str %a))
+  (defun (->str l)
+    (list->str l)))
+
+(: vec->str (-> (Vec %a) string) (where (->str %a)))
+(defun (vec->str v)
+  (def sp (open-output-string))
+  (write-string sp "[")
+  (if (= 0 (vec-length  v))
+      (write-string sp "")
+      (let ()
+        (write-string sp (->str (vec-ref v 0)))
+        (loop (:with i 0 (+ i 1))
+              (:for elem v)
+              (:when (> i 0))
+              (:do (write-string sp " ")
+                   (write-string sp (->str elem))))))
+  (get-output-string sp))
+
+(def/impl (->str (Vec %a))
+  (where (->str %a))
+  (defun (->str v)
+    (vec->str v)))

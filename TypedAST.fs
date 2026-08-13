@@ -500,6 +500,12 @@ type TplType =
     | TplFun of TplType list * TplType * Effect
     | TplTuple of TplType list
 
+/// One "this type implements that trait" demand: on a function's signature, on
+/// an impl's `(where ...)`, or on a dictionary parameter derived from either.
+type TraitConstraint =
+    { TraitName: string
+      TargetType: HMType }
+
 /// The target of an `impl`, kept as a pattern rather than a bare head name.
 ///
 /// The trait's constructor variable abstracts over the *trailing* `HoleArity`
@@ -511,7 +517,16 @@ type TplType =
 type ImplTarget =
     { Ctor: string
       FixedPrefix: HMType list
-      HoleArity: int }
+      HoleArity: int
+      /// What the impl demands of its own type variables — the `(where ...)` of
+      /// a conditional impl. `(def/impl (->str (List %a)) (where (->str %a)))`
+      /// records `->str` at `'a`.
+      ///
+      /// Every target here is a bare `TVar` naming one of `FixedPrefix`'s
+      /// variables, which is what makes evidence construction terminate: the
+      /// type a constraint is discharged at is always a proper subterm of the
+      /// type the impl was selected for.
+      Constraints: TraitConstraint list }
 
 /// The constructor key a **blanket** impl is filed under — one written at a bare
 /// type variable, `(def/impl (Discard %a) ...)`, which applies at any type with
@@ -538,8 +553,8 @@ type TDecl =
     | TTypeRec of TypeDef list * Range
     //         name     implementorVar  kind        holeArity  assocTypes    signatures
     | TTrait of string * string * TraitKind * int * string list * Map<string, HMType> * Range
-    //        traitName  kind        holeArity  targetType  assocBindings           methods
-    | TImpl of string * TraitKind * int * HMType * (string * HMType) list * TDecl list * Range
+    //        traitName  kind        holeArity  targetType  assocBindings           dictFields              methods
+    | TImpl of string * TraitKind * int * HMType * (string * HMType) list * (string * HMType) list * TDecl list * Range
     | TExtern of string * FType * Range
     /// `(import/extern ...)` and `(import/class ...)`. Both are pure
     /// environment entries: every use site has already been resolved into a
@@ -553,10 +568,6 @@ type FunMeta = {
     KeywordParams: (string * HMType) list   // keyword name, type
     RestParam: HMType option                // element type of rest array
 }
-
-type TraitConstraint =
-    { TraitName: string
-      TargetType: HMType }
 
 type Scheme = Scheme of string list * TraitConstraint list * HMType
 
@@ -642,7 +653,7 @@ type TraitRegistry =
       /// Every record type declaring a given field name.
       ///
       /// A list rather than a single owner: construction names its type, but
-      /// `record-get` and `record-set` still have to fall back to the field
+      /// `record-ref` and `record-set` still have to fall back to the field
       /// name when the target's type has not been resolved yet. Keeping only
       /// the last owner made a shared field name silently resolve to whichever
       /// type happened to be declared last.
@@ -883,6 +894,13 @@ let implClassName (traitName: string) (targetTypeName: string) =
 
     $"%s{traitName}_%s{flattened}"
 
+/// The name a dictionary is passed and stored under: a parameter of a
+/// constrained generic function, a field of a conditional impl's class, and the
+/// reference to either from a method body. One function so that the three
+/// cannot drift apart.
+let dictParamName (traitName: string) (typeVarName: string) =
+    $"_dict_%s{traitName}_%s{typeVarName}"
+
 /// The dictionary singleton of an implementation: `Foldable_Vec::Instance`.
 ///
 /// `Codegen` inserts the class's type arguments *before* the `::`, so this names
@@ -890,6 +908,16 @@ let implClassName (traitName: string) (targetTypeName: string) =
 /// followed by `.Instance`.
 let implSingletonName (traitName: string) (targetTypeName: string) =
     $"%s{implClassName traitName targetTypeName}::Instance"
+
+/// The factory of a *conditional* implementation: `ToStr_List::Make`.
+///
+/// A conditional impl holds the dictionaries its `(where ...)` demands, so it
+/// has no value that exists before they do and therefore no `Instance`. The
+/// factory is a static method rather than a bare constructor so that the one
+/// name carries the class's type arguments through the `::` spelling every
+/// other landing pad already uses — `Lowering` never has to spell C#.
+let implFactoryName (traitName: string) (targetTypeName: string) =
+    $"%s{implClassName traitName targetTypeName}::Make"
 
 /// The landing pad for an interface-trait method: the impl class's methods are
 /// instance methods, so the call goes through the singleton. `Codegen` rewrites

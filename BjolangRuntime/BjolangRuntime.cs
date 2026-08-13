@@ -349,7 +349,7 @@ public static partial class BjolangRuntime {
     public static Collections.RrbList<T> vecsubempty<T>() where T : notnull => Collections.RrbFun.Empty<T>();
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    public static T vecsubget<T>(Collections.RrbList<T> list, int index) where T : notnull => Collections.RrbFun.Get(list, index);
+    public static T vecsubref<T>(Collections.RrbList<T> list, int index) where T : notnull => Collections.RrbFun.Get(list, index);
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static Collections.RrbList<T> vecsubset<T>(Collections.RrbList<T> list, int index, T value) where T : notnull => Collections.RrbFun.SetItem(list, index, value);
@@ -449,7 +449,7 @@ public static partial class BjolangRuntime {
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static T vecbuildersubget<T>(Collections.RrbBuilder<T> builder, int index) where T : notnull => Collections.RrbBuilderFun.Get(builder, index);
+    public static T vecbuildersubref<T>(Collections.RrbBuilder<T> builder, int index) where T : notnull => Collections.RrbBuilderFun.Get(builder, index);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int vecbuildersublength<T>(Collections.RrbBuilder<T> builder) where T : notnull => Collections.RrbBuilderFun.Count(builder);
@@ -615,11 +615,11 @@ public static partial class BjolangRuntime {
     public static bool none_QMARK<T>(Option<T> option) => !option.IsSome;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static T optionsubget<T>(Option<T> option) =>
-        option.IsSome ? option.Value : throw new InvalidOperationException("option-get on None");
+    public static T optionsubref<T>(Option<T> option) =>
+        option.IsSome ? option.Value : throw new InvalidOperationException("option-ref on None");
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static T optionsubgetsubor<T>(Option<T> option, T fallback) =>
+    public static T optionsubrefsubor<T>(Option<T> option, T fallback) =>
         option.IsSome ? option.Value : fallback;
 
     /// Bjolang's `(Result %e %a)`. A struct for the same reason `Option<T>` is
@@ -851,14 +851,11 @@ public static partial class BjolangRuntime {
     public static TV mapsubref<TK, TV>(Map.Map<TK, TV> map, TK key) where TK : notnull => map.Get(key);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static TV mapsubget<TK, TV>(Map.Map<TK, TV> map, TK key) where TK : notnull => map.Get(key);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static TV mapsubgetsubor<TK, TV>(Map.Map<TK, TV> map, TK key, TV fallback) where TK : notnull =>
+    public static TV mapsubrefsubor<TK, TV>(Map.Map<TK, TV> map, TK key, TV fallback) where TK : notnull =>
         map.TryGetValue(key, out var val) ? val : fallback;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Option<TV> mapsubtrysubget<TK, TV>(Map.Map<TK, TV> map, TK key) where TK : notnull =>
+    public static Option<TV> mapsubtrysubref<TK, TV>(Map.Map<TK, TV> map, TK key) where TK : notnull =>
         map.TryGetValue(key, out var val) ? new Option<TV>(val) : default;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

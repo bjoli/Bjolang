@@ -1,0 +1,123 @@
+;; Conditional implementations: `(def/impl (T (C %a)) (where (T %a)) ...)`.
+;;
+;; An impl that holds only where its type argument does. The clause is not a
+;; note to the reader: it is a dictionary the impl class carries, so
+;; `ToStr_List<int>` is built out of the `int` implementation and the element's
+;; own format is what runs.
+;;
+;; The property being pinned down is the same one `70_blanket_impl.bjo` pins
+;; down one level up. A blanket is only ever selected at a ground type, so
+;; inside `(def/impl (->str (List %a)))` the element type `%a` is a variable and
+;; the blanket cannot be — must not be — chosen for it: that would format every
+;; element with `Object.ToString` no matter what impl it has. The where clause
+;; is what defers the choice to the concrete element type instead.
+
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; A local type with a format of its own. If a list ever formatted its elements
+;; through the blanket, this is what would give it away: the blanket answers
+;; `Object.ToString`, which for a union case is its C# class name.
+(type (: Tag (Enum Red Green)))
+
+(def/impl (->str Tag)
+  (defun (->str t)
+    (match t
+      (Red "red")
+      (Green "green"))))
+
+;; A trait of this file's own, implemented conditionally over `Option`. Two
+;; things it establishes that `->str` cannot: a conditional impl for a trait
+;; that has *no* blanket, so the where clause is the only thing that can
+;; discharge the obligation, and one written outside the prelude.
+(def/trait (Size %a)
+  (: size (-> %a int)))
+
+(def/impl (Size int)
+  (defun (size n) n))
+
+(def/impl (Size string)
+  (defun (size s) (string-length s)))
+
+(def/impl (Size (Option %a))
+  (where (Size %a))
+  (defun (size o)
+    (match o
+      (None 0)
+      ((Some v) (size v)))))
+
+;; Written with the recursion rather than a loop on purpose: `(size (list-tail
+;; xs))` is this very implementation at this very type, so the dictionary it
+;; needs is the one the method is already running as. Rebuilding it there would
+;; allocate one per element.
+(def/impl (Size (List %a))
+  (where (Size %a))
+  (defun (size xs)
+    (if (list-empty? xs)
+        0
+        (+ (size (list-head xs)) (size (list-tail xs))))))
+
+;; The empty cases, named so that their element type is written somewhere.
+(: no-ints (List int))
+(def no-ints Nil)
+
+(: no-number (Option int))
+(def no-number None)
+
+;; A generic function with no where clause of its own. It acquires one:
+;; `(->str %a)` at a `(List %b)` resolves to the conditional impl, which leaves
+;; a `(->str %b)` for whoever instantiates this.
+(: show (-> %a string))
+(defun (show x)
+  (->str x))
+
+;; Two levels of the same thing, so the dictionary has to be *built* rather than
+;; forwarded: the argument is a list of lists.
+(: show-nested (-> (List (List %a)) string))
+(defun (show-nested xs)
+  (->str xs))
+
+;; The constraint written by hand rather than inferred, and forwarded to a
+;; second constrained function.
+(: total (-> (List %a) int) (where (Size %a)))
+(defun (total xs)
+  (size xs))
+
+(defun (main args)
+  ;; Directly, at ground element types.
+  (expect "ints" (->str (list 1 2 3)) "'(1 2 3)")
+  (expect "strings" (->str (list "a" "b")) "'(a b)")
+  (expect "empty" (->str no-ints) "()")
+
+  ;; The element's own impl, not the blanket's.
+  (expect "element impl runs" (->str (list Red Green)) "'(red green)")
+
+  ;; Nested: the outer dictionary holds the inner one.
+  (expect "nested" (->str (list (list 1) (list 2 3))) "'('(1) '(2 3))")
+
+  ;; Through a dictionary parameter rather than at the call itself.
+  (expect "through a generic function" (show (list 1 2)) "'(1 2)")
+  (expect "generic, element impl" (show (list Red)) "'(red)")
+  (expect "generic over nesting" (show-nested (list (list 1 2))) "'('(1 2))")
+  (expect "generic over nesting, element impl" (show-nested (list (list Red))) "'('(red))")
+
+  ;; `println` is the generic display function, so this is the same path a
+  ;; program actually uses.
+  (println (list 1 2 3))
+
+  ;; A trait with no blanket at all: every one of these is discharged by a where
+  ;; clause and nothing else.
+  (expect "conditional over Option" (int->string (size (Some 7))) "7")
+  (expect "conditional over None" (int->string (size no-number)) "0")
+  (expect "conditional over List" (int->string (size (list 1 2 3))) "6")
+  (expect "conditional, twice over" (int->string (size (list (Some 1) None (Some 2)))) "3")
+  (expect "strings measure their length" (int->string (size (list "ab" "c"))) "3")
+  (expect "forwarded by hand" (int->string (total (list 4 5))) "9")
+  0)

@@ -136,7 +136,7 @@ let rec private checkDecl (registry: TraitRegistry) (decl: TDecl) : unit =
     | TDefTuple(_, value, _, _)
     | TDefMutable(_, value, _, _) -> checkExpr registry value
     | TModule(_, decls, _) -> decls |> List.iter (checkDecl registry)
-    | TImpl(_, _, _, _, _, methods, _) -> methods |> List.iter (checkDecl registry)
+    | TImpl(_, _, _, _, _, _, methods, _) -> methods |> List.iter (checkDecl registry)
     | _ -> ()
 
 let run (registry: TraitRegistry) (decls: TDecl list) : unit =

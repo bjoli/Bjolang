@@ -14,17 +14,22 @@ let collectTraitConstraints (env: Env) (body: TypedExpr) : TraitConstraint list 
 
     let step (acc: Set<string * string>) (expr: TypedExpr) =
         match expr.Node with
-        // A trait call the solver could not pin down. The node says which trait
-        // it belongs to, so there is nothing to guess: looking the method name
-        // up across every trait picked an arbitrary one whenever two traits
-        // shared a method.
-        | TTraitCall(tref, _, _) when tref.Resolved.IsNone ->
+        // A trait call, whether or not the solver pinned it down. The node says
+        // which trait it belongs to, so there is nothing to guess: looking the
+        // method name up across every trait picked an arbitrary one whenever two
+        // traits shared a method.
+        //
+        // An unresolved call needs a dictionary for the variable it dispatches
+        // on. A *resolved* one usually needs nothing — but a conditional impl
+        // was selected on the strength of its `(where ...)`, and that clause has
+        // to be paid for by whoever instantiates this function: `(->str xs)` at
+        // `(List %a)` resolves here and still owes a `(->str %a)`.
+        | TTraitCall(tref, _, _) ->
             tref.Holes
             |> List.fold
                 (fun acc hole ->
-                    match prune registry hole with
-                    | TVar varName -> Set.add (tref.Trait, varName) acc
-                    | _ -> acc)
+                    leafConstraints registry tref.Trait hole
+                    |> List.fold (fun acc c -> Set.add c acc) acc)
                 acc
 
         | TApply({ Node = TIdent(calleeName, tArgs) }, _, _) ->
@@ -48,12 +53,13 @@ let collectTraitConstraints (env: Env) (body: TypedExpr) : TraitConstraint list 
                                 | TVar v -> Map.tryFind v varSubst |> Option.defaultValue c.TargetType
                                 | t -> t
 
-                            // A concrete instantiation resolves to a real
-                            // impl at this call site and needs nothing from
-                            // our caller.
-                            match prune registry instantiated with
-                            | TVar varName -> Set.add (c.TraitName, varName) acc
-                            | _ -> acc)
+                            // A concrete instantiation usually resolves to a
+                            // real impl at this call site and needs nothing
+                            // from our caller — unless that impl is itself
+                            // conditional, in which case what it demands is
+                            // asked of us in turn.
+                            leafConstraints registry c.TraitName instantiated
+                            |> List.fold (fun acc leaf -> Set.add leaf acc) acc)
                         acc
             | None -> acc
         | _ -> acc
@@ -686,7 +692,13 @@ let solvePending (env: Env) : unit = solveWanteds env (takeWanteds ())
 ///
 /// The trait's constructor variable abstracts over the *trailing* `HoleArity`
 /// arguments; everything before them is fixed by this impl.
-let implTargetOf (traitName: string) (info: TraitInfo) (targetType: HMType) (r: Range) : ImplTarget =
+let implTargetOf
+    (traitName: string)
+    (info: TraitInfo)
+    (targetType: HMType)
+    (constraints: TraitConstraint list)
+    (r: Range)
+    : ImplTarget =
     match targetType with
     | TCon(ctor, args) ->
         if args.Length < info.HoleArity then
@@ -695,7 +707,8 @@ let implTargetOf (traitName: string) (info: TraitInfo) (targetType: HMType) (r: 
 
         { Ctor = ctor
           FixedPrefix = args |> List.take (args.Length - info.HoleArity)
-          HoleArity = info.HoleArity }
+          HoleArity = info.HoleArity
+          Constraints = constraints }
 
     // A blanket: `(def/impl (Discard %a) ...)`, which applies wherever the exact
     // head has no impl of its own. The implementor is the class's one type
@@ -709,9 +722,19 @@ let implTargetOf (traitName: string) (info: TraitInfo) (targetType: HMType) (r: 
             failwithf
                 $"Kind Error at %s{Lexer.formatPos r}: trait '%s{traitName}' abstracts over the last %d{info.HoleArity} argument(s) of its implementor, so it cannot have a blanket implementation. A blanket names a bare type variable, and there is nothing to apply it to."
 
+        // A blanket may not be conditional, and this is not a limitation of the
+        // implementation. Its target *is* the implementor, so `(where (C %a))`
+        // over it would ask a type to satisfy a constraint in order to satisfy
+        // the constraint — evidence with no bottom. A conditional impl is
+        // written at a constructor, where the demand lands on a smaller type.
+        if not constraints.IsEmpty then
+            failwithf
+                $"Type Error at %s{Lexer.formatPos r}: a blanket implementation of '%s{traitName}' cannot have a where clause. Its target is the implementor itself, so the constraint would be discharged at the very type it is being proved for."
+
         { Ctor = BlanketCtor
           FixedPrefix = [ targetType ]
-          HoleArity = 0 }
+          HoleArity = 0
+          Constraints = [] }
 
     | _ -> failwithf $"Trait implementations require concrete target types at %s{Lexer.formatPos r}"
 
@@ -798,7 +821,7 @@ let private instantiateRecord
 
     instantiatedRecordType, expectedFields, expectedFieldsInstantiated
 
-/// Which record type a `record-get` or `record-set` is talking about.
+/// Which record type a `record-ref` or `record-set` is talking about.
 ///
 /// The target's own type answers that whenever it is known — which is every
 /// place the value was constructed, annotated, or already unified with a record
@@ -2951,7 +2974,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
 
         finalEnv, sigs, [ TTrait(traitName, implementorVar, kind, holeArity, assocTypes, hmSignatures, r) ]
     | DTypeRec(typeDefs, r) -> registerTypeDefs true typeDefs env, sigs, [ TTypeRec(typeDefs, r) ]
-    | DImpl(traitName, targetTypeExpr, assocBindings, methods, r) ->
+    | DImpl(traitName, targetTypeExpr, assocBindings, whereClause, methods, r) ->
         let targetType = resolveTypeAnnotation env.Registry targetTypeExpr
 
         let typeKey =
@@ -3002,6 +3025,44 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
             | Some info -> info
             | None -> failwithf $"Unknown trait '%s{traitName}' at %s{Lexer.formatPos r}"
 
+        // The `(where ...)`, checked against what the impl can actually hold.
+        //
+        // Each constraint becomes a dictionary the impl class carries, so it has
+        // to be phrased over a variable of the impl's own target: there is
+        // nowhere else for the evidence to come from, and a variable named here
+        // and nowhere in the target would be one the class has no parameter for.
+        let targetVars = freeTVars env.Registry targetType |> Set.ofList
+
+        let implConstraints =
+            whereClause
+            |> List.map (fun (cTrait, varName) ->
+                if not (Set.contains varName targetVars) then
+                    let written = "%" + varName.TrimStart('\'')
+
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos r}: the where clause of this implementation constrains '%s{written}', which the implemented type does not mention. An impl may only constrain its own type variables."
+
+                match Map.tryFind cTrait env.Registry.Traits with
+                | None -> failwithf $"Unknown trait '%s{cTrait}' in the where clause at %s{Lexer.formatPos r}"
+                | Some cInfo ->
+                    // An inline trait has no dictionary — that is what makes it
+                    // inline-only — so there is nothing an impl could hold to
+                    // discharge a constraint over one.
+                    if cInfo.Kind = InlineTrait then
+                        failwithf
+                            $"Type Error at %s{Lexer.formatPos r}: '%s{cTrait}' is an inline-only trait, so it cannot appear in an implementation's where clause. There is no dictionary for the impl to carry."
+
+                    // The dictionary's C# type names the trait's associated
+                    // types too, and for a constraint over a type *variable*
+                    // those are not known here — they would have to become
+                    // further parameters of the impl class. Not built; say so
+                    // rather than emitting a class that will not compile.
+                    if not cInfo.AssociatedTypes.IsEmpty then
+                        failwithf
+                            $"Type Error at %s{Lexer.formatPos r}: '%s{cTrait}' has associated types, which an implementation's where clause cannot carry yet. Constrain a function instead, where the association becomes a type parameter."
+
+                    { TraitName = cTrait; TargetType = TVar varName })
+
         // Defaults are spliced in *here*, before anything looks at the method
         // list, so that everything below — the definition-site check, the
         // completeness check, the landing pads, the inline templates — sees an
@@ -3029,7 +3090,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
 
         let methods = methods @ inheritedMethods
 
-        let implTarget = implTargetOf traitName traitInfo targetType r
+        let implTarget = implTargetOf traitName traitInfo targetType implConstraints r
         let regEnv = addImplementation traitName typeKey targetType implTarget hmAssocBindingsMap env
 
         // FIX 1: Prepend the "'" to the substitution keys so they match TVar "'c"
@@ -3104,7 +3165,40 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                     let methodSigs = Map.add name (instantiatedSig, None, []) Map.empty
                     
                     let _, _, tDecls = checkDecl regEnv methodSigs methodDecl
-                    List.head tDecls // Return the fully verified TDefun node
+                    let tDecl = List.head tDecls // The fully verified TDefun node
+
+                    // What the body turned out to need of the impl's own type
+                    // variables, against what the impl declared. A method is not
+                    // a generic function: there are no dictionary parameters to
+                    // inject, only the fields the `(where ...)` put on the
+                    // class, so an undeclared need has nowhere to come from.
+                    //
+                    // Caught here rather than in `Lowering`, which would
+                    // otherwise report a missing `_dict_` — a name the program
+                    // never wrote and the author has no way to supply.
+                    match tDecl with
+                    | TDefun(_, _, _, _, _, _, _, typedBody, _) ->
+                        for c in collectTraitConstraints regEnv typedBody do
+                            let varName =
+                                match prune regEnv.Registry c.TargetType with
+                                | TVar v -> v
+                                | other -> DotNetInterop.showType other
+
+                            let declared =
+                                implConstraints
+                                |> List.exists (fun d -> d.TraitName = c.TraitName && d.TargetType = TVar varName)
+
+                            if not declared then
+                                // Spelled as the source spells a type variable,
+                                // because the message asks for a line to be
+                                // typed and `'a` is not how one is written.
+                                let written = "%" + varName.TrimStart('\'')
+
+                                failwithf
+                                    $"Type Error at %s{Lexer.formatPos methodRange}: '%s{name}' uses '%s{c.TraitName}' at '%s{written}', which this implementation does not require. Add (where (%s{c.TraitName} %s{written})) to the implementation, and every use of it will have to supply one."
+                    | _ -> ()
+
+                    tDecl
 
                 | _ -> failwithf $"Only 'defun' declarations are allowed inside 'def/impl' at %s{Lexer.formatPos r}")
 
@@ -3168,9 +3262,27 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                     | _ -> acc)
                 regEnv
 
+        // The dictionaries the class holds, named exactly as a constrained
+        // function's parameters are — `Lowering` puts them in scope for the
+        // method bodies under the same names, so a body cannot tell whether the
+        // dictionary it dispatches through arrived as an argument or was stored
+        // by the constructor.
+        //
+        // A constrained trait has no associated types (checked above), so the
+        // dictionary's type is the trait applied to the one variable.
+        let dictFields =
+            implConstraints
+            |> List.map (fun c ->
+                let varName =
+                    match c.TargetType with
+                    | TVar v -> v
+                    | other -> failwithf $"Internal error: impl constraint over %s{DotNetInterop.showType other}"
+
+                dictParamName c.TraitName varName, TCon(c.TraitName, [ c.TargetType ]))
+
         finalEnv,
         sigs,
-        [ TImpl(traitName, traitInfo.Kind, traitInfo.HoleArity, targetType, hmAssocBindings, typedMethods, r) ]
+        [ TImpl(traitName, traitInfo.Kind, traitInfo.HoleArity, targetType, hmAssocBindings, dictFields, typedMethods, r) ]
 
     | DInlineImpl(traitName, methodName, ctor, originModule, parameters, body, qualification, r) ->
         // An inline template read back from a compiled module's metadata. Like
@@ -3190,7 +3302,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
 
         env, sigs, []
 
-    | DImplExtern(traitName, targetTypeExpr, assocBindings, r) ->
+    | DImplExtern(traitName, targetTypeExpr, assocBindings, whereClause, r) ->
         // A bodyless implementation, read back from a compiled module's
         // metadata. Only the registry needs to learn about it: the methods are
         // already compiled into the assembly that declared it, so there is
@@ -3214,7 +3326,14 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
             |> List.map (fun (name, fType) -> name, resolveTypeAnnotation env.Registry fType)
             |> Map.ofList
 
-        let implTarget = implTargetOf traitName traitInfo targetType r
+        // The published `(where ...)`. An importing module builds the dictionary
+        // for `(List int)` itself, so it has to know a `(->str int)` goes inside
+        // — the impl class in the other assembly has no `Instance` to reach for.
+        let implConstraints =
+            whereClause
+            |> List.map (fun (cTrait, varName) -> { TraitName = cTrait; TargetType = TVar varName })
+
+        let implTarget = implTargetOf traitName traitInfo targetType implConstraints r
         addImplementation traitName typeKey targetType implTarget hmAssocBindings env, sigs, []
 
 /// Type-checks a group of declarations that share a signature scope: a module

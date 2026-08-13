@@ -16,29 +16,29 @@
       (println (string-append "ok " label))
       (println (string-append "FAILURE: " label))))
 
-;; A signature makes the target's type known, so `record-get` never guesses.
+;; A signature makes the target's type known, so `record-ref` never guesses.
 (: car-year (-> Car int))
-(defun (car-year c) (record-get c year))
+(defun (car-year c) (record-ref c year))
 
 (: bike-brand (-> Bike string))
-(defun (bike-brand b) (struct-get b brand))
+(defun (bike-brand b) (struct-ref b brand))
 
 (defun (main args)
   ;; A local lambda has no signature, so when its body is checked the target's
   ;; type is still an unknown. `gears` belongs to exactly one type, so the old
   ;; field-name guess still resolves it — that fallback is only reached here,
   ;; where there is genuinely nothing else to go on.
-  (def gears-of (fun (b) (struct-get b gears)))
+  (def gears-of (fun (b) (struct-ref b gears)))
 
   (def c (Car (brand "banana") (year 3000)))
-  (expect "brand" (equal? (record-get c brand) "banana"))
+  (expect "brand" (equal? (record-ref c brand) "banana"))
   (expect "year" (= (car-year c) 3000))
 
   ;; Fields in an order other than the declared one. The constructor a record
   ;; compiles to takes them positionally, so this is where a reordering bug
   ;; would show up.
   (def c2 (Car (year 1999) (brand "kiwi")))
-  (expect "reordered brand" (equal? (record-get c2 brand) "kiwi"))
+  (expect "reordered brand" (equal? (record-ref c2 brand) "kiwi"))
   (expect "reordered year" (= (car-year c2) 1999))
 
   ;; The same field name on a different type.
@@ -57,10 +57,10 @@
 
   ;; A generic record: the type arguments come from the fields given.
   (def boxed (Boxed (item "fig") (count 2)))
-  (expect "generic field" (equal? (record-get boxed item) "fig"))
-  (expect "generic count" (= (record-get boxed count) 2))
+  (expect "generic field" (equal? (record-ref boxed item) "fig"))
+  (expect "generic count" (= (record-ref boxed count) 2))
 
   ;; Nested construction.
   (def nested (Boxed (item (Car (brand "plum") (year 1970))) (count 1)))
-  (expect "nested" (equal? (record-get (record-get nested item) brand) "plum"))
+  (expect "nested" (equal? (record-ref (record-ref nested item) brand) "plum"))
   0)

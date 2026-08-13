@@ -405,13 +405,36 @@ let main argv =
                         let parts = assocStrs @ methodStrs @ defaultStrs |> String.concat " "
                         $"(def/trait (%s{traitName} %s{implementorStr}) %s{parts})"
 
-                    let serializeImpl (traitName: string) (targetType: TypedAST.HMType) (assocMap: Map<string, TypedAST.HMType>) =
+                    // The `(where ...)` travels with the impl, and it is not
+                    // decoration: the importing module is where the dictionary
+                    // for `(List int)` gets built, and it cannot build one
+                    // without knowing that a `(->str int)` goes inside. The
+                    // order is the constructor's, so it is preserved as read.
+                    let serializeImpl
+                        (traitName: string)
+                        (typeKey: string)
+                        (targetType: TypedAST.HMType)
+                        (assocMap: Map<string, TypedAST.HMType>)
+                        =
                         let assocStrs =
                             assocMap
                             |> Map.toList
                             |> List.map (fun (n, t) -> $"(type %s{quoted n} %s{Codegen.serializeHMType t})")
                             |> String.concat " "
-                        $"(def/impl/extern (%s{traitName} %s{Codegen.serializeHMType targetType}) %s{assocStrs})"
+
+                        let whereStr =
+                            match Map.tryFind (traitName, typeKey) env.Registry.ImplTargets with
+                            | Some target when not target.Constraints.IsEmpty ->
+                                let parts =
+                                    target.Constraints
+                                    |> List.map (fun c ->
+                                        $"(%s{c.TraitName} %s{Codegen.serializeHMType c.TargetType})")
+                                    |> String.concat " "
+
+                                " (where " + parts + ")"
+                            | _ -> ""
+
+                        $"(def/impl/extern (%s{traitName} %s{Codegen.serializeHMType targetType}) %s{assocStrs}%s{whereStr})"
 
                     // A function's flat type says how many arguments it takes,
                     // not which of them are keyword arguments — and a keyword
@@ -513,7 +536,7 @@ let main argv =
                             $"({head} (: {headStr} (Union\n  " + String.concat "\n  " (List.map serializeCase cases) + ")))"
                         // A record's *fields* are the part worth publishing.
                         // Without them an importer knows the name and nothing
-                        // else: `record-get` on the type fails with "unknown
+                        // else: `record-ref` on the type fails with "unknown
                         // record field", and an inline template that reads one
                         // cannot be re-inferred at the splice, so it falls back
                         // to an interface call. Both were silent — the type name
@@ -564,8 +587,8 @@ let main argv =
                         env.Registry.Implementations
                         |> Map.toList
                         |> List.filter (fun ((traitName, _), _) -> Map.containsKey traitName exportedTraits)
-                        |> List.map (fun ((traitName, _), (targetType, assocMap)) ->
-                            serializeImpl traitName targetType assocMap)
+                        |> List.map (fun ((traitName, typeKey), (targetType, assocMap)) ->
+                            serializeImpl traitName typeKey targetType assocMap)
                         |> String.concat "\n"
 
                     // Foreign imports precede the traits: a trait's own signature

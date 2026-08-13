@@ -1,0 +1,27 @@
+;; A blanket implementation with a where clause.
+;;
+;; Its target *is* the implementor, so the constraint would be discharged at the
+;; very type the impl is being selected for: evidence with no bottom. A
+;; conditional impl is written at a constructor, where the demand lands on a
+;; strictly smaller type and the recursion ends.
+;;
+;; EXPECT-ERROR: cannot have a where clause
+
+(import (std prelude))
+
+(def/trait (Size %a)
+  (: size (-> %a int)))
+
+(def/trait (Describe %a)
+  (: describe (-> %a string)))
+
+(def/impl (Size int)
+  (defun (size n) n))
+
+(def/impl (Describe %a)
+  (where (Size %a))
+  (defun (describe x) (int->string (size x))))
+
+(defun (main args)
+  (println (describe 3))
+  0)

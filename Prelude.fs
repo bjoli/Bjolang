@@ -490,7 +490,7 @@ let prelude : Env =
 
         // Vec operations
         "vec-empty", {Scheme = Scheme(["a"], [], makeFunType [] (makeVecType (TVar "a"))); IsMutable = false }
-        "vec-get", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a"); intType] (TVar "a")); IsMutable = false }
+        "vec-ref", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a"); intType] (TVar "a")); IsMutable = false }
         "vec-set", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a"); intType; TVar "a"] (makeVecType (TVar "a"))); IsMutable = false }
         "vec-add", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a"); TVar "a"] (makeVecType (TVar "a"))); IsMutable = false }
         "vec-insert", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a"); intType; TVar "a"] (makeVecType (TVar "a"))); IsMutable = false }
@@ -534,8 +534,8 @@ let prelude : Env =
         "None", {Scheme = Scheme(["a"], [], makeOptionType (TVar "a")); IsMutable = false }
         "some?", {Scheme = Scheme(["a"], [], makeFunType [makeOptionType (TVar "a")] boolType); IsMutable = false }
         "none?", {Scheme = Scheme(["a"], [], makeFunType [makeOptionType (TVar "a")] boolType); IsMutable = false }
-        "option-get", {Scheme = Scheme(["a"], [], makeFunType [makeOptionType (TVar "a")] (TVar "a")); IsMutable = false }
-        "option-get-or", {Scheme = Scheme(["a"], [], makeFunType [makeOptionType (TVar "a"); TVar "a"] (TVar "a")); IsMutable = false }
+        "option-ref", {Scheme = Scheme(["a"], [], makeFunType [makeOptionType (TVar "a")] (TVar "a")); IsMutable = false }
+        "option-ref-or", {Scheme = Scheme(["a"], [], makeFunType [makeOptionType (TVar "a"); TVar "a"] (TVar "a")); IsMutable = false }
 
         // Result. Built in for the same reason Option is: a `#:exceptions`
         // interop call returns one on every invocation, so it cannot be
@@ -631,7 +631,7 @@ let prelude : Env =
         "vec->vecbuilder", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a")] (makeVecBuilderType (TVar "a"))); IsMutable = false }
         "vecbuilder-add!", {Scheme = Scheme(["a"], [], makeFunType [makeVecBuilderType (TVar "a"); TVar "a"] unitType); IsMutable = false }
         "vecbuilder-set!", {Scheme = Scheme(["a"], [], makeFunType [makeVecBuilderType (TVar "a"); intType; TVar "a"] unitType); IsMutable = false }
-        "vecbuilder-get", {Scheme = Scheme(["a"], [], makeFunType [makeVecBuilderType (TVar "a"); intType] (TVar "a")); IsMutable = false }
+        "vecbuilder-ref", {Scheme = Scheme(["a"], [], makeFunType [makeVecBuilderType (TVar "a"); intType] (TVar "a")); IsMutable = false }
         "vecbuilder-length", {Scheme = Scheme(["a"], [], makeFunType [makeVecBuilderType (TVar "a")] intType); IsMutable = false }
         "vecbuilder->vec", {Scheme = Scheme(["a"], [], makeFunType [makeVecBuilderType (TVar "a")] (makeVecType (TVar "a"))); IsMutable = false }
 
@@ -663,9 +663,8 @@ let prelude : Env =
         // Map (CHAMP) operations
         "map-empty", {Scheme = Scheme(["k"; "v"], [], makeFunType [] (makeMapType (TVar "k") (TVar "v"))); IsMutable = false }
         "map-ref", {Scheme = Scheme(["k"; "v"], [], makeFunType [makeMapType (TVar "k") (TVar "v"); TVar "k"] (TVar "v")); IsMutable = false }
-        "map-get", {Scheme = Scheme(["k"; "v"], [], makeFunType [makeMapType (TVar "k") (TVar "v"); TVar "k"] (TVar "v")); IsMutable = false }
-        "map-get-or", {Scheme = Scheme(["k"; "v"], [], makeFunType [makeMapType (TVar "k") (TVar "v"); TVar "k"; TVar "v"] (TVar "v")); IsMutable = false }
-        "map-try-get", {Scheme = Scheme(["k"; "v"], [], makeFunType [makeMapType (TVar "k") (TVar "v"); TVar "k"] (makeOptionType (TVar "v"))); IsMutable = false }
+        "map-ref-or", {Scheme = Scheme(["k"; "v"], [], makeFunType [makeMapType (TVar "k") (TVar "v"); TVar "k"; TVar "v"] (TVar "v")); IsMutable = false }
+        "map-try-ref", {Scheme = Scheme(["k"; "v"], [], makeFunType [makeMapType (TVar "k") (TVar "v"); TVar "k"] (makeOptionType (TVar "v"))); IsMutable = false }
         "map-set", {Scheme = Scheme(["k"; "v"], [], makeFunType [makeMapType (TVar "k") (TVar "v"); TVar "k"; TVar "v"] (makeMapType (TVar "k") (TVar "v"))); IsMutable = false }
         "map-add", {Scheme = Scheme(["k"; "v"], [], makeFunType [makeMapType (TVar "k") (TVar "v"); TVar "k"; TVar "v"] (makeMapType (TVar "k") (TVar "v"))); IsMutable = false }
         "map-remove", {Scheme = Scheme(["k"; "v"], [], makeFunType [makeMapType (TVar "k") (TVar "v"); TVar "k"] (makeMapType (TVar "k") (TVar "v"))); IsMutable = false }

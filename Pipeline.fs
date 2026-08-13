@@ -553,8 +553,8 @@ let wrapInModule (moduleName: string) (filePath: string) (decls: Decl list) : De
             let getRange d = 
                 match d with
                 | DDef(_, _, r) | DDefun(_, _, _, _, r) | DDefTuple(_, _, r) | DDefMutable(_, _, r)
-                | DSignature(_, _, _, r) | DType(_, r) | DTypeRec(_, r) | DTrait(_, _, _, _, _, _, r) | DImpl(_, _, _, _, r)
-                | DImplExtern(_, _, _, r) | DInlineImpl(_, _, _, _, _, _, _, r)
+                | DSignature(_, _, _, r) | DType(_, r) | DTypeRec(_, r) | DTrait(_, _, _, _, _, _, r) | DImpl(_, _, _, _, _, r)
+                | DImplExtern(_, _, _, _, r) | DInlineImpl(_, _, _, _, _, _, _, r)
                 | DModule(_, _, r) | DImport(_, r) | DExport(_, r) | DReExport(_, r) | DExtern(_, _, _, r)
                 | DImportExtern(_, r) | DImportClass(_, r) | DMacro(_, r) -> r
             unionLexerRanges (getRange first) (getRange last)

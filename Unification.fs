@@ -60,6 +60,66 @@ let rec prune (registry: TraitRegistry) (t: HMType) : HMType =
         | _ -> TAssoc(traitName, assocName, prunedImpl)
     | _ -> t
 
+/// The implementation `traitName` selects at `t`, with the substitution that
+/// carries the impl's own type variables to `t`'s arguments.
+///
+/// The two levels resolution uses, in the same order: an exact head, then the
+/// trait's blanket. A blanket's target is the bare implementor, so the
+/// substitution binds its one variable to the whole type.
+let implFor (registry: TraitRegistry) (traitName: string) (t: HMType) : (ImplTarget * Map<string, HMType>) option =
+    match prune registry t with
+    | TCon(ctor, args) ->
+        let target =
+            match Map.tryFind (traitName, ctor) registry.ImplTargets with
+            | Some target -> Some target
+            | None -> Map.tryFind traitName registry.BlanketImpls
+
+        target
+        |> Option.map (fun target ->
+            let bound =
+                if target.Ctor = BlanketCtor then
+                    [ TCon(ctor, args) ]
+                else
+                    args |> List.truncate target.FixedPrefix.Length
+
+            let subst =
+                List.zip (target.FixedPrefix |> List.truncate bound.Length) bound
+                |> List.choose (fun (pattern, actual) ->
+                    match pattern with
+                    | TVar v -> Some(v, actual)
+                    | _ -> None)
+                |> Map.ofList
+
+            target, subst)
+    | _ -> None
+
+/// What a use of `traitName` at `t` still needs from the enclosing function.
+///
+/// A ground type answers nothing: the whole dictionary can be built where the
+/// type is known. A type variable answers itself. Everything between is a
+/// conditional impl, whose `(where ...)` is discharged one level down — so
+/// `(->str (List %a))` needs whatever `(->str %a)` needs, which is a dictionary
+/// parameter for `'a`.
+///
+/// The recursion terminates because a constraint's target is one of the impl's
+/// own target variables, so the type it is asked at is always a proper subterm
+/// of `t`.
+///
+/// One function, used by `Inference` to decide which constraints a generic
+/// function carries and by `Lowering` to build the dictionaries that discharge
+/// them. Were the two to disagree, a function would take a dictionary nobody
+/// passes, or be passed one it does not declare.
+let rec leafConstraints (registry: TraitRegistry) (traitName: string) (t: HMType) : (string * string) list =
+    match prune registry t with
+    | TVar v -> [ traitName, v ]
+    | TCon _ as ground ->
+        match implFor registry traitName ground with
+        | Some(target, subst) ->
+            target.Constraints
+            |> List.collect (fun c -> leafConstraints registry c.TraitName (substTypeVars subst c.TargetType))
+        | None -> []
+    | _ -> []
+
 let instantiate
     (registry: TraitRegistry)
     (Scheme(boundVars, constraints, t))

@@ -447,7 +447,7 @@ let rec private lowerDeclWith (aliasFor: string -> string list) (decl: TDecl) : 
     match decl with
     | TModule(name, decls, r) -> TModule(name, decls |> List.map (lowerDeclWith aliasFor), r)
 
-    | TImpl(traitName, kind, holeArity, targetType, assoc, methods, r) ->
+    | TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods, r) ->
         // A concrete self-call inside an `impl` method was devirtualized by
         // `Lowering.fs`, so the method no longer calls itself under its own name.
         // An inline trait's landing pad is a *static* method rather than one on
@@ -457,7 +457,7 @@ let rec private lowerDeclWith (aliasFor: string -> string list) (decl: TDecl) : 
             | TCon(targetTypeName, _) -> [ landingPadName kind traitName targetTypeName methodName ]
             | _ -> []
 
-        TImpl(traitName, kind, holeArity, targetType, assoc, methods |> List.map (lowerDeclWith implAlias), r)
+        TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods |> List.map (lowerDeclWith implAlias), r)
 
     | TDefun(name, tyArgs, args, kwArgs, restArg, retType, effect, body, r) ->
         let loweredKwArgs = kwArgs |> List.map (fun (n, t, e) -> n, t, lowerExpr [] false e)
@@ -536,7 +536,7 @@ let assertLoopsPromoted (decls: TDecl list) : unit =
     let rec checkDecl (d: TDecl) =
         match d with
         | TModule(_, inner, _) -> List.iter checkDecl inner
-        | TImpl(_, _, _, _, _, methods, _) -> List.iter checkDecl methods
+        | TImpl(_, _, _, _, _, _, methods, _) -> List.iter checkDecl methods
         | _ ->
             TypeVisitor.mapDecl
                 (fun e ->

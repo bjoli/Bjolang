@@ -562,7 +562,7 @@ let rec serializeExpr (e: Parser.Expr) : string =
         list [ head; list args; serializeExpr body ]
     | Parser.ERecordUpdate(n, fields, _) ->
         list ("record-set" :: n :: (fields |> List.map (fun (k, v) -> list [ k; serializeExpr v ])))
-    | Parser.EGetField(target, f, _) -> list [ "record-get"; serializeExpr target; f ]
+    | Parser.EGetField(target, f, _) -> list [ "record-ref"; serializeExpr target; f ]
     | Parser.EVec(items, _) -> "[" + String.concat " " (List.map serializeExpr items) + "]"
 
     | Parser.EMatch(target, clauses, _) ->
@@ -3013,7 +3013,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
         indent ctx
         appendLine ctx "}"
 
-    | TImpl (traitName, kind, holeArity, targetType, assocMap, methods, _) ->
+    | TImpl (traitName, kind, holeArity, targetType, assocMap, dictFields, methods, _) ->
         // A blanket impl's target is a bare type variable, which becomes the
         // class's one type parameter: `Discard_Blanket<T_a> : Discard<T_a>`.
         let targetTypeName =
@@ -3070,11 +3070,59 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
             // An inline trait has no interface to satisfy, so there is nothing
             // for a singleton to be an instance *of*: its landing pads are plain
             // static methods.
-            match kind with
-            | InterfaceTrait ->
+            //
+            // A conditional impl has no singleton either, for a different
+            // reason: it holds the dictionaries its `(where ...)` demands, and
+            // those differ per instantiation — `ToStr_List<int>` needs the `int`
+            // one — so there is no single value to share. It gets the fields, a
+            // constructor and a factory instead, and every dispatch site builds
+            // one. The allocation is a sealed object of exactly known type, so
+            // the interface call through it stays devirtualizable.
+            match kind, dictFields with
+            | InterfaceTrait, [] ->
                 indent ctx
                 appendLine ctx $"public static readonly %s{className}%s{tyParamsStr} Instance = new();"
-            | InlineTrait -> ()
+            | InterfaceTrait, _ ->
+                let parameters =
+                    dictFields
+                    |> List.mapi (fun i (_, t) -> $"%s{typeToString t} d%d{i}")
+                    |> String.concat ", "
+
+                let arguments =
+                    dictFields |> List.mapi (fun i _ -> $"d%d{i}") |> String.concat ", "
+
+                for (name, t) in dictFields do
+                    indent ctx
+                    appendLine ctx $"private readonly %s{typeToString t} %s{sanitizeIdent name};"
+
+                indent ctx
+                appendLine ctx $"public %s{className}(%s{parameters}) {{"
+
+                withIndent ctx (fun ctx ->
+                    for i, (name, _) in List.indexed dictFields do
+                        indent ctx
+                        appendLine ctx $"this.%s{sanitizeIdent name} = d%d{i};")
+
+                indent ctx
+                appendLine ctx "}"
+
+                // Named rather than left to `new`, so that `Lowering` can spell
+                // the whole thing as one `Class::Make` identifier and let the
+                // existing `::` path insert the class's type arguments.
+                indent ctx
+                appendLine ctx
+                    $"public static %s{className}%s{tyParamsStr} Make(%s{parameters}) => new %s{className}%s{tyParamsStr}(%s{arguments});"
+
+                // The dictionary for this very implementation, which a method
+                // recursing at its own target type needs: `this`, under the
+                // name `Lowering` refers to it by. A property rather than a
+                // field, so it costs nothing to hold.
+                let selfName = sanitizeIdent (Lowering.selfDictName traitName)
+                let interfaceStr = baseClause.Substring(3)
+
+                indent ctx
+                appendLine ctx $"private %s{interfaceStr} %s{selfName} => this;"
+            | InlineTrait, _ -> ()
 
             let modifier =
                 match kind with

@@ -1,0 +1,29 @@
+;; An implementation whose body uses a trait at its own type variable, without
+;; a where clause saying so.
+;;
+;; There is nowhere for that dictionary to come from: an impl method is not a
+;; generic function, so no parameter can be injected for it, and the only
+;; evidence the class holds is what its where clause put there. Caught at the
+;; implementation, where the fix is, rather than at whichever call site first
+;; needs the dictionary.
+;;
+;; EXPECT-ERROR: which this implementation does not require
+;; EXPECT-ERROR: Add (where (Describe %a)) to the implementation
+
+(import (std prelude))
+
+(def/trait (Describe %a)
+  (: describe (-> %a string)))
+
+(def/impl (Describe int)
+  (defun (describe n) (int->string n)))
+
+(def/impl (Describe (List %a))
+  (defun (describe xs)
+    (if (list-empty? xs)
+        "()"
+        (describe (list-head xs)))))
+
+(defun (main args)
+  (println (describe (list 1 2)))
+  0)

@@ -192,6 +192,19 @@ let private landingPad (env: Env) (tref: TraitRef) (ctor: string) (tyArgs: HMTyp
         | Some info -> info.Kind
         | None -> InterfaceTrait
 
+    // A conditional impl has no singleton to route through: its dictionary has
+    // to be built out of the evidence its `(where ...)` demands, and that is
+    // `Lowering`'s job. Handing the call back unchanged is what asks for it —
+    // the node still says which implementation was chosen.
+    let conditional =
+        match Map.tryFind (tref.Trait, ctor) env.Registry.ImplTargets with
+        | Some target -> not target.Constraints.IsEmpty
+        | None -> false
+
+    if conditional then
+        { expr with Node = TTraitCall(tref, args, kwArgs) }
+    else
+
     let calleeType =
         tfun ((args |> List.map (fun a -> a.Type)) @ (kwArgs |> List.map (fun (_, e) -> e.Type))) expr.Type
 
@@ -309,7 +322,7 @@ let rec private inlineDecl (ctx: Ctx) (decl: TDecl) : TDecl =
     match decl with
     | TModule(name, decls, r) -> TModule(name, decls |> List.map (inlineDecl ctx), r)
 
-    | TImpl(traitName, kind, holeArity, targetType, assoc, methods, r) ->
+    | TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods, r) ->
         let ctor =
             match targetType with
             | TCon(n, _) -> n
@@ -334,7 +347,7 @@ let rec private inlineDecl (ctx: Ctx) (decl: TDecl) : TDecl =
                 | TDefun(n, _, _, _, _, _, _, _, _) as m -> inlineDecl (methodCtx n) m
                 | m -> inlineDecl ctx m)
 
-        TImpl(traitName, kind, holeArity, targetType, assoc, methods, r)
+        TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods, r)
 
     | _ -> TypeVisitor.mapDecl (inlineExpr ctx) decl
 

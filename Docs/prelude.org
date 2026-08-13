@@ -115,6 +115,7 @@ Aliases for the operators, which work at ~StringCursor~ directly. The named form
 *** Conversions =(std prelude)=
 - ~(string->list s)~ : ~(List char)~.
 - ~(list->string cs)~ : Builds a string from ~(List char)~.
+- ~(list->str xs)~ : Formats a list as ~'(1 2 3)~, each element through its own ~->str~. Constrained ~(where (->str %a))~, and what the ~->str~ implementation for lists calls. =(std prelude)=
 - ~(string->vec s)~ : ~(Vec char)~.
 - ~(string-reverse s)~ : Reverses by *character*, so a string ending in an astral character comes back with that character intact rather than with its two halves swapped.
 
@@ -214,7 +215,7 @@ Built-in functional linked lists.
 ** Vectors (~Vec~ / ~RrbList~)
 Persistent immutable vectors.
 - ~(vec-empty)~ : Returns an empty vector.
-- ~(vec-get vec index)~ : Gets the element at ~index~.
+- ~(vec-ref vec index)~ : Gets the element at ~index~.
 - ~(vec-set vec index value)~ : Returns a new vector with ~value~ at ~index~.
 - ~(vec-add vec item)~ : Returns a new vector with ~item~ appended.
 - ~(vec-insert vec index item)~ : Returns a new vector with ~item~ inserted at ~index~.
@@ -243,7 +244,7 @@ Mutable builders for efficiently constructing vectors.
 - ~(vec->vecbuilder vec)~ : Creates a builder from a vector.
 - ~(vecbuilder-add! builder item)~ : Mutates the builder by appending ~item~.
 - ~(vecbuilder-set! builder index item)~ : Mutates the builder by setting ~item~ at ~index~.
-- ~(vecbuilder-get builder index)~ : Gets the element at ~index~.
+- ~(vecbuilder-ref builder index)~ : Gets the element at ~index~.
 - ~(vecbuilder-length builder)~ : Returns the size.
 - ~(vecbuilder->vec builder)~ : Freezes the builder into an immutable vector.
 
@@ -260,9 +261,8 @@ Mutable builders (~SchemeListBuilder~) for efficiently constructing Scheme lists
 High-performance immutable CHAMP (Compressed Hash-Array Mapped Prefix-tree) maps.
 - ~(map-empty)~ : Returns an empty map.
 - ~(map-ref map key)~ : Returns the value for ~key~; throws if not found.
-- ~(map-get map key)~ : Returns the value for ~key~; throws if not found.
-- ~(map-get-or map key default-val)~ : Returns the value for ~key~, or ~default-val~ if not found.
-- ~(map-try-get map key)~ : Returns ~(Some val)~ if found, or ~None~ if not.
+- ~(map-ref-or map key default-val)~ : Returns the value for ~key~, or ~default-val~ if not found.
+- ~(map-try-ref map key)~ : Returns ~(Some val)~ if found, or ~None~ if not.
 - ~(map-set map key value)~ : Returns a new map with ~key~ mapped to ~value~.
 - ~(map-add map key value)~ : Returns a new map with ~key~ mapped to ~value~.
 - ~(map-remove map key)~ : Returns a new map with ~key~ removed.
@@ -343,8 +343,8 @@ Optional value type representing presence (~Some~) or absence (~None~).
 - ~None~ : Represents no value.
 - ~(some? opt)~ : Returns true if ~opt~ is ~Some~.
 - ~(none? opt)~ : Returns true if ~opt~ is ~None~.
-- ~(option-get opt)~ : Returns the unwrapped value; throws if ~None~.
-- ~(option-get-or opt default-val)~ : Returns the unwrapped value, or ~default-val~ if ~None~.
+- ~(option-ref opt)~ : Returns the unwrapped value; throws if ~None~.
+- ~(option-ref-or opt default-val)~ : Returns the unwrapped value, or ~default-val~ if ~None~.
 
 ** Sequences (~Seq~)
 Lazy, demand-driven sequences.
@@ -376,6 +376,15 @@ Standard iterator protocol for collections.
 
 ** Traits
 - ~->str~ : Trait for string representation with method ~(->str x)~. Implemented for ~string~, ~int~, ~double~, ~byte~, ~long~, ~char~, ~Keyword~ and ~Symbol~. A ~char~ prints as itself, not as ~#\a~: ~->str~ is what ~display~ and ~print~ are built on, and those write text rather than a reread-able datum.
+
+  A list prints as ~'(1 2 3)~, through a *conditional* implementation:
+  ~(def/impl (->str (List %a)) (where (->str %a)) ...)~. The where clause is
+  what makes each element print through its own implementation rather than
+  through the blanket, and it is why ~->str~ over a list of a type you have
+  implemented ~->str~ for prints your version.
+
+  Anything with no implementation of its own falls to the blanket, which is
+  ~Object.ToString~.
 - ~Iterator~ : Trait for iterators.
 - ~Iterable~ : ~(start s)~, ~(done? s c)~, ~(current s c)~ and ~(next s c)~ —
   how to walk a collection, and what a ~(:for ...)~ clause uses. Implemented for

@@ -123,7 +123,7 @@ else aligns under its first argument."
 (defconst bjo-special-forms
   '("if" "when" "unless" "match" "let" "let/mono" "letrec" "loop" "seq" "seql"
     "do" "try" "with-open" "parameterize" "fun" "and" "or" "not" "set!"
-    "cast" "record" "record-get" "record-set!" "yield" "yield-from"
+    "cast" "record" "record-ref" "record-set!" "yield" "yield-from"
     "bjo" "bjoroutine" "spawn-evt" "task->event"
     "import" "import/extern" "import/class" "export" "re-export" "include"
     "type" "type-rec")

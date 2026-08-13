@@ -162,8 +162,8 @@ let rec mapDecl (f: TypedExpr -> TypedExpr) (decl: TDecl) : TDecl =
             r
         )
     | TModule(name, decls, r) -> TModule(name, decls |> List.map (mapDecl f), r)
-    | TImpl(traitName, kind, holeArity, targetType, assoc, methods, r) ->
-        TImpl(traitName, kind, holeArity, targetType, assoc, methods |> List.map (mapDecl f), r)
+    | TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods, r) ->
+        TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods |> List.map (mapDecl f), r)
     | TImport _
     | TExport _
     | TReExport _
