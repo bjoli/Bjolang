@@ -1,0 +1,134 @@
+;; `import/extern` over *instance* members, and over properties.
+;;
+;; The target of a clause is a fully qualified member, and whether it is static
+;; or an instance one is read off the metadata rather than written down. An
+;; instance member's receiver is simply the alias's first argument, so
+;; `(: System.String.Trim (-> string string))` takes the string it trims and
+;; nothing else.
+;;
+;; That is worth having for one reason above the others: `(.Method x ...)` has
+;; nowhere to put a keyword. An async instance method could not be awaited, a
+;; cancellable one could not be threaded, and a failing one could not become a
+;; `Result` — every one of those facts belongs to a clause, and until now only
+;; static methods had one. Everything §7.2 says about `#:async` therefore
+;; applies here unchanged, including the ambient token, which the last two
+;; tests pin down.
+;;
+;; `#:get` and `#:set` name an accessor for a property or field. One clause per
+;; accessor, under its own name: a property has no overloads to disambiguate,
+;; so naming both in one place would buy nothing, and two clauses is what lets a
+;; module import only the read. A `#:set` alias is void, exactly as `set!` is.
+
+(import (std prelude))
+
+(import/class
+  (StringBuilder (: System.Text.StringBuilder (-> StringBuilder)))
+  (SemaphoreSlim (: System.Threading.SemaphoreSlim (-> int SemaphoreSlim))))
+
+(import/extern
+  ;; Instance methods. The receiver leads the declared type, and the overload
+  ;; is still chosen from the arguments at each call — `Append` has some thirty
+  ;; of them and `(sb-append sb "a")` means the one taking a string.
+  (sb-append  (: System.Text.StringBuilder.Append (-> StringBuilder string StringBuilder)))
+  (sb->string (: System.Text.StringBuilder.ToString (-> StringBuilder string)))
+  (str-trim   (: System.String.Trim (-> string string)))
+
+  ;; One property, both ways. `Length` on a builder is genuinely writable —
+  ;; assigning a smaller one truncates — which is what makes it worth reading
+  ;; and writing here rather than two unrelated members.
+  (sb-length  (: System.Text.StringBuilder.Length (-> StringBuilder int) #:get))
+  (sb-length! (: System.Text.StringBuilder.Length (-> StringBuilder int void) #:set))
+
+  ;; A *static* accessor is not a call. There is no receiver to apply it to, so
+  ;; the alias names the value, the way `FileMode.Open` does.
+  (int-max (: System.Int32.MaxValue #:get))
+
+  ;; An instance call whose declared failures are values. `import/class` has no
+  ;; place to say this — it declares a constructor and nothing else — so before
+  ;; the clause existed the only guard for an instance call was `try`.
+  (substring (: System.String.Substring (-> string int string)
+                #:exceptions (System.ArgumentOutOfRangeException)))
+
+  ;; An async instance method. `WaitAsync(int, CancellationToken)` is what the
+  ;; ambient token selects; without it the overload taking only a timeout would
+  ;; be chosen and a cancelled scope would wait out the full thirty seconds.
+  (sem-wait (: System.Threading.SemaphoreSlim.WaitAsync (-> SemaphoreSlim int bool) #:async)))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; Waits on a semaphore nobody will ever post to. Only ever finishes by being
+;; cancelled, which is the point: the token has to have reached .NET.
+(: blocked (-> SemaphoreSlim string))
+(defbjo (blocked sem)
+  (if (sem-wait sem 30000) "acquired" "timed out"))
+
+(defbjo (main args)
+  ;; ---- Instance methods ---------------------------------------------------
+  (def sb (StringBuilder.))
+  (ignore (sb-append sb "abc"))
+  (expect "an instance method through import/extern" (sb->string sb) "abc")
+
+  ;; ---- Accessors ----------------------------------------------------------
+  (expect "a #:get import" (int->string (sb-length sb)) "3")
+
+  ;; Void, like `set!`. Truncating to two leaves "ab" behind it.
+  (sb-length! sb 2)
+  (expect "a #:set import" (sb->string sb) "ab")
+  (expect "the write is visible to the read" (int->string (sb-length sb)) "2")
+
+  ;; A static accessor, bare. `TForeignStaticGet` emits the member access
+  ;; itself, so a property like this is re-read wherever the name stands.
+  (expect "a static #:get import is a value" (int->string int-max) "2147483647")
+
+  ;; ---- As values ----------------------------------------------------------
+  ;;
+  ;; A .NET method group is not a value, so the declared signature is what lets
+  ;; the alias be eta-expanded into a lambda — and for an instance member the
+  ;; receiver is the lambda's first parameter, exactly as it is at a call.
+  (def trim str-trim)
+  (expect "an instance import used as a value" (trim "  hi  ") "hi")
+
+  ;; An accessor needs no signature for this: a property has no overload set,
+  ;; so its type is known from the member alone.
+  (def len sb-length)
+  (expect "a #:get import used as a value" (int->string (len sb)) "2")
+
+  ;; ---- #:exceptions over an instance call ---------------------------------
+  (expect "an instance call that succeeds"
+          (match (substring "abcdef" 3) ((Ok s) s) ((Err e) "failed"))
+          "def")
+  (expect "an instance call that fails is an Err"
+          (match (substring "abc" 10) ((Ok s) s) ((Err e) "out of range"))
+          "out of range")
+
+  ;; ---- #:async over an instance call --------------------------------------
+  (def open-sem (SemaphoreSlim. 1))
+  (expect "an async instance call that completes" (blocked open-sem) "acquired")
+
+  ;; The event form, on an instance method. The receiver is evaluated where the
+  ;; form stands, as the arguments are; only the call is deferred to the sync.
+  (def evented (SemaphoreSlim. 1))
+  (expect "a task->event on an instance method"
+          (match (sync (task->event (sem-wait evented 1000)))
+            ((Ok v) (if v "acquired" "timed out"))
+            ((Err e) "failed"))
+          "acquired")
+
+  ;; The ambient token, reaching an instance call. Nothing here passes a token
+  ;; to anything: `parameterize` puts it in the dynamic environment, `bjo`
+  ;; captures that, and the emitter appends it at the call. If any link were
+  ;; missing this would take thirty seconds and then say "timed out".
+  (def closed-sem (SemaphoreSlim. 0))
+  (def (cancel! tok) (make-cancel))
+  (def slow (parameterize ((current-cancel tok)) (bjo (blocked closed-sem))))
+  (def c (cancel!))
+  (expect "the ambient token cancels an async instance call"
+          (match (sync (promise-join slow)) ((Ok s) s) ((Err e) "cancelled"))
+          "cancelled")
+  0)

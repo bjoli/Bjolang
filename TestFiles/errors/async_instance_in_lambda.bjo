@@ -1,0 +1,28 @@
+;; An `#:async` *instance* import inside an ordinary lambda.
+;;
+;; The same rule as `bjo_in_lambda.bjo`, and worth its own test because the call
+;; arrives as a different node. An instance member imported with `#:async`
+;; compiles to the node `(.Method x ...)` also produces, so the only thing that
+;; says this one is a yield point is the metadata the type checker attached to
+;; it — and a check that looked at the node's shape rather than at that metadata
+;; would let this through and emit an `await` inside a `Func<>`.
+
+;; EXPECT-ERROR: is a yield point
+;; EXPECT-ERROR: yield point is not allowed here
+
+(import (std prelude))
+
+(import/class
+  (SemaphoreSlim (: System.Threading.SemaphoreSlim (-> int SemaphoreSlim))))
+
+(import/extern
+  (sem-wait (: System.Threading.SemaphoreSlim.WaitAsync (-> SemaphoreSlim int bool) #:async)))
+
+(: apply-to (-> (-> SemaphoreSlim bool) SemaphoreSlim bool))
+(defun (apply-to f s) (f s))
+
+(: grab (-> SemaphoreSlim bool))
+(defbjo (grab sem)
+  (apply-to (fun (s) (sem-wait s 10)) sem))
+
+(defun (main args) 0)

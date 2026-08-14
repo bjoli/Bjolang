@@ -1,0 +1,17 @@
+;; A `${` with no closing brace.
+;;
+;; The hole scanner counts brace depth, so a missing `}` swallows the rest of
+;; the file. Saying so is the difference between a diagnostic and a parse error
+;; about whatever the scan happened to stop on.
+;;
+;; No stray quote in the tail on purpose: one would open a nested string inside
+;; the hole — which is deliberate, and how `${(f "}")}` works — and the reader
+;; would then rightly complain about *that* being unterminated instead.
+
+;; EXPECT-ERROR: Unterminated ${ ... }
+
+(import (std prelude))
+
+(defun (main args)
+  (println #"the value is ${(+ 1 2) )
+  0)

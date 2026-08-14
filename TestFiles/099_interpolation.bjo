@@ -1,0 +1,108 @@
+;; String interpolation: `#"text ${expression} more"`.
+;;
+;; A *reader* macro, and nothing else. The tokenizer expands it into
+;;
+;;   (str "text " (->str expression) " more")
+;;
+;; and hands that to the parser, so there is no new token, no new AST node, no
+;; new type rule and nothing for the emitter. Everything downstream sees a call
+;; somebody could have written by hand, which is why a `#"..."` works unchanged
+;; inside a quasiquote, a macro template, or another `#"..."`.
+;;
+;; Two decisions are worth stating.
+;;
+;;   * **`->str` goes around each hole, not inside `str`.** A `#:rest`
+;;     parameter has one element type, so nothing variadic in this language can
+;;     take a mixture; the conversion has to happen while each part still has a
+;;     type of its own. `str` is therefore `(-> #:rest string string)` and is a
+;;     useful function in its own right.
+;;
+;;   * **It is the trait, not a formatter.** A hole is rendered by whatever
+;;     `(def/impl (->str T) ...)` applies, so a type formats the same way here
+;;     as it does under `println` — and a type of your own can say how.
+;;
+;; It costs one array and one `String.Concat`, whatever the number of holes.
+
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; A type with a `->str` of its own, to pin that a hole goes through the trait.
+(type (: Money (Union (Kr int))))
+
+(def/impl (->str Money)
+  (defun (->str m)
+    (match m ((Kr n) (string-append (int->string n) " kr")))))
+
+(defun (main)
+  ;; ---- The basic shape ----------------------------------------------------
+  (def x 5)
+  (expect "a hole and an expression hole"
+          #"x is ${x} and times two is ${(* x 2)}"
+          "x is 5 and times two is 10")
+
+  ;; ---- Degenerate cases ---------------------------------------------------
+  ;;
+  ;; No holes is the literal, and one hole is the conversion. Neither is a
+  ;; special rule — both are what `(str ...)` of the parts would give — so this
+  ;; only checks that nothing is lost by not emitting the call.
+  (expect "no holes at all" #"just text" "just text")
+  (expect "nothing but a hole" #"${(+ 2 3)}" "5")
+  (expect "the empty interpolation" #"" "")
+  (expect "adjacent holes" #"${x}${x}${x}" "555")
+  (expect "a hole at each end" #"${x} in the middle ${x}" "5 in the middle 5")
+
+  ;; ---- Escapes ------------------------------------------------------------
+  ;;
+  ;; `\$` is the one that is new. The rest escape as they do in an ordinary
+  ;; string, and a `$` that opens nothing needs no escape at all.
+  (expect "an escaped dollar" #"\${x} is not a hole" "${x} is not a hole")
+  (expect "a bare dollar" #"100$ and ${x}" "100$ and 5")
+  (expect "a quote and a backslash" #"she said \"${x}\" \\" "she said \"5\" \\")
+  (expect "a newline" #"a${x}\nb" "a5\nb")
+
+  ;; ---- What a hole may contain --------------------------------------------
+  ;;
+  ;; A hole is lexed by the whole reader, so it is an arbitrary expression.
+  (expect "a let inside a hole" #"got ${(let ((y 7)) (* y y))}" "got 49")
+  (expect "a string containing a brace"
+          #"brace: ${(string-append "}" "!")}"
+          "brace: }!")
+  (expect "a character literal that is a brace" #"char: ${#\}}" "char: }")
+  (expect "a comprehension inside a hole"
+          #"squares: ${(list-length {listing (* a a) (:for a (range 0 4))})}"
+          "squares: 4")
+
+  ;; Nested, which follows from the hole being read by the same reader.
+  (expect "an interpolation inside an interpolation"
+          #"outer ${#"inner ${(+ x 1)}"} end"
+          "outer inner 6 end")
+
+  ;; A `#"..."` may span lines, and the newline is part of the text.
+  (expect "spanning two lines"
+          #"first ${x}
+second"
+          "first 5\nsecond")
+
+  ;; ---- The conversion is the trait ----------------------------------------
+  (expect "a hole that is already a string" #"[${"raw"}]" "[raw]")
+  (expect "a user impl of ->str" #"you owe ${(Kr 42)}" "you owe 42 kr")
+  (expect "the impl for List" #"the list ${(list 1 2 3)}" "the list '(1 2 3)")
+  (expect "a double" #"pi-ish ${3.5}" "pi-ish 3.5")
+  (expect "a char" #"letter ${#\q}" "letter q")
+
+  ;; ---- `str` on its own ---------------------------------------------------
+  ;;
+  ;; The expansion target is an ordinary exported function, and nothing stops
+  ;; it being called directly.
+  (expect "str, called by hand" (str "a" "b" "c") "abc")
+  (expect "str of one" (str "solo") "solo")
+  (expect "str of none" (str) "")
+
+  0)

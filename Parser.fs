@@ -142,8 +142,14 @@ type ImportSpec =
     | RelativePath of string
     | ModulePath of string list
 
-/// One clause of `(import/extern ...)`: a static .NET method bound as an
-/// ordinary Bjolang function.
+/// One clause of `(import/extern ...)`: a .NET member bound as an ordinary
+/// Bjolang function.
+///
+/// The member may be static or an instance one, and which it is comes from
+/// reflection rather than from the clause: an instance member's receiver is
+/// simply the alias's first argument. So `(: System.IO.StreamReader.ReadLineAsync
+/// (-> StreamReader string) #:async)` is called as `(read-line r)`, and every
+/// keyword below applies to it exactly as it does to a static import.
 ///
 /// `ExplicitType` is optional. Given, it is enforced — the resolved overload
 /// has to unify with it, which is how a call site says *which* `WriteLine` it
@@ -166,6 +172,10 @@ type ExternImportSpec =
       /// `#:cancellable`: thread the ambient token into a non-`#:async` import,
       /// whose `CancellationToken` parameter is not optional. §7.6.
       Cancellable: bool
+      /// `#:get`: the target is a property or field, and the alias reads it.
+      IsGet: bool
+      /// `#:set`: the target is a property or field, and the alias writes it.
+      IsSet: bool
       Range: Range }
 
 /// One clause of `(import/class ...)`: a .NET class, its name, and its
@@ -2808,7 +2818,18 @@ type ForeignImportOptions =
       /// `File.ReadLinesAsync` hands back an `IAsyncEnumerable` rather than a
       /// task, so it is not an `#:async` import, and every one of its overloads
       /// takes a token — which makes it uncallable without this.
-      Cancellable: bool }
+      Cancellable: bool
+      /// `#:get` — the target names a property or field, and the alias reads
+      /// it.
+      IsGet: bool
+      /// `#:set` — the target names a property or field, and the alias writes
+      /// it.
+      ///
+      /// One accessor per clause, so a read/write property is two clauses under
+      /// two names. A property has no overloads to disambiguate, so nothing is
+      /// gained by naming both in one place, and two clauses is what lets a
+      /// module import only the read.
+      IsSet: bool }
 
 /// One clause of `import/extern` or `import/class`.
 ///
@@ -2821,7 +2842,7 @@ let parseForeignImportClause (formName: string) (s: SExpr) : string * string * F
 
     let malformed () : 'a =
         failwithf
-            $"Syntax error in %s{formName} at %s{Lexer.formatPos r}: expected (alias (: Fully.Qualified.Target type)), the type optionally followed by #:exceptions (ExceptionType ...), #:async and #:uncancellable."
+            $"Syntax error in %s{formName} at %s{Lexer.formatPos r}: expected (alias (: Fully.Qualified.Target type)), the type optionally followed by #:exceptions (ExceptionType ...), #:async, #:uncancellable, #:get or #:set."
 
     match s with
     | SList([ SAtom { Token = Symbol alias }
@@ -2860,6 +2881,8 @@ let parseForeignImportClause (formName: string) (s: SExpr) : string * string * F
             | SAtom { Token = Keyword "async" } :: tail -> readOptions { opts with IsAsync = true } tail
             | SAtom { Token = Keyword "uncancellable" } :: tail -> readOptions { opts with Uncancellable = true } tail
             | SAtom { Token = Keyword "cancellable" } :: tail -> readOptions { opts with Cancellable = true } tail
+            | SAtom { Token = Keyword "get" } :: tail -> readOptions { opts with IsGet = true } tail
+            | SAtom { Token = Keyword "set" } :: tail -> readOptions { opts with IsSet = true } tail
             | _ -> malformed ()
 
         let options =
@@ -2868,11 +2891,34 @@ let parseForeignImportClause (formName: string) (s: SExpr) : string * string * F
                   Exceptions = []
                   IsAsync = false
                   Uncancellable = false
-                  Cancellable = false }
+                  Cancellable = false
+                  IsGet = false
+                  IsSet = false }
                 optionForms
 
         alias, clrTarget, options, r
     | _ -> malformed ()
+
+/// Rejects the keyword combinations an accessor clause cannot mean.
+///
+/// Shared by `import/extern` and `import/class` so that the second form's
+/// blanket refusal of `#:get` and `#:set` still says the same things about
+/// them.
+let private checkAccessorOptions (formName: string) (opts: ForeignImportOptions) (r: Range) : unit =
+    let where = Lexer.formatPos r
+
+    if opts.IsGet && opts.IsSet then
+        failwithf
+            $"Syntax error in %s{formName} at %s{where}: a clause is one accessor. Write the read and the write as two clauses under two names — that is also what lets a module import only the read."
+
+    if opts.IsGet || opts.IsSet then
+        if opts.IsAsync || opts.Cancellable || opts.Uncancellable then
+            failwithf
+                $"Syntax error in %s{formName} at %s{where}: #:async, #:cancellable and #:uncancellable describe how a *call* is made, and reading or writing a property is not a call. Nothing about a property can be awaited or cancelled."
+
+        if not opts.Exceptions.IsEmpty then
+            failwithf
+                $"Syntax error in %s{formName} at %s{where}: #:exceptions decorates a call, and a property access is not one. An accessor that can fail is guarded with (try ... #:catch (...)) at the place it is read or written."
 
 let rec parseDecl (s: SExpr) : Decl =
     let r = getRange s
@@ -2927,6 +2973,7 @@ let rec parseDecl (s: SExpr) : Decl =
             clauses
             |> List.map (fun c ->
                 let alias, target, opts, cr = parseForeignImportClause "import/extern" c
+                checkAccessorOptions "import/extern" opts cr
 
                 { Alias = alias
                   ClrTarget = target
@@ -2935,6 +2982,8 @@ let rec parseDecl (s: SExpr) : Decl =
                   IsAsync = opts.IsAsync
                   Uncancellable = opts.Uncancellable
                   Cancellable = opts.Cancellable
+                  IsGet = opts.IsGet
+                  IsSet = opts.IsSet
                   Range = cr })
 
         DImportExtern(specs, r)
@@ -2948,12 +2997,20 @@ let rec parseDecl (s: SExpr) : Decl =
             clauses
             |> List.map (fun c ->
                 let alias, target, opts, cr = parseForeignImportClause "import/class" c
+                checkAccessorOptions "import/class" opts cr
 
                 // A constructor is never a task. Silently ignoring the flag
                 // would mean an import that reads as async and is not.
                 if opts.IsAsync || opts.Uncancellable || opts.Cancellable then
                     failwithf
                         $"Syntax error in import/class at %s{Lexer.formatPos cr}: #:async, #:cancellable and #:uncancellable describe how a call is made, and a constructor is not made that way. They belong on an import/extern clause."
+
+                // A class is not an accessor. `import/class` declares a type and
+                // its constructor, and a property of that type is imported with
+                // an `import/extern` clause naming it.
+                if opts.IsGet || opts.IsSet then
+                    failwithf
+                        $"Syntax error in import/class at %s{Lexer.formatPos cr}: #:get and #:set name an accessor for a property or field, and this form declares a type and its constructor. Write the accessor as an import/extern clause."
 
                 { Alias = alias
                   ClrClass = target

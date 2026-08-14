@@ -683,6 +683,11 @@ let rec isStatementShaped (expr: TypedExpr) : bool =
     | TLetTuple _
     | TLetMutable _
     | TSet _
+    // A `#:set` import. C# does have an assignment *expression*, but its value
+    // is the value assigned and Bjolang says the form is void — so it is
+    // emitted where `set!` is, for the reason `set!` is.
+    | TDotPropertySet _
+    | TForeignStaticSet _
     | TThrow _
     | TTryFinally _
     | TVecMake _
@@ -742,6 +747,7 @@ and containsHoist (expr: TypedExpr) : bool =
        | TTryCatch _ -> false
        | TNewObject (_, _, Some meta) when not meta.Exceptions.IsEmpty -> false
        | TForeignStaticCall (_, _, _, Some meta) when not meta.Exceptions.IsEmpty -> false
+       | TDotMethodCall (_, _, _, Some meta) when not meta.Exceptions.IsEmpty -> false
        | _ -> TypeVisitor.children expr |> List.exists containsHoist
 
 /// How the ambient cancellation token reaches a .NET call.
@@ -776,6 +782,7 @@ let rec private containsAwait (expr: TypedExpr) : bool =
             || kwArgs |> List.exists (snd >> containsAwait)
         | _ -> false
     | TForeignStaticCall (_, _, _, Some meta) when meta.Await -> true
+    | TDotMethodCall (_, _, _, Some meta) when meta.Await -> true
     | TApply (target, _, _) when (match target.Type with
                                   | TFun (_, _, EAsync) -> true
                                   | _ -> false) -> true
@@ -1047,14 +1054,54 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     // against .NET metadata. Nothing here chooses an overload, and nothing is
     // left for the C# compiler to work out.
 
-    | TDotMethodCall (target, methodName, args, _) ->
-        let emitters = prepareOperands ctx (target :: args)
-        emitReceiver ctx target emitters.Head
-        append ctx $".%s{methodName}("
-        for i, emit in List.indexed emitters.Tail do
-            if i > 0 then append ctx ", "
-            emit ctx
-        append ctx ")"
+    // `(.Method x ...)`, and an `import/extern` clause naming an instance
+    // method — which is the same node, and the reason this path carries the
+    // whole of the static one's metadata. An `#:async` import may name an
+    // instance method, so the `await`, the `ConfigureAwait(false)` and the
+    // ambient token all have to be available here too; the comments on
+    // `TForeignStaticCall` below explain why each is not optional.
+    | TDotMethodCall (target, methodName, args, meta) ->
+        let exceptions =
+            meta |> Option.map (fun m -> m.Exceptions) |> Option.defaultValue []
+
+        let awaits = meta |> Option.map (fun m -> m.Await) |> Option.defaultValue false
+        let ambient = meta |> Option.map (fun m -> m.AmbientToken) |> Option.defaultValue false
+
+        let returnsVoid =
+            match meta with
+            | Some m -> isVoidType m.ReturnType
+            | None -> false
+
+        if exceptions.IsEmpty then
+            if awaits then append ctx (if awaits && returnsVoid then "await " else "(await ")
+
+            let emitters = prepareOperands ctx (target :: args)
+            emitReceiver ctx target emitters.Head
+            append ctx $".%s{methodName}("
+
+            for i, emit in List.indexed emitters.Tail do
+                if i > 0 then append ctx ", "
+                emit ctx
+
+            if ambient then
+                if not args.IsEmpty then append ctx ", "
+                append ctx ambientTokenArgument
+
+            append ctx ")"
+
+            if awaits then
+                append ctx (if returnsVoid then ".ConfigureAwait(false)" else ".ConfigureAwait(false))")
+        else
+            // The receiver is bound with the arguments, and first: it is
+            // evaluated before them and its evaluation is not part of what the
+            // call may fail at.
+            generateGuarded ctx expr returnsVoid exceptions (target :: args) awaits (fun c names ->
+                let receiver = List.head names
+                let rest = List.tail names
+                let allArgs = if ambient then rest @ [ ambientTokenArgument ] else rest
+                let argList = String.concat ", " allArgs
+                let call = $"%s{receiver}.%s{methodName}(%s{argList})"
+                append c (if awaits then $"(await %s{call}.ConfigureAwait(false))" else call))
 
     | TDotPropertyGet (target, propName, _) ->
         let emitters = prepareOperands ctx [ target ]
@@ -1356,6 +1403,8 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     | TSeq _
     | TBjo _
     | TTaskEvent _
+    | TDotPropertySet _
+    | TForeignStaticSet _
     | TYield _
     | TYieldFrom _ ->
         // Statement-shaped: `needsHoist` has already routed these away.
@@ -2048,6 +2097,31 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
         // discharged.
         dischargeVoid ctx target
 
+    // A `#:set` import, applied. The left-hand side is a member access rather
+    // than a name, and everything else is `set!`.
+    | TDotPropertySet (receiver, propName, value) ->
+        // The receiver is evaluated before the value, as it is written. A
+        // temporary only where the receiver needs statements of its own:
+        // assigning to `w.Position` reads better than assigning to a member of
+        // a name invented for `w`.
+        let lhs =
+            if containsHoist receiver then
+                let tmp = freshName "__target"
+                generateBindingValue ctx (DeclareAndAssign(typeToString receiver.Type, tmp)) receiver
+                tmp
+            else
+                let scratch = StringBuilder()
+                let inner = { ctx with Builder = scratch; Prelude = None }
+                emitReceiver inner receiver (fun c -> generateExpr c receiver)
+                scratch.ToString()
+
+        generateBindingValue ctx (Assign $"%s{lhs}.%s{propName}") value
+        dischargeVoid ctx target
+
+    | TForeignStaticSet (clrType, memberName, value) ->
+        generateBindingValue ctx (Assign $"%s{clrType}.%s{memberName}") value
+        dischargeVoid ctx target
+
     // `(bjo (f x y))` — spawn.
     //
     // The split is the whole content of the form: every operand is bound to a
@@ -2109,20 +2183,30 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
     // whole difference from an ordinary `#:async` call. `TaskEvent` links the
     // two, so the work stops when either the branch loses or the scope is
     // cancelled.
-    | TTaskEvent (clrType, methodName, args, payload, awaitIsVoid) ->
-        let boundArgs =
-            args
-            |> List.map (fun arg ->
-                let tmp = freshName "__task"
-                generateBindingValue ctx (DeclareAndAssign(typeToString arg.Type, tmp)) arg
-                tmp)
+    | TTaskEvent (receiver, clrType, methodName, args, payload, awaitIsVoid) ->
+        let bind (e: TypedExpr) =
+            let tmp = freshName "__task"
+            generateBindingValue ctx (DeclareAndAssign(typeToString e.Type, tmp)) e
+            tmp
+
+        // The receiver is bound first and for the same reason as the arguments:
+        // it is evaluated where the form stands, and the lambda below runs once
+        // per sync.
+        let boundReceiver = receiver |> Option.map bind
+        let boundArgs = args |> List.map bind
 
         let tok = freshName "__tok"
         let payloadStr = typeToString payload
 
         emitTerminal ctx target expr.Type (fun c ->
             let argList = String.concat ", " (boundArgs @ [ tok ])
-            let call = $"%s{clrType}.%s{methodName}(%s{argList})"
+
+            let callee =
+                match boundReceiver with
+                | Some recv -> recv
+                | None -> clrType
+
+            let call = $"%s{callee}.%s{methodName}(%s{argList})"
 
             append c $"BjolangRuntime.TaskEvent<%s{payloadStr}>("
 

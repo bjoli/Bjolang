@@ -128,6 +128,14 @@ let rec private checkExpr (allowed: bool) (expr: TypedExpr) : unit =
         failwithf
             $"Type Error at %s{formatPos expr.Range}: calling '%s{clrType}.%s{methodName}' is a yield point — it is imported #:async, so it compiles to an await — and a yield point is not allowed here.\n  A yield point may only appear in the body of the bjoroutine it is written in. An ordinary (fun ...), a body-local (defun ...), a (seq ...) and a loop that is not tail-recursive each become a C# member of their own, and a member that is not async cannot suspend.\n  If what you want is to start this and carry on, that is (bjo (%s{methodName} ...)), which is colourless and may be written anywhere."
 
+    // The same rule for an `#:async` import that names an *instance* method.
+    // It arrives as the node `(.Method x ...)` also produces, and only the
+    // metadata says which of the two it was — which is the point of reading the
+    // fact there rather than from the registry.
+    | TDotMethodCall(receiver, methodName, args, Some meta) when meta.Await && not allowed ->
+        failwithf
+            $"Type Error at %s{formatPos expr.Range}: calling '%s{meta.DeclaringType}.%s{methodName}' is a yield point — it is imported #:async, so it compiles to an await — and a yield point is not allowed here.\n  A yield point may only appear in the body of the bjoroutine it is written in. An ordinary (fun ...), a body-local (defun ...), a (seq ...) and a loop that is not tail-recursive each become a C# member of their own, and a member that is not async cannot suspend.\n  If what you want is to start this and carry on, that is (bjo (%s{methodName} ...)), which is colourless and may be written anywhere."
+
     | TApply(target, args, kwArgs) ->
         if suspends target.Type && not allowed then
             let what =

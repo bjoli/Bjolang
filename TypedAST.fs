@@ -230,17 +230,48 @@ type ClrClassInfo =
       /// author never listed.
       CtorExceptions: string list }
 
-/// A static .NET method bound as a first-class Bjolang function by
-/// `import/extern`.
+/// What an `import/extern` alias names on the far side.
+///
+/// The alias is applied either way — a property is read by calling its alias
+/// and written by calling its setter's — so this decides what the application
+/// *emits*, not how it is written.
+type ClrExternKind =
+    /// A method, chosen from the overload set by the argument types.
+    | ExternMethod
+    /// `#:get`: a property or field read. There is nothing to overload, so the
+    /// arity is fixed and the type is known without any arguments.
+    | ExternGet
+    /// `#:set`: a property or field write. Always yields void; the value is the
+    /// alias's last argument.
+    | ExternSet
+
+/// A .NET member bound as a first-class Bjolang function by `import/extern`.
 type ClrExternInfo =
     { Alias: string
       /// The fully qualified name of the declaring type, e.g. `System.Console`.
       ClrType: string
-      MethodName: string
-      /// The declared signature, if one was written. Required in order to use
-      /// the import as a *value*: a .NET method group is not a value, so a
-      /// first-class use has to be eta-expanded into a lambda, and that needs
-      /// the parameter types before there are any arguments to infer them from.
+      /// The member's own name: a method, or a property or field under
+      /// `#:get`/`#:set`.
+      MemberName: string
+      Kind: ClrExternKind
+      /// The member is an instance one, so the alias takes the receiver as its
+      /// first argument.
+      ///
+      /// Reflected at the import rather than written there: a name either
+      /// denotes a static member of that type or an instance one, and asking
+      /// the metadata is both shorter to write and impossible to get wrong.
+      /// Static wins where a type has both, which is also how C# reads
+      /// `Type.Member`.
+      IsInstance: bool
+      /// The declared signature, if one was written, receiver included: an
+      /// instance member's alias is a function of its receiver, so
+      /// `StreamReader.ReadLine` is written `(-> StreamReader string)`.
+      ///
+      /// Required in order to use a *method* import as a value: a .NET method
+      /// group is not a value, so a first-class use has to be eta-expanded into
+      /// a lambda, and that needs the parameter types before there are any
+      /// arguments to infer them from. An accessor needs no such thing — a
+      /// property has no overloads, so its type is known from the member alone.
       DeclaredType: HMType option
       Exceptions: string list
       /// `#:async`: the .NET method returns a task, so calling it is a yield
@@ -371,12 +402,14 @@ and TExprNode =
     /// `(task->event (fetch url))` — the event of making an async .NET call.
     ///
     /// Deliberately *not* a `TForeignStaticCall`: the whole difference is that
-    /// this one is not made here and not awaited. The fields are the declaring
-    /// type, the method, the arguments the caller wrote — which are evaluated
-    /// where the form stands, as `bjo`'s are — the payload type the event
-    /// carries, and whether the .NET method returns a non-generic `Task`, which
-    /// has no result to hand back and so needs a lambda of a different shape.
-    | TTaskEvent of string * string * TypedExpr list * HMType * bool
+    /// this one is not made here and not awaited. The fields are the receiver
+    /// when the import names an instance method, the declaring type, the
+    /// method, the arguments the caller wrote — which are evaluated where the
+    /// form stands, as `bjo`'s are, and so is the receiver — the payload type
+    /// the event carries, and whether the .NET method returns a non-generic
+    /// `Task`, which has no result to hand back and so needs a lambda of a
+    /// different shape.
+    | TTaskEvent of TypedExpr option * string * string * TypedExpr list * HMType * bool
     /// Produce one element of the enclosing `TSeq`. Always void.
     | TYield of TypedExpr
     /// Produce every element of another sequence in turn. Always void.
@@ -427,6 +460,10 @@ and TExprNode =
     | TDotMethodCall of TypedExpr * string * TypedExpr list * DotNetMethodMetadata option
     /// `(.-Property target)` — an instance property or field read.
     | TDotPropertyGet of TypedExpr * string * HMType
+    /// An instance property or field write, from a `#:set` import: the
+    /// receiver, the member's name, and the value. Always void, exactly as
+    /// `set!` is.
+    | TDotPropertySet of TypedExpr * string * TypedExpr
     /// `(ClassName. args...)` — construction. The string is the *fully
     /// qualified* CLR name, not the alias, so the emitter needs no environment.
     | TNewObject of string * TypedExpr list * DotNetConstructorMetadata option
@@ -435,6 +472,9 @@ and TExprNode =
     /// A static field or property read, as `Class.Member` — how an enum value
     /// such as `FileMode.Open` is written.
     | TForeignStaticGet of string * string * HMType
+    /// A static property or field write, from a `#:set` import: the declaring
+    /// type, the member's name, and the value. Always void.
+    | TForeignStaticSet of string * string * TypedExpr
 
 and TLoopMember =
     { LoopName: string

@@ -3,8 +3,51 @@
 ** Literals
 - Numbers: ~42~, ~-100~, ~3.14159~
 - Strings: ~"hello world"~
+- Interpolated strings: ~#"x is ${x}"~
 - Booleans: ~true~, ~false~, ~#t~, ~#f~
 - Characters: ~#\a~, ~#\newline~
+
+*** String interpolation
+A string written ~#"..."~ may contain ~${expression}~ holes.
+#+BEGIN_SRC scheme
+(let ((x 5))
+  #"x is ${x} and times two is ${(* x 2)}")
+;; => "x is 5 and times two is 10"
+#+END_SRC
+
+It is a *reader* macro and nothing more: the tokenizer expands the form above
+into ~(str "x is " (->str x) " and times two is " (->str (* x 2)))~ and hands
+that to the parser. So there is no new token, no new node and no new type rule,
+and a ~#"..."~ works unchanged wherever a call would — inside a quasiquote, a
+macro template, or another ~#"..."~.
+
+A hole is read by the whole reader, so it holds an arbitrary expression,
+nesting and all:
+#+BEGIN_SRC scheme
+#"got ${(let ((y 7)) (* y y))}"        ;; "got 49"
+#"outer ${#"inner ${(+ x 1)}"} end"    ;; "outer inner 6 end"
+#"brace: ${(string-append "}" "!")}"   ;; "brace: }!"
+#+END_SRC
+
+~\$~ writes a dollar that opens nothing; a ~$~ not followed by ~{~ needs no
+escape. Everything else escapes as it does in an ordinary string, and a
+~#"..."~ may span lines.
+
+**** The conversion is ~->str~, and it is per hole
+Each hole is wrapped in ~->str~, so a value formats here exactly as it does
+under ~println~, and a type of your own says how by implementing the trait:
+#+BEGIN_SRC scheme
+(def/impl (->str Money)
+  (defun (->str m) (match m ((Kr n) (string-append (int->string n) " kr")))))
+
+#"you owe ${(Kr 42)}"                  ;; "you owe 42 kr"
+#+END_SRC
+
+The conversion is at each hole rather than inside ~str~ because it has to be: a
+~#:rest~ parameter has one element type, so nothing variadic in this language
+can take a mixture. ~str~ is therefore ~(-> #:rest string string)~ — an
+ordinary exported function, callable by hand — and the whole form costs one
+array and one ~String.Concat~ however many holes it has.
 
 ** Identifiers
 Identifiers may contain most characters except ~_~, and may not start with a digit. 
@@ -335,7 +378,7 @@ call means is chosen from the Bjolang types of its arguments, and a wrong
 argument is a Bjolang type error at a Bjolang source position rather than a C#
 error in generated code. There is no late binding, and no ~dynamic~.
 
-*** ~import/extern~ — static methods
+*** ~import/extern~ — methods
 #+BEGIN_SRC scheme
 (import/extern
   (write-line (: System.Console.WriteLine (-> string void)))
@@ -351,6 +394,69 @@ follows. The signature is optional — it is *checked* against the overload
 selected by reflection rather than used in place of it — but it is required to
 use the import as a value, since a .NET method group is not one and a first-class
 use has to be eta-expanded into a lambda.
+
+**** Instance members
+The target may name an *instance* member, and then the receiver is the alias's
+first argument. Which it is comes from the metadata rather than from the clause:
+a name denotes a static member of that type or an instance one, so there is
+nothing to write and nothing to get wrong.
+#+BEGIN_SRC scheme
+(import/extern
+  (str-trim  (: System.String.Trim (-> string string)))
+  (sb-append (: System.Text.StringBuilder.Append
+                (-> StringBuilder string StringBuilder))))
+
+(str-trim "  hi  ")                    ;; "  hi  ".Trim()
+#+END_SRC
+
+That is worth having for one reason above the others: ~(.Method x ...)~ has
+nowhere to put a keyword. An instance method imported this way takes every one
+of them, and an ~#:async~ one is a yield point exactly as a static one is —
+ambient token, ~ConfigureAwait(false)~ and all:
+#+BEGIN_SRC scheme
+(import/extern
+  (sem-wait (: System.Threading.SemaphoreSlim.WaitAsync
+               (-> SemaphoreSlim int bool) #:async))
+  (read-line (: System.IO.StreamReader.ReadLineAsync
+                (-> StreamReader string) #:async)))
+
+(defbjo (first-line r) (read-line r))  ;; await r.ReadLineAsync(token)
+#+END_SRC
+
+An instance call that arrives through a clause may also be decorated with
+~#:exceptions~, which is the one thing ~(.Method x ...)~ can never be given: the
+clause is a place to say what the call may raise, and a bare member access is
+not.
+
+**** ~#:get~ and ~#:set~ — properties and fields
+~#:get~ names a property or field to read, and ~#:set~ one to write. One clause
+per accessor, under its own name.
+#+BEGIN_SRC scheme
+(import/extern
+  (sb-length  (: System.Text.StringBuilder.Length (-> StringBuilder int) #:get))
+  (sb-length! (: System.Text.StringBuilder.Length (-> StringBuilder int void) #:set))
+  (int-max    (: System.Int32.MaxValue #:get)))
+
+(sb-length sb)                         ;; sb.Length
+(sb-length! sb 2)                      ;; sb.Length = 2
+int-max                                ;; System.Int32.MaxValue
+#+END_SRC
+
+A property has no overloads, so the signature buys less here than it does on a
+method and is not needed to use the alias as a value — the member alone says what
+its type is.
+
+Two clauses rather than one naming both accessors, because one clause binds one
+name: deriving the second would mean inventing a spelling nobody wrote, and
+letting one name mean both would mean choosing between them by arity. It is also
+what lets a module import only the read of a property it has no business
+writing. A member that cannot be written is refused at the ~#:set~ clause — a
+missing setter, a ~readonly~ or ~const~ field, an ~init~ accessor — rather than
+where somebody first tries.
+
+A ~#:set~ alias yields void, exactly as ~set!~ does, and a *static* ~#:get~ is
+not a call at all: with no receiver to apply it to, the alias names the value,
+the way ~FileMode.Open~ does.
 
 **** Which overload a call means
 Candidates are ranked by how well each argument fits, and the best-fitting one

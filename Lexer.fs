@@ -58,7 +58,36 @@ module Lexer =
 
     type LexedToken = { Token: Token; Range: Range }
 
-    let tokenize (file: string) (input: string) : LexedToken list =
+    /// One piece of a `#"..."` string: literal text, or the source of a
+    /// `${ ... }` hole together with where it starts in the enclosing file.
+    ///
+    /// The hole is kept as *source* rather than tokenized on the spot because
+    /// tokenizing it is a recursive call to the whole reader — which is what
+    /// makes a hole an arbitrary expression, nested interpolations included.
+    type private InterpSegment =
+        | InterpText of string
+        | InterpHole of string * int * int
+
+    /// Moves a range produced by lexing a fragment on its own to where that
+    /// fragment actually sits.
+    ///
+    /// A fragment is lexed starting at line 1, column 0, so its first line is
+    /// offset by both, and every later line only by the line count: column 0 of
+    /// the fragment's second line really is column 0 of the file's.
+    let private shiftToken (baseLine: int) (baseCol: int) (t: LexedToken) : LexedToken =
+        let shift (p: Position) =
+            if p.Line = 1 then
+                { Line = baseLine; Column = baseCol + p.Column }
+            else
+                { Line = baseLine + p.Line - 1; Column = p.Column }
+
+        { t with
+            Range =
+                { t.Range with
+                    Start = shift t.Range.Start
+                    End = shift t.Range.End } }
+
+    let rec tokenize (file: string) (input: string) : LexedToken list =
         let length = input.Length
 
         let isSymbolChar c =
@@ -254,10 +283,16 @@ module Lexer =
                     match input[pos + 1] with
                     | '(' -> emit Hash 1
                     | '[' -> emit Hash 1
-                    // `#'` — syntax-quote. Two characters, because `'` is not a
-                    // symbol character: without this arm `#'(a b)` lexes as a
-                    // symbol `#`, a `Quote` and an `LParen`, and the stray `#`
-                    // reaches the parser.
+
+                    // `#"a ${x} b"` — an interpolated string. The reader
+                    // expands it; `readInterpolatedString` below says what it
+                    // expands to and why.
+                    | '"' ->
+                        let expansion, nextPos, nextLine, nextCol =
+                            readInterpolatedString file input pos line col
+
+                        loop nextPos nextLine nextCol (List.rev expansion @ tokens)
+
                     | '\'' -> emit SynQuote 2
                     | ':' -> // Keywords (#:keyword)
                         let nextPos = readSymbol (pos + 2)
@@ -339,3 +374,186 @@ module Lexer =
                     emit (Symbol(input.Substring(pos, len))) len
 
         loop 0 1 0 []
+
+    /// Reads `#"a ${x} b"` and returns the tokens it stands for, followed by
+    /// the position just past its closing quote.
+    ///
+    /// The expansion is `(str "a " (->str x) " b")`. Doing it in the reader is
+    /// what a reader macro is, and it is what makes the feature cost nothing
+    /// anywhere else: there is no new token for the parser, no new node for
+    /// inference, nothing for the emitter, and a `#"..."` inside a macro
+    /// template is a template of the expansion without anyone arranging for it.
+    ///
+    /// `->str` around every hole is what lets the parts have different types. A
+    /// `#:rest` parameter has one element type, so `str` can only be variadic
+    /// over `string`, and each part has to be converted while it still has a
+    /// type of its own. It is the trait, so a type with an impl of its own is
+    /// formatted by that impl.
+    ///
+    /// A function of its own rather than an arm of the tokenizer's loop, which
+    /// is only about size: a hole is delimited by brace *depth* rather than by
+    /// a token, so this is a cursor and a `while` where everything around it is
+    /// a fold over tokens.
+    ///
+    /// Mutually recursive with the reader, which is what makes a hole an
+    /// arbitrary expression — nested interpolations included.
+    and private readInterpolatedString
+        (file: string)
+        (input: string)
+        (pos: int)
+        (line: int)
+        (col: int)
+        : LexedToken list * int * int * int =
+
+        let length = input.Length
+        let segments = ResizeArray<InterpSegment>()
+        let literal = Text.StringBuilder()
+
+        let mutable p = pos + 2
+        let mutable l = line
+        let mutable c = col + 2
+        let mutable closed = false
+
+        let step (ch: char) =
+            if ch = '\n' then
+                l <- l + 1
+                c <- 0
+            else
+                c <- c + 1
+
+            p <- p + 1
+
+        let flush () =
+            if literal.Length > 0 then
+                segments.Add(InterpText(literal.ToString()))
+                literal.Clear() |> ignore
+
+        while not closed do
+            if p >= length then
+                failwithf $"Unterminated interpolated string at %s{formatAt file line col}"
+
+            match input[p] with
+            | '"' ->
+                step '"'
+                closed <- true
+
+            // `\$` is how a dollar that opens nothing is written. Everything
+            // else escapes as it does in an ordinary string.
+            | '\\' when p + 1 < length ->
+                let escaped = input[p + 1]
+
+                literal.Append(
+                    match escaped with
+                    | 'n' -> "\n"
+                    | 't' -> "\t"
+                    | 'r' -> "\r"
+                    | '"' -> "\""
+                    | '\\' -> "\\"
+                    | '$' -> "$"
+                    | other -> "\\" + string other
+                )
+                |> ignore
+
+                step '\\'
+                step escaped
+
+            | '$' when p + 1 < length && input[p + 1] = '{' ->
+                flush ()
+                step '$'
+                step '{'
+
+                let holeStart = p
+                let holeLine = l
+                let holeCol = c
+                let mutable depth = 1
+
+                while depth > 0 do
+                    if p >= length then
+                        failwithf $"Unterminated ${{ ... }} in the interpolated string at %s{formatAt file line col}"
+
+                    match input[p] with
+                    // A brace inside a nested string literal is not a brace of
+                    // the hole, so the string is skipped whole. Without this,
+                    // `${(f "}")}` ends in the wrong place.
+                    | '"' ->
+                        step '"'
+                        let mutable inString = true
+
+                        while inString do
+                            if p >= length then
+                                failwithf
+                                    $"Unterminated string inside ${{ ... }} at %s{formatAt file holeLine holeCol}"
+                            elif input[p] = '\\' && p + 1 < length then
+                                let a = input[p]
+                                let b = input[p + 1]
+                                step a
+                                step b
+                            elif input[p] = '"' then
+                                step '"'
+                                inString <- false
+                            else
+                                step input[p]
+
+                    // And neither is one written as a character literal: `#\{`
+                    // is a value, not a nesting.
+                    | '#' when p + 2 < length && input[p + 1] = '\\' ->
+                        step '#'
+                        step '\\'
+                        step input[p]
+
+                    | '{' ->
+                        depth <- depth + 1
+                        step '{'
+                    | '}' ->
+                        depth <- depth - 1
+                        step '}'
+                    | ch -> step ch
+
+                // `p` is one past the closing brace, which is therefore at
+                // `p - 1`.
+                segments.Add(InterpHole(input.Substring(holeStart, p - 1 - holeStart), holeLine, holeCol))
+
+            | ch ->
+                literal.Append ch |> ignore
+                step ch
+
+        flush ()
+
+        let range =
+            { Start = { Line = line; Column = col }
+              End = { Line = l; Column = c }
+              File = file }
+
+        // The synthesized tokens all carry the whole form's range: `str` and
+        // `->str` were written by nobody, and the nearest true thing to say
+        // about where they are is "here". A hole's own tokens keep their real
+        // positions, so a type error inside one is reported against the source
+        // that caused it.
+        let mk t = { Token = t; Range = range }
+
+        let parts =
+            segments
+            |> Seq.map (fun segment ->
+                match segment with
+                | InterpText text -> [ mk (StringLit text) ]
+                | InterpHole(source, hl, hc) ->
+                    let inner = tokenize file source |> List.map (shiftToken hl hc)
+
+                    if inner.IsEmpty then
+                        failwithf
+                            $"Empty ${{}} in the interpolated string at %s{formatAt file hl hc}: there is nothing to interpolate."
+
+                    [ mk LParen; mk (Symbol "->str") ] @ inner @ [ mk RParen ])
+            |> List.ofSeq
+
+        // One part is already a string, and no parts is the empty one. Neither
+        // is a special case in the language — both are what `(str ...)` of them
+        // would produce — so this is only about not emitting a call with
+        // nothing to concatenate.
+        let expansion =
+            match parts with
+            | [] -> [ mk (StringLit "") ]
+            | [ single ] -> single
+            | many -> [ mk LParen; mk (Symbol "str") ] @ List.concat many @ [ mk RParen ]
+
+        expansion, p, l, c

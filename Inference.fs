@@ -1031,6 +1031,22 @@ let private metadataOf (resolved: DotNetInterop.ResolvedCall) (exceptions: strin
 /// The returned parameter list is what the *caller* wrote, with any threaded
 /// token dropped: it is what the arguments are reconciled against and what a
 /// declared signature is checked against.
+/// Resolves an extern method call, on whichever half of the type it lives in.
+///
+/// Every caller below works in the method's *own* parameters: an instance
+/// member's receiver has already been taken off the front, because it is the
+/// alias's first argument and not one of the method's.
+let private resolveExternMethod
+    (where: string)
+    (info: ClrExternInfo)
+    (clrType: System.Type)
+    (argTypes: HMType list)
+    : DotNetInterop.ResolvedCall =
+    if info.IsInstance then
+        DotNetInterop.resolveInstanceMethod where clrType info.MemberName argTypes
+    else
+        DotNetInterop.resolveStaticMethod where clrType info.MemberName argTypes
+
 /// Resolve an extern call that threads the ambient cancellation token.
 ///
 /// Shared by `#:async` and `#:cancellable`, which want the same overload
@@ -1046,21 +1062,19 @@ let private resolveTokenThreadedExtern
 
     let wantsToken = not info.Uncancellable
 
-    if wantsToken && DotNetInterop.hasTokenOverload clrType info.MethodName (Some(argTypes.Length + 1)) then
-        DotNetInterop.resolveStaticMethod
-            where
-            clrType
-            info.MethodName
-            (argTypes @ [ DotNetInterop.cancellationTokenType ]),
-        true
+    if
+        wantsToken
+        && DotNetInterop.hasTokenOverload (not info.IsInstance) clrType info.MemberName (Some(argTypes.Length + 1))
+    then
+        resolveExternMethod where info clrType (argTypes @ [ DotNetInterop.cancellationTokenType ]), true
     elif wantsToken && info.IsAsync then
         failwithf
-            $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MethodName}' has no overload taking these %d{argTypes.Length} argument(s) and a System.Threading.CancellationToken, so the ambient cancellation token cannot be passed to it.\n  An async call that cannot be cancelled outlives the scope that asked for it: a losing choose stops listening, and the work carries on. If that is genuinely the case here, write #:uncancellable in the import/extern clause so that the fact is visible where it is decided."
+            $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MemberName}' has no overload taking these %d{argTypes.Length} argument(s) and a System.Threading.CancellationToken, so the ambient cancellation token cannot be passed to it.\n  An async call that cannot be cancelled outlives the scope that asked for it: a losing choose stops listening, and the work carries on. If that is genuinely the case here, write #:uncancellable in the import/extern clause so that the fact is visible where it is decided."
     elif wantsToken then
         failwithf
-            $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MethodName}' is imported #:cancellable, but it has no overload taking these %d{argTypes.Length} argument(s) and a System.Threading.CancellationToken. Leave #:cancellable off — the call takes no token and there is nothing to thread."
+            $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MemberName}' is imported #:cancellable, but it has no overload taking these %d{argTypes.Length} argument(s) and a System.Threading.CancellationToken. Leave #:cancellable off — the call takes no token and there is nothing to thread."
     else
-        DotNetInterop.resolveStaticMethod where clrType info.MethodName argTypes, false
+        resolveExternMethod where info clrType argTypes, false
 
 let private resolveAsyncExtern
     (where: string)
@@ -1076,7 +1090,7 @@ let private resolveAsyncExtern
         | Some t -> t
         | None ->
             failwithf
-                $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MethodName}' is imported #:async, but the overload selected here returns %s{resolved.RawReturnType.Name}, which is not a Task, a ValueTask or either of their generic forms. Leave #:async off to call it directly."
+                $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MemberName}' is imported #:async, but the overload selected here returns %s{resolved.RawReturnType.Name}, which is not a Task, a ValueTask or either of their generic forms. Leave #:async off to call it directly."
 
     let visibleParams =
         if threadsToken then
@@ -1177,6 +1191,11 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     // any arguments to infer them from. That is what the declared signature is
     // for, and why it is required here and optional everywhere else.
     //
+    // An accessor is the exception, and needs no signature: a property has no
+    // overload set, so its type is known from the member alone. A *static*
+    // accessor read is not even a lambda — the alias names the value, exactly as
+    // `FileMode.Open` does.
+    //
     // An ordinary binding of the same name wins. The extern registry is one flat
     // namespace shared by every module in the compilation, so without this an
     // alias published by some imported library would silently capture calls to a
@@ -1184,55 +1203,145 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     | EIdent(name, r) when Map.containsKey name env.Registry.ClrExterns && not (Map.containsKey name env.Bindings) ->
         let info = env.Registry.ClrExterns[name]
         let where = Lexer.formatPos r
+        let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrType
+        let receiverType = TCon(info.ClrType, [])
 
-        // An async import is not a value either, and for a second reason on top
-        // of the method-group one: the eta-expansion would be an ordinary
-        // lambda whose body is a yield point, which is §3.1's higher-order
-        // restriction with a worse error message. Said here rather than left to
-        // `ColourCheck`, which would name a lambda the user never wrote.
-        if info.IsAsync then
-            failwithf
-                $"Type Error at %s{where}: '%s{name}' names the async .NET method '%s{info.ClrType}.%s{info.MethodName}', and calling it is a yield point, so it cannot be used as a value — the (fun ...) it would become may not suspend. Call it directly, or wrap the call in a bjoroutine of your own and pass that."
+        // Named once: three of the four shapes below build a lambda over the
+        // receiver, and all of them have to agree on what its type is.
+        let identOf (n: string) (t: HMType) : TypedExpr =
+            { Type = t
+              Range = r
+              Node = TIdent(n, []) }
 
-        match info.DeclaredType with
-        | Some(TFun(paramTypes, _, _)) ->
-            let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrType
-            let resolved = DotNetInterop.resolveStaticMethod where clrType info.MethodName paramTypes
-            unifyForeignArgs env.Registry paramTypes resolved.ParameterTypes
+        match info.Kind with
+        // A static read *is* the value, re-read wherever the name stands —
+        // `TForeignStaticGet` emits the member access itself, so a property like
+        // `DateTime.Now` still means "now" at each mention.
+        | ExternGet when not info.IsInstance ->
+            let memberType = DotNetInterop.resolveStaticMember where clrType info.MemberName
 
-            let retType = wrapForeignExceptions info.Exceptions resolved.ReturnType
-            let paramNames = resolved.ParameterTypes |> List.map (fun _ -> Gensym.fresh "__foreign")
+            memberType,
+            { Type = memberType
+              Range = r
+              Node = TForeignStaticGet(info.ClrType, info.MemberName, memberType) }
 
-            // Annotated because `TypedExpr` and `TypedPattern` have the same
-            // three field names, and neither of these is in a position that
-            // says which one is meant.
-            let argExprs: TypedExpr list =
-                List.zip paramNames resolved.ParameterTypes
-                |> List.map (fun (n, t) ->
-                    { Type = t
-                      Range = r
-                      Node = TIdent(n, []) })
+        | ExternGet ->
+            let memberType = DotNetInterop.resolveInstanceMember where clrType info.MemberName
+            let recv = Gensym.fresh "__foreign"
 
             let body: TypedExpr =
-                { Type = retType
+                { Type = memberType
                   Range = r
-                  Node =
-                    TForeignStaticCall(
-                        resolved.DeclaringType,
-                        info.MethodName,
-                        argExprs,
-                        Some(metadataOf resolved info.Exceptions)
-                    ) }
+                  Node = TDotPropertyGet(identOf recv receiverType, info.MemberName, memberType) }
 
-            let funType = tfun resolved.ParameterTypes retType
+            let funType = tfun [ receiverType ] memberType
+
+            funType,
+            { Type = funType
+              Range = r
+              Node = TLambda([ recv ], body) }
+
+        | ExternSet ->
+            let memberType = DotNetInterop.resolveMemberWrite where clrType info.MemberName (not info.IsInstance)
+            let value = Gensym.fresh "__foreign"
+            let valueExpr = identOf value memberType
+
+            let paramNames, paramTypes, node =
+                if info.IsInstance then
+                    let recv = Gensym.fresh "__foreign"
+
+                    [ recv; value ],
+                    [ receiverType; memberType ],
+                    TDotPropertySet(identOf recv receiverType, info.MemberName, valueExpr)
+                else
+                    [ value ], [ memberType ], TForeignStaticSet(info.ClrType, info.MemberName, valueExpr)
+
+            let body: TypedExpr =
+                { Type = TypeConstants.voidType
+                  Range = r
+                  Node = node }
+
+            let funType = tfun paramTypes TypeConstants.voidType
 
             funType,
             { Type = funType
               Range = r
               Node = TLambda(paramNames, body) }
-        | _ ->
-            failwithf
-                $"Type Error at %s{where}: '%s{name}' names the .NET method '%s{info.ClrType}.%s{info.MethodName}', and a method group is not a value. To use it as one, give it a signature in its import/extern clause; otherwise call it directly."
+
+        | ExternMethod ->
+            // An async import is not a value either, and for a second reason on
+            // top of the method-group one: the eta-expansion would be an
+            // ordinary lambda whose body is a yield point, which is §3.1's
+            // higher-order restriction with a worse error message. Said here
+            // rather than left to `ColourCheck`, which would name a lambda the
+            // user never wrote.
+            if info.IsAsync then
+                failwithf
+                    $"Type Error at %s{where}: '%s{name}' names the async .NET method '%s{info.ClrType}.%s{info.MemberName}', and calling it is a yield point, so it cannot be used as a value — the (fun ...) it would become may not suspend. Call it directly, or wrap the call in a bjoroutine of your own and pass that."
+
+            match info.DeclaredType with
+            | Some(TFun(declaredParams, _, _)) ->
+                // The receiver of an instance member is the alias's first
+                // parameter and none of the method's, so the declared type is
+                // split before reflection sees it and rejoined afterwards.
+                let declaredReceiver, methodParamTypes =
+                    if info.IsInstance then
+                        match declaredParams with
+                        | recv :: rest -> Some recv, rest
+                        | [] ->
+                            failwithf
+                                $"Type Error at %s{where}: '%s{name}' names the instance method '%s{info.ClrType}.%s{info.MemberName}', whose receiver is its first argument, but its declared type takes none."
+                    else
+                        None, declaredParams
+
+                let resolved = resolveExternMethod where info clrType methodParamTypes
+                unifyForeignArgs env.Registry methodParamTypes resolved.ParameterTypes
+                declaredReceiver |> Option.iter (fun t -> unify env.Registry t receiverType)
+
+                let retType = wrapForeignExceptions info.Exceptions resolved.ReturnType
+                let argNames = resolved.ParameterTypes |> List.map (fun _ -> Gensym.fresh "__foreign")
+
+                // Annotated because `TypedExpr` and `TypedPattern` have the same
+                // three field names, and neither of these is in a position that
+                // says which one is meant.
+                let argExprs: TypedExpr list = List.map2 identOf argNames resolved.ParameterTypes
+
+                let paramNames, paramTypes, node =
+                    if info.IsInstance then
+                        let recv = Gensym.fresh "__foreign"
+
+                        recv :: argNames,
+                        receiverType :: resolved.ParameterTypes,
+                        TDotMethodCall(
+                            identOf recv receiverType,
+                            info.MemberName,
+                            argExprs,
+                            Some(metadataOf resolved info.Exceptions)
+                        )
+                    else
+                        argNames,
+                        resolved.ParameterTypes,
+                        TForeignStaticCall(
+                            resolved.DeclaringType,
+                            info.MemberName,
+                            argExprs,
+                            Some(metadataOf resolved info.Exceptions)
+                        )
+
+                let body: TypedExpr =
+                    { Type = retType
+                      Range = r
+                      Node = node }
+
+                let funType = tfun paramTypes retType
+
+                funType,
+                { Type = funType
+                  Range = r
+                  Node = TLambda(paramNames, body) }
+            | _ ->
+                failwithf
+                    $"Type Error at %s{where}: '%s{name}' names the .NET method '%s{info.ClrType}.%s{info.MemberName}', and a method group is not a value. To use it as one, give it a signature in its import/extern clause; otherwise call it directly."
 
     // `apply` is a form, not a function, so it has no value form either.
     //
@@ -1460,69 +1569,183 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
           Range = r
           Node = TNewObject(resolved.DeclaringType, coercedArgs, Some meta) }
 
-    // A static method named by `import/extern`, applied. As above, a binding of
+    // A .NET member named by `import/extern`, applied. As above, a binding of
     // the same name shadows the alias rather than the other way round.
+    //
+    // An instance member's receiver is the first argument and is taken off the
+    // front here, so that everything below — overload selection, the threaded
+    // token, a declared signature — works in the member's own parameters. It
+    // rejoins as the receiver of a `TDotMethodCall`, which is the same node
+    // `(.Method x ...)` produces; the difference is that this one arrived
+    // through a clause that could say `#:async`.
     | EApp(EIdent(name, _), args, r) when
         Map.containsKey name env.Registry.ClrExterns && not (Map.containsKey name env.Bindings)
         ->
         let info = env.Registry.ClrExterns[name]
         let where = Lexer.formatPos r
         let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrType
+        let receiverType = TCon(info.ClrType, [])
 
-        let typedArgs = args |> List.map (infer env)
-        let argTypes = typedArgs |> List.map fst
+        /// Splits the receiver off an instance member's argument list.
+        ///
+        /// The receiver is reconciled like an argument rather than unified with
+        /// the declaring type, so that a subclass reaches a member declared on
+        /// its base: the upcast is written into the tree exactly as a widening
+        /// argument's is, which is also what keeps the C# that reads the
+        /// generated call resolving it the same way.
+        let takeReceiver (typedArgs: (HMType * TypedExpr) list) =
+            match typedArgs with
+            | (_, recv) :: rest ->
+                let coerced =
+                    reconcileForeignArgs env.Registry [ recv ] [ receiverType ] |> List.head
 
-        // An `#:async` import resolves against one more parameter than the call
-        // site wrote — the ambient token — and yields the task's result rather
-        // than the task, so the two paths differ in what they hand back and
-        // agree on everything after it.
-        let resolved, visibleParams, callResultType, threadsToken =
-            if info.IsAsync then
-                resolveAsyncExtern where info clrType argTypes
-            elif info.Cancellable then
-                // Threaded, but not awaited: the method takes a token and hands
-                // back an ordinary value. `File.ReadLinesAsync` is the case —
-                // a stream rather than a task, and a token in every overload.
-                let resolved, threads = resolveTokenThreadedExtern where info clrType argTypes
+                coerced, rest
+            | [] ->
+                failwithf
+                    $"Type Error at %s{where}: '%s{name}' names the instance member '%s{info.ClrType}.%s{info.MemberName}', so its first argument is the object to use it on, but it was given none."
 
-                let visible =
-                    if threads then
-                        resolved.ParameterTypes |> List.truncate (resolved.ParameterTypes.Length - 1)
-                    else
-                        resolved.ParameterTypes
+        match info.Kind with
+        // A property read. There is no overload set and no conversion to make:
+        // the member has one type, and the only thing the call site supplies is
+        // the receiver.
+        | ExternGet ->
+            let typedArgs = args |> List.map (infer env)
 
-                resolved, visible, resolved.ReturnType, threads
-            else
-                let resolved = DotNetInterop.resolveStaticMethod where clrType info.MethodName argTypes
-                resolved, resolved.ParameterTypes, resolved.ReturnType, false
+            if not info.IsInstance then
+                failwithf
+                    $"Type Error at %s{where}: '%s{name}' reads the static property '%s{info.ClrType}.%s{info.MemberName}', so it is a value rather than a call. Write it bare, as '%s{name}'."
 
-        let coercedArgs =
-            reconcileForeignArgs env.Registry (typedArgs |> List.map snd) visibleParams
+            let receiver, rest = takeReceiver typedArgs
 
-        // Checked against what the *caller* sees: the threaded token is not a
-        // parameter anyone writes, and a declared signature that had to mention
-        // it would be describing the emitter's work rather than the call's.
-        match info.DeclaredType with
-        | Some declared -> unify env.Registry declared (tfun visibleParams callResultType)
-        | None -> ()
+            if not rest.IsEmpty then
+                failwithf
+                    $"Type Error at %s{where}: '%s{name}' reads a property, so it takes exactly one argument — the object to read it from — but was given %d{args.Length}."
 
-        let retType = wrapForeignExceptions info.Exceptions callResultType
+            let memberType = DotNetInterop.resolveInstanceMember where clrType info.MemberName
 
-        retType,
-        { Type = retType
-          Range = r
-          Node =
-            TForeignStaticCall(
-                resolved.DeclaringType,
-                info.MethodName,
-                coercedArgs,
+            match info.DeclaredType with
+            | Some declared -> unify env.Registry declared (tfun [ receiverType ] memberType)
+            | None -> ()
+
+            memberType,
+            { Type = memberType
+              Range = r
+              Node = TDotPropertyGet(receiver, info.MemberName, memberType) }
+
+        // A property write. Void, like `set!`, and for the same reason: the
+        // value assigned is not what the form is for, and handing it back would
+        // make `(set-length! sb n)` usable as an expression that quietly has a
+        // value.
+        | ExternSet ->
+            let typedArgs = args |> List.map (infer env)
+            let memberType = DotNetInterop.resolveMemberWrite where clrType info.MemberName (not info.IsInstance)
+
+            let receiver, rest =
+                if info.IsInstance then
+                    let recv, rest = takeReceiver typedArgs
+                    Some recv, rest
+                else
+                    None, typedArgs
+
+            let value =
+                match rest with
+                | [ v ] -> reconcileForeignArgs env.Registry [ snd v ] [ memberType ] |> List.head
+                | _ ->
+                    let wanted = if info.IsInstance then "the object to write it on and the value" else "the value"
+
+                    failwithf
+                        $"Type Error at %s{where}: '%s{name}' writes a property, so it takes %s{wanted}, but was given %d{args.Length} argument(s)."
+
+            let declaredParams =
+                match receiver with
+                | Some _ -> [ receiverType; memberType ]
+                | None -> [ memberType ]
+
+            match info.DeclaredType with
+            | Some declared -> unify env.Registry declared (tfun declaredParams TypeConstants.voidType)
+            | None -> ()
+
+            let node =
+                match receiver with
+                | Some recv -> TDotPropertySet(recv, info.MemberName, value)
+                | None -> TForeignStaticSet(info.ClrType, info.MemberName, value)
+
+            TypeConstants.voidType,
+            { Type = TypeConstants.voidType
+              Range = r
+              Node = node }
+
+        | ExternMethod ->
+            let allTypedArgs = args |> List.map (infer env)
+
+            let receiver, typedArgs =
+                if info.IsInstance then
+                    let recv, rest = takeReceiver allTypedArgs
+                    Some recv, rest
+                else
+                    None, allTypedArgs
+
+            let argTypes = typedArgs |> List.map fst
+
+            // An `#:async` import resolves against one more parameter than the
+            // call site wrote — the ambient token — and yields the task's result
+            // rather than the task, so the two paths differ in what they hand
+            // back and agree on everything after it.
+            let resolved, visibleParams, callResultType, threadsToken =
+                if info.IsAsync then
+                    resolveAsyncExtern where info clrType argTypes
+                elif info.Cancellable then
+                    // Threaded, but not awaited: the method takes a token and
+                    // hands back an ordinary value. `File.ReadLinesAsync` is the
+                    // case — a stream rather than a task, and a token in every
+                    // overload.
+                    let resolved, threads = resolveTokenThreadedExtern where info clrType argTypes
+
+                    let visible =
+                        if threads then
+                            resolved.ParameterTypes |> List.truncate (resolved.ParameterTypes.Length - 1)
+                        else
+                            resolved.ParameterTypes
+
+                    resolved, visible, resolved.ReturnType, threads
+                else
+                    let resolved = resolveExternMethod where info clrType argTypes
+                    resolved, resolved.ParameterTypes, resolved.ReturnType, false
+
+            let coercedArgs =
+                reconcileForeignArgs env.Registry (typedArgs |> List.map snd) visibleParams
+
+            // Checked against what the *caller* sees: the threaded token is not
+            // a parameter anyone writes, and a declared signature that had to
+            // mention it would be describing the emitter's work rather than the
+            // call's. The receiver is part of what the caller sees, so an
+            // instance member's declared type carries it.
+            let declaredParams =
+                match receiver with
+                | Some _ -> receiverType :: visibleParams
+                | None -> visibleParams
+
+            match info.DeclaredType with
+            | Some declared -> unify env.Registry declared (tfun declaredParams callResultType)
+            | None -> ()
+
+            let retType = wrapForeignExceptions info.Exceptions callResultType
+
+            let meta =
                 Some
                     { metadataOf resolved info.Exceptions with
                         ParameterTypes = visibleParams
                         ReturnType = callResultType
                         Await = info.IsAsync
                         AmbientToken = threadsToken }
-            ) }
+
+            retType,
+            { Type = retType
+              Range = r
+              Node =
+                match receiver with
+                | Some recv -> TDotMethodCall(recv, info.MemberName, coercedArgs, meta)
+                | None -> TForeignStaticCall(resolved.DeclaringType, info.MemberName, coercedArgs, meta) }
 
     // `(apply f pos1 ... posN coll)` — spread a collection into `f`'s `#:rest`
     // parameter.
@@ -2244,9 +2467,13 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
                 failwithf
                     $"Type Error at %s{where}: '%s{name}' is not a method imported by import/extern, so task->event has no task to make an event of. For a bjoroutine, use (promise-join (bjo (%s{name} ...))) instead."
 
+        if info.Kind <> ExternMethod then
+            failwithf
+                $"Type Error at %s{where}: '%s{name}' reads or writes the property '%s{info.ClrType}.%s{info.MemberName}', which produces no task. task->event takes a call to a method imported #:async."
+
         if not info.IsAsync then
             failwithf
-                $"Type Error at %s{where}: '%s{name}' names '%s{info.ClrType}.%s{info.MethodName}', which is imported without #:async, so calling it produces no task to wait for. An ordinary .NET call is made where it is written and there is nothing to race."
+                $"Type Error at %s{where}: '%s{name}' names '%s{info.ClrType}.%s{info.MemberName}', which is imported without #:async, so calling it produces no task to wait for. An ordinary .NET call is made where it is written and there is nothing to race."
 
         // The branch's own token is what makes losing mean something. Without a
         // parameter to put it in there is no difference between this and
@@ -2256,19 +2483,30 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
                 $"Type Error at %s{where}: '%s{name}' is imported #:uncancellable, so a losing choose branch could not stop it — the work would carry on with nobody listening, which is exactly what task->event exists to prevent. Await it directly instead, or find an overload that takes a CancellationToken."
 
         let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrType
-        let typedArgs = args |> List.map (infer env)
+        let allTypedArgs = args |> List.map (infer env)
+
+        // An instance member's receiver is the first argument here as it is
+        // everywhere else. It is evaluated where the form stands, like the other
+        // operands, and only the *call* is deferred to the sync.
+        let receiver, typedArgs =
+            if info.IsInstance then
+                match allTypedArgs with
+                | (_, recv) :: rest ->
+                    Some(reconcileForeignArgs env.Registry [ recv ] [ TCon(info.ClrType, []) ] |> List.head), rest
+                | [] ->
+                    failwithf
+                        $"Type Error at %s{where}: '%s{name}' names the instance method '%s{info.ClrType}.%s{info.MemberName}', so its first argument is the object to call it on, but it was given none."
+            else
+                None, allTypedArgs
+
         let argTypes = typedArgs |> List.map fst
 
-        if not (DotNetInterop.hasTokenOverload clrType info.MethodName (Some(argTypes.Length + 1))) then
+        if not (DotNetInterop.hasTokenOverload (not info.IsInstance) clrType info.MemberName (Some(argTypes.Length + 1))) then
             failwithf
-                $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MethodName}' has no overload taking these %d{argTypes.Length} argument(s) and a System.Threading.CancellationToken, so this branch would have no way to stop the work it started."
+                $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MemberName}' has no overload taking these %d{argTypes.Length} argument(s) and a System.Threading.CancellationToken, so this branch would have no way to stop the work it started."
 
         let resolved =
-            DotNetInterop.resolveStaticMethod
-                where
-                clrType
-                info.MethodName
-                (argTypes @ [ DotNetInterop.cancellationTokenType ])
+            resolveExternMethod where info clrType (argTypes @ [ DotNetInterop.cancellationTokenType ])
 
         // §7.2's third rule, enforced where it bites. A `ValueTask` may be
         // consumed exactly once, so it cannot become an event: the conversion
@@ -2276,20 +2514,25 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         // `ValueTask` existed to avoid.
         if DotNetInterop.isValueTask resolved.RawReturnType then
             failwithf
-                $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MethodName}' returns a ValueTask, which may only be consumed once and therefore cannot become an event. Call it directly — awaiting a ValueTask is fine and is what it is for."
+                $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MemberName}' returns a ValueTask, which may only be consumed once and therefore cannot become an event. Call it directly — awaiting a ValueTask is fine and is what it is for."
 
         let awaited =
             match DotNetInterop.awaitedResultType resolved.RawReturnType with
             | Some t -> t
             | None ->
                 failwithf
-                    $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MethodName}' returns %s{resolved.RawReturnType.Name}, which is not a task."
+                    $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MemberName}' returns %s{resolved.RawReturnType.Name}, which is not a task."
 
         let visibleParams = resolved.ParameterTypes |> List.truncate (resolved.ParameterTypes.Length - 1)
         let coercedArgs = reconcileForeignArgs env.Registry (typedArgs |> List.map snd) visibleParams
 
+        let declaredParams =
+            match receiver with
+            | Some _ -> TCon(info.ClrType, []) :: visibleParams
+            | None -> visibleParams
+
         match info.DeclaredType with
-        | Some declared -> unify env.Registry declared (tfun visibleParams awaited)
+        | Some declared -> unify env.Registry declared (tfun declaredParams awaited)
         | None -> ()
 
         // A non-generic `Task` carries no result, and `Result<E, void>` is not
@@ -2309,7 +2552,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         eventType,
         { Type = eventType
           Range = r
-          Node = TTaskEvent(resolved.DeclaringType, info.MethodName, coercedArgs, payload, awaitIsVoid) }
+          Node = TTaskEvent(receiver, resolved.DeclaringType, info.MemberName, coercedArgs, payload, awaitIsVoid) }
 
     | EYield(value, r) ->
         let elemType = currentSeqElement env "yield" r
@@ -2923,7 +3166,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
 
         { env with Registry = finalRegistry }, sigs, [ TImportClass(infos, r) ]
 
-    // `(import/extern (alias (: Clr.Type.Method type #:exceptions (E ...))) ...)`
+    // `(import/extern (alias (: Clr.Type.Member type #:exceptions (E ...))) ...)`
     | DImportExtern(specs, r) ->
         let infos =
             specs
@@ -2931,64 +3174,121 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                 let where = Lexer.formatPos spec.Range
                 let split = spec.ClrTarget.LastIndexOf "."
 
+                let kind =
+                    if spec.IsGet then ExternGet
+                    elif spec.IsSet then ExternSet
+                    else ExternMethod
+
                 if split <= 0 || split = spec.ClrTarget.Length - 1 then
+                    let what =
+                        match kind with
+                        | ExternMethod -> "a method"
+                        | _ -> "a property or field"
+
                     failwithf
-                        $"Syntax error at %s{where}: '%s{spec.ClrTarget}' does not name a static method. Write the declaring type and the method together, as in System.Console.WriteLine."
+                        $"Syntax error at %s{where}: '%s{spec.ClrTarget}' does not name %s{what}. Write the declaring type and the member together, as in System.Console.WriteLine."
 
                 let typeName = spec.ClrTarget.Substring(0, split)
-                let methodName = spec.ClrTarget.Substring(split + 1)
+                let memberName = spec.ClrTarget.Substring(split + 1)
                 let clrType = DotNetInterop.resolveType $" at %s{where}" typeName
 
+                // Whether the member is static or an instance one is read off
+                // the metadata rather than written in the clause. There is
+                // nothing an author could add — the name denotes one or the
+                // other — and an instance member simply takes its receiver as
+                // the alias's first argument.
+                //
                 // Checked at the import rather than at the first call: an
-                // import that names nothing is wrong whether or not anybody
-                // got around to using it.
-                if not (DotNetInterop.hasStaticMethod clrType methodName) then
-                    failwithf
-                        $"Type Error at %s{where}: '%s{clrType.FullName}' has no public static method named '%s{methodName}'."
+                // import that names nothing is wrong whether or not anybody got
+                // around to using it.
+                let existsStatic, existsInstance =
+                    match kind with
+                    | ExternMethod ->
+                        DotNetInterop.hasStaticMethod clrType memberName,
+                        DotNetInterop.hasInstanceMethod clrType memberName
+                    | _ ->
+                        DotNetInterop.hasMember true clrType memberName,
+                        DotNetInterop.hasMember false clrType memberName
 
-                checkExceptionTypes where spec.Exceptions
+                // Static first, which is how C# reads `Type.Member` too. A type
+                // with both under one name is vanishingly rare and the static
+                // one is what the spelling says.
+                let isInstance =
+                    if existsStatic then false
+                    elif existsInstance then true
+                    else
+                        match kind with
+                        | ExternMethod ->
+                            failwithf
+                                $"Type Error at %s{where}: '%s{clrType.FullName}' has no public method named '%s{memberName}', static or instance."
+                        | ExternGet ->
+                            failwithf
+                                $"Type Error at %s{where}: '%s{clrType.FullName}' has no public property or field named '%s{memberName}'."
+                        | ExternSet ->
+                            failwithf
+                                $"Type Error at %s{where}: '%s{clrType.FullName}' has no public property or field named '%s{memberName}'."
 
-                // Both of these are arity-independent, so they can be answered
-                // here rather than at the first call — which is the point.
-                // `#:async` on a method that returns nothing awaitable is a
-                // mistake about the method, and the import is where the claim
-                // was made.
-                if spec.IsAsync && not (DotNetInterop.hasAwaitableStaticOverload clrType methodName) then
-                    failwithf
-                        $"Type Error at %s{where}: '%s{clrType.FullName}.%s{methodName}' is imported #:async, but no overload of it returns a Task or a ValueTask. An ordinary method is imported without #:async and called directly."
+                match kind with
+                | ExternGet ->
+                    // Readability and writability are settled here for the same
+                    // reason existence is: the clause is where the claim was
+                    // made. The resolved type is thrown away — each use
+                    // re-resolves it, and there is only ever one answer.
+                    DotNetInterop.resolveMemberRead where clrType memberName (not isInstance) |> ignore
+                | ExternSet -> DotNetInterop.resolveMemberWrite where clrType memberName (not isInstance) |> ignore
+                | ExternMethod ->
+                    checkExceptionTypes where spec.Exceptions
 
-                if spec.IsAsync
-                   && not spec.Uncancellable
-                   && not (DotNetInterop.hasTokenOverload clrType methodName None) then
-                    failwithf
-                        $"Type Error at %s{where}: '%s{clrType.FullName}.%s{methodName}' has no overload taking a System.Threading.CancellationToken, so the ambient cancellation token cannot be threaded into it.\n  Write #:uncancellable here to say so. That is deliberately not the default: a call that cannot be cancelled keeps running after the scope that wanted it has given up, and the place to notice is the import rather than the choose that leaks."
+                    // Both of these are arity-independent, so they can be
+                    // answered here rather than at the first call — which is the
+                    // point. `#:async` on a method that returns nothing
+                    // awaitable is a mistake about the method, and the import is
+                    // where the claim was made.
+                    if spec.IsAsync && not (DotNetInterop.hasAwaitableOverload (not isInstance) clrType memberName) then
+                        failwithf
+                            $"Type Error at %s{where}: '%s{clrType.FullName}.%s{memberName}' is imported #:async, but no overload of it returns a Task or a ValueTask. An ordinary method is imported without #:async and called directly."
 
-                // §7.5's lint. A synchronous method with an `…Async` sibling is
-                // almost always the wrong one to have imported: the sibling
-                // does not park a pool thread, and with `#:async` the call site
-                // reads identically. Said rather than enforced, because there
-                // are real reasons to want the synchronous one — a startup path
-                // with no fiber in sight, say — and being told the name is
-                // enough to make the choice deliberate.
-                if not spec.IsAsync && DotNetInterop.hasStaticMethod clrType (methodName + "Async") then
-                    printfn
-                        $"Note at %s{where}: '%s{clrType.FullName}.%s{methodName}' has an async sibling, '%s{methodName}Async'. The synchronous one parks a thread; importing the sibling with #:async does not, and the call site reads the same either way (§7.5)."
+                    if spec.IsAsync
+                       && not spec.Uncancellable
+                       && not (DotNetInterop.hasTokenOverload (not isInstance) clrType memberName None) then
+                        failwithf
+                            $"Type Error at %s{where}: '%s{clrType.FullName}.%s{memberName}' has no overload taking a System.Threading.CancellationToken, so the ambient cancellation token cannot be threaded into it.\n  Write #:uncancellable here to say so. That is deliberately not the default: a call that cannot be cancelled keeps running after the scope that wanted it has given up, and the place to notice is the import rather than the choose that leaks."
 
-                if spec.Uncancellable && not (spec.IsAsync || spec.Cancellable) then
-                    failwithf
-                        $"Syntax error at %s{where}: #:uncancellable says not to thread the ambient cancellation token into this call, but without #:async or #:cancellable there is no token to thread and nothing to cancel."
+                    // §7.5's lint. A synchronous method with an `…Async` sibling
+                    // is almost always the wrong one to have imported: the
+                    // sibling does not park a pool thread, and with `#:async`
+                    // the call site reads identically. Said rather than
+                    // enforced, because there are real reasons to want the
+                    // synchronous one — a startup path with no fiber in sight,
+                    // say — and being told the name is enough to make the choice
+                    // deliberate.
+                    let hasSibling =
+                        if isInstance then
+                            DotNetInterop.hasInstanceMethod clrType (memberName + "Async")
+                        else
+                            DotNetInterop.hasStaticMethod clrType (memberName + "Async")
 
-                if spec.Cancellable && spec.IsAsync then
-                    failwithf
-                        $"Syntax error at %s{where}: #:cancellable is what #:async already does — the ambient token is threaded into every #:async call that has an overload to take it. Write one or the other."
+                    if not spec.IsAsync && hasSibling then
+                        printfn
+                            $"Note at %s{where}: '%s{clrType.FullName}.%s{memberName}' has an async sibling, '%s{memberName}Async'. The synchronous one parks a thread; importing the sibling with #:async does not, and the call site reads the same either way (§7.5)."
 
-                if spec.Cancellable && not (DotNetInterop.hasTokenOverload clrType methodName None) then
-                    failwithf
-                        $"Type Error at %s{where}: '%s{clrType.FullName}.%s{methodName}' is imported #:cancellable, but no overload of it takes a System.Threading.CancellationToken. There is nothing to thread."
+                    if spec.Uncancellable && not (spec.IsAsync || spec.Cancellable) then
+                        failwithf
+                            $"Syntax error at %s{where}: #:uncancellable says not to thread the ambient cancellation token into this call, but without #:async or #:cancellable there is no token to thread and nothing to cancel."
+
+                    if spec.Cancellable && spec.IsAsync then
+                        failwithf
+                            $"Syntax error at %s{where}: #:cancellable is what #:async already does — the ambient token is threaded into every #:async call that has an overload to take it. Write one or the other."
+
+                    if spec.Cancellable && not (DotNetInterop.hasTokenOverload (not isInstance) clrType memberName None) then
+                        failwithf
+                            $"Type Error at %s{where}: '%s{clrType.FullName}.%s{memberName}' is imported #:cancellable, but no overload of it takes a System.Threading.CancellationToken. There is nothing to thread."
 
                 { Alias = spec.Alias
                   ClrType = clrType.FullName
-                  MethodName = methodName
+                  MemberName = memberName
+                  Kind = kind
+                  IsInstance = isInstance
                   DeclaredType = spec.ExplicitType |> Option.map (resolveTypeAnnotation env.Registry)
                   Exceptions = spec.Exceptions
                   IsAsync = spec.IsAsync

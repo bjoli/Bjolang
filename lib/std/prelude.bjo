@@ -24,7 +24,7 @@
   print println ->str list->str
 
   ;; Strings
-  string-append string-length
+  str string-append string-length
   ;; Characters — R6RS §11.11. The classification and case procedures
   ;; (char-upcase, char-alphabetic?, digit-value, ...) are builtins and need no
   ;; export; these are the ones written in Bjolang.
@@ -448,6 +448,21 @@
 
 (: string-append (-> string string string))
 (defun (string-append a b) (clr-concat a b))
+
+;; Variadic concatenation, and what `#"a ${x} b"` expands to a call of.
+;;
+;; The array a `#:rest` parameter collects is handed straight to
+;; `String.Concat(params string[])`, so a five-part interpolation is one call
+;; and one allocation rather than the four nested `string-append`s the same
+;; text would otherwise be written as.
+;;
+;; Its elements are strings, and that is not a simplification: a `#:rest`
+;; parameter has one element type, so nothing variadic in this language can
+;; take a mixture. That is why the reader puts `->str` around each hole rather
+;; than leaving the conversion to `str` — the conversion has to happen while
+;; each part still has its own type.
+(: str (-> #:rest string string))
+(defun (str #:rest parts) (clr-concat parts))
 
 ;; `.Length` is a property, so there is no method to import — a one-line body
 ;; reading the member is the whole of it.

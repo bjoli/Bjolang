@@ -492,7 +492,18 @@ let main argv =
                         let uncancellableStr = if info.Uncancellable then " #:uncancellable" else ""
                         let cancellableStr = if info.Cancellable then " #:cancellable" else ""
 
-                        $"(import/extern (%s{info.Alias} (: %s{info.ClrType}.%s{info.MethodName}%s{typeStr}%s{exceptionStr}%s{asyncStr}%s{uncancellableStr}%s{cancellableStr})))"
+                        // Whether the member is static or an instance one is
+                        // deliberately *not* written here: the reader on the far
+                        // side asks the same metadata and gets the same answer,
+                        // and a flag would be a second copy of a fact that
+                        // already has one.
+                        let accessorStr =
+                            match info.Kind with
+                            | TypedAST.ExternGet -> " #:get"
+                            | TypedAST.ExternSet -> " #:set"
+                            | TypedAST.ExternMethod -> ""
+
+                        $"(import/extern (%s{info.Alias} (: %s{info.ClrType}.%s{info.MemberName}%s{typeStr}%s{exceptionStr}%s{asyncStr}%s{uncancellableStr}%s{cancellableStr}%s{accessorStr})))"
 
                     let serializeExport name =
                         match Map.tryFind name env.Bindings with

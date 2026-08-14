@@ -409,12 +409,33 @@ let private callableMethods (t: Type) (name: string) (flags: BindingFlags) =
 
 let private describeMethod (t: Type) (name: string) = $"'%s{t.FullName}.%s{name}'"
 
+/// Which half of a type's surface a member lookup should search.
+///
+/// `import/extern` asks this of the metadata rather than of the clause: a name
+/// either denotes a static member of that type or an instance one, so there is
+/// nothing for the author to say and nothing to get wrong.
+let private memberFlags (isStatic: bool) =
+    if isStatic then staticFlags else instanceFlags
+
 /// Does the type have *any* public static method of this name?
 ///
 /// Asked at the import rather than at the first call site, so that a misspelled
 /// method is reported where it was written.
 let hasStaticMethod (t: Type) (name: string) : bool =
     t.GetMethods staticFlags |> Array.exists (fun m -> m.Name = name)
+
+/// Does the type have *any* public instance method of this name, its own or
+/// inherited?
+let hasInstanceMethod (t: Type) (name: string) : bool =
+    t.GetMethods instanceFlags |> Array.exists (fun m -> m.Name = name)
+
+/// Does the type have a public property or field of this name?
+///
+/// The two are one question because they are read and written identically in
+/// C#, so `#:get` and `#:set` do not make the caller say which they meant.
+let hasMember (isStatic: bool) (t: Type) (name: string) : bool =
+    let flags = memberFlags isStatic
+    not (isNull (t.GetProperty(name, flags))) || not (isNull (t.GetField(name, flags)))
 
 /// Is this type a task of some kind?
 let private isTaskType (t: Type) =
@@ -542,23 +563,25 @@ let isValueTask (t: Type) : bool =
     else
         t.FullName = "System.Threading.Tasks.ValueTask"
 
-/// Does this static method return something awaitable, in *any* overload?
+/// Does this method return something awaitable, in *any* overload?
 ///
 /// Asked at the import site, where there are no arguments yet to choose an
 /// overload with. A method with a mix would be answered "yes" here and caught
 /// at the call site by the same check applied to the overload that won.
-let hasAwaitableStaticOverload (t: Type) (name: string) : bool =
-    callableMethods t name staticFlags
+let hasAwaitableOverload (isStatic: bool) (t: Type) (name: string) : bool =
+    callableMethods t name (memberFlags isStatic)
     |> List.exists (fun (_, m) -> (awaitedResultType m.ReturnType).IsSome)
 
-/// Does this static method have an overload whose last parameter is a
+/// Does this method have an overload whose last parameter is a
 /// `CancellationToken`, and which takes `arity` parameters in total?
 ///
 /// `arity` is `None` at the import site, where the question is only whether
 /// this method is cancellable at all, and `Some n` at a call site, where the
-/// question is whether *this* call can have a token appended to it.
-let hasTokenOverload (t: Type) (name: string) (arity: int option) : bool =
-    callableMethods t name staticFlags
+/// question is whether *this* call can have a token appended to it. It counts
+/// the method's own parameters either way: an instance member's receiver is the
+/// alias's first argument and not one of these.
+let hasTokenOverload (isStatic: bool) (t: Type) (name: string) (arity: int option) : bool =
+    callableMethods t name (memberFlags isStatic)
     |> List.exists (fun (ps, _) ->
         ps.Length > 0
         && ps[ps.Length - 1].ParameterType = typeof<System.Threading.CancellationToken>
@@ -624,3 +647,60 @@ let resolveStaticMember (where: string) (declaringType: Type) (name: string) : H
         // An enum member's field type is the enum, which is exactly what is
         // wanted: `FileMode.Open` is a `FileMode`, not an `int`.
         mapClrType field.FieldType
+
+/// Resolves a `#:get` import — a readable property or field, static or not.
+///
+/// The two existing readers stay as they are: they answer for `(.-Name x)` and
+/// `Class.Member`, each of which knows which half it is looking in. This one is
+/// told.
+let resolveMemberRead (where: string) (declaringType: Type) (name: string) (isStatic: bool) : HMType =
+    if isStatic then
+        resolveStaticMember where declaringType name
+    else
+        resolveInstanceMember where declaringType name
+
+/// Resolves a `#:set` import — a writable property or field, static or not.
+///
+/// A read-only member is refused here rather than at the write, because the
+/// import is where the claim that it can be written was made. `readonly` and
+/// `const` are separate cases only in the message: knowing which one it is is
+/// the difference between looking for a setter and looking for another way.
+let resolveMemberWrite (where: string) (declaringType: Type) (name: string) (isStatic: bool) : HMType =
+    let flags = memberFlags isStatic
+
+    match declaringType.GetProperty(name, flags) with
+    | null ->
+        match declaringType.GetField(name, flags) with
+        | null ->
+            failwithf
+                $"Type Error at %s{where}: '%s{declaringType.FullName}' has no public property or field named '%s{name}'."
+        | field ->
+            if field.IsLiteral then
+                failwithf
+                    $"Type Error at %s{where}: '%s{declaringType.FullName}.%s{name}' is a constant and cannot be assigned. Import it with #:get."
+
+            if field.IsInitOnly then
+                failwithf
+                    $"Type Error at %s{where}: '%s{declaringType.FullName}.%s{name}' is a readonly field, so it can only be assigned by the type's own constructor. Import it with #:get."
+
+            mapClrType field.FieldType
+    | prop ->
+        if not prop.CanWrite then
+            failwithf
+                $"Type Error at %s{where}: '%s{declaringType.FullName}.%s{name}' has no setter. Import it with #:get."
+
+        // An `init` accessor is a setter as far as `CanWrite` is concerned, and
+        // is one only inside an object initializer. Caught here because the
+        // alternative is C# that does not compile, blamed on generated code.
+        let initOnly =
+            match prop.GetSetMethod() with
+            | null -> false
+            | setter ->
+                setter.ReturnParameter.GetRequiredCustomModifiers()
+                |> Array.exists (fun m -> m.FullName = "System.Runtime.CompilerServices.IsExternalInit")
+
+        if initOnly then
+            failwithf
+                $"Type Error at %s{where}: '%s{declaringType.FullName}.%s{name}' is init-only, so it can only be assigned while the object is being constructed. Import it with #:get."
+
+        mapClrType prop.PropertyType

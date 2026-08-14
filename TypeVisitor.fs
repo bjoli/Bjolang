@@ -78,8 +78,8 @@ let mapChildren (f: TypedExpr -> TypedExpr) (expr: TypedExpr) : TypedExpr =
         | TTryCatch(body, exceptions) -> TTryCatch(f body, exceptions)
         | TSeq body -> TSeq(f body)
         | TBjo body -> TBjo(f body)
-        | TTaskEvent(clrType, name, args, payload, isVoid) ->
-            TTaskEvent(clrType, name, List.map f args, payload, isVoid)
+        | TTaskEvent(receiver, clrType, name, args, payload, isVoid) ->
+            TTaskEvent(Option.map f receiver, clrType, name, List.map f args, payload, isVoid)
         | TYield value -> TYield(f value)
         | TYieldFrom source -> TYieldFrom(f source)
         | TMatch(target, clauses) -> TMatch(f target, List.map mapClause clauses)
@@ -103,8 +103,10 @@ let mapChildren (f: TypedExpr -> TypedExpr) (expr: TypedExpr) : TypedExpr =
         // against .NET metadata, and no later pass may second-guess it.
         | TDotMethodCall(target, name, args, meta) -> TDotMethodCall(f target, name, List.map f args, meta)
         | TDotPropertyGet(target, name, t) -> TDotPropertyGet(f target, name, t)
+        | TDotPropertySet(target, name, value) -> TDotPropertySet(f target, name, f value)
         | TNewObject(clrName, args, meta) -> TNewObject(clrName, List.map f args, meta)
         | TForeignStaticCall(clrType, name, args, meta) -> TForeignStaticCall(clrType, name, List.map f args, meta)
+        | TForeignStaticSet(clrType, name, value) -> TForeignStaticSet(clrType, name, f value)
         | TForeignStaticGet _ as leaf -> leaf
 
     { expr with Node = node }
