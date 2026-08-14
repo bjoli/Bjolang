@@ -540,10 +540,20 @@ let main argv =
                         match td.Kind with
                         | Parser.Alias(ft) -> $"({head} (: {headStr} {serializeFType ft}))"
                         | Parser.Union(cases) ->
+                            // `#:literal` travels with the case. It decides
+                            // which constructor a quoted literal elaborates
+                            // into, so a union that is unambiguous where it was
+                            // declared has to stay unambiguous where it is
+                            // imported.
                             let serializeCase c =
                                 match c with
                                 | Parser.SimpleCase(n, _) -> n
-                                | Parser.DataCase(n, args, _) -> $"({n} " + String.concat " " (List.map serializeFType args) + ")"
+                                | Parser.DataCase(n, args, isLiteral, _) ->
+                                    let parts =
+                                        List.map serializeFType args
+                                        @ (if isLiteral then [ "#:literal" ] else [])
+
+                                    $"({n} " + String.concat " " parts + ")"
                             $"({head} (: {headStr} (Union\n  " + String.concat "\n  " (List.map serializeCase cases) + ")))"
                         // A record's *fields* are the part worth publishing.
                         // Without them an importer knows the name and nothing

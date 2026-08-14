@@ -1,0 +1,27 @@
+;; A quoted literal passed to a *generic* parameter.
+;;
+;; `list-map`'s element type is a variable, so nothing expects a `ProcItem`
+;; here and there is no union to elaborate the literal into. It cannot be
+;; inferred on its own either — a symbol beside a list is two types, not one —
+;; so this is an error, and the useful thing to say is that the expected type is
+;; missing rather than that `Symbol` will not unify with `(List Symbol)`.
+;;
+;; The fix is an annotation: (def (: procs (List ProcList)) (list '(pipe (ls)))).
+
+;; EXPECT-ERROR: nothing here says what this list literal holds
+;; EXPECT-ERROR: A literal with a nested list among its elements stands for a union
+
+(import (std prelude))
+
+(type-rec
+  (: ProcItem (Union (ProcSym Symbol)
+                     (ProcStr string)
+                     (ProcSub (List ProcItem))))
+  (: ProcList (Alias (List ProcItem))))
+
+(: run/lines (-> ProcList string))
+(defun (run/lines items) "ran")
+
+(defun (main args)
+  (println (int->string (list-length (list-map run/lines (list '(pipe (ls)))))))
+  0)

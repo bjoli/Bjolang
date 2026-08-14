@@ -1,0 +1,177 @@
+;; Quoted literals elaborated into union constructors, recursively.
+;;
+;; `'(pipe (ls "-l"))` has no type of its own — a symbol beside a list of a
+;; symbol and a string is nothing HM can give one element type — and that is the
+;; point: it describes a `ProcItem`, and each piece becomes the case of that
+;; union which can hold it:
+;;
+;;   (list (ProcSym 'pipe) (ProcSub (list (ProcSym 'ls) (ProcStr "-l"))))
+;;
+;; Which case is chosen by the literal's *shape*, before it is inferred, since
+;; inferring a nested one is exactly what fails. The expected type comes either
+;; from an annotation or from the parameter the literal is passed to.
+
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; A `#:literal` marker is not needed here: no two cases carry a payload with
+;; the same head constructor. `ProcArgv`'s `(Vec string)` and `ProcSub`'s
+;; `(List ProcItem)` are told apart by `[...]` versus `(...)`.
+(type-rec
+  (: ProcItem (Union (ProcSym Symbol)
+                     (ProcStr string)
+                     (ProcFn (-> string string))
+                     (ProcArgv (Vec string))
+                     (ProcSub (List ProcItem))))
+  (: ProcList (Alias (List ProcItem))))
+
+(: render (-> ProcItem string))
+(defun (render item)
+  (match item
+    ((ProcSym s) (symbol->string s))
+    ((ProcStr s) (string-append "\"" (string-append s "\"")))
+    ((ProcFn f) (f "@"))
+    ((ProcArgv v) (string-append "[" (string-append (vec-fold (fun (acc s) (string-append acc s)) "" v) "]")))
+    ((ProcSub items) (string-append "(" (string-append (render-all items) ")")))))
+
+;; The alias in the signature, resolved against a `type` declared in the same
+;; group. Signatures are read before the group is checked, so this only works
+;; because the group's type declarations are registered first.
+(: render-all (-> ProcList string))
+(defun (render-all items)
+  (match items
+    (Nil "")
+    ((Cons x Nil) (render x))
+    ((Cons x rest) (string-append (render x) (string-append " " (render-all rest))))))
+
+;; An ordinary function. No macro, and no annotated intermediate binding at any
+;; of the call sites below.
+(: run/lines (-> ProcList string))
+(defun (run/lines items) (render-all items))
+
+(: my-rot-13 (-> string string))
+(defun (my-rot-13 s) (string-append "rot13" s))
+
+;; Mutually recursive unions. Each level is a fresh lookup, so nothing here is a
+;; special case of self-recursion.
+(type-rec
+  (: Odd (Union (OddSym Symbol) (OddSub (List Even))))
+  (: Even (Union (EvenStr string) (EvenSub (List Odd)))))
+
+(: show-odd (-> Odd string))
+(defun (show-odd o)
+  (match o
+    ((OddSym s) (symbol->string s))
+    ((OddSub es) (string-append "<" (string-append (show-evens es) ">")))))
+
+(: show-even (-> Even string))
+(defun (show-even e)
+  (match e
+    ((EvenStr s) s)
+    ((EvenSub os) (string-append "{" (string-append (show-odds os) "}")))))
+
+(: show-evens (-> (List Even) string))
+(defun (show-evens es)
+  (match es
+    (Nil "")
+    ((Cons x Nil) (show-even x))
+    ((Cons x rest) (string-append (show-even x) (string-append " " (show-evens rest))))))
+
+(: show-odds (-> (List Odd) string))
+(defun (show-odds os)
+  (match os
+    (Nil "")
+    ((Cons x Nil) (show-odd x))
+    ((Cons x rest) (string-append (show-odd x) (string-append " " (show-odds rest))))))
+
+;; Two cases carrying a list. Selection looks at the payload's head only, so
+;; `(List Item)` and `(List string)` are one question a literal cannot answer —
+;; `#:literal` answers it, and without it this union is ambiguous for every
+;; nested literal written at it. See `errors/literal_ambiguous_case.bjo`.
+(type-rec
+  (: Item (Union (Sym Symbol)
+                 (Str string)
+                 (Sub (List Item) #:literal)
+                 (Args (List string)))))
+
+(: show-item (-> Item string))
+(defun (show-item i)
+  (match i
+    ((Sym s) (symbol->string s))
+    ((Str s) s)
+    ((Args a) (string-append "args:" (int->string (list-length a))))
+    ((Sub items) (string-append "(" (string-append (show-items items) ")")))))
+
+(: show-items (-> (List Item) string))
+(defun (show-items items)
+  (match items
+    (Nil "")
+    ((Cons x Nil) (show-item x))
+    ((Cons x rest) (string-append (show-item x) (string-append " " (show-items rest))))))
+
+(defun (main args)
+  ;; As an argument, with nothing annotated anywhere.
+  (expect "argument position"
+          (run/lines '(pipe (ls "-l") (wc "-l")))
+          "pipe (ls \"-l\") (wc \"-l\")")
+
+  ;; Depth is not a special case: each level pushes the chosen case's payload
+  ;; back down into the literal it came from.
+  (expect "deep nesting"
+          (run/lines '(pipe (a (b (c "x")))))
+          "pipe (a (b (c \"x\")))")
+
+  ;; An unquoted value has no literal shape, and is selected by its type: a
+  ;; `(-> string string)` can only be `ProcFn`.
+  (expect "unquote selected by type"
+          (run/lines '(pipe (ls) ,my-rot-13))
+          "pipe (ls) rot13@")
+
+  ;; `[...]` inside a quote is a vec, not a list beginning with the symbol
+  ;; `vec-literal`.
+  (expect "vec literal in a quote"
+          (run/lines '(pipe (ls ["-l" "-a"])))
+          "pipe (ls [-l-a])")
+
+  ;; The annotated binding this started as still works.
+  (def (: xs ProcList) '(pipe (ls "-l")))
+  (expect "annotated binding" (run/lines xs) "pipe (ls \"-l\")")
+
+  ;; An annotation is also the way past a *generic* parameter, which expects
+  ;; nothing in particular and so has nothing to push — see
+  ;; `errors/literal_no_expected_type.bjo`. Naming the type once elaborates
+  ;; every element of the outer literal as a `ProcList` of its own.
+  (def (: many (List ProcList)) (list '(pipe (ls "-l")) '(wc)))
+  (expect "list of literals"
+          (list-foldl (fun (acc s) (string-append acc (string-append "|" s)))
+                      ""
+                      (list-map run/lines many))
+          "|pipe (ls \"-l\")|wc")
+
+  ;; An empty literal, and one with no nesting at all.
+  (expect "flat literal" (run/lines '(ls "-l")) "ls \"-l\"")
+  (expect "empty literal" (run/lines '()) "")
+
+  ;; Mutual recursion: the list alternates between the two unions by depth.
+  (expect "mutually recursive unions"
+          (show-evens '("a" (b ("c"))))
+          "a {b <c>}")
+
+  ;; `#:literal` decides between `Sub` and `Args`.
+  (expect "literal marker picks the case"
+          (show-items '(a (b "c")))
+          "a (b c)")
+
+  ;; And the unmarked case is still reachable by writing it. The constructor's
+  ;; own parameter type is pushed into the literal exactly as a function's is.
+  (expect "unmarked case written out"
+          (show-items (list (Sym 'x) (Args (list "y" "z"))))
+          "x args:2")
+  0)

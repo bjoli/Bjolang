@@ -1,0 +1,28 @@
+;; Literal elaboration against a union that came out of a compiled module.
+;;
+;; Selection reads the union's cases out of the registry, and an imported one is
+;; rebuilt from the metadata `proclit` published. `#:literal` is part of that:
+;; without it two of `Item`'s cases carry a list, and every nested literal below
+;; would be ambiguous here while compiling fine where the type is declared.
+(import (std prelude))
+(import "inc/proclit.bjo")
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+(defun (main args)
+  (expect "imported union, nested literal"
+          (show-items '(a (b "c") d))
+          "a (b c) d")
+
+  ;; The unmarked case, written out. Its own payload type is pushed into the
+  ;; literal the same way a function's parameter type is.
+  (expect "imported union, explicit case"
+          (show-items (list (Sym 'x) (Args (list "y" "z"))))
+          "x args:2")
+  0)

@@ -1,0 +1,30 @@
+;; A union whose cases a quoted literal is elaborated into, published from a
+;; library.
+;;
+;; Two of its cases carry a list, so it is ambiguous for a nested literal unless
+;; the `#:literal` marker travels with the type into the metadata. The importing
+;; side never sees this source.
+(import (std prelude))
+
+(export show-items)
+
+(type-rec
+  (: Item (Union (Sym Symbol)
+                 (Str string)
+                 (Sub (List Item) #:literal)
+                 (Args (List string)))))
+
+(: show-item (-> Item string))
+(defun (show-item i)
+  (match i
+    ((Sym s) (symbol->string s))
+    ((Str s) s)
+    ((Args a) (string-append "args:" (int->string (list-length a))))
+    ((Sub items) (string-append "(" (string-append (show-items items) ")")))))
+
+(: show-items (-> (List Item) string))
+(defun (show-items items)
+  (match items
+    (Nil "")
+    ((Cons x Nil) (show-item x))
+    ((Cons x rest) (string-append (show-item x) (string-append " " (show-items rest))))))

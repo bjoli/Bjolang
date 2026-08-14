@@ -1,0 +1,27 @@
+;; Two cases of one union carrying a list.
+;;
+;; A literal is selected by its shape, and a shape only reaches as far as the
+;; payload's head constructor: `(List Item)` and `(List string)` are the same
+;; question to `(b "c")`. Reporting that is the honest answer — the alternative
+;; is picking whichever case was declared first.
+;;
+;; `#:literal` on one of them resolves it, which is what
+;; `100_literal_elaboration.bjo` does with the same union.
+
+;; EXPECT-ERROR: could be injected into Sub or Args
+;; EXPECT-ERROR: Mark the case a literal means with #:literal where Item is declared
+
+(import (std prelude))
+
+(type-rec
+  (: Item (Union (Sym Symbol)
+                 (Str string)
+                 (Sub (List Item))
+                 (Args (List string)))))
+
+(: show-items (-> (List Item) string))
+(defun (show-items items) "shown")
+
+(defun (main args)
+  (println (show-items '(a (b "c"))))
+  0)

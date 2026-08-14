@@ -49,6 +49,65 @@ can take a mixture. ~str~ is therefore ~(-> #:rest string string)~ — an
 ordinary exported function, callable by hand — and the whole form costs one
 array and one ~String.Concat~ however many holes it has.
 
+*** Quoted lists, and the constructors they elaborate into
+~'(...)~ is data. A symbol inside one is a ~Symbol~ value rather than a
+reference, ~,x~ splices the value of an expression, and ~[...]~ is a vec:
+#+BEGIN_SRC scheme
+'(a b c)          ;; (List Symbol) — three symbols
+'(,x ,y)          ;; (List int)    — when x, y : int
+#+END_SRC
+
+A list is homogeneous, so ~'(pipe (ls "-l"))~ — a symbol beside a list of a
+symbol and a string — has no element type of its own. What it has is a *shape*,
+and where a union is expected each piece is elaborated into the case that can
+hold it:
+#+BEGIN_SRC scheme
+(type-rec
+  (: ProcItem (Union (ProcSym Symbol)
+                     (ProcStr string)
+                     (ProcFn  (-> string string))
+                     (ProcSub (List ProcItem))))
+  (: ProcList (Alias (List ProcItem))))
+
+(: run/lines (-> ProcList (List string)))
+
+(run/lines '(pipe (ls "-l") ,my-rot-13))
+;; elaborates to
+(run/lines (list (ProcSym 'pipe)
+                 (ProcSub (list (ProcSym 'ls) (ProcStr "-l")))
+                 (ProcFn  my-rot-13)))
+#+END_SRC
+
+Nesting is not a special case — a chosen case's payload is pushed back into the
+literal it came from, so any depth works, as do two unions that refer to each
+other. A literal is matched by the *head* of a case's payload: ~(...)~ wants a
+~List~, ~[...]~ a ~Vec~, and a string, symbol or number the type it already has.
+An unquoted ~,value~ has no shape and is selected by its type, which is why
+~,my-rot-13~ finds ~ProcFn~.
+
+The expected type is what makes any of this possible, and it comes from an
+annotated binding, a ~def~'s signature, or the parameter the literal is passed
+to. A *generic* parameter provides none — ~(list-map run/lines (list '(pipe
+(ls))))~ is an error saying so — and the fix is to name the type first:
+#+BEGIN_SRC scheme
+(def (: procs (List ProcList)) (list '(pipe (ls))))
+#+END_SRC
+
+**** ~#:literal~ — which case a literal means
+Only the payload's head is compared, never its arguments, so two cases carrying
+a list are one question a literal cannot answer. Marking one settles it:
+#+BEGIN_SRC scheme
+(type-rec
+  (: Item (Union (Sym Symbol)
+                 (Str string)
+                 (Sub (List Item) #:literal)   ;; nested (...) means this
+                 (Args (List string)))))       ;; written out by hand
+#+END_SRC
+
+Without the marker every nested literal at ~Item~ is reported as ambiguous.
+The marker travels with the type into a compiled module's metadata, so a union
+that is unambiguous where it is declared stays unambiguous where it is imported.
+
 ** Identifiers
 Identifiers may contain most characters except ~_~, and may not start with a digit. 
 Examples: ~my-var~, ~+~, ~string->int~, ~empty?~

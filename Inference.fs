@@ -1118,6 +1118,111 @@ let private demandedEffect (env: Env) (targetType: HMType) : Effect =
     | TFun(_, _, eff) -> eff
     | _ -> ESync
 
+// ---------------------------------------------------------------------------
+// Literal elaboration
+//
+// A literal written where a union is expected is elaborated into a constructor
+// of that union: `'(pipe (ls "-l"))` at `(List ProcItem)` becomes
+// `(list (ProcSym 'pipe) (ProcSub (list (ProcSym 'ls) (ProcStr "-l"))))`.
+//
+// Which constructor is chosen by the literal's *shape*, not by its type, and
+// the difference is the whole point: a nested `(ls "-l")` has no type to be
+// chosen by. Inferring it on its own allocates one element metavariable and
+// unifies `Symbol` against `string`, which fails before any constructor is
+// consulted. The shape is available before any of that happens.
+// ---------------------------------------------------------------------------
+
+/// The payload head constructors a literal of this shape could be injected
+/// into, or `None` for an expression that has no literal shape.
+///
+/// `None` is the ordinary case and keeps the type-directed path: an unquoted
+/// `,my-rot-13` is a `(-> string string)` and is selected by that type, having
+/// no shape a reader could select it by.
+let private literalPayloadHeads (expr: Expr) : string list option =
+    match expr with
+    | EList _ -> Some [ "List" ]
+    | EVec _ -> Some [ "Vec" ]
+    | EString _ -> Some [ TypeConstants.StringName ]
+    | EQuotedSymbol _ -> Some [ TypeConstants.SymbolName ]
+    // A numeric literal's own type rather than "int or double": `1` and `1.0`
+    // are different shapes to a reader, and a union carrying both would
+    // otherwise be ambiguous for every number written in it.
+    | EInt(value, _) ->
+        match inferNumericType value with
+        | TCon(name, _) -> Some [ name ]
+        | _ -> None
+    | _ -> None
+
+/// How a literal is named in a diagnostic about it.
+let private literalShapeName (expr: Expr) : string =
+    match expr with
+    | EList _ -> "list"
+    | EVec _ -> "vec"
+    | EString _ -> "string"
+    | EQuotedSymbol _ -> "symbol"
+    | EInt _ -> "number"
+    | _ -> "value"
+
+/// `a`, `a or b`, `a, b or c`.
+let private orList (names: string list) : string =
+    match List.rev names with
+    | [] -> ""
+    | [ one ] -> one
+    | last :: earlier -> String.concat ", " (List.rev earlier) + " or " + last
+
+/// A union's cases as they were declared, for a diagnostic that has to say what
+/// was on offer.
+let private describeUnionCases (registry: TraitRegistry) (unionName: string) : string =
+    match Map.tryFind unionName registry.Unions with
+    | None -> ""
+    | Some(_, cases) ->
+        cases
+        |> List.map (fun (caseName, payloads, _) ->
+            if payloads.IsEmpty then
+                caseName
+            else
+                let types = payloads |> List.map DotNetInterop.showType |> String.concat " "
+                $"(%s{caseName} %s{types})")
+        |> String.concat ", "
+
+/// Whether any element of a literal is itself a list or vec literal.
+///
+/// The question a failed element join has to answer: is this a list of things
+/// that happen not to agree, or a tree that was never meant to have one element
+/// type at all? Only the second has an answer beyond "these two types differ",
+/// and a nested literal is what tells them apart.
+let private hasNestedSequenceLiteral (elements: Expr list) : bool =
+    elements
+    |> List.exists (function
+        | EList _
+        | EVec _ -> true
+        | _ -> false)
+
+/// Join one element of a literal to the element type its siblings share.
+///
+/// Plain unification, except for the report when it fails. A literal reaches
+/// here only when nothing pushed an expected type into it, and for a tree —
+/// `'(pipe (ls "-l"))` — that is itself the error: its elements are a symbol
+/// and a list because it describes a union, and no union was named. Saying that
+/// `Symbol` does not unify with `(List Symbol)` names two types the program
+/// never wrote, and no way out of it.
+let private joinLiteralElement
+    (env: Env)
+    (r: Range)
+    (kind: string)
+    (elements: Expr list)
+    (elementType: HMType)
+    (elemTy: HMType)
+    : unit =
+    try
+        unify env.Registry elemTy elementType
+    with ex when Diagnostics.isDiagnostic ex && hasNestedSequenceLiteral elements ->
+        let shown =
+            DotNetInterop.showTypesTogether [ prune env.Registry elemTy; prune env.Registry elementType ]
+
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: nothing here says what this %s{kind} literal holds, and its elements do not agree on a type by themselves:\n  %s{shown[0]}\n  %s{shown[1]}\nA literal with a nested list among its elements stands for a union, and which union it stands for comes from the type expected where it is written. A generic parameter expects nothing in particular, so there is none: annotate the value and pass that, as in (def (: procs (List ProcList)) (list '(...)))."
+
 /// Infers a type, attaching a source location to any diagnostic that lacks one.
 ///
 /// `unify` is where most type errors are raised and it is given two types and
@@ -1937,6 +2042,34 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
             | Some meta -> meta.KeywordParams |> List.exists (fun (k, _) -> k = kwName)
             | None -> false
 
+        /// The type the callee declares for positional argument `i`, when there
+        /// is one worth pushing into the argument.
+        ///
+        /// Only a list or vec literal asks: it is the one argument shape whose
+        /// *elements* need the expected type before they can be inferred at
+        /// all, which is what makes `(run/lines '(pipe (ls "-l")))` work
+        /// without an annotated intermediate binding.
+        ///
+        /// Only the mandatory prefix, because past it the flat parameter list
+        /// holds the keyword parameters in declaration order and then the rest
+        /// array, and neither lines up with an argument's position. And only a
+        /// parameter that is already something: an unbound metavariable is a
+        /// polymorphic parameter, `(map run/lines ...)`, which expects nothing
+        /// in particular and so has nothing to push.
+        let expectedParam (i: int) : HMType option =
+            let declared =
+                match prune env.Registry targetType with
+                | TFun(paramTys, _, _) when i < paramTys.Length ->
+                    match funMeta with
+                    | Some meta when i >= meta.MandatoryCount -> None
+                    | _ -> Some(prune env.Registry paramTys[i])
+                | _ -> None
+
+            match declared with
+            | Some(TMeta _)
+            | None -> None
+            | Some paramTy -> Some paramTy
+
         // Separate keyword args from positional args
         // Keyword args appear as EKeyword("name") followed by a value expr when matching a declared keyword parameter
         let rec splitArgs positional keywords remaining =
@@ -1948,7 +2081,11 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
             | EKeyword(kwName, kr) :: [] when isDeclaredKw kwName ->
                 failwithf $"Keyword argument '#:%s{kwName}' is missing a value at %s{Lexer.formatPos kr}"
             | arg :: rest ->
-                let argType, typedArg = infer env arg
+                let argType, typedArg =
+                    match arg, expectedParam (List.length positional) with
+                    | (EList _ | EVec _), Some paramTy -> inferChecked paramTy env arg
+                    | _ -> infer env arg
+
                 splitArgs ((argType, typedArg) :: positional) keywords rest
 
         let positionalArgs, keywordArgs = splitArgs [] [] args
@@ -2352,7 +2489,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
             exprs
             |> List.map (fun e ->
                 let t, te = infer env e
-                unify env.Registry t elementType
+                joinLiteralElement env r "list" exprs elementType t
                 te)
 
         let listType = TCon("List", [ elementType ])
@@ -2369,7 +2506,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
             exprs
             |> List.map (fun e ->
                 let t, te = infer env e
-                unify env.Registry t elementType
+                joinLiteralElement env r "vec" exprs elementType t
                 te)
 
         let vecType = TCon("Vec", [ elementType ])
@@ -2690,34 +2827,82 @@ and private inferChecked (expected: HMType) (env: Env) (expr: Expr) : HMType * T
     | _ ->
         infer env expr
 
-/// Infer `expr` and, when its type does not directly match `expectedElem`,
-/// speculatively ask `CandidateCases` whether a unique union constructor wraps
-/// it.  If exactly one candidate is found the constructor is injected around
-/// the typed expression; if zero or multiple candidates are found the element
-/// is left unwrapped and normal unification will report the error.
+/// Check one element of a literal against the type its position expects,
+/// injecting a union constructor around it where the expectation is a union.
+///
+/// Two ways to pick that constructor, and which applies is decided by the
+/// element:
+///
+/// *Shape* first. A literal — a nested list, a string, a symbol, a number —
+/// selects by what it is written as, against the *head* of each case's payload.
+/// This has to happen before the element is inferred, because for a nested
+/// heterogeneous literal inferring is what fails. The chosen payload is then
+/// pushed back down through `inferChecked`, which calls this function again for
+/// each of that literal's own elements. Recursion terminates because the
+/// expression strictly shrinks; mutually recursive unions need nothing extra,
+/// since every step is a fresh lookup in `Registry.Unions`.
+///
+/// *Type* otherwise. An unquoted `,value` has no shape to be read — a
+/// `(-> string string)` is a candidate for `ProcFn` because of its type and
+/// nothing else — so it is inferred first and matched against the payloads
+/// afterwards.
 and private inferAndMaybeInject (expectedElem: HMType) (env: Env) (expr: Expr) : TypedExpr =
-    let elemTy, te = infer env expr
     let pe = prune env.Registry expectedElem
-    let pg = prune env.Registry elemTy
-    match pe with
-    | TCon(unionName, typeArgs) when Map.containsKey unionName env.Registry.Unions ->
-        match env.Registry.CandidateCases unionName typeArgs pg with
-        | [ (ctorName, [ payloadTy ]) ] ->
-            // The element type matches exactly one constructor's payload.
-            // Unify the element against the payload (resolves any remaining
-            // metas on either side) then wrap in the constructor call.
-            unify env.Registry elemTy payloadTy
-            let ctorType = tfun [ payloadTy ] pe
-            let ctorExpr : TypedExpr = { Type = ctorType; Range = te.Range; Node = TIdent(ctorName, []) }
-            { Type = pe; Range = te.Range; Node = TApply(ctorExpr, [ te ], []) }
+
+    /// The typed constructor application, around an already typed payload.
+    let wrapInCtor (ctorName: string) (payloadTy: HMType) (payload: TypedExpr) : TypedExpr =
+        let ctorType = tfun [ payloadTy ] pe
+        let ctorExpr: TypedExpr = { Type = ctorType; Range = payload.Range; Node = TIdent(ctorName, []) }
+        { Type = pe; Range = payload.Range; Node = TApply(ctorExpr, [ payload ], []) }
+
+    match pe, literalPayloadHeads expr with
+    | TCon(unionName, typeArgs), Some heads when Map.containsKey unionName env.Registry.Unions ->
+        // The literal's own range, not the range of whatever list it is written
+        // in: the constructor that cannot be chosen is this one's.
+        let reportAt () = Lexer.formatPos (exprRange expr)
+        let shape = literalShapeName expr
+
+        match env.Registry.CasesByPayloadShape unionName typeArgs heads with
+        | [ (ctorName, payloadTy) ] ->
+            let payloadType, typedPayload = inferChecked payloadTy env expr
+            unify env.Registry payloadType payloadTy
+            wrapInCtor ctorName payloadTy typedPayload
+        | [] ->
+            failwithf
+                $"Type Error at %s{reportAt ()}: no case of the union %s{unionName} carries a %s{shape}, so this literal cannot be one. A literal written where a union is expected is elaborated into the case that holds it, and %s{unionName} has %s{describeUnionCases env.Registry unionName}."
+        | many ->
+            let names = many |> List.map fst |> orList
+
+            failwithf
+                $"Type Error at %s{reportAt ()}: this %s{shape} literal could be injected into %s{names}, and nothing here says which. They are all cases of %s{unionName} that carry a %s{shape}, and only the payload's head constructor is compared against the literal — never its arguments — so the literal itself cannot tell them apart. Mark the case a literal means with #:literal where %s{unionName} is declared, or write the constructor around it here."
+    | _ ->
+        // Type-directed. The element is inferred first, and `CandidateCases`
+        // then asked — speculatively, so it may not bind anything — whether one
+        // constructor's payload matches what came back.
+        //
+        // `inferChecked` rather than `infer`, because the expectation is worth
+        // pushing even when it names no union: at `(List ProcList)` the element
+        // is a list of its own, and its elements are what the unions are at.
+        let elemTy, te = inferChecked pe env expr
+        let pg = prune env.Registry elemTy
+
+        match pe with
+        | TCon(unionName, typeArgs) when Map.containsKey unionName env.Registry.Unions ->
+            match env.Registry.CandidateCases unionName typeArgs pg with
+            | [ (ctorName, [ payloadTy ]) ] ->
+                // Exactly one constructor's payload matches. Unify the element
+                // against it — which resolves any metavariable left on either
+                // side — and wrap.
+                unify env.Registry elemTy payloadTy
+                wrapInCtor ctorName payloadTy te
+            | _ ->
+                // Zero or ambiguous matches — unify directly and let the type
+                // error (if any) be reported normally.
+                unify env.Registry elemTy expectedElem
+                te
         | _ ->
-            // Zero or ambiguous matches — unify directly and let the type
-            // error (if any) be reported normally.
             unify env.Registry elemTy expectedElem
             te
-    | _ ->
-        unify env.Registry elemTy expectedElem
-        te
 
 // --- DECLARATION CHECKING ---
 
@@ -2755,18 +2940,11 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env =
             let mutable caseTable = []
 
             for case in cases do
-                // `isLiteral` is always false for now. `#:literal` is not
-                // parseable yet — `parseType` has no `Keyword` case, so
-                // `(ProcStr String #:literal)` is a parse error — and it is
-                // only consulted when two cases of one union match the same
-                // payload. It lands with the ambiguity handling, together with
-                // the decision about how the marker survives module export
-                // (`Program.fs:422` serializes union cases and would have to
-                // carry it).
                 let caseName, resolvedArgs, isLiteral =
                     match case with
                     | SimpleCase(n, _) -> n, [], false
-                    | DataCase(n, types, _) -> n, types |> List.map (resolveTypeAnnotation finalRegistry), false
+                    | DataCase(n, types, marked, _) ->
+                        n, types |> List.map (resolveTypeAnnotation finalRegistry), marked
                 let schemeArgs = tArgs
                 let consScheme =
                     if resolvedArgs.IsEmpty then
@@ -2786,10 +2964,19 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
     | DSignature(name, ftype, constraints, _) -> env, Map.add name (resolveTypeAnnotation env.Registry ftype, Some ftype, constraints) sigs, []
 
     | DDef(name, expr, r) ->
-        let exprType, typedExpr = infer env expr
+        // A declared signature is an expected type, so it is pushed into the
+        // value rather than only checked against it afterwards — a list literal
+        // needs it while its elements are being inferred, not after. The
+        // annotated branch of `let` does the same.
+        let declaredType = Map.tryFind name sigs |> Option.map (fun (t, _, _) -> t)
 
-        match Map.tryFind name sigs with
-        | Some (sigType, _, _) -> unify env.Registry exprType sigType
+        let exprType, typedExpr =
+            match declaredType with
+            | Some sigType -> inferChecked sigType env expr
+            | None -> infer env expr
+
+        match declaredType with
+        | Some sigType -> unify env.Registry exprType sigType
         | None -> ()
 
         // Trait obligations are discharged before generalization: a scheme must
@@ -3836,18 +4023,47 @@ and private checkDeclGroup
     (decls: Decl list)
     : Env * Map<string, HMType * FType option * (string * string) list> * TDecl list =
 
+    /// The registry a signature is *read* with: this one, plus the group's own
+    /// type declarations.
+    ///
+    /// Signatures are resolved up front, before anything in the group is
+    /// checked, and a `type` declared beside them had not been registered yet.
+    /// For a union that is invisible — an unknown name resolves to a
+    /// constructor of that name, which is exactly what the declaration
+    /// registers — but an alias resolves to nothing at all, so
+    /// `(: run/lines (-> ProcList (List string)))` took a `ProcList` that no
+    /// later `(List ProcItem)` could unify with.
+    ///
+    /// The declarations are registered again by the fold below, in order and
+    /// into the environment the group really uses. This copy is thrown away
+    /// after the signatures have been read off it.
+    ///
+    /// Imports need no such treatment: `DImport` adds nothing here, because an
+    /// imported module is a group of its own that has already been checked by
+    /// the time this one starts.
+    let sigRegistry =
+        decls
+        |> List.fold
+            (fun acc d ->
+                match d with
+                | DType(typeDefs, _) -> registerTypeDefs false typeDefs acc
+                | DTypeRec(typeDefs, _) -> registerTypeDefs true typeDefs acc
+                | _ -> acc)
+            env
+        |> fun withTypes -> withTypes.Registry
+
     let explicitSigs =
         decls
         |> List.collect (function
             | DSignature(name, ftype, constraints, _) -> 
-                [name, (resolveTypeAnnotation env.Registry ftype, Some ftype, constraints)]
+                [name, (resolveTypeAnnotation sigRegistry ftype, Some ftype, constraints)]
             // An inline trait's signatures are not `HMType`s and never can be:
             // they mention the constructor variable applied. They are read as
             // templates by `DTrait` instead, and there is nothing to inject here.
             | DTrait(_, _, holeArity, _, signatures, _, _) when holeArity = 0 ->
                 signatures
                 |> List.map (fun (name, ftype) ->
-                    name, (resolveTypeAnnotation env.Registry ftype, Some ftype, []))
+                    name, (resolveTypeAnnotation sigRegistry ftype, Some ftype, []))
             | _ -> [])
         |> Map.ofList
 

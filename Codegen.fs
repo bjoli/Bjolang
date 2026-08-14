@@ -3031,7 +3031,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                         match c with
                         | SimpleCase (n, _) ->
                             appendLine ctx $"public sealed record %s{sanitizeIdent n}() : %s{sanitizeIdent td.Name}%s{tyArgsStr};"
-                        | DataCase (n, ftypes, _) ->
+                        | DataCase (n, ftypes, _, _) ->
                             append ctx $"public sealed record %s{sanitizeIdent n}("
                             for i, ft in List.indexed ftypes do
                                 if i > 0 then append ctx ", "
@@ -3283,7 +3283,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                                 | SimpleCase (n, _) ->
                                     indent ctx
                                     appendLine ctx $"public static %s{sanitizeIdent td.Name}%s{tyArgsStr} %s{sanitizeIdent n}%s{tyArgsStr}() => new %s{sanitizeIdent td.Name}%s{tyArgsStr}.%s{sanitizeIdent n}();"
-                                | DataCase (n, ftypes, _) ->
+                                | DataCase (n, ftypes, _, _) ->
                                     indent ctx
                                     append ctx $"public static %s{sanitizeIdent td.Name}%s{tyArgsStr} %s{sanitizeIdent n}%s{tyArgsStr}("
                                     for i, ft in List.indexed ftypes do
@@ -3378,7 +3378,7 @@ let generateProgram (exportMetadata: string) (inlineMetadata: string) (macroMeta
                             cases |> List.map (fun c ->
                                 match c with
                                 | SimpleCase (name, _) -> name, { ParentTypeName = td.Name; IsDataCase = false }
-                                | DataCase (name, _, _) -> name, { ParentTypeName = td.Name; IsDataCase = true }
+                                | DataCase (name, _, _, _) -> name, { ParentTypeName = td.Name; IsDataCase = true }
                             )
                         | _ -> []
                     )

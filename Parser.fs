@@ -47,7 +47,14 @@ type FType =
 
 type UnionCase =
     | SimpleCase of string * Range
-    | DataCase of string * FType list * Range
+    /// A case with payload types, and whether it was marked `#:literal`.
+    ///
+    /// The marker names the case a literal is injected into when several cases
+    /// of the union could carry one. Selection for a quoted literal goes by the
+    /// payload's *head* constructor, so `(ProcSub (List ProcItem))` and
+    /// `(ProcArgs (List string))` are indistinguishable to it; this is how the
+    /// program says which was meant.
+    | DataCase of string * FType list * bool * Range
 
 type RecordField =
     { Name: string
@@ -451,10 +458,37 @@ let rec parseType (s: SExpr) : FType =
 let parseUnionCase (s: SExpr) : UnionCase =
     let r = getRange s
 
+    // `#:literal` marks the *case*, and is not one of its types, so it is taken
+    // off here rather than by giving `parseType` a keyword case. A keyword is
+    // not a type anywhere else, and admitting one there would make
+    // `(-> #:literal int)` parse too.
+    let takeMarkers (name: string) (items: SExpr list) =
+        let markers, types =
+            items
+            |> List.partition (function
+                | SAtom { Token = Keyword _ } -> true
+                | _ -> false)
+
+        for marker in markers do
+            match marker with
+            | SAtom { Token = Keyword "literal" } -> ()
+            | SAtom { Token = Keyword bad } ->
+                failwithf
+                    $"Unknown marker #:%s{bad} on the union case %s{name} at %s{Lexer.formatPos r}. The only one is #:literal, which names this case as the one a quoted literal is injected into."
+            | _ -> ()
+
+        if not markers.IsEmpty && types.IsEmpty then
+            failwithf
+                $"#:literal on %s{name} at %s{Lexer.formatPos r} marks a case that carries nothing. It says which case a literal is injected into, so it belongs on one with a payload."
+
+        types, not markers.IsEmpty
+
     match s with
     | SAtom { Token = Symbol name } -> SimpleCase(name, r)
     | SList([ SAtom { Token = Symbol name } ], _) -> SimpleCase(name, r)
-    | SList(SAtom { Token = Symbol name } :: tTypes, _) -> DataCase(name, List.map parseType tTypes, r)
+    | SList(SAtom { Token = Symbol name } :: tTypes, _) ->
+        let types, isLiteral = takeMarkers name tTypes
+        DataCase(name, List.map parseType types, isLiteral, r)
     | _ ->
         printfn $"%A{s}"
         failwithf $"Invalid union case at %s{Lexer.formatPos r}"
@@ -632,9 +666,28 @@ let desugarQuotedList (parseExprFn: SExpr -> Expr) (items: SExpr list) (r: Range
         // Dotted pair in a quoted list: '(a . b) → (Tuple a b)
         | SList(SAtom { Token = Symbol "Tuple" } :: tupleItems, _) ->
             ETuple(List.map quoteItem tupleItems, ir)
-        // Nested list: '('(a b) '(c d)) → EList [EList [a b]; EList [c d]]
-        | SList(inner, lr) ->
-            collectItems inner lr
+        // `[a b]`, which the reader has already rewritten to
+        // `(vec-literal a b)`. Without this the head is quoted like any other
+        // symbol and `'(ls ["-l"])` yields a list beginning with the symbol
+        // `vec-literal` — a form no program wrote.
+        | SList(SAtom { Token = Symbol "vec-literal" } :: vecItems, vr) ->
+            EVec(List.map quoteItem vecItems, vr)
+        // `{...}`, likewise rewritten by the reader. A comprehension is a loop,
+        // not data, so there is nothing to quote it as. The reserved head wins
+        // over the symbol of the same name, which is the price of catching it.
+        | SList(SAtom { Token = Symbol "comprehension" } :: _, cr) ->
+            failwithf
+                $"A comprehension inside a quoted list at %s{Lexer.formatPos cr}. Quoting builds data, and a comprehension is a loop that produces a value: write ,{{...}} to splice what it produces."
+        // Any other list is data as well: '('(a b) '(c d)) nests.
+        //
+        // The two remaining reader rewrites arrive here — `#(...)` as a `fun`
+        // form, `#map(...)` as a `list->map` call — and neither can be told
+        // apart from the same list written by hand, so both are quoted as the
+        // lists they have become. Write `,#(...)` to splice the function.
+        | SList(inner, lr) -> collectItems inner lr
+        | SAtom { Token = CommaAt } ->
+            failwithf
+                $"Splicing with ,@ inside '(...) at %s{Lexer.formatPos ir}, which is not supported. A quoted list is built element by element from what is written in it, so a spliced list — whose length is only known when the program runs — has nowhere to go. Write ,x to place one element. ,@ does work inside a #' template, which builds a Syntax value rather than a list."
         | _ -> failwithf $"Unsupported item in quoted list at %s{Lexer.formatPos ir}"
 
     and collectItems (items: SExpr list) (r: Range) : Expr =

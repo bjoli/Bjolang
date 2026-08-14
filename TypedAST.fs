@@ -650,6 +650,36 @@ type TraitInfo =
       /// an overloaded foreign method from its argument types.
       Defaults: Map<string, Decl> }
 
+/// A declared union payload with the union's type arguments put in.
+///
+/// Shared by the two case-selection members of `TraitRegistry`, which differ
+/// only in how they compare a payload once it is concrete: by matching against
+/// an inferred type, or by its head constructor against a literal's shape.
+///
+/// A length mismatch substitutes nothing rather than failing. The payload is
+/// then still written in terms of the declaration's own variables, which both
+/// callers treat as wildcards — over-reporting a candidate is recoverable,
+/// while raising from a speculative lookup is not.
+let private withTypeArgs (typeParams: string list) (typeArgs: HMType list) (payload: HMType) : HMType =
+    let subst =
+        if typeParams.Length = typeArgs.Length then
+            List.zip typeParams typeArgs |> Map.ofList
+        else
+            Map.empty
+
+    let rec go t =
+        match t with
+        | TVar n ->
+            match Map.tryFind n subst with
+            | Some concrete -> concrete
+            | None -> t
+        | TCon(n, args) -> TCon(n, List.map go args)
+        | TFun(args, ret, eff) -> TFun(List.map go args, go ret, eff)
+        | TTuple args -> TTuple(List.map go args)
+        | _ -> t
+
+    go payload
+
 type TraitRegistry =
     { LocalTraits: Set<string>
       LocalTypes: Set<string>
@@ -778,29 +808,12 @@ type TraitRegistry =
         match Map.tryFind unionName this.Unions with
         | None -> []
         | Some (typeParams, cases) ->
-            let subst =
-                if typeParams.Length = typeArgs.Length then
-                    List.zip typeParams typeArgs |> Map.ofList
-                else
-                    Map.empty
-
-            let rec applySubst t =
-                match t with
-                | TVar n ->
-                    match Map.tryFind n subst with
-                    | Some concrete -> concrete
-                    | None -> t
-                | TCon(n, args) -> TCon(n, List.map applySubst args)
-                | TFun(args, ret, eff) -> TFun(List.map applySubst args, applySubst ret, eff)
-                | TTuple args -> TTuple(List.map applySubst args)
-                | _ -> t
-
             let matching =
                 cases
                 |> List.choose (fun (caseName, payloadTypes, isLiteral) ->
                     match payloadTypes with
                     | [ single ] ->
-                        let substituted = applySubst single
+                        let substituted = withTypeArgs typeParams typeArgs single
 
                         if matches substituted payload then
                             Some(caseName, [ substituted ], isLiteral)
@@ -816,6 +829,71 @@ type TraitRegistry =
                 match many |> List.filter (fun (_, _, isLiteral) -> isLiteral) with
                 | [ (name, payloads, _) ] -> [ (name, payloads) ]
                 | _ -> many |> List.map (fun (name, payloads, _) -> (name, payloads))
+
+    /// Cases of `unionName` carrying exactly one payload field whose *head
+    /// constructor* is one of `heads`, with the union's type arguments already
+    /// substituted in.
+    ///
+    /// The shape-directed sibling of `CandidateCases`, and the one a quoted
+    /// literal is selected by. `CandidateCases` needs the payload's inferred
+    /// type, and inferring is exactly what fails for the literals this feature
+    /// exists for: a nested `(ls "-l")` allocates one element metavariable and
+    /// unifies `Symbol` against `string` before any constructor is consulted.
+    /// So the only thing left to choose by is the literal's syntax — `'(...)`
+    /// wants a `List` payload, `[...]` a `Vec`, a string a `string` — and the
+    /// payload's arguments are not looked at at all. Whatever they are, the
+    /// chosen payload is then pushed back down into the literal, and the
+    /// elements are checked against it there.
+    ///
+    /// Ignoring the arguments is what makes `#:literal` matter. Two cases with
+    /// the same head — `(ProcSub (List ProcItem))` beside
+    /// `(ProcArgs (List string))` — are one question no literal can answer, so
+    /// when several match and exactly one is marked, that one wins. Otherwise
+    /// all of them are returned and the caller reports the ambiguity.
+    member this.CasesByPayloadShape
+        (unionName: string)
+        (typeArgs: HMType list)
+        (heads: string list)
+        : (string * HMType) list =
+        // As in `CandidateCases`: `prune` lives in `Unification`, which is
+        // compiled after this file, and nothing here may bind a `MetaVar`
+        // anyway — the lookup is speculative.
+        let rec deref t =
+            match t with
+            | TMeta { Value = Some inner } -> deref inner
+            | _ -> t
+
+        let headMatches payload =
+            match deref payload with
+            | TCon(name, _) -> List.contains name heads
+            // A hole nothing has decided yet, and a slot that takes anything.
+            // Both match, for the same reason they do in `CandidateCases`.
+            | TMeta _
+            | TVar _ -> true
+            | _ -> false
+
+        match Map.tryFind unionName this.Unions with
+        | None -> []
+        | Some (typeParams, cases) ->
+            let matching =
+                cases
+                |> List.choose (fun (caseName, payloadTypes, isLiteral) ->
+                    match payloadTypes with
+                    | [ single ] ->
+                        let substituted = withTypeArgs typeParams typeArgs single
+
+                        if headMatches substituted then
+                            Some(caseName, substituted, isLiteral)
+                        else
+                            None
+                    | _ -> None)
+
+            match matching with
+            | [ (name, payload, _) ] -> [ (name, payload) ]
+            | many ->
+                match many |> List.filter (fun (_, _, isLiteral) -> isLiteral) with
+                | [ (name, payload, _) ] -> [ (name, payload) ]
+                | _ -> many |> List.map (fun (name, payload, _) -> (name, payload))
 
     member this.ResolveAssociatedType (traitName: string) (assocName: string) (implType: HMType) : HMType option =
         // Pattern-match a stored generic type against a concrete type to build
