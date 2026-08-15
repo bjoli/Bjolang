@@ -172,6 +172,19 @@ let rec mapDecl (f: TypedExpr -> TypedExpr) (decl: TDecl) : TDecl =
     | TImportExtern _
     | TImportClass _ -> decl
 
+/// As `mapDecl`, but `f` is also handed the declaration that directly holds the
+/// expression.
+///
+/// For passes whose answer depends on the enclosing definition rather than on
+/// the expression alone — a body's colour is its `TDefun`'s effect, and nothing
+/// in the body says so.
+let rec mapDeclWithContext (f: TDecl -> TypedExpr -> TypedExpr) (decl: TDecl) : TDecl =
+    match decl with
+    | TModule(name, decls, r) -> TModule(name, decls |> List.map (mapDeclWithContext f), r)
+    | TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods, r) ->
+        TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods |> List.map (mapDeclWithContext f), r)
+    | _ -> mapDecl (f decl) decl
+
 /// Deep pre-order fold over every expression contained in `decl`.
 let foldDecl (f: 'S -> TypedExpr -> 'S) (state: 'S) (decl: TDecl) : 'S =
     let acc = ref state

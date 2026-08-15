@@ -127,17 +127,12 @@ let rec private checkExpr (registry: TraitRegistry) (expr: TypedExpr) : unit =
 
     | _ -> TypeVisitor.children expr |> List.iter descend
 
-let rec private checkDecl (registry: TraitRegistry) (decl: TDecl) : unit =
-    match decl with
-    | TDefun(_, _, _, kwArgs, _, _, _, body, _) ->
-        kwArgs |> List.iter (fun (_, _, d) -> checkExpr registry d)
-        checkExpr registry body
-    | TDef(_, value, _, _)
-    | TDefTuple(_, value, _, _)
-    | TDefMutable(_, value, _, _) -> checkExpr registry value
-    | TModule(_, decls, _) -> decls |> List.iter (checkDecl registry)
-    | TImpl(_, _, _, _, _, _, methods, _) -> methods |> List.iter (checkDecl registry)
-    | _ -> ()
+let private checkDecl (registry: TraitRegistry) (decl: TDecl) : unit =
+    decl
+    |> TypeVisitor.mapDecl (fun e ->
+        checkExpr registry e
+        e)
+    |> ignore
 
 let run (registry: TraitRegistry) (decls: TDecl list) : unit =
     decls |> List.iter (checkDecl registry)

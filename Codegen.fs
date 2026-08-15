@@ -349,6 +349,10 @@ let private elementTypeString (t: HMType) =
     | _ -> "object"
 
 /// Every type variable mentioned by `t`, in source spelling.
+///
+/// Not built on `TypedAST.foldType`, which calls its leaf function on the `TVar`
+/// itself: the `TAssoc` case here has to be recognized one level *above* that
+/// `TVar`, because the name it yields is made from the projection.
 let rec collectTypeVars (t: HMType) : string list =
     match t with
     | TVar name -> [ name ]
@@ -3369,51 +3373,49 @@ let builtinUnionCases: Map<string, UnionCaseInfo> =
 
 let generateProgram (exportMetadata: string) (inlineMetadata: string) (macroMetadata: string) (metadataDeps: string list) (linkedDlls: string list) (decls: TDecl list) : string =
     let unionCases =
-        let rec collect decls =
-            decls |> List.collect (function
-                | TType (defs, _) | TTypeRec (defs, _) ->
-                    defs |> List.collect (fun td ->
-                        match td.Kind with
-                        | Union cases ->
-                            cases |> List.map (fun c ->
-                                match c with
-                                | SimpleCase (name, _) -> name, { ParentTypeName = td.Name; IsDataCase = false }
-                                | DataCase (name, _, _, _) -> name, { ParentTypeName = td.Name; IsDataCase = true }
-                            )
-                        | _ -> []
-                    )
-                | TModule (_, innerDecls, _) -> collect innerDecls
-                | _ -> []
-            )
+        decls
+        |> collectDecls (function
+            | TType (defs, _) | TTypeRec (defs, _) ->
+                defs |> List.collect (fun td ->
+                    match td.Kind with
+                    | Union cases ->
+                        cases |> List.map (fun c ->
+                            match c with
+                            | SimpleCase (name, _) -> name, { ParentTypeName = td.Name; IsDataCase = false }
+                            | DataCase (name, _, _, _) -> name, { ParentTypeName = td.Name; IsDataCase = true }
+                        )
+                    | _ -> []
+                )
+            | _ -> []
+        )
         // A declared case of the same name wins, exactly as a declared *type*
         // wins over a builtin in `shadowedBuiltins` below.
-        collect decls |> List.fold (fun acc (n, info) -> Map.add n info acc) builtinUnionCases
+        |> List.fold (fun acc (n, info) -> Map.add n info acc) builtinUnionCases
 
     // Anything the program declares a type of its own for stops being the
     // built-in of that name, everywhere.
     shadowedBuiltins <-
-        let rec collect decls =
-            decls |> List.collect (function
-                | TType (defs, _) | TTypeRec (defs, _) -> defs |> List.map (fun td -> td.Name)
-                | TModule (_, innerDecls, _) -> collect innerDecls
-                | _ -> []
-            )
-        collect decls |> Set.ofList
+        decls
+        |> collectDecls (function
+            | TType (defs, _) | TTypeRec (defs, _) -> defs |> List.map (fun td -> td.Name)
+            | _ -> []
+        )
+        |> Set.ofList
 
     let globalBindings =
-        let rec collect decls =
-            decls |> List.collect (function
-                | TModule (modName, innerDecls, _) ->
-                    innerDecls |> List.collect (function
-                        | TDef (n, _, _, _) -> [ (n, modName) ]
-                        | TDefMutable (n, _, _, _) -> [ (n, modName) ]
-                        | TDefTuple (names, _, _, _) -> names |> List.map (fun n -> (n, modName))
-                        | TDefun (n, _, _, _, _, _, _, _, _) -> [ (n, modName) ]
-                        | _ -> []
-                    )
-                | _ -> []
-            )
-        collect decls |> Map.ofList
+        decls
+        |> collectDecls (function
+            | TModule (modName, innerDecls, _) ->
+                innerDecls |> List.collect (function
+                    | TDef (n, _, _, _) -> [ (n, modName) ]
+                    | TDefMutable (n, _, _, _) -> [ (n, modName) ]
+                    | TDefTuple (names, _, _, _) -> names |> List.map (fun n -> (n, modName))
+                    | TDefun (n, _, _, _, _, _, _, _, _) -> [ (n, modName) ]
+                    | _ -> []
+                )
+            | _ -> []
+        )
+        |> Map.ofList
 
     let ctx =
         { Builder = StringBuilder()
@@ -3442,8 +3444,7 @@ let generateProgram (exportMetadata: string) (inlineMetadata: string) (macroMeta
                     | TImport (specs, _) ->
                         for spec in specs do
                             match spec with
-                            | RelativePath p ->
-                                yield moduleClassName (System.IO.Path.GetFileNameWithoutExtension p)
+                            | RelativePath p -> yield moduleClassName p
                             | ModulePath parts ->
                                 yield moduleClassName (List.last parts)
                     | _ -> ()
@@ -3454,7 +3455,7 @@ let generateProgram (exportMetadata: string) (inlineMetadata: string) (macroMeta
           // reference, so the class that actually defines it has to be in
           // scope even though its module was never imported.
           for dllPath in linkedDlls do
-              yield moduleClassName (System.IO.Path.GetFileNameWithoutExtension dllPath) ]
+              yield moduleClassName dllPath ]
         |> List.distinct
 
     for className in moduleUsings do

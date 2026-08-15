@@ -157,23 +157,19 @@ let main argv =
 
             printfn "Compilation succeeded. %d declarations." typedAst.Length
             
-            let rec extractExports (decls: TypedAST.TDecl list) =
-                decls |> List.choose (function 
-                    | TypedAST.TExport(names, _) -> Some names 
-                    | TypedAST.TReExport(names, _) -> Some names
-                    | TypedAST.TModule(_, innerDecls, _) -> Some (extractExports innerDecls |> List.concat)
-                    | _ -> None)
-            
-            let exports = extractExports typedAst |> List.concat
-            
-            let rec extractTypes (decls: TypedAST.TDecl list) =
-                decls |> List.choose (function
-                    | TypedAST.TType(defs, _) -> Some (defs |> List.map (fun d -> d, false))
-                    | TypedAST.TTypeRec(defs, _) -> Some (defs |> List.map (fun d -> d, true))
-                    | TypedAST.TModule(_, innerDecls, _) -> Some (extractTypes innerDecls |> List.concat)
-                    | _ -> None)
-            
-            let typesToExport = extractTypes typedAst |> List.concat
+            let exports =
+                typedAst
+                |> TypedAST.collectDecls (function
+                    | TypedAST.TExport(names, _)
+                    | TypedAST.TReExport(names, _) -> names
+                    | _ -> [])
+
+            let typesToExport =
+                typedAst
+                |> TypedAST.collectDecls (function
+                    | TypedAST.TType(defs, _) -> defs |> List.map (fun d -> d, false)
+                    | TypedAST.TTypeRec(defs, _) -> defs |> List.map (fun d -> d, true)
+                    | _ -> [])
             
             // A trait travels with its methods. Whichever module publishes a
             // trait method has to publish the trait itself and every
@@ -261,8 +257,7 @@ let main argv =
                 if alias.StartsWith publishedAliasPrefix then
                     alias
                 else
-                    let modTag =
-                        System.IO.Path.GetFileNameWithoutExtension(inputFilePath).Replace(".", "_").Replace("-", "_")
+                    let modTag = Naming.moduleNameOfPath inputFilePath
 
                     $"%s{publishedAliasPrefix}%s{modTag}__%s{alias}"
 
@@ -290,12 +285,7 @@ let main argv =
                    |> List.collect (fun (_, decl) ->
                        match decl with
                        | Parser.DDefun(_, args, body, _, _) ->
-                           let params' =
-                               args
-                               |> List.choose (function
-                                   | Parser.MandatoryArg n -> Some n
-                                   | _ -> None)
-
+                           let params' = Parser.mandatoryNames args
                            bodyExternSubst (Set.ofList params') body |> Map.toList
                        | _ -> []))
                 |> List.distinct
@@ -371,11 +361,7 @@ let main argv =
                             |> List.choose (fun (mName, decl) ->
                                 match decl with
                                 | Parser.DDefun(_, args, body, _, _) when Codegen.isSerializableTemplate body ->
-                                    let paramNames =
-                                        args
-                                        |> List.choose (function
-                                            | Parser.MandatoryArg n -> Some n
-                                            | _ -> None)
+                                    let paramNames = Parser.mandatoryNames args
 
                                     // Keyword and rest parameters are a calling
                                     // convention, and the reader on the far side
@@ -652,8 +638,7 @@ let main argv =
                     // spell `Module_Module::helper` for a template that names
                     // one of this module's own bindings — and `Naming` already
                     // derives the second from the first.
-                    let moduleName =
-                        Path.GetFileNameWithoutExtension(inputFilePath).Replace(".", "_").Replace("-", "_")
+                    let moduleName = Naming.moduleNameOfPath inputFilePath
 
                     declaredMacros
                     |> List.map (fun name -> $"(macro \"{name}\" \"{moduleName}\")")
@@ -702,7 +687,7 @@ let main argv =
                     | _ -> false
                 | None -> false
 
-            let mainModuleClass = Path.GetFileNameWithoutExtension(inputFilePath) |> Codegen.moduleClassName
+            let mainModuleClass = Codegen.moduleClassName inputFilePath
 
             // Everything this program links against, where it really lives.
             // Nothing is ever copied next to the output: an assembly has one

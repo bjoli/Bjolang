@@ -751,7 +751,7 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
             // `.dll` has none to load: its transitive deps are link-only and
             // never enter the module graph.
 
-            let moduleName = Path.GetFileNameWithoutExtension(absPath).Replace(".", "_").Replace("-", "_")
+            let moduleName = Naming.moduleNameOfPath absPath
             resolvedModules.[absPath] <- {
                 FilePath = absPath
                 ModuleName = moduleName
@@ -787,20 +787,18 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
 /// exactly the answer wanted for a helper the origin module itself imported
 /// from a third module.
 let private moduleOfName (decls: TypedAST.TDecl list) : Map<string, string> =
-    let rec collect (decls: TypedAST.TDecl list) =
-        decls
-        |> List.collect (function
-            | TypedAST.TModule(modName, inner, _) ->
-                inner
-                |> List.choose (function
-                    | TypedAST.TDef(n, _, _, _) -> Some(n, modName)
-                    | TypedAST.TDefMutable(n, _, _, _) -> Some(n, modName)
-                    | TypedAST.TDefun(n, _, _, _, _, _, _, _, _) -> Some(n, modName)
-                    | TypedAST.TExtern(n, _, _) -> Some(n, modName)
-                    | _ -> None)
-            | _ -> [])
-
-    collect decls |> Map.ofList
+    decls
+    |> TypedAST.collectDecls (function
+        | TypedAST.TModule(modName, inner, _) ->
+            inner
+            |> List.choose (function
+                | TypedAST.TDef(n, _, _, _) -> Some(n, modName)
+                | TypedAST.TDefMutable(n, _, _, _) -> Some(n, modName)
+                | TypedAST.TDefun(n, _, _, _, _, _, _, _, _) -> Some(n, modName)
+                | TypedAST.TExtern(n, _, _) -> Some(n, modName)
+                | _ -> None)
+        | _ -> [])
+    |> Map.ofList
 
 /// Works out what each local inline template's free variables should be emitted
 /// as, now that the whole program has been checked.

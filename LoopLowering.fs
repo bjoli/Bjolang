@@ -533,16 +533,11 @@ let assertLoopsPromoted (decls: TDecl list) : unit =
 
         | _ -> TypeVisitor.children e |> List.iter checkExpr
 
-    let rec checkDecl (d: TDecl) =
-        match d with
-        | TModule(_, inner, _) -> List.iter checkDecl inner
-        | TImpl(_, _, _, _, _, _, methods, _) -> List.iter checkDecl methods
-        | _ ->
-            TypeVisitor.mapDecl
-                (fun e ->
-                    checkExpr e
-                    e)
-                d
-            |> ignore
-
-    List.iter checkDecl decls
+    decls
+    |> List.iter (fun d ->
+        TypeVisitor.mapDecl
+            (fun e ->
+                checkExpr e
+                e)
+            d
+        |> ignore)

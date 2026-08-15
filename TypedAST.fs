@@ -1060,19 +1060,46 @@ let landingPadName (kind: TraitKind) (traitName: string) (targetTypeName: string
     | InterfaceTrait -> implInstanceMethodName traitName targetTypeName methodName
     | InlineTrait -> implStaticMethodName traitName targetTypeName methodName
 
+/// `f` applied to every declaration in the program, nested ones included.
+///
+/// A module's declarations and an impl's methods are declarations like any
+/// other, so anything that asks a question of "every `TDefun`" or "every
+/// `TType`" has to descend into both. `f` sees the `TModule` and `TImpl` nodes
+/// too, which is what lets a caller that needs the enclosing module's name
+/// answer at that level instead.
+let rec collectDecls (f: TDecl -> 'a list) (decls: TDecl list) : 'a list =
+    decls
+    |> List.collect (fun d ->
+        f d
+        @ match d with
+          | TModule(_, inner, _) -> collectDecls f inner
+          | TImpl(_, _, _, _, _, _, methods, _) -> collectDecls f methods
+          | _ -> [])
+
+/// Structural traversal of a type, with `leaf` deciding what a `TVar` or a
+/// `TMeta` contributes.
+///
+/// Only the compound cases are shared. What a metavariable *means* differs by
+/// caller — some prune it through the trait registry first, some follow
+/// `Value` by hand, some ignore it — and that decision stays with `leaf`.
+let rec foldType (leaf: HMType -> 'a list) (t: HMType) : 'a list =
+    match t with
+    | TVar _
+    | TMeta _ -> leaf t
+    | TCon(_, args) -> List.collect (foldType leaf) args
+    | TFun(args, ret, _) -> (List.collect (foldType leaf) args) @ foldType leaf ret
+    | TTuple args -> List.collect (foldType leaf) args
+    | TAssoc(_, _, impl) -> foldType leaf impl
+
 /// Every type variable a type mentions, in order of first appearance.
 let typeVarsOf (t: HMType) : string list =
-    let rec go t =
+    let rec leaf t =
         match t with
         | TVar n -> [ n ]
-        | TCon(_, args) -> List.collect go args
-        | TFun(args, ret, _) -> (List.collect go args) @ go ret
-        | TTuple args -> List.collect go args
-        | TAssoc(_, _, impl) -> go impl
-        | TMeta { Value = Some inner } -> go inner
-        | TMeta _ -> []
+        | TMeta { Value = Some inner } -> foldType leaf inner
+        | _ -> []
 
-    go t |> List.distinct
+    foldType leaf t |> List.distinct
 
 let rec substTypeVars (subst: Map<string, HMType>) (t: HMType) : HMType =
     match t with

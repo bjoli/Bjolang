@@ -2,142 +2,22 @@ module Bjolang.LetRecify
 
 open Bjolang.Parser
 
-/// Combine two free-var maps; if a var appears in both, Unguarded (false) wins.
-let mergeVarUseMaps (a: Map<string, bool>) (b: Map<string, bool>) =
-    let folder (acc: Map<string, bool>) (key: string) (useType: bool) =
-        match Map.tryFind key acc with
-        | Some false -> acc // Unguarded already exists; keep it.
-        | _ -> Map.add key useType acc // Overwrites True with False, or inserts new.
+/// Every free variable of `expr`, mapped to whether *every* use of it is
+/// guarded — that is, deferred inside a lambda, a `seq`, or a `bjo`.
+///
+/// A guarded use may point at a binding that is not established yet, so it
+/// makes a group mutually recursive rather than mis-ordered. One unguarded use
+/// is therefore the stronger claim and wins over any number of guarded ones.
+let exprFreeVars (isGuarded: bool) (bound: Set<string>) (expr: Expr) : Map<string, bool> =
+    let mutable acc = Map.empty
 
-    Map.fold folder a b
+    let record name guarded =
+        match Map.tryFind name acc with
+        | Some false -> ()
+        | _ -> acc <- Map.add name guarded acc
 
-/// Walk an untyped Expr, returning free variables with their use classification.
-/// `isGuarded`: true when inside at least one lambda body.
-/// `bound`: variables bound in the current scope (to exclude from free vars).
-let rec exprFreeVars (isGuarded: bool) (bound: Set<string>) (expr: Expr) : Map<string, bool> =
-    let classify = isGuarded
-
-    match expr with
-    | EInt _
-    | EString _
-    | EChar _
-    | EQuotedSymbol _
-    | EKeyword _ -> Map.empty
-    | EIdent(name, _) ->
-        if Set.contains name bound then
-            Map.empty
-        else
-            Map.add name classify Map.empty
-    | ETuple(exprs, _)
-    | EList(exprs, _)
-    | EVec(exprs, _) ->
-        exprs
-        |> List.map (exprFreeVars isGuarded bound)
-        |> List.fold mergeVarUseMaps Map.empty
-    | EApp(target, args, _) ->
-        let tfv = exprFreeVars isGuarded bound target
-
-        let afvs =
-            args
-            |> List.map (exprFreeVars isGuarded bound)
-            |> List.fold mergeVarUseMaps Map.empty
-
-        mergeVarUseMaps tfv afvs
-    | ECast(_, expr, _) -> exprFreeVars isGuarded bound expr
-    | ELet(name, isFun, args, typeAnn, value, body, _) ->
-        let boundInValue = if isFun then Set.union bound (Set.ofList args) else bound
-        let vfv = exprFreeVars (isGuarded || isFun) boundInValue value
-        let bfv = exprFreeVars isGuarded (Set.add name bound) body
-        mergeVarUseMaps vfv bfv
-
-    | ELetMono(name, value, body, _) ->
-        let vfv = exprFreeVars isGuarded bound value
-        let bfv = exprFreeVars isGuarded (Set.add name bound) body
-        mergeVarUseMaps vfv bfv
-
-    | ELetRec(bindings, body, _) ->
-        let boundNames = bindings |> List.map (fun (n, _, _, _, _) -> n) |> Set.ofList
-        let allBound = Set.union bound boundNames
-
-        let bfvs =
-            bindings
-            |> List.map (fun (_, isFun, args, _, expr) ->
-                let boundInExpr =
-                    if isFun then
-                        Set.union allBound (Set.ofList args)
-                    else
-                        allBound
-
-                exprFreeVars (isGuarded || isFun) boundInExpr expr)
-            |> List.fold mergeVarUseMaps Map.empty
-
-        let bodyFv = exprFreeVars isGuarded allBound body
-        mergeVarUseMaps bfvs bodyFv
-    | ELetTuple(names, value, body, _) ->
-        let vfv = exprFreeVars isGuarded bound value
-        let bfv = exprFreeVars isGuarded (Set.union bound (Set.ofList names)) body
-        mergeVarUseMaps vfv bfv
-    | EIf(cond, trueB, falseB, _) ->
-        let cfv = exprFreeVars isGuarded bound cond
-        let tfv = exprFreeVars isGuarded bound trueB
-        let ffv = exprFreeVars isGuarded bound falseB
-        mergeVarUseMaps (mergeVarUseMaps cfv tfv) ffv
-    | EWhen(cond, body, _, _) ->
-        let cfv = exprFreeVars isGuarded bound cond
-        let bfv = exprFreeVars isGuarded bound body
-        mergeVarUseMaps cfv bfv
-    | EFun(args, body, _, _) -> exprFreeVars true (Set.union bound (Set.ofList args)) body
-    | ERecordUpdate(_, fields, _) ->
-        fields
-        |> List.map (snd >> exprFreeVars isGuarded bound)
-        |> List.fold mergeVarUseMaps Map.empty
-    | EGetField(target, _, _) -> exprFreeVars isGuarded bound target
-    | EMatch(target, clauses, _) ->
-        let tfv = exprFreeVars isGuarded bound target
-
-        let cfvs =
-            clauses
-            |> List.map (fun (pat, guard, body) ->
-                let patBounds = patternBinders pat |> Set.ofList
-                let innerBound = Set.union bound patBounds
-
-                let gfv =
-                    match guard with
-                    | Some g -> exprFreeVars isGuarded innerBound g
-                    | None -> Map.empty
-
-                let bfv = exprFreeVars isGuarded innerBound body
-                mergeVarUseMaps gfv bfv)
-            |> List.fold mergeVarUseMaps Map.empty
-
-        mergeVarUseMaps tfv cfvs
-    | ELetMutable(name, typeAnn, value, body, _) ->
-        let vfv = exprFreeVars isGuarded bound value
-        let bfv = exprFreeVars isGuarded (Set.add name bound) body
-        mergeVarUseMaps vfv bfv
-    | ESet(name, value, _) ->
-        let vfv = exprFreeVars isGuarded bound value
-
-        let tfv =
-            if Set.contains name bound then
-                Map.empty
-            else
-                Map.add name classify Map.empty
-
-        mergeVarUseMaps tfv vfv
-    | ETryFinally(body, cleanup, _) ->
-        mergeVarUseMaps (exprFreeVars isGuarded bound body) (exprFreeVars isGuarded bound cleanup)
-    | ETryCatch(body, _, _) -> exprFreeVars isGuarded bound body
-    // A `seq` body is deferred exactly as a lambda body is: nothing in it runs
-    // until the sequence is consumed, so a reference from inside one is guarded
-    // and can point at a binding defined later in the same group.
-    | ESeq(body, _) -> exprFreeVars true bound body
-    // The operands are evaluated where the form is written; only the call is
-    // deferred. Guarded all the same, because the call is.
-    | EBjo(body, _)
-    | ETaskEvent(body, _) -> exprFreeVars true bound body
-    | EYield(value, _)
-    | EYieldFrom(value, _) -> exprFreeVars isGuarded bound value
+    freeNamesWith record isGuarded bound expr
+    acc
 
 /// Kosaraju's algorithm: compute SCCs of a graph, returned in reverse topological order.
 let computeSCCs (nodes: Set<string>) (edges: Map<string, Map<string, bool>>) : Set<string> list =

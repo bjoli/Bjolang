@@ -155,23 +155,23 @@ let rec private checkExpr (allowed: bool) (expr: TypedExpr) : unit =
 
     | _ -> TypeVisitor.children expr |> List.iter descend
 
-let rec private checkDecl (decl: TDecl) : unit =
-    match decl with
-    // The one place `allowed` is ever true.
-    | TDefun(_, _, _, kwArgs, _, _, effect, body, _) ->
-        // A keyword parameter's default is emitted in the method's prologue, so
-        // it is inside the same member as the body and inherits its colour.
-        kwArgs |> List.iter (fun (_, _, d) -> checkExpr (effect = EAsync) d)
-        checkExpr (effect = EAsync) body
+/// A `TDefun`'s own effect is the only source of `allowed`, and every
+/// expression it holds — its body and its keyword defaults, which are emitted
+/// in the method's prologue — is inside that one C# member.
+///
+/// Everything else is emitted somewhere that cannot be async: a module-level
+/// value is a static field, initialised by the class's static constructor,
+/// which has no fiber to suspend.
+let private checkDecl (decl: TDecl) : unit =
+    decl
+    |> TypeVisitor.mapDeclWithContext (fun owner e ->
+        let allowed =
+            match owner with
+            | TDefun(_, _, _, _, _, _, effect, _, _) -> effect = EAsync
+            | _ -> false
 
-    // A module-level value is a static field initialised by the class's static
-    // constructor, which cannot be async and has no fiber to suspend.
-    | TDef(_, value, _, _)
-    | TDefTuple(_, value, _, _)
-    | TDefMutable(_, value, _, _) -> checkExpr false value
-
-    | TModule(_, decls, _) -> decls |> List.iter checkDecl
-    | TImpl(_, _, _, _, _, _, methods, _) -> methods |> List.iter checkDecl
-    | _ -> ()
+        checkExpr allowed e
+        e)
+    |> ignore
 
 let run (decls: TDecl list) : unit = decls |> List.iter checkDecl

@@ -19,15 +19,25 @@ let sanitizeIdent (s: string) =
     | "abstract" | "base" | "checked" | "const" | "delegate" | "enum" | "event" | "explicit" | "extern" | "fixed" | "implicit" | "interface" | "namespace" | "operator" | "override" | "sealed" | "stackalloc" | "this" | "unchecked" | "unsafe" | "using" | "virtual" | "volatile" -> "@" + s
     | _ -> s
 
+/// The module a source or assembly path is known by.
+///
+/// A module is named after its file, with the two characters that separate a
+/// C# identifier folded away. Everything that has to name another file's module
+/// — the import graph, the metadata a `.dll` publishes, the macro table — has
+/// to arrive at the same answer, so there is one spelling of the rule.
+let moduleNameOfPath (path: string) : string =
+    IO.Path.GetFileNameWithoutExtension(path).Replace(".", "_").Replace("-", "_")
+
 /// The C# class a module's declarations are emitted into.
 ///
-/// A module is named after its source file, so the name can hold characters no
-/// C# identifier may hold — or start with a digit, as `006_lib.bjo` does. Every
+/// Takes a module name or the path it came from, indifferently. A module is
+/// named after its source file, so the name can hold characters no C#
+/// identifier may hold — or start with a digit, as `006_lib.bjo` does. Every
 /// site that spells this class has to agree on the answer: the class definition,
 /// the `using static` for it, a qualified reference to one of its bindings, and
 /// the generated entry point.
 let moduleClassName (moduleName: string) =
-    sanitizeIdent (moduleName.Replace(".", "_").Replace("-", "_")) + "_Module"
+    sanitizeIdent (moduleNameOfPath moduleName) + "_Module"
 
 /// The reference an inlined body uses for a free name that belongs to a module.
 ///

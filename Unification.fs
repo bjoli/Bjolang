@@ -282,14 +282,13 @@ let rec unify (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
 
         failwithf $"Type error: these types do not match.\n  %s{shown[0]}\n  %s{shown[1]}%s{note}"
 
-let rec freeVars (registry: TraitRegistry) (t: HMType) : MetaVar list =
-    match prune registry t with
-    | TMeta m -> [ m ]
-    | TCon(_, args) -> List.collect (freeVars registry) args
-    | TFun(args, ret, _) -> (List.collect (freeVars registry) args) @ (freeVars registry ret)
-    | TTuple args -> List.collect (freeVars registry) args
-    | TAssoc(_, _, impl) -> freeVars registry impl
-    | TVar _ -> []
+/// `prune` is deep and leaves no bound metavariable behind, so pruning once at
+/// the top is what makes the survivors exactly the free ones.
+let freeVars (registry: TraitRegistry) (t: HMType) : MetaVar list =
+    prune registry t
+    |> foldType (function
+        | TMeta m -> [ m ]
+        | _ -> [])
 
 let envFreeVars (env: Env) : Set<MetaVar> =
     env.Bindings
@@ -299,14 +298,11 @@ let envFreeVars (env: Env) : Set<MetaVar> =
         | Scheme(_, _, t) -> freeVars env.Registry t)
     |> Set.ofList
 
-let rec freeTVars (registry: TraitRegistry) (t: HMType) : string list =
-    match prune registry t with
-    | TVar name -> [ name ]
-    | TMeta _ -> []
-    | TCon(_, args) -> List.collect (freeTVars registry) args
-    | TFun(args, ret, _) -> (List.collect (freeTVars registry) args) @ (freeTVars registry ret)
-    | TTuple args -> List.collect (freeTVars registry) args
-    | TAssoc(_, _, impl) -> freeTVars registry impl
+let freeTVars (registry: TraitRegistry) (t: HMType) : string list =
+    prune registry t
+    |> foldType (function
+        | TVar name -> [ name ]
+        | _ -> [])
 
 /// Metavariables that a deferred, *un-abstractable* obligation is still waiting
 /// on.

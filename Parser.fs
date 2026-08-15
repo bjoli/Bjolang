@@ -145,6 +145,18 @@ and DefunArg =
     | KeywordArg of string * Expr              // (#:keyword defaultValue)
     | RestArg of string                        // #:rest name
 
+/// The positional parameters of an argument list, in order.
+///
+/// Keyword and rest parameters are a calling convention rather than a name the
+/// body binds positionally, so callers that want "the parameters" in the plain
+/// sense want exactly these. Several of them also compare the count back
+/// against the whole list to find out whether anything was left out.
+let mandatoryNames (args: DefunArg list) : string list =
+    args
+    |> List.choose (function
+        | MandatoryArg n -> Some n
+        | _ -> None)
+
 type ImportSpec =
     | RelativePath of string
     | ModulePath of string list
@@ -756,6 +768,100 @@ let rec patternBinders (pat: Pattern) : string list =
         @ (tailOpt |> Option.map patternBinders |> Option.defaultValue [])
     | PTuple(items, _) -> items |> List.collect patternBinders
     | PConstruct(_, args, _) -> args |> List.collect patternBinders
+
+/// One walk over an untyped expression, calling `reference name guarded` at
+/// every name it mentions but does not bind.
+///
+/// `guarded` is true where the reference sits inside something deferred — a
+/// lambda or `seq` body, a `bjo` or task-event operand, the value of a local
+/// `defun`. Nothing in there runs until the enclosing form is applied or
+/// consumed, so such a reference may legally point at a binding that is not
+/// established yet. That is what tells a mutually recursive group apart from a
+/// use-before-definition; callers that only want the names ignore it.
+let freeNamesWith (reference: string -> bool -> unit) (guarded: bool) (bound: Set<string>) (expr: Expr) : unit =
+    let rec go (guarded: bool) (bound: Set<string>) (e: Expr) =
+        let sub = go guarded bound
+        let refer n = if not (Set.contains n bound) then reference n guarded
+
+        match e with
+        | EInt _
+        | EString _
+        | EChar _
+        | EQuotedSymbol _
+        | EKeyword _ -> ()
+        | EIdent(n, _) -> refer n
+        | ETuple(items, _)
+        | EList(items, _)
+        | EVec(items, _) -> List.iter sub items
+        | EApp(target, args, _) ->
+            sub target
+            List.iter sub args
+        | ECast(_, v, _) -> sub v
+
+        | ELet(n, isFun, args, _, value, body, _) ->
+            go (guarded || isFun) (if isFun then Set.union bound (Set.ofList args) else bound) value
+            go guarded (Set.add n bound) body
+
+        | ELetMono(n, value, body, _) ->
+            sub value
+            go guarded (Set.add n bound) body
+
+        | ELetRec(bindings, body, _) ->
+            let inner = bindings |> List.fold (fun acc (n, _, _, _, _) -> Set.add n acc) bound
+
+            for (_, isFun, args, _, value) in bindings do
+                go (guarded || isFun) (if isFun then Set.union inner (Set.ofList args) else inner) value
+
+            go guarded inner body
+
+        | ELetTuple(names, value, body, _) ->
+            sub value
+            go guarded (Set.union bound (Set.ofList names)) body
+
+        | ELetMutable(n, _, value, body, _) ->
+            sub value
+            go guarded (Set.add n bound) body
+
+        | ESet(n, value, _) ->
+            refer n
+            sub value
+
+        | EIf(c, t, f, _) ->
+            sub c
+            sub t
+            sub f
+        | EWhen(c, b, _, _) ->
+            sub c
+            sub b
+        | EFun(args, body, _, _) -> go true (Set.union bound (Set.ofList args)) body
+        | ERecordUpdate(n, fields, _) ->
+            refer n
+            fields |> List.iter (snd >> sub)
+        | EGetField(target, _, _) -> sub target
+
+        | EMatch(target, clauses, _) ->
+            sub target
+
+            for (pat, guard, body) in clauses do
+                let inner = Set.union bound (Set.ofList (patternBinders pat))
+                Option.iter (go guarded inner) guard
+                go guarded inner body
+
+        | ETryFinally(body, cleanup, _) ->
+            sub body
+            sub cleanup
+        | ETryCatch(body, _, _) -> sub body
+        // A `seq` body is deferred exactly as a lambda body is: nothing in it
+        // runs until the sequence is consumed.
+        | ESeq(body, _) -> go true bound body
+        // The operands are evaluated where the form is written; only the call
+        // is deferred. Guarded all the same, because the call is.
+        | EBjo(body, _)
+        | ETaskEvent(body, _) -> go true bound body
+        | EYield(v, _)
+        | EYieldFrom(v, _) -> sub v
+
+    go guarded bound expr
 
 /// Every expression held directly inside `e`.
 ///

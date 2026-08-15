@@ -514,16 +514,13 @@ let private wantedQueue = ResizeArray<Wanted>()
 /// Deliberately registry-free: this is consulted from `generalize`, which has no
 /// business being handed a queue, let alone an environment.
 let rec private metaIdsOf (t: HMType) : int list =
-    match t with
-    | TMeta m ->
-        match m.Value with
-        | Some inner -> metaIdsOf inner
-        | None -> [ m.Id ]
-    | TCon(_, args)
-    | TTuple args -> List.collect metaIdsOf args
-    | TFun(args, ret, _) -> (List.collect metaIdsOf args) @ metaIdsOf ret
-    | TAssoc(_, _, impl) -> metaIdsOf impl
-    | TVar _ -> []
+    t
+    |> foldType (function
+        | TMeta m ->
+            match m.Value with
+            | Some inner -> metaIdsOf inner
+            | None -> [ m.Id ]
+        | _ -> [])
 
 /// The holes an unresolved obligation of `kind` is still watching.
 ///
@@ -3050,8 +3047,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
             | None -> []
 
         // Match defun args with the signature types
-        let mandatoryArgNames =
-            defunArgs |> List.choose (function MandatoryArg n -> Some n | _ -> None)
+        let mandatoryArgNames = mandatoryNames defunArgs
         let keywordArgDefs =
             defunArgs |> List.choose (function KeywordArg(n, defaultExpr) -> Some(n, defaultExpr) | _ -> None)
         let restArgName =
@@ -3889,8 +3885,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                 (fun acc methodDecl ->
                     match methodDecl with
                     | DDefun(name, defunArgs, body, _, _) ->
-                        let paramNames =
-                            defunArgs |> List.choose (function MandatoryArg n -> Some n | _ -> None)
+                        let paramNames = mandatoryNames defunArgs
 
                         // Keyword and rest parameters would have to survive the
                         // splice as a calling convention, which a spliced body
