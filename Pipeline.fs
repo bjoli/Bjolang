@@ -81,25 +81,39 @@ let rec private collapseSynQuote (nodes: SExpr list) : SExpr list =
 let rec read (tokens: LexedToken list) : SExpr list * LexedToken list =
     let isDot = function SAtom { Token = Dot } -> true | _ -> false
 
-    /// Reads the body of a parenthesized form. A dot anywhere in the body makes
-    /// it a tuple regardless of how the form was introduced; otherwise the
-    /// caller decides what, if anything, to put at the head.
+    /// Reads the body of a bracketed form, up to its closing bracket, and puts
+    /// whatever `undotted` says at the head.
+    ///
+    /// With `dotMakesTuple`, a dot anywhere in the body makes the form a tuple
+    /// regardless of how it was introduced. Only `(...)` says so: inside `[...]`
+    /// and `{...}` a dot is an ordinary element, because a vec literal and a
+    /// comprehension are not spellings of a tuple.
     ///
     /// `startRange` opens the form and `rangeFrom` opens the range the result
     /// spans — they differ for a quoted list, where the quote comes first.
-    let readForm (startRange: Lexer.Range) (rangeFrom: Lexer.Range) (undotted: SExpr list -> SExpr list) rest =
+    let readForm
+        (dotMakesTuple: bool)
+        (startRange: Lexer.Range)
+        (rangeFrom: Lexer.Range)
+        (undotted: SExpr list -> SExpr list)
+        rest
+        =
         let innerNodes, afterList = read rest
         let endRange = if List.isEmpty afterList then startRange else (List.head afterList).Range
         let listRange = unionLexerRanges rangeFrom endRange
 
         let finalNodes =
-            if List.exists isDot innerNodes then
+            if dotMakesTuple && List.exists isDot innerNodes then
                 let tupleToken = { Token = Lexer.Symbol "Tuple"; Range = startRange }
                 SAtom tupleToken :: List.filter (not << isDot) innerNodes
             else
                 undotted innerNodes
 
         SList(finalNodes, listRange), afterList
+
+    /// Prepends a reserved head — `vec-literal`, `comprehension` — to a body.
+    let headed (name: string) (r: Lexer.Range) (innerNodes: SExpr list) =
+        SAtom { Token = Lexer.Symbol name; Range = r } :: innerNodes
 
     // Every level ends at one of these four, so collapsing here covers all of
     // them and nothing else has to know about `#'`.
@@ -112,16 +126,12 @@ let rec read (tokens: LexedToken list) : SExpr list * LexedToken list =
 
         // Quoted list: '(items...) → (quoted-list items...)
         | { Token = Quote; Range = qr } :: { Token = LParen; Range = r } :: rest ->
-            let withHead innerNodes =
-                let headToken = { Token = Lexer.Symbol "quoted-list"; Range = qr }
-                SAtom headToken :: innerNodes
-
-            let node, afterList = readForm r qr withHead rest
+            let node, afterList = readForm true r qr (headed "quoted-list" qr) rest
             loop (node :: acc) afterList
 
         // Function shorthand: #(+ &1 &2 5) → (fun (&1 &2) (+ &1 &2 5))
         | { Token = Hash; Range = hr } :: { Token = LParen; Range = r } :: rest ->
-            let bodySList, afterList = readForm r hr id rest
+            let bodySList, afterList = readForm true r hr id rest
             let argIndices = collectPositionalArgs bodySList
             let maxArg = if Set.isEmpty argIndices then 0 else Set.maxElement argIndices
             let paramNames = [ for i in 1 .. maxArg -> $"&{i}" ]
@@ -133,12 +143,12 @@ let rec read (tokens: LexedToken list) : SExpr list * LexedToken list =
         // Map shorthand: #map((k1 v1) (k2 v2) ...) or #map[(k1 v1) (k2 v2) ...]
         | { Token = Lexer.Symbol "#map"; Range = hr } :: { Token = LParen; Range = r } :: rest
         | { Token = Lexer.Symbol "#map"; Range = hr } :: { Token = LBracket; Range = r } :: rest ->
-            let entriesSList, afterList = readForm r hr id rest
+            let entriesSList, afterList = readForm true r hr id rest
             let mapSExpr = desugarMapLiteral hr entriesSList
             loop (mapSExpr :: acc) afterList
 
         | { Token = LParen; Range = r } :: rest ->
-            let node, afterList = readForm r r id rest
+            let node, afterList = readForm true r r id rest
             loop (node :: acc) afterList
 
         // Comprehension: {collector expr clause...} → (comprehension collector expr clause...)
@@ -146,20 +156,13 @@ let rec read (tokens: LexedToken list) : SExpr list * LexedToken list =
         // Read as an ordinary list under a reserved head, exactly as a vec
         // literal is; the parser is where it becomes a loop.
         | { Token = LBrace; Range = r } :: rest ->
-            let innerNodes, afterList = read rest
-            let endRange = if List.isEmpty afterList then r else (List.head afterList).Range
-            let listRange = unionLexerRanges r endRange
-            let headToken = { Token = Lexer.Symbol "comprehension"; Range = r }
-            loop (SList(SAtom headToken :: innerNodes, listRange) :: acc) afterList
+            let node, afterList = readForm false r r (headed "comprehension" r) rest
+            loop (node :: acc) afterList
 
         // Vec literal: [items...] → (vec-literal items...)
         | { Token = LBracket; Range = r } :: rest ->
-            let innerNodes, afterList = read rest
-            let endRange = if List.isEmpty afterList then r else (List.head afterList).Range
-            let listRange = unionLexerRanges r endRange
-            let headToken = { Token = Lexer.Symbol "vec-literal"; Range = r }
-            let finalNodes = SAtom headToken :: innerNodes
-            loop (SList(finalNodes, listRange) :: acc) afterList
+            let node, afterList = readForm false r r (headed "vec-literal" r) rest
+            loop (node :: acc) afterList
 
         | token :: rest -> loop (SAtom token :: acc) rest
 
@@ -177,45 +180,60 @@ let rec read (tokens: LexedToken list) : SExpr list * LexedToken list =
 /// Paths resolve relative to the directory of the file doing the including, so
 /// a chain of includes follows the files rather than the process's working
 /// directory.
-let rec private expandIncludes (activeFiles: string list) (filePath: string) (forms: SExpr list) : SExpr list =
+/// Returns the expanded forms and every file they came from, `filePath`
+/// included. The second half is what staleness is judged against: an included
+/// file is part of the module's source but is not the file the `.dll` is named
+/// after, so editing one has to force a rebuild just as editing the module
+/// itself does.
+let rec private expandIncludes
+    (activeFiles: string list)
+    (filePath: string)
+    (forms: SExpr list)
+    : SExpr list * Set<string> =
     let includedFrom (r: Lexer.Range) = Lexer.formatPos r
+    let mutable visited = Set.singleton filePath
 
-    forms
-    |> List.collect (fun form ->
-        match form with
-        | SList([ SAtom { Token = Lexer.Symbol "include" }; SAtom { Token = Lexer.StringLit rel } ], r) ->
-            let target =
-                Path.GetFullPath(Path.Combine(Path.GetDirectoryName(filePath: string), rel))
+    let expanded =
+        forms
+        |> List.collect (fun form ->
+            match form with
+            | SList([ SAtom { Token = Lexer.Symbol "include" }; SAtom { Token = Lexer.StringLit rel } ], r) ->
+                let target =
+                    Path.GetFullPath(Path.Combine(Path.GetDirectoryName(filePath: string), rel))
 
-            if List.contains target activeFiles then
-                let chain =
-                    (List.rev (target :: activeFiles))
-                    |> List.map Path.GetFileName
-                    |> String.concat " -> "
+                if List.contains target activeFiles then
+                    let chain =
+                        (List.rev (target :: activeFiles))
+                        |> List.map Path.GetFileName
+                        |> String.concat " -> "
 
+                    failwithf
+                        "Include Error: '%s' includes itself at %s. Include chain: %s"
+                        (Path.GetFileName target)
+                        (includedFrom r)
+                        chain
+
+                if not (File.Exists target) then
+                    failwithf
+                        "Include Error: cannot find '%s' included at %s (looked for %s)"
+                        rel
+                        (includedFrom r)
+                        target
+
+                let source = File.ReadAllText(target)
+                let innerForms, _ = Lexer.tokenize target source |> read
+                let inner, innerVisited = expandIncludes (target :: activeFiles) target innerForms
+                visited <- Set.union visited innerVisited
+                inner
+
+            | SList(SAtom { Token = Lexer.Symbol "include" } :: _, r) ->
                 failwithf
-                    "Include Error: '%s' includes itself at %s. Include chain: %s"
-                    (Path.GetFileName target)
+                    "Include Error: malformed include at %s. Expected (include \"path\")"
                     (includedFrom r)
-                    chain
 
-            if not (File.Exists target) then
-                failwithf
-                    "Include Error: cannot find '%s' included at %s (looked for %s)"
-                    rel
-                    (includedFrom r)
-                    target
+            | other -> [ other ])
 
-            let source = File.ReadAllText(target)
-            let innerForms, _ = Lexer.tokenize target source |> read
-            expandIncludes (target :: activeFiles) target innerForms
-
-        | SList(SAtom { Token = Lexer.Symbol "include" } :: _, r) ->
-            failwithf
-                "Include Error: malformed include at %s. Expected (include \"path\")"
-                (includedFrom r)
-
-        | other -> [ other ])
+    expanded, visited
 
 /// Reads the `BjolangInlineImpls` metadata back into declarations.
 ///
@@ -385,25 +403,6 @@ let private registerMacros
 
         Macro.install ()
 
-let resolveImportPath (basePath: string) (importSpec: ImportSpec) : string option =
-    match importSpec with
-    | RelativePath p -> 
-        let rawPath = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(basePath), p))
-        let dllPath = if rawPath.EndsWith(".bjo") then rawPath.Substring(0, rawPath.Length - 4) + ".dll" else rawPath + ".dll"
-        if System.IO.File.Exists(dllPath) then Some dllPath
-        else Some rawPath
-    | ModulePath p -> 
-        // Anchored to the installation, never to the working directory: a
-        // module import means the same file no matter where the compiler is
-        // invoked from, so the compiled standard library is always the one
-        // that gets linked instead of being rebuilt from source per caller.
-        let libPath = Paths.libDir
-        let relPath = Path.Combine(Array.ofList p)
-        let dllPath = Path.GetFullPath(Path.Combine(libPath, relPath + ".dll"))
-        let bjoPath = Path.GetFullPath(Path.Combine(libPath, relPath + ".bjo"))
-        if System.IO.File.Exists(dllPath) then Some dllPath
-        else Some bjoPath
-
 type LoadedModule = {
     FilePath: string
     ModuleName: string
@@ -423,27 +422,6 @@ type LoadedModule = {
 let mutable compileLibrary: string -> string =
     fun path -> failwithf $"No backend is installed to compile '%s{path}'."
 
-/// Every file spliced into `path` by an `(include ...)`, transitively.
-///
-/// Needed for staleness: an included file is part of the module's source but is
-/// not the file the `.dll` is named after, so editing one has to force a
-/// rebuild just as editing the module itself does.
-let rec private includedFiles (seen: Set<string>) (path: string) : Set<string> =
-    if Set.contains path seen || not (File.Exists path) then
-        seen
-    else
-        let seen = Set.add path seen
-        let forms, _ = Lexer.tokenize path (File.ReadAllText path) |> read
-
-        forms
-        |> List.fold
-            (fun acc form ->
-                match form with
-                | SList([ SAtom { Token = Lexer.Symbol "include" }; SAtom { Token = Lexer.StringLit rel } ], _) ->
-                    includedFiles acc (Path.GetFullPath(Path.Combine(Path.GetDirectoryName(path: string), rel)))
-                | _ -> acc)
-            seen
-
 /// The `.dll` for an imported `.bjo`, built if there is not a current one.
 ///
 /// `(import "x.bjo")` means a compiled unit, always. Merging the source into
@@ -452,35 +430,48 @@ let rec private includedFiles (seen: Set<string>) (path: string) : Set<string> =
 /// produced. Compiling it separately is also what makes `include` a distinct
 /// thing rather than a slower spelling of the same one.
 ///
-/// Staleness is by timestamp against the whole source closure. It is checked at
-/// all, which is new: `resolveImportPath` preferred any `.dll` that existed, so
-/// editing a library and rebuilding a program against it quietly linked the old
-/// one.
+/// Staleness is by timestamp against the whole source closure, which is what
+/// `expandIncludes` reports alongside the forms — the include walk is the only
+/// thing that knows what that closure is, so it is asked rather than repeated.
 let private ensureLibrary (bjoPath: string) : string =
     let dllPath = Path.ChangeExtension(bjoPath, ".dll")
 
     let upToDate =
         File.Exists dllPath
         && (let built = File.GetLastWriteTimeUtc dllPath
+            let forms, _ = Lexer.tokenize bjoPath (File.ReadAllText bjoPath) |> read
+            let _, sources = expandIncludes [ bjoPath ] bjoPath forms
 
-            includedFiles Set.empty bjoPath
-            |> Set.forall (fun src -> File.GetLastWriteTimeUtc src <= built))
+            sources |> Set.forall (fun src -> File.GetLastWriteTimeUtc src <= built))
 
     if upToDate then dllPath else compileLibrary bjoPath
 
 /// The path an import resolves to, which is always a `.dll`.
 ///
-/// `resolveImportPath` prefers an existing `.dll` and stops there, which is not
-/// enough: with a `.bjo` beside it, the source is the truth and the `.dll` may
-/// be behind it. A `.dll` with no source is a prebuilt library and is taken as
-/// given.
+/// Where a source file exists it is the truth, and the `.dll` beside it may be
+/// behind it — so the `.bjo` is what this looks for first, and `ensureLibrary`
+/// decides whether the built artefact is still current. A `.dll` with no source
+/// is a prebuilt library and is taken as given.
+///
+/// A module path anchors to the installation, never to the working directory: a
+/// module import means the same file no matter where the compiler is invoked
+/// from, so the compiled standard library is the one that gets linked instead
+/// of being rebuilt from source per caller.
 let private resolveDependency (basePath: string) (spec: ImportSpec) : string option =
-    resolveImportPath basePath spec
-    |> Option.map (fun resolved ->
-        let source =
-            if resolved.EndsWith ".dll" then Path.ChangeExtension(resolved, ".bjo") else resolved
+    let raw =
+        match spec with
+        | RelativePath p -> Path.GetFullPath(Path.Combine(Path.GetDirectoryName basePath, p))
+        | ModulePath parts ->
+            Path.GetFullPath(Path.Combine(Paths.libDir, Path.Combine(Array.ofList parts) + ".bjo"))
 
-        if source.EndsWith ".bjo" && File.Exists source then ensureLibrary source else resolved)
+    let bjoPath = if raw.EndsWith ".bjo" then raw else raw + ".bjo"
+    let dllPath = Path.ChangeExtension(bjoPath, ".dll")
+
+    if File.Exists bjoPath then Some(ensureLibrary bjoPath)
+    elif File.Exists dllPath then Some dllPath
+    // Neither is there. Answering with the path as written keeps an import that
+    // names a `.dll` outright working, and leaves the rest to fail by name.
+    else Some raw
 
 /// `(std prelude)`, which every program gets whether it asks or not.
 let private preludeSpec = ModulePath [ "std"; "prelude" ]
@@ -590,14 +581,18 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
                     noteAssemblyPath absPath
                     let asm = System.Reflection.Assembly.LoadFile(absPath)
                     let attr = asm.GetCustomAttributes(typeof<System.Reflection.AssemblyMetadataAttribute>, false)
-                    
-                    // Collect transitive DLL dependencies from BjolangDeps metadata
-                    let transitiveDeps =
+
+                    /// One `[AssemblyMetadata]` entry, if the assembly carries
+                    /// it. An older assembly simply has none, which is why
+                    /// every one of these is optional.
+                    let metadataValue (key: string) : string option =
                         attr
-                        |> Array.choose (fun a -> 
+                        |> Array.choose (fun a ->
                             let meta = a :?> System.Reflection.AssemblyMetadataAttribute
-                            if meta.Key = "BjolangDeps" then Some meta.Value else None)
+                            if meta.Key = key then Some meta.Value else None)
                         |> Array.tryHead
+
+                    let transitiveDeps = metadataValue "BjolangDeps"
                     // A transitive dependency is *linked*, not *imported*. Its
                     // assembly has to be referenced, because that is where the
                     // code of anything re-exported through this DLL actually
@@ -613,32 +608,19 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
                                 noteAssemblyPath depPath
                     | None -> ()
                     
-                    let exports =
-                        attr
-                        |> Array.choose (fun a -> 
-                            let meta = a :?> System.Reflection.AssemblyMetadataAttribute
-                            if meta.Key = "BjolangExports" then Some meta.Value else None)
-                        |> Array.tryHead
+                    let exports = metadataValue "BjolangExports"
 
                     // Inlineable method bodies, if this assembly published any.
-                    // An older assembly simply has none, and everything that
-                    // would have been inlined calls the landing pad instead.
+                    // Without them everything that would have been inlined
+                    // calls the landing pad instead.
                     let inlineImplDecls =
-                        attr
-                        |> Array.choose (fun a ->
-                            let meta = a :?> System.Reflection.AssemblyMetadataAttribute
-                            if meta.Key = "BjolangInlineImpls" then Some meta.Value else None)
-                        |> Array.tryHead
+                        metadataValue "BjolangInlineImpls"
                         |> Option.map (parseInlineImpls absPath)
                         |> Option.defaultValue []
 
                     // The macros this assembly publishes.
                     let macroEntries =
-                        attr
-                        |> Array.choose (fun a ->
-                            let meta = a :?> System.Reflection.AssemblyMetadataAttribute
-                            if meta.Key = "BjolangMacros" then Some meta.Value else None)
-                        |> Array.tryHead
+                        metadataValue "BjolangMacros"
                         |> Option.map (parseMacroEntries absPath)
                         |> Option.defaultValue []
 
@@ -704,7 +686,7 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
                     // Includes are spliced before anything looks at the forms, so
                     // an included file's own imports are picked up as this
                     // module's dependencies below.
-                    let forms = expandIncludes [ absPath ] absPath forms
+                    let forms, _ = expandIncludes [ absPath ] absPath forms
                     // The implicit `(import (std prelude))` goes on *after*
                     // includes are spliced: an included file's forms land in
                     // this module, so this module's one import covers them.

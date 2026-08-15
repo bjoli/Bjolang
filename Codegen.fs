@@ -387,16 +387,22 @@ type BlockTarget =
     /// that follow.
     | Effect
 
+/// How a type constructor is spelled in published metadata.
+///
+/// Intentionally the inverse of only part of `Inference.typeNameMap`: an entry
+/// added here changes what every `.dll` already on disk reads back as.
+let private shortPrimitiveName (name: string) : string =
+    match name with
+    | _ when name = TypeConstants.Int32Name -> "int"
+    | _ when name = TypeConstants.StringName -> "string"
+    | _ when name = TypeConstants.BooleanName -> "bool"
+    | _ when name = TypeConstants.VoidName -> "void"
+    | _ -> name
+
 let rec serializeHMType (t: HMType) : string =
     match t with
     | TCon (name, args) ->
-        let baseName = 
-            match name with
-            | _ when name = TypeConstants.Int32Name -> "int"
-            | _ when name = TypeConstants.StringName -> "string"
-            | _ when name = TypeConstants.BooleanName -> "bool"
-            | _ when name = TypeConstants.VoidName -> "void"
-            | _ -> name
+        let baseName = shortPrimitiveName name
         if args.IsEmpty then baseName
         else $"(%s{baseName} " + String.concat " " (List.map serializeHMType args) + ")"
     | TVar name -> name
@@ -432,13 +438,7 @@ let rec serializeTplType (implementorVar: string) (t: TplType) : string =
 
     match t with
     | TplCon(name, args) ->
-        let baseName =
-            match name with
-            | _ when name = TypeConstants.Int32Name -> "int"
-            | _ when name = TypeConstants.StringName -> "string"
-            | _ when name = TypeConstants.BooleanName -> "bool"
-            | _ when name = TypeConstants.VoidName -> "void"
-            | _ -> name
+        let baseName = shortPrimitiveName name
 
         if args.IsEmpty then baseName
         else $"(%s{baseName} " + String.concat " " (List.map go args) + ")"
