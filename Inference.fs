@@ -1025,10 +1025,7 @@ let private resolveExternMethod
     (clrType: System.Type)
     (argTypes: HMType list)
     : DotNetInterop.ResolvedCall =
-    if info.IsInstance then
-        DotNetInterop.resolveInstanceMethod where clrType info.MemberName argTypes
-    else
-        DotNetInterop.resolveStaticMethod where clrType info.MemberName argTypes
+    DotNetInterop.resolveMethod where (not info.IsInstance) clrType info.MemberName argTypes
 
 /// Resolve an extern call that threads the ambient cancellation token.
 ///
@@ -1265,7 +1262,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         let info = env.Registry.ClrClasses[alias]
         let where = Lexer.formatPos r
         let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrName
-        let memberType = DotNetInterop.resolveStaticMember where clrType memberName
+        let memberType = DotNetInterop.resolveMemberRead where clrType memberName true
 
         memberType,
         { Type = memberType
@@ -1306,7 +1303,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         // `TForeignStaticGet` emits the member access itself, so a property like
         // `DateTime.Now` still means "now" at each mention.
         | ExternGet when not info.IsInstance ->
-            let memberType = DotNetInterop.resolveStaticMember where clrType info.MemberName
+            let memberType = DotNetInterop.resolveMemberRead where clrType info.MemberName true
 
             memberType,
             { Type = memberType
@@ -1314,7 +1311,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
               Node = TForeignStaticGet(info.ClrType, info.MemberName, memberType) }
 
         | ExternGet ->
-            let memberType = DotNetInterop.resolveInstanceMember where clrType info.MemberName
+            let memberType = DotNetInterop.resolveMemberRead where clrType info.MemberName false
             let recv = Gensym.fresh "__foreign"
 
             let body: TypedExpr =
@@ -1575,7 +1572,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         | [ target ] ->
             let targetType, typedTarget = infer env target
             let clrTarget = receiverClrType where name targetType
-            let propType = DotNetInterop.resolveInstanceMember where clrTarget propName
+            let propType = DotNetInterop.resolveMemberRead where clrTarget propName false
 
             propType,
             { Type = propType
@@ -1601,7 +1598,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
             let typedArgs = rest |> List.map (infer env)
             let argTypes = typedArgs |> List.map fst
 
-            let resolved = DotNetInterop.resolveInstanceMethod where clrTarget methodName argTypes
+            let resolved = DotNetInterop.resolveMethod where false clrTarget methodName argTypes
 
             let coercedArgs =
                 reconcileForeignArgs env.Registry (typedArgs |> List.map snd) resolved.ParameterTypes
@@ -1709,7 +1706,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
                 failwithf
                     $"Type Error at %s{where}: '%s{name}' reads a property, so it takes exactly one argument — the object to read it from — but was given %d{args.Length}."
 
-            let memberType = DotNetInterop.resolveInstanceMember where clrType info.MemberName
+            let memberType = DotNetInterop.resolveMemberRead where clrType info.MemberName false
 
             match info.DeclaredType with
             | Some declared -> unify env.Registry declared (tfun [ receiverType ] memberType)

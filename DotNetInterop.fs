@@ -475,44 +475,36 @@ let private rejectSyncOverAsync (where: string) (t: Type) (name: string) : unit 
                 $"Type Error at %s{where}: '%s{name}' on a task blocks the thread it is called on, and inside a bjoroutine that is a thread-pool thread — which deadlocks or starves the pool depending on the host.\n  There is no sync-over-async in Bjolang, deliberately. Import the method with #:async instead: the call then *is* the result, suspension is invisible at the call site, and the pool thread goes back to the pool while the task is in flight (§7.2).\n  For genuinely synchronous work that has to block something, `(blocking (fun () ...))` moves it to a thread the pool can grow to replace."
         | _ -> ()
 
-/// Resolves `(.Name target args...)`.
-let resolveInstanceMethod (where: string) (targetType: Type) (name: string) (argTypes: HMType list) : ResolvedCall =
-    rejectSyncOverAsync where targetType name
-    let candidates = callableMethods targetType name instanceFlags
+/// Resolves `(.Name target args...)` when instance, or a static method named by
+/// `import/extern` when not.
+///
+/// `DeclaringType` is the type the lookup started from rather than the one that
+/// declares the method: an inherited method is still called through the target,
+/// and the field is only ever used for diagnostics and for static calls.
+let resolveMethod
+    (where: string)
+    (isStatic: bool)
+    (t: Type)
+    (name: string)
+    (argTypes: HMType list)
+    : ResolvedCall =
+    rejectSyncOverAsync where t name
+    let candidates = callableMethods t name (memberFlags isStatic)
 
     if candidates.IsEmpty then
-        failwithf
-            $"Type Error at %s{where}: '%s{targetType.FullName}' has no public instance method named '%s{name}'."
+        let kind = if isStatic then "static" else "instance"
 
-    let ps, m = selectOverload (describeMethod targetType name) where candidates argTypes
+        failwithf
+            $"Type Error at %s{where}: '%s{t.FullName}' has no public %s{kind} method named '%s{name}'."
+
+    let ps, m = selectOverload (describeMethod t name) where candidates argTypes
 
     { ParameterTypes = ps |> Array.map (fun p -> mapClrType p.ParameterType) |> Array.toList
       ReturnType = mapClrType m.ReturnType
       RawReturnType = m.ReturnType
-      // The *declaring* type rather than the target's: an inherited method is
-      // still called through the target, and this field is only ever used for
-      // diagnostics and for static calls.
-      DeclaringType = targetType.FullName
+      DeclaringType = t.FullName
       Name = name
-      IsStatic = false }
-
-/// Resolves a static method named by `import/extern`.
-let resolveStaticMethod (where: string) (declaringType: Type) (name: string) (argTypes: HMType list) : ResolvedCall =
-    rejectSyncOverAsync where declaringType name
-    let candidates = callableMethods declaringType name staticFlags
-
-    if candidates.IsEmpty then
-        failwithf
-            $"Type Error at %s{where}: '%s{declaringType.FullName}' has no public static method named '%s{name}'."
-
-    let ps, m = selectOverload (describeMethod declaringType name) where candidates argTypes
-
-    { ParameterTypes = ps |> Array.map (fun p -> mapClrType p.ParameterType) |> Array.toList
-      ReturnType = mapClrType m.ReturnType
-      RawReturnType = m.ReturnType
-      DeclaringType = declaringType.FullName
-      Name = name
-      IsStatic = true }
+      IsStatic = isStatic }
 
 // ---------------------------------------------------------------------------
 // Awaiting .NET
@@ -613,51 +605,33 @@ let resolveConstructor (where: string) (targetType: Type) (argTypes: HMType list
       Name = ".ctor"
       IsStatic = false }
 
-/// Resolves `(.-Name target)` — a property first, then a field.
+/// Resolves a member read — `(.-Name x)`, `Class.Member`, or a `#:get` import —
+/// as a property first, then a field, matching `resolveMemberWrite`.
 ///
 /// Both are read the same way in C#, so which one it turned out to be does not
-/// reach the code generator; only the type does.
-let resolveInstanceMember (where: string) (targetType: Type) (name: string) : HMType =
-    rejectSyncOverAsync where targetType name
+/// reach the code generator; only the type does. An enum member is a field, and
+/// its field type is the enum: `FileMode.Open` is a `FileMode`, not an `int`.
+let resolveMemberRead (where: string) (declaringType: Type) (name: string) (isStatic: bool) : HMType =
+    // Only for an instance read: a task is a value someone holds, and `.Result`
+    // on it is the sync-over-async that §7.5 has to make unreachable.
+    if not isStatic then
+        rejectSyncOverAsync where declaringType name
 
-    match targetType.GetProperty(name, instanceFlags) with
+    let flags = memberFlags isStatic
+    let kind = if isStatic then "static" else "instance"
+
+    match declaringType.GetProperty(name, flags) with
     | null ->
-        match targetType.GetField(name, instanceFlags) with
+        match declaringType.GetField(name, flags) with
         | null ->
             failwithf
-                $"Type Error at %s{where}: '%s{targetType.FullName}' has no public instance property or field named '%s{name}'."
+                $"Type Error at %s{where}: '%s{declaringType.FullName}' has no public %s{kind} property or field named '%s{name}'."
         | field -> mapClrType field.FieldType
     | prop ->
         if not prop.CanRead then
-            failwithf $"Type Error at %s{where}: '%s{targetType.FullName}.%s{name}' is write-only."
+            failwithf $"Type Error at %s{where}: '%s{declaringType.FullName}.%s{name}' is write-only."
 
         mapClrType prop.PropertyType
-
-/// Resolves `Class.Member` — a static field or property, which is how an enum
-/// value such as `FileMode.Open` is written.
-let resolveStaticMember (where: string) (declaringType: Type) (name: string) : HMType =
-    match declaringType.GetField(name, staticFlags) with
-    | null ->
-        match declaringType.GetProperty(name, staticFlags) with
-        | null ->
-            failwithf
-                $"Type Error at %s{where}: '%s{declaringType.FullName}' has no public static property or field named '%s{name}'."
-        | prop -> mapClrType prop.PropertyType
-    | field ->
-        // An enum member's field type is the enum, which is exactly what is
-        // wanted: `FileMode.Open` is a `FileMode`, not an `int`.
-        mapClrType field.FieldType
-
-/// Resolves a `#:get` import — a readable property or field, static or not.
-///
-/// The two existing readers stay as they are: they answer for `(.-Name x)` and
-/// `Class.Member`, each of which knows which half it is looking in. This one is
-/// told.
-let resolveMemberRead (where: string) (declaringType: Type) (name: string) (isStatic: bool) : HMType =
-    if isStatic then
-        resolveStaticMember where declaringType name
-    else
-        resolveInstanceMember where declaringType name
 
 /// Resolves a `#:set` import — a writable property or field, static or not.
 ///
