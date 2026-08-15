@@ -16,8 +16,8 @@ open Bjolang.TypedAST
 ///     faithfully preserve the wrong binding.
 ///   * `renameExpr`, over `TypedExpr`, is `LoopLowering`'s per-iteration
 ///     parameter copying, promoted out of that pass.
-///   * `uniquifyDecl` is the global cleanup pass that keeps C# from seeing two
-///     locals of one name in nested scopes.
+///   * `uniquifyProgram` is the global cleanup pass that keeps C# from seeing
+///     two locals of one name in nested scopes.
 ///
 /// Everything is parameterized over *which* binders to freshen rather than
 /// hardcoded to "all of them", so that hygienic macro expansion can reuse it.
@@ -42,24 +42,6 @@ let isRenamable (name: string) : bool =
 
 let private withoutKeys (names: string seq) (subst: Map<string, string>) =
     names |> Seq.fold (fun acc n -> Map.remove n acc) subst
-
-/// Every name a pattern binds.
-let rec patternBinders (pat: Pattern) : string list =
-    match pat with
-    | PWildcard _
-    | PInt _
-    | PString _
-    | PChar _
-    | PKeyword _
-    | PQuotedSymbol _ -> []
-    | PIdent(n, _) -> [ n ]
-    | PTypeTest(_, binder, _) -> Option.toList binder
-    | PList(items, tailOpt, _)
-    | PVec(items, tailOpt, _) ->
-        (items |> List.collect patternBinders)
-        @ (tailOpt |> Option.map patternBinders |> Option.defaultValue [])
-    | PTuple(items, _) -> items |> List.collect patternBinders
-    | PConstruct(_, args, _) -> args |> List.collect patternBinders
 
 let rec private renamePattern (subst: Map<string, string>) (pat: Pattern) : Pattern =
     match pat with
@@ -611,8 +593,6 @@ let rec uniquifyDeclWith (globals: Set<string>) (decl: TDecl) : TDecl =
     | TDefTuple(names, value, t, r) -> TDefTuple(names, inFunction globals Map.empty value, t, r)
     | TDefMutable(name, value, t, r) -> TDefMutable(name, inFunction globals Map.empty value, t, r)
     | _ -> decl
-
-let uniquifyDecl (decl: TDecl) : TDecl = uniquifyDeclWith (topLevelNames [ decl ]) decl
 
 let uniquifyProgram (decls: TDecl list) : TDecl list =
     let globals = topLevelNames decls

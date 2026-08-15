@@ -11,11 +11,6 @@ open Bjolang.Unification
 ///
 /// `TMatch` nodes are passed through untouched - pattern matching is emitted
 /// directly as C# patterns by the code generator.
-/// The name a devirtualized trait method call is emitted under. `Codegen`
-/// rewrites `::` to `.`, so this names the singleton's instance method.
-let implInstanceMethod (traitName: string) (targetTypeName: string) (methodName: string) =
-    implInstanceMethodName traitName targetTypeName methodName
-
 /// A name an inlined body was qualified with — `core_Module::helper` — pointing
 /// at the module that actually defines it.
 ///

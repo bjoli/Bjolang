@@ -11,25 +11,6 @@ let mergeVarUseMaps (a: Map<string, bool>) (b: Map<string, bool>) =
 
     Map.fold folder a b
 
-/// Extract all variable names bound by a pattern.
-let rec patternBoundNames (pat: Pattern) : string list =
-    match pat with
-    | PWildcard _ -> []
-    | PIdent(name, _) -> [ name ]
-    | PTypeTest(_, binder, _) -> Option.toList binder
-    | PInt _
-    | PString _
-    | PChar _
-    | PKeyword _
-    | PQuotedSymbol _ -> []
-    | PList(items, tail, _)
-    | PVec(items, tail, _) ->
-        let itemNames = List.collect patternBoundNames items
-        let tailNames = tail |> Option.map patternBoundNames |> Option.defaultValue []
-        itemNames @ tailNames
-    | PTuple(items, _) -> List.collect patternBoundNames items
-    | PConstruct(_, args, _) -> List.collect patternBoundNames args
-
 /// Walk an untyped Expr, returning free variables with their use classification.
 /// `isGuarded`: true when inside at least one lambda body.
 /// `bound`: variables bound in the current scope (to exclude from free vars).
@@ -117,7 +98,7 @@ let rec exprFreeVars (isGuarded: bool) (bound: Set<string>) (expr: Expr) : Map<s
         let cfvs =
             clauses
             |> List.map (fun (pat, guard, body) ->
-                let patBounds = patternBoundNames pat |> Set.ofList
+                let patBounds = patternBinders pat |> Set.ofList
                 let innerBound = Set.union bound patBounds
 
                 let gfv =

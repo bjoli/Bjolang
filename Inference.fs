@@ -80,15 +80,6 @@ let inferNumericType (value: string) : HMType =
     elif value.EndsWith("d") || value.EndsWith("D") || value.Contains(".") then TypeConstants.doubleType
     else TypeConstants.intType
 
-let rec applyTypeSubst (subst: Map<string, HMType>) (t: HMType) =
-    match t with
-    | TVar n -> match Map.tryFind n subst with Some t' -> t' | None -> t
-    | TCon(n, args) -> TCon(n, List.map (applyTypeSubst subst) args)
-    | TFun(args, ret, eff) -> TFun(List.map (applyTypeSubst subst) args, applyTypeSubst subst ret, eff)
-    | TTuple args -> TTuple(List.map (applyTypeSubst subst) args)
-    | TAssoc(tn, an, impl) -> TAssoc(tn, an, applyTypeSubst subst impl)
-    | _ -> t
-
 /// The environment slot a `seq` records its element type in, so that the
 /// `yield`s in its body have something to unify against.
 ///
@@ -405,7 +396,7 @@ let rec resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType 
                 failwithf $"Type alias {name} expects {typeParams.Length} arguments, but got {resolvedArgs.Length}"
             let normalizeParam (p: string) = if p.StartsWith("'") then p else "'" + p
             let subst = List.zip (typeParams |> List.map normalizeParam) resolvedArgs |> Map.ofList
-            applyTypeSubst subst t
+            substTypeVars subst t
         | None -> TCon(name, resolvedArgs)
 
 
@@ -534,39 +525,31 @@ let rec private metaIdsOf (t: HMType) : int list =
     | TAssoc(_, _, impl) -> metaIdsOf impl
     | TVar _ -> []
 
-/// The holes an unresolved *inline*-trait obligation is still watching.
+/// The holes an unresolved obligation of `kind` is still watching.
 ///
-/// A local helper written without a signature — `(defun (bump fa) (fmap fa inc))`
-/// — is let-polymorphic, so its parameter's metavariable used to be quantified
-/// the moment the binding was finished, long before any call site said what it
-/// was. Resolution then found a rigid type variable and reported that an
-/// inline-only trait cannot be used generically, which was true of the type it
-/// had just been given and false of the program that was written.
+/// For `InlineTrait`: a local helper written without a signature —
+/// `(defun (bump fa) (fmap fa inc))` — is let-polymorphic, so its parameter's
+/// metavariable used to be quantified the moment the binding was finished, long
+/// before any call site said what it was. Resolution then found a rigid type
+/// variable and reported that an inline-only trait cannot be used generically,
+/// which was true of the type it had just been given and false of the program
+/// that was written. Holding these back makes such a binding monomorphic, which
+/// is the only thing it can honestly be: one use site, one constructor,
+/// resolved and inlined.
 ///
-/// Holding these back makes such a binding monomorphic, which is the only thing
-/// it can honestly be: one use site, one constructor, resolved and inlined.
-let private heldByInlineWanteds () : Set<int> =
+/// For `InterfaceTrait`: held back for local bindings only. At the top level
+/// such an obligation is exactly the generic-receiver case the dictionary path
+/// handles, and holding it there would turn every constrained generic function
+/// monomorphic — but a top-level binding drains the queue before it generalizes
+/// anyway, so the two never meet.
+let private heldWanteds (kind: TraitKind) () : Set<int> =
     wantedQueue
-    |> Seq.filter (fun w -> w.Kind = InlineTrait && w.Ref.Resolved.IsNone)
+    |> Seq.filter (fun w -> w.Kind = kind && w.Ref.Resolved.IsNone)
     |> Seq.collect (fun w -> w.HoleArgs |> Seq.collect (fun (m, _) -> metaIdsOf m))
     |> Set.ofSeq
 
-do Unification.heldMetaIds <- heldByInlineWanteds
-
-/// The holes an unresolved *interface*-trait obligation is watching.
-///
-/// Held back for local bindings only. At the top level such an obligation is
-/// exactly the generic-receiver case the dictionary path handles, and holding
-/// it there would turn every constrained generic function monomorphic — but a
-/// top-level binding drains the queue before it generalizes anyway, so the two
-/// never meet.
-let private heldByInterfaceWanteds () : Set<int> =
-    wantedQueue
-    |> Seq.filter (fun w -> w.Kind = InterfaceTrait && w.Ref.Resolved.IsNone)
-    |> Seq.collect (fun w -> w.HoleArgs |> Seq.collect (fun (m, _) -> metaIdsOf m))
-    |> Set.ofSeq
-
-do Unification.heldLocalMetaIds <- heldByInterfaceWanteds
+do Unification.heldMetaIds <- heldWanteds InlineTrait
+do Unification.heldLocalMetaIds <- heldWanteds InterfaceTrait
 
 let private pushWanted (w: Wanted) = wantedQueue.Add w
 
@@ -768,7 +751,7 @@ let private traitCallType (env: Env) (traitName: string) (methodName: string) (r
                 |> List.map (fun a -> "'" + a, TAssoc(traitName, a, TVar implVar))
                 |> Map.ofList
 
-            let withAssoc = applyTypeSubst assocSubst sigType
+            let withAssoc = substTypeVars assocSubst sigType
 
             let vars =
                 implVar :: (freeTVars env.Registry withAssoc |> List.distinct |> List.filter ((<>) implVar))
@@ -776,7 +759,7 @@ let private traitCallType (env: Env) (traitName: string) (methodName: string) (r
             let subst = vars |> List.map (fun v -> v, freshMeta ()) |> Map.ofList
 
             // An implementor of arity zero is the hole, applied to nothing.
-            applyTypeSubst subst withAssoc, [ subst[implVar], [] ]
+            substTypeVars subst withAssoc, [ subst[implVar], [] ]
 
     let tref =
         { Trait = traitName
@@ -817,7 +800,7 @@ let private instantiateRecord
     let fieldSubst = List.zip tArgs freshVars |> Map.ofList
 
     let expectedFieldsInstantiated =
-        expectedFields |> List.map (fun (n, t) -> n, applyTypeSubst fieldSubst t) |> Map.ofList
+        expectedFields |> List.map (fun (n, t) -> n, substTypeVars fieldSubst t) |> Map.ofList
 
     instantiatedRecordType, expectedFields, expectedFieldsInstantiated
 
@@ -3636,7 +3619,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
 
         if kind = InterfaceTrait then
             for kvp in hmSignatures do
-                let methodTypeWithAssoc = applyTypeSubst assocSubst kvp.Value
+                let methodTypeWithAssoc = substTypeVars assocSubst kvp.Value
                 // Collect ALL free type variables from the method signature.
                 // The implementor var is always first; any additional vars (like 'acc)
                 // are method-level generics that must also be quantified.
@@ -3831,7 +3814,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                         |> List.filter (fun v -> not (Set.contains v classLevelVars))
                         |> List.map (fun v -> v, freshMeta())
                         |> Map.ofList
-                    let instantiatedSig = applyTypeSubst freshSubst expectedSignature
+                    let instantiatedSig = substTypeVars freshSubst expectedSignature
 
                     // Pass instantiatedSig through 'sigs'.
                     // This forces DDefun to unify the expected types into the arguments

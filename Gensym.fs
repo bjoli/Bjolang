@@ -29,5 +29,3 @@ let baseName (name: string) : string =
             name.Substring(0, i)
         else
             name
-
-let reset () = counter.Value <- 0

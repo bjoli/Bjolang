@@ -145,14 +145,6 @@ let main argv =
 
         printfn $"Compiling %s{inputFilePath}"
 
-        // 4. (Placeholder) Run your pipeline!
-        // let ast = Parser.parseFile inputFilePath
-        // let env, _, typedAst = TypedAST.checkProgram resolutionCtx ast
-        // let loweredDecls = ClosureConversion.convertProgram typedAst
-
-        // 5. Pass the isLibrary flag to the Emitter
-        // Emitter.compileAssembly outputFilePath options.IsLibrary loweredDecls
-        // here we should add the complation to a library
         let result = Pipeline.runFullFrontendPipeline inputFilePath
         match result with
         | Some (env, typedAst, dllDeps, declaredMacros) ->
@@ -520,18 +512,8 @@ let main argv =
                                 $"(: %s{name} %s{typeStr} %s{whereClause})"
                         | None -> ""
                         
-                    let rec serializeFType (ft: Parser.FType) : string =
-                        match ft with
-                        | Parser.TName(n, _) -> n
-                        | Parser.TApp(n, args, _) -> $"({n} " + String.concat " " (List.map serializeFType args) + ")"
-                        | Parser.TArrow(mandatory, keywords, restOpt, ret, colour, _) ->
-                            let mandatoryStrs = mandatory |> List.map serializeFType
-                            let keywordStrs = keywords |> List.map (fun (n, t) -> $"(#:{n} {serializeFType t})")
-                            let restStrs = match restOpt with Some t -> [$"#:rest {serializeFType t}"] | None -> []
-                            let allParts = mandatoryStrs @ keywordStrs @ restStrs @ [serializeFType ret]
-                            "(" + TypedAST.arrowHead (TypedAST.colourEffect colour) + " "
-                            + String.concat " " allParts + ")"
-                        
+                    let serializeFType = Codegen.serializeFType
+
                     let serializeTypeDef (td: Parser.TypeDef, isRec: bool) : string =
                         let quotedArgs = td.TypeArgs |> List.map (fun a -> if a.StartsWith("'") then a else "'" + a)
                         let typeArgsStr = if td.TypeArgs.IsEmpty then "" else " " + String.concat " " quotedArgs

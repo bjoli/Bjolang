@@ -96,8 +96,6 @@ let isMacro (name: string) =
     let known (n: string) = table.ContainsKey n || Set.contains n localMacros
     known name || known (Parser.headName name)
 
-let reset () = table.Clear()
-
 // ---------------------------------------------------------------------------
 // Marshalling
 // ---------------------------------------------------------------------------

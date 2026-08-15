@@ -132,10 +132,6 @@ let children (expr: TypedExpr) : TypedExpr list =
 let rec mapExpr (f: TypedExpr -> TypedExpr) (expr: TypedExpr) : TypedExpr =
     expr |> mapChildren (mapExpr f) |> f
 
-/// Deep, top-down rewrite: `f` is applied to the node first, then to its children.
-let rec mapExprTopDown (f: TypedExpr -> TypedExpr) (expr: TypedExpr) : TypedExpr =
-    f expr |> mapChildren (mapExprTopDown f)
-
 /// Deep pre-order fold over `expr` and all of its sub-expressions.
 let rec foldExpr (f: 'S -> TypedExpr -> 'S) (state: 'S) (expr: TypedExpr) : 'S =
     children expr |> List.fold (foldExpr f) (f state expr)

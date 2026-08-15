@@ -739,6 +739,24 @@ let exprRange (e: Expr) : Range =
     | EYield(_, r)
     | EYieldFrom(_, r) -> r
 
+/// Every name a pattern binds.
+let rec patternBinders (pat: Pattern) : string list =
+    match pat with
+    | PWildcard _
+    | PInt _
+    | PString _
+    | PChar _
+    | PKeyword _
+    | PQuotedSymbol _ -> []
+    | PIdent(n, _) -> [ n ]
+    | PTypeTest(_, binder, _) -> Option.toList binder
+    | PList(items, tailOpt, _)
+    | PVec(items, tailOpt, _) ->
+        (items |> List.collect patternBinders)
+        @ (tailOpt |> Option.map patternBinders |> Option.defaultValue [])
+    | PTuple(items, _) -> items |> List.collect patternBinders
+    | PConstruct(_, args, _) -> args |> List.collect patternBinders
+
 /// Every expression held directly inside `e`.
 ///
 /// Exhaustive on purpose: this is used to refuse a loop name outside tail
