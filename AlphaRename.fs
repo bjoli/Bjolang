@@ -80,7 +80,44 @@ let private renameWith
 
         renamed, subst'
 
-    let rec go (subst: Map<string, string>) (e: Expr) : Expr =
+    /// Binds a `defun` argument list, returning the rewritten list.
+    ///
+    /// A keyword parameter's name is left alone. It *is* the calling
+    /// convention — `Codegen` emits it as a C# named argument at every call
+    /// site — so renaming the parameter would rename only one end of it. It
+    /// still shadows an outer name of the same spelling, which is what dropping
+    /// it from the substitution does.
+    let rec bindArgs (args: DefunArg list) (subst: Map<string, string>) =
+        let renamable =
+            args
+            |> List.choose (function
+                | MandatoryArg(n, _)
+                | RestArg n -> Some n
+                | KeywordArg _ -> None)
+
+        let renamed, subst' = bind renamable subst
+
+        let subst' =
+            args
+            |> List.fold
+                (fun acc a ->
+                    match a with
+                    | KeywordArg(n, _) -> Map.remove n acc
+                    | _ -> acc)
+                subst'
+
+        let newName = System.Collections.Generic.Queue renamed
+
+        let args' =
+            args
+            |> List.map (function
+                | MandatoryArg(_, t) -> MandatoryArg(newName.Dequeue(), t)
+                | RestArg _ -> RestArg(newName.Dequeue())
+                | KeywordArg(n, d) -> KeywordArg(n, go subst' d))
+
+        args', subst'
+
+    and go (subst: Map<string, string>) (e: Expr) : Expr =
         let sub = go subst
         let reference n = Map.tryFind n subst |> Option.defaultValue n
 
@@ -98,7 +135,7 @@ let private renameWith
         | ELet(n, isFun, args, ann, value, body, r) ->
             // A function-shaped `let` is never self-recursive: `LetRecify` emits
             // one only for a singleton component with no self-edge.
-            let args', valueSubst = if isFun then bind args subst else args, subst
+            let args', valueSubst = if isFun then bindArgs args subst else args, subst
             let value' = go valueSubst value
             let names', bodySubst = bind [ n ] subst
             ELet(List.head names', isFun, args', ann, value', go bodySubst body, r)
@@ -116,7 +153,7 @@ let private renameWith
             let bindings' =
                 List.zip names' bindings
                 |> List.map (fun (n', (_, isFun, args, ann, value)) ->
-                    let args', valueSubst = if isFun then bind args groupSubst else args, groupSubst
+                    let args', valueSubst = if isFun then bindArgs args groupSubst else args, groupSubst
                     n', isFun, args', ann, go valueSubst value)
 
             ELetRec(bindings', go groupSubst body, r)
@@ -261,6 +298,55 @@ let rec private renameCore
 
         renamed, sc, sb
 
+    /// Binds a local function's parameters, returning the rewritten `LocalFun`.
+    ///
+    /// A keyword parameter's name is left alone, for the reason `isRenamable`
+    /// gives: it is emitted as a C# named argument at every call site, so
+    /// renaming the parameter would rename only one end of it.
+    let bindParams (fn: LocalFun) (scope: Set<string>) (subst: Map<string, string>) =
+        let keywordNames = fn.KeywordArgs |> List.map (fun (n, _, _) -> n) |> Set.ofList
+        let renamable = fn.Params |> List.filter (fun n -> not (Set.contains n keywordNames))
+        let renamed, scope', subst' = bind renamable scope subst
+        let subst' = keywordNames |> Set.fold (fun acc n -> Map.remove n acc) subst'
+        let newNames = List.zip renamable renamed |> Map.ofList
+        let renameParam n = Map.tryFind n newNames |> Option.defaultValue n
+
+        { Params = fn.Params |> List.map renameParam
+          KeywordArgs =
+            fn.KeywordArgs
+            |> List.map (fun (n, t, d) -> n, t, renameCore freshenBinder scope' subst' d)
+          RestArg = fn.RestArg |> Option.map (fun (n, t) -> renameParam n, t) },
+        scope',
+        subst'
+
+    /// Renames a function-shaped binding's value as one unit with its `LocalFun`.
+    ///
+    /// The parameters are bound *here* and the lambda is rebuilt with the names
+    /// that produced, rather than letting the `TLambda` case bind them again:
+    /// two binds mean two sets of fresh names, and the parameter list would then
+    /// be emitted under one of them and read under the other. Doing it here is
+    /// also the only way to reach the keyword defaults, which are scoped inside
+    /// the function but stored outside the lambda.
+    let renameFunValue
+        (isFun: bool)
+        (fn: LocalFun)
+        (scope: Set<string>)
+        (subst: Map<string, string>)
+        (value: TypedExpr)
+        =
+        if not isFun then
+            fn, renameCore freshenBinder scope subst value
+        else
+            let fn', vScope, vSubst = bindParams fn scope subst
+
+            let value' =
+                match value.Node with
+                | TLambda(_, lambdaBody) ->
+                    { value with Node = TLambda(fn'.Params, renameCore freshenBinder vScope vSubst lambdaBody) }
+                | _ -> renameCore freshenBinder vScope vSubst value
+
+            fn', value'
+
     let sub e = renameCore freshenBinder scope subst e
     let reference n = Map.tryFind n subst |> Option.defaultValue n
 
@@ -270,11 +356,10 @@ let rec private renameCore
         | TSet(n, v) -> TSet(reference n, sub v)
         | TRecordUpdate(n, fields) -> TRecordUpdate(reference n, fields |> List.map (fun (k, v) -> k, sub v))
 
-        | TLet(n, isFun, args, v, b) ->
-            let args', vScope, vSubst = if isFun then bind args scope subst else args, scope, subst
-            let v' = renameCore freshenBinder vScope vSubst v
+        | TLet(n, isFun, fn, v, b) ->
+            let fn', v' = renameFunValue isFun fn scope subst v
             let names', bScope, bSubst = bind [ n ] scope subst
-            TLet(List.head names', isFun, args', v', renameCore freshenBinder bScope bSubst b)
+            TLet(List.head names', isFun, fn', v', renameCore freshenBinder bScope bSubst b)
 
         | TLetRec(bindings, b) ->
             // Every name in the group is in scope in every value.
@@ -283,9 +368,9 @@ let rec private renameCore
 
             TLetRec(
                 List.zip names' bindings
-                |> List.map (fun (n', (_, isFun, args, v)) ->
-                    let args', vScope, vSubst = if isFun then bind args gScope gSubst else args, gScope, gSubst
-                    n', isFun, args', renameCore freshenBinder vScope vSubst v),
+                |> List.map (fun (n', (_, isFun, fn, v)) ->
+                    let fn', v' = renameFunValue isFun fn gScope gSubst v
+                    n', isFun, fn', v'),
                 renameCore freshenBinder gScope gSubst b
             )
 

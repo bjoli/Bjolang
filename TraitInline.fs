@@ -112,7 +112,7 @@ let rec private bindArguments
 
             { Type = inner.Type
               Range = arg.Range
-              Node = TLet(name, false, [], arg, inner) }
+              Node = TLet(name, false, noParams, arg, inner) }
 
 /// Reduces `((fun (x ...) body) a ...)` in place.
 ///

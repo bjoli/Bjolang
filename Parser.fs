@@ -103,12 +103,17 @@ and Expr =
     | EApp of Expr * Expr list * Range
     | ECast of FType * Expr * Range
     // ELet (name, isFun, args, typeAnn, value, restOfScope, range)
-    | ELet of string * bool * string list * FType option * Expr * Expr * Range
+    //
+    // `args` is empty unless `isFun`, in which case the binding is a local
+    // `defun` and takes the same argument grammar a top-level one does.
+    // `typeAnn` is whatever the source wrote after a colon: the value's own
+    // type for a `def`, and the *return* type for a `defun`.
+    | ELet of string * bool * DefunArg list * FType option * Expr * Expr * Range
     /// A binding that is deliberately *not* generalized (used for associated-type projections).
     | ELetMono of string * Expr * Expr * Range
     // ELetRec (bindings, restOfScope, range)
-    // binding tuple: (name, isFun, args, typeAnn, value)
-    | ELetRec of (string * bool * string list * FType option * Expr) list * Expr * Range
+    // binding tuple: (name, isFun, args, typeAnn, value), read as for `ELet`
+    | ELetRec of (string * bool * DefunArg list * FType option * Expr) list * Expr * Range
     | ELetTuple of string list * Expr * Expr * Range
     | ELetMutable of string * FType option * Expr * Expr * Range
     | ESet of string * Expr * Range
@@ -141,7 +146,9 @@ and Expr =
     | EYieldFrom of Expr * Range
 
 and DefunArg =
-    | MandatoryArg of string
+    /// A positional parameter, with the type `(: name type)` gave it if it was
+    /// written with one.
+    | MandatoryArg of string * FType option
     | KeywordArg of string * Expr              // (#:keyword defaultValue)
     | RestArg of string                        // #:rest name
 
@@ -154,8 +161,17 @@ and DefunArg =
 let mandatoryNames (args: DefunArg list) : string list =
     args
     |> List.choose (function
-        | MandatoryArg n -> Some n
+        | MandatoryArg(n, _) -> Some n
         | _ -> None)
+
+/// Every parameter name, in the order a call's arguments are laid out:
+/// mandatory, then keyword, then rest.
+let allArgNames (args: DefunArg list) : string list =
+    let pick f = args |> List.choose f
+
+    pick (function MandatoryArg(n, _) -> Some n | _ -> None)
+    @ pick (function KeywordArg(n, _) -> Some n | _ -> None)
+    @ pick (function RestArg n -> Some n | _ -> None)
 
 type ImportSpec =
     | RelativePath of string
@@ -568,20 +584,6 @@ let parseTypeDef (s: SExpr) : TypeDef =
           Range = r }
     | _ -> failwithf $"Invalid type definition at %s{Lexer.formatPos r}"
 
-let parseDefunArg (arg: SExpr) : (string * FType option) =
-    match arg with
-    | SAtom { Token = Symbol n } -> (n, None)
-    | SList([ SAtom { Token = Colon }; SAtom { Token = Symbol n }; t ], _) -> (n, Some(parseType t))
-    | _ -> failwith "Invalid defun argument"
-
-let parseDefunArgs (args: SExpr list) : (string * FType option) list = args |> List.map parseDefunArg
-
-let parseDefunRest (rest: SExpr list) : (FType option * SExpr list) =
-    match rest with
-    | SAtom { Token = Colon } :: t :: body -> (Some(parseType t), body)
-    | body -> (None, body)
-
-
 /// Desugars a syntax template `#'(if ,c ,t ,f)` into the `Syntax` value it
 /// describes.
 ///
@@ -799,7 +801,7 @@ let freeNamesWith (reference: string -> bool -> unit) (guarded: bool) (bound: Se
         | ECast(_, v, _) -> sub v
 
         | ELet(n, isFun, args, _, value, body, _) ->
-            go (guarded || isFun) (if isFun then Set.union bound (Set.ofList args) else bound) value
+            go (guarded || isFun) (if isFun then Set.union bound (Set.ofList (allArgNames args)) else bound) value
             go guarded (Set.add n bound) body
 
         | ELetMono(n, value, body, _) ->
@@ -810,7 +812,7 @@ let freeNamesWith (reference: string -> bool -> unit) (guarded: bool) (bound: Se
             let inner = bindings |> List.fold (fun acc (n, _, _, _, _) -> Set.add n acc) bound
 
             for (_, isFun, args, _, value) in bindings do
-                go (guarded || isFun) (if isFun then Set.union inner (Set.ofList args) else inner) value
+                go (guarded || isFun) (if isFun then Set.union inner (Set.ofList (allArgNames args)) else inner) value
 
             go guarded inner body
 
@@ -1190,7 +1192,7 @@ let rec parseExpr (s: SExpr) : Expr =
                     let argNames = parsedBindings |> List.map fst
                     let argVals = parsedBindings |> List.map snd
                     let body = parseBody bodyExprs listRange
-                    let funcBinding = (name, true, argNames, None, body)
+                    let funcBinding = (name, true, argNames |> List.map (fun n -> MandatoryArg(n, None)), None, body)
                     ELetRec([funcBinding], EApp(EIdent(name, r), argVals, r), r)
                 | _ -> failwith "Invalid let syntax"
 
@@ -2482,7 +2484,7 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
                     $"'%s{n}' at %s{Lexer.formatPos ir} is a (:with ...) variable, and a loop variable is not in scope after the loop: the finish block is reached from every exit, and an inner level's variables do not exist at an exit taken from an outer one. Carry it out with an accumulator — (:acc last (folding 0 %s{n})) — and name that in the '=>' instead."
             | EFun(args, body, _, _) -> go (Set.union bound (Set.ofList args)) body
             | ELet(n, _, args, _, value, body, _) ->
-                go (Set.union bound (Set.ofList args)) value
+                go (Set.union bound (Set.ofList (allArgNames args))) value
                 go (Set.add n bound) body
             | ELetMono(n, value, body, _) ->
                 sub value
@@ -2498,7 +2500,7 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
                     Set.union bound (bindings |> List.map (fun (n, _, _, _, _) -> n) |> Set.ofList)
 
                 for (_, _, args, _, v) in bindings do
-                    go (Set.union inner (Set.ofList args)) v
+                    go (Set.union inner (Set.ofList (allArgNames args))) v
 
                 go inner body
             | EMatch(target, clauses, _) ->
@@ -2801,13 +2803,15 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
                         r
                     ))
 
-            (lvl.Member, true, slotNames lvl.Index, None, body))
+            (lvl.Member, true, slotNames lvl.Index |> List.map (fun n -> MandatoryArg(n, None)), None, body))
 
     // The finish member. It calls nothing, so `LetRecify` gives it a component
     // of its own and it is bound ahead of the loop group rather than becoming a
     // case in the same switch — which costs one call on the way out and saves a
     // copy of the block at every other exit.
-    let members = members @ [ (exitName, true, accNames, None, finishBlockBody) ]
+    let members =
+        members
+        @ [ (exitName, true, accNames |> List.map (fun n -> MandatoryArg(n, None)), None, finishBlockBody) ]
 
     // In `slotNames 0`'s order: level 0's cursors, then its `:with` slots, then
     // the accumulators.
@@ -2838,6 +2842,37 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
         (fun (sn, (_, sequence, cr)) acc -> ELetMono(sn, parseExpr sequence, acc, cr))
         (List.zip levels[0].SeqNames levels[0].Fors)
         withCollectors
+
+/// The argument list of a `defun`, top-level or body-local.
+///
+/// One grammar for both. A local `defun` used to have an older, narrower one of
+/// its own, which accepted `(: name type)` and then discarded the type and
+/// refused keyword and rest arguments outright.
+and parseDefunArgs (args: SExpr list) : DefunArg list =
+    match args with
+    | [] -> []
+    | SAtom { Token = Symbol n } :: rest -> MandatoryArg(n, None) :: parseDefunArgs rest
+    // `(: name type)` — a parameter's type written at the parameter. A
+    // top-level `defun` normally takes its types from the signature declared
+    // beside it, and one written here has to agree with that.
+    | SList([ SAtom { Token = Colon }; SAtom { Token = Symbol n }; t ], _) :: rest ->
+        MandatoryArg(n, Some(parseType t)) :: parseDefunArgs rest
+    | SAtom { Token = Comma } :: rest -> parseDefunArgs rest
+    | SList(SAtom { Token = Keyword name } :: [ defaultExpr ], _) :: rest ->
+        KeywordArg(name, parseExpr defaultExpr) :: parseDefunArgs rest
+    | SAtom { Token = Keyword "rest" } :: SAtom { Token = Symbol name } :: rest ->
+        if not rest.IsEmpty then
+            failwithf $"Rest argument must be the last argument at %s{Lexer.formatPos (getRange (List.head rest))}"
+        [RestArg name]
+    | SAtom { Token = Keyword name } :: defaultExpr :: rest ->
+        KeywordArg(name, parseExpr defaultExpr) :: parseDefunArgs rest
+    | bad :: _ -> failwithf $"Invalid defun argument at %s{Lexer.formatPos (getRange bad)}"
+
+/// The optional `: type` between a `defun`'s arguments and its body.
+and parseDefunReturn (rest: SExpr list) : FType option * SExpr list =
+    match rest with
+    | SAtom { Token = Colon } :: t :: body -> Some(parseType t), body
+    | body -> None, body
 
 and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
     // The third renaming rule, for the heads this function consumes.
@@ -2878,11 +2913,10 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
                 $"Syntax Error at %s{Lexer.formatPos r}: a bjoroutine may only be defined at the top level, and '%s{name}' is inside a body. A local definition is compiled as a C# local function, which cannot suspend."
 
         | SList(SAtom { Token = Symbol "defun" } :: SList(SAtom { Token = Symbol name } :: args, _) :: rest, r) :: rest' ->
-            let argNames = parseDefunArgs args |> List.map fst
-            let _, bodyExprs = parseDefunRest rest
+            let parsedArgs = parseDefunArgs args
+            let retType, bodyExprs = parseDefunReturn rest
             let fBody = parseBody bodyExprs r
-            // isFun = true, args = argNames
-            collectDefs ((name, true, argNames, None, fBody) :: acc) rest'
+            collectDefs ((name, true, parsedArgs, retType, fBody) :: acc) rest'
 
         | _ -> (List.rev acc, remaining)
 
@@ -2955,21 +2989,7 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
 
     parseItems exprs
 
-// New defun arg parser for top-level defuns with keyword/rest support
-let rec parseNewDefunArgs (args: SExpr list) : DefunArg list =
-    match args with
-    | [] -> []
-    | SAtom { Token = Symbol n } :: rest -> MandatoryArg n :: parseNewDefunArgs rest
-    | SAtom { Token = Comma } :: rest -> parseNewDefunArgs rest
-    | SList(SAtom { Token = Keyword name } :: [ defaultExpr ], _) :: rest ->
-        KeywordArg(name, parseExpr defaultExpr) :: parseNewDefunArgs rest
-    | SAtom { Token = Keyword "rest" } :: SAtom { Token = Symbol name } :: rest ->
-        if not rest.IsEmpty then
-            failwithf $"Rest argument must be the last argument at %s{Lexer.formatPos (getRange (List.head rest))}"
-        [RestArg name]
-    | SAtom { Token = Keyword name } :: defaultExpr :: rest ->
-        KeywordArg(name, parseExpr defaultExpr) :: parseNewDefunArgs rest
-    | bad :: _ -> failwithf $"Invalid defun argument at %s{Lexer.formatPos (getRange bad)}"
+
 
 /// What a foreign import clause said, beyond its alias and target.
 ///
@@ -3248,12 +3268,11 @@ let rec parseDecl (s: SExpr) : Decl =
 
     | SList(SAtom { Token = Symbol(("defun" | "defbjo") as definer) } :: SList(SAtom { Token = Symbol name } :: args, _) :: rest, _) ->
         let colour = if definer = "defbjo" then Suspending else Ordinary
-        let parsedArgs = parseNewDefunArgs args
-        // Skip optional inline return type annotation (backward compat, ignored — type comes from signature)
-        let bodyExprs =
-            match rest with
-            | SAtom { Token = Colon } :: _ :: body -> body
-            | body -> body
+        let parsedArgs = parseDefunArgs args
+        // The return type is taken from the declared signature, which every
+        // top-level `defun` but `main` must have. One written here is accepted
+        // and ignored rather than checked against it.
+        let _, bodyExprs = parseDefunReturn rest
         DDefun(name, parsedArgs, parseBody bodyExprs r, colour, r)
     | SList(SAtom { Token = Symbol "type" } :: typeDefs, _) -> DType(List.map parseTypeDef typeDefs, r)
 
@@ -3456,7 +3475,7 @@ let parseDeclForms (s: SExpr) : Decl list =
             failwithf $"Invalid def/macro '%s{name}' at %s{Lexer.formatPos r}: it has no body."
 
         [ DSignature(name, macroTransformerType r, [], r)
-          DDefun(name, argNames |> List.map MandatoryArg, parseBody body r, Ordinary, r)
+          DDefun(name, argNames |> List.map (fun n -> MandatoryArg(n, None)), parseBody body r, Ordinary, r)
           DMacro(name, r) ]
 
     | SList(SAtom { Token = Symbol "def/macro" } :: _, r) ->

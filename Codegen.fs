@@ -512,6 +512,28 @@ and private serializeSeqPattern (head: string) items tailOpt =
 /// of mutable metavariable cells that mean nothing outside the compilation that
 /// made them, and re-inferring the body at the call site is exactly what gives
 /// the method a type its trait signature could not express.
+/// A local function's parameters, refused if they are anything a `(fun ...)`
+/// cannot say.
+///
+/// A keyword parameter is a calling convention and a spliced body carries no
+/// call to hold it. Refusing here rather than emitting something lossy is what
+/// keeps the round trip honest: `isSerializableTemplate` catches this, the
+/// template is simply not published, and the landing pad — always emitted —
+/// answers instead.
+let private serializableParams (args: Parser.DefunArg list) : string list =
+    let names = Parser.mandatoryNames args
+
+    if names.Length <> args.Length then
+        failwith "an inline template body may not contain a local function with keyword or rest parameters"
+
+    names
+
+/// Writes an untyped expression as source the reader accepts again.
+///
+/// The *untyped* expression is what an inline template stores: `HMType` is full
+/// of mutable metavariable cells that mean nothing outside the compilation that
+/// made them, and re-inferring the body at the call site is exactly what gives
+/// the method a type its trait signature could not express.
 let rec serializeExpr (e: Parser.Expr) : string =
     let list (parts: string list) = "(" + String.concat " " parts + ")"
 
@@ -533,7 +555,7 @@ let rec serializeExpr (e: Parser.Expr) : string =
 
     | Parser.ELet(n, isFun, args, ann, value, body, _) ->
         let valueStr =
-            if isFun then list [ "fun"; list args; serializeExpr value ]
+            if isFun then list [ "fun"; list (serializableParams args); serializeExpr value ]
             else serializeExpr value
 
         let annotated =
@@ -549,7 +571,7 @@ let rec serializeExpr (e: Parser.Expr) : string =
         let defs =
             bindings
             |> List.map (fun (n, isFun, args, _, value) ->
-                if isFun then list [ "defun"; list (n :: args); serializeExpr value ]
+                if isFun then list [ "defun"; list (n :: serializableParams args); serializeExpr value ]
                 else list [ "def"; n; serializeExpr value ])
 
         list ([ "let"; "()" ] @ defs @ [ serializeExpr body ])
@@ -960,6 +982,37 @@ let private castPromoted (ctx: CodegenContext) (t: HMType) (body: unit -> unit) 
 // ---------------------------------------------------------------------------
 // Expressions and statements
 // ---------------------------------------------------------------------------
+
+/// Emits a parameter list shared by module functions and trait-`impl` methods.
+let private generateParameterList
+    (ctx: CodegenContext)
+    (ownerName: string)
+    (args: (string * HMType) list)
+    (kwArgs: (string * HMType * TypedExpr) list)
+    (restArg: (string * HMType) option)
+    : unit =
+
+    let mutable paramIdx = 0
+
+    for (argName, argType) in args do
+        if paramIdx > 0 then append ctx ", "
+        append ctx (typeToString argType)
+        append ctx " "
+        append ctx (sanitizeIdent argName)
+        paramIdx <- paramIdx + 1
+
+    for (kwName, kwType, kwDefault) in kwArgs do
+        if paramIdx > 0 then append ctx ", "
+        append ctx $"BjolangRuntime.Option<{typeToString kwType}> "
+        append ctx $"__kw_{sanitizeIdent kwName}"
+        append ctx " = default"
+        paramIdx <- paramIdx + 1
+
+    match restArg with
+    | Some (restName, restElemType) ->
+        if paramIdx > 0 then append ctx ", "
+        append ctx $"params %s{typeToString restElemType}[] %s{sanitizeIdent restName}"
+    | None -> ()
 
 let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     match ctx.Prelude with
@@ -2053,22 +2106,22 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
                 expr.Range
                 "internal error: a function-body loop was emitted outside of a function body"
 
-    | TLet (name, isFun, _, value, body) ->
+    | TLet (name, isFun, fn, value, body) ->
         // `LetRecify` only emits `ELet` for a singleton component with no
         // self-edge, so a function-shaped binding here is always a
         // *non-recursive* local function and needs no loop.
         let asLocalFunction =
             if isFun then
                 match value.Node, value.Type with
-                | TLambda (lambdaArgs, lambdaBody), TFun (argTypes, retType, _) ->
-                    Some(lambdaArgs, argTypes, retType, lambdaBody)
+                | TLambda (_, lambdaBody), TFun (argTypes, retType, _) ->
+                    Some(argTypes, retType, lambdaBody)
                 | _ -> None
             else
                 None
 
         match asLocalFunction with
-        | Some (lambdaArgs, argTypes, retType, lambdaBody) ->
-            generateLocalFunction ctx name lambdaArgs argTypes retType lambdaBody value.Type
+        | Some (argTypes, retType, lambdaBody) ->
+            generateLocalFunction ctx name fn argTypes retType lambdaBody value.Type
         | None ->
             if isVoidType value.Type || name = "_" then
                 // `(begin a b)` is `TLet ("_", …, a, b)`: `a` runs, then `b`. The
@@ -2082,12 +2135,34 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
         generateBlock ctx target body
 
     | TLetRec (bindings, body) ->
-        // A group `LoopLowering` declined to turn into a loop: bindings that are
-        // not functions and so have nothing to jump to.
-        for (name, _, _, value) in bindings do
+        // A group `LoopLowering` declined to turn into a loop.
+        //
+        // A function-shaped member becomes a C# local function. They are
+        // mutually visible within the block whatever order they are emitted in,
+        // which is what a recursive group needs, and it is the only encoding
+        // that can carry a keyword or rest parameter — which is one of the
+        // reasons the promotion was declined.
+        //
+        // Anything else is a plain local, declared ahead of the group so that a
+        // member can name a sibling, and assigned in source order.
+        let isLocalFunction (_, isFun, _, (value: TypedExpr)) =
+            isFun
+            && (match value.Node with
+                | TLambda _ -> true
+                | _ -> false)
+
+        for (name, _, fn, value) in bindings |> List.filter isLocalFunction do
+            match value.Node, value.Type with
+            | TLambda(_, lambdaBody), TFun(argTypes, retType, _) ->
+                generateLocalFunction ctx name fn argTypes retType lambdaBody value.Type
+            | _ -> ()
+
+        let values = bindings |> List.filter (isLocalFunction >> not)
+
+        for (name, _, _, value) in values do
             indent ctx
             appendLine ctx $"{typeToString value.Type} {sanitizeIdent name} = default!;"
-        for (name, _, _, value) in bindings do
+        for (name, _, _, value) in values do
             generateBlock { ctx with Loop = None } (Assign(sanitizeIdent name)) value
         generateBlock ctx target body
 
@@ -2851,16 +2926,49 @@ and private generateMergedLoop (ctx: CodegenContext) (members: TLoopMember list)
                 append ctx (if owned.Contains slotName then sanitizeIdent slotName else "default!")
             appendLine ctx ");"
 
+/// Emits the prologue that turns keyword parameters back into ordinary locals.
+///
+/// A keyword parameter arrives as an `Option`, so that one omitted is
+/// distinguishable from one passed explicitly at its default value. Shared by
+/// methods and local functions, which take keyword arguments the same way
+/// because they are written the same way.
+and private generateKeywordPrologue (ctx: CodegenContext) (kwArgs: (string * HMType * TypedExpr) list) : unit =
+    for (kwName, kwType, kwDefault) in kwArgs do
+        let cType = typeToString kwType
+        let sName = sanitizeIdent kwName
+        indent ctx
+        appendLine ctx $"{cType} {sName};"
+        indent ctx
+        appendLine ctx $"if (__kw_{sName}.IsSome) {{"
+        withIndent ctx (fun c -> indent c; appendLine c $"{sName} = __kw_{sName}.Value;")
+        indent ctx
+        appendLine ctx "} else {"
+        withIndent ctx (fun c -> generateBlock c (Assign(sName)) kwDefault)
+        indent ctx
+        appendLine ctx "}"
+
 /// Emits a non-recursive local function.
+///
+/// A C# local function takes optional parameters and a `params` array just as a
+/// method does, so a local `defun` is emitted with the same calling convention
+/// a top-level one gets and the same emitter builds the parameter list.
 and private generateLocalFunction
     (ctx: CodegenContext)
     (name: string)
-    (lambdaArgs: string list)
+    (fn: LocalFun)
     (argTypes: HMType list)
     (retType: HMType)
     (lambdaBody: TypedExpr)
     (funType: HMType)
     : unit =
+
+    // The flat argument types are laid out mandatory, keyword, rest — the order
+    // `Params` is in — so the mandatory ones are whatever is left at the front.
+    let restCount = if fn.RestArg.IsSome then 1 else 0
+    let mandatoryCount = fn.Params.Length - fn.KeywordArgs.Length - restCount
+
+    let mandatory =
+        List.zip fn.Params argTypes |> List.truncate mandatoryCount
 
     // `collectTypeVars` knows nothing about what is already in scope, so a local
     // function over `Vec<'a>` inside a method generic in `'a` would emit
@@ -2880,54 +2988,21 @@ and private generateLocalFunction
     append ctx (sanitizeIdent name)
     append ctx tyParamsStr
     append ctx "("
-    for i, (argName, argType) in List.indexed (List.zip lambdaArgs argTypes) do
-        if i > 0 then append ctx ", "
-        append ctx (typeToString argType)
-        append ctx " "
-        append ctx (sanitizeIdent argName)
+    generateParameterList ctx name mandatory fn.KeywordArgs fn.RestArg
     appendLine ctx ") {"
     // A local function is a new function scope: it cannot jump into the
     // enclosing loop, nor yield into the enclosing sequence.
     withIndent
         { ctx with Loop = None; InSeq = false; ReturnsVoid = isVoidType retType }
-        (fun c -> generateBlock c Return lambdaBody)
+        (fun c ->
+            generateKeywordPrologue c fn.KeywordArgs
+            generateBlock c Return lambdaBody)
     indent ctx
     appendLine ctx "}"
 
 // ---------------------------------------------------------------------------
 // Declarations
 // ---------------------------------------------------------------------------
-
-/// Emits a parameter list shared by module functions and trait-`impl` methods.
-let private generateParameterList
-    (ctx: CodegenContext)
-    (ownerName: string)
-    (args: (string * HMType) list)
-    (kwArgs: (string * HMType * TypedExpr) list)
-    (restArg: (string * HMType) option)
-    : unit =
-
-    let mutable paramIdx = 0
-
-    for (argName, argType) in args do
-        if paramIdx > 0 then append ctx ", "
-        append ctx (typeToString argType)
-        append ctx " "
-        append ctx (sanitizeIdent argName)
-        paramIdx <- paramIdx + 1
-
-    for (kwName, kwType, kwDefault) in kwArgs do
-        if paramIdx > 0 then append ctx ", "
-        append ctx $"BjolangRuntime.Option<{typeToString kwType}> "
-        append ctx $"__kw_{sanitizeIdent kwName}"
-        append ctx " = default"
-        paramIdx <- paramIdx + 1
-
-    match restArg with
-    | Some (restName, restElemType) ->
-        if paramIdx > 0 then append ctx ", "
-        append ctx $"params %s{typeToString restElemType}[] %s{sanitizeIdent restName}"
-    | None -> ()
 
 /// Emits a whole method: signature, the keyword-parameter unwrap prologue, and
 /// the body. Shared by module-level functions and trait-`impl` methods, which
@@ -2970,25 +3045,7 @@ let private generateMethod
     let ctx = { ctx with ReturnsVoid = (effect = ESync && isVoidType retType) }
 
     withIndent ctx (fun c ->
-        // A keyword parameter arrives as an `Option`, so that an omitted one is
-        // distinguishable from one passed explicitly at its default value.
-        for (kwName, kwType, kwDefault) in kwArgs do
-            let c_type = typeToString kwType
-            let s_name = sanitizeIdent kwName
-            indent c
-            appendLine c $"{c_type} {s_name};"
-            indent c
-            appendLine c $"if (__kw_{s_name}.IsSome) {{"
-            withIndent c (fun c2 ->
-                indent c2; appendLine c2 $"{s_name} = __kw_{s_name}.Value;"
-            )
-            indent c
-            appendLine c "} else {"
-            withIndent c (fun c2 ->
-                generateBlock c2 (Assign(s_name)) kwDefault
-            )
-            indent c
-            appendLine c "}"
+        generateKeywordPrologue c kwArgs
         generateFunctionBody c body)
     indent ctx
     appendLine ctx "}"

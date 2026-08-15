@@ -1,0 +1,17 @@
+;; A parameter's type annotation on a body-local `defun` is checked.
+;;
+;; It used to be parsed and thrown away, so this program compiled: `n` was given
+;; a metavariable, the call pinned it to `string`, and the annotation said
+;; nothing about anything. A written type that means nothing is worse than no
+;; type at all, because it reads as a claim that was checked.
+
+;; EXPECT-ERROR: Type error: these types do not match.
+
+(import (std prelude))
+
+(defun (main)
+  (defun (twice (: n int))
+    (* n 2))
+
+  (println (int->string (twice "not an int")))
+  0)

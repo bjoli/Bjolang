@@ -241,11 +241,11 @@ let rec private lowerExpr (targets: LoopTarget list) (inTail: bool) (expr: Typed
         { expr with
             Node = TBjo(newScope b) }
 
-    | TLet(n, isFun, args, v, b) ->
+    | TLet(n, isFun, fn, v, b) ->
         let loweredValue = if isFun then newScope v else notTail v
 
         { expr with
-            Node = TLet(n, isFun, args, loweredValue, lowerExpr (shadow [ n ]) inTail b) }
+            Node = TLet(n, isFun, fn, loweredValue, lowerExpr (shadow [ n ]) inTail b) }
 
     | TLetRec(bindings, b) -> lowerLetRec targets inTail expr bindings b
 
@@ -259,13 +259,25 @@ and private lowerLetRec
     (targets: LoopTarget list)
     (inTail: bool)
     (expr: TypedExpr)
-    (bindings: (string * bool * string list * TypedExpr) list)
+    (bindings: (string * bool * LocalFun * TypedExpr) list)
     (body: TypedExpr)
     : TypedExpr =
 
-    let asFunction (_, _, _, (value: TypedExpr)) =
+    /// A member this group could jump to instead of calling.
+    ///
+    /// A keyword or rest parameter disqualifies one. A jump is positional — a
+    /// `TRecur`'s arguments line up with the slots by index — and a keyword
+    /// argument is exactly the thing that is *not* positional: an omitted one
+    /// has no slot to fill, and its default is written to be evaluated once in
+    /// the prologue rather than at every iteration. Such a member stays a C#
+    /// local function, where the calling convention is the parameter list's.
+    let asFunction (_, _, (fn: LocalFun), (value: TypedExpr)) =
         match value.Node, value.Type with
-        | TLambda(lambdaArgs, lambdaBody), TFun(argTypes, retType, _) when argTypes.Length = lambdaArgs.Length ->
+        | TLambda(lambdaArgs, lambdaBody), TFun(argTypes, retType, _) when
+            argTypes.Length = lambdaArgs.Length
+            && fn.KeywordArgs.IsEmpty
+            && fn.RestArg.IsNone
+            ->
             Some(lambdaArgs, argTypes, retType, lambdaBody)
         | _ -> None
 
@@ -277,7 +289,7 @@ and private lowerLetRec
 
     let renamedBindings =
         bindings
-        |> List.map (fun (n, isFun, args, v) -> renames[n], isFun, args, renameExpr renames v)
+        |> List.map (fun (n, isFun, fn, v) -> renames[n], isFun, fn, renameExpr renames v)
 
     let renamedBody = renameExpr renames body
 
@@ -289,7 +301,7 @@ and private lowerLetRec
             Node =
                 TLetRec(
                     renamedBindings
-                    |> List.map (fun (n, isFun, args, v) -> n, isFun, args, lowerExpr [] true v),
+                    |> List.map (fun (n, isFun, fn, v) -> n, isFun, fn, lowerExpr [] true v),
                     lowerExpr targets inTail renamedBody
                 ) }
     | true ->

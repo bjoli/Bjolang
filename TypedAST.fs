@@ -359,8 +359,9 @@ and TExprNode =
     | TSymbol of string
     /// A Unicode scalar value, as a codepoint.
     | TChar of int
-    | TLet of string * bool * string list * TypedExpr * TypedExpr
-    | TLetRec of (string * bool * string list * TypedExpr) list * TypedExpr
+    //     name     isFun  parameters  value        rest of scope
+    | TLet of string * bool * LocalFun * TypedExpr * TypedExpr
+    | TLetRec of (string * bool * LocalFun * TypedExpr) list * TypedExpr
     | TLetTuple of string list * TypedExpr * TypedExpr
     | TLambda of string list * TypedExpr
     | TApply of TypedExpr * TypedExpr list * (string * TypedExpr) list
@@ -493,6 +494,21 @@ and TMatchClause =
       Guard: TypedExpr option
       Body: TypedExpr }
 
+/// The parameters of a function-shaped local binding — a body-local `defun`, a
+/// named `let`, a lowered loop member.
+///
+/// A local `defun` takes the same argument grammar a top-level one does, so it
+/// needs the same three pieces `TDefun` carries. A binding that is not a
+/// function has `noParams`.
+and LocalFun =
+    { /// Every parameter, in the order the value's `TFun` lists their types:
+      /// mandatory first, then keyword, then rest.
+      Params: string list
+      /// Keyword parameters with their defaults, as `TDefun` records them.
+      KeywordArgs: (string * HMType * TypedExpr) list
+      /// The rest parameter and its *element* type.
+      RestArg: (string * HMType) option }
+
 /// Which trait a `TTraitCall` invokes, and — once the solver has said so —
 /// which implementation.
 ///
@@ -539,6 +555,14 @@ type TplType =
     /// the way through the registry would come back out as `ESync`.
     | TplFun of TplType list * TplType * Effect
     | TplTuple of TplType list
+
+/// What a binding that is not a function carries in place of parameters.
+let noParams: LocalFun = { Params = []; KeywordArgs = []; RestArg = None }
+
+/// Only mandatory parameters — a named `let`, a loop member, or a local `defun`
+/// that was written without keyword or rest arguments.
+let onlyParams (names: string list) : LocalFun =
+    { Params = names; KeywordArgs = []; RestArg = None }
 
 /// One "this type implements that trait" demand: on a function's signature, on
 /// an impl's `(where ...)`, or on a dictionary parameter derived from either.

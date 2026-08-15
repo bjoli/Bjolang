@@ -153,7 +153,7 @@ let rec letrecifyExpr (expr: Expr) : Expr =
         let edges =
             optBindings
             |> List.map (fun (n, isFun, args, _, e) ->
-                let boundInExpr = if isFun then Set.ofList args else Set.empty
+                let boundInExpr = if isFun then Set.ofList (allArgNames args) else Set.empty
                 let fvs = exprFreeVars isFun boundInExpr e
                 let localDeps = fvs |> Map.filter (fun k _ -> Set.contains k nodes)
                 (n, localDeps))

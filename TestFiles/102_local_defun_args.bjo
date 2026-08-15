@@ -1,0 +1,67 @@
+;; A body-local `defun` takes the same argument list a top-level one does.
+;;
+;; It used to have an older grammar of its own: it accepted `(: x type)` and a
+;; return-type annotation, discarded both, and refused keyword and rest
+;; arguments outright. There is one grammar now, so a function that has to move
+;; between the top level and a body does not have to be rewritten on the way.
+;;
+;; The one thing a local `defun` still does not take is a declared signature —
+;; it has nowhere to put one — so its parameter types come from the annotations
+;; written at the parameters, and from use.
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+(defun (main)
+  ;; A keyword parameter with a default, called both ways.
+  (defun (greet name #:greeting "hello")
+    (string-append greeting (string-append ", " name)))
+
+  (expect "keyword defaulted" (greet "world") "hello, world")
+  (expect "keyword supplied" (greet "world" #:greeting "hi") "hi, world")
+
+  ;; A default may read a parameter declared before it: it is evaluated in the
+  ;; function's own prologue, exactly as a top-level one is.
+  (defun (pad n #:fill (+ n 1))
+    (+ fill 1))
+
+  (expect "default reads an earlier parameter" (int->string (pad 3)) "5")
+  (expect "and is not evaluated when given" (int->string (pad 3 #:fill 10)) "11")
+
+  ;; A rest parameter, empty and not.
+  (defun (count-after first #:rest more)
+    (+ first (array-length more)))
+
+  (expect "rest parameter empty" (int->string (count-after 10)) "10")
+  (expect "rest parameter collects" (int->string (count-after 10 1 2 3)) "13")
+
+  ;; A parameter's type written at the parameter, and a return type written
+  ;; after the argument list. Both used to be parsed and thrown away.
+  (defun (twice (: n int)) : int
+    (* n 2))
+
+  (expect "annotated parameter and return type" (int->string (twice 21)) "42")
+
+  ;; A local function is still generalized over whatever the annotations leave
+  ;; open, and is still usable at two types.
+  (defun (fst a b) a)
+
+  (expect "polymorphic at int" (int->string (fst 1 "one")) "1")
+  (expect "polymorphic at string" (fst "two" 2) "two")
+
+  ;; Mutually recursive local functions, keyword parameters and all.
+  (defun (down-a n #:step 1)
+    (if (= n 0) "landed" (down-b (- n step))))
+  (defun (down-b n)
+    (if (= n 0) "landed" (down-a (- n 1))))
+
+  (expect "mutual recursion, keyword defaulted" (down-a 10) "landed")
+  (expect "mutual recursion, keyword supplied" (down-a 10 #:step 2) "landed")
+
+  0)

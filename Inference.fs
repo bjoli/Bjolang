@@ -1200,6 +1200,61 @@ let private joinLiteralElement
         failwithf
             $"Type Error at %s{Lexer.formatPos r}: nothing here says what this %s{kind} literal holds, and its elements do not agree on a type by themselves:\n  %s{shown[0]}\n  %s{shown[1]}\nA literal with a nested list among its elements stands for a union, and which union it stands for comes from the type expected where it is written. A generic parameter expects nothing in particular, so there is none: annotate the value and pass that, as in (def (: procs (List ProcList)) (list '(...)))."
 
+/// What a function-shaped local binding declares, before its body is looked at.
+///
+/// Built first so that a recursive call *inside* the body — one that passes a
+/// keyword argument, or leaves an optional one out — has metadata to resolve
+/// against. A top-level `defun` establishes its `FunMeta` before its body for
+/// exactly the same reason.
+type private LocalFunShape =
+    { Mandatory: (string * HMType) list
+      Keywords: (string * HMType * Expr) list
+      /// Name and *element* type; the parameter itself is an array of it.
+      Rest: (string * HMType) option
+      RetType: HMType
+      /// The flat arrow a call unifies against: mandatory, then keyword, then
+      /// the rest array. The layout a top-level `defun` builds, because the
+      /// same application rule reads it.
+      FunType: HMType
+      Meta: FunMeta }
+
+/// Reads a local `defun`'s argument list as types.
+///
+/// A local function has no declared signature to take them from, so a
+/// parameter's type is a metavariable unless `(: x type)` said otherwise, and
+/// the return type is whatever the body turns out to have unless `: type` did.
+let private localFunShape (env: Env) (args: DefunArg list) (retAnn: FType option) : LocalFunShape =
+    let annotated (ann: FType option) =
+        match ann with
+        | Some t -> resolveTypeAnnotation env.Registry t
+        | None -> freshMeta ()
+
+    let mandatory =
+        args |> List.choose (function MandatoryArg(n, t) -> Some(n, annotated t) | _ -> None)
+
+    let keywords =
+        args |> List.choose (function KeywordArg(n, d) -> Some(n, freshMeta (), d) | _ -> None)
+
+    let rest = args |> List.tryPick (function RestArg n -> Some(n, freshMeta ()) | _ -> None)
+    let retType = annotated retAnn
+
+    let argTypes =
+        (mandatory |> List.map snd)
+        @ (keywords |> List.map (fun (_, t, _) -> t))
+        @ (match rest with
+           | Some(_, t) -> [ TCon("Array", [ t ]) ]
+           | None -> [])
+
+    { Mandatory = mandatory
+      Keywords = keywords
+      Rest = rest
+      RetType = retType
+      FunType = tfun argTypes retType
+      Meta =
+        { MandatoryCount = mandatory.Length
+          KeywordParams = keywords |> List.map (fun (n, t, _) -> n, t)
+          RestParam = rest |> Option.map snd } }
+
 /// Infers a type, attaching a source location to any diagnostic that lacks one.
 ///
 /// `unify` is where most type errors are raised and it is given two types and
@@ -2184,47 +2239,36 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         bodyType,
         { Type = bodyType
           Range = r
-          Node = TLet(name, false, [], typedVal, typedBody) }
+          Node = TLet(name, false, noParams, typedVal, typedBody) }
 
     | ELet(name, isFun, args, typeAnn, value, body, r) ->
-        let valType, typedVal =
-            if isFun then
-                let argTypes = args |> List.map (fun _ -> freshMeta ())
+        // For a function-shaped binding `typeAnn` is the *return* type, and is
+        // already accounted for by the shape; for a value binding it is the
+        // binding's own type.
+        let shape = if isFun then Some(localFunShape env args typeAnn) else None
 
-                let localEnv =
-                    List.zip args argTypes
-                    |> List.fold
-                        (fun acc (n, t) ->
-                            addBinding
-                                n
-                                { Scheme = Scheme([], [], t)
-                                  IsMutable = false }
-                                acc)
-                        env
-
-                let bodyType, typedBody = infer localEnv value
-                let lambdaNode =
-                    ({ Type = tfun argTypes bodyType
-                       Range = r
-                       Node = TLambda(args, typedBody) } : TypedExpr)
-                tfun argTypes bodyType, lambdaNode
-            else
+        let valType, typedVal, localFun =
+            match shape with
+            | Some s ->
+                let lambda, lf = inferLocalFunBody env s args r value
+                s.FunType, lambda, lf
+            | None ->
                 // When the binding has a type annotation, resolve it first and
                 // pass it down as the expected type.  For list / vec literals
                 // this enables per-element constructor injection before any
                 // element-level unification can fail.
-                match typeAnn with
-                | Some tAnn ->
-                    let expectedType = resolveTypeAnnotation env.Registry tAnn
-                    inferChecked expectedType env value
-                | None ->
-                    infer env value
+                let t, typed =
+                    match typeAnn with
+                    | Some tAnn ->
+                        let expectedType = resolveTypeAnnotation env.Registry tAnn
+                        inferChecked expectedType env value
+                    | None -> infer env value
 
-        match typeAnn with
-        | Some tAnn ->
-            let expectedType = resolveTypeAnnotation env.Registry tAnn
-            unify env.Registry valType expectedType
-        | None -> ()
+                match typeAnn with
+                | Some tAnn -> unify env.Registry t (resolveTypeAnnotation env.Registry tAnn)
+                | None -> ()
+
+                t, typed, noParams
 
         // Only a *function*-shaped local binding is generalized.
         //
@@ -2241,16 +2285,57 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         let scheme =
             if isFun then generalizeLocal env valType
             else Scheme([], [], valType)
+
         let localEnv = addBinding name { Scheme = scheme; IsMutable = false } env
+
+        // Keyword and rest metadata travels with the name, or a call that
+        // passes a keyword argument — or omits an optional one — has nothing to
+        // resolve against and is checked against the flat arrow instead.
+        let localEnv =
+            match shape with
+            | Some s -> { localEnv with FunMetas = Map.add name s.Meta localEnv.FunMetas }
+            | None -> localEnv
+
         let bodyType, typedBody = infer localEnv body
 
         bodyType,
         { Type = bodyType
           Range = r
-          Node = TLet(name, isFun, args, typedVal, typedBody) }
+          Node = TLet(name, isFun, localFun, typedVal, typedBody) }
 
     | ELetRec(bindings, body, r) ->
         let bindingMetas = bindings |> List.map (fun (n, _, _, _, _) -> n, freshMeta ())
+
+        // Every member's shape is read before any body is checked. Two reasons,
+        // and they are the same reason at two scales: a mutually recursive
+        // group's earlier member has already said what this one's arguments
+        // are, and a body checked against bare metavariables is fatal rather
+        // than merely imprecise for an associated type — a projection needs a
+        // concrete head and cannot be deferred into a unification. A recursive
+        // call that passes a keyword argument needs the `FunMeta` for the same
+        // reason it does at the top level.
+        let shapes =
+            bindings
+            |> List.map (fun (_, isFun, args, typeAnn, _) ->
+                if isFun then Some(localFunShape env args typeAnn) else None)
+
+        List.iter2
+            (fun shape (_, expected) ->
+                match shape with
+                | Some(s: LocalFunShape) -> unify env.Registry s.FunType expected
+                | None -> ())
+            shapes
+            bindingMetas
+
+        let withMetas (start: Env) =
+            List.fold2
+                (fun (acc: Env) shape (n, _) ->
+                    match shape with
+                    | Some(s: LocalFunShape) -> { acc with FunMetas = Map.add n s.Meta acc.FunMetas }
+                    | None -> acc)
+                start
+                shapes
+                bindingMetas
 
         let recEnv =
             bindingMetas
@@ -2262,56 +2347,30 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
                           IsMutable = false }
                         acc)
                 env
+            |> withMetas
 
         let typedBindings =
-            bindings
-            |> List.mapi (fun i (name, isFun, args, typeAnn, expr) ->
-                let expectedType = snd bindingMetas[i]
+            List.zip3 bindings shapes bindingMetas
+            |> List.map (fun ((name, isFun, args, typeAnn, expr), shape, (_, expectedType)) ->
+                let valType, typedVal, localFun =
+                    match shape with
+                    | Some s ->
+                        let lambda, lf = inferLocalFunBody recEnv s args r expr
+                        s.FunType, lambda, lf
+                    | None ->
+                        let t, typed = infer recEnv expr
 
-                let valType, typedVal =
-                    if isFun then
-                        let argTypes = args |> List.map (fun _ -> freshMeta ())
+                        // A value binding's annotation is its own type. A
+                        // function's is its return type, and the shape has
+                        // already unified it with the body.
+                        match typeAnn with
+                        | Some tAnn -> unify env.Registry t (resolveTypeAnnotation env.Registry tAnn)
+                        | None -> ()
 
-                        // The member's *shape* is unified with whatever is known
-                        // of it before its body is checked, rather than only
-                        // after. In a mutually recursive group an earlier
-                        // member's call site has already said what this one's
-                        // arguments are, and a body that cannot see that is
-                        // checked against bare metavariables — which is fatal
-                        // rather than merely imprecise for an associated type,
-                        // since a projection needs a concrete head to resolve
-                        // against and cannot be deferred into a unification.
-                        unify env.Registry (tfun argTypes (freshMeta ())) expectedType
-
-                        let localEnv =
-                            List.zip args argTypes
-                            |> List.fold
-                                (fun acc (n, t) ->
-                                    addBinding
-                                        n
-                                        { Scheme = Scheme([], [], t)
-                                          IsMutable = false }
-                                        acc)
-                                recEnv
-
-                        let bodyType, typedBody = infer localEnv expr
-                        let lambdaNode =
-                            ({ Type = tfun argTypes bodyType
-                               Range = r
-                               Node = TLambda(args, typedBody) } : TypedExpr)
-                        tfun argTypes bodyType, lambdaNode
-                    else
-                        infer recEnv expr
+                        t, typed, noParams
 
                 unify env.Registry valType expectedType
-                
-                match typeAnn with
-                | Some tAnn ->
-                    let annType = resolveTypeAnnotation env.Registry tAnn
-                    unify env.Registry valType annType
-                | None -> ()
-                
-                name, isFun, args, typedVal)
+                name, isFun, localFun, typedVal)
 
         let finalEnv =
             List.zip bindings bindingMetas
@@ -2326,6 +2385,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
                           IsMutable = false }
                         acc)
                 env
+            |> withMetas
 
         let bodyType, typedBody = infer finalEnv body
 
@@ -2791,6 +2851,56 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
 /// injection for list and vec literals.  For any other expression shape the
 /// call degrades to a plain `infer` so the annotation is unified afterwards
 /// by the caller as usual.
+/// Checks a local function's body and its keyword defaults against the shape
+/// already read off its argument list.
+///
+/// The order is the one a top-level `defun` uses: the body first, in a scope
+/// holding every parameter, and then each default in the *mandatory*-argument
+/// scope extended by the keyword parameters before it. A default may therefore
+/// name an earlier parameter and not a later one, which is the only order that
+/// can be evaluated.
+and private inferLocalFunBody
+    (env: Env)
+    (shape: LocalFunShape)
+    (args: DefunArg list)
+    (r: Range)
+    (value: Expr)
+    : TypedExpr * LocalFun =
+
+    let bind name t acc =
+        addBinding name { Scheme = Scheme([], [], t); IsMutable = false } acc
+
+    let envWithMandatory = shape.Mandatory |> List.fold (fun acc (n, t) -> bind n t acc) env
+
+    let bodyEnv =
+        shape.Keywords |> List.fold (fun acc (n, t, _) -> bind n t acc) envWithMandatory
+
+    let bodyEnv =
+        match shape.Rest with
+        | Some(n, t) -> bind n (TCon("Array", [ t ])) bodyEnv
+        | None -> bodyEnv
+
+    let bodyType, typedBody = infer bodyEnv value
+    unify env.Registry bodyType shape.RetType
+
+    let typedKeywords, _ =
+        shape.Keywords
+        |> List.fold
+            (fun (acc, currentEnv) (n, t, defaultExpr) ->
+                let defaultType, typedDefault = infer currentEnv defaultExpr
+                unify env.Registry defaultType t
+                acc @ [ n, t, typedDefault ], bind n t currentEnv)
+            ([], envWithMandatory)
+
+    let paramNames = allArgNames args
+
+    { Type = shape.FunType
+      Range = r
+      Node = TLambda(paramNames, typedBody) },
+    { Params = paramNames
+      KeywordArgs = typedKeywords
+      RestArg = shape.Rest }
+
 and private inferChecked (expected: HMType) (env: Env) (expr: Expr) : HMType * TypedExpr =
     match expr, prune env.Registry expected with
     | EList(exprs, r), TCon("List", [ elemTy ]) ->
@@ -3062,6 +3172,18 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
             else
                 // For main or functions without TArrow signature, use fresh metas
                 mandatoryArgNames |> List.map (fun n -> n, freshMeta())
+
+        // A type written at the parameter, `(: x int)`, has to agree with the
+        // one the signature gives it. The body-local form has no signature and
+        // takes its parameter types from exactly here, so the annotation means
+        // the same thing in both places rather than being decoration in one.
+        List.iter2
+            (fun ann (_, t) ->
+                match ann with
+                | Some ft -> unify env.Registry t (resolveTypeAnnotation env.Registry ft)
+                | None -> ())
+            (defunArgs |> List.choose (function MandatoryArg(_, a) -> Some a | _ -> None))
+            mandatoryTypes
 
         // Resolve keyword arg types from signature and type-check defaults
         let keywordTypes =

@@ -197,6 +197,35 @@ A local helper that uses the *enclosing* function's constrained type variable is
 unaffected: that constraint belongs to the enclosing function and becomes its
 dictionary parameter, exactly as before.
 
+*** A local ~defun~ takes the same arguments as a top-level one
+Keyword parameters with defaults, a ~#:rest~ parameter, a type written at a
+parameter, and a return type after the argument list — one grammar, wherever the
+~defun~ is written:
+#+BEGIN_SRC scheme
+(defun (main)
+  (defun (greet name #:greeting "hello")
+    (string-append greeting (string-append ", " name)))
+
+  (defun (count-after first #:rest more)
+    (+ first (array-length more)))
+
+  (defun (twice (: n int)) : int
+    (* n 2))
+
+  (println (greet "world"))                ;; hello, world
+  (println (greet "world" #:greeting "hi"))) ;; hi, world
+#+END_SRC
+
+The one thing a local ~defun~ cannot have is a declared signature, because there
+is nowhere to put one. Its parameter types therefore come from the annotations
+written at the parameters and from use, rather than from a ~(: name ...)~ beside
+it — which is why an annotation there is worth writing, and is checked.
+
+A member with a keyword or rest parameter is not promoted to a loop. A jump is
+positional, and a keyword argument is exactly what is not; such a function stays
+a C# local function, where the parameter list *is* the calling convention. Deep
+tail recursion therefore wants a plain positional ~defun~ — or a ~loop~.
+
 *** Mutable bindings
 ~def/mutable~ declares a binding ~set!~ may write, at module level or inside a
 function.
