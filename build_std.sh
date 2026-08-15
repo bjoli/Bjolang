@@ -16,5 +16,8 @@ echo "Building standard library..."
 ./bjor --lib lib/std/prelude.bjo
 # `ports` imports `prelude`, so it comes last for the same reason.
 ./bjor --lib lib/std/ports.bjo
+# `stopwatch` imports both `prelude` and `syntax-match`, the latter because its
+# `time-it` is written with it.
+./bjor --lib lib/std/stopwatch.bjo
 
 echo "Standard library built successfully!"

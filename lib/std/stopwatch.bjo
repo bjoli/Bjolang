@@ -1,0 +1,39 @@
+(import (std prelude))
+(import (std syntax-match))
+
+(import/class
+  (Stopwatch (: System.Diagnostics.Stopwatch)))
+
+(export stopwatch stopwatch-start! stopwatch-stop! stopwatch-ms time-it)
+
+(: stopwatch (-> Stopwatch))
+(defun (stopwatch) (Stopwatch.))
+
+(: stopwatch-start! (-> Stopwatch void))
+(defun (stopwatch-start! sw)
+  (.Start sw))
+
+(: stopwatch-stop! (-> Stopwatch void))
+(defun (stopwatch-stop! sw)
+  (.Stop sw))
+
+(: stopwatch-ms (-> Stopwatch long))
+(defun (stopwatch-ms sw)
+  (.-ElapsedMilliseconds sw))
+
+
+;; `(time-it body ...)` — run the body, then say how long it took.
+;;
+;; The body's own value is dropped: this answers the elapsed time's `println`,
+;; not the body. Wrap the whole thing in a `def` if you want the value instead.
+(def/macro (time-it form inject compare)
+  (syntax-match form
+    ((_ first body ...)
+     #'(let ()
+         (def sw (stopwatch))
+         (stopwatch-start! sw)
+         ,first
+         ,@body
+         (stopwatch-stop! sw)
+         (println (str "Elapsed ms: " (->str (stopwatch-ms sw))))))
+    (bad (syntax-error bad "time-it takes a body: (time-it expr ...)"))))
