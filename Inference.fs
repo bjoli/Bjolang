@@ -3397,7 +3397,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
 
     // A macro is checked as the `defun` it also produced. This carries no body
     // and contributes nothing to the program's runtime shape, so it stops here;
-    // what an importing compilation reads is the assembly's `BjolangMacros`.
+    // what an importing compilation reads is the assembly's macro list.
     | DMacro _ -> env, sigs, []
     | DExport(names, r) -> env, sigs, [ TExport(names, r) ]
 

@@ -3428,7 +3428,7 @@ let builtinUnionCases: Map<string, UnionCaseInfo> =
     |> List.map (fun name -> name, { ParentTypeName = "Syntax"; IsDataCase = true })
     |> Map.ofList
 
-let generateProgram (exportMetadata: string) (inlineMetadata: string) (macroMetadata: string) (metadataDeps: string list) (linkedDlls: string list) (decls: TDecl list) : string =
+let generateProgram (metadata: ModuleMetadata.Metadata) (linkedDlls: string list) (decls: TDecl list) : string =
     let unionCases =
         decls
         |> collectDecls (function
@@ -3522,32 +3522,23 @@ let generateProgram (exportMetadata: string) (inlineMetadata: string) (macroMeta
     // already inside the metadata — which an inline template body carries as
     // soon as it mentions a string literal — into `\\"`, closing the C# literal
     // early and producing source that does not parse.
+    //
+    // A carriage return is escaped rather than dropped. Dropping one changed
+    // the length of a string the metadata format counts characters of, so a
+    // body containing `\r` made every value after it read at the wrong offset.
     let escapeAttribute (s: string) =
-        s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "")
+        s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r")
 
-    if not (String.IsNullOrWhiteSpace(exportMetadata)) then
-        let escapedMeta = escapeAttribute exportMetadata
-        appendLine ctx $"[assembly: System.Reflection.AssemblyMetadata(\"BjolangExports\", \"%s{escapedMeta}\")]"
+    // One attribute for all of it. The parts have different readers on the far
+    // side — a macro entry is read before the importing module is parsed, a
+    // signature long after — but they are written together because they are
+    // one version of one thing, and a reader that found three of four would
+    // have no way to say so.
+    if not (ModuleMetadata.isEmpty metadata) then
+        let escaped = escapeAttribute (ModuleMetadata.serialize metadata)
+        appendLine ctx $"[assembly: System.Reflection.AssemblyMetadata(\"BjolangMetadata\", \"%s{escaped}\")]"
 
-    // Kept in an attribute of its own rather than mixed into the exports: these
-    // are expressions, not declarations, and whoever reads them wants them
-    // whole rather than folded into the declaration parser.
-    if not (String.IsNullOrWhiteSpace(inlineMetadata)) then
-        let escapedInline = escapeAttribute inlineMetadata
-        appendLine ctx $"[assembly: System.Reflection.AssemblyMetadata(\"BjolangInlineImpls\", \"%s{escapedInline}\")]"
-
-    // Which of this assembly's methods are macro transformers. Read by an
-    // importing compilation *before* it parses its own source, which is the
-    // whole reason it is metadata rather than something derived from a
-    // signature.
-    if not (String.IsNullOrWhiteSpace(macroMetadata)) then
-        let escapedMacros = escapeAttribute macroMetadata
-        appendLine ctx $"[assembly: System.Reflection.AssemblyMetadata(\"BjolangMacros\", \"%s{escapedMacros}\")]"
     
-    if not metadataDeps.IsEmpty then
-        let depsStr = metadataDeps |> List.map System.IO.Path.GetFullPath |> String.concat ";"
-        appendLine ctx $"[assembly: System.Reflection.AssemblyMetadata(\"BjolangDeps\", \"%s{depsStr}\")]"
-        
     appendLine ctx ""
     // Only generate code for the main module (the last one)
     if not decls.IsEmpty then

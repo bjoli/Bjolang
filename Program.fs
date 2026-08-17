@@ -185,17 +185,18 @@ let main argv =
 
             printfn "Compilation succeeded. %d declarations." typedAst.Length
             
-            let exportMetadata, inlineMetadata, macroMetadata =
-                Exports.metadata env typedAst declaredMacros inputFilePath isLibrary
+            // Only a library records what it links. An executable is the end
+            // of the chain: nothing imports it, so nothing needs to find the
+            // assemblies behind it.
+            let metadata =
+                { Exports.metadata env typedAst declaredMacros inputFilePath isLibrary with
+                    Deps =
+                        if isLibrary then
+                            dllDeps |> List.map Path.GetFullPath
+                        else
+                            [] }
 
-            let csCode =
-                Codegen.generateProgram
-                    exportMetadata
-                    inlineMetadata
-                    macroMetadata
-                    (if isLibrary then dllDeps else [])
-                    dllDeps
-                    typedAst
+            let csCode = Codegen.generateProgram metadata dllDeps typedAst
             
             if options.Debug then
                 File.WriteAllText("ast_dump.txt", sprintf "%A" typedAst)

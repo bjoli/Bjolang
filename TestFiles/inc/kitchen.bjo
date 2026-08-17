@@ -1,0 +1,93 @@
+;; One of everything the module metadata can carry, in a single library.
+;;
+;; The format is written once and read once, so a field that survives here
+;; survives everywhere. What it has to carry that the emitted C# cannot say:
+;; the type of an exported binding, the keyword and rest parameters that are
+;; part of its calling convention, the types and constructors its signatures
+;; name, the traits and impls it dispatches through, the defaults an importer
+;; inherits, a body that may be spliced at a call site, the foreign import an
+;; overload was resolved against, and which names are macros.
+
+(export num-min tally-up count-extras bump reads make-crate crate-label unwrap
+        label shout wrap crate-of macro-helper)
+
+;; An overload set, so what crosses the boundary is the import rather than a
+;; signature: the importing module re-resolves it against the same metadata.
+(import/extern
+  (num-min (: System.Math.Min)))
+
+;; A union with both a data case and a simple one.
+(type (: (Crate %a) (Union (MkCrate %a) EmptyCrate)))
+
+;; A record, whose *fields* are the part worth publishing: without them
+;; `record-ref` on the type fails on the importing side.
+(type (: Tag (Record (: name string) (: rank int))))
+
+;; Keyword and rest parameters are calling convention rather than type, so both
+;; have to travel. One function each: a keyword parameter and a rest parameter
+;; on the *same* function does not compile within a module either, so it is not
+;; something the metadata could be asked to carry.
+(: tally-up (-> int (#:by int) int))
+(defun (tally-up n #:by 2)
+  (* n by))
+
+(: count-extras (-> int #:rest int int))
+(defun (count-extras n #:rest extras)
+  (+ n (array-length extras)))
+
+;; A mutable module binding is a field, not a copy: an importer that assigns
+;; through `bump` and reads `reads` has to see one cell.
+(: reads int)
+(def/mutable reads 0)
+
+(: bump (-> int))
+(defun (bump)
+  (set! reads (+ reads 1))
+  reads)
+
+(: make-crate (-> %a (Crate %a)))
+(defun (make-crate x)
+  (MkCrate x))
+
+(: unwrap (-> (Crate int) int))
+(defun (unwrap c)
+  (match c
+    ((MkCrate v) v)
+    (EmptyCrate 0)))
+
+(: crate-label (-> Tag string))
+(defun (crate-label t)
+  (record-ref t name))
+
+;; A trait carrying a default body, which travels with it so an importing
+;; module may write its own impl and inherit the default.
+(def/trait (Labelled %a)
+  (: label (-> %a string))
+  (: shout (-> %a string))
+  (defun (shout x) (string-append (label x) "!")))
+
+(def/impl (Labelled int)
+  (defun (label x) "int"))
+
+;; An *inline* trait. There is no `HMType` that could carry `('w 'a)`, so its
+;; hole arity and templated signatures travel as templates and are read back
+;; as such.
+(def/trait (Wrapper (%w %a))
+  (: wrap (-> %a (%w %a))))
+
+(def/impl (Wrapper (Crate %a))
+  (defun (wrap x) (MkCrate x)))
+
+(: crate-of (-> int (Crate int)))
+(defun (crate-of n)
+  (wrap n))
+
+(: macro-helper (-> int int))
+(defun (macro-helper x) (* x 3))
+
+;; A macro, which an importer has to know about before it parses a line of its
+;; own source.
+(def/macro (thrice form inject compare)
+  (match form
+    ((SList (Cons _ (Cons x Nil))) #'(macro-helper ,x))
+    (_ (syntax-error form "thrice takes one argument"))))

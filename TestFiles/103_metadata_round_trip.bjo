@@ -1,0 +1,66 @@
+;; Every kind of thing the module metadata carries, read back across a real
+;; assembly boundary.
+;;
+;; `inc/kitchen.bjo` exports one of each. This is the other side of the round
+;; trip: if a field is dropped or misread when the metadata is written or
+;; parsed, one of these stops compiling or stops agreeing.
+;; The library first, then the prelude. `kitchen` auto-exports `string-append`
+;; — it is a free name of an exported template, so it has to be reachable from
+;; here — and the later import is the one that wins, so `string-append` still
+;; means the prelude's.
+(import "inc/kitchen.bjo")
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; A type of this module's own implementing the imported trait, so the default
+;; body `shout` is the one that travelled with `Labelled`.
+(type (: Widget (Union widget)))
+
+(def/impl (Labelled Widget)
+  (defun (label x) "widget"))
+
+(defun (main)
+  ;; A plain exported function, and the union constructor its signature names.
+  (expect "unwrap" (int->string (unwrap (make-crate 7))) "7")
+
+  ;; Keyword and rest parameters are calling convention, not type: defaulted,
+  ;; passed, and a rest tail of three and of none.
+  (expect "kwargs default" (int->string (tally-up 5)) "10")
+  (expect "kwargs passed" (int->string (tally-up 5 #:by 3)) "15")
+  (expect "rest three" (int->string (count-extras 5 1 2 3)) "8")
+  (expect "rest none" (int->string (count-extras 5)) "5")
+
+  ;; A mutable module binding is one cell on both sides of the boundary.
+  (expect "mutable before" (int->string reads) "0")
+  (ignore (bump))
+  (ignore (bump))
+  (expect "mutable after" (int->string reads) "2")
+
+  ;; A trait method with an impl compiled in the library.
+  (expect "trait method" (label 3) "int")
+  ;; The default body, spliced here against this module's own type.
+  (expect "inherited default" (shout widget) "widget!")
+  ;; And the default at the library's own impl.
+  (expect "library default" (shout 3) "int!")
+
+  ;; An inline trait: hole arity and templated signature survived, so this
+  ;; splices rather than falling back.
+  (expect "inline impl" (int->string (unwrap (crate-of 9))) "9")
+
+  ;; The foreign import travelled as an import, so the overload set resolves
+  ;; here the same way it did there.
+  (expect "extern overload" (int->string (num-min 4 9)) "4")
+
+  ;; A macro the library published, known to be a macro before this file was
+  ;; parsed.
+  (expect "macro" (int->string (thrice 5)) "15")
+
+  (println "103 ok")
+  0)

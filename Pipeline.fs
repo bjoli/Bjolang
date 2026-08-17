@@ -235,52 +235,29 @@ let rec private expandIncludes
 
     expanded, visited
 
-/// Reads the `BjolangInlineImpls` metadata back into declarations.
+/// Reads one metadata entry back into a declaration.
 ///
-/// Each entry keeps the parameter names, the untyped body and the qualification
-/// map as three separate fields, exactly as they were written.
-let private parseInlineImpls (source: string) (metadata: string) : Decl list =
-    let forms, _ = Lexer.tokenize source metadata |> read
+/// Only the body needs parsing: everything else was a typed field, and the
+/// parameter names, the untyped body and the qualification map stay three
+/// separate things exactly as they were written.
+let private inlineImplDecl (source: string) (entry: ModuleMetadata.InlineTemplateEntry) : Decl =
+    let form =
+        match Lexer.tokenize source entry.Body |> read |> fst with
+        | [ form ] -> form
+        | _ ->
+            failwithf
+                $"Malformed inline template body in metadata for '%s{entry.TraitName}.%s{entry.MethodName}'."
 
-    forms
-    |> List.choose (fun form ->
-        match form with
-        | SList([ SAtom { Token = Lexer.Symbol "inline-impl" }
-                  SAtom { Token = Lexer.StringLit traitName }
-                  SAtom { Token = Lexer.StringLit methodName }
-                  SAtom { Token = Lexer.StringLit ctor }
-                  SAtom { Token = Lexer.StringLit originModule }
-                  SList(paramNodes, _)
-                  body
-                  SList(qualNodes, _) ],
-                r) ->
-            let parameters =
-                paramNodes
-                |> List.map (function
-                    | SAtom { Token = Lexer.Symbol p } -> p
-                    | bad -> failwithf $"Malformed inline template parameter in metadata at %s{Lexer.formatPos (getRange bad)}")
-
-            let qualification =
-                qualNodes
-                |> List.map (function
-                    | SList([ SAtom { Token = Lexer.StringLit name }; SAtom { Token = Lexer.StringLit emitted } ], _) ->
-                        name, emitted
-                    | bad ->
-                        failwithf $"Malformed inline template qualification in metadata at %s{Lexer.formatPos (getRange bad)}")
-
-            Some(
-                DInlineImpl(
-                    traitName,
-                    methodName,
-                    ctor,
-                    originModule,
-                    parameters,
-                    Parser.parseExpr body,
-                    qualification,
-                    r
-                )
-            )
-        | _ -> None)
+    DInlineImpl(
+        entry.TraitName,
+        entry.MethodName,
+        entry.Ctor,
+        entry.OriginModule,
+        entry.Params,
+        Parser.parseExpr form,
+        entry.Qualification,
+        getRange form
+    )
 
 // ---------------------------------------------------------------------------
 // Making a macro module's dependencies loadable
@@ -333,28 +310,6 @@ let private installAssemblyResolver () =
                 | None -> null)
         )
 
-/// One macro an assembly publishes: the Bjolang name, and the module that
-/// defines it.
-type MacroEntry = { Name: string; ModuleName: string }
-
-/// Reads the `BjolangMacros` metadata back.
-///
-/// Format is `(macro "name" "module")`, one per line. Deliberately not folded
-/// into `BjolangExports`: those entries are signatures, and this is read
-/// *before* the importing module is parsed — the expander has to know a name is
-/// a macro at the moment the parser meets it in head position.
-let private parseMacroEntries (source: string) (metadata: string) : MacroEntry list =
-    let forms, _ = Lexer.tokenize source metadata |> read
-
-    forms
-    |> List.choose (function
-        | SList([ SAtom { Token = Lexer.Symbol "macro" }
-                  SAtom { Token = Lexer.StringLit name }
-                  SAtom { Token = Lexer.StringLit moduleName } ],
-                _) -> Some { Name = name; ModuleName = moduleName }
-        | bad ->
-            failwithf $"Malformed macro entry in metadata at %s{Lexer.formatPos (getRange bad)}")
-
 /// Loads the transformers an imported assembly publishes and hands them to the
 /// expander.
 ///
@@ -366,7 +321,7 @@ let private parseMacroEntries (source: string) (metadata: string) : MacroEntry l
 /// has nowhere for rule two to resolve to.
 let private registerMacros
     (asm: System.Reflection.Assembly)
-    (entries: MacroEntry list)
+    (entries: ModuleMetadata.MacroEntry list)
     (decls: Decl list)
     : unit =
 
@@ -433,8 +388,18 @@ let mutable compileLibrary: string -> string =
 /// Staleness is by timestamp against the whole source closure, which is what
 /// `expandIncludes` reports alongside the forms — the include walk is the only
 /// thing that knows what that closure is, so it is asked rather than repeated.
+///
+/// The compiler counts as part of that closure. What a `.dll` carries for an
+/// importer is this compiler's metadata format, so one built by a different
+/// build of the compiler is out of date however new its source is — and the
+/// symptom otherwise is not a rebuild but an unbound variable, because
+/// unreadable metadata describes a module that exports nothing.
 let private ensureLibrary (bjoPath: string) : string =
     let dllPath = Path.ChangeExtension(bjoPath, ".dll")
+
+    let compilerBuilt =
+        let loc = System.Reflection.Assembly.GetExecutingAssembly().Location
+        if loc <> "" && File.Exists loc then File.GetLastWriteTimeUtc loc else DateTime.MinValue
 
     let upToDate =
         File.Exists dllPath
@@ -442,7 +407,8 @@ let private ensureLibrary (bjoPath: string) : string =
             let forms, _ = Lexer.tokenize bjoPath (File.ReadAllText bjoPath) |> read
             let _, sources = expandIncludes [ bjoPath ] bjoPath forms
 
-            sources |> Set.forall (fun src -> File.GetLastWriteTimeUtc src <= built))
+            compilerBuilt <= built
+            && sources |> Set.forall (fun src -> File.GetLastWriteTimeUtc src <= built))
 
     if upToDate then dllPath else compileLibrary bjoPath
 
@@ -582,9 +548,6 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
                     let asm = System.Reflection.Assembly.LoadFile(absPath)
                     let attr = asm.GetCustomAttributes(typeof<System.Reflection.AssemblyMetadataAttribute>, false)
 
-                    /// One `[AssemblyMetadata]` entry, if the assembly carries
-                    /// it. An older assembly simply has none, which is why
-                    /// every one of these is optional.
                     let metadataValue (key: string) : string option =
                         attr
                         |> Array.choose (fun a ->
@@ -592,86 +555,86 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
                             if meta.Key = key then Some meta.Value else None)
                         |> Array.tryHead
 
-                    let transitiveDeps = metadataValue "BjolangDeps"
+                    // An assembly with no Bjolang metadata at all exports
+                    // nothing and is a perfectly good thing to link — a
+                    // hand-written C# library is exactly that. One carrying
+                    // the attributes an older compiler wrote is a different
+                    // thing, and saying so beats reporting every name it was
+                    // meant to export as unbound.
+                    let meta =
+                        match metadataValue "BjolangMetadata" with
+                        | Some text -> ModuleMetadata.deserialize absPath text
+                        | None ->
+                            let legacyKeys =
+                                [ "BjolangExports"; "BjolangDeps"; "BjolangInlineImpls"; "BjolangMacros" ]
+
+                            if legacyKeys |> List.exists (metadataValue >> Option.isSome) then
+                                failwithf
+                                    $"'%s{absPath}' was built by an earlier version of the Bjolang compiler, whose metadata format this one does not read. Rebuild it with this compiler version."
+
+                            ModuleMetadata.empty
+
                     // A transitive dependency is *linked*, not *imported*. Its
                     // assembly has to be referenced, because that is where the
                     // code of anything re-exported through this DLL actually
                     // lives — but its exports are deliberately not parsed into
                     // the module graph. Only what this DLL exports or
                     // re-exports becomes visible to whoever imports it.
-                    match transitiveDeps with
-                    | Some depsStr ->
-                        for dep in depsStr.Split(';') do
-                            let depPath = dep.Trim()
-                            if depPath <> "" && System.IO.File.Exists(depPath) then
-                                dllDeps.Add(depPath) |> ignore
-                                noteAssemblyPath depPath
-                    | None -> ()
-                    
-                    let exports = metadataValue "BjolangExports"
+                    for depPath in meta.Deps do
+                        if depPath <> "" && File.Exists depPath then
+                            dllDeps.Add(depPath) |> ignore
+                            noteAssemblyPath depPath
 
                     // Inlineable method bodies, if this assembly published any.
                     // Without them everything that would have been inlined
                     // calls the landing pad instead.
                     let inlineImplDecls =
-                        metadataValue "BjolangInlineImpls"
-                        |> Option.map (parseInlineImpls absPath)
-                        |> Option.defaultValue []
+                        meta.InlineTemplates |> List.map (inlineImplDecl absPath)
 
-                    // The macros this assembly publishes.
-                    let macroEntries =
-                        metadataValue "BjolangMacros"
-                        |> Option.map (parseMacroEntries absPath)
-                        |> Option.defaultValue []
+                    // Foreign imports precede the traits: a trait's own
+                    // signature may name a type an `import/class` alias
+                    // introduced, and an impl's inline template may call an
+                    // `import/extern` one. Impls follow the traits they belong
+                    // to, because reading one back needs the trait registered.
+                    let declText =
+                        meta.TypeDecls @ meta.ExternDecls @ meta.TraitDecls @ meta.ImplDecls
+                        |> String.concat "\n"
 
-                    match exports with
-                    | Some metaStr ->
-                        let tokens, _ = Lexer.tokenize absPath metaStr |> read
-                        
-                        // Extract constraint info from S-expressions before parsing
-                        // Format: (: name type (where (trait var) ...))
-                        let extractConstraints (sexpr: SExpr) : (string * string) list =
-                            match sexpr with
-                            | SList(items, _) ->
-                                items |> List.tryPick (function
-                                    | SList(SAtom { Token = Lexer.Symbol "where" } :: constraintExprs, _) ->
-                                        constraintExprs |> List.choose (function
-                                            | SList([ SAtom { Token = Lexer.Symbol traitName }; SAtom { Token = Lexer.QuotedSymbol varName } ], _) ->
-                                                Some (traitName, "'" + varName)
-                                            | SList([ SAtom { Token = Lexer.Symbol traitName }; SAtom { Token = Lexer.Symbol varName } ], _) ->
-                                                Some (traitName, varName)
-                                            | _ -> None)
-                                        |> Some
-                                    | _ -> None)
-                                |> Option.defaultValue []
-                            | _ -> []
-                        
-                        // Build a map from name to constraints  
-                        let constraintMap =
-                            tokens |> List.choose (function
-                                | SList(SAtom { Token = Lexer.Colon } :: SAtom { Token = Lexer.Symbol name } :: _, _) as sexpr ->
-                                    let constraints = extractConstraints sexpr
-                                    if constraints.IsEmpty then None
-                                    else Some (name, constraints)
-                                | _ -> None)
-                            |> Map.ofList
-                        
-                        let parsedDecls = 
-                            Parser.parseModule tokens
+                    let declsFromText =
+                        if System.String.IsNullOrWhiteSpace declText then
+                            []
+                        else
+                            Lexer.tokenize absPath declText |> read |> fst |> Parser.parseModule
+
+                    // An exported binding becomes an extern: a name with a type
+                    // and no body, which is exactly what an importer can say
+                    // about it. The signature is rebuilt as source because a
+                    // type is stored as the syntax it was written in, and there
+                    // is one parser for that.
+                    let externDecls =
+                        meta.Defs
+                        |> List.collect (fun d ->
+                            let text =
+                                if d.ConstraintsText = "" then
+                                    $"(: %s{d.Name} %s{d.TypeText})"
+                                else
+                                    $"(: %s{d.Name} %s{d.TypeText} %s{d.ConstraintsText})"
+
+                            Lexer.tokenize absPath text
+                            |> read
+                            |> fst
+                            |> Parser.parseModule
                             |> List.map (function
-                                | DSignature(name, t, _, r) ->
-                                    let constraints = Map.tryFind name constraintMap |> Option.defaultValue []
-                                    DExtern(name, t, constraints, r)
-                                | d -> d)
-                        registerMacros asm macroEntries parsedDecls
-                        // No module dependencies: a DLL's transitive deps are
-                        // link-only and never enter the module graph. Inline
-                        // templates come last: registering one is meaningless
-                        // until the trait and impl it belongs to exist.
-                        parsedDecls @ inlineImplDecls, []
-                    | None ->
-                        registerMacros asm macroEntries []
-                        inlineImplDecls, []
+                                | DSignature(name, t, constraints, r) -> DExtern(name, t, constraints, r)
+                                | other -> other))
+
+                    let parsedDecls = declsFromText @ externDecls
+                    registerMacros asm meta.Macros parsedDecls
+                    // No module dependencies: a DLL's transitive deps are
+                    // link-only and never enter the module graph. Inline
+                    // templates come last: registering one is meaningless
+                    // until the trait and impl it belongs to exist.
+                    parsedDecls @ inlineImplDecls, []
                 else
                     // Reported rather than left to `File.ReadAllText`, whose
                     // `FileNotFoundException` is not a diagnostic and so prints

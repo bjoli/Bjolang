@@ -1,25 +1,26 @@
-/// The metadata a compiled module publishes about itself.
+/// Filling in what a compiled module publishes about itself.
 ///
-/// Three `[AssemblyMetadata]` strings, read back by `Pipeline` when somebody
-/// imports the resulting `.dll`. Between them they carry everything an importer
-/// needs that the emitted C# cannot express: the *types* of exported bindings,
-/// the traits and impls those bindings dispatch through, the foreign imports
-/// they resolve overloads against, the bodies that may be inlined at a call
-/// site, and the names that are macros rather than functions.
+/// The shape of it, and the reading and writing, are `ModuleMetadata`. This is
+/// where a module's typed AST and inference environment are turned into one:
+/// the *types* of exported bindings, the traits and impls those bindings
+/// dispatch through, the foreign imports they resolve overloads against, the
+/// bodies that may be inlined at a call site, and the names that are macros
+/// rather than functions.
 ///
 /// Only a library publishes any of it. An executable has no importer.
 module Bjolang.Exports
 
 open Bjolang
 
-/// `BjolangExports`, `BjolangInlineImpls`, `BjolangMacros`, in that order.
+/// Everything but `Deps`, which is the driver's to fill in: it knows what was
+/// linked, and this knows what was declared.
 let metadata
     (env: TypedAST.Env)
     (typedAst: TypedAST.TDecl list)
     (declaredMacros: string list)
     (inputFilePath: string)
     (isLibrary: bool)
-    : string * string * string =
+    : ModuleMetadata.Metadata =
     let exports =
         typedAst
         |> TypedAST.collectDecls (function
@@ -90,7 +91,7 @@ let metadata
     // The `import/extern` aliases this module has to publish.
     //
     // An alias is not a binding and has no signature, so neither
-    // `serializeExport` nor `autoExports` can carry one: what an
+    // `exportedDef` nor `autoExports` can carry one: what an
     // importer needs is the *import*, so that it resolves the overload
     // set against the same .NET metadata this module did.
     //
@@ -174,7 +175,7 @@ let metadata
             externsNamedByBodies.Length
             (externsNamedByBodies |> List.map fst |> String.concat ", ")
 
-    let exportMetadata =
+    let declMetadata =
         if isLibrary && (not exports.IsEmpty || not typesToExport.IsEmpty) then
             let quoted (name: string) = if name.StartsWith("'") then name else "'" + name
 
@@ -344,28 +345,31 @@ let metadata
 
                 $"(import/extern (%s{info.Alias} (: %s{info.ClrType}.%s{info.MemberName}%s{typeStr}%s{exceptionStr}%s{asyncStr}%s{uncancellableStr}%s{cancellableStr}%s{accessorStr})))"
 
-            /// `None` for a name with no binding to read a type off.
-            ///
-            /// The result is joined with newlines, so answering with an
-            /// empty string would publish a blank line and export
-            /// nothing — silently, which is the failure this shape
-            /// exists to make impossible.
-            let serializeExport name : string option =
+            /// `None` for a name with no binding to read a type off, so
+            /// that a name which cannot be described is dropped rather
+            /// than published as something the reader would have to
+            /// interpret.
+            let exportedDef name : ModuleMetadata.ExportedDef option =
                 Map.tryFind name env.Bindings
                 |> Option.map (fun b ->
                     let (TypedAST.Scheme(_, constraints, t)) = b.Scheme
-                    let typeStr = serializeSignature name t
 
-                    if constraints.IsEmpty then
-                        $"(: %s{name} %s{typeStr})"
-                    else
-                        let constraintStrs =
-                            constraints |> List.map (fun c ->
-                                let targetStr = Codegen.serializeHMType c.TargetType
-                                $"(%s{c.TraitName} %s{targetStr})")
+                    let constraintsText =
+                        if constraints.IsEmpty then
+                            ""
+                        else
+                            let constraintStrs =
+                                constraints |> List.map (fun c ->
+                                    let targetStr = Codegen.serializeHMType c.TargetType
+                                    $"(%s{c.TraitName} %s{targetStr})")
 
-                        let whereClause = "(where " + String.concat " " constraintStrs + ")"
-                        $"(: %s{name} %s{typeStr} %s{whereClause})")
+                            "(where " + String.concat " " constraintStrs + ")"
+
+                    ({ Name = name
+                       TypeText = serializeSignature name t
+                       ConstraintsText = constraintsText
+                       Origin = None }
+                    : ModuleMetadata.ExportedDef))
                 
             let serializeFType = Codegen.serializeFType
 
@@ -418,62 +422,42 @@ let metadata
             // gives it the associated types a bare signature cannot
             // express. Emitting a signature for it too would shadow
             // that binding with a weaker one on the importing side.
-            let sigsStr =
+            let defs =
                 (exports @ autoExports)
                 |> List.filter (fun name ->
                     not (Set.contains name exportedTraitMethods)
-                    // An alias is published as its import, just below. It
-                    // has no binding to read a type off, so leaving it in
-                    // here would emit a blank line and export nothing.
+                    // An alias is published as its import instead. It has
+                    // no binding to read a type off, so describing it here
+                    // would export nothing under a name that claims
+                    // otherwise.
                     && not (Set.contains name exportedExternAliases))
                 |> List.distinct
-                |> List.choose serializeExport
-                |> String.concat "\n"
+                |> List.choose exportedDef
 
-            let externsStr = externsToExport |> List.map serializeExtern |> String.concat "\n"
-            let typesStr = typesToExport |> List.map serializeTypeDef |> String.concat "\n"
+            let externDecls = externsToExport |> List.map serializeExtern
+            let typeDecls = typesToExport |> List.map serializeTypeDef
 
-            let traitsStr =
+            let traitDecls =
                 exportedTraits
                 |> Map.toList
                 |> List.map (fun (traitName, info) -> serializeTrait traitName info)
-                |> String.concat "\n"
 
             // Implementations follow the traits they belong to: reading
             // one back needs the trait already registered.
-            let implsStr =
+            let implDecls =
                 env.Registry.Implementations
                 |> Map.toList
                 |> List.filter (fun ((traitName, _), _) -> Map.containsKey traitName exportedTraits)
                 |> List.map (fun ((traitName, typeKey), (targetType, assocMap)) ->
                     serializeImpl traitName typeKey targetType assocMap)
-                |> String.concat "\n"
 
-            // Foreign imports precede the traits: a trait's own signature
-            // may name a type an `import/class` alias introduced, and an
-            // impl's inline template may call an `import/extern` one.
-            [ typesStr; externsStr; traitsStr; implsStr; sigsStr ]
-            |> List.filter (fun s -> not (System.String.IsNullOrWhiteSpace s))
-            |> String.concat "\n"
-        else ""
+            typeDecls, externDecls, traitDecls, implDecls, defs
+        else [], [], [], [], []
 
-    // Parameter names, body and qualification map as three distinct
-    // fields. Bundling the parameters and body into a lambda would be
-    // worse than redundant: `infer`'s `EFun` case binds each parameter
-    // to a fresh metavariable in a scope of its own, discarding exactly
-    // the concrete argument types the inliner supplies.
-    let inlineMetadata =
-        if isLibrary && not inlineTemplatesToExport.IsEmpty then
+    let inlineTemplates =
+        if isLibrary then
             inlineTemplatesToExport
             |> List.map (fun ((traitName, methodName, ctor), tpl) ->
-                let paramsStr = String.concat " " tpl.Params
-
-                let qualStr =
-                    tpl.Qualification
-                    |> Map.toList
-                    |> List.map (fun (name, emitted) -> $"(\"{name}\" \"{emitted}\")")
-                    |> String.concat " "
-
                 // Foreign aliases the body names are rewritten to the
                 // names they were published under, so that the splice
                 // resolves them where they were written rather than
@@ -483,14 +467,19 @@ let metadata
                         (bodyExternSubst (Set.ofList tpl.Params) tpl.Body)
                         tpl.Body
 
-                $"(inline-impl \"{traitName}\" \"{methodName}\" \"{ctor}\" \"{tpl.OriginModule}\" "
-                + $"({paramsStr}) {Codegen.serializeExpr body} ({qualStr}))")
-            |> String.concat "\n"
-        else ""
+                ({ TraitName = traitName
+                   MethodName = methodName
+                   Ctor = ctor
+                   OriginModule = tpl.OriginModule
+                   Params = tpl.Params
+                   Body = Codegen.serializeExpr body
+                   Qualification = tpl.Qualification |> Map.toList }
+                : ModuleMetadata.InlineTemplateEntry))
+        else []
 
     // The macros this assembly publishes, and the class holding them.
     //
-    // Kept out of `BjolangExports` deliberately: those entries are
+    // A separate field from the exported defs deliberately: those are
     // signatures, and a macro is not a binding an importer may call. An
     // importer needs one thing from this — that the name is a macro and
     // where the transformer lives — and reads it before it parses a
@@ -500,8 +489,8 @@ let metadata
     // because a macro that cannot be used from anywhere is the one thing
     // a macro cannot be: it is unusable in its own module by
     // construction.
-    let macroMetadata =
-        if isLibrary && not declaredMacros.IsEmpty then
+    let macros =
+        if isLibrary then
             // The Bjolang module name, not the C# class. The reader
             // needs both — the class to reflect on, and the module to
             // spell `Module_Module::helper` for a template that names
@@ -510,11 +499,21 @@ let metadata
             let moduleName = Naming.moduleNameOfPath inputFilePath
 
             declaredMacros
-            |> List.map (fun name -> $"(macro \"{name}\" \"{moduleName}\")")
-            |> String.concat "\n"
-        else ""
+            |> List.map (fun name ->
+                ({ Name = name; ModuleName = moduleName }: ModuleMetadata.MacroEntry))
+        else []
 
     if isLibrary && not declaredMacros.IsEmpty then
         printfn "Publishing %d macro(s): %s" declaredMacros.Length (String.concat ", " declaredMacros)
 
-    exportMetadata, inlineMetadata, macroMetadata
+    let typeDecls, externDecls, traitDecls, implDecls, defs = declMetadata
+
+    { Version = ModuleMetadata.currentVersion
+      Deps = []
+      TypeDecls = typeDecls
+      ExternDecls = externDecls
+      TraitDecls = traitDecls
+      ImplDecls = implDecls
+      Defs = defs
+      InlineTemplates = inlineTemplates
+      Macros = macros }

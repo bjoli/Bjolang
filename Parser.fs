@@ -269,8 +269,8 @@ type Decl =
     /// it at parse time rather than let anyone call it. It carries no body for
     /// the same reason: the body is the `DDefun`'s.
     ///
-    /// It does not survive type checking. What survives is the assembly's
-    /// `BjolangMacros` metadata, which is what an importing compilation reads.
+    /// It does not survive type checking. What survives is the macro list in
+    /// the assembly's metadata, which is what an importing compilation reads.
     | DMacro of string * Range
 
     // DImpl (TraitName, TargetType, AssociatedTypeBindings, Constraints, Methods, Range)
@@ -305,7 +305,7 @@ type Expansion =
 ///
 /// A mutable hook rather than a threaded context, for the same reason `Gensym`
 /// keeps one counter: `parseExpr` is a pure `SExpr -> Expr` called from several
-/// hundred places and from `Pipeline.parseInlineImpls`, which parses
+/// hundred places and from `Pipeline.inlineImplDecl`, which parses
 /// already-expanded metadata bodies and must keep working with no macros
 /// registered at all.
 let mutable expandHook: SExpr -> Expansion option = fun _ -> None
