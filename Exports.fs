@@ -349,6 +349,31 @@ let metadata
             /// that a name which cannot be described is dropped rather
             /// than published as something the reader would have to
             /// interpret.
+            /// Where an exported name really lives, when it is not here.
+            ///
+            /// Resolved through the import table, which already holds the
+            /// *ultimate* origin: an alias of an alias, or a facade in front of
+            /// a facade, was flattened when this module read its own imports.
+            /// So a chain of any length costs the consumer one qualified
+            /// reference and no forwarding method anywhere along it.
+            let originOf (name: string) : (string * string) option =
+                match Map.tryFind name env.Registry.ImportAliases with
+                | Some alias ->
+                    // An alias of one of this module's own definitions has no
+                    // module recorded, because inference could not name one
+                    // while the module was still being checked.
+                    let originModule =
+                        if alias.OriginModule = "" then
+                            Naming.moduleNameOfPath inputFilePath
+                        else
+                            alias.OriginModule
+
+                    if originModule = Naming.moduleNameOfPath inputFilePath && alias.OriginalName = name then
+                        None
+                    else
+                        Some(originModule, alias.OriginalName)
+                | None -> None
+
             let exportedDef name : ModuleMetadata.ExportedDef option =
                 Map.tryFind name env.Bindings
                 |> Option.map (fun b ->
@@ -368,7 +393,7 @@ let metadata
                     ({ Name = name
                        TypeText = serializeSignature name t
                        ConstraintsText = constraintsText
-                       Origin = None }
+                       Origin = originOf name }
                     : ModuleMetadata.ExportedDef))
                 
             let serializeFType = Codegen.serializeFType

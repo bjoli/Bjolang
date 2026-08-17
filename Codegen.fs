@@ -3484,8 +3484,14 @@ let generateProgram (metadata: ModuleMetadata.Metadata) (linkedDlls: string list
                     | TDefMutable (n, _, _, _) -> [ (n, (modName, n)) ]
                     | TDefTuple (names, _, _, _) -> names |> List.map (fun n -> (n, (modName, n)))
                     | TDefun (n, _, _, _, _, _, _, _, _) -> [ (n, (modName, n)) ]
-                    | TExtern (visible, original, _, _) when visible <> original ->
-                        [ (visible, (modName, original)) ]
+                    // An import whose spelling or whose home differs from what a
+                    // bare identifier would find: a modifier renamed it, or the
+                    // module publishing it was a facade and generated no code
+                    // for it at all.
+                    | TExtern (visible, origin, _, _) when
+                        visible <> origin.OriginalName || origin.OriginModule <> modName
+                        ->
+                        [ (visible, (origin.OriginModule, origin.OriginalName)) ]
                     | _ -> []
                 )
             | _ -> []

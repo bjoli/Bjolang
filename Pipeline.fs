@@ -475,8 +475,8 @@ let private applyDefRenaming (renaming: Map<string, string list>) (decls: Decl l
     decls
     |> List.collect (fun d ->
         match d with
-        | DExtern(name, original, t, constraints, r) ->
-            visible name |> List.map (fun v -> DExtern(v, original, t, constraints, r))
+        | DExtern(name, origin, t, constraints, r) ->
+            visible name |> List.map (fun v -> DExtern(v, origin, t, constraints, r))
         | DImportExtern(specs, r) ->
             let kept =
                 specs
@@ -565,7 +565,7 @@ let private registerMacros
         let exports =
             decls
             |> List.choose (function
-                | DExtern(_, original, _, _, _) -> Some original
+                | DExtern(_, origin, _, _, _) -> Some origin.OriginalName
                 | DDefun(n, _, _, _, _) -> Some n
                 | DDef(n, _, _) -> Some n
                 | DDefMutable(n, _, _) -> Some n
@@ -898,11 +898,28 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
                             |> fst
                             |> Parser.parseModule
                             |> List.map (function
-                                // Visible name and original agree here, and
-                                // that is the point of parsing once per path:
-                                // this is the module as it describes itself,
-                                // before any importer's modifiers.
-                                | DSignature(name, t, constraints, r) -> DExtern(name, name, t, constraints, r)
+                                // The visible name is the one this module
+                                // publishes, and that is the point of parsing
+                                // once per path: the module as it describes
+                                // itself, before any importer's modifiers.
+                                //
+                                // The origin is elsewhere only when this module
+                                // was a facade for the name — it then generated
+                                // no code for it, and an importer has to be
+                                // pointed at the module that did.
+                                | DSignature(name, t, constraints, r) ->
+                                    let origin =
+                                        match d.Origin with
+                                        | Some(originModule, originalName) ->
+                                            { OriginModule = originModule
+                                              OriginalName = originalName
+                                              Kind = AliasDef }
+                                        | None ->
+                                            { OriginModule = ""
+                                              OriginalName = name
+                                              Kind = AliasDef }
+
+                                    DExtern(name, origin, t, constraints, r)
                                 | other -> other))
 
                     let parsedDecls = declsFromText @ externDecls
@@ -1130,7 +1147,8 @@ let private moduleOfName (decls: TypedAST.TDecl list) : Map<string, string * str
                 | TypedAST.TDef(n, _, _, _) -> Some(n, (modName, n))
                 | TypedAST.TDefMutable(n, _, _, _) -> Some(n, (modName, n))
                 | TypedAST.TDefun(n, _, _, _, _, _, _, _, _) -> Some(n, (modName, n))
-                | TypedAST.TExtern(visible, original, _, _) -> Some(visible, (modName, original))
+                | TypedAST.TExtern(visible, origin, _, _) ->
+                    Some(visible, (origin.OriginModule, origin.OriginalName))
                 | _ -> None)
         | _ -> [])
     |> Map.ofList

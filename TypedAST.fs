@@ -603,15 +603,6 @@ type ImplTarget =
 [<Literal>]
 let BlanketCtor = "*"
 
-/// Where a visible name really comes from.
-///
-/// `OriginModule` is `""` for a compiler builtin, which has no module class to
-/// qualify to; codegen then emits the original name bare.
-type ImportAlias =
-    { OriginModule: string
-      OriginalName: string
-      Kind: AliasKind }
-
 type TDecl =
     | TImport of ImportSpec list * Range
     /// A second spelling of an existing binding or macro. It emits no C# of its
@@ -635,9 +626,9 @@ type TDecl =
     | TTrait of string * string * TraitKind * int * string list * Map<string, HMType> * Range
     //        traitName  kind        holeArity  targetType  assocBindings           dictFields              methods
     | TImpl of string * TraitKind * int * HMType * (string * HMType) list * (string * HMType) list * TDecl list * Range
-    /// TExtern (VisibleName, OriginalName, Type, Range). The two differ when
-    /// the import that brought the name in carried a modifier.
-    | TExtern of string * string * FType * Range
+    /// TExtern (VisibleName, Origin, Type, Range). The origin's module is
+    /// filled in by then, so it is never `""`.
+    | TExtern of string * ImportAlias * FType * Range
     /// `(import/extern ...)` and `(import/class ...)`. Both are pure
     /// environment entries: every use site has already been resolved into a
     /// `TForeignStaticCall`, `TNewObject` or `TDotMethodCall`, so neither emits

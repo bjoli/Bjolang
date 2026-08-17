@@ -218,6 +218,17 @@ type AliasKind =
     | AliasConstructor
     | AliasTrait
 
+/// Where a visible name really comes from.
+///
+/// `OriginModule` is `""` for "wherever this declaration is" — the enclosing
+/// module for an import, the compiling module for an alias, and no module at
+/// all for a compiler builtin. Whoever resolves it fills that in, because only
+/// they know which of the three it is.
+type ImportAlias =
+    { OriginModule: string
+      OriginalName: string
+      Kind: AliasKind }
+
 /// An import with nothing done to it, which is what most of them are.
 let plainImport (path: ImportPath) = { Path = path; Modifiers = [] }
 
@@ -299,13 +310,15 @@ type Decl =
     // mean something different at each implementor.
     | DTrait of string * string * int * string list * (string * FType) list * Decl list * Range
     /// A binding an imported module publishes: the name it is visible under
-    /// here, the name it is defined under there, its type and its constraints.
+    /// here, where it actually lives, its type and its constraints.
     ///
-    /// The two names differ when the import carried a modifier. Everything
-    /// keyed internally — the `Module::name` qualified binding, the reference
-    /// codegen emits — uses the original; the visible one is only a spelling.
-    /// DExtern (VisibleName, OriginalName, Type, Constraints, Range)
-    | DExtern of string * string * FType * (string * string) list * Range
+    /// The visible name differs from the origin's when the import carried a
+    /// modifier; the origin's *module* differs from the declaring one when the
+    /// module publishing it was only a facade for it. Everything keyed
+    /// internally — the `Module::name` qualified binding, the reference codegen
+    /// emits — uses the origin; the visible name is only a spelling.
+    /// DExtern (VisibleName, Origin, Type, Constraints, Range)
+    | DExtern of string * ImportAlias * FType * (string * string) list * Range
 
     /// A spelling an import modifier produced for something that is not a
     /// binding: a type, a constructor, a trait or one of its methods.

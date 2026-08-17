@@ -3446,18 +3446,22 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
             decls
             |> List.collect (function
                 | DDef(n, _, _)
-                | DDefMutable(n, _, _) -> [ n, n ]
-                | DExtern(visible, original, _, _, _) -> [ visible, original ]
-                | DDefun(n, _, _, _, _) -> [ n, n ]
-                | DDefTuple(ns, _, _) -> ns |> List.map (fun n -> n, n)
+                | DDefMutable(n, _, _) -> [ n, Naming.qualifiedBinding moduleName n ]
+                | DExtern(visible, origin, _, _, _) ->
+                    // A facade's re-export lives in another module's class, so
+                    // its qualified spelling names that one.
+                    let m = if origin.OriginModule = "" then moduleName else origin.OriginModule
+                    [ visible, Naming.qualifiedBinding m origin.OriginalName ]
+                | DDefun(n, _, _, _, _) -> [ n, Naming.qualifiedBinding moduleName n ]
+                | DDefTuple(ns, _, _) -> ns |> List.map (fun n -> n, Naming.qualifiedBinding moduleName n)
                 | _ -> [])
 
         let qualified =
             definedHere
             |> List.fold
-                (fun acc (visible, original) ->
+                (fun acc (visible, qualifiedSpelling) ->
                     match Map.tryFind visible finalEnv.Bindings with
-                    | Some binding -> Map.add (Naming.qualifiedBinding moduleName original) binding acc
+                    | Some binding -> Map.add qualifiedSpelling binding acc
                     | None -> acc)
                 finalEnv.Bindings
 
@@ -3743,7 +3747,16 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
 
         env, sigs, [ TReExport(names, r) ]
     | DType(typeDefs, r) -> registerTypeDefs false typeDefs env, sigs, [ TType(typeDefs, r) ]
-    | DExtern(name, original, ftype, constraintPairs, r) ->
+    | DExtern(name, declaredOrigin, ftype, constraintPairs, r) ->
+        // An unfilled origin module means "the module this declaration is in",
+        // which is only knowable here. A filled one is a facade's: the module
+        // publishing the name generated no code for it.
+        let origin =
+            if declaredOrigin.OriginModule = "" then
+                { declaredOrigin with OriginModule = env.CurrentModule }
+            else
+                declaredOrigin
+
         let t = resolveTypeAnnotation env.Registry ftype
         let scheme = generalize env t
         let (Scheme(vars, _, schemeType)) = scheme
@@ -3757,18 +3770,14 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
         // Every imported binding gets a table entry, whether or not a modifier
         // renamed it. The degenerate one carries no new spelling but does carry
         // the module the name came from, which is what an `(:alias ...)` of it
-        // needs to resolve to a qualified reference.
+        // needs to resolve to a qualified reference — and what makes a facade
+        // of a facade flatten, since the entry already holds the ultimate
+        // origin rather than the module it was read from.
         let newEnv =
             { newEnv with
                 Registry =
                     { newEnv.Registry with
-                        ImportAliases =
-                            Map.add
-                                name
-                                { OriginModule = env.CurrentModule
-                                  OriginalName = original
-                                  Kind = AliasDef }
-                                newEnv.Registry.ImportAliases } }
+                        ImportAliases = Map.add name origin newEnv.Registry.ImportAliases } }
 
         // Keyword and rest metadata travels with an imported signature too.
         // Without it a call that passes a keyword argument, or omits an optional
@@ -3786,7 +3795,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                 { newEnv with FunMetas = Map.add name funMeta newEnv.FunMetas }
             | _ -> newEnv
 
-        newEnv, sigs, [ TExtern(name, original, ftype, r) ]
+        newEnv, sigs, [ TExtern(name, origin, ftype, r) ]
 
     | DTrait(traitName, implementorVar, holeArity, assocTypes, signatures, defaults, r) ->
         // The kind is derived, not declared: an implementor written applied to
@@ -4369,6 +4378,22 @@ and private checkDeclGroup
             | _ -> [])
         |> Set.ofList
 
+    /// Names that already carry a signature from somewhere else: a second
+    /// spelling this group declares, and anything an import brought in under
+    /// any spelling.
+    ///
+    /// Rule 9's facade is exactly this — `(export http-get)` where `http-get`
+    /// is an alias. The local-signature rule cannot apply to one, for the same
+    /// reason it does not apply to `re-export`: the name was given its type
+    /// where it was defined, and writing a second one here would be a copy that
+    /// could disagree.
+    let aliasedNames =
+        decls
+        |> List.collect (function
+            | DAlias(newName, _, _) -> [ newName ]
+            | _ -> [])
+        |> Set.ofList
+
     decls
     |> List.iter (function
         | DExport(names, exprRange) ->
@@ -4378,6 +4403,8 @@ and private checkDeclGroup
                         Map.containsKey name explicitSigs
                         || Set.contains name traitMethodNames
                         || Set.contains name externAliases
+                        || Set.contains name aliasedNames
+                        || Map.containsKey name env.Registry.ImportAliases
                     )
                 then
                     failwithf "Export Error: Exported item '%s' is missing a mandatory type signature at %s" name (Lexer.formatPos exprRange)

@@ -1,0 +1,51 @@
+;; Re-export through an alias: the facade pattern.
+;;
+;; `inc/net.bjo` publishes two of `inc/net_internals.bjo`'s bindings under
+;; shorter names and generates no code for either. `inc/net_facade.bjo` is a
+;; facade in front of that one, and `inc/net_renamed.bjo` builds the same thing
+;; out of a `rename` at the import instead of an `(:alias ...)` after it.
+;;
+;; What has to hold: the calling convention survives the indirection, a chain
+;; flattens to the one origin rather than hopping, two facades naming one
+;; binding are two spellings and not a conflict, and the origin's assembly is
+;; linked even though nothing here imports it.
+(import "inc/net.bjo")
+(import "inc/net_facade.bjo")
+(import "inc/net_renamed.bjo")
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; Taking the facade's name as an argument: it has to survive as a value, not
+;; only in call position.
+(: use-it (-> (-> string string) string))
+(defun (use-it f)
+  (f "here"))
+
+(defun (main)
+  (expect "facade" (http-get "x") "x @30")
+
+  ;; The keyword parameter is part of the calling convention and belongs to the
+  ;; origin's signature, so it has to reach here through two sets of metadata.
+  (expect "facade keeps its keyword parameter" (http-get "x" #:timeout 5) "x @5")
+
+  ;; A facade in front of a facade, flattened at the first one.
+  (expect "chained facade" (fetch "y") "y @30")
+
+  ;; The diamond: `http-get` and `fetch` are two spellings of one member.
+  (expect "diamond" (string-append (http-get "z") (fetch "z")) "z @30z @30")
+
+  ;; The same thing built with `rename` rather than `(:alias ...)`.
+  (expect "renamed at the import" (knock "host") "pong:host")
+  (expect "and the alias beside it" (ping "host") "pong:host")
+
+  (expect "first class" (use-it ping) "pong:here")
+
+  (println "107 ok")
+  0)
