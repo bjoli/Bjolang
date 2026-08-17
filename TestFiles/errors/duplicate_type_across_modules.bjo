@@ -1,0 +1,23 @@
+;; Two libraries, each declaring a `Banana`, imported together with no modifier
+;; anywhere.
+;;
+;; This is rejected today, and by the wrong compiler: the type checker accepts
+;; the program and Roslyn refuses to emit it, with a CS0433 naming two
+;; assemblies rather than two modules. No EXPECT-ERROR line, because the
+;; message pinned here is not one this compiler wrote and not one it should
+;; keep — a file with no expectation only has to be rejected, which is exactly
+;; the claim worth pinning. Step 1 gives a type an identity and this becomes a
+;; program that compiles.
+
+(import "../inc/banana_a.bjo" "../inc/banana_b.bjo")
+
+;; `Banana` names one registry entry, so this signature typechecks against
+;; `peel-a` — and spells, in the generated C#, a type that exists in two of the
+;; assemblies being linked.
+(: twice (-> Banana int))
+(defun (twice b)
+  (+ (peel-a b) (peel-a b)))
+
+(defun (main)
+  (println (int->string (twice (make-a 3))))
+  0)
