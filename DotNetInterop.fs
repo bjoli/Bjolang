@@ -234,8 +234,12 @@ let showTypesTogether (ts: HMType list) : string list =
             | "System.Void"
             | "Unit" -> "void"
             | "Char" -> "char"
-            | other -> other
-        | TCon(name, args) -> "(" + name + " " + String.Join(" ", args |> List.map go) + ")"
+            // A declared type is keyed by the module that declared it, and the
+            // reader is shown both halves: `Banana` alone is no answer when
+            // the other side of the mismatch is somebody else's `Banana`.
+            | other -> Naming.showTypeName other
+        | TCon(name, args) ->
+            "(" + Naming.showTypeName name + " " + String.Join(" ", args |> List.map go) + ")"
         | TFun(args, ret, eff) -> "(" + arrowHead eff + " " + String.Join(" ", (args @ [ ret ]) |> List.map go) + ")"
         | TTuple items -> "(Tuple " + String.Join(" ", items |> List.map go) + ")"
         | TVar n -> "%" + n.TrimStart('\'')

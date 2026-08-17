@@ -1177,6 +1177,8 @@ let private describeUnionCases (registry: TraitRegistry) (unionName: string) : s
     | Some(_, cases) ->
         cases
         |> List.map (fun (caseName, payloads, _) ->
+            let caseName = Naming.showTypeName caseName
+
             if payloads.IsEmpty then
                 caseName
             else
@@ -2986,6 +2988,10 @@ and private inferAndMaybeInject (expectedElem: HMType) (env: Env) (expr: Expr) :
         // in: the constructor that cannot be chosen is this one's.
         let reportAt () = Lexer.formatPos (exprRange expr)
         let shape = literalShapeName expr
+        // Shown by key, like every other type name in a diagnostic: which
+        // module's union this is may be the whole of what the reader is
+        // missing.
+        let shownUnion = Naming.showTypeName unionName
 
         match env.Registry.CasesByPayloadShape unionName typeArgs heads with
         | [ (ctorName, payloadTy) ] ->
@@ -2994,12 +3000,12 @@ and private inferAndMaybeInject (expectedElem: HMType) (env: Env) (expr: Expr) :
             wrapInCtor ctorName payloadTy typedPayload
         | [] ->
             failwithf
-                $"Type Error at %s{reportAt ()}: no case of the union %s{unionName} carries a %s{shape}, so this literal cannot be one. A literal written where a union is expected is elaborated into the case that holds it, and %s{unionName} has %s{describeUnionCases env.Registry unionName}."
+                $"Type Error at %s{reportAt ()}: no case of the union %s{shownUnion} carries a %s{shape}, so this literal cannot be one. A literal written where a union is expected is elaborated into the case that holds it, and %s{shownUnion} has %s{describeUnionCases env.Registry unionName}."
         | many ->
-            let names = many |> List.map fst |> orList
+            let names = many |> List.map (fst >> Naming.showTypeName) |> orList
 
             failwithf
-                $"Type Error at %s{reportAt ()}: this %s{shape} literal could be injected into %s{names}, and nothing here says which. They are all cases of %s{unionName} that carry a %s{shape}, and only the payload's head constructor is compared against the literal — never its arguments — so the literal itself cannot tell them apart. Mark the case a literal means with #:literal where %s{unionName} is declared, or write the constructor around it here."
+                $"Type Error at %s{reportAt ()}: this %s{shape} literal could be injected into %s{names}, and nothing here says which. They are all cases of %s{shownUnion} that carry a %s{shape}, and only the payload's head constructor is compared against the literal — never its arguments — so the literal itself cannot tell them apart. Mark the case a literal means with #:literal where %s{shownUnion} is declared, or write the constructor around it here."
     | _ ->
         // Type-directed. The element is inferred first, and `CandidateCases`
         // then asked — speculatively, so it may not bind anything — whether one
@@ -3031,14 +3037,109 @@ and private inferAndMaybeInject (expectedElem: HMType) (env: Env) (expr: Expr) :
 
 // --- DECLARATION CHECKING ---
 
-let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env =
-    let localTypes = typeDefs |> List.fold (fun acc td -> Set.add td.Name acc) env.Registry.LocalTypes
-    let preRegistry = { env.Registry with LocalTypes = localTypes }
+/// Every type name a declaration mentions, resolved to the name it stands for.
+///
+/// The declaration itself outlives inference: the code generator emits a field
+/// or a payload by the name written in it, and the metadata publishes it as
+/// source text. Both read those names literally, so a payload written as the
+/// bare `Crate` becomes `kitchen__Crate` here — where the table that knows
+/// which `Crate` is meant is still at hand. Type variables are left alone.
+let rec private qualifyFTypeNames (registry: TraitRegistry) (ftype: FType) : FType =
+    let qualify (n: string) = if n.StartsWith "'" then n else originalName registry n
+    let go = qualifyFTypeNames registry
+
+    match ftype with
+    | TName(n, r) -> TName(qualify n, r)
+    | TApp(n, args, r) -> TApp(qualify n, List.map go args, r)
+    | TArrow(mandatory, keywords, restOpt, ret, colour, r) ->
+        TArrow(
+            List.map go mandatory,
+            keywords |> List.map (fun (k, t) -> k, go t),
+            Option.map go restOpt,
+            go ret,
+            colour,
+            r
+        )
+
+/// Registers a `type` or `type-rec` group, and hands back the declarations as
+/// everything downstream will see them: named by their keys.
+///
+/// A declared type's identity is the module that declared it plus its name
+/// (`Naming.typeKey`), so two modules may each declare a `Banana` and mean two
+/// types. Nothing else has to change to make that work — `Implementations`,
+/// `Unions`, `InlineMethods` and the impl class C# is emitted as are all keyed
+/// on a type's *name*, and the name is now unique.
+///
+/// The bare name is what source goes on writing, here and in anything that
+/// imports this module plainly. It is filed as a spelling in the same table an
+/// import modifier's spellings go in, which `originalName` resolves before any
+/// registry is consulted.
+let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * TypeDef list =
+    let key (name: string) = Naming.typeKey env.CurrentModule name
+
+    let withSpelling (kind: AliasKind) (name: string) (registry: TraitRegistry) =
+        let keyed = key name
+
+        if keyed = name then
+            registry
+        else
+            { registry with
+                ImportAliases =
+                    Map.add
+                        name
+                        { OriginModule = env.CurrentModule
+                          OriginalName = keyed
+                          Kind = kind }
+                        registry.ImportAliases }
+
+    // The whole group's type names before any of its bodies: a `type-rec` names
+    // its siblings, and a payload written with a bare name has to reach the
+    // sibling's key rather than a same-named type declared elsewhere.
+    let preRegistry =
+        typeDefs
+        |> List.fold
+            (fun (reg: TraitRegistry) td ->
+                withSpelling AliasType td.Name { reg with LocalTypes = Set.add (key td.Name) reg.LocalTypes })
+            env.Registry
 
     let mutable finalRegistry = preRegistry
     let mutable finalBindings = env.Bindings
+    let keyedDefs = ResizeArray<TypeDef>()
 
     for td in typeDefs do
+        // A constructor follows its type, in expression and in pattern
+        // position alike, so its bare name is a spelling in exactly the same
+        // sense. Registered before the payloads are resolved, because a case
+        // may carry a value of the union it belongs to.
+        match td.Kind with
+        | Union cases ->
+            for case in cases do
+                let caseName =
+                    match case with
+                    | SimpleCase(n, _) -> n
+                    | DataCase(n, _, _, _) -> n
+
+                finalRegistry <- withSpelling AliasConstructor caseName finalRegistry
+        | _ -> ()
+
+        let name = key td.Name
+
+        let keyedKind =
+            match td.Kind with
+            | Alias ftype -> Alias(qualifyFTypeNames finalRegistry ftype)
+            | Record(fields, isStruct) ->
+                Record(fields |> List.map (fun f -> { f with Type = qualifyFTypeNames finalRegistry f.Type }), isStruct)
+            | Union cases ->
+                cases
+                |> List.map (function
+                    | SimpleCase(n, r) -> SimpleCase(key n, r)
+                    | DataCase(n, types, marked, r) ->
+                        DataCase(key n, types |> List.map (qualifyFTypeNames finalRegistry), marked, r))
+                |> Union
+
+        let td = { td with Name = name; Kind = keyedKind }
+        keyedDefs.Add td
+
         let tArgs = td.TypeArgs |> List.map (fun a -> if a.StartsWith("'") then a else "'" + a)
         let hmArgs = tArgs |> List.map TVar
         let parentType = TCon(td.Name, hmArgs)
@@ -3082,7 +3183,7 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env =
             finalRegistry <- { finalRegistry with Unions = Map.add td.Name (tArgs, caseTable) finalRegistry.Unions }
 
 
-    { env with Registry = finalRegistry; Bindings = finalBindings }
+    { env with Registry = finalRegistry; Bindings = finalBindings }, List.ofSeq keyedDefs
 
 let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string * string) list>) (decl: Decl) : Env * Map<string, HMType * FType option * (string * string) list> * TDecl list =
     match decl with
@@ -3746,7 +3847,9 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                                         (Lexer.formatPos r)
 
         env, sigs, [ TReExport(names, r) ]
-    | DType(typeDefs, r) -> registerTypeDefs false typeDefs env, sigs, [ TType(typeDefs, r) ]
+    | DType(typeDefs, r) ->
+        let newEnv, keyed = registerTypeDefs false typeDefs env
+        newEnv, sigs, [ TType(keyed, r) ]
     | DExtern(name, declaredOrigin, ftype, constraintPairs, r) ->
         // An unfilled origin module means "the module this declaration is in",
         // which is only knowable here. A filled one is a facade's: the module
@@ -3912,7 +4015,9 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                 finalEnv <- addBinding kvp.Key { Scheme = scheme; IsMutable = false } finalEnv
 
         finalEnv, sigs, [ TTrait(traitName, implementorVar, kind, holeArity, assocTypes, hmSignatures, r) ]
-    | DTypeRec(typeDefs, r) -> registerTypeDefs true typeDefs env, sigs, [ TTypeRec(typeDefs, r) ]
+    | DTypeRec(typeDefs, r) ->
+        let newEnv, keyed = registerTypeDefs true typeDefs env
+        newEnv, sigs, [ TTypeRec(keyed, r) ]
     | DImpl(traitName, targetTypeExpr, assocBindings, whereClause, methods, r) ->
         // The trait may be written under a spelling a `prefix` produced; the
         // registries are keyed on the name the `def/trait` gave it.
@@ -4329,13 +4434,29 @@ and private checkDeclGroup
     /// Imports need no such treatment: `DImport` adds nothing here, because an
     /// imported module is a group of its own that has already been checked by
     /// the time this one starts.
+    ///
+    /// The spellings are folded in too. A type is registered under its key, so
+    /// a signature written above the `type` it names — or above the import
+    /// alias a `.dll`'s reader produced — resolves the bare name through the
+    /// same table everything else does, and has to see it.
     let sigRegistry =
         decls
         |> List.fold
             (fun acc d ->
                 match d with
-                | DType(typeDefs, _) -> registerTypeDefs false typeDefs acc
-                | DTypeRec(typeDefs, _) -> registerTypeDefs true typeDefs acc
+                | DType(typeDefs, _) -> fst (registerTypeDefs false typeDefs acc)
+                | DTypeRec(typeDefs, _) -> fst (registerTypeDefs true typeDefs acc)
+                | DImportAlias(visible, original, kind, _) ->
+                    { acc with
+                        Registry =
+                            { acc.Registry with
+                                ImportAliases =
+                                    Map.add
+                                        visible
+                                        { OriginModule = acc.CurrentModule
+                                          OriginalName = original
+                                          Kind = kind }
+                                        acc.Registry.ImportAliases } }
                 | _ -> acc)
             env
         |> fun withTypes -> withTypes.Registry

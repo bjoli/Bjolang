@@ -19,7 +19,10 @@ open System.Text
 /// Bumped whenever a field's meaning changes such that an older assembly would
 /// be misread. Adding an optional field does not require it: a reader of the
 /// same version writes and reads the same field list.
-let currentVersion = 1
+/// 2: a type name is a *key* — the module that declared it and the name it was
+/// declared under — rather than the bare name source wrote. An assembly built
+/// before this reads as though its types were somebody else's.
+let currentVersion = 2
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {

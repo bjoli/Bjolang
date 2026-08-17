@@ -1,0 +1,57 @@
+;; Two libraries, each declaring a `Banana`.
+;;
+;; A type's identity is the module that declared it plus its name, so these are
+;; two types and both are usable in one program. What they are *called* is a
+;; separate question, and the two answers are here: the bare name follows the
+;; ordinary import order — the later import wins, silently — and `prefix-types`
+;; reaches either of them by a spelling of its own.
+(import "inc/banana_a.bjo"
+        (prefix-types "inc/banana_a.bjo" "A/")
+        (prefix-types "inc/banana_b.bjo" "B/")
+        "inc/banana_b.bjo"
+        (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; Both constructors arrive under their own names: a constructor follows its
+;; type, and the two types are different ones.
+(: from-a (-> int int))
+(defun (from-a n)
+  (peel-a (MkBananaA n)))
+
+(: from-b (-> string string))
+(defun (from-b s)
+  (peel-b (MkBananaB s)))
+
+;; The bare `Banana` is `banana_b`'s: it is the later import, which is the
+;; shadowing rule imports have always had.
+(: shout (-> Banana string))
+(defun (shout b)
+  (string-append (peel-b b) "!"))
+
+;; ...and the earlier one is still reachable, which is what changed.
+(: twice (-> A/Banana int))
+(defun (twice b)
+  (+ (peel-a b) (peel-a b)))
+
+;; A prefixed spelling of each, in a signature, in a constructor and in a
+;; pattern. `A/Banana` and `B/Banana` are two types, not two names for one.
+(: relabel (-> A/Banana B/Banana))
+(defun (relabel b)
+  (match b
+    ((A/MkBananaA n) (B/MkBananaB (int->string n)))))
+
+(defun (main)
+  (expect "a's constructor and a's peeler" (int->string (from-a 3)) "3")
+  (expect "b's constructor and b's peeler" (from-b "yes") "yes")
+  (expect "the bare name is the later import's" (shout (make-b "ripe")) "ripe!")
+  (expect "the earlier one is reachable under a prefix" (int->string (twice (make-a 4))) "8")
+  (expect "one type in, the other out" (peel-b (relabel (A/MkBananaA 7))) "7")
+  (println "108 ok")
+  0)

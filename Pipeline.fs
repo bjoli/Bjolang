@@ -284,7 +284,13 @@ type private ImportSurface =
       /// Method name -> the trait that declares it.
       TraitMethods: Map<string, string> }
 
-let private surfaceOf (decls: Decl list) (macros: ModuleMetadata.MacroEntry list) : ImportSurface =
+/// `moduleName` is the dependency's own, and is what a type name is read back
+/// through: a declaration is keyed by the module that wrote it, and what an
+/// importer spells — with or without a modifier — is the bare name inside that
+/// key.
+let private surfaceOf (moduleName: string) (decls: Decl list) (macros: ModuleMetadata.MacroEntry list) : ImportSurface =
+    let bare = Naming.bareTypeName moduleName
+
     let typeDefs =
         decls
         |> List.collect (function
@@ -304,7 +310,7 @@ let private surfaceOf (decls: Decl list) (macros: ModuleMetadata.MacroEntry list
         @ (macros |> List.map (fun m -> m.Name))
         |> Set.ofList
 
-      Types = typeDefs |> List.map (fun td -> td.Name) |> Set.ofList
+      Types = typeDefs |> List.map (fun td -> bare td.Name) |> Set.ofList
 
       Constructors =
         typeDefs
@@ -313,10 +319,10 @@ let private surfaceOf (decls: Decl list) (macros: ModuleMetadata.MacroEntry list
             | Union cases ->
                 cases
                 |> List.map (function
-                    | SimpleCase(n, _) -> n
-                    | DataCase(n, _, _, _) -> n)
+                    | SimpleCase(n, _) -> bare n
+                    | DataCase(n, _, _, _) -> bare n)
             // A record is constructed by its own name.
-            | Record _ -> [ td.Name ]
+            | Record _ -> [ bare td.Name ]
             | Alias _ -> [])
         |> Set.ofList
 
@@ -431,9 +437,15 @@ let private defRenaming
 /// key would leave the impls filed under a name nothing looks up. The prefixed
 /// name is resolved back to the original before any of those is consulted.
 ///
+/// What it is resolved back *to* is the key: a type's identity is the module
+/// that declared it plus its name, so `(prefix-types "a.bjo" "A/")` beside
+/// `(prefix-types "b.bjo" "B/")` gives two spellings of two different types
+/// rather than two spellings of one.
+///
 /// `only`, `except` and `rename` contribute nothing here: they are refused on
 /// these names outright, and a type always arrives.
 let private typeRenaming
+    (moduleName: string)
     (surface: ImportSurface)
     (modifiers: ImportModifier list)
     : (string * string * AliasKind) list =
@@ -460,6 +472,14 @@ let private typeRenaming
     // A record's name is both its type and its constructor, so it arrives
     // twice. Which kind wins does not matter — both resolve the same way.
     |> List.distinctBy (fun (original, visible, _) -> original, visible)
+    // The spelling is invented from the bare name; what it resolves to is the
+    // key. A trait is not keyed — it is still nominal by its bare name, and
+    // `TraitOrigins` is what answers where one was declared.
+    |> List.map (fun (original, visible, kind) ->
+        match kind with
+        | AliasType
+        | AliasConstructor -> Naming.typeKey moduleName original, visible, kind
+        | _ -> original, visible, kind)
 
 /// A dependency's declarations as every edge that reaches it sees them.
 ///
@@ -879,6 +899,40 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
                         else
                             Lexer.tokenize absPath declText |> read |> fst |> Parser.parseModule
 
+                    // The bare spellings of the types this assembly declares.
+                    //
+                    // A type name in metadata is a *key*: the module that
+                    // declared it and the name it was declared under, which
+                    // resolves to itself wherever it is read. That is what a
+                    // signature naming a type from a link-only dependency
+                    // needs, and it is why nothing here re-derives anything.
+                    // What source writes is still the bare name, so it is
+                    // offered back as a spelling — the same mechanism an import
+                    // modifier's spellings use, and the reason a plain import
+                    // goes on meaning what it meant.
+                    let typeSpellingDecls =
+                        let bare = Naming.bareTypeName (Naming.moduleNameOfPath absPath)
+
+                        let spellingOf (kind: AliasKind) (r: Lexer.Range) (keyed: string) =
+                            let name = bare keyed
+                            if name = keyed then [] else [ DImportAlias(name, keyed, kind, r) ]
+
+                        declsFromText
+                        |> List.collect (function
+                            | DType(tds, r)
+                            | DTypeRec(tds, r) ->
+                                tds
+                                |> List.collect (fun td ->
+                                    spellingOf AliasType r td.Name
+                                    @ (match td.Kind with
+                                       | Union cases ->
+                                           cases
+                                           |> List.collect (function
+                                               | SimpleCase(n, _)
+                                               | DataCase(n, _, _, _) -> spellingOf AliasConstructor r n)
+                                       | _ -> []))
+                            | _ -> [])
+
                     // An exported binding becomes an extern: a name with a type
                     // and no body, which is exactly what an importer can say
                     // about it. The signature is rebuilt as source because a
@@ -922,7 +976,7 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
                                     DExtern(name, origin, t, constraints, r)
                                 | other -> other))
 
-                    let parsedDecls = declsFromText @ externDecls
+                    let parsedDecls = typeSpellingDecls @ declsFromText @ externDecls
                     // Macros are registered per import *edge*, not here: which
                     // name a transformer answers to is the importer's to say.
                     //
@@ -988,13 +1042,13 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
                         // computed here rather than inside `load`, which is
                         // keyed by path and shared by every importer.
                         let m = resolvedModules[dep]
-                        let surface = surfaceOf m.ParsedDecls m.Macros
+                        let surface = surfaceOf m.ModuleName m.ParsedDecls m.Macros
                         let renaming = defRenaming r (Path.GetFileName dep) surface spec.Modifiers
 
                         if not (edges.ContainsKey dep) then
                             edges[dep] <- ResizeArray()
 
-                        edges[dep].Add(renaming, typeRenaming surface spec.Modifiers, r)
+                        edges[dep].Add(renaming, typeRenaming m.ModuleName surface spec.Modifiers, r)
 
                         // A macro has to be in the table under the name this
                         // import gives it before the form using it is read.
@@ -1085,8 +1139,10 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
             for (original, visible, r) in merged do
                 spellings.Add(visible, m.ModuleName, original, visible <> original, r)
 
+            // Reported under the name source writes rather than the key, which
+            // is what the reader of the collision message is looking at.
             for (original, visible, _, r) in typeSpellings do
-                spellings.Add(visible, m.ModuleName, original, true, r)
+                spellings.Add(visible, m.ModuleName, Naming.bareTypeName m.ModuleName original, true, r)
 
             let byOriginal =
                 merged

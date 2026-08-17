@@ -28,8 +28,24 @@ let metadata
             | TypedAST.TReExport(names, _) -> names
             | _ -> [])
 
-    let typesToExport =
+    // The types *this* module declares, and not a dependency's.
+    //
+    // A declaration is published under the key it was given, and a key names
+    // the module that declared it — so republishing a dependency's would offer
+    // an importer a second copy of something that is already reachable, under a
+    // name that says where the first one lives. What an importer needs from a
+    // type it never imported is that the signatures mentioning it resolve, and
+    // a key resolves to itself.
+    let ownModuleDecls =
+        let ownName = Naming.moduleNameOfPath inputFilePath
+
         typedAst
+        |> List.collect (function
+            | TypedAST.TModule(name, inner, _) -> if name = ownName then inner else []
+            | other -> [ other ])
+
+    let typesToExport =
+        ownModuleDecls
         |> TypedAST.collectDecls (function
             | TypedAST.TType(defs, _) -> defs |> List.map (fun d -> d, false)
             | TypedAST.TTypeRec(defs, _) -> defs |> List.map (fun d -> d, true)

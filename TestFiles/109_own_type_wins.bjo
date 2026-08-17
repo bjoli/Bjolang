@@ -1,0 +1,33 @@
+;; A module's own declaration wins inside it.
+;;
+;; `banana_a` exports a `Banana` and this module declares one. The bare name is
+;; this module's, whatever is imported; the imported one is reached under the
+;; prefix, and the two do not mix.
+(import (prefix-types "inc/banana_a.bjo" "A/") (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+(type (: Banana (Union (MkBananaHere bool))))
+
+;; Written above the declaration on purpose: a signature resolves against the
+;; types declared beside it, so `Banana` here is already this module's.
+(: ripe? (-> Banana bool))
+(defun (ripe? b)
+  (match b
+    ((MkBananaHere r) r)))
+
+(: peel-imported (-> A/Banana int))
+(defun (peel-imported b)
+  (peel-a b))
+
+(defun (main)
+  (expect "the bare name is this module's" (if (ripe? (MkBananaHere true)) "yes" "no") "yes")
+  (expect "the imported one is still reachable" (int->string (peel-imported (A/MkBananaA 5))) "5")
+  (println "109 ok")
+  0)

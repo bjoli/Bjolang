@@ -107,7 +107,10 @@ let syntaxType = TCon("Syntax", [])
 
 let emptyRegistry : TraitRegistry =
     { LocalTraits = Set.empty
-      LocalTypes = Set.ofList ["List"; "Vec"; "VecBuilder"; "ListBuilder"; "MapBuilder"; "VecCursor"; "MapCursor"; "StringCursor"; "StringBuilder"; "Seq"; "Option"; "Result"; "Map"; "Keyword"; "Symbol"; "Array"; "Param"; "DynEnv"; "Promise"; "Event"; "Chan"; "CancelToken"; "AsyncSeq"; "Syntax"]
+      // The types with no declaring module, which is exactly what `typeKey`
+      // leaves unkeyed. One list, in `Naming`, so the registry that holds them
+      // and the rule that exempts them cannot drift apart.
+      LocalTypes = Naming.builtinTypeNames
       Traits = Map.empty
       TraitMethods = Map.empty
       Implementations = Map.empty

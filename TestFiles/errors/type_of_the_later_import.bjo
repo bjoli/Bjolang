@@ -1,0 +1,24 @@
+;; Two libraries, each declaring a `Banana`, imported plainly.
+;;
+;; That is legal — they are two types — and the bare name means the later
+;; import's, which is the shadowing rule imports have always had. What is not
+;; legal is confusing the two: this signature says `banana_b`'s and the body
+;; hands it to a function that takes `banana_a`'s.
+;;
+;; Rejected by the type checker, naming both modules. It used to be accepted
+;; here and refused by Roslyn with a CS0433 naming two *assemblies*, because
+;; both `Banana`s were one registry entry and one emitted C# type.
+
+;; EXPECT-ERROR: Type error: these types do not match.
+;; EXPECT-ERROR: banana_b/Banana
+;; EXPECT-ERROR: banana_a/Banana
+
+(import "../inc/banana_a.bjo" "../inc/banana_b.bjo")
+
+(: twice (-> Banana int))
+(defun (twice b)
+  (+ (peel-a b) (peel-a b)))
+
+(defun (main)
+  (println (int->string (twice (make-a 3))))
+  0)
