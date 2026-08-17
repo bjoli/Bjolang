@@ -1,0 +1,72 @@
+;; Types, constructors and traits under an import modifier.
+;;
+;; `prefix-types` renames what is declared; `prefix-defs` renames what is
+;; bound; plain `prefix` does both. A type is not a binding, so its prefixed
+;; spelling cannot be one either: the declaration keeps the name every registry
+;; is keyed on — the implementations, the inline templates, the union cases —
+;; and the spelling is resolved back to it before any of them is consulted.
+;; That is what lets an impl travel unrenamed and still be found through a
+;; prefixed method name.
+;;
+;; The prefix on `kitchen` is capitalised because a bare symbol is read as a
+;; constructor pattern only when it starts with a capital, and `T/EmptyCrate`
+;; is matched below.
+(import (prefix-types "inc/kitchen.bjo" "T/")
+        (prefix "inc/boxed.bjo" "b/")
+        (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; A type of this module's own, implementing the imported trait under the
+;; spelling the prefix produced. The method inside keeps the name the trait
+;; declared it with — that is what an impl is written against.
+(type (: Widget (Union widget)))
+
+(def/impl (T/Labelled Widget)
+  (defun (label x) "widget"))
+
+;; A prefixed type in a signature, and a prefixed constructor in the body.
+(: fresh (-> int (T/Crate int)))
+(defun (fresh n)
+  (T/MkCrate n))
+
+;; ...and both cases of it in patterns.
+(: peek (-> (T/Crate int) int))
+(defun (peek c)
+  (match c
+    ((T/MkCrate v) v)
+    (T/EmptyCrate 0)))
+
+(defun (main)
+  ;; A prefixed type annotation, constructor and pattern, all resolving to the
+  ;; union `kitchen` declared.
+  (expect "prefixed constructor and pattern" (int->string (peek (fresh 7))) "7")
+  (expect "prefixed nullary case" (int->string (peek T/EmptyCrate)) "0")
+
+  ;; prefix-types is only the declared half, so the defs arrived bare.
+  (expect "prefix-types leaves a def bare" (int->string (unwrap (make-crate 4))) "4")
+
+  ;; A trait method under its prefixed spelling still dispatches to the impl
+  ;; the library compiled, and to the default that travelled with the trait.
+  (expect "prefixed trait method" (T/label 3) "int")
+  (expect "prefixed default" (T/shout 3) "int!")
+  ;; ...and to this module's own impl, written at the prefixed trait name.
+  (expect "prefixed trait in def/impl" (T/shout widget) "widget!")
+
+  ;; An inline trait's method, prefixed. The template is keyed on `wrap` and
+  ;; the hole is pinned by what the result is used as.
+  (expect "prefixed inline trait method" (int->string (unwrap (T/wrap 9))) "9")
+
+  ;; Plain `prefix` is both halves at once, on a second module: `unbox` is a
+  ;; def, `MkBox` a constructor and `render` a trait method.
+  (expect "prefix covers defs and types" (b/unbox (b/MkBox "yes")) "yes")
+  (expect "and dispatches its traits" (b/render (b/MkBox "x")) "<x>")
+
+  (println "106 ok")
+  0)

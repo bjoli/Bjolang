@@ -5,6 +5,20 @@ open Bjolang.Parser
 open Bjolang.TypedAST
 open Bjolang.Unification
 
+/// The name a visible spelling stands for, where the spelling is only that.
+///
+/// A def is deliberately left alone: it is *bound* under the name the import
+/// gave it, and codegen resolves that to the origin's member through
+/// `GlobalBindings` — which is what keeps a renamed import from being taken
+/// over by a same-named binding elsewhere in the program. Everything else is
+/// resolved away before any registry is consulted, because `Implementations`,
+/// `InlineMethods`, `Unions`, `Records` and `Aliases` are all keyed on the name
+/// the declaring module wrote.
+let originalName (registry: TraitRegistry) (name: string) : string =
+    match Map.tryFind name registry.ImportAliases with
+    | Some alias when alias.Kind <> AliasDef && alias.Kind <> AliasMacro -> alias.OriginalName
+    | _ -> name
+
 /// Walk a typed expression body for the trait constraints its enclosing function
 /// must carry. Returns a list of TraitConstraints (TraitName, TargetType as TVar).
 /// Constraints arise from trait method calls on type variables, or from calling 
@@ -201,6 +215,10 @@ let rec checkPattern (env: Env) (expectedType: HMType) (pat: Pattern) : TypedPat
              | None -> Map.empty)
 
     | PConstruct(name, args, r) ->
+        // A prefixed constructor is a spelling: the typed pattern carries the
+        // name the union declared, which is what codegen emits a case class for.
+        let name = originalName env.Registry name
+
         let binding = 
             match Map.tryFind name env.Bindings with
             | Some b -> b
@@ -327,7 +345,10 @@ let rec resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType 
         if name.StartsWith("'") then
             TVar name
         else
-            match Map.tryFind name registry.Aliases with
+
+        let name = originalName registry name
+
+        match Map.tryFind name registry.Aliases with
             | Some (args, t) when args.Length = 0 -> t
             | Some (args, _) -> failwithf $"Type alias {name} expects {args.Length} arguments, but got 0"
             | None ->
@@ -389,6 +410,7 @@ let rec resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType 
             $"Kind Error at %s{Lexer.formatPos r}: the type variable %%%s{name.TrimStart('\'')} is applied to arguments here. Bjolang has no higher-kinded type variables: only the constructor variable of an inline trait may be written applied, and only inside that trait's own signatures. A function cannot be generic over a type constructor."
 
     | TApp(name, args, _) ->
+        let name = originalName registry name
         let resolvedArgs = args |> List.map (resolveTypeAnnotation registry)
         match Map.tryFind name registry.Aliases with
         | Some (typeParams, t) ->
@@ -1268,9 +1290,25 @@ let private localFunShape (env: Env) (args: DefunArg list) (retAnn: FType option
 /// exception that is not a diagnostic is never caught here and keeps its trace.
 let rec infer (env: Env) (expr: Expr) : HMType * TypedExpr =
     try
-        inferNode env expr
+        inferNode env (resolveAliasedHead env.Registry expr)
     with ex when Diagnostics.needsLocation ex ->
         raise (Diagnostics.withLocation (exprRange expr) ex)
+
+/// Rewrites a head identifier that is a prefixed spelling of a constructor, a
+/// record type or a trait method back to the name it stands for.
+///
+/// Once, here, rather than at each of the guards in `inferNode`: that function
+/// dispatches on `EIdent` and on `EApp(EIdent ...)` in a dozen places, and a
+/// spelling is not meant to be visible to any of them.
+and private resolveAliasedHead (registry: TraitRegistry) (expr: Expr) : Expr =
+    match expr with
+    | EIdent(name, r) ->
+        let original = originalName registry name
+        if original = name then expr else EIdent(original, r)
+    | EApp(EIdent(name, ir), args, r) ->
+        let original = originalName registry name
+        if original = name then expr else EApp(EIdent(original, ir), args, r)
+    | _ -> expr
 
 and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     match expr with
@@ -3153,7 +3191,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
             match sigOpt with
             | Some (_, _, constraints) ->
                 constraints |> List.map (fun (traitName, varName) ->
-                    { TraitName = traitName; TargetType = TVar varName })
+                    { TraitName = originalName env.Registry traitName; TargetType = TVar varName })
             | None -> []
 
         // Match defun args with the signature types
@@ -3442,18 +3480,22 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
     | DAlias(newName, oldName, r) ->
         let where = Lexer.formatPos r
 
+        // Through the table first, so that aliasing a *prefixed* type or trait
+        // is refused for what it is rather than reported as unbound.
+        let target = originalName env.Registry oldName
+
         let isConstructor =
             env.Registry.Unions
-            |> Map.exists (fun _ (_, cases) -> cases |> List.exists (fun (c, _, _) -> c = oldName))
+            |> Map.exists (fun _ (_, cases) -> cases |> List.exists (fun (c, _, _) -> c = target))
 
-        if Map.containsKey oldName env.Registry.Traits then
+        if Map.containsKey target env.Registry.Traits then
             failwithf
                 $"Alias Error: '%s{oldName}' at %s{where} is a trait, and (:alias ...) makes a second spelling of a def or a macro. Import the module that declares it with (prefix-types ...) to change what its traits are called."
 
         if
-            Set.contains oldName env.Registry.LocalTypes
-            || Map.containsKey oldName env.Registry.Aliases
-            || Map.containsKey oldName env.Registry.Records
+            Set.contains target env.Registry.LocalTypes
+            || Map.containsKey target env.Registry.Aliases
+            || Map.containsKey target env.Registry.Records
         then
             failwithf
                 $"Alias Error: '%s{oldName}' at %s{where} is a type, and (:alias ...) makes a second spelling of a def or a macro. Write (type (: %s{newName} %s{oldName})) for a type, or import its module with (prefix-types ...)."
@@ -3469,7 +3511,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
             // up where the whole program is known": a name defined in this
             // module, or a compiler builtin with no module class at all.
             let resolution =
-                match Map.tryFind oldName env.ImportAliases with
+                match Map.tryFind oldName env.Registry.ImportAliases with
                 | Some a -> { a with Kind = AliasDef }
                 | None -> { OriginModule = ""; OriginalName = oldName; Kind = AliasDef }
 
@@ -3480,7 +3522,9 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                         match Map.tryFind oldName env.FunMetas with
                         | Some meta -> Map.add newName meta env.FunMetas
                         | None -> env.FunMetas
-                    ImportAliases = Map.add newName resolution env.ImportAliases }
+                    Registry =
+                        { env.Registry with
+                            ImportAliases = Map.add newName resolution env.Registry.ImportAliases } }
 
             newEnv, sigs, [ TAlias(newName, Some resolution, r) ]
 
@@ -3699,14 +3743,14 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
 
         env, sigs, [ TReExport(names, r) ]
     | DType(typeDefs, r) -> registerTypeDefs false typeDefs env, sigs, [ TType(typeDefs, r) ]
-    | DExtern(name, originalName, ftype, constraintPairs, r) ->
+    | DExtern(name, original, ftype, constraintPairs, r) ->
         let t = resolveTypeAnnotation env.Registry ftype
         let scheme = generalize env t
         let (Scheme(vars, _, schemeType)) = scheme
         // Add constraints from DLL metadata
         let constraints = 
             constraintPairs |> List.map (fun (traitName, varName) ->
-                { TraitName = traitName; TargetType = TVar varName })
+                { TraitName = originalName env.Registry traitName; TargetType = TVar varName })
         let schemeWithConstraints = Scheme(vars, constraints, schemeType)
         let newEnv = { env with Bindings = Map.add name { Scheme = schemeWithConstraints; IsMutable = false } env.Bindings }
 
@@ -3716,13 +3760,15 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
         // needs to resolve to a qualified reference.
         let newEnv =
             { newEnv with
-                ImportAliases =
-                    Map.add
-                        name
-                        { OriginModule = env.CurrentModule
-                          OriginalName = originalName
-                          Kind = AliasDef }
-                        newEnv.ImportAliases }
+                Registry =
+                    { newEnv.Registry with
+                        ImportAliases =
+                            Map.add
+                                name
+                                { OriginModule = env.CurrentModule
+                                  OriginalName = original
+                                  Kind = AliasDef }
+                                newEnv.Registry.ImportAliases } }
 
         // Keyword and rest metadata travels with an imported signature too.
         // Without it a call that passes a keyword argument, or omits an optional
@@ -3740,7 +3786,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                 { newEnv with FunMetas = Map.add name funMeta newEnv.FunMetas }
             | _ -> newEnv
 
-        newEnv, sigs, [ TExtern(name, originalName, ftype, r) ]
+        newEnv, sigs, [ TExtern(name, original, ftype, r) ]
 
     | DTrait(traitName, implementorVar, holeArity, assocTypes, signatures, defaults, r) ->
         // The kind is derived, not declared: an implementor written applied to
@@ -3859,6 +3905,10 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
         finalEnv, sigs, [ TTrait(traitName, implementorVar, kind, holeArity, assocTypes, hmSignatures, r) ]
     | DTypeRec(typeDefs, r) -> registerTypeDefs true typeDefs env, sigs, [ TTypeRec(typeDefs, r) ]
     | DImpl(traitName, targetTypeExpr, assocBindings, whereClause, methods, r) ->
+        // The trait may be written under a spelling a `prefix` produced; the
+        // registries are keyed on the name the `def/trait` gave it.
+        let traitName = originalName env.Registry traitName
+        let whereClause = whereClause |> List.map (fun (t, v) -> originalName env.Registry t, v)
         let targetType = resolveTypeAnnotation env.Registry targetTypeExpr
 
         let typeKey =
@@ -4190,6 +4240,8 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
         // metadata. Only the registry needs to learn about it: the methods are
         // already compiled into the assembly that declared it, so there is
         // nothing to type-check and nothing to emit.
+        let traitName = originalName env.Registry traitName
+        let whereClause = whereClause |> List.map (fun (t, v) -> originalName env.Registry t, v)
         let targetType = resolveTypeAnnotation env.Registry targetTypeExpr
 
         let typeKey =
@@ -4218,6 +4270,24 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
 
         let implTarget = implTargetOf traitName traitInfo targetType implConstraints r
         addImplementation traitName typeKey targetType implTarget hmAssocBindings env, sigs, []
+
+    // A spelling an import modifier produced for a type, a constructor, a trait
+    // or a trait method. It binds nothing and emits nothing: what it does is
+    // let `originalName` resolve the spelling away before any registry keyed on
+    // the declaring module's own name is consulted.
+    | DImportAlias(visible, original, kind, _) ->
+        { env with
+            Registry =
+                { env.Registry with
+                    ImportAliases =
+                        Map.add
+                            visible
+                            { OriginModule = env.CurrentModule
+                              OriginalName = original
+                              Kind = kind }
+                            env.Registry.ImportAliases } },
+        sigs,
+        []
 
 /// Type-checks a group of declarations that share a signature scope: a module
 /// body, or a whole program.
@@ -4337,7 +4407,7 @@ and private checkDeclGroup
                     let constraints =
                         constraintPairs
                         |> List.map (fun (traitName, varName) ->
-                            { TraitName = traitName; TargetType = TVar varName })
+                            { TraitName = originalName acc.Registry traitName; TargetType = TVar varName })
 
                     let bound =
                         addBinding

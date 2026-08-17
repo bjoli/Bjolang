@@ -421,6 +421,46 @@ let private defRenaming
     |> Map.ofList
     |> fun start -> List.fold step start modifiers
 
+/// The extra spellings one import edge gives a dependency's types,
+/// constructors, traits and trait methods.
+///
+/// Additional spellings rather than replacements, which is the difference from
+/// `defRenaming`. A type declaration keeps its own name because every registry
+/// — implementations, inline templates, associated types, union cases — is
+/// keyed on it, and an impl travels unconditionally (rule 2), so renaming the
+/// key would leave the impls filed under a name nothing looks up. The prefixed
+/// name is resolved back to the original before any of those is consulted.
+///
+/// `only`, `except` and `rename` contribute nothing here: they are refused on
+/// these names outright, and a type always arrives.
+let private typeRenaming
+    (surface: ImportSurface)
+    (modifiers: ImportModifier list)
+    : (string * string * AliasKind) list =
+
+    let start =
+        (surface.Types |> Set.toList |> List.map (fun n -> n, n, AliasType))
+        @ (surface.Constructors |> Set.toList |> List.map (fun n -> n, n, AliasConstructor))
+        @ (surface.Traits |> Set.toList |> List.map (fun n -> n, n, AliasTrait))
+        // A method is prefixed with the trait it belongs to. Dispatch resolves
+        // through the original, so a systematic prefix costs nothing — which is
+        // the reason rule 4 refuses an individual rename and points here.
+        @ (surface.TraitMethods |> Map.toList |> List.map (fun (m, _) -> m, m, AliasTrait))
+
+    let step (visible: (string * string * AliasKind) list) (m: ImportModifier) =
+        match m with
+        | Prefix a
+        | PrefixTypes a -> visible |> List.map (fun (o, v, k) -> o, a + v, k)
+        | Postfix a
+        | PostfixTypes a -> visible |> List.map (fun (o, v, k) -> o, v + a, k)
+        | _ -> visible
+
+    List.fold step start modifiers
+    |> List.filter (fun (original, visible, _) -> original <> visible)
+    // A record's name is both its type and its constructor, so it arrives
+    // twice. Which kind wins does not matter — both resolve the same way.
+    |> List.distinctBy (fun (original, visible, _) -> original, visible)
+
 /// A dependency's declarations as every edge that reaches it sees them.
 ///
 /// The spellings are a list rather than one name, which is rule 10: a module
@@ -733,7 +773,7 @@ let wrapInModule (moduleName: string) (filePath: string) (decls: Decl list) : De
                 | DSignature(_, _, _, r) | DType(_, r) | DTypeRec(_, r) | DTrait(_, _, _, _, _, _, r) | DImpl(_, _, _, _, _, r)
                 | DImplExtern(_, _, _, _, r) | DInlineImpl(_, _, _, _, _, _, _, r)
                 | DModule(_, _, r) | DImport(_, r) | DAlias(_, _, r) | DExport(_, r) | DReExport(_, r)
-                | DExtern(_, _, _, _, r)
+                | DExtern(_, _, _, _, r) | DImportAlias(_, _, _, r)
                 | DImportExtern(_, r) | DImportClass(_, r) | DMacro(_, r) -> r
             unionLexerRanges (getRange first) (getRange last)
     
@@ -759,7 +799,10 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
     /// what a module says about itself, and this holds what each importer made
     /// of it.
     let edges =
-        System.Collections.Generic.Dictionary<string, ResizeArray<Map<string, string> * Lexer.Range>>()
+        System.Collections.Generic.Dictionary<
+            string,
+            ResizeArray<Map<string, string> * (string * string * AliasKind) list * Lexer.Range>
+         >()
 
     let rec load (filePath: string) : unit =
         let absPath = Path.GetFullPath(filePath)
@@ -928,14 +971,13 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
                         // computed here rather than inside `load`, which is
                         // keyed by path and shared by every importer.
                         let m = resolvedModules[dep]
-
-                        let renaming =
-                            defRenaming r (Path.GetFileName dep) (surfaceOf m.ParsedDecls m.Macros) spec.Modifiers
+                        let surface = surfaceOf m.ParsedDecls m.Macros
+                        let renaming = defRenaming r (Path.GetFileName dep) surface spec.Modifiers
 
                         if not (edges.ContainsKey dep) then
                             edges[dep] <- ResizeArray()
 
-                        edges[dep].Add(renaming, r)
+                        edges[dep].Add(renaming, typeRenaming surface spec.Modifiers, r)
 
                         // A macro has to be in the table under the name this
                         // import gives it before the form using it is read.
@@ -1008,13 +1050,26 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
         | true, edgeList ->
             let merged =
                 edgeList
-                |> Seq.collect (fun (renaming, r) ->
+                |> Seq.collect (fun (renaming, _, r) ->
                     renaming |> Map.toSeq |> Seq.map (fun (original, visible) -> original, visible, r))
                 |> Seq.distinctBy (fun (original, visible, _) -> original, visible)
                 |> List.ofSeq
 
+            // The spellings for what is not a binding. They are declarations of
+            // their own rather than a rewriting, because the declaration that
+            // introduces the name has to keep it.
+            let typeSpellings =
+                edgeList
+                |> Seq.collect (fun (_, types, r) ->
+                    types |> Seq.map (fun (original, visible, kind) -> original, visible, kind, r))
+                |> Seq.distinctBy (fun (original, visible, _, _) -> original, visible)
+                |> List.ofSeq
+
             for (original, visible, r) in merged do
                 spellings.Add(visible, m.ModuleName, original, visible <> original, r)
+
+            for (original, visible, _, r) in typeSpellings do
+                spellings.Add(visible, m.ModuleName, original, true, r)
 
             let byOriginal =
                 merged
@@ -1022,7 +1077,11 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
                 |> List.map (fun (original, g) -> original, g |> List.map (fun (_, visible, _) -> visible))
                 |> Map.ofList
 
-            applyDefRenaming byOriginal m.ParsedDecls
+            let aliasDecls =
+                typeSpellings
+                |> List.map (fun (original, visible, kind, r) -> DImportAlias(visible, original, kind, r))
+
+            aliasDecls @ applyDefRenaming byOriginal m.ParsedDecls
         | _ -> m.ParsedDecls
 
     let allDecls =

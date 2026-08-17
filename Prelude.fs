@@ -116,6 +116,7 @@ let emptyRegistry : TraitRegistry =
       TraitOrigins = Map.empty
       InlineMethods = Map.empty
       Aliases = Map.empty
+      ImportAliases = Map.empty
       Records = Map.empty
       RecordFields = Map.empty
       Unions = Map.empty
@@ -717,5 +718,4 @@ let prelude : Env =
           // would refuse the shorter argument list.
           ("choose", { MandatoryCount = 0; KeywordParams = []; RestParam = Some (TCon("Event", [ TVar "a" ])) })
       ]
-      ImportAliases = Map.empty
       CurrentModule = "" }

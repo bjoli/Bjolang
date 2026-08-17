@@ -206,6 +206,18 @@ type ImportModifier =
 
 type ImportSpec = { Path: ImportPath; Modifiers: ImportModifier list }
 
+/// What kind of thing a visible name is a second spelling of.
+///
+/// Everything resolves through one table, but the consumers of it consult
+/// different registries once they get there — and only a def keeps its visible
+/// spelling, because only a def is *bound* under it.
+type AliasKind =
+    | AliasDef
+    | AliasMacro
+    | AliasType
+    | AliasConstructor
+    | AliasTrait
+
 /// An import with nothing done to it, which is what most of them are.
 let plainImport (path: ImportPath) = { Path = path; Modifiers = [] }
 
@@ -294,6 +306,17 @@ type Decl =
     /// codegen emits — uses the original; the visible one is only a spelling.
     /// DExtern (VisibleName, OriginalName, Type, Constraints, Range)
     | DExtern of string * string * FType * (string * string) list * Range
+
+    /// A spelling an import modifier produced for something that is not a
+    /// binding: a type, a constructor, a trait or one of its methods.
+    ///
+    /// A def carries its own second name on its `DExtern`, because it is bound
+    /// under it. These are not bound under anything — the declaration that
+    /// introduces them keeps the name every registry is keyed on — so the
+    /// spelling has to travel as a declaration of its own and is resolved away
+    /// before any of those registries is consulted.
+    /// DImportAlias (VisibleName, OriginalName, Kind, Range)
+    | DImportAlias of string * string * AliasKind * Range
     /// `(import/extern (alias (: Clr.Target type #:exceptions (E ...))) ...)`
     | DImportExtern of ExternImportSpec list * Range
     /// `(import/class (Alias (: Clr.Class type #:exceptions (E ...))) ...)`

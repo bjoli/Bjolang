@@ -603,18 +603,6 @@ type ImplTarget =
 [<Literal>]
 let BlanketCtor = "*"
 
-/// What kind of thing a visible name is a second spelling of.
-///
-/// Every consumer resolves through one table, but they consult different
-/// registries once they get there, and a name may legitimately be a def in one
-/// module and a type in another.
-type AliasKind =
-    | AliasDef
-    | AliasMacro
-    | AliasType
-    | AliasConstructor
-    | AliasTrait
-
 /// Where a visible name really comes from.
 ///
 /// `OriginModule` is `""` for a compiler builtin, which has no module class to
@@ -773,6 +761,19 @@ type TraitRegistry =
       /// second registration would silently win.
       InlineMethods: Map<string * string * string, InlineTemplate>
       Aliases: Map<string, string list * HMType>
+      /// Visible name -> what it is really a spelling of.
+      ///
+      /// Populated by import modifiers, by `(:alias ...)`, and by every plain
+      /// imported binding — a plain import is the degenerate alias whose
+      /// visible name and original agree, and recording it is what lets an
+      /// `(:alias ...)` of an imported name find the module its origin lives
+      /// in.
+      ///
+      /// On the registry rather than beside it on `Env`, because type
+      /// resolution, constructor resolution and trait lookup are all handed a
+      /// registry and nothing else. Not to be confused with `Aliases` above,
+      /// which is the table of `type` aliases.
+      ImportAliases: Map<string, ImportAlias>
       Records: Map<string, string list * (string * HMType) list>
       /// Every record type declaring a given field name.
       ///
@@ -999,17 +1000,6 @@ type Env =
     { Bindings: Map<string, Binding>
       Registry: TraitRegistry
       FunMetas: Map<string, FunMeta>
-      /// Visible name -> what it is really a spelling of.
-      ///
-      /// Populated by import modifiers, by `(:alias ...)`, and by every plain
-      /// imported binding — a plain import is the degenerate alias whose
-      /// visible name and original agree, and recording it is what lets an
-      /// `(:alias ...)` of an imported name find the module its origin lives
-      /// in.
-      ///
-      /// Not to be confused with `TraitRegistry.Aliases`, which is the table of
-      /// `type` aliases.
-      ImportAliases: Map<string, ImportAlias>
       /// The module whose declarations are currently being checked.
       ///
       /// An inline template records where its body came from, because its free
