@@ -52,10 +52,10 @@ let qualifiedBinding (moduleName: string) (name: string) =
 ///
 /// `List`, `Option`, `Syntax` and the rest are the runtime's, declared by no
 /// `.bjo` and named the same wherever they are mentioned — so there is no
-/// declaring module to key them by. `Prelude.emptyRegistry` seeds its
-/// `LocalTypes` from this, and `typeKey` leaves these names alone: a program
-/// that declares a type of one of these names is shadowing the runtime type on
-/// purpose, and `Codegen.shadowedBuiltins` is what that costs.
+/// declaring module to key them by, and they are the names `typeKey` never
+/// produces. A program *declaring* one of these names is a different thing: it
+/// gets a type of its own, keyed like any other, which is what keeps the two
+/// apart. `Prelude.emptyRegistry` seeds its `LocalTypes` from this.
 let builtinTypeNames =
     Set.ofList
         [ "List"; "Vec"; "VecBuilder"; "ListBuilder"; "MapBuilder"; "VecCursor"; "MapCursor"; "StringCursor"
@@ -76,12 +76,16 @@ let builtinTypeNames =
 /// for it in the same table an import modifier's spellings go in, and
 /// `Inference.originalName` resolves it before any registry is consulted.
 ///
+/// A declaration that shadows a runtime type is keyed like any other: a module
+/// declaring its own `Option` gets `main__Option`, distinct from the `Option`
+/// nothing declared, and neither can be taken for the other.
+///
 /// Idempotent for a declaration that already carries *this* module's key,
 /// which is what a `.dll`'s own type declarations read back look like: the
 /// prefix being tested for is one this function just built, so nothing here
 /// has to guess where a key divides.
 let typeKey (moduleName: string) (typeName: string) : string =
-    if moduleName = "" || Set.contains typeName builtinTypeNames then
+    if moduleName = "" then
         typeName
     else
         let prefix = sanitizeIdent (moduleNameOfPath moduleName) + "__"

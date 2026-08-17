@@ -214,32 +214,18 @@ let typeParamKey = Naming.typeParamKey
 
 
 
-/// Built-in type names that the program being compiled declares for itself.
-///
-/// `Result`, `Option` and the collection types are built in, but nothing stops
-/// a module from declaring a union of its own under one of those names — and
-/// two of the suite's tests declare their own `Result`, from before there was
-/// one to inherit. A declared type wins: it is emitted as an ordinary union and
-/// has to be *named* as one, rather than as the runtime type it shadows.
-///
-/// Module state rather than a `CodegenContext` field because `typeToString` is
-/// called from a dozen places that have no context to thread — including the
-/// type-definition emitter itself. It is set once, from `generateProgram`,
-/// before anything is emitted.
-let mutable private shadowedBuiltins: Set<string> = Set.empty
-
 /// The C# spelling of a type constructor's name.
 ///
 /// The single answer to "what is this type called in the generated code", so
-/// that a declared type cannot be a union in one place and the runtime type it
-/// shadows in another — which is exactly what happened while the union-case
-/// emitter had a copy of this logic that did not know about shadowing.
+/// that one type cannot be spelled two ways in two emitters.
+///
+/// A module declaring its own `Result` needs nothing special here any more: its
+/// declaration is keyed by the module that wrote it, so it arrives as
+/// `main__Result` and the runtime type it shadows arrives as `Result`. They are
+/// two names because they are two types.
 let private conBaseName (name: string) =
-    if Set.contains name shadowedBuiltins then
-        sanitizeIdent name
-    else
-        let mapped = mapPrimitiveType name
-        if mapped = name then sanitizeIdent name else mapped
+    let mapped = mapPrimitiveType name
+    if mapped = name then sanitizeIdent name else mapped
 
 let rec typeToString (hm: HMType) : string =
     match hm with
@@ -3454,19 +3440,10 @@ let generateProgram (metadata: ModuleMetadata.Metadata) (linkedDlls: string list
                 )
             | _ -> []
         )
-        // A declared case of the same name wins, exactly as a declared *type*
-        // wins over a builtin in `shadowedBuiltins` below.
+        // A declared case is keyed by the module that declared it, so it cannot
+        // land on one of the builtin names here — a program's own `SList` is
+        // `main__SList`. The two sets merge rather than compete.
         |> List.fold (fun acc (n, info) -> Map.add n info acc) builtinUnionCases
-
-    // Anything the program declares a type of its own for stops being the
-    // built-in of that name, everywhere.
-    shadowedBuiltins <-
-        decls
-        |> collectDecls (function
-            | TType (defs, _) | TTypeRec (defs, _) -> defs |> List.map (fun td -> td.Name)
-            | _ -> []
-        )
-        |> Set.ofList
 
     // Where each top-level name is emitted from, and under what member name.
     //
