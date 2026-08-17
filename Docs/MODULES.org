@@ -14,6 +14,9 @@ things.
 | ~(include "helper.bjo")~ | no — splices into /this/ module | everything in the file       | n/a               |
 | transitive ~BjolangDeps~ | no                    | nothing                      | yes               |
 
+An import may be wrapped in modifiers that decide what its names are called
+here and which of them arrive; see [[*Import modifiers][Import modifiers]].
+
 *An import is always a compiled unit.* ~(import "helper.bjo")~ compiles
 ~helper.bjo~ to ~helper.dll~ and imports that, exactly as if the ~.dll~ had been
 there already. So the two spellings of ~import~ differ only in where the file is
@@ -21,7 +24,7 @@ looked for, and the choice between ~import~ and ~include~ is a choice about
 whether there is a boundary at all:
 
 - an *import* is a boundary. Only exported names cross it, every exported name
-  needs a signature, and inlineable bodies cross as metadata — which is lossy,
+  needs a signature *somewhere*, and inlineable bodies cross as metadata — which is lossy,
   since ~Codegen.isSerializableTemplate~ refuses some shapes and those fall back
   to a call.
 - an *include* is not. Everything is in scope, nothing needs exporting, and an
@@ -29,6 +32,199 @@ whether there is a boundary at all:
 
 Use ~include~ to split one module across files. Use ~import~ when the other file
 is a module in its own right.
+
+** Import modifiers
+
+An import may be wrapped in modifiers that decide what the names it brings in
+are called here, and which of them arrive at all:
+
+#+BEGIN_SRC scheme
+(import (prefix (banan boats) "bb/")
+        (postfix (banan rafts) "/r")
+        (prefix-defs (util parse) "p/")
+        (prefix-types (util geom) "G/")
+        (rename (std http) (http-fetcher http-get))
+        (only (std json) parse-json)
+        (except (std ports) port->lines)
+        (prefix (except (std strings) trim) "s/"))
+#+END_SRC
+
+They *nest* rather than sit in a list, and are read inside-out: the last line
+drops ~trim~ and then prefixes what is left. A modifier belongs to the import
+that wrote it, not to the module — the same module imported twice under
+different modifiers answers to both sets of names (see [[*Importing one module
+twice][Importing one module twice]]).
+
+| Modifier                        | Applies to                                                    |
+|---------------------------------+---------------------------------------------------------------|
+| ~(only m a b ...)~              | defs and macros: keeps these and drops the rest               |
+| ~(except m a b ...)~            | defs and macros: drops these and keeps the rest               |
+| ~(prefix m "s")~                | everything but impls                                          |
+| ~(postfix m "s")~               | everything but impls                                          |
+| ~(prefix-defs m "s")~           | defs and macros                                               |
+| ~(postfix-defs m "s")~          | defs and macros                                               |
+| ~(prefix-types m "s")~          | types, constructors, traits and trait methods                 |
+| ~(postfix-types m "s")~         | types, constructors, traits and trait methods                 |
+| ~(rename m (old new) ...)~      | defs and macros                                               |
+
+*** What a modifier may and may not touch
+
+*Types, constructors and traits always arrive.* An imported signature is source
+text that has to resolve the types it mentions, so there is no view of a module
+in which its own signatures do not typecheck. ~only~ and ~except~ therefore
+filter defs and macros only, and naming a type in one is an error rather than a
+silent no-op.
+
+*Impls are never filtered, renamed or prefixed.* An implementation has no name
+to rename. It travels with its module unconditionally, and a trait method
+called by its bare — or prefixed — name still finds it.
+
+*A constructor follows its type.* It is renamed by the ~-types~ variants, never
+by the ~-defs~ ones, and ~only~ and ~except~ cannot name it.
+
+*Renaming a type is refused*, and points at ~prefix-types~ for a module's worth
+of them or a local ~(type (: NewName Old))~ for one. *Renaming an individual
+trait method is refused* too: an impl is filed under the name the ~def/trait~
+declared, so a bare-name remap would leave the method pointing at nothing.
+Prefixing the trait's module renames its methods together and still dispatches,
+which is what the error says to do.
+
+*** How a renamed name is compiled
+
+A modifier produces a *spelling*, never a copy. Everything keyed internally —
+the implementations, the inline templates, the union cases, the ~Module::name~
+qualified reference a macro expansion uses — goes on using the name the
+declaring module wrote, and the visible name is resolved back to it.
+
+The two halves resolve differently, and the difference matters:
+
+- A *def* stays bound under its visible name, and code generation emits it as a
+  qualified reference into the origin's class. So ~(rename (m) (helper h))~
+  gives an ~h~ that means ~m~'s ~helper~ even if something else in the program
+  also defines ~helper~.
+- A *type, constructor or trait* is not bound under anything — its declaration
+  keeps the name every registry uses — so its prefixed spelling is resolved
+  away before any of them is consulted.
+
+One consequence of the second: a prefixed type does not *hide* the unprefixed
+one. ~(prefix-types (m) "T/")~ makes ~T/Crate~ a name; ~Crate~ stays one. And
+because the type registries are keyed by name with no module in the key,
+~prefix-types~ cannot be used to disambiguate two modules that both declare a
+~Node~ — the second registration still wins, and both prefixed spellings resolve
+to it.
+
+*** Prefix strings
+
+A prefix or postfix has to lex as part of the name it builds, so a string
+containing whitespace, parentheses, quotes or anything else the tokenizer would
+break on is rejected at the import. ~/~ is a symbol character and is the usual
+separator. ~.~ is also a symbol character but is refused anyway: a dot is how a
+.NET member is spelled, and a name that looked like one but was not would be
+read as such long before anybody suspected the import.
+
+One quirk worth knowing: a bare symbol is read as a *constructor pattern* only
+when it starts with a capital, so a nullary case matched by name needs a prefix
+that starts with one. ~(match c (T/EmptyCrate 0))~ matches; ~(match c
+(t/EmptyCrate 0))~ binds a variable. Inside a list it is unambiguous either way.
+
+*** Collisions
+
+A spelling that a modifier or an alias *invents* may not be one that something
+else already produces. Two renames landing on one name, or two modules prefixed
+into the same spelling, is a compile error naming both sources.
+
+This is deliberately narrower than "no two imports may offer one name". A name
+that arrives *unchanged* from two modules is the older rule, unchanged: the
+later import wins, silently, and a name defined in the importing module wins
+over both. Making that an error would reject programs that have always
+compiled — the standard library itself relies on it. So the boundary is: what
+you asked for by hand is checked, what falls out of import order is not.
+
+*** Importing one module twice
+
+Allowed, and the visible names are the union of what each import produces:
+
+#+BEGIN_SRC scheme
+(import (prefix "inc/kitchen.bjo" "k/")
+        (only "inc/kitchen.bjo" unwrap make-crate))
+#+END_SRC
+
+gives ~k/unwrap~, ~k/make-crate~, ~k/tally-up~ … *and* ~unwrap~ and
+~make-crate~, all naming the same compiled members. The collision rule applies
+to any overlap.
+
+*** The implicit prelude
+
+Writing any modifier around the prelude's own path suppresses the implicit
+import and honours the modifier:
+
+#+BEGIN_SRC scheme
+(import (except (std prelude) print))   ;; `print` is really gone
+#+END_SRC
+
+The comparison is on the path alone. Were the implicit edge added alongside
+this one it would reinstate exactly the name the modifier was written to
+remove.
+
+** ~:alias~
+
+#+BEGIN_SRC scheme
+(:alias http-get http-get/async+fixed-headers)
+#+END_SRC
+
+A second spelling of a binding or a macro already in scope. The alias shares the
+original's type scheme, its keyword and rest metadata, and its mutability —
+~set!~ through an alias to a mutable def writes the original's cell, because
+there is no copy to write instead.
+
+- ~old~ must resolve to a def, a macro, or a ~Module_Module::name~ qualified
+  reference. Aliasing a type, a trait or a constructor is an error: a type has
+  ~(type (: New Old))~ aliases of its own, and a constructor follows its type.
+- An alias of an alias flattens to the ultimate origin rather than hopping
+  through the middle.
+- An alias is a top-level binding for shadowing and duplicate purposes: two
+  aliases producing one name, or an alias taking a name the module defines for
+  itself, is an error.
+- An alias of a *macro* is registered before the module is parsed. It has to be
+  — the parser decides what a head symbol means at the moment it meets it — so
+  the alias form is read off the S-expressions alongside the imports.
+
+** The facade pattern
+
+A module may publish names it did not define, under whatever spelling its
+callers should write:
+
+#+BEGIN_SRC scheme
+;; myapp/net.bjo
+(import "net_internals.bjo")
+
+(:alias http-get http-get/async+fixed-headers)
+
+(export http-get)
+#+END_SRC
+
+#+BEGIN_SRC scheme
+;; a consumer
+(import "myapp/net.bjo")
+
+(http-get "https://example.com" #:timeout 30)
+#+END_SRC
+
+The exported name needs no signature here, for the same reason ~re-export~ never
+did: it already has one where it was defined, and a second copy could disagree.
+~rename~ at the import works just as well as ~(:alias ...)~ after it.
+
+*No forwarding method is generated.* ~net~ compiles to a class with nothing in
+it; the export metadata carries the *origin* — the module and the name it is
+defined under — and the consumer emits a reference straight to
+~net_internals_Module~. That assembly is linked because a compiled library's
+dependencies are transitive, which is the same mechanism that makes ~re-export~
+work (see [[*Linking is not importing][Linking is not importing]]).
+
+The origin recorded is the *ultimate* one, resolved when the facade read its own
+imports. So a facade in front of a facade flattens rather than chaining, and two
+facades publishing one binding under two names give a consumer two spellings of
+one reference — not a conflict.
 
 ** ~export~
 
@@ -47,6 +243,13 @@ signature in the same module*:
 
 This is deliberate. An exported type is part of a compiled DLL's metadata, so it
 has to be written down rather than inferred.
+
+The rule is about names this module *defines*. A name that already carries a
+signature from elsewhere is exempt: an ~(:alias ...)~, a name a ~rename~ at the
+import produced, and anything else an import brought in. Those are the facade
+cases, and writing a second signature for one here would be a copy that could
+disagree with the first — which is the same reason ~re-export~ has never
+required one.
 
 ** ~re-export~
 
@@ -140,6 +343,23 @@ the one the importer is meant to write.
 
 A name defined in the importing module always wins over an imported alias.
 
+** Which name wins
+
+Three rules, in the order they are decided:
+
+1. A name *defined in the importing module* wins over anything imported.
+2. Between two imports offering the same name, the *later import* wins.
+   Silently: this is what makes the implicit prelude a background that anything
+   can override, and it is what several modules in this repository rely on.
+3. A spelling a *modifier or an alias produced* may not collide with anything —
+   with another such spelling, or with a name the module defines for itself. It
+   is a compile error naming both sources.
+
+The boundary between 2 and 3 is deliberate. Rule 2 covers what falls out of the
+order imports happen to be written in, where an error would reject working
+programs; rule 3 covers a name somebody asked for by hand, where two answers
+mean the request was ambiguous.
+
 ** Linking is not importing
 
 A compiled library records its dependencies in ~BjolangDeps~. Those assemblies
@@ -216,6 +436,11 @@ import graph keeps one edge rather than two.
 
 It is prepended rather than appended, so a later import still shadows a prelude
 name: the prelude is the earliest binding there is.
+
+An explicit import wrapped in a modifier counts as importing it, and the
+modifier is honoured — ~(import (except (std prelude) print))~ really does
+remove ~print~. The comparison is on the path alone, so the implicit edge is not
+added alongside the explicit one to put the name back.
 
 Files under ~lib/~ are the exception, and are left exactly as written. The
 standard library has to state its own dependencies — ~prelude~ imports ~maths~,
