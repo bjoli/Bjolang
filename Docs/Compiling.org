@@ -24,8 +24,30 @@ A compiled Bjolang module records the *absolute paths* of its dependencies, so
 every ~.dll~ built in the old location is stale the moment the directory moves —
 it links against files that are no longer there, and the failure names a missing
 module class rather than the cause. After a move, delete the build output under
-~TestFiles~ and ~lib/std~ and run the sequence above; ~run_tests.sh~ rebuilds
-~TestFiles/inc~ itself.
+~lib/std~ and run the sequence above.
+
+~TestFiles~ needs nothing done by hand. Every test binary is rebuilt each run,
+and the fixture libraries in ~TestFiles/inc~ — which are *not* — record the
+directory they were built from, so a move rebuilds them for the same reason a
+changed source does.
+
+** What ~run_tests.sh~ rebuilds
+
+Three things, in this order, and only what is out of date:
+
+- *the compiler*, through ~dotnet build~;
+- *the standard library*, when any ~lib/std/*.dll~ is older than its source or
+  than the compiler. It has to happen here rather than fall out of the first
+  test that notices: an import of a ~.bjo~ rebuilds a stale dependency
+  (~ensureLibrary~), so 200 compilations running at once would each rebuild the
+  prelude into the same files;
+- *the fixture libraries* in ~TestFiles/inc~, in dependency waves — everything
+  whose dependencies are already built goes at once. A fixture is rebuilt when
+  its ~.dll~ is older than a source it names, than the compiler, or than the
+  standard library, and rebuilding one rebuilds everything downstream of it.
+
+The tests themselves are always compiled afresh, in parallel, one job per
+three-digit group.
 
 ** ~bjor~
 

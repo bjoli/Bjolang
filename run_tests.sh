@@ -37,6 +37,44 @@ cleanup() {
 }
 trap cleanup EXIT
 
+MAX_JOBS=$(nproc 2>/dev/null || echo 8)
+
+# --- The standard library ----------------------------------------------------
+#
+# Everything below imports `(std prelude)`, and an import of a `.bjo` resolves
+# through `ensureLibrary` — which counts the compiler as part of a module's
+# source closure, so a rebuilt compiler leaves every `lib/std/*.dll` out of
+# date. Left to the compilations below, each would notice that and rebuild the
+# standard library *itself*, concurrently, into the same files.
+#
+# It used to be hidden rather than absent: the fixtures were built one at a
+# time, so the first of them rebuilt the prelude and the rest found it current.
+# Building anything in parallel makes it a race, so the answer is to be
+# deliberate about it — once, here, before anything else runs.
+STD_DIR="lib/std"
+
+std_is_stale() {
+    local src dll
+    for src in "$STD_DIR"/*.bjo; do
+        [ -f "$src" ] || continue
+        dll="${src%.bjo}.dll"
+        [ -f "$dll" ] || return 0
+        [ "$src" -nt "$dll" ] && return 0
+        [ "$COMPILER_DLL" -nt "$dll" ] && return 0
+    done
+    return 1
+}
+
+if std_is_stale; then
+    echo -e "${BLUE}Rebuilding the standard library...${NC}"
+    if ! ./build_std.sh > "$LOG_DIR/std.log" 2>&1; then
+        echo -e "${RED}Standard library build failed!${NC}"
+        cat "$LOG_DIR/std.log"
+        exit 1
+    fi
+    echo -e "${GREEN}Standard library rebuilt.${NC}"
+fi
+
 # --- Fixture libraries -------------------------------------------------------
 #
 # `TestFiles/inc` holds the modules the "across a dll" tests link against. The
@@ -44,76 +82,152 @@ trap cleanup EXIT
 # nothing builds them, and the tests that import one fail with a missing module
 # class rather than anything that names the cause.
 #
-# They are rebuilt every run rather than reused, because a stale `.dll` is worse
-# than a missing one: a compiled module records the *absolute paths* of its own
-# dependencies, so one built in another directory links against files that are
-# no longer there. That is exactly what a move of the repository leaves behind.
-#
 # Which files are modules is read off the source: one with an `(export ...)` or
 # a `def/macro` is a module and gets compiled, and the rest are include
 # fragments, spliced into whoever includes them and not modules at all. A macro
 # counts because macros are published whether or not anything is exported, so a
-# fixture that is nothing but transformers has no `(export ...)` to find. Build
-# order follows the `(import "...")` edges between them, so a new fixture needs
-# no edit here.
+# fixture that is nothing but transformers has no `(export ...)` to find.
+#
+# A fixture's edges are every `"....bjo"` it names, which covers `(import ...)`
+# and `(include ...)` alike and does not care how many paths one form lists.
+# They decide two things: what may be built at the same time, and what a
+# rebuild forces — a module reads its dependencies' metadata at build time, so
+# rebuilding one makes everything downstream of it out of date.
+#
+# A module is rebuilt when its `.dll` is older than a source it is built from,
+# older than the compiler, or older than the standard library it links against.
+# The last two are the same reason: a `.dll` carries metadata read at build time
+# from the compiler's format and from the prelude's own metadata, so a rebuild of
+# either invalidates it however fresh the source is. That is the rule
+# `Pipeline.ensureLibrary` applies to an imported `.bjo` — and `bjor` to a
+# program — spelled out here because these are compiled directly rather than
+# reached through an import.
+#
+# One thing timestamps cannot see: a *moved* checkout. A compiled module records
+# the absolute paths of its dependencies, so one built somewhere else links
+# against files that are no longer there — which is what made this rebuild
+# everything, every run. The directory the fixtures were built from is recorded
+# instead, and a change to it rebuilds the lot.
 INC_DIR="TestFiles/inc"
+FIXTURE_STAMP="$INC_DIR/.built-from"
+FIXTURES_BUILT=0
+FIXTURES_CURRENT=0
 
 build_fixture_libs() {
-    local pending=()
-    local f
+    local f d modules=()
 
     for f in "$INC_DIR"/*.bjo; do
         [ -f "$f" ] || continue
         if grep -qE '^[[:space:]]*\((export|def/macro)' "$f"; then
-            pending+=("$f")
-            rm -f "${f%.bjo}.dll"
+            modules+=("$f")
         fi
     done
 
-    [ ${#pending[@]} -eq 0 ] && return 0
+    [ ${#modules[@]} -eq 0 ] && return 0
 
-    local progress=1
-    while [ ${#pending[@]} -gt 0 ] && [ $progress -eq 1 ]; do
-        progress=0
-        local remaining=()
+    local moved=0
+    [ "$(cat "$FIXTURE_STAMP" 2>/dev/null)" = "$PWD" ] || moved=1
+
+    # Sibling files each module is built from, and whether it has to be built.
+    local -A edges stale built
+    for f in "${modules[@]}"; do
+        edges["$f"]=$(grep -ohE '"[^"]+\.bjo"' "$f" | tr -d '"' | xargs -r -n1 basename \
+                      | sort -u | sed "s|^|$INC_DIR/|" | while read -r d; do
+                          [ -f "$d" ] && [ "$d" != "$f" ] && echo "$d"
+                      done)
+    done
+
+    for f in "${modules[@]}"; do
+        local dll="${f%.bjo}.dll"
+        stale["$f"]=0
+
+        if [ $moved -eq 1 ] || [ ! -f "$dll" ] || [ "$f" -nt "$dll" ] || [ "$COMPILER_DLL" -nt "$dll" ]; then
+            stale["$f"]=1
+        else
+            for d in ${edges["$f"]} "$STD_DIR"/*.dll; do
+                [ -f "$d" ] && [ "$d" -nt "$dll" ] && stale["$f"]=1
+            done
+        fi
+    done
+
+    # A rebuilt dependency is a rebuilt dependent: what crossed between them is
+    # metadata, read once, at the time the dependent was compiled.
+    local changed=1
+    while [ $changed -eq 1 ]; do
+        changed=0
+        for f in "${modules[@]}"; do
+            [ "${stale[$f]}" = 1 ] && continue
+            for d in ${edges["$f"]}; do
+                if [ "${stale[$d]:-0}" = 1 ]; then
+                    stale["$f"]=1
+                    changed=1
+                fi
+            done
+        done
+    done
+
+    # One wave at a time: everything whose dependencies are behind it goes at
+    # once, because nothing in a wave can be waiting on anything else in it.
+    local pending=("${modules[@]}")
+
+    while [ ${#pending[@]} -gt 0 ]; do
+        local wave=() remaining=() ready pids=() names=()
 
         for f in "${pending[@]}"; do
-            # Ready once every sibling module it imports has been built.
-            local ready=1
-            local dep
-            while read -r dep; do
-                [ -z "$dep" ] && continue
-                if [ -f "$INC_DIR/$dep" ] && [ ! -f "$INC_DIR/${dep%.bjo}.dll" ]; then
+            ready=1
+            for d in ${edges["$f"]}; do
+                # Only a sibling *module* is something to wait for. A fragment
+                # is spliced into whoever names it and builds nothing.
+                if [ -n "${stale[$d]+set}" ] && [ -z "${built[$d]+set}" ]; then
                     ready=0
                 fi
-            done < <(grep -oE '\(import[[:space:]]+"[^"]+\.bjo"' "$f" \
-                     | grep -oE '"[^"]+"' | tr -d '"' | xargs -r -n1 basename)
+            done
+            if [ $ready -eq 1 ]; then wave+=("$f"); else remaining+=("$f"); fi
+        done
 
-            if [ $ready -eq 1 ]; then
-                if ! dotnet "$COMPILER_DLL" --lib "$f" > "$LOG_DIR/inc.log" 2>&1; then
-                    echo -e "${RED}Failed to build fixture library $f${NC}"
-                    cat "$LOG_DIR/inc.log"
-                    exit 1
-                fi
-                progress=1
-            else
-                remaining+=("$f")
+        if [ ${#wave[@]} -eq 0 ]; then
+            echo -e "${RED}Could not resolve a build order for: ${pending[*]}${NC}"
+            echo -e "${RED}A cycle, or an import naming a file that is not there.${NC}"
+            exit 1
+        fi
+
+        for f in "${wave[@]}"; do
+            built["$f"]=1
+
+            if [ "${stale[$f]}" != 1 ]; then
+                FIXTURES_CURRENT=$((FIXTURES_CURRENT + 1))
+                continue
             fi
+
+            rm -f "${f%.bjo}.dll"
+            dotnet "$COMPILER_DLL" --lib "$f" > "$LOG_DIR/inc_$(basename "${f%.bjo}").log" 2>&1 &
+            pids+=($!)
+            names+=("$f")
+
+            while [ $(jobs -r -p | wc -l) -ge $MAX_JOBS ]; do
+                sleep 0.02
+            done
+        done
+
+        local i
+        for i in "${!pids[@]}"; do
+            if ! wait "${pids[$i]}"; then
+                echo -e "${RED}Failed to build fixture library ${names[$i]}${NC}"
+                cat "$LOG_DIR/inc_$(basename "${names[$i]%.bjo}").log"
+                exit 1
+            fi
+            FIXTURES_BUILT=$((FIXTURES_BUILT + 1))
         done
 
         pending=("${remaining[@]}")
     done
 
-    if [ ${#pending[@]} -gt 0 ]; then
-        echo -e "${RED}Could not resolve a build order for: ${pending[*]}${NC}"
-        echo -e "${RED}A cycle, or an import naming a file that is not there.${NC}"
-        exit 1
-    fi
+    echo "$PWD" > "$FIXTURE_STAMP"
 }
 
 echo -e "${BLUE}Building fixture libraries in $INC_DIR...${NC}"
 build_fixture_libs
-echo -e "${GREEN}Fixture libraries built.${NC}"
+echo -e "${GREEN}Fixture libraries: $FIXTURES_BUILT built, $FIXTURES_CURRENT already current.${NC}"
 echo ""
 
 # Helper function to run a prefix group
@@ -189,7 +303,6 @@ if [ -z "$prefixes" ]; then
     exit 1
 fi
 
-MAX_JOBS=$(nproc 2>/dev/null || echo 8)
 echo -e "${BLUE}Running tests in parallel (max $MAX_JOBS concurrent jobs)...${NC}"
 echo "--------------------------------------------------"
 
