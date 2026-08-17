@@ -9,3 +9,5 @@ If you change anything in bjolangruntime you need to rebuild it. It is a differe
 To rebuild the standard library, please use ./build_std.sh
 
 Keep source comments as succinct as you can without being mystic. Do not reference conversations we have had. Only document what is in the code.
+
+Do not commit prompts.
