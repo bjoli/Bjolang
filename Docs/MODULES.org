@@ -107,11 +107,34 @@ The two halves resolve differently, and the difference matters:
   away before any of them is consulted.
 
 One consequence of the second: a prefixed type does not *hide* the unprefixed
-one. ~(prefix-types (m) "T/")~ makes ~T/Crate~ a name; ~Crate~ stays one. And
-because the type registries are keyed by name with no module in the key,
-~prefix-types~ cannot be used to disambiguate two modules that both declare a
-~Node~ — the second registration still wins, and both prefixed spellings resolve
-to it.
+one. ~(prefix-types (m) "T/")~ makes ~T/Crate~ a name; ~Crate~ stays one.
+
+*** What ~prefix-types~ is not for
+
+It renames; it does not disambiguate. If two libraries both declare a ~Banana~,
+importing them under two prefixes does *not* give you two types:
+
+#+BEGIN_SRC scheme
+(import (prefix-types "a.bjo" "A/")
+        (prefix-types "b.bjo" "B/"))
+#+END_SRC
+
+~A/Banana~ and ~B/Banana~ are both real names, and both resolve to the same
+entry — so a value of one is accepted where the other is wanted, silently, and
+the program is then rejected by the C# backend with
+
+#+BEGIN_SRC text
+error CS0433: The type 'Banana' exists in both 'a' and 'b'
+#+END_SRC
+
+which names assemblies rather than modules and points at generated code.
+
+This is not something the modifier does or fails to do. A Bjolang type is
+nominal by its *bare* name across the whole program: the registries have no
+module in the key, and each type is emitted as one class. Two libraries
+declaring one type name collide under plain ~import~ too — the modifier neither
+causes it nor is able to repair it. Until the type registries are keyed by
+module, the only fix is for one of the two libraries to rename its type.
 
 *** Prefix strings
 
