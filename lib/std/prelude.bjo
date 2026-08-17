@@ -905,7 +905,7 @@
   (let loop ((acc init))
     (if (port-eof? port)
         acc
-        (loop (f port init)))))
+        (loop (f port acc)))))
 
 
 ;; --- Output ---
@@ -1196,19 +1196,34 @@
   (def sp (open-output-string))
   (def out #(write-string sp &1))
   (out "[")
-  (if (= 0 (vec-length  v))
-      (out "")
-      (let ()
-        (out (->str (vec-ref v 0)))
-        (loop (:with i 0 (+ i 1))
-              (:for elem v)
-              (:when (> i 0))
-              (:do (out " ")
-                   (out (->str elem))))))
-  (out "]")
+  (when (not (empty? v))
+    (out (->str (vec-ref v 0)))
+    (loop (:with i 0 (+ i 1))
+          (:for elem v)
+          (:when (> i 0))
+          (:do (out " ")
+               (out (->str elem)))))
   (get-output-string sp))
 
 (def/impl (->str (Vec %a))
   (where (->str %a))
   (defun (->str v)
     (vec->str v)))
+
+
+(: seq->str (-> (Seq %a) string) (where (->str %a)))
+(defun (seq->str sq)
+  (def sp (open-output-string))
+  (def out #(write-string sp &1))
+  (out "(seq")
+  (when (not (empty? sq))
+    (out (->str (seq-head sq)))
+    (loop (:for item (seq-tail sq))
+          (:do (out (str " " (->str item))))))
+  (out ")")
+  (get-output-string sp))
+
+(def/impl (->str (Seq %a))
+  (where (->str %a))
+  (defun (->str sq)
+    (seq->str sq)))
