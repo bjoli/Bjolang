@@ -286,7 +286,14 @@ type Decl =
     // that impl's instantiation of the signature, which is what lets one body
     // mean something different at each implementor.
     | DTrait of string * string * int * string list * (string * FType) list * Decl list * Range
-    | DExtern of string * FType * (string * string) list * Range
+    /// A binding an imported module publishes: the name it is visible under
+    /// here, the name it is defined under there, its type and its constraints.
+    ///
+    /// The two names differ when the import carried a modifier. Everything
+    /// keyed internally — the `Module::name` qualified binding, the reference
+    /// codegen emits — uses the original; the visible one is only a spelling.
+    /// DExtern (VisibleName, OriginalName, Type, Constraints, Range)
+    | DExtern of string * string * FType * (string * string) list * Range
     /// `(import/extern (alias (: Clr.Target type #:exceptions (E ...))) ...)`
     | DImportExtern of ExternImportSpec list * Range
     /// `(import/class (Alias (: Clr.Class type #:exceptions (E ...))) ...)`

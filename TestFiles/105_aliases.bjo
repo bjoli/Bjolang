@@ -1,0 +1,71 @@
+;; `(:alias new old)` — a second spelling of a binding or a macro in scope.
+;;
+;; The alias shares the original's scheme, its keyword and rest metadata and
+;; its mutability. Nothing is copied and no forwarding method is emitted: every
+;; use resolves to the original, which is what makes `set!` through one write
+;; the same cell.
+(import "inc/kitchen.bjo")
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; An imported def, an imported macro, and a prelude binding.
+(:alias fetch unwrap)
+(:alias triple thrice)
+(:alias say println)
+
+;; An alias of an alias: resolution flattens to the ultimate origin, so this is
+;; a spelling of `kitchen`'s `unwrap` rather than of `fetch`.
+(:alias fetch-again fetch)
+
+(: box (-> int (Crate int)))
+(defun (box n) (make-crate n))
+
+;; One of this module's own.
+(:alias wrap-up box)
+
+(: nudge (-> int (#:by int) int))
+(defun (nudge n #:by 2)
+  (* n by))
+
+(:alias bump-by nudge)
+
+(def/mutable ticks 0)
+(:alias clicks ticks)
+
+;; Taking a function as an argument is the whole of "first class" here: the
+;; alias has to survive as a value, not only in call position.
+(: apply-it (-> (-> (Crate int) int) (Crate int) int))
+(defun (apply-it f c)
+  (f c))
+
+(defun (main)
+  (expect "alias of an import" (int->string (fetch (make-crate 3))) "3")
+  (expect "chained alias" (int->string (fetch-again (make-crate 4))) "4")
+  (expect "alias of a local def" (int->string (fetch (wrap-up 5))) "5")
+
+  ;; Keyword metadata travels with the alias; without it the shorter argument
+  ;; list would not unify.
+  (expect "alias keeps its keyword parameter" (int->string (bump-by 5)) "10")
+  (expect "and one passed by name" (int->string (bump-by 5 #:by 3)) "15")
+
+  ;; `set!` through an alias to a mutable def writes the original's cell.
+  (set! clicks 7)
+  (expect "set! writes through" (int->string ticks) "7")
+  (set! ticks 9)
+  (expect "and reads through" (int->string clicks) "9")
+
+  (expect "first class" (int->string (apply-it fetch (make-crate 8))) "8")
+
+  ;; A macro alias, which had to reach the macro table before this file was
+  ;; parsed — by the time inference runs, the call has already been read.
+  (expect "alias of a macro" (int->string (triple 5)) "15")
+
+  (say "105 ok")
+  0)

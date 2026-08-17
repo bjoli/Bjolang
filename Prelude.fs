@@ -717,4 +717,5 @@ let prelude : Env =
           // would refuse the shorter argument list.
           ("choose", { MandatoryCount = 0; KeywordParams = []; RestParam = Some (TCon("Event", [ TVar "a" ])) })
       ]
+      ImportAliases = Map.empty
       CurrentModule = "" }

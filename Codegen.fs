@@ -38,7 +38,11 @@ type CodegenContext = {
     Builder: StringBuilder
     IndentLevel: int
     UnionCases: Map<string, UnionCaseInfo>
-    GlobalBindings: Map<string, string>
+    /// Visible name -> the module class holding it and the member it is
+    /// spelled as there. The two names differ for an alias and for an import
+    /// brought in under a modifier; an empty module means a name with no class
+    /// of its own, emitted bare.
+    GlobalBindings: Map<string, string * string>
     /// Where `generateExpr` may hoist statement-shaped operands to. `None` in
     /// the three contexts C# gives no statement position: optional-parameter
     /// defaults, `case ... when` guards, and switch-expression arms.
@@ -1592,7 +1596,8 @@ and private generateGuarded
 /// Fully qualifies a module-level binding.
 and private qualifiedName (ctx: CodegenContext) (name: string) =
     match Map.tryFind name ctx.GlobalBindings with
-    | Some modName -> $"%s{moduleClassName modName}.%s{sanitizeIdent name}"
+    | Some("", member') -> sanitizeIdent member'
+    | Some(modName, member') -> $"%s{moduleClassName modName}.%s{sanitizeIdent member'}"
     | None -> sanitizeIdent name
 
 /// Evaluates a statement-shaped node into a temporary in the enclosing statement
@@ -2170,8 +2175,12 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
         generateBindingValue ctx (DeclareAndAssign(typeToString value.Type, sanitizeIdent name)) value
         generateBlock ctx target body
 
+    // Qualified, not bare: `set!` through an alias has to write the original's
+    // cell rather than name a field the alias's own class does not have.
+    // `AlphaRename` has already made sure no local shares a top-level name, so
+    // the lookup cannot capture one.
     | TSet (name, value) ->
-        generateBindingValue ctx (Assign(sanitizeIdent name)) value
+        generateBindingValue ctx (Assign(qualifiedName ctx name)) value
         // `set!` itself yields void, so the enclosing target still has to be
         // discharged.
         dischargeVoid ctx target
@@ -3459,20 +3468,49 @@ let generateProgram (metadata: ModuleMetadata.Metadata) (linkedDlls: string list
         )
         |> Set.ofList
 
-    let globalBindings =
+    // Where each top-level name is emitted from, and under what member name.
+    //
+    // A plain import is deliberately absent: it resolves through the
+    // `using static` for its module, as it always has. What is here is what a
+    // bare identifier cannot express — a name whose spelling differs from the
+    // member it stands for, which is every alias and every import brought in
+    // under a modifier.
+    let definitions =
         decls
         |> collectDecls (function
             | TModule (modName, innerDecls, _) ->
                 innerDecls |> List.collect (function
-                    | TDef (n, _, _, _) -> [ (n, modName) ]
-                    | TDefMutable (n, _, _, _) -> [ (n, modName) ]
-                    | TDefTuple (names, _, _, _) -> names |> List.map (fun n -> (n, modName))
-                    | TDefun (n, _, _, _, _, _, _, _, _) -> [ (n, modName) ]
+                    | TDef (n, _, _, _) -> [ (n, (modName, n)) ]
+                    | TDefMutable (n, _, _, _) -> [ (n, (modName, n)) ]
+                    | TDefTuple (names, _, _, _) -> names |> List.map (fun n -> (n, (modName, n)))
+                    | TDefun (n, _, _, _, _, _, _, _, _) -> [ (n, (modName, n)) ]
+                    | TExtern (visible, original, _, _) when visible <> original ->
+                        [ (visible, (modName, original)) ]
                     | _ -> []
                 )
             | _ -> []
         )
         |> Map.ofList
+
+    // Aliases last, and resolved against the definitions: an alias whose
+    // origin module is unknown to inference is one of this program's own
+    // bindings, or a builtin with no class to name.
+    let globalBindings =
+        decls
+        |> collectDecls (function
+            | TAlias (visible, Some resolution, _) ->
+                let target =
+                    if resolution.OriginModule <> "" then
+                        resolution.OriginModule, resolution.OriginalName
+                    else
+                        match Map.tryFind resolution.OriginalName definitions with
+                        | Some found -> found
+                        | None -> "", resolution.OriginalName
+
+                [ (visible, target) ]
+            | _ -> []
+        )
+        |> List.fold (fun acc (n, target) -> Map.add n target acc) definitions
 
     let ctx =
         { Builder = StringBuilder()

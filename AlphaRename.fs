@@ -529,7 +529,8 @@ let rec private topLevelNames (decls: TDecl list) : Set<string> =
         | TModule(_, inner, _) -> Set.toList (topLevelNames inner)
         | TDef(n, _, _, _)
         | TDefMutable(n, _, _, _)
-        | TExtern(n, _, _) -> [ n ]
+        | TAlias(n, _, _)
+        | TExtern(n, _, _, _) -> [ n ]
         | TDefun(n, _, _, _, _, _, _, _, _) -> [ n ]
         | TDefTuple(names, _, _, _) -> names
         | _ -> [])

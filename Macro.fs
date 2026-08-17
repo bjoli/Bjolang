@@ -86,6 +86,23 @@ let setLocalMacros (names: Set<string>) = localMacros <- names
 /// moved ahead of parsing.
 let register (binding: MacroBinding) = table[binding.Name] <- binding
 
+/// A second spelling of a macro already in the table.
+///
+/// Answers whether there was one to alias, so that `(:alias ...)` of an
+/// ordinary binding can fall through to the type checker. Registered before the
+/// module writing the alias is parsed, for the same reason a macro's own name
+/// is: the parser has to know a head symbol names a macro at the moment it
+/// meets it.
+///
+/// `ModuleName`, `Exports` and `Method` are the original's — the transformer
+/// and the module its templates resolve against do not move.
+let alias (newName: string) (oldName: string) : bool =
+    match table.TryGetValue oldName with
+    | true, binding ->
+        table[newName] <- { binding with Name = newName }
+        true
+    | _ -> false
+
 /// Whether a head symbol names a macro — including one a macro wrote.
 ///
 /// The mark is stripped for the same reason `expand` strips it: a recursive

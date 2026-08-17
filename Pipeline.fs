@@ -260,6 +260,196 @@ let private inlineImplDecl (source: string) (entry: ModuleMetadata.InlineTemplat
     )
 
 // ---------------------------------------------------------------------------
+// Applying an import's modifiers
+// ---------------------------------------------------------------------------
+
+/// The prefix a foreign alias named by an exported body is published under.
+///
+/// Neither filtered nor renamed. A spliced template refers to it by the name it
+/// was published as, wherever the splice lands, so an edge's modifiers must not
+/// reach it — the name is not one the importing module ever writes.
+let private publishedAliasPrefix = "clr_import__"
+
+/// What a dependency offers, by kind.
+///
+/// `only`, `except` and `rename` are refused on everything but the defs, so
+/// what a name *is* has to be answerable before any of them is applied.
+type private ImportSurface =
+    { /// Exported bindings, foreign aliases and macros — the names a modifier
+      /// may filter or rename.
+      Defs: Set<string>
+      Types: Set<string>
+      Constructors: Set<string>
+      Traits: Set<string>
+      /// Method name -> the trait that declares it.
+      TraitMethods: Map<string, string> }
+
+let private surfaceOf (decls: Decl list) (macros: ModuleMetadata.MacroEntry list) : ImportSurface =
+    let typeDefs =
+        decls
+        |> List.collect (function
+            | DType(tds, _)
+            | DTypeRec(tds, _) -> tds
+            | _ -> [])
+
+    { Defs =
+        (decls
+         |> List.collect (function
+             | DExtern(visible, _, _, _, _) -> [ visible ]
+             | DImportExtern(specs, _) ->
+                 specs
+                 |> List.map (fun s -> s.Alias)
+                 |> List.filter (fun a -> not (a.StartsWith publishedAliasPrefix))
+             | _ -> []))
+        @ (macros |> List.map (fun m -> m.Name))
+        |> Set.ofList
+
+      Types = typeDefs |> List.map (fun td -> td.Name) |> Set.ofList
+
+      Constructors =
+        typeDefs
+        |> List.collect (fun td ->
+            match td.Kind with
+            | Union cases ->
+                cases
+                |> List.map (function
+                    | SimpleCase(n, _) -> n
+                    | DataCase(n, _, _, _) -> n)
+            // A record is constructed by its own name.
+            | Record _ -> [ td.Name ]
+            | Alias _ -> [])
+        |> Set.ofList
+
+      Traits =
+        decls
+        |> List.choose (function
+            | DTrait(n, _, _, _, _, _, _) -> Some n
+            | _ -> None)
+        |> Set.ofList
+
+      TraitMethods =
+        decls
+        |> List.collect (function
+            | DTrait(traitName, _, _, _, signatures, _, _) ->
+                signatures |> List.map (fun (m, _) -> m, traitName)
+            | _ -> [])
+        |> Map.ofList }
+
+/// What each of a dependency's defs and macros is called after one import
+/// edge's modifiers. A name absent from the result was filtered out.
+///
+/// Keyed on the original name throughout, because that is what the declarations
+/// and the macro entries are keyed on; the value is the spelling this edge
+/// produces. Modifiers are applied in the order they nest, innermost first, so
+/// `(prefix (rename (m) (a b)) "p/")` yields `p/b`.
+let private defRenaming
+    (r: Lexer.Range)
+    (moduleLabel: string)
+    (surface: ImportSurface)
+    (modifiers: ImportModifier list)
+    : Map<string, string> =
+
+    let where = Lexer.formatPos r
+
+    /// Refuses a name `only`, `except` or `rename` may not touch, and a name
+    /// the dependency does not offer at all.
+    let checkTouchable (form: string) (visible: Map<string, string>) (name: string) : unit =
+        let advice =
+            if form = "rename" then
+                $"(rename ...) applies to defs and macros. Write (prefix-types ...) to rename a module's types, constructors and traits together, or a local (type (: new-name %s{name})) for one of them."
+            else
+                "Types, constructors and traits always arrive with their module — an imported signature is source text that has to resolve the types it mentions — so (only ...) and (except ...) filter defs and macros only."
+
+        let refuse (what: string) : unit =
+            failwithf $"Invalid (%s{form} ...) at %s{where}: '%s{name}' %s{what}. %s{advice}"
+
+        if Set.contains name surface.Types then refuse "is a type"
+        elif Set.contains name surface.Constructors then refuse "is a constructor"
+        elif Set.contains name surface.Traits then refuse "is a trait"
+        else
+            match Map.tryFind name surface.TraitMethods with
+            | Some owner ->
+                failwithf
+                    $"Invalid (%s{form} ...) at %s{where}: '%s{name}' is a method of the trait '%s{owner}'. A trait method is dispatched under the name it was declared with, so an individual one cannot be remapped — prefix the module that declares the trait instead, which renames its methods together and still dispatches."
+            | None ->
+                if not (visible |> Map.exists (fun _ v -> v = name)) then
+                    failwithf
+                        $"Invalid (%s{form} ...) at %s{where}: '%s{name}' is not exported by %s{moduleLabel}."
+
+    let step (visible: Map<string, string>) (m: ImportModifier) : Map<string, string> =
+        match m with
+        | Only names ->
+            for n in names do
+                checkTouchable "only" visible n
+
+            let keep = Set.ofList names
+            visible |> Map.filter (fun _ v -> Set.contains v keep)
+
+        | Except names ->
+            for n in names do
+                checkTouchable "except" visible n
+
+            let drop = Set.ofList names
+            visible |> Map.filter (fun _ v -> not (Set.contains v drop))
+
+        | Prefix a
+        | PrefixDefs a -> visible |> Map.map (fun _ v -> a + v)
+
+        | Postfix a
+        | PostfixDefs a -> visible |> Map.map (fun _ v -> v + a)
+
+        | Rename pairs ->
+            for (oldName, _) in pairs do
+                checkTouchable "rename" visible oldName
+
+            let byOld = Map.ofList pairs
+
+            visible
+            |> Map.map (fun _ v ->
+                match Map.tryFind v byOld with
+                | Some renamed -> renamed
+                | None -> v)
+
+        // Types are a spelling of their own, and are renamed where they are
+        // resolved rather than by rewriting the declarations that carry them.
+        | PrefixTypes _
+        | PostfixTypes _ -> visible
+
+    surface.Defs
+    |> Set.toList
+    |> List.map (fun n -> n, n)
+    |> Map.ofList
+    |> fun start -> List.fold step start modifiers
+
+/// A dependency's declarations as every edge that reaches it sees them.
+///
+/// The spellings are a list rather than one name, which is rule 10: a module
+/// imported twice under different modifiers contributes both, and the
+/// declaration is duplicated once per spelling. A name no edge kept is dropped.
+let private applyDefRenaming (renaming: Map<string, string list>) (decls: Decl list) : Decl list =
+    let visible (n: string) =
+        match Map.tryFind n renaming with
+        | Some names -> names
+        | None -> []
+
+    decls
+    |> List.collect (fun d ->
+        match d with
+        | DExtern(name, original, t, constraints, r) ->
+            visible name |> List.map (fun v -> DExtern(v, original, t, constraints, r))
+        | DImportExtern(specs, r) ->
+            let kept =
+                specs
+                |> List.collect (fun s ->
+                    if s.Alias.StartsWith publishedAliasPrefix then
+                        [ s ]
+                    else
+                        visible s.Alias |> List.map (fun v -> { s with Alias = v }))
+
+            if kept.IsEmpty then [] else [ DImportExtern(kept, r) ]
+        | other -> [ other ])
+
+// ---------------------------------------------------------------------------
 // Making a macro module's dependencies loadable
 // ---------------------------------------------------------------------------
 
@@ -319,17 +509,23 @@ let private installAssemblyResolver () =
 /// it. `Exports` comes from the same assembly's declarations, because a
 /// template may only name an exported binding of its own module — anything else
 /// has nowhere for rule two to resolve to.
+///
+/// `renaming` is the importing edge's: a macro is registered under the name
+/// *this* import makes it visible as, and one the edge filtered out is not
+/// registered at all. Everything else stays the original's — the transformer to
+/// invoke, and the module its templates resolve against.
 let private registerMacros
     (asm: System.Reflection.Assembly)
     (entries: ModuleMetadata.MacroEntry list)
     (decls: Decl list)
+    (renaming: Map<string, string>)
     : unit =
 
     if not entries.IsEmpty then
         let exports =
             decls
             |> List.choose (function
-                | DExtern(n, _, _, _) -> Some n
+                | DExtern(_, original, _, _, _) -> Some original
                 | DDefun(n, _, _, _, _) -> Some n
                 | DDef(n, _, _) -> Some n
                 | DDefMutable(n, _, _) -> Some n
@@ -337,32 +533,45 @@ let private registerMacros
             |> Set.ofList
 
         for entry in entries do
-            let className = Naming.moduleClassName entry.ModuleName
-            let clrType = asm.GetType className
+            match Map.tryFind entry.Name renaming with
+            | None -> ()
+            | Some visibleName ->
+                let className = Naming.moduleClassName entry.ModuleName
+                let clrType = asm.GetType className
 
-            if isNull clrType then
-                failwithf
-                    $"'%s{entry.Name}' is declared a macro by %s{asm.GetName().Name}, but the class '%s{className}' holding it is not in that assembly."
+                if isNull clrType then
+                    failwithf
+                        $"'%s{entry.Name}' is declared a macro by %s{asm.GetName().Name}, but the class '%s{className}' holding it is not in that assembly."
 
-            let method = clrType.GetMethod(Naming.sanitizeIdent entry.Name)
+                let method = clrType.GetMethod(Naming.sanitizeIdent entry.Name)
 
-            if isNull method then
-                failwithf
-                    $"'%s{entry.Name}' is declared a macro by %s{asm.GetName().Name}, but '%s{className}' has no method '%s{Naming.sanitizeIdent entry.Name}'."
+                if isNull method then
+                    failwithf
+                        $"'%s{entry.Name}' is declared a macro by %s{asm.GetName().Name}, but '%s{className}' has no method '%s{Naming.sanitizeIdent entry.Name}'."
 
-            Macro.register
-                { Name = entry.Name
-                  ModuleName = entry.ModuleName
-                  Exports = exports
-                  Method = method }
+                Macro.register
+                    { Name = visibleName
+                      ModuleName = entry.ModuleName
+                      Exports = exports
+                      Method = method }
 
         Macro.install ()
 
+/// One module of the graph, parsed once and cached by path.
+///
+/// Deliberately modifier-independent. Modifiers belong to the *edge* that
+/// reaches a module, and the same module may be reached by several edges with
+/// different ones — so what is cached here is what the module says about
+/// itself, and each edge derives its own view from it.
 type LoadedModule = {
     FilePath: string
     ModuleName: string
     Dependencies: string list
     ParsedDecls: Decl list
+    /// The macros the assembly publishes, and the assembly holding them.
+    /// Registration is per edge, so it does not happen where this is built.
+    Macros: ModuleMetadata.MacroEntry list
+    Assembly: System.Reflection.Assembly option
 }
 
 // ---------------------------------------------------------------------------
@@ -463,13 +672,16 @@ let private isStandardLibrary (absPath: string) =
 /// `Parser.parseDecl` is called rather than the shape being re-matched here, so
 /// that one place decides what an import path means. An import form contains no
 /// expressions and so cannot itself contain a macro call.
-let importsOf (forms: SExpr list) : ImportSpec list =
+///
+/// Each spec comes with the range of the form it was written in, which is what
+/// a modifier's errors point at.
+let importsOf (forms: SExpr list) : (ImportSpec * Lexer.Range) list =
     forms
     |> List.collect (fun form ->
         match form with
         | SList(SAtom { Token = Lexer.Symbol "import" } :: _, _) ->
             match Parser.parseDecl form with
-            | DImport(specs, _) -> specs
+            | DImport(specs, r) -> specs |> List.map (fun s -> s, r)
             | _ -> []
         | _ -> [])
 
@@ -495,7 +707,7 @@ let importsOf (forms: SExpr list) : ImportSpec list =
 /// exactly the name the modifier was written to remove.
 let private withImplicitPrelude (absPath: string) (forms: SExpr list) : SExpr list =
     if
-        importsOf forms |> List.exists (fun s -> s.Path = preludePath)
+        importsOf forms |> List.exists (fun (s, _) -> s.Path = preludePath)
         || isStandardLibrary absPath
     then
         forms
@@ -521,7 +733,7 @@ let wrapInModule (moduleName: string) (filePath: string) (decls: Decl list) : De
                 | DSignature(_, _, _, r) | DType(_, r) | DTypeRec(_, r) | DTrait(_, _, _, _, _, _, r) | DImpl(_, _, _, _, _, r)
                 | DImplExtern(_, _, _, _, r) | DInlineImpl(_, _, _, _, _, _, _, r)
                 | DModule(_, _, r) | DImport(_, r) | DAlias(_, _, r) | DExport(_, r) | DReExport(_, r)
-                | DExtern(_, _, _, r)
+                | DExtern(_, _, _, _, r)
                 | DImportExtern(_, r) | DImportClass(_, r) | DMacro(_, r) -> r
             unionLexerRanges (getRange first) (getRange last)
     
@@ -540,6 +752,15 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
     let currentPath = System.Collections.Generic.HashSet<string>()
     let dllDeps = System.Collections.Generic.HashSet<string>()
 
+    /// Every import edge that reaches a given module, as the renaming it
+    /// produces and the position of the form that wrote it.
+    ///
+    /// Keyed by path, like the module cache, but a *list* — the cache holds
+    /// what a module says about itself, and this holds what each importer made
+    /// of it.
+    let edges =
+        System.Collections.Generic.Dictionary<string, ResizeArray<Map<string, string> * Lexer.Range>>()
+
     let rec load (filePath: string) : unit =
         let absPath = Path.GetFullPath(filePath)
         if currentPath.Contains(absPath) then
@@ -547,7 +768,7 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
         if not (resolvedModules.ContainsKey(absPath)) then
             currentPath.Add(absPath) |> ignore
             
-            let parsedDecls, deps =
+            let parsedDecls, deps, macros, assembly =
                 if absPath.EndsWith(".dll") then
                     dllDeps.Add(absPath) |> ignore
                     // Before the assembly is loaded: a transformer this one
@@ -634,16 +855,22 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
                             |> fst
                             |> Parser.parseModule
                             |> List.map (function
-                                | DSignature(name, t, constraints, r) -> DExtern(name, t, constraints, r)
+                                // Visible name and original agree here, and
+                                // that is the point of parsing once per path:
+                                // this is the module as it describes itself,
+                                // before any importer's modifiers.
+                                | DSignature(name, t, constraints, r) -> DExtern(name, name, t, constraints, r)
                                 | other -> other))
 
                     let parsedDecls = declsFromText @ externDecls
-                    registerMacros asm meta.Macros parsedDecls
+                    // Macros are registered per import *edge*, not here: which
+                    // name a transformer answers to is the importer's to say.
+                    //
                     // No module dependencies: a DLL's transitive deps are
                     // link-only and never enter the module graph. Inline
                     // templates come last: registering one is meaningless
                     // until the trait and impl it belongs to exist.
-                    parsedDecls @ inlineImplDecls, []
+                    parsedDecls @ inlineImplDecls, [], meta.Macros, Some asm
                 else
                     // Reported rather than left to `File.ReadAllText`, whose
                     // `FileNotFoundException` is not a diagnostic and so prints
@@ -681,7 +908,11 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
                     // Resolved *and built*: an imported `.bjo` becomes a `.dll`
                     // here, so every edge in the graph names a compiled unit and
                     // the topological sort below keys on the same paths.
-                    let deps = importsOf forms |> List.choose (resolveDependency absPath)
+                    let importEdges =
+                        importsOf forms
+                        |> List.choose (fun (spec, r) ->
+                            resolveDependency absPath spec
+                            |> Option.map (fun p -> Path.GetFullPath p, spec, r))
 
                     // Dependencies are loaded *before* this module is parsed.
                     //
@@ -690,8 +921,41 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
                     // has to know that at the moment it meets one in head
                     // position. Parsing first and collecting `DImport`s
                     // afterwards cannot work, however the expander is written.
-                    for dep in deps do
+                    for (dep, spec, r) in importEdges do
                         load dep
+
+                        // The modifiers belong to this edge, so the renaming is
+                        // computed here rather than inside `load`, which is
+                        // keyed by path and shared by every importer.
+                        let m = resolvedModules[dep]
+
+                        let renaming =
+                            defRenaming r (Path.GetFileName dep) (surfaceOf m.ParsedDecls m.Macros) spec.Modifiers
+
+                        if not (edges.ContainsKey dep) then
+                            edges[dep] <- ResizeArray()
+
+                        edges[dep].Add(renaming, r)
+
+                        // A macro has to be in the table under the name this
+                        // import gives it before the form using it is read.
+                        match m.Assembly with
+                        | Some asm -> registerMacros asm m.Macros m.ParsedDecls renaming
+                        | None -> ()
+
+                    // `(:alias new old)` where `old` is a macro, for the same
+                    // reason: the parser decides what a head symbol means at the
+                    // moment it meets it, and by inference time every use has
+                    // already been read as an ordinary call. An alias of an
+                    // ordinary binding is not one of these and is left to the
+                    // type checker.
+                    for form in forms do
+                        match form with
+                        | SList([ SAtom { Token = Lexer.Keyword "alias" }
+                                  SAtom { Token = Lexer.Symbol newName }
+                                  SAtom { Token = Lexer.Symbol oldName } ],
+                                _) -> Macro.alias newName oldName |> ignore
+                        | _ -> ()
 
                     // Set immediately before parsing, and not earlier: loading a
                     // dependency parses *that* module, whose own macros are a
@@ -699,7 +963,7 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
                     Macro.setLocalMacros localMacros
                     let parsed = Parser.parseModule forms
                     Macro.setLocalMacros Set.empty
-                    parsed, deps
+                    parsed, (importEdges |> List.map (fun (dep, _, _) -> dep)), [], None
 
             // Dependencies were loaded above, before this module was parsed. A
             // `.dll` has none to load: its transitive deps are link-only and
@@ -711,6 +975,8 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
                 ModuleName = moduleName
                 Dependencies = deps
                 ParsedDecls = parsedDecls
+                Macros = macros
+                Assembly = assembly
             }
             currentPath.Remove(absPath) |> ignore
 
@@ -728,9 +994,61 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
             sorted.Add(m)
 
     visit (Path.GetFullPath(mainFilePath))
-    
-    // Concatenate all module ASTs
-    let allDecls = sorted |> Seq.map (fun m -> wrapInModule m.ModuleName m.FilePath m.ParsedDecls) |> List.concat
+
+    // Every spelling an import made visible: the name, where it came from,
+    // whether a modifier invented it, and the import that did. Rule 5 is
+    // decided over this once every module's edges are known.
+    let spellings = ResizeArray<string * string * string * bool * Lexer.Range>()
+
+    /// A module's declarations as its importers see them.
+    ///
+    /// The main module has no importer and is left exactly as parsed.
+    let viewOf (m: LoadedModule) : Decl list =
+        match edges.TryGetValue m.FilePath with
+        | true, edgeList ->
+            let merged =
+                edgeList
+                |> Seq.collect (fun (renaming, r) ->
+                    renaming |> Map.toSeq |> Seq.map (fun (original, visible) -> original, visible, r))
+                |> Seq.distinctBy (fun (original, visible, _) -> original, visible)
+                |> List.ofSeq
+
+            for (original, visible, r) in merged do
+                spellings.Add(visible, m.ModuleName, original, visible <> original, r)
+
+            let byOriginal =
+                merged
+                |> List.groupBy (fun (original, _, _) -> original)
+                |> List.map (fun (original, g) -> original, g |> List.map (fun (_, visible, _) -> visible))
+                |> Map.ofList
+
+            applyDefRenaming byOriginal m.ParsedDecls
+        | _ -> m.ParsedDecls
+
+    let allDecls =
+        sorted
+        |> Seq.map (fun m -> wrapInModule m.ModuleName m.FilePath (viewOf m))
+        |> List.concat
+
+    // Rule 5. Only a spelling a modifier *invented* is checked: two plain
+    // imports offering the same name is the older shadowing rule, where the
+    // later import wins, and widening this to cover it would reject programs
+    // that have always compiled.
+    for (visible, group) in spellings |> Seq.groupBy (fun (v, _, _, _, _) -> v) do
+        let origins =
+            group
+            |> Seq.map (fun (_, originModule, original, _, _) -> originModule, original)
+            |> Seq.distinct
+            |> List.ofSeq
+
+        if origins.Length > 1 && group |> Seq.exists (fun (_, _, _, renamed, _) -> renamed) then
+            let (_, _, _, _, r) = group |> Seq.find (fun (_, _, _, renamed, _) -> renamed)
+            let describe (m: string, n: string) = $"'%s{n}' from %s{m}"
+            let both = origins |> List.map describe |> String.concat " and "
+
+            failwithf
+                $"Import collision at %s{Lexer.formatPos r}: '%s{visible}' would name %s{both}. A modifier or (:alias ...) that produces a name another import already produces is an error, not a shadowing."
+
     allDecls, dllDeps |> Seq.toList
 
 /// Which module each top-level name belongs to.
@@ -740,16 +1058,20 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
 /// imported `.dll` arrives as a `TExtern` inside that dll's module, which is
 /// exactly the answer wanted for a helper the origin module itself imported
 /// from a third module.
-let private moduleOfName (decls: TypedAST.TDecl list) : Map<string, string> =
+///
+/// The answer is the module *and* the name that module knows it by, which
+/// differ for an import brought in under a modifier: the qualified reference
+/// has to spell the original, since that is what the origin's class defines.
+let private moduleOfName (decls: TypedAST.TDecl list) : Map<string, string * string> =
     decls
     |> TypedAST.collectDecls (function
         | TypedAST.TModule(modName, inner, _) ->
             inner
             |> List.choose (function
-                | TypedAST.TDef(n, _, _, _) -> Some(n, modName)
-                | TypedAST.TDefMutable(n, _, _, _) -> Some(n, modName)
-                | TypedAST.TDefun(n, _, _, _, _, _, _, _, _) -> Some(n, modName)
-                | TypedAST.TExtern(n, _, _) -> Some(n, modName)
+                | TypedAST.TDef(n, _, _, _) -> Some(n, (modName, n))
+                | TypedAST.TDefMutable(n, _, _, _) -> Some(n, (modName, n))
+                | TypedAST.TDefun(n, _, _, _, _, _, _, _, _) -> Some(n, (modName, n))
+                | TypedAST.TExtern(visible, original, _, _) -> Some(visible, (modName, original))
                 | _ -> None)
         | _ -> [])
     |> Map.ofList
@@ -783,7 +1105,7 @@ let private qualifyInlineTemplates (env: TypedAST.Env) (decls: TypedAST.TDecl li
                         // left exactly as written. There is nothing to qualify
                         // it to.
                         match Map.tryFind n moduleOf with
-                        | Some m -> Some(n, Naming.qualifiedBinding m n)
+                        | Some(m, original) -> Some(n, Naming.qualifiedBinding m original)
                         | None -> None)
                     |> Map.ofSeq
 

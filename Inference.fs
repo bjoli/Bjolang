@@ -3352,6 +3352,37 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
         newEnv, Map.remove name sigs, [ TDefMutable(name, typedExpr, exprType, r) ]
 
     | DModule(moduleName, decls, r) ->
+        // Rule 5 for aliases, decided over the module as written rather than as
+        // checked: an alias may appear above the definition it would collide
+        // with, and by the time the fold reached it the collision would look
+        // like ordinary shadowing.
+        let aliasesHere =
+            decls |> List.choose (function DAlias(n, _, ar) -> Some(n, ar) | _ -> None)
+
+        if not aliasesHere.IsEmpty then
+            let definedHere =
+                decls
+                |> List.collect (function
+                    | DDef(n, _, _)
+                    | DDefMutable(n, _, _)
+                    | DDefun(n, _, _, _, _)
+                    | DMacro(n, _) -> [ n ]
+                    | DDefTuple(ns, _, _) -> ns
+                    | _ -> [])
+                |> Set.ofList
+
+            for (name, ar) in aliasesHere do
+                if Set.contains name definedHere then
+                    failwithf
+                        $"Alias Error: '%s{name}' at %s{Lexer.formatPos ar} is also defined in this module. An alias is a top-level binding, so it may not take a name the module defines for itself."
+
+            for (name, group) in aliasesHere |> List.groupBy fst do
+                if group.Length > 1 then
+                    let positions = group |> List.map (snd >> Lexer.formatPos) |> String.concat " and "
+
+                    failwithf
+                        $"Alias Error: '%s{name}' is aliased more than once, at %s{positions}. Two aliases producing one name is an error, not a shadowing."
+
         let finalEnv, finalSigs, typedDecls =
             checkDeclGroup { env with CurrentModule = moduleName } sigs decls
 
@@ -3368,22 +3399,27 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
         // Restricted to what the module actually defines rather than to
         // everything in scope at its end, so `Foo_Module::print` is not a name
         // just because `Foo` imported the prelude.
+        //
+        // The name to look the binding up under and the name to qualify it as
+        // are two things: they differ for an import brought in under a
+        // modifier, where the qualified spelling has to name the member the
+        // origin's class actually defines.
         let definedHere =
             decls
             |> List.collect (function
                 | DDef(n, _, _)
-                | DDefMutable(n, _, _)
-                | DExtern(n, _, _, _) -> [ n ]
-                | DDefun(n, _, _, _, _) -> [ n ]
-                | DDefTuple(ns, _, _) -> ns
+                | DDefMutable(n, _, _) -> [ n, n ]
+                | DExtern(visible, original, _, _, _) -> [ visible, original ]
+                | DDefun(n, _, _, _, _) -> [ n, n ]
+                | DDefTuple(ns, _, _) -> ns |> List.map (fun n -> n, n)
                 | _ -> [])
 
         let qualified =
             definedHere
             |> List.fold
-                (fun acc n ->
-                    match Map.tryFind n finalEnv.Bindings with
-                    | Some binding -> Map.add (Naming.qualifiedBinding moduleName n) binding acc
+                (fun acc (visible, original) ->
+                    match Map.tryFind visible finalEnv.Bindings with
+                    | Some binding -> Map.add (Naming.qualifiedBinding moduleName original) binding acc
                     | None -> acc)
                 finalEnv.Bindings
 
@@ -3395,7 +3431,67 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
 
     | DImport(paths, r) -> env, sigs, [ TImport(paths, r) ]
 
-    | DAlias(newName, oldName, r) -> env, sigs, [ TAlias(newName, oldName, r) ]
+    // `(:alias new old)`. A second spelling of a binding or a macro already in
+    // scope, sharing the original's scheme, keyword and rest metadata, and
+    // mutability — `set!` through one writes to the original's cell, because
+    // codegen resolves the alias to it rather than emitting a copy.
+    //
+    // Types, traits and constructors are refused. A type has `type` aliases of
+    // its own, and a constructor follows its type: neither is a binding, so
+    // neither could share one.
+    | DAlias(newName, oldName, r) ->
+        let where = Lexer.formatPos r
+
+        let isConstructor =
+            env.Registry.Unions
+            |> Map.exists (fun _ (_, cases) -> cases |> List.exists (fun (c, _, _) -> c = oldName))
+
+        if Map.containsKey oldName env.Registry.Traits then
+            failwithf
+                $"Alias Error: '%s{oldName}' at %s{where} is a trait, and (:alias ...) makes a second spelling of a def or a macro. Import the module that declares it with (prefix-types ...) to change what its traits are called."
+
+        if
+            Set.contains oldName env.Registry.LocalTypes
+            || Map.containsKey oldName env.Registry.Aliases
+            || Map.containsKey oldName env.Registry.Records
+        then
+            failwithf
+                $"Alias Error: '%s{oldName}' at %s{where} is a type, and (:alias ...) makes a second spelling of a def or a macro. Write (type (: %s{newName} %s{oldName})) for a type, or import its module with (prefix-types ...)."
+
+        if isConstructor then
+            failwithf
+                $"Alias Error: '%s{oldName}' at %s{where} is a constructor, and (:alias ...) makes a second spelling of a def or a macro. A constructor follows its type: import its module with (prefix-types ...) to change what it is called."
+
+        match Map.tryFind oldName env.Bindings with
+        | Some binding ->
+            // Resolved through the table, so a chain of facades flattens here
+            // rather than at every use. An origin module of `""` means "look it
+            // up where the whole program is known": a name defined in this
+            // module, or a compiler builtin with no module class at all.
+            let resolution =
+                match Map.tryFind oldName env.ImportAliases with
+                | Some a -> { a with Kind = AliasDef }
+                | None -> { OriginModule = ""; OriginalName = oldName; Kind = AliasDef }
+
+            let newEnv =
+                { env with
+                    Bindings = Map.add newName binding env.Bindings
+                    FunMetas =
+                        match Map.tryFind oldName env.FunMetas with
+                        | Some meta -> Map.add newName meta env.FunMetas
+                        | None -> env.FunMetas
+                    ImportAliases = Map.add newName resolution env.ImportAliases }
+
+            newEnv, sigs, [ TAlias(newName, Some resolution, r) ]
+
+        // A macro is not a binding. It was registered under the new name before
+        // this module was parsed — it had to be, since the parser decides what a
+        // head symbol means when it meets it — so there is nothing left to do.
+        | None when Macro.isMacro oldName -> env, sigs, [ TAlias(newName, None, r) ]
+
+        | None ->
+            failwithf
+                $"Alias Error: '%s{oldName}' is not in scope at %s{where}. (:alias ...) needs a binding or a macro to make a second spelling of."
 
     // A macro is checked as the `defun` it also produced. This carries no body
     // and contributes nothing to the program's runtime shape, so it stops here;
@@ -3603,7 +3699,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
 
         env, sigs, [ TReExport(names, r) ]
     | DType(typeDefs, r) -> registerTypeDefs false typeDefs env, sigs, [ TType(typeDefs, r) ]
-    | DExtern(name, ftype, constraintPairs, r) ->
+    | DExtern(name, originalName, ftype, constraintPairs, r) ->
         let t = resolveTypeAnnotation env.Registry ftype
         let scheme = generalize env t
         let (Scheme(vars, _, schemeType)) = scheme
@@ -3613,6 +3709,20 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                 { TraitName = traitName; TargetType = TVar varName })
         let schemeWithConstraints = Scheme(vars, constraints, schemeType)
         let newEnv = { env with Bindings = Map.add name { Scheme = schemeWithConstraints; IsMutable = false } env.Bindings }
+
+        // Every imported binding gets a table entry, whether or not a modifier
+        // renamed it. The degenerate one carries no new spelling but does carry
+        // the module the name came from, which is what an `(:alias ...)` of it
+        // needs to resolve to a qualified reference.
+        let newEnv =
+            { newEnv with
+                ImportAliases =
+                    Map.add
+                        name
+                        { OriginModule = env.CurrentModule
+                          OriginalName = originalName
+                          Kind = AliasDef }
+                        newEnv.ImportAliases }
 
         // Keyword and rest metadata travels with an imported signature too.
         // Without it a call that passes a keyword argument, or omits an optional
@@ -3630,7 +3740,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                 { newEnv with FunMetas = Map.add name funMeta newEnv.FunMetas }
             | _ -> newEnv
 
-        newEnv, sigs, [ TExtern(name, ftype, r) ]
+        newEnv, sigs, [ TExtern(name, originalName, ftype, r) ]
 
     | DTrait(traitName, implementorVar, holeArity, assocTypes, signatures, defaults, r) ->
         // The kind is derived, not declared: an implementor written applied to

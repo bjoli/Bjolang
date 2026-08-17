@@ -603,11 +603,36 @@ type ImplTarget =
 [<Literal>]
 let BlanketCtor = "*"
 
+/// What kind of thing a visible name is a second spelling of.
+///
+/// Every consumer resolves through one table, but they consult different
+/// registries once they get there, and a name may legitimately be a def in one
+/// module and a type in another.
+type AliasKind =
+    | AliasDef
+    | AliasMacro
+    | AliasType
+    | AliasConstructor
+    | AliasTrait
+
+/// Where a visible name really comes from.
+///
+/// `OriginModule` is `""` for a compiler builtin, which has no module class to
+/// qualify to; codegen then emits the original name bare.
+type ImportAlias =
+    { OriginModule: string
+      OriginalName: string
+      Kind: AliasKind }
+
 type TDecl =
     | TImport of ImportSpec list * Range
     /// A second spelling of an existing binding or macro. It emits no C# of its
     /// own: the alias resolves to the original, which is what codegen names.
-    | TAlias of string * string * Range
+    ///
+    /// The resolution is `None` for an alias of a macro, which is a parse-time
+    /// name with no binding behind it.
+    /// TAlias (VisibleName, Resolution, Range)
+    | TAlias of string * ImportAlias option * Range
     | TExport of string list * Range
     | TReExport of string list * Range
     | TModule of string * TDecl list * Range
@@ -622,7 +647,9 @@ type TDecl =
     | TTrait of string * string * TraitKind * int * string list * Map<string, HMType> * Range
     //        traitName  kind        holeArity  targetType  assocBindings           dictFields              methods
     | TImpl of string * TraitKind * int * HMType * (string * HMType) list * (string * HMType) list * TDecl list * Range
-    | TExtern of string * FType * Range
+    /// TExtern (VisibleName, OriginalName, Type, Range). The two differ when
+    /// the import that brought the name in carried a modifier.
+    | TExtern of string * string * FType * Range
     /// `(import/extern ...)` and `(import/class ...)`. Both are pure
     /// environment entries: every use site has already been resolved into a
     /// `TForeignStaticCall`, `TNewObject` or `TDotMethodCall`, so neither emits
@@ -972,6 +999,17 @@ type Env =
     { Bindings: Map<string, Binding>
       Registry: TraitRegistry
       FunMetas: Map<string, FunMeta>
+      /// Visible name -> what it is really a spelling of.
+      ///
+      /// Populated by import modifiers, by `(:alias ...)`, and by every plain
+      /// imported binding — a plain import is the degenerate alias whose
+      /// visible name and original agree, and recording it is what lets an
+      /// `(:alias ...)` of an imported name find the module its origin lives
+      /// in.
+      ///
+      /// Not to be confused with `TraitRegistry.Aliases`, which is the table of
+      /// `type` aliases.
+      ImportAliases: Map<string, ImportAlias>
       /// The module whose declarations are currently being checked.
       ///
       /// An inline template records where its body came from, because its free
