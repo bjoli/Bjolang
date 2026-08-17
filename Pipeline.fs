@@ -425,7 +425,7 @@ let private ensureLibrary (bjoPath: string) : string =
 /// of being rebuilt from source per caller.
 let private resolveDependency (basePath: string) (spec: ImportSpec) : string option =
     let raw =
-        match spec with
+        match spec.Path with
         | RelativePath p -> Path.GetFullPath(Path.Combine(Path.GetDirectoryName basePath, p))
         | ModulePath parts ->
             Path.GetFullPath(Path.Combine(Paths.libDir, Path.Combine(Array.ofList parts) + ".bjo"))
@@ -440,7 +440,7 @@ let private resolveDependency (basePath: string) (spec: ImportSpec) : string opt
     else Some raw
 
 /// `(std prelude)`, which every program gets whether it asks or not.
-let private preludeSpec = ModulePath [ "std"; "prelude" ]
+let private preludePath = ModulePath [ "std"; "prelude" ]
 
 /// Is this file part of the standard library itself?
 ///
@@ -488,8 +488,16 @@ let importsOf (forms: SExpr list) : ImportSpec list =
 ///
 /// Done to the *forms* rather than to the declarations, because the import
 /// graph is now built before parsing and the prelude is one of its edges.
+///
+/// The comparison is on the path alone, so that
+/// `(import (except (std prelude) print))` counts as importing it. Otherwise
+/// the implicit edge would be added alongside the explicit one and reinstate
+/// exactly the name the modifier was written to remove.
 let private withImplicitPrelude (absPath: string) (forms: SExpr list) : SExpr list =
-    if List.contains preludeSpec (importsOf forms) || isStandardLibrary absPath then
+    if
+        importsOf forms |> List.exists (fun s -> s.Path = preludePath)
+        || isStandardLibrary absPath
+    then
         forms
     else
         let r =
@@ -512,7 +520,8 @@ let wrapInModule (moduleName: string) (filePath: string) (decls: Decl list) : De
                 | DDef(_, _, r) | DDefun(_, _, _, _, r) | DDefTuple(_, _, r) | DDefMutable(_, _, r)
                 | DSignature(_, _, _, r) | DType(_, r) | DTypeRec(_, r) | DTrait(_, _, _, _, _, _, r) | DImpl(_, _, _, _, _, r)
                 | DImplExtern(_, _, _, _, r) | DInlineImpl(_, _, _, _, _, _, _, r)
-                | DModule(_, _, r) | DImport(_, r) | DExport(_, r) | DReExport(_, r) | DExtern(_, _, _, r)
+                | DModule(_, _, r) | DImport(_, r) | DAlias(_, _, r) | DExport(_, r) | DReExport(_, r)
+                | DExtern(_, _, _, r)
                 | DImportExtern(_, r) | DImportClass(_, r) | DMacro(_, r) -> r
             unionLexerRanges (getRange first) (getRange last)
     

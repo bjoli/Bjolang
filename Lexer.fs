@@ -87,12 +87,17 @@ module Lexer =
                     Start = shift t.Range.Start
                     End = shift t.Range.End } }
 
+    /// Whether a character may appear inside a symbol.
+    ///
+    /// At module level because an import prefix has to be checkable against the
+    /// same answer the tokenizer would give: a prefix that does not lex as part
+    /// of a symbol produces a name nothing can write.
+    let isSymbolChar c =
+        not (Char.IsWhiteSpace c)
+        && not (List.contains c [ '('; ')'; '['; ']'; '{'; '}'; ','; ':'; '"'; ';'; '\'' ])
+
     let rec tokenize (file: string) (input: string) : LexedToken list =
         let length = input.Length
-
-        let isSymbolChar c =
-            not (Char.IsWhiteSpace c)
-            && not (List.contains c [ '('; ')'; '['; ']'; '{'; '}'; ','; ':'; '"'; ';'; '\'' ])
 
         let rec following charList pos =
             if List.isEmpty charList then

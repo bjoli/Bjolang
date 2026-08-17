@@ -3500,7 +3500,7 @@ let generateProgram (metadata: ModuleMetadata.Metadata) (linkedDlls: string list
                     match inner with
                     | TImport (specs, _) ->
                         for spec in specs do
-                            match spec with
+                            match spec.Path with
                             | RelativePath p -> yield moduleClassName p
                             | ModulePath parts ->
                                 yield moduleClassName (List.last parts)

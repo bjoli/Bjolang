@@ -605,6 +605,9 @@ let BlanketCtor = "*"
 
 type TDecl =
     | TImport of ImportSpec list * Range
+    /// A second spelling of an existing binding or macro. It emits no C# of its
+    /// own: the alias resolves to the original, which is what codegen names.
+    | TAlias of string * string * Range
     | TExport of string list * Range
     | TReExport of string list * Range
     | TModule of string * TDecl list * Range

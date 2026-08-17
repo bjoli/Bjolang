@@ -173,9 +173,41 @@ let allArgNames (args: DefunArg list) : string list =
     @ pick (function KeywordArg(n, _) -> Some n | _ -> None)
     @ pick (function RestArg n -> Some n | _ -> None)
 
-type ImportSpec =
+/// Where an import resolves from. A quoted string is relative to the importing
+/// file; a list of symbols anchors to the installation.
+type ImportPath =
     | RelativePath of string
     | ModulePath of string list
+
+/// What an import does to the names it brings in.
+///
+/// Modifiers compose by nesting, and are read inside-out:
+/// `(prefix (except (std strings) trim) "s/")` drops `trim` and then prefixes
+/// what is left.
+type ImportModifier =
+    /// Defs and macros only. Types, constructors, traits and impls always
+    /// arrive, because an imported signature is source text that has to
+    /// resolve the types it mentions.
+    | Only of string list
+    | Except of string list
+    /// Everything but impls: defs, macros, types, constructors, traits and
+    /// trait methods.
+    | Prefix of string
+    | Postfix of string
+    /// Defs and macros.
+    | PrefixDefs of string
+    | PostfixDefs of string
+    /// Types, constructors and traits, including their methods.
+    | PrefixTypes of string
+    | PostfixTypes of string
+    /// Defs and macros. Renaming a type or an individual trait method is an
+    /// error: see `prefix-types`.
+    | Rename of (string * string) list
+
+type ImportSpec = { Path: ImportPath; Modifiers: ImportModifier list }
+
+/// An import with nothing done to it, which is what most of them are.
+let plainImport (path: ImportPath) = { Path = path; Modifiers = [] }
 
 /// One clause of `(import/extern ...)`: a .NET member bound as an ordinary
 /// Bjolang function.
@@ -225,6 +257,10 @@ type ClassImportSpec =
 type Decl =
     | DSignature of string * FType * (string * string) list * Range
     | DImport of ImportSpec list * Range
+    /// `(:alias new-name existing-name)`. A second spelling of a binding or
+    /// macro already in scope, sharing its scheme, its keyword and rest
+    /// metadata, and its mutability.
+    | DAlias of string * string * Range
     | DExport of string list * Range
     // Re-exports bindings this module imported from elsewhere. Unlike `export`,
     // the names are not required to have a signature in this module — they
@@ -3117,6 +3153,94 @@ let private checkAccessorOptions (formName: string) (opts: ForeignImportOptions)
             failwithf
                 $"Syntax error in %s{formName} at %s{where}: #:exceptions decorates a call, and a property access is not one. An accessor that can fail is guarded with (try ... #:catch (...)) at the place it is read or written."
 
+/// A prefix or postfix has to lex as part of a symbol.
+///
+/// The name it builds is one the importing module writes by hand, so a prefix
+/// containing anything the tokenizer would break on produces a binding nothing
+/// can refer to. `/` is the expected separator and is a symbol character; `.`
+/// is one too, but is refused anyway — a dot is how a .NET member is spelled,
+/// and a name that looks like one but is not would be read as such well before
+/// anybody suspected the import.
+let private checkAffix (form: string) (affix: string) (r: Lexer.Range) : string =
+    if affix = "" then
+        failwithf $"Empty string in (%s{form} ...) at %s{Lexer.formatPos r}. A prefix or postfix has to be a non-empty string."
+
+    match affix |> Seq.tryFind (fun c -> not (Lexer.isSymbolChar c) || c = '.') with
+    | Some bad ->
+        let described =
+            if System.Char.IsWhiteSpace bad then
+                "whitespace, which cannot appear inside a symbol"
+            elif bad = '.' then
+                "'.', which is how a .NET member is spelled"
+            else
+                $"'%c{bad}', which cannot appear inside a symbol"
+
+        failwithf
+            $"Invalid prefix \"%s{affix}\" in (%s{form} ...) at %s{Lexer.formatPos r}: it contains %s{described}. A prefix has to lex as part of the name it builds — '/' is the usual separator."
+    | None -> affix
+
+/// One import, which is a path wrapped in zero or more modifiers.
+///
+/// Modifiers nest rather than sit in a list, so that they compose in a stated
+/// order: the innermost applies first. They are collected outermost-first here
+/// and reversed, so `Modifiers` reads in application order.
+let rec private parseImportForm (s: SExpr) : ImportSpec =
+    let r = getRange s
+
+    let rec go (s: SExpr) (acc: ImportModifier list) : ImportSpec =
+        let names (nodes: SExpr list) =
+            nodes
+            |> List.map (function
+                | SAtom { Token = Symbol n } -> n
+                | bad -> failwithf $"Expected a name at %s{Lexer.formatPos (getRange bad)}")
+
+        match s with
+        | SAtom { Token = StringLit p } -> { Path = RelativePath p; Modifiers = acc }
+
+        | SList(SAtom { Token = Symbol head } :: inner :: rest, mr) when
+            List.contains
+                head
+                [ "only"; "except"; "prefix"; "postfix"; "prefix-defs"; "postfix-defs"; "prefix-types"
+                  "postfix-types"; "rename" ]
+            ->
+            let modifier =
+                match head, rest with
+                | "only", args -> Only(names args)
+                | "except", args -> Except(names args)
+                | "rename", pairs ->
+                    pairs
+                    |> List.map (function
+                        | SList([ SAtom { Token = Symbol from }; SAtom { Token = Symbol to' } ], _) -> from, to'
+                        | bad ->
+                            failwithf
+                                $"Invalid (rename ...) clause at %s{Lexer.formatPos (getRange bad)}. Expected: (old-name new-name)")
+                    |> Rename
+                | affixForm, [ SAtom { Token = StringLit affix } ] ->
+                    let a = checkAffix affixForm affix mr
+
+                    match affixForm with
+                    | "prefix" -> Prefix a
+                    | "postfix" -> Postfix a
+                    | "prefix-defs" -> PrefixDefs a
+                    | "postfix-defs" -> PostfixDefs a
+                    | "prefix-types" -> PrefixTypes a
+                    | _ -> PostfixTypes a
+                | affixForm, _ ->
+                    failwithf
+                        $"Invalid (%s{affixForm} ...) at %s{Lexer.formatPos mr}. Expected: (%s{affixForm} import \"affix\")"
+
+            go inner (modifier :: acc)
+
+        // A bare list of symbols is a module path, and so the innermost thing
+        // an import can be. Checked after the modifier heads, which are lists
+        // of the same shape.
+        | SList(pathNodes, _) when not pathNodes.IsEmpty ->
+            { Path = ModulePath(names pathNodes); Modifiers = acc }
+
+        | _ -> failwithf $"Invalid import syntax at %s{Lexer.formatPos r}"
+
+    go s []
+
 let rec parseDecl (s: SExpr) : Decl =
     let r = getRange s
 
@@ -3147,19 +3271,19 @@ let rec parseDecl (s: SExpr) : Decl =
         DSignature(name, parseType tType, constraints, r)
 
     | SList(SAtom { Token = Symbol "import" } :: imports, _) ->
-        // Parse paths like (io readline) into ["io"; "readline"]
-        let parseImportPath =
-            function
-            | SAtom { Token = StringLit s } -> RelativePath s
-            | SList(pathNodes, _) ->
-                pathNodes
-                |> List.map (function
-                    | SAtom { Token = Symbol p } -> p
-                    | _ -> failwithf $"Invalid import path element at %s{Lexer.formatPos r}")
-                |> ModulePath
-            | _ -> failwithf $"Invalid import syntax at %s{Lexer.formatPos r}"
+        DImport(List.map parseImportForm imports, r)
 
-        DImport(List.map parseImportPath imports, r)
+    // (:alias new-name existing-name)
+    //
+    // `:alias` is one `Keyword` token rather than a colon and a symbol, so this
+    // is not the `(: name type)` shape above and does not compete with it.
+    | SList(SAtom { Token = Keyword "alias" } :: rest, _) ->
+        match rest with
+        | [ SAtom { Token = Symbol newName }; SAtom { Token = Symbol oldName } ] ->
+            DAlias(newName, oldName, r)
+        | _ ->
+            failwithf
+                $"Invalid (:alias ...) at %s{Lexer.formatPos r}. Expected: (:alias new-name existing-name)"
 
     // (import/extern (write-line (: System.Console.WriteLine (-> string void))) ...)
     | SList(SAtom { Token = Symbol "import/extern" } :: clauses, _) ->

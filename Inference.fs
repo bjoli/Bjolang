@@ -3395,6 +3395,8 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
 
     | DImport(paths, r) -> env, sigs, [ TImport(paths, r) ]
 
+    | DAlias(newName, oldName, r) -> env, sigs, [ TAlias(newName, oldName, r) ]
+
     // A macro is checked as the `defun` it also produced. This carries no body
     // and contributes nothing to the program's runtime shape, so it stops here;
     // what an importing compilation reads is the assembly's macro list.

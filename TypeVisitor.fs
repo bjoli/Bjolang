@@ -163,6 +163,7 @@ let rec mapDecl (f: TypedExpr -> TypedExpr) (decl: TDecl) : TDecl =
     | TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods, r) ->
         TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods |> List.map (mapDecl f), r)
     | TImport _
+    | TAlias _
     | TExport _
     | TReExport _
     | TType _
