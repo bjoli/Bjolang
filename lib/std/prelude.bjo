@@ -121,10 +121,6 @@
 (def/trait (Discard %a)
   (: ignore (-> %a void)))
 
-;; The blanket: level one, and the answer for almost everything. `unit` rather
-;; than `(Tuple)` — the empty tuple is a different type with a different C#
-;; spelling — and it is the one place in the language that needs a way to write
-;; the unit value without also doing something.
 (def/impl (Discard %a)
   (defun (ignore x) unit))
 
@@ -133,11 +129,7 @@
 ;; therefore means "detach deliberately", routing a failure to the scheduler's
 ;; unhandled hook — the only reading of "discard this promise" that is not a
 ;; quiet bug.
-;;
-;; Note how sparingly this level should be used. It is tempting to give every
-;; `IDisposable`-shaped import an impl that disposes; resist, because a discard
-;; that closes a stream is action at a distance and the reader of `(ignore s)`
-;; has no way to see it. Cleanup that matters deserves a name.
+;; 
 (def/impl (Discard (Promise %a))
   (defun (ignore p) (detach p)))
 
@@ -241,13 +233,7 @@
 
 ;; A string's elements are its *characters*, so a walk yields one `char` per
 ;; codepoint and an astral character arrives whole rather than as two halves.
-;;
-;; This is the protocol at its plainest, and the contrast with `Vec` above is
-;; the point: a `StringCursor` is a position rather than a live enumerator, so
-;; `done?` merely asks and `next` genuinely returns the following cursor. That
-;; it is a bare offset is also what keeps the loop allocation-free — the whole
-;; cursor is an int in a struct, and the traversal is the `for` a C programmer
-;; would have written, minus the chance of stopping mid-character.
+;; 
 (def/impl (Iterable string)
   (type %elem char)
   (type %cursor StringCursor)
@@ -317,11 +303,7 @@
 
 (type (: (Listing %a) (Union listing)))
 
-;; A builder rather than cons-and-reverse, which allocates a cell per element
-;; each way. The accumulator is mutated in place, and `step` hands back the same
-;; builder it was given — a loop slot carries it exactly as it would an
-;; immutable value, and the identity never changing is what makes the mutator's
-;; `Unit` return honest (§8.1).
+;; Uses listbuilder. About 2x faster
 (def/impl (Collector (Listing %a))
   (type %elem %a)
   (type %acc (ListBuilder %a))
@@ -434,11 +416,10 @@
 
 ;; The rest of `System.Math` stays in `std/maths.bjo`; what is re-exported here
 ;; is `Num`, general enough that a program should not have to ask for it.
-;;
-;; A trait travels with its methods, so re-exporting any one publishes `Num`
-;; whole.  We name all of them for clarity.
+
 (import (std maths))
 
+;; Remember: exporting one trait function exposes ALL functions.
 (re-export abs sign min max clamp sqrt zero?)
 
 ;; ---------------------------------------------------------------------------
@@ -460,29 +441,13 @@
 (defun (string-append a b) (clr-concat a b))
 
 ;; Variadic concatenation, and what `#"a ${x} b"` expands to a call of.
-;;
-;; The array a `#:rest` parameter collects is handed straight to
-;; `String.Concat(params string[])`, so a five-part interpolation is one call
-;; and one allocation rather than the four nested `string-append`s the same
-;; text would otherwise be written as.
-;;
-;; Its elements are strings, and that is not a simplification: a `#:rest`
-;; parameter has one element type, so nothing variadic in this language can
-;; take a mixture. That is why the reader puts `->str` around each hole rather
-;; than leaving the conversion to `str` — the conversion has to happen while
-;; each part still has its own type.
 (: str (-> #:rest string string))
 (defun (str #:rest parts) (clr-concat parts))
 
 ;; `.Length` is a property, so there is no method to import — a one-line body
 ;; reading the member is the whole of it.
 ;;
-;; **This counts storage units, not characters.** Today that is UTF-16 code
-;; units, so a string holding one emoji has length 2; under UTF-8 storage the
-;; same string would measure 4. It is O(1) and it is the right number for
-;; sizing a buffer, and the wrong one for anything a reader would call "how
-;; long is this text" — `string-count` is that, and walks. The two names are
-;; meant to be told apart, which is why neither is called `size`.
+;; **This counts storage units, not characters.**
 (: string-length (-> string int))
 (defun (string-length s) (.-Length s))
 
@@ -530,11 +495,7 @@
 ;; here is the part that needs no help — the comparisons, which are the ordinary
 ;; operators at `char`, and the case-insensitive family, which is a fold
 ;; followed by one of them.
-;;
-;; `char?` has no entry. Every other Scheme needs it because a value's type is
-;; a runtime question; here it is a static one, and the predicate could only
-;; ever answer `#t`.
-
+;; 
 ;; R6RS's spelling of the conversions. The same operations as `char->int` and
 ;; `int->char`, kept under both names for the reason `number->string` is: a
 ;; program ported from Scheme should not have to be rewritten to compile.
@@ -547,11 +508,8 @@
 ;; Ordering is by codepoint, and `<` at `char` *is* the C# operator on the
 ;; underlying value — so these are aliases rather than implementations.
 ;;
-;; They are binary, where R6RS's are n-ary. The chaining `(< a b c)` gets is a
-;; parser desugar over the operator tokens, and it cannot extend to a named
-;; function without turning it into a `#:rest` fold that allocates an array and
-;; loses the short-circuit. Write `(< a b c)` when the chain is what you want;
-;; these names are for the two-argument case and for passing as a value.
+;; They are binary, where R6RS's are n-ary. The chaining `(< a b c)` is done
+;; by the parser
 (: char=? (-> char char bool))
 (defun (char=? a b) (= a b))
 
@@ -590,32 +548,9 @@
 ;; ---------------------------------------------------------------------------
 ;;
 ;; A cursor is a position in a string, and it is what replaces the `string-ref`
-;; this language deliberately does not have. Indexing UTF-16 by codepoint is
-;; O(n), so the innocent `(loop (i 0)) (string-ref s i)` is quadratic; the same
-;; loop over a cursor is linear, and a cursor is a struct holding an int.
-;;
-;; **A cursor is opaque.** There is no `string-cursor->index` and no way to
-;; build one except from a string, so the offset inside is free to mean UTF-16
-;; code units today and UTF-8 bytes later without a single Bjolang program
-;; noticing. That is the entire reason the type exists rather than the API
-;; simply taking ints, and it is why no procedure here will ever hand the
-;; number back.
-;;
-;; Every operation takes the string as well as the cursor, because the cursor
-;; carries no reference to it. Pairing them would double the struct to re-check
-;; something the caller already knows, and it is the same bargain the `Iterable`
-;; protocol strikes by passing `s` and `c` to every method.
-;;
-;; The primitives — `string-cursor-start`, `-end`, `-end?`, `-ref`, `-next`,
-;; `-prev`, `substring/cursors` and `string-count` — are builtins. What follows
-;; is what can be said in terms of them.
-
-;; Cursor comparison. `=` and `<` at `StringCursor` are the C# operators on the
-;; offset, so these are aliases; the named forms exist because `(string-cursor<?
-;; a b)` says what it means and `(< a b)` on two opaque values does not.
-;;
-;; Only meaningful between two cursors on the *same* string. Nothing checks it,
-;; exactly as nothing checks that two ints index the same array.
+;; this language deliberately does not have. In the future we might switch to utf8
+;; to gain memory efficiency and speed, but doing that automatically invalidates a
+;; string-ref api.
 (: string-cursor=? (-> StringCursor StringCursor bool))
 (defun (string-cursor=? a b) (= a b))
 
@@ -665,11 +600,6 @@
       (loop (string-cursor-next s c)))))
 
 ;; The first character satisfying `pred`, as a cursor — `None` if there is none.
-;;
-;; A cursor rather than an index, which is what makes the result *usable*: it
-;; can be handed straight to `substring/cursors` or stepped on from, where an
-;; integer would have to be converted back at O(n) and could not be converted
-;; back at all.
 (: string-index (-> (-> char bool) string (Option StringCursor)))
 (defun (string-index pred s)
   (let loop ((c (string-cursor-start s)))
@@ -698,9 +628,7 @@
     (vecbuilder->vec b)))
 
 ;; Reversing by character, so a string ending in an astral character comes back
-;; with that character intact rather than with its two halves swapped — which is
-;; what reversing the storage would do, and is the classic way to corrupt text
-;; while appearing to work on everything the author tested.
+;; with that character intact rather than with its two halves swapped.
 (: string-reverse (-> string string))
 (defun (string-reverse s)
   (let ((b (stringbuilder-empty)))
@@ -949,28 +877,7 @@
 ;; elements. `Iterable` says how to walk one and `Foldable` how to consume one;
 ;; this is the trait for the questions that need no walk to ask.
 ;;
-;; First-order with one associated type, so it is an ordinary interface trait:
-;; `->seq` returns a `(Seq %content)` at the element type the collection already
-;; has, never at a new one, so there is no constructor variable to abstract over
-;; and no reason to make it inline-only.
-;;
-;; `%content` is the element type, and for a `(Map %k %v)` that is the pair —
-;; the same answer `Iterable`'s `%elem` and `Foldable`'s `%item` give, and what
-;; `map->seq` hands back.
-;;
-;; **`length` is not uniformly cheap, and the trait does not pretend otherwise.**
-;; `Vec` and `Map` store their count, so it is O(1); `List` walks; `Seq` walks
-;; *and*, over an effectful source, consumes. Generic code that only wants to
-;; know whether there is anything should ask `empty?`, which is O(1) everywhere
-;; except `Seq` — where it forces one element, for the same reason.
-;;
-;; `string` is a member, and its `length` is the character count rather than the
-;; storage count — the trait's `%content` is `char`, so any other answer would
-;; disagree with what `->seq` hands over. That makes it O(n), which is the
-;; trait's own point about `length` restated: ask `empty?` when the question is
-;; only whether there is anything.
-;;
-;; `(Array %a)` is still not a member: it has no `->seq` to give.
+;; I should get ->seq into the iterable trait with a simple default method there.
 (def/trait (Collection %a)
   (type %content)
   (: length (-> %a int))
