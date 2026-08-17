@@ -100,6 +100,18 @@ let bareTypeName (moduleName: string) (key: string) : string =
         let prefix = sanitizeIdent (moduleNameOfPath moduleName) + "__"
         if key.StartsWith prefix then key.Substring(prefix.Length) else key
 
+/// The module and the name a key is made of, for a name that looks like one.
+///
+/// Display only, and the one place that guesses: `typeKey` and `bareTypeName`
+/// are told which module they are dealing with and a diagnostic is not. A
+/// module whose own name contains `__` is therefore reported a little wrong —
+/// which costs a reader a moment and costs a program nothing, since no
+/// resolution goes through here.
+let typeKeyParts (name: string) : (string * string) option =
+    match name.IndexOf "__" with
+    | i when i > 0 && i + 2 < name.Length -> Some(name.Substring(0, i), name.Substring(i + 2))
+    | _ -> None
+
 /// How a type or constructor name reads in a diagnostic.
 ///
 /// A key is a module and a name spelled as one string, and a reader needs both
@@ -107,13 +119,10 @@ let bareTypeName (moduleName: string) (key: string) : string =
 /// declared. Written with a `/` so that it composes inside a larger type —
 /// `(List banana_a/Banana)` — and because that is the shape `prefix-types`
 /// gives a disambiguating spelling anyway.
-///
-/// Display only. It has to find where the key divides, and a module whose own
-/// name contains `__` is shown a little wrong rather than resolved wrong.
 let showTypeName (name: string) : string =
-    match name.IndexOf "__" with
-    | i when i > 0 && i + 2 < name.Length -> name.Substring(0, i) + "/" + name.Substring(i + 2)
-    | _ -> name
+    match typeKeyParts name with
+    | Some(moduleName, typeName) -> moduleName + "/" + typeName
+    | None -> name
 
 /// The C# spelling of a Bjolang type parameter.
 let typeParamName (name: string) = "T_" + name.TrimStart('\'')

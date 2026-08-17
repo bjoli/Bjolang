@@ -278,6 +278,15 @@ let rec unify (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
             match t1, t2 with
             | TFun(a1, _, _), TFun(a2, _, _) when a1.Length <> a2.Length ->
                 $"\n  The first takes %s{args a1.Length}, the second %s{args a2.Length}."
+            // Two types of one name. The pair above then differs only by the
+            // module in front of it, which is a lot to expect a reader to spot
+            // — and the thing they have to know is not that the spellings
+            // differ but that the types do.
+            | TCon(n1, _), TCon(n2, _) ->
+                match Naming.typeKeyParts n1, Naming.typeKeyParts n2 with
+                | Some(m1, bare1), Some(m2, bare2) when bare1 = bare2 && m1 <> m2 ->
+                    $"\n  Both are called %s{bare1}, and a type belongs to the module that declared it: %s{m1} and %s{m2} each declared one. Import a module with (prefix-types ...) to give its types a spelling of their own."
+                | _ -> ""
             | _ -> ""
 
         failwithf $"Type error: these types do not match.\n  %s{shown[0]}\n  %s{shown[1]}%s{note}"

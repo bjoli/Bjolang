@@ -1,0 +1,23 @@
+;; `prefix-types` on two libraries that each declare a `Banana`.
+;;
+;; The two prefixes are two spellings of two *types*, not two spellings of one:
+;; an `A/Banana` is not a `B/Banana`, and handing one to a function that wants
+;; the other is a Bjolang type error naming both modules. It used to typecheck,
+;; and the C# backend refused the program afterwards with a CS0433.
+
+;; EXPECT-ERROR: Type error: these types do not match.
+;; EXPECT-ERROR: banana_b/Banana
+;; EXPECT-ERROR: banana_a/Banana
+;; EXPECT-ERROR: Both are called Banana
+;; EXPECT-ERROR: each declared one
+
+(import (prefix-types "../inc/banana_a.bjo" "A/")
+        (prefix-types "../inc/banana_b.bjo" "B/"))
+
+(: mk (-> int A/Banana))
+(defun (mk n)
+  (A/MkBananaA n))
+
+(defun (main)
+  (println (peel-b (mk 3)))
+  0)
