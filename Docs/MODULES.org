@@ -94,7 +94,9 @@ which is what the error says to do.
 A modifier produces a *spelling*, never a copy. Everything keyed internally —
 the implementations, the inline templates, the union cases, the ~Module::name~
 qualified reference a macro expansion uses — goes on using the name the
-declaring module wrote, and the visible name is resolved back to it.
+*declaring* module gives it, and the visible name is resolved back to that. For
+a def, a macro or a trait, that name is the one its source wrote; for a type or
+a constructor it is the key (see [[*How a type is keyed][How a type is keyed]]).
 
 The two halves resolve differently, and the difference matters:
 
@@ -102,39 +104,62 @@ The two halves resolve differently, and the difference matters:
   qualified reference into the origin's class. So ~(rename (m) (helper h))~
   gives an ~h~ that means ~m~'s ~helper~ even if something else in the program
   also defines ~helper~.
-- A *type, constructor or trait* is not bound under anything — its declaration
-  keeps the name every registry uses — so its prefixed spelling is resolved
-  away before any of them is consulted.
+- A *type, constructor or trait* is not bound under anything, so its prefixed
+  spelling is resolved away before any registry is consulted. What it resolves
+  *to* is the declaring module's own name for it: a trait's bare name, and a
+  type's key.
 
 One consequence of the second: a prefixed type does not *hide* the unprefixed
 one. ~(prefix-types (m) "T/")~ makes ~T/Crate~ a name; ~Crate~ stays one.
 
-*** What ~prefix-types~ is not for
+*** What ~prefix-types~ is for
 
-It renames; it does not disambiguate. If two libraries both declare a ~Banana~,
-importing them under two prefixes does *not* give you two types:
+Renaming a module's worth of types, and *disambiguating* two of them.
+
+A type's identity is the module that declared it plus its name. Two libraries
+may each declare a ~Banana~, and those are two types: a value of one is not
+accepted where the other is wanted. What is left to decide is what each is
+*called* here, and that is what the modifier says:
 
 #+BEGIN_SRC scheme
 (import (prefix-types "a.bjo" "A/")
         (prefix-types "b.bjo" "B/"))
 #+END_SRC
 
-~A/Banana~ and ~B/Banana~ are both real names, and both resolve to the same
-entry — so a value of one is accepted where the other is wanted, silently, and
-the program is then rejected by the C# backend with
+~A/Banana~ and ~B/Banana~ are two names for two types, usable in the same
+signature. Passing one where the other is wanted is a type error that names
+both modules:
 
 #+BEGIN_SRC text
-error CS0433: The type 'Banana' exists in both 'a' and 'b'
+Type error: these types do not match.
+  b/Banana
+  a/Banana
+  Both are called Banana, and a type belongs to the module that declared it:
+  b and a each declared one. Import a module with (prefix-types ...) to give
+  its types a spelling of their own.
 #+END_SRC
 
-which names assemblies rather than modules and points at generated code.
+Without the modifier both are still there and still distinct — the bare
+~Banana~ simply means the later import's, which is rule 2 of [[*Which name
+wins][Which name wins]]. The prefix is how the other one gets a name.
 
-This is not something the modifier does or fails to do. A Bjolang type is
-nominal by its *bare* name across the whole program: the registries have no
-module in the key, and each type is emitted as one class. Two libraries
-declaring one type name collide under plain ~import~ too — the modifier neither
-causes it nor is able to repair it. Until the type registries are keyed by
-module, the only fix is for one of the two libraries to rename its type.
+**** How a type is keyed
+
+Internally a declared type — and each of its constructors — is filed under
+~<module>__<name>~: ~a__Banana~, ~a__MkBanana~. That string is what the
+registries are keyed on and what the generated C# class is called, which is why
+two libraries no longer collide there. Source never writes it: the bare name is
+registered as a *spelling* of it, exactly as ~prefix-types~ registers ~A/Banana~,
+and both resolve to the key before any registry is consulted.
+
+It surfaces in one place, diagnostics, where it is written ~a/Banana~ — the
+module, then the name.
+
+The runtime's own types — ~List~, ~Option~, ~Result~, ~Syntax~ and the rest —
+are declared by no module and are not keyed. A module declaring a type of one
+of those names is not shadowing it so much as declaring its own: ~mine/Option~
+and ~Option~ are two types, and mixing them is a type error rather than a
+silent substitution.
 
 *** Prefix strings
 
@@ -370,10 +395,17 @@ A name defined in the importing module always wins over an imported alias.
 
 Three rules, in the order they are decided:
 
-1. A name *defined in the importing module* wins over anything imported.
+1. A name *defined in the importing module* wins over anything imported. For a
+   type that holds wherever the declaration sits in the file: a signature
+   written above a ~type~ already means that ~type~.
 2. Between two imports offering the same name, the *later import* wins.
    Silently: this is what makes the implicit prelude a background that anything
    can override, and it is what several modules in this repository rely on.
+
+   For a *type* this decides the spelling and nothing else. Both types are
+   still there and still distinct, and the one the bare name does not reach is
+   reached with ~prefix-types~ (see [[*What ~prefix-types~ is for][What
+   ~prefix-types~ is for]]).
 3. A spelling a *modifier or an alias produced* may not collide with anything —
    with another such spelling, or with a name the module defines for itself. It
    is a compile error naming both sources.
@@ -495,6 +527,44 @@ declarations: reading needs no macros, parsing does.
 Every macro is published. There is no ~(export ...)~ for them, because a macro
 that no other module can reach is unusable — it cannot be used in the module
 that defines it. See ~Docs/MACROS.org~.
+
+** What a ~.dll~ says about its types, and the version that says how to read it
+
+Everything a compiled module publishes about itself is one ~BjolangMetadata~
+attribute, and the first thing in it is a format version. A mismatch is
+reported rather than guessed at:
+
+#+BEGIN_SRC text
+'/.../prelude.dll' was built by a different version of the Bjolang compiler
+(metadata version 1, this compiler reads 2). Rebuild it with this compiler
+version.
+#+END_SRC
+
+The version is bumped when a field changes *meaning*; adding one does not need
+it. Version 2 is where type names became keys — an older assembly's types would
+be read as somebody else's.
+
+Two shapes cross the boundary, and the difference is the whole of how a key
+travels:
+
+- a type *declaration* travels as the source it was written as, under its bare
+  name, and is keyed again by its reader — which knows the module it came from,
+  since it is reading that module's own assembly;
+- every *other* type name — in a signature, an impl target, a trait's methods —
+  is already a key, and a key resolves to itself. That is what a signature
+  mentioning a type from a link-only dependency needs (see [[*Linking is not
+  importing][Linking is not importing]]): nothing has to be registered for it
+  to mean what it meant.
+
+So a module publishes only the types *it* declares. A dependency's arrive
+through the dependency, or not at all — and a signature that mentions one still
+resolves, because the name in it says where the type lives.
+
+Rebuilding after a version bump is ~./build_std.sh~ for the standard library,
+and a rebuild of anything else compiled against it. A library that still has
+its source needs nothing done by hand: the compiler counts itself as part of a
+module's source closure, so an out-of-date ~.dll~ beside its ~.bjo~ is rebuilt
+at the next import.
 
 ** Where a module import resolves
 
