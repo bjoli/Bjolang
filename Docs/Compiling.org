@@ -74,6 +74,50 @@ an executable without an entry point does not link.
 
 The dumps land in the *working directory*, not next to the source.
 
+** ~main~
+
+The entry point has one type:
+
+#+BEGIN_SRC scheme
+(: main (-> (List string) int))
+#+END_SRC
+
+and a file gets it whether or not it writes it. A ~main~ with no signature is
+given that one, so ~args~ is a list of strings by declaration rather than by
+whatever the body happened to constrain — ~(println (list-head args))~ on its
+own would otherwise leave the element type open, and a generic entry point is
+one nothing can call. A ~main~ with no parameter is given one: the arguments
+exist whether or not the program wants them, and
+
+#+BEGIN_SRC scheme
+(defun (main)
+  (println "hi")
+  0)
+#+END_SRC
+
+is the same function with the parameter left unnamed.
+
+Writing a *different* signature is the one way to get a different type, and it
+is rejected:
+
+#+BEGIN_SRC text
+Type Error at prog.bjo:15: 'main' is a program's entry point and has one type,
+(-> (List string) int). This one is (-> (Array string) int). A main written
+without a signature is given that one, and a main written without a parameter
+is given the arguments anyway — so the way to a different type is a signature,
+and there is nothing the entry point could pass it.
+#+END_SRC
+
+~main~ may be a ~defbjo~. That is the only way a program gets into fiber-land
+today, and the entry point drives the fiber to completion on the process's own
+thread; nothing else about its type changes.
+
+The generated ~Main~ conses the process arguments into a ~(List string)~ and
+calls ~main~ with it. There is one such call and no case analysis: a ~main~ of
+an unexpected shape used to be handed a literal ~0~, which was invisible for a
+program that ignored its parameter and a C# error in generated code for one
+that did not.
+
 ** Runtime assemblies
 
 Every compiled program links against a fixed set of support assemblies, named

@@ -780,6 +780,90 @@ let private withImplicitPrelude (absPath: string) (forms: SExpr list) : SExpr li
         let sym name = SAtom { Token = Lexer.Symbol name; Range = r }
         SList([ sym "import"; SList([ sym "std"; sym "prelude" ], r) ], r) :: forms
 
+/// The one shape an entry point has: `(-> (List string) int)`.
+///
+/// `main` is called by the generated entry point rather than by anything in the
+/// program, so what it takes is the runtime's to say and not inference's to
+/// work out from a body. There is one type, and a file gets it whatever it
+/// wrote:
+///
+/// - a `main` with no parameter is given one. The arguments exist whether or
+///   not the program wants them, and the entry point then has a single call to
+///   emit rather than a case analysis over what it may hand over.
+/// - a `main` with no signature is given this one, so its parameter is
+///   `(List string)` by declaration rather than by whatever its body happened
+///   to constrain. `(println (list-head args))` alone leaves the element type
+///   open, and a generic entry point is one nothing can call.
+///
+/// A signature written by hand is left as written and checked afterwards, by
+/// `checkEntryPoint`, which can compare types rather than syntax.
+///
+/// Applied to the file being compiled and to nothing else: an imported module's
+/// `main`, if it has one, is an ordinary function of that module's.
+let private shapeEntryPoint (decls: Decl list) : Decl list =
+    let entryPoint =
+        decls
+        |> List.tryPick (function
+            | DDefun("main", args, _, colour, r) -> Some(args, colour, r)
+            | _ -> None)
+
+    match entryPoint with
+    | None -> decls
+    | Some(args, colour, r) ->
+        // Invented rather than named, because the source that would refer to it
+        // is the source that did not write it.
+        let withParameter =
+            if not (mandatoryNames args).IsEmpty then
+                decls
+            else
+                let received = MandatoryArg(Gensym.fresh "args", None)
+
+                decls
+                |> List.map (function
+                    | DDefun("main", args, body, colour, r) -> DDefun("main", received :: args, body, colour, r)
+                    | d -> d)
+
+        if decls |> List.exists (function DSignature("main", _, _, _) -> true | _ -> false) then
+            withParameter
+        else
+            let argsType = TApp("List", [ TName("string", r) ], r)
+            DSignature("main", TArrow([ argsType ], [], None, TName("int", r), colour, r), [], r) :: withParameter
+
+/// The type `main` ended up with, once the whole program has been checked.
+///
+/// `shapeEntryPoint` gives an unsignatured `main` the right signature, so the
+/// only way to arrive here with a different type is to have written one — and
+/// the mistake deserves a message naming the shape rather than a C# error
+/// inside a generated entry point nobody wrote.
+///
+/// The effect is not compared: `main` may be a bjoroutine, and the entry point
+/// drives the fiber.
+let private checkEntryPoint (env: TypedAST.Env) (decls: Decl list) : unit =
+    let definedHere =
+        match List.tryLast decls with
+        | Some(DModule(_, inner, _)) ->
+            inner
+            |> List.tryPick (function
+                | DDefun("main", _, _, _, r)
+                | DDef("main", _, r)
+                | DDefMutable("main", _, r) -> Some r
+                | _ -> None)
+        | _ -> None
+
+    match definedHere, Map.tryFind "main" env.Bindings with
+    | Some r, Some binding ->
+        let (TypedAST.Scheme(_, constraints, t)) = binding.Scheme
+        let actual = Unification.prune env.Registry t
+
+        match actual with
+        | TypedAST.TFun([ TypedAST.TCon("List", [ TypedAST.TCon(TypedAST.TypeConstants.StringName, []) ]) ],
+                        TypedAST.TCon(TypedAST.TypeConstants.Int32Name, []),
+                        _) when constraints.IsEmpty -> ()
+        | _ ->
+            failwithf
+                $"Type Error at %s{Lexer.formatPos r}: 'main' is a program's entry point and has one type, (-> (List string) int). This one is %s{DotNetInterop.showType actual}. A main written without a signature is given that one, and a main written without a parameter is given the arguments anyway — so the way to a different type is a signature, and there is nothing the entry point could pass it."
+    | _ -> ()
+
 let wrapInModule (moduleName: string) (filePath: string) (decls: Decl list) : Decl list =
     // Find the first and last range to represent the module range
     let r = 
@@ -1076,6 +1160,15 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
                     Macro.setLocalMacros localMacros
                     let parsed = Parser.parseModule forms
                     Macro.setLocalMacros Set.empty
+
+                    // Only the file being compiled has an entry point. A `main`
+                    // in a module this one imports is one of its functions.
+                    let parsed =
+                        if absPath = Path.GetFullPath mainFilePath then
+                            shapeEntryPoint parsed
+                        else
+                            parsed
+
                     parsed, (importEdges |> List.map (fun (dep, _, _) -> dep)), [], None
 
             // Dependencies were loaded above, before this module was parsed. A
@@ -1267,6 +1360,11 @@ let runFullFrontendPipeline (mainFilePath: string) =
 
         printfn "=== Step 2: Type Checking ==="
         let env, typedAst = Inference.checkProgram Prelude.prelude letrecifiedDecls
+
+        // Before anything reads `main`: the entry point is generated code's
+        // caller, and a type it cannot call is a diagnostic here rather than a
+        // C# error in a file nobody wrote.
+        checkEntryPoint env parsedModuleDecls
 
         let env = qualifyInlineTemplates env typedAst
 

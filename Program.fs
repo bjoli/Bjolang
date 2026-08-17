@@ -5,18 +5,7 @@ type CompilerOptions =
 
 let defaultOptions = { InputFile = None; IsLibrary = false; Debug = false }
 
-/// What the generated `Main` passes to the program's own `main`.
-type MainArgs =
-    /// `(-> (List string) ...)`: the process arguments, as a Bjolang list.
-    | CommandLineArgs
-    /// `(-> ...)`: nothing to pass.
-    | NoArgs
-    /// One parameter of some other type, which gets a zero. Nothing checks that
-    /// this makes sense; it is what a `main` of an unexpected shape has always
-    /// been given.
-    | OneUnknownArg
 
-type EntryPoint = { Args: MainArgs; IsBjoroutine: bool }
 
 let printUsage () =
     printfn "Bjolang Compiler"
@@ -201,34 +190,26 @@ let main argv =
             if options.Debug then
                 File.WriteAllText("ast_dump.txt", sprintf "%A" typedAst)
             
-            /// What the generated entry point has to hand `main`, and whether
-            /// it has to drive a fiber to do it.
+            /// Does the entry point have to drive a fiber to call `main`?
             ///
             /// `main` is allowed to be a bjoroutine, and that is the only way a
             /// program gets *into* fiber-land today: `bjo` and `sync` do not
             /// exist yet, so without it there would be no caller a yield point
             /// could legally appear under.
-            let entryPoint =
-                let argsOf t =
-                    match t with
-                    | TypedAST.TFun([ TypedAST.TCon("List", [ TypedAST.TCon("System.String", []) ]) ], _, _) ->
-                        CommandLineArgs
-                    | TypedAST.TFun([], _, _) -> NoArgs
-                    // Not a function at all is treated as no-args; a function of
-                    // anything else gets a zero, which is what it always got.
-                    | TypedAST.TFun _ -> OneUnknownArg
-                    | _ -> NoArgs
-
+            ///
+            /// The rest of `main`'s type is not a question. It is
+            /// `(-> (List string) int)`, given to the module rather than read
+            /// off it (`Pipeline.shapeEntryPoint`) and checked afterwards
+            /// (`Pipeline.checkEntryPoint`).
+            let mainIsBjoroutine =
                 match Map.tryFind "main" env.Bindings with
                 | Some b ->
                     let (TypedAST.Scheme(_, _, t)) = b.Scheme
 
-                    { Args = argsOf t
-                      IsBjoroutine =
-                        match t with
-                        | TypedAST.TFun(_, _, TypedAST.EAsync) -> true
-                        | _ -> false }
-                | None -> { Args = OneUnknownArg; IsBjoroutine = false }
+                    match t with
+                    | TypedAST.TFun(_, _, TypedAST.EAsync) -> true
+                    | _ -> false
+                | None -> false
 
             let mainModuleClass = Codegen.moduleClassName inputFilePath
 
@@ -286,21 +267,22 @@ let main argv =
             // thread `Main` runs on is the one thread in the process that is
             // certainly not one.
             let callMain (argExpr: string) =
-                if entryPoint.IsBjoroutine then
+                if mainIsBjoroutine then
                     $"        _ = Bjoml.Bjo.RunToCompletion(() => %s{mainModuleClass}.main(%s{argExpr}));\n"
                 else
                     $"        %s{mainModuleClass}.main(%s{argExpr});\n"
 
+            // One call, always. `main` takes the arguments as a `(List string)`
+            // whether or not it was written with a parameter, so there is no
+            // shape of entry point to choose between — and no case in which the
+            // arguments are dropped, or a placeholder is passed to a `main` that
+            // cannot take one.
             let runBody =
-                match entryPoint.Args with
-                | CommandLineArgs ->
-                    $"        SchemeList.SchemeList<string> bjoArgs = SchemeList.SchemeList.Empty<string>();\n" +
-                    $"        for (int i = args.Length - 1; i >= 0; i--) {{\n" +
-                    $"            bjoArgs = SchemeList.SchemeList.Cons(args[i], bjoArgs);\n" +
-                    $"        }}\n" +
-                    callMain "bjoArgs"
-                | NoArgs -> callMain ""
-                | OneUnknownArg -> callMain "0"
+                $"        SchemeList.SchemeList<string> bjoArgs = SchemeList.SchemeList.Empty<string>();\n" +
+                $"        for (int i = args.Length - 1; i >= 0; i--) {{\n" +
+                $"            bjoArgs = SchemeList.SchemeList.Cons(args[i], bjoArgs);\n" +
+                $"        }}\n" +
+                callMain "bjoArgs"
 
             let entryPointCode =
                 if isLibrary then ""
