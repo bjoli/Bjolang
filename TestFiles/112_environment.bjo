@@ -1,0 +1,92 @@
+;; The process's surroundings: environment variables, the working directory,
+;; and the directory operations that go with the file ones.
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+(: expect-true (-> string bool void))
+(defun (expect-true label actual)
+  (expect label (if actual "true" "false") "true"))
+
+(: expect-false (-> string bool void))
+(defun (expect-false label actual)
+  (expect label (if actual "true" "false") "false"))
+
+;; What a path operation answered, with the absent case spelled out.
+(: shown (-> (Option string) string))
+(defun (shown o) (option-ref-or o "#none"))
+
+(defun (main)
+  ;; --- Paths ---------------------------------------------------------------
+  ;;
+  ;; The three that can come up empty are Options. .NET says `""` or `null`,
+  ;; and neither is a path.
+  (expect "a filename" (shown (path-filename "/a/b/c.txt")) "c.txt")
+  (expect "a path that names a directory has none" (shown (path-filename "/a/b/")) "#none")
+  (expect "an extension" (shown (path-file-extension "/a/b/c.txt")) ".txt")
+  (expect "a name without one" (shown (path-file-extension "README")) "#none")
+  (expect "a dotfile is an extension to .NET" (shown (path-file-extension ".bashrc")) ".bashrc")
+  (expect "a directory" (shown (path-directory "/a/b/c.txt")) "/a/b")
+  (expect "a bare filename has none" (shown (path-directory "c.txt")) "#none")
+  (expect "and the root has none" (shown (path-directory "/")) "#none")
+
+  ;; --- Environment variables -----------------------------------------------
+  (set-environment-variable! "BJO_112_PROBE" "here")
+  (expect "a variable that is set"
+          (option-ref-or (get-environment-variable "BJO_112_PROBE") "unset") "here")
+  (expect-true "one that is not is None"
+               (none? (get-environment-variable "BJO_112_NOT_SET_BY_ANYONE")))
+
+  ;; Set to nothing reads back as unset, which is the one distinction this
+  ;; cannot make.
+  (set-environment-variable! "BJO_112_PROBE" "")
+  (expect-true "and set to nothing reads as unset"
+               (none? (get-environment-variable "BJO_112_PROBE")))
+
+  ;; --- Directories ---------------------------------------------------------
+  (def root "112_probe_dir")
+  (def nested (path-combine root "inner"))
+
+  (directory-create nested)
+  (expect-true "create makes the parents too" (directory-exists? nested))
+  (directory-create nested)
+  (expect-true "and creating it again is not an error" (directory-exists? nested))
+
+  (file-write-text (path-combine root "a.txt") "a")
+  (file-write-text (path-combine root "b.log") "b")
+  (expect "files, not subdirectories" (int->string (length (directory-files root))) "2")
+  (expect "subdirectories, not files" (int->string (length (directory-subdirectories root))) "1")
+  (expect "and a pattern is a filter"
+          (int->string (length (vec-filter #(string-ends-with? &1 ".txt")
+                                           (directory-files root))))
+          "1")
+
+  ;; --- The working directory -----------------------------------------------
+  (def home (current-directory))
+  (set-current-directory! root)
+  (expect-true "changed" (string-ends-with? (current-directory) root))
+  ;; Relative paths follow it, which is the whole reason it is mutable state.
+  (expect-true "and relative paths follow it" (directory-exists? "inner"))
+  (set-current-directory! home)
+  (expect "and back" (current-directory) home)
+
+  ;; --- Deleting ------------------------------------------------------------
+  (directory-delete nested)
+  (expect-false "an empty directory can be deleted" (directory-exists? nested))
+
+  ;; A directory with files in it needs the tree form, and refuses the other.
+  (expect-true "a non-empty one refuses"
+               (match (try (directory-delete root) #:catch (System.IO.IOException))
+                 ((Ok u) false)
+                 ((Err e) true)))
+  (directory-delete-tree root)
+  (expect-false "and the tree form takes it" (directory-exists? root))
+
+  (println "112 ok")
+  0)

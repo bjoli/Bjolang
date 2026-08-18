@@ -1,0 +1,98 @@
+;; The string operations the prelude wraps around .NET: searching, case,
+;; trimming, padding, splitting and joining.
+;;
+;; What is being asserted beyond "the call works" is that every comparison is
+;; ordinal and every case mapping invariant, so the answers below are the same
+;; on every machine, and that `string-split` and `string-join` are inverses.
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+(: expect-true (-> string bool void))
+(defun (expect-true label actual)
+  (expect label (if actual "true" "false") "true"))
+
+(: expect-false (-> string bool void))
+(defun (expect-false label actual)
+  (expect label (if actual "true" "false") "false"))
+
+(defun (main)
+  ;; --- Searching -----------------------------------------------------------
+  (expect-true  "contains" (string-contains? "hello world" "o w"))
+  (expect-false "and does not" (string-contains? "hello world" "ow"))
+  (expect-true  "the empty needle is everywhere" (string-contains? "hello" ""))
+  (expect-true  "starts with" (string-starts-with? "hello" "hell"))
+  (expect-false "and does not" (string-starts-with? "hello" "Hell"))
+  (expect-true  "ends with" (string-ends-with? "hello" "llo"))
+  (expect-false "and does not" (string-ends-with? "hello" "LLO"))
+
+  ;; Ordinal, not cultural. The first literal below holds a bare "e" followed
+  ;; by a combining acute accent; the needle is a precomposed "é". They are the
+  ;; same text to a collator and two different strings to storage, and it is
+  ;; storage that answers here — on every machine, in every locale.
+  (expect-false "comparison is ordinal" (string-contains? "éclair" "é"))
+
+  ;; --- Rewriting -----------------------------------------------------------
+  (expect "replace" (string-replace "a-b-c" "-" "+") "a+b+c")
+  (expect "replace with nothing deletes" (string-replace "a-b-c" "-" "") "abc")
+  (expect "and a needle that is not there changes nothing"
+          (string-replace "abc" "-" "+") "abc")
+
+  ;; --- Case ----------------------------------------------------------------
+  ;; ß upcases to itself rather than to SS: the invariant mapping is
+  ;; character-for-character, and the expansion is a locale's rule, not
+  ;; Unicode's simple one.
+  (expect "upcase" (string-upcase "Straße road") "STRAßE ROAD")
+  (expect "downcase" (string-downcase "LOUD Noise") "loud noise")
+
+  ;; --- Trimming and padding ------------------------------------------------
+  (expect "trim" (string-trim "  padded\t\n") "padded")
+  (expect "trim-start" (string-trim-start "  padded  ") "padded  ")
+  (expect "trim-end" (string-trim-end "  padded  ") "  padded")
+  (expect "pad-left" (string-pad-left "7" 3) "  7")
+  (expect "pad-right" (string-pad-right "7" 3) "7  ")
+  (expect "padding never truncates" (string-pad-left "wide" 2) "wide")
+
+  ;; --- Splitting and joining -----------------------------------------------
+  (def fields (string-split "a,b,c" ","))
+  (expect "split" (int->string (length fields)) "3")
+  (expect "and its fields" (vec-ref fields 1) "b")
+
+  ;; Empty fields are kept, which is what makes the two inverses.
+  (def sparse (string-split "a,,b" ","))
+  (expect "an empty field is a field" (int->string (length sparse)) "3")
+  (expect "join undoes split" (string-join sparse ",") "a,,b")
+
+  (expect "a separator that is not there splits into one field"
+          (int->string (length (string-split "abc" ","))) "1")
+  (expect "a multi-character separator"
+          (string-join (string-split "a::b::c" "::") "/") "a/b/c")
+  (expect "joining nothing is nothing"
+          (string-join (vec-empty) ",") "")
+
+  ;; Splitting is by storage, joining by nothing at all, so text outside the
+  ;; BMP survives both.
+  (expect "and an astral character is not cut in half"
+          (int->string (length (string-split "a😀b" "😀"))) "2")
+
+  ;; --- Composition ---------------------------------------------------------
+  ;;
+  ;; The wrappers are ordinary functions, so they compose with `->` and with
+  ;; the collection operations like anything else.
+  (expect "a pipeline"
+          (-> "  Alpha, Beta ,Gamma  "
+              (string-trim)
+              (string-split & ",")
+              (vec-map string-trim &)
+              (vec-map string-downcase &)
+              (string-join & "|"))
+          "alpha|beta|gamma")
+
+  (println "111 ok")
+  0)
