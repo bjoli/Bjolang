@@ -359,10 +359,10 @@ let prelude : Env =
         "file-read/seq", {Scheme = Scheme(["a"], [], makeFunType [makeFunType [textInputPortType] (TVar "a"); stringType] (makeSeqType (TVar "a"))); IsMutable = false }
 
         // `Path.GetDirectoryName` answers null for a root and for a bare
-        // filename. Bjolang has no null to test against, so that sentinel is
-        // absorbed at the boundary — which is why this one is not in
+        // filename. Bjolang has no null to test against, so that sentinel
+        // becomes `None` at the boundary — which is why this one is not in
         // `std/prelude` with the other path operations.
-        "path-directory", {Scheme = Scheme([], [], makeFunType [stringType] stringType); IsMutable = false }
+        "path-directory", {Scheme = Scheme([], [], makeFunType [stringType] (makeOptionType stringType)); IsMutable = false }
 
         // Raw port primitives. `std/prelude` is the documented surface — with
         // the reader-parameterised drains in `std/ports` — and these are the

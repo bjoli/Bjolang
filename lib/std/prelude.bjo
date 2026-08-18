@@ -25,6 +25,11 @@
 
   ;; Strings
   str string-append string-length
+  string-contains? string-starts-with? string-ends-with? string-replace
+  string-upcase string-downcase
+  string-trim string-trim-start string-trim-end
+  string-pad-left string-pad-right
+  string-split string-join
   ;; Characters — R6RS §11.11. The classification and case procedures
   ;; (char-upcase, char-alphabetic?, digit-value, ...) are builtins and need no
   ;; export; these are the ones written in Bjolang.
@@ -42,6 +47,12 @@
   file-read-text file-write-text file-append-text file-exists? file-delete
   ;; Paths
   path-absolute path-combine path-filename path-file-extension
+  ;; Directories
+  directory-exists? directory-create directory-delete directory-delete-tree
+  directory-files directory-subdirectories
+  ;; The environment
+  get-environment-variable set-environment-variable!
+  current-directory set-current-directory!
   ;; Ports — opening
   open-input-file open-input-string open-output-file open-output-string
   ;; Ports — closing
@@ -451,6 +462,86 @@
 (: string-length (-> string int))
 (defun (string-length s) (.-Length s))
 
+;; --- Searching and rewriting -----------------------------------------------
+;;
+;; Ordinal, explicitly: .NET's one-argument overloads compare by culture, which
+;; makes the answer depend on the machine. Fold the case first for an
+;; insensitive answer.
+;;
+;; None of the `char`-taking overloads is wrapped — a Bjolang `char` is a
+;; codepoint and a C# `char` a UTF-16 code unit. `(char->string c)` crosses.
+
+(import/extern
+  (clr-ordinal (: System.StringComparison.Ordinal #:get)))
+
+(: string-contains? (-> string string bool))
+(defun (string-contains? s needle) (.Contains s needle clr-ordinal))
+
+(: string-starts-with? (-> string string bool))
+(defun (string-starts-with? s prefix) (.StartsWith s prefix clr-ordinal))
+
+(: string-ends-with? (-> string string bool))
+(defun (string-ends-with? s suffix) (.EndsWith s suffix clr-ordinal))
+
+;; Every occurrence. Replacing with `""` deletes.
+(: string-replace (-> string string string string))
+(defun (string-replace s old new) (.Replace s old new clr-ordinal))
+
+;; --- Case ------------------------------------------------------------------
+;;
+;; Invariant, for the reason `char-upcase` is, and character for character: ß
+;; upcases to itself rather than to SS. For normalising before a comparison,
+;; not for presenting text to a reader.
+(: string-upcase (-> string string))
+(defun (string-upcase s) (.ToUpperInvariant s))
+
+(: string-downcase (-> string string))
+(defun (string-downcase s) (.ToLowerInvariant s))
+
+;; --- Trimming and padding --------------------------------------------------
+;;
+;; Whitespace only, by `char-whitespace?`'s definition: a "trim these
+;; characters" form is `params char[]`, which is unreachable from here.
+(: string-trim (-> string string))
+(defun (string-trim s) (.Trim s))
+
+(: string-trim-start (-> string string))
+(defun (string-trim-start s) (.TrimStart s))
+
+(: string-trim-end (-> string string))
+(defun (string-trim-end s) (.TrimEnd s))
+
+;; Spaces to `width` storage units — `string-length`'s count, not
+;; `string-count`'s. Never truncates.
+(: string-pad-left (-> string int string))
+(defun (string-pad-left s width) (.PadLeft s width))
+
+(: string-pad-right (-> string int string))
+(defun (string-pad-right s width) (.PadRight s width))
+
+;; --- Splitting and joining -------------------------------------------------
+
+;; Empty fields are kept, which is what makes splitting and joining inverses.
+;; Drop them with `(vec-filter #(not (string-empty? &1)) parts)`.
+(import/extern
+  (clr-keep-empty-fields (: System.StringSplitOptions.None #:get)))
+
+;; A `Vec` rather than the `(Array %a)` .NET answers with: an array is
+;; `Iterable` and nothing more, so it can be walked and not measured or mapped.
+(: string-split (-> string string (Vec string)))
+(defun (string-split s sep)
+  (loop (:for field (.Split s sep clr-keep-empty-fields))
+        (:acc fields (vecing field))))
+
+(: string-join (-> (Vec string) string string))
+(defun (string-join parts sep)
+  (let ((b (stringbuilder-empty)))
+    (loop (:with first? true false)
+          (:for part parts)
+          (:do (unless first? (stringbuilder-add-string! b sep))
+               (stringbuilder-add-string! b part)))
+    (stringbuilder->string b)))
+
 ;; --- Conversions ---
 ;;
 ;; `ToString` is an instance method on each of the numeric types, and interop
@@ -682,9 +773,13 @@
 ;;
 ;; Textual operations on path strings: none of them touches the file system.
 ;;
-;; `path-directory` is *not* here — `GetDirectoryName` answers null for a root
-;; and for a bare filename, so it stays in the runtime with the rest of the
-;; sentinel-absorbing boundary code.
+;; The three that can come up empty answer `(Option string)`. .NET reports "no
+;; filename here" and "no extension" as `""`, and a root's directory as `null`,
+;; and neither is a path — an empty string used as one names the working
+;; directory, which is a different place from nowhere.
+;;
+;; `path-directory` is *not* here: it is the `null` case, and absorbing that
+;; needs the boundary code in the runtime.
 
 (import/extern
   (clr-full-path      (: System.IO.Path.GetFullPath))
@@ -700,11 +795,94 @@
 (: path-combine (-> #:rest string string))
 (defun (path-combine #:rest parts) (clr-path-combine parts))
 
-(: path-filename (-> string string))
-(defun (path-filename path) (clr-file-name path))
+;; `None` for a path that ends in a separator, which names a directory.
+(: path-filename (-> string (Option string)))
+(defun (path-filename path)
+  (let ((name (clr-file-name path)))
+    (if (string-empty? name) None (Some name))))
 
-(: path-file-extension (-> string string))
-(defun (path-file-extension path) (clr-file-extension path))
+;; The extension including its dot. A name that is nothing but a dotted suffix
+;; — `.bashrc` — counts as one, as it does to .NET.
+(: path-file-extension (-> string (Option string)))
+(defun (path-file-extension path)
+  (let ((ext (clr-file-extension path)))
+    (if (string-empty? ext) None (Some ext))))
+
+;; --- Directories ---
+;;
+;; They throw as the file operations above do; wrap a call in `try` for a
+;; `Result`. Listing is eager and gives whole paths — `EnumerateFiles` answers
+;; an `IEnumerable<string>`, which interop cannot equate with `(Seq string)`.
+;; There is no pattern argument: filter the `Vec`.
+
+(import/extern
+  (clr-dir-exists  (: System.IO.Directory.Exists))
+  (clr-dir-create  (: System.IO.Directory.CreateDirectory))
+  (clr-dir-delete  (: System.IO.Directory.Delete))
+  (clr-dir-files   (: System.IO.Directory.GetFiles))
+  (clr-dir-subdirs (: System.IO.Directory.GetDirectories)))
+
+(: directory-exists? (-> string bool))
+(defun (directory-exists? path) (clr-dir-exists path))
+
+;; Creates every missing directory along the path, and does nothing if it is
+;; already there — so it needs no guard, which would be a race anyway. The
+;; `DirectoryInfo` it answers is of no use here.
+(: directory-create (-> string void))
+(defun (directory-create path) (ignore (clr-dir-create path)))
+
+;; An *empty* directory. Deleting a tree is spelled differently because it is
+;; not a mistake anything can undo.
+(: directory-delete (-> string void))
+(defun (directory-delete path) (clr-dir-delete path))
+
+(: directory-delete-tree (-> string void))
+(defun (directory-delete-tree path) (clr-dir-delete path true))
+
+;; Directly in `path`, not in its subdirectories.
+(: directory-files (-> string (Vec string)))
+(defun (directory-files path)
+  (loop (:for file (clr-dir-files path))
+        (:acc files (vecing file))))
+
+(: directory-subdirectories (-> string (Vec string)))
+(defun (directory-subdirectories path)
+  (loop (:for dir (clr-dir-subdirs path))
+        (:acc dirs (vecing dir))))
+
+;; --- The environment ---
+;;
+;; A variable that is not set is `None` rather than the empty string .NET's
+;; `null` arrives as. It cannot tell "unset" from "set to nothing": the test
+;; available here is `IsNullOrEmpty`, there being no `null` to compare against.
+;;
+;; The working directory is a procedure rather than a value because it is
+;; process-wide mutable state.
+
+(import/extern
+  (clr-get-env      (: System.Environment.GetEnvironmentVariable))
+  (clr-set-env      (: System.Environment.SetEnvironmentVariable))
+  (clr-empty?       (: System.String.IsNullOrEmpty))
+  (clr-cwd          (: System.Environment.CurrentDirectory #:get))
+  (clr-set-cwd      (: System.Environment.CurrentDirectory #:set)))
+
+(: get-environment-variable (-> string (Option string)))
+(defun (get-environment-variable name)
+  (let ((value (clr-get-env name)))
+    (if (clr-empty? value)
+        None
+        (Some value))))
+
+;; For this process and its children, not for the shell that started it.
+;; Setting a variable to the empty string removes it.
+(: set-environment-variable! (-> string string void))
+(defun (set-environment-variable! name value) (clr-set-env name value))
+
+(: current-directory (-> string))
+(defun (current-directory) clr-cwd)
+
+(: set-current-directory! (-> string void))
+(defun (set-current-directory! path) (clr-set-cwd path))
 
 ;; ---------------------------------------------------------------------------
 ;; Ports
@@ -743,12 +921,12 @@
   ;; which is the point — an exception nobody named is a bug, not a result.
   (StreamReader (: System.IO.StreamReader (-> string StreamReader)
                    #:exceptions (System.IO.FileNotFoundException
-                                 System.IO.DirectoryNotFoundException
-                                 System.UnauthorizedAccessException)))
+                                  System.IO.DirectoryNotFoundException
+                                  System.UnauthorizedAccessException)))
   (StringReader (: System.IO.StringReader (-> string StringReader)))
   (StreamWriter (: System.IO.StreamWriter (-> string StreamWriter)
                    #:exceptions (System.IO.DirectoryNotFoundException
-                                 System.UnauthorizedAccessException)))
+                                  System.UnauthorizedAccessException)))
   ;; Writes into a buffer of its own, so it takes nothing and cannot fail.
   (StringWriter (: System.IO.StringWriter (-> StringWriter)))
   (Exception (: System.Exception)))
@@ -993,22 +1171,22 @@
 ;; the one-armed forms, and neither needs one.
 (def/macro (cond form inject compare)
   (syntax-match form
-                ((_ clause ...) (cond-arms clause form))
-                (bad (syntax-error bad "cond takes clauses: (cond (test body ...) ... (else body ...))"))))
+    ((_ clause ...) (cond-arms clause form))
+    (bad (syntax-error bad "cond takes clauses: (cond (test body ...) ... (else body ...))"))))
 
 (: cond-arms (-> (List Syntax) Syntax Syntax))
 (defun (cond-arms clauses whole)
   (match clauses
     (Nil
-     (syntax-error whole "cond needs a final (else ...) clause: every arm answers something, so there has to be a last answer."))
+      (syntax-error whole "cond needs a final (else ...) clause: every arm answers something, so there has to be a last answer."))
     ((Cons clause rest)
      (syntax-match clause
-                   ;; `'else` matches that identifier and nothing else. Note what it is not:
-                   ;; a check against whatever `else` happens to mean at the call site,
-                   ;; which is not a question that can be asked at parse time.
-                   (('else body ...) (one-form body clause))
-                   ((test body ...) #'(if ,test ,(one-form body clause) ,(cond-arms rest whole)))
-                   (bad (syntax-error bad "A cond clause is (test body ...), or (else body ...) for the last one."))))))
+       ;; `'else` matches that identifier and nothing else. Note what it is not:
+       ;; a check against whatever `else` happens to mean at the call site,
+       ;; which is not a question that can be asked at parse time.
+       (('else body ...) (one-form body clause))
+       ((test body ...) #'(if ,test ,(one-form body clause) ,(cond-arms rest whole)))
+       (bad (syntax-error bad "A cond clause is (test body ...), or (else body ...) for the last one."))))))
 
 ;; Several forms as one. An `if` branch is an expression, where a `defun` body
 ;; and a `match` arm are bodies, and `(let () ...)` is how one becomes the other.
@@ -1027,9 +1205,9 @@
 ;; with a different name.
 (def/macro (if-let form inject compare)
   (syntax-match form
-                ((_ ((name value)) then else)
-                 #'(match ,value ((Some ,name) ,then) (None ,else)))
-                (bad (syntax-error bad "if-let takes one binding, a then and an else: (if-let ((name expr)) then else)"))))
+    ((_ ((name value)) then else)
+     #'(match ,value ((Some ,name) ,then) (None ,else)))
+    (bad (syntax-error bad "if-let takes one binding, a then and an else: (if-let ((name expr)) then else)"))))
 
 ;; `(when-let ((name expr)) body ...)`
 ;;
@@ -1042,14 +1220,14 @@
 ;; anywhere else in the language.
 (def/macro (when-let form inject compare)
   (syntax-match form
-                ((_ ((name value)) first body ...)
-                 ;; `value` is bound before it is asked about, so it is evaluated once.
-                 #'(let ((found ,value))
-                     (when (some? found)
-                       (let ((,name (option-ref found)))
-                         ,first
-                         ,@body))))
-                (bad (syntax-error bad "when-let takes one binding and a body: (when-let ((name expr)) body ...)"))))
+    ((_ ((name value)) first body ...)
+     ;; `value` is bound before it is asked about, so it is evaluated once.
+     #'(let ((found ,value))
+         (when (some? found)
+           (let ((,name (option-ref found)))
+             ,first
+             ,@body))))
+    (bad (syntax-error bad "when-let takes one binding and a body: (when-let ((name expr)) body ...)"))))
 
 ;; `(some-> value step ...)` — `->`, stopping at the first `None`.
 ;;
@@ -1059,8 +1237,8 @@
 ;; rather than reimplemented here.
 (def/macro (some-> form inject compare)
   (syntax-match form
-                ((_ value step ...) (some-steps value step))
-                (bad (syntax-error bad "some-> takes a value and steps: (some-> value (f &) (g &))"))))
+    ((_ value step ...) (some-steps value step))
+    (bad (syntax-error bad "some-> takes a value and steps: (some-> value (f &) (g &))"))))
 
 (: some-steps (-> Syntax (List Syntax) Syntax))
 (defun (some-steps value steps)

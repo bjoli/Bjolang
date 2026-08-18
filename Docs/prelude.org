@@ -7,7 +7,7 @@ Nothing here has to be imported. ~(std prelude)~ is linked into every module the
 The prelude is nevertheless made of two halves, and it is worth knowing which is which when reading the sources:
 
 - The *builtin* environment (~Prelude.fs~, backed by ~BjolangRuntime~) holds what cannot be written in Bjolang: the operators, the generic collections, the dynamic environment, and the handful of places where a .NET ~null~ has to be turned into something the language can talk about.
-- ~lib/std/prelude.bjo~ is an ordinary Bjolang module. It holds everything that *is* just a .NET call — the string, conversion, file, path and port operations below — plus the traits (~->str~, ~Iterable~, ~Collector~, ~Functor~, ~Num~) and ~print~/~println~.
+- ~lib/std/prelude.bjo~ is an ordinary Bjolang module. It holds everything that *is* just a .NET call — the string, conversion, file, path, directory, environment and port operations below — plus the traits (~->str~, ~Iterable~, ~Collector~, ~Functor~, ~Num~) and ~print~/~println~.
 
 Sections below are marked =(std prelude)= where they live in the second.
 
@@ -53,6 +53,29 @@ Standard polymorphic math operators (deferred to C# for resolution):
 ~string-length~ and ~string-count~ are two questions with two answers and two costs, which is why neither is called ~size~. Reach for ~string-length~ to size a buffer and ~string-count~ for anything a reader would call "how long is this text".
 
 There is no ~string-ref~, and no other index-based accessor. Indexing UTF-16 by codepoint is O(n), so a loop that looks linear is quadratic; string traversal belongs to a cursor.
+
+*** Searching and rewriting =(std prelude)=
+All *ordinal*: they compare storage, not culture. .NET's one-argument overloads compare by the ambient culture instead, which makes ~"e"+U+0301~ and ~"é"~ equal in one place and different in another; nothing here should depend on where it runs. Fold the case first — ~(string-contains? (string-downcase s) needle)~ — for an insensitive answer.
+- ~(string-contains? s needle)~
+- ~(string-starts-with? s prefix)~ / ~(string-ends-with? s suffix)~
+- ~(string-replace s old new)~ : every occurrence; replacing with ~""~ deletes.
+
+The ~char~-taking overloads of these are not wrapped and cannot be: a Bjolang ~char~ is a codepoint and a C# ~char~ a UTF-16 code unit, so they are not the same type at the boundary. ~(char->string c)~ is the way across.
+
+*** Case =(std prelude)=
+- ~(string-upcase s)~ / ~(string-downcase s)~
+
+Invariant, for the reason ~char-upcase~ is, and character for character: ß upcases to itself rather than to SS, since the expansion is a German rule and not a Unicode one. These are for normalising before a comparison; what a *reader* expects to see is the locale-dependent answer they avoid.
+
+*** Trimming and padding =(std prelude)=
+- ~(string-trim s)~, ~(string-trim-start s)~, ~(string-trim-end s)~ : whitespace, by ~char-whitespace?~'s definition. There is no "trim these characters" form — .NET spells it ~params char[]~.
+- ~(string-pad-left s width)~ / ~(string-pad-right s width)~ : spaces to ~width~ *storage units*, which is ~string-length~'s count and not ~string-count~'s. Never truncates.
+
+*** Splitting and joining =(std prelude)=
+- ~(string-split s sep)~ : the fields between occurrences of ~sep~, as a ~(Vec string)~. Empty fields are kept, which is what makes the two inverses; drop them with ~(vec-filter #(not (string-empty? &1)) parts)~.
+- ~(string-join parts sep)~ : the elements with ~sep~ between them, through one buffer.
+
+A ~Vec~ rather than the ~(Array %a)~ .NET answers with, because an array is ~Iterable~ and nothing more — it can be walked, and not measured, mapped or folded.
 
 ** Characters
 A ~char~ is a Unicode *scalar value* — a codepoint — backed by ~Bjolang.Runtime.BjoChar~, not a C# ~char~. A C# ~char~ is a 16-bit UTF-16 code unit and cannot hold an astral codepoint on its own, so every predicate here classifies by codepoint and an emoji gets a real answer rather than whatever its leading surrogate would have said.
@@ -158,9 +181,28 @@ Whole-file operations, for when the contents fit in memory. They throw as the un
 Textual operations on path strings; none of them touches the file system.
 - ~(path-absolute path)~
 - ~(path-combine part ...)~ : Variadic.
-- ~(path-filename path)~
-- ~(path-file-extension path)~
-- ~(path-directory path)~ : Builtin rather than =(std prelude)=: ~GetDirectoryName~ answers null for a root and for a bare filename, and that sentinel is turned into ~""~ at the boundary.
+- ~(path-filename path)~ : ~(Option string)~ — ~None~ for a path that ends in a separator, which names a directory.
+- ~(path-file-extension path)~ : ~(Option string)~, including the dot. A name that is nothing but a dotted suffix — ~.bashrc~ — counts as one, as it does to .NET.
+- ~(path-directory path)~ : ~(Option string)~. Builtin rather than =(std prelude)=: ~GetDirectoryName~ answers null for a root and for a bare filename, and absorbing that needs boundary code in the runtime.
+
+The three that can come up empty answer an ~Option~. .NET reports "no filename here" and "no extension" as ~""~, and neither is a path — an empty string used as one names the working directory, which is a different place from nowhere.
+
+** Directories =(std prelude)=
+They throw as the whole-file operations do; wrap a call in ~try~ for a ~Result~.
+- ~(directory-exists? path)~
+- ~(directory-create path)~ : Creates every missing directory along the path, and does nothing if it is already there — so it needs no guard, which would be a race anyway.
+- ~(directory-delete path)~ : An *empty* directory.
+- ~(directory-delete-tree path)~ : Spelled differently because it is not a mistake anything can undo.
+- ~(directory-files path)~ / ~(directory-subdirectories path)~ : Whole paths, directly in ~path~, as a ~(Vec string)~.
+
+Listing is eager: ~EnumerateFiles~ would pull lazily and comes back as an ~IEnumerable<string>~, which interop cannot equate with ~(Seq string)~. There is no pattern argument either — ~(vec-filter #(string-ends-with? &1 ".bjo") (directory-files dir))~ asks the same question in the language.
+
+** The environment =(std prelude)=
+- ~(get-environment-variable name)~ : ~(Option string)~. R7RS's name, and ~None~ where R7RS answers ~#f~.
+- ~(set-environment-variable! name value)~ : For this process and its children, not for the shell that started it. Setting a variable to the empty string removes it.
+- ~(current-directory)~ / ~(set-current-directory! path)~ : A procedure rather than a value, because it is process-wide mutable state that relative paths follow.
+
+A variable that is not set is ~None~ rather than the empty string .NET's ~null~ arrives as. What this cannot tell you is "unset" from "set to nothing": the test available at the boundary is ~String.IsNullOrEmpty~, there being no ~null~ in the language to compare against.
 
 ** Ports =(std prelude)=
 Opening a file returns a ~Result~ because a missing file is expected; opening a string cannot fail and returns the port itself. A file port and a string port are the *same type*, so a procedure that reads or writes never learns where the text comes from or goes.

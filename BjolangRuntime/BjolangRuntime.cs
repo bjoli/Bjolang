@@ -55,11 +55,12 @@ public static partial class BjolangRuntime {
     }
 
     // `GetDirectoryName` answers null for a root and for a bare filename, and
-    // Bjolang has no null to test against — so the sentinel is absorbed here
-    // rather than let loose in the program. That is also why this is the one
-    // path operation not written in `std/prelude`.
+    // Bjolang has no null to test against — so the sentinel is turned into the
+    // `None` that means the same thing. That is also why this is the one path
+    // operation not written in `std/prelude`.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static string pathsubdirectory(string path) => System.IO.Path.GetDirectoryName(path) ?? "";
+    public static Option<string> pathsubdirectory(string path) =>
+        System.IO.Path.GetDirectoryName(path) is { Length: > 0 } dir ? Some(dir) : None<string>();
 
     // The failing read. `ReadLine` reports end of input by returning null, and
     // Bjolang has no null to test against, so the sentinel is converted into an
