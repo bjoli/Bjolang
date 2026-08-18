@@ -365,6 +365,10 @@ anything or stored in a variable.
   answers an ~(Option ...)~ and is handed what the step before it unwrapped to,
   so the whole answers one and nothing after a ~None~ runs. Threading is ~->~'s
   own, ~&~ and all.
+- ~(with-cancel (cancel) body ...)~ : a cancellation scope that ends when the
+  scope does. See below.
+- ~(with-deadline ms body ...)~ : the same scope, with a timer holding the
+  canceller.
 
 #+BEGIN_SRC scheme
 (cond ((< n 0) "negative")
@@ -378,6 +382,47 @@ anything or stored in a variable.
 
 (some-> 16 (halve) (halve) (at-least & 3))   ;; (Some 4)
 #+END_SRC
+
+** Cancellation scopes =(std prelude)=
+
+~parameterize~ restores the binding on the way out but never *fires* the token.
+So a scope can hand a child a token and then return, leaving a token nobody
+holds the canceller for — a child running on with nothing able to stop it:
+
+#+BEGIN_SRC scheme
+(parameterize ((current-cancel tok))
+  (bjo (worker jobs)))          ;; promise dropped
+(respond 200)                   ;; scope exits, worker runs on
+#+END_SRC
+
+- ~(with-cancel (cancel) body ...)~ : makes a token, installs it as
+  ~current-cancel~ for the body, and fires it however the body leaves —
+  ~Scope-Ended~ on a normal return, ~(Failed e)~ on a failure, with the
+  exception carrying on out. The binding is restored either way. ~cancel~ is
+  bound to the thunk, for stopping the scope early.
+- ~(with-deadline ms body ...)~ : the same, plus a fiber that fires ~Deadline~
+  after ~ms~. The timer races the scope's own token, so a body that finishes
+  early takes the timer with it.
+
+#+BEGIN_SRC scheme
+(with-cancel (stop!)
+  (bjo (worker jobs))            ;; inherits the token
+  (sync (timeout 5000)))
+
+(with-deadline 5000 (fetch-all urls))
+#+END_SRC
+
+Both are macros over ~make-cancel~, ~parameterize~, ~try~ and ~raise~ — nothing
+the parser knows about, so the import modifiers reach them like any other
+binding.
+
+*Firing returns immediately.* A cooperating child stops /soon/, not before the
+scope exits: a child midway through its cleanup can still be writing to a port
+the scope has closed. Guaranteeing otherwise needs the children joined.
+
+A bare ~(parameterize ((current-cancel t)) ...)~ stays legal, and is the
+deliberate airlock for a token that must outlive its creator — a daemon whose
+token lives in a registry.
 
 ** Options (~Option~)
 Optional value type representing presence (~Some~) or absence (~None~).

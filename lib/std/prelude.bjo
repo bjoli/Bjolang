@@ -1257,6 +1257,87 @@
         ((Some it) ,(some-steps #'it rest))))))
 
 ;; ---------------------------------------------------------------------------
+;; Cancellation scopes
+;; ---------------------------------------------------------------------------
+
+;; `(with-cancel (cancel) body ...)` — a cancellation scope that ends when the
+;; scope does.
+;;
+;; `parameterize` restores the binding on the way out but never *fires* the
+;; token. So a scope can hand a child a token and then return, and what is left
+;; behind is a token nobody holds the canceller for — a child running on with
+;; nothing able to stop it. It is the same leak `spawn-evt` exists to close, in
+;; the shape a reader is most likely to write:
+;;
+;;     (parameterize ((current-cancel tok))
+;;       (bjo (worker jobs)))        ;; promise dropped
+;;     (respond 200)                 ;; scope exits, worker runs on
+;;
+;; So: make the token here, install it, and fire it however the body leaves.
+;;
+;;   * normal exit  → `Scope-Ended`
+;;   * a failure    → `(Failed e)`, and the exception carries on out
+;;   * either way   → the binding is restored
+;;
+;; A macro rather than a special form, and deliberately: this is ordinary
+;; `make-cancel` + `parameterize` + `try`, so there is nothing here the parser
+;; needs to know about. Being a macro also means the import modifiers reach it —
+;; it can be renamed or excluded like any other binding, which a reserved word
+;; could not be.
+;;
+;; **What it does not do.** Firing returns immediately, so a cooperating child
+;; stops *soon*, not before the scope exits. A child midway through its cleanup
+;; can still be writing to a port this scope has closed; guaranteeing otherwise
+;; needs the children joined, which needs a nursery. This is the cheap half, and
+;; it is the half that stops the leak.
+;;
+;; **The airlock.** Bare `(parameterize ((current-cancel t)) ...)` stays legal,
+;; for the token that genuinely must outlive its creator — a daemon whose token
+;; lives in a registry. That is a deliberate choice worth a second look at a
+;; review, not a thing to ban.
+(def/macro (with-cancel form inject compare)
+  (syntax-match form
+    ((_ (cancel) first body ...)
+     ;; `cancel` came from the input, so hygiene leaves it alone and the body
+     ;; sees it. Everything else here is the template's and is renamed apart,
+     ;; which is where a hand-written desugar would have had to gensym.
+     #'(let ()
+         (def (,cancel scope-token) (make-cancel))
+         (def saved (parameter-push! current-cancel scope-token))
+         (try
+           ;; Catches everything, so the token fires for every failure rather
+           ;; than for a list somebody remembered to write. That costs the
+           ;; caller nothing because `raise` puts the exception straight back,
+           ;; with the stack trace it arrived with.
+           (match (try (let () ,first ,@body) #:catch (System.Exception))
+             ((Ok answer) (,cancel Scope-Ended) answer)
+             ((Err failure) (,cancel (Failed failure)) (raise failure)))
+           #:finally (dyn-restore! saved))))
+    (bad (syntax-error bad "with-cancel names its cancel thunk and takes a body: (with-cancel (cancel) body ...)"))))
+
+;; `(with-deadline ms body ...)` — a `with-cancel` whose token also fires on its
+;; own, after `ms`, with `Deadline`.
+;;
+;; Costs nothing on top: the scope is the same scope, and the timer is one fiber
+;; that races the scope's own token, so finishing early takes the timer away
+;; again rather than leaving it parked until an instant nothing is waiting for.
+;;
+;; The canceller is not named because there is nobody to hand it to — a deadline
+;; is the whole reason this scope is cancellable. Write `with-cancel` and start
+;; your own timer if you want both.
+(def/macro (with-deadline form inject compare)
+  (syntax-match form
+    ((_ ms first body ...)
+     ;; `fire` is the template's on both sides, so it is one renamed name: the
+     ;; `with-cancel` this expands into binds it, and the watcher started inside
+     ;; that scope is what holds it.
+     #'(with-cancel (fire)
+         (deadline-watch! fire ,ms)
+         ,first
+         ,@body))
+    (bad (syntax-error bad "with-deadline takes a millisecond limit and a body: (with-deadline 5000 body ...)"))))
+
+;; ---------------------------------------------------------------------------
 ;; Container formats
 ;; ---------------------------------------------------------------------------
 

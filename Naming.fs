@@ -60,7 +60,7 @@ let builtinTypeNames =
     Set.ofList
         [ "List"; "Vec"; "VecBuilder"; "ListBuilder"; "MapBuilder"; "VecCursor"; "MapCursor"; "StringCursor"
           "StringBuilder"; "Seq"; "Option"; "Result"; "Map"; "Keyword"; "Symbol"; "Array"; "Param"; "DynEnv"
-          "Promise"; "Event"; "Chan"; "CancelToken"; "AsyncSeq"; "Syntax" ]
+          "Promise"; "Event"; "Chan"; "CancelToken"; "CancelReason"; "AsyncSeq"; "Syntax" ]
 
 /// The name a declared type — or one of its constructors — is known by
 /// everywhere except in source.

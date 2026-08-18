@@ -1,0 +1,165 @@
+;; `until-cancelled`: leaving, rather than winning forever.
+;;
+;; A fired token is *persistent* — that is the design, since cancellation is a
+;; fact every listener has to see — and persistence is also the trap. A loop
+;; that races `(cancelled tok)` in a `choose` and then goes round again finds
+;; the token branch available immediately, wins on it, goes round again, and
+;; spins a core at 100% until something else stops it.
+;;
+;; Two answers, and they are for two different loops.
+;;
+;;   * `until-cancelled`, over any event, for the loop that has a sync point.
+;;     `None` means cancelled, and not recursing is the natural spelling of
+;;     leaving — so the shape that avoids the spin is also the shape you would
+;;     have written.
+;;
+;;   * `(:until-cancelled)`, a loop clause, for the compute loop that has no
+;;     sync point to hang an event on at all.
+
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; ---------------------------------------------------------------------------
+;; The combinator
+;; ---------------------------------------------------------------------------
+;;
+;; The token is *ambient*: nothing is passed to this worker, and the read
+;; happens inside the guard at each `sync` — on the fiber doing the syncing,
+;; which is the only fiber whose scope is the right one to consult. An event is
+;; a value, and a value can be built in one fiber and synced in another.
+
+(: worker (-> (Chan int) (Chan string) void))
+(defbjo (worker jobs results)
+  (let go ((total 0) (taken 0))
+    (match (sync (until-cancelled (chan-recv jobs)))
+      ((Some j) (go (+ total j) (+ taken 1)))
+      (None (sync (chan-send results
+                             (string-append (int->string taken)
+                                            (string-append "/" (int->string total)))))))))
+
+;; With nothing parameterized the ambient token is the root one, which never
+;; fires — so `until-cancelled` is `Some` for as long as there is anything to
+;; take, and the loop leaves on its own terms instead.
+(: bounded (-> (Chan int) int int))
+(defbjo (bounded jobs n)
+  (let go ((i 0) (total 0))
+    (if (= i n)
+        total
+        (match (sync (until-cancelled (chan-recv jobs)))
+          ((Some j) (go (+ i 1) (+ total j)))
+          (None total)))))
+
+(: feed (-> (Chan int) int void))
+(defbjo (feed jobs n)
+  (loop (:for i (range 0 n))
+        (:do (sync (chan-send jobs i)))))
+
+;; ---------------------------------------------------------------------------
+;; The loop clause
+;; ---------------------------------------------------------------------------
+;;
+;; No sync point anywhere in here, so there is no event to race — which is the
+;; whole reason the clause exists alongside the combinator. The test is once per
+;; iteration, and the ambient read is hoisted to loop entry, so the body pays a
+;; predicate rather than a dynamic-environment lookup.
+;;
+;; Written *before* the accumulator on purpose: clause order decides where in an
+;; iteration the exit happens, so the iteration that sees the token contributes
+;; nothing.
+(: count-ambient (-> int int))
+(defun (count-ambient limit)
+  (loop (:for i (range 0 limit))
+        (:until-cancelled)
+        (:acc n (counting i))
+        => n))
+
+;; The explicit form does no lookup at all, and is the only way to watch a token
+;; that is not the ambient one.
+(: count-explicit (-> CancelToken int int))
+(defun (count-explicit tok limit)
+  (loop (:for i (range 0 limit))
+        (:until-cancelled tok)
+        (:acc n (counting i))
+        => n))
+
+;; The exit is where it is written, not at the top: this one accumulates first,
+;; so the iteration that notices the cancellation has already counted.
+(: count-after (-> CancelToken int int))
+(defun (count-after tok limit)
+  (loop (:for i (range 0 limit))
+        (:acc n (counting i))
+        (:until-cancelled tok)
+        => n))
+
+(defbjo (main args)
+  ;; ---- The combinator, uncancelled -----------------------------------------
+  (def jobs (make-chan))
+  (def f (bjo (feed jobs 4)))
+  (expect "an uncancelled until-cancelled is just the event"
+          (int->string (bounded jobs 4)) "6")
+
+  ;; ---- The combinator, cancelled while parked ------------------------------
+  ;;
+  ;; Each send is a rendezvous, so by the time the second returns the worker has
+  ;; taken both and is parked in the sync with nothing to receive. The
+  ;; cancellation is what wakes it, and `None` is what it wakes to.
+  (def (stop! tok) (make-cancel))
+  (def jobs2 (make-chan))
+  (def results (make-chan))
+  (def w (parameterize ((current-cancel tok)) (bjo (worker jobs2 results))))
+  (def s1 (sync (chan-send jobs2 20)))
+  (def s2 (sync (chan-send jobs2 22)))
+  (def stopped (stop! (Requested "the test")))
+  (expect "a parked until-cancelled wakes on the ambient token"
+          (sync (chan-recv results)) "2/42")
+
+  ;; And the fiber came home rather than spinning: a `None` that is not
+  ;; recursed on is a loop that has left.
+  (expect "and the worker finished"
+          (match (sync (promise-join w)) ((Ok u) "done") ((Err e) "failed"))
+          "done")
+
+  ;; ---- The loop clause -----------------------------------------------------
+  (expect "an uncancelled ambient clause runs to the limit"
+          (int->string (count-ambient 100)) "100")
+
+  (def (stop-scope! scope) (make-cancel))
+  (def sc (stop-scope! Deadline))
+  (expect "a cancelled ambient clause stops at once"
+          (int->string (parameterize ((current-cancel scope)) (count-ambient 100)))
+          "0")
+
+  ;; The read is hoisted to loop *entry*, and entry is inside the
+  ;; `parameterize` here — which is exactly why it is loop entry and not
+  ;; function entry. Read at function entry this would see the root token and
+  ;; count to 100.
+  (def (stop-later! later) (make-cancel))
+  (expect "an ambient clause under an unfired token runs to the limit"
+          (int->string (parameterize ((current-cancel later)) (count-ambient 100)))
+          "100")
+
+  ;; ---- The explicit form ---------------------------------------------------
+  (def (never! quiet) (make-cancel))
+  (expect "an explicit clause on an unfired token runs to the limit"
+          (int->string (count-explicit quiet 100)) "100")
+
+  (def (now! fired) (make-cancel))
+  (def n (now! (Requested "the test")))
+  (expect "an explicit clause on a fired token stops at once"
+          (int->string (count-explicit fired 100)) "0")
+
+  ;; Clause order is the author's, and it is observable: with the exit written
+  ;; after the accumulator, the iteration that sees the token has already
+  ;; counted.
+  (expect "and the exit happens where it was written"
+          (int->string (count-after fired 100)) "1")
+
+  (println "113 ok")
+  0)

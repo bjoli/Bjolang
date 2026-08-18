@@ -694,6 +694,69 @@ public static partial class BjolangRuntime {
         public override string ToString() => IsOk ? $"(Ok {OkValue})" : $"(Err {ErrValue})";
     }
 
+    /// `(raise e)` — throw, keeping the stack trace the exception already has.
+    ///
+    /// The counterpart of `try`, which turns the failures it names into values.
+    /// This is how one gets back out: a handler that has decided it cannot deal
+    /// with what it caught, and `with-cancel`, which has to fire `(Failed e)`
+    /// on the way past without swallowing the exception it fired for.
+    ///
+    /// `ExceptionDispatchInfo` rather than `throw e`, which would reset
+    /// `StackTrace` to this line and lose where the failure actually came from.
+    ///
+    /// Generic in its *return* type, and so a value anywhere: `raise` never
+    /// returns, and typing it `void` would keep it out of the one position that
+    /// needs it — a `match` arm whose siblings produce something. C# cannot
+    /// infer that argument from anything, so `Codegen` writes it out.
+    public static T raise<T>(Exception e) {
+        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e).Throw();
+        return default!;   // unreachable: Throw() does not return
+    }
+
+    /// Why a scope was cancelled, and Bjolang's `CancelReason`. The payload of
+    /// every cancellation token: a token used to say only *that* you had been
+    /// cancelled.
+    ///
+    /// Builtin rather than declared in `prelude.bjo` because the runtime has to
+    /// *construct* reasons — the nack in `spawn-evt`, the deadline watcher — and
+    /// it is compiled below the generated code, so it cannot name a type the
+    /// code generator emits.
+    ///
+    /// Shaped exactly like a union the compiler would generate, as `Syntax` is,
+    /// so that patterns and construction take the ordinary union paths.
+    ///
+    /// Closed: a library cannot add a case. `(Requested "circuit-breaker")` is
+    /// the escape hatch, and it is deliberately an untyped string — naming who
+    /// asked is a diagnostic, not a value anything dispatches on.
+    public abstract record CancelReason {
+        private CancelReason() { }
+
+        /// Someone asked to stop, and the string names who.
+        public sealed record Requested(string Item1) : CancelReason;
+
+        /// A time limit fired. What `with-deadline` raises.
+        public sealed record Deadline : CancelReason;
+
+        /// The scope owning the token returned normally. What `with-cancel`
+        /// raises on the way out, so that a child handed the token stops rather
+        /// than outliving the scope that made it.
+        public sealed record ScopesubEnded : CancelReason;
+
+        /// The scope body, or a sibling, threw.
+        public sealed record Failed(Exception Item1) : CancelReason;
+
+        /// `sealed` for the reason `Syntax.ToString` is: without it each nested
+        /// case synthesizes a record `ToString` of its own, which prints field
+        /// names rather than the Bjolang spelling.
+        public sealed override string ToString() => this switch {
+            Requested r => $"(Requested \"{r.Item1}\")",
+            Deadline => "(Deadline)",
+            ScopesubEnded => "(Scope-Ended)",
+            Failed f => $"(Failed {f.Item1.GetType().Name})",
+            _ => "(CancelReason)",
+        };
+    }
+
     // --- Seq (IEnumerable) ---
     //
     // Each of these that returns a sequence is itself an iterator: no work

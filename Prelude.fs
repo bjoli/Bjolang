@@ -71,19 +71,32 @@ let makeAsyncSeqType a = TCon("AsyncSeq", [a])
 
 /// A cancellation token: a persistent event that fires at most once.
 ///
-/// A newtype over `(Promise Unit)` and nothing else — the runtime
-/// representation *is* a `Bjoml.Promise<Unit>`, so cancelling is
+/// A newtype over `(Promise CancelReason)` and nothing else — the runtime
+/// representation *is* a `Bjoml.Promise<CancelReason>`, so cancelling is
 /// `TrySetResult`, asking is `IsCompleted`, waiting is `Join`, and linking a
 /// child to a parent is `Forward`. No new runtime machinery, which is the
 /// point of §6.1.
 ///
 /// Nominal rather than an alias, though, because the two are not
 /// interchangeable *to a program*: `promise-join` on a token would hand back a
-/// `(Result Exception Unit)` and invite a `match` on a failure that cannot
-/// happen, and `detach` on one would arm an unhandled-exception report for a
-/// promise nothing ever fails. A distinct `TCon` costs nothing at runtime and
-/// keeps both out of reach.
+/// `(Result Exception CancelReason)` and invite a `match` on a failure that
+/// cannot happen, and `detach` on one would arm an unhandled-exception report
+/// for a promise nothing ever fails. A distinct `TCon` costs nothing at runtime
+/// and keeps both out of reach.
 let cancelTokenType = TCon("CancelToken", [])
+
+/// Why a scope was cancelled — the payload every token carries.
+///
+/// Builtin rather than declared in `prelude.bjo` because `Concurrency.cs` has to
+/// *construct* reasons (the nack in `spawn-evt`, the deadline watcher) and the
+/// runtime is compiled below the generated code, so it cannot reference a type
+/// the code generator emits.
+///
+/// Deliberately **not** `CancelToken %r`. `current-cancel` is one ambient
+/// parameter for the whole program, so its payload type is fixed program-wide; a
+/// parameter would either infect every signature that touches cancellation or
+/// collapse to a single instantiation anyway.
+let cancelReasonType = TCon("CancelReason", [])
 
 /// A saved dynamic environment. Produced by `parameter-push!` and consumed by
 /// `dyn-restore!`, both of which only ever appear in a `parameterize` desugar.
@@ -307,18 +320,45 @@ let prelude : Env =
         /// the thunk can cancel, whoever holds the token can only *observe*
         /// cancellation. A single value carrying both would make "here is my
         /// token, watch it" also mean "here is my token, fire it".
-        "make-cancel", {Scheme = Scheme([], [], makeFunType [] (TTuple [makeFunType [] unitType; cancelTokenType])); IsMutable = false }
+        ///
+        /// The thunk takes the reason to raise. Cancelling twice is still a
+        /// no-op, so the *first* reason is the one the token carries.
+        "make-cancel", {Scheme = Scheme([], [], makeFunType [] (TTuple [makeFunType [cancelReasonType] unitType; cancelTokenType])); IsMutable = false }
 
         /// Persistent, and deliberately: cancellation is a fact, so every
         /// listener must see it and a listener that arrives late must still see
         /// it. The cost is §9's limitation 10 — a cancelled scope is finished,
         /// and resuming needs a fresh token rather than a reset.
-        "cancelled", {Scheme = Scheme([], [], makeFunType [cancelTokenType] (makeEventType unitType)); IsMutable = false }
+        "cancelled", {Scheme = Scheme([], [], makeFunType [cancelTokenType] (makeEventType cancelReasonType)); IsMutable = false }
 
         /// The poll, for the compute loop that has no `sync` to hang a `choose`
         /// on. Answering without suspending is the whole point, so this is the
         /// one place a token is read rather than raced.
+        ///
+        /// `?`, so `bool`: a loop's exit test wants one bit and paying for an
+        /// `Option` to get it would be a tax on the hot path this exists for.
         "cancelled?", {Scheme = Scheme([], [], makeFunType [cancelTokenType] boolType); IsMutable = false }
+
+        /// `ev`, or `None` if the ambient scope goes down first. One combinator
+        /// over any event rather than a cancellable variant of each primitive.
+        ///
+        /// What keeps a worker loop out of §4.4's trap: a fired token is
+        /// persistent, so a loop that races one directly wins on it every
+        /// iteration and spins. `None` makes leaving the natural spelling.
+        "until-cancelled", {Scheme = Scheme(["a"], [], makeFunType [makeEventType (TVar "a")] (makeEventType (makeOptionType (TVar "a")))); IsMutable = false }
+
+        /// The same poll, answering *why*. `None` is "not cancelled", which is
+        /// the one case `cancelled?` collapses — so a loop tests with
+        /// `cancelled?` and, having left, asks this what cleanup it owes.
+        "cancel-reason", {Scheme = Scheme([], [], makeFunType [cancelTokenType] (makeOptionType cancelReasonType)); IsMutable = false }
+
+        // The reasons themselves. A closed set: a library cannot add a case,
+        // and `(Requested "...")` is the escape hatch for everything the four
+        // do not name.
+        "Requested", {Scheme = Scheme([], [], makeFunType [stringType] cancelReasonType); IsMutable = false }
+        "Deadline", {Scheme = Scheme([], [], cancelReasonType); IsMutable = false }
+        "Scope-Ended", {Scheme = Scheme([], [], cancelReasonType); IsMutable = false }
+        "Failed", {Scheme = Scheme([], [], makeFunType [TCon("System.Exception", [])] cancelReasonType); IsMutable = false }
 
         /// `Promise.Forward`: cancelling the parent cancels the child, and not
         /// the other way round. Safe as a bare callback in a way user code
@@ -337,6 +377,20 @@ let prelude : Env =
         "current-output-port", {Scheme = Scheme([], [], makeParamType textOutputPortType); IsMutable = false }
         "current-input-port", {Scheme = Scheme([], [], makeParamType textInputPortType); IsMutable = false }
         "current-error-port", {Scheme = Scheme([], [], makeParamType textOutputPortType); IsMutable = false }
+
+        /// The timer `with-deadline` desugars to. Not surface API: it fires a
+        /// token whose thunk the desugar has just made, and called by hand it
+        /// would be a fiber nobody owns racing a scope nobody established.
+        "deadline-watch!", {Scheme = Scheme([], [], makeFunType [makeFunType [cancelReasonType] unitType; intType] unitType); IsMutable = false }
+
+        /// `(raise e)` — the counterpart of `try`, which turns the failures it
+        /// names into values. This is how one gets back out, and it keeps the
+        /// stack trace the exception already has rather than starting a new one.
+        ///
+        /// Generic in its return type because it never returns: typing it
+        /// `void` would keep it out of the one position that needs it, a `match`
+        /// arm whose siblings produce a value.
+        "raise", {Scheme = Scheme(["a"], [], makeFunType [TCon("System.Exception", [])] (TVar "a")); IsMutable = false }
 
         // The two halves of `parameterize`, which the parser desugars to. Not
         // surface API: called by hand they pair a push with a restore that no

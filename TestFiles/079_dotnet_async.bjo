@@ -174,7 +174,7 @@
   ;; later and the token source fires and the running delay faults.
   (def (cancel! tok) (make-cancel))
   (def slow (parameterize ((current-cancel tok)) (bjo (sleep-forever))))
-  (def c (cancel!))
+  (def c (cancel! (Requested "the test")))
   (expect "the ambient token cancels a .NET call"
           (match (sync (promise-join slow)) ((Ok s) s) ((Err e) "cancelled"))
           "cancelled")
@@ -231,7 +231,7 @@
   (def (stop! scope) (make-cancel))
   (def report (make-chan))
   (def waiting (parameterize ((current-cancel scope)) (bjo (patient report))))
-  (def s2 (stop!))
+  (def s2 (stop! (Requested "the test")))
   (expect "the ambient token cancels a synced task->event"
           (match (sync (choose (wrap (chan-recv report) (fun (m) (Got m)))
                                (wrap (timeout 10000) (fun (u) TimedOut))))

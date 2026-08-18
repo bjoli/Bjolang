@@ -1,23 +1,30 @@
 ;; Cancellation: a token is a promise, and a promise is already an event.
 ;;
 ;; There is no cancellation machinery here, and that is the result rather than a
-;; shortcut. §6.1 asks for "a persistent event that fires once"; a `Promise Unit`
-;; is precisely that, so cancelling is `TrySetResult`, asking is `IsCompleted`,
-;; waiting is `Join` and building a scope tree is `Forward`. Nothing in the
-;; scheduler had to learn a new concept.
+;; shortcut. §6.1 asks for "a persistent event that fires once"; a
+;; `Promise CancelReason` is precisely that, so cancelling is `TrySetResult`,
+;; asking is `IsCompleted`, waiting is `Join` and building a scope tree is
+;; `Forward`. Nothing in the scheduler had to learn a new concept.
 ;;
-;; What the surface adds over the promise is two things.
+;; What the surface adds over the promise is three things.
 ;;
-;;   * A **nominal type**. `CancelToken` is not `(Promise Unit)`, so
+;;   * A **nominal type**. `CancelToken` is not `(Promise CancelReason)`, so
 ;;     `promise-join` cannot be aimed at a token — which would hand back a
-;;     `(Result Exception Unit)` and invite a `match` on a failure that cannot
-;;     occur — and neither can `detach`, which would arm an unhandled-exception
-;;     report for a promise nothing ever fails. The distinction costs nothing at
-;;     runtime: the generated C# is a `Bjoml.Promise<Bjoml.Unit>` either way.
+;;     `(Result Exception CancelReason)` and invite a `match` on a failure that
+;;     cannot occur — and neither can `detach`, which would arm an
+;;     unhandled-exception report for a promise nothing ever fails. The
+;;     distinction costs nothing at runtime: the generated C# is a
+;;     `Bjoml.Promise<CancelReason>` either way.
 ;;
 ;;   * A **split between the two rights**. `make-cancel` hands back a thunk and
 ;;     a token, not one value that does both. Giving a worker its token lets it
 ;;     watch its own deadline without also letting it cancel its siblings.
+;;
+;;   * A **reason**. The token says why, not merely that: a deadline, a
+;;     shutdown, a sibling's failure and a scope returning normally all want
+;;     different amounts of cleanup, and a `Unit` payload could tell none of
+;;     them apart. First reason wins — cancelling twice is still a no-op, so
+;;     what a token carries is the cause rather than the last word on it.
 ;;
 ;; The shape to take away is the worker below: cancellation is an ordinary
 ;; `choose` branch. A fiber parked on a channel is interruptible *because* the
@@ -39,6 +46,20 @@
 
 (: yes-no (-> bool string))
 (defun (yes-no b) (if b "yes" "no"))
+
+;; A reason rendered flat, so that every assertion below is a string compare.
+;;
+;; `None` is "not cancelled at all", which is the one case `cancelled?`
+;; collapses into its `false` — so the poll that answers *why* has four answers
+;; where the boolean has two, and this is where that shows.
+(: reason-name (-> (Option CancelReason) string))
+(defun (reason-name r)
+  (match r
+    ((Some (Requested who)) (string-append "requested " who))
+    ((Some Deadline) "deadline")
+    ((Some Scope-Ended) "scope-ended")
+    ((Some (Failed e)) "failed")
+    (None "none")))
 
 (type (: Outcome (Union (Job int) Quit)))
 
@@ -117,7 +138,7 @@
 ;; Raced against a generous timeout wherever a test would otherwise be able to
 ;; hang: a broken link should be a `FAILURE:` line, not a suite that never
 ;; finishes.
-(: within (-> (Event Unit) int string))
+(: within (-> (Event CancelReason) int string))
 (defbjo (within ev ms)
   (match (sync (choose (wrap ev (fun (u) (Job 0)))
                        (wrap (timeout ms) (fun (u) Quit))))
@@ -128,14 +149,22 @@
   ;; ---- The pair, and the fact ----------------------------------------------
   (def (cancel! tok) (make-cancel))
   (expect "a fresh token has not fired" (yes-no (cancelled? tok)) "no")
-  (def c1 (cancel!))
+  (expect "and has no reason to give" (reason-name (cancel-reason tok)) "none")
+  (def c1 (cancel! (Requested "the test")))
   (expect "and has, once the thunk is called" (yes-no (cancelled? tok)) "yes")
+  (expect "carrying the reason it was given" (reason-name (cancel-reason tok)) "requested the test")
 
   ;; Idempotent, because `TrySetResult` loses the race and says so. Worth
   ;; pinning: the thunk gets handed to a nack, a supervisor and a `finally` at
   ;; once, and none of them can know whether it has already run.
-  (def c2 (cancel!))
+  ;;
+  ;; So the reason a token carries is the *first* one raised, not the most
+  ;; specific and not the last. First-wins is the only rule a write-once cell
+  ;; can have, and it is the right one: the first reason is the cause.
+  (def c2 (cancel! Deadline))
   (expect "cancelling twice is a no-op" (yes-no (cancelled? tok)) "yes")
+  (expect "and the first reason is the one that stuck"
+          (reason-name (cancel-reason tok)) "requested the test")
 
   ;; Persistent, which is the design: cancellation is a *fact*, so every
   ;; listener sees it and a listener that arrives late still sees it. The price
@@ -159,7 +188,7 @@
   (def j1 (sync (chan-send jobs 10)))
   (def j2 (sync (chan-send jobs 20)))
   (def j3 (sync (chan-send jobs 12)))
-  (def s (stop!))
+  (def s (stop! (Requested "shutdown")))
   (expect "a parked worker is cancellable" (int->string (sync (chan-recv results))) "42")
 
   ;; ---- Polling, for the loop with no yield point ---------------------------
@@ -167,7 +196,7 @@
   (expect "an uncancelled poll runs to the limit"
           (int->string (count-until-cancelled quiet-tok 1000)) "1000")
   (def (stop-now! fired-tok) (make-cancel))
-  (def n (stop-now!))
+  (def n (stop-now! Deadline))
   (expect "a cancelled poll stops at once"
           (int->string (count-until-cancelled fired-tok 1000)) "0")
 
@@ -184,15 +213,22 @@
   (def (cancel-parent! parent-tok) (make-cancel))
   (def (cancel-child! child-tok) (make-cancel))
   (def linked (link-cancel parent-tok child-tok))
-  (def cp (cancel-parent!))
+  (def cp (cancel-parent! (Requested "the parent")))
   (expect "cancelling a parent cancels the linked child"
           (within (cancelled child-tok) 5000) "fired")
+
+  ;; `Forward` forwards the *value*, so a child inherits its parent's reason
+  ;; unaltered. That is the right answer rather than a coincidence: a linked
+  ;; child was cancelled because its parent was, so the parent's reason is its
+  ;; own, and `link-cancel` needed no change for the payload at all.
+  (expect "and the child inherits the parent's reason"
+          (reason-name (cancel-reason child-tok)) "requested the parent")
 
   ;; And not the other way round.
   (def (cancel-p2! p2) (make-cancel))
   (def (cancel-c2! c2) (make-cancel))
   (def linked2 (link-cancel p2 c2))
-  (def cc (cancel-c2!))
+  (def cc (cancel-c2! (Requested "the child")))
   (expect "cancelling a child leaves its parent alone" (yes-no (cancelled? p2)) "no")
 
   ;; ---- The ambient token --------------------------------------------------
@@ -202,7 +238,7 @@
   (def (cancel-scope! scope-tok) (make-cancel))
   (def report (make-chan))
   (def root (parameterize ((current-cancel scope-tok)) (bjo (branch report))))
-  (def cs (cancel-scope!))
+  (def cs (cancel-scope! (Requested "the scope")))
   (expect "a grandchild sees the ambient token" (sync (chan-recv report)) "leaf")
   (expect "and its parent finishes after it" (sync (chan-recv report)) "branch")
   (expect "the whole subtree came home"

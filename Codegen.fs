@@ -155,13 +155,17 @@ let mapPrimitiveType (name: string) =
     | "Promise" -> "Bjoml.Promise"
     | "Event" -> "Bjoml.IEvent"
     | "Chan" -> "Bjoml.Channel"
-    // A cancellation token *is* a promise of nothing, so it needs no type of
+    // A cancellation token *is* a promise of a reason, so it needs no type of
     // its own here — the whole newtype lives in the Bjolang type system, where
     // it keeps `promise-join` and `detach` off a value neither of them means
     // anything for. Spelled with its argument already applied because the
-    // Bjolang type takes none: `(Promise Unit)` is the only promise a token can
-    // be.
-    | "CancelToken" -> "Bjoml.Promise<Bjoml.Unit>"
+    // Bjolang type takes none: a token is a promise of exactly one thing.
+    | "CancelToken" -> "Bjoml.Promise<BjolangRuntime.CancelReason>"
+    // Why a scope was cancelled. A builtin union for the same reason `Syntax`
+    // is one: the runtime constructs values of it — `spawn-evt`'s nack, the
+    // deadline watcher — and is compiled below anything a `def/type` could be
+    // written in.
+    | "CancelReason" -> "BjolangRuntime.CancelReason"
     | "AsyncSeq" -> "System.Collections.Generic.IAsyncEnumerable"
     | "Keyword" | "Bjolang.Keyword" -> "BjolangRuntime.Keyword"
     | "Symbol" | "Bjolang.Symbol" -> "BjolangRuntime.Symbol"
@@ -1785,7 +1789,15 @@ and private generateApply
                 append ctx (sanitizeIdent methodPart)
             else
                 append ctx (qualifiedName ctx name)
-                if not tArgs.IsEmpty && (args.IsEmpty || name = "make-array" || name = "makesubarray") && kwArgs.IsEmpty then
+                // A call with arguments normally lets C# infer its type
+                // arguments from them. The exceptions are the ones whose type
+                // argument appears only in the *return* type, which C# cannot
+                // infer from anything: a nullary call, `make-array`, and
+                // `raise`, which claims to return whatever the position it
+                // stands in wants and in fact returns nothing at all.
+                if not tArgs.IsEmpty
+                   && (args.IsEmpty || name = "make-array" || name = "makesubarray" || name = "raise")
+                   && kwArgs.IsEmpty then
                     let tyArgsStr = tArgs |> List.map typeToString |> String.concat ", "
                     append ctx $"<%s{tyArgsStr}>"
         | TLambda _ ->
@@ -3411,17 +3423,28 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
 /// `linkedDlls` is every assembly this compilation references, and each one
 /// contributes a `using static` so that names re-exported through one DLL can
 /// still be found in the class that actually defines them.
-/// The cases of `Syntax`, which is a builtin union rather than a declared one.
+/// The cases of the builtin unions — `Syntax` and `CancelReason` — which are
+/// defined in the runtime rather than declared by any `def/type`.
 ///
-/// Seeded rather than collected: the type is defined in `BjolangRuntime` and
-/// there is no `def/type` anywhere to read it off. With this in place the
-/// generic pattern and construction paths handle it exactly as they handle a
-/// union the program declared — `Bjolang.Runtime.Syntax.SList(var xs)` and
-/// `new Bjolang.Runtime.Syntax.SList(xs)` — and no special case is needed.
+/// Seeded rather than collected, since there is no declaration anywhere to read
+/// them off. With this in place the generic pattern and construction paths
+/// handle them exactly as they handle a union the program declared —
+/// `Bjolang.Runtime.Syntax.SList(var xs)` and `new Bjolang.Runtime.Syntax.SList(xs)`
+/// — and no special case is needed.
 let builtinUnionCases: Map<string, UnionCaseInfo> =
-    [ "SSym"; "SDatum"; "SInt"; "SStr"; "SChar"; "SKey"; "SList"; "SPunct" ]
-    |> List.map (fun name -> name, { ParentTypeName = "Syntax"; IsDataCase = true })
-    |> Map.ofList
+    let syntaxCases =
+        [ "SSym"; "SDatum"; "SInt"; "SStr"; "SChar"; "SKey"; "SList"; "SPunct" ]
+        |> List.map (fun name -> name, { ParentTypeName = "Syntax"; IsDataCase = true })
+
+    // `Deadline` and `Scope-Ended` carry nothing, so they are *values* rather
+    // than calls and take the nullary path — which is what `IsDataCase = false`
+    // selects.
+    let cancelReasonCases =
+        [ "Requested", true; "Deadline", false; "Scope-Ended", false; "Failed", true ]
+        |> List.map (fun (name, isData) ->
+            name, { ParentTypeName = "CancelReason"; IsDataCase = isData })
+
+    syntaxCases @ cancelReasonCases |> Map.ofList
 
 let generateProgram (metadata: ModuleMetadata.Metadata) (linkedDlls: string list) (decls: TDecl list) : string =
     let unionCases =

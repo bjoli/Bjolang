@@ -176,13 +176,18 @@ public static partial class BjolangRuntime {
     // Cancellation
     // -----------------------------------------------------------------------
     //
-    // A cancellation token is a `Promise<Unit>` and nothing more. That is the
-    // whole of §6.1: a token is "a persistent event that fires once", a promise
-    // is already exactly that, and so cancellation needs no scheduler support,
-    // no flag to poll and no callback registry. Bjolang sees a distinct type —
-    // `CancelToken` is nominal, so `promise-join` and `detach` cannot be aimed
-    // at one — but nothing here has to enforce that, because the type system
-    // already has.
+    // A cancellation token is a `Promise<CancelReason>` and nothing more. That
+    // is the whole of §6.1: a token is "a persistent event that fires once", a
+    // promise is already exactly that, and so cancellation needs no scheduler
+    // support, no flag to poll and no callback registry. Bjolang sees a distinct
+    // type — `CancelToken` is nominal, so `promise-join` and `detach` cannot be
+    // aimed at one — but nothing here has to enforce that, because the type
+    // system already has.
+    //
+    // The payload is the *reason*. A token that carried a `Unit` said only that
+    // you had been cancelled, never why — so a worker could not tell a deadline
+    // from a shutdown from a sibling's failure, and every one of those wants a
+    // different amount of cleanup.
     //
     // Persistence is the design and also the cost. Every listener sees a
     // cancellation and a late listener still sees it, which is what "cancelled"
@@ -202,32 +207,126 @@ public static partial class BjolangRuntime {
     /// Cancelling twice is a no-op — `TrySetResult` loses the race and says so
     /// — so the thunk needs no guard at its call sites and can be handed to a
     /// nack, a finaliser and a supervisor at once.
-    public static ValueTuple<Func<Unit>, Promise<Unit>> makesubcancel() {
-        var token = new Promise<Unit>();
-        return new ValueTuple<Func<Unit>, Promise<Unit>>(
-            () => { token.TrySetResult(default); return default; },
+    ///
+    /// The consequence of that for the payload is worth stating: the reason a
+    /// token carries is *the first one raised*, not the most specific. A scope
+    /// that hits its deadline and then throws on the way out reports
+    /// `(Deadline)`, because the deadline fired first and `TrySetResult` lost
+    /// the second race. First-wins is the only rule a write-once cell can have,
+    /// and it is the right one — the first reason is the cause and the rest are
+    /// consequences.
+    public static ValueTuple<Func<CancelReason, Unit>, Promise<CancelReason>> makesubcancel() {
+        var token = new Promise<CancelReason>();
+        return new ValueTuple<Func<CancelReason, Unit>, Promise<CancelReason>>(
+            reason => { token.TrySetResult(reason); return default; },
             token);
     }
 
-    /// `(cancelled ct)` — the event of this token having fired.
+    /// `(cancelled ct)` — the event of this token having fired, carrying why.
     ///
     /// An event rather than a callback, so cancellation composes with
     /// everything else a fiber might be waiting for: `(choose (chan-recv jobs)
     /// (cancelled ct))` is a worker that is interruptible while parked, which
     /// is the only kind of interruptible that costs nothing.
     ///
-    /// The outcome is discarded down to its value because a token cannot fail:
-    /// the only writer Bjolang can reach is `make-cancel`'s thunk, which calls
+    /// The outcome is unwrapped to its value because a token cannot fail: the
+    /// only writer Bjolang can reach is `make-cancel`'s thunk, which calls
     /// `TrySetResult`, and `link-cancel` only ever forwards from another token.
-    public static IEvent<Unit> cancelled(Promise<Unit> ct) =>
+    public static IEvent<CancelReason> cancelled(Promise<CancelReason> ct) =>
         Cml.Wrap(ct.Join(), static r => r.Value);
+
+    /// `(until-cancelled ev)` — `ev`, or `None` if the ambient scope goes down
+    /// first.
+    ///
+    /// One combinator over *any* event rather than a cancellable variant of
+    /// each primitive, and the shape that keeps a worker loop out of the trap
+    /// §4.4 describes: a fired token is persistent, so a loop that races one
+    /// directly wins on it every iteration thereafter and spins a core at 100%.
+    /// `None` is the answer that makes leaving the natural spelling —
+    ///
+    ///     (match (sync (until-cancelled (chan-recv jobs)))
+    ///       ((Some job) (handle job) (loop))
+    ///       (None       (void)))
+    ///
+    /// — because not recursing is what you write anyway.
+    ///
+    /// The ambient token is read inside the `Guard`, so the read happens at
+    /// *sync* time on the fiber doing the syncing. An event is a value: it may
+    /// be built in one fiber and synced by another, and the token that matters
+    /// is the syncing fiber's. `timeout` and `task->event` guard for the same
+    /// reason.
+    ///
+    /// `ev` is published first, and that is the ordering `choose` gives meaning
+    /// to: a token that has already fired must not take an iteration in which
+    /// there was still a job waiting.
+    public static IEvent<Option<T>> untilsubcancelled<T>(IEvent<T> ev) =>
+        Cml.Guard(() => {
+            var token = parametersubref(currentsubcancel);
+
+            // Nothing has been parameterized, so there is nothing to lose to.
+            // The common case, and it costs a reference comparison to skip a
+            // `choose` and a join that could never fire.
+            if (ReferenceEquals(token, RootCancel))
+                return Cml.Wrap(ev, static v => Some(v));
+
+            return Cml.Choose(
+                Cml.Wrap(ev, static v => Some(v)),
+                Cml.Wrap(cancelled(token), static _ => None<T>()));
+        });
 
     /// `(cancelled? ct)` — has it fired, right now?
     ///
     /// For the compute loop with no yield point to hang a `choose` on. §6.1's
     /// cooperative limitation is exactly this: a loop that never syncs and
     /// never checks runs to completion no matter who cancelled what.
-    public static bool cancelled_QMARK(Promise<Unit> ct) => ct.IsCompleted;
+    public static bool cancelled_QMARK(Promise<CancelReason> ct) => ct.IsCompleted;
+
+    /// `(cancel-reason ct)` — why, if it has fired at all.
+    ///
+    /// The poll that `cancelled?` is the boolean of. Two answers rather than
+    /// one because "not cancelled" and "cancelled, and here is why" are
+    /// different facts, and a loop that has just broken out on `cancelled?`
+    /// still has to find out which cleanup it owes.
+    ///
+    /// Reading the outcome cannot throw here: a token completes only through
+    /// `TrySetResult`, so the awaiter's rethrow path is unreachable, and this
+    /// is guarded on `IsCompleted` anyway.
+    public static Option<CancelReason> cancelsubreason(Promise<CancelReason> ct) =>
+        ct.IsCompleted ? Some(ct.GetAwaiter().GetResult()) : None<CancelReason>();
+
+    /// The timer behind `(with-deadline ms body...)`, which the parser emits and
+    /// nobody writes.
+    ///
+    /// A fiber that races the deadline against the scope's own token, so a scope
+    /// that finishes early takes its timer with it rather than leaving one
+    /// parked until an instant nothing is waiting for any more. That race is the
+    /// only reason this is not two lines of Bjolang in the desugar: it has to
+    /// read the ambient token *inside* the spawned fiber, which is where the
+    /// scope's token is the ambient one.
+    ///
+    /// The promise is detached rather than dropped. Dropping it would lose a
+    /// failure silently, and detaching says "I know, and I still do not want the
+    /// result" — which is exactly the case here, since the only thing the body
+    /// does is fire a token.
+    public static Unit deadlinesubwatch_BANG(Func<CancelReason, Unit> fire, int ms) {
+        var watcher = Bjo.Spawn<ValueTuple<Func<CancelReason, Unit>, int>, Unit>(
+            static async state => {
+                // Read inside the fiber: `Bjo.Spawn` installs the captured
+                // environment before the body runs, so this is the token
+                // `with-cancel` has just parameterized.
+                var scope = parametersubref(currentsubcancel);
+
+                await Cml.Choose(
+                    Cml.Wrap(Cml.Timeout(state.Item2), _ => state.Item1(new CancelReason.Deadline())),
+                    Cml.Wrap(cancelled(scope), static _ => default(Unit)));
+
+                return default;
+            },
+            new ValueTuple<Func<CancelReason, Unit>, int>(fire, ms));
+
+        watcher.Detach();
+        return default;
+    }
 
     /// `(link-cancel parent child)` — cancelling the parent cancels the child.
     ///
@@ -238,7 +337,12 @@ public static partial class BjolangRuntime {
     /// `Forward` is safe as a bare completion callback in a way user code never
     /// is — it stores a value into another promise and returns — so this is one
     /// of the few things §5.4 allows on a borrowed thread.
-    public static Unit linksubcancel(Promise<Unit> parent, Promise<Unit> child) {
+    ///
+    /// It forwards the *value*, so a child inherits its parent's reason
+    /// unaltered. Nothing here had to change for the reason payload, and that
+    /// is the right answer rather than a coincidence: a linked child was
+    /// cancelled because its parent was, so the parent's reason is its own.
+    public static Unit linksubcancel(Promise<CancelReason> parent, Promise<CancelReason> child) {
         parent.Forward(child);
         return default;
     }
@@ -352,7 +456,7 @@ public static partial class BjolangRuntime {
     /// matter who lost what.
     public static IEvent<Result<Exception, T>> spawnsubevtdivstart<T>(Func<Promise<T>> start) =>
         Cml.WithNack<Result<Exception, T>>(nack => {
-            var token = new Promise<Unit>();
+            var token = new Promise<CancelReason>();
 
             // Pushed and restored around the spawn exactly as `parameterize`
             // would, and for the same reason: the child inherits the
@@ -366,7 +470,12 @@ public static partial class BjolangRuntime {
                 dynsubrestore_BANG(saved);
             }
 
-            Cml.Sync(nack, _ => token.TrySetResult(default));
+            // The reason names the mechanism rather than the loser: nothing
+            // here knows what the branch was for. A child that wants to tell
+            // "my choose branch lost" from "the whole scope is going down" has
+            // it in the string.
+            Cml.Sync(nack, _ => token.TrySetResult(
+                new CancelReason.Requested("spawn-evt: the branch lost its choose")));
 
             return Cml.Wrap(
                 child.Join(),
@@ -395,9 +504,9 @@ public static partial class BjolangRuntime {
     /// could never fire. Declared *before* the parameter that holds it, because
     /// static field initializers run in declaration order and the other way
     /// round binds the default to null.
-    private static readonly Promise<Unit> RootCancel = new();
+    private static readonly Promise<CancelReason> RootCancel = new();
 
-    public static readonly Param<Promise<Unit>> currentsubcancel = makesubparameter(RootCancel);
+    public static readonly Param<Promise<CancelReason>> currentsubcancel = makesubparameter(RootCancel);
 
     // -----------------------------------------------------------------------
     // The bridge to .NET
@@ -418,7 +527,7 @@ public static partial class BjolangRuntime {
     /// disposing one is only correct after every registration on it is gone —
     /// which is exactly the bookkeeping a per-token source avoids having.
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<
-        Promise<Unit>, CancellationTokenSource> CancelBridges = new();
+        Promise<CancelReason>, CancellationTokenSource> CancelBridges = new();
 
     /// The ambient Bjolang cancellation token, as .NET wants to be given it.
     ///
@@ -437,6 +546,12 @@ public static partial class BjolangRuntime {
     ///     handing .NET a token that is already cancelled is how you say that
     ///     without a check at every call site;
     ///   * otherwise, the source mirroring this token, created once.
+    ///
+    /// **The reason does not cross.** A .NET `CancellationToken` carries no
+    /// payload and never will, so a cancelled `#:async` call surfaces as a bare
+    /// `TaskCanceledException`: the reason exists only on the Bjolang side of
+    /// the bridge, and a caller that wants it reads `cancel-reason` off its own
+    /// token rather than off the exception.
     public static CancellationToken AmbientCancellation() {
         var token = parametersubref(currentsubcancel);
 
@@ -447,7 +562,7 @@ public static partial class BjolangRuntime {
     }
 
     /// The source mirroring one token, created once.
-    private static CancellationTokenSource AmbientBridge(Promise<Unit> token) =>
+    private static CancellationTokenSource AmbientBridge(Promise<CancelReason> token) =>
         CancelBridges.GetValue(token, static t => {
             var cts = new CancellationTokenSource();
 

@@ -64,25 +64,71 @@ Spawning: ~(bjo expr)~ enqueues and returns a ~(Promise %a)~ without ever suspen
   ((Err e) 0))
 #+end_src
 
-Cancellation is ambient and hierarchical, and it is both an event and a poll, because sometimes you are inside a ~choose~ and sometimes you are inside a tight loop (TODO. This is not exposed yet.)
+Cancellation is ambient and hierarchical, and it is both an event and a poll, because sometimes you are inside a ~choose~ and sometimes you are inside a tight loop. A token carries a ~CancelReason~ rather than merely the fact: a deadline, a shutdown, a sibling's failure and a scope returning normally all want different amounts of cleanup.
 
 #+begin_src scheme
-(def (cancel! tok) (make-cancel))   ;; a thunk and a token, split deliberately
+;; A thunk and a token, split deliberately: the thunk is the capability to
+;; cancel, the token only the ability to notice.
+(def (cancel! tok) (make-cancel))
+(def c (cancel! (Requested "shutdown")))
 
-;; as an event, inside a choose
-(wrap (cancelled ct) (fun (u) Quit))
+;; (Requested string) (Deadline) (Scope-Ended) (Failed Exception)
+;; Cancelling twice is a no-op, so the reason a token carries is the FIRST
+;; one raised -- the cause, not the last word on it.
+(match (cancel-reason tok)
+  ((Some (Requested who)) who)
+  ((Some Deadline)        "ran out of time")
+  ((Some Scope-Ended)     "the scope returned")
+  ((Some (Failed e))      "something threw")
+  (None                   "still running"))
 
-;; as a poll, inside a loop that never syncs
+;; As an event, inside a choose.
+(wrap (cancelled ct) (fun (why) Quit))
+
+;; As a poll, inside a loop that never syncs.
 (: count-until-cancelled (-> CancelToken int int))
 (defun (count-until-cancelled ct limit)
   (let lp ((i 0))
     (if (or (= i limit) (cancelled? ct)) i (lp (+ i 1)))))
 
-;; scope trees, and an ambient token every callee inherits for free
+;; Scope trees, and an ambient token every callee inherits for free.
 (def linked (link-cancel parent-tok child-tok))
-(parameterize ((current-cancel child-tok))
-  (do-the-thing))
 #+end_src
+
+~with-cancel~ is the way in. ~parameterize~ restores the binding on the way out but never /fires/ the token, so a scope that hands a child a token and then returns leaves a child nobody can stop. ~with-cancel~ makes the token, installs it, and fires it however the body leaves.
+
+#+begin_src scheme
+(with-cancel (stop!)
+  (bjo (worker jobs))          ;; inherits the token
+  (sync (timeout 5000)))       ;; on exit: Scope-Ended, or (Failed e) if this threw
+
+;; A deadline is the same scope with a timer holding the canceller.
+(with-deadline 5000 (fetch-all urls))
+#+end_src
+
+A bare ~(parameterize ((current-cancel t)) ...)~ stays legal, and is the deliberate airlock for a token that must outlive its creator -- a daemon whose token lives in a registry.
+
+Note what firing does /not/ do: it returns immediately, so a cooperating child stops soon rather than before the scope exits.
+
+A fired token is /persistent/, so racing one directly in a loop wins every iteration thereafter and spins. ~until-cancelled~ is the shape that leaves instead, and it works over any event:
+
+#+begin_src scheme
+(: until-cancelled (-> (Event %a) (Event (Option %a))))
+
+(defbjo (worker jobs)
+  (let lp ()
+    (match (sync (until-cancelled (chan-recv jobs)))
+      ((Some job) (handle job) (lp))
+      (None       (void)))))          ;; not recursing is how you leave
+
+;; For the compute loop with no sync point to hang an event on. The ambient
+;; read is hoisted to loop entry; the test is once per iteration.
+(loop (:for job jobs)
+      (:until-cancelled)              ;; or (:until-cancelled tok) for a named one
+      (:do (handle job)))
+#+end_src
+
+One limitation to know: .NET's ~CancellationToken~ carries no payload, so a cancelled ~#:async~ call still surfaces as a bare ~TaskCanceledException~. The reason exists only on the Bjolang side of the bridge -- read it off your own token, not off the exception.
 
 *** Calling .NET async without ever meeting a Task
 
@@ -252,7 +298,6 @@ All main data structures except array are immutable. Vec is an rrb tree, list is
 #+end_src
 
 
-
 * Planned features
 
 Make the seq functions take a Collection, meaning they can do ->seq. This would make (seq-map #(+ 5 &) [1 2 3 4 5]) work, while alos being lazy.
@@ -266,7 +311,6 @@ Extend do notation, preferably as a macro
 Pattern matching in function arguments. (defun (abc (Tuple fst snd)) ...)
 
 Array literals
-
 
 * Limitations
 
@@ -502,7 +546,6 @@ Lists, quasiquoted lists and vectors do not need constructors in some circumstan
 
 These are things I found while spelunking:
 
-- Check that the Map higher order wrappers are not slowing things down too much
 - run, run/string, run/strings.
 - Make it possible to shadow trait methods and not have the typechecker vomit.
 - output LINE-directives a little bit better than I do now
@@ -510,7 +553,7 @@ These are things I found while spelunking:
 - Annotations using @[c# annotation verbatim here] so that I can piggyback on c# json libraries.
 - vecbuilder and mapbuilder should be transientvec and transientmap.
 - I hate how numerics work currently. This needs to be fixed.
-- Prefixing types does not actually help resolve conflicts atm.
+- 
 
 
 
@@ -545,3 +588,5 @@ Naming a local variable list, will produce local shadowing and a c# exception. I
 
 
 Add array literals
+
+fix tail recursion and parameterization: Since tail calls have no code in the recursive function running after it, we can restore the parameters outside the recursion.

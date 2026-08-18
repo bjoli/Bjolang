@@ -1589,10 +1589,18 @@ let rec parseExpr (s: SExpr) : Expr =
                             failwithf
                                 $"Invalid try at %s{Lexer.formatPos r}: #:catch names no exception types. Leave it off to let everything propagate."
 
+                        // `headName` for the reason `parsePattern` uses it: an
+                        // exception type is dispatched on, never bound, so the
+                        // first two renaming rules cannot reach one and
+                        // stripping is the whole answer. It has to happen here
+                        // because these names leave as a `string list` that
+                        // `AlphaRename` never walks — without it a template
+                        // writing `#:catch (System.IO.IOException)` reaches
+                        // inference as `System.IO.IOException__37`.
                         let parsed =
                             names
                             |> List.map (function
-                                | SAtom { Token = Symbol n } -> n
+                                | SAtom { Token = Symbol n } -> headName n
                                 | bad ->
                                     failwithf
                                         $"Invalid try at %s{Lexer.formatPos (getRange bad)}: #:catch takes fully qualified .NET exception type names, as in System.IO.IOException.")
@@ -2201,6 +2209,83 @@ and private desugarComprehension (allForms: SExpr list) (r: Range) : Expr =
         let acc = SList([ at (Keyword "acc"); at (Symbol name); SList(accParts, r) ] @ guard, r)
         desugarLoop (clauses @ [ acc; at (Symbol "=>"); at (Symbol name) ]) r
 
+/// Rewrites `(:until-cancelled)` and `(:until-cancelled token)` into clauses the
+/// loop facility already has.
+///
+/// For the compute loop with no sync point to hang an `until-cancelled` event
+/// on. The zero-arity form becomes two clauses:
+///
+///     (:with %tok (parameter-ref current-cancel))   ;; loop ENTRY, wherever the
+///                                                   ;; clause was written
+///     (:break (cancelled? %tok))                    ;; left exactly where it was
+///
+/// Two-expression `:with` is already the loop-invariant binding form, so this
+/// needs no new machinery. The break stays put because clause order decides
+/// *where in an iteration* the exit happens, and that is the author's to say.
+///
+/// **The hoist is the point.** `current-cancel` is not one of `DynEnv`'s three
+/// port fields, so `parameter-ref` on it is `FiberContext.Current`, a cast, an
+/// identity-keyed CHAMP descent and an unbox. In a loop whose body is arithmetic
+/// that costs more than the work it guards.
+///
+/// *Why it is safe:* only `parameterize` can rebind it, and that is a
+/// `try/finally`, so it has restored before control reaches the loop head again;
+/// `parameter-push!`/`dyn-restore!` are not surface API; and `FiberContext` is
+/// reinstated around every suspension, so a fiber sees the same token before and
+/// after a `sync`.
+///
+/// *Why loop entry rather than function entry:* a loop inside a `parameterize`
+/// in the same function would otherwise read what was ambient *outside* it,
+/// which is usually the root token — the one that never fires.
+///
+/// **The limitation this locks in:** the ambient token cannot change under a
+/// running loop. True today, because a fiber's dynamic environment is written
+/// only by lexically scoped push/restore on that same fiber. It forecloses a
+/// supervisor reaching into a running child to swap its deadline; if that is
+/// ever wanted, the way in is a level of indirection — a token whose replacement
+/// is itself observable — not mutating another fiber's environment.
+///
+/// The explicit form does no lookup at all, and is the only way to watch a token
+/// that is not the ambient one.
+///
+/// Either way the test is once per iteration: a single ten-second iteration
+/// still takes ten seconds.
+and private expandUntilCancelled (clauseForms: SExpr list) : SExpr list =
+    let at r t = SAtom { Token = t; Range = r }
+
+    // Every zero-arity clause's binding, in the order the clauses were written.
+    let mutable entryBindings = []
+
+    let rewrite (s: SExpr) =
+        match s with
+        | SList(SAtom { Token = Keyword "until-cancelled" } :: rest, r) ->
+            let token =
+                match rest with
+                | [] ->
+                    let name = Gensym.fresh "untilcancel"
+
+                    entryBindings <-
+                        entryBindings
+                        @ [ SList(
+                                [ at r (Keyword "with")
+                                  at r (Symbol name)
+                                  SList([ at r (Symbol "parameter-ref"); at r (Symbol "current-cancel") ], r) ],
+                                r
+                            ) ]
+
+                    at r (Symbol name)
+                | [ token ] -> token
+                | _ ->
+                    failwithf
+                        $"Invalid (:until-cancelled ...) at %s{Lexer.formatPos r}. Expected: (:until-cancelled) for the ambient token, or (:until-cancelled token) for a named one."
+
+            SList([ at r (Keyword "break"); SList([ at r (Symbol "cancelled?"); token ], r) ], r)
+
+        | other -> other
+
+    let rewritten = clauseForms |> List.map rewrite
+    entryBindings @ rewritten
+
 /// Desugars `(loop clause... [=> expr])`.
 ///
 /// A loop is a left fold with early exit that always delivers a result: every
@@ -2229,6 +2314,8 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
 
     if clauseForms.IsEmpty then
         failwithf $"Invalid loop at %s{Lexer.formatPos r}: it has no clauses"
+
+    let clauseForms = expandUntilCancelled clauseForms
 
     let clauses = clauseForms |> List.map parseLoopClause
 

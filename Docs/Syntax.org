@@ -712,6 +712,23 @@ value's type is rejected at the pattern (*"...is not a..., so this test can
 never succeed"*) rather than left to C#, and it does not apply to Bjolang's own
 unions, which have their own constructors to match on.
 
+*** ~raise~ — the way back out
+~(raise e)~ throws, keeping the stack trace the exception already has. It is the
+counterpart of ~try~, which turns the failures it names into values: this is how
+a handler that has decided it cannot deal with what it caught puts it back.
+
+#+BEGIN_SRC scheme
+(match (try (file-read-text path) #:catch (System.IO.IOException))
+  ((Ok text) text)
+  ((Err (:is System.IO.FileNotFoundException)) "")
+  ((Err e) (raise e)))            ;; not ours; someone else's problem
+#+END_SRC
+
+Its return type is a fresh variable because it never returns, which is what lets
+it stand in a ~match~ arm whose siblings produce a value. It takes a
+~System.Exception~, so a caught error can always be re-raised; raising a freshly
+constructed one of a narrower type needs that type widened first.
+
 ** Traits and Implementations
 Bjolang supports generic traits and implementations. A trait is parameterised by
 exactly *one* implementor variable; every other type it needs is an associated
@@ -1063,6 +1080,7 @@ are extended by writing trait implementations rather than by adding syntax.
 | ~(:acc name (coll ...) #:when c)~ | declare an accumulator; ~#:when~ gates the step  |
 | ~(:break cond)~                 | end the whole loop, before the rest of the iteration |
 | ~(:final cond)~                 | end it *after* the current iteration completes     |
+| ~(:until-cancelled [tok])~      | end the loop when a cancellation token has fired   |
 | ~(:end-subloop-if cond)~        | abandon this level, resume the enclosing one       |
 | ~(:subloop)~                    | nothing; it exists only to open a new level        |
 | ~(:yield expr)~                 | ~(seql ...)~ only: produce an element               |
@@ -1072,6 +1090,33 @@ Each carries its own condition rather than being guarded by a preceding
 conditionally. ~:final~ is not a mechanism of its own: it is a ~:break~ on a
 hidden accumulator holding the previous iteration's verdict, which is what makes
 it one iteration later than a ~:break~ on the same predicate.
+
+**** ~:until-cancelled~
+For the compute loop with no ~sync~ to hang an ~until-cancelled~ event on. Both
+forms are ~:break~ underneath, so the exit happens where the clause is written:
+
+#+BEGIN_SRC scheme
+(loop (:for job jobs)
+      (:until-cancelled)          ;; the ambient token
+      (:do (handle job)))
+
+(loop (:for job jobs)
+      (:until-cancelled tok)      ;; explicit, and the only way to watch a token
+      (:do (handle job)))         ;; that is not the ambient one
+#+END_SRC
+
+The zero-arity form is two clauses: a ~(:with ...)~ reading ~current-cancel~,
+hoisted to loop *entry* wherever the clause was written, and a ~:break~ left
+exactly where it was. The hoist is the point — ~current-cancel~ is not one of
+~DynEnv~'s port fields, so reading it is a CHAMP descent, which in an arithmetic
+loop costs more than the work it guards. Loop entry rather than function entry
+because a loop inside a ~parameterize~ in the same function would otherwise read
+what was ambient *outside* it, which is usually the root token.
+
+The limitation this locks in: *the ambient token cannot change under a running
+loop*. True today, since a fiber's dynamic environment is written only by
+lexically scoped push/restore on that same fiber. Both forms check once per
+iteration; a single ten-second iteration still takes ten seconds.
 
 *** Comprehensions
 ~{collector expr clause...}~ is a ~loop~ with its accumulator implied. It is one
