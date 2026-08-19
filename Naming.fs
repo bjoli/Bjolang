@@ -19,6 +19,36 @@ let sanitizeIdent (s: string) =
     | "abstract" | "base" | "checked" | "const" | "delegate" | "enum" | "event" | "explicit" | "extern" | "fixed" | "implicit" | "interface" | "namespace" | "operator" | "override" | "sealed" | "stackalloc" | "this" | "unchecked" | "unsafe" | "using" | "virtual" | "volatile" -> "@" + s
     | _ -> s
 
+/// The C# parameter a keyword argument arrives in.
+///
+/// Keyword arguments are passed as C# *named* arguments, so this name is the
+/// calling convention: the declaration and every call site — including one in
+/// another assembly, compiling against a `.dll` — have to spell it the same
+/// way. That is also why `AlphaRename` is forbidden from renaming a keyword
+/// parameter.
+///
+/// The prefix goes on *before* sanitizing rather than after. A keyword named
+/// after a C# keyword — `#:base`, `#:default` — sanitizes to `@base`, and
+/// prefixing that gives `__kw_@base`, which is not an identifier at all and
+/// emitted C# that does not parse. `__kw_base` needs no escape and never did:
+/// the prefix is what takes it out of the reserved set.
+let keywordParamName (kwName: string) = sanitizeIdent ("__kw_" + kwName)
+
+/// The C# parameter a rest argument arrives in, for a function that also takes
+/// keyword arguments.
+///
+/// Such a call has to be able to leave a keyword out, and the rest parameter
+/// sits *after* the keyword ones — C# puts `params` last and gives no choice
+/// about it. Leaving a keyword out therefore moves the array out of the
+/// position it would be passed in, so the array has to be named too, and a name
+/// the call site can spell is one it does not have to look up. A single fixed
+/// name is enough: there is only ever one rest parameter.
+///
+/// A function with no keyword parameters keeps its own name for it. Nothing can
+/// be left out of such a call, so the array is passed positionally and there is
+/// nothing to disambiguate.
+let restParamName = "__rest"
+
 /// The module a source or assembly path is known by.
 ///
 /// A module is named after its file, with the two characters that separate a

@@ -186,6 +186,14 @@ let mapPrimitiveType (name: string) =
 // free variable came from.
 let sanitizeIdent = Naming.sanitizeIdent
 
+/// The C# parameter a keyword argument arrives in. Spelled by the declaration
+/// and by every call site, so it has one definition.
+let keywordParamName = Naming.keywordParamName
+
+/// The C# parameter a rest argument arrives in, where the function also takes
+/// keyword arguments and the array therefore has to be passed by name.
+let restParamName = Naming.restParamName
+
 /// Does this `::` name qualify a binding to the module class that defines it,
 /// rather than name a method of a trait implementation?
 ///
@@ -687,6 +695,125 @@ let private liveClauses (clauses: TMatchClause list) =
     take [] clauses
 
 // ---------------------------------------------------------------------------
+// Keyword defaults
+// ---------------------------------------------------------------------------
+
+/// The C# constant a keyword parameter's default can be written as, when it can
+/// be written as one at all.
+///
+/// A keyword default is in general an arbitrary expression, evaluated in the
+/// callee on every call that omits the argument — see `generateArgumentPrologue`
+/// for the machinery that costs. When the default is a literal, none of that is
+/// needed: C# can carry the value in the signature itself, and the parameter
+/// becomes an ordinary optional one that a keyword-free call does no work for.
+///
+/// Both halves of the answer matter, which is why the *type* is consulted and
+/// not only the node:
+///
+///   - A C# optional parameter's default must be a constant expression. `1.5`
+///     and `"n="` are; `new Bjolang.Runtime.BjoChar(32)` and
+///     `BjolangRuntime.Keyword.Intern("k")` are how `char` and a keyword are
+///     emitted, and are not. Nor is `@true` — the runtime spells the boolean
+///     literals as static fields — so `true` and `false` are emitted here
+///     directly rather than through `generateExpr`.
+///   - A type *parameter* admits no constant default but `default`, so a
+///     generic keyword slot is never eligible however literal its default
+///     looks.
+///
+/// One thing does change, and is the price of the whole optimization: a C#
+/// optional parameter's default is baked into the *call site* by the C#
+/// compiler, so a library that changes a default value only reaches callers
+/// that are recompiled. Bjolang rebuilds a dependent whenever its dependency's
+/// `.dll` is newer — `Pipeline.ensureLibrary` — so a changed default cannot
+/// outlive the build that changed it. Nothing else is observable: the value is
+/// a constant, so evaluating it at the call site and evaluating it in the
+/// callee cannot be told apart.
+let private csharpConstantDefault (kwType: HMType) (kwDefault: TypedExpr) : string option =
+    match kwDefault.Node, typeToString kwType with
+    // `TInt` carries the literal's source text and is emitted verbatim, so it
+    // covers the floating-point literals too. The types are listed rather than
+    // defaulted to eligible because `mapPrimitiveType` is free to grow a case
+    // that a bare numeral is not a constant of.
+    | TInt text, ("int" | "byte" | "short" | "ushort" | "uint" | "long" | "ulong" | "double") -> Some text
+    | TString value, "string" -> Some $"\"%s{escapeStringLiteral value}\""
+    // The booleans are prelude *bindings*, not literal nodes. A shadowing
+    // binding cannot be mistaken for one: a local is alpha-renamed and a
+    // module-level one arrives module-qualified, so only the prelude's own
+    // reaches here under the bare name.
+    | TIdent (("true" | "false") as literal, _), "bool" -> Some literal
+    | _ -> None
+
+/// Which of a keyword-taking function's two entry points is being emitted.
+///
+/// A default that is not a constant has to be evaluated somewhere, and the
+/// general entry evaluates it in a branch: the argument arrives as an `Option`,
+/// and the callee asks whether it was there. A call that passes no keywords at
+/// all pays for a question it already knows the answer to.
+///
+/// So such a function is emitted twice, as two C# overloads of one name. The
+/// second takes no keyword parameters and binds every default outright. C# then
+/// picks between them with no help from anyone: an overload all of whose
+/// parameters have arguments beats one that has to substitute a default, so a
+/// keyword-free call selects the keyword-free entry — including across an
+/// assembly boundary, where the caller cannot see the defaults at all and does
+/// not need to. Call sites are emitted exactly as they were.
+type private KeywordEntry =
+    /// Keyword parameters in the signature; a default is evaluated only for an
+    /// argument this call left out.
+    | KeywordParameters
+    /// No keyword parameters at all; every default is bound unconditionally.
+    | KeywordDefaultsOnly
+
+/// Whether a keyword-free entry point is worth emitting for these parameters.
+///
+/// Only a default that is *not* a constant costs anything to leave out: a
+/// constant one is already carried in the signature, so the general entry is
+/// the fast one and a second copy of the body would buy nothing.
+let private needsKeywordFreeEntry (kwArgs: (string * HMType * TypedExpr) list) : bool =
+    kwArgs |> List.exists (fun (_, kwType, kwDefault) -> (csharpConstantDefault kwType kwDefault).IsNone)
+
+// ---------------------------------------------------------------------------
+// Call shape
+// ---------------------------------------------------------------------------
+
+/// The callee's flat parameter types, seen through whatever metavariables
+/// inference left in the way.
+let rec private funArgTypes (t: HMType) : HMType list option =
+    match t with
+    | TFun (argTypes, _, _) -> Some argTypes
+    | TMeta { Value = Some inner } -> funArgTypes inner
+    | _ -> None
+
+/// Whether the callee's last parameter is the array a `#:rest` resolves to.
+///
+/// Read off the flat type, because that is all a call site has: `FunMeta`
+/// records which parameters are really keyword and rest ones, and it does not
+/// reach code generation. A function whose last *mandatory* parameter happens
+/// to be an array is therefore indistinguishable from one with a rest
+/// parameter — a pre-existing limit of reading the shape off the type, and
+/// harmless while such a function has no keyword parameters, which is the only
+/// case where the two are treated differently.
+let private calleeHasRest (target: TypedExpr) : bool =
+    match funArgTypes target.Type with
+    | Some argTypes when not argTypes.IsEmpty ->
+        match List.last argTypes with
+        | TCon ("Array", _) -> true
+        | _ -> false
+    | _ -> false
+
+/// Whether the callee *declares* keyword parameters — which is a different
+/// question from whether this call supplies any, and the one that decides how
+/// the call has to be written.
+///
+/// The flat type is mandatory ++ keyword ++ rest?, and a call's positional
+/// arguments are mandatory ++ the rest array, so whatever the type has over the
+/// arguments is the keyword slots.
+let private calleeDeclaresKeywords (target: TypedExpr) (args: TypedExpr list) : bool =
+    match funArgTypes target.Type with
+    | Some argTypes -> argTypes.Length > args.Length
+    | None -> false
+
+// ---------------------------------------------------------------------------
 // Statement shape
 // ---------------------------------------------------------------------------
 
@@ -978,12 +1105,21 @@ let private castPromoted (ctx: CodegenContext) (t: HMType) (body: unit -> unit) 
 // ---------------------------------------------------------------------------
 
 /// Emits a parameter list shared by module functions and trait-`impl` methods.
+///
+/// A keyword parameter is emitted one of two ways. A default C# can carry as a
+/// constant becomes an ordinary optional parameter of the declared type, and a
+/// call that omits it costs nothing at all; anything else arrives as an
+/// `Option`, so that the callee can tell an omitted argument from one passed
+/// explicitly at the default value and evaluate the default expression itself.
+/// `csharpConstantDefault` decides which, and `generateArgumentPrologue` emits
+/// the matching half of the body.
 let private generateParameterList
     (ctx: CodegenContext)
     (ownerName: string)
     (args: (string * HMType) list)
     (kwArgs: (string * HMType * TypedExpr) list)
     (restArg: (string * HMType) option)
+    (entry: KeywordEntry)
     : unit =
 
     let mutable paramIdx = 0
@@ -995,17 +1131,42 @@ let private generateParameterList
         append ctx (sanitizeIdent argName)
         paramIdx <- paramIdx + 1
 
-    for (kwName, kwType, kwDefault) in kwArgs do
-        if paramIdx > 0 then append ctx ", "
-        append ctx $"BjolangRuntime.Option<{typeToString kwType}> "
-        append ctx $"__kw_{sanitizeIdent kwName}"
-        append ctx " = default"
-        paramIdx <- paramIdx + 1
+    // The keyword-free entry has none of these: that is what it is for.
+    if entry = KeywordParameters then
+        for (kwName, kwType, kwDefault) in kwArgs do
+            if paramIdx > 0 then append ctx ", "
+            // The parameter is named the same either way: the name is the
+            // calling convention, and a caller in another assembly picks its
+            // spelling out of the `.dll` without knowing which lowering was
+            // used. A bare value under that name binds to both — to the
+            // `Option` through the runtime's implicit conversion — so no call
+            // site has to know either.
+            match csharpConstantDefault kwType kwDefault with
+            | Some constant ->
+                append ctx $"%s{typeToString kwType} "
+                append ctx (keywordParamName kwName)
+                append ctx $" = %s{constant}"
+            | None ->
+                append ctx $"BjolangRuntime.Option<{typeToString kwType}> "
+                append ctx (keywordParamName kwName)
+                append ctx " = default"
+            paramIdx <- paramIdx + 1
 
     match restArg with
     | Some (restName, restElemType) ->
         if paramIdx > 0 then append ctx ", "
-        append ctx $"params %s{typeToString restElemType}[] %s{sanitizeIdent restName}"
+        // Beside keyword parameters the array is passed by name, so it is
+        // declared under the one the call site knows; `generateArgumentPrologue`
+        // binds it back to the name the body wrote. On its own it keeps that
+        // name outright, and is passed positionally as it always was.
+        //
+        // This asks what the *function* declares, not what this entry point
+        // takes: the keyword-free entry has no keyword parameters but is
+        // reached by the same call, written the same way, so it has to answer
+        // to the same name for the array.
+        let declaredName =
+            if kwArgs.IsEmpty then sanitizeIdent restName else restParamName
+        append ctx $"params %s{typeToString restElemType}[] %s{declaredName}"
     | None -> ()
 
 let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
@@ -1811,31 +1972,22 @@ and private generateApply
         | _ -> calleeEmitters.Head ctx
 
         append ctx "("
-        if kwArgs.IsEmpty then
+        if kwArgs.IsEmpty && not (calleeDeclaresKeywords target args) then
+            // Nothing can be left out, so nothing has to be named.
             for i, emit in List.indexed positionalEmitters do
                 if i > 0 then append ctx ", "
                 emit ctx
         else
-            // Function type is TFun([mandatory..., keyword..., rest?], ret) and the
-            // positional arguments are mandatory ++ rest, so the split point is
-            // derived from the callee's arity rather than the call's shape.
-            let funArgCount =
-                match target.Type with
-                | TFun (argTypes, _, _) -> argTypes.Length
-                | _ -> args.Length + kwArgs.Length
-
-            let hasRest =
-                match target.Type with
-                | TFun (argTypes, _, _) when not argTypes.IsEmpty ->
-                    match List.last argTypes with
-                    | TCon ("Array", _) -> true
-                    | _ -> false
-                | _ -> false
-
-            let mandatoryCount = funArgCount - kwArgs.Length - (if hasRest then 1 else 0)
-            let split = min positionalEmitters.Length mandatoryCount
-            let mandatoryEmitters = positionalEmitters |> List.truncate split
-            let restEmitters = positionalEmitters |> List.skip split
+            // The callee's type is TFun([mandatory..., keyword..., rest?], ret)
+            // and `args` is mandatory ++ the rest array — `Inference` gathers
+            // rest arguments into one array rather than leaving them spread —
+            // so the last positional emitter is the array, and the rest are the
+            // mandatory arguments.
+            let mandatoryEmitters, restEmitters =
+                if calleeHasRest target && not positionalEmitters.IsEmpty then
+                    positionalEmitters |> List.splitAt (positionalEmitters.Length - 1)
+                else
+                    positionalEmitters, []
 
             let mutable argIdx = 0
 
@@ -1844,26 +1996,33 @@ and private generateApply
                 emit ctx
                 argIdx <- argIdx + 1
 
-            if hasRest then
-                // C# forbids mixing named arguments with a `params` expansion.
-                for emit in keywordEmitters do
-                    if argIdx > 0 then append ctx ", "
-                    emit ctx
-                    argIdx <- argIdx + 1
-            else
-                for (kwName, _), emit in List.zip kwArgs keywordEmitters do
-                    if argIdx > 0 then append ctx ", "
-                    // The parameter is declared as `__kw_<name>`, so that is
-                    // what a named argument has to say. Writing the bare name
-                    // produced C# that named a parameter which does not exist —
-                    // latent only because nothing in the suite had ever passed a
-                    // keyword argument rather than relying on its default.
-                    append ctx $"__kw_%s{sanitizeIdent kwName}: "
-                    emit ctx
-                    argIdx <- argIdx + 1
+            for (kwName, _), emit in List.zip kwArgs keywordEmitters do
+                if argIdx > 0 then append ctx ", "
+                // The parameter is declared under `keywordParamName`, so that is
+                // what a named argument has to say. Writing the bare name
+                // produced C# that named a parameter which does not exist —
+                // latent only because nothing in the suite had ever passed a
+                // keyword argument rather than relying on its default.
+                //
+                // One spelling serves both lowerings. A bare value binds to the
+                // declared type directly, and to an `Option` of it through the
+                // runtime's implicit conversion, so a call site never has to
+                // know which the callee chose — which is what lets the choice
+                // depend on the default *expression*, a thing no importer can
+                // see in a `.dll`.
+                append ctx $"%s{keywordParamName kwName}: "
+                emit ctx
+                argIdx <- argIdx + 1
 
             for emit in restEmitters do
                 if argIdx > 0 then append ctx ", "
+                // Named for the same reason the keywords are: an omitted
+                // keyword leaves a hole ahead of the array, and a positional
+                // argument cannot be placed across one. The callee declares it
+                // under this name whenever it has keyword parameters at all —
+                // which is exactly when this branch is reached with a rest
+                // argument to pass.
+                append ctx $"%s{restParamName}: "
                 emit ctx
                 argIdx <- argIdx + 1
         append ctx ")"
@@ -2935,24 +3094,73 @@ and private generateMergedLoop (ctx: CodegenContext) (members: TLoopMember list)
 
 /// Emits the prologue that turns keyword parameters back into ordinary locals.
 ///
-/// A keyword parameter arrives as an `Option`, so that one omitted is
-/// distinguishable from one passed explicitly at its default value. Shared by
-/// methods and local functions, which take keyword arguments the same way
-/// because they are written the same way.
-and private generateKeywordPrologue (ctx: CodegenContext) (kwArgs: (string * HMType * TypedExpr) list) : unit =
+/// A keyword parameter whose default is not a constant arrives as an `Option`,
+/// so that one omitted is distinguishable from one passed explicitly at its
+/// default value — the callee has to know which, because it is the callee that
+/// evaluates the default expression. That expression may be statement-shaped,
+/// may read the parameters declared before it, and may have effects, so it is
+/// emitted as a block rather than an expression.
+///
+/// A constant default needs none of that. The value is in the signature, C# has
+/// already put it in place, and the two cases the `Option` exists to tell apart
+/// have the same answer — so the parameter arrives as the declared type and the
+/// prologue is the binding alone. `csharpConstantDefault` draws the line, and
+/// `generateParameterList` emits the matching half of the signature; the choice
+/// is made per parameter, so a function with one default of each kind gets one
+/// of each here.
+///
+/// The keyword-free entry point has no parameter to ask about, so every default
+/// is simply evaluated, in declaration order — which is the order they may read
+/// each other in, and the order the general entry evaluates them in too.
+///
+/// A rest parameter needs a line here only when there are keyword parameters
+/// beside it: that is the case where it is declared under `restParamName` so
+/// that the call site can name it, and the body still wrote its own name.
+///
+/// Shared by methods and local functions, which take keyword arguments the same
+/// way because they are written the same way.
+and private generateArgumentPrologue
+    (ctx: CodegenContext)
+    (kwArgs: (string * HMType * TypedExpr) list)
+    (restArg: (string * HMType) option)
+    (entry: KeywordEntry)
+    : unit =
+
     for (kwName, kwType, kwDefault) in kwArgs do
         let cType = typeToString kwType
         let sName = sanitizeIdent kwName
+        let pName = keywordParamName kwName
+        match entry, csharpConstantDefault kwType kwDefault with
+        | KeywordDefaultsOnly, Some constant ->
+            indent ctx
+            appendLine ctx $"{cType} {sName} = {constant};"
+        | KeywordDefaultsOnly, None ->
+            indent ctx
+            appendLine ctx $"{cType} {sName};"
+            generateBlock ctx (Assign(sName)) kwDefault
+        | KeywordParameters, Some _ ->
+            // Copied to the name the body wrote rather than the parameter being
+            // given that name outright: the parameter's name is the calling
+            // convention and cannot be chosen to suit the body.
+            indent ctx
+            appendLine ctx $"{cType} {sName} = {pName};"
+        | KeywordParameters, None ->
+            indent ctx
+            appendLine ctx $"{cType} {sName};"
+            indent ctx
+            appendLine ctx $"if ({pName}.IsSome) {{"
+            withIndent ctx (fun c -> indent c; appendLine c $"{sName} = {pName}.Value;")
+            indent ctx
+            appendLine ctx "} else {"
+            withIndent ctx (fun c -> generateBlock c (Assign(sName)) kwDefault)
+            indent ctx
+            appendLine ctx "}"
+
+    match restArg with
+    | Some (restName, restElemType) when not kwArgs.IsEmpty ->
         indent ctx
-        appendLine ctx $"{cType} {sName};"
-        indent ctx
-        appendLine ctx $"if (__kw_{sName}.IsSome) {{"
-        withIndent ctx (fun c -> indent c; appendLine c $"{sName} = __kw_{sName}.Value;")
-        indent ctx
-        appendLine ctx "} else {"
-        withIndent ctx (fun c -> generateBlock c (Assign(sName)) kwDefault)
-        indent ctx
-        appendLine ctx "}"
+        appendLine ctx $"{typeToString restElemType}[] {sanitizeIdent restName} = {restParamName};"
+    | _ -> ()
 
 /// Emits a non-recursive local function.
 ///
@@ -2995,14 +3203,18 @@ and private generateLocalFunction
     append ctx (sanitizeIdent name)
     append ctx tyParamsStr
     append ctx "("
-    generateParameterList ctx name mandatory fn.KeywordArgs fn.RestArg
+    // A local function gets no keyword-free twin: C# has no overloading for
+    // local functions, two in one scope are a duplicate-name error, and a
+    // distinct name would be one the call site has no way to know it should
+    // write. It keeps the general entry, which is what it always had.
+    generateParameterList ctx name mandatory fn.KeywordArgs fn.RestArg KeywordParameters
     appendLine ctx ") {"
     // A local function is a new function scope: it cannot jump into the
     // enclosing loop, nor yield into the enclosing sequence.
     withIndent
         { ctx with Loop = None; InSeq = false; ReturnsVoid = isVoidType retType }
         (fun c ->
-            generateKeywordPrologue c fn.KeywordArgs
+            generateArgumentPrologue c fn.KeywordArgs fn.RestArg KeywordParameters
             generateBlock c Return lambdaBody)
     indent ctx
     appendLine ctx "}"
@@ -3028,6 +3240,7 @@ let private generateMethod
     (retType: HMType)
     (effect: Effect)
     (body: TypedExpr)
+    (entry: KeywordEntry)
     : unit =
 
     indent ctx
@@ -3040,7 +3253,7 @@ let private generateMethod
     append ctx (sanitizeIdent name)
     append ctx genericParams
     append ctx "("
-    generateParameterList ctx name args kwArgs restArg
+    generateParameterList ctx name args kwArgs restArg entry
     append ctx ") {\n"
     // A method is where `ReturnsVoid` is first established; every nested scope
     // that opens a C# method of its own overrides it.
@@ -3052,7 +3265,7 @@ let private generateMethod
     let ctx = { ctx with ReturnsVoid = (effect = ESync && isVoidType retType) }
 
     withIndent ctx (fun c ->
-        generateKeywordPrologue c kwArgs
+        generateArgumentPrologue c kwArgs restArg entry
         generateFunctionBody c body)
     indent ctx
     appendLine ctx "}"
@@ -3069,7 +3282,19 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                 let tyArgsStr = tyArgs |> List.map typeParamName |> String.concat ", "
                 $"<%s{tyArgsStr}>"
 
-        generateMethod ctx "public static " genericParams name args kwArgs restArg retType effect body
+        generateMethod ctx "public static " genericParams name args kwArgs restArg retType effect body KeywordParameters
+
+        // The keyword-free entry, as a C# overload of the same name. Emitted
+        // only where it can win anything — a function all of whose defaults are
+        // constants already carries them in its signature — because it is a
+        // second copy of the body and not merely a second signature.
+        //
+        // The body is emitted rather than called: a wrapper would have to hand
+        // the resolved values to a third method, and that method would need the
+        // whole of `generateMethod`'s async, iterator and generic handling
+        // repeated around a return type it no longer shares.
+        if needsKeywordFreeEntry kwArgs then
+            generateMethod ctx "public static " genericParams name args kwArgs restArg retType effect body KeywordDefaultsOnly
 
     | TType (defs, _) 
     | TTypeRec (defs, _) ->
@@ -3297,7 +3522,10 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                     // Include method-level type params in scope
                     let methodCtx =
                         { ctx with TypeParams = Set.union ctx.TypeParams (methodOnlyTyArgs |> List.map typeParamKey |> Set.ofList) }
-                    generateMethod methodCtx modifier methodTyArgsStr n args kwArgs restArg retType effect body
+                    // No twin for a trait-`impl` method: a keyword parameter on
+                    // one is rejected before it reaches here, and an overload
+                    // would in any case have no interface declaration to match.
+                    generateMethod methodCtx modifier methodTyArgsStr n args kwArgs restArg retType effect body KeywordParameters
                 | _ -> ()
         )
         indent ctx

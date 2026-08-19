@@ -439,7 +439,30 @@ Unlike f#, bjolang has keyword arguments (but no optargs!):
 (key-fun 10 #:what "orange") ;; prints "orange\n" 10 times
 #+end_src
 
-This is currently less efficient than non-kw functions, because every function call checks what was provided and re-evaluates the default argument expressions. It is just a series of ifs and evaluating the expressions, so it is not that bad, but perhaps something that could be added.
+A default is an arbitrary expression, evaluated in the callee on every call that leaves the argument out — as ~(string-append "ban" "ana")~ above is. That needs the callee to be able to tell an omitted argument from one passed explicitly at the default value, so the parameter arrives as an ~Option<T>~ and the body starts with a branch per keyword. It is a series of ifs and some expressions, so it was never that bad, but it is more than a plain function does.
+
+A default that is a *literal* costs none of it. C# can carry a constant in the signature, so such a parameter is emitted as an ordinary optional parameter of its declared type — ~int __kw_by = 2~ — and a call that omits it does no work at all, has nothing to unwrap, and passes a plain ~int~ rather than an ~Option<int>~. The decision is per parameter, so a function with one literal default and one that reads an earlier argument gets one of each.
+
+What still goes the old way: a default that is any other expression, one that reads another parameter, one that needs statements to evaluate — and a *generic* slot, whose C# type is a type parameter and admits no constant but ~default~, however literal its default looks. A ~char~ is in that group too, since it is emitted as a constructor call rather than a literal.
+
+The one thing that changes is where the value comes from. A C# optional parameter's default is baked into the call site by the C# compiler, so a library that changes a literal default reaches only callers that are recompiled — and Bjolang rebuilds a dependent whenever its dependency's ~.dll~ is newer, so a changed default cannot outlive the build that changed it. Nothing else is observable, because the value is a constant.
+
+Keyword and ~#:rest~ parameters may be combined. C# puts ~params~ last, so the array follows the keyword parameters and a call that omits one would leave the array in a position that is no longer the array's — so such a call passes the array by name too. A function with no keyword parameters is unaffected and passes it positionally, as before.
+
+A default that *has* to be evaluated gets the same treatment one step further out. Such a function is emitted twice, as two C# overloads of one name: the general entry taking ~Option~s, and a keyword-free twin that takes no keyword parameters at all and binds every default outright.
+
+#+begin_src csharp
+int shifted(int n, Option<int> __kw_by = default) { ... }   // general
+int shifted(int n)                                { ... }   // twin
+#+end_src
+
+C# chooses between them unaided, and that is the whole trick: an overload all of whose parameters have arguments beats one that has to substitute a default, so ~shifted(5)~ selects the twin and ~shifted(5, __kw_by: 1)~ selects the general entry. Call sites are emitted exactly as they were, nothing about the choice is published, and it works across a ~.dll~ — an importer cannot see a default expression and never needs to. The default is still evaluated; what goes is the wider argument slot and the branch.
+
+A function all of whose defaults are constants gets no twin: its general entry already carries them in the signature, and a twin would be a second copy of the body buying nothing. A local ~defun~ gets none either — C# has no overloading for local functions, and a distinct name would be one the call site has no way to know it should write.
+
+Measured on a keyword-free call to a function too large for the JIT to inline, the twin is about 9% faster (0.72s against 0.79s, 5×10⁶ calls, median of 13 interleaved runs). Where the callee *is* inlined — most small functions — there is no measurable difference at all, because the JIT already sees ~default(Option<T>).IsSome~ as false and folds the branch away by itself. The same comparison written directly in C# with inlining forced off runs twice as fast, which is the ceiling this is reaching for.
+
+One thing the twin does *not* change, in either direction: which functions get promoted to a loop. A module-level ~defun~ with keyword parameters is already promoted — its keywords become loop slots like any other parameter, and their defaults are re-evaluated per iteration where the jump omits them — so tail recursion through one is a ~while~ loop and runs at any depth. A keyword parameter on a *local* ~defun~ is the exception: a jump into a loop group is positional, and an omitted keyword has no slot to fill, so such a member stays a real C# local function and deep tail recursion through it overflows the stack. That is decided in ~LoopLowering~, before code generation, and a second entry point emitted afterwards cannot reach it.
 
 *** Structs and records
 Have the same syntax, and both are constructed by naming the type — there is no

@@ -22,7 +22,12 @@ open System.Text
 /// 2: a type name is a *key* — the module that declared it and the name it was
 /// declared under — rather than the bare name source wrote. An assembly built
 /// before this reads as though its types were somebody else's.
-let currentVersion = 2
+/// 3: a function with both keyword and rest parameters declares the rest array
+/// under `Naming.restParamName` rather than its own name, because such a call
+/// has to pass it by name. An assembly built before this declares it under the
+/// name its source wrote, and a call that leaves a keyword out cannot be
+/// written against it at all.
+let currentVersion = 3
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {

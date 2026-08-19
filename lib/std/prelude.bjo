@@ -1305,13 +1305,13 @@
          (def (,cancel scope-token) (make-cancel))
          (def saved (parameter-push! current-cancel scope-token))
          (try
-           ;; Catches everything, so the token fires for every failure rather
-           ;; than for a list somebody remembered to write. That costs the
-           ;; caller nothing because `raise` puts the exception straight back,
-           ;; with the stack trace it arrived with.
-           (match (try (let () ,first ,@body) #:catch (System.Exception))
-             ((Ok answer) (,cancel Scope-Ended) answer)
-             ((Err failure) (,cancel (Failed failure)) (raise failure)))
+             ;; Catches everything, so the token fires for every failure rather
+             ;; than for a list somebody remembered to write. That costs the
+             ;; caller nothing because `raise` puts the exception straight back,
+             ;; with the stack trace it arrived with.
+             (match (try (let () ,first ,@body) #:catch (System.Exception))
+               ((Ok answer) (,cancel Scope-Ended) answer)
+               ((Err failure) (,cancel (Failed failure)) (raise failure)))
            #:finally (dyn-restore! saved))))
     (bad (syntax-error bad "with-cancel names its cancel thunk and takes a body: (with-cancel (cancel) body ...)"))))
 
@@ -1332,9 +1332,9 @@
      ;; `with-cancel` this expands into binds it, and the watcher started inside
      ;; that scope is what holds it.
      #'(with-cancel (fire)
-         (deadline-watch! fire ,ms)
-         ,first
-         ,@body))
+        (deadline-watch! fire ,ms)
+        ,first
+        ,@body))
     (bad (syntax-error bad "with-deadline takes a millisecond limit and a body: (with-deadline 5000 body ...)"))))
 
 ;; ---------------------------------------------------------------------------
@@ -1403,3 +1403,16 @@
   (where (->str %a))
   (defun (->str sq)
     (seq->str sq)))
+
+;; Useful macros
+;; That should have been implemented earlier
+
+;; (def/macro (let* form compare inject)
+;;   (syntax-match form
+;;     ((_ () body ...)
+;;      #'(let () body ...))
+;;     ((_ (bind) body ...)
+;;      #'(let (bind) body ...))
+;;     ((_ (bind binds ...) body ...)
+;;      #(let (bind)
+;;         (let* (binds ...) body ...)))))
