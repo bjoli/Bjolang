@@ -1,0 +1,139 @@
+;; Two entry points for a keyword function whose defaults have to be evaluated.
+;;
+;; A keyword parameter whose default is not a constant arrives as an `Option`,
+;; because the callee has to tell an omitted argument from one passed at the
+;; default value — it is the callee that evaluates the default. A call that
+;; passes no keywords at all pays for a question whose answer it already knows.
+;;
+;; So such a function is emitted twice, as two C# overloads of one name:
+;;
+;;   int shifted(int n, Option<int> __kw_by = default) { ... }   // general
+;;   int shifted(int n)                                { ... }   // twin
+;;
+;; and C# chooses between them unaided. An overload all of whose parameters have
+;; arguments beats one that has to substitute a default, so `shifted(5)` selects
+;; the twin and `shifted(5, __kw_by: 1)` selects the general entry. Call sites
+;; are emitted exactly as they were, and nothing about the choice is published:
+;; an importer cannot see a default expression and does not need to.
+;;
+;; A function all of whose defaults *are* constants gets no twin — the general
+;; entry already carries them in its signature, so a second copy of the body
+;; would buy nothing. A local `defun` gets none either: C# has no overloading
+;; for local functions.
+;;
+;; The whole point is that the two entries are indistinguishable, which is what
+;; this file has to establish. Every function below is called both ways, and the
+;; side-effecting defaults pin the one thing a second copy of a prologue could
+;; plausibly get wrong: how many times a default is evaluated, and in what order.
+(import (std prelude))
+(import "inc/kwfast.bjo")
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; A trace the defaults below write to, so that "was it evaluated, and when" is
+;; an observable rather than an assumption.
+(def/mutable trace "")
+
+(: note (-> string int int))
+(defun (note tag value)
+  (set! trace (string-append trace tag))
+  value)
+
+(: reset (-> void))
+(defun (reset)
+  (set! trace ""))
+
+;; --- the shape that gets a twin --------------------------------------------
+
+(: shifted (-> int (#:by int) int))
+(defun (shifted n #:by (+ n 1))
+  (+ n by))
+
+;; Two defaults with effects, the second reading the first. Evaluation order is
+;; declaration order in both entries.
+(: ordered (-> int (#:a int) (#:b int) int))
+(defun (ordered n #:a (note "a" n) #:b (note "b" (* a 2)))
+  (+ a b))
+
+;; A statement-shaped default: it needs the prologue's block form, which the
+;; twin emits without the surrounding `if`.
+(: looped (-> int (#:acc int) int))
+(defun (looped n #:acc (let loop ((i 3) (a 0)) (if (= i 0) a (loop (- i 1) (+ a 1)))))
+  (+ n acc))
+
+;; A generic slot whose default is a mandatory parameter.
+(: pick (-> %a (#:fallback %a) %a))
+(defun (pick x #:fallback x)
+  fallback)
+
+;; Recursion. Called without keywords it stays on the twin the whole way down,
+;; and the default is evaluated once per level either way.
+(: countdown (-> int (#:step int) int))
+(defun (countdown n #:step (note "s" 1))
+  (if (= n 0) 0 (+ 1 (countdown (- n step)))))
+
+;; All defaults constant: no twin, and nothing here should notice.
+(: scaled (-> int (#:by int) int))
+(defun (scaled n #:by 3)
+  (* n by))
+
+(defun (main)
+  ;; --- the two entries agree ------------------------------------------------
+  (expect "twin, default evaluated" (int->string (shifted 5)) "11")
+  (expect "general entry, supplied" (int->string (shifted 5 #:by 100)) "105")
+  (expect "supplied at the default value" (int->string (shifted 5 #:by 6)) "11")
+
+  (expect "statement-shaped, twin" (int->string (looped 1)) "4")
+  (expect "statement-shaped, supplied" (int->string (looped 1 #:acc 10)) "11")
+
+  (expect "generic, twin" (int->string (pick 7)) "7")
+  (expect "generic, supplied" (int->string (pick 7 #:fallback 9)) "9")
+  (expect "generic at string, twin" (pick "a") "a")
+
+  (expect "all-constant, no twin" (int->string (scaled 5)) "15")
+  (expect "all-constant, supplied" (int->string (scaled 5 #:by 4)) "20")
+
+  ;; --- a default is evaluated exactly once, in declaration order ------------
+  (reset)
+  (expect "twin evaluates both defaults" (int->string (ordered 3)) "9")
+  (expect "and in declaration order, once each" trace "ab")
+
+  (reset)
+  (expect "general entry skips a supplied default" (int->string (ordered 3 #:a 10)) "30")
+  (expect "so only the other one ran" trace "b")
+
+  (reset)
+  (expect "general entry, both supplied" (int->string (ordered 3 #:a 1 #:b 2)) "3")
+  (expect "no default ran at all" trace "")
+
+  ;; --- recursion stays on the twin -----------------------------------------
+  ;;
+  ;; Four levels, each evaluating the default once: the twin calls itself, not
+  ;; the general entry.
+  (reset)
+  (expect "recursion through the twin" (int->string (countdown 4)) "4")
+  (expect "one default evaluation per level" trace "sssss")
+
+  ;; --- a local defun keeps the general entry -------------------------------
+  (defun (local-shifted n #:by (+ n 1))
+    (+ n by))
+
+  (expect "local, default evaluated" (int->string (local-shifted 5)) "11")
+  (expect "local, supplied" (int->string (local-shifted 5 #:by 100)) "105")
+
+  ;; --- across a `.dll` ------------------------------------------------------
+  (expect "imported, twin" (int->string (bumped 5)) "11")
+  (expect "imported, supplied" (int->string (bumped 5 #:by 100)) "105")
+  (expect "imported twin beside a rest parameter" (int->string (counted 2 1 2 3)) "23")
+  (expect "imported, rest and keyword supplied" (int->string (counted 2 #:start 1 1 2 3)) "4")
+  (expect "imported, rest and no rest arguments" (int->string (counted 2)) "20")
+  (expect "imported mixed defaults, twin" (int->string (paired 1)) "15")
+  (expect "imported mixed defaults, supplied" (int->string (paired 1 #:a 2)) "5")
+
+  0)

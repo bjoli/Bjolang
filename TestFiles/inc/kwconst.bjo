@@ -1,0 +1,42 @@
+;; Keyword defaults on the far side of a `.dll`.
+;;
+;; The lowering a keyword parameter gets depends on its default *expression*,
+;; and an importer never sees one: a module publishes its keyword parameters'
+;; names and types, not the code behind them. Nothing has to see them. The
+;; parameter is named the same either way and a bare value binds to both
+;; spellings, so a call site emits one thing and the callee's choice stays the
+;; callee's business — which is what these exports are here to hold to.
+(import (std prelude))
+
+;; Named apart from the same shapes in the importing test, so that every call
+;; there says plainly which side of the boundary it is exercising.
+(export scaled greeting based dotted combined)
+
+;; Both defaults are constants: `int __kw_by = 2, int __kw_offset = 0`.
+(: scaled (-> int (#:by int) (#:offset int) int))
+(defun (scaled n #:by 2 #:offset 0)
+  (+ (* n by) offset))
+
+;; A string and a boolean constant.
+(: greeting (-> string (#:sep string) (#:loud bool) string))
+(defun (greeting who #:sep ", " #:loud false)
+  (string-append (if loud "HI" "hi") (string-append sep who)))
+
+;; A keyword named after a C# keyword, exported. The parameter it arrives in is
+;; `__kw_base` — the prefix is applied before sanitizing, so there is no `@` for
+;; the importing side to disagree about.
+(: based (-> int (#:base int) int))
+(defun (based n #:base 1000)
+  (+ n base))
+
+;; A `char` is emitted as a constructor call, which is not a constant
+;; expression, so this one keeps the `Option` and evaluates its default in the
+;; callee. Exported to pin that a call site does not have to know that.
+(: dotted (-> string (#:pad char) string))
+(defun (dotted s #:pad #\.)
+  (string-append (char->string pad) s))
+
+;; One default of each kind on one function.
+(: combined (-> int (#:a int) (#:b int) int))
+(defun (combined n #:a 7 #:b (+ a n))
+  (+ a b))

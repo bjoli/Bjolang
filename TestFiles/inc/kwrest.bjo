@@ -1,0 +1,21 @@
+;; Keyword parameters beside a rest parameter, across a module boundary.
+;;
+;; C# puts `params` last and gives no choice about it, so the rest array sits
+;; *after* the keyword parameters — and a call that leaves a keyword out moves
+;; the array out of the position it would otherwise be passed in. The array is
+;; therefore passed by name too, under `Naming.restParamName`, which is a fixed
+;; spelling precisely so that an importer can write it without having to know
+;; what the source called it.
+(import (std prelude))
+
+(export tally gather)
+
+;; One keyword, one rest.
+(: tally (-> (#:start int) #:rest int int))
+(defun (tally #:start 100 #:rest xs)
+  (+ start (array-length xs)))
+
+;; Two keywords, so a call can leave a hole in the middle of them.
+(: gather (-> string (#:sep string) (#:cap int) #:rest int string))
+(defun (gather label #:sep "-" #:cap 0 #:rest xs)
+  (string-append label (string-append sep (int->string (+ cap (array-length xs))))))

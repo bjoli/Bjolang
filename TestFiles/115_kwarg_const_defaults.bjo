@@ -1,0 +1,160 @@
+;; Keyword defaults that C# can carry in the signature.
+;;
+;; A keyword parameter is normally passed as `Option<T>`: the callee has to be
+;; able to tell an omitted argument from one passed explicitly at the default
+;; value, because it is the callee that evaluates the default expression. That
+;; costs a wider argument slot and a branch on every call, and re-evaluates the
+;; default every time it is used.
+;;
+;; When the default is a literal there is nothing to evaluate and nothing to
+;; tell apart, so the parameter is emitted as an ordinary C# optional parameter
+;; of the declared type and a call that omits it does no work at all. Which
+;; defaults qualify is `Codegen.csharpConstantDefault`, and the two halves that
+;; have to agree about it are `generateParameterList` and
+;; `generateKeywordPrologue`.
+;;
+;; What this file pins is that the choice is invisible: every function below is
+;; called with each keyword defaulted and supplied, and the answers do not
+;; depend on which lowering it got.
+(import (std prelude))
+(import "inc/kwconst.bjo")
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; --- defaults C# can carry -------------------------------------------------
+
+(: scale (-> int (#:by int) (#:offset int) int))
+(defun (scale n #:by 2 #:offset 0)
+  (+ (* n by) offset))
+
+(: greet (-> string (#:sep string) (#:loud bool) string))
+(defun (greet who #:sep ", " #:loud false)
+  (string-append (if loud "HI" "hi") (string-append sep who)))
+
+;; A floating-point literal. `TInt` carries a numeric literal's source text
+;; whatever the type, so this goes the same way the integers do.
+(: grow (-> double (#:factor double) double))
+(defun (grow x #:factor 1.5)
+  (* x factor))
+
+;; A keyword named after a C# keyword. `__kw_base`, not `__kw_@base`.
+(: offsetted (-> int (#:base int) int))
+(defun (offsetted n #:base 1000)
+  (+ n base))
+
+;; --- defaults that stay behind ---------------------------------------------
+
+;; A `char` is `new BjoChar(46)`, a constructor call rather than a constant.
+(: padded (-> string (#:pad char) string))
+(defun (padded s #:pad #\.)
+  (string-append (char->string pad) s))
+
+;; A default reading an earlier parameter has nothing to put in a signature —
+;; and the two here are a pair, so this also pins that the choice is made per
+;; parameter rather than per function.
+(: blended (-> int (#:a int) (#:b int) int))
+(defun (blended n #:a 7 #:b (+ a n))
+  (+ a b))
+
+;; A statement-shaped default, which needs the prologue's block to evaluate at
+;; all.
+(: looped (-> int (#:acc int) int))
+(defun (looped n #:acc (let loop ((i 3) (a 0)) (if (= i 0) a (loop (- i 1) (+ a 1)))))
+  (+ n acc))
+
+;; A generic slot. The parameter's C# type is a type parameter, and the only
+;; constant a type parameter admits is `default` — so a literal default here
+;; would still not qualify.
+(: pick (-> %a (#:fallback %a) %a))
+(defun (pick x #:fallback x)
+  fallback)
+
+(: labelled (-> %a (#:tag string) string))
+(defun (labelled x #:tag "t")
+  tag)
+
+(defun (main)
+  ;; --- constant defaults, omitted and supplied -----------------------------
+  (expect "int defaulted" (int->string (scale 5)) "10")
+  (expect "int supplied" (int->string (scale 5 #:by 10)) "50")
+  (expect "int, the other one" (int->string (scale 5 #:offset 1)) "11")
+  (expect "int, both, out of order" (int->string (scale 5 #:offset 1 #:by 10)) "51")
+
+  ;; A supplied value equal to the default is not distinguishable from an
+  ;; omitted one — which is exactly what makes the lowering sound.
+  (expect "int supplied at its default" (int->string (scale 5 #:by 2)) "10")
+
+  (expect "string and bool defaulted" (greet "you") "hi, you")
+  (expect "bool supplied" (greet "you" #:loud true) "HI, you")
+  (expect "bool supplied false" (greet "you" #:loud false) "hi, you")
+  (expect "string supplied" (greet "you" #:sep " -> ") "hi -> you")
+
+  (expect "double defaulted" (double->string (grow 4.0)) "6")
+  (expect "double supplied" (double->string (grow 4.0 #:factor 2.0)) "8")
+
+  (expect "reserved-word keyword defaulted" (int->string (offsetted 1)) "1001")
+  (expect "reserved-word keyword supplied" (int->string (offsetted 1 #:base 5)) "6")
+
+  ;; --- defaults that stay behind -------------------------------------------
+  (expect "char defaulted" (padded "x") ".x")
+  (expect "char supplied" (padded "x" #:pad #\!) "!x")
+
+  (expect "mixed, both defaulted" (int->string (blended 1)) "15")
+  (expect "mixed, constant supplied" (int->string (blended 1 #:a 2)) "5")
+  (expect "mixed, dependent supplied" (int->string (blended 1 #:b 100)) "107")
+  (expect "mixed, both supplied" (int->string (blended 1 #:a 2 #:b 3)) "5")
+
+  (expect "statement-shaped defaulted" (int->string (looped 1)) "4")
+  (expect "statement-shaped supplied" (int->string (looped 1 #:acc 10)) "11")
+
+  (expect "generic defaulted" (int->string (pick 7)) "7")
+  (expect "generic supplied" (int->string (pick 7 #:fallback 9)) "9")
+  (expect "generic at string" (pick "a" #:fallback "z") "z")
+
+  ;; A constant default on a function that is generic in something *else*: the
+  ;; slot's own type is `string`, so it qualifies while the function does not.
+  (expect "constant slot on a generic function" (labelled 1) "t")
+  (expect "and supplied" (labelled 1 #:tag "u") "u")
+
+  ;; --- a local function gets the same treatment ----------------------------
+  ;;
+  ;; `generateLocalFunction` shares both emitters with `generateMethod`, so a
+  ;; local `defun` is lowered by the same rule.
+  (defun (local-scale n #:by 3 #:label "n=")
+    (string-append label (int->string (* n by))))
+
+  (expect "local, defaulted" (local-scale 7) "n=21")
+  (expect "local, supplied" (local-scale 7 #:by 100) "n=700")
+  (expect "local, string supplied" (local-scale 7 #:label "v=") "v=21")
+
+  ;; A local function whose default is not a constant, beside one whose is.
+  (defun (local-blended n #:a 4 #:b (* a n))
+    (+ a b))
+
+  (expect "local mixed, defaulted" (int->string (local-blended 3)) "16")
+  (expect "local mixed, supplied" (int->string (local-blended 3 #:b 1)) "5")
+
+  ;; --- across a `.dll` ------------------------------------------------------
+  ;;
+  ;; The importing side picks the parameter name out of the module's metadata
+  ;; and cannot see the default expression at all, so it emits one call shape
+  ;; for both lowerings.
+  (expect "imported, defaulted" (int->string (scaled 5)) "10")
+  (expect "imported, supplied" (int->string (scaled 5 #:by 10)) "50")
+  (expect "imported, both, out of order" (int->string (scaled 5 #:offset 1 #:by 10)) "51")
+  (expect "imported string and bool" (greeting "you") "hi, you")
+  (expect "imported bool supplied" (greeting "you" #:loud true) "HI, you")
+  (expect "imported reserved-word keyword" (int->string (based 1)) "1001")
+  (expect "imported reserved-word supplied" (int->string (based 1 #:base 5)) "6")
+  (expect "imported non-constant default" (dotted "x") ".x")
+  (expect "imported non-constant supplied" (dotted "x" #:pad #\!) "!x")
+  (expect "imported mixed defaulted" (int->string (combined 1)) "15")
+  (expect "imported mixed supplied" (int->string (combined 1 #:a 2)) "5")
+
+  0)

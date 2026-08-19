@@ -1,0 +1,28 @@
+;; A keyword function with a non-constant default, exported.
+;;
+;; Such a function is emitted twice — the general entry taking `Option`s, and a
+;; keyword-free twin binding the defaults outright. Which one a call reaches is
+;; decided by C# overload resolution, from the call alone, so an importer needs
+;; to know nothing about it: no metadata carries the choice and the call site is
+;; written exactly as it was.
+(import (std prelude))
+
+(export bumped counted paired)
+
+;; The default reads a mandatory parameter, so it cannot be a constant and the
+;; function gets a twin.
+(: bumped (-> int (#:by int) int))
+(defun (bumped n #:by (+ n 1))
+  (+ n by))
+
+;; A twin beside a rest parameter: the array is declared under the same name in
+;; both entries, so the keyword-free call still reaches the twin.
+(: counted (-> int (#:start int) #:rest int int))
+(defun (counted n #:start (* n 10) #:rest xs)
+  (+ start (array-length xs)))
+
+;; One constant default and one that reads it. The twin binds both, in
+;; declaration order.
+(: paired (-> int (#:a int) (#:b int) int))
+(defun (paired n #:a 7 #:b (+ a n))
+  (+ a b))

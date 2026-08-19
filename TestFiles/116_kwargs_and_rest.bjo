@@ -1,0 +1,110 @@
+;; Keyword parameters beside a rest parameter.
+;;
+;; These two used not to compile together. A rest parameter is emitted last —
+;; C# puts `params` there and gives no choice about it — so the keyword
+;; parameters come before it, and a call that omitted one left the array in a
+;; position that was no longer the array's:
+;;
+;;   int tally(Option<int> __kw_start = default, params int[] xs)
+;;   tally(new int[]{ 1, 2, 3 })     // binds the array to __kw_start. CS1503.
+;;
+;; The old emitter passed keyword arguments *positionally* whenever there was a
+;; rest parameter, on the grounds that C# forbids mixing named arguments with a
+;; `params` expansion. It does — but nothing here expands: `Inference` gathers
+;; rest arguments into one array of its own, so every such call is already in
+;; normal form, and normal form takes named arguments like any other call. The
+;; array is now named too, so an omitted keyword is simply absent:
+;;
+;;   int tally(int __kw_start = 100, params int[] __rest)
+;;   tally(__rest: new int[]{ 1, 2, 3 })
+;;
+;; Passing them positionally was also wrong in a way that did not announce
+;; itself: it emitted them in the order the *call* wrote them rather than the
+;; order they were declared, so two keywords of the same type given out of order
+;; went to each other's parameters and the program quietly computed the wrong
+;; answer. That is what "out of order" below is for.
+(import (std prelude))
+(import "inc/kwrest.bjo")
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; One keyword, one rest, and a constant default — a rest parameter does not
+;; cost the callee the optimization: `int __kw_start = 100, params int[] __rest`.
+(: counted (-> (#:start int) #:rest int int))
+(defun (counted #:start 100 #:rest xs)
+  (+ start (array-length xs)))
+
+;; Two keywords of the *same* type, which is what makes a swapped pair visible.
+(: ranged (-> (#:lo int) (#:hi int) #:rest int int))
+(defun (ranged #:lo 1 #:hi 2 #:rest xs)
+  (+ (* lo 100) (+ (* hi 10) (array-length xs))))
+
+;; A default that has to be evaluated in the callee, beside a rest parameter:
+;; the `Option` lowering and the rest parameter together.
+(: shifted (-> int (#:by int) #:rest int int))
+(defun (shifted n #:by (+ n 1) #:rest xs)
+  (+ by (array-length xs)))
+
+;; A mandatory parameter ahead of the keywords, so the array is neither the
+;; first argument nor the second.
+(: labelled (-> string (#:sep string) #:rest int string))
+(defun (labelled label #:sep "-" #:rest xs)
+  (string-append label (string-append sep (int->string (array-length xs)))))
+
+(defun (main)
+  ;; --- the call that used not to compile ------------------------------------
+  (expect "keyword omitted" (int->string (counted 1 2 3)) "103")
+  (expect "keyword omitted, no rest arguments" (int->string (counted)) "100")
+  (expect "keyword supplied" (int->string (counted #:start 5 1 2 3)) "8")
+  (expect "keyword supplied, no rest arguments" (int->string (counted #:start 5)) "5")
+
+  ;; --- a hole in the middle of the keywords ---------------------------------
+  (expect "both omitted" (int->string (ranged 1 2 3)) "123")
+  (expect "first supplied" (int->string (ranged #:lo 5 1 2 3)) "523")
+  (expect "second supplied" (int->string (ranged #:hi 5 1 2 3)) "153")
+  (expect "both supplied" (int->string (ranged #:lo 5 #:hi 6 1 2 3)) "563")
+
+  ;; Same types, written the other way round. Passed positionally these two
+  ;; swapped places and the answer came out 653.
+  (expect "out of order" (int->string (ranged #:hi 6 #:lo 5 1 2 3)) "563")
+
+  ;; --- a default that is still evaluated in the callee ----------------------
+  (expect "computed default omitted" (int->string (shifted 5 1 2)) "8")
+  (expect "computed default supplied" (int->string (shifted 5 #:by 100 1 2)) "102")
+
+  ;; --- a mandatory argument ahead of them -----------------------------------
+  (expect "mandatory, keyword omitted" (labelled "a" 1 2 3) "a-3")
+  (expect "mandatory, keyword supplied" (labelled "a" #:sep "=" 1 2 3) "a=3")
+
+  ;; --- a rest parameter on its own is unchanged -----------------------------
+  ;;
+  ;; No keyword parameters means nothing can be left out, so the array keeps the
+  ;; name its source wrote and is passed positionally as it always was.
+  (defun (plain n #:rest xs)
+    (+ n (array-length xs)))
+
+  (expect "rest alone" (int->string (plain 1 2 3 4)) "4")
+  (expect "rest alone, empty" (int->string (plain 1)) "1")
+
+  ;; --- a local function gets the same treatment -----------------------------
+  (defun (local-counted #:start 7 #:rest xs)
+    (+ start (array-length xs)))
+
+  (expect "local, keyword omitted" (int->string (local-counted 1 2)) "9")
+  (expect "local, keyword supplied" (int->string (local-counted #:start 1 2 3)) "3")
+
+  ;; --- across a `.dll` -------------------------------------------------------
+  (expect "imported, keyword omitted" (int->string (tally 1 2 3)) "103")
+  (expect "imported, keyword supplied" (int->string (tally #:start 5 1 2 3)) "8")
+  (expect "imported, no rest arguments" (int->string (tally)) "100")
+  (expect "imported, both omitted" (gather "a" 1 2 3) "a-3")
+  (expect "imported, hole in the middle" (gather "a" #:cap 10 1 2 3) "a-13")
+  (expect "imported, out of order" (gather "a" #:cap 10 #:sep "=" 1 2) "a=12")
+
+  0)
