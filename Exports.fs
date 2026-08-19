@@ -51,6 +51,22 @@ let metadata
             | TypedAST.TTypeRec(defs, _) -> defs |> List.map (fun d -> d, true)
             | _ -> [])
     
+    /// The implementations written *in this module*, keyed as the registry keys
+    /// them.
+    ///
+    /// The registry holds every impl in scope, imported ones included, so it
+    /// cannot answer "which are mine" on its own — and republishing an imported
+    /// impl would have every module in a chain claim the same one.
+    let ownImplKeys =
+        ownModuleDecls
+        |> TypedAST.collectDecls (function
+            | TypedAST.TImpl(traitName, _, _, targetType, _, _, _, _) ->
+                match targetType with
+                | TypedAST.TCon(name, _) -> [ traitName, name ]
+                | _ -> []
+            | _ -> [])
+        |> Set.ofList
+
     // A trait travels with its methods. Whichever module publishes a
     // trait method has to publish the trait itself and every
     // implementation of it, or the importer sees a plain function whose
@@ -184,6 +200,36 @@ let metadata
         exports
         |> List.filter (fun n -> Map.containsKey n env.Registry.ClrExterns)
         |> Set.ofList
+
+    /// An exported `import/class` alias, as the type declaration it is.
+    ///
+    /// The alias is a *type* and nothing else — there is no binding to read a
+    /// signature off — so it travels as a `(type ...)` alias pointing straight
+    /// at the .NET name. Pointing it at the alias instead would export a name
+    /// the importing module cannot resolve, which is the same reason
+    /// `std/prelude` publishes `TextInputPort` as `System.IO.TextReader`.
+    ///
+    /// A generic import keeps its parameters, so `(Set %a)` arrives as a type
+    /// constructor of arity one rather than as a type.
+    let exportedClassAliases =
+        exports
+        |> List.filter (fun n -> Map.containsKey n env.Registry.ClrClasses)
+        |> Set.ofList
+
+    let classTypeDecls =
+        ownModuleDecls
+        |> TypedAST.collectDecls (function
+            | TypedAST.TImportClass(infos, _) -> infos
+            | _ -> [])
+        |> List.distinctBy (fun info -> info.Alias)
+        |> List.map (fun info ->
+            let quotedArgs = info.TypeParams |> List.map (fun p -> "'" + p.TrimStart('\''))
+
+            if quotedArgs.IsEmpty then
+                $"(type (: %s{info.Alias} %s{info.ClrName}))"
+            else
+                let args = String.concat " " quotedArgs
+                $"(type (: (%s{info.Alias} %s{args}) (%s{info.ClrName} %s{args})))")
 
     if isLibrary && not externsNamedByBodies.IsEmpty then
         printfn
@@ -471,12 +517,18 @@ let metadata
                     // no binding to read a type off, so describing it here
                     // would export nothing under a name that claims
                     // otherwise.
-                    && not (Set.contains name exportedExternAliases))
+                    && not (Set.contains name exportedExternAliases)
+                    // Nor is a class alias: it names a type, and a type has no
+                    // binding to describe.
+                    && not (Set.contains name exportedClassAliases))
                 |> List.distinct
                 |> List.choose exportedDef
 
             let externDecls = externsToExport |> List.map serializeExtern
-            let typeDecls = typesToExport |> List.map serializeTypeDef
+
+            // The class aliases first: an extern's declared signature may
+            // mention one, and a declaration is read in the order it is written.
+            let typeDecls = classTypeDecls @ (typesToExport |> List.map serializeTypeDef)
 
             let traitDecls =
                 exportedTraits
@@ -485,10 +537,22 @@ let metadata
 
             // Implementations follow the traits they belong to: reading
             // one back needs the trait already registered.
+            //
+            // Two kinds are published. One is an impl of a trait this
+            // module declares, which travels with it. The other is an
+            // impl *this module wrote* for a trait it imported —
+            // `(std set)` implementing `Collection` for a `Set` — which
+            // has no other way to reach an importer, and without which a
+            // library can define a type and a trait's meaning for it and
+            // then not be able to say so. The orphan rule is what keeps
+            // the second from being a hazard: only the module owning the
+            // trait or the type may write one, so there is no second
+            // claimant for the importer to have to choose between.
             let implDecls =
                 env.Registry.Implementations
                 |> Map.toList
-                |> List.filter (fun ((traitName, _), _) -> Map.containsKey traitName exportedTraits)
+                |> List.filter (fun (key, _) ->
+                    Map.containsKey (fst key) exportedTraits || Set.contains key ownImplKeys)
                 |> List.map (fun ((traitName, typeKey), (targetType, assocMap)) ->
                     serializeImpl traitName typeKey targetType assocMap)
 

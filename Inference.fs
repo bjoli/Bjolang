@@ -1002,12 +1002,48 @@ let private metadataOf (resolved: DotNetInterop.ResolvedCall) (exceptions: strin
       MethodName = resolved.Name
       ParameterTypes = resolved.ParameterTypes
       ReturnType = resolved.ReturnType
+      // Overload resolution by argument type only ever selects a *constructed*
+      // method, so there is nothing to write between angle brackets. A generic
+      // import fills this in from its declared signature instead — see
+      // `instantiateGenericExtern`.
+      TypeArguments = []
       IsStatic = resolved.IsStatic
       Exceptions = exceptions
       // Ordinary calls, which are all of them but an `#:async` import's. The
       // async path builds on this and overrides both.
       Await = false
       AmbientToken = false }
+
+/// One use of a generic extern alias: its parameter types, its return type and
+/// its .NET type arguments, all instantiated at fresh metavariables.
+///
+/// *All* — that is the point of packing them into one type before instantiating.
+/// The type arguments were solved at the import in terms of the signature's own
+/// variables, so instantiating the two apart would hand the call one set of
+/// metavariables for the arguments to settle and a different set to write
+/// between the angle brackets. Packed, `%a` is one variable, the argument that
+/// pins it pins the bracket too, and there is nothing left for C# to infer.
+///
+/// The receiver is included in the parameters, exactly as the signature writes
+/// it: an instance member's alias is a function of its receiver.
+let private instantiateGenericExtern (registry: TraitRegistry) (where: string) (info: ClrExternInfo) =
+    let declared =
+        match info.DeclaredType with
+        | Some t -> t
+        | None ->
+            failwithf
+                $"Type Error at %s{where}: '%s{info.Alias}' names the generic method '%s{info.ClrType}.%s{info.MemberName}' and has no declared signature. A generic method's type arguments come from the signature, so it is the one kind of import that cannot do without one."
+
+    let typeArgs = Option.defaultValue [] info.GenericTypeArgs
+    let packed = TTuple(declared :: typeArgs)
+    let vars = freeTVars registry packed |> List.distinct
+    let instantiated, _, _ = instantiate registry (Scheme(vars, [], packed))
+
+    match instantiated with
+    | TTuple(TFun(paramTypes, retType, _) :: instantiatedArgs) -> paramTypes, retType, instantiatedArgs
+    | _ ->
+        failwithf
+            $"Type Error at %s{where}: the declared signature of '%s{info.Alias}' is not a function type, so it cannot name a method."
 
 /// What an `#:async` import's call resolves to.
 ///
@@ -1456,6 +1492,55 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
                 failwithf
                     $"Type Error at %s{where}: '%s{name}' names the async .NET method '%s{info.ClrType}.%s{info.MemberName}', and calling it is a yield point, so it cannot be used as a value — the (fun ...) it would become may not suspend. Call it directly, or wrap the call in a bjoroutine of your own and pass that."
 
+            match info.GenericTypeArgs with
+            // A generic method as a value. The eta-expansion is built from the
+            // declared signature rather than from reflection, which is where a
+            // generic import's meaning lives anyway — and the lambda is at *one*
+            // instantiation, whatever the context settles it to, because a C#
+            // delegate cannot be generic.
+            | Some _ ->
+                let paramTypes, retType, typeArgs = instantiateGenericExtern env.Registry where info
+
+                let methodParams =
+                    if info.IsInstance then List.tail paramTypes else paramTypes
+
+                let argNames = paramTypes |> List.map (fun _ -> Gensym.fresh "__foreign")
+                let argExprs: TypedExpr list = List.map2 identOf argNames paramTypes
+
+                let meta =
+                    Some
+                        { DeclaringType = info.ClrType
+                          MethodName = info.MemberName
+                          ParameterTypes = methodParams
+                          ReturnType = retType
+                          TypeArguments = typeArgs
+                          IsStatic = not info.IsInstance
+                          Exceptions = info.Exceptions
+                          Await = false
+                          AmbientToken = false }
+
+                let node =
+                    if info.IsInstance then
+                        TDotMethodCall(List.head argExprs, info.MemberName, List.tail argExprs, meta)
+                    else
+                        TForeignStaticCall(info.ClrType, info.MemberName, argExprs, meta)
+
+                let resultType = wrapForeignExceptions info.Exceptions retType
+
+                let body: TypedExpr =
+                    { Type = resultType
+                      Range = r
+                      Node = node }
+
+                let funType = tfun paramTypes resultType
+
+                funType,
+                { Type = funType
+                  Range = r
+                  Node = TLambda(argNames, body) }
+
+            | None ->
+
             match info.DeclaredType with
             | Some(TFun(declaredParams, _, _)) ->
                 // The receiver of an instance member is the alias's first
@@ -1851,6 +1936,62 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
             { Type = TypeConstants.voidType
               Range = r
               Node = node }
+
+        // A generic method, applied. There is no overload to choose from the
+        // arguments here: the import already chose one, against the declared
+        // signature, and solved its type arguments. So this is an ordinary
+        // polymorphic call — instantiate, unify, done — and the only thing that
+        // makes it foreign is where the body ends up.
+        | ExternMethod when info.GenericTypeArgs.IsSome ->
+            let paramTypes, retType, typeArgs = instantiateGenericExtern env.Registry where info
+
+            if args.Length <> paramTypes.Length then
+                let what =
+                    if info.IsInstance then
+                        $"the object to use it on and %d{paramTypes.Length - 1} argument(s)"
+                    else
+                        $"%d{paramTypes.Length} argument(s)"
+
+                failwithf
+                    $"Type Error at %s{where}: '%s{name}' takes %s{what}, but was given %d{args.Length}."
+
+            let typedArgs = args |> List.map (infer env)
+
+            // Unified rather than scored. A declared signature is not a
+            // candidate to be ranked against others — it is what the alias
+            // *means* — so an argument that does not fit is a type error naming
+            // the two types, exactly as it would be for a Bjolang function.
+            List.iter2 (fun (argType, _) paramType -> unify env.Registry argType paramType) typedArgs paramTypes
+
+            let callArgs = typedArgs |> List.map snd
+
+            let receiver, methodArgs, methodParams =
+                if info.IsInstance then
+                    Some(List.head callArgs), List.tail callArgs, List.tail paramTypes
+                else
+                    None, callArgs, paramTypes
+
+            let resultType = wrapForeignExceptions info.Exceptions retType
+
+            let meta =
+                Some
+                    { DeclaringType = info.ClrType
+                      MethodName = info.MemberName
+                      ParameterTypes = methodParams
+                      ReturnType = retType
+                      TypeArguments = typeArgs
+                      IsStatic = not info.IsInstance
+                      Exceptions = info.Exceptions
+                      Await = false
+                      AmbientToken = false }
+
+            resultType,
+            { Type = resultType
+              Range = r
+              Node =
+                match receiver with
+                | Some recv -> TDotMethodCall(recv, info.MemberName, methodArgs, meta)
+                | None -> TForeignStaticCall(info.ClrType, info.MemberName, methodArgs, meta) }
 
         | ExternMethod ->
             let allTypedArgs = args |> List.map (infer env)
@@ -3658,16 +3799,71 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
             specs
             |> List.map (fun spec ->
                 let where = Lexer.formatPos spec.Range
-                let clrType = DotNetInterop.resolveType $" at %s{where}" spec.ClrClass
+                // A generic type is spelled with its arity — `Set.Set`1` — but
+                // written in source without one, because the alias says how many
+                // arguments it takes. Both spellings are tried so that a clause
+                // reads the way C# does.
+                /// The generic definition of this name at *some* arity.
+                ///
+                /// Asked when the bare name does not resolve, so that a generic
+                /// type written without its parameters is reported as the type
+                /// constructor it is rather than as a name that does not exist.
+                /// Eight is past every arity in the BCL that anyone imports.
+                let genericAtAnyArity () =
+                    [ 1..8 ]
+                    |> List.tryPick (fun n -> DotNetInterop.tryResolveType $"%s{spec.ClrClass}`%d{n}")
 
-                if clrType.IsGenericTypeDefinition then
+                let clrType =
+                    if spec.TypeParams.IsEmpty then
+                        match DotNetInterop.tryResolveType spec.ClrClass with
+                        | Some t -> t
+                        | None ->
+                            match genericAtAnyArity () with
+                            | Some t -> t
+                            | None -> DotNetInterop.resolveType $" at %s{where}" spec.ClrClass
+                    else
+                        let arityName = $"%s{spec.ClrClass}`%d{spec.TypeParams.Length}"
+
+                        match DotNetInterop.tryResolveType arityName with
+                        | Some t -> t
+                        | None ->
+                            match genericAtAnyArity () with
+                            | Some t -> t
+                            | None -> DotNetInterop.resolveType $" at %s{where}" spec.ClrClass
+
+                // The two halves of the same claim: a generic type has to be
+                // imported applied, and an ordinary one cannot be.
+                if clrType.IsGenericTypeDefinition && spec.TypeParams.IsEmpty then
+                    let arity = clrType.GetGenericArguments().Length
+                    let written = List.init arity (fun i -> "%" + string (char (int 'a' + i))) |> String.concat " "
+
                     failwithf
-                        $"Type Error at %s{where}: '%s{spec.ClrClass}' is a generic type. Interop is resolved entirely at compile time and does not infer .NET type arguments, so a generic type cannot be imported."
+                        $"Type Error at %s{where}: '%s{spec.ClrClass}' is a generic type taking %d{arity} argument(s), so it is a type constructor rather than a type. Import it applied to its parameters: ((%s{spec.Alias} %s{written}) (: %s{spec.ClrClass}))."
+
+                if not clrType.IsGenericTypeDefinition && not spec.TypeParams.IsEmpty then
+                    failwithf
+                        $"Type Error at %s{where}: '%s{spec.ClrClass}' is not a generic type, so '%s{spec.Alias}' takes no type parameters. Write the alias bare."
+
+                if clrType.IsGenericTypeDefinition
+                   && clrType.GetGenericArguments().Length <> spec.TypeParams.Length then
+                    let arity = clrType.GetGenericArguments().Length
+
+                    failwithf
+                        $"Type Error at %s{where}: '%s{spec.ClrClass}' takes %d{arity} type argument(s), but '%s{spec.Alias}' was declared with %d{spec.TypeParams.Length}."
+
+                if clrType.IsGenericTypeDefinition && not spec.Exceptions.IsEmpty then
+                    failwithf
+                        $"Type Error at %s{where}: #:exceptions describes the constructor, and a generic class is imported as a type only. Reach its constructor through a static factory imported with import/extern."
 
                 checkExceptionTypes where spec.Exceptions
 
                 { Alias = spec.Alias
-                  ClrName = clrType.FullName
+                  TypeParams = spec.TypeParams
+                  // Without the arity mark, which is what a Bjolang type
+                  // constructor carries in the number of arguments it is applied
+                  // to — and what the code generator emits before its angle
+                  // brackets.
+                  ClrName = DotNetInterop.clrTypeName clrType
                   CtorType = None
                   CtorExceptions = spec.Exceptions })
 
@@ -3678,10 +3874,24 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
             baseInfos
             |> List.fold
                 (fun (reg: TraitRegistry) info ->
+                    // A generic import becomes a type *alias with parameters*,
+                    // which the annotation resolver already knows how to expand:
+                    // `(Set int)` substitutes into `Set.Set<int>` the same way a
+                    // hand-written `(type (: (Pair %a) ...))` does. The bare
+                    // alias of an ordinary class is the arity-zero case of the
+                    // same thing.
+                    let aliasTarget =
+                        TCon(info.ClrName, info.TypeParams |> List.map (fun p -> TVar("'" + p)))
+
                     { reg with
                         ClrClasses = Map.add info.Alias info reg.ClrClasses
-                        Aliases = Map.add info.Alias ([], TCon(info.ClrName, [])) reg.Aliases
-                        LocalTypes = Set.add info.Alias reg.LocalTypes })
+                        Aliases = Map.add info.Alias (info.TypeParams, aliasTarget) reg.Aliases
+                        // Both spellings are this module's: the alias, and the
+                        // .NET name it expands to. The second is what an impl's
+                        // target resolves to, and without it the orphan rule
+                        // would refuse a module the right to implement a trait
+                        // for a type it went to the trouble of importing.
+                        LocalTypes = reg.LocalTypes |> Set.add info.Alias |> Set.add info.ClrName })
                 env.Registry
 
         let infos =
@@ -3816,12 +4026,74 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                         failwithf
                             $"Type Error at %s{where}: '%s{clrType.FullName}.%s{memberName}' is imported #:cancellable, but no overload of it takes a System.Threading.CancellationToken. There is nothing to thread."
 
+                let declaredType =
+                    spec.ExplicitType |> Option.map (resolveTypeAnnotation env.Registry)
+
+                // A member whose overloads are *all* generic definitions is
+                // resolved here, once, against the signature — and a member with
+                // even one ordinary overload keeps being resolved per call site
+                // from its argument types, exactly as before. Which of the two a
+                // name gets is a property of the .NET method group rather than
+                // of anything written in the clause.
+                let genericTypeArgs, declaredType =
+                    if kind <> ExternMethod
+                       || not (DotNetInterop.isGenericOnlyMethod (not isInstance) clrType memberName) then
+                        None, declaredType
+                    else
+                        if spec.IsAsync || spec.Cancellable then
+                            failwithf
+                                $"Type Error at %s{where}: '%s{clrType.FullName}.%s{memberName}' is generic, and #:async and #:cancellable are not supported for a generic method yet. Its type arguments are solved from the declared signature, which has no room to say what a threaded token or an unwrapped task does to them."
+
+                        match declaredType with
+                        | Some(TFun(declaredParams, declaredReturn, _)) ->
+                            // The receiver is the alias's first parameter and
+                            // none of the method's, so it comes off before
+                            // reflection sees the signature.
+                            let methodParams =
+                                if not isInstance then
+                                    declaredParams
+                                else
+                                    match declaredParams with
+                                    | _ :: rest -> rest
+                                    | [] ->
+                                        failwithf
+                                            $"Type Error at %s{where}: '%s{spec.Alias}' names the instance method '%s{clrType.FullName}.%s{memberName}', whose receiver is its first argument, but its declared type takes none."
+
+                            let resolved =
+                                DotNetInterop.resolveGenericMethod
+                                    where
+                                    (not isInstance)
+                                    clrType
+                                    memberName
+                                    methodParams
+                                    declaredReturn
+
+                            // A method that answers nothing keeps the *interop*
+                            // void as its type, not the unit the signature spells
+                            // it with. The two are the same thing to a reader and
+                            // not to the emitter: a void call is a statement, and
+                            // a unit is a value C# would have to produce.
+                            let normalized =
+                                if resolved.ReturnType = declaredReturn then
+                                    declaredType
+                                else
+                                    Some(TFun(declaredParams, resolved.ReturnType, ESync))
+
+                            Some resolved.TypeArguments, normalized
+                        | Some _ ->
+                            failwithf
+                                $"Type Error at %s{where}: '%s{spec.Alias}' names a method, so its declared type has to be a function type."
+                        | None ->
+                            failwithf
+                                $"Type Error at %s{where}: '%s{clrType.FullName}.%s{memberName}' is generic, so this import needs a declared signature — that is where its type arguments come from. Write one, as in (: %s{spec.ClrTarget} (-> (Set %%a) %%a (Set %%a)))."
+
                 { Alias = spec.Alias
                   ClrType = clrType.FullName
                   MemberName = memberName
                   Kind = kind
                   IsInstance = isInstance
-                  DeclaredType = spec.ExplicitType |> Option.map (resolveTypeAnnotation env.Registry)
+                  DeclaredType = declaredType
+                  GenericTypeArgs = genericTypeArgs
                   Exceptions = spec.Exceptions
                   IsAsync = spec.IsAsync
                   Uncancellable = spec.Uncancellable

@@ -905,6 +905,21 @@ and containsHoist (expr: TypedExpr) : bool =
 /// emission paths both need it and must agree.
 let private ambientTokenArgument = "BjolangRuntime.AmbientCancellation()"
 
+/// The `<...>` a generic foreign call is written with, or nothing.
+///
+/// Always written out when there is one, never left to C#'s own inference. The
+/// call was *typed* against this instantiation during inference, and generated
+/// code naming a method resolves it a second time — so spelling the arguments
+/// is what keeps the second answer equal to the first, which is the same reason
+/// a widened argument is emitted with its cast. It is also the only thing that
+/// can make a call C# could not infer at all compile: a nullary `Empty<T>()`
+/// takes its argument from the context, and the context is Bjolang's.
+let private foreignTypeArguments (meta: DotNetMethodMetadata option) =
+    match meta with
+    | Some m when not m.TypeArguments.IsEmpty ->
+        "<" + (m.TypeArguments |> List.map typeToString |> String.concat ", ") + ">"
+    | _ -> ""
+
 /// Does evaluating this expression *in the member it is written in* reach an
 /// `await`?
 ///
@@ -1264,7 +1279,8 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     //
     // Every one of these names a member the type checker already resolved
     // against .NET metadata. Nothing here chooses an overload, and nothing is
-    // left for the C# compiler to work out.
+    // left for the C# compiler to work out — including, for a generic method,
+    // the type arguments: `foreignTypeArguments` writes them out.
 
     // `(.Method x ...)`, and an `import/extern` clause naming an instance
     // method — which is the same node, and the reason this path carries the
@@ -1275,6 +1291,8 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     | TDotMethodCall (target, methodName, args, meta) ->
         let exceptions =
             meta |> Option.map (fun m -> m.Exceptions) |> Option.defaultValue []
+
+        let methodName = methodName + foreignTypeArguments meta
 
         let awaits = meta |> Option.map (fun m -> m.Await) |> Option.defaultValue false
         let ambient = meta |> Option.map (fun m -> m.AmbientToken) |> Option.defaultValue false
@@ -1344,6 +1362,8 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     | TForeignStaticCall (clrType, methodName, args, meta) ->
         let exceptions =
             meta |> Option.map (fun m -> m.Exceptions) |> Option.defaultValue []
+
+        let methodName = methodName + foreignTypeArguments meta
 
         // An `#:async` import. Two things are added and neither is optional —
         // see §7.2.

@@ -1,0 +1,298 @@
+;; std/orderedmap.bjo — the sorted map.
+;;
+;; An `(OrderedMap %k %v)` is a persistent B-tree keyed in the keys' natural
+;; order. Against the prelude's `(Map %k %v)`, which is a hash trie, what it buys
+;; is the order: a walk arrives sorted by key, and a program may ask for the
+;; smallest entry, the one after a given key, or every entry between two. The
+;; price is the comparison — a lookup is O(log n) rather than effectively
+;; constant, and the key type has to be comparable at run time.
+;;
+;; The vocabulary is the prelude's `map-*`, spelled `orderedmap-*`, so a program
+;; that outgrows one can change the constructor and the prefix and stop. An entry
+;; is a `(Tuple %k %v)` here as it is there, which is what makes a map iterable,
+;; foldable and collectable like any other collection.
+;;
+;; Three interfaces again: the map, a builder shaped like `ListBuilder`, and a
+;; transient that is the map's own interface with the writes turned inside out.
+;;
+;; **Ordering is `Comparer<TK>.Default`.** A key type with no natural order fails
+;; at the first comparison rather than when the map is made.
+
+(export
+  ;; Maps
+  orderedmap-empty orderedmap-ref orderedmap-ref-or orderedmap-try-ref
+  orderedmap-set orderedmap-set-all orderedmap-remove orderedmap-remove-all
+  orderedmap-contains? orderedmap-has-key? orderedmap-length orderedmap-empty?
+  orderedmap-clear orderedmap-keys orderedmap-values
+  orderedmap-merge orderedmap-merge-with
+  ;; Order — what the tree is for
+  orderedmap-min orderedmap-max orderedmap-successor orderedmap-predecessor
+  orderedmap-range orderedmap-from orderedmap-until
+  ;; Walking and rebuilding
+  orderedmap-map orderedmap-map-values orderedmap-filter orderedmap-fold
+  orderedmap-for-each orderedmap-iter orderedmap-any? orderedmap-find
+  ;; Conversions
+  list->orderedmap orderedmap->list vec->orderedmap orderedmap->vec
+  seq->orderedmap orderedmap->seq map->orderedmap orderedmap->map
+  orderedmap->str
+  ;; Builders — the same shape as ListBuilder
+  orderedmapbuilder-empty orderedmap->orderedmapbuilder orderedmapbuilder-add!
+  orderedmapbuilder-add-all! orderedmapbuilder-length
+  orderedmapbuilder->orderedmap
+  ;; Transients — the map's interface, in place
+  transientorderedmap-empty orderedmap->transientorderedmap
+  transientorderedmap->orderedmap transientorderedmap-set!
+  transientorderedmap-set-all! transientorderedmap-remove!
+  transientorderedmap-remove-all! transientorderedmap-contains?
+  transientorderedmap-ref transientorderedmap-ref-or transientorderedmap-try-ref
+  transientorderedmap-length transientorderedmap-empty?
+  transientorderedmap-filter! transientorderedmap->seq)
+
+(import (std prelude))
+
+(import/class
+  ((OrderedMap %k %v) (: OrderedMap.OrderedMap))
+  ((OrderedMapBuilder %k %v) (: OrderedMap.OrderedMapBuilder))
+  ((TransientOrderedMap %k %v) (: OrderedMap.TransientOrderedMap))
+  ((OrderedMapCursor %k %v) (: OrderedMap.OrderedMapCursor)))
+
+;; ---------------------------------------------------------------------------
+;; The map
+;; ---------------------------------------------------------------------------
+
+(import/extern
+  (orderedmap-empty      (: OrderedMap.OrderedMapModule.Empty       (-> (OrderedMap %k %v))))
+  ;; Throws for a key that is not there. `orderedmap-try-ref` is the total one,
+  ;; and `orderedmap-ref-or` the one with a default.
+  (orderedmap-ref        (: OrderedMap.OrderedMapModule.Ref         (-> (OrderedMap %k %v) %k %v)))
+  (orderedmap-ref-or     (: OrderedMap.OrderedMapModule.RefOr       (-> (OrderedMap %k %v) %k %v %v)))
+  (orderedmap-set        (: OrderedMap.OrderedMapModule.Set         (-> (OrderedMap %k %v) %k %v (OrderedMap %k %v))))
+  ;; Through a transient, so the tree is copied once rather than once per entry.
+  (orderedmap-set-all    (: OrderedMap.OrderedMapModule.SetRange    (-> (OrderedMap %k %v) (Seq (Tuple %k %v)) (OrderedMap %k %v))))
+  (orderedmap-remove     (: OrderedMap.OrderedMapModule.Remove      (-> (OrderedMap %k %v) %k (OrderedMap %k %v))))
+  (orderedmap-remove-all (: OrderedMap.OrderedMapModule.RemoveRange (-> (OrderedMap %k %v) (Seq %k) (OrderedMap %k %v))))
+  (orderedmap-contains?  (: OrderedMap.OrderedMapModule.ContainsKey (-> (OrderedMap %k %v) %k bool)))
+  (orderedmap-length     (: OrderedMap.OrderedMapModule.Count       (-> (OrderedMap %k %v) int)))
+  (orderedmap-empty?     (: OrderedMap.OrderedMapModule.IsEmpty     (-> (OrderedMap %k %v) bool)))
+  (orderedmap-clear      (: OrderedMap.OrderedMapModule.Clear       (-> (OrderedMap %k %v) (OrderedMap %k %v))))
+  (orderedmap-keys       (: OrderedMap.OrderedMapModule.Keys        (-> (OrderedMap %k %v) (Seq %k))))
+  (orderedmap-values     (: OrderedMap.OrderedMapModule.Values      (-> (OrderedMap %k %v) (Seq %v))))
+  ;; The right-hand map wins where both have a key.
+  (orderedmap-merge      (: OrderedMap.OrderedMapModule.Merge       (-> (OrderedMap %k %v) (OrderedMap %k %v) (OrderedMap %k %v))))
+  ;; The same, with the collisions decided by a function of the key and the two
+  ;; values — which is one argument, a triple, for the reason every callback here
+  ;; takes the entry whole.
+  (orderedmap-merge-with (: OrderedMap.OrderedMapModule.MergeWith   (-> (-> (Tuple %k %v %v) %v) (OrderedMap %k %v) (OrderedMap %k %v) (OrderedMap %k %v))))
+
+  (orderedmap-try-ref/pair (: OrderedMap.OrderedMapModule.TryGetValue (-> (OrderedMap %k %v) %k (Tuple bool %v))))
+
+  ;; --- Order ---
+  (orderedmap-try-min         (: OrderedMap.OrderedMapModule.TryGetMin         (-> (OrderedMap %k %v) (Tuple bool %k %v))))
+  (orderedmap-try-max         (: OrderedMap.OrderedMapModule.TryGetMax         (-> (OrderedMap %k %v) (Tuple bool %k %v))))
+  (orderedmap-try-successor   (: OrderedMap.OrderedMapModule.TryGetSuccessor   (-> (OrderedMap %k %v) %k (Tuple bool %k %v))))
+  (orderedmap-try-predecessor (: OrderedMap.OrderedMapModule.TryGetPredecessor (-> (OrderedMap %k %v) %k (Tuple bool %k %v))))
+
+  ;; Lazy: the tree is descended to the lower bound once and then walked, so a
+  ;; slice of a big map costs its own size rather than the map's.
+  (orderedmap-range (: OrderedMap.OrderedMapModule.Range (-> (OrderedMap %k %v) %k %k (Seq (Tuple %k %v)))))
+  (orderedmap-from  (: OrderedMap.OrderedMapModule.From  (-> (OrderedMap %k %v) %k (Seq (Tuple %k %v)))))
+  (orderedmap-until (: OrderedMap.OrderedMapModule.Until (-> (OrderedMap %k %v) %k (Seq (Tuple %k %v)))))
+
+  ;; --- Walking ---
+  ;;
+  ;; Every callback takes the *entry*, as one argument. A map's element is its
+  ;; `(Tuple %k %v)` — `Iterable`'s `%elem` and `Foldable`'s `%item` say so — and
+  ;; a trait signature mentioning one element takes a one-argument callback, so a
+  ;; two-argument function over a key and a value could not go where one is
+  ;; expected.
+  (orderedmap-map        (: OrderedMap.OrderedMapModule.Map       (-> (-> (Tuple %k %v) %w) (OrderedMap %k %v) (OrderedMap %k %w))))
+  ;; The functor's map: the value moves and the key rides along.
+  (orderedmap-map-values (: OrderedMap.OrderedMapModule.MapValues (-> (-> %v %w) (OrderedMap %k %v) (OrderedMap %k %w))))
+  (orderedmap-filter     (: OrderedMap.OrderedMapModule.Filter    (-> (-> (Tuple %k %v) bool) (OrderedMap %k %v) (OrderedMap %k %v))))
+  (orderedmap-fold       (: OrderedMap.OrderedMapModule.Fold      (-> (-> %s (Tuple %k %v) %s) %s (OrderedMap %k %v) %s)))
+  (orderedmap-iter       (: OrderedMap.OrderedMapModule.Iter      (-> (-> (Tuple %k %v) bool) (OrderedMap %k %v) bool)))
+  (orderedmap-any?       (: OrderedMap.OrderedMapModule.Exists    (-> (-> (Tuple %k %v) bool) (OrderedMap %k %v) bool)))
+  (orderedmap-try-find   (: OrderedMap.OrderedMapModule.TryFind   (-> (-> (Tuple %k %v) bool) (OrderedMap %k %v) (Tuple bool %k %v))))
+
+  (seq->orderedmap (: OrderedMap.OrderedMapModule.FromEnumerable (-> (Seq (Tuple %k %v)) (OrderedMap %k %v))))
+  (orderedmap->seq (: OrderedMap.OrderedMapModule.AsEnumerable   (-> (OrderedMap %k %v) (Seq (Tuple %k %v)))))
+
+  (orderedmap-cursor         (: OrderedMap.OrderedMapModule.Cursor        (-> (OrderedMap %k %v) (OrderedMapCursor %k %v))))
+  (orderedmap-cursor-done?   (: OrderedMap.OrderedMapModule.CursorDone    (-> (OrderedMapCursor %k %v) bool)))
+  (orderedmap-cursor-current (: OrderedMap.OrderedMapModule.CursorCurrent (-> (OrderedMapCursor %k %v) (Tuple %k %v)))))
+
+;; The value under `key`, or `None`. The `Option` is put on here because a static
+;; C# method has no `Option` to hand back — the type is Bjolang's.
+(: orderedmap-try-ref (-> (OrderedMap %k %v) %k (Option %v)))
+(defun (orderedmap-try-ref m key)
+  (def (found value) (orderedmap-try-ref/pair m key))
+  (if found (Some value) None))
+
+;; The name the prelude's `Map` uses for the same question. Two spellings
+;; because `contains?` reads better about a set and `has-key?` about a map, and
+;; a program porting between the two should not have to change either.
+(: orderedmap-has-key? (-> (OrderedMap %k %v) %k bool))
+(defun (orderedmap-has-key? m key) (orderedmap-contains? m key))
+
+;; The four partial answers, as `Option`s over the whole entry. `None` for the
+;; empty map, and for a key with nothing beyond it.
+(: orderedmap-min (-> (OrderedMap %k %v) (Option (Tuple %k %v))))
+(defun (orderedmap-min m)
+  (def (found key value) (orderedmap-try-min m))
+  (if found (Some (Tuple key value)) None))
+
+(: orderedmap-max (-> (OrderedMap %k %v) (Option (Tuple %k %v))))
+(defun (orderedmap-max m)
+  (def (found key value) (orderedmap-try-max m))
+  (if found (Some (Tuple key value)) None))
+
+;; The entry whose key is the smallest one greater than `key`, which need not
+;; itself be in the map.
+(: orderedmap-successor (-> (OrderedMap %k %v) %k (Option (Tuple %k %v))))
+(defun (orderedmap-successor m key)
+  (def (found k v) (orderedmap-try-successor m key))
+  (if found (Some (Tuple k v)) None))
+
+(: orderedmap-predecessor (-> (OrderedMap %k %v) %k (Option (Tuple %k %v))))
+(defun (orderedmap-predecessor m key)
+  (def (found k v) (orderedmap-try-predecessor m key))
+  (if found (Some (Tuple k v)) None))
+
+(: orderedmap-find (-> (-> (Tuple %k %v) bool) (OrderedMap %k %v) (Option (Tuple %k %v))))
+(defun (orderedmap-find pred m)
+  (def (found k v) (orderedmap-try-find pred m))
+  (if found (Some (Tuple k v)) None))
+
+;; ---------------------------------------------------------------------------
+;; Builders and transients
+;; ---------------------------------------------------------------------------
+
+(import/extern
+  (orderedmapbuilder-empty       (: OrderedMap.OrderedMapBuilderModule.Empty    (-> (OrderedMapBuilder %k %v))))
+  (orderedmap->orderedmapbuilder (: OrderedMap.OrderedMapBuilderModule.FromMap  (-> (OrderedMap %k %v) (OrderedMapBuilder %k %v))))
+  (orderedmapbuilder-add!        (: OrderedMap.OrderedMapBuilderModule.Add      (-> (OrderedMapBuilder %k %v) %k %v void)))
+  (orderedmapbuilder-add-all!    (: OrderedMap.OrderedMapBuilderModule.AddRange (-> (OrderedMapBuilder %k %v) (Seq (Tuple %k %v)) void)))
+  ;; Appends, not entries: a key appended twice is resolved when the map is
+  ;; built, last one winning.
+  (orderedmapbuilder-length      (: OrderedMap.OrderedMapBuilderModule.Count    (-> (OrderedMapBuilder %k %v) int)))
+  (orderedmapbuilder->orderedmap (: OrderedMap.OrderedMapBuilderModule.Build    (-> (OrderedMapBuilder %k %v) (OrderedMap %k %v))))
+
+  (transientorderedmap-empty       (: OrderedMap.TransientOrderedMapModule.Empty          (-> (TransientOrderedMap %k %v))))
+  (orderedmap->transientorderedmap (: OrderedMap.TransientOrderedMapModule.FromPersistent (-> (OrderedMap %k %v) (TransientOrderedMap %k %v))))
+  (transientorderedmap->orderedmap (: OrderedMap.TransientOrderedMapModule.ToPersistent   (-> (TransientOrderedMap %k %v) (OrderedMap %k %v))))
+  (transientorderedmap-set!        (: OrderedMap.TransientOrderedMapModule.Set            (-> (TransientOrderedMap %k %v) %k %v void)))
+  (transientorderedmap-set-all!    (: OrderedMap.TransientOrderedMapModule.SetRange       (-> (TransientOrderedMap %k %v) (Seq (Tuple %k %v)) void)))
+  (transientorderedmap-remove!     (: OrderedMap.TransientOrderedMapModule.Remove         (-> (TransientOrderedMap %k %v) %k void)))
+  (transientorderedmap-remove-all! (: OrderedMap.TransientOrderedMapModule.RemoveRange    (-> (TransientOrderedMap %k %v) (Seq %k) void)))
+  (transientorderedmap-contains?   (: OrderedMap.TransientOrderedMapModule.ContainsKey    (-> (TransientOrderedMap %k %v) %k bool)))
+  (transientorderedmap-ref         (: OrderedMap.TransientOrderedMapModule.Ref            (-> (TransientOrderedMap %k %v) %k %v)))
+  (transientorderedmap-ref-or      (: OrderedMap.TransientOrderedMapModule.RefOr          (-> (TransientOrderedMap %k %v) %k %v %v)))
+  (transientorderedmap-length      (: OrderedMap.TransientOrderedMapModule.Count          (-> (TransientOrderedMap %k %v) int)))
+  (transientorderedmap-empty?      (: OrderedMap.TransientOrderedMapModule.IsEmpty        (-> (TransientOrderedMap %k %v) bool)))
+  (transientorderedmap-filter!     (: OrderedMap.TransientOrderedMapModule.FilterInPlace  (-> (-> (Tuple %k %v) bool) (TransientOrderedMap %k %v) void)))
+  ;; A walk of the map as it stands. Finish it before the next write.
+  (transientorderedmap->seq        (: OrderedMap.TransientOrderedMapModule.AsEnumerable   (-> (TransientOrderedMap %k %v) (Seq (Tuple %k %v)))))
+  (transientorderedmap-try-ref/pair (: OrderedMap.TransientOrderedMapModule.TryGetValue   (-> (TransientOrderedMap %k %v) %k (Tuple bool %v)))))
+
+(: transientorderedmap-try-ref (-> (TransientOrderedMap %k %v) %k (Option %v)))
+(defun (transientorderedmap-try-ref m key)
+  (def (found value) (transientorderedmap-try-ref/pair m key))
+  (if found (Some value) None))
+
+;; ---------------------------------------------------------------------------
+;; Conversions
+;; ---------------------------------------------------------------------------
+
+(: list->orderedmap (-> (List (Tuple %k %v)) (OrderedMap %k %v)))
+(defun (list->orderedmap xs) (seq->orderedmap (list->seq xs)))
+
+(: orderedmap->list (-> (OrderedMap %k %v) (List (Tuple %k %v))))
+(defun (orderedmap->list m) (seq->list (orderedmap->seq m)))
+
+(: vec->orderedmap (-> (Vec (Tuple %k %v)) (OrderedMap %k %v)))
+(defun (vec->orderedmap v) (seq->orderedmap (vec->seq v)))
+
+(: orderedmap->vec (-> (OrderedMap %k %v) (Vec (Tuple %k %v))))
+(defun (orderedmap->vec m) (seq->vec (orderedmap->seq m)))
+
+;; Both ways to the prelude's hashed map, for the program that builds one and
+;; then wants it in order — or the reverse, once the order has been used up.
+(: map->orderedmap (-> (Map %k %v) (OrderedMap %k %v)))
+(defun (map->orderedmap m) (seq->orderedmap (map->seq m)))
+
+(: orderedmap->map (-> (OrderedMap %k %v) (Map %k %v)))
+(defun (orderedmap->map m) (seq->map (orderedmap->seq m)))
+
+;; ---------------------------------------------------------------------------
+;; The traits
+;; ---------------------------------------------------------------------------
+
+;; A map's elements are its entries, in key order.
+(def/impl (Iterable (OrderedMap %k %v))
+  (type %elem (Tuple %k %v))
+  (type %cursor (OrderedMapCursor %k %v))
+  (defun (start m) (orderedmap-cursor m))
+  (defun (done? m c) (orderedmap-cursor-done? c))
+  (defun (current m c) (orderedmap-cursor-current c))
+  (defun (next m c) c))
+
+(: orderedmap-for-each (-> (-> (Tuple %k %v) void) (OrderedMap %k %v) void))
+(defun (orderedmap-for-each f m)
+  (loop (:for entry m) (:do (f entry))))
+
+(def/impl (Collection (OrderedMap %k %v))
+  (type %content (Tuple %k %v))
+  (defun (length m) (orderedmap-length m))
+  (defun (empty? m) (orderedmap-empty? m))
+  (defun (->seq m) (orderedmap->seq m)))
+
+(def/impl (Foldable (OrderedMap %k %v))
+  (type %item (Tuple %k %v))
+  (defun (fold f acc col) (orderedmap-fold f acc col)))
+
+;; The abstracted argument is `%v`, so the functor moves values and leaves keys
+;; alone — `orderedmap-map` will not serve, since it hands over the whole entry
+;; and a functor's `(-> %a %b)` has room for one element type.
+(def/impl (Functor (OrderedMap %k %v))
+  (defun (map g m) (orderedmap-map-values g m)))
+
+;; `(loop (:for kv m) (:acc out (ordered-mapping kv)))` — sorted by key,
+;; whatever order the entries arrive in.
+(type (: (OrderedMapping %k %v) (Union ordered-mapping)))
+
+(def/impl (Collector (OrderedMapping %k %v))
+  (type %elem (Tuple %k %v))
+  (type %acc (OrderedMapBuilder %k %v))
+  (type %out (OrderedMap %k %v))
+  (defun (init c) (orderedmapbuilder-empty))
+  (defun (step c acc kv)
+    (def (k v) kv)
+    (orderedmapbuilder-add! acc k v)
+    acc)
+  (defun (finish c acc) (orderedmapbuilder->orderedmap acc)))
+
+;; One entry, as `key value`. A function of its own because a loop clause is a
+;; body of expressions and a `def` is a declaration, so the pair has to come
+;; apart somewhere that a binding may be introduced.
+(: entry->str (-> (Tuple %k %v) string) (where (->str %k) (->str %v)))
+(defun (entry->str entry)
+  (def (k v) entry)
+  (str (->str k) " " (->str v)))
+
+;; `#map(key value ...)`, in key order — a fact rather than an artefact here, so
+;; two equal maps always print the same.
+(: orderedmap->str (-> (OrderedMap %k %v) string) (where (->str %k) (->str %v)))
+(defun (orderedmap->str m)
+  (let ((sb (stringbuilder-empty)))
+    (stringbuilder-add-string! sb "#map(")
+    (loop (:with first? true false)
+          (:for entry m)
+          (:do (unless first? (stringbuilder-add-string! sb " "))
+               (stringbuilder-add-string! sb (entry->str entry))))
+    (stringbuilder-add-string! sb ")")
+    (stringbuilder->string sb)))
+
+(def/impl (->str (OrderedMap %k %v))
+  (where (->str %k) (->str %v))
+  (defun (->str m)
+    (orderedmap->str m)))

@@ -67,7 +67,21 @@ let root: string = Path.GetFullPath(Path.Combine(libDir, ".."))
 /// `Microsoft.Extensions.ObjectPool` is Bjoml's own dependency. It is not named
 /// here: MSBuild copies it next to `Bjoml.dll`, which is already a probe
 /// directory, so the resolver finds it there.
-let private runtimeAssemblyNames = [ "BjolangRuntime"; "Collections"; "SchemeList"; "Map"; "Bjoml" ]
+/// The three collection assemblies carry a `Bjo` prefix that their namespaces
+/// do not: `Set.Set<T>` lives in `BjoSet.dll`. Assembly names are matched
+/// without regard to case, so an assembly called `Set` and the `(std set)`
+/// module's own `set.dll` are one name to the loader — and the standard library
+/// module is named after what it publishes, not after where it happens to come
+/// from.
+let private runtimeAssemblyNames =
+    [ "BjolangRuntime"
+      "Collections"
+      "SchemeList"
+      "Map"
+      "BjoSet"
+      "BjoOrderedSet"
+      "BjoOrderedMap"
+      "Bjoml" ]
 
 /// Directory holding the runtime support assemblies every compiled program
 /// links against.

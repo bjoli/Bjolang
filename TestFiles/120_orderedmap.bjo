@@ -1,0 +1,265 @@
+;; `(std orderedmap)`: the sorted map, its builder and its transient.
+;;
+;; The vocabulary is the prelude's `map-*` under an `orderedmap-` prefix, so most
+;; of what is checked here is that the two really do answer the same questions.
+;; What is new is the order: a walk arrives sorted by key, and the navigation
+;; answers what a hash trie cannot.
+
+(import (std prelude))
+(import (std orderedmap))
+
+(: expect (-> string int int void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (str "ok: " label))
+      (println (str "FAILURE: " label " gave " (->str actual) " but wanted " (->str wanted)))))
+
+(: expect-bool (-> string bool bool void))
+(defun (expect-bool label actual wanted)
+  (if (= actual wanted)
+      (println (str "ok: " label))
+      (println (str "FAILURE: " label))))
+
+(: expect-str (-> string string string void))
+(defun (expect-str label actual wanted)
+  (if (= actual wanted)
+      (println (str "ok: " label))
+      (println (str "FAILURE: " label " gave " actual " but wanted " wanted))))
+
+;; Out of order on purpose, so that "in order" below is about the map.
+(: scores (-> (OrderedMap string int)))
+(defun (scores)
+  (orderedmap-set (orderedmap-set (orderedmap-set (orderedmap-empty) "pear" 3) "apple" 1) "fig" 2))
+
+(: test-map (-> void))
+(defun (test-map)
+  (def m (scores))
+  (expect "length" (orderedmap-length m) 3)
+  (expect "ref" (orderedmap-ref m "fig") 2)
+  (expect "ref-or with a key" (orderedmap-ref-or m "fig" 0) 2)
+  (expect "ref-or without one" (orderedmap-ref-or m "plum" 0) 0)
+  (expect-bool "contains?" (orderedmap-contains? m "apple") true)
+  (expect-bool "has-key? is the same question" (orderedmap-has-key? m "plum") false)
+  (expect-bool "empty?" (orderedmap-empty? m) false)
+  (expect-bool "empty? of a cleared map" (orderedmap-empty? (orderedmap-clear m)) true)
+
+  (match (orderedmap-try-ref m "apple")
+    ((Some v) (expect "try-ref" v 1))
+    (None (println "FAILURE: try-ref of a key that is there")))
+
+  (match (orderedmap-try-ref m "plum")
+    ((Some _) (println "FAILURE: try-ref of a key that is not"))
+    (None (println "ok: try-ref comes up empty")))
+
+  ;; Setting a key that is already there replaces rather than adds.
+  (expect "set replaces" (orderedmap-length (orderedmap-set m "fig" 20)) 3)
+  (expect "and the value moved" (orderedmap-ref (orderedmap-set m "fig" 20) "fig") 20)
+  (expect "remove" (orderedmap-length (orderedmap-remove m "fig")) 2)
+  (expect "remove of a stranger" (orderedmap-length (orderedmap-remove m "plum")) 3)
+
+  (expect "set-all" (orderedmap-length (orderedmap-set-all m (list->seq (list (Tuple "plum" 4) (Tuple "date" 5))))) 5)
+  (expect "remove-all" (orderedmap-length (orderedmap-remove-all m (list->seq (list "fig" "pear")))) 1)
+
+  (expect "keys" (seq-length (orderedmap-keys m)) 3)
+  (expect "values" (seq-fold + 0 (orderedmap-values m)) 6))
+
+(: test-merge (-> void))
+(defun (test-merge)
+  (def a (scores))
+  (def b (orderedmap-set (orderedmap-set (orderedmap-empty) "fig" 200) "plum" 4))
+  (def merged (orderedmap-merge a b))
+  (expect "merge" (orderedmap-length merged) 4)
+  (expect "the right-hand value wins" (orderedmap-ref merged "fig") 200)
+
+  ;; The resolver is handed the key and both values, as one triple.
+  (def summed (orderedmap-merge-with #(+ (tuple-second &1) (tuple-third &1)) a b))
+  (expect "merge-with resolves a collision" (orderedmap-ref summed "fig") 202)
+  (expect "and leaves the rest alone" (orderedmap-ref summed "apple") 1))
+
+;; The prelude has no accessors for a 3-tuple, so these are the test's own.
+(: tuple-second (-> (Tuple string int int) int))
+(defun (tuple-second t)
+  (def (k a b) t)
+  a)
+
+(: tuple-third (-> (Tuple string int int) int))
+(defun (tuple-third t)
+  (def (k a b) t)
+  b)
+
+(: test-order (-> void))
+(defun (test-order)
+  (def m (scores))
+  (expect-str "a walk arrives sorted by key" (->str m) "#map(apple 1 fig 2 pear 3)")
+
+  (match (orderedmap-min m)
+    ((Some entry) (expect-str "min" (entry-key entry) "apple"))
+    (None (println "FAILURE: min of a map with entries")))
+
+  (match (orderedmap-max m)
+    ((Some entry) (expect-str "max" (entry-key entry) "pear"))
+    (None (println "FAILURE: max of a map with entries")))
+
+  (match (orderedmap-min (orderedmap-clear m))
+    ((Some _) (println "FAILURE: min of the empty map"))
+    (None (println "ok: the empty map has no min")))
+
+  (match (orderedmap-successor m "apple")
+    ((Some entry) (expect-str "successor" (entry-key entry) "fig"))
+    (None (println "FAILURE: successor")))
+
+  ;; The key need not be in the map.
+  (match (orderedmap-successor m "banana")
+    ((Some entry) (expect-str "successor of a key that is not there" (entry-key entry) "fig"))
+    (None (println "FAILURE: successor of a non-key")))
+
+  (match (orderedmap-successor m "pear")
+    ((Some _) (println "FAILURE: successor of the largest key"))
+    (None (println "ok: the largest key has no successor")))
+
+  (match (orderedmap-predecessor m "fig")
+    ((Some entry) (expect-str "predecessor" (entry-key entry) "apple"))
+    (None (println "FAILURE: predecessor")))
+
+  (expect "range" (seq-length (orderedmap-range m "apple" "fig")) 2)
+  (expect "from" (seq-length (orderedmap-from m "fig")) 2)
+  (expect "until" (seq-length (orderedmap-until m "fig")) 2))
+
+(: entry-key (-> (Tuple string int) string))
+(defun (entry-key entry)
+  (def (k v) entry)
+  k)
+
+(: entry-value (-> (Tuple string int) int))
+(defun (entry-value entry)
+  (def (k v) entry)
+  v)
+
+(: test-walking (-> void))
+(defun (test-walking)
+  (def m (scores))
+  (expect "filter" (orderedmap-length (orderedmap-filter #(> (entry-value &1) 1) m)) 2)
+  (expect "fold" (orderedmap-fold #(+ &1 (entry-value &2)) 0 m) 6)
+  (expect "map takes the entry and answers a value"
+          (orderedmap-ref (orderedmap-map #(* 10 (entry-value &1)) m) "fig")
+          20)
+  (expect "map-values" (orderedmap-ref (orderedmap-map-values #(+ &1 1) m) "fig") 3)
+  (expect-bool "any?" (orderedmap-any? #(= 3 (entry-value &1)) m) true)
+  (expect-bool "iter stops early" (orderedmap-iter #(< (entry-value &1) 3) m) false)
+
+  (match (orderedmap-find #(> (entry-value &1) 1) m)
+    ;; In key order, so the first match is the one with the smallest key.
+    ((Some entry) (expect-str "find takes the first in key order" (entry-key entry) "fig"))
+    (None (println "FAILURE: find found nothing")))
+
+  (def b (vecbuilder-empty))
+  (orderedmap-for-each #(vecbuilder-add! b (entry-value &1)) m)
+  (expect "for-each" (vec-fold + 0 (vecbuilder->vec b)) 6))
+
+(: test-traits (-> void))
+(defun (test-traits)
+  (def m (scores))
+  (expect "Collection length" (length m) 3)
+  (expect-bool "Collection empty?" (empty? m) false)
+  (expect "Collection ->seq" (seq-length (->seq m)) 3)
+  (expect "Foldable fold" (fold #(+ &1 (entry-value &2)) 0 m) 6)
+  ;; The functor moves values and leaves keys alone.
+  (expect "Functor map" (orderedmap-ref (map #(* &1 2) m) "pear") 6)
+
+  ;; Iterable: an entry at a time, in key order.
+  (expect "loop over an ordered map"
+          (loop (:for entry m) (:acc total (summing (entry-value entry))))
+          6)
+
+  (def doubled
+    (loop (:for entry m)
+          (:acc out (ordered-mapping (Tuple (entry-key entry) (* 2 (entry-value entry)))))))
+  (expect-str "ordered-mapping collector" (->str doubled) "#map(apple 2 fig 4 pear 6)")
+
+  (expect "orderedmap->list" (list-length (orderedmap->list m)) 3)
+  (expect "list->orderedmap" (orderedmap-length (list->orderedmap (orderedmap->list m))) 3)
+  (expect "orderedmap->vec" (vec-length (orderedmap->vec m)) 3)
+  (expect "vec->orderedmap" (orderedmap-length (vec->orderedmap (orderedmap->vec m))) 3)
+
+  ;; Both ways to the prelude's hashed map.
+  (expect "orderedmap->map" (map-length (orderedmap->map m)) 3)
+  (expect "map->orderedmap" (orderedmap-ref (map->orderedmap (orderedmap->map m)) "fig") 2))
+
+(: test-builder (-> void))
+(defun (test-builder)
+  (def b (orderedmapbuilder-empty))
+  (orderedmapbuilder-add! b "b" 2)
+  (orderedmapbuilder-add! b "a" 1)
+  (orderedmapbuilder-add! b "b" 20)
+  (expect "builder length counts appends" (orderedmapbuilder-length b) 3)
+  ;; A key appended twice is resolved when the map is built, last one winning.
+  (expect-str "builder->orderedmap sorts and resolves"
+              (->str (orderedmapbuilder->orderedmap b))
+              "#map(a 1 b 20)")
+
+  (def c (orderedmapbuilder-empty))
+  (orderedmapbuilder-add-all! c (list->seq (list (Tuple "z" 26) (Tuple "y" 25))))
+  (expect-str "builder add-all!" (->str (orderedmapbuilder->orderedmap c)) "#map(y 25 z 26)")
+
+  (def d (orderedmap->orderedmapbuilder (scores)))
+  (orderedmapbuilder-add! d "plum" 4)
+  (expect "orderedmap->orderedmapbuilder" (orderedmap-length (orderedmapbuilder->orderedmap d)) 4))
+
+(: test-transient (-> void))
+(defun (test-transient)
+  (def t (transientorderedmap-empty))
+  (expect-bool "transient starts empty" (transientorderedmap-empty? t) true)
+  (transientorderedmap-set! t "a" 1)
+  (transientorderedmap-set! t "b" 2)
+  (transientorderedmap-set! t "a" 10)
+  ;; The persistent interface, in place: `set!` of a key already there replaces.
+  (expect "transient length" (transientorderedmap-length t) 2)
+  (expect "transient ref" (transientorderedmap-ref t "a") 10)
+  (expect "transient ref-or" (transientorderedmap-ref-or t "z" 0) 0)
+  (expect-bool "transient contains?" (transientorderedmap-contains? t "b") true)
+
+  (match (transientorderedmap-try-ref t "b")
+    ((Some v) (expect "transient try-ref" v 2))
+    (None (println "FAILURE: transient try-ref")))
+
+  (transientorderedmap-set-all! t (list->seq (list (Tuple "c" 3) (Tuple "d" 4))))
+  (expect "transient set-all!" (transientorderedmap-length t) 4)
+  (transientorderedmap-remove! t "a")
+  (expect "transient remove!" (transientorderedmap-length t) 3)
+  (transientorderedmap-remove-all! t (list->seq (list "b" "c")))
+  (expect "transient remove-all!" (transientorderedmap-length t) 1)
+
+  (transientorderedmap-set! t "e" 5)
+  (transientorderedmap-filter! #(> (entry-value &1) 4) t)
+  (expect "transient filter!" (transientorderedmap-length t) 1)
+
+  (def snapshot (transientorderedmap->orderedmap t))
+  (transientorderedmap-set! t "z" 100)
+  (expect "the snapshot did not move" (orderedmap-length snapshot) 1)
+  (expect "the transient did" (transientorderedmap-length t) 2)
+
+  (def from-map (orderedmap->transientorderedmap (scores)))
+  (transientorderedmap-set! from-map "plum" 4)
+  (expect "orderedmap->transientorderedmap" (transientorderedmap-length from-map) 4)
+  (expect "and the map it came from is untouched" (orderedmap-length (scores)) 3)
+  (expect "a transient walks in order too"
+          (seq-fold #(+ &1 (entry-value &2)) 0 (transientorderedmap->seq from-map))
+          10))
+
+;; Int keys, to pin that the type arguments are solved per call site.
+(: test-int-keys (-> void))
+(defun (test-int-keys)
+  (def m (seq->orderedmap (list->seq (list (Tuple 3 "c") (Tuple 1 "a") (Tuple 2 "b")))))
+  (expect "a map keyed by int" (orderedmap-length m) 3)
+  (expect-str "in numeric order" (->str m) "#map(1 a 2 b 3 c)"))
+
+(defun (main args)
+  (test-map)
+  (test-merge)
+  (test-order)
+  (test-walking)
+  (test-traits)
+  (test-builder)
+  (test-transient)
+  (test-int-keys)
+  0)

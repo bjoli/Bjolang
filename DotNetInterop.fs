@@ -138,27 +138,119 @@ let rec private pruneLocal (t: HMType) : HMType =
     | TMeta { Value = Some inner } -> pruneLocal inner
     | other -> other
 
+// ---------------------------------------------------------------------------
+// Generic types
+// ---------------------------------------------------------------------------
+
+/// The .NET generic type definitions that Bjolang already has a name for.
+///
+/// Every *other* constructed generic maps to a type constructor spelled after
+/// the .NET type itself — `Set.Set<int>` is `(Set.Set int)` — which is what
+/// makes `import/class` able to name one. These are the ones where the two
+/// names differ, because the type is the runtime's own and the language has
+/// been spelling it since before interop could see inside a generic at all.
+///
+/// The inverse is `clrOfBjolangGeneric` below, and the two are written as one
+/// list so that they cannot drift. `Codegen.mapPrimitiveType` has to agree with
+/// them: it is the same correspondence, in the direction of emission.
+let private genericTypeCorrespondence =
+    [ "System.Collections.Generic.IEnumerable`1", "Seq"
+      "System.Collections.Generic.IAsyncEnumerable`1", "AsyncSeq"
+      "SchemeList.SchemeList`1", "List"
+      "SchemeList.SchemeListBuilder`1", "ListBuilder"
+      "Collections.RrbList`1", "Vec"
+      "Collections.RrbBuilder`1", "VecBuilder"
+      "Map.Map`2", "Map"
+      "Map.MapBuilder`2", "MapBuilder"
+      "BjolangRuntime+Option`1", "Option"
+      "BjolangRuntime+Result`2", "Result"
+      "Bjoml.Promise`1", "Promise"
+      "Bjoml.IEvent`1", "Event"
+      "Bjoml.Channel`1", "Chan" ]
+
+let private bjolangOfClrGeneric =
+    genericTypeCorrespondence |> List.map (fun (clr, bjo) -> clr, bjo) |> dict
+
+let private clrOfBjolangGeneric =
+    genericTypeCorrespondence |> List.map (fun (clr, bjo) -> bjo, clr) |> dict
+
+/// The name a .NET type is known by in a Bjolang type constructor.
+///
+/// The arity mark goes: a Bjolang constructor carries its arity in the number
+/// of arguments it is applied to, so `Set.Set`1` is `Set.Set`. A nested type's
+/// `+` becomes `.`, which is both what C# writes and what the code generator
+/// emits.
+let clrTypeName (t: Type) : string =
+    // The definition rather than the construction. An *open* constructed
+    // generic — `Set<T>` as a method's parameter mentions it — has no
+    // `FullName` at all, so the namespace has to come from the definition it
+    // was built from.
+    let t =
+        if t.IsGenericType && not t.IsGenericTypeDefinition then
+            t.GetGenericTypeDefinition()
+        else
+            t
+
+    let full =
+        if isNull t.FullName then
+            if String.IsNullOrEmpty t.Namespace then t.Name else t.Namespace + "." + t.Name
+        else
+            t.FullName
+
+    let withoutArity =
+        match full.IndexOf '`' with
+        | -1 -> full
+        | i -> full.Substring(0, i)
+
+    withoutArity.Replace("+", ".")
+
+/// Is this a `System.Func<...>`? Its last type argument is the return type.
+let private isFuncType (def: Type) =
+    not (isNull def.FullName) && def.FullName.StartsWith "System.Func`"
+
+let private isActionType (def: Type) =
+    not (isNull def.FullName) && def.FullName.StartsWith "System.Action`"
+
+let private isValueTupleType (def: Type) =
+    not (isNull def.FullName) && def.FullName.StartsWith "System.ValueTuple`"
+
 /// The Bjolang type a .NET type corresponds to.
+///
+/// Structural, and that is the whole of what makes generic interop possible: a
+/// method's parameters and return type are read *into* the language rather than
+/// flattened to an opaque name, so `Func<T, bool>` arrives as an arrow, an
+/// `IEnumerable<T>` as a `(Seq %a)`, and the method's own type parameters as
+/// type variables that a declared signature can then solve.
 let rec mapClrType (t: Type) : HMType =
-    if t.IsArray then
+    if t.IsGenericParameter then
+        // A method's or a type's own parameter, as a Bjolang type variable. It
+        // is quoted because that is how `resolveTypeAnnotation` spells one, and
+        // named after the .NET parameter so that a diagnostic can point at it.
+        TVar("'" + t.Name)
+    elif t.IsArray then
         TCon("Array", [ mapClrType (t.GetElementType()) ])
     elif t.IsByRef || t.IsPointer then
         // `out`/`ref` parameters have no Bjolang spelling. Mapping them to the
         // referent would silently drop the indirection, so overloads that use
         // them simply do not match.
         TCon("<byref>", [ mapClrType (t.GetElementType()) ])
-    elif t.IsGenericType
-         && t.GetGenericTypeDefinition().FullName = "System.Collections.Generic.IAsyncEnumerable`1" then
-        // The one constructed generic that maps to a Bjolang type rather than
-        // to the mangled `IAsyncEnumerable`1[[System.String, …]]`.
-        //
-        // Worth the special case because it is the only way to *get* one: an
-        // async stream comes back from a .NET call and there is no other way to
-        // make one, so without this `async-seq->chan` would have nothing it
-        // could ever be applied to. `IEnumerable<T>` deserves the same
-        // treatment for `(Seq %a)` and does not have it yet — see the note on
-        // `file-read-lines/seq` in `Prelude`.
-        TCon("AsyncSeq", [ mapClrType (t.GetGenericArguments()[0]) ])
+    elif t.IsGenericType then
+        let def = t.GetGenericTypeDefinition()
+        let args = t.GetGenericArguments() |> Array.toList |> List.map mapClrType
+
+        // A delegate is an arrow, which is what lets a Bjolang lambda be passed
+        // to `Filter` or `Fold` with nothing in between. `Action` returns the
+        // *interop* void rather than unit — see `TypeConstants.voidType`.
+        if isFuncType def then
+            tfun (args |> List.take (args.Length - 1)) (List.last args)
+        elif isActionType def then
+            tfun args voidType
+        elif isValueTupleType def then
+            TTuple args
+        else
+            match bjolangOfClrGeneric.TryGetValue(def.FullName) with
+            | true, name -> TCon(name, args)
+            | _ -> TCon(clrTypeName t, args)
     else
         match t.FullName with
         | null -> TCon("<open>", [])
@@ -174,17 +266,98 @@ let rec mapClrType (t: Type) : HMType =
         | "System.UInt32" -> uintType
         | "System.UInt64" -> ulongType
         | "System.Object" -> objType
+        | "System.Action" -> tfun [] voidType
+        // The unit value's runtime type. A Bjolang `void` in a signature is
+        // this, so a .NET member typed in terms of it is already in the
+        // language.
+        | "Bjoml.Unit" -> unitType
         | name -> TCon(name, [])
 
 /// The .NET type a Bjolang type corresponds to, when it has one.
 ///
+/// The inverse of `mapClrType`, and it has to be: overload scoring asks this
+/// what an argument *is* before comparing it with a parameter, so a type the
+/// two functions disagree about is one that maps in and then fails to match the
+/// very parameter it came from.
+///
 /// `None` covers two very different situations that the callers keep apart: a
-/// type that has no .NET counterpart at all (`(List int)`), and one that is
-/// simply not known yet (an unresolved metavariable).
+/// type that has no .NET counterpart at all (a record this module declared),
+/// and one that is simply not known yet (an unresolved metavariable).
 let rec tryClrTypeOf (t: HMType) : Type option =
     match pruneLocal t with
     | TCon("Array", [ elem ]) -> tryClrTypeOf elem |> Option.map (fun e -> e.MakeArrayType())
+    // The unit *value*'s type, which is a real one — as against `System.Void`,
+    // which resolves by its own name and is not a type anything can hold.
+    | TCon("Unit", []) -> tryResolveType "Bjoml.Unit"
     | TCon(name, []) -> tryResolveType name
+    | TCon(name, args) ->
+        // A constructed generic: resolve the definition by arity and fill it in.
+        // The definition is spelled with its arity mark, which the Bjolang name
+        // has dropped.
+        let clrName =
+            match clrOfBjolangGeneric.TryGetValue name with
+            | true, full -> full
+            | _ -> $"%s{name}`%d{args.Length}"
+
+        let resolvedArgs = args |> List.map tryClrTypeOf
+
+        if resolvedArgs |> List.forall Option.isSome then
+            tryResolveType clrName
+            |> Option.bind (fun def ->
+                if def.IsGenericTypeDefinition && def.GetGenericArguments().Length = args.Length then
+                    try
+                        Some(def.MakeGenericType(resolvedArgs |> List.map Option.get |> Array.ofList))
+                    with _ ->
+                        None
+                else
+                    None)
+        else
+            None
+    | TTuple [] -> tryResolveType "System.ValueTuple"
+    | TTuple items ->
+        let resolved = items |> List.map tryClrTypeOf
+
+        if resolved |> List.forall Option.isSome then
+            tryResolveType $"System.ValueTuple`%d{items.Length}"
+            |> Option.bind (fun def ->
+                try
+                    Some(def.MakeGenericType(resolved |> List.map Option.get |> Array.ofList))
+                with _ ->
+                    None)
+        else
+            None
+    // A function value is a delegate. `Action` for the interop void, `Func`
+    // otherwise — exactly the choice `Codegen.typeToString` makes, because the
+    // delegate this answers has to be the one the argument was emitted as.
+    | TFun(args, ret, _) ->
+        let resolvedArgs = args |> List.map tryClrTypeOf
+        let isVoid = pruneLocal ret = voidType
+
+        if resolvedArgs |> List.forall Option.isSome then
+            let argTypes = resolvedArgs |> List.map Option.get
+
+            let name, allTypes =
+                if isVoid then
+                    (if args.IsEmpty then "System.Action" else $"System.Action`%d{args.Length}"), argTypes
+                else
+                    match tryClrTypeOf ret with
+                    | Some retType -> $"System.Func`%d{args.Length + 1}", argTypes @ [ retType ]
+                    | None -> "", []
+
+            if name = "" then
+                None
+            else
+                tryResolveType name
+                |> Option.bind (fun def ->
+                    if allTypes.IsEmpty then
+                        Some def
+                    else
+                        try
+                            Some(def.MakeGenericType(Array.ofList allTypes))
+                        with _ ->
+                            None)
+        else
+            None
     | _ -> None
 
 /// Is the type still open — a metavariable nothing has pinned down?
@@ -250,6 +423,239 @@ let showTypesTogether (ts: HMType list) : string list =
 
 let showType (t: HMType) : string =
     showTypesTogether [ t ] |> List.head
+
+/// Which half of a type's surface a member lookup searches. Named here because
+/// both resolvers below ask the question, and they have to ask it the same way.
+let private instanceFlags = BindingFlags.Public ||| BindingFlags.Instance
+let private staticFlags = BindingFlags.Public ||| BindingFlags.Static
+
+// ---------------------------------------------------------------------------
+// Generic methods
+// ---------------------------------------------------------------------------
+//
+// A generic method's type arguments have to come from somewhere, and the answer
+// is the signature the import declares. `(import/extern (set-add (: Set.SetModule.Add
+// (-> (Set %a) %a (Set %a)))))` says what the alias means in Bjolang; matching
+// that against the method's own `(Set<T>, T) -> Set<T>` solves `T` to `%a`, once,
+// at the import. Every call site is then an ordinary polymorphic call: the
+// signature is instantiated with fresh metavariables, the arguments unify with
+// it, and the *same* substitution says what to write between the angle brackets.
+//
+// So nothing here infers anything a Bjolang programmer did not write down, and
+// the type arguments are known before code generation rather than left to C#'s
+// own inference — which is the same discipline the non-generic path follows for
+// overloads.
+
+/// Solves a generic method's type parameters by matching its own signature
+/// against a declared one.
+///
+/// One-way: only the names in `typeParams` are solved for. The declared side is
+/// fixed, so a type variable of the *signature* stands for itself and has to
+/// meet the same variable on the other side.
+let rec private solveTypeParams
+    (typeParams: Set<string>)
+    (solution: Map<string, HMType>)
+    (fromMethod: HMType)
+    (declared: HMType)
+    : Map<string, HMType> option =
+
+    match fromMethod, declared with
+    | TVar v, _ when typeParams.Contains v ->
+        match Map.tryFind v solution with
+        // A type parameter used twice has to mean the same thing both times,
+        // which is what makes `(-> (Set %a) %a (Set %a))` reject a signature
+        // whose element type disagrees with its set's.
+        | Some existing -> if existing = declared then Some solution else None
+        | None -> Some(Map.add v declared solution)
+    | TVar a, TVar b -> if a = b then Some solution else None
+    | TCon(n, xs), TCon(m, ys) when n = m && xs.Length = ys.Length ->
+        List.zip xs ys
+        |> List.fold (fun acc (x, y) -> acc |> Option.bind (fun s -> solveTypeParams typeParams s x y)) (Some solution)
+    | TFun(xs, r1, _), TFun(ys, r2, _) when xs.Length = ys.Length ->
+        List.zip (r1 :: xs) (r2 :: ys)
+        |> List.fold (fun acc (x, y) -> acc |> Option.bind (fun s -> solveTypeParams typeParams s x y)) (Some solution)
+    | TTuple xs, TTuple ys when xs.Length = ys.Length ->
+        List.zip xs ys
+        |> List.fold (fun acc (x, y) -> acc |> Option.bind (fun s -> solveTypeParams typeParams s x y)) (Some solution)
+    | a, b -> if a = b then Some solution else None
+
+/// What a resolved generic method tells the rest of the compiler.
+type ResolvedGenericMethod =
+    { /// The method's type parameters, in the order C# writes them between the
+      /// angle brackets, each solved to a Bjolang type in terms of the declared
+      /// signature's own variables.
+      TypeArguments: HMType list
+      /// The parameter types as the *declaration* has them, receiver excluded.
+      /// Not the method's own: they are the same types, and these are the ones
+      /// a call site unifies against.
+      ParameterTypes: HMType list
+      /// The method's own return type, with the type arguments substituted in.
+      ///
+      /// The same as the declared one but for a method that answers nothing:
+      /// `void` in a signature is the *unit*, and what a void call has is the
+      /// interop void, which no value can be. Taking the method's answer here
+      /// is what keeps `(setbuilder-add! b x)` a statement rather than a value
+      /// of a type C# has no way to produce.
+      ReturnType: HMType
+      DeclaringType: string
+      Name: string
+      IsStatic: bool }
+
+/// Every public method of this name that is a generic definition.
+let private genericMethods (t: Type) (name: string) (flags: BindingFlags) =
+    t.GetMethods flags
+    |> Array.filter (fun m ->
+        m.Name = name
+        && m.IsGenericMethodDefinition
+        && not (m.GetParameters() |> Array.exists (fun p -> p.ParameterType.IsByRef || p.ParameterType.IsPointer)))
+    |> Array.toList
+
+/// Does this member consist *only* of generic definitions?
+///
+/// The question decides which resolution a call takes, and it is asked of the
+/// whole method group rather than per call: a name that has an ordinary
+/// overload keeps resolving by argument types, exactly as before.
+let isGenericOnlyMethod (isStatic: bool) (t: Type) (name: string) : bool =
+    let flags = if isStatic then staticFlags else instanceFlags
+    let all = t.GetMethods flags |> Array.filter (fun m -> m.Name = name)
+
+    not (Array.isEmpty all) && all |> Array.forall (fun m -> m.IsGenericMethodDefinition)
+
+/// Resolves a generic method against the signature its import declared.
+///
+/// `declaredParams`/`declaredReturn` are the *caller's* view with the receiver
+/// already removed, so an instance member is resolved in its own parameters
+/// exactly as a static one is.
+let resolveGenericMethod
+    (where: string)
+    (isStatic: bool)
+    (t: Type)
+    (name: string)
+    (declaredParams: HMType list)
+    (declaredReturn: HMType)
+    : ResolvedGenericMethod =
+
+    let flags = if isStatic then staticFlags else instanceFlags
+    let candidates = genericMethods t name flags
+
+    if candidates.IsEmpty then
+        failwithf $"Type Error at %s{where}: '%s{t.FullName}' has no generic method named '%s{name}'."
+
+    /// How many of a method's parameters a call is obliged to pass.
+    ///
+    /// A trailing optional parameter may be left out — that is what C# does at
+    /// its own call sites, and the emitted call leaves it out the same way — so
+    /// a signature declaring fewer arguments than the method takes is right
+    /// rather than wrong, as long as everything it omits has a default. It is
+    /// how a comparer-taking factory is imported without a comparer.
+    let requiredCount (m: MethodInfo) =
+        let ps = m.GetParameters()
+
+        let rec countFrom i =
+            if i > 0 && ps[i - 1].IsOptional then countFrom (i - 1) else i
+
+        countFrom ps.Length
+
+    let byArity =
+        candidates
+        |> List.filter (fun m ->
+            declaredParams.Length <= m.GetParameters().Length
+            && declaredParams.Length >= requiredCount m)
+
+    if byArity.IsEmpty then
+        let arities =
+            candidates
+            |> List.map (fun m ->
+                let total = m.GetParameters().Length
+                let required = requiredCount m
+                if required = total then string total else $"%d{required} to %d{total}")
+            |> List.distinct
+            |> List.sort
+
+        let shownArities = String.Join(" or ", arities)
+
+        failwithf
+            $"Type Error at %s{where}: '%s{t.FullName}.%s{name}' takes %s{shownArities} argument(s), but the declared signature has %d{declaredParams.Length}."
+
+    let attempt (m: MethodInfo) =
+        let typeParams = m.GetGenericArguments() |> Array.map (fun p -> "'" + p.Name) |> Set.ofArray
+
+        // Only as many as were declared: the rest are optional and the call
+        // simply leaves them out.
+        let methodParams =
+            m.GetParameters()
+            |> Array.map (fun p -> mapClrType p.ParameterType)
+            |> Array.toList
+            |> List.truncate declaredParams.Length
+
+        let methodReturn = mapClrType m.ReturnType
+
+        // A method that answers nothing is declared `void`, which in a Bjolang
+        // signature is the unit — there is no way to write the interop void, and
+        // no reason to want one. The allowance is *only* here, at the method's
+        // own answer: inside a parameter it would equate `Action<T>` with
+        // `(-> %a void)`, which are two different delegates, and the mismatch
+        // would surface as C# that does not compile rather than as a type error.
+        let declaredReturn =
+            if methodReturn = voidType && declaredReturn = unitType then
+                voidType
+            else
+                declaredReturn
+
+        let solved =
+            List.zip (methodReturn :: methodParams) (declaredReturn :: declaredParams)
+            |> List.fold
+                (fun acc (fromMethod, declared) ->
+                    acc |> Option.bind (fun s -> solveTypeParams typeParams s fromMethod declared))
+                (Some Map.empty)
+
+        match solved with
+        | None -> None
+        | Some solution ->
+            let ordered =
+                m.GetGenericArguments()
+                |> Array.map (fun p -> Map.tryFind ("'" + p.Name) solution)
+                |> Array.toList
+
+            // Every type parameter has to be pinned by the signature. One the
+            // signature never mentions is one nothing could write between the
+            // angle brackets, and inventing an answer is exactly the guessing
+            // this design does not do.
+            if ordered |> List.forall Option.isSome then
+                Some(m, ordered |> List.map Option.get, substTypeVars solution methodReturn)
+            else
+                None
+
+    let describeMethod (m: MethodInfo) =
+        let ps =
+            m.GetParameters()
+            |> Array.map (fun p -> showType (mapClrType p.ParameterType))
+            |> String.concat " "
+
+        "  (-> " + ps + " " + showType (mapClrType m.ReturnType) + ")"
+
+    match byArity |> List.choose attempt with
+    | [ (_, typeArgs, returnType) ] ->
+        { TypeArguments = typeArgs
+          ParameterTypes = declaredParams
+          ReturnType = returnType
+          DeclaringType = t.FullName
+          Name = name
+          IsStatic = isStatic }
+    | [] ->
+        let declaredShown =
+            showType (tfun declaredParams declaredReturn)
+
+        let shapes = byArity |> List.map describeMethod |> String.concat "\n"
+
+        failwithf
+            $"Type Error at %s{where}: the declared signature %s{declaredShown} does not match '%s{t.FullName}.%s{name}'. Its shape is:\n%s{shapes}\nA generic method's type arguments come from the signature, so the two have to agree exactly — a type variable of the signature stands for one of the method's."
+    | several ->
+        let shapes =
+            several |> List.map (fun (m, _, _) -> describeMethod m) |> String.concat "\n"
+
+        failwithf
+            $"Type Error at %s{where}: '%s{t.FullName}.%s{name}' is ambiguous — the declared signature fits more than one of its overloads:\n%s{shapes}"
 
 // ---------------------------------------------------------------------------
 // Overload resolution
@@ -392,9 +798,6 @@ type ResolvedCall =
       DeclaringType: string
       Name: string
       IsStatic: bool }
-
-let private instanceFlags = BindingFlags.Public ||| BindingFlags.Instance
-let private staticFlags = BindingFlags.Public ||| BindingFlags.Static
 
 /// Methods are filtered down to the ones Bjolang can actually call.
 ///

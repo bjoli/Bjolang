@@ -636,11 +636,80 @@ It describes the *constructor* on ~import/class~, which is the one signature
 that form declares. Instance methods are never decorated this way — nothing has
 said what they may raise, so guard them with ~try~.
 
+*** Generic types and generic methods
+A .NET generic type is a type *constructor*, so its alias is written applied:
+
+#+BEGIN_SRC scheme
+(import/class
+  ((Set %a)        (: Set.Set))
+  ((SetBuilder %a) (: Set.SetBuilder)))
+#+END_SRC
+
+~(Set int)~ is then an ordinary type, and ~Set~ written bare is an arity error
+like any other. The arity in the clause is checked against the type's own, and a
+generic type imported without one — or an ordinary class imported with one — is
+reported at the clause.
+
+A generic *method* takes its type arguments from the signature the import
+declares, which is therefore required rather than optional:
+
+#+BEGIN_SRC scheme
+(import/extern
+  (set-empty (: Set.SetModule.Empty  (-> (Set %a))))
+  (set-add   (: Set.SetModule.Add    (-> (Set %a) %a (Set %a))))
+  (set-fold  (: Set.SetModule.Fold   (-> (-> %s %a %s) %s (Set %a) %s))))
+#+END_SRC
+
+The signature is matched against the method's own shape once, at the clause, and
+that match is what solves the method's type parameters: ~T~ is ~%a~ here, and
+~TState~ is ~%s~. A signature that does not fit is an error naming both shapes,
+so a mistake lands where it was written rather than at the first call.
+
+Every call site is then an ordinary polymorphic call — the signature is
+instantiated, the arguments unify with it — and the solved type arguments are
+*written out* in the generated C#, never left to its own inference. That is the
+same discipline the rest of interop follows, and it is what makes a call C#
+could not infer at all work: ~(set-empty)~ takes its element type from the
+context, and the context is Bjolang's.
+
+The rule for which resolution a name gets belongs to the .NET method group
+rather than to anything written in the clause: a member whose overloads are
+*all* generic definitions is resolved from the signature, and a member with even
+one ordinary overload keeps being resolved per call site from its argument
+types.
+
+**** What crosses, and how
+Parameter and return types are read structurally, so the language's own types
+meet .NET's without a wrapper:
+
+| .NET                 | Bjolang            |
+|----------------------+--------------------|
+| ~Func<A, B>~         | ~(-> %a %b)~       |
+| ~IEnumerable<T>~     | ~(Seq %a)~         |
+| ~(A, B)~             | ~(Tuple %a %b)~    |
+| ~T[]~                | ~(Array %a)~       |
+| ~void~               | ~void~             |
+| a method's own ~T~   | a type variable    |
+
+A trailing optional parameter may be left out of the signature, exactly as C#
+leaves one out at a call site — which is how a factory taking an
+~IComparer<T>? = null~ is imported without one.
+
+Two things deliberately do not cross. ~Action<T>~ is not ~(-> %a void)~: a
+Bjolang callback answering nothing answers the *unit*, which is a value, so it
+is a ~Func<T, Unit>~ and no ~Action~ will take it — write the loop in Bjolang
+instead. And an ~out~ parameter has no spelling at all, so a partial answer
+should be a ~(found, value)~ tuple, which ~match~ takes apart.
+
+~#:async~ and ~#:cancellable~ are not supported on a generic method: the
+signature is where its type arguments come from, and it has no room to say what
+an unwrapped task or a threaded token does to them.
+
 *** Limits
-Generic .NET types and generic methods are not imported — their type arguments
-would have to be inferred, which is a different problem — and destructuring a
-.NET class with a constructor pattern is not supported. Both are reported as
-errors rather than mis-compiled.
+Destructuring a .NET class with a constructor pattern is not supported, and a
+generic class is imported as a type only — reach its constructor through a
+static factory imported with ~import/extern~. Both are reported as errors rather
+than mis-compiled.
 
 ** ~try~ — failures as values
 ~try~ guards an arbitrary expression. ~#:catch~ turns the listed exception

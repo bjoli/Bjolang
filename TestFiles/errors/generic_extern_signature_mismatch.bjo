@@ -1,0 +1,17 @@
+;; The declared signature is matched against the method's own shape, and the
+;; match is what solves its type arguments — so a signature that disagrees is an
+;; error at the clause rather than a surprise at the first call site.
+;;
+;; Here the element type and the set's disagree: `Add` is `(Set<T>, T) -> Set<T>`,
+;; and no instantiation of it takes a `%b` out of a `(Set %a)`.
+;; EXPECT-ERROR: does not match 'Set.SetModule.Add'
+;; EXPECT-ERROR: a type variable of the signature stands for one of the method's
+(import (std prelude))
+
+(import/class
+  ((Set %a) (: Set.Set)))
+
+(import/extern
+  (set-add (: Set.SetModule.Add (-> (Set %a) %b (Set %a)))))
+
+(defun (main args) 0)

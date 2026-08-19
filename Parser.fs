@@ -272,6 +272,13 @@ type ExternImportSpec =
 /// constructor.
 type ClassImportSpec =
     { Alias: string
+      /// The alias's own type parameters, written applied — `(Set %a)`.
+      ///
+      /// A .NET generic type is a type *constructor*, so the alias for one has
+      /// to be applied before it is a type, and the names are needed to say in
+      /// which order. Empty for an ordinary class, which is the common case and
+      /// is written bare.
+      TypeParams: string list
       ClrClass: string
       ConstructorType: FType option
       Exceptions: string list
@@ -3200,7 +3207,10 @@ type ForeignImportOptions =
 /// naming the fully qualified .NET target, its type, and optionally the
 /// exceptions the call is allowed to turn into an `Err` — so one reader does
 /// for both.
-let parseForeignImportClause (formName: string) (s: SExpr) : string * string * ForeignImportOptions * Range =
+let parseForeignImportClause
+    (formName: string)
+    (s: SExpr)
+    : string * string list * string * ForeignImportOptions * Range =
     let r = getRange s
 
     let malformed () : 'a =
@@ -3208,9 +3218,18 @@ let parseForeignImportClause (formName: string) (s: SExpr) : string * string * F
             $"Syntax error in %s{formName} at %s{Lexer.formatPos r}: expected (alias (: Fully.Qualified.Target type)), the type optionally followed by #:exceptions (ExceptionType ...), #:async, #:uncancellable, #:get or #:set."
 
     match s with
-    | SList([ SAtom { Token = Symbol alias }
-              SList(SAtom { Token = Colon } :: SAtom { Token = Symbol clrTarget } :: rest, _) ],
-            _) ->
+    // The alias may be written applied — `(Set %a)` — which is how a generic
+    // .NET type is named: it is a type constructor, so it is not a type until
+    // it has its arguments, and `import/class` is the only form that accepts
+    // the applied spelling. `parseTypeDefHead` reads it, so the shape is the
+    // one every other type declaration in the language uses.
+    | SList([ head; SList(SAtom { Token = Colon } :: SAtom { Token = Symbol clrTarget } :: rest, _) ], _) ->
+        let alias, typeParams =
+            match head with
+            | SAtom { Token = Symbol name } -> name, []
+            | SList _ -> parseTypeDefHead head
+            | _ -> malformed ()
+
         // The signature is optional. Given, it is enforced against what
         // reflection finds; omitted, the arguments at each call site decide.
         let explicitType, optionForms =
@@ -3259,7 +3278,7 @@ let parseForeignImportClause (formName: string) (s: SExpr) : string * string * F
                   IsSet = false }
                 optionForms
 
-        alias, clrTarget, options, r
+        alias, typeParams, clrTarget, options, r
     | _ -> malformed ()
 
 /// Rejects the keyword combinations an accessor clause cannot mean.
@@ -3423,8 +3442,15 @@ let rec parseDecl (s: SExpr) : Decl =
         let specs =
             clauses
             |> List.map (fun c ->
-                let alias, target, opts, cr = parseForeignImportClause "import/extern" c
+                let alias, typeParams, target, opts, cr = parseForeignImportClause "import/extern" c
                 checkAccessorOptions "import/extern" opts cr
+
+                // An extern alias is a *binding*, and a binding takes no type
+                // parameters: what makes one polymorphic is the signature, and
+                // that is where a generic method's arguments are solved from.
+                if not typeParams.IsEmpty then
+                    failwithf
+                        $"Syntax error in import/extern at %s{Lexer.formatPos cr}: '%s{alias}' is written applied to type parameters, and an extern alias is a function rather than a type. A generic method's type arguments come from its declared signature — write them there, as in (-> (Set %%a) %%a (Set %%a))."
 
                 { Alias = alias
                   ClrTarget = target
@@ -3447,7 +3473,7 @@ let rec parseDecl (s: SExpr) : Decl =
         let specs =
             clauses
             |> List.map (fun c ->
-                let alias, target, opts, cr = parseForeignImportClause "import/class" c
+                let alias, typeParams, target, opts, cr = parseForeignImportClause "import/class" c
                 checkAccessorOptions "import/class" opts cr
 
                 // A constructor is never a task. Silently ignoring the flag
@@ -3464,6 +3490,7 @@ let rec parseDecl (s: SExpr) : Decl =
                         $"Syntax error in import/class at %s{Lexer.formatPos cr}: #:get and #:set name an accessor for a property or field, and this form declares a type and its constructor. Write the accessor as an import/extern clause."
 
                 { Alias = alias
+                  TypeParams = typeParams
                   ClrClass = target
                   ConstructorType = opts.ExplicitType
                   Exceptions = opts.Exceptions

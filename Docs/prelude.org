@@ -344,6 +344,69 @@ pair is a value tuple, so handing it over costs no allocation.
 - ~(seq->map seq)~ : Constructs a map from a sequence of pairs/tuples.
 - ~(map->seq map)~ : Converts the map to a sequence of pairs/tuples.
 
+** Sets and sorted collections =(std set)= =(std orderedset)= =(std orderedmap)=
+
+Three libraries rather than builtins, and imported by name:
+
+#+BEGIN_SRC scheme
+(import (std set))          ;; (Set %a)        — a CHAMP trie, unordered
+(import (std orderedset))   ;; (OrderedSet %a) — a B-tree, sorted
+(import (std orderedmap))   ;; (OrderedMap %k %v)
+#+END_SRC
+
+Nothing in them is a builtin. The operations are the collections' own static
+interfaces — ~Set.SetModule~ and its siblings — reached through ~import/extern~
+clauses that declare a Bjolang signature for each, so the whole of every module
+is Bjolang source. That is what generic interop bought, and these three are its
+first customers.
+
+Each collection has *three* interfaces, and deliberately the same interface
+three times over:
+
+- the collection itself, where every write answers a new one;
+- a **builder**, shaped exactly like ~ListBuilder~ — ~empty~, ~add!~,
+  ~add-all!~, ~length~, and the conversion each way — and the fast way to make
+  one out of nothing, since appends are sorted or scattered into place in a
+  single pass at the end;
+- a **transient**, which is the collection's own interface with the writes
+  turned inside out: the same names in the same argument order, mutating in
+  place and answering nothing. It is the fast way to make one out of *another*,
+  because it owns the nodes it has touched and ~transientset->set~ hands the
+  result back in O(1). The snapshot is safe: what a transient hands over it
+  disowns, so the next edit copies rather than corrupting it.
+
+~(Set %a)~ is ~(Map %k %v)~ with the values left out — effectively constant time,
+and a walk in the trie's own order, which is to say in no order to rely on.
+~set-union~ is cheap where two sets have a history in common, since an untouched
+subtree is taken whole.
+
+~(OrderedSet %a)~ and ~(OrderedMap %k %v)~ are persistent B-trees keyed in the
+elements' natural order, by ~Comparer<T>.Default~. What that buys is the order
+itself — a walk arrives sorted — and the navigation nothing hashed can answer:
+~-min~, ~-max~, ~-successor~ and ~-predecessor~, each answering an ~Option~
+because "there is no smaller element" is a real answer; and ~-range~, ~-from~
+and ~-until~, which are lazy and cost their own size rather than the
+collection's. The key need not be a member: ~(orderedset-successor s 4)~ is the
+smallest element above 4 whether or not 4 is there. The price is the comparison,
+so a lookup is O(log n) and a key type with no natural order fails at the first
+comparison rather than when the collection is made.
+
+~(OrderedMap %k %v)~'s vocabulary is the prelude's ~map-*~ under an
+~orderedmap-~ prefix, down to an entry being a ~(Tuple %k %v)~ and every
+callback taking it whole — so a program that outgrows a hashed map changes the
+constructor and the prefix and stops. ~map->orderedmap~ and ~orderedmap->map~
+cross between them.
+
+All three implement ~Iterable~, ~Collection~, ~Foldable~, ~Functor~ and ~->str~,
+and each publishes a collector — ~setting~, ~ordered-setting~,
+~ordered-mapping~ — so a loop can accumulate into one:
+
+#+BEGIN_SRC scheme
+(loop (:for x (range 0 10))
+      (:when (= 0 (% x 2)))
+      (:acc evens (setting x)))
+#+END_SRC
+
 ** Control =(std prelude)=
 
 Macros, not procedures — which is what lets them take a branch that is not

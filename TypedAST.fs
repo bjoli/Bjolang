@@ -217,6 +217,13 @@ module TypeConstants =
 type ClrClassInfo =
     { Alias: string
       ClrName: string
+      /// The alias's type parameters, for a .NET *generic* type.
+      ///
+      /// Empty for an ordinary class. Non-empty, the alias is registered as a
+      /// type constructor of this arity rather than as a type: `(Set %a)` means
+      /// `Set.Set<T_a>`, and `Set` written bare is an arity error like any
+      /// other.
+      TypeParams: string list
       /// The declared constructor signature, if one was written. It is checked
       /// against the overload reflection picks rather than used instead of it.
       CtorType: HMType option
@@ -287,7 +294,17 @@ type ClrExternInfo =
       /// `#:async`. A `CancellationToken` parameter is not always optional —
       /// `File.ReadLinesAsync` returns a stream rather than a task and takes
       /// one in every overload — so without this such a method is uncallable.
-      Cancellable: bool }
+      Cancellable: bool
+      /// The target is a *generic* method, and these are its type arguments —
+      /// one per parameter C# writes between the angle brackets, each a Bjolang
+      /// type written in terms of `DeclaredType`'s own variables.
+      ///
+      /// Solved once, at the import, by matching the method's shape against the
+      /// declared signature; `None` for an ordinary member, which is resolved
+      /// per call site from its argument types instead. A call then instantiates
+      /// the signature and these together, so the metavariables the arguments
+      /// unify with are the very ones that end up between the brackets.
+      GenericTypeArgs: HMType list option }
 
 /// The overload the type checker selected, carried to the code generator.
 ///
@@ -315,7 +332,16 @@ type DotNetMethodMetadata =
       /// Pass the ambient cancellation token as the final argument. The
       /// overload was resolved *with* it, so `ParameterTypes` includes it and
       /// the user's arguments are the prefix.
-      AmbientToken: bool }
+      AmbientToken: bool
+      /// The type arguments a generic method is called at, in order. Empty for
+      /// an ordinary one.
+      ///
+      /// Written out rather than left to C#'s own inference, for the reason the
+      /// rest of interop is: the call was *typed* against this instantiation,
+      /// and generated code that resolves it a second time has to arrive at the
+      /// same answer. It also covers the calls C# could not infer at all — a
+      /// nullary `Empty<T>()`, whose argument comes from the context.
+      TypeArguments: HMType list }
 
 type DotNetConstructorMetadata =
     { ClrType: string
