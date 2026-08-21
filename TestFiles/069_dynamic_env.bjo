@@ -79,12 +79,21 @@
     (expect "unwound two levels" (describe) "1/quiet"))
   (expect "unwound entirely" (describe) "0/quiet")
 
-  ;; Bindings in one `parameterize` are sequential, not simultaneous: the
-  ;; second value expression sees the first already installed. R7RS leaves the
-  ;; order unspecified but installs none of them until all are evaluated; the
-  ;; `let*` reading is the one that matches the rest of the language.
+  ;; Bindings in one `parameterize` are simultaneous, as R7RS says and as
+  ;; `let`'s are: every value expression is evaluated against the environment
+  ;; outside the form, and only then is any of them installed. So the second
+  ;; value here reads `indent` as it was *before* — 0, not 5 — and the body runs
+  ;; quiet.
   (parameterize ((indent 5) (verbose? (= (parameter-ref indent) 5)))
-    (expect "bindings are sequential" (describe) "5/loud"))
+    (expect "bindings are simultaneous" (describe) "5/quiet"))
+
+  ;; `parameterize*` is the sequential one, for when a later value really is
+  ;; meant to see an earlier binding installed.
+  (parameterize* ((indent 5) (verbose? (= (parameter-ref indent) 5)))
+    (expect "parameterize* is sequential" (describe) "5/loud"))
+
+  ;; Both restore, and in the reverse of the order they were installed.
+  (expect "restored after either" (describe) "0/quiet")
 
   ;; --- Capturing the output port ------------------------------------------
   ;;

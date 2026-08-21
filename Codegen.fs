@@ -569,6 +569,10 @@ let rec serializeExpr (e: Parser.Expr) : string =
             | Some t -> list [ "cast"; serializeFType t; valueStr ]
             | None -> valueStr
 
+        // One binding per `let`, which is now load-bearing rather than merely
+        // tidy: a `let` binds simultaneously, so a group of them would be read
+        // back with a different scope than the nest it was written from. A
+        // single binding means the same thing under either reading.
         list [ "let"; list [ list [ n; annotated ] ]; serializeExpr body ]
 
     | Parser.ELetRec(bindings, body, _) ->

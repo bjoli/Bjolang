@@ -348,6 +348,34 @@ Use ~let~ to bind local variables.
   (+ x y))
 #+END_SRC
 
+The bindings are *simultaneous*, as in R7RS: every value expression is evaluated
+where the form is written, with none of the group's own names in scope. So an
+init that mentions a name the group also binds reads the *outer* one, and a
+group can swap.
+#+BEGIN_SRC scheme
+(let ((a 1) (b 2))
+  (let ((a b) (b a))
+    (Tuple a b)))            ;; (2, 1)
+#+END_SRC
+
+The value expressions still run left to right, in the order written.
+
+Binding the same name twice in one ~let~ is an error: neither binding is in
+scope for the other's value, so there is nothing for the second to shadow.
+
+~let*~, from the prelude, is the sequential form — each binding is in scope for
+the ones after it, which is what you want when a value is built from the one
+before.
+#+BEGIN_SRC scheme
+(let* ((a 1)
+       (b (+ a 1)))
+  (Tuple a b))               ;; (1, 2)
+#+END_SRC
+
+~with-open~ and a ~loop~'s clauses are sequential too, and deliberately: a later
+resource is normally built from an earlier one, and disposal is registered per
+binding so that a constructor that throws cannot leak what is already open.
+
 ** Loops
 A ~let~ with a name binds a procedure to call for the next iteration:
 #+BEGIN_SRC scheme

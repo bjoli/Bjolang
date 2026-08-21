@@ -1,0 +1,142 @@
+;; `let` binds simultaneously; `let*` binds sequentially.
+;;
+;; Every value expression in a `let` is evaluated where the form is written,
+;; with none of the group's own names in scope. That is the R7RS reading, and it
+;; is the one the language already used for the *named* `let`, whose inits are
+;; the arguments of a call — so this removes an inconsistency rather than adding
+;; a rule.
+;;
+;; The AST has no node for a group of bindings, so a group is still built out of
+;; nested single-binding nodes, which are sequential. What makes that faithful
+;; is renaming apart exactly those binders a later init would otherwise see:
+;; `Parser.simultaneous`. A binder nothing shadows keeps the name the author
+;; wrote, so ordinary code is unchanged, down to the C# it emits.
+;;
+;; `let*` is a prelude macro over nested single-binding `let`s — a single
+;; binding means the same thing under either reading, which is why that is all
+;; it has to be.
+;;
+;; The `parameterize` half of the same change is in `069_dynamic_env.bjo`: it
+;; needs the other implementation strategy, since its binders are expressions
+;; rather than names and what leaks between them is the dynamic environment
+;; rather than a scope.
+
+(import (std prelude))
+
+(import/class
+  (StreamWriter (: System.IO.StreamWriter (-> string StreamWriter)))
+  (StreamReader (: System.IO.StreamReader (-> string StreamReader))))
+
+(import/extern
+  (file-delete! (: System.IO.File.Delete (-> string void))))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+(: pair (-> int int string))
+(defun (pair a b)
+  (string-append (int->string a) (string-append "/" (int->string b))))
+
+;; ---------------------------------------------------------------------------
+;; Shadow and read
+;; ---------------------------------------------------------------------------
+
+;; The inner `x` is not in scope for `y`'s init, so `y` reads the outer one.
+;; Sequentially this would be 2/2.
+(: shadow-and-read (-> string))
+(defun (shadow-and-read)
+  (let ((x 1))
+    (let ((x 2) (y x))
+      (pair x y))))
+
+;; The same thing twice over, which is what a swap is.
+(: swap (-> string))
+(defun (swap)
+  (let ((a 1) (b 2))
+    (let ((a b) (b a))
+      (pair a b))))
+
+;; A destructuring binding is a binder like any other, and shadows like one: the
+;; group's `p` is not in scope for the init that reads `p`, so `a` and `b` come
+;; from the *outer* tuple. Sequentially this would not even typecheck, `99`
+;; being no tuple.
+(: destructuring (-> string))
+(defun (destructuring)
+  (let ((p (Tuple 1 2)))
+    (let ((p 99) ((a b) p))
+      (string-append (pair a b) (string-append "/" (int->string p))))))
+
+;; ---------------------------------------------------------------------------
+;; Still sequential
+;; ---------------------------------------------------------------------------
+
+;; `let*`, for when a later value really is meant to see an earlier binding.
+(: sequential (-> string))
+(defun (sequential)
+  (let* ((a 1) (b (+ a 1)) (c (+ b 1)))
+    (string-append (pair a b) (string-append "/" (int->string c)))))
+
+;; A named `let` was always simultaneous — its inits are the arguments of a
+;; call, evaluated before the loop is entered — and is untouched by any of this.
+(: named (-> string))
+(defun (named)
+  (let ((a 1) (b 2))
+    (let loop ((a b) (b a))
+      (pair a b))))
+
+;; ---------------------------------------------------------------------------
+;; Order, and effects
+;; ---------------------------------------------------------------------------
+
+(def/mutable trace "")
+
+(: note (-> string int))
+(defun (note tag)
+  (set! trace (string-append trace tag))
+  0)
+
+;; Simultaneous says nothing about *when* each init runs, only about what is in
+;; scope while it does. R7RS leaves the order unspecified; this compiler keeps
+;; source order, and a program may rely on that.
+(: left-to-right (-> string))
+(defun (left-to-right)
+  (set! trace "")
+  (let ((p (note "1")) (q (note "2")) (s (note "3")))
+    (string-append trace (int->string (+ p (+ q s))))))
+
+;; ---------------------------------------------------------------------------
+;; What deliberately did not change
+;; ---------------------------------------------------------------------------
+
+;; `with-open` stays sequential, and has to: simultaneous would mean every
+;; constructor runs before any disposal is registered, so a later one that threw
+;; would leak the earlier resources. Building a later resource from an earlier
+;; one is also the normal way to write one, which is what this pins.
+(: through-an-alias (-> string string))
+(defun (through-an-alias path)
+  (with-open ((w (StreamWriter. path))
+              (echo w))
+    (.Write echo "aliased"))
+
+  (with-open ((r (StreamReader. path)))
+    (.ReadToEnd r)))
+
+;; ---------------------------------------------------------------------------
+
+(defun (main args)
+  (expect "an init reads the outer binding" (shadow-and-read) "2/1")
+  (expect "a swap swaps" (swap) "2/1")
+  (expect "a destructuring binder shadows too" (destructuring) "1/2/99")
+  (expect "let* is still sequential" (sequential) "1/2/3")
+  (expect "a named let is unaffected" (named) "2/1")
+  (expect "inits run left to right" (left-to-right) "1230")
+
+  (def path "126_simultaneous.tmp")
+  (expect "with-open is still sequential" (through-an-alias path) "aliased")
+  (file-delete! path)
+  0)

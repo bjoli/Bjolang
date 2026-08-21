@@ -1667,9 +1667,20 @@
   (defun (->str m)
     (map->str m)))
 
-;; Useful macros
-;; That should have been implemented earlier
+;; Sequential binding
+;;
+;; `let` and `parameterize` bind *simultaneously*: every value expression is
+;; evaluated where the form is written, and none of the new bindings is in
+;; scope, or installed, for any of them. That is the R7RS reading and it is what
+;; makes `(let ((a b) (b a)) ...)` a swap.
+;;
+;; These two are the sequential forms, for the case where a later value really
+;; is meant to see an earlier binding. Both are macros rather than special
+;; forms, and both are one line of work, because a *single* binding means the
+;; same thing under either reading — so a sequential group is nothing but a nest
+;; of singles, and there is nothing for the compiler to know about it.
 
+;; `(let* ((a 1) (b (+ a 1))) ...)` — each binding is in scope for the next.
 (def/macro (let* form compare inject)
   (syntax-match form
     ((_ () body ...)
@@ -1679,3 +1690,19 @@
     ((_ (bind binds ...) body ...)
      #'(let (,bind)
         (let* (,@binds) ,@body)))))
+
+;; `(parameterize* ((p 1) (q (parameter-ref p))) ...)` — each parameter is
+;; installed before the next value expression runs, so `q` here gets 1 rather
+;; than whatever `p` was outside.
+;;
+;; The unwinding is the same either way: each binding still gets its own
+;; `try/finally`, so an exception restores exactly the pushes that happened.
+(def/macro (parameterize* form compare inject)
+  (syntax-match form
+    ((_ () body ...)
+     #'(let () ,@body))
+    ((_ (bind) body ...)
+     #'(parameterize (,bind) ,@body))
+    ((_ (bind binds ...) body ...)
+     #'(parameterize (,bind)
+        (parameterize* (,@binds) ,@body)))))

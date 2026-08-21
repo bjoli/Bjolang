@@ -11,7 +11,7 @@ open Bjolang.Parser
 let exprFreeVars (isGuarded: bool) (bound: Set<string>) (expr: Expr) : Map<string, bool> =
     let mutable acc = Map.empty
 
-    let record name guarded =
+    let record name (_: Lexer.Range) guarded =
         match Map.tryFind name acc with
         | Some false -> ()
         | _ -> acc <- Map.add name guarded acc

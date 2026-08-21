@@ -899,8 +899,8 @@ let rec patternBinders (pat: Pattern) : string list =
     | PTuple(items, _) -> items |> List.collect patternBinders
     | PConstruct(_, args, _) -> args |> List.collect patternBinders
 
-/// One walk over an untyped expression, calling `reference name guarded` at
-/// every name it mentions but does not bind.
+/// One walk over an untyped expression, calling `reference name range guarded`
+/// at every name it mentions but does not bind.
 ///
 /// `guarded` is true where the reference sits inside something deferred — a
 /// lambda or `seq` body, a `bjo` or task-event operand, the value of a local
@@ -908,10 +908,13 @@ let rec patternBinders (pat: Pattern) : string list =
 /// consumed, so such a reference may legally point at a binding that is not
 /// established yet. That is what tells a mutually recursive group apart from a
 /// use-before-definition; callers that only want the names ignore it.
-let freeNamesWith (reference: string -> bool -> unit) (guarded: bool) (bound: Set<string>) (expr: Expr) : unit =
+///
+/// The range is the occurrence's own, which is what lets a caller that refuses
+/// a name point at the one it means rather than at the enclosing form.
+let freeNamesWith (reference: string -> Range -> bool -> unit) (guarded: bool) (bound: Set<string>) (expr: Expr) : unit =
     let rec go (guarded: bool) (bound: Set<string>) (e: Expr) =
         let sub = go guarded bound
-        let refer n = if not (Set.contains n bound) then reference n guarded
+        let refer n r = if not (Set.contains n bound) then reference n r guarded
 
         match e with
         | EInt _
@@ -919,7 +922,7 @@ let freeNamesWith (reference: string -> bool -> unit) (guarded: bool) (bound: Se
         | EChar _
         | EQuotedSymbol _
         | EKeyword _ -> ()
-        | EIdent(n, _) -> refer n
+        | EIdent(n, r) -> refer n r
         | ETuple(items, _)
         | EList(items, _)
         | EVec(items, _) -> List.iter sub items
@@ -952,8 +955,8 @@ let freeNamesWith (reference: string -> bool -> unit) (guarded: bool) (bound: Se
             sub value
             go guarded (Set.add n bound) body
 
-        | ESet(n, value, _) ->
-            refer n
+        | ESet(n, value, r) ->
+            refer n r
             sub value
 
         | EIf(c, t, f, _) ->
@@ -964,8 +967,8 @@ let freeNamesWith (reference: string -> bool -> unit) (guarded: bool) (bound: Se
             sub c
             sub b
         | EFun(args, body, _, _) -> go true (Set.union bound (Set.ofList args)) body
-        | ERecordUpdate(n, fields, _) ->
-            refer n
+        | ERecordUpdate(n, fields, r) ->
+            refer n r
             fields |> List.iter (snd >> sub)
         | EGetField(target, _, _) -> sub target
 
@@ -1033,10 +1036,289 @@ let exprChildren (e: Expr) : Expr list =
         target
         :: (clauses |> List.collect (fun (_, guard, body) -> (Option.toList guard) @ [ body ]))
 
+// ---------------------------------------------------------------------------
+// Scope
+// ---------------------------------------------------------------------------
+//
+// Free variables, capture-avoiding renaming, and simultaneous binding, over the
+// untyped `Expr`.
+//
+// They live here rather than in `AlphaRename`, which is where the same three
+// things over the *typed* AST live, because the parser is itself a caller:
+// `(let ...)` binds simultaneously and the AST has no node for that, so
+// desugaring one means freshening a shadowed binder on the spot. `AlphaRename`
+// is compiled after `TypedAST`, which is compiled after this file, so a call
+// from here to there cannot exist. It re-exports everything below under its own
+// names, so no caller has to know which side of that line it is on.
+//
+// One walker, not several: `freeNamesWith` above is the only free-variable
+// traversal in the compiler over this AST, and `renameWith` below the only
+// renamer. A binder missed in either is a capture nothing downstream can
+// detect — which is the mistake `AlphaRename`'s docstring records having made
+// once already, in the typed pattern cases.
+
+/// A name whose spelling is part of an interface someone else relies on.
+///
+///   * `::` marks a name the compiler synthesized to reach into another class —
+///     `Foldable_List.Instance::fold`, `core_Module::helper`. It never names a
+///     binder, and rewriting one would point it somewhere else entirely.
+///   * `_` is the binder a body uses for a value nothing reads. Nothing can
+///     reference it, so nothing can capture it either.
+let isRenamable (name: string) : bool =
+    not (name.Contains "::") && name <> "_"
+
+let rec private renamePattern (subst: Map<string, string>) (pat: Pattern) : Pattern =
+    match pat with
+    | PIdent(n, r) -> PIdent((Map.tryFind n subst |> Option.defaultValue n), r)
+    | PList(items, tailOpt, r) ->
+        PList(List.map (renamePattern subst) items, Option.map (renamePattern subst) tailOpt, r)
+    | PVec(items, tailOpt, r) ->
+        PVec(List.map (renamePattern subst) items, Option.map (renamePattern subst) tailOpt, r)
+    | PTuple(items, r) -> PTuple(List.map (renamePattern subst) items, r)
+    | PConstruct(n, args, r) -> PConstruct(n, List.map (renamePattern subst) args, r)
+    | PTypeTest(t, binder, r) ->
+        PTypeTest(t, binder |> Option.map (fun n -> Map.tryFind n subst |> Option.defaultValue n), r)
+    | leaf -> leaf
+
+/// Renames names in `expr`, given how to rename a binder and what the free
+/// names start out substituted by.
+///
+/// `renameBinder` returning a name unchanged is what makes this usable for a
+/// substitution that must *not* freshen: `bind` then drops the name from the
+/// substitution instead of adding to it, so a binder shadows an outer name
+/// exactly as it does at runtime.
+let private renameWith (renameBinder: string -> string) (rootSubst: Map<string, string>) (expr: Expr) : Expr =
+
+    /// Extends `subst` with a new name for each binder, returning the new names
+    /// in the order given.
+    let bind (names: string list) (subst: Map<string, string>) =
+        let renamed = names |> List.map renameBinder
+
+        let subst' =
+            List.zip names renamed
+            |> List.fold (fun acc (n, n') -> if n = n' then Map.remove n acc else Map.add n n' acc) subst
+
+        renamed, subst'
+
+    /// Binds a `defun` argument list, returning the rewritten list.
+    ///
+    /// A keyword parameter's name is left alone. It *is* the calling
+    /// convention — `Codegen` emits it as a C# named argument at every call
+    /// site — so renaming the parameter would rename only one end of it. It
+    /// still shadows an outer name of the same spelling, which is what dropping
+    /// it from the substitution does.
+    let rec bindArgs (args: DefunArg list) (subst: Map<string, string>) =
+        let renamable =
+            args
+            |> List.choose (function
+                | MandatoryArg(n, _)
+                | RestArg n -> Some n
+                | KeywordArg _ -> None)
+
+        let renamed, subst' = bind renamable subst
+
+        let subst' =
+            args
+            |> List.fold
+                (fun acc a ->
+                    match a with
+                    | KeywordArg(n, _) -> Map.remove n acc
+                    | _ -> acc)
+                subst'
+
+        let newName = System.Collections.Generic.Queue renamed
+
+        let args' =
+            args
+            |> List.map (function
+                | MandatoryArg(_, t) -> MandatoryArg(newName.Dequeue(), t)
+                | RestArg _ -> RestArg(newName.Dequeue())
+                | KeywordArg(n, d) -> KeywordArg(n, go subst' d))
+
+        args', subst'
+
+    and go (subst: Map<string, string>) (e: Expr) : Expr =
+        let sub = go subst
+        let reference n = Map.tryFind n subst |> Option.defaultValue n
+
+        match e with
+        | EInt _
+        | EString _
+        | EChar _
+        | EQuotedSymbol _
+        | EKeyword _ -> e
+        | EIdent(n, r) -> EIdent(reference n, r)
+        | ETuple(items, r) -> ETuple(List.map sub items, r)
+        | EApp(target, args, r) -> EApp(sub target, List.map sub args, r)
+        | ECast(t, v, r) -> ECast(t, sub v, r)
+
+        | ELet(n, isFun, args, ann, value, body, r) ->
+            // A function-shaped `let` is never self-recursive: `LetRecify` emits
+            // one only for a singleton component with no self-edge.
+            let args', valueSubst = if isFun then bindArgs args subst else args, subst
+            let value' = go valueSubst value
+            let names', bodySubst = bind [ n ] subst
+            ELet(List.head names', isFun, args', ann, value', go bodySubst body, r)
+
+        | ELetMono(n, value, body, r) ->
+            let value' = go subst value
+            let names', bodySubst = bind [ n ] subst
+            ELetMono(List.head names', value', go bodySubst body, r)
+
+        | ELetRec(bindings, body, r) ->
+            // Every name in the group is bound before any value is renamed.
+            let names = bindings |> List.map (fun (n, _, _, _, _) -> n)
+            let names', groupSubst = bind names subst
+
+            let bindings' =
+                List.zip names' bindings
+                |> List.map (fun (n', (_, isFun, args, ann, value)) ->
+                    let args', valueSubst = if isFun then bindArgs args groupSubst else args, groupSubst
+                    n', isFun, args', ann, go valueSubst value)
+
+            ELetRec(bindings', go groupSubst body, r)
+
+        | ELetTuple(names, value, body, r) ->
+            let value' = sub value
+            let names', bodySubst = bind names subst
+            ELetTuple(names', value', go bodySubst body, r)
+
+        | ELetMutable(n, ann, value, body, r) ->
+            let value' = sub value
+            let names', bodySubst = bind [ n ] subst
+            ELetMutable(List.head names', ann, value', go bodySubst body, r)
+
+        | ESet(n, value, r) -> ESet(reference n, sub value, r)
+        | EIf(c, t, f, r) -> EIf(sub c, sub t, sub f, r)
+        | EWhen(c, b, neg, r) -> EWhen(sub c, sub b, neg, r)
+
+        | EFun(args, body, colour, r) ->
+            let args', bodySubst = bind args subst
+            EFun(args', go bodySubst body, colour, r)
+
+        | ERecordUpdate(n, fields, r) -> ERecordUpdate(reference n, fields |> List.map (fun (k, v) -> k, sub v), r)
+        | EGetField(target, f, r) -> EGetField(sub target, f, r)
+        | EList(items, r) -> EList(List.map sub items, r)
+        | EVec(items, r) -> EVec(List.map sub items, r)
+
+        | EMatch(target, clauses, r) ->
+            EMatch(
+                sub target,
+                clauses
+                |> List.map (fun (pat, guard, body) ->
+                    let _, inner = bind (patternBinders pat) subst
+                    renamePattern inner pat, Option.map (go inner) guard, go inner body),
+                r
+            )
+
+        | ETryFinally(body, cleanup, r) -> ETryFinally(sub body, sub cleanup, r)
+        | ETryCatch(body, exceptions, r) -> ETryCatch(sub body, exceptions, r)
+        | ESeq(body, r) -> ESeq(sub body, r)
+        | EBjo(body, r) -> EBjo(sub body, r)
+        | ETaskEvent(body, r) -> ETaskEvent(sub body, r)
+        | EYield(v, r) -> EYield(sub v, r)
+        | EYieldFrom(s, r) -> EYieldFrom(sub s, r)
+
+    go rootSubst expr
+
+/// Freshens every binder in `expr`, and every free occurrence of a name in
+/// `roots`.
+///
+/// `roots` are the caller's chosen entry names — an inline template's formal
+/// parameters — which are free in `expr` but still have to be renamed apart so
+/// that the arguments can be substituted for names nothing else can mention.
+/// The returned map covers exactly those.
+let freshen (roots: string list) (expr: Expr) : Expr * Map<string, string> =
+    let rootSubst =
+        roots
+        |> List.filter isRenamable
+        |> List.map (fun r -> r, Gensym.fresh r)
+        |> Map.ofList
+
+    renameWith (fun n -> if isRenamable n then Gensym.fresh n else n) rootSubst expr, rootSubst
+
+/// Rewrites the *free* occurrences of the names in `subst`, leaving binders as
+/// they are.
+///
+/// A name the expression binds itself keeps its meaning: the substitution is
+/// dropped for the extent of that binder, so this cannot reach inside a scope
+/// where the name means something else.
+let renameFree (subst: Map<string, string>) (expr: Expr) : Expr =
+    if Map.isEmpty subst then expr else renameWith id subst expr
+
+/// Every name `expr` references without binding, given `bound` already in scope.
+let freeNames (bound: Set<string>) (expr: Expr) : Set<string> =
+    let mutable acc = Set.empty
+    freeNamesWith (fun n _ _ -> acc <- Set.add n acc) false bound expr
+    acc
+
+/// A group of bindings that all take effect at once, expressed as bindings that
+/// nest.
+///
+/// Nesting is the only scoping mechanism the AST has, so a simultaneous group
+/// has to be built out of a sequential one that *means* the same thing. It does
+/// as soon as no binder of the group is visible to a later init — and the only
+/// way one can be is by having the name that a later init reads from further
+/// out. So: rename exactly those binders apart, and rewrite the *body* to read
+/// the new names. The inits are never rewritten; they mean what they meant in
+/// the enclosing scope, which is the whole point.
+///
+///     (let ((x 1)) (let ((x 2) (y x)) (Tuple x y)))
+///  => (let ((x 1)) (let ((x__7 2)) (let ((y x)) (Tuple x__7 y))))
+///
+/// Renaming only where it is needed, rather than everywhere: binder names
+/// survive into the generated C# and into every message that mentions the
+/// binding, so a gensym for a binder nothing shadows is a debugging cost with
+/// nothing bought by it. Code that does not shadow-and-read — which is nearly
+/// all code — comes out of this untouched.
+///
+/// A binding contributes a *list* of names because a destructuring binder binds
+/// several at once, and each of them shadows on its own.
+///
+/// The caller keeps its own nesting and its own node types: what comes back is
+/// the binder names to use, in source order, and the substitution to apply to
+/// the body.
+let simultaneous (bindings: (string list * Expr) list) : string list list * Map<string, string> =
+    // `laterFree[i]` is everything the inits after `i` read. One element longer
+    // than the group, so the last binding reads the empty set.
+    let laterFree =
+        List.foldBack
+            (fun (_, init) (acc: Set<string> list) -> Set.union (freeNames Set.empty init) (List.head acc) :: acc)
+            bindings
+            [ Set.empty ]
+
+    let renames =
+        bindings
+        |> List.mapi (fun i (names, _) ->
+            names
+            |> List.choose (fun n ->
+                if isRenamable n && Set.contains n (List.item (i + 1) laterFree) then
+                    // `baseName` first: freshening a name that is already a
+                    // gensym would otherwise stack suffixes, `x__3__11`, and
+                    // the C# local would carry both.
+                    Some(n, Gensym.fresh (Gensym.baseName n))
+                else
+                    None))
+        |> List.concat
+        |> Map.ofList
+
+    let renamed =
+        bindings
+        |> List.map (fun (names, _) -> names |> List.map (fun n -> Map.tryFind n renames |> Option.defaultValue n))
+
+    renamed, renames
+
 /// One clause of a `(loop ...)`, still unparsed.
 ///
 /// The clause list is flat and there is no body position: every clause carries
 /// its own condition, and iteration order is clause order.
+///
+/// Which is also why `:for`, `:with` and `:let` bind **sequentially** and stay
+/// that way now that `let`'s bindings are simultaneous. A clause list is an
+/// explicitly ordered thing, and an inner level's sequence is normally written
+/// in terms of the outer level's variable — `(:for row rows) (:for cell row)` —
+/// so a simultaneous reading would forbid the ordinary nested loop rather than
+/// merely change what it means.
 type private LoopClause =
     | LFor of SExpr * SExpr * Range
     /// `(:with pat start [update [end]])`. A loop variable that carries its own
@@ -1295,15 +1577,40 @@ let rec parseExpr (s: SExpr) : Expr =
             // of nothing is `unit`.
             | "begin" -> parseBody args listRange
 
+            // `(let ((x a) (y b)) body)` — R7RS, so the bindings are
+            // *simultaneous*: every init is evaluated in the enclosing scope,
+            // and none of the group's names is in scope for any of them.
+            // `(let ((a b) (b a)) ...)` swaps.
+            //
+            // The AST has no node for a group, so the group is built out of
+            // nested single-binding nodes, which are sequential — and
+            // `simultaneous` is what makes that faithful, by renaming apart the
+            // binders a later init would otherwise see. Its docstring has the
+            // reasoning; the two things worth knowing here are that a binder
+            // nothing shadows is left with the name the author gave it, and
+            // that the substitution goes to the body and never to an init.
+            //
+            // The sequential form is `let*`, a prelude macro over nested
+            // single-binding `let`s. A single binding means the same thing
+            // under both readings, which is what lets the macro be that simple.
+            //
+            // Left to right is kept, though R7RS leaves the order of the inits
+            // unspecified: an init may have effects, the emitted C# has one
+            // order regardless, and an order nobody can predict buys a
+            // reordering nobody performs.
             | "let" ->
                 match args with
                 | SList(bindings, _) :: bodyExprs ->
                     let body = parseBody bodyExprs listRange
 
-                    List.foldBack
-                        (fun bind acc ->
+                    // Each binding as (the names it binds, its init, its own range).
+                    // A destructuring binding contributes several names, and each
+                    // of them shadows on its own.
+                    let parsedBindings =
+                        bindings
+                        |> List.map (fun bind ->
                             match bind with
-                            | SList([ Ident k; v ], _) -> ELet(k, false, [], None, parseExpr v, acc, getRange bind)
+                            | SList([ Ident k; v ], _) -> [ k ], parseExpr v, getRange bind, false
                             | SList([ SList(names, _); v ], bindRange) when
                                 not names.IsEmpty
                                 && names
@@ -1320,12 +1627,46 @@ let rec parseExpr (s: SExpr) : Expr =
                                     match rawNames with
                                     | "Tuple" :: restNames -> restNames
                                     | _ -> rawNames
-                                ELetTuple(tupleNames, parseExpr v, acc, bindRange)
+                                tupleNames, parseExpr v, bindRange, true
                             | _ -> failwith "Invalid let binding")
-                        bindings
-                        body
+
+                    // A repeated name is meaningful under `let*` — the second
+                    // binding shadows the first — and means nothing at all here,
+                    // since neither binding is in scope for the other's init.
+                    // Refused rather than given an arbitrary winner.
+                    //
+                    // `_` is exempt: it is the binder a body uses for a value
+                    // nothing reads, and a body of several statements is several
+                    // of them.
+                    parsedBindings
+                    |> List.collect (fun (names, _, bindRange, _) -> names |> List.map (fun n -> n, bindRange))
+                    |> List.filter (fun (n, _) -> n <> "_")
+                    |> List.groupBy fst
+                    |> List.iter (fun (n, occurrences) ->
+                        if occurrences.Length > 1 then
+                            let (_, secondRange) = occurrences[1]
+
+                            failwithf
+                                $"'%s{n}' is bound twice in the same let at %s{Lexer.formatPos secondRange}. A let binds simultaneously, so neither binding is in scope for the other's value and there is nothing for the second to shadow. Write (let* ...) if the second is meant to see the first, or give one of them another name.")
+
+                    let renamedNames, bodySubst =
+                        simultaneous (parsedBindings |> List.map (fun (names, init, _, _) -> names, init))
+
+                    List.foldBack
+                        (fun (names, (_, init, bindRange, isTuple)) acc ->
+                            if isTuple then
+                                ELetTuple(names, init, acc, bindRange)
+                            else
+                                ELet(List.head names, false, [], None, init, acc, bindRange))
+                        (List.zip renamedNames parsedBindings)
+                        (renameFree bodySubst body)
                 | Ident name :: SList(bindings, _) :: bodyExprs ->
-                    // Named let
+                    // Named let. Already simultaneous, and unchanged by any of
+                    // the above: its inits are the arguments of an `EApp`, so
+                    // they are evaluated in the enclosing scope by construction
+                    // and the loop's parameters cannot be in scope for them.
+                    // This form is where the language was right about `let` all
+                    // along and the unnamed one was not.
                     let parsedBindings =
                         bindings
                         |> List.map (function
@@ -1714,6 +2055,16 @@ let rec parseExpr (s: SExpr) : Expr =
             // Each binding gets its *own* try/finally rather than one around
             // all of them, so a later constructor that throws still leaves the
             // earlier resources disposed.
+            //
+            // Which is also why the bindings stay **sequential** where `let`'s
+            // and `parameterize`'s became simultaneous. Simultaneous would mean
+            // every constructor runs before any disposal is registered, so a
+            // second one that throws would leak the first resource — the exact
+            // failure the per-binding `try/finally` above exists to prevent.
+            // And `(with-open ((r (open-in p)) (w (wrap r))) ...)` is how one is
+            // normally written: a later resource built from an earlier one needs
+            // the earlier one's name in scope. Resource safety and the ordinary
+            // usage agree here, and both outrank uniformity.
             | "with-open" ->
                 match args with
                 | SList(bindings, _) :: bodyForms ->
@@ -1757,16 +2108,34 @@ let rec parseExpr (s: SExpr) : Expr =
             // value, so one `finally` undoes a binding whichever slot it went
             // to — a port field or the champ.
             //
-            // Also like `with-open`, and unlike R7RS: the bindings nest, so
-            // they are sequential rather than simultaneous. A later value
-            // expression sees the earlier bindings already installed, and a
-            // later one that throws leaves the earlier ones restored. The `let*`
-            // reading is the one that matches the rest of the language — a
-            // keyword argument's default may already read an earlier parameter.
+            // The bindings are *simultaneous*, as R7RS says and as `let`'s are:
+            // every parameter and value expression is evaluated against the
+            // environment the form was written in, and only then is any of them
+            // installed. So a later value expression that reads an earlier
+            // parameter of the same form reads what it was *outside*.
             //
-            // Note the binder is an arbitrary *expression*, not a name: a
+            // The mechanism is not `let`'s. There is no binder to rename apart
+            // here — a binding's left-hand side is an arbitrary expression, not
+            // a name — and the capture is not lexical but dynamic: an earlier
+            // parameter is already installed in the environment while a later
+            // value expression runs. What fixes that is evaluating everything
+            // into temporaries first, in one flat chain outside the pushes, and
+            // pushing the temporaries.
+            //
+            // `parameterize*` — a prelude macro over nested single-binding
+            // `parameterize`s — is the sequential form, for the rare case that
+            // wants one binding to be visible while the next value is computed.
+            //
+            // The unwinding is unchanged, and still nests: each binding gets its
+            // own `try/finally`, so a `finally` runs only for a push that
+            // happened, and the environment comes back in the reverse of the
+            // order it went out.
+            //
+            // Note again that the binder is an arbitrary *expression*: a
             // parameter is a value, so `(parameterize (((config-port c) w)) ...)`
-            // is as legitimate as naming one directly.
+            // is as legitimate as naming one directly — which is the other
+            // reason it has to go into a temporary, since computing it twice
+            // could push one parameter and restore another.
             | "parameterize" ->
                 match args with
                 | SList(bindings, _) :: bodyForms ->
@@ -1775,36 +2144,55 @@ let rec parseExpr (s: SExpr) : Expr =
 
                     let body = parseBody bodyForms listRange
 
-                    List.foldBack
-                        (fun binding acc ->
+                    // (the parameter's temporary, the value's temporary, the two
+                    // expressions they hold, the binding's own range)
+                    let parsedBindings =
+                        bindings
+                        |> List.map (fun binding ->
                             match binding with
                             | SList([ param; value ], bindRange) ->
+                                Gensym.fresh "dynparam", Gensym.fresh "dynvalue", parseExpr param, parseExpr value, bindRange
+                            | bad ->
+                                failwithf
+                                    $"Invalid parameterize binding at %s{Lexer.formatPos (getRange bad)}: expected (parameter expression).")
+
+                    let installed =
+                        List.foldBack
+                            (fun (paramTemp, valueTemp, _, _, bindRange) acc ->
                                 let saved = Gensym.fresh "dynsaved"
 
                                 let push =
                                     EApp(
                                         EIdent("parameter-push!", bindRange),
-                                        [ parseExpr param; parseExpr value ],
+                                        [ EIdent(paramTemp, bindRange); EIdent(valueTemp, bindRange) ],
                                         bindRange
                                     )
 
                                 let restore =
                                     EApp(EIdent("dyn-restore!", bindRange), [ EIdent(saved, bindRange) ], bindRange)
 
-                                ELet(
-                                    saved,
-                                    false,
-                                    [],
-                                    None,
-                                    push,
-                                    ETryFinally(acc, restore, bindRange),
-                                    bindRange
-                                )
-                            | bad ->
-                                failwithf
-                                    $"Invalid parameterize binding at %s{Lexer.formatPos (getRange bad)}: expected (parameter expression).")
-                        bindings
-                        body
+                                ELet(saved, false, [], None, push, ETryFinally(acc, restore, bindRange), bindRange))
+                            parsedBindings
+                            body
+
+                    // Source order, left to right, and the parameter before its
+                    // own value — the same order the expressions were written
+                    // in, which is the order they used to run in too. R7RS
+                    // leaves it unspecified; an effect in a value expression is
+                    // not a reason to make it unpredictable.
+                    List.foldBack
+                        (fun (paramTemp, valueTemp, paramExpr, valueExpr, bindRange) acc ->
+                            ELet(
+                                paramTemp,
+                                false,
+                                [],
+                                None,
+                                paramExpr,
+                                ELet(valueTemp, false, [], None, valueExpr, acc, bindRange),
+                                bindRange
+                            ))
+                        parsedBindings
+                        installed
                 | _ ->
                     failwithf
                         $"Invalid parameterize at %s{Lexer.formatPos r}: expected (parameterize ((parameter expression) ...) body...)"
@@ -1872,6 +2260,12 @@ let rec parseExpr (s: SExpr) : Expr =
 /// Each generated `bind` carries the range of *its own* form. Giving them all
 /// the range of the opening paren made every type error in a ten-step block
 /// point at the same character.
+///
+/// `:bind` and `:let` are **sequential**, and stay so where `let`'s bindings
+/// became simultaneous. A `do` block is a chain of `bind` calls, each taking the
+/// rest of the block as a continuation, so a step is inside the previous step's
+/// lambda by construction: monadic sequencing *is* the sequencing, and there is
+/// no group here for a simultaneous reading to be about.
 and desugarDo (forms: SExpr list) (fallbackRange: Range) : Expr =
     let named (s: SExpr) =
         match s with
@@ -2692,57 +3086,22 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
     /// value out.
     ///
     /// Scope-aware, because a finish block is an ordinary expression and may
-    /// perfectly well bind a name of its own that happens to collide.
+    /// perfectly well bind a name of its own that happens to collide — which is
+    /// why this is `freeNamesWith` rather than a search for the spelling. It
+    /// used to be a walker of its own, and that walker had already drifted: its
+    /// pattern case did not see a `(:is T e)` binder, so a finish block that
+    /// rebound the name that way was refused for shadowing it.
     let rejectWithInFinish (e: Expr) : unit =
         let names = Set.ofList withVarNames
 
-        let rec patternBinds (p: Pattern) : string list =
-            match p with
-            | PIdent(n, _) -> [ n ]
-            | PList(items, tail, _)
-            | PVec(items, tail, _) -> (items @ Option.toList tail) |> List.collect patternBinds
-            | PTuple(items, _)
-            | PConstruct(_, items, _) -> items |> List.collect patternBinds
-            | _ -> []
-
-        let rec go (bound: Set<string>) (x: Expr) =
-            let sub = go bound
-
-            match x with
-            | EIdent(n, ir) when Set.contains n names && not (Set.contains n bound) ->
-                failwithf
-                    $"'%s{n}' at %s{Lexer.formatPos ir} is a (:with ...) variable, and a loop variable is not in scope after the loop: the finish block is reached from every exit, and an inner level's variables do not exist at an exit taken from an outer one. Carry it out with an accumulator — (:acc last (folding 0 %s{n})) — and name that in the '=>' instead."
-            | EFun(args, body, _, _) -> go (Set.union bound (Set.ofList args)) body
-            | ELet(n, _, args, _, value, body, _) ->
-                go (Set.union bound (Set.ofList (allArgNames args))) value
-                go (Set.add n bound) body
-            | ELetMono(n, value, body, _) ->
-                sub value
-                go (Set.add n bound) body
-            | ELetMutable(n, _, value, body, _) ->
-                sub value
-                go (Set.add n bound) body
-            | ELetTuple(ns, value, body, _) ->
-                sub value
-                go (Set.union bound (Set.ofList ns)) body
-            | ELetRec(bindings, body, _) ->
-                let inner =
-                    Set.union bound (bindings |> List.map (fun (n, _, _, _, _) -> n) |> Set.ofList)
-
-                for (_, _, args, _, v) in bindings do
-                    go (Set.union inner (Set.ofList (allArgNames args))) v
-
-                go inner body
-            | EMatch(target, clauses, _) ->
-                sub target
-
-                for (pat, guard, body) in clauses do
-                    let inner = Set.union bound (patternBinds pat |> Set.ofList)
-                    Option.iter (go inner) guard
-                    go inner body
-            | _ -> exprChildren x |> List.iter sub
-
-        go Set.empty e
+        freeNamesWith
+            (fun n ir _ ->
+                if Set.contains n names then
+                    failwithf
+                        $"'%s{n}' at %s{Lexer.formatPos ir} is a (:with ...) variable, and a loop variable is not in scope after the loop: the finish block is reached from every exit, and an inner level's variables do not exist at an exit taken from an outer one. Carry it out with an accumulator — (:acc last (folding 0 %s{n})) — and name that in the '=>' instead.")
+            false
+            Set.empty
+            e
 
     let finishBlockBody =
         // `:final`'s accumulator is not the author's and has no business in the
@@ -3088,6 +3447,12 @@ and parseDefunArgs (args: SExpr list) : DefunArg list =
     | SList([ SAtom { Token = Colon }; SAtom { Token = Symbol n }; t ], _) :: rest ->
         MandatoryArg(n, Some(parseType t)) :: parseDefunArgs rest
     | SAtom { Token = Comma } :: rest -> parseDefunArgs rest
+    // A keyword parameter's default is evaluated **sequentially**, with the
+    // parameters before it in scope — unchanged by `let` becoming simultaneous.
+    // The list is a C# parameter list by the time this runs anywhere, and a
+    // default that reads an earlier parameter is emitted as an expression in the
+    // method body, where the earlier one is already a local. There is nowhere to
+    // put a simultaneous reading even if one were wanted.
     | SList(SAtom { Token = Keyword name } :: [ defaultExpr ], _) :: rest ->
         KeywordArg(name, parseExpr defaultExpr) :: parseDefunArgs rest
     | SAtom { Token = Keyword "rest" } :: SAtom { Token = Symbol name } :: rest ->

@@ -62,50 +62,28 @@ let private betaReduce
         failwithf
             $"The lambda at %s{Lexer.formatPos funRange} takes %d{List.length parameters} argument(s) but is applied to %d{List.length args} at %s{Lexer.formatPos appRange}. Give it one argument per parameter, or add the missing parameters to the (fun (...) ...) list."
 
-    // `let` is sequential; application arguments are not.
-    //
-    // Nested `let` means `let*` — the second value is evaluated with the first
-    // binding in scope — whereas every argument of an application is evaluated
-    // in the *enclosing* scope. So a parameter whose name a later argument
-    // mentions would capture it:
+    // Application arguments are *simultaneous* — every one of them is evaluated
+    // in the enclosing scope — and a chain of nested `ELet`s is sequential. That
+    // difference is a capture:
     //
     //     (def x 1) (def y 2)
     //     ((fun (x y) (- x y)) y x)   ; (- 2 1), and naively (- 2 2)
     //
-    // Freshening only those parameters, rather than all of them
-    // unconditionally: the names survive into the generated C# and into every
-    // diagnostic that mentions the binding, and `p__37` for a parameter that
-    // never needed renaming is a debugging cost paid on every applied lambda in
-    // the program to fix the rare one. It relies on `AlphaRename.freeNames`
-    // being complete over the untyped `Expr` — one missed binding form is a
-    // missed capture — which is why the traversal is shared with the pass that
-    // already had to get it right rather than written again here.
-    let freeInArgs = args |> List.map (AlphaRename.freeNames Set.empty)
+    // Which is exactly the problem `(let ((x a) (y b)) ...)` has, so it is
+    // exactly the same call: `Parser.simultaneous` freshens the parameters a
+    // later argument would otherwise see, and hands back the names to bind and
+    // a substitution for the body. Sharing it is the point — two
+    // implementations of one rule would be one implementation and one latent
+    // capture, and the one that fires less often would be the wrong one.
+    let boundNameLists, bodySubst =
+        simultaneous (List.map2 (fun p arg -> [ p ], arg) parameters args)
 
-    // `laterFree[i]` is everything the arguments *after* `i` mention. One
-    // element longer than `args`, so the last parameter reads the empty set.
-    let laterFree =
-        List.foldBack (fun fv (acc: Set<string> list) -> Set.union fv (List.head acc) :: acc) freeInArgs [ Set.empty ]
+    let boundNames = boundNameLists |> List.map List.head
 
-    let renames =
-        parameters
-        |> List.mapi (fun i p ->
-            // `_` is how the parser spells a binder nothing reads, and
-            // `AlphaRename.isRenamable` refuses to touch it; a name it declines
-            // cannot be captured either, since nothing references it.
-            if AlphaRename.isRenamable p && Set.contains p (List.item (i + 1) laterFree) then
-                Some(p, Gensym.fresh p)
-            else
-                None)
-        |> List.choose id
-        |> Map.ofList
-
-    // Renaming the *body*, not the arguments: the arguments are the caller's
-    // expressions and mean what they meant where they were written.
-    let renamedBody = AlphaRename.renameFree renames body
-
-    let boundNames =
-        parameters |> List.map (fun p -> Map.tryFind p renames |> Option.defaultValue p)
+    // The substitution goes to the body, never to the arguments: the arguments
+    // are the caller's expressions and mean what they meant where they were
+    // written.
+    let renamedBody = renameFree bodySubst body
 
     List.foldBack
         (fun (name, arg) rest ->

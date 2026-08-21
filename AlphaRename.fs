@@ -8,7 +8,9 @@ open Bjolang.TypedAST
 /// This is deliberately *not* a CS0136 patch. It is the substrate three
 /// different things need:
 ///
-///   * `freshen`, over untyped `Expr`, is the inliner's splice hygiene. A
+///   * `freshen`, over untyped `Expr` — implemented in `Parser`'s "Scope"
+///     section and re-exported here, see below — is the inliner's splice
+///     hygiene. A
 ///     template body is renamed apart from its call site *before* the arguments
 ///     are bound into it, because binding first destroys meaning that no later
 ///     pass can recover: `TLet(a, argA, TLet(b, argB, body))` captures a caller
@@ -23,219 +25,37 @@ open Bjolang.TypedAST
 /// hardcoded to "all of them", so that hygienic macro expansion can reuse it.
 
 // ---------------------------------------------------------------------------
-// What may never be renamed
+// Untyped: re-exported from `Parser`
 // ---------------------------------------------------------------------------
+//
+// The untyped half of this module lives in `Parser.fs`, in its "Scope" section,
+// because the parser is one of its callers: a simultaneous `(let ...)` is built
+// out of nested single-binding nodes, and that means freshening a shadowed
+// binder while desugaring. This file is compiled after `TypedAST.fs`, which is
+// compiled after `Parser.fs`, so the call cannot go the other way.
+//
+// Re-exported rather than left there to be qualified, so that every caller —
+// `Macro`, `TraitInline`, `Exports`, `Pipeline`, `Normalize` — goes on naming
+// one module for renaming, whichever AST it is renaming.
 
 /// A name whose spelling is part of an interface someone else relies on.
-///
-///   * `::` marks a name the compiler synthesized to reach into another class —
-///     `Foldable_List.Instance::fold`, `core_Module::helper`. It never names a
-///     binder, and rewriting one would point it somewhere else entirely.
-///   * A keyword parameter's name is the calling convention: `Codegen` emits it
-///     as a C# named argument at every call site.
-let isRenamable (name: string) : bool =
-    not (name.Contains "::") && name <> "_"
+let isRenamable = Parser.isRenamable
 
-// ---------------------------------------------------------------------------
-// Untyped: `freshen`
-// ---------------------------------------------------------------------------
+/// Freshens every binder in an untyped expression, and every free occurrence of
+/// a name in `roots`.
+let freshen = Parser.freshen
 
-let private withoutKeys (names: string seq) (subst: Map<string, string>) =
-    names |> Seq.fold (fun acc n -> Map.remove n acc) subst
+/// Rewrites the *free* occurrences of the names in a substitution, leaving
+/// binders as they are.
+let renameFree = Parser.renameFree
 
-let rec private renamePattern (subst: Map<string, string>) (pat: Pattern) : Pattern =
-    match pat with
-    | PIdent(n, r) -> PIdent((Map.tryFind n subst |> Option.defaultValue n), r)
-    | PList(items, tailOpt, r) ->
-        PList(List.map (renamePattern subst) items, Option.map (renamePattern subst) tailOpt, r)
-    | PVec(items, tailOpt, r) ->
-        PVec(List.map (renamePattern subst) items, Option.map (renamePattern subst) tailOpt, r)
-    | PTuple(items, r) ->
-        PTuple(List.map (renamePattern subst) items, r)
-    | PConstruct(n, args, r) -> PConstruct(n, List.map (renamePattern subst) args, r)
-    | PTypeTest(t, binder, r) -> PTypeTest(t, binder |> Option.map (fun n -> Map.tryFind n subst |> Option.defaultValue n), r)
-    | leaf -> leaf
-
-/// Renames names in `expr`, given how to rename a binder and what the free
-/// names start out substituted by.
-///
-/// `renameBinder` returning a name unchanged is what makes this usable for a
-/// substitution that must *not* freshen: `bind` then drops the name from the
-/// substitution instead of adding to it, so a binder shadows an outer name
-/// exactly as it does at runtime.
-let private renameWith
-    (renameBinder: string -> string)
-    (rootSubst: Map<string, string>)
-    (expr: Expr)
-    : Expr =
-
-    /// Extends `subst` with a new name for each binder, returning the new names
-    /// in the order given.
-    let bind (names: string list) (subst: Map<string, string>) =
-        let renamed = names |> List.map renameBinder
-
-        let subst' =
-            List.zip names renamed
-            |> List.fold (fun acc (n, n') -> if n = n' then Map.remove n acc else Map.add n n' acc) subst
-
-        renamed, subst'
-
-    /// Binds a `defun` argument list, returning the rewritten list.
-    ///
-    /// A keyword parameter's name is left alone. It *is* the calling
-    /// convention — `Codegen` emits it as a C# named argument at every call
-    /// site — so renaming the parameter would rename only one end of it. It
-    /// still shadows an outer name of the same spelling, which is what dropping
-    /// it from the substitution does.
-    let rec bindArgs (args: DefunArg list) (subst: Map<string, string>) =
-        let renamable =
-            args
-            |> List.choose (function
-                | MandatoryArg(n, _)
-                | RestArg n -> Some n
-                | KeywordArg _ -> None)
-
-        let renamed, subst' = bind renamable subst
-
-        let subst' =
-            args
-            |> List.fold
-                (fun acc a ->
-                    match a with
-                    | KeywordArg(n, _) -> Map.remove n acc
-                    | _ -> acc)
-                subst'
-
-        let newName = System.Collections.Generic.Queue renamed
-
-        let args' =
-            args
-            |> List.map (function
-                | MandatoryArg(_, t) -> MandatoryArg(newName.Dequeue(), t)
-                | RestArg _ -> RestArg(newName.Dequeue())
-                | KeywordArg(n, d) -> KeywordArg(n, go subst' d))
-
-        args', subst'
-
-    and go (subst: Map<string, string>) (e: Expr) : Expr =
-        let sub = go subst
-        let reference n = Map.tryFind n subst |> Option.defaultValue n
-
-        match e with
-        | EInt _
-        | EString _
-        | EChar _
-        | EQuotedSymbol _
-        | EKeyword _ -> e
-        | EIdent(n, r) -> EIdent(reference n, r)
-        | ETuple(items, r) -> ETuple(List.map sub items, r)
-        | EApp(target, args, r) -> EApp(sub target, List.map sub args, r)
-        | ECast(t, v, r) -> ECast(t, sub v, r)
-
-        | ELet(n, isFun, args, ann, value, body, r) ->
-            // A function-shaped `let` is never self-recursive: `LetRecify` emits
-            // one only for a singleton component with no self-edge.
-            let args', valueSubst = if isFun then bindArgs args subst else args, subst
-            let value' = go valueSubst value
-            let names', bodySubst = bind [ n ] subst
-            ELet(List.head names', isFun, args', ann, value', go bodySubst body, r)
-
-        | ELetMono(n, value, body, r) ->
-            let value' = go subst value
-            let names', bodySubst = bind [ n ] subst
-            ELetMono(List.head names', value', go bodySubst body, r)
-
-        | ELetRec(bindings, body, r) ->
-            // Every name in the group is bound before any value is renamed.
-            let names = bindings |> List.map (fun (n, _, _, _, _) -> n)
-            let names', groupSubst = bind names subst
-
-            let bindings' =
-                List.zip names' bindings
-                |> List.map (fun (n', (_, isFun, args, ann, value)) ->
-                    let args', valueSubst = if isFun then bindArgs args groupSubst else args, groupSubst
-                    n', isFun, args', ann, go valueSubst value)
-
-            ELetRec(bindings', go groupSubst body, r)
-
-        | ELetTuple(names, value, body, r) ->
-            let value' = sub value
-            let names', bodySubst = bind names subst
-            ELetTuple(names', value', go bodySubst body, r)
-
-        | ELetMutable(n, ann, value, body, r) ->
-            let value' = sub value
-            let names', bodySubst = bind [ n ] subst
-            ELetMutable(List.head names', ann, value', go bodySubst body, r)
-
-        | ESet(n, value, r) -> ESet(reference n, sub value, r)
-        | EIf(c, t, f, r) -> EIf(sub c, sub t, sub f, r)
-        | EWhen(c, b, neg, r) -> EWhen(sub c, sub b, neg, r)
-
-        | EFun(args, body, colour, r) ->
-            let args', bodySubst = bind args subst
-            EFun(args', go bodySubst body, colour, r)
-
-        | ERecordUpdate(n, fields, r) ->
-            ERecordUpdate(reference n, fields |> List.map (fun (k, v) -> k, sub v), r)
-        | EGetField(target, f, r) -> EGetField(sub target, f, r)
-        | EList(items, r) -> EList(List.map sub items, r)
-        | EVec(items, r) -> EVec(List.map sub items, r)
-
-        | EMatch(target, clauses, r) ->
-            EMatch(
-                sub target,
-                clauses
-                |> List.map (fun (pat, guard, body) ->
-                    let _, inner = bind (patternBinders pat) subst
-                    renamePattern inner pat, Option.map (go inner) guard, go inner body),
-                r
-            )
-
-        | ETryFinally(body, cleanup, r) -> ETryFinally(sub body, sub cleanup, r)
-        | ETryCatch(body, exceptions, r) -> ETryCatch(sub body, exceptions, r)
-        | ESeq(body, r) -> ESeq(sub body, r)
-        | EBjo(body, r) -> EBjo(sub body, r)
-        | ETaskEvent(body, r) -> ETaskEvent(sub body, r)
-        | EYield(v, r) -> EYield(sub v, r)
-        | EYieldFrom(s, r) -> EYieldFrom(sub s, r)
-
-    go rootSubst expr
-
-/// Freshens every binder in `expr`, and every free occurrence of a name in
-/// `roots`.
-///
-/// `roots` are the caller's chosen entry names — an inline template's formal
-/// parameters — which are free in `expr` but still have to be renamed apart so
-/// that the arguments can be substituted for names nothing else can mention.
-/// The returned map covers exactly those.
-let freshen (roots: string list) (expr: Expr) : Expr * Map<string, string> =
-    let rootSubst =
-        roots
-        |> List.filter isRenamable
-        |> List.map (fun r -> r, Gensym.fresh r)
-        |> Map.ofList
-
-    renameWith (fun n -> if isRenamable n then Gensym.fresh n else n) rootSubst expr, rootSubst
-
-/// Rewrites the *free* occurrences of the names in `subst`, leaving binders as
-/// they are.
-///
-/// A name the expression binds itself keeps its meaning: the substitution is
-/// dropped for the extent of that binder, so this cannot reach inside a scope
-/// where the name means something else.
-let renameFree (subst: Map<string, string>) (expr: Expr) : Expr =
-    if Map.isEmpty subst then expr else renameWith id subst expr
-
-/// Every name `expr` references without binding, given `bound` already in scope.
+/// Every name an untyped expression references without binding, given `bound`
+/// already in scope.
 ///
 /// Used to decide which of an inline template's references have to be qualified
 /// to the module they came from: a name the body binds itself is not free, and a
 /// formal parameter is bound by the splice.
-let freeNames (bound: Set<string>) (expr: Expr) : Set<string> =
-    let mutable acc = Set.empty
-    freeNamesWith (fun n _ -> acc <- Set.add n acc) false bound expr
-    acc
+let freeNames = Parser.freeNames
 
 // ---------------------------------------------------------------------------
 // Typed: the parameterized core
