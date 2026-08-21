@@ -1,0 +1,134 @@
+;; Beta-reduction of a directly applied lambda — `Normalize`.
+;;
+;; `((fun (x y) (+ x y)) 4 5)` is not something anyone writes by hand. It is
+;; what a macro expands to whenever it wants to name its operands, and what
+;; several desugarings leave behind, and `Normalize` turns it into the nested
+;; `let` it should have been before any other pass sees it.
+;;
+;; What is being pinned here is *meaning*, not the shape of the output: every
+;; case below is written so that the wrong rewrite gives a different answer
+;; rather than merely slower code.
+;;
+;;   1. The argument is bound, never substituted, so an effect in an argument
+;;      still happens exactly once even where the parameter is unused.
+;;   2. Nested `let` is sequential and application arguments are not, so a
+;;      parameter whose name a later argument mentions has to be freshened.
+;;   3. A `bjoroutine` in head position is left alone. Hoisting its body into
+;;      the caller would move a yield point into a function that is not
+;;      coloured to have one.
+;;
+;; The arity check is `errors/normalize_arity.bjo`.
+
+(import (std prelude))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; ---------------------------------------------------------------------------
+;; The basic case
+;; ---------------------------------------------------------------------------
+
+;; ((fun (x y) (+ x y)) 4 5)
+;;   => (let ((x 4)) (let ((y 5)) (+ x y)))
+(: basic (-> int))
+(defun (basic)
+  ((fun (x y) (+ x y)) 4 5))
+
+;; ((fun () 7))  =>  7. No parameters means no bindings; the collapse is the
+;; empty case of the same fold rather than a rule of its own.
+(: nullary (-> int))
+(defun (nullary)
+  ((fun () (+ 3 4))))
+
+;; ---------------------------------------------------------------------------
+;; Capture
+;; ---------------------------------------------------------------------------
+
+(def a 1)
+(def b 2)
+
+;; The parameters are named `a` and `b`, and the arguments are the *globals*
+;; `b` and `a` — so this is (- 2 1). Nesting the bindings naively would put the
+;; parameter `a` in scope for the second argument and give (- 2 2), which is
+;; why the first parameter is freshened here.
+(: capture (-> int))
+(defun (capture)
+  ((fun (a b) (- a b)) b a))
+
+;; The same shape with an argument that is itself an applied lambda: only comes
+;; out right if the rewrite is still capture-avoiding after it has fired once.
+;; (- (* 2 2) 1).
+(: nested-capture (-> int))
+(defun (nested-capture)
+  ((fun (a b) (- a b)) ((fun (n) (* n 2)) b) a))
+
+;; ---------------------------------------------------------------------------
+;; Effects
+;; ---------------------------------------------------------------------------
+
+(def/mutable trace "")
+
+(: note (-> string int))
+(defun (note tag)
+  (set! trace (string-append trace tag))
+  0)
+
+;; The parameter is never read. Substituting the argument into the body would
+;; delete the effect; binding it keeps it, exactly once and before the body.
+(: unused-parameter (-> string))
+(defun (unused-parameter)
+  (set! trace "")
+  (def result ((fun (ignored) 42) (note "effect ")))
+  (string-append trace (int->string result)))
+
+;; Arguments are evaluated left to right, and go on being evaluated left to
+;; right after the rewrite.
+(: argument-order (-> string))
+(defun (argument-order)
+  (set! trace "")
+  (def result ((fun (p q r) (+ p (+ q r))) (note "1") (note "2") (note "3")))
+  (string-append trace (int->string result)))
+
+;; ---------------------------------------------------------------------------
+;; A lambda that escapes
+;; ---------------------------------------------------------------------------
+
+;; Bound to a name and then *passed*, rather than applied. Nothing in this pass
+;; may turn that into a function-shaped binding: `list-map` needs a value.
+(: escaping (-> int))
+(defun (escaping)
+  (let ((f (fun (v) (* v 2))))
+    (list-foldl (fun (acc v) (+ acc v)) 0 (list-map f (list 1 2 3)))))
+
+;; ---------------------------------------------------------------------------
+;; Colour
+;; ---------------------------------------------------------------------------
+
+(: double (-> int int))
+(defbjo (double v) (* v 2))
+
+;; A `bjoroutine` in head position. Left completely untouched — the lambda is a
+;; C# state machine of its own, and calling it is a yield point, which is why
+;; this only compiles inside a bjoroutine.
+(: suspending-head (-> int))
+(defbjo (suspending-head)
+  ((bjoroutine (v) (double v)) 21))
+
+;; ---------------------------------------------------------------------------
+
+(defbjo (main args)
+  (expect "an applied lambda" (int->string (basic)) "9")
+  (expect "a nullary applied lambda" (int->string (nullary)) "7")
+  (expect "an argument naming a later parameter" (int->string (capture)) "1")
+  (expect "and one nested inside another" (int->string (nested-capture)) "3")
+  (expect "an effect in an unused argument" (unused-parameter) "effect 42")
+  (expect "arguments run left to right" (argument-order) "1230")
+  (expect "a lambda bound and passed on" (int->string (escaping)) "12")
+  (expect "a suspending lambda in head position"
+          (int->string (suspending-head)) "42")
+  0)

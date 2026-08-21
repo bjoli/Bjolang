@@ -229,17 +229,6 @@ Every non-~void~ (or non-unit) value in statement position must be used. If not 
   #:finally (cleanup))
 #+end_src
 
-*** Local generalization
-
-Local ~defun~ generalizes, so helpers stay polymorphic instead of getting pinned to whatever you happened to call them with first. Let-bound lambdas stay monomorphic, as ML intended.
-
-#+begin_src scheme
-(defun (main args)
-  (defun (twice f x) (f (f x)))     ;; generic, no signature needed
-  (println (twice #(+ &1 1) 0))
-  (println (twice #(string-append & "!") "hi"))
-  0)
-#+end_src
 
 * Examples
 
@@ -254,48 +243,6 @@ Basic syntax
     ((Err err) 0)))
 #+end_src
 
-The looping construct is pretty ballers. It can do lazy stuff as well
-
-#+begin_src scheme
-(: get-num-seq (-> int int (Seq int)))
-(defun (get-num-seq a b)
-  (seql (:with a a b)
-        (:with b b (+ a b))
-        (:yield a)))
-
-(defun (main args)
-  (def fib-seq (get-num-seq 0 1)))
-  (def lucas-seq (get-num-seq 1 0))
-  (def first-hundred-linus-numbers
-    (loop (:for a (range 1 101))
-          (:for fib fib-seq)
-          (:for luc lucas-seq)
-          (:acc linus-numbers (vecing (+ fib luc)))))
-  ;; fold is a trait function. here it dispatches to vec-fold
-  (fold + 0 first-hundred-linus-numbers)
-  ; it also does subloops
-  (def a-vector
-    (loop (:for a '(1 2 3))
-          (:when (odd? a))
-          (:for b [1 2])
-          (:acc (vectoring (a . b)))))
-  ;; => [(1 1) (1 2) (3 1) (3 2)]
-
-  1)
-
-#+end_src
-
-All main data structures except array are immutable. Vec is an rrb tree, list is of course a singly linked list. Map is a champ. Arrays are regular c# arrays
-
-#+begin_src scheme
-
-(defun (main args)
-  (def a-vec [1 2 3 4 5])
-  (def b-vec (vec-add a-vec 9000))
-  (println (vec-length a-vec)) ;; => 5
-  (println (vec-length b-vec)) ;; => 6
-  
-#+end_src
 
 
 * Planned features
@@ -524,6 +471,7 @@ Lists, quasiquoted lists and vectors do not need constructors in some circumstan
 
 #+begin_src scheme
 ;; Check Examples/receipt.bjo for the full source
+;; This is our list of lines
 (: basket (List Line))
 (def basket
   (list (Line (what "Bananas, organic") (qty 1.24) (unit 24.90))
@@ -540,10 +488,10 @@ Lists, quasiquoted lists and vectors do not need constructors in some circumstan
     ;; cloudberry jam gets truncated, with "..."
     [(with current-ellipsis "..."
        [(heading ["BJOLI'S GROCERY"])
-        nl
-        masthead
-        (rule #\=)
-        (joined item ls [])
+        nl ;; Newline
+        masthead ;; formatted header
+        (rule #\=) ;; ruler
+        (joined item ls []) ;; item is a formatter for Lines
         (rule #\-)
         (labelled ["Net"] net)
         (labelled ["VAT 12%"] vat)
@@ -594,7 +542,7 @@ returned within thirty days.
 
 These are things I found while spelunking:
 
-- run, run/string, run/strings.
+- run, run/string, run/strings for executing commands
 - Make it possible to shadow trait methods and not have the typechecker vomit.
 - output LINE-directives a little bit better than I do now
 - A standard library that doesn't suck.

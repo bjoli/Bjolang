@@ -1356,9 +1356,16 @@ let runFullFrontendPipeline (mainFilePath: string) =
             | Some(DModule(_, decls, _)) -> decls |> List.choose (function DMacro(n, _) -> Some n | _ -> None)
             | _ -> []
 
-        let letrecifiedDecls = letrecifyModule parsedModuleDecls
+        printfn "=== Step 2: Normalization ==="
+        // First of the source-to-source passes, and before `LetRecify` on
+        // purpose: an applied lambda reduced into a `let` chain here is one
+        // fewer closure for every pass after it to carry, and the bindings it
+        // leaves behind are what `LetRecify` orders.
+        let normalizedDecls = Normalize.normalizeModule parsedModuleDecls
 
-        printfn "=== Step 2: Type Checking ==="
+        let letrecifiedDecls = letrecifyModule normalizedDecls
+
+        printfn "=== Step 3: Type Checking ==="
         let env, typedAst = Inference.checkProgram Prelude.prelude letrecifiedDecls
 
         // Before anything reads `main`: the entry point is generated code's
@@ -1374,17 +1381,17 @@ let runFullFrontendPipeline (mainFilePath: string) =
         // errors depending on inliner luck. See the module docstring and §8.3.
         MustUse.run env.Registry typedAst
 
-        printfn "=== Step 3: Trait Inlining ==="
+        printfn "=== Step 4: Trait Inlining ==="
         // Before dictionary lowering, so that the dictionary pass sees the
         // inlined result and handles any interface-trait dispatch inside it with
         // no changes; and before loop lowering, because a `TRecur` carries an
         // index into its enclosing loop and cannot be spliced elsewhere.
         let inlinedAst = TraitInline.run env typedAst
 
-        printfn "=== Step 4: Dictionary Lowering ==="
+        printfn "=== Step 5: Dictionary Lowering ==="
         let loweredAst = Lowering.lowerProgram env inlinedAst
 
-        printfn "=== Step 5: Loop Lowering ==="
+        printfn "=== Step 6: Loop Lowering ==="
         let loopLoweredAst = LoopLowering.lowerProgram loweredAst
 
         // A `(loop ...)` is a loop by construction, but promotion is a silent

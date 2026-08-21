@@ -1,0 +1,21 @@
+;; A literal lambda applied to the wrong number of arguments.
+;;
+;; Reported by `Normalize`, where the rewrite fires, rather than left to
+;; inference. At that node both counts are known and the callee is a lambda
+;; written right there, so the mistake can be stated as one; inference sees two
+;; arrow types that will not unify and can name neither the lambda nor the
+;; count.
+;;
+;; This is also why the rewrite does not quietly decline on a mismatch. An
+;; applied lambda with the wrong arity is never anything but an error, and
+;; leaving the `EApp` alone would trade a precise message for a worse one.
+
+;; EXPECT-ERROR: takes 2 argument(s) but is applied to 3
+
+(: sum (-> int))
+(defun (sum)
+  ((fun (x y) (+ x y)) 1 2 3))
+
+(defun (main args)
+  (println (int->string (sum)))
+  0)
