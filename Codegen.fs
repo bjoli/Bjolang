@@ -56,6 +56,13 @@ type CodegenContext = {
     /// construct that opens a new C# method — a lambda, a local function, a
     /// non-inlined loop member — clears this.
     InSeq: bool
+    /// What the type checker ended the module with. Only the type tables are
+    /// read from it: a record field or a union payload is written as an
+    /// `FType`, so resolving one to the type C# names it by needs the same
+    /// alias table inference resolved it against. Resolved against an empty
+    /// registry a payload of alias type came out as a C# class named after the
+    /// alias, which nothing declares.
+    Registry: TraitRegistry
     /// Does the enclosing C# method return `void`?
     ///
     /// Only a function whose *inferred* return type came from a statement-shaped
@@ -1976,8 +1983,18 @@ and private generateApply
                 // infer from anything: a nullary call, `make-array`, and
                 // `raise`, which claims to return whatever the position it
                 // stands in wants and in fact returns nothing at all.
+                //
+                // A lambda argument is a fourth: an anonymous function whose
+                // parameters have no written types contributes nothing to
+                // inference, so a call whose arguments are *all* lambdas is as
+                // blind as one with no arguments at all. That is what
+                // `(make-parameter (fun (s) ...))` is.
+                let onlyLambdas =
+                    not args.IsEmpty
+                    && args |> List.forall (fun a -> match a.Node with TLambda _ -> true | _ -> false)
+
                 if not tArgs.IsEmpty
-                   && (args.IsEmpty || name = "make-array" || name = "makesubarray" || name = "raise")
+                   && (args.IsEmpty || onlyLambdas || name = "make-array" || name = "makesubarray" || name = "raise")
                    && kwArgs.IsEmpty then
                     let tyArgsStr = tArgs |> List.map typeToString |> String.concat ", "
                     append ctx $"<%s{tyArgsStr}>"
@@ -3329,7 +3346,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                 append ctx $"public %s{kind} %s{sanitizeIdent td.Name}%s{tyArgsStr}("
                 for i, f in List.indexed fields do
                     if i > 0 then append ctx ", "
-                    append ctx (typeToString (Inference.resolveTypeAnnotation Prelude.emptyRegistry f.Type))
+                    append ctx (typeToString (Inference.resolveTypeAnnotation ctx.Registry f.Type))
                     append ctx " "
                     append ctx (sanitizeIdent f.Name)
                 appendLine ctx ");"
@@ -3348,7 +3365,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                             append ctx $"public sealed record %s{sanitizeIdent n}("
                             for i, ft in List.indexed ftypes do
                                 if i > 0 then append ctx ", "
-                                append ctx (typeToString (Inference.resolveTypeAnnotation Prelude.emptyRegistry ft))
+                                append ctx (typeToString (Inference.resolveTypeAnnotation ctx.Registry ft))
                                 append ctx $" Item%d{i+1}"
                             appendLine ctx $") : %s{sanitizeIdent td.Name}%s{tyArgsStr};"
                 )
@@ -3604,7 +3621,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                                     append ctx $"public static %s{sanitizeIdent td.Name}%s{tyArgsStr} %s{sanitizeIdent n}%s{tyArgsStr}("
                                     for i, ft in List.indexed ftypes do
                                         if i > 0 then append ctx ", "
-                                        append ctx (typeToString (Inference.resolveTypeAnnotation Prelude.emptyRegistry ft))
+                                        append ctx (typeToString (Inference.resolveTypeAnnotation ctx.Registry ft))
                                         append ctx $" arg{i}"
                                     let argsListStr = String.concat ", " [for i in 0 .. ftypes.Length - 1 -> $"arg{i}"]
                                     appendLine ctx $") => new %s{sanitizeIdent td.Name}%s{tyArgsStr}.%s{sanitizeIdent n}(%s{argsListStr});"
@@ -3694,7 +3711,7 @@ let builtinUnionCases: Map<string, UnionCaseInfo> =
 
     syntaxCases @ cancelReasonCases |> Map.ofList
 
-let generateProgram (metadata: ModuleMetadata.Metadata) (linkedDlls: string list) (decls: TDecl list) : string =
+let generateProgram (registry: TraitRegistry) (metadata: ModuleMetadata.Metadata) (linkedDlls: string list) (decls: TDecl list) : string =
     let unionCases =
         decls
         |> collectDecls (function
@@ -3775,6 +3792,7 @@ let generateProgram (metadata: ModuleMetadata.Metadata) (linkedDlls: string list
           Loop = None
           TypeParams = Set.empty
           InSeq = false
+          Registry = registry
           ReturnsVoid = false }
 
     appendLine ctx "using System;"

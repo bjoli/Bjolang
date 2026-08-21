@@ -511,13 +511,34 @@
 (: string-trim-end (-> string string))
 (defun (string-trim-end s) (.TrimEnd s))
 
-;; Spaces to `width` storage units — `string-length`'s count, not
-;; `string-count`'s. Never truncates.
-(: string-pad-left (-> string int string))
-(defun (string-pad-left s width) (.PadLeft s width))
+;; To `width` *characters* — `string-count`'s count, not `string-length`'s —
+;; with `#:with`, which defaults to a space. Never truncates.
+;;
+;; `.PadLeft` is not what these call: it counts storage units and its pad is a
+;; UTF-16 code unit, so neither an astral character in `s` nor an astral pad
+;; would come out at the width that was asked for.
+(: string-pad-left (-> string int (#:with char) string))
+(defun (string-pad-left s width #:with #\space)
+  (let ((b (stringbuilder-empty)))
+    (string-pad-fill! b with (- width (string-count s)))
+    (stringbuilder-add-string! b s)
+    (stringbuilder->string b)))
 
-(: string-pad-right (-> string int string))
-(defun (string-pad-right s width) (.PadRight s width))
+(: string-pad-right (-> string int (#:with char) string))
+(defun (string-pad-right s width #:with #\space)
+  (let ((b (stringbuilder-empty)))
+    (stringbuilder-add-string! b s)
+    (string-pad-fill! b with (- width (string-count s)))
+    (stringbuilder->string b)))
+
+;; `n` copies of `c`, and nothing at all when `n` is not positive — which is
+;; the "never truncates" half of the two above.
+(: string-pad-fill! (-> StringBuilder char int void))
+(defun (string-pad-fill! b c n)
+  (let fill ((i 0))
+    (when (< i n)
+      (stringbuilder-add! b c)
+      (fill (+ i 1)))))
 
 ;; --- Splitting and joining -------------------------------------------------
 
@@ -1407,12 +1428,12 @@
 ;; Useful macros
 ;; That should have been implemented earlier
 
-;; (def/macro (let* form compare inject)
-;;   (syntax-match form
-;;     ((_ () body ...)
-;;      #'(let () body ...))
-;;     ((_ (bind) body ...)
-;;      #'(let (bind) body ...))
-;;     ((_ (bind binds ...) body ...)
-;;      #(let (bind)
-;;         (let* (binds ...) body ...)))))
+(def/macro (let* form compare inject)
+  (syntax-match form
+    ((_ () body ...)
+     #'(let () ,@body))
+    ((_ (bind) body ...)
+     #'(let (,bind) ,@body))
+    ((_ (bind binds ...) body ...)
+     #'(let (,bind)
+        (let* (,@binds) ,@body)))))

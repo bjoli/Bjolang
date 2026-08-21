@@ -19,6 +19,8 @@ echo "Building standard library..."
 # `stopwatch` imports both `prelude` and `syntax-match`, the latter because its
 # `time-it` is written with it.
 ./bjor --lib lib/std/stopwatch.bjo
+# `fmt` imports `prelude` and nothing else.
+./bjor --lib lib/std/fmt.bjo
 
 # The collections. Each imports `prelude` and nothing else, and each is
 # independent of the other two, so the order between them does not matter.

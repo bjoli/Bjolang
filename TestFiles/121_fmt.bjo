@@ -1,0 +1,285 @@
+;; std/fmt — the two layers.
+;;
+;; Layer 1 is `println*`: a vec literal of mixed scalars, each element
+;; elaborated into the `Disp` case that can hold it.
+;;
+;; Layer 2 is `render`: blocks that thread the column they left the cursor in,
+;; which is what lets `fl` ask whether a line is already open, and settings
+;; carried by a parameter rather than by a state record.
+;;
+;; What this pins beyond "the calls work": the leaves need no wrapping, a
+;; setting is restored on the way out of the `with-pad` that set it, padding is
+;; counted in characters, and a combinator written *here* — outside the
+;; library — is the same kind of thing as the ones inside it.
+(import (std prelude))
+(import (std fmt))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; A user's own combinator. It needs nothing from the library but `BRun` and
+;; the two functions that run a block, which is the whole of the engine's
+;; vocabulary.
+(: boxed (-> (Vec Block) Block))
+(defun (boxed bs)
+  (BRun (fun (out col)
+          (run-blocks out col ["[" (render->string bs) "]"]))))
+
+;; A user's own *setting*, which needs `with` and nothing else. `with` takes
+;; the parameter as an argument, so the library never has to have heard of it.
+(def indent (make-parameter 0))
+
+;; Note where the `parameter-ref` is: inside the closure, so that it is read
+;; when the block runs. Outside it — in `indented`'s own body — it would be
+;; read when the block is *built*, which is before any enclosing `with`, and
+;; the setting would never be seen at all.
+(: indented (-> (Vec Block) Block))
+(defun (indented bs)
+  (BRun (fun (out col)
+          (run-blocks out
+                      col
+                      [(BStr (string-pad-left "" (parameter-ref indent))) (each bs)]))))
+
+;; A width function for a fixed-width terminal, where an astral character
+;; occupies two columns. Everything in the library that measures or cuts goes
+;; through `current-string-width`, so setting this changes all of it at once.
+(: terminal-width (-> string int))
+(defun (terminal-width s)
+  (string-fold (fun (acc ch) (+ acc (if (> (char->integer ch) 65535) 2 1))) 0 s))
+
+;; Five words, for the paragraph tests.
+(: sentence (List string))
+(def sentence (list "the" "quick" "brown" "fox" "jumps"))
+
+(: say (-> string Block))
+(defun (say w) (BStr w))
+
+(defun (main)
+  ;; --- Layer 1 -------------------------------------------------------------
+  ;;
+  ;; No engine, no column: one case per literal shape the reader produces.
+  (println* ["n = " 42 ", ok? " true ", " #\x ", " 1.5])
+
+  ;; --- Layer 2, the leaves -------------------------------------------------
+  (expect "a string block" (render->string ["ab"]) "ab")
+  (expect "the leaves need no wrapping" (render->string ["x = " 7 #\!]) "x = 7!")
+  (expect "nothing at all" (render->string (vec-empty)) "")
+
+  ;; --- Newlines ------------------------------------------------------------
+  (expect "nl" (render->string ["a" nl "b"]) "a\nb")
+  (expect "fl opens a line" (render->string ["a" fl "b"]) "a\nb")
+  (expect "and does nothing at the start of one"
+          (render->string ["a" nl fl "b"]) "a\nb")
+  (expect "nor at the start of the render" (render->string [fl "a"]) "a")
+
+  ;; --- Padding -------------------------------------------------------------
+  (expect "padded/left" (render->string [(padded/left 5 ["7"])]) "    7")
+  (expect "padding never truncates" (render->string [(padded/left 2 ["wide"])]) "wide")
+  (expect "the padded content is itself blocks"
+          (render->string [(padded/left 6 ["x=" 7])]) "   x=7")
+
+  ;; A setting is a parameter, so it is restored when the block that set it
+  ;; ends rather than when someone remembers to put it back.
+  (expect "with-pad" (render->string [(with-pad #\. [(padded/left 5 ["ab"])])]) "...ab")
+  (expect "and the previous pad comes back"
+          (render->string [(with-pad #\. [(padded/left 3 ["a"])]) (padded/left 3 ["b"])])
+          "..a  b")
+
+  ;; Width is in characters: an astral pad is one of them, not two.
+  (expect "an astral pad is one character"
+          (render->string [(with-pad #\😀 [(padded/left 3 ["a"])])])
+          "😀😀a")
+
+  ;; --- Joining -------------------------------------------------------------
+  (expect "joined" (render->string [(joined (fun (n) (BInt n)) (list 1 2 3) [", "])])
+          "1, 2, 3")
+  (expect "one element is no separator"
+          (render->string [(joined (fun (n) (BInt n)) (list 1) [", "])]) "1")
+  (expect "and none is nothing"
+          (render->string [(joined (fun (n) (BInt n)) Nil [", "])]) "")
+  (expect "the separator is blocks too"
+          (render->string [(joined (fun (s) (BStr s)) (list "a" "b") [#\| nl])])
+          "a|\nb")
+
+  ;; --- A combinator from outside -------------------------------------------
+  (expect "boxed" (render->string [(boxed ["hi"])]) "[hi]")
+  (expect "and it nests" (render->string [(boxed [(boxed ["x"])])]) "[[x]]")
+
+  ;; --- The column ----------------------------------------------------------
+  ;;
+  ;; Threaded through every block, which is the one thing the engine carries.
+  (def seen (vecbuilder-empty))
+  (ignore (render->string ["abc" (BRun (fun (out col)
+                                         (vecbuilder-add! seen col)
+                                         col))
+                           nl
+                           (BRun (fun (out col)
+                                   (vecbuilder-add! seen col)
+                                   col))]))
+  (def cols (vecbuilder->vec seen))
+  (expect "the column after a string" (int->string (vec-ref cols 0)) "3")
+  (expect "and a newline puts it back to zero" (int->string (vec-ref cols 1)) "0")
+
+  ;; --- Rendering to a port -------------------------------------------------
+  ;;
+  ;; The sink is a closure over the destination, so a port and a builder are
+  ;; the same engine.
+  (def w (open-output-string))
+  (render w ["to a port" nl])
+  (expect "render to a port" (get-output-string w) "to a port\n")
+  (close-output-port w)
+
+  ;; --- The block algebra ---------------------------------------------------
+  (expect "nothing" (render->string [nothing]) "")
+  (expect "and it is what an empty arm answers"
+          (render->string ["a" (if false nl nothing) "b"]) "ab")
+  (expect "each is many blocks as one" (render->string [(each ["a" 1 #\!])]) "a1!")
+  (expect "captured hands over the text"
+          (render->string [(captured (fun (s) (BInt (string-count s))) ["abcd"])])
+          "4")
+
+  ;; --- Settings ------------------------------------------------------------
+  ;;
+  ;; `with` takes the parameter as an argument, so a setting the library has
+  ;; never heard of works exactly like one of its own.
+  (expect "a setting of one's own"
+          (render->string [(with indent 4 [(indented ["x"])])]) "    x")
+  (expect "and it is restored afterwards"
+          (render->string [(with indent 4 [(indented ["x"])]) (indented ["y"])])
+          "    xy")
+  (expect "with-pad is a call of with"
+          (render->string [(with current-pad #\- [(padded/left 3 ["a"])])]) "--a")
+
+  ;; --- Space ---------------------------------------------------------------
+  (expect "space-to" (render->string ["ab" (space-to 5) "c"]) "ab   c")
+  (expect "and it never moves backwards"
+          (render->string ["abcdef" (space-to 3) "!"]) "abcdef!")
+  (expect "it fills with the pad character, which is what a dot leader is"
+          (render->string [(with-pad #\. ["ab" (space-to 6) "c"])]) "ab....c")
+  (expect "tab-to" (render->string ["ab" (tab-to #:width 4) "c"]) "ab  c")
+  (expect "and a tab always moves"
+          (render->string ["abcd" (tab-to #:width 4) "c"]) "abcd    c")
+  (expect "eight columns unless told otherwise"
+          (render->string ["ab" (tab-to) "c"]) "ab      c")
+
+  ;; --- Padding, trimming, fitting ------------------------------------------
+  (expect "padded/right" (render->string [(padded/right 4 ["ab"]) "|"]) "ab  |")
+  (expect "padded/both, odd column on the right"
+          (render->string ["|" (padded/both 5 ["ab"]) "|"]) "| ab  |")
+
+  (expect "trimmed/right keeps the front"
+          (render->string [(trimmed/right 3 ["abcdef"])]) "abc")
+  (expect "trimmed/left keeps the end"
+          (render->string [(trimmed/left 3 ["abcdef"])]) "def")
+  (expect "trimmed/both keeps the middle"
+          (render->string [(trimmed/both 4 ["abcdefgh"])]) "cdef")
+  (expect "and something short enough is left alone"
+          (render->string [(trimmed/right 6 ["abc"])]) "abc")
+
+  ;; The ellipsis takes its room out of the content, so the answer is never
+  ;; wider than what was asked for.
+  (expect "an ellipsis"
+          (render->string [(with current-ellipsis "..." [(trimmed/right 6 ["abcdefgh"])])])
+          "abc...")
+  (expect "on the left, it says where the cut was"
+          (render->string [(with current-ellipsis "..." [(trimmed/left 6 ["abcdefgh"])])])
+          "...fgh")
+
+  (expect "fitted/right pads what is short"
+          (render->string [(fitted/right 5 ["ab"]) "|"]) "ab   |")
+  (expect "and trims what is long"
+          (render->string [(fitted/right 3 ["abcdef"]) "|"]) "abc|")
+  (expect "fitted/left" (render->string [(fitted/left 5 ["ab"]) "|"]) "   ab|")
+
+  ;; --- The width function --------------------------------------------------
+  ;;
+  ;; An emoji is one character and two terminal columns. Which of those a width
+  ;; is counted in is the caller's to say, and everything follows it.
+  (expect "characters by default" (render->string [(padded/left 5 ["😀"])]) "    😀")
+  (expect "columns when told to count them"
+          (render->string [(with current-string-width terminal-width
+                                 [(padded/left 5 ["😀"])])])
+          "   😀")
+  (expect "and cutting counts the same way"
+          (render->string [(with current-string-width terminal-width
+                                 [(trimmed/right 3 ["😀ab"])])])
+          "😀a")
+
+  ;; --- The joined family ---------------------------------------------------
+  (expect "joined/prefix" (render->string [(joined/prefix say (list "a" "b") [","])]) ",a,b")
+  (expect "joined/suffix" (render->string [(joined/suffix say (list "a" "b") [","])]) "a,b,")
+  ;; The separator is written before the last element too, so what `last-f`
+  ;; adds is a word and not a comma.
+  (expect "joined/last"
+          (render->string [(joined/last say (fun (s) (each ["and " (say s)]))
+                                        (list "a" "b" "c") [", "])])
+          "a, b, and c")
+  (expect "and a list of one is only ever the last element"
+          (render->string [(joined/last say (fun (s) (each ["and " (say s)]))
+                                        (list "a") [", "])])
+          "and a")
+
+  ;; --- Numbers -------------------------------------------------------------
+  (expect "as many digits as it takes" (render->string [(numeric 1.5)]) "1.5")
+  (expect "a precision" (render->string [(numeric 2.0 #:precision 2)]) "2.00")
+  (expect "which rounds" (render->string [(numeric -3.14159 #:precision 3)]) "-3.142")
+  (expect "grouped digits"
+          (render->string [(numeric 1234567.891 #:precision 2 #:comma 3)])
+          "1,234,567.89")
+  (expect "numeric/comma is the common case"
+          (render->string [(numeric/comma 1234567.0)]) "1,234,567")
+  (expect "a group too short to divide"
+          (render->string [(numeric/comma 42.0)]) "42")
+  (expect "a forced sign" (render->string [(numeric 42.0 #:signed true)]) "+42")
+  (expect "and a negative number keeps its own"
+          (render->string [(numeric -42.0 #:signed true)]) "-42")
+
+  ;; The separators are settings, not the machine's locale.
+  (expect "separators of one's own"
+          (render->string [(numeric 1234.5 #:comma 3 #:comma-sep #\space #:decimal-sep #\,)])
+          "1 234,5")
+  (expect "and a keyword defaults to the parameter"
+          (render->string [(with current-precision 2 [(numeric 3.14159)])])
+          "3.14")
+
+  ;; --- Paragraphs ----------------------------------------------------------
+  (expect "wrapped"
+          (render->string [(with current-width 12 [(wrapped [(joined say sentence [" "])])])])
+          "the quick\nbrown fox\njumps")
+  (expect "justified pads the gaps instead"
+          (render->string [(with current-width 12 [(justified [(joined say sentence [" "])])])])
+          "the    quick\nbrown    fox\njumps")
+  (expect "a word wider than the line gets a line rather than a cut"
+          (render->string [(with current-width 4 [(wrapped ["ab enormous cd"])])])
+          "ab\nenormous\ncd")
+  (expect "wrapping starts from wherever the cursor is"
+          (render->string ["12345678" (with current-width 12 [(wrapped ["aaa bbb"])])])
+          "12345678aaa\nbbb")
+
+  ;; --- Tables --------------------------------------------------------------
+  ;;
+  ;; Each column is rendered on its own and the lines are laid out together.
+  (expect "columnar divides the width"
+          (render->string [(with current-width 11
+                                 [(columnar [["abc" nl "def"] ["123" nl "456"]])])])
+          "abc   123\ndef   456\n")
+  (expect "tabular measures the content instead"
+          (render->string [(tabular [["a" nl "bbb"] ["1" nl "2"]])])
+          "a   1\nbbb 2\n")
+  (expect "a separator of one's own"
+          (render->string [(tabular [["a" nl "bbb"] ["1" nl "2"]] #:sep " | ")])
+          "a   | 1\nbbb | 2\n")
+  (expect "a column that runs out contributes blanks"
+          (render->string [(tabular [["a" nl "bb"] ["1"]])])
+          "a  1\nbb \n")
+  (expect "and a table always starts on a fresh line"
+          (render->string ["x" (tabular [["a"] ["1"]])])
+          "x\na 1\n")
+
+  (println "121 ok")
+  0)

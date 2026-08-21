@@ -185,7 +185,7 @@ let main argv =
                         else
                             [] }
 
-            let csCode = Codegen.generateProgram metadata dllDeps typedAst
+            let csCode = Codegen.generateProgram env.Registry metadata dllDeps typedAst
             
             if options.Debug then
                 File.WriteAllText("ast_dump.txt", sprintf "%A" typedAst)

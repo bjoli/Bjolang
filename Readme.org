@@ -407,7 +407,6 @@ Look Ma, a Monad!
 #+END_SRC
 
 *** The usual syntactic things in a modern lisp
-apart from (-> this is not actually implemented. )
 
 #+begin_src scheme
 (-> [1 2 3 4 5]
@@ -420,9 +419,7 @@ apart from (-> this is not actually implemented. )
 #(+ & 5) ;; => (fun (&1) (+ &1 5))
 #+end_src
 
-if-let, some-let* and things are going to be implemented.
-
-some-> will short-circuit in any of the calls returns none.
+if-let, when-let and some-> is also there.
 
 *** Keyword arguments
 Unlike f#, bjolang has keyword arguments (but no optargs!):
@@ -439,35 +436,10 @@ Unlike f#, bjolang has keyword arguments (but no optargs!):
 (key-fun 10 #:what "orange") ;; prints "orange\n" 10 times
 #+end_src
 
-A default is an arbitrary expression, evaluated in the callee on every call that leaves the argument out — as ~(string-append "ban" "ana")~ above is. That needs the callee to be able to tell an omitted argument from one passed explicitly at the default value, so the parameter arrives as an ~Option<T>~ and the body starts with a branch per keyword. It is a series of ifs and some expressions, so it was never that bad, but it is more than a plain function does.
-
-A default that is a *literal* costs none of it. C# can carry a constant in the signature, so such a parameter is emitted as an ordinary optional parameter of its declared type — ~int __kw_by = 2~ — and a call that omits it does no work at all, has nothing to unwrap, and passes a plain ~int~ rather than an ~Option<int>~. The decision is per parameter, so a function with one literal default and one that reads an earlier argument gets one of each.
-
-What still goes the old way: a default that is any other expression, one that reads another parameter, one that needs statements to evaluate — and a *generic* slot, whose C# type is a type parameter and admits no constant but ~default~, however literal its default looks. A ~char~ is in that group too, since it is emitted as a constructor call rather than a literal.
-
-The one thing that changes is where the value comes from. A C# optional parameter's default is baked into the call site by the C# compiler, so a library that changes a literal default reaches only callers that are recompiled — and Bjolang rebuilds a dependent whenever its dependency's ~.dll~ is newer, so a changed default cannot outlive the build that changed it. Nothing else is observable, because the value is a constant.
-
-Keyword and ~#:rest~ parameters may be combined. C# puts ~params~ last, so the array follows the keyword parameters and a call that omits one would leave the array in a position that is no longer the array's — so such a call passes the array by name too. A function with no keyword parameters is unaffected and passes it positionally, as before.
-
-A default that *has* to be evaluated gets the same treatment one step further out. Such a function is emitted twice, as two C# overloads of one name: the general entry taking ~Option~s, and a keyword-free twin that takes no keyword parameters at all and binds every default outright.
-
-#+begin_src csharp
-int shifted(int n, Option<int> __kw_by = default) { ... }   // general
-int shifted(int n)                                { ... }   // twin
-#+end_src
-
-C# chooses between them unaided, and that is the whole trick: an overload all of whose parameters have arguments beats one that has to substitute a default, so ~shifted(5)~ selects the twin and ~shifted(5, __kw_by: 1)~ selects the general entry. Call sites are emitted exactly as they were, nothing about the choice is published, and it works across a ~.dll~ — an importer cannot see a default expression and never needs to. The default is still evaluated; what goes is the wider argument slot and the branch.
-
-A function all of whose defaults are constants gets no twin: its general entry already carries them in the signature, and a twin would be a second copy of the body buying nothing. A local ~defun~ gets none either — C# has no overloading for local functions, and a distinct name would be one the call site has no way to know it should write.
-
-Measured on a keyword-free call to a function too large for the JIT to inline, the twin is about 9% faster (0.72s against 0.79s, 5×10⁶ calls, median of 13 interleaved runs). Where the callee *is* inlined — most small functions — there is no measurable difference at all, because the JIT already sees ~default(Option<T>).IsSome~ as false and folds the branch away by itself. The same comparison written directly in C# with inlining forced off runs twice as fast, which is the ceiling this is reaching for.
-
-One thing the twin does *not* change, in either direction: which functions get promoted to a loop. A module-level ~defun~ with keyword parameters is already promoted — its keywords become loop slots like any other parameter, and their defaults are re-evaluated per iteration where the jump omits them — so tail recursion through one is a ~while~ loop and runs at any depth. A keyword parameter on a *local* ~defun~ is the exception: a jump into a loop group is positional, and an omitted keyword has no slot to fill, so such a member stays a real C# local function and deep tail recursion through it overflows the stack. That is decided in ~LoopLowering~, before code generation, and a second entry point emitted afterwards cannot reach it.
+You can use arbitrary expressions as default values for keyword args. If the function only takes c# literals, it is transformed into a c# named parameter call. If no parameters are used, a body that just binds the names is picked over one that checks which are used. The slow path does some Option unpacking. 
 
 *** Structs and records
-Have the same syntax, and both are constructed by naming the type — there is no
-f#-esque guessing at which type a bag of field names belongs to. This is a
-record example:
+Have the same syntax, and both are constructed by naming the type — there is no f#-esque guessing at which type a bag of field names belongs to. This is a record example:
 
 #+begin_src scheme
 (type
@@ -537,8 +509,6 @@ If you want to call c# it is possible:
 (console-write-line (concat2 "hej" " hej"))
 
 ;; and for classes
-
-
 (import/class
   (StreamWriter (: System.IO.StreamWriter (-> string StreamWriter))))
 
@@ -550,20 +520,75 @@ If you want to call c# it is possible:
 
 *** Constructorless DSLs
 
-Lists, quasiquoted lists and vectors do not need constructors in some circumstances, giving us nice small DSLs, like the completely made up (run ...) function DSL:
+Lists, quasiquoted lists and vectors do not need constructors in some circumstances, giving us nice small DSLs. Like the (std fmt) string formatter, bringing string formatting into the 1980s:
 
 #+begin_src scheme
+;; Check Examples/receipt.bjo for the full source
+(: basket (List Line))
+(def basket
+  (list (Line (what "Bananas, organic") (qty 1.24) (unit 24.90))
+        (Line (what "Coffee beans, dark roast, whole") (qty 2.0) (unit 89.00))
+        (Line (what "Rye bread") (qty 1.0) (unit 32.50))
+        (Line (what "Oat milk") (qty 3.0) (unit 18.95))
+        (Line (what "Cloudberry jam from Lapland, the small jar") (qty 1.0) (unit 64.00))))
 
-(:stream-rot13 (-> InputPort OutputPort Void))
-;; implementation left as an exercise for the reader
+(: receipt (-> (List Line) (Vec Block)))
+(defun (receipt ls)
+  (let* ((total (list-foldl (fun (acc l) (+ acc (amount-of l))) 0.0 ls))
+         (net (/ total 1.12))
+         (vat (- total net)))
+    ;; cloudberry jam gets truncated, with "..."
+    [(with current-ellipsis "..."
+       [(heading ["BJOLI'S GROCERY"])
+        nl
+        masthead
+        (rule #\=)
+        (joined item ls [])
+        (rule #\-)
+        (labelled ["Net"] net)
+        (labelled ["VAT 12%"] vat)
+        (rule #\=)
+        (total-line total)
+        nl
+        (vat-summary net vat)
+        nl
+        footer])]))
 
-(run/strings '(pipe (cat "encrypted-file.txt") ,stream-rot13 (grep "bomb")))
-;; Without the constructor insertions it would be:
-(run/strings (ProcList (ProcSym 'pipe)
-               (ProcList (ProcSym 'cat) (ProcString "encrypted-file.txt"))
-               (ProcProc stream-rot13)
-               (ProcList (ProcSym 'grep) (ProcString "bomb")))))
+(defun (main args)
+  (render (parameter-ref current-output-port) (receipt basket))
+  0)
+
+;; Prints:
+            BJOLI'S GROCERY             
+
+Fruktgatan 12           2026-08-21 14:32
+211 44 Malmo                Receipt 1042
+========================================
+Bananas, organic                   30.88
+  1.24 x 24.90
+Coffee beans, dark roast, whole   178.00
+  2.00 x 89.00
+Rye bread                          32.50
+Oat milk                           56.85
+  3.00 x 18.95
+Cloudberry jam from Lapland,...    64.00
+----------------------------------------
+Net                               323.42
+VAT 12%                            38.81
+========================================
+TOTAL.............................362.23
+
+Rate   Net      VAT
+12 %   323.42   38.81
+
+Thank  you  for shopping with us. Please
+keep  the  receipt:  it is your proof of
+purchase,  and  anything unopened may be
+returned within thirty days.
+
 #+end_src
+
+
 
 * TODO
 
@@ -590,7 +615,6 @@ Process notation, maybe taken from scsh.
 
 Maybe I should just steal all the functions from r6rs and bolt them onto what I can find in dotnet. Or maybe steal something from racket.
 
-STRING FORMATTING. Alex Shinn is the answer yet again. (show #t etc ...) and divide them into shorter forms showt and showf and make them the "default" print functions. I really like the showt name...
 
 ** Syntax ideas
 @-expr from racket?
@@ -613,3 +637,7 @@ Naming a local variable list, will produce local shadowing and a c# exception. I
 Add array literals
 
 fix tail recursion and parameterization: Since tail calls have no code in the recursive function running after it, we can restore the parameters outside the recursion.
+
+The current parameter implementation is very practical. But it could be a lot faster.
+
+Add #:align to columnar and tabular
