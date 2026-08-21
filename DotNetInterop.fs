@@ -160,8 +160,6 @@ let private genericTypeCorrespondence =
       "SchemeList.SchemeListBuilder`1", "ListBuilder"
       "Collections.RrbList`1", "Vec"
       "Collections.RrbBuilder`1", "VecBuilder"
-      "Map.Map`2", "Map"
-      "Map.MapBuilder`2", "MapBuilder"
       "BjolangRuntime+Option`1", "Option"
       "BjolangRuntime+Result`2", "Result"
       "Bjoml.Promise`1", "Promise"

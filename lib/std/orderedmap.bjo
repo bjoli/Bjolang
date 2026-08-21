@@ -79,10 +79,9 @@
   (orderedmap-values     (: OrderedMap.OrderedMapModule.Values      (-> (OrderedMap %k %v) (Seq %v))))
   ;; The right-hand map wins where both have a key.
   (orderedmap-merge      (: OrderedMap.OrderedMapModule.Merge       (-> (OrderedMap %k %v) (OrderedMap %k %v) (OrderedMap %k %v))))
-  ;; The same, with the collisions decided by a function of the key and the two
-  ;; values — which is one argument, a triple, for the reason every callback here
-  ;; takes the entry whole.
-  (orderedmap-merge-with (: OrderedMap.OrderedMapModule.MergeWith   (-> (-> (Tuple %k %v %v) %v) (OrderedMap %k %v) (OrderedMap %k %v) (OrderedMap %k %v))))
+  ;; The same, with the collisions decided by a function of the key, the value
+  ;; already there and the one arriving.
+  (orderedmap-merge-with (: OrderedMap.OrderedMapModule.MergeWith   (-> (-> %k %v %v %v) (OrderedMap %k %v) (OrderedMap %k %v) (OrderedMap %k %v))))
 
   (orderedmap-try-ref/pair (: OrderedMap.OrderedMapModule.TryGetValue (-> (OrderedMap %k %v) %k (Tuple bool %v))))
 
@@ -100,19 +99,21 @@
 
   ;; --- Walking ---
   ;;
-  ;; Every callback takes the *entry*, as one argument. A map's element is its
-  ;; `(Tuple %k %v)` — `Iterable`'s `%elem` and `Foldable`'s `%item` say so — and
-  ;; a trait signature mentioning one element takes a one-argument callback, so a
-  ;; two-argument function over a key and a value could not go where one is
-  ;; expected.
-  (orderedmap-map        (: OrderedMap.OrderedMapModule.Map       (-> (-> (Tuple %k %v) %w) (OrderedMap %k %v) (OrderedMap %k %w))))
+  ;; Every callback takes the key and the value as *two* arguments, which is
+  ;; what a walk of the tree has to hand over anyway.
+  ;;
+  ;; The entry survives as a `(Tuple %k %v)` only where a trait fixes the shape:
+  ;; `Iterable`'s `%elem` and `Foldable`'s `%item` are one element, so the
+  ;; callbacks reached through `fold` or a `loop` see a pair. The impls below
+  ;; take a pair apart and call these.
+  (orderedmap-map        (: OrderedMap.OrderedMapModule.Map       (-> (-> %k %v %w) (OrderedMap %k %v) (OrderedMap %k %w))))
   ;; The functor's map: the value moves and the key rides along.
   (orderedmap-map-values (: OrderedMap.OrderedMapModule.MapValues (-> (-> %v %w) (OrderedMap %k %v) (OrderedMap %k %w))))
-  (orderedmap-filter     (: OrderedMap.OrderedMapModule.Filter    (-> (-> (Tuple %k %v) bool) (OrderedMap %k %v) (OrderedMap %k %v))))
-  (orderedmap-fold       (: OrderedMap.OrderedMapModule.Fold      (-> (-> %s (Tuple %k %v) %s) %s (OrderedMap %k %v) %s)))
-  (orderedmap-iter       (: OrderedMap.OrderedMapModule.Iter      (-> (-> (Tuple %k %v) bool) (OrderedMap %k %v) bool)))
-  (orderedmap-any?       (: OrderedMap.OrderedMapModule.Exists    (-> (-> (Tuple %k %v) bool) (OrderedMap %k %v) bool)))
-  (orderedmap-try-find   (: OrderedMap.OrderedMapModule.TryFind   (-> (-> (Tuple %k %v) bool) (OrderedMap %k %v) (Tuple bool %k %v))))
+  (orderedmap-filter     (: OrderedMap.OrderedMapModule.Filter    (-> (-> %k %v bool) (OrderedMap %k %v) (OrderedMap %k %v))))
+  (orderedmap-fold       (: OrderedMap.OrderedMapModule.Fold      (-> (-> %s %k %v %s) %s (OrderedMap %k %v) %s)))
+  (orderedmap-iter       (: OrderedMap.OrderedMapModule.Iter      (-> (-> %k %v bool) (OrderedMap %k %v) bool)))
+  (orderedmap-any?       (: OrderedMap.OrderedMapModule.Exists    (-> (-> %k %v bool) (OrderedMap %k %v) bool)))
+  (orderedmap-try-find   (: OrderedMap.OrderedMapModule.TryFind   (-> (-> %k %v bool) (OrderedMap %k %v) (Tuple bool %k %v))))
 
   (seq->orderedmap (: OrderedMap.OrderedMapModule.FromEnumerable (-> (Seq (Tuple %k %v)) (OrderedMap %k %v))))
   (orderedmap->seq (: OrderedMap.OrderedMapModule.AsEnumerable   (-> (OrderedMap %k %v) (Seq (Tuple %k %v)))))
@@ -158,7 +159,9 @@
   (def (found k v) (orderedmap-try-predecessor m key))
   (if found (Some (Tuple k v)) None))
 
-(: orderedmap-find (-> (-> (Tuple %k %v) bool) (OrderedMap %k %v) (Option (Tuple %k %v))))
+;; The first entry in key order satisfying `pred`, as an `Option`. The entry is
+;; a pair here because it is a *value* being handed back, not an argument list.
+(: orderedmap-find (-> (-> %k %v bool) (OrderedMap %k %v) (Option (Tuple %k %v))))
 (defun (orderedmap-find pred m)
   (def (found k v) (orderedmap-try-find pred m))
   (if found (Some (Tuple k v)) None))
@@ -189,7 +192,7 @@
   (transientorderedmap-ref-or      (: OrderedMap.TransientOrderedMapModule.RefOr          (-> (TransientOrderedMap %k %v) %k %v %v)))
   (transientorderedmap-length      (: OrderedMap.TransientOrderedMapModule.Count          (-> (TransientOrderedMap %k %v) int)))
   (transientorderedmap-empty?      (: OrderedMap.TransientOrderedMapModule.IsEmpty        (-> (TransientOrderedMap %k %v) bool)))
-  (transientorderedmap-filter!     (: OrderedMap.TransientOrderedMapModule.FilterInPlace  (-> (-> (Tuple %k %v) bool) (TransientOrderedMap %k %v) void)))
+  (transientorderedmap-filter!     (: OrderedMap.TransientOrderedMapModule.FilterInPlace  (-> (-> %k %v bool) (TransientOrderedMap %k %v) void)))
   ;; A walk of the map as it stands. Finish it before the next write.
   (transientorderedmap-try-ref/pair (: OrderedMap.TransientOrderedMapModule.TryGetValue   (-> (TransientOrderedMap %k %v) %k (Tuple bool %v)))))
 
@@ -235,9 +238,12 @@
   (defun (current m c) (orderedmap-cursor-current c))
   (defun (next m c) c))
 
-(: orderedmap-for-each (-> (-> (Tuple %k %v) void) (OrderedMap %k %v) void))
+;; Written here rather than imported: the .NET `ForEach` takes an `Action`,
+;; where a Bjolang `(-> %k %v void)` is a `Func<TK, TV, Unit>` — the unit is a
+;; value, and that is what makes a callback's type uniform whatever it answers.
+(: orderedmap-for-each (-> (-> %k %v void) (OrderedMap %k %v) void))
 (defun (orderedmap-for-each f m)
-  (loop (:for entry m) (:do (f entry))))
+  (ignore (orderedmap-iter (fun (k v) (f k v) true) m)))
 
 (def/impl (Collection (OrderedMap %k %v))
   (type %content (Tuple %k %v))
@@ -245,12 +251,16 @@
   (defun (empty? m) (orderedmap-empty? m))
   (defun (->seq m) (orderedmap->seq m)))
 
+;; A map's item is its entry, so the folder the trait hands down takes one
+;; argument where `orderedmap-fold`'s takes two. The pair is put back together
+;; here, which is the only place that has to know the difference.
 (def/impl (Foldable (OrderedMap %k %v))
   (type %item (Tuple %k %v))
-  (defun (fold f acc col) (orderedmap-fold f acc col)))
+  (defun (fold f acc col)
+    (orderedmap-fold (fun (acc2 k v) (f acc2 (Tuple k v))) acc col)))
 
 ;; The abstracted argument is `%v`, so the functor moves values and leaves keys
-;; alone — `orderedmap-map` will not serve, since it hands over the whole entry
+;; alone — `orderedmap-map` will not serve, since it hands over the key as well
 ;; and a functor's `(-> %a %b)` has room for one element type.
 (def/impl (Functor (OrderedMap %k %v))
   (defun (map g m) (orderedmap-map-values g m)))

@@ -135,13 +135,11 @@ let mapPrimitiveType (name: string) =
     | "Unit" -> "Bjoml.Unit"
     | "System.Object" -> "object"
     | "Vec" -> "Collections.RrbList"
-    // Builders and cursors. All three live inside the runtime's static class,
-    // which `using static` also imports the nested types of — but a declaration
+    // Builders and cursors. Both live inside the runtime's static class, which
+    // `using static` also imports the nested types of — but a declaration
     // spells the type out, so they are qualified here.
     | "ListBuilder" -> "SchemeList.SchemeListBuilder"
-    | "MapBuilder" -> "Map.MapBuilder"
     | "VecCursor" -> "BjolangRuntime.VecCursor"
-    | "MapCursor" -> "BjolangRuntime.MapCursor"
     // Fully qualified for the same reason `BjoChar` is: it lives in the
     // `Bjolang.Runtime` namespace rather than nested in the static class the
     // generated file has a `using static` for.
@@ -153,7 +151,6 @@ let mapPrimitiveType (name: string) =
     | "Seq" -> "System.Collections.Generic.IEnumerable"
     | "Option" -> "BjolangRuntime.Option"
     | "Result" -> "BjolangRuntime.Result"
-    | "Map" -> "Map.Map"
     | "Param" -> "BjolangRuntime.Param"
     | "DynEnv" -> "BjolangRuntime.DynEnv"
     // The concurrency surface. A promise is what `bjo` hands back and what a

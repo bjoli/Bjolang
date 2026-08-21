@@ -303,6 +303,17 @@ Mutable builders (~SchemeListBuilder~) for efficiently constructing Scheme lists
 
 ** Maps (~Map~)
 High-performance immutable CHAMP (Compressed Hash-Array Mapped Prefix-tree) maps.
+
+Not builtins. ~(Map %k %v)~ is an ~import/class~ alias for ~Map.Map~ and the
+operations are ~import/extern~ bindings on ~Map.MapModule~, both living in
+=(std prelude)= — which every program imports implicitly, so a map is written
+exactly as it always was. They are in the prelude rather than a =(std map)= of
+their own because ~#map(...)~ reads as a call to ~list->map~, which has to be in
+scope wherever the literal is written, and because the prelude implements
+~Iterable~, ~Foldable~, ~Collection~, ~Functor~ and ~Collector~ for ~Map~ — a
+separate module would have to import the prelude for those while the prelude
+imported it back.
+
 - ~(map-empty)~ : Returns an empty map.
 - ~(map-ref map key)~ : Returns the value for ~key~; throws if not found.
 - ~(map-ref-or map key default-val)~ : Returns the value for ~key~, or ~default-val~ if not found.
@@ -318,33 +329,65 @@ High-performance immutable CHAMP (Compressed Hash-Array Mapped Prefix-tree) maps
 - ~(map-keys map)~ : Returns a lazy sequence (~Seq~) of the map's keys.
 - ~(map-values map)~ : Returns a lazy sequence (~Seq~) of the map's values.
 - ~(map-merge map other)~ : Merges two maps, with entries in ~other~ taking precedence.
+- ~(map-set-all map seq)~ : Sets every entry of ~seq~, through a transient, and returns the new map.
+- ~(map-remove-all map seq)~ : Removes every key of ~seq~ and returns the new map.
 
-A map's *element* is its ~(key . value)~ pair, which is what ~map->list~,
-~map->seq~, ~map-cursor-current~ and the ~#map(...)~ literal all deal in, and
-what ~Iterable~'s ~%elem~ and ~Foldable~'s ~%item~ are for ~(Map %k %v)~. So
-every callback below takes **one** argument, the pair, and destructures it:
+*** Where an entry is two arguments and where it is one
+
+Every callback below takes the key and the value as **two** arguments, which is
+what a walk of the trie produces anyway:
 
 #+BEGIN_SRC scheme
-(map-fold (fun (acc kv) (def (_ . v) kv) (+ acc v)) 0 m)
+(map-fold (fun (acc k v) (+ acc v)) 0 m)
 #+END_SRC
 
-A two-argument callback over a key and a value could not be passed where a trait
-expects a function of one ~%item~, which is why there is only the one form. The
-pair is a value tuple, so handing it over costs no allocation.
+The entry survives as a ~(Tuple %k %v)~ only where a trait signature fixes the
+shape. ~Iterable~'s ~%elem~ and ~Foldable~'s ~%item~ are a single element, so a
+callback reached through ~fold~ or a ~loop~ sees a pair rather than two
+arguments, and the prelude's implementations are what put the pair together:
 
-- ~(map-merge-with f map other)~ : Merges two maps using resolver ~f~ for duplicate keys; ~f~ receives the triple ~(key val1 val2)~.
-- ~(map-for-each f map)~ : Applies ~(f pair)~ to each entry for side effects.
-- ~(map-iter f map)~ : Iterates with early exit; ~f~ receives the pair and returns a boolean.
-- ~(map-fold f init map)~ : Folds over the map; ~f~ receives ~(acc pair)~.
-- ~(map-filter f map)~ : Returns a new map containing only entries where ~(f pair)~ is true.
-- ~(map-map f map)~ : Returns a new map whose values are ~(f pair)~. The key is what the result is filed under, so the mapper cannot move it.
+#+BEGIN_SRC scheme
+(fold (fun (acc kv) (def (_ . v) kv) (+ acc v)) 0 m)
+#+END_SRC
+
+The pair is also what ~map->list~, ~map->seq~, ~map-cursor-current~, ~map-find~
+and the ~#map(...)~ literal deal in — in every one of those an entry is a
+*value* crossing the boundary rather than an argument list. A value tuple, so it
+costs no allocation.
+
+- ~(map-merge-with f map other)~ : Merges two maps using resolver ~f~ for duplicate keys; ~f~ receives ~(key val1 val2)~ as three arguments.
+- ~(map-for-each f map)~ : Applies ~(f key value)~ to each entry for side effects.
+- ~(map-iter f map)~ : Iterates with early exit; ~f~ receives ~(key value)~ and returns a boolean.
+- ~(map-any? f map)~ : True if ~(f key value)~ holds of any entry.
+- ~(map-find f map)~ : ~(Some entry)~ for the first entry where ~(f key value)~ holds, or ~None~. The entry is a pair: it is a value being handed back.
+- ~(map-fold f init map)~ : Folds over the map; ~f~ receives ~(acc key value)~.
+- ~(map-filter f map)~ : Returns a new map containing only entries where ~(f key value)~ is true.
+- ~(map-map f map)~ : Returns a new map whose values are ~(f key value)~. The key is what the result is filed under, so the mapper cannot move it.
 - ~(map-map-values f map)~ : Returns a new map with each value replaced by ~(f value)~, keys untouched. This is the one ~Functor~ uses: its ~(-> %a %b)~ has room for a single element type, and for ~(Map %k %v)~ that is ~%v~.
+- ~(map->str map)~ : ~#map(key value ...)~, so the literal round-trips. Also the ~->str~ implementation, so ~(println m)~ prints it.
 - ~(list->map lst)~ : Constructs a map from a list of ~(key . val)~ pairs/tuples.
 - ~(map->list map)~ : Converts the map to a list of pairs/tuples.
 - ~(vec->map vec)~ : Constructs a map from a vector of pairs/tuples.
 - ~(map->vec map)~ : Converts the map to a vector of pairs/tuples.
 - ~(seq->map seq)~ : Constructs a map from a sequence of pairs/tuples.
 - ~(map->seq map)~ : Converts the map to a sequence of pairs/tuples.
+
+*** Builders and transients
+
+Two more ways to build a map, in the shape ~(std set)~ and =(std orderedmap)=
+use. The builder is the fast way to make a map out of nothing — appends land in
+a flat buffer and are scattered into the trie by hash in one pass at the end.
+The transient is the map's own interface with the writes turned inside out, and
+the fast way to make a map out of *another* map: it owns the nodes it has
+touched, so ~transientmap->map~ is O(1). The mutators answer nothing.
+
+- ~(mapbuilder-empty)~ / ~(map->mapbuilder map)~ : Creates a builder.
+- ~(mapbuilder-add! b key value)~ / ~(mapbuilder-add-all! b seq)~ : Appends.
+- ~(mapbuilder-length b)~ : How many entries have been *appended*. Duplicates are resolved when the map is built, last one winning, so this is not the size of the map to come.
+- ~(mapbuilder->map b)~ : Builds the map.
+- ~(transientmap-empty)~ / ~(map->transientmap map)~ / ~(transientmap->map t)~
+- ~(transientmap-set! t key value)~, ~(transientmap-set-all! t seq)~, ~(transientmap-remove! t key)~, ~(transientmap-remove-all! t seq)~, ~(transientmap-filter! f t)~
+- ~(transientmap-ref t key)~, ~(transientmap-ref-or t key default)~, ~(transientmap-try-ref t key)~, ~(transientmap-contains? t key)~, ~(transientmap-length t)~, ~(transientmap-empty? t)~
 
 ** Sets and sorted collections =(std set)= =(std orderedset)= =(std orderedmap)=
 
@@ -394,10 +437,10 @@ so a lookup is O(log n) and a key type with no natural order fails at the first
 comparison rather than when the collection is made.
 
 ~(OrderedMap %k %v)~'s vocabulary is the prelude's ~map-*~ under an
-~orderedmap-~ prefix, down to an entry being a ~(Tuple %k %v)~ and every
-callback taking it whole — so a program that outgrows a hashed map changes the
-constructor and the prefix and stops. ~map->orderedmap~ and ~orderedmap->map~
-cross between them.
+~orderedmap-~ prefix, down to a callback taking the key and the value as two
+arguments and an entry being a ~(Tuple %k %v)~ wherever a trait fixes the shape
+— so a program that outgrows a hashed map changes the constructor and the prefix
+and stops. ~map->orderedmap~ and ~orderedmap->map~ cross between them.
 
 All three implement ~Iterable~, ~Collection~, ~Foldable~, ~Functor~ and ~->str~,
 and each publishes a collector — ~setting~, ~ordered-setting~,

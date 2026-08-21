@@ -25,7 +25,7 @@
   ;; Running blocks
   render render->string run-block run-blocks
   ;; Settings
-  with with-pad
+  with-fmt with-pad
   current-pad current-width current-ellipsis current-string-width
   current-precision current-comma current-comma-sep current-decimal-sep
   current-signed
@@ -148,7 +148,7 @@
 ;; A user adds one of these without touching this file, which is the point of
 ;; using parameters rather than a state record.
 ;;
-;; `with` is SRFI 166's setter, and here it is one function rather than one per
+;; `with-fmt` is SRFI 166's setter, and here it is one function rather than one per
 ;; setting: `parameterize`'s binder is an expression, not a name, so the
 ;; parameter itself can be an argument. A program's own setting is a `def` of a
 ;; `make-parameter` and needs nothing from this file.
@@ -160,8 +160,8 @@
 ;; them ever runs, so a `(parameter-ref ...)` outside the closure reads the
 ;; setting that was in force at the wrong moment — the one where the block was
 ;; written down rather than the one where it is being printed.
-(: with (-> (Param %a) %a (Vec Block) Block))
-(defun (with p v bs)
+(: with-fmt (-> (Param %a) %a (Vec Block) Block))
+(defun (with-fmt p v bs)
   (BRun (fun (out col)
           (parameterize ((p v))
             (run-blocks out col bs)))))
@@ -171,7 +171,7 @@
 (def current-pad (make-parameter #\space))
 
 (: with-pad (-> char (Vec Block) Block))
-(defun (with-pad c bs) (with current-pad c bs))
+(defun (with-pad c bs) (with-fmt current-pad c bs))
 
 ;; The right margin: what `wrapped`, `justified` and `columnar` fill up to.
 (: current-width (Param int))
@@ -766,7 +766,7 @@
 ;;
 ;;   (render out [(with-pad #\. ["Chapter 1" (space-to 20) (numeric page)]) nl])
 ;;
-;;   (render out [(with current-width 60 [(justified [prose])]) nl])
+;;   (render out [(with-fmt current-width 60 [(justified [prose])]) nl])
 ;;
 ;;   (render out
 ;;     [(tabular [[(joined name-of people [nl])]

@@ -148,12 +148,12 @@
   ;; `with` takes the parameter as an argument, so a setting the library has
   ;; never heard of works exactly like one of its own.
   (expect "a setting of one's own"
-          (render->string [(with indent 4 [(indented ["x"])])]) "    x")
+          (render->string [(with-fmt indent 4 [(indented ["x"])])]) "    x")
   (expect "and it is restored afterwards"
-          (render->string [(with indent 4 [(indented ["x"])]) (indented ["y"])])
+          (render->string [(with-fmt indent 4 [(indented ["x"])]) (indented ["y"])])
           "    xy")
   (expect "with-pad is a call of with"
-          (render->string [(with current-pad #\- [(padded/left 3 ["a"])])]) "--a")
+          (render->string [(with-fmt current-pad #\- [(padded/left 3 ["a"])])]) "--a")
 
   ;; --- Space ---------------------------------------------------------------
   (expect "space-to" (render->string ["ab" (space-to 5) "c"]) "ab   c")
@@ -184,10 +184,10 @@
   ;; The ellipsis takes its room out of the content, so the answer is never
   ;; wider than what was asked for.
   (expect "an ellipsis"
-          (render->string [(with current-ellipsis "..." [(trimmed/right 6 ["abcdefgh"])])])
+          (render->string [(with-fmt current-ellipsis "..." [(trimmed/right 6 ["abcdefgh"])])])
           "abc...")
   (expect "on the left, it says where the cut was"
-          (render->string [(with current-ellipsis "..." [(trimmed/left 6 ["abcdefgh"])])])
+          (render->string [(with-fmt current-ellipsis "..." [(trimmed/left 6 ["abcdefgh"])])])
           "...fgh")
 
   (expect "fitted/right pads what is short"
@@ -202,11 +202,11 @@
   ;; is counted in is the caller's to say, and everything follows it.
   (expect "characters by default" (render->string [(padded/left 5 ["😀"])]) "    😀")
   (expect "columns when told to count them"
-          (render->string [(with current-string-width terminal-width
+          (render->string [(with-fmt current-string-width terminal-width
                                  [(padded/left 5 ["😀"])])])
           "   😀")
   (expect "and cutting counts the same way"
-          (render->string [(with current-string-width terminal-width
+          (render->string [(with-fmt current-string-width terminal-width
                                  [(trimmed/right 3 ["😀ab"])])])
           "😀a")
 
@@ -244,28 +244,28 @@
           (render->string [(numeric 1234.5 #:comma 3 #:comma-sep #\space #:decimal-sep #\,)])
           "1 234,5")
   (expect "and a keyword defaults to the parameter"
-          (render->string [(with current-precision 2 [(numeric 3.14159)])])
+          (render->string [(with-fmt current-precision 2 [(numeric 3.14159)])])
           "3.14")
 
   ;; --- Paragraphs ----------------------------------------------------------
   (expect "wrapped"
-          (render->string [(with current-width 12 [(wrapped [(joined say sentence [" "])])])])
+          (render->string [(with-fmt current-width 12 [(wrapped [(joined say sentence [" "])])])])
           "the quick\nbrown fox\njumps")
   (expect "justified pads the gaps instead"
-          (render->string [(with current-width 12 [(justified [(joined say sentence [" "])])])])
+          (render->string [(with-fmt current-width 12 [(justified [(joined say sentence [" "])])])])
           "the    quick\nbrown    fox\njumps")
   (expect "a word wider than the line gets a line rather than a cut"
-          (render->string [(with current-width 4 [(wrapped ["ab enormous cd"])])])
+          (render->string [(with-fmt current-width 4 [(wrapped ["ab enormous cd"])])])
           "ab\nenormous\ncd")
   (expect "wrapping starts from wherever the cursor is"
-          (render->string ["12345678" (with current-width 12 [(wrapped ["aaa bbb"])])])
+          (render->string ["12345678" (with-fmt current-width 12 [(wrapped ["aaa bbb"])])])
           "12345678aaa\nbbb")
 
   ;; --- Tables --------------------------------------------------------------
   ;;
   ;; Each column is rendered on its own and the lines are laid out together.
   (expect "columnar divides the width"
-          (render->string [(with current-width 11
+          (render->string [(with-fmt current-width 11
                                  [(columnar [["abc" nl "def"] ["123" nl "456"]])])])
           "abc   123\ndef   456\n")
   (expect "tabular measures the content instead"

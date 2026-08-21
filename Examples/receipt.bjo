@@ -3,10 +3,6 @@
 ;; Everything a receipt needs is a width problem: the paper is forty columns
 ;; and not one more, the money has to line up on the right however long the
 ;; description is, and the description has to give way when it does not fit.
-;;
-;; So nothing below counts characters or appends strings. Each line says what
-;; it *is* — this is centred, this is cut to fit, this is the money column —
-;; and the width is stated once, at the top.
 (import (std prelude))
 (import (std fmt))
 
@@ -15,11 +11,17 @@
 (def paper 40)
 (def money-column 9)
 
+
+;; First we define the line.
+;; what is the grocery
+;; qty is how much
+;; and unit is unit price
 (type
   (: Line (Record (: what string)
                   (: qty double)
                   (: unit double))))
 
+;; Simple accessors
 (: what-of (-> Line string))
 (defun (what-of l) (record-ref l what))
 
@@ -49,7 +51,7 @@
 ;; what this shop's prices are, whatever the machine's locale thinks.
 (: money (-> double Block))
 (defun (money x)
-  (padded/left money-column [(numeric x #:precision 2 #:comma 3)]))
+  (padded/left money-column [(numeric x #:precision 2 #:comma 3 #:decimal-sep #\,)]))
 
 ;; A line with something against each margin. The right-hand side is rendered
 ;; and measured first — `captured` — and the left takes exactly what is left
@@ -115,8 +117,8 @@
 ;; The shop against the left margin, the transaction against the right.
 (: masthead Block)
 (def masthead
-  (each [(spread ["Kungsgatan 12"] ["2026-08-21 14:32"])
-         (spread ["211 44 Malmo"] ["Receipt 1042"])]))
+  (each [(spread ["Fruktgatan 12"] ["2026-08-21 14:32"])
+         (spread ["211 41 Malmo"] ["Receipt 1042"])]))
 
 ;; Filled to the paper's width and flush against both edges, the last line
 ;; excepted. The text is one long string; where the lines break is `justified`'s
@@ -132,11 +134,11 @@
 
 (: basket (List Line))
 (def basket
-  (list (Line (what "Bananas, organic") (qty 1.24) (unit 24.90))
-        (Line (what "Coffee beans, dark roast, whole") (qty 2.0) (unit 89.00))
-        (Line (what "Rye bread") (qty 1.0) (unit 32.50))
-        (Line (what "Oat milk") (qty 3.0) (unit 18.95))
-        (Line (what "Cloudberry jam from Lapland, the small jar") (qty 1.0) (unit 64.00))))
+  (list (Line (what "Bananas, organic")                           (qty 1.24) (unit 24.90))
+        (Line (what "Coffee beans, dark roast, whole")            (qty 2.0)  (unit 89.00))
+        (Line (what "Rye bread")                                  (qty 1.0)  (unit 32.50))
+        (Line (what "Oat milk")                                   (qty 3.0)  (unit 18.95))
+        (Line (what "Cloudberry jam from Lapland, the small jar") (qty 1.0)  (unit 64.00))))
 
 (: receipt (-> (List Line) (Vec Block)))
 (defun (receipt ls)
@@ -146,7 +148,7 @@
     ;; One `with` over the whole receipt: a name too long for its column is cut
     ;; and says so, wherever on the paper it appears.
     [(with current-ellipsis "..."
-       [(heading ["BJORN'S GROCERY"])
+       [(heading ["BJOLI'S GROCERY"])
         nl
         masthead
         (rule #\=)
@@ -162,5 +164,6 @@
         footer])]))
 
 (defun (main args)
-  (render (parameter-ref current-output-port) (receipt basket))
+  (parameterize ((current-decimal-sep #\,))
+    (render (parameter-ref current-output-port) (receipt basket)))
   0)

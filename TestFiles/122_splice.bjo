@@ -1,0 +1,112 @@
+;; `(begin ...)` in declaration position, and the macros it exists for.
+;;
+;; A macro used to be able to expand to exactly one declaration, which meant a
+;; transformer could not write a `defun` and its signature together — let alone
+;; a binding beside the function that reads it. A `begin` spliced into the
+;; enclosing declaration list is what lifts that, and everything below is a
+;; macro from `inc/splicemacros.bjo` producing several declarations at once.
+;;
+;; What is pinned beyond "it splices": a name the template *binds* keeps the
+;; fresh spelling that makes it uncapturable (rule 1), a name the template
+;; *calls* from its own module is reached qualified (rule 2), a name the
+;; template `inject`s is an ordinary call-site name this module can export
+;; (rule 3 by way of the escape hatch), and a `def/macro` inside a splice is
+;; published like any other.
+(import (std prelude))
+(import "inc/splicemacros.bjo")
+(import "inc/splicemade.bjo")
+
+;; The derived names exist nowhere in this file's source: `def/derived` built
+;; them out of `size` below, and exporting them is what proves they are
+;; ordinary bindings rather than renamed ones.
+(export size-get size-twice)
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+(: expect-int (-> string int int void))
+(defun (expect-int label actual wanted)
+  (expect label (int->string actual) (int->string wanted)))
+
+;; --- The declarations ------------------------------------------------------
+
+;; Two functions and two signatures from one call.
+(def/pair base-value next-value 41)
+
+;; A mutable binding the macro introduced, and the function that steps it. The
+;; `counter` below is *this* module's, written deliberately at the same name:
+;; the macro's own is renamed apart and neither one can see the other.
+(def/counter bump)
+
+(def counter 999)
+
+;; A parameter the template wrote.
+(def/scaler triple 3)
+
+;; Two public names derived from a base this file gave.
+(def/derived size 10)
+
+;; A call that declares nothing at all.
+(def/nothing)
+
+;; Nested begins, including an empty one.
+(def/nested one two)
+
+;; --- Splices inside a trait and an implementation --------------------------
+;;
+;; Both read their bodies with a loop of their own rather than through
+;; `parseDeclForms`, so both had to be taught the same two things: a literal
+;; `begin` flattens, and a macro produces methods.
+(def/trait (Sized %a)
+  (: size-of (-> %a int))
+  (begin
+    (defun (size-of x) 0)))
+
+(def/impl (Sized string)
+  (impl/length size-of))
+
+;; An empty `begin` is an impl with no methods of its own, which is the trait's
+;; default and nothing else.
+(def/impl (Sized int)
+  (begin))
+
+(defun (main)
+  ;; --- The basic splice ----------------------------------------------------
+  (expect-int "a function from a splice" (base-value) 41)
+  (expect-int "and its neighbour" (next-value) 42)
+
+  ;; --- Rule 1: a binding the template introduced ---------------------------
+  (expect-int "the macro's own binding steps" (bump) 1)
+  (expect-int "and keeps its value between calls" (bump) 2)
+  (expect-int "the call site's counter is untouched" counter 999)
+
+  ;; A parameter is a binder too, and the body's use of it has to be the same
+  ;; name the parameter list wrote.
+  (expect-int "a parameter the template introduced" (triple 7) 21)
+
+  ;; --- Rule 3 by way of inject ---------------------------------------------
+  (expect-int "a derived name" (size-get) 10)
+  (expect-int "and one derived name calling the other" (size-twice) 20)
+
+  ;; --- Nesting -------------------------------------------------------------
+  (expect-int "a nested begin" (one) 1)
+  (expect-int "at any depth" (two) 2)
+
+  ;; --- Traits and implementations ------------------------------------------
+  (expect-int "a macro producing a method" (size-of "abcd") 4)
+  (expect-int "and an empty begin leaves the default" (size-of 7) 0)
+
+  ;; --- A macro from a splice -----------------------------------------------
+  ;;
+  ;; `answer` is a macro `def/macro-maker` wrote into `splicemade.bjo`, and
+  ;; `made-helper` is the function it wrote beside it.
+  (expect-int "a macro published from inside a splice" (answer) 42)
+  (expect-int "and the function beside it" (made-helper) 7)
+
+  (println "122 ok")
+  0)

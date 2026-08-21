@@ -1,0 +1,124 @@
+;; Macros that expand to a `(begin ...)` of several declarations.
+;;
+;; A macro cannot be used in the module that defines it, so every one of these
+;; is exercised from `122_splice.bjo` and from `splicemade.bjo` next door.
+
+(import (std syntax-match))
+
+(export cat)
+
+;; A helper of this module's own, named by `def/derived`'s template below.
+;; Exporting it is what makes rule 2 apply: the expansion lands in another
+;; module, where this name is not in scope, so it is emitted qualified and a
+;; `cat` at the call site cannot take it over.
+(: cat (-> string string string))
+(defun (cat a b) (string-append a b))
+
+;; The basic case: two functions and their signatures, from one form.
+(def/macro (def/pair form inject compare)
+  (syntax-match form
+    ((_ name-a name-b value)
+     #'(begin
+         (: ,name-a (-> int))
+         (defun (,name-a) ,value)
+         (: ,name-b (-> int))
+         (defun (,name-b) (+ ,value 1))))
+    (bad (syntax-error bad "def/pair takes two names and a value."))))
+
+;; A binding the template introduces, read and written by a function from the
+;; same template.
+;;
+;; This is the rule-1 test. `counter` is template-origin, so it arrives renamed;
+;; at the top level there is no expression enclosing the two declarations, so
+;; unless the group's own binders are handed to the resolver the reference
+;; inside `,name` is free — and is either qualified into a module that has no
+;; such binding, or stripped bare and captured by the call site's own `counter`.
+(def/macro (def/counter form inject compare)
+  (syntax-match form
+    ((_ name)
+     #'(begin
+         (def/mutable counter 0)
+         (: ,name (-> int))
+         (defun (,name)
+           (set! counter (+ counter 1))
+           counter)))
+    (bad (syntax-error bad "def/counter takes one name."))))
+
+;; A parameter the template introduces. `x` is written here rather than taken
+;; from the input, so it is renamed — and the body's `x` has to be the
+;; parameter, not a free name resolved as if it came from somewhere else.
+(def/macro (def/scaler form inject compare)
+  (syntax-match form
+    ((_ name factor)
+     #'(begin
+         (: ,name (-> int int))
+         (defun (,name x) (* x ,factor))))
+    (bad (syntax-error bad "def/scaler takes a name and a factor."))))
+
+;; Two *public* names derived from one the caller gave.
+;;
+;; `inject` is what makes them public: an injected symbol never enters the
+;; rename memo, so it is an ordinary call-site name that the using module can
+;; export. The template also calls `cat`, which is this module's own.
+(def/macro (def/derived form inject compare)
+  (syntax-match form
+    ((_ base value)
+     (match base
+       ((SSym name)
+        (let ((getter (inject (string->symbol (cat (symbol->string name) "-get"))))
+              (doubler (inject (string->symbol (cat (symbol->string name) "-twice")))))
+          #'(begin
+              (: ,getter (-> int))
+              (defun (,getter) ,value)
+              (: ,doubler (-> int))
+              (defun (,doubler) (* 2 (,getter))))))
+       (bad (syntax-error bad "def/derived's first argument is a name."))))
+    (bad (syntax-error bad "def/derived takes a base name and a value."))))
+
+;; Nothing at all. A macro has to be able to decide that a call declares
+;; nothing, and an empty `begin` in declaration position is how it says so.
+(def/macro (def/nothing form inject compare)
+  (syntax-match form
+    ((_) #'(begin))
+    (bad (syntax-error bad "def/nothing takes no arguments."))))
+
+;; Nesting flattens, however deep, and an empty `begin` inside one contributes
+;; nothing rather than ending the group.
+(def/macro (def/nested form inject compare)
+  (syntax-match form
+    ((_ name-a name-b)
+     #'(begin
+         (: ,name-a (-> int))
+         (defun (,name-a) 1)
+         (begin
+           (begin)
+           (begin
+             (: ,name-b (-> int))
+             (defun (,name-b) 2)))))
+    (bad (syntax-error bad "def/nested takes two names."))))
+
+;; A method for an implementation. `def/impl` reads its body with a loop of its
+;; own rather than through `parseDeclForms`, so a macro is only usable there
+;; because that loop asks for one — which is what makes a `derive`-style
+;; transformer possible at all.
+(def/macro (impl/length form inject compare)
+  (syntax-match form
+    ((_ name)
+     #'(begin
+         (defun (,name s) (string-length s))))
+    (bad (syntax-error bad "impl/length takes one name."))))
+
+;; A macro that writes a macro, beside a function.
+;;
+;; The `DMacro` a spliced `def/macro` produces has to reach `parseModule`'s
+;; output, or the module this expands in never publishes it and nothing can
+;; call it. The name comes from the input form, so it is the caller's spelling
+;; rather than a renamed one.
+(def/macro (def/macro-maker form inject compare)
+  (syntax-match form
+    ((_ name helper)
+     #'(begin
+         (def/macro (,name inner-form inner-inject inner-compare) #'42)
+         (: ,helper (-> int))
+         (defun (,helper) 7)))
+    (bad (syntax-error bad "def/macro-maker takes two names."))))

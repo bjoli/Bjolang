@@ -261,7 +261,18 @@ let private compareIdent =
 /// so it keeps its fresh spelling and ordinary scoping has already made it
 /// uncapturable. What comes back free is what has to be resolved somewhere
 /// else.
-let private resolveIntroduced (binding: MacroBinding) (memo: Dictionary<string, string>) (e: Expr) : Expr =
+///
+/// `bound` is what the caller already knows to be bound, and is empty
+/// everywhere an expansion lands inside an expression. Declaration position is
+/// the exception: a spliced group's binders are not inside anything, so
+/// `Parser.boundNames` collects them and hands them over — without which rule 1
+/// could not apply to a `(begin (def x 0) (defun (f) x))` at all.
+let private resolveIntroduced
+    (binding: MacroBinding)
+    (memo: Dictionary<string, string>)
+    (bound: Set<string>)
+    (e: Expr)
+    : Expr =
     if memo.Count = 0 then
         e
     else
@@ -270,7 +281,7 @@ let private resolveIntroduced (binding: MacroBinding) (memo: Dictionary<string, 
     let introduced = memo |> Seq.map (fun kv -> kv.Value, kv.Key) |> Map.ofSeq
 
     let subst =
-        AlphaRename.freeNames Set.empty e
+        AlphaRename.freeNames bound e
         |> Seq.choose (fun n ->
             match Map.tryFind n introduced with
             | None -> None

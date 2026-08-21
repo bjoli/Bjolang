@@ -1,0 +1,128 @@
+;; `(begin ...)` in body and expression position.
+;;
+;; In a body it splices: the forms it holds are the forms the body holds, so a
+;; definition inside one scopes over what follows it and a group of mutually
+;; recursive definitions is still one group. In expression position — where
+;; `parseBody` never saw it — it opens a nested body instead, which is the
+;; sequencing expression the language otherwise has none of.
+;;
+;; The empty form is the interesting corner. `(begin)` is `unit`, and
+;; deliberately not a splice of nothing: vanishing would move whatever precedes
+;; it from statement position into tail position, silently changing a function's
+;; value and taking a `MustUse` diagnostic with it. See
+;; `errors/empty_begin_must_use.bjo`, which is that diagnostic still firing.
+(import (std prelude))
+(import "inc/splicebody.bjo")
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+(: expect-int (-> string int int void))
+(defun (expect-int label actual wanted)
+  (expect label (int->string actual) (int->string wanted)))
+
+(: expect-bool (-> string bool bool void))
+(defun (expect-bool label actual wanted)
+  (expect label (if actual "true" "false") (if wanted "true" "false")))
+
+;; Mutual recursion split across a `begin`, written by hand. `collectDefs` has
+;; to look through the splice, or these land in two separate groups and the
+;; first cannot see the second.
+(: even-here? (-> int bool))
+(defun (even-here? n)
+  (if (= n 0) true (odd-here? (- n 1))))
+
+(begin
+  (: odd-here? (-> int bool))
+  (defun (odd-here? n)
+    (if (= n 0) false (even-here? (- n 1)))))
+
+;; The same thing inside a body, and from a macro.
+(: parity-of (-> int string))
+(defun (parity-of n)
+  (defun (top-even? k) (if (= k 0) true (top-odd? (- k 1))))
+  (begin
+    (defun (top-odd? k) (if (= k 0) false (top-even? (- k 1)))))
+  (if (top-even? n) "even" "odd"))
+
+(: macro-parity (-> int string))
+(defun (macro-parity n)
+  (def/parity mac-even? mac-odd?)
+  (if (mac-even? n) "even" "odd"))
+
+;; A whole body that is one empty `begin`. The function's value is `unit`.
+(: does-nothing (-> void))
+(defun (does-nothing)
+  (begin))
+
+(defun (main)
+  ;; --- Splicing in a body --------------------------------------------------
+  (expect-int "a begin splices its forms"
+              (let ()
+                (begin
+                  (def a 1)
+                  (def b 2))
+                (+ a b))
+              3)
+
+  (expect-int "nested begins flatten"
+              (let ()
+                (begin
+                  (def c 1)
+                  (begin
+                    (def d 2)
+                    (def e 3)))
+                (+ c (+ d e)))
+              6)
+
+  ;; --- Mutual recursion across a splice ------------------------------------
+  (expect-bool "top-level mutual recursion across a begin" (even-here? 10) true)
+  (expect-bool "and the other way" (odd-here? 7) true)
+  (expect "in a body" (parity-of 4) "even")
+  (expect "and from a macro" (macro-parity 5) "odd")
+
+  ;; --- The empty form ------------------------------------------------------
+  ;;
+  ;; In the middle of a body it is a statement: what precedes it stays in
+  ;; statement position, and what follows is still the body's value.
+  (expect-int "an empty begin mid-body"
+              (let ()
+                (def f 4)
+                (begin)
+                (+ f 1))
+              5)
+
+  (does-nothing)
+  (println "ok: an empty begin as a whole body")
+
+  ;; --- Expression position -------------------------------------------------
+  (expect-int "begin as an expression" (+ 1 (begin 2)) 3)
+  (expect-int "which sequences" (+ 1 (begin (println "ok: a begin runs its forms in order") 2)) 3)
+  (expect-int "and opens a scope of its own"
+              (begin
+                (def g 10)
+                (* g 2))
+              20)
+  (expect-int "an empty begin as an expression is unit"
+              (let () (ignore (begin)) 1)
+              1)
+
+  ;; --- Macros --------------------------------------------------------------
+  (expect-int "a macro splicing a definition into a body" (with-doubled 5 1) 11)
+
+  ;; The macro's `tmp` and the call site's are different bindings, and the
+  ;; call site's survives the expansion unchanged.
+  (expect-int "a spliced definition does not capture"
+              (let ()
+                (def tmp 100)
+                (def from-macro (add-tmp 7))
+                (+ tmp from-macro))
+              107)
+
+  (println "123 ok")
+  0)

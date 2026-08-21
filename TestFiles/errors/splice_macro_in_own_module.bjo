@@ -1,0 +1,24 @@
+;; A macro still cannot be used in the module that defines it, splice or no
+;; splice. `parseDeclForms` consults `tryParseDecl` before `expandHook`, so a
+;; declaration form always wins over a macro of the same name — and a macro
+;; call that reaches the expander here is the same error it always was, rather
+;; than an "Unknown declaration" from the new path.
+
+;; EXPECT-ERROR: a macro cannot be used where it is defined
+
+(import (std prelude))
+(import (std syntax-match))
+
+(def/macro (def/local-pair form inject compare)
+  (syntax-match form
+    ((_ name)
+     #'(begin
+         (: ,name (-> int))
+         (defun (,name) 1)))
+    (bad (syntax-error bad "def/local-pair takes one name."))))
+
+(def/local-pair here)
+
+(defun (main args)
+  (println (int->string (here)))
+  0)

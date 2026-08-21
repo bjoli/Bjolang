@@ -1,0 +1,20 @@
+;; Why `(begin)` is `unit` rather than a splice of nothing.
+;;
+;; If an empty `begin` vanished, the `try` below would move from statement
+;; position into tail position: the function's value would silently become the
+;; `Result` instead of `unit`, and the dropped error this reports would stop
+;; being dropped at all. Reading it as `unit` keeps the `try` where it was
+;; written, which is what `MustUse` is looking at.
+
+;; EXPECT-ERROR: Result
+
+(import (std prelude))
+
+(: risky (-> void))
+(defun (risky)
+  (try (file-read-text "/nonexistent") #:catch (System.Exception))
+  (begin))
+
+(defun (main args)
+  (risky)
+  0)

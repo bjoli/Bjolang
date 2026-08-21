@@ -244,6 +244,54 @@ So expansion is counted per call site, which every node a transformer builds
 inherits, and the hundredth at one site is reported as a runaway. A recursion
 that takes something off each round never reaches it.
 
+** ~begin~ expands to several forms
+
+A transformer answers one ~Syntax~, and a great deal of what a macro is for
+needs more than one form: a ~defun~ and the signature above it, a binding and
+the function that reads it, a definition and the code that uses it. ~(begin
+...)~ is how one form stands for many — it splices its contents into whatever
+list it was written in.
+
+#+BEGIN_SRC scheme
+(def/macro (def/counter form inject compare)
+  (syntax-match form
+    ((_ name)
+     #'(begin
+         (def/mutable counter 0)
+         (: ,name (-> int))
+         (defun (,name)
+           (set! counter (+ counter 1))
+           counter)))
+    (bad (syntax-error bad "def/counter takes one name."))))
+#+END_SRC
+
+Splicing works wherever declarations or body forms do: at the top level, inside
+~(module ...)~, inside a ~def/trait~ or ~def/impl~ body, and in any body — a
+~defun~'s, a ~let~'s, a ~match~ arm's. Nesting flattens. Two definitions spliced
+into a body are still one mutually recursive group, as though the ~begin~ were
+not there.
+
+Hygiene needs nothing extra. ~counter~ above is written in the template, so it
+is renamed and cannot be captured by — or capture — a ~counter~ at the call
+site, exactly as a ~let~ binding in a template is. A name the *caller* supplies,
+or one built with ~inject~, is an ordinary call-site name that the using module
+can export.
+
+Two details worth knowing:
+
+- *An empty ~(begin)~ means different things in the two positions, on purpose.*
+  In declaration position it is no declarations, so a macro can decide that a
+  call declares nothing. In a body it is ~unit~ — if it vanished, the form
+  before it would slide from statement position into tail position, silently
+  changing the body's value and taking a discarded-~Result~ diagnostic with it.
+- *~begin~ is reserved in body position*, as ~def~, ~defun~, ~defbjo~ and
+  ~def/mutable~ already are. The parser consumes those heads before anything is
+  in scope, so ~(let ((begin f)) (begin 1 2))~ splices rather than calls.
+
+In expression position — where a value is wanted and no body was being read —
+~(begin ...)~ opens a nested body instead, which is the sequencing expression
+the language otherwise lacks: ~(+ 1 (begin (log!) 2))~.
+
 ** What a macro cannot do
 
 - *Appear anywhere but where a whole expression or declaration is expected.* Not
@@ -259,6 +307,11 @@ that takes something off each round never reaches it.
   ~compare~. Type parameters, trait constraints, keyword or rest arguments and
   ~defbjo~ are rejected at the ~def/macro~, because each changes the emitted C#
   method that the expander reflects on.
+- *Introduce an import.* The import graph is read from a file's raw forms before
+  anything is parsed, and it has to be: parsing a macro call requires that
+  macro's module to be compiled already. An ~(import ...)~ inside an expansion is
+  one the graph never saw, so it is refused rather than silently unlinked. Write
+  it in the file that uses the macro.
 
 Two more things worth knowing. Every node a transformer builds carries the *call
 site's* range, so a type error inside a large expansion reports one line. And the
@@ -274,4 +327,6 @@ which is what the hundred-level expansion limit is for.
 | ~def/macro~                    | ~Parser.parseDeclForms~         |
 | marshalling, renaming, the call | ~Macro.fs~                     |
 | the ~BjolangMacros~ metadata   | ~Program.fs~, ~Pipeline.parseMacroEntries~ |
+| ~begin~ splicing               | ~Parser.parseDeclForms~, ~Parser.parseBody~ |
 | worked examples                | ~TestFiles/inc/macros.bjo~, ~TestFiles/091_macros.bjo~ |
+| splicing examples              | ~TestFiles/122_splice.bjo~, ~TestFiles/123_begin.bjo~ |

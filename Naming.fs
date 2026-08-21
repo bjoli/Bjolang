@@ -88,8 +88,8 @@ let qualifiedBinding (moduleName: string) (name: string) =
 /// apart. `Prelude.emptyRegistry` seeds its `LocalTypes` from this.
 let builtinTypeNames =
     Set.ofList
-        [ "List"; "Vec"; "VecBuilder"; "ListBuilder"; "MapBuilder"; "VecCursor"; "MapCursor"; "StringCursor"
-          "StringBuilder"; "Seq"; "Option"; "Result"; "Map"; "Keyword"; "Symbol"; "Array"; "Param"; "DynEnv"
+        [ "List"; "Vec"; "VecBuilder"; "ListBuilder"; "VecCursor"; "StringCursor"
+          "StringBuilder"; "Seq"; "Option"; "Result"; "Keyword"; "Symbol"; "Array"; "Param"; "DynEnv"
           "Promise"; "Event"; "Chan"; "CancelToken"; "CancelReason"; "AsyncSeq"; "Syntax" ]
 
 /// The name a declared type — or one of its constructors — is known by

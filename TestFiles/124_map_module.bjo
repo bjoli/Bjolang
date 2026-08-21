@@ -1,0 +1,221 @@
+;; `Map` after it stopped being a compiler builtin.
+;;
+;; Its type is now an `import/class` alias for `Map.Map`, its operations are
+;; `import/extern` bindings on `Map.MapModule`, and both live in `(std prelude)`
+;; — which every program imports implicitly, so nothing about the way a Map is
+;; written changed. What is checked here is the seams: the `#map(...)` literal,
+;; which reads as a call to `list->map`; the four trait implementations; and the
+;; generic dictionary path, where the alias expansion meets a dictionary's
+;; associated-type projection.
+(import (std prelude))
+
+(: expect (-> string bool void))
+(defun (expect label ok)
+  (if ok
+      (println (string-append "ok " label))
+      (println (string-append "FAILURE: " label))))
+
+(: expect-str (-> string string string void))
+(defun (expect-str label actual wanted)
+  (if (equal? actual wanted)
+      (println (string-append "ok " label))
+      (println (str "FAILURE: " label ": got " actual ", wanted " wanted))))
+
+;; A loop clause is a body of expressions and a `def` is a declaration, so an
+;; entry has to come apart somewhere a binding may be introduced.
+(: entry-value (-> (Tuple string int) int))
+(defun (entry-value entry)
+  (def (_ v) entry)
+  v)
+
+;; `#map()` says nothing about what it would hold, so its key and value types
+;; have to come from the context. Here that is the signature.
+(: nothing (-> (Map string int)))
+(defun (nothing) #map())
+
+;; ---------------------------------------------------------------------------
+;; 1. The literal
+;; ---------------------------------------------------------------------------
+
+(: test-literal (-> void))
+(defun (test-literal)
+  (def m #map(("a" 1) ("b" 2)))
+  (expect "literal length" (= (map-length m) 2))
+  (expect "literal keys" (= (map-ref m "b") 2))
+
+  ;; The empty case desugars to `(map-empty)` rather than to `list->map`, so it
+  ;; is a different path through the reader.
+  (expect "empty literal" (map-empty? (nothing)))
+
+  ;; `[k v]` is the other spelling of an entry.
+  (def bracketed #map(["x" 10] ["y" 20]))
+  (expect "bracketed entries" (= (map-ref bracketed "y") 20)))
+
+;; ---------------------------------------------------------------------------
+;; 2. The loop — Iterable, through Map.MapCursor
+;; ---------------------------------------------------------------------------
+
+(: test-loop (-> void))
+(defun (test-loop)
+  (def m #map(("a" 1) ("b" 2) ("c" 3)))
+
+  (def/mutable total 0)
+  (loop (:for kv m) (:do (set! total (+ total (entry-value kv)))))
+  (expect "loop sums the values" (= total 6))
+
+  ;; The cursor is the trie's own enumerator in a heap cell, and `done?` is what
+  ;; advances it. Two loops over the same map must each get a fresh one, or the
+  ;; second would find the first one's cursor already at the end.
+  (def/mutable twice 0)
+  (loop (:for kv m) (:do (set! twice (+ twice (entry-value kv)))))
+  (loop (:for kv m) (:do (set! twice (+ twice (entry-value kv)))))
+  (expect "a loop starts a fresh cursor" (= twice 12)))
+
+;; ---------------------------------------------------------------------------
+;; 3. The comprehension — Collector (Mapping %k %v), through MapBuilder
+;; ---------------------------------------------------------------------------
+
+(: test-comprehension (-> void))
+(defun (test-comprehension)
+  (def squares {mapping (Tuple a (* a a)) (:for a (range 1 5))})
+  (expect "comprehension length" (= (map-length squares) 4))
+  (expect "comprehension values" (= (map-ref squares 4) 16))
+
+  ;; Collecting the entries of an existing map copies it: `%elem` is the pair,
+  ;; which is exactly what walking one yields.
+  (def m #map(("a" 1) ("b" 2)))
+  (def copied {mapping kv (:for kv m)})
+  (expect "a map collects into a map" (= (map-length copied) 2))
+  (expect "and keeps the values" (= (map-ref copied "b") 2)))
+
+;; ---------------------------------------------------------------------------
+;; 4. The generic dictionary path
+;; ---------------------------------------------------------------------------
+;;
+;; This is the case worth testing hardest. The functions below never mention a
+;; ground type: `(Map %k %v)` is an alias expanding to `Map.Map`, and the
+;; constraints become dictionary parameters filled in where the key and value
+;; types are known.
+
+(: describe (-> (Map %k %v) string) (where (->str %k) (->str %v)))
+(defun (describe m)
+  (str "<" (int->string (map-length m)) ": " (map->str m) ">"))
+
+;; The same map, reached through `Foldable` rather than through `Map`'s own
+;; operations — so the dictionary has to project `%item` to `(Tuple %k %v)`.
+;; Nothing implements `Foldable` for `Set`, so this path is unique to Map here.
+(: count-via-foldable (-> (Map %k %v) int))
+(defun (count-via-foldable m)
+  (fold (fun (acc _) (+ acc 1)) 0 m))
+
+;; A generic function taking a Map and nothing else. Under `-nullable:enable`
+;; this used to raise CS8714 for want of a `notnull` on the emitted type
+;; parameter; `Map.Map` carries no such constraint now.
+(: key-count (-> (Map %k %v) int))
+(defun (key-count m)
+  (map-length m))
+
+(: test-generic (-> void))
+(defun (test-generic)
+  (def m #map(("a" 1) ("b" 2)))
+  (def n #map((1 true)))
+
+  ;; `True` rather than `true`: a bool has no `->str` of its own, so the blanket
+  ;; runs and hands the job to `System.Convert.ToString`. That is the prelude's
+  ;; behaviour everywhere, not something the map does.
+  (expect-str "constrained generic over int keys" (describe n) "<1: #map(1 True)>")
+  (expect-str "constrained generic over string keys"
+              (describe #map(("a" 1)))
+              "<1: #map(a 1)>")
+  ;; Two entries, so the trie's order decides which way round it comes out.
+  (expect "the same at two entries" (= (string-length (describe m)) 18))
+
+  (expect "Foldable-generic count" (= (count-via-foldable m) 2))
+  (expect "Foldable-generic count at other types" (= (count-via-foldable n) 1))
+  (expect "unconstrained generic" (= (key-count m) 2))
+
+  ;; Collection and Functor, the other two implementations.
+  (expect "Collection length" (= (length m) 2))
+  (expect "Collection empty?" (not (empty? m)))
+  (expect "Functor moves values" (= (map-ref (map (fun (v) (* v 10)) m) "b") 20)))
+
+;; ---------------------------------------------------------------------------
+;; 5. Printing
+;; ---------------------------------------------------------------------------
+
+(: test-printing (-> void))
+(defun (test-printing)
+  ;; A single entry, so the trie's order cannot make this flaky.
+  (expect-str "->str of a map" (->str #map(("a" 1))) "#map(a 1)")
+  (expect-str "an empty map" (->str (nothing)) "#map()")
+
+  ;; Two entries: whichever order the trie walks them in, the result is one of
+  ;; two strings, and neither is a .NET type name.
+  (def m #map(("a" 1) ("b" 2)))
+  (def shown (->str m))
+  (expect "two entries print as a literal"
+          (or (equal? shown "#map(a 1 b 2)") (equal? shown "#map(b 2 a 1)")))
+
+  ;; And it round-trips: what was printed reads back as the same map.
+  (expect "the literal round-trips" (equal? m #map(("a" 1) ("b" 2)))))
+
+;; ---------------------------------------------------------------------------
+;; The surface `map-*` did not have before
+;; ---------------------------------------------------------------------------
+
+(: test-new-surface (-> void))
+(defun (test-new-surface)
+  (def m #map(("a" 1) ("b" 2) ("c" 3)))
+
+  (expect "set-all" (= (map-length (map-set-all m (list->seq (Cons (Tuple "d" 4) Nil)))) 4))
+  (expect "remove-all" (= (map-length (map-remove-all m (list->seq (Cons "a" (Cons "b" Nil))))) 1))
+  (expect "any? hit" (map-any? (fun (_ v) (= v 3)) m))
+  (expect "any? miss" (not (map-any? (fun (k _) (equal? k "z")) m)))
+  (expect "add" (= (map-length (map-add m "d" 4)) 4))
+  (expect "clear" (map-empty? (map-clear m)))
+  (expect "keys" (= (seq-length (map-keys m)) 3))
+  (expect "values" (= (seq-length (map-values m)) 3))
+
+  (match (map-find (fun (_ v) (> v 2)) m)
+    ((Some entry) (expect "find" (= (entry-value entry) 3)))
+    (None (println "FAILURE: find")))
+
+  (match (map-try-ref m "a")
+    ((Some v) (expect "try-ref hit" (= v 1)))
+    (None (println "FAILURE: try-ref hit")))
+  (match (map-try-ref m "z")
+    ((Some _) (println "FAILURE: try-ref miss"))
+    (None (println "ok try-ref miss")))
+
+  ;; The builder: appends into a flat buffer, sorted into the trie once.
+  (def b (mapbuilder-empty))
+  (mapbuilder-add! b "x" 1)
+  (mapbuilder-add-all! b (list->seq (Cons (Tuple "y" 2) (Cons (Tuple "x" 9) Nil))))
+  (expect "builder counts appends, not entries" (= (mapbuilder-length b) 3))
+  (def built (mapbuilder->map b))
+  (expect "builder resolves duplicates, last winning" (= (map-ref built "x") 9))
+  (expect "builder length" (= (map-length built) 2))
+
+  ;; The transient: the map's interface with the writes turned inside out. Its
+  ;; count used to start at zero however full the map it came from was.
+  (def t (map->transientmap m))
+  (expect "a transient keeps the count it came from" (= (transientmap-length t) 3))
+  (transientmap-set! t "d" 4)
+  (transientmap-remove! t "a")
+  (expect "transient writes move the count" (= (transientmap-length t) 3))
+  (expect "transient reads see the writes" (transientmap-contains? t "d"))
+  (expect "transient ref-or" (= (transientmap-ref-or t "z" 99) 99))
+  (transientmap-filter! (fun (_ v) (> v 2)) t)
+  (expect "transient filter!" (= (transientmap-length t) 2))
+  (def rebuilt (transientmap->map t))
+  (expect "back to a map" (= (map-length rebuilt) 2))
+  (expect "and the map it came from is untouched" (= (map-length m) 3)))
+
+(defun (main args)
+  (test-literal)
+  (test-loop)
+  (test-comprehension)
+  (test-generic)
+  (test-printing)
+  (test-new-surface)
+  0)

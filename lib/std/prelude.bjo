@@ -23,6 +23,30 @@
 
   print println ->str list->str
 
+  ;; Maps. These were compiler builtins and so appeared in no export list; they
+  ;; are ordinary bindings now, and every one of them has to be named here.
+  map-empty map-ref map-ref-or map-try-ref
+  map-set map-add map-set-all map-remove map-remove-all
+  map-contains? map-has-key? map-length map-empty? map-clear
+  map-keys map-values map-merge map-merge-with
+  ;; Walking and rebuilding
+  map-map map-map-values map-filter map-fold
+  map-for-each map-iter map-any? map-find map-try-find
+  ;; The cursor `Iterable` walks with
+  map-cursor map-cursor-done? map-cursor-current
+  ;; Conversions. `list->map` is what `#map(...)` reads as.
+  list->map map->list vec->map map->vec seq->map map->seq
+  map->str map-entry->str
+  ;; Builders — the same shape as ListBuilder
+  mapbuilder-empty map->mapbuilder mapbuilder-add! mapbuilder-add-all!
+  mapbuilder-length mapbuilder->map
+  ;; Transients — the map's interface, in place
+  transientmap-empty map->transientmap transientmap->map
+  transientmap-set! transientmap-set-all! transientmap-remove!
+  transientmap-remove-all! transientmap-contains? transientmap-ref
+  transientmap-ref-or transientmap-try-ref transientmap-length
+  transientmap-empty? transientmap-filter!
+
   ;; Strings
   str string-append string-length
   string-contains? string-starts-with? string-ends-with? string-replace
@@ -152,6 +176,197 @@
 (: println (-> %a void))
 (defun (println x)
   (displayln (->str x)))
+
+
+;; ---------------------------------------------------------------------------
+;; Map — the unordered map
+;; ---------------------------------------------------------------------------
+;;
+;; A `(Map %k %v)` is a CHAMP trie keyed by hash: lookup, insertion and removal
+;; are all effectively constant time, two maps share every subtree they have in
+;; common, and a walk arrives in the trie's own order — which is to say, in no
+;; order a program should rely on. Reach for `(std orderedmap)` when the order
+;; is part of the answer.
+;;
+;; Nothing here is a builtin. The operations are `Map.MapModule` and its two
+;; siblings, imported directly, exactly as `(std set)` imports `Set.SetModule`.
+;; It lives in the prelude rather than in a `std/map.bjo` of its own for two
+;; reasons: `#map(...)` reads as a call to `list->map`, which has to be in scope
+;; wherever the literal is written, and the trait implementations below are the
+;; prelude's — a separate module would have to import the prelude for them while
+;; the prelude imported it back.
+;;
+;; Three interfaces, deliberately the same interface three times: the **map**,
+;; where every write answers a new map; the **builder**, shaped like
+;; `ListBuilder` and the fast way to make a map out of nothing; and the
+;; **transient**, the map's own interface with the writes turned inside out and
+;; the fast way to make a map out of *another* map.
+;;
+;; The vocabulary is `(std orderedmap)`'s `orderedmap-*` with the prefix
+;; shortened, so a program that outgrows the hashing can change the constructor
+;; and the prefix and stop.
+
+;; The types. Each is written applied, because a .NET generic type is a type
+;; *constructor*: `Map.Map` is not a type until it has its arguments.
+(import/class
+  ((Map %k %v)          (: Map.Map))
+  ((MapBuilder %k %v)   (: Map.MapBuilder))
+  ((TransientMap %k %v) (: Map.TransientMap))
+  ((MapCursor %k %v)    (: Map.MapCursor)))
+
+(import/extern
+  (map-empty      (: Map.MapModule.Empty       (-> (Map %k %v))))
+  ;; Throws for a key that is not there. `map-try-ref` is the total one, and
+  ;; `map-ref-or` the one with a default.
+  (map-ref        (: Map.MapModule.Ref         (-> (Map %k %v) %k %v)))
+  (map-ref-or     (: Map.MapModule.RefOr       (-> (Map %k %v) %k %v %v)))
+  (map-set        (: Map.MapModule.Set         (-> (Map %k %v) %k %v (Map %k %v))))
+  ;; The same, except that a key already there is an error rather than a
+  ;; replacement.
+  (map-add        (: Map.MapModule.Add         (-> (Map %k %v) %k %v (Map %k %v))))
+  ;; Through a transient, so the trie is copied once rather than once per entry.
+  (map-set-all    (: Map.MapModule.SetRange    (-> (Map %k %v) (Seq (Tuple %k %v)) (Map %k %v))))
+  (map-remove     (: Map.MapModule.Remove      (-> (Map %k %v) %k (Map %k %v))))
+  (map-remove-all (: Map.MapModule.RemoveRange (-> (Map %k %v) (Seq %k) (Map %k %v))))
+  (map-contains?  (: Map.MapModule.ContainsKey (-> (Map %k %v) %k bool)))
+  (map-length     (: Map.MapModule.Count       (-> (Map %k %v) int)))
+  (map-empty?     (: Map.MapModule.IsEmpty     (-> (Map %k %v) bool)))
+  (map-clear      (: Map.MapModule.Clear       (-> (Map %k %v) (Map %k %v))))
+  (map-keys       (: Map.MapModule.Keys        (-> (Map %k %v) (Seq %k))))
+  (map-values     (: Map.MapModule.Values      (-> (Map %k %v) (Seq %v))))
+  ;; The right-hand map wins where both have a key. Cheap where the two have a
+  ;; history in common: an untouched subtree is taken whole rather than walked.
+  (map-merge      (: Map.MapModule.Merge       (-> (Map %k %v) (Map %k %v) (Map %k %v))))
+  ;; The same, with the collisions decided by a function of the key, the value
+  ;; already there and the one arriving.
+  (map-merge-with (: Map.MapModule.MergeWith   (-> (-> %k %v %v %v) (Map %k %v) (Map %k %v) (Map %k %v))))
+
+  (map-try-ref/pair (: Map.MapModule.TryGetValue (-> (Map %k %v) %k (Tuple bool %v))))
+
+  ;; --- Walking ---
+  ;;
+  ;; Every callback takes the key and the value as *two* arguments, which is
+  ;; what a walk of the trie has to hand over anyway.
+  ;;
+  ;; The entry survives as a `(Tuple %k %v)` only where a trait fixes the shape:
+  ;; `Iterable`'s `%elem` and `Foldable`'s `%item` are one element, so a callback
+  ;; reached through `fold` or a `loop` sees a pair. The impls below take the
+  ;; pair apart and call these.
+  (map-map        (: Map.MapModule.Map       (-> (-> %k %v %w) (Map %k %v) (Map %k %w))))
+  ;; The functor's map: the value moves and the key rides along.
+  (map-map-values (: Map.MapModule.MapValues (-> (-> %v %w) (Map %k %v) (Map %k %w))))
+  (map-filter     (: Map.MapModule.Filter    (-> (-> %k %v bool) (Map %k %v) (Map %k %v))))
+  (map-fold       (: Map.MapModule.Fold      (-> (-> %s %k %v %s) %s (Map %k %v) %s)))
+  ;; Walks until the predicate answers false, and reports whether it ran to the
+  ;; end — the early-exit walk, and the one to reach for when the answer is
+  ;; known before the entries run out.
+  (map-iter       (: Map.MapModule.Iter      (-> (-> %k %v bool) (Map %k %v) bool)))
+  (map-any?       (: Map.MapModule.Exists    (-> (-> %k %v bool) (Map %k %v) bool)))
+  (map-try-find   (: Map.MapModule.TryFind   (-> (-> %k %v bool) (Map %k %v) (Tuple bool %k %v))))
+
+  (seq->map (: Map.MapModule.FromEnumerable (-> (Seq (Tuple %k %v)) (Map %k %v))))
+  (map->seq (: Map.MapModule.AsEnumerable   (-> (Map %k %v) (Seq (Tuple %k %v)))))
+
+  ;; The cursor `Iterable` walks with. `done?` is what advances it, which the
+  ;; protocol allows and which is what lets the walk allocate nothing per entry.
+  (map-cursor         (: Map.MapModule.Cursor        (-> (Map %k %v) (MapCursor %k %v))))
+  (map-cursor-done?   (: Map.MapModule.CursorDone    (-> (MapCursor %k %v) bool)))
+  (map-cursor-current (: Map.MapModule.CursorCurrent (-> (MapCursor %k %v) (Tuple %k %v))))
+
+  ;; --- Builders ---
+  ;;
+  ;; Appends land in a flat buffer and are scattered into the trie by hash in one
+  ;; pass at the end, which beats inserting a key at a time by enough to be the
+  ;; default way to build one. The mutators answer nothing: a builder is a class
+  ;; that mutates in place and whose identity never changes, so handing the
+  ;; reference back would buy nothing and cost a discard at every call site.
+  (mapbuilder-empty    (: Map.MapBuilderModule.Empty    (-> (MapBuilder %k %v))))
+  (map->mapbuilder     (: Map.MapBuilderModule.FromMap  (-> (Map %k %v) (MapBuilder %k %v))))
+  (mapbuilder-add!     (: Map.MapBuilderModule.Add      (-> (MapBuilder %k %v) %k %v void)))
+  (mapbuilder-add-all! (: Map.MapBuilderModule.AddRange (-> (MapBuilder %k %v) (Seq (Tuple %k %v)) void)))
+  ;; Appends, not entries: a key appended twice is resolved when the map is
+  ;; built, last one winning.
+  (mapbuilder-length   (: Map.MapBuilderModule.Count    (-> (MapBuilder %k %v) int)))
+  (mapbuilder->map     (: Map.MapBuilderModule.Build    (-> (MapBuilder %k %v) (Map %k %v))))
+
+  ;; --- Transients ---
+  (transientmap-empty       (: Map.TransientMapModule.Empty          (-> (TransientMap %k %v))))
+  (map->transientmap        (: Map.TransientMapModule.FromPersistent (-> (Map %k %v) (TransientMap %k %v))))
+  ;; The map as it stands. The transient stays usable and disowns what it handed
+  ;; over, so a later write copies rather than corrupting the snapshot.
+  (transientmap->map        (: Map.TransientMapModule.ToPersistent   (-> (TransientMap %k %v) (Map %k %v))))
+  (transientmap-set!        (: Map.TransientMapModule.Set            (-> (TransientMap %k %v) %k %v void)))
+  (transientmap-set-all!    (: Map.TransientMapModule.SetRange       (-> (TransientMap %k %v) (Seq (Tuple %k %v)) void)))
+  (transientmap-remove!     (: Map.TransientMapModule.Remove         (-> (TransientMap %k %v) %k void)))
+  (transientmap-remove-all! (: Map.TransientMapModule.RemoveRange    (-> (TransientMap %k %v) (Seq %k) void)))
+  (transientmap-contains?   (: Map.TransientMapModule.ContainsKey    (-> (TransientMap %k %v) %k bool)))
+  (transientmap-ref         (: Map.TransientMapModule.Ref            (-> (TransientMap %k %v) %k %v)))
+  (transientmap-ref-or      (: Map.TransientMapModule.RefOr          (-> (TransientMap %k %v) %k %v %v)))
+  (transientmap-length      (: Map.TransientMapModule.Count          (-> (TransientMap %k %v) int)))
+  (transientmap-empty?      (: Map.TransientMapModule.IsEmpty        (-> (TransientMap %k %v) bool)))
+  (transientmap-filter!     (: Map.TransientMapModule.FilterInPlace  (-> (-> %k %v bool) (TransientMap %k %v) void)))
+  (transientmap-try-ref/pair (: Map.TransientMapModule.TryGetValue   (-> (TransientMap %k %v) %k (Tuple bool %v)))))
+
+;; The value under `key`, or `None`. The `Option` is put on here because a
+;; static C# method has no `Option` to hand back — the type is Bjolang's.
+(: map-try-ref (-> (Map %k %v) %k (Option %v)))
+(defun (map-try-ref m key)
+  (def (found value) (map-try-ref/pair m key))
+  (if found (Some value) None))
+
+(: transientmap-try-ref (-> (TransientMap %k %v) %k (Option %v)))
+(defun (transientmap-try-ref m key)
+  (def (found value) (transientmap-try-ref/pair m key))
+  (if found (Some value) None))
+
+;; Two spellings of one question, because `contains?` reads better about a set
+;; and `has-key?` about a map, and a program porting between the two should not
+;; have to change either.
+(: map-has-key? (-> (Map %k %v) %k bool))
+(defun (map-has-key? m key) (map-contains? m key))
+
+;; The first entry satisfying `pred`, as an `Option`. The entry is a pair here
+;; because it is a *value* being handed back, not an argument list.
+(: map-find (-> (-> %k %v bool) (Map %k %v) (Option (Tuple %k %v))))
+(defun (map-find pred m)
+  (def (found k v) (map-try-find pred m))
+  (if found (Some (Tuple k v)) None))
+
+;; Written here rather than imported: the .NET `ForEach` takes an `Action`,
+;; where a Bjolang `(-> %k %v void)` is a `Func<TK, TV, Unit>` — the unit is a
+;; value, and that is what makes a callback's type uniform whatever it answers.
+(: map-for-each (-> (-> %k %v void) (Map %k %v) void))
+(defun (map-for-each f m)
+  (ignore (map-iter (fun (k v) (f k v) true) m)))
+
+;; A map's item is its entry, so the folder `Foldable` hands down takes one
+;; argument where `map-fold`'s takes two. The pair is put back together here,
+;; which is the only place that has to know the difference.
+(def/impl (Foldable (Map %k %v))
+  (type %item (Tuple %k %v))
+  (defun (fold f acc col)
+    (map-fold (fun (acc2 k v) (f acc2 (Tuple k v))) acc col)))
+
+;; --- Conversions ---
+;;
+;; Through `(Seq (Tuple %k %v))`, which every collection can produce and
+;; consume: a map is built from a walk of the source and nothing about the
+;; source's own shape matters. `seq->map` is the one that does the work.
+;;
+;; `list->map` is also what `#map(...)` reads as, so it has to be in scope
+;; wherever the literal may be written.
+
+(: list->map (-> (List (Tuple %k %v)) (Map %k %v)))
+(defun (list->map xs) (seq->map (list->seq xs)))
+
+(: map->list (-> (Map %k %v) (List (Tuple %k %v))))
+(defun (map->list m) (seq->list (map->seq m)))
+
+(: vec->map (-> (Vec (Tuple %k %v)) (Map %k %v)))
+(defun (vec->map v) (seq->map (vec->seq v)))
+
+(: map->vec (-> (Map %k %v) (Vec (Tuple %k %v))))
+(defun (map->vec m) (seq->vec (map->seq m)))
 
 
 ;; ---------------------------------------------------------------------------
@@ -410,7 +625,7 @@
   (defun (map g v) (vec-map g v)))
 
 ;; `(Map %k %v)`'s abstracted argument is `%v`, so the functor moves values and
-;; leaves keys alone. `map-map` will not serve: it hands over the whole pair,
+;; leaves keys alone. `map-map` will not serve: it hands over the key as well,
 ;; and a functor's `(-> %a %b)` has room for one element type.
 (def/impl (Functor (Map %k %v))
   (defun (map g m)
@@ -1424,6 +1639,33 @@
   (where (->str %a))
   (defun (->str sq)
     (seq->str sq)))
+
+;; One entry, as `key value`. A function of its own because a loop clause is a
+;; body of expressions and a `def` is a declaration, so the pair has to come
+;; apart somewhere that a binding may be introduced.
+(: map-entry->str (-> (Tuple %k %v) string) (where (->str %k) (->str %v)))
+(defun (map-entry->str entry)
+  (def (k v) entry)
+  (str (->str k) " " (->str v)))
+
+;; `#map(key value ...)`, so the literal round-trips. The order is the trie's,
+;; which is stable for a given map and worth nothing beyond that — print an
+;; `(std orderedmap)` map when two equal maps have to print the same.
+(: map->str (-> (Map %k %v) string) (where (->str %k) (->str %v)))
+(defun (map->str m)
+  (let ((sb (stringbuilder-empty)))
+    (stringbuilder-add-string! sb "#map(")
+    (loop (:with first? true false)
+          (:for entry m)
+          (:do (unless first? (stringbuilder-add-string! sb " "))
+               (stringbuilder-add-string! sb (map-entry->str entry))))
+    (stringbuilder-add-string! sb ")")
+    (stringbuilder->string sb)))
+
+(def/impl (->str (Map %k %v))
+  (where (->str %k) (->str %v))
+  (defun (->str m)
+    (map->str m)))
 
 ;; Useful macros
 ;; That should have been implemented earlier

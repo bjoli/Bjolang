@@ -29,28 +29,17 @@
   (println (map-ref merged "y"))
   (println (map-ref merged "z"))
 
-  ;; Every Map callback takes the pair as one argument. The resolver of a
-  ;; merge sees the key and the two values that collided under it, so its
-  ;; argument is a triple.
-  (def merged-with (map-merge-with (fun (kvv)
-                                     (def (_ v1 v2) kvv)
-                                     (+ v1 v2))
-                                   ma mb))
+  ;; A Map callback takes the key and the value as two arguments. The resolver
+  ;; of a merge sees the key and the two values that collided under it, so it
+  ;; takes three.
+  (def merged-with (map-merge-with (fun (_ v1 v2) (+ v1 v2)) ma mb))
   (println (map-ref merged-with "y"))
 
-  (def doubled (map-map (fun (kv)
-                          (def (_ . v) kv)
-                          (* v 2))
-                        ma))
+  (def doubled (map-map (fun (_ v) (* v 2)) ma))
   (println (map-ref doubled "x"))
   (println (map-ref doubled "y"))
 
-  ;; The pair reaches a callback the same way anywhere else does, so it
-  ;; destructures in the parameter list too.
-  (def filtered (map-filter (fun (kv)
-                              (def (_ . v) kv)
-                              (> v 1))
-                            ma))
+  (def filtered (map-filter (fun (_ v) (> v 1)) ma))
   (println (map-length filtered))
   (println (map-ref filtered "y"))
 
@@ -59,14 +48,11 @@
   (def shown (map-map-values int->string ma))
   (println (map-ref shown "x"))
 
-  (def direct (map-fold (fun (acc kv)
-                          (def (_ . v) kv)
-                          (+ acc v))
-                        0 ma))
+  (def direct (map-fold (fun (acc _ v) (+ acc v)) 0 ma))
   (println direct)
 
-  ;; The same fold reached through the Foldable trait, which is what the pair
-  ;; shape is for: `%item` is one thing, so the folder takes one argument.
+  ;; The same fold reached through the Foldable trait. This is the one place the
+  ;; pair survives: `%item` is one thing, so the folder takes one argument.
   (def sum (fold (fun (acc kv)
                    (def (_ . v) kv)
                    (+ acc v))

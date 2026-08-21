@@ -1,0 +1,36 @@
+;; Macros that expand to a `(begin ...)` in *body* position.
+;;
+;; Declaration position splices a group of declarations; this is the other half
+;; — a macro standing where one form was written, expanding to several.
+(import (std syntax-match))
+
+;; A definition and the code that uses it, from one form. `parseBody` consumes
+;; `def`, so this can only work if the `begin` splices into the body rather
+;; than becoming an expression of its own.
+(def/macro (with-doubled form inject compare)
+  (syntax-match form
+    ((_ x body)
+     #'(begin
+         (def tmp (* 2 ,x))
+         (+ tmp ,body)))
+    (bad (syntax-error bad "with-doubled takes a value and a body form."))))
+
+;; A definition spliced beside one the *call site* wrote under the same name.
+;; `tmp` here is template-origin and renamed; the caller's is not.
+(def/macro (add-tmp form inject compare)
+  (syntax-match form
+    ((_ x)
+     #'(begin
+         (def tmp ,x)
+         tmp))
+    (bad (syntax-error bad "add-tmp takes one value."))))
+
+;; Two mutually recursive definitions spliced into a body. Whether they can see
+;; each other is what `collectDefs` decides.
+(def/macro (def/parity form inject compare)
+  (syntax-match form
+    ((_ even-name odd-name)
+     #'(begin
+         (defun (,even-name n) (if (= n 0) true (,odd-name (- n 1))))
+         (defun (,odd-name n) (if (= n 0) false (,even-name (- n 1))))))
+    (bad (syntax-error bad "def/parity takes two names."))))

@@ -1,6 +1,10 @@
-;; A Map's element is its (key . value) pair, and every higher-order function
-;; over a Map takes that pair as one argument. That is what lets a Map be passed
-;; to a trait whose signature mentions a single element type.
+;; Where a Map's entry is two arguments and where it is one.
+;;
+;; Every higher-order function over a Map hands the callback the key and the
+;; value separately — that is what a walk of the trie produces, and it is the
+;; shape a caller wants. The entry survives as a `(Tuple %k %v)` only where a
+;; trait signature fixes it: `Foldable`'s `%item` and `Iterable`'s `%elem` are
+;; one element, so a callback reached through `fold` or a `loop` sees a pair.
 (import (std prelude))
 
 (: expect (-> string bool void))
@@ -13,17 +17,14 @@
 (defun (sample)
   (map-set (map-set (map-set (map-empty) "a" 1) "b" 2) "c" 3))
 
-;; The pair destructures in a callback exactly as it does anywhere else.
+;; The folder takes the accumulator, the key and the value: three arguments.
 (: total (-> (Map string int) int))
 (defun (total m)
-  (map-fold (fun (acc kv)
-              (def (_ . v) kv)
-              (+ acc v))
-            0 m))
+  (map-fold (fun (acc _ v) (+ acc v)) 0 m))
 
-;; The same fold reached through Foldable. The trait has one %item, so the
-;; folder it takes is a one-argument function — which is the whole reason the
-;; callbacks take pairs.
+;; The same fold reached through Foldable. The trait has one `%item`, so the
+;; folder it takes is a two-argument function over the accumulator and a pair.
+;; The impl in the prelude is what puts the pair back together.
 (: total-via-trait (-> (Map string int) int))
 (defun (total-via-trait m)
   (fold (fun (acc kv)
@@ -31,13 +32,9 @@
           (+ acc v))
         0 m))
 
-;; Keys are reachable from the pair just as well as values.
 (: key-lengths (-> (Map string int) int))
 (defun (key-lengths m)
-  (map-fold (fun (acc kv)
-              (def (k . _) kv)
-              (+ acc (string-length k)))
-            0 m))
+  (map-fold (fun (acc k _) (+ acc (string-length k))) 0 m))
 
 (defun (main args)
   (def m (sample))
@@ -46,47 +43,43 @@
   (expect "fold via Foldable" (= (total-via-trait m) 6))
   (expect "keys reachable" (= (key-lengths m) 3))
 
-  ;; map-map sees the pair and returns the new value.
-  (def tagged (map-map (fun (kv)
-                         (def (k . v) kv)
-                         (string-append k (int->string v)))
-                       m))
+  ;; map-map sees the key and the value and returns the new value.
+  (def tagged (map-map (fun (k v) (string-append k (int->string v))) m))
   (expect "map-map" (equal? (map-ref tagged "b") "b2"))
 
-  ;; map-filter sees the pair too.
-  (def big (map-filter (fun (kv)
-                         (def (_ . v) kv)
-                         (> v 1))
-                       m))
+  (def big (map-filter (fun (_ v) (> v 1)) m))
   (expect "map-filter count" (= (map-length big) 2))
   (expect "map-filter kept" (= (map-ref big "c") 3))
 
-  ;; The merge resolver gets the key and both colliding values as a triple.
+  ;; The merge resolver gets the key and both colliding values: three arguments.
   (def other (map-set (map-set (map-empty) "c" 30) "d" 40))
-  (def merged (map-merge-with (fun (kvv)
-                                (def (_ a b) kvv)
-                                (+ a b))
-                              m other))
+  (def merged (map-merge-with (fun (_ a b) (+ a b)) m other))
   (expect "merge-with collision" (= (map-ref merged "c") 33))
   (expect "merge-with untouched" (= (map-ref merged "a") 1))
   (expect "merge-with added" (= (map-ref merged "d") 40))
 
-  ;; map-iter short-circuits on false, and its callback takes the pair.
-  (expect "iter all" (map-iter (fun (kv)
-                                 (def (_ . v) kv)
-                                 (> v 0))
-                               m))
-  (expect "iter stops" (not (map-iter (fun (kv)
-                                        (def (_ . v) kv)
-                                        (> v 2))
-                                      m)))
+  ;; map-iter short-circuits on false.
+  (expect "iter all" (map-iter (fun (_ v) (> v 0)) m))
+  (expect "iter stops" (not (map-iter (fun (_ v) (> v 2)) m)))
+
+  ;; map-any? is the same question the other way up.
+  (expect "any? hit" (map-any? (fun (k _) (equal? k "c")) m))
+  (expect "any? miss" (not (map-any? (fun (k _) (equal? k "z")) m)))
+
+  ;; map-find answers an Option over the whole entry: a value being handed
+  ;; back, so a pair.
+  (expect "find hit"
+          (match (map-find (fun (_ v) (= v 2)) m)
+            ((Some entry) (equal? (tuple-key entry) "b"))
+            (None false)))
+  (expect "find miss"
+          (match (map-find (fun (_ v) (> v 99)) m)
+            ((Some _) false)
+            (None true)))
 
   ;; map-for-each is the same shape, for effect.
   (def/mutable seen 0)
-  (map-for-each (fun (kv)
-                  (def (_ . v) kv)
-                  (set! seen (+ seen v)))
-                m)
+  (map-for-each (fun (_ v) (set! seen (+ seen v))) m)
   (expect "for-each" (= seen 6))
 
   ;; Functor is the exception: its (-> %a %b) has room for one element type and
@@ -103,4 +96,21 @@
           (match (map (fun (n) (* n 2)) (Some 21))
             ((Some v) (= v 42))
             (None false)))
+
+  ;; A loop over a Map walks its entries, so `kv` is a pair here too.
+  (def/mutable looped 0)
+  (loop (:for kv m) (:do (set! looped (+ looped (tuple-value kv)))))
+  (expect "loop over entries" (= looped 6))
   0)
+
+;; A loop clause is a body of expressions and a `def` is a declaration, so a
+;; pair has to come apart somewhere a binding may be introduced.
+(: tuple-key (-> (Tuple string int) string))
+(defun (tuple-key entry)
+  (def (k _) entry)
+  k)
+
+(: tuple-value (-> (Tuple string int) int))
+(defun (tuple-value entry)
+  (def (_ v) entry)
+  v)

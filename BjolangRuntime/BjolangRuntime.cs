@@ -497,33 +497,16 @@ public static partial class BjolangRuntime {
     public static SchemeList.SchemeList<T> listbuildersubgtlist<T>(SchemeList.SchemeListBuilder<T> builder) =>
         builder.ToSchemeList();
 
-    // --- MapBuilder ---
-    //
-    // `MapBuilder` rather than `TransientMap`: it appends into a flat buffer
-    // and sorts by CHAMP hash once at the end, the fastest bulk path. Also
-    // `TransientMap`'s constructor zeroes `_count` even for a non-empty root,
-    // so anything but `Empty.ToTransient()` builds a map with a wrong `Count`.
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Map.MapBuilder<TK, TV> mapbuildersubempty<TK, TV>() where TK : notnull =>
-        new Map.MapBuilder<TK, TV>();
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Unit mapbuildersubadd_BANG<TK, TV>(Map.MapBuilder<TK, TV> builder, TK key, TV value) where TK : notnull {
-        builder.Add(key, value);
-        return unit;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Map.Map<TK, TV> mapbuildersubgtmap<TK, TV>(Map.MapBuilder<TK, TV> builder) where TK : notnull =>
-        builder.ToImmutable();
-
     // --- Cursors ---
     //
-    // Both collections have an allocation-free *struct* enumerator, but a
-    // struct in a Bjolang binding is a value, and `MoveNext` on one copied into
-    // a call advances the copy. So a cursor is a small class holding the
-    // enumerator as a *field*: one allocation per loop entry, none per element,
-    // no boxing.
+    // A `Vec` has an allocation-free *struct* enumerator, but a struct in a
+    // Bjolang binding is a value, and `MoveNext` on one copied into a call
+    // advances the copy. So a cursor is a small class holding the enumerator as
+    // a *field*: one allocation per loop entry, none per element, no boxing.
+    //
+    // The collections with a project of their own carry their own cursor —
+    // `Map.MapCursor`, `Set.SetCursor` — and bind to it through `import/class`.
+    // This one is here because `Vec`'s type is a builtin.
     //
     // The advancing happens in `done?`, which the `Iterable` protocol allows —
     // called once per iteration, before `current`, and nothing peeks. `next` is
@@ -544,25 +527,6 @@ public static partial class BjolangRuntime {
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static T vecsubcursorsubcurrent<T>(VecCursor<T> cursor) where T : notnull => cursor.E.Current;
-
-    public sealed class MapCursor<TK, TV> where TK : notnull {
-        public Map.MapEnumerator<TK, TV> E;
-        public MapCursor(Map.Map<TK, TV> map) { E = map.GetEnumerator(); }
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static MapCursor<TK, TV> mapsubcursor<TK, TV>(Map.Map<TK, TV> map) where TK : notnull =>
-        new MapCursor<TK, TV>(map);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool mapsubcursorsubdone_QMARK<TK, TV>(MapCursor<TK, TV> cursor) where TK : notnull =>
-        !cursor.E.MoveNext();
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static ValueTuple<TK, TV> mapsubcursorsubcurrent<TK, TV>(MapCursor<TK, TV> cursor) where TK : notnull {
-        var kv = cursor.E.Current;
-        return new ValueTuple<TK, TV>(kv.Key, kv.Value);
-    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static T[] makesubarray<T>(int length) => new T[length];
@@ -935,185 +899,6 @@ public static partial class BjolangRuntime {
     // No `listsubcount`: `SchemeList.Count` is a C# alias for `Length`, and
     // exporting both gave Bjolang two names for one O(n) walk. `list-length`
     // is the one.
-
-    // --- Map (CHAMP) Wrappers ---
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Map.Map<TK, TV> mapsubempty<TK, TV>() where TK : notnull => Map.Map<TK, TV>.Empty;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static TV mapsubref<TK, TV>(Map.Map<TK, TV> map, TK key) where TK : notnull => map.Get(key);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static TV mapsubrefsubor<TK, TV>(Map.Map<TK, TV> map, TK key, TV fallback) where TK : notnull =>
-        map.TryGetValue(key, out var val) ? val : fallback;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Option<TV> mapsubtrysubref<TK, TV>(Map.Map<TK, TV> map, TK key) where TK : notnull =>
-        map.TryGetValue(key, out var val) ? new Option<TV>(val) : default;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Map.Map<TK, TV> mapsubset<TK, TV>(Map.Map<TK, TV> map, TK key, TV value) where TK : notnull =>
-        map.Set(key, value);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Map.Map<TK, TV> mapsubadd<TK, TV>(Map.Map<TK, TV> map, TK key, TV value) where TK : notnull =>
-        map.Add(key, value);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Map.Map<TK, TV> mapsubremove<TK, TV>(Map.Map<TK, TV> map, TK key) where TK : notnull =>
-        map.Remove(key);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool mapsubcontains_QMARK<TK, TV>(Map.Map<TK, TV> map, TK key) where TK : notnull =>
-        map.ContainsKey(key);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool mapsubhassubkey_QMARK<TK, TV>(Map.Map<TK, TV> map, TK key) where TK : notnull =>
-        map.ContainsKey(key);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int mapsublength<TK, TV>(Map.Map<TK, TV> map) where TK : notnull => map.Count;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool mapsubempty_QMARK<TK, TV>(Map.Map<TK, TV> map) where TK : notnull => map.IsEmpty;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Map.Map<TK, TV> mapsubclear<TK, TV>(Map.Map<TK, TV> map) where TK : notnull => map.Clear();
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static IEnumerable<TK> mapsubkeys<TK, TV>(Map.Map<TK, TV> map) where TK : notnull => map.Keys;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static IEnumerable<TV> mapsubvalues<TK, TV>(Map.Map<TK, TV> map) where TK : notnull => map.Values;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Map.Map<TK, TV> mapsubmerge<TK, TV>(Map.Map<TK, TV> map, Map.Map<TK, TV> other) where TK : notnull =>
-        map.Merge(other);
-
-    // --- Map higher-order functions ---
-    //
-    // Every callback here takes the *pair*, as one argument, because a Map's
-    // element is its `(Tuple %k %v)` — `Iterable`'s `%elem`, `Foldable`'s
-    // `%item`, `map->list`, `map->seq` and the `#map(...)` literal all say so.
-    // A trait mentioning one element takes a one-argument callback, so a
-    // two-argument function over a key and a value cannot go where one is
-    // expected. The pair is a `ValueTuple`, so it costs no allocation.
-    // TODO: this should be fixed. Map should have an interface that works with ValueTuples instead of kvp so that we
-    // do not have to create valuetuples
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Map.Map<TK, TV> mapsubmergesubwith<TK, TV>(Func<ValueTuple<TK, TV, TV>, TV> resolver, Map.Map<TK, TV> map, Map.Map<TK, TV> other) where TK : notnull =>
-        map.Merge(other, (k, a, b) => resolver(new ValueTuple<TK, TV, TV>(k, a, b)));
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Unit mapsubforsubeach<TK, TV>(Func<ValueTuple<TK, TV>, Unit> action, Map.Map<TK, TV> map) where TK : notnull {
-        map.ForEach((k, v) => action(new ValueTuple<TK, TV>(k, v)));
-        return unit;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool mapsubiter<TK, TV>(Func<ValueTuple<TK, TV>, bool> action, Map.Map<TK, TV> map) where TK : notnull =>
-        map.Iter((k, v) => action(new ValueTuple<TK, TV>(k, v)));
-
-    public static TState mapsubfold<TK, TV, TState>(Func<TState, ValueTuple<TK, TV>, TState> folder, TState initial, Map.Map<TK, TV> map) where TK : notnull {
-        var state = initial;
-        map.Iter((k, v) => {
-            state = folder(state, new ValueTuple<TK, TV>(k, v));
-            return true;
-        });
-        return state;
-    }
-
-    public static Map.Map<TK, TV> mapsubfilter<TK, TV>(Func<ValueTuple<TK, TV>, bool> predicate, Map.Map<TK, TV> map) where TK : notnull {
-        var tmap = Map.Map<TK, TV>.Empty.ToTransient();
-        map.Iter((k, v) => {
-            if (predicate(new ValueTuple<TK, TV>(k, v))) {
-                tmap.Set(k, v);
-            }
-            return true;
-        });
-        return tmap.ToImmutable();
-    }
-
-    // Takes the pair and returns the new *value*: the key is what the result is
-    // filed under, so letting the mapper move it would make collisions this
-    // function has no answer for.
-    public static Map.Map<TK, TV2> mapsubmap<TK, TV, TV2>(Func<ValueTuple<TK, TV>, TV2> mapper, Map.Map<TK, TV> map) where TK : notnull {
-        var tmap = Map.Map<TK, TV2>.Empty.ToTransient();
-        map.Iter((k, v) => {
-            tmap.Set(k, mapper(new ValueTuple<TK, TV>(k, v)));
-            return true;
-        });
-        return tmap.ToImmutable();
-    }
-
-    // `Functor` is not `Foldable`, and this is the one place a pair will not do.
-    // Its `(-> %a %b)` has to replace the element type and hand back the same
-    // shape, and the only argument of `(Map %k %v)` free to move is `%v` — so a
-    // functorial map over a Map sees the value, with the key riding along. There
-    // is no `(Map %k %v)` whose element type is a pair the functor may replace.
-    public static Map.Map<TK, TV2> mapsubmapsubvalues<TK, TV, TV2>(Func<TV, TV2> mapper, Map.Map<TK, TV> map) where TK : notnull {
-        var tmap = Map.Map<TK, TV2>.Empty.ToTransient();
-        map.Iter((k, v) => {
-            tmap.Set(k, mapper(v));
-            return true;
-        });
-        return tmap.ToImmutable();
-    }
-
-    // --- Map Conversions ---
-    public static Map.Map<TK, TV> listsubgtmap<TK, TV>(SchemeList.SchemeList<ValueTuple<TK, TV>> list) where TK : notnull {
-        var tmap = Map.Map<TK, TV>.Empty.ToTransient();
-        var cur = list;
-        while (!SchemeList.SchemeList.IsEmpty(cur)) {
-            var head = SchemeList.SchemeList.Head(cur);
-            tmap.Set(head.Item1, head.Item2);
-            cur = SchemeList.SchemeList.Tail(cur);
-        }
-        return tmap.ToImmutable();
-    }
-
-    public static SchemeList.SchemeList<ValueTuple<TK, TV>> mapsubgtlist<TK, TV>(Map.Map<TK, TV> map) where TK : notnull {
-        var pairs = new List<ValueTuple<TK, TV>>(map.Count);
-        map.ForEach((k, v) => pairs.Add(new ValueTuple<TK, TV>(k, v)));
-        var result = SchemeList.SchemeList.Empty<ValueTuple<TK, TV>>();
-        for (int i = pairs.Count - 1; i >= 0; i--) {
-            result = SchemeList.SchemeList.Cons(pairs[i], result);
-        }
-        return result;
-    }
-
-    public static Map.Map<TK, TV> vecsubgtmap<TK, TV>(Collections.RrbList<ValueTuple<TK, TV>> vec) where TK : notnull {
-        var tmap = Map.Map<TK, TV>.Empty.ToTransient();
-        int count = Collections.RrbFun.Count(vec);
-        for (int i = 0; i < count; i++) {
-            var item = Collections.RrbFun.Get(vec, i);
-            tmap.Set(item.Item1, item.Item2);
-        }
-        return tmap.ToImmutable();
-    }
-
-    public static Collections.RrbList<ValueTuple<TK, TV>> mapsubgtvec<TK, TV>(Map.Map<TK, TV> map) where TK : notnull {
-        var builder = Collections.RrbBuilderFun.Empty<ValueTuple<TK, TV>>();
-        map.ForEach((k, v) => {
-            builder = Collections.RrbBuilderFun.Add(builder, new ValueTuple<TK, TV>(k, v));
-        });
-        return Collections.RrbBuilderFun.ToImmutable(builder);
-    }
-
-    public static Map.Map<TK, TV> seqsubgtmap<TK, TV>(IEnumerable<ValueTuple<TK, TV>> source) where TK : notnull {
-        var tmap = Map.Map<TK, TV>.Empty.ToTransient();
-        foreach (var (k, v) in source) {
-            tmap.Set(k, v);
-        }
-        return tmap.ToImmutable();
-    }
-
-    public static IEnumerable<ValueTuple<TK, TV>> mapsubgtseq<TK, TV>(Map.Map<TK, TV> map) where TK : notnull {
-        foreach (var kvp in map) {
-            yield return new ValueTuple<TK, TV>(kvp.Key, kvp.Value);
-        }
-    }
 
     // -----------------------------------------------------------------------
     // The dynamic environment

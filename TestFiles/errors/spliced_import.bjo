@@ -1,0 +1,19 @@
+;; A macro cannot introduce an import.
+;;
+;; The import graph is built from a file's raw forms, before anything is
+;; parsed, and it has to be: parsing a form whose head is a macro requires that
+;; macro's own module to be compiled and loaded already. So an `(import ...)`
+;; inside an expansion is one the graph never saw — the dependency is never
+;; compiled, never linked, and what the user would be told about is an unbound
+;; variable in code they did not write.
+
+;; EXPECT-ERROR: a macro cannot introduce an import
+
+(import (std prelude))
+(import "../inc/spliceimport.bjo")
+
+(def/importer one)
+
+(defun (main args)
+  (println (int->string (one)))
+  0)
