@@ -1,0 +1,33 @@
+;; An `Eq` implementation, emitted into the type it is for.
+;;
+;; This is what makes `Map`, `Set` and every .NET consumer agree with `=`
+;; without any of them being told about the trait, and no behavioural test can
+;; distinguish it from C#'s synthesized equality until an implementation
+;; disagrees with the fields.
+
+;; EXPECT-CS: public virtual bool Equals\(materialization__Point\? other\) => other is not null && Eq_materialization__Point\.Instance\.eq\(this, other\);
+;; EXPECT-CS: public override int GetHashCode\(\) => Eq_materialization__Point\.Instance\.eqsubhash\(this\);
+(type/derive (Eq)
+  (: Point (Record (: x int) (: y int))))
+
+;; A record struct takes neither `virtual` nor a null check: there is no
+;; derived type to override it and no null to be handed.
+;; EXPECT-CS: public bool Equals\(materialization__Coord other\) => Eq_materialization__Coord\.Instance\.eq\(this, other\);
+(type/derive (Eq)
+  (: Coord (Struct (: lat int) (: lon int))))
+
+;; Into every case class, not onto the abstract base: a derived record
+;; synthesizes its own `Equals`, which overrides the base's, so an override
+;; written only on the base would be silently dead.
+;; EXPECT-CS: public bool Equals\(materialization__Circle\? other\) => other is not null && Eq_materialization__Shape\.Instance\.eq\(this, other\);
+;; EXPECT-CS: public bool Equals\(materialization__Square\? other\) => other is not null && Eq_materialization__Shape\.Instance\.eq\(this, other\);
+(type/derive (Eq)
+  (: Shape (Union (Circle int) (Square int))))
+
+;; A type with a parameter is left alone. Its implementation is conditional, and
+;; there is nothing inside `Box<T>` that could build the `Eq<T>` dictionary the
+;; `(where ...)` asks for — so it keeps C#'s synthesized equality, which is
+;; field-wise and therefore agrees with what was derived.
+;; EXPECT-CS: public record materialization__Box<T_a>\(T_a item\);
+(type/derive (Eq)
+  (: (Box %a) (Record (: item %a))))

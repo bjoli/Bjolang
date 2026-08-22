@@ -3313,6 +3313,111 @@ let private generateMethod
     appendLine ctx "}"
     hiddenDirective ctx
 
+// ---------------------------------------------------------------------------
+// Materialization
+// ---------------------------------------------------------------------------
+//
+// A trait implementation for a type this module declares is emitted *into* that
+// type as the .NET member .NET asks for: `Eq` as `Equals`/`GetHashCode`, and
+// `Ord` as `IComparable<T>` when it arrives.
+//
+// C# synthesizes those members only when they are not written, and a record's
+// `==` calls `Equals`. So after this `EqualityComparer<T>.Default` *is* the
+// implementation the program wrote, and `Map`, `Set`, `HashSet<T>`, `Distinct()`
+// and every other .NET consumer agree with `=` — with no dictionary threaded
+// anywhere and no signature changed.
+//
+// The orphan rule is what makes the lookup possible at all: an implementation
+// for a type declared here is in this module too, so both are in hand at the
+// moment the type is emitted.
+
+/// The implementation of `traitName` for `typeKey` that can be materialized, if
+/// there is one.
+///
+/// A *conditional* implementation cannot be. Its dictionary is built out of
+/// evidence for its `(where ...)`, and a C# type parameter carries none — there
+/// is nothing inside `Box<T>.Equals` that could produce the `Eq<T>` its own
+/// implementation needs. Such a type keeps C#'s synthesized equality, which is
+/// field-wise and therefore agrees with a derived implementation; only a
+/// hand-written one that ignores a field can differ, and only for a generic
+/// type.
+let private materializableImpl (registry: TraitRegistry) (traitName: string) (typeKey: string) : bool =
+    match Map.tryFind (traitName, typeKey) registry.ImplTargets with
+    | Some target -> target.Constraints.IsEmpty
+    | None -> false
+
+/// What a materialized member is being written into. The three differ in what
+/// C# would have synthesized in its place, which is what the replacement has to
+/// match.
+type private MaterializeTarget =
+    /// A plain record. The synthesized `Equals(R?)` is virtual, because a
+    /// record may be derived from, so the replacement has to be too.
+    | OpenRecord
+    /// A record struct. No null to guard against, and nothing virtual.
+    | ValueRecord
+    /// One case class of a union. Sealed, so `virtual` is an error; the
+    /// `sealed override Equals(Base?)` the compiler still synthesizes is what
+    /// routes a comparison at the base type through to here.
+    | SealedCase
+
+/// The members `traitName`'s implementation for `implKey` becomes.
+///
+/// `selfType` is the C# type they are written into — the *case* class for a
+/// union — while `implKey` is the type the implementation was written for,
+/// which is the union itself in both cases.
+let private materializedMembers
+    (traitName: string)
+    (implKey: string)
+    (selfType: string)
+    (target: MaterializeTarget)
+    : string list =
+
+    let instance = $"%s{implClassName (sanitizeIdent traitName) implKey}.Instance"
+
+    match traitName with
+    | "Eq" ->
+        // A reference type's `Equals` is handed `null` by .NET, which the
+        // implementation — an ordinary Bjolang function over two values — has
+        // no case for.
+        let notNull = if target = ValueRecord then "" else "other is not null && "
+        let param = if target = ValueRecord then $"%s{selfType} other" else $"%s{selfType}? other"
+        let modifier = if target = OpenRecord then "public virtual " else "public "
+        let hashMember = sanitizeIdent "eq-hash"
+
+        [ $"%s{modifier}bool Equals(%s{param}) => %s{notNull}%s{instance}.eq(this, other);"
+          $"public override int GetHashCode() => %s{instance}.%s{hashMember}(this);" ]
+    | _ -> []
+
+/// The trait implementations materialized into a type, in the order their
+/// members are emitted. One list so that `Ord` is an entry rather than a second
+/// pass.
+let private materializedTraits = [ "Eq" ]
+
+/// The body a declared type carries because of the implementations written for
+/// it, or `[]` if it carries none.
+let private materializedBody
+    (registry: TraitRegistry)
+    (implKey: string)
+    (selfType: string)
+    (target: MaterializeTarget)
+    : string list =
+    materializedTraits
+    |> List.filter (fun t -> materializableImpl registry t implKey)
+    |> List.collect (fun t -> materializedMembers t implKey selfType target)
+
+/// `;` for a type with nothing to carry, or the block that carries it.
+let private appendTypeBody (ctx: CodegenContext) (members: string list) : unit =
+    if members.IsEmpty then
+        appendLine ctx ";"
+    else
+        appendLine ctx " {"
+        withIndent ctx (fun c ->
+            for m in members do
+                indent c
+                appendLine c m)
+        indent ctx
+        appendLine ctx "}"
+
 let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
     match decl with
     | TDefun (name, tyArgs, args, kwArgs, restArg, retType, effect, body, _) ->
@@ -3344,6 +3449,15 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
             let tyArgsStr = 
                 if td.TypeArgs.IsEmpty then "" 
                 else "<" + (td.TypeArgs |> List.map typeParamName |> String.concat ", ") + ">"
+            // A type with a type parameter is left alone: an implementation for
+            // one is conditional, and there is nothing inside the emitted type
+            // that could build the dictionary its `(where ...)` asks for.
+            let materialized selfType target =
+                if td.TypeArgs.IsEmpty then
+                    materializedBody ctx.Registry td.Name selfType target
+                else
+                    []
+
             match td.Kind with
             | Record(fields, isStruct) ->
                 indent ctx
@@ -3354,25 +3468,35 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                     append ctx (typeToString (Inference.resolveTypeAnnotation ctx.Registry f.Type))
                     append ctx " "
                     append ctx (sanitizeIdent f.Name)
-                appendLine ctx ");"
+                append ctx ")"
+                appendTypeBody ctx (materialized (sanitizeIdent td.Name) (if isStruct then ValueRecord else OpenRecord))
             | Union cases ->
                 indent ctx
                 appendLine ctx $"public abstract record %s{sanitizeIdent td.Name}%s{tyArgsStr} {{"
                 withIndent ctx (fun ctx ->
                     indent ctx
                     appendLine ctx $"private %s{sanitizeIdent td.Name}() {{}}"
+
+                    // Into every case class, and not onto the abstract base: a
+                    // derived record synthesizes its own `Equals`, which
+                    // overrides the base's, so an override written only on the
+                    // base would be silently dead. Declaring `Equals(Case?)` is
+                    // what displaces it — the `sealed override Equals(Base?)`
+                    // the compiler still synthesizes calls through to it.
                     for c in cases do
                         indent ctx
                         match c with
                         | SimpleCase (n, _) ->
-                            appendLine ctx $"public sealed record %s{sanitizeIdent n}() : %s{sanitizeIdent td.Name}%s{tyArgsStr};"
+                            append ctx $"public sealed record %s{sanitizeIdent n}() : %s{sanitizeIdent td.Name}%s{tyArgsStr}"
+                            appendTypeBody ctx (materialized (sanitizeIdent n) SealedCase)
                         | DataCase (n, ftypes, _, _) ->
                             append ctx $"public sealed record %s{sanitizeIdent n}("
                             for i, ft in List.indexed ftypes do
                                 if i > 0 then append ctx ", "
                                 append ctx (typeToString (Inference.resolveTypeAnnotation ctx.Registry ft))
                                 append ctx $" Item%d{i+1}"
-                            appendLine ctx $") : %s{sanitizeIdent td.Name}%s{tyArgsStr};"
+                            append ctx $") : %s{sanitizeIdent td.Name}%s{tyArgsStr}"
+                            appendTypeBody ctx (materialized (sanitizeIdent n) SealedCase)
                 )
                 indent ctx
                 appendLine ctx "}"

@@ -1734,3 +1734,193 @@
     ((_ (bind binds ...) body ...)
      #'(parameterize (,bind)
         (parameterize* (,@binds) ,@body)))))
+
+;; ---------------------------------------------------------------------------
+;; type/derive
+;; ---------------------------------------------------------------------------
+;;
+;; `(type/derive (Eq) (: Point (Record (: x int) (: y int))))` is the type
+;; declaration and the implementations its shape determines.
+;;
+;; Syntactic, and it has to be: where a declaration is read there is no registry
+;; to ask what a type's fields are, only the form that declares them. The
+;; declaration is passed through untouched and the implementation is written out
+;; of the same S-expression.
+;;
+;; The traits are a list — `(Eq)` today, `(Eq Ord)` later — so the shape does
+;; not have to change when there is a second one.
+
+(: derive-sym (-> string Syntax))
+(defun (derive-sym name) (SSym (string->symbol name)))
+
+;; How the transformer refuses its input where a list of methods is wanted.
+;; `syntax-error` never returns; the `Nil` is what makes it type.
+(: derive-fail (-> Syntax string (List Syntax)))
+(defun (derive-fail form message)
+  (ignore (syntax-error form message))
+  Nil)
+
+;; The type variables of a declaration's head: none for `Point`, one for
+;; `(Box %a)`. Each becomes a constraint, because comparing a `Box` is comparing
+;; whatever it holds.
+(: derive-head-vars (-> Syntax (List Syntax)))
+(defun (derive-head-vars head)
+  (match head
+    ((SList items)
+     (match items
+       (Nil Nil)
+       ((Cons _ vars) vars)))
+    (_ Nil)))
+
+;; A fold of `hash-combine` over the parts of a value, in order. Combination
+;; does not commute, so two fields cannot swap places unnoticed.
+(: derive-hash-fold (-> (List Syntax) Syntax Syntax))
+(defun (derive-hash-fold parts acc)
+  (match parts
+    (Nil acc)
+    ((Cons p rest) (derive-hash-fold rest #'(hash-combine ,acc ,p)))))
+
+;; --- Records and structs ---
+
+(: derive-field-names (-> (List Syntax) (List Syntax)))
+(defun (derive-field-names fields)
+  (list-map (fun (f)
+              (syntax-match f
+                ((_ name _) name)
+                (bad (syntax-error bad "a record field is written (: name type)."))))
+            fields))
+
+(: derive-eq-record (-> (List Syntax) (List Syntax)))
+(defun (derive-eq-record names)
+  (def equals
+    #'(defun (= a b)
+        (and ,@(list-map (fun (n) #'(= (record-ref a ,n) (record-ref b ,n))) names))))
+  (def hashed
+    #'(defun (eq-hash v)
+        ,(derive-hash-fold (list-map (fun (n) #'(eq-hash (record-ref v ,n))) names) #'17)))
+  (Cons equals (Cons hashed Nil)))
+
+;; --- Unions ---
+;;
+;; A case is `Name` or `(Name payload ...)`, and a `#:literal` marker is neither
+;; a payload nor a field.
+
+(: derive-case-name (-> Syntax Syntax))
+(defun (derive-case-name c)
+  (match c
+    ((SList items)
+     (match items
+       ((Cons head _) head)
+       (Nil c)))
+    (_ c)))
+
+(: derive-payload (-> Syntax (List Syntax)))
+(defun (derive-payload c)
+  (match c
+    ((SList items)
+     (match items
+       ((Cons _ rest)
+        (list-filter (fun (t) (match t ((SKey _) #f) (_ #t))) rest))
+       (Nil Nil)))
+    (_ Nil)))
+
+;; The binders a case's payload is taken apart into. Built rather than written
+;; in a template, since how many there are is only known here — which also means
+;; they are not renamed. That is harmless: each is bound by the pattern it
+;; appears in and read only by that arm's body.
+(: derive-binders (-> string int int (List Syntax)))
+(defun (derive-binders side i n)
+  (if (= i n)
+      Nil
+      (Cons (derive-sym (string-append side (int->string i)))
+            (derive-binders side (+ i 1) n))))
+
+(: derive-eq-pairs (-> (List Syntax) (List Syntax) (List Syntax)))
+(defun (derive-eq-pairs ls rs)
+  (match ls
+    (Nil Nil)
+    ((Cons l lrest)
+     (match rs
+       (Nil Nil)
+       ((Cons r rrest) (Cons #'(= ,l ,r) (derive-eq-pairs lrest rrest)))))))
+
+;; Same case, compare the payloads positionally; any other case, unequal.
+(: derive-eq-union-arm (-> Syntax Syntax))
+(defun (derive-eq-union-arm c)
+  (def name (derive-case-name c))
+  (def n (list-length (derive-payload c)))
+  (def ls (derive-binders "__derived-l" 0 n))
+  (def rs (derive-binders "__derived-r" 0 n))
+  #'((,name ,@ls)
+     (match b
+       ((,name ,@rs) (and ,@(derive-eq-pairs ls rs)))
+       (,(derive-sym "_") #f))))
+
+;; Seeded with the case's position, so that two cases carrying the same payload
+;; hash differently.
+(: derive-hash-union-arms (-> (List Syntax) int (List Syntax)))
+(defun (derive-hash-union-arms cases index)
+  (match cases
+    (Nil Nil)
+    ((Cons c rest)
+     (def name (derive-case-name c))
+     (def ls (derive-binders "__derived-l" 0 (list-length (derive-payload c))))
+     (def tag (SInt (int->string index)))
+     (Cons #'((,name ,@ls)
+              ,(derive-hash-fold (list-map (fun (l) #'(eq-hash ,l)) ls) tag))
+           (derive-hash-union-arms rest (+ index 1))))))
+
+(: derive-eq-union (-> (List Syntax) (List Syntax)))
+(defun (derive-eq-union cases)
+  (def equals
+    #'(defun (= a b) (match a ,@(list-map derive-eq-union-arm cases))))
+  (def hashed
+    #'(defun (eq-hash v) (match v ,@(derive-hash-union-arms cases 0))))
+  (Cons equals (Cons hashed Nil)))
+
+;; --- Putting one implementation together ---
+
+(: derive-eq-methods (-> Syntax (List Syntax)))
+(defun (derive-eq-methods shape)
+  (syntax-match shape
+    (('Record fields ...) (derive-eq-record (derive-field-names fields)))
+    (('Struct fields ...) (derive-eq-record (derive-field-names fields)))
+    (('Union cases ...) (derive-eq-union cases))
+    (('Enum cases ...) (derive-eq-union cases))
+    (('Sum cases ...) (derive-eq-union cases))
+    (bad (derive-fail bad "a type that derives has to be a Record, a Struct or a Union. An alias is a second spelling of a type rather than a type of its own — derive for the type it names."))))
+
+(: derive-methods (-> Syntax Syntax (List Syntax)))
+(defun (derive-methods trait shape)
+  (if (syntax-ident=? trait (derive-sym "Eq"))
+      (derive-eq-methods shape)
+      (derive-fail trait "the only trait that can be derived is Eq.")))
+
+;; A type with parameters derives a *conditional* implementation: every
+;; parameter has to satisfy the same trait, because the fields hold values of
+;; those types and comparing one is what the body does.
+(: derive-impl (-> Syntax Syntax Syntax))
+(defun (derive-impl trait typedef)
+  (syntax-match typedef
+    ((_ head shape)
+     #'(def/impl (,trait ,head)
+         (where ,@(list-map (fun (v) #'(,trait ,v)) (derive-head-vars head)))
+         ,@(derive-methods trait shape)))
+    (bad (syntax-error bad "a type declaration is written (: Name (Record ...))."))))
+
+(: derive-impls (-> (List Syntax) (List Syntax) (List Syntax)))
+(defun (derive-impls traits typedefs)
+  (match traits
+    (Nil Nil)
+    ((Cons t rest)
+     (list-append (list-map (fun (td) (derive-impl t td)) typedefs)
+                  (derive-impls rest typedefs)))))
+
+(def/macro (type/derive form inject compare)
+  (syntax-match form
+    ((_ (trait ...) typedef ...)
+     #'(begin
+         (type ,@typedef)
+         ,@(derive-impls trait typedef)))
+    (bad (syntax-error bad "type/derive takes a list of traits and one or more type declarations, as in (type/derive (Eq) (: Point (Record (: x int)))).")))
+

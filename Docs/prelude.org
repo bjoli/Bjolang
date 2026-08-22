@@ -67,11 +67,41 @@ A type with no implementation is a clean error — /no implementation of trait '
 
 #+BEGIN_SRC scheme
 (def/impl (Eq Point)
-  (defun (= a b) (and (= (x a) (x b)) (= (y a) (y b))))
-  (defun (eq-hash p) (hash-combine (eq-hash (x p)) (eq-hash (y p)))))
+  (defun (= a b) (and (= (record-ref a x) (record-ref b x))
+                      (= (record-ref a y) (record-ref b y))))
+  (defun (eq-hash p) (hash-combine (eq-hash (record-ref p x))
+                                   (eq-hash (record-ref p y)))))
 #+END_SRC
 
-Note what a hand-written implementation does *not* yet do: C#'s synthesized ~Point.Equals~ and ~GetHashCode~ are still what .NET asks, so a ~Map~ or ~Set~ keyed on ~Point~, and any interop, disagree with it.
+*** ~type/derive~
+Writing that out per field is what ~type/derive~ is for. It is a macro in ~(std prelude)~, and a syntactic one — where a declaration is read there is no registry to ask what a type's fields are, only the form that declares them.
+
+#+BEGIN_SRC scheme
+(type/derive (Eq)
+  (: Point (Record (: x int) (: y int))))
+#+END_SRC
+
+- a record or struct compares its fields in declaration order
+- a union compares the case first: different cases are unequal, the same case compares its payload positionally
+- a type with parameters derives a *conditional* implementation, ~(def/impl (Eq (Box %a)) (where (Eq %a)) ...)~
+- the traits are a list, ~(Eq)~ today and ~(Eq Ord)~ later, so the shape does not change when there is a second one
+
+A field whose type has no ~Eq~ is reported against the ~type/derive~ form rather than against the field: every node a macro builds carries the call site's range. The message names the type that has no implementation and the implementation that needed it.
+
+*** What .NET asks
+When a record, struct or union has an ~Eq~ implementation, its ~Equals~ and ~GetHashCode~ are *emitted as calls to that implementation*. C# only synthesizes those when they are not written, and a record's ~==~ calls ~Equals~ — so ~EqualityComparer<T>.Default~ is the implementation the program wrote.
+
+That is what makes ~Map~ and ~Set~ correct without either of them being told about the trait, and it is what makes interop correct: a ~HashSet<Point>~ or a ~Distinct()~ agrees with ~=~. An implementation that deliberately ignores a field is therefore ignored by every one of them too, which is the point:
+
+#+BEGIN_SRC scheme
+(def/impl (Eq Cached)
+  (defun (= a b) (= (record-ref a key) (record-ref b key)))
+  (defun (eq-hash c) (eq-hash (record-ref c key))))
+#+END_SRC
+
+A ~Map~ keyed on one ~Cached~ finds the entry when looked up with another that differs only in ~cache~.
+
+Two limits. A union's override goes into every *case* class, because a derived record synthesizes its own ~Equals~ which overrides the base's — an override written only on the abstract base would be silently dead. And a type with type parameters is left with C#'s synthesized equality: its implementation is conditional, and there is nothing inside ~Box<T>~ that could build the ~Eq<T>~ dictionary the ~(where ...)~ asks for. A derived implementation is field-wise, so the two agree; a hand-written one for a generic type can differ from what .NET asks.
 
 ** String Operations
 - ~(string-append a b)~ : Concatenates strings ~a~ and ~b~. =(std prelude)=

@@ -1,0 +1,124 @@
+;; `type/derive`, and what makes it worth having: the implementation is what
+;; .NET asks when it asks.
+;;
+;; A record with an `Eq` implementation has its `Equals` and `GetHashCode`
+;; emitted as calls to that implementation, so `EqualityComparer<T>.Default`
+;; *is* the implementation. `Map` and `Set` are C# and were never told about the
+;; trait; they agree anyway, which is the whole point of the exercise.
+(import (std prelude))
+(import (std set))
+
+(: expect (-> string bool void))
+(defun (expect label actual)
+  (if actual
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " label))))
+
+;; ---------------------------------------------------------------------------
+;; Derived shapes
+;; ---------------------------------------------------------------------------
+
+(type/derive (Eq)
+  (: Point (Record (: x int) (: y int))))
+
+;; A field whose type is itself derived: the comparison goes through `Point`'s
+;; implementation rather than through .NET's idea of a `Point`.
+(type/derive (Eq)
+  (: Segment (Record (: head Point) (: tail Point))))
+
+(type/derive (Eq)
+  (: Coord (Struct (: lat int) (: lon int))))
+
+;; Different cases are unequal; the same case compares its payload positionally.
+;; `Square` and `Circle` carry the same payload type, so the case tag has to be
+;; part of the hash as well as of the comparison.
+(type/derive (Eq)
+  (: Shape (Union Empty (Circle int) (Square int) (Rect int int))))
+
+(type/derive (Eq)
+  (: (Box %a) (Record (: item %a) (: label string))))
+
+;; Recursive, and derived: the payload is the type being declared.
+(type/derive (Eq)
+  (: Nest (Union Leaf (Branch Nest Nest))))
+
+;; ---------------------------------------------------------------------------
+;; A hand-written implementation that ignores a field
+;; ---------------------------------------------------------------------------
+;;
+;; This is the invariant test. `cache` is not part of what a `Cached` *is*, so
+;; `=` ignores it — and everything that can ask whether two of them are equal
+;; has to give that same answer, including the ones written in C#.
+(type
+  (: Cached (Record (: key string) (: cache int))))
+
+(def/impl (Eq Cached)
+  (defun (= a b) (= (record-ref a key) (record-ref b key)))
+  (defun (eq-hash c) (eq-hash (record-ref c key))))
+
+(defun (main)
+  ;; ---- records ------------------------------------------------------------
+  (def p (Point (x 1) (y 2)))
+  (def q (Point (x 1) (y 2)))
+  (def r (Point (x 1) (y 9)))
+  (expect "derived record" (= p q))
+  (expect "derived record, differing" (not (= p r)))
+  (expect "derived record hashes alike" (= (eq-hash p) (eq-hash q)))
+
+  (expect "a derived field type" (= (Segment (head p) (tail q)) (Segment (head q) (tail p))))
+  (expect "a derived field type, differing"
+          (not (= (Segment (head p) (tail q)) (Segment (head p) (tail r)))))
+
+  (expect "derived struct" (= (Coord (lat 1) (lon 2)) (Coord (lat 1) (lon 2))))
+  (expect "derived struct, differing" (not (= (Coord (lat 1) (lon 2)) (Coord (lat 1) (lon 3)))))
+
+  ;; ---- unions -------------------------------------------------------------
+  (expect "within a case" (= (Circle 3) (Circle 3)))
+  (expect "within a case, differing" (not (= (Circle 3) (Circle 4))))
+  (expect "across cases" (not (= (Circle 3) (Square 3))))
+  (expect "a case with no payload" (= Empty Empty))
+  (expect "no payload against one" (not (= Empty (Circle 0))))
+  (expect "two payloads" (= (Rect 1 2) (Rect 1 2)))
+  (expect "two payloads, differing" (not (= (Rect 1 2) (Rect 2 1))))
+  (expect "same payload, different case, hashes apart"
+          (not (= (eq-hash (Circle 3)) (eq-hash (Square 3)))))
+
+  ;; Recursion terminates: the payload comparison is the trait method again,
+  ;; one level down, and the leaves are a case with nothing to compare.
+  (expect "recursive union"
+          (= (Branch Leaf (Branch Leaf Leaf)) (Branch Leaf (Branch Leaf Leaf))))
+  (expect "recursive union, differing"
+          (not (= (Branch Leaf (Branch Leaf Leaf)) (Branch Leaf Leaf))))
+
+  ;; ---- a derived generic type ---------------------------------------------
+  (expect "(Box int)" (= (Box (item 1) (label "a")) (Box (item 1) (label "a"))))
+  (expect "(Box int), differing" (not (= (Box (item 1) (label "a")) (Box (item 2) (label "a")))))
+  (expect "(Box Point)" (= (Box (item p) (label "a")) (Box (item q) (label "a"))))
+  (expect "(Box (List int))" (= (Box (item (list 1 2)) (label "a"))
+                                (Box (item (list 1 2)) (label "a"))))
+
+  ;; ---- the invariant ------------------------------------------------------
+  ;;
+  ;; `=` says these are the same, so every other way of asking has to as well.
+  (def c1 (Cached (key "k") (cache 1)))
+  (def c2 (Cached (key "k") (cache 999)))
+  (expect "a hand-written implementation ignores a field" (= c1 c2))
+
+  ;; `Map` is a CHAMP trie written in C#. It keys on `GetHashCode` and
+  ;; `Equals`, knows nothing about the trait, and finds the entry anyway.
+  (def m (map-set (map-empty) c1 "found"))
+  (expect "a Map keyed on one finds it with the other"
+          (= "found" (map-ref-or m c2 "MISSING")))
+  (expect "and still misses a key that is really different"
+          (= "MISSING" (map-ref-or m (Cached (key "other") (cache 1)) "MISSING")))
+
+  ;; `Set` is the same story in a different C# collection.
+  (expect "a Set agrees" (set-contains? (set-add (set-empty) c1) c2))
+
+  ;; A derived type as a map key, where the two values were built separately.
+  (def pm (map-set (map-empty) p "point"))
+  (expect "a derived type as a Map key" (= "point" (map-ref-or pm q "MISSING")))
+  (expect "a derived union as a Map key"
+          (= "shape" (map-ref-or (map-set (map-empty) (Rect 1 2) "shape") (Rect 1 2) "MISSING")))
+
+  0)

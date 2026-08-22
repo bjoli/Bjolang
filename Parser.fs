@@ -435,6 +435,50 @@ let noteIntroduced (names: string seq) =
 let headName (sym: string) =
     if Set.contains sym introducedNames then Gensym.baseName sym else sym
 
+/// The third renaming rule, at a head that is dispatched on rather than bound.
+/// Unconditional, unlike in `parseExpr`: a declaration's head is either one of
+/// the declaration forms or the name of a macro, and neither is a binding a
+/// mark could be resolving. A macro that expands to a `defun` — or to a
+/// `(: name type)` beside it — arrives with both renamed like anything else a
+/// template constructs.
+///
+/// Used wherever a form's head selects a form rather than naming a value:
+/// `tryParseDecl`, `parseDeclForms`, `flattenBegins`, a type definition's
+/// `Record`/`Union` tag, and the clauses of a `def/trait` or `def/impl`.
+let stripHeadMark (s: SExpr) : SExpr =
+    match s with
+    | SList(SAtom({ Token = Symbol sym } as head) :: rest, lr) when sym <> headName sym ->
+        SList(SAtom { head with Token = Symbol(headName sym) } :: rest, lr)
+    | _ -> s
+
+/// A symbol whose mark has been stripped, for the positions that name something
+/// dispatched on rather than bound — a trait in a `def/impl`, say, which has to
+/// match what the `def/trait` declared.
+let (|StrippedSymbol|_|) (s: SExpr) =
+    match s with
+    | SAtom { Token = Symbol sym } -> Some(headName sym)
+    | _ -> None
+
+/// The same, at the name of a method inside a `def/trait` or `def/impl` body.
+///
+/// `(defun (= a b) ...)` in a template has `=` renamed like everything else it
+/// constructs, and the completeness check compares it against the trait's
+/// signature. The *parameters* are left alone: those are binders, and hygiene
+/// is exactly what should apply to them.
+let stripMethodName (s: SExpr) : SExpr =
+    match s with
+    | SList((SAtom { Token = Symbol("defun" | "defbjo") } as definer)
+            :: SList(SAtom({ Token = Symbol name } as nameAtom) :: args, hr)
+            :: rest,
+            lr) when name <> headName name ->
+        SList(
+            definer
+            :: SList(SAtom { nameAtom with Token = Symbol(headName name) } :: args, hr)
+            :: rest,
+            lr
+        )
+    | _ -> s
+
 // --- Parser ---
 
 let rec parsePattern (s: SExpr) : Pattern =
@@ -660,6 +704,18 @@ let parseTypeDefHead (head: SExpr) : string * string list =
 let parseTypeDef (s: SExpr) : TypeDef =
     let r = getRange s
 
+    // The third renaming rule, at the shape tag. `Record`, `Struct` and `Union`
+    // are dispatched on exactly as a special form's head is, and a template that
+    // writes one — which is what a `derive` macro does — arrives with it
+    // renamed. Nothing else in a type definition needs it: a type *name* is
+    // read through `originalName` and a type inside a field is read by
+    // `parseType`, which strips its own.
+    let s =
+        match s with
+        | SList([ (SAtom { Token = Colon } as colon); head; shape ], sr) ->
+            SList([ colon; head; stripHeadMark shape ], sr)
+        | _ -> s
+
     match s with
     | SList([ SAtom { Token = Colon }
               head
@@ -698,6 +754,184 @@ let parseTypeDef (s: SExpr) : TypeDef =
           Kind = Alias(parseType aliasType)
           Range = r }
     | _ -> failwithf $"Invalid type definition at %s{Lexer.formatPos r}"
+
+// ---------------------------------------------------------------------------
+// type/derive
+// ---------------------------------------------------------------------------
+//
+// `(type/derive (Eq) (: Point (Record (: x int) (: y int))))` is the type
+// declaration and the implementations that follow from its shape.
+//
+// Syntactic, and it has to be: where a declaration is read there is no registry
+// to ask what a type's fields are, only the form declaring them. So this reads
+// the same `TypeDef` the `type` form does and writes the implementation out of
+// it, in declaration order.
+//
+// The traits are a list — `(Eq)` today, `(Eq Ord)` later — so that the shape
+// does not have to change when there is a second one.
+
+/// Every generated node carries the range of the *field* or *case* it came
+/// from, so an unimplementable comparison is reported against the thing in the
+/// source that asked for it rather than against the whole declaration.
+let private dTrue r = EIdent("true", r)
+let private dFalse r = EIdent("false", r)
+let private dAnd r a b = EIf(a, b, dFalse r, r)
+let private dEq r a b = EApp(EIdent("=", r), [ a; b ], r)
+let private dHash r x = EApp(EIdent("eq-hash", r), [ x ], r)
+let private dCombine r a b = EApp(EIdent("hash-combine", r), [ a; b ], r)
+let private dInt r (n: int) = EInt(string n, r)
+
+let private dAllOf (r: Range) (items: (Range * Expr) list) : Expr =
+    match items with
+    | [] -> dTrue r
+    | _ ->
+        let rec go =
+            function
+            | [] -> dTrue r
+            | [ (_, last) ] -> last
+            | (ir, item) :: rest -> dAnd ir item (go rest)
+
+        go items
+
+/// The seed a fold of `hash-combine` starts from, and the tag a union case
+/// contributes. Two cases carrying the same payload have to hash differently,
+/// which is what the index buys.
+let private dHashSeed r = dInt r 17
+
+let private deriveEqForRecord (r: Range) (fields: RecordField list) : Decl list =
+    let get (who: string) (f: RecordField) = EGetField(EIdent(who, f.Range), f.Name, f.Range)
+
+    let equals =
+        DDefun(
+            "=",
+            [ MandatoryArg("a", None); MandatoryArg("b", None) ],
+            dAllOf r (fields |> List.map (fun f -> f.Range, dEq f.Range (get "a" f) (get "b" f))),
+            Ordinary,
+            r
+        )
+
+    let hash =
+        let body =
+            fields
+            |> List.fold (fun acc f -> dCombine f.Range acc (dHash f.Range (get "v" f))) (dHashSeed r)
+
+        DDefun("eq-hash", [ MandatoryArg("v", None) ], body, Ordinary, r)
+
+    [ equals; hash ]
+
+/// A union: different cases are unequal, and the same case compares its payload
+/// positionally.
+let private deriveEqForUnion (r: Range) (cases: UnionCase list) : Decl list =
+    let parts =
+        function
+        | SimpleCase(n, cr) -> n, 0, cr
+        | DataCase(n, types, _, cr) -> n, types.Length, cr
+
+    let binders (side: string) (arity: int) (cr: Range) =
+        List.init arity (fun i -> PIdent($"__d_%s{side}%d{i}", cr))
+
+    let equals =
+        let arms =
+            cases
+            |> List.map (fun c ->
+                let name, arity, cr = parts c
+
+                // The inner match is on the *other* value: same case, compare
+                // the payloads; any other case, unequal.
+                let sameCase =
+                    dAllOf
+                        cr
+                        (List.init arity (fun i ->
+                            cr, dEq cr (EIdent($"__d_l%d{i}", cr)) (EIdent($"__d_r%d{i}", cr))))
+
+                let inner =
+                    EMatch(
+                        EIdent("b", cr),
+                        [ PConstruct(name, binders "r" arity cr, cr), None, sameCase
+                          PWildcard cr, None, dFalse cr ],
+                        cr
+                    )
+
+                PConstruct(name, binders "l" arity cr, cr), None, inner)
+
+        DDefun(
+            "=",
+            [ MandatoryArg("a", None); MandatoryArg("b", None) ],
+            EMatch(EIdent("a", r), arms, r),
+            Ordinary,
+            r
+        )
+
+    let hash =
+        let arms =
+            cases
+            |> List.mapi (fun index c ->
+                let name, arity, cr = parts c
+
+                let body =
+                    List.init arity id
+                    |> List.fold
+                        (fun acc i -> dCombine cr acc (dHash cr (EIdent($"__d_l%d{i}", cr))))
+                        (dInt cr index)
+
+                PConstruct(name, binders "l" arity cr, cr), None, body)
+
+        DDefun("eq-hash", [ MandatoryArg("v", None) ], EMatch(EIdent("v", r), arms, r), Ordinary, r)
+
+    [ equals; hash ]
+
+/// The traits `type/derive` knows how to write, and how.
+let private deriveMethods (traitName: string) (td: TypeDef) : Decl list =
+    match traitName, td.Kind with
+    | "Eq", Record(fields, _) -> deriveEqForRecord td.Range fields
+    | "Eq", Union cases -> deriveEqForUnion td.Range cases
+    | "Eq", Alias _ ->
+        failwithf
+            $"Cannot derive at %s{Lexer.formatPos td.Range}: '%s{td.Name}' is a type alias, which is a second spelling of a type rather than a type of its own. Derive for the type it names."
+    | _ ->
+        failwithf
+            $"Cannot derive '%s{traitName}' at %s{Lexer.formatPos td.Range}: the traits that can be derived are Eq."
+
+/// The implementation `traitName` derives for `td`.
+///
+/// A type with parameters derives a *conditional* implementation — every
+/// parameter has to satisfy the same trait, because the fields hold values of
+/// those types and comparing one is what the body does.
+let private deriveImpl (traitName: string) (td: TypeDef) : Decl =
+    let r = td.Range
+
+    let target =
+        if td.TypeArgs.IsEmpty then
+            TName(td.Name, r)
+        else
+            TApp(td.Name, td.TypeArgs |> List.map (fun a -> TName("'" + a, r)), r)
+
+    let constraints = td.TypeArgs |> List.map (fun a -> traitName, "'" + a)
+
+    DImpl(traitName, target, [], constraints, deriveMethods traitName td, r)
+
+/// `(type/derive (Eq) typedef ...)`, as the declarations it stands for.
+let private parseDerive (isRec: bool) (traits: SExpr list) (typeDefForms: SExpr list) (r: Range) : Decl list =
+    let traitNames =
+        traits
+        |> List.map (function
+            | SAtom { Token = Symbol name } -> name
+            | bad ->
+                failwithf
+                    $"Syntax error in type/derive at %s{Lexer.formatPos (getRange bad)}: the first form is the list of traits to derive, as in (Eq).")
+
+    if traitNames.IsEmpty then
+        failwithf
+            $"Syntax error in type/derive at %s{Lexer.formatPos r}: it derives nothing. Write the traits to derive, as in (Eq), or use `type`."
+
+    if typeDefForms.IsEmpty then
+        failwithf $"Syntax error in type/derive at %s{Lexer.formatPos r}: it declares no type."
+
+    let typeDefs = List.map parseTypeDef typeDefForms
+
+    let decl = if isRec then DTypeRec(typeDefs, r) else DType(typeDefs, r)
+
+    decl :: [ for t in traitNames do for td in typeDefs -> deriveImpl t td ]
 
 /// Desugars a syntax template `#'(if ,c ,t ,f)` into the `Syntax` value it
 /// describes.
@@ -3886,21 +4120,6 @@ let macroTransformerType (r: Range) : FType =
     let compare = TArrow([ syntax; syntax ], [], None, TName("bool", r), Ordinary, r)
     TArrow([ syntax; inject; compare ], [], None, syntax, Ordinary, r)
 
-/// The third renaming rule, at the last of the three heads that dispatch on
-/// one. Unconditional here, unlike in `parseExpr`: a declaration's head is
-/// either one of the declaration forms or the name of a macro, and neither is
-/// a binding a mark could be resolving. A macro that expands to a `defun` — or
-/// to a `(: name type)` beside it — arrives with both renamed like anything
-/// else a template constructs.
-///
-/// Shared by `tryParseDecl`, `parseDeclForms` and `flattenBegins`: each of them
-/// dispatches on a head, and a `begin` a template wrote arrives as `begin__37`.
-let stripHeadMark (s: SExpr) : SExpr =
-    match s with
-    | SList(SAtom({ Token = Symbol sym } as head) :: rest, lr) when sym <> headName sym ->
-        SList(SAtom { head with Token = Symbol(headName sym) } :: rest, lr)
-    | _ -> s
-
 /// Every name a group of declarations introduces.
 ///
 /// This is what makes rule 1 apply to a top-level splice.
@@ -4325,8 +4544,13 @@ let rec tryParseDecl (s: SExpr) : Decl option =
         Some(DTrait(traitName, implementorVar, holeArity, List.rev assocTypes, List.rev signatures, List.rev defaults, r))
 
     // Parse: (def/impl (TraitName (Vec 'a)) (type 'item 'a) (defun (get v i) ...))
+    //
+    // The trait name is stripped of a rename, as every dispatched-on head is: a
+    // template that writes `(def/impl (Eq ,name) ...)` — which is what a
+    // `derive` macro does — constructs the trait name and so has it renamed,
+    // and a trait is not a binding for the mark to be resolving.
     | SList (SAtom { Token = Symbol "def/impl" } ::
-             SList (SAtom { Token = Symbol traitName } :: targetTypeExpr :: [], _) ::
+             SList (StrippedSymbol traitName :: targetTypeExpr :: [], _) ::
              body, r) ->
 
         let targetType = parseType targetTypeExpr
@@ -4336,7 +4560,12 @@ let rec tryParseDecl (s: SExpr) : Decl option =
         let mutable methods = []
 
         for item in flattenBegins body do
-            match item with
+            // The clause tags — `type`, `where`, `defun` — are dispatched on
+            // exactly as a declaration's head is, and a constructed one arrives
+            // renamed. The *method name* inside a `defun` is stripped with them:
+            // it has to match what the `def/trait` declared, so it is a
+            // selector rather than a binding.
+            match stripMethodName (stripHeadMark item) with
             // Match: (type 'item targetType)
             | SList (SAtom { Token = Symbol "type" } :: SAtom { Token = QuotedSymbol assocName } :: boundTypeExpr :: [], _) ->
                 assocBindings <- (assocName, parseType boundTypeExpr) :: assocBindings
@@ -4347,9 +4576,9 @@ let rec tryParseDecl (s: SExpr) : Decl option =
             | SList (SAtom { Token = Symbol "where" } :: constraintExprs, wr) ->
                 for c in constraintExprs do
                     match c with
-                    | SList ([ SAtom { Token = Symbol cTrait }; SAtom { Token = QuotedSymbol varName } ], _) ->
+                    | SList ([ StrippedSymbol cTrait; SAtom { Token = QuotedSymbol varName } ], _) ->
                         constraints <- (cTrait, "'" + varName) :: constraints
-                    | SList ([ SAtom { Token = Symbol cTrait }; SAtom { Token = Symbol varName } ], _) ->
+                    | SList ([ StrippedSymbol cTrait; SAtom { Token = Symbol varName } ], _) ->
                         constraints <- (cTrait, varName) :: constraints
                     | _ ->
                         failwithf

@@ -271,6 +271,28 @@ Splicing works wherever declarations or body forms do: at the top level, inside
 into a body are still one mutually recursive group, as though the ~begin~ were
 not there.
 
+** A template may write a type declaration and an implementation
+
+~type/derive~ in the prelude is the worked example: it splices back the ~type~
+form it was given and writes a ~def/impl~ beside it, out of the same
+S-expression.
+
+Rule 3 reaches further than the three heads ~parseExpr~ dispatches on, because
+several other positions *select* rather than *bind*: a type definition's
+~Record~, ~Struct~ or ~Union~ tag; the trait named by a ~def/impl~ and by each
+constraint in its ~(where ...)~; the ~type~, ~where~ and ~defun~ tags of the
+clauses; and the *name* of a method inside one, which has to match what the
+~def/trait~ declared. All of those have the rename stripped. A method's
+*parameters* do not — those are binders, and hygiene is exactly what should
+apply to them.
+
+A trait method written in a template — ~=~, in ~type/derive~'s case — takes rule
+3 and not rule 2, even though the prelude publishes it. Rule 2's set is the
+module's exported *bindings*, and a trait method is published as part of its
+trait rather than as a binding of its own. That is the right answer: there is no
+~prelude_Module.eq~ for a qualified spelling to name, and the method is meant to
+be whatever it means where the expansion lands.
+
 Hygiene needs nothing extra. ~counter~ above is written in the template, so it
 is renamed and cannot be captured by — or capture — a ~counter~ at the call
 site, exactly as a ~let~ binding in a template is. A name the *caller* supplies,

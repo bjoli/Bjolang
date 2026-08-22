@@ -3,6 +3,82 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~derive~, and equality that .NET agrees with
+
+Two things, shipping together because both touch record, struct and union code
+generation and because either alone is half an answer.
+
+** Materialization
+
+When a record, struct or union has an ~Eq~ implementation, its ~Equals~ and
+~GetHashCode~ are emitted as calls to that implementation:
+
+#+BEGIN_SRC csharp
+public record Point(int x, int y, string cache) {
+    public virtual bool Equals(Point? other) => other is not null && Eq_Point.Instance.eq(this, other);
+    public override int GetHashCode() => Eq_Point.Instance.eqsubhash(this);
+}
+#+END_SRC
+
+C# synthesizes those only when they are not written, and a record's ~==~ calls
+~Equals~, so ~EqualityComparer<T>.Default~ *is* the implementation the program
+wrote. That closes the gap the previous entry left open, everywhere at once and
+in one place:
+
+- ~Map~ and ~Set~ are correct with no dictionary threaded through them and no
+  signature changed, because they key on ~Equals~ and ~GetHashCode~.
+- Interop is correct: a ~HashSet<Point>~ or a ~Distinct()~ agrees with ~=~.
+- An implementation that deliberately ignores a field is ignored by all of them
+  too. That is the test worth having, and it is in ~TestFiles/128_derive.bjo~.
+
+The orphan rule is what makes the lookup possible: an implementation for a type
+declared here is in this module too, so both are in hand when the type is
+emitted.
+
+A union's override goes into every *case* class. A derived record synthesizes
+its own ~Equals~, which overrides the base's, so one written on the abstract base
+alone would be silently dead.
+
+** ~type/derive~
+
+A macro in ~(std prelude)~:
+
+#+BEGIN_SRC scheme
+(type/derive (Eq)
+  (: Point (Record (: x int) (: y int))))
+#+END_SRC
+
+Records and structs compare their fields in declaration order; unions compare
+the case first and then the payload positionally; a type with parameters derives
+a conditional implementation. The trait list is a list so that ~Ord~ can join it
+without the form changing shape.
+
+It is written in Bjolang rather than in the compiler, which needed the macro
+system to reach a little further. Rule 3 — "strip the rename and dispatch" — now
+applies to every position that *selects* rather than binds: a type definition's
+~Record~/~Struct~/~Union~ tag, the trait in a ~def/impl~ and in each of its
+~(where ...)~ constraints, the clause tags inside one, and the name of a method
+in an implementation. A method's parameters keep their renames, being binders.
+
+** What is still open
+
+- *A generic type keeps C#'s synthesized equality.* Its implementation is
+  conditional, and there is nothing inside ~Box<T>~ that could build the ~Eq<T>~
+  dictionary the ~(where ...)~ asks for. A derived implementation is field-wise
+  and so agrees; a hand-written one for a generic type can differ from what .NET
+  asks. This closes when there is a blanket implementation to use as the
+  dictionary.
+- *A derived body reports against the ~type/derive~ form, not the field.* Every
+  node a macro builds carries the call site's range. The message names the type
+  with no implementation and the implementation that needed it, which between
+  them say which field.
+- *~=~ on a ~Map~ still matches keys by lookup.* That is now correct for every
+  key type whose ~Equals~ is its ~Eq~ implementation, which is every record,
+  struct and union the compiler emits — so what is left is a key type that is
+  neither.
+- *There is still no blanket ~Eq~.* A type with no implementation of its own has
+  no equality at all.
+
 * Equality is a trait
 
 ~=~ is a method of ~Eq~, declared in ~(std eq)~ and re-exported by the prelude:

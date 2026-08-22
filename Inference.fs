@@ -4884,7 +4884,28 @@ and private checkDeclGroup
         decls
         |> List.fold
             (fun (currEnv, currSigs, accDecls) d ->
-                let nextEnv, nextSigs, tDecls = checkDecl currEnv currSigs d
+                let nextEnv, nextSigs, tDecls =
+                    match d with
+                    // Which implementation a failure came from. A method body
+                    // is short, and often nobody wrote it — `type/derive`
+                    // writes one per field, and every node a macro builds
+                    // carries the *call site's* range, so the line reported is
+                    // the derive form rather than the field that asked for the
+                    // comparison.
+                    | DImpl(traitName, target, _, _, _, ir) ->
+                        try
+                            checkDecl currEnv currSigs d
+                        with ex when Diagnostics.isDiagnostic ex ->
+                            let targetName =
+                                match target with
+                                | TName(n, _) -> n
+                                | TApp(n, _, _) -> n
+                                | _ -> "this type"
+
+                            failwithf
+                                $"%s{ex.Message}\n  in the implementation of '%s{traitName}' for '%s{targetName}' at %s{Lexer.formatPos ir}"
+                    | _ -> checkDecl currEnv currSigs d
+
                 (nextEnv, nextSigs, tDecls @ accDecls))
             (envWithForwardDecls, combinedSigs, [])
 
