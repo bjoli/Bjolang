@@ -141,7 +141,10 @@ let emptyRegistry : TraitRegistry =
       // and there is nowhere in source to hang the declaration. `Result` is the
       // whole of §8.2's third level: a discarded error is exactly the failure
       // the type exists to make visible.
-      NoDiscard = Set.ofList [ "Result" ] }
+      NoDiscard = Set.ofList [ "Result" ]
+
+      OpaqueTypes = Set.empty
+      HiddenMembers = Map.empty }
 
 let prelude : Env =
     { Bindings = Map.ofList [

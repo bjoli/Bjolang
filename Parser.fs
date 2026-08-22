@@ -77,11 +77,30 @@ type TypeDefKind =
     | Union of UnionCase list
     /// A record, and whether it is a *value* type (struct).
     | Record of RecordField list * bool
+    /// A head with no body: what an `#:opaque` type is published as, and the
+    /// only shape a module ever reads back for one.
+    ///
+    /// It carries the names of the members that did *not* cross — the union's
+    /// cases, or the record's fields — and carries them for diagnostics alone.
+    /// Nothing is registered under them, so a use resolves to nothing whether
+    /// they are listed or not; listing them is what lets the failure say which
+    /// type the name belongs to instead of claiming there is no such name. No
+    /// secret is spent on it: the emitted C# members are public either way.
+    | Opaque of string list
 
 type TypeDef =
     { Name: string
       TypeArgs: string list
       Kind: TypeDefKind
+      /// `#:opaque` on the declaration: the type name crosses the module
+      /// boundary and its representation does not.
+      ///
+      /// Separate from `Kind = Opaque` because the two are the same fact on
+      /// opposite sides of the boundary. Inside the declaring module the body
+      /// is fully visible and `Kind` is the `Union` or `Record` as written —
+      /// this flag is what tells `Exports` to publish a head instead. `Kind =
+      /// Opaque` is what an importer reads back, and implies the flag.
+      IsOpaque: bool
       Range: Range }
 
 
@@ -754,6 +773,30 @@ let parseTypeDefHead (head: SExpr) : string * string list =
 let parseTypeDef (s: SExpr) : TypeDef =
     let r = getRange s
 
+    // `#:opaque` marks the *declaration* rather than any part of the shape, so
+    // it is taken off here — before the shape is looked at — for the reason a
+    // record field's `#:mutable` is: a keyword is not a type anywhere else, and
+    // every arm below matches an exactly-three-element list.
+    let s, isOpaque =
+        match s with
+        | SList((SAtom { Token = Colon } as colon) :: rest, sr) ->
+            let markers, items =
+                rest
+                |> List.partition (function
+                    | SAtom { Token = Keyword _ } -> true
+                    | _ -> false)
+
+            for marker in markers do
+                match marker with
+                | SAtom { Token = Keyword "opaque" } -> ()
+                | SAtom { Token = Keyword bad } ->
+                    failwithf
+                        $"Unknown marker #:%s{bad} on the type definition at %s{Lexer.formatPos r}. The only one is #:opaque, which exports the type's name without its representation."
+                | _ -> ()
+
+            SList(colon :: items, sr), not markers.IsEmpty
+        | _ -> s, false
+
     // The third renaming rule, at the shape tag. `Record`, `Struct` and `Union`
     // are dispatched on exactly as a special form's head is, and a template that
     // writes one — which is what a `derive` macro does — arrives with it
@@ -789,6 +832,7 @@ let parseTypeDef (s: SExpr) : TypeDef =
         { Name = name
           TypeArgs = typeArgs
           Kind = Record(parsedFields, kind = "Struct")
+          IsOpaque = isOpaque
           Range = r }
     // `Union`, `Enum`, and `Sum` are accepted tags for sum types.
     | SList([ SAtom { Token = Colon }
@@ -799,6 +843,29 @@ let parseTypeDef (s: SExpr) : TypeDef =
         { Name = name
           TypeArgs = typeArgs
           Kind = Union(List.map parseUnionCase cases)
+          IsOpaque = isOpaque
+          Range = r }
+    // A head with no body. Not a shape source writes: it is what `Exports`
+    // publishes an `#:opaque` type as, read back here by the ordinary parser
+    // because metadata *is* Bjolang source text.
+    | SList([ SAtom { Token = Colon }
+              head
+              SList(SAtom { Token = Symbol "Opaque" } :: members, _) ],
+            _) ->
+        let name, typeArgs = parseTypeDefHead head
+
+        let memberNames =
+            members
+            |> List.map (function
+                | SAtom { Token = Symbol m } -> m
+                | bad ->
+                    failwithf
+                        $"Invalid hidden member name in an Opaque type at %s{Lexer.formatPos (getRange bad)}")
+
+        { Name = name
+          TypeArgs = typeArgs
+          Kind = Opaque memberNames
+          IsOpaque = true
           Range = r }
     // Explicit Alias: (: head (Alias aliasType))
     | SList([ SAtom { Token = Colon }
@@ -806,16 +873,31 @@ let parseTypeDef (s: SExpr) : TypeDef =
               SList([ SAtom { Token = Symbol "Alias" }; aliasType ], _) ],
             _) ->
         let name, typeArgs = parseTypeDefHead head
+
+        // An alias has no representation to keep back. `resolveTypeAnnotation`
+        // expands it wherever it is written, so an opaque one would be a
+        // different type inside the module from the one outside.
+        if isOpaque then
+            failwithf
+                $"#:opaque on the alias '%s{name}' at %s{Lexer.formatPos r}: an alias is expanded wherever it is named, so there is no representation to hold back. Declare '%s{name}' as a Record or a Union with one field to make it a type of its own."
+
         { Name = name
           TypeArgs = typeArgs
           Kind = Alias(parseType aliasType)
+          IsOpaque = false
           Range = r }
     // Implicit Alias: (: head aliasType)
     | SList([ SAtom { Token = Colon }; head; aliasType ], _) ->
         let name, typeArgs = parseTypeDefHead head
+
+        if isOpaque then
+            failwithf
+                $"#:opaque on the alias '%s{name}' at %s{Lexer.formatPos r}: an alias is expanded wherever it is named, so there is no representation to hold back. Declare '%s{name}' as a Record or a Union with one field to make it a type of its own."
+
         { Name = name
           TypeArgs = typeArgs
           Kind = Alias(parseType aliasType)
+          IsOpaque = false
           Range = r }
     | _ -> failwithf $"Invalid type definition at %s{Lexer.formatPos r}"
 
@@ -4277,8 +4359,11 @@ let rec boundNames (decls: Decl list) : Set<string> =
                         |> List.map (function
                             | SimpleCase(n, _) -> n
                             | DataCase(n, _, _, _) -> n)
+                    // An opaque type's members are not bound here either: the
+                    // whole of what it publishes is a name.
                     | Alias _
-                    | Record _ -> []))
+                    | Record _
+                    | Opaque _ -> []))
         | DTrait(name, _, _, _, signatures, defaults, _) ->
             (name :: (signatures |> List.map fst)) @ Set.toList (boundNames defaults)
         | DImpl(_, _, _, _, methods, _) -> Set.toList (boundNames methods)

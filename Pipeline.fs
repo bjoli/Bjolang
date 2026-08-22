@@ -323,6 +323,11 @@ let private surfaceOf (moduleName: string) (decls: Decl list) (macros: ModuleMet
                     | DataCase(n, _, _, _) -> bare n)
             // A record is constructed by its own name.
             | Record _ -> [ bare td.Name ]
+            // An opaque type offers no constructor, not even the record one
+            // that shares its name — which is why the name is in `Types` and
+            // absent here. Its hidden members are held for diagnostics and are
+            // not part of any surface.
+            | Opaque _
             | Alias _ -> [])
         |> Set.ofList
 

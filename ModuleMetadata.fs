@@ -27,7 +27,11 @@ open System.Text
 /// has to pass it by name. An assembly built before this declares it under the
 /// name its source wrote, and a call that leaves a keyword out cannot be
 /// written against it at all.
-let currentVersion = 3
+/// 4: `TypeDecls` holds the types the module *exported*, rather than every type
+/// it declared. An assembly built before this offers its private types as
+/// though they were public, and knows nothing of the `(Opaque ...)` shape an
+/// `#:opaque` export is published as.
+let currentVersion = 4
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {

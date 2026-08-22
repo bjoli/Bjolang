@@ -25,6 +25,7 @@
 (import (std prelude))
 
 (export
+  Deque
   deque deque-length deque-empty? deque-clear!
   deque-push-front! deque-push-back!
   deque-pop-front! deque-pop-back!
@@ -32,18 +33,24 @@
   list->deque deque->list deque-fold deque-for-each
   deque->str)
 
-;; All three fields are mutable, and a mutable field may be written only by the
-;; module that declared it — so `front`, `back` and `size` are this file's
-;; business and the operations below are the whole interface to them. A caller
-;; can read them, and gets nothing useful: which half an element is in is a fact
-;; about the representation, not about the deque.
+;; `#:opaque`, so the two lists and the count stay here: which half an element
+;; is in is a fact about the representation and not about the deque, and a
+;; caller that could read `front` would be reading an implementation detail that
+;; every push and pop rearranges. The name still crosses — a signature may say
+;; `(Deque int)`, and the trait implementations below still dispatch — so what
+;; is lost is only the ability to take one apart.
+;;
+;; That also settles the mutable fields. A mutable field may be written only by
+;; the module that declared it; opacity makes reading one the same rule, and the
+;; operations below are the whole interface.
 ;;
 ;; `size` is carried rather than counted so that `deque-length` is O(1). It is
 ;; the one field that is not derivable from the others in constant time.
 (type
-  (: (Deque %a) (Record (: front (List %a) #:mutable)
-                        (: back (List %a) #:mutable)
-                        (: size int #:mutable))))
+  (: (Deque %a) #:opaque
+     (Record (: front (List %a) #:mutable)
+             (: back (List %a) #:mutable)
+             (: size int #:mutable))))
 
 (: deque (-> (Deque %a)))
 (defun (deque)

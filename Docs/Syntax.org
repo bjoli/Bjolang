@@ -1039,6 +1039,31 @@ The type is ~Bjoml.Unit~, from the concurrency runtime, rather than one of the
 core runtime's own. A bjoroutine with no useful result is a ~Promise<Unit>~, and
 a second unit type would need converting at exactly that boundary.
 
+*** ~#:opaque~ — a type whose representation stays home
+A marker on the *declaration*, written between the head and the shape, where a
+field's ~#:mutable~ and a case's ~#:literal~ sit:
+
+#+BEGIN_SRC scheme
+(export Handle)
+(type (: (Handle %a) #:opaque (Union (Live %a int) Closed)))
+#+END_SRC
+
+Inside this module nothing changes: the cases are constructors, the patterns
+match, and ~#:opaque~ is a fact about the module boundary rather than about the
+type. What crosses that boundary is the name and its arity, so an importer may
+write ~(Handle string)~ in a signature, hold one and pass it back — and may not
+name ~Live~ or ~Closed~. For a ~Record~ it is the fields that stay behind, and
+with them the constructor, since a record is built by its own name.
+
+Trait implementations still travel and still dispatch, which is what makes an
+opaque type worth having: the module can say what ~->str~ or ~=~ mean for it
+without saying what it is.
+
+~#:opaque~ on an alias is refused — an alias is expanded wherever it is named,
+so there is nothing to hold back. It is also independent of ~(export ...)~: the
+marker says how much of the type crosses, the export list says whether it
+crosses at all. See [[file:MODULES.org::*Exporting a type][MODULES.org]].
+
 *** Records and structs
 ~(: Name (Record (: field type) ...))~ defines a record whose fields are
 immutable unless one says otherwise, and ~(: Name (Struct ...))~ the same thing
@@ -1110,7 +1135,8 @@ Four rules keep this from spreading further than it should.
   state carries a ~Record~ that has it.
 - **Only the declaring module may write.** A module that means its state to be
   written from outside exports functions that write it, exactly as one with a
-  ~def/mutable~ does. Reading and constructing are unrestricted.
+  ~def/mutable~ does. Reading and constructing are unrestricted — unless the
+  type is ~#:opaque~, which is how a module extends the same rule to both.
 - **Constructing one is not a syntactic value.** A record with a mutable field
   is a cell, so a module-level ~def~ of one is not generalized — the same
   restriction ~(make-array 1)~ is under, and for the same reason.

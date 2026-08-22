@@ -44,12 +44,65 @@ let metadata
             | TypedAST.TModule(name, inner, _) -> if name = ownName then inner else []
             | other -> [ other ])
 
+    /// A declaration's key back to the name source wrote, which is the name an
+    /// `(export ...)` list holds: `registerTypeDefs` re-keyed every declaration
+    /// in this module before it reached here.
+    let bare = Naming.bareTypeName (Naming.moduleNameOfPath inputFilePath)
+
+    /// Every type this module declares, exported or not, under its source name.
+    /// The gate below needs the whole set to tell "not exported" from "not
+    /// mine": a type belonging to a dependency is reachable through that
+    /// dependency and is nobody's leak.
+    let ownTypeNames =
+        ownModuleDecls
+        |> TypedAST.collectDecls (function
+            | TypedAST.TType(defs, _)
+            | TypedAST.TTypeRec(defs, _) -> defs |> List.map (fun d -> bare d.Name)
+            | _ -> [])
+        |> Set.ofList
+
+    /// The types that cross, and in what state.
+    ///
+    /// A type is published only if it is named in an `(export ...)`, so the
+    /// export list is the whole truth about a module's surface. One marked
+    /// `#:opaque` is reduced to its head here — the single place where the
+    /// decision is made, so that the members cannot reach the metadata by some
+    /// other route.
     let typesToExport =
         ownModuleDecls
         |> TypedAST.collectDecls (function
             | TypedAST.TType(defs, _) -> defs |> List.map (fun d -> d, false)
             | TypedAST.TTypeRec(defs, _) -> defs |> List.map (fun d -> d, true)
             | _ -> [])
+        |> List.filter (fun ((td: Parser.TypeDef), _) -> List.contains (bare td.Name) exports)
+        |> List.map (fun ((td: Parser.TypeDef), isRec) ->
+            if not td.IsOpaque then
+                td, isRec
+            else
+                let hidden =
+                    match td.Kind with
+                    | Parser.Union cases ->
+                        cases
+                        |> List.map (function
+                            | Parser.SimpleCase(n, _)
+                            | Parser.DataCase(n, _, _, _) -> bare n)
+                    // A record is taken apart by its field names and built by
+                    // its own, which is already the type name and is published.
+                    | Parser.Record(fields, _) -> fields |> List.map (fun f -> f.Name)
+                    | Parser.Alias _
+                    | Parser.Opaque _ -> []
+
+                { td with Kind = Parser.Opaque hidden }, isRec)
+
+    /// The types that crossed under their own name.
+    ///
+    /// What the leak check below tests against, and it deliberately includes
+    /// the opaque ones: naming an opaque type in a signature is fine, since the
+    /// importer can resolve the name. What it cannot resolve is a type that was
+    /// not published at all.
+    let exportedTypeNames =
+        typesToExport |> List.map (fun ((td: Parser.TypeDef), _) -> bare td.Name) |> Set.ofList
+
     
     /// The implementations written *in this module*, keyed as the registry keys
     /// them.
@@ -222,6 +275,11 @@ let metadata
             | TypedAST.TImportClass(infos, _) -> infos
             | _ -> [])
         |> List.distinctBy (fun info -> info.Alias)
+        // An `import/class` alias is a type, and a type crosses only when it is
+        // named in an `(export ...)`. It was the one kind that used to travel
+        // unasked, which is how a signature could mention a `(Map %k %v)` the
+        // importer had never been offered.
+        |> List.filter (fun info -> List.contains info.Alias exports)
         |> List.map (fun info ->
             let quotedArgs = info.TypeParams |> List.map (fun p -> "'" + p.TrimStart('\''))
 
@@ -512,7 +570,17 @@ let metadata
                     $"({head} (: {headStr} ({tag}\n  "
                     + String.concat "\n  " (List.map serializeField fields)
                     + ")))"
-                
+                // The head of an `#:opaque` type, and the names of the members
+                // that stayed behind. The type arguments are still here, so the
+                // importer knows the arity and can write `(Crate int)`; nothing
+                // that would let it take one apart is.
+                //
+                // The member names are for the error message alone — see
+                // `Parser.TypeDefKind.Opaque`.
+                | Parser.Opaque(members) ->
+                    $"({head} (: {headStr} (Opaque " + String.concat " " members + ")))"
+
+
             // A trait method is published by its `def/trait`, which
             // gives it the associated types a bare signature cannot
             // express. Emitting a signature for it too would shadow
@@ -563,6 +631,69 @@ let metadata
                     Map.containsKey (fst key) exportedTraits || Set.contains key ownImplKeys)
                 |> List.map (fun ((traitName, typeKey), (targetType, assocMap)) ->
                     serializeImpl traitName typeKey targetType assocMap)
+
+            // Nothing published may name a type of this module's that stayed
+            // behind. Without this a private type escapes as an unresolvable
+            // token in somebody else's signature — the failure lands in the
+            // importing module, at a call whose author never saw the type.
+            //
+            // Checked over the serialized text rather than over each shape's
+            // own structure, because the question *is* about the text: this is
+            // everything that crosses, and a walker per shape would be a second
+            // list to keep in step with the first. A key is an unambiguous
+            // token, so a substring hit at both ends of a delimiter is a
+            // reference and nothing else.
+            //
+            // Inline template bodies are deliberately not scanned. A body that
+            // will not re-infer where it lands falls back to the landing pad,
+            // which is always correct and is emitted for every impl method
+            // anyway — so a type it cannot reach costs a call, not a program.
+            let withheld =
+                Set.difference ownTypeNames exportedTypeNames
+                |> Set.toList
+                |> List.map (fun n -> Naming.typeKey inputFilePath n, n)
+
+            if not withheld.IsEmpty then
+                let isDelimiter (c: char) =
+                    System.Char.IsWhiteSpace c || c = '(' || c = ')' || c = '"'
+
+                let mentions (key: string) (text: string) =
+                    let rec scan (from: int) =
+                        match text.IndexOf(key, from, System.StringComparison.Ordinal) with
+                        | -1 -> false
+                        | i ->
+                            let before = i = 0 || isDelimiter text[i - 1]
+                            let after =
+                                i + key.Length >= text.Length || isDelimiter text[i + key.Length]
+
+                            if before && after then true else scan (i + 1)
+
+                    scan 0
+
+                let check (what: string) (text: string) =
+                    for (key, name) in withheld do
+                        if mentions key text then
+                            failwithf
+                                "Export Error: %s names the type '%s', which this module declares and does not export. A type crosses a module boundary only when it is named in an (export ...), so an importer has no way to resolve this. Write (export %s), or (export %s) with the declaration marked #:opaque to publish the name without its representation."
+                                what
+                                name
+                                name
+                                name
+
+                for d in defs do
+                    check $"the exported binding '%s{d.Name}'" (d.TypeText + " " + d.ConstraintsText)
+
+                for (td: Parser.TypeDef), _ in typesToExport do
+                    check $"the exported type '%s{bare td.Name}'" (serializeTypeDef (td, false))
+
+                for info in externsToExport do
+                    check $"the exported foreign import '%s{info.Alias}'" (serializeExtern info)
+
+                for text in traitDecls do
+                    check "an exported trait" text
+
+                for text in implDecls do
+                    check "a published implementation" text
 
             typeDecls, externDecls, traitDecls, implDecls, defs
         else [], [], [], [], []

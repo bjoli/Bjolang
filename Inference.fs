@@ -19,6 +19,29 @@ let originalName (registry: TraitRegistry) (name: string) : string =
     | Some alias when alias.Kind <> AliasDef && alias.Kind <> AliasMacro -> alias.OriginalName
     | _ -> name
 
+/// What to add to a lookup that has just failed, when the name is a member of
+/// an imported `#:opaque` type.
+///
+/// A hidden constructor or field is registered nowhere, so every use of one
+/// fails on the ordinary path — as a constructor that does not exist, a
+/// variable that is not bound, a field no record has. That is the correct
+/// refusal and the wrong explanation, and this is the only thing that stands
+/// between the two. Empty for a name that is genuinely unknown, so a caller can
+/// append it unconditionally.
+let hiddenMemberNote (registry: TraitRegistry) (name: string) : string =
+    match Map.tryFind name registry.HiddenMembers with
+    | Some typeKey ->
+        $" '%s{name}' belongs to %s{Naming.showTypeName typeKey}, which is exported #:opaque: the type's name crosses the module boundary and its representation does not, so a value of it can be held and passed on but not taken apart here."
+    | None -> ""
+
+/// The same, for a type whose representation did not cross — reached when the
+/// *type* is known and the member name is not the thing that failed.
+let opaqueTypeNote (registry: TraitRegistry) (typeName: string) : string =
+    if Set.contains typeName registry.OpaqueTypes then
+        $" %s{Naming.showTypeName typeName} is exported #:opaque, so its fields did not cross the module boundary."
+    else
+        ""
+
 /// Walk a typed expression body for the trait constraints its enclosing function
 /// must carry. Returns a list of TraitConstraints (TraitName, TargetType as TVar).
 /// Constraints arise from trait method calls on type variables, or from calling 
@@ -222,7 +245,9 @@ let rec checkPattern (env: Env) (expectedType: HMType) (pat: Pattern) : TypedPat
         let binding = 
             match Map.tryFind name env.Bindings with
             | Some b -> b
-            | None -> failwithf $"Pattern Error: Unknown constructor '%s{name}' at %s{Lexer.formatPos r}"
+            | None ->
+                failwithf
+                    $"Pattern Error: Unknown constructor '%s{name}' at %s{Lexer.formatPos r}.%s{hiddenMemberNote env.Registry name}"
 
         let consType, _, _ = instantiate env.Registry binding.Scheme
 
@@ -874,10 +899,18 @@ let private recordTypeOfField
 
     match prune registry targetType with
     | TCon(name, _) when Map.containsKey name registry.Records -> name
+    // Answered here rather than by the fallback below, which would go looking
+    // for another owner of the field name and report that none has it. The type
+    // is known; what is missing is its fields, and they are missing on purpose.
+    | TCon(name, _) when Set.contains name registry.OpaqueTypes ->
+        failwithf
+            $"Type Error at %s{formatPos r}: '%s{field}' cannot be read here.%s{opaqueTypeNote registry name}"
     | _ ->
         match Map.tryFind field registry.RecordFields |> Option.defaultValue [] with
         | [ only ] -> only
-        | [] -> failwithf $"Type Error at %s{formatPos r}: no record or struct type has a field named '%s{field}'."
+        | [] ->
+            failwithf
+                $"Type Error at %s{formatPos r}: no record or struct type has a field named '%s{field}'.%s{hiddenMemberNote registry field}"
         | many ->
             let owners = String.concat ", " many
 
@@ -3397,6 +3430,10 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
                     | DataCase(n, types, marked, r) ->
                         DataCase(key n, types |> List.map (qualifyFTypeNames finalRegistry), marked, r))
                 |> Union
+            // Left as written. A hidden member is a name in a diagnostic and
+            // nothing else, so keying it would only make the message harder to
+            // read than the source the reader is looking at.
+            | Opaque members -> Opaque members
 
         let td = { td with Name = name; Kind = keyedKind }
         keyedDefs.Add td
@@ -3451,6 +3488,23 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
                 caseTable <- caseTable @ [ (caseName, resolvedArgs, isLiteral) ]
 
             finalRegistry <- { finalRegistry with Unions = Map.add td.Name (tArgs, caseTable) finalRegistry.Unions }
+
+        // A head and nothing else, which is what an `#:opaque` export arrives
+        // as. `LocalTypes` and the name's spelling were registered by the
+        // pre-pass above, so the type is nameable, unifiable and a legal impl
+        // target; deliberately absent are the `Records`, `Unions` and
+        // constructor bindings that would let anything take it apart.
+        //
+        // Note what this costs the importer nothing to know: the member names
+        // go into `HiddenMembers` so that a use of one reports the type it
+        // belongs to rather than "no such constructor".
+        | Opaque members ->
+            finalRegistry <-
+                { finalRegistry with
+                    OpaqueTypes = Set.add td.Name finalRegistry.OpaqueTypes
+                    HiddenMembers =
+                        members
+                        |> List.fold (fun acc m -> Map.add m td.Name acc) finalRegistry.HiddenMembers }
 
 
     { env with Registry = finalRegistry; Bindings = finalBindings }, List.ofSeq keyedDefs
@@ -4920,6 +4974,22 @@ and private checkDeclGroup
             | _ -> [])
         |> Set.ofList
 
+    /// The type names this group declares, and the `import/class` aliases it
+    /// binds.
+    ///
+    /// A type has to be named in an `(export ...)` to cross at all, and it has
+    /// no signature to be missing: what it publishes is its declaration. So the
+    /// rule below has to know a type name when it sees one, or exporting one
+    /// would fail asking for a signature that cannot be written.
+    let declaredTypeNames =
+        decls
+        |> List.collect (function
+            | DType(typeDefs, _)
+            | DTypeRec(typeDefs, _) -> typeDefs |> List.map (fun td -> td.Name)
+            | DImportClass(specs, _) -> specs |> List.map (fun s -> s.Alias)
+            | _ -> [])
+        |> Set.ofList
+
     decls
     |> List.iter (function
         | DExport(names, exprRange) ->
@@ -4930,6 +5000,7 @@ and private checkDeclGroup
                         || Set.contains name traitMethodNames
                         || Set.contains name externAliases
                         || Set.contains name aliasedNames
+                        || Set.contains name declaredTypeNames
                         || Map.containsKey name env.Registry.ImportAliases
                     )
                 then

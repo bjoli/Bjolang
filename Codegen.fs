@@ -3614,6 +3614,11 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                 indent ctx
                 appendLine ctx "}"
             | Alias _ -> ()
+            // An opaque declaration is never one of this module's own: it is
+            // how an `#:opaque` type arrives from a dependency, whose assembly
+            // already holds the emitted class. Emitting one here would be a
+            // second type of the same name.
+            | Opaque _ -> ()
 
     // An inline trait emits nothing at all. There is no valid C# interface for
     // `Monad<M>`: the parameter would have to be a type constructor.

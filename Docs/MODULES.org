@@ -14,6 +14,10 @@ things.
 | ~(include "helper.bjo")~ | no — splices into /this/ module | everything in the file       | n/a               |
 | transitive ~BjolangDeps~ | no                    | nothing                      | yes               |
 
+"Its exports" means exactly that, and includes its *types*: a type that is not
+named in an ~(export ...)~ does not cross an import (see [[*Exporting a
+type][Exporting a type]]).
+
 An import may be wrapped in modifiers that decide what its names are called
 here and which of them arrive; see [[*Import modifiers][Import modifiers]].
 
@@ -69,18 +73,25 @@ twice][Importing one module twice]]).
 
 *** What a modifier may and may not touch
 
-*Types, constructors and traits always arrive.* An imported signature is source
+*Whatever types a module exports always arrive.* An imported signature is source
 text that has to resolve the types it mentions, so there is no view of a module
 in which its own signatures do not typecheck. ~only~ and ~except~ therefore
 filter defs and macros only, and naming a type in one is an error rather than a
-silent no-op.
+silent no-op. What decides which types there are to arrive is the exporting
+module's ~(export ...)~ (see [[*Exporting a type][Exporting a type]]) — a
+modifier narrows the *spelling* of a surface, never the surface.
+
+An ~#:opaque~ type arrives as its name alone, so it is a type here and has no
+constructor to be filtered, renamed or prefixed.
 
 *Impls are never filtered, renamed or prefixed.* An implementation has no name
 to rename. It travels with its module unconditionally, and a trait method
 called by its bare — or prefixed — name still finds it.
 
 *A constructor follows its type.* It is renamed by the ~-types~ variants, never
-by the ~-defs~ ones, and ~only~ and ~except~ cannot name it.
+by the ~-defs~ ones, and ~only~ and ~except~ cannot name it. It is also
+published with its type and withheld with it: exporting a union exports its
+cases, and marking one ~#:opaque~ keeps them all back.
 
 *Renaming a type is refused*, and points at ~prefix-types~ for a module's worth
 of them or a local ~(type (: NewName Old))~ for one. *Renaming an individual
@@ -277,11 +288,14 @@ one reference — not a conflict.
 ** ~export~
 
 #+BEGIN_SRC scheme
-(export print println)
+(export print println Crate)
 #+END_SRC
 
-Names a module's public surface. Every exported name *must have an explicit
-signature in the same module*:
+Names a module's public surface — *the whole of it*. A binding, a macro, a
+trait, an ~import/extern~ alias, an ~import/class~ alias and a type all cross
+only by being named here.
+
+Every exported *binding* must have an explicit signature in the same module:
 
 #+BEGIN_SRC scheme
 (: println (-> %a void))
@@ -298,6 +312,91 @@ import produced, and anything else an import brought in. Those are the facade
 cases, and writing a second signature for one here would be a copy that could
 disagree with the first — which is the same reason ~re-export~ has never
 required one.
+
+A *type* is exempt for the opposite reason: it has no signature, and what it
+publishes is its declaration. ~(export Crate)~ beside ~(type (: Crate ...))~ is
+the whole of it.
+
+*** Exporting a type
+
+A type is visible to an importer only if it is named in an ~(export ...)~. There
+are three levels, and the declaration and the export list decide between them
+together:
+
+| In ~(export ...)~ | ~#:opaque~ | What an importer gets                     |
+|-------------------+------------+-------------------------------------------|
+| no                | —          | nothing; the name does not resolve        |
+| yes               | yes        | the name and its arity                    |
+| yes               | no         | the name, its cases or fields, everything |
+
+*Nothing a module publishes may name a type it withheld.* An exported
+signature, a ~(where ...)~, a trait method, an impl target, the field types of
+an exported record and the payloads of an exported union are all checked, and a
+withheld type in any of them is refused where the library is built:
+
+#+BEGIN_SRC text
+Export Error: the exported binding 'make-crate' names the type 'Crate', which
+this module declares and does not export. A type crosses a module boundary only
+when it is named in an (export ...), so an importer has no way to resolve this.
+Write (export Crate), or (export Crate) with the declaration marked #:opaque to
+publish the name without its representation.
+#+END_SRC
+
+Refused *here* rather than where the type is used, which is the point of
+checking it: the alternative is an unresolvable name in somebody else's
+signature, failing in the importing module at a call whose author never saw the
+type.
+
+Two things are not types in this sense and need no export. A ~(type (: Name
+Other))~ *alias* and an ~import/class~ alias are both expanded where they are
+named, so a signature mentioning one carries what it expands to and resolves
+anywhere — exporting one gives an importer the *spelling*, which is often worth
+having and is never required for correctness.
+
+*** ~#:opaque~ — a name without its representation
+
+#+BEGIN_SRC scheme
+(export Handle)
+(type (: (Handle %a) #:opaque (Union (Live %a int) Closed)))
+#+END_SRC
+
+The head crosses and the body does not. An importer may write ~(Handle string)~
+in a signature, hold one in a ~List~, pass it back — and may not name ~Live~ or
+~Closed~, in an expression or a pattern. For a ~Record~ it is the fields that
+stay behind, and the constructor with them, since a record is built by its own
+name.
+
+*Implementations still travel and still dispatch.* This is what makes an opaque
+type usable rather than merely storable: an impl is keyed on the type, a key
+resolves to itself wherever it is read, so ~(->str h)~ finds the implementation
+the declaring module compiled with none of the representation crossing.
+
+*The pattern matcher needs no rule for this and has none.* A union case is
+registered as an ordinary constructor binding by walking the cases of a
+declaration; an opaque type publishes no cases, so there is no binding, and a
+pattern naming one is refused exactly as a typo is. The same holds for a
+constructor call, a ~record-ref~ and a ~record-set~. All opacity adds is the
+explanation:
+
+#+BEGIN_SRC text
+Pattern Error: Unknown constructor 'Live' at m.bjo:19. 'Live' belongs to
+vault/Handle, which is exported #:opaque: the type's name crosses the module
+boundary and its representation does not, so a value of it can be held and
+passed on but not taken apart here.
+#+END_SRC
+
+The member names travel in the metadata for that message and for nothing else —
+nothing is registered under them. No secret is spent on it, since the emitted
+C# members are public either way.
+
+*~#:opaque~ on an alias is refused.* An alias is expanded wherever it is named,
+so there is no representation to hold back, and an opaque one would be a
+different type inside the module from the one outside. A type meant to be its
+own is a ~Record~ or a ~Union~.
+
+Inside the declaring module — and inside anything it ~include~s, which is the
+same module — an opaque type is entirely ordinary. Opacity is a property of the
+boundary, not of the declaration.
 
 ** ~re-export~
 
@@ -542,7 +641,10 @@ version.
 
 The version is bumped when a field changes *meaning*; adding one does not need
 it. Version 2 is where type names became keys — an older assembly's types would
-be read as somebody else's.
+be read as somebody else's. Version 4 is where the type declarations became the
+*exported* ones rather than every one declared: an older assembly offers its
+private types as though they were public, and knows nothing of the ~(Opaque
+...)~ shape an ~#:opaque~ export is published as.
 
 Two shapes cross the boundary, and the difference is the whole of how a key
 travels:
@@ -556,9 +658,14 @@ travels:
   importing][Linking is not importing]]): nothing has to be registered for it
   to mean what it meant.
 
-So a module publishes only the types *it* declares. A dependency's arrive
-through the dependency, or not at all — and a signature that mentions one still
-resolves, because the name in it says where the type lives.
+So a module publishes only the types it declares *and exports*. A dependency's
+arrive through the dependency, or not at all — and a signature that mentions one
+still resolves, because the name in it says where the type lives.
+
+An ~#:opaque~ export is the same mechanism used deliberately. Its declaration is
+published as a head with no body, so the name resolves and nothing is registered
+that could take a value apart — which is what a link-only dependency's type has
+always been, except that here the module meant it.
 
 Rebuilding after a version bump is ~./build_std.sh~ for the standard library,
 and a rebuild of anything else compiled against it. A library that still has

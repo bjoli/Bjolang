@@ -870,7 +870,27 @@ type TraitRegistry =
       /// third level. `(ignore x)` on one of these is an error rather than a
       /// permission, because there is no defensible automatic behaviour for a
       /// discarded error and pretending otherwise is the bug.
-      NoDiscard: Set<string> }
+      NoDiscard: Set<string>
+
+      /// Type keys whose name arrived without their representation — an
+      /// `#:opaque` export, read back from a dependency's metadata.
+      ///
+      /// Only ever holds *imported* types. Inside the module that declares one
+      /// the body is fully visible, so nothing is entered here for it.
+      ///
+      /// Nothing is enforced against this set: an opaque type registers no
+      /// constructor, no `Records` entry and no `Unions` entry, so every use of
+      /// its representation already fails on the ordinary path. It is read to
+      /// say *why* the lookup failed.
+      OpaqueTypes: Set<string>
+
+      /// Constructor or field name -> the opaque type key it belongs to.
+      ///
+      /// Diagnostics only, and it has to be a map from the member rather than
+      /// from the type because that is the direction the failing lookups run:
+      /// a pattern has a constructor name and no type, and `record-ref` has a
+      /// field name and often no resolved target yet.
+      HiddenMembers: Map<string, string> }
 
     member this.IsTraitDefinedLocally(name) = Set.contains name this.LocalTraits
     member this.IsTypeDefinedLocally(name) = Set.contains name this.LocalTypes
