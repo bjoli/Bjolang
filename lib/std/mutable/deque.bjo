@@ -1,0 +1,250 @@
+;; A double-ended queue that is written in place.
+;;
+;; Two lists: `front` holds the front of the deque in order, `back` holds the
+;; rear reversed, so the deque's contents are `front ++ reverse back`. Pushing
+;; at either end is a cons. Popping takes the head of the list on that end, and
+;; when that list is empty the other one is split to refill it.
+;;
+;; **This is the mutable one.** `(deque-push-back! d x)` writes `d`; it answers
+;; nothing, and everyone holding `d` sees the change. The persistent shape of
+;; the same structure is what `List` and `Vec` already are, and a program that
+;; wants a queue it can keep old versions of should use one of those with an
+;; explicit fold. What this buys is the thing they cannot: a worklist that a
+;; recursive walk pushes onto and a loop pops from, without either of them
+;; having to thread a new deque back out.
+;;
+;; **Split in half, not moved wholesale.** Refilling an empty side by moving
+;; *all* of the other one is the textbook queue trick, and it is quadratic on a
+;; deque: pop one end, pop the other, and every pop moves the whole structure
+;; back again. Moving half leaves both ends stocked, so the next n operations at
+;; either end are free. Every operation is O(1) amortized.
+;;
+;; **Not a key.** `Deque` has mutable fields, so `eq-hash` refuses and a deque
+;; cannot go in a `Map` or a `Set`. That is deliberate — see the `Eq`
+;; implementation at the bottom for why it is also what keeps `=` honest.
+(import (std prelude))
+
+(export
+  deque deque-length deque-empty? deque-clear!
+  deque-push-front! deque-push-back!
+  deque-pop-front! deque-pop-back!
+  deque-peek-front! deque-peek-back!
+  list->deque deque->list deque-fold deque-for-each
+  deque->str)
+
+;; All three fields are mutable, and a mutable field may be written only by the
+;; module that declared it — so `front`, `back` and `size` are this file's
+;; business and the operations below are the whole interface to them. A caller
+;; can read them, and gets nothing useful: which half an element is in is a fact
+;; about the representation, not about the deque.
+;;
+;; `size` is carried rather than counted so that `deque-length` is O(1). It is
+;; the one field that is not derivable from the others in constant time.
+(type
+  (: (Deque %a) (Record (: front (List %a) #:mutable)
+                        (: back (List %a) #:mutable)
+                        (: size int #:mutable))))
+
+(: deque (-> (Deque %a)))
+(defun (deque)
+  (Deque (front Nil) (back Nil) (size 0)))
+
+(: deque-length (-> (Deque %a) int))
+(defun (deque-length d) (record-ref d size))
+
+(: deque-empty? (-> (Deque %a) bool))
+(defun (deque-empty? d) (= (record-ref d size) 0))
+
+(: deque-clear! (-> (Deque %a) void))
+(defun (deque-clear! d)
+  (record-set! d (front Nil) (back Nil) (size 0)))
+
+;; ---------------------------------------------------------------------------
+;; Splitting
+;; ---------------------------------------------------------------------------
+;;
+;; The prelude has no `list-take` or `list-drop`, deliberately — they invite the
+;; O(n) indexing a cons list cannot support — so the two walks a split needs are
+;; here. Both run once per rebalance, which is once per n operations.
+
+(: take-n (-> int (List %a) (List %a)))
+(defun (take-n k xs)
+  (if (= k 0)
+      Nil
+      (match xs
+        (Nil Nil)
+        ((Cons x rest) (Cons x (take-n (- k 1) rest))))))
+
+(: drop-n (-> int (List %a) (List %a)))
+(defun (drop-n k xs)
+  (if (= k 0)
+      xs
+      (match xs
+        (Nil Nil)
+        ((Cons _ rest) (drop-n (- k 1) rest)))))
+
+;; `front` is empty and everything is on `back`, reversed. Keep the rear half
+;; where it is and hand the front half over, in order.
+;;
+;; `k` elements stay on `back`, and since `back` is the deque reversed its first
+;; `k` are the deque's *last* `k` — so the ones to move are the rest, reversed
+;; back into order. With `k = n / 2` the front is left non-empty for any n ≥ 1:
+;; a single element has `k = 0` and moves across whole.
+;;
+;; Both fields are written by one `record-set!`, so the deque is never briefly
+;; holding an element twice.
+(: refill-front! (-> (Deque %a) void))
+(defun (refill-front! d)
+  (when (and (list-empty? (record-ref d front))
+             (not (list-empty? (record-ref d back))))
+    (let ((b (record-ref d back))
+          (k (/ (record-ref d size) 2)))
+      (record-set! d
+                   (front (list-reverse (drop-n k b)))
+                   (back (take-n k b))))))
+
+;; The mirror image: everything is on `front`, in order, and the rear half moves
+;; across reversed.
+(: refill-back! (-> (Deque %a) void))
+(defun (refill-back! d)
+  (when (and (list-empty? (record-ref d back))
+             (not (list-empty? (record-ref d front))))
+    (let ((f (record-ref d front))
+          (k (/ (record-ref d size) 2)))
+      (record-set! d
+                   (front (take-n k f))
+                   (back (list-reverse (drop-n k f)))))))
+
+;; ---------------------------------------------------------------------------
+;; The ends
+;; ---------------------------------------------------------------------------
+
+(: deque-push-front! (-> (Deque %a) %a void))
+(defun (deque-push-front! d x)
+  (record-set! d
+               (front (Cons x (record-ref d front)))
+               (size (+ (record-ref d size) 1))))
+
+(: deque-push-back! (-> (Deque %a) %a void))
+(defun (deque-push-back! d x)
+  (record-set! d
+               (back (Cons x (record-ref d back)))
+               (size (+ (record-ref d size) 1))))
+
+(: deque-pop-front! (-> (Deque %a) (Option %a)))
+(defun (deque-pop-front! d)
+  (refill-front! d)
+  (match (record-ref d front)
+    (Nil None)
+    ((Cons x rest)
+     (record-set! d
+                  (front rest)
+                  (size (- (record-ref d size) 1)))
+     (Some x))))
+
+(: deque-pop-back! (-> (Deque %a) (Option %a)))
+(defun (deque-pop-back! d)
+  (refill-back! d)
+  (match (record-ref d back)
+    (Nil None)
+    ((Cons x rest)
+     (record-set! d
+                  (back rest)
+                  (size (- (record-ref d size) 1)))
+     (Some x))))
+
+;; A look that does not consume — but it still rebalances, hence the `!`.
+;;
+;; Refilling changes how the deque is *stored* and not what it holds, so this is
+;; a read as far as the caller is concerned. Reading the front of an empty
+;; `front` without refilling would mean walking to the end of `back`, which is
+;; the O(n) this structure exists to avoid.
+(: deque-peek-front! (-> (Deque %a) (Option %a)))
+(defun (deque-peek-front! d)
+  (refill-front! d)
+  (match (record-ref d front)
+    (Nil None)
+    ((Cons x _) (Some x))))
+
+(: deque-peek-back! (-> (Deque %a) (Option %a)))
+(defun (deque-peek-back! d)
+  (refill-back! d)
+  (match (record-ref d back)
+    (Nil None)
+    ((Cons x _) (Some x))))
+
+;; ---------------------------------------------------------------------------
+;; Conversions and walks
+;; ---------------------------------------------------------------------------
+;;
+;; None of these rebalance: they read both halves as they stand, so a walk is
+;; not a write and a deque may be folded from anywhere.
+
+(: append-onto (-> (List %a) (List %a) (List %a)))
+(defun (append-onto xs ys)
+  (match xs
+    (Nil ys)
+    ((Cons x rest) (Cons x (append-onto rest ys)))))
+
+(: deque->list (-> (Deque %a) (List %a)))
+(defun (deque->list d)
+  (append-onto (record-ref d front) (list-reverse (record-ref d back))))
+
+(: list->deque (-> (List %a) (Deque %a)))
+(defun (list->deque xs)
+  (Deque (front xs) (back Nil) (size (list-length xs))))
+
+;; Front to back. The rear half is reversed once rather than per element.
+(: deque-fold (-> (-> %b %a %b) %b (Deque %a) %b))
+(defun (deque-fold f init d)
+  (list-foldl f (list-foldl f init (record-ref d front))
+              (list-reverse (record-ref d back))))
+
+(: deque-for-each (-> (-> %a void) (Deque %a) void))
+(defun (deque-for-each f d)
+  (deque-fold (fun (acc x) (ignore (f x)) acc) unit d))
+
+;; ---------------------------------------------------------------------------
+;; Equality, and the hash there is not
+;; ---------------------------------------------------------------------------
+;;
+;; Two deques are equal when they hold the same elements in the same order.
+;; *Where* those elements sit is a fact about the representation: pushing three
+;; items on the back and popping one leaves a deque that is `=` to one built by
+;; three pushes on the front, and it would be absurd for it not to be.
+;;
+;; This implementation is not decoration, then — without it a deque would fall
+;; to the blanket, which is .NET's equality, which for this record is a
+;; field-wise comparison of `front`, `back` and `size`. Two deques holding the
+;; same elements but split differently would have compared unequal, silently.
+;;
+;; `eq-hash` refuses. There is no honest number for a value whose fields move,
+;; and the refusal is what keeps the paragraph above true: a `Map` keyed on a
+;; deque would ask .NET rather than asking this, and .NET's answer is the
+;; field-wise one. Materialization cannot fix that for a generic type — there is
+;; nothing inside `Deque<T>` that could build the `Eq<T>` dictionary the
+;; `(where ...)` asks for — so the way to keep the two from disagreeing is to
+;; make sure nothing ever asks. Throwing does that, at the one call that would.
+(def/impl (Eq (Deque %a))
+  (where (Eq %a))
+  (defun (= a b)
+    (and (= (deque-length a) (deque-length b))
+         (= (deque->list a) (deque->list b))))
+  (defun (eq-hash d) (unhashable "Deque")))
+
+;; `#<a b c>`, front first, each element by its own `->str`.
+(: deque->str (-> (Deque %a) string) (where (->str %a)))
+(defun (deque->str d)
+  (let ((sb (stringbuilder-empty)))
+    (stringbuilder-add-string! sb "#<")
+    (loop (:with first? true false)
+          (:for elem (deque->list d))
+          (:do (unless first? (stringbuilder-add-string! sb " "))
+               (stringbuilder-add-string! sb (->str elem))))
+    (stringbuilder-add-string! sb ">")
+    (stringbuilder->string sb)))
+
+(def/impl (->str (Deque %a))
+  (where (->str %a))
+  (defun (->str d)
+    (deque->str d)))
