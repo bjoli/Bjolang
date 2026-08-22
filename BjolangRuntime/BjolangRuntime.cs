@@ -127,6 +127,20 @@ public static partial class BjolangRuntime {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int hashsubcombine(int a, int b) => HashCode.Combine(a, b);
 
+    // The answer an `eq-hash` gives when there is no honest one: the type has a
+    // mutable field, so hashing it would break the law that a key's hash does
+    // not change, and hashing only the immutable fields would break the law
+    // that equal values hash alike. A mutable record is simply not a key.
+    //
+    // Typed `int` rather than generic because `eq-hash` returns `int` and a
+    // generic return has no argument to infer itself from. Loud rather than
+    // silent for the reason the whole design turns on: the alternative is a
+    // `Map` that quietly loses the entry the next time the field is written.
+    public static int unhashable(string typeName) =>
+        throw new InvalidOperationException(
+            $"{typeName} has a mutable field, so it has no stable hash: it cannot be a Map or Set key. "
+            + "Compare it with = instead, or write an Eq implementation whose eq-hash reads only the immutable fields.");
+
     // `eq?` is identity. On a value type there is no identity to ask after —
     // boxing would make every answer false — so it falls back to structural
     // equality there; the JIT specializes the test away per T.

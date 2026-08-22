@@ -1776,6 +1776,18 @@
        ((Cons _ vars) vars)))
     (_ Nil)))
 
+;; The type's own name: the head itself for `Point`, its first item for
+;; `(Box %a)`. Wanted only for a diagnostic — the name a type with no lawful
+;; hash reports itself under — so the bare spelling is the right one.
+(: derive-head-name (-> Syntax Syntax))
+(defun (derive-head-name head)
+  (match head
+    ((SList items)
+     (match items
+       ((Cons name _) name)
+       (Nil head)))
+    (_ head)))
+
 ;; A fold of `hash-combine` over the parts of a value, in order. Combination
 ;; does not commute, so two fields cannot swap places unnoticed.
 (: derive-hash-fold (-> (List Syntax) Syntax Syntax))
@@ -1786,22 +1798,51 @@
 
 ;; --- Records and structs ---
 
+;; A field is `(: name type)` or `(: name type #:mutable)`, so the marker is
+;; matched with an ellipsis rather than by a second arm: `#:mutable` is the only
+;; one the parser accepts, and it has already refused anything else by the time
+;; a declaration reaches here.
 (: derive-field-names (-> (List Syntax) (List Syntax)))
 (defun (derive-field-names fields)
   (list-map (fun (f)
               (syntax-match f
-                ((_ name _) name)
-                (bad (syntax-error bad "a record field is written (: name type)."))))
+                ((_ name _ marker ...) name)
+                (bad (syntax-error bad "a record field is written (: name type), optionally followed by #:mutable."))))
             fields))
 
-(: derive-eq-record (-> (List Syntax) (List Syntax)))
-(defun (derive-eq-record names)
+;; Whether any field carries a marker — which, `#:mutable` being the only one
+;; there is, means the record has a mutable field.
+(: derive-any-mutable? (-> (List Syntax) bool))
+(defun (derive-any-mutable? fields)
+  (match fields
+    (Nil #f)
+    ((Cons f rest)
+     (if (syntax-match f
+           ((_ _ _ marker markers ...) #t)
+           (_ #f))
+         #t
+         (derive-any-mutable? rest)))))
+
+;; `=` is field-wise over every field, mutable ones included: comparing a record
+;; means comparing what it holds now, and that a later write can change the
+;; answer is what mutation *is*.
+;;
+;; `eq-hash` is the other half of the trait and has no honest answer. Hashing
+;; the mutable field breaks the law that a key's hash does not change; hashing
+;; only the immutable ones breaks the law that equal values hash alike. So a
+;; derived implementation refuses, naming the type. A hand-written one is still
+;; free to hash the stable fields and mean it — this is the default, not a
+;; property of the type.
+(: derive-eq-record (-> Syntax (List Syntax) bool (List Syntax)))
+(defun (derive-eq-record head names mutable?)
   (def equals
     #'(defun (= a b)
         (and ,@(list-map (fun (n) #'(= (record-ref a ,n) (record-ref b ,n))) names))))
   (def hashed
-    #'(defun (eq-hash v)
-        ,(derive-hash-fold (list-map (fun (n) #'(eq-hash (record-ref v ,n))) names) #'17)))
+    (if mutable?
+        #'(defun (eq-hash v) (unhashable ,(SStr (syntax->string (derive-head-name head)))))
+        #'(defun (eq-hash v)
+            ,(derive-hash-fold (list-map (fun (n) #'(eq-hash (record-ref v ,n))) names) #'17))))
   (Cons equals (Cons hashed Nil)))
 
 ;; --- Unions ---
@@ -1884,20 +1925,22 @@
 
 ;; --- Putting one implementation together ---
 
-(: derive-eq-methods (-> Syntax (List Syntax)))
-(defun (derive-eq-methods shape)
+;; A `Struct` never reaches `derive-eq-record` with a mutable field: the parser
+;; refuses the combination outright, so the flag it is handed is always false.
+(: derive-eq-methods (-> Syntax Syntax (List Syntax)))
+(defun (derive-eq-methods head shape)
   (syntax-match shape
-    (('Record fields ...) (derive-eq-record (derive-field-names fields)))
-    (('Struct fields ...) (derive-eq-record (derive-field-names fields)))
+    (('Record fields ...) (derive-eq-record head (derive-field-names fields) (derive-any-mutable? fields)))
+    (('Struct fields ...) (derive-eq-record head (derive-field-names fields) (derive-any-mutable? fields)))
     (('Union cases ...) (derive-eq-union cases))
     (('Enum cases ...) (derive-eq-union cases))
     (('Sum cases ...) (derive-eq-union cases))
     (bad (derive-fail bad "a type that derives has to be a Record, a Struct or a Union. An alias is a second spelling of a type rather than a type of its own — derive for the type it names."))))
 
-(: derive-methods (-> Syntax Syntax (List Syntax)))
-(defun (derive-methods trait shape)
+(: derive-methods (-> Syntax Syntax Syntax (List Syntax)))
+(defun (derive-methods trait head shape)
   (if (syntax-ident=? trait (derive-sym "Eq"))
-      (derive-eq-methods shape)
+      (derive-eq-methods head shape)
       (derive-fail trait "the only trait that can be derived is Eq.")))
 
 ;; A type with parameters derives a *conditional* implementation: every
@@ -1909,7 +1952,7 @@
     ((_ head shape)
      #'(def/impl (,trait ,head)
          (where ,@(list-map (fun (v) #'(,trait ,v)) (derive-head-vars head)))
-         ,@(derive-methods trait shape)))
+         ,@(derive-methods trait head shape)))
     (bad (syntax-error bad "a type declaration is written (: Name (Record ...))."))))
 
 (: derive-impls (-> (List Syntax) (List Syntax) (List Syntax)))

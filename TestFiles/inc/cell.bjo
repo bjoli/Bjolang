@@ -1,0 +1,18 @@
+;; A module owning a record with a mutable field, for the tests about who may
+;; write one. Only this module may: `errors/mutable_foreign_write.bjo` is the
+;; other side of it.
+(export cell cell-ref cell-set!)
+
+(type
+  (: (Cell %a) (Record (: held %a #:mutable))))
+
+(: cell (-> %a (Cell %a)))
+(defun (cell initial) (Cell (held initial)))
+
+(: cell-ref (-> (Cell %a) %a))
+(defun (cell-ref c) (record-ref c held))
+
+;; The write, exported. This is the only way the state is reachable from
+;; outside, which is the whole of the module rule.
+(: cell-set! (-> (Cell %a) %a void))
+(defun (cell-set! c v) (record-set! c (held v)))

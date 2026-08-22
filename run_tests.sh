@@ -53,9 +53,12 @@ MAX_JOBS=$(nproc 2>/dev/null || echo 8)
 # deliberate about it — once, here, before anything else runs.
 STD_DIR="lib/std"
 
+# `*/*.bjo` as well as `*.bjo`: `std/mutable` holds modules too, and a glob that
+# missed them left the standard library looking current after one of them had
+# changed.
 std_is_stale() {
     local src dll
-    for src in "$STD_DIR"/*.bjo; do
+    for src in "$STD_DIR"/*.bjo "$STD_DIR"/*/*.bjo; do
         [ -f "$src" ] || continue
         dll="${src%.bjo}.dll"
         [ -f "$dll" ] || return 0

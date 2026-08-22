@@ -1040,8 +1040,9 @@ core runtime's own. A bjoroutine with no useful result is a ~Promise<Unit>~, and
 a second unit type would need converting at exactly that boundary.
 
 *** Records and structs
-~(: Name (Record (: field type) ...))~ defines an immutable record, and
-~(: Name (Struct ...))~ the same thing as a *value* type — a C# ~record struct~
+~(: Name (Record (: field type) ...))~ defines a record whose fields are
+immutable unless one says otherwise, and ~(: Name (Struct ...))~ the same thing
+as a *value* type — a C# ~record struct~
 rather than a ~record~. Both compare by value, so the choice is about
 representation: a struct lives in its enclosing local or field rather than
 behind a reference, which is what a small, hot, non-recursive type wants, while
@@ -1072,6 +1073,80 @@ name up, and that fallback is an error if more than one type declares the name.
 
 The ~struct*~ *expression* forms — ~(struct-ref ...)~, ~(struct-set ...)~ —
 remain plain synonyms of the ~record*~ forms and work on either kind.
+
+**** Mutable fields
+A field marked ~#:mutable~ may be written in place, by ~record-set!~:
+
+#+BEGIN_SRC scheme
+(type (: Counter (Record (: label string)
+                         (: count int #:mutable))))
+
+(def c (Counter (label "clicks") (count 0)))
+(record-set! c (count 1))                       ;; void
+(record-set! c (label "taps") (count 2))        ;; refused: label is not mutable
+#+END_SRC
+
+The marker changes nothing about construction — every field is still given, and
+still by name — only that this one may be written again. ~record-set!~ takes a
+*name*, not an expression, as ~record-set~ does; it writes one or more fields;
+and it yields void, as every other write in the language does.
+
+**All values are evaluated, left to right, before any of them is written.** So a
+value expression that reads the record sees the state before the form, whichever
+field it reads, rather than a state half way through it. This is why several
+fields in one ~record-set!~ is worth having over several ~record-set!~s.
+
+~record-set~ is unaffected and still copies. The copy takes the mutable fields
+as they stand, and writing one afterwards does not reach the other.
+
+Four rules keep this from spreading further than it should.
+
+- **A ~Struct~ may not have a mutable field.** A struct is a value type, copied
+  on assignment and on every parameter pass, and one held inside a ~List~ or a
+  ~Map~ cannot be addressed at all: the write would land on the copy and be
+  lost. There is no ~struct-set!~.
+- **A union case may not have one either.** A case payload is positional and
+  unnamed, so there is nothing for a write to name. A case that needs mutable
+  state carries a ~Record~ that has it.
+- **Only the declaring module may write.** A module that means its state to be
+  written from outside exports functions that write it, exactly as one with a
+  ~def/mutable~ does. Reading and constructing are unrestricted.
+- **Constructing one is not a syntactic value.** A record with a mutable field
+  is a cell, so a module-level ~def~ of one is not generalized — the same
+  restriction ~(make-array 1)~ is under, and for the same reason.
+
+***** Equality, and the hash there is not
+~=~ on a record with a mutable field is structural over what the fields hold
+*now*. Two records equal at one moment may be unequal at the next; that is what
+mutation means and it is not a defect.
+
+~eq-hash~ **throws**, and so does anything that asks .NET for the hash — putting
+one in a ~Map~ or a ~Set~ raises rather than returning. There is no honest
+number: hashing the mutable field breaks the rule that a key's hash does not
+change, and hashing only the immutable ones breaks the rule that equal values
+hash alike. Failing loudly is the alternative to a ~Map~ that quietly loses the
+entry the next time the field is written.
+
+That is what ~derive~ writes, not a property of the type. An implementation
+written by hand may hash only the fields that do not move and mean it:
+
+#+BEGIN_SRC scheme
+(def/impl (Eq Counter)
+  (defun (= a b) (= (record-ref a label) (record-ref b label)))
+  (defun (eq-hash c) (eq-hash (record-ref c label))))
+#+END_SRC
+
+One restriction has no way around it: a *generic* record with a mutable field
+can never have a working hash, even a hand-written one. The members that would
+carry it are emitted into the type, and for a generic type there is nothing
+inside it that could build the dictionary a conditional implementation needs.
+
+***** Concurrency
+Nothing is done for you. Fibers run in parallel on the .NET thread pool, no
+synchronization is emitted for a mutable field any more than for a
+~def/mutable~, and a mutable record shared between fibers races. Everything else
+in the language is persistent and may be shared freely; this is the one thing
+that may not.
 
 A trait written this way compiles to a C# interface, with each implementation a
 sealed class holding a singleton ~Instance~. A call whose receiver type is known

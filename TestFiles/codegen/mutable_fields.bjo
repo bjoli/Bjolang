@@ -1,0 +1,75 @@
+;; How a record with a mutable field is emitted.
+;;
+;; It stays a `record`: `with`, `ToString` and a synthesized structural `Equals`
+;; are all wanted, and all three are what a record has that a class does not.
+;; What it cannot have is a *positional* parameter list, because a primary
+;; constructor parameter of a record is init-only. So the fields move into the
+;; body and the constructor is written out.
+
+;; The whole field list moves, not only the mutable half. That keeps
+;; construction positional and in declaration order — which is what
+;; `TRecordMake` already emits — instead of splitting the operands into a
+;; constructor call and an object initializer and reordering them.
+;;
+;; EXPECT-CS: public record mutable_fields__Counter \{
+;; EXPECT-CS: public string label \{ get; init; \}
+;; EXPECT-CS: public int count;
+;; EXPECT-CS: public mutable_fields__Counter\(string label, int count\) \{ this\.label = label; this\.count = count; \}
+(type
+  (: Counter (Record (: label string)
+                     (: count int #:mutable))))
+
+;; The hash a mutable record does not have.
+;;
+;; `Counter` has no `Eq` implementation, so materialization writes nothing and
+;; C# would otherwise synthesize a hash over every instance field — the mutable
+;; one included — which a `Map` would then use without a word, losing the entry
+;; the next time the field is written. `Equals` is deliberately left alone: the
+;; synthesized one compares every field, which is what `=` on a mutable record
+;; means, so the two already agree.
+;;
+;; EXPECT-CS: public override int GetHashCode\(\) => throw new System\.InvalidOperationException\("mutable_fields/Counter has a mutable field
+
+;; A record without one is untouched, and stays positional.
+;; EXPECT-CS: public record mutable_fields__Point\(int x, int y\);
+(type
+  (: Point (Record (: x int) (: y int))))
+
+;; The case materialization cannot reach. A generic type's implementation is
+;; conditional, so no `Equals` or `GetHashCode` is emitted from it — and C#'s
+;; synthesized hash over `item` would be exactly the silent hazard above. The
+;; throw needs no dictionary, so it goes where materialization cannot.
+;;
+;; EXPECT-CS: public record mutable_fields__Box<T_a> \{
+;; EXPECT-CS: public override int GetHashCode\(\) => throw new System\.InvalidOperationException\("mutable_fields/Box has a mutable field
+(type/derive (Eq)
+  (: (Box %a) (Record (: item %a #:mutable))))
+
+;; A derived `eq-hash` for a *non-generic* mutable record refuses in Bjolang, so
+;; the materialized `GetHashCode` throws through the implementation rather than
+;; directly — one refusal, reached by the other road. Only one `GetHashCode` is
+;; emitted: the throw is skipped where materialization already wrote one.
+;;
+;; EXPECT-CS: public override int GetHashCode\(\) => Eq_mutable_fields__Tally\.Instance\.eqsubhash\(this\);
+;; EXPECT-CS: public virtual bool Equals\(mutable_fields__Tally\? other\) => other is not null && Eq_mutable_fields__Tally\.Instance\.eq\(this, other\);
+(type/derive (Eq)
+  (: Tally (Record (: name string) (: hits int #:mutable))))
+
+;; A single-field write needs no temporary — there is nothing it could be
+;; reordered against — so it is written where it is evaluated.
+;; EXPECT-CS: c\.count = 1;
+(: bump! (-> Counter void))
+(defun (bump! c)
+  (record-set! c (count 1)))
+
+;; Several fields are all evaluated, left to right, before any is written, so a
+;; value expression that reads the record sees the state before the form.
+;; EXPECT-CS: int __field__[0-9]+ = p\.y;
+;; EXPECT-CS: p\.x = __field__[0-9]+;
+;; EXPECT-CS: p\.y = __field__[0-9]+;
+(type
+  (: Cursor (Record (: x int #:mutable) (: y int #:mutable))))
+
+(: swap! (-> Cursor void))
+(defun (swap! p)
+  (record-set! p (x (record-ref p y)) (y (record-ref p x))))

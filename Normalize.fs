@@ -172,6 +172,7 @@ let rec private rewriteExpr (expr: Expr) : Expr =
     | EFun(args, body, colour, r) -> EFun(args, rewriteExpr body, colour, r)
 
     | ERecordUpdate(baseRec, fields, r) -> ERecordUpdate(baseRec, fields |> List.map (fun (k, v) -> k, rewriteExpr v), r)
+    | ERecordSet(baseRec, fields, r) -> ERecordSet(baseRec, fields |> List.map (fun (k, v) -> k, rewriteExpr v), r)
 
     | EGetField(target, field, r) -> EGetField(rewriteExpr target, field, r)
 

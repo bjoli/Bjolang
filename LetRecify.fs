@@ -120,6 +120,9 @@ let rec letrecifyExpr (expr: Expr) : Expr =
     | ERecordUpdate(baseRec, fields, r) ->
         ERecordUpdate(baseRec, fields |> List.map (fun (k, v) -> k, letrecifyExpr v), r)
 
+    | ERecordSet(baseRec, fields, r) ->
+        ERecordSet(baseRec, fields |> List.map (fun (k, v) -> k, letrecifyExpr v), r)
+
     | EGetField(target, field, r) -> EGetField(letrecifyExpr target, field, r)
 
     | EMatch(target, clauses, r) ->

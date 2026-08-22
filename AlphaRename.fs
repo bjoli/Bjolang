@@ -175,6 +175,7 @@ let rec private renameCore
         | TIdent(n, tArgs) -> TIdent(reference n, tArgs)
         | TSet(n, v) -> TSet(reference n, sub v)
         | TRecordUpdate(n, fields) -> TRecordUpdate(reference n, fields |> List.map (fun (k, v) -> k, sub v))
+        | TRecordSet(n, fields) -> TRecordSet(reference n, fields |> List.map (fun (k, v) -> k, sub v))
 
         | TLet(n, isFun, fn, v, b) ->
             let fn', v' = renameFunValue isFun fn scope subst v

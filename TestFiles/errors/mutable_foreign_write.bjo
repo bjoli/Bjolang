@@ -1,0 +1,22 @@
+;; A mutable field may be written only by the module that declared the record.
+;;
+;; The marker is published — an importer has to see it, or it would generalize a
+;; construction that allocates a cell — so this module knows perfectly well that
+;; `held` is mutable. Knowing is not permission: a module that means its state
+;; to be written from outside exports a function that writes it, exactly as one
+;; with a `def/mutable` does.
+;;
+;; Reading is unaffected, and so is constructing. Only the write is refused.
+
+;; EXPECT-ERROR: was declared in another module
+;; EXPECT-ERROR: may not write its fields
+;; EXPECT-ERROR: exports functions that write it
+
+(import (std prelude))
+(import "../inc/cell.bjo")
+
+(defun (main args)
+  (def c (cell 1))
+  (displayln (int->string (cell-ref c)))   ;; reading is fine
+  (record-set! c (held 2))                 ;; writing is not
+  0)

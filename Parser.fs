@@ -59,6 +59,17 @@ type UnionCase =
 type RecordField =
     { Name: string
       Type: FType
+      /// `#:mutable` on the field: it may be written in place by
+      /// `record-set!`, and only by the module that declared the record.
+      ///
+      /// A property of the *field* rather than of the type, because it decides
+      /// two unrelated things about it: which half of the emitted C# record it
+      /// lands in — a positional parameter is init-only, so a mutable field
+      /// has to be declared in the body — and whether constructing the record
+      /// is a syntactic value. The second is why it has to survive into a
+      /// module's published metadata: an importer that did not know would
+      /// generalize a construction over a cell that exists once.
+      Mutable: bool
       Range: Range }
 
 type TypeDefKind =
@@ -126,6 +137,14 @@ and Expr =
     /// Record and struct construction, treated as application.
     /// Handled by type inference rather than a dedicated AST node.
     | ERecordUpdate of string * (string * Expr) list * Range
+    /// `(record-set! r (field value) ...)` — a write in place, to one or more
+    /// `#:mutable` fields of the record `r` names.
+    ///
+    /// The target is a name rather than an expression for the same reason
+    /// `ERecordUpdate`'s is: it is the shape that has been needed, and widening
+    /// it later is a local change. Void, as every other write in the language
+    /// is.
+    | ERecordSet of string * (string * Expr) list * Range
     | EGetField of Expr * string * Range
     | EList of Expr list * Range
     | EVec of Expr list * Range
@@ -659,6 +678,13 @@ let parseUnionCase (s: SExpr) : UnionCase =
         for marker in markers do
             match marker with
             | SAtom { Token = Keyword "literal" } -> ()
+            // Named separately from the unknown markers because it is a thing
+            // someone may reasonably expect to work: a record field can be
+            // mutable and a case payload cannot. A payload is positional and
+            // unnamed, so there would be nothing for a write to name.
+            | SAtom { Token = Keyword "mutable" } ->
+                failwithf
+                    $"#:mutable on the union case %s{name} at %s{Lexer.formatPos r}: a case payload is positional, so there is no field name for a write to use. Give the case a Record that has the mutable field instead."
             | SAtom { Token = Keyword bad } ->
                 failwithf
                     $"Unknown marker #:%s{bad} on the union case %s{name} at %s{Lexer.formatPos r}. The only one is #:literal, which names this case as the one a quoted literal is injected into."
@@ -683,11 +709,35 @@ let parseUnionCase (s: SExpr) : UnionCase =
 let parseRecordField (s: SExpr) : RecordField =
     let r = getRange s
 
+    // Markers come after the type, and are taken off before it is parsed for
+    // the reason a union case's are: a keyword is not a type anywhere else, and
+    // letting `parseType` see one would make `(-> #:mutable int)` parse too.
+    let takeMarkers (name: string) (items: SExpr list) =
+        let markers, rest =
+            items
+            |> List.partition (function
+                | SAtom { Token = Keyword _ } -> true
+                | _ -> false)
+
+        for marker in markers do
+            match marker with
+            | SAtom { Token = Keyword "mutable" } -> ()
+            | SAtom { Token = Keyword bad } ->
+                failwithf
+                    $"Unknown marker #:%s{bad} on the field '%s{name}' at %s{Lexer.formatPos r}. The only one is #:mutable, which lets the field be written in place by record-set!."
+            | _ -> ()
+
+        rest, not markers.IsEmpty
+
     match s with
-    | SList([ SAtom { Token = Colon }; SAtom { Token = Symbol name }; tType ], _) ->
-        { Name = name
-          Type = parseType tType
-          Range = r }
+    | SList(SAtom { Token = Colon } :: SAtom { Token = Symbol name } :: rest, _) ->
+        match takeMarkers name rest with
+        | [ tType ], isMutable ->
+            { Name = name
+              Type = parseType tType
+              Mutable = isMutable
+              Range = r }
+        | _ -> failwithf $"Invalid record field at %s{Lexer.formatPos r}: a field is written (: name type), optionally followed by #:mutable."
     | _ -> failwithf $"Invalid record field at %s{Lexer.formatPos r}"
 
 let parseTypeDefHead (head: SExpr) : string * string list =
@@ -722,9 +772,23 @@ let parseTypeDef (s: SExpr) : TypeDef =
               SList(SAtom { Token = Symbol(("Record" | "Struct") as kind) } :: fields, _) ],
             _) ->
         let name, typeArgs = parseTypeDefHead head
+        let parsedFields = List.map parseRecordField fields
+
+        // A `Struct` is a C# `record struct` — a value type, copied on every
+        // assignment and every parameter pass, and one held inside a `List` or
+        // a `Map` cannot be addressed at all. A write to a mutable field of one
+        // would land on a copy and be lost, silently and unpreventably, so the
+        // combination is refused rather than supported badly.
+        if kind = "Struct" then
+            match parsedFields |> List.tryFind (fun f -> f.Mutable) with
+            | Some f ->
+                failwithf
+                    $"Invalid field '%s{f.Name}' at %s{Lexer.formatPos f.Range}: a Struct may not have a mutable field. A struct is a value type, so it is copied on assignment and a write would land on the copy. Declare '%s{name}' as a Record instead."
+            | None -> ()
+
         { Name = name
           TypeArgs = typeArgs
-          Kind = Record(List.map parseRecordField fields, kind = "Struct")
+          Kind = Record(parsedFields, kind = "Struct")
           Range = r }
     // `Union`, `Enum`, and `Sum` are accepted tags for sum types.
     | SList([ SAtom { Token = Colon }
@@ -1103,6 +1167,7 @@ let exprRange (e: Expr) : Range =
     | EWhen(_, _, _, r)
     | EFun(_, _, _, r)
     | ERecordUpdate(_, _, r)
+    | ERecordSet(_, _, r)
     | EGetField(_, _, r)
     | EList(_, r)
     | EVec(_, r)
@@ -1201,7 +1266,8 @@ let freeNamesWith (reference: string -> Range -> bool -> unit) (guarded: bool) (
             sub c
             sub b
         | EFun(args, body, _, _) -> go true (Set.union bound (Set.ofList args)) body
-        | ERecordUpdate(n, fields, r) ->
+        | ERecordUpdate(n, fields, r)
+        | ERecordSet(n, fields, r) ->
             refer n r
             fields |> List.iter (snd >> sub)
         | EGetField(target, _, _) -> sub target
@@ -1263,7 +1329,8 @@ let exprChildren (e: Expr) : Expr list =
     | EIf(c, t, f, _) -> [ c; t; f ]
     | EWhen(c, b, _, _) -> [ c; b ]
     | EFun(_, b, _, _) -> [ b ]
-    | ERecordUpdate(_, fields, _) -> fields |> List.map snd
+    | ERecordUpdate(_, fields, _)
+    | ERecordSet(_, fields, _) -> fields |> List.map snd
     | ETryFinally(b, c, _) -> [ b; c ]
     | ETryCatch(b, _, _) -> [ b ]
     | EMatch(target, clauses, _) ->
@@ -1431,6 +1498,7 @@ let private renameWith (renameBinder: string -> string) (rootSubst: Map<string, 
             EFun(args', go bodySubst body, colour, r)
 
         | ERecordUpdate(n, fields, r) -> ERecordUpdate(reference n, fields |> List.map (fun (k, v) -> k, sub v), r)
+        | ERecordSet(n, fields, r) -> ERecordSet(reference n, fields |> List.map (fun (k, v) -> k, sub v), r)
         | EGetField(target, f, r) -> EGetField(sub target, f, r)
         | EList(items, r) -> EList(List.map sub items, r)
         | EVec(items, r) -> EVec(List.map sub items, r)
@@ -2191,6 +2259,33 @@ let rec parseExpr (s: SExpr) : Expr =
 
                     ERecordUpdate(baseRec, parsedFields, r)
                 | _ -> failwithf $"Invalid %s{sym} syntax at %s{Lexer.formatPos r}: expected (%s{sym} target (field value) ...)"
+
+            // A write in place, to `#:mutable` fields. Deliberately *not* given
+            // a `struct-set!` synonym the way the pure forms are: a Struct
+            // cannot have a mutable field, so the spelling is refused below
+            // with the reason rather than left to fail as an unbound name.
+            | "record-set!" ->
+                match args with
+                | Ident baseRec :: (_ :: _ as fields) ->
+                    let parsedFields =
+                        fields
+                        |> List.map (function
+                            | SList([ Ident k; v ], _) -> (k, parseExpr v)
+                            | bad ->
+                                failwithf
+                                    $"Invalid %s{sym} field at %s{Lexer.formatPos (getRange bad)}: expected (field-name value)")
+
+                    ERecordSet(baseRec, parsedFields, r)
+                | [ Ident _ ] ->
+                    failwithf
+                        $"Invalid %s{sym} at %s{Lexer.formatPos r}: it has to write at least one field."
+                | _ ->
+                    failwithf
+                        $"Invalid %s{sym} syntax at %s{Lexer.formatPos r}: expected (%s{sym} target (field value) ...), where the target is the name of a record. A computed target is not supported — bind it first."
+
+            | "struct-set!" ->
+                failwithf
+                    $"Invalid struct-set! at %s{Lexer.formatPos r}: a Struct may not have a mutable field, so there is nothing for it to write. Use record-set! on a Record, or struct-set for a copy."
 
             | "record-ref" | "struct-ref" ->
                 match args with

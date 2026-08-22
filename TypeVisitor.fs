@@ -70,6 +70,7 @@ let mapChildren (f: TypedExpr -> TypedExpr) (expr: TypedExpr) : TypedExpr =
         | TVecMake items -> TVecMake(List.map f items)
         | TRecordMake fields -> TRecordMake(fields |> List.map (fun (k, v) -> k, f v))
         | TRecordUpdate(name, fields) -> TRecordUpdate(name, fields |> List.map (fun (k, v) -> k, f v))
+        | TRecordSet(name, fields) -> TRecordSet(name, fields |> List.map (fun (k, v) -> k, f v))
         | TLetMutable(name, value, body) -> TLetMutable(name, f value, f body)
         | TSet(name, value) -> TSet(name, f value)
         | TIf(c, t, e) -> TIf(f c, f t, f e)

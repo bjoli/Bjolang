@@ -3,6 +3,134 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std mutable deque)~
+
+The first thing built on mutable fields, and the reason they were wanted: a
+double-ended queue that is written in place.
+
+#+BEGIN_SRC scheme
+(def work (deque))
+(deque-push-back! work job)
+(match (deque-pop-front! work) ((Some j) ...) (None ...))
+#+END_SRC
+
+Two lists — ~front~ in order, ~back~ reversed — so a push at either end is a
+cons and a pop is a head. When the list at one end runs dry the other is
+**split in half** rather than moved across wholesale. Moving all of it is the
+textbook queue trick and it is quadratic on a *deque*: pop one end, pop the
+other, and every pop hauls the whole structure back again. Half leaves both ends
+stocked, so every operation is O(1) amortized. 200k alternating pops on a 200k
+deque run in 13ms; the wholesale version would be doing ~10^10~ conses.
+
+It lives under ~std/mutable~ so that reaching for it is a deliberate act, and
+the module is the only thing that may write the fields — a mutable field is
+writable only in its declaring module, so ~front~, ~back~ and ~size~ are not
+somebody else's business.
+
+** Equality is by contents, and it has to be written down
+
+Two deques are equal when they hold the same elements in the same order,
+whichever half those elements are sitting in. Pushing three items on the back
+and popping one gives a deque ~=~ to one built by three pushes on the front.
+
+The ~Eq~ implementation is not decoration. Without it a deque would fall to the
+blanket, which is .NET's equality, which for this record is a field-wise
+comparison of ~front~, ~back~ and ~size~ — so two deques holding the same
+elements in different splits would have compared unequal, silently.
+
+~eq-hash~ refuses, and that refusal is what keeps the paragraph above true. A
+~Map~ keyed on a deque would ask .NET rather than asking the implementation, and
+materialization cannot redirect that for a *generic* type. So rather than let
+the two disagree, nothing is allowed to ask: the hash throws at the one call
+that would have.
+
+** What is still open
+
+- **No transient interface**, which is what ~Readme.org~ originally wanted — a
+  persistent deque with a mutable view over it. This is mutable all the way
+  down instead. A persistent deque is still worth having and would not conflict.
+- **No ~Collector~ implementation**, so a deque is not yet a comprehension
+  target the way ~Set~ is.
+- **Heap is still missing.**
+
+* Mutable fields in records
+
+#+BEGIN_SRC scheme
+(type (: (Queue %a) (Record (: front (List %a) #:mutable)
+                            (: back (List %a) #:mutable)
+                            (: size int #:mutable))))
+
+(record-set! q (front (list-reverse (record-ref q back))) (back Nil))
+#+END_SRC
+
+A field marked ~#:mutable~ is written in place by ~record-set!~. Until now the
+language had exactly one mutation primitive — ~def/mutable~ plus ~(set! name
+value)~, on a bare identifier — and everything else was persistent, which left
+programs that genuinely hold state reaching for ~Array~ and a hand-rolled index
+scheme.
+
+~record-set!~ takes a name, writes one or more fields, and is void. All of its
+values are evaluated, left to right, *before* any of them is written, so a value
+expression that reads the record sees the state before the form rather than one
+half way through it. ~record-set~ is untouched and still copies, taking the
+mutable fields as they stand.
+
+Four things are deliberately not allowed. A ~Struct~ may not have a mutable
+field — it is a value type, so the write would land on a copy — and there is no
+~struct-set!~. A union case may not have one, its payload being positional and
+so having no name for a write to use. Only the declaring module may write a
+field; a module that means its state to be reachable exports functions that
+reach it. And constructing a record with a mutable field is not a syntactic
+value, so a module-level ~def~ of one is not generalized — the ~make-array~ hole
+arriving by a second route.
+
+The emitted C# stays a ~record~. Only a *positional* parameter is init-only, so
+the whole field list moves into the body and the constructor is written out:
+~with~, ~ToString~ and a synthesized structural ~Equals~ all keep working, and
+construction stays positional and in declaration order.
+
+** Equality holds. Hashing does not, and says so.
+
+~=~ is structural over what the fields hold at the moment of the comparison, so
+two records equal now may be unequal later. All four paths to equality agree, as
+they must: a direct ~=~, a dictionary-dispatched one, a container comparing
+elements, and .NET calling ~Equals~.
+
+~eq-hash~ throws. There is no honest number — hashing the mutable field breaks
+the rule that a key's hash does not change, hashing only the immutable ones
+breaks the rule that equal values hash alike — so a mutable record is not a
+~Map~ or ~Set~ key and raises at the point it is asked, rather than being
+accepted and then silently lost on the next write.
+
+Closing that properly took two pieces. ~derive~ writes an ~eq-hash~ that calls
+the new ~unhashable~ builtin, and codegen writes a throwing ~GetHashCode~ into
+any record with a mutable field that materialization did not already write one
+for. The second is the one that matters: materialization never fires for a
+*generic* type, so ~(Box %a)~ with a mutable ~item~ would otherwise have kept
+C#'s synthesized hash over that very field. ~Equals~ is left alone in that case
+— the synthesized one compares every field, which is what ~=~ means here, so the
+two already agree.
+
+The ~#:mutable~ marker is published in a module's metadata. Not for diagnostics:
+an importer never writes a foreign field, but it does *construct* the record,
+and one that could not see the marker would generalize the construction and hand
+out a single cell at two types.
+
+** What is still open
+
+- **A generic record with a mutable field can never have a working hash**, even
+  a hand-written one, because materialization cannot reach a generic type. The
+  throw is otherwise a default rather than a property: a non-generic type may
+  hash only its immutable fields and mean it.
+- **Transitive hash failure is a runtime error.** A record deriving ~Eq~ over a
+  field whose type has no hash throws one level down rather than being rejected
+  at compile time, which would mean tracking "has no hash" per implementation
+  through the registry.
+- **Nothing is done about concurrency.** A mutable record shared between fibers
+  races, exactly as a ~def/mutable~ does. This is now at least written down.
+- ~record-set!~ takes a name rather than an lvalue, so
+  ~(record-set! (car xs) (x 1))~ needs a binding first.
+
 * ~Eq~ for the library's collections
 
 Implementations for ~(Set %a)~, ~(OrderedSet %a)~ and ~(OrderedMap %k %v)~, each

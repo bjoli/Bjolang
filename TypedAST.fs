@@ -396,6 +396,9 @@ and TExprNode =
     | TVecMake of TypedExpr list
     | TRecordMake of (string * TypedExpr) list
     | TRecordUpdate of string * (string * TypedExpr) list
+    /// `record-set!` — a write in place to one or more mutable fields of the
+    /// record a name is bound to. Always void, exactly as `set!` is.
+    | TRecordSet of string * (string * TypedExpr) list
     | TLetMutable of string * TypedExpr * TypedExpr
     | TSet of string * TypedExpr
     | TIf of TypedExpr * TypedExpr * TypedExpr
@@ -829,6 +832,18 @@ type TraitRegistry =
       /// the last owner made a shared field name silently resolve to whichever
       /// type happened to be declared last.
       RecordFields: Map<string, string list>
+      /// Record type -> the names of its `#:mutable` fields, in declaration
+      /// order. Absent for a record that has none.
+      ///
+      /// Three things read it, and they are why it is keyed by type rather than
+      /// folded into `Records`: `record-set!` asks whether the field it is
+      /// writing is writable at all; the value restriction asks whether
+      /// constructing this type allocates a cell; and code generation asks
+      /// which fields have to leave the emitted record's positional parameter
+      /// list, since a positional parameter is init-only. `Records` answers
+      /// "what type is this field", which is a different question consulted in
+      /// unification, and none of these three want to disturb it.
+      MutableRecordFields: Map<string, string list>
       /// Union type name -> (type parameters, cases as (caseName, payload
       /// types, isLiteral)).
       ///

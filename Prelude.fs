@@ -132,6 +132,7 @@ let emptyRegistry : TraitRegistry =
       ImportAliases = Map.empty
       Records = Map.empty
       RecordFields = Map.empty
+      MutableRecordFields = Map.empty
       Unions = Map.empty
       ClrClasses = Map.empty
       ClrExterns = Map.empty
@@ -222,6 +223,15 @@ let prelude : Env =
         /// What an `eq-hash` over several fields folds with. Public, unlike the
         /// three above: every derived and hand-written impl needs it.
         "hash-combine", {Scheme = Scheme([], [], makeFunType [intType; intType] intType); IsMutable = false }
+
+        /// The `eq-hash` of a type that has none: it throws, naming the type.
+        ///
+        /// A record with a `#:mutable` field has no lawful hash — see
+        /// `unhashable` in the runtime — so `derive` writes this instead of a
+        /// fold. Public because a derived implementation lands in the module
+        /// that wrote the `type/derive`, and honest as a thing to write by
+        /// hand: it is how a type says it is not a key.
+        "unhashable", {Scheme = Scheme([], [], makeFunType [stringType] intType); IsMutable = false }
 
         // Object identity — for mutable cells, and for nothing else. On a value
         // type it is silently structural, there being no identity to ask about.

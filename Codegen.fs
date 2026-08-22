@@ -598,6 +598,8 @@ let rec serializeExpr (e: Parser.Expr) : string =
         list [ head; list args; serializeExpr body ]
     | Parser.ERecordUpdate(n, fields, _) ->
         list ("record-set" :: n :: (fields |> List.map (fun (k, v) -> list [ k; serializeExpr v ])))
+    | Parser.ERecordSet(n, fields, _) ->
+        list ("record-set!" :: n :: (fields |> List.map (fun (k, v) -> list [ k; serializeExpr v ])))
     | Parser.EGetField(target, f, _) -> list [ "record-ref"; serializeExpr target; f ]
     | Parser.EVec(items, _) -> "[" + String.concat " " (List.map serializeExpr items) + "]"
 
@@ -838,6 +840,9 @@ let rec isStatementShaped (expr: TypedExpr) : bool =
     | TLetTuple _
     | TLetMutable _
     | TSet _
+    // A write to a record's field. Void like `set!`, and with more than one
+    // field it is several statements rather than one expression anyway.
+    | TRecordSet _
     // A `#:set` import. C# does have an assignment *expression*, but its value
     // is the value assigned and Bjolang says the form is void — so it is
     // emitted where `set!` is, for the reason `set!` is.
@@ -1636,6 +1641,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     | TLetTuple _
     | TLetMutable _
     | TSet _
+    | TRecordSet _
     | TWhen _
     | TTryFinally _
     | TLoop _
@@ -2382,6 +2388,35 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
         generateBindingValue ctx (Assign(qualifiedName ctx name)) value
         // `set!` itself yields void, so the enclosing target still has to be
         // discharged.
+        dischargeVoid ctx target
+
+    // `(record-set! r (f v) ...)`. Qualified for the reason `set!` is: a write
+    // through an alias has to reach the original's binding.
+    | TRecordSet (name, fields) ->
+        let lhs = qualifiedName ctx name
+
+        match fields with
+        // One field cannot be reordered against anything, so it is written
+        // where it is evaluated.
+        | [ (field, value) ] ->
+            generateBindingValue ctx (Assign $"%s{lhs}.%s{sanitizeIdent field}") value
+
+        // Every value is evaluated, left to right, before any of them is
+        // written. A value that reads the record therefore sees the state
+        // before the form whichever field it reads, rather than a state half
+        // way through it.
+        | _ ->
+            let temporaries =
+                fields
+                |> List.map (fun (field, value) ->
+                    let tmp = freshName "__field"
+                    generateBindingValue ctx (DeclareAndAssign(typeToString value.Type, tmp)) value
+                    field, tmp)
+
+            for (field, tmp) in temporaries do
+                indent ctx
+                appendLine ctx $"%s{lhs}.%s{sanitizeIdent field} = %s{tmp};"
+
         dischargeVoid ctx target
 
     // A `#:set` import, applied. The left-hand side is a member access rather
@@ -3460,16 +3495,94 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
 
             match td.Kind with
             | Record(fields, isStruct) ->
-                indent ctx
-                let kind = if isStruct then "record struct" else "record"
-                append ctx $"public %s{kind} %s{sanitizeIdent td.Name}%s{tyArgsStr}("
-                for i, f in List.indexed fields do
-                    if i > 0 then append ctx ", "
-                    append ctx (typeToString (Inference.resolveTypeAnnotation ctx.Registry f.Type))
-                    append ctx " "
-                    append ctx (sanitizeIdent f.Name)
-                append ctx ")"
-                appendTypeBody ctx (materialized (sanitizeIdent td.Name) (if isStruct then ValueRecord else OpenRecord))
+                let selfType = sanitizeIdent td.Name
+                let fieldType (f: Parser.RecordField) =
+                    typeToString (Inference.resolveTypeAnnotation ctx.Registry f.Type)
+
+                let members = materialized selfType (if isStruct then ValueRecord else OpenRecord)
+
+                // A record with a mutable field is still a record — `with`,
+                // `ToString` and the synthesized `Equals` are all wanted, and
+                // all three are what a record has that a class does not. What
+                // it cannot have is a *positional* parameter list, because a
+                // primary constructor parameter of a record is init-only.
+                //
+                // So the whole field list moves into the body and the
+                // constructor is written out. Doing it for every field rather
+                // than only the mutable ones keeps construction positional and
+                // in declaration order, which is what `TRecordMake` already
+                // emits: splitting the list would have reordered the operands,
+                // and evaluation order is not something to spend on a shorter
+                // declaration.
+                //
+                // A `Struct` never reaches here with a mutable field — the
+                // parser refuses the combination — so this is always the
+                // reference-record path.
+                if fields |> List.exists (fun f -> f.Mutable) then
+                    let declarations =
+                        fields
+                        |> List.map (fun f ->
+                            // `init` rather than a positional parameter for the
+                            // immutable ones, so that `record-set`'s `with`
+                            // still has something to assign.
+                            if f.Mutable then $"public %s{fieldType f} %s{sanitizeIdent f.Name};"
+                            else $"public %s{fieldType f} %s{sanitizeIdent f.Name} {{ get; init; }}")
+
+                    let parameters =
+                        fields
+                        |> List.map (fun f -> $"%s{fieldType f} %s{sanitizeIdent f.Name}")
+                        |> String.concat ", "
+
+                    let assignments =
+                        fields
+                        |> List.map (fun f -> $"this.%s{sanitizeIdent f.Name} = %s{sanitizeIdent f.Name};")
+                        |> String.concat " "
+
+                    let constructor =
+                        $"public %s{selfType}(%s{parameters}) {{ %s{assignments} }}"
+
+                    // The hash a mutable record does not have.
+                    //
+                    // Materialization already writes one where there is an
+                    // unconditional `Eq` implementation to write it from, and
+                    // for a derived implementation that one throws too. This is
+                    // the other two cases: a record with no implementation at
+                    // all, and — the one that matters — every *generic* record,
+                    // which materialization skips because there is nothing
+                    // inside the type that could build the dictionary a
+                    // conditional implementation asks for.
+                    //
+                    // Without it C# synthesizes a hash over all instance
+                    // fields, the mutable one included, and a `Map` or a `Set`
+                    // uses it without a word: the entry is simply lost the next
+                    // time the field is written. Throwing needs no dictionary,
+                    // so it reaches where materialization cannot.
+                    //
+                    // `Equals` is deliberately left alone. C#'s synthesized one
+                    // compares every instance field, which is exactly what `=`
+                    // on a mutable record means, so the two already agree.
+                    let hashed =
+                        if members |> List.exists (fun m -> m.Contains "GetHashCode") then
+                            []
+                        else
+                            let shown = escapeStringLiteral (Naming.showTypeName td.Name)
+
+                            [ $"public override int GetHashCode() => throw new System.InvalidOperationException(\"%s{shown} has a mutable field, so it has no stable hash: it cannot be a Map or Set key. Compare it with = instead, or write an Eq implementation whose eq-hash reads only the immutable fields.\");" ]
+
+                    indent ctx
+                    append ctx $"public record %s{selfType}%s{tyArgsStr}"
+                    appendTypeBody ctx (declarations @ [ constructor ] @ members @ hashed)
+                else
+                    indent ctx
+                    let kind = if isStruct then "record struct" else "record"
+                    append ctx $"public %s{kind} %s{selfType}%s{tyArgsStr}("
+                    for i, f in List.indexed fields do
+                        if i > 0 then append ctx ", "
+                        append ctx (fieldType f)
+                        append ctx " "
+                        append ctx (sanitizeIdent f.Name)
+                    append ctx ")"
+                    appendTypeBody ctx members
             | Union cases ->
                 indent ctx
                 appendLine ctx $"public abstract record %s{sanitizeIdent td.Name}%s{tyArgsStr} {{"

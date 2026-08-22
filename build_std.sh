@@ -31,4 +31,8 @@ echo "Building standard library..."
 ./bjor --lib lib/std/orderedset.bjo
 ./bjor --lib lib/std/orderedmap.bjo
 
+# The mutable collections, under `std/mutable` so that reaching for one is a
+# deliberate act. `deque` imports `prelude` and nothing else.
+./bjor --lib lib/std/mutable/deque.bjo
+
 echo "Standard library built successfully!"

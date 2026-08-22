@@ -33,6 +33,7 @@ let rec private occurrences (name: string) (expr: TypedExpr) : int =
         | TIdent(n, _) when n = name -> 1
         | TSet(n, _) when n = name -> 1
         | TRecordUpdate(n, _) when n = name -> 1
+        | TRecordSet(n, _) when n = name -> 1
         | _ -> 0
 
     TypeVisitor.children expr |> List.sumBy (occurrences name) |> (+) here
@@ -157,6 +158,11 @@ let applyQualification (qualification: Map<string, string>) (expr: TypedExpr) : 
             | TSet(n, v) ->
                 let n' = Map.tryFind n qualification |> Option.defaultValue n
                 TSet(n', go v)
+            // A write reaching a splice is a write to whatever the target
+            // resolved to there, exactly as `set!` is.
+            | TRecordSet(n, fields) ->
+                let n' = Map.tryFind n qualification |> Option.defaultValue n
+                TRecordSet(n', fields |> List.map (fun (k, v) -> k, go v))
             | _ -> (TypeVisitor.mapChildren go e).Node
 
         { e with Node = node }

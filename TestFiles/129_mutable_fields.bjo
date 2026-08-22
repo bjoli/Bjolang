@@ -1,0 +1,328 @@
+;; Mutable record fields, by way of the thing they are for.
+;;
+;; A queue out of two lists: `back` takes what arrives, reversed; `front` gives
+;; what leaves; and when `front` runs out, `back` is flipped onto it. Every
+;; operation is O(1) amortized, and the flip is the only expensive step.
+;;
+;; The functional version of this returns a new queue from every operation, and
+;; the caller has to thread it. Here the queue *is* the thing that changes:
+;; `(enqueue! q 1)` writes `q`, and everyone holding `q` sees it. That is the
+;; whole difference, and this file is mostly about pinning down what follows
+;; from it.
+(import (std prelude))
+(import "129_lib.bjo")
+
+(: expect (-> string bool void))
+(defun (expect label ok)
+  (println (string-append (if ok "ok: " "FAILURE: ") label)))
+
+(: expect-int (-> string int int void))
+(defun (expect-int label actual want)
+  (expect (string-append label
+                         (string-append " => " (int->string actual)))
+          (= actual want)))
+
+;; ---------------------------------------------------------------------------
+;; The queue
+;; ---------------------------------------------------------------------------
+;;
+;; All three fields are mutable: a dequeue writes `front` and a flip writes all
+;; three, so there is no half of this that stays still. The marker goes after
+;; the field's type.
+
+(type
+  (: (Queue %a) (Record (: front (List %a) #:mutable)
+                        (: back (List %a) #:mutable)
+                        (: size int #:mutable))))
+
+(: queue (-> (Queue %a)))
+(defun (queue)
+  (Queue (front Nil) (back Nil) (size 0)))
+
+(: queue-size (-> (Queue %a) int))
+(defun (queue-size q) (record-ref q size))
+
+(: queue-empty? (-> (Queue %a) bool))
+(defun (queue-empty? q) (= (record-ref q size) 0))
+
+;; Arriving items go on `back`, which costs a cons and nothing else.
+(: enqueue! (-> (Queue %a) %a void))
+(defun (enqueue! q x)
+  (record-set! q
+               (back (Cons x (record-ref q back)))
+               (size (+ (record-ref q size) 1))))
+
+;; The flip: `back` reversed becomes the new `front`, and `back` is emptied.
+;;
+;; Both fields are written by one form, which is the point of allowing more than
+;; one. Doing it as two `record-set!`s would leave the queue holding the same
+;; item twice in between — briefly, but really.
+(: flip! (-> (Queue %a) void))
+(defun (flip! q)
+  (when (and (list-empty? (record-ref q front))
+             (not (list-empty? (record-ref q back))))
+    (record-set! q
+                 (front (list-reverse (record-ref q back)))
+                 (back Nil))))
+
+(: dequeue! (-> (Queue %a) (Option %a)))
+(defun (dequeue! q)
+  (flip! q)
+  (match (record-ref q front)
+    (Nil None)
+    ((Cons x rest)
+     (record-set! q
+                  (front rest)
+                  (size (- (record-ref q size) 1)))
+     (Some x))))
+
+;; A look that does not consume. It still flips — that is a change to how the
+;; queue is *stored*, not to what it holds — which is exactly the sort of thing
+;; a mutable field is for: nothing about the queue's value has changed, so
+;; making the caller thread a new queue through a peek would be a lie.
+(: peek! (-> (Queue %a) (Option %a)))
+(defun (peek! q)
+  (flip! q)
+  (match (record-ref q front)
+    (Nil None)
+    ((Cons x _) (Some x))))
+
+;; The prelude has no general `list-append`, deliberately, so the one place
+;; that wants one has it here.
+(: list-then (-> (List %a) (List %a) (List %a)))
+(defun (list-then xs ys)
+  (match xs
+    (Nil ys)
+    ((Cons x rest) (Cons x (list-then rest ys)))))
+
+;; Front to back, without disturbing anything.
+(: queue->list (-> (Queue %a) (List %a)))
+(defun (queue->list q)
+  (list-then (record-ref q front) (list-reverse (record-ref q back))))
+
+;; ---------------------------------------------------------------------------
+;; Using it
+;; ---------------------------------------------------------------------------
+
+(: drain (-> (Queue int) (List int)))
+(defun (drain q)
+  (match (dequeue! q)
+    (None Nil)
+    ((Some x) (Cons x (drain q)))))
+
+(: show (-> (List int) string))
+(defun (show xs)
+  (list-foldl (fun (acc x) (string-append acc (string-append (int->string x) " "))) "" xs))
+
+(: first-in-first-out (-> void))
+(defun (first-in-first-out)
+  (def q (queue))
+  (enqueue! q 1)
+  (enqueue! q 2)
+  (enqueue! q 3)
+  (expect-int "three in" (queue-size q) 3)
+
+  ;; The first dequeue is the one that pays for the flip; the rest are free.
+  (expect "1 comes out first" (match (dequeue! q) ((Some x) (= x 1)) (None #f)))
+  (expect "then 2" (match (dequeue! q) ((Some x) (= x 2)) (None #f)))
+  (expect-int "one left" (queue-size q) 1)
+
+  ;; Interleaving is where the two lists earn their keep: 4 lands on `back`
+  ;; while 3 is still on `front`.
+  (enqueue! q 4)
+  (expect "3 before 4" (match (dequeue! q) ((Some x) (= x 3)) (None #f)))
+  (expect "then 4" (match (dequeue! q) ((Some x) (= x 4)) (None #f)))
+  (expect "and then nothing" (match (dequeue! q) ((Some _) #f) (None #t)))
+  (expect "empty" (queue-empty? q)))
+
+;; A queue passed to a function is the caller's queue. Nothing is returned and
+;; nothing is threaded; this is the property the whole feature buys.
+(: written-through-a-call (-> void))
+(defun (written-through-a-call)
+  (def q (queue))
+  (enqueue! q 10)
+  (enqueue! q 20)
+  (expect "drained in order" (= (show (drain q)) "10 20 "))
+  (expect-int "and the caller's queue is empty" (queue-size q) 0))
+
+;; Two names, one queue.
+(: aliasing (-> void))
+(defun (aliasing)
+  (def q (queue))
+  (def same q)
+  (enqueue! q 7)
+  (expect-int "an alias sees the write" (queue-size same) 1)
+  (expect "and gives the same item" (match (dequeue! same) ((Some x) (= x 7)) (None #f)))
+  (expect-int "which the first name has lost too" (queue-size q) 0))
+
+;; `peek!` flips but does not consume, so asking twice gives the same answer and
+;; the size is unmoved.
+(: peeking (-> void))
+(defun (peeking)
+  (def q (queue))
+  (enqueue! q 5)
+  (enqueue! q 6)
+  (expect "peek gives the front" (match (peek! q) ((Some x) (= x 5)) (None #f)))
+  (expect "and again" (match (peek! q) ((Some x) (= x 5)) (None #f)))
+  (expect-int "without consuming" (queue-size q) 2)
+  (expect "and the order survived the flip" (= (show (queue->list q)) "5 6 ")))
+
+;; Generic in the element type, and mutable in it: `Queue` is exactly the shape
+;; the value restriction exists for, and it is used at two types here.
+(: generic (-> void))
+(defun (generic)
+  (def qs (queue))
+  (enqueue! qs "a")
+  (enqueue! qs "b")
+  (expect "a queue of strings" (match (dequeue! qs) ((Some s) (= s "a")) (None #f)))
+
+  (def qb (queue))
+  (enqueue! qb #t)
+  (expect "and one of bools" (match (dequeue! qb) ((Some b) b) (None #f))))
+
+;; Every value is evaluated, left to right, before any of them is written. So
+;; the `size` operand below reads the size as it was, not the one being written
+;; beside it.
+(: evaluation-order (-> void))
+(defun (evaluation-order)
+  (def q (queue))
+  (enqueue! q 1)
+  (record-set! q
+               (size 100)
+               (front (Cons (record-ref q size) Nil)))
+  (expect-int "the write landed" (queue-size q) 100)
+  (expect "the other operand read the old state" (= (show (record-ref q front)) "1 ")))
+
+;; A functional update is still a copy, and takes the mutable fields as they
+;; stand. Writing one afterwards does not reach the other — which is what makes
+;; `record-set` and `record-set!` worth telling apart.
+(: copying (-> void))
+(defun (copying)
+  (def a (queue))
+  (enqueue! a 1)
+  (def b (record-set a (size 99)))
+  (expect-int "the copy took the mutable values" (queue-size b) 99)
+
+  (enqueue! a 2)
+  (expect-int "the original moved" (queue-size a) 2)
+  (expect-int "and the copy did not" (queue-size b) 99)
+
+  ;; One field on its own, which needs no temporary: there is nothing it could
+  ;; be reordered against.
+  (record-set! b (size 0))
+  (expect-int "the copy is writable in its own right" (queue-size b) 0)
+  (expect-int "without reaching back" (queue-size a) 2))
+
+;; ---------------------------------------------------------------------------
+;; Equality, and the hash there is not
+;; ---------------------------------------------------------------------------
+;;
+;; `=` on a record with a mutable field is structural over what the fields hold
+;; *now*, so two records equal at one moment may be unequal at the next. That is
+;; what mutation means and it is not a defect.
+;;
+;; `eq-hash` is the other half of the same trait and has no honest answer.
+;; Hashing the mutable field breaks the law that a key's hash does not change;
+;; hashing only the immutable ones breaks the law that equal values hash alike.
+;; So a derived implementation refuses, loudly, naming the type — rather than
+;; letting a `Map` quietly lose the entry the next time the field is written.
+
+(type/derive (Eq)
+  (: Tally (Record (: name string)
+                   (: hits int #:mutable))))
+
+(: threw? (-> (Result System.Exception %a) bool))
+(defun (threw? r)
+  (match r ((Ok _) #f) ((Err _) #t)))
+
+(: equality (-> void))
+(defun (equality)
+  (def a (Tally (name "a") (hits 1)))
+  (def b (Tally (name "a") (hits 1)))
+  (expect "equal while the fields agree" (= a b))
+
+  (record-set! b (hits 2))
+  (expect "and unequal once one is written" (not (= a b)))
+
+  (record-set! a (hits 2))
+  (expect "and equal again" (= a b))
+
+  ;; The derived `eq-hash` refuses.
+  (expect "hashing a mutable record throws"
+          (threw? (try (eq-hash a) #:catch (System.InvalidOperationException))))
+
+  ;; And so does .NET, which is the same refusal reached the other way round:
+  ;; `Map` is a C# trie keying on `GetHashCode`, and materialization made that
+  ;; the trait's. One refusal, both roads to it.
+  (expect "and so does using one as a Map key"
+          (threw? (try (map-set (map-empty) a "x") #:catch (System.InvalidOperationException)))))
+
+;; The refusal is what `derive` writes, not a property of the type. An
+;; implementation written by hand may hash only the fields that do not move —
+;; and then it is a key again, and stays found across a write, which is the
+;; whole reason the law is worth keeping rather than merely asserting.
+
+(type
+  (: Cached (Record (: key string) (: hits int #:mutable))))
+
+(def/impl (Eq Cached)
+  (defun (= a b) (= (record-ref a key) (record-ref b key)))
+  (defun (eq-hash c) (eq-hash (record-ref c key))))
+
+(: hand-written-hash (-> void))
+(defun (hand-written-hash)
+  (def a (Cached (key "k") (hits 1)))
+  (def b (Cached (key "k") (hits 999)))
+  (expect "a hand-written implementation ignores the mutable field" (= a b))
+  (expect "and hashes them alike" (= (eq-hash a) (eq-hash b)))
+
+  ;; `Map` is a C# trie asking .NET, and .NET's answer for `Cached` is
+  ;; `Cached`'s own implementation — so it agrees.
+  (def m (map-set (map-empty) a "found"))
+  (expect "a Map keyed on one finds the other" (= "found" (map-ref-or m b "MISSING")))
+
+  (record-set! a (hits 42))
+  (expect "and still finds it after a write" (= "found" (map-ref-or m a "MISSING"))))
+
+;; ---------------------------------------------------------------------------
+;; Across a module boundary
+;; ---------------------------------------------------------------------------
+;;
+;; A field is writable only where it was declared. `129_lib` owns `Slot`, so
+;; this module constructs one and reads it, and reaches the state through the
+;; functions `129_lib` exports — `(record-set! s (held 1))` written here is a
+;; type error, which `errors/mutable_foreign_write.bjo` pins down.
+;;
+;; What crosses is one record, not a copy of one: the writes the library makes
+;; are visible here because it is the same object.
+
+(: foreign (-> void))
+(defun (foreign)
+  (def s (slot "counter" 0))
+  (expect-int "constructed across the boundary" (slot-ref s) 0)
+
+  (slot-set! s 41)
+  (slot-bump! s)
+  (expect-int "written by the module that owns it" (slot-ref s) 42)
+
+  ;; The record this module holds *is* the one the library wrote.
+  (def same s)
+  (slot-bump! same)
+  (expect-int "and it is one record, not a copy" (slot-ref s) 43)
+
+  ;; Reading a mutable field of a foreign record is fine; only writing is not.
+  (expect-int "a foreign mutable field reads" (record-ref s writes) 3)
+  (expect "and so does a foreign immutable one" (= (record-ref s label) "counter")))
+
+(defun (main args)
+  (first-in-first-out)
+  (written-through-a-call)
+  (aliasing)
+  (peeking)
+  (generic)
+  (evaluation-order)
+  (copying)
+  (equality)
+  (hand-written-hash)
+  (foreign)
+  0)

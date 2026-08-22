@@ -1,0 +1,35 @@
+;; A module that owns a record with a mutable field.
+;;
+;; Only the declaring module may write one, so the state is reachable from
+;; outside through the functions exported here and in no other way. The type is
+;; exported too: an importer may construct one and read it, and its `#:mutable`
+;; marker has to survive into the metadata — not so the importer can write it,
+;; which it cannot, but because constructing a record that holds a cell is not a
+;; syntactic value, and an importer that could not see the marker would
+;; generalize the construction.
+;; The type itself is published by its declaration and needs no mention here.
+(export slot slot-ref slot-set! slot-bump!)
+
+(type
+  (: (Slot %a) (Record (: label string)
+                       (: held %a #:mutable)
+                       (: writes int #:mutable))))
+
+(: slot (-> string %a (Slot %a)))
+(defun (slot label initial)
+  (Slot (label label) (held initial) (writes 0)))
+
+(: slot-ref (-> (Slot %a) %a))
+(defun (slot-ref s) (record-ref s held))
+
+;; The exported write. Both fields go in one form, so a reader can never catch
+;; the slot holding a new value under an old count.
+(: slot-set! (-> (Slot %a) %a void))
+(defun (slot-set! s v)
+  (record-set! s
+               (held v)
+               (writes (+ (record-ref s writes) 1))))
+
+(: slot-bump! (-> (Slot int) void))
+(defun (slot-bump! s)
+  (slot-set! s (+ (slot-ref s) 1)))

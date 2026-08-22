@@ -1,0 +1,23 @@
+;; The value restriction, reached through a mutable field.
+;;
+;; `(Box (item Nil))` looks like a value — every operand is one — but a record
+;; with a `#:mutable` field is a cell, and generalizing the construction to
+;; `∀a. (Box a)` would hand out one cell at two types. This is exactly
+;; `module_value_restriction.bjo`'s `make-array` case arriving by a second
+;; route, and it is refused the same way: not generalized, so the two uses below
+;; disagree about the element type where the disagreement actually is.
+
+;; EXPECT-ERROR: these types do not match
+;; EXPECT-ERROR: string
+
+(import (std prelude))
+
+(type
+  (: (Box %a) (Record (: item %a #:mutable))))
+
+(def b (Box (item Nil)))
+
+(defun (main args)
+  (record-set! b (item (Cons 1 Nil)))                        ;; 'a := int
+  (displayln (string-append (record-ref b item) "!"))        ;; 'a := string
+  0)

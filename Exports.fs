@@ -492,8 +492,16 @@ let metadata
                 // still resolved, because an unrecognized one passes
                 // through to C# verbatim.
                 | Parser.Record(fields, isStruct) ->
+                    // `#:mutable` survives for soundness rather than for
+                    // diagnostics. An importer never writes a foreign field —
+                    // that is refused — but it does *construct* the record, and
+                    // constructing one that holds a cell is not a syntactic
+                    // value. An importer that could not see the marker would
+                    // generalize the construction and hand out one cell at two
+                    // types.
                     let serializeField (f: Parser.RecordField) =
-                        $"(: {f.Name} {serializeFType f.Type})"
+                        let marker = if f.Mutable then " #:mutable" else ""
+                        $"(: {f.Name} {serializeFType f.Type}{marker})"
 
                     // `Struct` and `Record` are different types on the
                     // far side, so the spelling has to survive: an

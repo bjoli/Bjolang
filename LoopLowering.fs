@@ -149,7 +149,8 @@ let rec referencedNames (expr: TypedExpr) : Set<string> =
         match expr.Node with
         | TIdent(n, _) -> Set.singleton n
         | TSet(n, _) -> Set.singleton n
-        | TRecordUpdate(n, _) -> Set.singleton n
+        | TRecordUpdate(n, _)
+        | TRecordSet(n, _) -> Set.singleton n
         | _ -> Set.empty
 
     TypeVisitor.children expr

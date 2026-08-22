@@ -1,0 +1,21 @@
+;; `record-set!` on a field that was not declared mutable.
+;;
+;; The default is unchanged: a record field is immutable unless it says
+;; otherwise, and `record-set` — the copy — is what a program that has not asked
+;; for a cell should be using. The message names the field, the type, and which
+;; of its fields *are* writable, since the fix is usually one marker.
+
+;; EXPECT-ERROR: field 'label' of
+;; EXPECT-ERROR: Counter
+;; EXPECT-ERROR: is not mutable
+;; EXPECT-ERROR: Its mutable fields are: count.
+
+(import (std prelude))
+
+(type
+  (: Counter (Record (: label string) (: count int #:mutable))))
+
+(defun (main args)
+  (def c (Counter (label "clicks") (count 0)))
+  (record-set! c (label "taps"))
+  0)

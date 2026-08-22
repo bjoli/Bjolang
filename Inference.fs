@@ -838,6 +838,23 @@ let private instantiateRecord
 
     instantiatedRecordType, expectedFields, expectedFieldsInstantiated
 
+/// The `#:mutable` fields of a record type, or `[]` for one that has none —
+/// which includes every type that is not a record at all.
+let mutableFieldsOf (registry: TraitRegistry) (recordTypeName: string) : string list =
+    Map.tryFind recordTypeName registry.MutableRecordFields |> Option.defaultValue []
+
+/// Whether `moduleName` is the module that declared the record keyed
+/// `recordTypeName`, and so the only one that may write its fields.
+///
+/// Read off the key rather than recorded beside it: a type's key *is* its
+/// declaring module and its name collapsed into one string, and `Naming.typeKey`
+/// is idempotent for a name that already carries this module's prefix. So a key
+/// this module built comes back unchanged and any other key grows a second
+/// prefix, which is exactly the question being asked. Nothing has to guess where
+/// the key divides, which `typeKeyParts` would have to.
+let private declaredHere (moduleName: string) (recordTypeName: string) : bool =
+    Naming.typeKey moduleName recordTypeName = recordTypeName
+
 /// Which record type a `record-ref` or `record-set` is talking about.
 ///
 /// The target's own type answers that whenever it is known — which is every
@@ -882,7 +899,21 @@ let private recordTypeOfField
 /// innocent it looks. The recursion matters as much as the cases: a tuple or a
 /// record is a value only when everything in it is, so a box nested inside one
 /// is refused along with it.
-let rec isSyntacticValue (expr: TypedExpr) =
+///
+/// A record with a `#:mutable` field is the `make-array` case arriving by a
+/// second route, and is refused for the same reason — constructing one
+/// allocates a cell, however syntactic the construction looks:
+///
+///     (type (: (Box %a) (Record (: item %a #:mutable))))
+///     (def b (Box (item Nil)))         ;; if this were ∀a. (Box a)
+///     (box-set! b 1)                   ;; a := int
+///     (string-length (record-ref b item))  ;; a := string, same box
+///
+/// The registry is needed rather than the node alone because the node carries
+/// the field *values*, not the declaration that says which of them are cells.
+let rec isSyntacticValue (registry: TraitRegistry) (expr: TypedExpr) =
+    let recur = isSyntacticValue registry
+
     match expr.Node with
     | TInt _
     | TString _
@@ -890,10 +921,16 @@ let rec isSyntacticValue (expr: TypedExpr) =
     | TSymbol _
     | TLambda(_, _)
     | TIdent(_, _) -> true
-    | TTupleMake es -> List.forall isSyntacticValue es
-    | TListMake es -> List.forall isSyntacticValue es
-    | TVecMake es -> List.forall isSyntacticValue es
-    | TRecordMake fields -> fields |> List.forall (snd >> isSyntacticValue)
+    | TTupleMake es -> List.forall recur es
+    | TListMake es -> List.forall recur es
+    | TVecMake es -> List.forall recur es
+    | TRecordMake fields ->
+        let hasMutableField =
+            match prune registry expr.Type with
+            | TCon(name, _) -> not (mutableFieldsOf registry name).IsEmpty
+            | _ -> false
+
+        not hasMutableField && fields |> List.forall (snd >> recur)
     | _ -> false
 
 // ---------------------------------------------------------------------------
@@ -3044,6 +3081,65 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
           Range = r
           Node = TRecordUpdate(targetName, typedFields) }
 
+    // `(record-set! r (field value) ...)` — the write in place.
+    //
+    // Shaped like `ERecordUpdate` above and checked like it, plus the two
+    // questions a write has that a copy does not: is this field writable, and
+    // is this module allowed to write it.
+    | ERecordSet(targetName, fields, r) ->
+        let targetBinding = lookup env targetName
+        let targetType, _, _ = instantiate env.Registry targetBinding.Scheme
+
+        // Non-empty by construction — the parser refuses a `record-set!` that
+        // names no field — so the head is safe to resolve the type from.
+        let recordTypeName = recordTypeOfField env.Registry targetType (fst fields.Head) r
+
+        let instantiatedRecordType, _, expectedFieldsInstantiated =
+            instantiateRecord env.Registry recordTypeName
+
+        unify env.Registry targetType instantiatedRecordType
+
+        // A field is writable only where it was declared. The check is on the
+        // *record's* module rather than on the binding's: a value of a foreign
+        // record type reaches here by every ordinary route — an argument, a
+        // field of something local — and none of them may write it.
+        if not (declaredHere env.CurrentModule recordTypeName) then
+            let shown = Naming.showTypeName recordTypeName
+
+            failwithf
+                $"Type Error at %s{formatPos r}: '%s{shown}' was declared in another module, so this one may not write its fields. A module that means its state to be written from outside exports functions that write it."
+
+        let mutableFields = mutableFieldsOf env.Registry recordTypeName
+
+        let typedFields =
+            fields |> List.map (fun (name, expr) ->
+                let exprType, typedExpr = infer env expr
+
+                match Map.tryFind name expectedFieldsInstantiated with
+                | Some expectedType -> unify env.Registry exprType expectedType
+                | None ->
+                    failwithf
+                        $"Type Error at %s{formatPos r}: field '%s{name}' does not belong to record '%s{Naming.showTypeName recordTypeName}'."
+
+                if not (List.contains name mutableFields) then
+                    let writable =
+                        if mutableFields.IsEmpty then "It has no mutable fields."
+                        else "Its mutable fields are: " + String.concat ", " mutableFields + "."
+
+                    failwithf
+                        $"Type Error at %s{formatPos r}: field '%s{name}' of '%s{Naming.showTypeName recordTypeName}' is not mutable, so it cannot be written in place. Declare it (: %s{name} <type> #:mutable), or use record-set for a copy. %s{writable}"
+
+                name, typedExpr)
+
+        // Void, as every other write in the language is. The value it might
+        // have handed back — the record — is the same object either way, so
+        // returning it would only invite `(def r2 (record-set! r ...))` to read
+        // as though it were a copy.
+        TypeConstants.unitType,
+        { Type = TypeConstants.unitType
+          Range = r
+          Node = TRecordSet(targetName, typedFields) }
+
     | ECast(targetTypeAnnotation, expr, r) ->
         let targetType = resolveTypeAnnotation env.Registry targetTypeAnnotation
         let exprType, typedExpr = infer env expr
@@ -3316,6 +3412,15 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
         | Record(fields, _) ->
             let resolvedFields = fields |> List.map (fun f -> f.Name, resolveTypeAnnotation finalRegistry f.Type)
             finalRegistry <- { finalRegistry with Records = Map.add td.Name (tArgs, resolvedFields) finalRegistry.Records }
+
+            // Only for a record that has one, so that `Map.tryFind` answering
+            // `None` means "nothing here is mutable" rather than "not a record".
+            match fields |> List.filter (fun f -> f.Mutable) |> List.map (fun f -> f.Name) with
+            | [] -> ()
+            | mutableNames ->
+                finalRegistry <-
+                    { finalRegistry with
+                        MutableRecordFields = Map.add td.Name mutableNames finalRegistry.MutableRecordFields }
             for (fName, _) in resolvedFields do
                 let owners =
                     Map.tryFind fName finalRegistry.RecordFields |> Option.defaultValue []
@@ -3384,7 +3489,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
             addBinding
                 name
                 { Scheme =
-                    if isSyntacticValue typedExpr then
+                    if isSyntacticValue env.Registry typedExpr then
                         generalize env exprType
                     else
                         Scheme([], [], exprType)
