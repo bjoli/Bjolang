@@ -32,6 +32,34 @@
   (: eq-hash (-> %a int)))
 
 
+;; --- The blanket -----------------------------------------------------------
+;;
+;; What `=` means at a type with no implementation of its own: .NET's equality,
+;; which for a record, struct or union the compiler emitted *is* that type's own
+;; `Eq` implementation — because `Equals` and `GetHashCode` are emitted as calls
+;; to it. So this is "derive, applied automatically" rather than a second
+;; equality, and it routes to a hand-written implementation at any depth.
+;;
+;; That is the whole reason it comes last. Without materialization it would be
+;; the split: `(= p q)` written directly would find the user's implementation
+;; and `(= (Some p) (Some q))` would find .NET's.
+;;
+;; Only legal here, which the orphan rule enforces: a blanket applies at every
+;; type that has none of its own, so one declared elsewhere would change what
+;; `=` means for modules that never heard of it.
+;;
+;; `clr-equals` and not `clr-eq`: C# `==` does not compile at a type parameter.
+;;
+;; Note what this does not do. There is no way to opt *out* — `(= f g)` on two
+;; ports, or on two fibers, compiles and means reference identity. Two functions
+;; are the exception and only by accident: a `(-> %a %b)` has no head
+;; constructor, so resolution never reaches a blanket at all and the call is
+;; reported as a dictionary that cannot be built.
+(def/impl (Eq %a)
+  (defun (= a b) (clr-equals a b))
+  (defun (eq-hash a) (clr-hash a)))
+
+
 ;; --- The primitives --------------------------------------------------------
 ;;
 ;; Written out rather than generated, because a macro cannot be used in the

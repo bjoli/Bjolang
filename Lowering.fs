@@ -58,11 +58,15 @@ let isConditional (env: Env) (traitName: string) (ctor: string) =
 /// is one — the dictionary for its own trait at its own target is the object
 /// the method is already running on, so a self-call must not build a second
 /// one per step.
+/// `Within` is diagnostic only: which implementation a body belongs to, for the
+/// failures that surface here rather than during inference. It is separate from
+/// `Self`, which is only set when there is a dictionary to reuse.
 type Scope =
     { Dicts: Map<string, string>
-      Self: (string * HMType) option }
+      Self: (string * HMType) option
+      Within: string option }
 
-    static member Empty = { Dicts = Map.empty; Self = None }
+    static member Empty = { Dicts = Map.empty; Self = None; Within = None }
 
 /// The name a conditional impl reads its own dictionary under. Emitted by
 /// `Codegen` as a property returning `this`, so it costs no storage and the
@@ -147,7 +151,7 @@ let rec buildEvidence
                 |> List.map (fun c -> c.TraitName, substTypeVars subst c.TargetType)
             | None ->
                 failwithf
-                    $"Type Error at %s{Lexer.formatPos range}: no implementation of trait '%s{traitName}' for '%s{typeName}', needed %s{describe}."
+                    $"Type Error at %s{Lexer.formatPos range}: no implementation of trait '%s{traitName}' for '%s{Naming.showTypeName typeName}', needed %s{describe}."
 
         if constraints.IsEmpty then
             { Type = dictType
@@ -174,9 +178,18 @@ let rec buildEvidence
               Range = range
               Node = TApply(callee, subEvidence, []) }
 
+    // A structural type with no head constructor: a function, or a tuple of an
+    // arity nothing implements. There is nothing to key an implementation by,
+    // so not even a blanket is reachable — resolution needs a head to look up
+    // before it can fall back to one.
     | other ->
+        let within =
+            match scope.Within with
+            | Some w -> $"\n  in %s{w}"
+            | None -> ""
+
         failwithf
-            $"Cannot resolve dictionary for type %s{DotNetInterop.showType other} at %s{Lexer.formatPos range}"
+            $"Type Error at %s{Lexer.formatPos range}: no implementation of trait '%s{traitName}' for '%s{DotNetInterop.showType other}', needed %s{describe}. That type has no head constructor, so it cannot have one — and a blanket implementation is only reached through a head.%s{within}"
 
 module DictionaryLowering =
 
@@ -401,7 +414,10 @@ module DictionaryLowering =
                   // its own trait at its own target — the recursive step of
                   // `size` over a list — is already holding the answer, and
                   // rebuilding it would allocate one dictionary per element.
-                  Self = if dicts.IsEmpty then None else Some(traitName, targetType) }
+                  Self = if dicts.IsEmpty then None else Some(traitName, targetType)
+                  Within =
+                    Some
+                        $"the implementation of '%s{traitName}' for '%s{DotNetInterop.showType targetType}'" }
 
             let lowerMethod (m: TDecl) =
                 match m with

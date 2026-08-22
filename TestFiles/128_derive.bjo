@@ -56,6 +56,20 @@
   (defun (= a b) (= (record-ref a key) (record-ref b key)))
   (defun (eq-hash c) (eq-hash (record-ref c key))))
 
+;; ---------------------------------------------------------------------------
+;; No implementation at all
+;; ---------------------------------------------------------------------------
+;;
+;; The blanket applies, which for a record the compiler emitted is .NET's
+;; synthesized field-wise equality. The point of the checks below is that it
+;; agrees with a derived implementation and reaches a *hand-written* one at
+;; depth — because the hand-written one is what .NET is asking.
+(type
+  (: Plain (Record (: a int) (: b int))))
+
+(type/derive (Eq)
+  (: Wrapper (Record (: plain Plain) (: cached Cached))))
+
 (defun (main)
   ;; ---- records ------------------------------------------------------------
   (def p (Point (x 1) (y 2)))
@@ -120,5 +134,24 @@
   (expect "a derived type as a Map key" (= "point" (map-ref-or pm q "MISSING")))
   (expect "a derived union as a Map key"
           (= "shape" (map-ref-or (map-set (map-empty) (Rect 1 2) "shape") (Rect 1 2) "MISSING")))
+
+  ;; ---- the blanket --------------------------------------------------------
+  (expect "no implementation at all" (= (Plain (a 1) (b 2)) (Plain (a 1) (b 2))))
+  (expect "no implementation at all, differing" (not (= (Plain (a 1) (b 2)) (Plain (a 1) (b 3)))))
+
+  ;; The blanket is .NET's equality, and .NET's equality for `Cached` is
+  ;; `Cached`'s own implementation — so a hand-written one is reached through a
+  ;; field whose own type has none.
+  (expect "the blanket reaches a hand-written implementation"
+          (= (Wrapper (plain (Plain (a 1) (b 2))) (cached c1))
+             (Wrapper (plain (Plain (a 1) (b 2))) (cached c2))))
+  (expect "and still separates what really differs"
+          (not (= (Wrapper (plain (Plain (a 1) (b 2))) (cached c1))
+                  (Wrapper (plain (Plain (a 9) (b 2))) (cached c1)))))
+
+  ;; A tuple of an arity nothing implements has a head key of its own, so it
+  ;; falls to the blanket rather than off the end.
+  (expect "a five-tuple" (= (Tuple 1 2 3 4 5) (Tuple 1 2 3 4 5)))
+  (expect "a five-tuple, differing" (not (= (Tuple 1 2 3 4 5) (Tuple 1 2 3 4 6))))
 
   0)

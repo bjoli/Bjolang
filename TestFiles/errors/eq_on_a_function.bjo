@@ -1,0 +1,22 @@
+;; `=` on two functions.
+;;
+;; The blanket implementation means a type with none of its own still has an
+;; equality, so this is one of the few things `=` cannot do — and it is an
+;; accident rather than a decision. A `(-> int int)` has no head constructor,
+;; and resolution needs one to look up before it can fall back to a blanket.
+;;
+;; There is no negative-implementation mechanism, so there is no way to say
+;; "this type has no meaningful equality" about a type that *does* have a head:
+;; `(= p q)` on two ports compiles and means reference identity.
+
+;; EXPECT-ERROR: no implementation of trait 'Eq'
+;; EXPECT-ERROR: (-> int int)
+;; EXPECT-ERROR: no head constructor
+
+(import (std prelude))
+
+(: twice (-> int int))
+(defun (twice x) (* 2 x))
+
+(defun (main args)
+  (if (= twice twice) 1 0))

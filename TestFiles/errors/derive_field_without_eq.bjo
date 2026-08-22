@@ -1,4 +1,8 @@
-;; A derived type holding a field whose type has no `Eq`.
+;; A derived type holding a field whose type cannot have an `Eq`.
+;;
+;; A record field is almost always fine — the blanket covers any type with a
+;; head constructor — so what is left is the structural types that have none. A
+;; callback stored in a record is the one that turns up in practice.
 ;;
 ;; Every node a macro builds carries the *call site's* range, so the line a
 ;; derived comparison reports is the `type/derive` form rather than the field
@@ -6,15 +10,13 @@
 ;; the implementation it was needed by, which between them say which field.
 
 ;; EXPECT-ERROR: no implementation of trait 'Eq'
-;; EXPECT-ERROR: Opaque
-;; EXPECT-ERROR: in the implementation of 'Eq' for 'Holder'
+;; EXPECT-ERROR: (-> int int)
+;; EXPECT-ERROR: in the implementation of 'Eq' for
+;; EXPECT-ERROR: Handler
 
 (import (std prelude))
 
-(type
-  (: Opaque (Record (: n int))))
-
 (type/derive (Eq)
-  (: Holder (Record (: name string) (: thing Opaque))))
+  (: Handler (Record (: name string) (: run (-> int int)))))
 
 (defun (main args) 0)

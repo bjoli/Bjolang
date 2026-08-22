@@ -3,6 +3,51 @@
 
 What each change guarantees, and what it leaves open.
 
+* A blanket ~Eq~
+
+#+BEGIN_SRC scheme
+(def/impl (Eq %a)
+  (defun (= a b) (clr-equals a b))
+  (defun (eq-hash a) (clr-hash a)))
+#+END_SRC
+
+In ~(std eq)~, which the orphan rule already required: a blanket applies at every
+type that has none of its own, so one declared elsewhere would change what ~=~
+means for modules that never heard of it.
+
+This lands last, and that ordering is the whole of why it is safe. .NET's
+equality for a record, struct or union the compiler emitted *is* that type's own
+~Eq~ implementation, because ~Equals~ and ~GetHashCode~ are emitted as calls to
+it. So the blanket routes to a hand-written implementation wherever one exists,
+at any nesting depth — it is "derive, applied automatically" rather than a second
+equality. Landed before materialization it would have been the split it exists
+to prevent: ~(= p q)~ finding the user's implementation and ~(= (Some p) (Some
+q))~ finding .NET's.
+
+** What is guaranteed
+
+- ~=~ works at every type with a head constructor. A record with no
+  implementation compares field-wise; a class-backed one compares by identity.
+- A tuple of an arity nothing implements — five or more — reaches the blanket
+  through its synthetic head key rather than failing.
+- A hand-written implementation still wins wherever there is one, including
+  through a field whose own type has none.
+
+** What is still open
+
+- *Nothing can opt out.* ~(= p q)~ on two ports, or two fibers, compiles and
+  means reference identity. There is no negative-implementation mechanism. The
+  lever available, if a type's equality is genuinely meaningless, is to emit an
+  ~Equals~ that throws — turning a silent wrong answer into a runtime one.
+- *A type with no head constructor is not covered.* Resolution needs a head to
+  look up before it can fall back to a blanket, so ~(= f g)~ on two functions is
+  a type error. It says so, and names the implementation it was needed by.
+- *A generic type still keeps C#'s synthesized equality.* Materialization is
+  skipped for it, for the reason in the previous entry. The blanket now makes the
+  missing dictionary constructible, so this could be closed; it has not been,
+  because a derived implementation agrees with the synthesized one anyway and
+  only a hand-written implementation for a generic type can differ.
+
 * ~derive~, and equality that .NET agrees with
 
 Two things, shipping together because both touch record, struct and union code

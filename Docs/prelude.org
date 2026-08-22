@@ -61,9 +61,15 @@ A generic function that compares two values acquires the constraint without bein
 Two deliberate choices worth knowing:
 
 - ~double~ uses ~Equals~ rather than ~==~, so ~(= x x)~ is true for ~NaN~. Every hash-based container assumes its keys are reflexive; IEEE's answer is the other one, and it is not available through ~=~.
-- ~=~ on a ~Map~ matches keys by lookup, so key equality there is still .NET's while values go through ~Eq~. That is the one gap left open, and it closes when a type's ~Equals~ is emitted as a call to its ~Eq~ implementation.
+- ~=~ on a ~Map~ matches keys by lookup, so key equality there is the trie's — which is .NET's, which is the key type's own implementation.
 
-A type with no implementation is a clean error — /no implementation of trait 'Eq' for 'Point'/ — not a C# compile failure. Writing one by hand is ordinary:
+*** The blanket
+A type with no implementation of its own gets .NET's equality, through a blanket implementation in ~(std eq)~. For a record, struct or union the compiler emitted, .NET's equality *is* that type's own ~Eq~ implementation — see *What .NET asks* below — so the blanket is "derive, applied automatically" rather than a second equality, and it reaches a hand-written implementation through a field at any depth.
+
+Two consequences worth knowing. Nothing can opt *out*: ~(= p q)~ on two ports, or two fibers, compiles and means reference identity, and there is no negative-implementation mechanism to say otherwise. And a type with no *head constructor* is not covered at all, because resolution needs a head to look up before it can fall back to a blanket — so ~(= f g)~ on two functions is a type error saying so.
+
+*** Writing one by hand
+Writing one by hand is ordinary, and is how a type says its equality is not its fields:
 
 #+BEGIN_SRC scheme
 (def/impl (Eq Point)
