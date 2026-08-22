@@ -280,6 +280,30 @@
     acc)
   (defun (finish c acc) (orderedmapbuilder->orderedmap acc)))
 
+;; Two ordered maps are equal when they hold the same entries.
+;;
+;; A paired walk rather than a lookup per key, and that is what the ordering
+;; buys: both trees walk in key order, so keys and values alike are compared
+;; through `Eq` and the tree's own `Comparer<TK>` never has to be trusted to
+;; agree with it. `(Map %k %v)` cannot do this — it has to ask the trie, which
+;; leaves its keys on .NET equality.
+;;
+;; The lists are the price. `OrderedMap.OrderedMap` is a C# class with no
+;; structural `Equals` of its own, so before this `=` on two of them was
+;; reference identity; a walk that allocates is a great deal better than an
+;; answer that is wrong.
+(def/impl (Eq (OrderedMap %k %v))
+  (where (Eq %k) (Eq %v))
+  (defun (= a b)
+    (and (= (orderedmap-length a) (orderedmap-length b))
+         (= (orderedmap->list a) (orderedmap->list b))))
+  ;; Order *does* matter here, and may: the walk is by key, so two equal maps
+  ;; produce the same sequence whatever order they were built in.
+  (defun (eq-hash m)
+    (orderedmap-fold (fun (h k v) (hash-combine h (hash-combine (eq-hash k) (eq-hash v))))
+                     17
+                     m)))
+
 ;; One entry, as `key value`. A function of its own because a loop clause is a
 ;; body of expressions and a `def` is a declaration, so the pair has to come
 ;; apart somewhere that a binding may be introduced.

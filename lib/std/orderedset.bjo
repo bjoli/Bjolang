@@ -246,6 +246,27 @@
 
 ;; `#{1 2 3}`, in order — which for this set is a fact rather than an artefact,
 ;; so two equal sets always print the same.
+;; Two ordered sets are equal when they hold the same elements.
+;;
+;; A paired walk rather than a membership test, and that is what the ordering
+;; buys: both trees walk in the same order, so the comparison is element against
+;; element through `Eq` and the tree's own `Comparer<T>` never has to be trusted
+;; to agree with it. `(Set %a)` cannot do this — it has to ask the trie.
+;;
+;; The lists are the price. `OrderedSet.OrderedSet` is a C# class with no
+;; structural `Equals` of its own, so before this `=` on two of them was
+;; reference identity; a walk that allocates is a great deal better than an
+;; answer that is wrong.
+(def/impl (Eq (OrderedSet %a))
+  (where (Eq %a))
+  (defun (= a b)
+    (and (= (orderedset-length a) (orderedset-length b))
+         (= (orderedset->list a) (orderedset->list b))))
+  ;; Order *does* matter here, and may: the walk is sorted, so two equal sets
+  ;; produce the same sequence whatever order they were built in.
+  (defun (eq-hash s)
+    (orderedset-fold (fun (h x) (hash-combine h (eq-hash x))) 17 s)))
+
 (: orderedset->str (-> (OrderedSet %a) string) (where (->str %a)))
 (defun (orderedset->str s)
   (let ((sb (stringbuilder-empty)))

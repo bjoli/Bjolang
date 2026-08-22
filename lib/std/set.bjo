@@ -208,6 +208,26 @@
   (defun (step c acc x) (setbuilder-add! acc x) acc)
   (defun (finish c acc) (setbuilder->set acc)))
 
+;; Two sets are equal when they hold the same elements. Order does not come into
+;; it: the walk order is the trie's, and the trie's is the hashes'.
+;;
+;; Membership is the trie's own lookup, so element equality here is .NET's —
+;; which, for a record, struct or union with an `Eq` implementation, *is* that
+;; implementation. The same caveat as `Map`'s, and the same one place it does not
+;; hold: a generic type whose implementation was hand-written, which keeps C#'s
+;; synthesized equality.
+(def/impl (Eq (Set %a))
+  (where (Eq %a))
+  (defun (= a b)
+    (and (= (set-length a) (set-length b))
+         (set-iter (fun (x) (set-contains? b x)) a)))
+  ;; Order-independent, because the walk order is: xor commutes, so two equal
+  ;; sets built by different routes hash alike. The fold is `Set<T>`'s own,
+  ;; operation and seed both, so `eq-hash` and `GetHashCode` answer the same
+  ;; number for one set rather than merely each agreeing with itself.
+  (defun (eq-hash s)
+    (set-fold (fun (h x) (bitwise-xor h (eq-hash x))) 0 s)))
+
 ;; `#{1 2 3}`, with every element formatted by its own `->str`. The order is the
 ;; trie's, which is stable for a given set and worth nothing beyond that.
 (: set->str (-> (Set %a) string) (where (->str %a)))

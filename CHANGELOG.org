@@ -3,6 +3,36 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~Eq~ for the library's collections
+
+Implementations for ~(Set %a)~, ~(OrderedSet %a)~ and ~(OrderedMap %k %v)~, each
+in its own module, joining the ~(Map %k %v)~ one already in the prelude.
+
+The two ordered ones were the ones that mattered. ~OrderedSet~ and ~OrderedMap~
+are C# classes that had no structural ~Equals~ at all, so ~=~ on two of them
+meant *reference identity*: two sorted sets built separately out of the same
+elements were not equal, silently. They now compare by a paired walk, which is
+what the ordering buys — both trees enumerate in the same order, so keys, values
+and elements alike are compared through ~Eq~ in place, and the tree's own
+~Comparer~ never has to be trusted to agree with equality. ~(Set %a)~ has to ask
+the trie instead, as ~(Map %k %v)~ does, so its element equality is .NET's.
+
+Writing those in Bjolang alone would have *created* a split: ~=~ would have said
+two ordered sets were equal while a ~Map~ keyed on one went on failing to find
+it. So ~OrderedSet<T>~ and ~OrderedMap<TK, TV>~ gained ~Equals~ and
+~GetHashCode~ in the runtime, computing the same paired walk. That is the same
+move materialization makes for a type the compiler emits, done by hand for two
+it does not.
+
+All four collections now compute ~eq-hash~ and ~GetHashCode~ as the *same
+number* — same operation, same seed — rather than each merely agreeing with
+itself. ~Set~ and ~Map~ fold with xor, which is what their C# side already did.
+
+** What is still open
+
+- A transient has no implementation and should not: it is mutable and its
+  identity is the point.
+
 * A blanket ~Eq~
 
 #+BEGIN_SRC scheme
