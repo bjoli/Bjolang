@@ -11,6 +11,9 @@ echo "Building standard library..."
 # `syntax-match` comes before both. It imports nothing at all — deliberately,
 # since `prelude` imports *it* to write `cond` and its neighbours, and a macro
 # has to be compiled before whatever uses it is read.
+# `eq` is below all of them: `=` is a trait method, so every module that
+# compares two values imports the module declaring the trait.
+./bjor --lib lib/std/eq.bjo
 ./bjor --lib lib/std/syntax-match.bjo
 ./bjor --lib lib/std/maths.bjo
 ./bjor --lib lib/std/prelude.bjo

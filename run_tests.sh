@@ -452,6 +452,67 @@ if [ -d "$ERROR_DIR" ] && ls "$ERROR_DIR"/*.bjo >/dev/null 2>&1; then
     done
 fi
 
+# --- Generated-C# assertions -------------------------------------------------
+#
+# A few properties are about the C# that comes out rather than about what the
+# program prints, and no behavioural test can see them. `(= 1 2)` compiling to
+# `(1 == 2)` is the example: `=` is a trait method, so if a statically resolved
+# call stopped being spliced back down to the operator every test here would
+# still pass while the whole numeric surface got slower.
+#
+# Each fixture is compiled as a library with --debug, which dumps the generated
+# C# to `out.cs` in the working directory, and every `;; EXPECT-CS:` line in it
+# is an extended regex the dump has to match. Sequential, and in a directory of
+# its own, because that dump is written to a fixed name.
+CODEGEN_DIR="TestFiles/codegen"
+codegen_total=0
+codegen_failed=0
+declare -a codegen_failures
+
+if [ -d "$CODEGEN_DIR" ] && ls "$CODEGEN_DIR"/*.bjo >/dev/null 2>&1; then
+    echo "--------------------------------------------------"
+    echo -e "${BLUE}Checking the generated C#...${NC}"
+
+    ROOT="$PWD"
+    CS_WORK="$LOG_DIR/codegen"
+    mkdir -p "$CS_WORK"
+
+    for bjo_file in "$CODEGEN_DIR"/*.bjo; do
+        cs_name=$(basename "$bjo_file" .bjo)
+        codegen_total=$((codegen_total + 1))
+
+        ( cd "$CS_WORK" && dotnet "$ROOT/$COMPILER_DLL" --debug --lib "$ROOT/$bjo_file" ) \
+            > "$LOG_DIR/cs_${cs_name}.log" 2>&1
+        cs_status=$?
+
+        rm -f "${bjo_file%.bjo}.dll" "${bjo_file%.bjo}.pdb"
+
+        if [ $cs_status -ne 0 ]; then
+            echo -e "  [${RED}FAIL${NC}] $cs_name.bjo"
+            codegen_failed=$((codegen_failed + 1))
+            codegen_failures+=("$cs_name.bjo: did not compile")
+            continue
+        fi
+
+        cs_missing=""
+        while IFS= read -r pattern; do
+            [ -z "$pattern" ] && continue
+            if ! grep -qE -- "$pattern" "$CS_WORK/out.cs"; then
+                cs_missing="$pattern"
+                break
+            fi
+        done < <(sed -n 's/^;;[[:space:]]*EXPECT-CS:[[:space:]]*//p' "$bjo_file")
+
+        if [ -n "$cs_missing" ]; then
+            echo -e "  [${RED}FAIL${NC}] $cs_name.bjo"
+            codegen_failed=$((codegen_failed + 1))
+            codegen_failures+=("$cs_name.bjo: the generated C# has no match for: $cs_missing")
+        else
+            echo -e "  [${GREEN}PASS${NC}] $cs_name.bjo"
+        fi
+    done
+fi
+
 end_time=$(date +%s.%N 2>/dev/null || date +%s)
 duration=$(echo "$end_time - $start_time" | bc -l 2>/dev/null)
 if [ -z "$duration" ]; then
@@ -478,6 +539,9 @@ echo -e "Successful runs:    $success_count"
 if [ $error_total -gt 0 ]; then
     echo -e "Error tests:        $((error_total - error_failed))/$error_total rejected as expected"
 fi
+if [ $codegen_total -gt 0 ]; then
+    echo -e "Codegen tests:      $((codegen_total - codegen_failed))/$codegen_total emitted as expected"
+fi
 echo -e "Total time:         ${duration}s"
 echo ""
 
@@ -489,8 +553,17 @@ if [ ${#error_failures[@]} -ne 0 ]; then
     echo ""
 fi
 
+if [ ${#codegen_failures[@]} -ne 0 ]; then
+    echo -e "${RED}=== Codegen Test Failures ===${NC}"
+    for failure in "${codegen_failures[@]}"; do
+        echo -e "  $failure"
+    done
+    echo ""
+fi
+
 # Print failure details
-if [ $error_failed -ne 0 ] && [ ${#compiled_failed[@]} -eq 0 ] && [ ${#run_failed[@]} -eq 0 ]; then
+if { [ $error_failed -ne 0 ] || [ $codegen_failed -ne 0 ]; } \
+   && [ ${#compiled_failed[@]} -eq 0 ] && [ ${#run_failed[@]} -eq 0 ]; then
     exit 1
 fi
 

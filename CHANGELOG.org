@@ -1,0 +1,85 @@
+#+TITLE: Changelog
+#+STARTUP: showall
+
+What each change guarantees, and what it leaves open.
+
+* Equality is a trait
+
+~=~ is a method of ~Eq~, declared in ~(std eq)~ and re-exported by the prelude:
+
+#+BEGIN_SRC scheme
+(def/trait (Eq %a)
+  (: = (-> %a %a bool))
+  (: eq-hash (-> %a int)))
+#+END_SRC
+
+Before this there were three unrelated equalities. ~=~ was typed ~(-> %a %a
+bool)~ and emitted as C# ~==~, which does not compile at a type variable, does
+not compile on ~Option~ or ~Result~, and silently means *reference* equality on
+~List~ and ~Vec~. ~equal?~ was ~EqualityComparer<T>.Default.Equals~. ~eq?~ was
+~ReferenceEquals~.
+
+** What is guaranteed
+
+- One equality. ~equal?~ is gone; it *is* ~=~ now. ~eq?~ is unchanged and still
+  means object identity — for mutable cells, and silently structural on a value
+  type.
+- ~=~ at a type with no implementation is a type error naming the trait and the
+  type, rather than a C# compile failure or a wrong answer.
+- A container compares its elements through *their* ~Eq~ implementation, so
+  ~(= (Some p) (Some q))~ reaches whatever ~p~'s type says equality is, at any
+  depth. Implementations ship for ~List~, ~Vec~, ~Option~, ~Result~, ~Map~ and
+  tuples of two, three and four elements.
+- A generic function acquires ~(where (Eq %a))~ from its body. Nothing that
+  compared two values has to be annotated.
+- ~(= 1 2)~ still emits ~(1 == 2)~. A statically resolved call is spliced, so
+  the primitive path costs no dictionary and no allocation — asserted against
+  the generated C# in ~TestFiles/codegen/equality.bjo~, because no behavioural
+  test can see it.
+- ~eq-hash~ lives in the same trait as ~=~ rather than in one of its own,
+  because it is derived from the same choice of fields. There are no default
+  bodies: the only body a default could have is "ask .NET", which is wrong in
+  exactly the case someone wrote an implementation for.
+- ~double~ is reflexive on ~NaN~, deliberately: it uses ~Equals~ rather than
+  ~==~, because a hash-based container cannot find a key that is not equal to
+  itself. IEEE's answer is not available through ~=~.
+
+** What is still open
+
+- *A hand-written implementation and .NET disagree.* C# still synthesizes
+  ~Equals~ and ~GetHashCode~ for a record or struct, so ~(def/impl (Eq Point)
+  ...)~ governs every ~=~ in Bjolang while ~Map~, ~Set~, ~HashSet<Point>~,
+  ~Distinct()~ and every other .NET consumer go on using the synthesized ones.
+  Nothing in the language reaches them — every ~=~ is a trait call and the
+  container implementations are Bjolang — but a ~Map~ keyed on a type with a
+  hand-written implementation is keyed on a different equality from the one ~=~
+  answers with.
+
+  This closes when a record's ~Equals~ is emitted as a call to its ~Eq~
+  implementation. It is deliberately not papered over by threading ~Eq~
+  dictionaries into ~Map~ and ~Set~: that would fix two containers and leave
+  interop broken, where emitting ~Equals~ fixes all of it in one place.
+
+- *~=~ on a ~Map~ matches keys by lookup*, so key equality there is the trie's —
+  .NET's — while values go through ~Eq~. The same fix closes it.
+
+- *There is no ~derive~.* An implementation over a record's fields is written by
+  hand.
+
+- *Tuples reach ~Eq~ through a synthetic constructor key* (~Tuple2~, ~Tuple3~,
+  ...); functions and other structural types have no head constructor and so
+  cannot have an implementation at all.
+
+** Incidental
+
+- ~clr-eq~, ~clr-equals~ and ~clr-hash~ are builtins private to ~(std eq)~,
+  refused by name anywhere else. They are what the primitive implementations are
+  written in, and they are shut away against the day a type's ~Equals~ is its
+  ~Eq~ implementation — at which point an implementation written with one of
+  them calls itself forever.
+- ~hash-combine~ is a builtin, for writing an ~eq-hash~ over several fields.
+- A trait method's arguments are now all positional, keyword literals included.
+  ~(= k #:foo)~ compares a keyword; it is not a call with a keyword argument,
+  and no trait declares one.
+- ~run_tests.sh~ grew a ~TestFiles/codegen~ stage: each ~;; EXPECT-CS:~ line in
+  a fixture is a regex the generated C# has to match.

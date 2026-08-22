@@ -90,6 +90,11 @@
 (import/extern
   (clr-tostring (: System.Convert.ToString)))
 
+;; First, and before the includes: `=` is a trait method now, and a call to one
+;; is only recognized as such once the trait has been registered.
+(import (std eq))
+(re-export = eq-hash)
+
 (include "Foldable.protobjo")
 (include "Monad.protobjo")
 
@@ -346,6 +351,29 @@
   (type %item (Tuple %k %v))
   (defun (fold f acc col)
     (map-fold (fun (acc2 k v) (f acc2 (Tuple k v))) acc col)))
+
+;; Two maps are equal when they hold the same entries.
+;;
+;; Keys are matched by *lookup*, so key equality here is the trie's, which is
+;; .NET's; only the values go through `Eq %v`. That is the one place `=` is not
+;; yet the single answer §0 asks for, and it closes when a type's `Equals` is
+;; emitted as a call to its `Eq` implementation — after which the trie is asking
+;; the same question this trait is.
+(def/impl (Eq (Map %k %v))
+  (where (Eq %k) (Eq %v))
+  (defun (= a b)
+    (and (= (map-length a) (map-length b))
+         (map-iter (fun (k v)
+                     (match (map-try-ref b k)
+                       ((Some w) (= v w))
+                       (None #f)))
+                   a)))
+  ;; Order-independent, because the trie's walk order is: addition commutes, so
+  ;; two equal maps built by different routes still hash alike. Combination
+  ;; *within* an entry does not commute, so a key and its value cannot swap
+  ;; places unnoticed.
+  (defun (eq-hash m)
+    (map-fold (fun (h k v) (+ h (hash-combine (eq-hash k) (eq-hash v)))) 0 m)))
 
 ;; --- Conversions ---
 ;;

@@ -1,0 +1,27 @@
+;; What `=` compiles to.
+;;
+;; Behavioural tests cannot see any of this. `=` is a trait method now, and if
+;; a resolved call stopped being spliced back down to the operator every one of
+;; them would still pass while the whole numeric surface got slower and started
+;; allocating dictionaries.
+;;
+;; Each `EXPECT-CS` line is an extended regex the generated C# has to match.
+
+;; The primitive implementation is `(clr-eq a b)`, spliced at the call site, so
+;; a concrete comparison is the C# operator and nothing else: no dictionary, no
+;; interface call, no allocation.
+;; EXPECT-CS: return \(1 == 2\);
+(: on-literals (-> bool))
+(defun (on-literals) (= 1 2))
+
+;; EXPECT-CS: return \(a == b\);
+(: on-strings (-> string string bool))
+(defun (on-strings a b) (= a b))
+
+;; A generic receiver cannot be spliced — which implementation runs is not known
+;; here — so it takes the dictionary, and the `Eq` constraint was inferred from
+;; the body rather than written.
+;; EXPECT-CS: bool atsubasubvariable<T_a>\(Eq<T_a> _dict_Eq_a, T_a a, T_a b\)
+;; EXPECT-CS: return _dict_Eq_a\.eq\(a, b\);
+(: at-a-variable (-> %a %a bool))
+(defun (at-a-variable a b) (= a b))

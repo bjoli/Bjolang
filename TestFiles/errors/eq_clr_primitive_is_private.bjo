@@ -1,0 +1,20 @@
+;; .NET's equality, reached from outside `(std eq)`.
+;;
+;; It is shut away because it is the thing a type's own `Eq` implementation is
+;; going to *become*: the emitted `Equals` of a record with an implementation
+;; calls that implementation, so an implementation written in terms of .NET
+;; equality calls itself. The failure would be a stack overflow naming neither
+;; the impl nor the type, so the name is refused instead.
+
+;; EXPECT-ERROR: 'clr-eq' is private to std/eq
+
+(import (std prelude))
+
+(type
+  (: Point (Record (: x int) (: y int))))
+
+(def/impl (Eq Point)
+  (defun (= a b) (clr-eq a b))
+  (defun (eq-hash p) 0))
+
+(defun (main args) 0)

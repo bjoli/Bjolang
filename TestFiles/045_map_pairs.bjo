@@ -45,7 +45,7 @@
 
   ;; map-map sees the key and the value and returns the new value.
   (def tagged (map-map (fun (k v) (string-append k (int->string v))) m))
-  (expect "map-map" (equal? (map-ref tagged "b") "b2"))
+  (expect "map-map" (= (map-ref tagged "b") "b2"))
 
   (def big (map-filter (fun (_ v) (> v 1)) m))
   (expect "map-filter count" (= (map-length big) 2))
@@ -63,14 +63,14 @@
   (expect "iter stops" (not (map-iter (fun (_ v) (> v 2)) m)))
 
   ;; map-any? is the same question the other way up.
-  (expect "any? hit" (map-any? (fun (k _) (equal? k "c")) m))
-  (expect "any? miss" (not (map-any? (fun (k _) (equal? k "z")) m)))
+  (expect "any? hit" (map-any? (fun (k _) (= k "c")) m))
+  (expect "any? miss" (not (map-any? (fun (k _) (= k "z")) m)))
 
   ;; map-find answers an Option over the whole entry: a value being handed
   ;; back, so a pair.
   (expect "find hit"
           (match (map-find (fun (_ v) (= v 2)) m)
-            ((Some entry) (equal? (tuple-key entry) "b"))
+            ((Some entry) (= (tuple-key entry) "b"))
             (None false)))
   (expect "find miss"
           (match (map-find (fun (_ v) (> v 99)) m)
@@ -89,7 +89,7 @@
 
   ;; Through the trait, changing the value type as it goes.
   (def shown (map (fun (v) (int->string v)) m))
-  (expect "Functor via trait" (equal? (map-ref shown "c") "3"))
+  (expect "Functor via trait" (= (map-ref shown "c") "3"))
 
   ;; Functor still works for the other instances.
   (expect "Functor on Option"

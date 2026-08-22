@@ -106,15 +106,30 @@ public static partial class BjolangRuntime {
     public static bool @true = true;
     public static bool @false = false;
     
+    // .NET's own equality, which the `Eq` implementations in `std/prelude` are
+    // written in terms of. No top-level `eq` here: a trait method named `=`
+    // mangles to `eq`, and `using static BjolangRuntime` would put a second one
+    // of those in scope of every generated file.
+    //
+    // `Equals` rather than `==`: this is what a hash-based collection asks, so
+    // it is reflexive on `NaN` where `==` is not, and it is the only form that
+    // compiles at an unconstrained `T`.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool eq<T>(T a, T b) => EqualityComparer<T>.Default.Equals(a, b);
+    public static bool clrsubequals<T>(T a, T b) => EqualityComparer<T>.Default.Equals(a, b);
 
-    // `equal?` is structural, `eq?` is identity. Identity on a value type would
-    // box both operands and always answer false, so it falls back to structural
-    // there; the JIT specializes the test away per T.
+    // The hash that goes with it. Reads through the same comparer so that the
+    // two cannot disagree about a type .NET treats specially.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool equal_QMARK<T>(T a, T b) => EqualityComparer<T>.Default.Equals(a, b);
+    public static int clrsubhash<T>(T a) => a is null ? 0 : EqualityComparer<T>.Default.GetHashCode(a);
 
+    // What an `eq-hash` written over several fields folds with. Order matters,
+    // so `(hash-combine (hash x) (hash y))` and its transpose differ.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int hashsubcombine(int a, int b) => HashCode.Combine(a, b);
+
+    // `eq?` is identity. On a value type there is no identity to ask after —
+    // boxing would make every answer false — so it falls back to structural
+    // equality there; the JIT specializes the test away per T.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool eq_QMARK<T>(T a, T b) =>
         typeof(T).IsValueType ? EqualityComparer<T>.Default.Equals(a, b) : ReferenceEquals(a, b);

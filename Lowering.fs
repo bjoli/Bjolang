@@ -115,7 +115,16 @@ let rec buildEvidence
           Range = range
           Node = TIdent(name, []) }
 
-    | TCon(typeName, tconArgs) ->
+    // A tuple dispatches under its synthetic arity key and is otherwise an
+    // ordinary head applied to its element types.
+    | TCon _
+    | TTuple _ ->
+        let typeName, tconArgs =
+            match resolved with
+            | TTuple args -> tupleCtor args.Length, args
+            | TCon(n, args) -> n, args
+            | _ -> failwith "unreachable"
+
         // The same two levels resolution uses — exact head, then the trait's
         // blanket. This is the site that makes the §0.2 guarantee concrete: a
         // value routed through a constrained generic function gets the impl

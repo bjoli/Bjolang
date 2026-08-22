@@ -1,0 +1,220 @@
+;; std/eq.bjo — `=`, and the hash that has to agree with it.
+;;
+;; The bottom of the library, below `std/maths` and `std/syntax-match` and so
+;; below the prelude, which re-exports what is here. It imports nothing: `=` is
+;; written in every module there is, including the two the prelude itself is
+;; built on, so the trait declaring it cannot sit above them.
+(export = eq-hash)
+
+;; ---------------------------------------------------------------------------
+;; Eq — the one equality
+;; ---------------------------------------------------------------------------
+;;
+;; `=` is a trait method, so there is exactly one equality in the language and a
+;; program may define it for its own types. Every path that can ask whether two
+;; values are equal goes through here: `(= a b)` written directly, `(= a b)`
+;; inside a generic function via a dictionary, and `=` reached through a
+;; container's element comparison.
+;;
+;; `eq-hash` is in this trait rather than one of its own because it is derived
+;; from the same choice of fields `=` is. There is no supertrait mechanism to
+;; keep two traits in step, and an implementation that overrode `=` while
+;; inheriting a hash computed from different fields would break every hash-based
+;; container silently. The name is not `hash`, which is too common a word to
+;; reserve program-wide, and not `default-hash`, which stops being true the
+;; moment anyone writes one.
+;;
+;; No default bodies, deliberately. The only body a default could have is "ask
+;; .NET", which is wrong in exactly the case someone wrote an implementation
+;; for: their own type. Every implementation writes both methods.
+(def/trait (Eq %a)
+  (: = (-> %a %a bool))
+  (: eq-hash (-> %a int)))
+
+
+;; --- The primitives --------------------------------------------------------
+;;
+;; Written out rather than generated, because a macro cannot be used in the
+;; module that defines it and this is the module every other one imports.
+;;
+;; `clr-eq` is C# `==` and `clr-hash` is the comparer's hash. Both are private
+;; to this file — see `Naming.eqPrivateBindings` — so `(= 1 2)` compiles to
+;; `(1 == 2)` here without giving user code a way to write an implementation
+;; that calls itself.
+
+(def/impl (Eq int)
+  (defun (= a b) (clr-eq a b))
+  (defun (eq-hash a) (clr-hash a)))
+
+(def/impl (Eq long)
+  (defun (= a b) (clr-eq a b))
+  (defun (eq-hash a) (clr-hash a)))
+
+(def/impl (Eq short)
+  (defun (= a b) (clr-eq a b))
+  (defun (eq-hash a) (clr-hash a)))
+
+(def/impl (Eq byte)
+  (defun (= a b) (clr-eq a b))
+  (defun (eq-hash a) (clr-hash a)))
+
+(def/impl (Eq uint)
+  (defun (= a b) (clr-eq a b))
+  (defun (eq-hash a) (clr-hash a)))
+
+(def/impl (Eq ulong)
+  (defun (= a b) (clr-eq a b))
+  (defun (eq-hash a) (clr-hash a)))
+
+(def/impl (Eq ushort)
+  (defun (= a b) (clr-eq a b))
+  (defun (eq-hash a) (clr-hash a)))
+
+;; `NaN` is the one place the two spellings of .NET equality disagree: C# `==`
+;; says `(= x x)` is false for it, `Equals` says true. This picks `Equals`,
+;; because every hash-based container assumes its keys are reflexive and a key
+;; that is not equal to itself can never be found again. IEEE's answer is still
+;; available — `(not (= x x))` is not it, but a program that wants IEEE
+;; comparison wants `<` and `>`, which are unaffected.
+;;
+;; `eq-hash` reads through the same comparer, so the two agree about `NaN`.
+(def/impl (Eq double)
+  (defun (= a b) (clr-equals a b))
+  (defun (eq-hash a) (clr-hash a)))
+
+(def/impl (Eq bool)
+  (defun (= a b) (clr-eq a b))
+  (defun (eq-hash a) (clr-hash a)))
+
+;; C# `==` on a string is value equality, ordinal, not reference equality.
+(def/impl (Eq string)
+  (defun (= a b) (clr-eq a b))
+  (defun (eq-hash a) (clr-hash a)))
+
+(def/impl (Eq char)
+  (defun (= a b) (clr-eq a b))
+  (defun (eq-hash a) (clr-hash a)))
+
+;; Keywords and symbols are interned, so identity *is* equality for them.
+(def/impl (Eq Keyword)
+  (defun (= a b) (clr-eq a b))
+  (defun (eq-hash a) (clr-hash a)))
+
+(def/impl (Eq Symbol)
+  (defun (= a b) (clr-eq a b))
+  (defun (eq-hash a) (clr-hash a)))
+
+(def/impl (Eq StringCursor)
+  (defun (= a b) (clr-eq a b))
+  (defun (eq-hash a) (clr-hash a)))
+
+;; There is one unit value, so there is one answer.
+(def/impl (Eq void)
+  (defun (= a b) #t)
+  (defun (eq-hash a) 0))
+
+
+;; --- The containers --------------------------------------------------------
+;;
+;; Each of these compares elements through the `%a` dictionary rather than
+;; through .NET equality, and that is the point of writing them at all:
+;; `(= (Some p) (Some q))` has to reach the user's `Eq` implementation for `p`'s
+;; type. Routed through `Option.Equals` instead, .NET would pick
+;; `EqualityComparer<Point>.Default` — C#'s synthesized record equality — and
+;; the user's implementation would be discarded one level down while looking
+;; correct at the top.
+;;
+;; The bodies use builtins only. A helper defined in this module would have to
+;; be in scope wherever the body is spliced, and these are spliced into every
+;; module that compares a list.
+
+(def/impl (Eq (List %a))
+  (where (Eq %a))
+  (defun (= xs ys)
+    (if (list-empty? xs)
+        (list-empty? ys)
+        (and (not (list-empty? ys))
+             (and (= (list-head xs) (list-head ys))
+                  (= (list-tail xs) (list-tail ys))))))
+  (defun (eq-hash xs)
+    (list-foldl (fun (h x) (hash-combine h (eq-hash x))) 17 xs)))
+
+(def/impl (Eq (Vec %a))
+  (where (Eq %a))
+  (defun (= xs ys)
+    (defun (same-from i)
+      (if (= i (vec-length xs))
+          #t
+          (and (= (vec-ref xs i) (vec-ref ys i))
+               (same-from (+ i 1)))))
+    (and (= (vec-length xs) (vec-length ys))
+         (same-from 0)))
+  (defun (eq-hash xs)
+    (vec-fold (fun (h x) (hash-combine h (eq-hash x))) 17 xs)))
+
+(def/impl (Eq (Option %a))
+  (where (Eq %a))
+  (defun (= a b)
+    (match a
+      ((Some x)
+       (match b
+         ((Some y) (= x y))
+         (None #f)))
+      (None (none? b))))
+  (defun (eq-hash o)
+    (match o
+      ((Some x) (hash-combine 1 (eq-hash x)))
+      (None 0))))
+
+;; Tuples, one implementation per arity.
+;;
+;; A tuple has no head constructor, so these are filed under a synthetic key —
+;; `Tuple2`, `Tuple3`, … — which is what lets resolution find them at all. See
+;; `TypedAST.tupleCtor`.
+(def/impl (Eq (Tuple %a %b))
+  (where (Eq %a) (Eq %b))
+  (defun (= x y)
+    (def (a1 b1) x)
+    (def (a2 b2) y)
+    (and (= a1 a2) (= b1 b2)))
+  (defun (eq-hash x)
+    (def (a b) x)
+    (hash-combine (eq-hash a) (eq-hash b))))
+
+(def/impl (Eq (Tuple %a %b %c))
+  (where (Eq %a) (Eq %b) (Eq %c))
+  (defun (= x y)
+    (def (a1 b1 c1) x)
+    (def (a2 b2 c2) y)
+    (and (= a1 a2) (and (= b1 b2) (= c1 c2))))
+  (defun (eq-hash x)
+    (def (a b c) x)
+    (hash-combine (hash-combine (eq-hash a) (eq-hash b)) (eq-hash c))))
+
+(def/impl (Eq (Tuple %a %b %c %d))
+  (where (Eq %a) (Eq %b) (Eq %c) (Eq %d))
+  (defun (= x y)
+    (def (a1 b1 c1 d1) x)
+    (def (a2 b2 c2 d2) y)
+    (and (and (= a1 a2) (= b1 b2)) (and (= c1 c2) (= d1 d2))))
+  (defun (eq-hash x)
+    (def (a b c d) x)
+    (hash-combine (hash-combine (eq-hash a) (eq-hash b))
+                  (hash-combine (eq-hash c) (eq-hash d)))))
+
+(def/impl (Eq (Result %e %a))
+  (where (Eq %e) (Eq %a))
+  (defun (= a b)
+    (match a
+      ((Ok x)
+       (match b
+         ((Ok y) (= x y))
+         ((Err _) #f)))
+      ((Err x)
+       (match b
+         ((Ok _) #f)
+         ((Err y) (= x y))))))
+  (defun (eq-hash r)
+    (match r
+      ((Ok x) (hash-combine 1 (eq-hash x)))
+      ((Err e) (hash-combine 2 (eq-hash e))))))

@@ -275,6 +275,9 @@ and private spliceTemplate
         // 2. Each parameter is bound at the argument's *concrete* type. Not a
         //    fresh metavariable: the whole point of re-inference is that the
         //    body gets to see what it is actually being applied to.
+        //    Checked under the module the *body* came from, not the one it is
+        //    landing in: a template may name something its own module is
+        //    allowed to name and this one is not.
         let spliceEnv =
             List.zip freshParams args
             |> List.fold
@@ -284,7 +287,7 @@ and private spliceTemplate
                         { Scheme = Scheme([], [], prune ctx.Env.Registry arg.Type)
                           IsMutable = false }
                         acc)
-                ctx.Env
+                { ctx.Env with CurrentModule = tpl.OriginModule }
 
         // 3. Re-infer the body expression directly. Never re-wrapped as a
         //    lambda first: `infer`'s `EFun` case binds each parameter to a fresh
@@ -323,16 +326,12 @@ let rec private inlineDecl (ctx: Ctx) (decl: TDecl) : TDecl =
     | TModule(name, decls, r) -> TModule(name, decls |> List.map (inlineDecl ctx), r)
 
     | TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods, r) ->
-        let ctor =
-            match targetType with
-            | TCon(n, _) -> n
-            // A blanket impl, whose methods key off the sentinel exactly as a
-            // specific impl's key off their constructor. Getting this wrong
-            // would not be a miscompile — the key would simply never match, and
-            // every self-call in a blanket body would inline one gratuitous
-            // copy of itself before falling back.
-            | TVar _ -> BlanketCtor
-            | _ -> ""
+        // A blanket impl's methods key off the sentinel exactly as a specific
+        // impl's key off their constructor, and a tuple's off its arity.
+        // Getting this wrong would not be a miscompile — the key would simply
+        // never match, and every self-call in such a body would inline one
+        // gratuitous copy of itself before falling back.
+        let ctor = implCtorKey targetType |> Option.defaultValue ""
 
         // A method of an impl is its own recursive edge. Holding its key down
         // over its own body means a self-call becomes the landing pad, which

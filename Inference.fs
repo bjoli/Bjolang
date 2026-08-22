@@ -603,6 +603,7 @@ let private tryResolveWanted (env: Env) (w: Wanted) : bool =
         |> List.tryPick (fun (m, _) ->
             match prune registry m with
             | TCon(ctor, _) -> Some ctor
+            | TTuple args -> Some(tupleCtor args.Length)
             | _ -> None)
 
     match ctorOpt with
@@ -641,12 +642,12 @@ let private tryResolveWanted (env: Env) (w: Wanted) : bool =
                 true
             | None ->
                 failwithf
-                    $"Type Error at %s{Lexer.formatPos w.Range}: no implementation of trait '%s{w.Trait}' for '%s{ctor}', required by '%s{w.Method}'."
+                    $"Type Error at %s{Lexer.formatPos w.Range}: no implementation of trait '%s{w.Trait}' for '%s{Naming.showTypeName ctor}', required by '%s{w.Method}'."
         | Some target ->
             let prefix, classTypeArgs = instantiateImplPrefix target
 
             for (m, occArgs) in w.HoleArgs do
-                unify registry m (TCon(ctor, prefix @ occArgs))
+                unify registry m (implTargetType ctor (prefix @ occArgs))
 
             w.Ref.Resolved <- Some(ctor, classTypeArgs |> List.map (prune registry))
             true
@@ -737,6 +738,20 @@ let implTargetOf
           FixedPrefix = [ targetType ]
           HoleArity = 0
           Constraints = [] }
+
+    // A tuple, under its synthetic arity key. Nothing abstracts over a tuple's
+    // trailing arguments — there is no constructor to apply — so the whole of
+    // it is the fixed prefix and only a first-order trait can be implemented
+    // for one.
+    | TTuple args ->
+        if info.HoleArity > 0 then
+            failwithf
+                $"Kind Error at %s{Lexer.formatPos r}: trait '%s{traitName}' abstracts over the last %d{info.HoleArity} argument(s) of its implementor, and a tuple has no constructor for it to abstract over."
+
+        { Ctor = tupleCtor args.Length
+          FixedPrefix = args
+          HoleArity = 0
+          Constraints = constraints }
 
     | _ -> failwithf $"Trait implementations require concrete target types at %s{Lexer.formatPos r}"
 
@@ -1363,6 +1378,15 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
           Range = r
           Node = TString value }
 
+    // `std/eq`'s own equality primitives, refused everywhere else. See
+    // `Naming.eqPrivateBindings` for why they are shut away at all.
+    | EIdent(name, r) when
+        Set.contains name Naming.eqPrivateBindings
+        && env.CurrentModule <> Naming.eqModuleName
+        ->
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: '%s{name}' is private to std/eq. It is .NET's equality, and a type's own `Eq` implementation is what .NET equality is made *of* — writing one in terms of the other is a loop. Compare the fields instead, or derive."
+
     // An inline trait's methods are never bound as values: there is no single
     // scheme they could be bound under, which is the whole reason the trait is
     // inline-only.
@@ -1659,13 +1683,13 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     | EApp(EIdent(methodName, _), args, r) when Map.containsKey methodName env.Registry.TraitMethods ->
         let traitName = env.Registry.TraitMethods[methodName]
 
-        let typedArgs =
-            args
-            |> List.map (function
-                | EKeyword(kw, kr) ->
-                    failwithf
-                        $"Type Error at %s{Lexer.formatPos kr}: trait method '%s{methodName}' takes positional arguments only, but was given '#:%s{kw}'."
-                | a -> infer env a)
+        // Every argument is positional, keywords included. A trait method's
+        // shape is fixed by its trait and no trait declares a keyword
+        // parameter, so `#:foo` here can only be the keyword *value* — which
+        // `(= k #:foo)` is, now that `Keyword` has an `Eq` implementation. A
+        // call written as though it took keyword arguments fails on arity
+        // instead, which is what it is.
+        let typedArgs = args |> List.map (infer env)
 
         let methodType, tref = traitCallType env traitName methodName r
         let retType = freshMeta ()
@@ -4298,13 +4322,18 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
         let targetType = resolveTypeAnnotation env.Registry targetTypeExpr
 
         let typeKey =
-            match targetType with
-            | TCon(name, _) -> name
-            | TVar _ -> BlanketCtor
-            | _ -> failwithf $"Trait implementations require concrete target types at %s{Lexer.formatPos r}"
+            match implCtorKey targetType with
+            | Some k -> k
+            | None -> failwithf $"Trait implementations require concrete target types at %s{Lexer.formatPos r}"
 
         let isLocalTrait = env.Registry.IsTraitDefinedLocally(traitName)
-        let isLocalType = typeKey <> BlanketCtor && env.Registry.IsTypeDefinedLocally(typeKey)
+
+        // A tuple belongs to no module, exactly as `List` and `Option` do, so
+        // the "or the module defining the type" half of the orphan rule has
+        // nothing to hold it to.
+        let isLocalType =
+            typeKey <> BlanketCtor
+            && (isTupleCtor typeKey || env.Registry.IsTypeDefinedLocally(typeKey))
 
         // The orphan rule, and it is what keeps the blanket fallback from being
         // a source of action at a distance. Once impls can overlap, adding one
@@ -4631,10 +4660,9 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
         let targetType = resolveTypeAnnotation env.Registry targetTypeExpr
 
         let typeKey =
-            match targetType with
-            | TCon(name, _) -> name
-            | TVar _ -> BlanketCtor
-            | _ -> failwithf $"Trait implementations require concrete target types at %s{Lexer.formatPos r}"
+            match implCtorKey targetType with
+            | Some k -> k
+            | None -> failwithf $"Trait implementations require concrete target types at %s{Lexer.formatPos r}"
 
         let traitInfo =
             match Map.tryFind traitName env.Registry.Traits with

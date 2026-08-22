@@ -1,0 +1,121 @@
+;; `=` is a trait method.
+;;
+;; One equality for the primitives, the containers, tuples and a program's own
+;; types, defined in `(std eq)` and re-exported by the prelude. What is checked
+;; here is that every path to it gives the same answer: written directly,
+;; written as a value, reached through a generic function's dictionary, and
+;; reached through a container's element comparison.
+(import (std prelude))
+
+(: expect (-> string bool void))
+(defun (expect label actual)
+  (if actual
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " label))))
+
+;; No `(where (Eq %a))` written anywhere here. The constraint is inferred from
+;; the body, which is the point: a function that compares two values says so by
+;; comparing them.
+(: member? (-> %a (List %a) bool))
+(defun (member? x xs)
+  (if (list-empty? xs)
+      #f
+      (if (= x (list-head xs))
+          #t
+          (member? x (list-tail xs)))))
+
+;; A higher-order position, so that a bare `=` has somewhere to be a value.
+(: applied (-> (-> %a %a bool) %a %a bool))
+(defun (applied f a b) (f a b))
+
+;; `Ok`'s error type is open at the constructor, so it is pinned by a signature
+;; rather than at each use.
+(: ok-1 (-> (Result string int)))
+(defun (ok-1) (Ok 1))
+
+(: err-bad (-> (Result string int)))
+(defun (err-bad) (Err "bad"))
+
+(defun (main)
+  ;; ---- the primitives -----------------------------------------------------
+  (expect "(= 1 1)" (= 1 1))
+  (expect "(not (= 1 2))" (not (= 1 2)))
+  (expect "(= 1.0 1.0)" (= 1.0 1.0))
+  (expect "(= #\\a #\\a)" (= #\a #\a))
+  (expect "(= \"x\" \"x\")" (= "x" "x"))
+  (expect "(not (= #t #f))" (not (= #t #f)))
+  (expect "(= #t #t)" (= #t #t))
+  (expect "(= 3000000000L 3000000000L)" (= 3000000000L 3000000000L))
+  (expect "(= :foo #:foo)" (= :foo #:foo))
+  (expect "(= 'sym 'sym)" (= 'sym 'sym))
+
+  ;; NaN is reflexive under `=`, deliberately: a hash-based container cannot
+  ;; find a key that is not equal to itself. C# `==` says the opposite, so this
+  ;; is the assertion that `double` does not use it.
+  (def nan (/ 0.0 0.0))
+  (expect "NaN equals itself" (= nan nan))
+  (expect "NaN is not 1.0" (not (= nan 1.0)))
+
+  ;; ---- chaining -----------------------------------------------------------
+  (expect "(= 1 1 1 1)" (= 1 1 1 1))
+  (expect "(not (= 1 1 2 1))" (not (= 1 1 2 1)))
+
+  ;; A middle operand appears in two comparisons and must still run once.
+  (def calls (make-array 1))
+  (array-set! calls 0 0)
+
+  (defun (next! x)
+    (array-set! calls 0 (+ (array-ref calls 0) 1))
+    x)
+
+  (expect "(= 0 (next! 0) 10) is false" (not (= 0 (next! 0) 10)))
+  (expect "next! ran exactly once" (= 1 (array-ref calls 0)))
+
+  ;; ---- `=` as a value -----------------------------------------------------
+  ;;
+  ;; A bare operator eta-expands to a lambda over a trait call, so this raises
+  ;; an `Eq` obligation at whatever it is passed at.
+  (expect "= passed as a function" (applied = 4 4))
+  (expect "= passed at string" (applied = "a" "a"))
+  (expect "= inside a lambda"
+          (= (list #f #t) (map (fun (p) (= p 1)) (list 0 1))))
+
+  ;; ---- generic, with the constraint inferred ------------------------------
+  (expect "member? at (List int)" (member? 2 (list 1 2 3)))
+  (expect "member? at (List int), absent" (not (member? 9 (list 1 2 3))))
+  (expect "member? at (List string)" (member? "b" (list "a" "b")))
+  (expect "member? at (List string), absent" (not (member? "z" (list "a" "b"))))
+
+  ;; ---- the containers -----------------------------------------------------
+  (expect "(= (Some 1) (Some 1))" (= (Some 1) (Some 1)))
+  (expect "(not (= (Some 1) (Some 2)))" (not (= (Some 1) (Some 2))))
+  (expect "Some is not None" (not (= (Some 1) None)))
+  (expect "(= (ok-1) (ok-1))" (= (ok-1) (ok-1)))
+  (expect "Ok is not Err" (not (= (ok-1) (err-bad))))
+  (expect "(= (err-bad) (err-bad))" (= (err-bad) (err-bad)))
+  (expect "(= (list 1 2) (list 1 2))" (= (list 1 2) (list 1 2)))
+  (expect "lists of different length" (not (= (list 1 2) (list 1 2 3))))
+  (expect "(= (vec 1 2) (vec 1 2))" (= [1 2] [1 2]))
+  (expect "vecs that differ" (not (= [1 2] [1 3])))
+
+  ;; The element comparison is `Eq`'s and not .NET's, so it reaches all the way
+  ;; down. Nothing here would fail if it were .NET's — that is what phase two's
+  ;; test is for — but the nesting is what the container implementations are
+  ;; written to support.
+  (expect "nested" (= (Some (list 1)) (Some (list 1))))
+  (expect "nested, differing" (not (= (Some (list 1)) (Some (list 2)))))
+
+  ;; ---- tuples -------------------------------------------------------------
+  (expect "(= (Tuple 1 \"a\") (Tuple 1 \"a\"))" (= (Tuple 1 "a") (Tuple 1 "a")))
+  (expect "tuples that differ" (not (= (Tuple 1 "a") (Tuple 2 "a"))))
+  (expect "triples" (= (Tuple 1 "a" #\z) (Tuple 1 "a" #\z)))
+  (expect "tuples inside a list" (= (list (Tuple 1 "a")) (list (Tuple 1 "a"))))
+
+  ;; ---- hashing agrees with equality ---------------------------------------
+  (expect "equal ints hash alike" (= (eq-hash 7) (eq-hash 7)))
+  (expect "equal lists hash alike" (= (eq-hash (list 1 2)) (eq-hash (list 1 2))))
+  (expect "equal tuples hash alike"
+          (= (eq-hash (Tuple 1 "a")) (eq-hash (Tuple 1 "a"))))
+  (expect "NaN hashes alike" (= (eq-hash nan) (eq-hash nan)))
+
+  0)

@@ -67,8 +67,16 @@ let rec prune (registry: TraitRegistry) (t: HMType) : HMType =
 /// trait's blanket. A blanket's target is the bare implementor, so the
 /// substitution binds its one variable to the whole type.
 let implFor (registry: TraitRegistry) (traitName: string) (t: HMType) : (ImplTarget * Map<string, HMType>) option =
-    match prune registry t with
-    | TCon(ctor, args) ->
+    // A tuple answers under its synthetic arity key, and is otherwise an
+    // ordinary constructor applied to its element types.
+    let headed =
+        match prune registry t with
+        | TTuple args -> Some(tupleCtor args.Length, args)
+        | TCon(ctor, args) -> Some(ctor, args)
+        | _ -> None
+
+    match headed with
+    | Some(ctor, args) ->
         let target =
             match Map.tryFind (traitName, ctor) registry.ImplTargets with
             | Some target -> Some target
@@ -78,7 +86,7 @@ let implFor (registry: TraitRegistry) (traitName: string) (t: HMType) : (ImplTar
         |> Option.map (fun target ->
             let bound =
                 if target.Ctor = BlanketCtor then
-                    [ TCon(ctor, args) ]
+                    [ implTargetType ctor args ]
                 else
                     args |> List.truncate target.FixedPrefix.Length
 
@@ -91,7 +99,7 @@ let implFor (registry: TraitRegistry) (traitName: string) (t: HMType) : (ImplTar
                 |> Map.ofList
 
             target, subst)
-    | _ -> None
+    | None -> None
 
 /// What a use of `traitName` at `t` still needs from the enclosing function.
 ///

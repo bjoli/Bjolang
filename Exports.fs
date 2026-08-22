@@ -61,8 +61,8 @@ let metadata
         ownModuleDecls
         |> TypedAST.collectDecls (function
             | TypedAST.TImpl(traitName, _, _, targetType, _, _, _, _) ->
-                match targetType with
-                | TypedAST.TCon(name, _) -> [ traitName, name ]
+                match TypedAST.implCtorKey targetType with
+                | Some name when name <> TypedAST.BlanketCtor -> [ traitName, name ]
                 | _ -> []
             | _ -> [])
         |> Set.ofList

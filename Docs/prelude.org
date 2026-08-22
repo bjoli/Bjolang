@@ -36,13 +36,42 @@ Standard polymorphic math operators (deferred to C# for resolution):
 - ~(% a b)~
 
 ** Comparison
-- ~(= a b)~
+- ~(= a b)~ : Equality. A method of the ~Eq~ trait =(std eq)=, re-exported by the prelude, so it is one operation over the primitives, the containers and a program's own types alike. See *Equality* below.
 - ~(< a b)~
 - ~(> a b)~
 - ~(<= a b)~
 - ~(>= a b)~
-- ~(eq? a b)~ : Pointer/Reference equality (structural for value types).
-- ~(equal? a b)~ : Structural/Generic equality.
+- ~(eq? a b)~ : Pointer/Reference equality (structural for value types). About mutable cells and object identity, and not a substitute for ~=~.
+
+** Equality =(std eq)=
+There is one equality, ~=~, and it is a trait method:
+
+#+BEGIN_SRC scheme
+(def/trait (Eq %a)
+  (: = (-> %a %a bool))
+  (: eq-hash (-> %a int)))
+#+END_SRC
+
+Implementations ship for the primitive types (~int~ and its siblings, ~double~, ~bool~, ~string~, ~char~, ~Keyword~, ~Symbol~, ~StringCursor~, ~void~), for ~List~, ~Vec~, ~Option~, ~Result~ and ~Map~, and for tuples of two, three and four elements. A container's implementation compares its elements through *their* ~Eq~ implementation, so ~(= (Some p) (Some q))~ reaches whatever ~p~'s type says equality is.
+
+A generic function that compares two values acquires the constraint without being told to: ~(defun (member? x xs) ...)~ using ~=~ is inferred as ~(where (Eq %a))~.
+
+~eq-hash~ belongs to the same trait as ~=~ rather than to one of its own, because it is derived from the same choice of fields. An implementation that overrode one while inheriting the other would break every hash-based container silently, and there is no supertrait mechanism to keep two traits in step. There are no default bodies for the same reason: the only body a default could have is "ask .NET", which is wrong in exactly the case someone wrote an implementation for. ~(hash-combine a b)~ is what an ~eq-hash~ over several fields folds with.
+
+Two deliberate choices worth knowing:
+
+- ~double~ uses ~Equals~ rather than ~==~, so ~(= x x)~ is true for ~NaN~. Every hash-based container assumes its keys are reflexive; IEEE's answer is the other one, and it is not available through ~=~.
+- ~=~ on a ~Map~ matches keys by lookup, so key equality there is still .NET's while values go through ~Eq~. That is the one gap left open, and it closes when a type's ~Equals~ is emitted as a call to its ~Eq~ implementation.
+
+A type with no implementation is a clean error — /no implementation of trait 'Eq' for 'Point'/ — not a C# compile failure. Writing one by hand is ordinary:
+
+#+BEGIN_SRC scheme
+(def/impl (Eq Point)
+  (defun (= a b) (and (= (x a) (x b)) (= (y a) (y b))))
+  (defun (eq-hash p) (hash-combine (eq-hash (x p)) (eq-hash (y p)))))
+#+END_SRC
+
+Note what a hand-written implementation does *not* yet do: C#'s synthesized ~Point.Equals~ and ~GetHashCode~ are still what .NET asks, so a ~Map~ or ~Set~ keyed on ~Point~, and any interop, disagree with it.
 
 ** String Operations
 - ~(string-append a b)~ : Concatenates strings ~a~ and ~b~. =(std prelude)=
@@ -238,7 +267,7 @@ Note that ~write-line~ is a prelude binding, and an ordinary binding wins over a
 Keywords (~:foo~ or ~#:foo~) and quoted symbols (~'foo~) are interned first-class types.
 - ~(keyword? x)~ : Returns true if ~x~ is a ~Keyword~.
 - ~(symbol? x)~ : Returns true if ~x~ is a ~Symbol~.
-- Keywords and symbols can be compared with ~(eq? a b)~ for $O(1)$ reference equality and used as map keys.
+- Keywords and symbols are interned, so ~(= a b)~ on them *is* $O(1)$ reference equality — as is ~(eq? a b)~. Both are usable as map keys.
 
 ** Lists (~SchemeList~)
 Built-in functional linked lists.

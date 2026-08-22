@@ -92,6 +92,20 @@ let builtinTypeNames =
           "StringBuilder"; "Seq"; "Option"; "Result"; "Keyword"; "Symbol"; "Array"; "Param"; "DynEnv"
           "Promise"; "Event"; "Chan"; "CancelToken"; "CancelReason"; "AsyncSeq"; "Syntax" ]
 
+/// The builtins only `std/eq` may name, and the module that may name them.
+///
+/// All three are .NET's own equality, which is what `std/eq` writes the `Eq`
+/// implementations for the primitive types in terms of. They are shut away
+/// because materialization emits a record's `Equals` as a call to its `Eq`
+/// impl: an impl written with one of these would call itself forever, and the
+/// resulting stack overflow names neither the impl nor the type.
+///
+/// A spliced inline template is checked under the module its body came from, so
+/// `std/eq`'s own implementations still inline into every caller.
+let eqPrivateBindings = Set.ofList [ "clr-eq"; "clr-equals"; "clr-hash" ]
+
+let eqModuleName = "eq"
+
 /// The name a declared type — or one of its constructors — is known by
 /// everywhere except in source.
 ///

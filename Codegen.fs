@@ -1906,7 +1906,11 @@ and private generateApply
         (prepareOperands ctx args).Head ctx
         append ctx ")"
 
-    | TIdent ("=", _) when args.Length = 2 && kwArgs.IsEmpty ->
+    // `clr-eq` is C# `==` and nothing else. `=` never reaches codegen as an
+    // identifier — it is a trait method — so this arm is what makes the `Eq`
+    // implementation for a primitive type compile to the operator rather than
+    // to a comparer call.
+    | TIdent ("clr-eq", _) when args.Length = 2 && kwArgs.IsEmpty ->
         let emitters = prepareOperands ctx args
         append ctx "("
         emitters[0] ctx
@@ -3431,11 +3435,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
     | TImpl (traitName, kind, holeArity, targetType, assocMap, dictFields, methods, _) ->
         // A blanket impl's target is a bare type variable, which becomes the
         // class's one type parameter: `Discard_Blanket<T_a> : Discard<T_a>`.
-        let targetTypeName =
-            match targetType with
-            | TCon(n, _) -> n
-            | TVar _ -> BlanketCtor
-            | _ -> "Unknown"
+        let targetTypeName = implCtorKey targetType |> Option.defaultValue "Unknown"
 
         let sanitizedTraitName = sanitizeIdent traitName
         let className = implClassName sanitizedTraitName targetTypeName
@@ -3447,6 +3447,8 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
         let targetArgs =
             match targetType with
             | TCon(_, args) -> args
+            // A tuple's elements are its arguments, as a constructor's are.
+            | TTuple args -> args
             // The implementor *is* the argument for a blanket. Left as `[]`,
             // the class would take no type parameter and its `Instance` field
             // and interface clause would both name an undeclared `T_a`.

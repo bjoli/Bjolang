@@ -194,18 +194,42 @@ let prelude : Env =
         "shift-right", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; intType] (TVar "a")); IsMutable = false }
         "shift-right-logical", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; intType] (TVar "a")); IsMutable = false }
 
-        // Comparison Operators
-        "=", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] boolType); IsMutable = false }
+        // Comparison Operators. `=` is not here: it is a method of the `Eq`
+        // trait declared in `std/prelude`, so that one equality serves the
+        // primitives, the containers and a user's own types alike.
         "<", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] boolType); IsMutable = false }
         ">", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] boolType); IsMutable = false }
         "<=", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] boolType); IsMutable = false }
         ">=", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] boolType); IsMutable = false }
 
-        // Polymorphic equality
-        // eq? : 'a -> 'a -> bool (Pointer/Reference equality)
+        // --- The primitives `Eq` is built out of -----------------------------
+        //
+        // Prelude-private: `preludePrivateBindings` below refuses them to any
+        // module but `std/prelude`. They have to be, because materialization
+        // (§3.1) makes a record's `Equals` call its `Eq` impl — so an impl
+        // written in terms of .NET equality would call itself forever.
+
+        // C# `==`, which is what `=` used to be. Correct and free on the
+        // primitive types the impls below use it for; meaningless at a type
+        // variable, where it does not even compile.
+        "clr-eq", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] boolType); IsMutable = false }
+        // `EqualityComparer<T>.Default.Equals`, which does compile at a type
+        // variable — and which differs from `==` on `NaN`, deliberately. See
+        // the `double` impl in `std/prelude`.
+        "clr-equals", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] boolType); IsMutable = false }
+        "clr-hash", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"] intType); IsMutable = false }
+
+        /// What an `eq-hash` over several fields folds with. Public, unlike the
+        /// three above: every derived and hand-written impl needs it.
+        "hash-combine", {Scheme = Scheme([], [], makeFunType [intType; intType] intType); IsMutable = false }
+
+        // Object identity — for mutable cells, and for nothing else. On a value
+        // type it is silently structural, there being no identity to ask about.
+        //
+        // `equal?` is gone: it *is* `=` now, and leaving the binding would let
+        // a value use find the unconstrained primitive while an application
+        // found the trait.
         "eq?", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] boolType); IsMutable = false }
-        // equal? : 'a -> 'a -> bool (Structural/Generic equality)
-        "equal?", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] boolType); IsMutable = false }
 
 
         // I/O

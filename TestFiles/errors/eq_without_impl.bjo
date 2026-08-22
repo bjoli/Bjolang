@@ -1,0 +1,19 @@
+;; `=` at a type with no `Eq` implementation.
+;;
+;; This is the whole reason equality is a trait. `=` used to be typed
+;; `(-> %a %a bool)` and emitted as C# `==`, so this compiled and then failed in
+;; the generated C# — or, worse, compiled all the way and meant reference
+;; equality. The answer now is a type error naming the trait and the type.
+
+;; EXPECT-ERROR: no implementation of trait 'Eq'
+;; EXPECT-ERROR: Point
+
+(import (std prelude))
+
+(type
+  (: Point (Record (: x int) (: y int))))
+
+(defun (main args)
+  (def p (Point (x 1) (y 2)))
+  (def q (Point (x 1) (y 2)))
+  (if (= p q) 1 0))

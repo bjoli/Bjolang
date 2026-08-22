@@ -629,6 +629,35 @@ type ImplTarget =
 [<Literal>]
 let BlanketCtor = "*"
 
+/// The constructor key a tuple of this arity is filed under.
+///
+/// `TTuple` has no head constructor, so an implementation for it has nothing to
+/// be keyed by and `tryResolveWanted` could never reach one. A synthetic key
+/// keeps tuples inside the machinery every other type already uses —
+/// `ImplTargets`, `InlineMethods`, the impl class's C# name, the metadata — in
+/// place of a second resolution path that every trait after `Eq` would have to
+/// duplicate.
+///
+/// Arity is part of the key because a pair and a triple are different types
+/// needing different implementations.
+let tupleCtor (arity: int) = $"Tuple%d{arity}"
+
+let isTupleCtor (ctor: string) =
+    ctor.StartsWith "Tuple" && ctor.Length > 5 && ctor.Substring 5 |> Seq.forall System.Char.IsDigit
+
+/// The key an implementation target is filed under, or `None` for a target no
+/// implementation may be written at.
+let implCtorKey (targetType: HMType) : string option =
+    match targetType with
+    | TCon(name, _) -> Some name
+    | TVar _ -> Some BlanketCtor
+    | TTuple args -> Some(tupleCtor args.Length)
+    | _ -> None
+
+/// A key and its arguments, put back together as the type they came from.
+let implTargetType (ctor: string) (args: HMType list) : HMType =
+    if isTupleCtor ctor then TTuple args else TCon(ctor, args)
+
 type TDecl =
     | TImport of ImportSpec list * Range
     /// A second spelling of an existing binding or macro. It emits no C# of its
