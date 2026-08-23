@@ -10,6 +10,23 @@ NC='\033[0m' # No Color
 echo -e "${BLUE}=== Bjolang Optimized Parallel Test Runner ===${NC}"
 echo ""
 
+# One run at a time in a given working tree.
+#
+# Everything here is written *next to the source it came from*: `lib/std/*.dll`,
+# a `.exe` beside each fixture, the log directory. Two runs at once therefore
+# do not merely interleave — they rebuild the same standard library into the
+# same files while the other is linking against it, and the second one's
+# `rm -rf` on the log directory pulls it out from under the first. The symptom
+# is a scatter of unrelated failures that do not reproduce.
+#
+# Waiting rather than refusing: a second run almost always means "run the tests
+# again", and finishing the first is what that wants.
+exec 9> .test-lock
+if ! flock -n 9; then
+    echo -e "${YELLOW}Another run_tests.sh is using this working tree. Waiting for it...${NC}"
+    flock 9
+fi
+
 # 1. Build the compiler once in Release mode
 echo -e "${BLUE}Building compiler in Release mode...${NC}"
 dotnet build -c Release > /dev/null
@@ -53,30 +70,30 @@ MAX_JOBS=$(nproc 2>/dev/null || echo 8)
 # deliberate about it — once, here, before anything else runs.
 STD_DIR="lib/std"
 
-# `*/*.bjo` as well as `*.bjo`: `std/mutable` holds modules too, and a glob that
-# missed them left the standard library looking current after one of them had
-# changed.
-std_is_stale() {
-    local src dll
-    for src in "$STD_DIR"/*.bjo "$STD_DIR"/*/*.bjo; do
-        [ -f "$src" ] || continue
-        dll="${src%.bjo}.dll"
-        [ -f "$dll" ] || return 0
-        [ "$src" -nt "$dll" ] && return 0
-        [ "$COMPILER_DLL" -nt "$dll" ] && return 0
-    done
-    return 1
-}
-
-if std_is_stale; then
-    echo -e "${BLUE}Rebuilding the standard library...${NC}"
-    if ! ./build_std.sh > "$LOG_DIR/std.log" 2>&1; then
-        echo -e "${RED}Standard library build failed!${NC}"
-        cat "$LOG_DIR/std.log"
-        exit 1
-    fi
-    echo -e "${GREEN}Standard library rebuilt.${NC}"
+# Asked of `build_std.sh` rather than decided here.
+#
+# There used to be a `std_is_stale` beside this that globbed `lib/std/*.bjo` and
+# compared timestamps. It was wrong in both directions. A `.bjo` sitting in
+# `lib/std` that the library does not build — a module still being written — has
+# no `.dll`, which read as "stale", so the whole standard library was rebuilt on
+# every run and the condition never cleared. And the glob did not cover
+# `.protobjo`, so editing `Monad.protobjo`, which `prelude` includes, read as
+# "current" and the suite ran against a stale prelude.
+#
+# `build_std.sh` names the modules the standard library consists of, in
+# dependency order, and `bjor` decides staleness per module against the whole
+# source closure — includes and all. Both facts already lived somewhere. This
+# asks them instead of keeping a third copy that drifts from both.
+echo -e "${BLUE}Checking the standard library...${NC}"
+if ! ./build_std.sh > "$LOG_DIR/std.log" 2>&1; then
+    echo -e "${RED}Standard library build failed!${NC}"
+    cat "$LOG_DIR/std.log"
+    exit 1
 fi
+
+std_built=$(grep -c "^Built library:" "$LOG_DIR/std.log")
+std_current=$(grep -c "^Up to date:" "$LOG_DIR/std.log")
+echo -e "${GREEN}Standard library: $std_built built, $std_current already current.${NC}"
 
 # --- Fixture libraries -------------------------------------------------------
 #

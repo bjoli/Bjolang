@@ -112,6 +112,24 @@ elif [ -f "$DLL_FILE" ]; then
     OUT_FILE="$DLL_FILE"
 fi
 
+# What the binary beside the source was last built as, and what this invocation
+# wants.
+#
+# `-d` and a plain build produce different code, and being handed the wrong one
+# is silent: a debug build runs several times slower, and a release build cannot
+# usefully be stepped through. The two used to be told apart by whether a `.pdb`
+# sat next to the binary — which stopped being true when the compiler began
+# emitting portable symbols in *both* configurations, so that `#line` could map
+# a stack trace back to the Bjolang it came from.
+#
+# Every build has left a `.pdb` since, so every binary looked like a debug
+# build: `bjor` rebuilt everything it was ever asked about, and `build_std.sh`
+# rebuilt the whole standard library on every invocation, forever, with nothing
+# having changed. Recording the answer is the only way to know it.
+WANTED_MODE=release
+[ $DEBUG_MODE -eq 1 ] && WANTED_MODE=debug
+MODE_FILE="${FILE%.bjo}.bjobuild"
+
 # Every source the binary was built from: the file itself plus everything it
 # imports or includes by path, transitively. A path is any string literal
 # naming a .bjo or .protobjo, which is what both forms spell, and paths are
@@ -146,10 +164,9 @@ collect_sources() {
 needs_compile() {
     [ -z "$OUT_FILE" ] && return 0
 
-    # Symbols next to the binary mean the last build was a debug build. Running
-    # it now would quietly hand back the unoptimized, several-times-slower
-    # binary under a command that did not ask for one.
-    [ -f "${OUT_FILE%.*}.pdb" ] && return 0
+    # Built as something other than what is being asked for now — or by a bjor
+    # that did not record it, which is the same thing as not knowing.
+    [ "$(cat "$MODE_FILE" 2>/dev/null)" = "$WANTED_MODE" ] || return 0
 
     collect_sources "$FILE"
 
@@ -158,9 +175,34 @@ needs_compile() {
         [ "$dep" -nt "$OUT_FILE" ] && return 0
     done
 
-    for dep in "$SCRIPT_DIR"/lib/std/*.dll "$SCRIPT_DIR"/*.fs "$COMPILER_DLL"; do
+    # A rebuilt compiler invalidates everything it produced: a `.dll` carries
+    # metadata in the compiler's own format, and the source it was built from
+    # says nothing about that.
+    for dep in "$SCRIPT_DIR"/*.fs "$COMPILER_DLL"; do
         [ -f "$dep" ] && [ "$dep" -nt "$OUT_FILE" ] && return 0
     done
+
+    # The standard library this program links against — but not when the file
+    # being built is part of that library.
+    #
+    # `build_std.sh` builds those in dependency order, so a module built early
+    # is always older than one built after it. Asking whether *any* of them is
+    # newer therefore called every module but the last one stale, and rebuilding
+    # them left them in the same shape again: the whole standard library was
+    # rebuilt on every invocation, forever, with nothing having changed. It cost
+    # about six seconds of every `run_tests.sh`.
+    #
+    # Nothing is lost by skipping it. What a standard library module depends on
+    # is what it imports, and `Pipeline.ensureLibrary` judges that against the
+    # same rule — the source closure and the compiler — while compiling it.
+    local file_dir
+    file_dir="$(cd "$(dirname "$FILE")" && pwd)"
+
+    if [[ "$file_dir" != "$SCRIPT_DIR/lib/std"* ]]; then
+        for dep in "$SCRIPT_DIR"/lib/std/*.dll; do
+            [ -f "$dep" ] && [ "$dep" -nt "$OUT_FILE" ] && return 0
+        done
+    fi
 
     return 1
 }
@@ -203,6 +245,11 @@ if [ $SHOULD_COMPILE -eq 1 ]; then
     if [ $COMPILE_STATUS -ne 0 ]; then
         exit $COMPILE_STATUS
     fi
+
+    # Only after a build that succeeded. A failed one leaves whatever was there
+    # before, and recording this invocation's mode would then claim a binary
+    # that was never produced.
+    echo "$WANTED_MODE" > "$MODE_FILE"
 fi
 
 # Execute output if an executable was created
