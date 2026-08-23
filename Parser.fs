@@ -461,6 +461,17 @@ let mutable private introducedNames: Set<string> = Set.empty
 let noteIntroduced (names: string seq) =
     introducedNames <- names |> Seq.fold (fun acc n -> Set.add n acc) introducedNames
 
+/// The set, and a way to put it back.
+///
+/// "Never pruned" above is true within one compilation and is what makes the
+/// set safe. Across compilations in one process it is only growth: every entry
+/// answers for an expansion that has already been parsed, so `Session` drops
+/// them at the boundary rather than carrying a REPL session's worth of marks
+/// into every subsequent `headName`.
+let snapshotIntroduced () : Set<string> = introducedNames
+
+let restoreIntroduced (names: Set<string>) : unit = introducedNames <- names
+
 /// The name to dispatch a head symbol on: the third renaming rule, "strip the
 /// rename and dispatch as a special form".
 ///

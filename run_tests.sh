@@ -516,6 +516,58 @@ if [ -d "$CODEGEN_DIR" ] && ls "$CODEGEN_DIR"/*.bjo >/dev/null 2>&1; then
     done
 fi
 
+# --- Reproducibility ---------------------------------------------------------
+#
+# A module's `.dll` must not depend on how it was reached. Staleness is decided
+# by timestamp, so nothing *breaks* the moment this fails — the symptom is a
+# rebuild that produces a different artefact for no reason the source explains,
+# and then a diff that cannot be accounted for.
+#
+# Two things are checked, and they fail for different reasons. Building the same
+# module twice catches a non-deterministic backend: `csc` stamps a fresh MVID
+# into every assembly unless told not to, and records the path of the generated
+# C#, which lives in a temp directory named after a GUID. Building it once with
+# its dependency compiled in-process and once out-of-process catches the other
+# thing — compiler state that belongs to a compilation and was not moved into
+# `Session`, which is invisible until two modules share a process.
+REPRO_MAIN="TestFiles/006_modules_and_input.bjo"
+REPRO_DEP="TestFiles/006_lib"
+repro_failed=0
+declare -a repro_failures
+
+repro_build() {
+    rm -f "$REPRO_DEP.dll" "${REPRO_MAIN%.bjo}.exe"
+    env $1 dotnet "$COMPILER_DLL" "$REPRO_MAIN" > "$LOG_DIR/repro.log" 2>&1 \
+        || { cat "$LOG_DIR/repro.log"; return 1; }
+    md5sum "$REPRO_DEP.dll" "${REPRO_MAIN%.bjo}.exe" | cut -d' ' -f1 | tr '\n' ' '
+}
+
+echo "--------------------------------------------------"
+echo -e "${BLUE}Checking that a build reproduces...${NC}"
+
+repro_a=$(repro_build "BJOLANG_X=1") || exit 1
+repro_b=$(repro_build "BJOLANG_X=1") || exit 1
+repro_c=$(repro_build "BJOLANG_OUT_OF_PROCESS_DEPS=1") || exit 1
+
+if [ "$repro_a" = "$repro_b" ]; then
+    echo -e "  [${GREEN}PASS${NC}] the same source builds to the same bytes"
+else
+    echo -e "  [${RED}FAIL${NC}] the same source builds to the same bytes"
+    repro_failed=1
+    repro_failures+=("two identical builds differed: $repro_a vs $repro_b")
+fi
+
+if [ "$repro_a" = "$repro_c" ]; then
+    echo -e "  [${GREEN}PASS${NC}] an in-process dependency build matches an out-of-process one"
+else
+    echo -e "  [${RED}FAIL${NC}] an in-process dependency build matches an out-of-process one"
+    repro_failed=1
+    repro_failures+=("in-process $repro_a vs out-of-process $repro_c — compilation state has leaked between modules")
+fi
+
+rm -f "$REPRO_DEP.dll" "${REPRO_MAIN%.bjo}.exe" "${REPRO_MAIN%.bjo}.runtimeconfig.json" \
+      "${REPRO_MAIN%.bjo}.deps.json" "$REPRO_DEP.pdb" "${REPRO_MAIN%.bjo}.pdb"
+
 end_time=$(date +%s.%N 2>/dev/null || date +%s)
 duration=$(echo "$end_time - $start_time" | bc -l 2>/dev/null)
 if [ -z "$duration" ]; then
@@ -551,6 +603,14 @@ echo ""
 if [ ${#error_failures[@]} -ne 0 ]; then
     echo -e "${RED}=== Error Test Failures ===${NC}"
     for failure in "${error_failures[@]}"; do
+        echo -e "  $failure"
+    done
+    echo ""
+fi
+
+if [ ${#repro_failures[@]} -ne 0 ]; then
+    echo -e "${RED}=== Reproducibility Failures ===${NC}"
+    for failure in "${repro_failures[@]}"; do
         echo -e "  $failure"
     done
     echo ""

@@ -603,6 +603,16 @@ let takeWanteds () : Wanted list =
     wantedQueue.Clear()
     ws
 
+/// Drops whatever is still queued.
+///
+/// A successful `checkProgram` leaves the queue empty — `solvePending` is what
+/// empties it — so this is for the compilation that *failed*. An obligation
+/// raised before the exception is still in the queue, and the next compilation
+/// in the same process would try to solve it against an environment it was
+/// never about. That is a diagnostic pointing at another file entirely, which
+/// is the worst shape a state leak can take.
+let clearWanteds () : unit = wantedQueue.Clear()
+
 /// Instantiates an impl's target pattern, giving fresh metas to the impl's own
 /// prefix variables.
 ///

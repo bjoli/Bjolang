@@ -9,6 +9,17 @@ let freshMeta () =
     nextMetaId <- nextMetaId + 1
     TMeta { Id = id; Value = None }
 
+/// The counter, and a way to put it back.
+///
+/// A metavariable's id has to be unique within one inference run and means
+/// nothing outside it — `heldMetaIds` compares ids belonging to the same run —
+/// so this is per compilation. It is bracketed rather than left alone because
+/// an id is reachable from a diagnostic, and a number that depends on what was
+/// compiled first is a message that changes for no reason the reader can see.
+let snapshotMetaCounter () : int = nextMetaId
+
+let restoreMetaCounter (n: int) : unit = nextMetaId <- n
+
 /// A binding, or the reason there is none.
 ///
 /// The opaque arms are the whole of what an `#:opaque` type needs on the

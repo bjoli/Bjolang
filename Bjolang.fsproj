@@ -55,12 +55,32 @@
         <!-- Before Pipeline, which reads it, and before Exports, which writes
              it. Pure data and its own serializer, so it depends on nothing. -->
         <Compile Include="ModuleMetadata.fs" />
+        <!-- After everything holding module-level state, which is what it
+             brackets, and before Pipeline, which is what brackets a
+             sub-compilation with it. -->
+        <Compile Include="Session.fs" />
         <Compile Include="Pipeline.fs"/>
         <Compile Include="Codegen.fs"/>
         <!-- After Codegen, whose serializers it publishes types and inline
              bodies with. -->
         <Compile Include="Exports.fs"/>
+        <!-- The other half of the backend: Codegen writes the C#, this turns it
+             into an assembly. Depends on nothing above it but Timing. -->
+        <Compile Include="CSharpEmit.fs"/>
+        <!-- One compilation, end to end. Before Program, which now holds only
+             the command line. -->
+        <Compile Include="Build.fs"/>
         <Compile Include="Program.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <!-- Roslyn as a library, so a C# compilation is a method call rather
+             than a process. What that buys is not the process — `-shared`
+             already hands csc's work to a warm server — but the *stream*: a
+             REPL entry is emitted to memory and loaded, never touching disk,
+             and a multi-module build parses the ~150 reference assemblies once
+             for the whole graph instead of once per module. -->
+        <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" />
     </ItemGroup>
 
     <ItemGroup>

@@ -380,3 +380,44 @@ let expand (form: SExpr) : Expansion option =
 let install () =
     Parser.expandHook <- expand
     Parser.isMacroName <- isMacro
+
+// ---------------------------------------------------------------------------
+// Scoping
+// ---------------------------------------------------------------------------
+
+/// Everything the expander knows, as a value.
+///
+/// All three fields belong to *one* compilation. Which macros exist is decided
+/// by that module's imports under that module's modifiers, so a second module
+/// compiled in the same process must not inherit them — the symptom otherwise
+/// is not an error but a form silently read as a macro call because some other
+/// file imported something that publishes that name.
+///
+/// `Expansions` is in here for a different reason: it is a runaway counter
+/// keyed on a call site, and a call site is a file and a line. Leaking one
+/// between compilations cannot make a wrong decision, but it never shrinks, and
+/// a long-lived process is exactly where that matters.
+type State =
+    { Bindings: (string * MacroBinding) list
+      Local: Set<string>
+      Expansions: ((string * Range) * int) list }
+
+let emptyState =
+    { Bindings = []; Local = Set.empty; Expansions = [] }
+
+let snapshot () : State =
+    { Bindings = table |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq
+      Local = localMacros
+      Expansions = expansions |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq }
+
+let restore (state: State) : unit =
+    table.Clear()
+
+    for (name, binding) in state.Bindings do
+        table[name] <- binding
+
+    localMacros <- state.Local
+    expansions.Clear()
+
+    for (site, count) in state.Expansions do
+        expansions[site] <- count

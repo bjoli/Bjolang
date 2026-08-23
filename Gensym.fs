@@ -19,6 +19,22 @@ let fresh (prefix: string) : string =
     counter.Value <- counter.Value + 1
     $"%s{prefix}__%d{counter.Value}"
 
+/// The counter's value, and a way to put it back.
+///
+/// One compilation's invented names must not depend on what was compiled before
+/// it in the same process: a module's `.dll` is judged stale by timestamp, so
+/// two builds of unchanged source that differ in a `tmp__37` are a cache that
+/// starts missing. A process boundary used to guarantee that for free. These
+/// are what `Session` brackets an in-process module compilation with instead.
+///
+/// A REPL entry is the other case and uses the same pair the other way: the
+/// counter is *not* put back, so two entries never invent the same name — entry
+/// 4's `tmp__12` and entry 9's would otherwise be one C# member in two
+/// assemblies, and the one loaded second is the one that wins.
+let snapshot () : int = counter.Value
+
+let restore (n: int) : unit = counter.Value <- n
+
 /// The base name a `fresh` name was derived from, for diagnostics.
 let baseName (name: string) : string =
     match name.LastIndexOf "__" with
