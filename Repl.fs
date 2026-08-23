@@ -179,11 +179,15 @@ let private isSticky (decl: Parser.Decl) : bool =
 
 /// What the user typed, as the compiler reads it.
 ///
-/// `Parser.tryParseDecl` is asked rather than the head symbol matched here, so
-/// that what counts as a declaration is decided in one place. Run *before* the
-/// entry's own session is reset, which is what makes a macro imported by an
-/// earlier entry visible: the table still holds what the previous entry's
-/// import registered.
+/// `Parser.tryParseDeclGroup` is asked rather than the head symbol matched
+/// here, so that what counts as a declaration is decided in one place. The
+/// *group* form, because a `defun` carrying its own parameter and return types
+/// declares a signature as well as a function — and an entry that already has
+/// one must not be given a second.
+///
+/// Run *before* the entry's own session is reset, which is what makes a macro
+/// imported by an earlier entry visible: the table still holds what the
+/// previous entry's import registered.
 type private Shape =
     /// Every form is a declaration: what it defines, and what it only declared
     /// the type of.
@@ -198,22 +202,27 @@ type private Shape =
     | Malformed of reason: string
 
 let private shapeOf (forms: SExpr list) : Shape =
-    let asDecl (form: SExpr) =
+    let asDecls (form: SExpr) =
         try
-            Parser.tryParseDecl form |> Option.map (fun d -> d, form)
+            Parser.tryParseDeclGroup form
+            |> Option.map (List.map (fun d -> d, form))
         with _ ->
             // A declaration whose *body* is malformed still reads as one. The
             // real diagnostic comes from compiling it, where it has a position.
-            Some(Parser.DExport([], getRange form), form)
+            Some [ Parser.DExport([], getRange form), form ]
 
     match forms with
     | [] -> Malformed "nothing to evaluate"
     | _ ->
-        let parsed = forms |> List.map asDecl
+        let parsed = forms |> List.map asDecls
 
         if parsed |> List.forall Option.isSome then
-            let decls = parsed |> List.map Option.get
+            let decls = parsed |> List.collect Option.get
 
+            // Every signature, including one a `defun` wrote for itself. Which
+            // of them is still *waiting* for a definition is decided where they
+            // are recorded: one whose name this entry also defines is already
+            // beside its function and has nothing to wait for.
             let signed =
                 decls
                 |> List.choose (function
@@ -636,6 +645,16 @@ let private help () =
     printfn ""
     printfn "  Anything else is a Bjolang entry: a group of definitions, or one"
     printfn "  expression, whose value is printed with ->str."
+    printfn ""
+    printfn "  A top-level defun needs a signature. Write it on the definition,"
+    printfn "  which is one entry:"
+    printfn ""
+    printfn "    (defun (double (: x int)) : int (* x 2))"
+    printfn ""
+    printfn "  Or on the line before, which the next entry picks up:"
+    printfn ""
+    printfn "    (: double (-> int int))"
+    printfn "    (defun (double x) (* x 2))"
     printfn ""
     printfn "  Redefining a name shadows it. Code compiled against the earlier"
     printfn "  one goes on calling the earlier one."

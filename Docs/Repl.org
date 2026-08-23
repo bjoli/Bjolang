@@ -299,7 +299,9 @@ every top-level =defun= but =main=, and =Exports= requires one on every exported
 name. At a prompt the signature and the definition arrive on separate lines,
 because a complete form is a complete entry.
 
-Two mechanisms, and they are different on purpose:
+Three mechanisms now. The third — a =defun= writing its own signature — arrived
+afterwards and is the one to reach for; the first two are what the REPL does
+when it is not available. All of them keep the prompt meaning what a file means:
 
 - *A signature typed at the prompt waits for the entry that defines its name*,
   is replayed into that entry's source, and is then forgotten. Which is what the
@@ -323,11 +325,36 @@ Two mechanisms, and they are different on purpose:
   This costs a second frontend pass, and only for definition entries that need
   it. Expression entries, which is most of interactive use, stay single-pass.
 
-*This is the decision that constrains language design, and it is worth stating
-plainly:* mandatory top-level signatures make a REPL awkward, and no amount of
-REPL cleverness fixes that without the REPL and =bjo build= meaning different
-things. If you ever want ~bjo> (defun (double x) (* x 2))~ to work on one line,
-that is a change to =Inference=, not to =Repl=.
+- *A =defun= may write its own signature*, which needs neither of the above.
+  See below.
+
+*This was the decision that constrained language design*, and it is worth
+recording what happened to it. Mandatory top-level signatures made a REPL
+awkward, and no amount of REPL cleverness fixed that without the REPL and
+=bjo build= meaning different things. The note here used to say that making
+~(defun (double x) (* x 2))~ work on one line was a change to =Inference=, not
+to =Repl=.
+
+It turned out to be a change to =Parser=, and a small one. A ~defun~ may now
+write its own signature — a type at each parameter, one after the argument list
+— and the parser turns that into the ~(: name ...)~ the rest of the compiler
+already wanted:
+
+#+begin_src scheme
+bjo> (defun (double (: x int)) : int (* x 2))
+double
+bjo> (double 21)
+42
+#+end_src
+
+One entry, one compile, no replay. Both mechanisms above stay, because both are
+still reachable: the two-line spelling is what a longer argument list wants, and
+the inferred-signature pass is for =def=, which has no annotation grammar of its
+own. But neither is load-bearing at a prompt any more.
+
+See [[file:Syntax.org][Syntax.org]] for what the inline form cannot say — keyword
+and rest parameter types, and ~(where ...)~ constraints — each of which still
+wants the separate signature.
 
 ** How a value is shown
 

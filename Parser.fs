@@ -4501,6 +4501,78 @@ let rejectSplicedImports (decls: Decl list) (callSite: Range) : unit =
 /// as an error. Keeping the two apart is what lets a macro in declaration
 /// position produce several declarations — a function returning one `Decl` has
 /// nowhere to put them.
+/// A `defun` or `defbjo`, and the signature it writes for itself.
+///
+/// A top-level function needs a `(: name type)`: `Inference` refuses every name
+/// but `main` without one, and `Exports` refuses to publish one. Writing the
+/// types at the parameters and after the argument list says the same thing in
+/// one form rather than two —
+///
+///   (: double (-> int int))        (defun (double (: x int)) : int
+///   (defun (double x) (* x 2))       (* x 2))
+///
+/// — so that is what it becomes. The signature is *synthesized*, not a second
+/// mechanism: the arity check, the export rule and the metadata a `.dll`
+/// publishes all read a `DSignature` and cannot tell which spelling produced
+/// it. `def/macro` writes its transformer's signature the same way.
+///
+/// The colour is `Ordinary` whichever definer this is, because that is what a
+/// hand-written arrow says. `defbjo` is what declares a function may suspend,
+/// and `recolour` repaints the declared type before anything unifies with it.
+///
+/// All or nothing. A return type beside an unannotated parameter is refused
+/// rather than half-read: it used to be accepted and silently discarded, which
+/// reads as a claim that was checked.
+let private parseDefunDecl
+    (definer: string)
+    (name: string)
+    (args: SExpr list)
+    (rest: SExpr list)
+    (r: Lexer.Range)
+    : Decl list =
+
+    let colour = if definer = "defbjo" then Suspending else Ordinary
+    let parsedArgs = parseDefunArgs args
+    let retAnn, bodyExprs = parseDefunReturn rest
+    let defun = DDefun(name, parsedArgs, parseBody bodyExprs r, colour, r)
+
+    match retAnn with
+    | None -> [ defun ]
+    | Some ret ->
+        let where = Lexer.formatPos r
+
+        let refuse (what: string) =
+            failwithf
+                $"Invalid signature on '%s{name}' at %s{where}: %s{what} Write a (: %s{name} ...) beside the definition instead."
+
+        // A keyword or a rest parameter has nowhere to write its type — the
+        // argument grammar gives one a default expression and the other a bare
+        // name — so a function taking either cannot describe itself here, and
+        // says so rather than producing a signature with a parameter missing.
+        for a in parsedArgs do
+            match a with
+            | MandatoryArg _ -> ()
+            | KeywordArg(kw, _) ->
+                refuse $"the keyword parameter '#:%s{kw}' has nowhere to write its type."
+            | RestArg restName -> refuse $"the rest parameter '%s{restName}' has nowhere to write its type."
+
+        let mandatory =
+            parsedArgs
+            |> List.choose (function
+                | MandatoryArg(argName, ann) -> Some(argName, ann)
+                | _ -> None)
+
+        match mandatory |> List.tryFind (snd >> Option.isNone) with
+        | Some(bare, _) ->
+            failwithf
+                $"Invalid signature on '%s{name}' at %s{where}: the return type is written here but the parameter '%s{bare}' has no type. Give every parameter one — (: %s{bare} <type>) — or drop the return type and write a (: %s{name} ...) beside the definition."
+        | None ->
+            // A trait constraint has nowhere to go in this form either, so a
+            // constrained generic still writes its signature separately. The
+            // empty list is what an unconstrained one has.
+            let argTypes = mandatory |> List.map (snd >> Option.get)
+            [ DSignature(name, TArrow(argTypes, [], None, ret, Ordinary, r), [], r); defun ]
+
 let rec tryParseDecl (s: SExpr) : Decl option =
     let r = getRange s
     let s = stripHeadMark s
@@ -4651,13 +4723,14 @@ let rec tryParseDecl (s: SExpr) : Decl option =
         Some(DDefMutable(name, parseExpr expr, r))
 
     | SList(SAtom { Token = Symbol(("defun" | "defbjo") as definer) } :: SList(SAtom { Token = Symbol name } :: args, _) :: rest, _) ->
-        let colour = if definer = "defbjo" then Suspending else Ordinary
-        let parsedArgs = parseDefunArgs args
-        // The return type is taken from the declared signature, which every
-        // top-level `defun` but `main` must have. One written here is accepted
-        // and ignored rather than checked against it.
-        let _, bodyExprs = parseDefunReturn rest
-        Some(DDefun(name, parsedArgs, parseBody bodyExprs r, colour, r))
+        // The function only. A definition that carries its own types also makes
+        // a signature, and one `Decl` has nowhere to put it — see
+        // `tryParseDeclGroup`, which is what every caller that compiles a
+        // module goes through.
+        parseDefunDecl definer name args rest r
+        |> List.tryPick (function
+            | DDefun _ as d -> Some d
+            | _ -> None)
     | SList(SAtom { Token = Symbol "type" } :: typeDefs, _) -> Some(DType(List.map parseTypeDef typeDefs, r))
 
     | SList(SAtom { Token = Symbol "type-rec" } :: typeDefs, _) -> Some(DTypeRec(List.map parseTypeDef typeDefs, r))
@@ -4856,6 +4929,20 @@ and parseDecl (s: SExpr) : Decl =
     | Some d -> d
     | None -> failwithf $"Unknown declaration at %s{Lexer.formatPos (getRange s)}"
 
+/// Every declaration one form makes, or `None` when nothing matched it.
+///
+/// `tryParseDecl` answers with one because most callers want one. A `defun`
+/// that carries its own parameter and return types makes two — the signature
+/// and the function — and anything deciding what a form *declares* has to see
+/// both. `parseDeclForms` is one such caller; the REPL, which asks what an
+/// entry defines and whether it still needs a signature written for it, is the
+/// other.
+and tryParseDeclGroup (s: SExpr) : Decl list option =
+    match stripHeadMark s with
+    | SList(SAtom { Token = Symbol(("defun" | "defbjo") as definer) } :: SList(SAtom { Token = Symbol name } :: args, _) :: rest, _) ->
+        Some(parseDefunDecl definer name args rest (getRange s))
+    | _ -> tryParseDecl s |> Option.map List.singleton
+
 /// The declarations one top-level form expands to.
 ///
 /// Three ways there can be more than one. `def/macro` is not a new binding
@@ -4921,8 +5008,8 @@ and parseDeclForms (s: SExpr) : Decl list =
     | SList(SAtom { Token = Symbol "begin" } :: inner, _) -> List.collect parseDeclForms inner
 
     | other ->
-        match tryParseDecl other with
-        | Some d -> [ d ]
+        match tryParseDeclGroup other with
+        | Some decls -> decls
         | None ->
             // A macro in declaration position. Unlike the expression and body
             // positions, this one used to drop `Resolve` entirely — so a

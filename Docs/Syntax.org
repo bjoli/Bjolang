@@ -144,6 +144,54 @@ Type annotations for top-level definitions use ~:~.
 (defun (add x y) (+ x y))
 #+END_SRC
 
+A top-level ~defun~ must have a signature — ~main~ is the only exception — so
+that a module's published surface is something its author wrote rather than
+something that happened to be inferred.
+
+*** Writing the types at the definition
+The same signature may be written *on* the ~defun~ instead: a type at each
+parameter, and one after the argument list.
+#+BEGIN_SRC scheme
+(defun (add (: x int) (: y int)) : int
+  (+ x y))
+#+END_SRC
+These two spellings are one thing. The parser turns the second into the first,
+so the arity check, the export rule and the metadata a ~.dll~ publishes all see
+a signature and cannot tell which was written. Pick whichever reads better; a
+long argument list usually wants the separate form, and a short function at a
+REPL prompt usually wants this one.
+
+Any type goes at a parameter, including a type variable and a function type:
+#+BEGIN_SRC scheme
+(defun (twice-over (: x %a)) : (List %a)
+  (list x x))
+
+(defun (compose-int (: f (-> int int)) (: g (-> int int)) (: x int)) : int
+  (f (g x)))
+#+END_SRC
+
+Three things it cannot say, each of which keeps the separate form:
+
+- *A keyword or rest parameter's type.* The argument grammar gives a keyword
+  parameter a default expression and a rest parameter a bare name, so there is
+  nowhere to write one.
+- *A trait constraint.* There is no room for a ~(where ...)~ clause, so a
+  constrained generic declares itself separately.
+- *Nothing at all.* Writing a return type with a parameter left untyped is an
+  error rather than half a signature. All or nothing.
+
+Writing both spellings for one function is also an error: they declare the same
+thing, so doing it twice is a mistake rather than a refinement.
+
+A parameter type written *without* a return type is still checked — it just does
+not declare anything, so the ~(: name ...)~ is still required and the annotation
+has to agree with it:
+#+BEGIN_SRC scheme
+(: triple (-> int int))
+(defun (triple (: n int))        ;; agrees; a different type here is an error
+  (* n 3))
+#+END_SRC
+
 *** What generalizes
 A binding is generalized only when its value is a *syntactic value* — a literal,
 a lambda, a variable, or a tuple/list/vec/record built entirely out of those. An
@@ -216,10 +264,11 @@ parameter, and a return type after the argument list — one grammar, wherever t
   (println (greet "world" #:greeting "hi"))) ;; hi, world
 #+END_SRC
 
-The one thing a local ~defun~ cannot have is a declared signature, because there
-is nowhere to put one. Its parameter types therefore come from the annotations
-written at the parameters and from use, rather than from a ~(: name ...)~ beside
-it — which is why an annotation there is worth writing, and is checked.
+The one thing a local ~defun~ cannot have is a *separate* signature, because
+there is nowhere to put one. Its parameter types therefore come from the
+annotations written at the parameters and from use — which is why an annotation
+there is worth writing, and is checked. A top-level ~defun~ written the same way
+means the same thing, and is where that grammar came from.
 
 A *local* member with a keyword or rest parameter is not promoted to a loop. A
 jump is positional, and a keyword argument is exactly what is not; such a

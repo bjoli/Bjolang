@@ -1,0 +1,48 @@
+;; A `defun` that writes its own types instead of a `(: name ...)` beside it.
+;;
+;; The two spellings are one thing: the parser turns the second into the first,
+;; so everything downstream — the arity check, the export rule, the metadata a
+;; `.dll` publishes — sees a signature and cannot tell which was written.
+
+(import (std prelude))
+
+(defun (double (: x int)) : int
+  (* x 2))
+
+(defun (add (: a int) (: b int)) : int
+  (+ a b))
+
+;; A type variable is an ordinary type here.
+(defun (twice-over (: x %a)) : (List %a)
+  (list x x))
+
+;; So is a function type, so a higher-order parameter needs no separate
+;; signature either.
+(defun (compose-int (: f (-> int int)) (: g (-> int int)) (: x int)) : int
+  (f (g x)))
+
+;; No parameters at all.
+(defun (answer) : int
+  42)
+
+;; The older spelling goes on meaning what it meant, including a parameter type
+;; written at the parameter and checked against the signature beside it.
+(: triple (-> int int))
+(defun (triple (: n int))
+  (* n 3))
+
+;; A constraint has nowhere to go in the inline form, so a constrained generic
+;; still declares itself separately.
+(: describe (-> %a string) (where (->str %a)))
+(defun (describe x)
+  (string-append "<" (string-append (->str x) ">")))
+
+(defun (main args)
+  (if (= (double 21) 42) (displayln "ok double") (displayln "FAILURE: double"))
+  (if (= (add 1 2) 3) (displayln "ok add") (displayln "FAILURE: add"))
+  (if (= (list-length (twice-over "x")) 2) (displayln "ok twice-over") (displayln "FAILURE: twice-over"))
+  (if (= (compose-int double double 5) 20) (displayln "ok compose") (displayln "FAILURE: compose"))
+  (if (= (answer) 42) (displayln "ok answer") (displayln "FAILURE: answer"))
+  (if (= (triple 3) 9) (displayln "ok triple") (displayln "FAILURE: triple"))
+  (if (= (describe 5) "<5>") (displayln "ok describe") (displayln "FAILURE: describe"))
+  0)

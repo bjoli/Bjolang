@@ -4930,6 +4930,29 @@ and private checkDeclGroup
             env
         |> fun withTypes -> withTypes.Registry
 
+    // One name, two signatures. Silently unanswerable before this: the map
+    // below is built from a list, so whichever came last won and the other was
+    // dropped without a word. It became reachable when a `defun` was allowed to
+    // write its own — the two spellings say the same thing, and saying it twice
+    // is a mistake rather than a refinement.
+    //
+    // Trait method signatures are deliberately not in this: two traits
+    // declaring a method of one name is a different question, answered by its
+    // own diagnostic.
+    let duplicateSignature =
+        decls
+        |> List.choose (function
+            | DSignature(name, _, _, r) -> Some(name, r)
+            | _ -> None)
+        |> List.groupBy fst
+        |> List.tryFind (fun (_, group) -> group.Length > 1)
+
+    match duplicateSignature with
+    | Some(name, (_, r) :: _) ->
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: '%s{name}' has more than one type signature. A (: %s{name} ...) and a `defun` that writes its own types both declare one, so write whichever of the two you meant and not both."
+    | _ -> ()
+
     let explicitSigs =
         decls
         |> List.collect (function
