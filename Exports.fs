@@ -12,6 +12,60 @@ module Bjolang.Exports
 
 open Bjolang
 
+/// The type of a checked binding, as the source a `(: name ...)` would be
+/// written in.
+///
+/// A function's flat type says how many arguments it takes, not which of them
+/// are keyword arguments — and a keyword name is part of the calling
+/// convention. Flattening it meant an importer could not pass one at all: the
+/// shorter argument list it wrote would not unify.
+///
+/// At module level rather than inside `metadata`, because the REPL needs it
+/// too: an exported name has to carry a signature, `Inference` refuses to
+/// publish one without, and at a prompt there is no author to have written one.
+/// The REPL writes back exactly what was inferred, which is what makes an entry
+/// mean what the same lines in a file would.
+let signatureText (env: TypedAST.Env) (name: string) (t: TypedAST.HMType) : string =
+    match Map.tryFind name env.FunMetas, t with
+    | Some meta, TypedAST.TFun(argTypes, ret, _) when
+        not meta.KeywordParams.IsEmpty || meta.RestParam.IsSome
+        ->
+        let mandatory =
+            argTypes |> List.truncate meta.MandatoryCount |> List.map Codegen.serializeHMType
+
+        let keywords =
+            meta.KeywordParams
+            |> List.map (fun (n, kt) -> $"(#:{n} {Codegen.serializeHMType kt})")
+
+        let rest =
+            match meta.RestParam with
+            | Some rt -> [ $"#:rest {Codegen.serializeHMType rt}" ]
+            | None -> []
+
+        "(-> "
+        + String.concat " " (mandatory @ keywords @ rest @ [ Codegen.serializeHMType ret ])
+        + ")"
+    | _ -> Codegen.serializeHMType t
+
+/// The whole `(: name type (where ...))` form for a checked binding, or nothing
+/// if there is no binding of that name to read a type off.
+let signatureForm (env: TypedAST.Env) (name: string) : string option =
+    Map.tryFind name env.Bindings
+    |> Option.map (fun b ->
+        let (TypedAST.Scheme(_, constraints, t)) = b.Scheme
+
+        let constraintsText =
+            if constraints.IsEmpty then
+                ""
+            else
+                let parts =
+                    constraints
+                    |> List.map (fun c -> $"(%s{c.TraitName} %s{Codegen.serializeHMType c.TargetType})")
+
+                " (where " + String.concat " " parts + ")"
+
+        $"(: %s{name} %s{signatureText env name t}%s{constraintsText})")
+
 /// Everything but `Deps`, which is the driver's to fill in: it knows what was
 /// linked, and this knows what was declared.
 let metadata
@@ -168,10 +222,11 @@ let metadata
         |> List.distinct
 
     if isLibrary && not autoExports.IsEmpty then
-        printfn
-            "Auto-exporting %d name(s) reachable only through an exported inline template: %s"
-            autoExports.Length
-            (String.concat ", " autoExports)
+        Diagnostics.progress (
+            sprintf
+                "Auto-exporting %d name(s) reachable only through an exported inline template: %s"
+                autoExports.Length
+                (String.concat ", " autoExports))
 
     // The `import/extern` aliases this module has to publish.
     //
@@ -290,10 +345,11 @@ let metadata
                 $"(type (: (%s{info.Alias} %s{args}) (%s{info.ClrName} %s{args})))")
 
     if isLibrary && not externsNamedByBodies.IsEmpty then
-        printfn
-            "Publishing %d foreign import(s) named by an exported body: %s"
-            externsNamedByBodies.Length
-            (externsNamedByBodies |> List.map fst |> String.concat ", ")
+        Diagnostics.progress (
+            sprintf
+                "Publishing %d foreign import(s) named by an exported body: %s"
+                externsNamedByBodies.Length
+                (externsNamedByBodies |> List.map fst |> String.concat ", "))
 
     let declMetadata =
         if isLibrary && (not exports.IsEmpty || not typesToExport.IsEmpty) then
@@ -396,32 +452,7 @@ let metadata
 
                 $"(def/impl/extern (%s{traitName} %s{Codegen.serializeHMType targetType}) %s{assocStrs}%s{whereStr})"
 
-            // A function's flat type says how many arguments it takes,
-            // not which of them are keyword arguments — and a keyword
-            // name is part of the calling convention. Flattening it here
-            // meant an importer could not pass one at all: the shorter
-            // argument list it wrote would not unify.
-            let serializeSignature (name: string) (t: TypedAST.HMType) =
-                match Map.tryFind name env.FunMetas, t with
-                | Some meta, TypedAST.TFun(argTypes, ret, _) when
-                    not meta.KeywordParams.IsEmpty || meta.RestParam.IsSome
-                    ->
-                    let mandatory =
-                        argTypes |> List.truncate meta.MandatoryCount |> List.map Codegen.serializeHMType
-
-                    let keywords =
-                        meta.KeywordParams
-                        |> List.map (fun (n, kt) -> $"(#:{n} {Codegen.serializeHMType kt})")
-
-                    let rest =
-                        match meta.RestParam with
-                        | Some rt -> [ $"#:rest {Codegen.serializeHMType rt}" ]
-                        | None -> []
-
-                    "(-> "
-                    + String.concat " " (mandatory @ keywords @ rest @ [ Codegen.serializeHMType ret ])
-                    + ")"
-                | _ -> Codegen.serializeHMType t
+            let serializeSignature (name: string) (t: TypedAST.HMType) = signatureText env name t
 
             // `(import/extern (alias (: System.Math.Abs)))`, the same
             // form the source was written in — the reader on the far
@@ -748,7 +779,8 @@ let metadata
         else []
 
     if isLibrary && not declaredMacros.IsEmpty then
-        printfn "Publishing %d macro(s): %s" declaredMacros.Length (String.concat ", " declaredMacros)
+        Diagnostics.progress (
+            sprintf "Publishing %d macro(s): %s" declaredMacros.Length (String.concat ", " declaredMacros))
 
     let typeDecls, externDecls, traitDecls, implDecls, defs = declMetadata
 

@@ -516,6 +516,53 @@ if [ -d "$CODEGEN_DIR" ] && ls "$CODEGEN_DIR"/*.bjo >/dev/null 2>&1; then
     done
 fi
 
+# --- The REPL ----------------------------------------------------------------
+#
+# A scripted session against a recorded transcript. Every `.in` under
+# `TestFiles/repl` is fed to `--repl` and its output compared to the `.expected`
+# beside it.
+#
+# Whole-transcript rather than a property per line, because what is being pinned
+# is the *semantics* — which value each entry produces, that a redefinition
+# shadows rather than replaces, that an impl written mid-session reaches the
+# entries after it, and which diagnostics come out where. Those are decisions,
+# and a decision quietly changing is exactly what this is for.
+#
+# Prompts are stripped and the dependency-build narration dropped: whether the
+# standard library happened to need rebuilding is not part of the session.
+REPL_DIR="TestFiles/repl"
+repl_total=0
+repl_failed=0
+declare -a repl_failures
+
+if [ -d "$REPL_DIR" ] && ls "$REPL_DIR"/*.in >/dev/null 2>&1; then
+    echo "--------------------------------------------------"
+    echo -e "${BLUE}Running REPL sessions...${NC}"
+
+    for in_file in "$REPL_DIR"/*.in; do
+        repl_name=$(basename "$in_file" .in)
+        repl_total=$((repl_total + 1))
+        expected="${in_file%.in}.expected"
+
+        dotnet "$COMPILER_DLL" --repl < "$in_file" 2>&1 \
+            | sed 's/^\(bjo> \|\.\.\.> \)*//' \
+            | grep -vE "^(Building imported module|$)" > "$LOG_DIR/repl_$repl_name.out"
+
+        if [ ! -f "$expected" ]; then
+            echo -e "  [${RED}FAIL${NC}] $repl_name (no .expected beside it)"
+            repl_failed=$((repl_failed + 1))
+            repl_failures+=("$repl_name: no recorded transcript")
+        elif diff -u "$expected" "$LOG_DIR/repl_$repl_name.out" > "$LOG_DIR/repl_$repl_name.diff"; then
+            echo -e "  [${GREEN}PASS${NC}] $repl_name"
+        else
+            echo -e "  [${RED}FAIL${NC}] $repl_name"
+            repl_failed=$((repl_failed + 1))
+            repl_failures+=("$repl_name: the session no longer matches its transcript")
+            cat "$LOG_DIR/repl_$repl_name.diff"
+        fi
+    done
+fi
+
 # --- Reproducibility ---------------------------------------------------------
 #
 # A module's `.dll` must not depend on how it was reached. Staleness is decided
@@ -597,12 +644,23 @@ fi
 if [ $codegen_total -gt 0 ]; then
     echo -e "Codegen tests:      $((codegen_total - codegen_failed))/$codegen_total emitted as expected"
 fi
+if [ $repl_total -gt 0 ]; then
+    echo -e "REPL sessions:      $((repl_total - repl_failed))/$repl_total match their transcript"
+fi
 echo -e "Total time:         ${duration}s"
 echo ""
 
 if [ ${#error_failures[@]} -ne 0 ]; then
     echo -e "${RED}=== Error Test Failures ===${NC}"
     for failure in "${error_failures[@]}"; do
+        echo -e "  $failure"
+    done
+    echo ""
+fi
+
+if [ ${#repl_failures[@]} -ne 0 ]; then
+    echo -e "${RED}=== REPL Session Failures ===${NC}"
+    for failure in "${repl_failures[@]}"; do
         echo -e "  $failure"
     done
     echo ""
@@ -625,7 +683,8 @@ if [ ${#codegen_failures[@]} -ne 0 ]; then
 fi
 
 # Print failure details
-if { [ $error_failed -ne 0 ] || [ $codegen_failed -ne 0 ]; } \
+if { [ $error_failed -ne 0 ] || [ $codegen_failed -ne 0 ] || [ $repl_failed -ne 0 ] \
+     || [ $repro_failed -ne 0 ]; } \
    && [ ${#compiled_failed[@]} -eq 0 ] && [ ${#run_failed[@]} -eq 0 ]; then
     exit 1
 fi

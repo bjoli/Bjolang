@@ -89,12 +89,40 @@ The compiler itself (~dotnet bin/Release/net10.0/Bjolang.dll~) takes:
 |----------------+-------------------------------------------------------------|
 | ~--lib~        | Compile to a ~.dll~ instead of an executable                |
 | ~-d~, ~--debug~ | Unoptimized, with symbols, plus ~ast_dump.txt~ and ~out.cs~ |
+| ~--repl~       | Read, evaluate, print, loop. See [[file:Repl.org][Repl.org]] |
 | ~--help~       | Usage                                                       |
 
 A file with no ~main~ compiles to a library whether or not ~--lib~ was passed:
 an executable without an entry point does not link.
 
 The dumps land in the *working directory*, not next to the source.
+
+*** Environment variables
+
+Diagnostic and escape-hatch settings, all off by default. What each is for, and
+the measurements behind them, are in [[file:Repl.org][Repl.org]].
+
+| Variable                        | Effect                                                    |
+|---------------------------------+-----------------------------------------------------------|
+| ~BJOLANG_TIMING=1~              | Print a phase breakdown to stderr at exit                 |
+| ~BJOLANG_NO_CSC_SERVER=1~       | Do not hand the C# build to a VBCSCompiler server         |
+| ~BJOLANG_OUT_OF_PROCESS_DEPS=1~ | Build each imported module in a compiler process of its own |
+| ~BJOLANG_REPL_DIR=<dir>~        | Keep a REPL session's generated sources there             |
+
+~BJOLANG_OUT_OF_PROCESS_DEPS~ is the one to reach for when a build fails only in
+company: imported modules are normally compiled in this process, and anything
+the compiler holds at module level that is not in ~Session~ would leak between
+them. If setting it fixes a build, that is what happened.
+
+** The REPL
+
+: ./bjor --repl
+
+No line editing, no completion, no history — run it under ~rlwrap~. An entry is
+a group of definitions or one expression, compiled by the same pipeline a build
+runs and emitted as an assembly of its own. [[file:Repl.org][Repl.org]] has the semantics: what
+redefinition does, what an ~impl~ written mid-session does and does not reach,
+and why a ~defun~ at the prompt still needs its signature.
 
 ** ~main~
 

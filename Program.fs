@@ -10,15 +10,19 @@ open System.IO
 type CompilerOptions =
     { InputFile: string option
       IsLibrary: bool
-      Debug: bool }
+      Debug: bool
+      Repl: bool }
 
-let defaultOptions = { InputFile = None; IsLibrary = false; Debug = false }
+let defaultOptions =
+    { InputFile = None; IsLibrary = false; Debug = false; Repl = false }
 
 let printUsage () =
     printfn "Bjolang Compiler"
     printfn "Usage: bjoc [options] <source.bjo>"
     printfn ""
     printfn "Options:"
+    printfn "  --repl      Read, evaluate and print Bjolang forms until end of input."
+    printfn "              No line editing — run it under rlwrap."
     printfn "  --lib       Compile the source as a library (.dll) instead of an executable"
     printfn "  -d, --debug Build unoptimized, with debug symbols, and dump the typed AST to"
     printfn "              ast_dump.txt and the generated C# to out.cs"
@@ -32,6 +36,7 @@ let rec parseArgs (args: string list) (opts: CompilerOptions) =
     | "--help" :: _ ->
         printUsage ()
         exit 0
+    | "--repl" :: rest -> parseArgs rest { opts with Repl = true }
     | "--lib" :: rest -> parseArgs rest { opts with IsLibrary = true }
     | "-d" :: rest
     | "--debug" :: rest -> parseArgs rest { opts with Debug = true }
@@ -51,6 +56,10 @@ let private run (argv: string array) =
     Build.installDependencyBackend ()
 
     let options = parseArgs (Array.toList argv) defaultOptions
+
+    if options.Repl then
+        Repl.run ()
+    else
 
     let inputFilePath =
         match options.InputFile with

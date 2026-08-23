@@ -40,6 +40,31 @@ let private runProcess (fileName: string) (args: string) (env: (string * string)
     p.ExitCode, stdout, stderr
 
 
+/// The C# for a checked program, with the metadata attribute an importer reads
+/// it back through.
+///
+/// Shared with the REPL, which is the reason it is a function. An entry is
+/// imported by the entries after it, so it has to publish its bindings the same
+/// way a library does — through `Exports.metadata` and nothing else. A REPL
+/// that built its own view of "what entry 3 defined" would be a second answer
+/// to a question the compiler already answers, and the two would drift.
+let generateSource
+    (env: TypedAST.Env)
+    (typedAst: TypedAST.TDecl list)
+    (dllDeps: string list)
+    (declaredMacros: string list)
+    (inputFilePath: string)
+    (isLibrary: bool)
+    : string =
+    // Only a library records what it links. An executable is the end of the
+    // chain: nothing imports it, so nothing needs to find the assemblies
+    // behind it.
+    let metadata =
+        { Exports.metadata env typedAst declaredMacros inputFilePath isLibrary with
+            Deps = if isLibrary then dllDeps |> List.map Path.GetFullPath else [] }
+
+    Timing.phase "codegen" (fun () -> Codegen.generateProgram env.Registry metadata dllDeps typedAst)
+
 /// Compiles `inputFilePath`. Answers a process exit code.
 let compile (options: Options) (inputFilePath: string) : int =
     try
@@ -72,19 +97,8 @@ let compile (options: Options) (inputFilePath: string) : int =
 
             Diagnostics.progress (sprintf "Compilation succeeded. %d declarations." typedAst.Length)
             
-            // Only a library records what it links. An executable is the end
-            // of the chain: nothing imports it, so nothing needs to find the
-            // assemblies behind it.
-            let metadata =
-                { Exports.metadata env typedAst declaredMacros inputFilePath isLibrary with
-                    Deps =
-                        if isLibrary then
-                            dllDeps |> List.map Path.GetFullPath
-                        else
-                            [] }
-
             let csCode =
-                Timing.phase "codegen" (fun () -> Codegen.generateProgram env.Registry metadata dllDeps typedAst)
+                generateSource env typedAst dllDeps declaredMacros inputFilePath isLibrary
             
             if options.Debug then
                 File.WriteAllText("ast_dump.txt", sprintf "%A" typedAst)

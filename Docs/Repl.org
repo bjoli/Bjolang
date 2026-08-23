@@ -1,0 +1,508 @@
+#+TITLE: The REPL, and why builds got faster
+#+OPTIONS: toc:2
+
+* What this is
+
+Two things that turned out to share almost all their machinery: a REPL, and
+faster batch compiles. What they share is the removal of a process boundary.
+
+Before: one compiler process per imported module, and one =csc= process per
+module on top of that. A five-module build was ten processes. The reason for
+the first of those was real — the compiler kept counters and tables at module
+level, and a sub-compilation would have inherited them — and the way out was to
+make that state a value rather than a global.
+
+Measured, on a trivial single-module program against a warm standard library:
+
+| stage                                     | wall  |
+|-------------------------------------------+-------|
+| before                                    | 1020ms |
+| =csc -shared=                             |  490ms |
+
+And on the same program against a *cold* standard library, so that four
+dependency modules have to be built:
+
+| stage                                     | wall   |
+|-------------------------------------------+--------|
+| a compiler process per module             | 2739ms |
+| in-process                                | 1226ms |
+
+A REPL entry, warm, costs **24ms**.
+
+* Where the time actually went
+
+=Timing= records phase durations when =BJOLANG_TIMING= is set. It is off
+otherwise and costs a stopwatch read when on, so wrapping a pass needs no
+deliberation.
+
+: BJOLANG_TIMING=1 dotnet bin/Release/net10.0/Bjolang.dll TestFiles/000_simple.bjo
+
+The first thing it said was that the frontend was not the problem:
+
+#+begin_example
+parse + module graph       141.7 ms
+type check                 106.6 ms
+codegen                     32.2 ms
+csc                        617.2 ms
+wall clock                1020.5 ms
+#+end_example
+
+Sixty per cent of a build was a =csc= process. That is the number every later
+decision was made against, and it is why the first change was one word.
+
+Measure before deciding. The plan below is ordered so that each stage is
+independently shippable, and so that anything expensive comes after the cheap
+thing that might make it unnecessary.
+
+* Stage 1 — =csc -shared=
+
+=-shared= hands the compilation to a VBCSCompiler server, started on first use
+and kept alive. What that saves is Roslyn's JIT and the parse of ~167 reference
+assemblies, which a fresh =csc= pays every time.
+
+csc: 617ms → 80ms. Wall: 1020ms → 490ms. One word.
+
+=BJOLANG_NO_CSC_SERVER=1= turns it off, because a stale server is a class of
+failure with no good diagnostic and the way out of one must not require editing
+the compiler.
+
+*What it forecloses:* nothing.
+
+* Stage 2 — determinism that was never there
+
+The premise was that a module produces a byte-identical =.dll= regardless of
+what else was built, because =Gensym='s counter starts at zero in each
+dependency's own process.
+
+That premise was false, and had always been false. Two consecutive builds of
+unchanged source produced different assemblies, for two reasons that have
+nothing to do with =Gensym=:
+
+1. =csc= was invoked without =-deterministic=, so Roslyn stamped a fresh MVID
+   and a timestamp into every assembly.
+2. The generated C# is written to a temp directory named after a fresh GUID,
+   and =-debug:portable= records the path of the source an assembly was built
+   from. So even *with* =-deterministic= the filename being determined about was
+   different every build. =-pathmap= normalizes it to =/bjolang/=.
+
+A trap worth recording: =-pathmap:x== with an empty replacement is rejected by
+=csc=, and a rejected argument there is not an error anyone sees — it fails the
+whole =csc= attempt, which falls back to MSBuild, which builds successfully and
+non-deterministically.
+
+This stage is what makes the next one testable. "The same module compiles to the
+same bytes however it was reached" is now a property =run_tests.sh= checks
+rather than something believed.
+
+* Stage 3 — the state refactor
+
+=Session= names the state that belongs to a *compilation* rather than to the
+*process*, and can put a compilation back where it found it.
+
+** Per compilation — captured and restored
+
+| field                      | why it is scoped                                                       |
+|----------------------------+------------------------------------------------------------------------|
+| =Gensym.counter=           | determinism: unchanged source must not compile to a different =tmp__37= |
+| =Unification.nextMetaId=   | ids are compared within one run, and one can reach a diagnostic        |
+| =Macro.table=              | which macros exist is decided by *this* module's imports               |
+| =Macro.localMacros=        | the module being parsed, which is a different set per module           |
+| =Macro.expansions=         | correct if leaked, but it never shrinks                                 |
+| =Parser.introducedNames=   | likewise                                                                |
+| =Inference.wantedQueue=    | empty after a compilation that succeeded, and not after one that threw  |
+
+The macro table is the dangerous one. A leaked entry does not raise an error: it
+makes a form silently read as a macro call because some *other* file imported
+something that publishes that name.
+
+** Per process — deliberately not touched
+
+| field                                      | why it is global                                          |
+|--------------------------------------------+-----------------------------------------------------------|
+| =Pipeline.assemblyPaths=, =resolverInstalled= | the CLR's assembly resolution is process-wide, and an assembly cannot be unloaded |
+| =Pipeline.compileLibrary=                  | a backend hook, set once                                   |
+| =DotNetInterop.typeCache=, =extraAssemblies= | reflection over what the process has loaded               |
+| =Parser.expandHook=, =isMacroName=         | function pointers into =Macro=; the tables behind them are scoped |
+| =Unification.heldMetaIds=, =heldLocalMetaIds= | likewise, into =Inference=                             |
+
+** The one that does not exist
+
+=Program.fs= named a "=Codegen= shadowed-builtin set" among the reasons a
+sub-compilation had to be a subprocess. There is no such thing. =Codegen='s
+per-compilation data — =GlobalBindings=, =UnionCases=, the registry — is built
+inside =generateProgram= and threaded through =ctx=. The comment was stale and
+is gone.
+
+** Gensym's two directions
+
+Per module for a build, monotonic across entries for the REPL. Both, and they
+are the same mechanism used opposite ways:
+
+- =Session.isolated= resets the counter to zero, so a dependency compiled
+  in-process produces the assembly a subprocess produced.
+- =Session.replEntry= carries the counter forward, because entry 4 and entry 9
+  both starting at zero would emit two members called =tmp__12=, and entry 9's
+  assembly references entry 4's, so the two are in scope together and which one
+  a name binds to stops being decidable.
+
+Determinism is not lost by the second: a REPL entry's assembly is thrown away
+when the next one is typed and no staleness check ever looks at it.
+
+* Stage 4 — in-process dependency builds
+
+=compileDependencyInProcess= replaces the compiler-per-import. 2739ms → 1226ms
+on a cold standard library.
+
+** What it costs
+
+The process boundary was a real isolation guarantee. Any state not moved into
+=Session= becomes an order-dependent bug that only appears when compiling B
+after A — the worst shape a bug can take, because the file that fails is not the
+file that is wrong.
+
+Three things reduce that risk:
+
+1. *The out-of-process path stays*, behind =BJOLANG_OUT_OF_PROCESS_DEPS=1=. It is
+   the escape hatch for exactly one class of bug: if setting it fixes a build,
+   the fault is state that was not moved.
+2. *=run_tests.sh= checks it.* It builds a two-module fixture three times — twice
+   in-process and once out-of-process — and compares hashes. The first pair
+   catches a non-deterministic backend; the second catches a state leak.
+3. *Determinism came first* (stage 2), which is what makes that check mean
+   anything.
+
+** =BJOLANG_BUILD_CHAIN=
+
+It cannot be retired while the out-of-process path exists: a build that falls
+back to it, or a compiler invoked by one that did, still needs the cycle chain
+to cross the boundary. In-process the chain is an ordinary list. Both are
+consulted. The variable becomes dead the day that path is deleted, and not
+before.
+
+** Memory
+
+One process now holds the whole graph: every module's parsed declarations, typed
+AST and loaded assembly, for the duration. On the standard library that is a few
+tens of megabytes. It grows with the size of the graph, not with the size of the
+build, and nothing is freed early because a module's declarations are read by
+everything downstream of it. If a project ever gets large enough for this to
+matter, the fix is to drop a =LoadedModule='s typed AST once every dependent has
+been checked — which is a change to =loadModuleGraph= alone, and is not worth
+making on speculation.
+
+* Stage 5 — in-process Roslyn, and when *not* to use it
+
+=CSharpEmit= is Roslyn as a library, with =MetadataReference= objects cached for
+the life of the process.
+
+The measurement that matters:
+
+| what                                  | cost   |
+|---------------------------------------+--------|
+| first emit in a process, no warm-up   | ~400ms |
+| first emit behind a background warm-up| ~190ms |
+| =csc -shared=                         |  ~82ms |
+| *second* emit in the same process     |  ~14ms |
+
+So the honest statement is not "in-process is faster". It is "in-process is
+faster from the second emit onwards". A one-shot =bjo build= is better off with
+=csc -shared=, whose server is a warm Roslyn one process away and needs no
+warm-up of ours.
+
+Two consequences:
+
+- The backend is chosen *once per process*, not per emit. A rule like "use
+  in-process once we are warm" makes the choice depend on whether a background
+  thread finished first — measured, a four-module build came out with two
+  modules from each backend, differently every run. Since this Roslyn and the
+  SDK's =csc= are different builds of the same compiler, that made a module's
+  bytes depend on thread scheduling.
+- The pre-warm has to bind against the real reference set. Metadata is read
+  lazily, per type, so warming up on ~static class W { static int F() => 1; }~
+  warms nothing: the following real emit still cost 400ms. Warming up on
+  something shaped like generated code — the same =using static=, a list, a
+  string, a console call — brought it to 190ms.
+
+*What it forecloses:* very little, and it is the enabling piece for the REPL,
+where 14ms per entry is the whole point.
+
+* Stage 6 — the REPL
+
+** Not an interpreter
+
+An entry is compiled by the same =runFullFrontendPipeline= a build runs, emitted
+by the same =Codegen=, and published by the same =Exports.metadata=. There is no
+second account of what Bjolang means anywhere in =Repl.fs=. What that module
+contributes is a driver: what source an entry becomes, which earlier entries it
+links, and how a value is shown.
+
+A tree-walking interpreter over =TypedAST= would have been a second
+implementation of the semantics — the thing you asked not to have — and it would
+have had to reimplement dictionary lowering, trait inlining and loop lowering to
+get the same answers. It would drift, and the drift would be invisible until
+someone hit it.
+
+** One assembly per entry
+
+Entry N is written to =Bjo_Repl_N.bjo= in a session directory, compiled to
+=Bjo_Repl_N.dll=, and loaded. Entry N+1 reaches entry N's bindings by importing
+that =.dll=, which is the ordinary module mechanism and needs nothing of its
+own.
+
+Checked against =Codegen=: yes, a top-level =def= emits as a
+=public static readonly= field on the module class and a =defun= as a
+=public static= method, which is exactly what an importing entry links against.
+No separate emission path was needed.
+
+Set =BJOLANG_REPL_DIR= to keep the entries where you can read them. What an
+entry becomes is the whole of what this module decides, so being able to look at
+one is the difference between debugging the REPL and guessing at it.
+
+** Per-entry cost does not grow with the session
+
+Your instinct was right, with one correction. Entry N imports only the previous
+entries it actually depends on, found by resolving every symbol it mentions to
+the newest entry that provides it. Importing all N would make entry N re-read N
+sets of metadata.
+
+The correction: it is done on the *token stream*, not on =AlphaRename.freeNames=.
+=freeNames= works on a parsed =Expr=, and parsing needs the imports, which is
+what we are trying to compute. Over-approximating is free — a local named =x=
+pulls in an earlier entry that defines an =x=, which costs one assembly
+reference and changes nothing, since a =let=-bound =x= shadows the import as it
+would shadow anything. Under-approximating is what would be wrong, and cannot
+happen, because every reference to a binding is a symbol in the text.
+
+Three things had to be added to make it correct:
+
+- *A name the entry defines is never imported.* =(defun (f x) (* x 100))=
+  mentions =f=, so without this it imported the earlier =f= alongside defining
+  its own — and the import wins, so redefining a name silently produced the old
+  one. This was a real bug, caught by the transcript test.
+- *Union cases and trait methods count as provided.* Nothing writes =Shape=; it
+  writes =(Circle 2.0)=. They cannot go in the =(export ...)= list — a case has
+  no signature and travels with its type — so "what this entry provides" and
+  "what this entry exports" are two different sets.
+- *Entries declaring a trait or an impl are linked unconditionally.* An impl is
+  not a name; nothing a later entry writes mentions it, so nothing would pull it
+  in.
+
+Qualified names via =Naming.qualifiedBinding= were not needed: an ordinary
+import already resolves through =using static= for the entry's module class, and
+shadowing between two imported entries is decided by import order, which the
+REPL controls.
+
+** Signatures at the prompt
+
+This is where the language pushed back. =Inference= requires a signature on
+every top-level =defun= but =main=, and =Exports= requires one on every exported
+name. At a prompt the signature and the definition arrive on separate lines,
+because a complete form is a complete entry.
+
+Two mechanisms, and they are different on purpose:
+
+- *A signature typed at the prompt waits for the entry that defines its name*,
+  is replayed into that entry's source, and is then forgotten. Which is what the
+  same two lines in a file mean.
+
+  #+begin_src scheme
+  bjo> (: double (-> int int))
+  bjo> (defun (double x) (* x 2))
+  double
+  bjo> (double 21)
+  42
+  #+end_src
+
+- *For an unsignatured =def=, the REPL writes down what was inferred and
+  compiles the entry again.* The export rule is deliberate — a module's
+  published surface is what its author committed to, not what happened to be
+  inferred — and at a prompt there is no author. Writing back the inferred type
+  means the entry means exactly what the same lines in a file with that
+  annotation would.
+
+  This costs a second frontend pass, and only for definition entries that need
+  it. Expression entries, which is most of interactive use, stay single-pass.
+
+*This is the decision that constrains language design, and it is worth stating
+plainly:* mandatory top-level signatures make a REPL awkward, and no amount of
+REPL cleverness fixes that without the REPL and =bjo build= meaning different
+things. If you ever want ~bjo> (defun (double x) (* x 2))~ to work on one line,
+that is a change to =Inference=, not to =Repl=.
+
+** How a value is shown
+
+=->str=, the language's own. The prelude gives it a blanket impl over every
+type, so there is no value the prompt cannot show and no printer in the compiler
+to keep in step with the language.
+
+An entry that is an expression becomes:
+
+#+begin_src scheme
+(def __bjo_value <what you typed>)
+(def __bjo_show (->str __bjo_value))
+#+end_src
+
+=def= rather than =defun= because a top-level =defun= needs a signature and the
+whole point of the wrapper is that the REPL does not know the type. A top-level
+=def= runs its initializer in the class's static constructor, so *reading the
+field is what evaluates the entry*.
+
+Two bindings rather than one so the type of the value is still readable off
+=env= afterwards: =__bjo_show= is a =string= whatever it wrapped, and whether to
+print at all depends on what =__bjo_value= was. =void= and =Unit= print nothing,
+because "this was done" is not a value and echoing =Bjoml.Unit= is noise.
+
+** The four semantic choices
+
+*** Redefinition — GHCi-style shadowing
+
+Entry 3's IL holds a hard reference to =Bjo_Repl_1.f=; redefining =f= does not
+update it. The REPL says so rather than pretending:
+
+#+begin_src scheme
+bjo> (: g (-> int int))
+bjo> (defun (g x) (f (f x)))
+g
+bjo> (g 10)
+12
+bjo> (: f (-> int int))
+bjo> (defun (f x) (* x 100))
+  note: f shadows the one from entry 15. Anything already compiled against that one still calls it.
+f
+bjo> (f 10)
+1000
+bjo> (g 10)
+12
+#+end_src
+
+Dependent-entry recompilation is the alternative and it is not worth it. To make
+that =(g 10)= answer =1000=, entry 16 would have to recompile every entry that
+mentions =f=, transitively, and re-emit each of them — turning a keystroke from
+24ms into a rebuild of the session, growing with session length, which is
+exactly the property the import-only-what-you-need work exists to avoid. It also
+re-runs every top-level initializer, so a =(def log (open-file ...))= four
+entries back is silently re-executed.
+
+Shadowing is honest and cheap. The note is what stops it being surprising.
+
+*** Trait impls added mid-session — forward only
+
+An impl written at entry 9 reaches entries 10 and after, because such an entry
+is linked unconditionally. It cannot reach entry 4: =Lowering= baked a
+dictionary choice into entry 4's IL, and that IL is loaded and cannot be
+reconsidered.
+
+#+begin_src scheme
+bjo> (type (: Colour (Union Red Green)))
+Colour
+bjo> (->str Red)
+Bjo_Repl_1__Red { }
+bjo> (def/impl (->str Colour) (defun (->str c) (match c (Red "red") (Green "green"))))
+bjo> (->str Red)
+red
+#+end_src
+
+The failure mode is that second line: before the impl exists, the *blanket*
+=->str= impl applies, silently and correctly. Nothing warns, because at that
+point nothing is wrong. It only looks wrong in hindsight.
+
+Whether to warn when a new impl overlaps something already compiled: yes,
+eventually, and not yet. Doing it properly means keeping, per entry, the set of
+=(trait, type)= pairs that entry resolved, and reporting when a new impl would
+have changed one. That is a small amount of bookkeeping in =Repl= over
+information =Lowering= already computes, and it should wait until there is a
+session long enough to be confused by. It is noted here so it is not rediscovered.
+
+An implementation detail worth knowing: =Exports.metadata= writes a module's
+impls only if the module has an export or a type to hang them on. An entry that
+is nothing but =(def/impl ...)= has neither, so its impl never crossed and the
+line above went on printing =Bjo_Repl_1__Red { }=. The REPL gives such an entry
+one exported binding — =__bjo_anchor= — purely to open the metadata block. It is
+not reported as a name the entry defined, because it is not one the user wrote.
+
+The same is true of a hand-written module: a =.bjo= that exports nothing and
+declares no type publishes no impls either. Worth knowing about outside the REPL.
+
+*** Generalization at the prompt — let the language answer
+
+Neither default nor generalize. A top-level =def= at the prompt *is* a top-level
+=def= in a module, so the module value restriction applies and an ambiguous one
+is rejected with the language's own diagnostic. Defaulting would make the prompt
+accept programs a file rejects, which is the divergence this whole design exists
+to avoid.
+
+*** =(import "x.bjo")= at the prompt — safe, and cached
+
+Safe. Imports typed at the prompt are replayed into every subsequent entry
+rather than remembered as compiler state, so a macro imported at entry 2 is
+re-registered at entry 3 by that entry's own import — the same path a build
+takes. =Session.replEntry= clearing the macro table between entries is what
+makes replay the *only* path, which is what makes it safe.
+
+One correction to how it reads: a relative path at a prompt means relative to
+where you are standing, not to a temp file you cannot see, so the REPL makes it
+absolute before writing the entry.
+
+Caching: yes, and it is on. =Pipeline.cacheLoadedModules= keeps a read =.dll='s
+declarations keyed on path *and* mtime. It is on for the REPL and *off for
+builds*, and the reason is the interesting part: reading a =.dll= parses its
+metadata back into declarations, and that parse can invent names through
+=Gensym=. Decls produced under one compilation's counter and reused under
+another's would make a module's output depend on what was compiled before it —
+the determinism stage 2 exists to establish. A REPL entry's assembly is thrown
+away when the next one is typed, so it has nothing to lose.
+
+It is worth a third of an entry: without it, re-reading the prelude's metadata
+dominated.
+
+** Where an entry's cost goes now
+
+Measured over 18 entries, subtracting a 6-entry run to get the marginal cost:
+
+| phase              | per warm entry |
+|--------------------+----------------|
+| parse + module graph |         10ms |
+| type check           |          8ms |
+| roslyn emit          |          5ms |
+| everything else      |          1ms |
+| *total*              |     *~24ms* |
+
+The first entry of a session costs ~700ms, most of it waiting for Roslyn's
+warm-up. That is the number to attack next if anyone cares; 24ms warm is well
+inside the target.
+
+* What this sets up
+
+A =bjo watch= daemon is now mostly a loop. The session object it would need —
+warm Roslyn, cached =MetadataReference= objects, a cached module graph, explicit
+compilation state — is the same one the REPL holds, and each piece landed for a
+reason of its own rather than for that. What is missing is a file watcher and an
+invalidation rule, and the invalidation rule is the only hard part: the module
+cache is keyed on path and mtime, which is right for a watcher too.
+
+*Should you design toward it now? No.* The pieces arrived because each was the
+cheapest correct answer to a measured problem, and that is why they compose. A
+=watch= command designed for in advance would have added a session type nothing
+yet needed, and the guess about what it should hold would have been made before
+any of the measurements above existed.
+
+Two things are worth doing before a daemon, and both are visible from here:
+
+- =Pipeline.cacheLoadedModules= is off for builds for a reason that is a bug, not
+  a law: reading a =.dll='s metadata should not consume =Gensym=. If that were
+  fixed, the cache would be safe for builds too, and a watcher would get it for
+  free.
+- Independent branches of the module DAG can now compile concurrently — one
+  process holds the graph, and =Session= makes the state per compilation. That
+  is not done here. It wants =Gensym= and the macro table to be thread-local
+  rather than merely scoped, which is a change to =Session='s shape and not to
+  its idea.
+
+* Flags
+
+| variable                        | effect                                                    |
+|---------------------------------+-----------------------------------------------------------|
+| =BJOLANG_TIMING=1=              | print a phase breakdown to stderr at exit                 |
+| =BJOLANG_NO_CSC_SERVER=1=       | do not use the VBCSCompiler server                        |
+| =BJOLANG_OUT_OF_PROCESS_DEPS=1= | build imported modules in a subprocess, as before         |
+| =BJOLANG_REPL_DIR=<dir>=        | put the REPL session's generated sources there, and keep them |

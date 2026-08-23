@@ -21,12 +21,24 @@ if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
     echo "  bjor -c <file.bjo> [args...] Compile unconditionally, then run"
     echo "  bjor -d <file.bjo> [args...] Build unoptimized with debug symbols, dumping the"
     echo "                               typed AST and generated C#; always recompiles"
+    echo "  bjor --repl                  Start a REPL. No line editing: run it under rlwrap"
     echo "  bjor --lib <file.bjo>        Compile a Bjolang source file as a library"
     echo "  bjor -h, --help              Show this help message"
     echo ""
     echo "Options must come before the source file; everything after it is passed"
     echo "to the compiled program."
     exit 0
+fi
+
+# The REPL takes no source file, so it short-circuits the staleness machinery
+# below — which is all about deciding whether a binary is older than what it was
+# built from, and there is no binary.
+if [ "$1" = "--repl" ]; then
+    if [ ! -f "$COMPILER_DLL" ] || [ -n "$(find "$SCRIPT_DIR" -maxdepth 1 -name '*.fs' -newer "$COMPILER_DLL" 2>/dev/null)" ]; then
+        echo "Building Bjolang compiler..."
+        dotnet build "$PROJECT_FILE" -c Release -v q --nologo || exit 1
+    fi
+    exec dotnet "$COMPILER_DLL" --repl
 fi
 
 # Parse compiler flags vs source file

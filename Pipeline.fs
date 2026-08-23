@@ -639,6 +639,34 @@ type LoadedModule = {
     Assembly: System.Reflection.Assembly option
 }
 
+/// What reading one `.dll` produced, kept for the next compilation in this
+/// process.
+///
+/// Off for a build, on for a REPL, and the difference is what the cache is
+/// allowed to be wrong about. Reading a `.dll` parses its metadata back into
+/// declarations, and that parse can invent names through `Gensym` — so decls
+/// produced under one compilation's counter and reused under another's would
+/// make a module's output depend on what was compiled before it. That is
+/// exactly the determinism a build must not lose, and exactly what a REPL entry
+/// has no use for: an entry's assembly is thrown away when the next one is
+/// typed.
+///
+/// What it buys is the whole reason: a REPL entry imports the prelude, and
+/// re-reading the prelude's metadata was about a third of what an entry cost.
+let mutable cacheLoadedModules = false
+
+/// Keyed on the timestamp as well as the path, so that rebuilding a dependency
+/// and importing it again in the same process gets the new one.
+type private CachedDll =
+    { Decls: Decl list
+      Macros: ModuleMetadata.MacroEntry list
+      Assembly: System.Reflection.Assembly
+      /// Everything reading it added to the link set — itself, and the
+      /// transitive dependencies its metadata named.
+      Linked: string list }
+
+let private dllCache = System.Collections.Generic.Dictionary<string * int64, CachedDll>()
+
 // ---------------------------------------------------------------------------
 // Building an imported source module
 // ---------------------------------------------------------------------------
@@ -920,7 +948,28 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
         if not (resolvedModules.ContainsKey(absPath)) then
             currentPath.Add(absPath) |> ignore
             
+            let cacheKey = absPath, File.GetLastWriteTimeUtc(absPath).Ticks
+
+            let cached =
+                if cacheLoadedModules && absPath.EndsWith ".dll" then
+                    match dllCache.TryGetValue cacheKey with
+                    | true, hit -> Some hit
+                    | _ -> None
+                else
+                    None
+
             let parsedDecls, deps, macros, assembly =
+                match cached with
+                | Some hit ->
+                    // The link set is per compilation and the parse is not, so
+                    // what was linked is replayed rather than remembered.
+                    for path in hit.Linked do
+                        dllDeps.Add path |> ignore
+                        noteAssemblyPath path
+
+                    hit.Decls, [], hit.Macros, Some hit.Assembly
+                | None ->
+
                 if absPath.EndsWith(".dll") then
                     dllDeps.Add(absPath) |> ignore
                     // Before the assembly is loaded: a transformer this one
@@ -1073,7 +1122,17 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
                     // link-only and never enter the module graph. Inline
                     // templates come last: registering one is meaningless
                     // until the trait and impl it belongs to exist.
-                    parsedDecls @ inlineImplDecls, [], meta.Macros, Some asm
+                    let decls = parsedDecls @ inlineImplDecls
+
+                    if cacheLoadedModules then
+                        dllCache[cacheKey] <-
+                            { Decls = decls
+                              Macros = meta.Macros
+                              Assembly = asm
+                              Linked =
+                                absPath :: (meta.Deps |> List.filter (fun p -> p <> "" && File.Exists p)) }
+
+                    decls, [], meta.Macros, Some asm
                 else
                     // Reported rather than left to `File.ReadAllText`, whose
                     // `FileNotFoundException` is not a diagnostic and so prints

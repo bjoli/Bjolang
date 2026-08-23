@@ -4204,7 +4204,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                             DotNetInterop.hasStaticMethod clrType (memberName + "Async")
 
                     if not spec.IsAsync && hasSibling then
-                        printfn
+                        Diagnostics.progress
                             $"Note at %s{where}: '%s{clrType.FullName}.%s{memberName}' has an async sibling, '%s{memberName}Async'. The synchronous one parks a thread; importing the sibling with #:async does not, and the call site reads the same either way (§7.5)."
 
                     if spec.Uncancellable && not (spec.IsAsync || spec.Cancellable) then
