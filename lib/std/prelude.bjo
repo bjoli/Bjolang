@@ -16,8 +16,6 @@
   fold
   ;; Functor
   map
-  ;; Monad
-  bind pure
   ;; Iterable
   current done? next start
   ;; Cursor — a position, where Iterable is a walk
@@ -32,6 +30,7 @@
   range range-by
 
   print println ->str list->str
+  list-append
 
   ;; Maps. These were compiler builtins and so appeared in no export list; they
   ;; are ordinary bindings now, and every one of them has to be named here.
@@ -106,7 +105,13 @@
 (re-export = eq-hash)
 
 (include "Foldable.protobjo")
-(include "Monad.protobjo")
+
+;; The one list operation written here rather than built in. `(std monad)` is
+;; where it was, since `List`'s `bind` is a concat-map and needs one — and that
+;; module is above this one, so it stayed behind when the trait left.
+(: list-append (-> (List %a) (List %a) (List %a)))
+(defun (list-append xs ys)
+  (list-foldr Cons ys xs))
 
 ;; Type to String Trait
 (def/trait (->str %a)
@@ -676,6 +681,11 @@
 (def/impl (Functor (Option %a))
   (defun (map g o)
     (match o ((Some v) (Some (g v))) (None None))))
+
+;; `%e` is fixed by the impl, so the error rides along untouched.
+(def/impl (Functor (Result %e %a))
+  (defun (map g r)
+    (match r ((Ok v) (Ok (g v))) ((Err e) (Err e)))))
 
 
 ;; ---------------------------------------------------------------------------

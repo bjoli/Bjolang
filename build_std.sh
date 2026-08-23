@@ -19,6 +19,10 @@ echo "Building standard library..."
 ./bjor --lib lib/std/prelude.bjo
 # `ports` imports `prelude`, so it comes last for the same reason.
 ./bjor --lib lib/std/ports.bjo
+# `monad` imports `prelude` for `list-append` and `syntax-match` to write `do`
+# with. Both have to be compiled first — a macro's module is loaded into the
+# compiler along with everything it imports.
+./bjor --lib lib/std/monad.bjo
 # `stopwatch` imports both `prelude` and `syntax-match`, the latter because its
 # `time-it` is written with it.
 ./bjor --lib lib/std/stopwatch.bjo

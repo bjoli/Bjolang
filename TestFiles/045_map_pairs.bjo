@@ -97,6 +97,18 @@
             ((Some v) (= v 42))
             (None false)))
 
+  ;; On Result the error is fixed by the impl and rides along.
+  (def (: ok (Result string int)) (Ok 21))
+  (def (: bad (Result string int)) (Err "nope"))
+  (expect "Functor on Ok"
+          (match (map (fun (n) (* n 2)) ok)
+            ((Ok v) (= v 42))
+            ((Err _) false)))
+  (expect "Functor on Err"
+          (match (map (fun (n) (* n 2)) bad)
+            ((Ok _) false)
+            ((Err e) (= e "nope"))))
+
   ;; A loop over a Map walks its entries, so `kv` is a pair here too.
   (def/mutable looped 0)
   (loop (:for kv m) (:do (set! looped (+ looped (tuple-value kv)))))

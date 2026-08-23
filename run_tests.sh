@@ -77,7 +77,7 @@ STD_DIR="lib/std"
 # `lib/std` that the library does not build — a module still being written — has
 # no `.dll`, which read as "stale", so the whole standard library was rebuilt on
 # every run and the condition never cleared. And the glob did not cover
-# `.protobjo`, so editing `Monad.protobjo`, which `prelude` includes, read as
+# `.protobjo`, so editing `Foldable.protobjo`, which `prelude` includes, read as
 # "current" and the suite ran against a stale prelude.
 #
 # `build_std.sh` names the modules the standard library consists of, in

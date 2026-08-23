@@ -320,6 +320,9 @@ Built-in functional linked lists.
 - ~(list-foldr f init lst)~ : Right fold; ~f~ receives ~(item acc)~.
 - ~(list-for-each f lst)~ : Applies ~f~ to each element for side effects.
 - ~(list-ref lst index)~ : Gets the element at ~index~.
+- ~(list-append xs ys)~ : ~xs~ followed by ~ys~. Written in ~std/prelude~ rather
+  than built in, because a builtin of that name is ambiguous to C# at every call
+  site — ~,@~'s own append is monomorphic and separate for that reason.
 
 ** Vectors (~Vec~ / ~RrbList~)
 Persistent immutable vectors.
@@ -637,6 +640,36 @@ Lazy, demand-driven sequences.
 - ~(vec->seq vec)~ : Converts a vector to a lazy sequence.
 - ~(seq->vec s)~ : Consumes a sequence into a vector.
 
+** Monads =(std monad)=
+The ~Monad~ trait, its instances, and the ~(do ...)~ block, none of which is in
+the prelude: a file that wants one writes ~(import (std monad))~.
+
+- ~(pure x)~ : ~x~ in the monad. It mentions its constructor only in its
+  *result*, so nothing about the call says which instance is meant — the
+  expected type does, and where there is none the compiler asks for an
+  annotation.
+- ~(bind m k)~ : ~m~'s value handed to ~k~, which answers the next ~m~.
+- ~(do clause ...)~ : the block, which is ~bind~ and ~pure~ written in
+  sequence. See ~Docs/Syntax.org~ for the clauses.
+
+Implemented for ~(List %a)~ — where ~bind~ is a concat-map, so a block over one
+multiplies out — ~(Option %a)~ and ~(Result %e %a)~, both of which
+short-circuit. The last is what makes a block of fallible steps read as the
+happy path: ~%e~ is fixed by the implementation, so the error type is written
+once in the signature and never in the block.
+
+~Monad~ is *inline-only*: ~%m~ is a type constructor, which no C# interface can
+abstract over, so every call is resolved statically and spliced. Two
+consequences follow. A method may not be used at a type that is still a
+variable — no function generic in its monad — and whether a block is a loop
+depends on the instance: ~bind~ mentioning its continuation once means the
+lambda is substituted away, and mentioning it twice means it survives.
+
+There is deliberately no instance for ~Promise~ or ~Event~. Concurrency here is
+direct-style — a call to a ~defbjo~ is the yield point — and a suspension inside
+~bind~'s continuation is a lambda that cannot suspend. ~bjo~, ~sync~ and
+~with-cancel~ are the sequencing for those.
+
 ** Iterators
 Standard iterator protocol for collections.
 - ~(iterate col)~ : Returns an iterator for the collection.
@@ -676,9 +709,12 @@ Standard iterator protocol for collections.
   ~%content~ is ~char~ and so ~length~ must be ~string-count~ rather than
   ~string-length~.
 - ~Functor~ : ~(map f x)~, where ~f~ receives one element and returns its
-  replacement. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Option %a)~ and
-  ~(Map %k %v)~. The abstracted argument is the last one, so mapping a
-  ~(Map %k %v)~ moves the *values* and leaves the keys alone.
+  replacement. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Option %a)~,
+  ~(Result %e %a)~ and ~(Map %k %v)~. The abstracted argument is the last one,
+  so mapping a ~(Map %k %v)~ moves the *values* and leaves the keys alone, and
+  mapping a ~(Result %e %a)~ leaves the error alone.
+- ~Monad~ : ~(pure x)~ and ~(bind m k)~ — in ~(std monad)~ rather than here.
+  See the section above.
 - ~Collector~ : ~(init c)~, ~(step c acc x)~ and ~(finish c acc)~ — the
   accumulators an ~:acc~ clause names. The stock ones are ~listing~, ~vecing~,
   ~mapping~, ~stringing~, ~summing~, ~counting~ and ~folding~; ~stringing~

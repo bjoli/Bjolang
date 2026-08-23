@@ -1290,16 +1290,27 @@ use ~let~, ~if~ and ~->~ unchanged.
 See ~Docs/MACROS.org~.
 
 ** Monadic blocks
-~(do ...)~ desugars to ~bind~ and ~pure~. It is spelled ~do~ rather than ~seq~,
+~(do ...)~ expands to ~bind~ and ~pure~. It is spelled ~do~ rather than ~seq~,
 which lazy sequences already own.
+
+It is *not* syntax. ~Monad~, its implementations for ~List~, ~Option~ and
+~Result~, and the ~do~ macro are all ~(std monad)~, which a file that writes a
+block imports:
 #+BEGIN_SRC scheme
+(import (std monad))
+
 (do (:bind x xs)              ; x <- xs
+    (:match (Tuple a b) (m))  ; the same, taken apart
     (:let  y (+ x 1))         ; ordinary binding, no monad involved
     (:then (action))          ; >>, run for its effect
     (:return (* y 2)))        ; sugar for (pure (* y 2))
 #+END_SRC
 
-Four things are worth knowing:
+The macro's templates write ~bind~ and ~pure~, which are trait methods, so
+hygiene leaves them meaning whatever they mean at the call site: a block runs
+over any ~Monad~ in scope, including one ~(std monad)~ has never heard of.
+
+Five things are worth knowing:
 
 - The last form may be *any* ~m a~, not only a ~:return~. Otherwise a monadic
   loop could not be written at all, because the recursive call has to *be* the
@@ -1310,6 +1321,10 @@ Four things are worth knowing:
 - ~:bind~ takes a plain identifier. A pattern would raise the question of what
   happens when the match fails, which wants a ~MonadFail~ rather than a match
   that can throw.
+- ~:match~ is that question answered by name: it binds a pattern, and a pattern
+  that does not cover throws, as one does anywhere else in the language. What it
+  is for is the pattern that cannot fail — a ~Tuple~, a record, a union of one
+  case.
 - A bare form in non-tail position is an ordinary statement, run for its effect.
 
 ** Loops

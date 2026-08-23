@@ -104,9 +104,9 @@ let private betaReduce
                 arg,
                 rest,
                 // The argument's own range, not the application's. Every
-                // generated node sharing one range is what made a long `do`
-                // block report each of its errors at the same character; see
-                // `Parser.desugarDo`.
+                // generated node sharing one range is what makes a long chain
+                // of `bind` calls — a `(do ...)` block, say — report each of
+                // its errors at the same character.
                 exprRange arg
             ))
         (List.zip boundNames args)

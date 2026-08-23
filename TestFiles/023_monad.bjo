@@ -1,4 +1,7 @@
 (import (std prelude))
+;; The trait, its `List` and `Option` instances and the `(do ...)` block that
+;; reads as calls to them all come from here.
+(import (std monad))
 
 
 
@@ -34,6 +37,36 @@
       (do (:bind x (Cons n Nil))
           (countdown (- x 1)))))
 
+;; `Result`, where the whole block is the happy path: `%e` is fixed by the
+;; implementation, so an `Err` short-circuits the rest without being mentioned
+;; anywhere in the block.
+(: parse-pair (-> string (Result string (Tuple int int))))
+(defun (parse-pair text)
+  (let ((parts (string-split text ",")))
+    (if (= (length parts) 2)
+        (Ok (Tuple (string->int (vec-ref parts 0)) (string->int (vec-ref parts 1))))
+        (Err (string-append "not a pair: " text)))))
+
+(: checked (-> int (Result string int)))
+(defun (checked n)
+  (if (< n 0) (Err "negative") (Ok n)))
+
+;; `:match` is `:bind` with a pattern. The `Tuple` cannot fail to match, which
+;; is what the clause is for; a pattern that can fail throws, as one does
+;; anywhere else in the language.
+(: area (-> string (Result string int)))
+(defun (area text)
+  (do (:match (Tuple w h) (parse-pair text))
+      (:bind width (checked w))
+      (:bind height (checked h))
+      (:return (* width height))))
+
+(: show-result (-> (Result string int) string))
+(defun (show-result r)
+  (match r
+    ((Ok v) (int->string v))
+    ((Err e) e)))
+
 (: show-list (-> (List int) string))
 (defun (show-list xs)
   (list-foldl (fun (acc x) (string-append acc (string-append " " (int->string x)))) "" xs))
@@ -54,4 +87,8 @@
   ;; call itself says which instance it is. The annotation on `one` does.
   (def (: one (List int)) (pure 1))
   (println (show-list one))
+
+  (println (show-result (area "3,4")))
+  (println (show-result (area "3,-4")))
+  (println (show-result (area "3")))
   0)

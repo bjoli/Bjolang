@@ -1210,8 +1210,8 @@ public static partial class BjolangRuntime {
     /// What `,@` compiles to: append, on the children of one template form.
     ///
     /// Monomorphic, and named for the one thing it is for, rather than being a
-    /// general `list-append`. `std/prelude` already publishes one of those (via
-    /// `Monad.protobjo`), and a builtin of the same name is ambiguous to C# at
+    /// general `list-append`. `std/prelude` already publishes one of those, and
+    /// a builtin of the same name is ambiguous to C# at
     /// every call site — both are in scope through `using static`. A splice
     /// also must not depend on the prelude having been imported: `lib/` is
     /// compiled without it.

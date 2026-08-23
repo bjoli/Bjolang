@@ -447,7 +447,7 @@ let private readBinding (dllPath: string) (moduleName: string) (memberName: stri
     if isNull clrType then
         failwithf $"The entry compiled, but '%s{className}' is not in the assembly it produced."
 
-    match clrType.GetField(Naming.sanitizeIdent memberName) with
+    match clrType.GetField(Naming.clrMemberName memberName) with
     | null -> failwithf $"The entry compiled, but '%s{className}' has no '%s{memberName}'."
     | field -> field.GetValue null
 

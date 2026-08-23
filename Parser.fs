@@ -2219,23 +2219,6 @@ let rec parseExpr (s: SExpr) : Expr =
                     failwithf
                         $"Invalid task->event syntax at %s{Lexer.formatPos r}. Expected: (task->event (f args...)) — one call to a method imported #:async, whose arguments are evaluated here and whose call is made when the event is synced."
 
-            // A monadic block. `(seq ...)` was already taken by lazy sequences,
-            // so the form is spelled `do`.
-            //
-            //   (do (:bind x xs)
-            //       (:let  y (+ x 1))
-            //       (:then (side-effecting-action))
-            //       (:return (* y 2)))
-            //
-            // The last form may be *any* `m a`, not necessarily `:return`:
-            // otherwise a monadic loop could not be written at all, because the
-            // recursive call has to *be* the result rather than be wrapped in a
-            // `pure`. `(:return e)` is sugar for `(pure e)` in tail position.
-            | "do" ->
-                match args with
-                | [] -> failwithf $"Invalid do syntax at %s{Lexer.formatPos r}. Expected: (do form...)"
-                | forms -> desugarDo forms listRange
-
             // Guarded rather than claimed outright: `(loop (+ i 1))` is how a
             // named `let` recurses, and that must keep meaning a call. A clause
             // is a keyword-headed list, which an argument expression is not.
@@ -2676,69 +2659,6 @@ let rec parseExpr (s: SExpr) : Expr =
     | SAtom { Token = Comma } -> failwithf $"Unexpected comma at %s{Lexer.formatPos r}"
     | SAtom { Token = Quote } -> failwithf $"Unexpected quote at %s{Lexer.formatPos r}"
     | _ -> failwithf $"Unexpected expression at %s{Lexer.formatPos r}"
-
-/// Desugars a `(do ...)` block into `bind` / `pure`.
-///
-/// Each generated `bind` carries the range of *its own* form. Giving them all
-/// the range of the opening paren made every type error in a ten-step block
-/// point at the same character.
-///
-/// `:bind` and `:let` are **sequential**, and stay so where `let`'s bindings
-/// became simultaneous. A `do` block is a chain of `bind` calls, each taking the
-/// rest of the block as a continuation, so a step is inside the previous step's
-/// lambda by construction: monadic sequencing *is* the sequencing, and there is
-/// no group here for a simultaneous reading to be about.
-and desugarDo (forms: SExpr list) (fallbackRange: Range) : Expr =
-    let named (s: SExpr) =
-        match s with
-        | SList(SAtom { Token = Keyword k } :: rest, r) -> Some(k, rest, r)
-        | _ -> None
-
-    match forms with
-    | [] -> failwithf $"Invalid do syntax at %s{Lexer.formatPos fallbackRange}: the block is empty"
-
-    | [ last ] ->
-        match named last with
-        | Some("return", [ e ], r) -> EApp(EIdent("pure", r), [ parseExpr e ], r)
-        | Some("return", _, r) -> failwithf $"Invalid (:return ...) at %s{Lexer.formatPos r}. Expected: (:return expr)"
-        | Some(("bind" | "let" | "then") as k, _, r) ->
-            failwithf
-                $"A (do ...) block cannot end with (:%s{k} ...) at %s{Lexer.formatPos r}. Its last form is the block's value."
-        // Any `m a` may be the last form, which is what lets a monadic loop put
-        // its own recursive call in tail position.
-        | _ -> parseExpr last
-
-    | first :: rest ->
-        let continuation () = desugarDo rest fallbackRange
-
-        match named first with
-        // `:bind` takes an identifier, deliberately. A pattern would force the
-        // failure question — what `(:bind (Some x) e)` means when the match
-        // fails — which wants `MonadFail` rather than a match that can throw.
-        | Some("bind", [ SAtom { Token = Symbol name }; e ], r) ->
-            EApp(EIdent("bind", r), [ parseExpr e; EFun([ name ], continuation (), Ordinary, r) ], r)
-        | Some("bind", _, r) ->
-            failwithf $"Invalid (:bind ...) at %s{Lexer.formatPos r}. Expected: (:bind name expr) — a plain identifier, not a pattern."
-
-        | Some("let", [ SAtom { Token = Symbol name }; e ], r) ->
-            ELet(name, false, [], None, parseExpr e, continuation (), r)
-        | Some("let", _, r) -> failwithf $"Invalid (:let ...) at %s{Lexer.formatPos r}. Expected: (:let name expr)"
-
-        // `>>`, and named for what it is. Calling it `:do` would invite reading
-        // it as a variable-less `:bind`, which in a strict language it is not:
-        // on `List`, `>>` multiplies out the elements it discards.
-        | Some("then", [ e ], r) ->
-            EApp(EIdent("bind", r), [ parseExpr e; EFun([ "_" ], continuation (), Ordinary, r) ], r)
-        | Some("then", _, r) -> failwithf $"Invalid (:then ...) at %s{Lexer.formatPos r}. Expected: (:then expr)"
-
-        | Some("return", _, r) ->
-            failwithf $"(:return ...) at %s{Lexer.formatPos r} must be the last form of its (do ...) block."
-
-        | Some(k, _, r) -> failwithf $"Unknown (do ...) form ':%s{k}' at %s{Lexer.formatPos r}"
-
-        // A plain form in non-tail position is an ordinary statement, run for
-        // its effect. It is *not* a variable-less bind.
-        | None -> ELet("_", false, [], None, parseExpr first, continuation (), getRange first)
 
 // ---------------------------------------------------------------------------
 // (loop ...)
