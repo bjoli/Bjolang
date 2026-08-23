@@ -1,0 +1,19 @@
+;; A field of an `#:opaque` record, read from outside.
+;;
+;; `record-set!` already refused a foreign write — a mutable field belongs to
+;; the module that declared it. `#:opaque` is what extends the same rule to
+;; reading, for a type whose layout is nobody else's business.
+;;
+;; Answered by `recordTypeOfField`, which knows the type here and knows that its
+;; fields did not cross. Without that arm it would go looking for another record
+;; owning a field called `total` and report that none does, which is true and
+;; unhelpful.
+
+;; EXPECT-ERROR: 'total' cannot be read here
+;; EXPECT-ERROR: vault/Ledger is exported #:opaque
+
+(import "../inc/vault.bjo")
+
+(defun (main args)
+  (println (int->string (record-ref (new-ledger 100 "opening") total)))
+  0)

@@ -1,0 +1,102 @@
+;; A library whose types cross at all three visibilities, for `131_opaque.bjo`
+;; and the `errors/opaque_*` tests.
+;;
+;; `Handle` and `Ledger` are `#:opaque`: the name crosses and the representation
+;; does not. `Receipt` is exported plainly, so an importer may build one and take
+;; it apart. `Scratch` is exported not at all, and is the case the export list is
+;; now the whole truth about — nothing published may name it.
+(import (std prelude))
+
+(export Handle Ledger Receipt
+        open-handle close-handle handle-live? handle-tag handle-value
+        new-ledger ledger-add ledger-total ledger-note
+        receipt describe)
+
+;; An opaque union. Both cases stay behind, so `Live` and `Closed` are names an
+;; importer cannot write in an expression or a pattern.
+(type
+  (: (Handle %a) #:opaque
+     (Union (Live %a int) Closed)))
+
+;; An opaque record. Its fields stay behind, so `record-ref` on one is refused
+;; where `handle-tag`'s equivalent would be a hidden constructor.
+(type
+  (: Ledger #:opaque
+     (Record (: total int) (: note string))))
+
+;; The contrast: exported with its representation, as everything used to be.
+(type (: Receipt (Record (: amount int) (: memo string))))
+
+;; Declared and not exported. Nothing below may name it in a signature — that is
+;; what the export check refuses — so it appears only in a body.
+(type (: Scratch (Union (MkScratch int))))
+
+(: scratch-double (-> int int))
+(defun (scratch-double n)
+  (match (MkScratch n)
+    ((MkScratch v) (* v 2))))
+
+;; --- Handles ---------------------------------------------------------------
+
+(: open-handle (-> %a int (Handle %a)))
+(defun (open-handle v tag)
+  (Live v tag))
+
+(: close-handle (-> (Handle %a) (Handle %a)))
+(defun (close-handle h) Closed)
+
+(: handle-live? (-> (Handle %a) bool))
+(defun (handle-live? h)
+  (match h
+    ((Live v tag) true)
+    (Closed false)))
+
+(: handle-tag (-> (Handle %a) int))
+(defun (handle-tag h)
+  (match h
+    ((Live v tag) tag)
+    (Closed -1)))
+
+(: handle-value (-> (Handle %a) (Option %a)))
+(defun (handle-value h)
+  (match h
+    ((Live v tag) (Some v))
+    (Closed None)))
+
+;; An implementation on an opaque type. This is what makes one usable rather
+;; than merely storable: the impl is keyed on the type, and a key resolves
+;; wherever it is read, so dispatch works across the boundary with none of the
+;; representation crossing it.
+(def/impl (->str (Handle %a))
+  (defun (->str h)
+    (if (handle-live? h)
+        (string-append "live#" (int->string (handle-tag h)))
+        "closed")))
+
+;; --- Ledgers ---------------------------------------------------------------
+
+(: new-ledger (-> int string Ledger))
+(defun (new-ledger total note)
+  (Ledger (total total) (note note)))
+
+(: ledger-add (-> Ledger int Ledger))
+(defun (ledger-add l n)
+  (record-set l (total (+ (record-ref l total) n))))
+
+(: ledger-total (-> Ledger int))
+(defun (ledger-total l) (record-ref l total))
+
+(: ledger-note (-> Ledger string))
+(defun (ledger-note l) (record-ref l note))
+
+;; --- Receipts, and the private type -----------------------------------------
+
+(: receipt (-> int string Receipt))
+(defun (receipt amount memo)
+  (Receipt (amount amount) (memo memo)))
+
+;; `Scratch` reaches the boundary nowhere: the signature is `int -> string`, and
+;; the union is used inside the body only.
+(: describe (-> int string))
+(defun (describe n)
+  (string-append "n2=" (int->string (scratch-double n))))

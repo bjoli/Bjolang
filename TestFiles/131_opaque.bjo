@@ -1,0 +1,85 @@
+;; An `#:opaque` type across a real assembly boundary.
+;;
+;; What crosses is the name and the arity, so `(Handle string)` may be written
+;; in a signature, held in a collection and passed back; what does not is the
+;; representation, so `Live`, `Closed` and `Ledger`'s fields are refused here.
+;; The refusals are `errors/opaque_*.bjo`, since a test that compiles cannot
+;; contain one.
+;;
+;; The part worth watching is the trait method. An impl is keyed on the type,
+;; and a key resolves to itself wherever it is read, so `->str` on a `Handle`
+;; dispatches to the implementation `vault` compiled — with nothing about the
+;; union crossing to make it possible.
+(import (prefix-types "inc/vault.bjo" "V/")
+        "inc/vault.bjo")
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
+;; The name in a signature of this module's own, at two different arguments —
+;; an opaque type is a type constructor like any other.
+(: tag-of (-> (Handle string) int))
+(defun (tag-of h) (handle-tag h))
+
+(: reopen (-> (Handle int) (Handle int)))
+(defun (reopen h)
+  (if (handle-live? h) h (open-handle 0 0)))
+
+;; ...and under `prefix-types`, which gives an opaque type a spelling of its own
+;; exactly as it does a transparent one. There is no constructor to prefix.
+(: prefixed-tag (-> (V/Handle string) int))
+(defun (prefixed-tag h) (handle-tag h))
+
+;; An opaque type inside another type, which is all a caller ever needs to do
+;; with one: the representation is the library's business, the value is not.
+(: tags (-> (List (Handle int)) (List int)))
+(defun (tags hs) (map handle-tag hs))
+
+(defun (main)
+  (def h (open-handle "payload" 7))
+
+  (expect "an opaque value round-trips" (int->string (tag-of h)) "7")
+  (expect "and through a prefixed spelling" (int->string (prefixed-tag h)) "7")
+
+  (match (handle-value h)
+    ((Some v) (expect "its contents come back through the API" v "payload"))
+    (None (println "FAILURE: handle-value gave None")))
+
+  ;; The trait method. Dispatch is by type key, so this reaches the impl in
+  ;; `vault.dll` without a case of the union ever being named here.
+  (expect "a trait method dispatches on an opaque type" (->str h) "live#7")
+  (expect "and on the other case" (->str (close-handle h)) "closed")
+  (expect "closing is visible through the API" (->str (handle-live? (close-handle h))) "False")
+
+  ;; Held in a collection, and mapped over. Nothing here knows what a handle is.
+  (expect "opaque values in a collection"
+          (->str (tags (list (open-handle 1 10) (open-handle 2 20))))
+          "'(10 20)")
+
+  (expect "an opaque value survives being reopened"
+          (int->string (handle-tag (reopen (close-handle (open-handle 5 5)))))
+          "0")
+
+  ;; The opaque record. Read and written only through the functions the module
+  ;; exports, which is the same shape `record-set!` already required of a
+  ;; mutable field — extended here to reading.
+  (def l (ledger-add (new-ledger 100 "opening") 40))
+  (expect "an opaque record is built by its module" (int->string (ledger-total l)) "140")
+  (expect "and read by it" (ledger-note l) "opening")
+
+  ;; The contrast: a plainly exported type is still built and taken apart here.
+  (def r (Receipt (amount 3) (memo "tea")))
+  (expect "a transparent export is still transparent" (record-ref r memo) "tea")
+  (expect "and constructible" (int->string (record-ref r amount)) "3")
+
+  ;; A binding whose signature never mentions the module's private type still
+  ;; works: `Scratch` stayed behind and nothing here had to know.
+  (expect "a private type stays private" (describe 21) "n2=42")
+
+  (println "131 ok")
+  0)

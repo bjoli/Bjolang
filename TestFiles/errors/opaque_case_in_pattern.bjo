@@ -1,0 +1,21 @@
+;; A case of an `#:opaque` union, matched from outside the module that declared
+;; it.
+;;
+;; The pattern matcher needs no rule for this and has none. A case is registered
+;; as an ordinary constructor binding by `registerTypeDefs`, walking the cases in
+;; the declaration; an opaque type publishes no cases, so there is no binding,
+;; and `checkPattern` refuses the pattern exactly as it refuses a typo. All the
+;; opacity adds is the second sentence of the message.
+
+;; EXPECT-ERROR: Unknown constructor 'Live'
+;; EXPECT-ERROR: vault/Handle
+;; EXPECT-ERROR: exported #:opaque
+
+(import "../inc/vault.bjo")
+
+(defun (main args)
+  (println (int->string
+    (match (open-handle 1 2)
+      ((Live v tag) tag)
+      (Closed 0))))
+  0)
