@@ -1347,8 +1347,9 @@ let private qualifyInlineTemplates (env: TypedAST.Env) (decls: TypedAST.TDecl li
 
 let runFullFrontendPipeline (mainFilePath: string) =
     try
-        printfn "=== Step 1: Parsing & Module Resolution ==="
-        let parsedModuleDecls, dllDeps = loadModuleGraph mainFilePath
+        Diagnostics.progress "=== Step 1: Parsing & Module Resolution ==="
+        let parsedModuleDecls, dllDeps =
+            Timing.phase "parse + module graph" (fun () -> loadModuleGraph mainFilePath)
 
         // The macros *this* compilation publishes. The main module is last, and
         // is the only one being compiled — everything before it arrived as a
@@ -1361,17 +1362,19 @@ let runFullFrontendPipeline (mainFilePath: string) =
             | Some(DModule(_, decls, _)) -> decls |> List.choose (function DMacro(n, _) -> Some n | _ -> None)
             | _ -> []
 
-        printfn "=== Step 2: Normalization ==="
+        Diagnostics.progress "=== Step 2: Normalization ==="
         // First of the source-to-source passes, and before `LetRecify` on
         // purpose: an applied lambda reduced into a `let` chain here is one
         // fewer closure for every pass after it to carry, and the bindings it
         // leaves behind are what `LetRecify` orders.
-        let normalizedDecls = Normalize.normalizeModule parsedModuleDecls
+        let normalizedDecls =
+            Timing.phase "normalize" (fun () -> Normalize.normalizeModule parsedModuleDecls)
 
-        let letrecifiedDecls = letrecifyModule normalizedDecls
+        let letrecifiedDecls = Timing.phase "letrecify" (fun () -> letrecifyModule normalizedDecls)
 
-        printfn "=== Step 3: Type Checking ==="
-        let env, typedAst = Inference.checkProgram Prelude.prelude letrecifiedDecls
+        Diagnostics.progress "=== Step 3: Type Checking ==="
+        let env, typedAst =
+            Timing.phase "type check" (fun () -> Inference.checkProgram Prelude.prelude letrecifiedDecls)
 
         // Before anything reads `main`: the entry point is generated code's
         // caller, and a type it cannot call is a diagnostic here rather than a
@@ -1386,18 +1389,18 @@ let runFullFrontendPipeline (mainFilePath: string) =
         // errors depending on inliner luck. See the module docstring and §8.3.
         MustUse.run env.Registry typedAst
 
-        printfn "=== Step 4: Trait Inlining ==="
+        Diagnostics.progress "=== Step 4: Trait Inlining ==="
         // Before dictionary lowering, so that the dictionary pass sees the
         // inlined result and handles any interface-trait dispatch inside it with
         // no changes; and before loop lowering, because a `TRecur` carries an
         // index into its enclosing loop and cannot be spliced elsewhere.
-        let inlinedAst = TraitInline.run env typedAst
+        let inlinedAst = Timing.phase "trait inline" (fun () -> TraitInline.run env typedAst)
 
-        printfn "=== Step 5: Dictionary Lowering ==="
-        let loweredAst = Lowering.lowerProgram env inlinedAst
+        Diagnostics.progress "=== Step 5: Dictionary Lowering ==="
+        let loweredAst = Timing.phase "dictionary lowering" (fun () -> Lowering.lowerProgram env inlinedAst)
 
-        printfn "=== Step 6: Loop Lowering ==="
-        let loopLoweredAst = LoopLowering.lowerProgram loweredAst
+        Diagnostics.progress "=== Step 6: Loop Lowering ==="
+        let loopLoweredAst = Timing.phase "loop lowering" (fun () -> LoopLowering.lowerProgram loweredAst)
 
         // A `(loop ...)` is a loop by construction, but promotion is a silent
         // optimization and a desugaring bug would leave real calls behind —
@@ -1412,9 +1415,9 @@ let runFullFrontendPipeline (mainFilePath: string) =
 
         // Last, and a cleanup pass only: C# rejects a local that shadows an
         // enclosing one, and every pass above is free to produce that.
-        let uniquifiedAst = AlphaRename.uniquifyProgram loopLoweredAst
+        let uniquifiedAst = Timing.phase "alpha rename" (fun () -> AlphaRename.uniquifyProgram loopLoweredAst)
 
-        printfn "=== Frontend pipeline complete ==="
+        Diagnostics.progress "=== Frontend pipeline complete ==="
         Some (env, uniquifiedAst, dllDeps, declaredMacros)
     with ex ->
         Diagnostics.reportFailure ex

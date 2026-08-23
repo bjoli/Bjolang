@@ -45,6 +45,15 @@ module Diagnostics =
     /// is their whole purpose.
     let humanize (message: string) = invented.Replace(message, "")
 
+    /// Whether the compiler narrates what it is doing.
+    ///
+    /// A REPL entry runs the same pipeline as a build, and six step banners per
+    /// keystroke is not what the prompt is for — so the narration is a setting
+    /// rather than something the REPL reimplements a quieter pipeline to avoid.
+    let mutable verbose = true
+
+    let progress (message: string) = if verbose then printfn "%s" message
+
     /// Prints a failed compilation.
     ///
     /// A diagnostic is the message and nothing else: a stack trace through the

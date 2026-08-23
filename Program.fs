@@ -112,7 +112,8 @@ let private compileDependencyOutOfProcess (bjoPath: string) : string =
             "dotnet", $"exec \"{self}\" --lib \"{bjoPath}\""
 
     let exitCode, stdout, stderr =
-        runProcess fileName args [ buildChainVariable, String.concat ";" (chain @ [ bjoPath ]) ]
+        Timing.phase "dependency build (out of process)" (fun () ->
+            runProcess fileName args [ buildChainVariable, String.concat ";" (chain @ [ bjoPath ]) ])
 
     if exitCode <> 0 || not (File.Exists dllPath) then
         // The dependency's own diagnostics, passed through. They name its file
@@ -125,8 +126,7 @@ let private compileDependencyOutOfProcess (bjoPath: string) : string =
 
     dllPath
 
-[<EntryPoint>]
-let main argv =
+let private run (argv: string array) =
     Pipeline.compileLibrary <- compileDependencyOutOfProcess
 
     // 1. Parse CLI arguments
@@ -156,9 +156,10 @@ let main argv =
         // linkable but not nameable. `registerAssemblyFile` is idempotent and
         // swallows nothing: a runtime assembly that is present but unloadable
         // is a real problem and says so.
-        for assemblyPath in Paths.runtimeAssemblies do
-            if File.Exists assemblyPath then
-                DotNetInterop.registerAssemblyFile assemblyPath
+        Timing.phase "load runtime assemblies" (fun () ->
+            for assemblyPath in Paths.runtimeAssemblies do
+                if File.Exists assemblyPath then
+                    DotNetInterop.registerAssemblyFile assemblyPath)
 
         printfn $"Compiling %s{inputFilePath}"
 
@@ -185,7 +186,8 @@ let main argv =
                         else
                             [] }
 
-            let csCode = Codegen.generateProgram env.Registry metadata dllDeps typedAst
+            let csCode =
+                Timing.phase "codegen" (fun () -> Codegen.generateProgram env.Registry metadata dllDeps typedAst)
             
             if options.Debug then
                 File.WriteAllText("ast_dump.txt", sprintf "%A" typedAst)
@@ -392,9 +394,10 @@ let main argv =
                                     runtimeDir
 
                             let bclRefs =
-                                Directory.GetFiles(bclDir, "*.dll")
-                                |> Array.map (fun p -> $"\"-r:{p}\"")
-                                |> String.concat " "
+                                Timing.phase "gather BCL references" (fun () ->
+                                    Directory.GetFiles(bclDir, "*.dll")
+                                    |> Array.map (fun p -> $"\"-r:{p}\"")
+                                    |> String.concat " ")
                             
                             let userRefs =
                                 linkedAssemblies
@@ -419,8 +422,29 @@ let main argv =
                             let codeGenArgs =
                                 if options.Debug then "-optimize- -debug:portable" else "-optimize+ -debug:portable"
 
-                            let cscArgs = $"exec \"{cscDll}\" -noconfig -nullable:enable {codeGenArgs} -target:{target} -out:\"{targetPath}\" \"{csFile}\" {userRefs} {bclRefs}"
-                            let exitCode, stdout, stderr = runProcess "dotnet" cscArgs []
+                            // `-shared` hands the compilation to a VBCSCompiler
+                            // server, started on first use and kept alive
+                            // between invocations. What that saves is Roslyn's
+                            // JIT and the parse of ~150 reference assemblies,
+                            // which a fresh `csc` process pays every time and
+                            // is most of what a small build costs. The server
+                            // keys its cache on the reference set, so builds
+                            // that link the same standard library share it.
+                            //
+                            // Deliberately not the default when
+                            // `BJOLANG_NO_CSC_SERVER` is set: a stale server
+                            // holding an old reference is a class of failure
+                            // with no good diagnostic, and the way out of one
+                            // has to not require editing the compiler.
+                            let shared =
+                                match System.Environment.GetEnvironmentVariable "BJOLANG_NO_CSC_SERVER" with
+                                | null | "" | "0" -> "-shared"
+                                | _ -> ""
+
+                            let cscArgs = $"exec \"{cscDll}\" -noconfig -nullable:enable {shared} {codeGenArgs} -target:{target} -out:\"{targetPath}\" \"{csFile}\" {userRefs} {bclRefs}"
+
+                            let exitCode, stdout, stderr =
+                                Timing.phase "csc" (fun () -> runProcess "dotnet" cscArgs [])
 
                             // csc ran and said no. Print what it said.
                             //
@@ -528,3 +552,10 @@ let main argv =
         Diagnostics.reportFailure ex
         printfn "Compilation failed."
         1
+
+[<EntryPoint>]
+let main argv =
+    try
+        run argv
+    finally
+        Timing.report ()
