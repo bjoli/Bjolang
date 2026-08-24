@@ -27,6 +27,23 @@ if ! flock -n 9; then
     flock 9
 fi
 
+# The lock must not outlive this script, and left alone it does.
+#
+# `flock` is held per *open file description*, not per process, so every child
+# that inherits fd 9 keeps the lock held for as long as it lives. Most children
+# here exit with the run — but two do not. MSBuild's node-reuse daemons survive
+# a build by design, and so does the Roslyn server that `csc -shared` talks to,
+# which is the thing `Build.fs` reaches for to avoid paying JIT on every
+# sub-compilation. Both then sit on the lock for their idle timeout, and the
+# *next* run waits on a lock that nobody is left to release. The symptom is a
+# run that hangs at "Waiting for it..." with no other run in sight.
+#
+# Closing the fd for the child is the whole fix, and shadowing `dotnet` is how
+# every call site gets it without having to remember: a function is inherited
+# by subshells, command substitutions and background jobs alike, which is where
+# the calls below actually live.
+dotnet() { command dotnet "$@" 9>&-; }
+
 # 1. Build the compiler once in Release mode
 echo -e "${BLUE}Building compiler in Release mode...${NC}"
 dotnet build -c Release > /dev/null
@@ -489,6 +506,38 @@ codegen_total=0
 codegen_failed=0
 declare -a codegen_failures
 
+# --- The three phases below run together -------------------------------------
+#
+# Codegen, the REPL sessions and the reproducibility check touch none of each
+# other's files: codegen writes `TestFiles/codegen` and a dump directory of its
+# own, a REPL session writes nothing but logs, and reproducibility rebuilds
+# `TestFiles/006_*`. Run one after another they were 5.8s of a 15s run on a
+# 24-core machine that averaged 11 busy cores, which is most of the idle time in
+# the whole script.
+#
+# Each is a brace group writing to a file rather than to the terminal, and the
+# three files are replayed in the old order once all three have finished. Three
+# phases reporting at once would interleave into something nobody could read,
+# and a test runner's log is read far more often than it is waited for.
+#
+# What may *not* join them is anything above: the group runner and the error
+# tests already saturate the machine on their own, and reproducibility rebuilds
+# the very artefacts group 006 owns.
+
+# A phase's tally, handed back through the filesystem because a background
+# subshell cannot assign to its parent's variables.
+write_phase_result() {
+    local name="$1" total="$2" failed="$3"
+    shift 3
+    printf '%s %s\n' "$total" "$failed" > "$LOG_DIR/phase_$name.counts"
+    if [ "$#" -gt 0 ]; then
+        printf '%s\n' "$@" > "$LOG_DIR/phase_$name.failures"
+    else
+        : > "$LOG_DIR/phase_$name.failures"
+    fi
+}
+
+{
 if [ -d "$CODEGEN_DIR" ] && ls "$CODEGEN_DIR"/*.bjo >/dev/null 2>&1; then
     echo "--------------------------------------------------"
     echo -e "${BLUE}Checking the generated C#...${NC}"
@@ -532,6 +581,9 @@ if [ -d "$CODEGEN_DIR" ] && ls "$CODEGEN_DIR"/*.bjo >/dev/null 2>&1; then
         fi
     done
 fi
+write_phase_result codegen "$codegen_total" "$codegen_failed" "${codegen_failures[@]}"
+} > "$LOG_DIR/phase_codegen.out" 2>&1 &
+pid_codegen=$!
 
 # --- The REPL ----------------------------------------------------------------
 #
@@ -552,6 +604,7 @@ repl_total=0
 repl_failed=0
 declare -a repl_failures
 
+{
 if [ -d "$REPL_DIR" ] && ls "$REPL_DIR"/*.in >/dev/null 2>&1; then
     echo "--------------------------------------------------"
     echo -e "${BLUE}Running REPL sessions...${NC}"
@@ -579,6 +632,9 @@ if [ -d "$REPL_DIR" ] && ls "$REPL_DIR"/*.in >/dev/null 2>&1; then
         fi
     done
 fi
+write_phase_result repl "$repl_total" "$repl_failed" "${repl_failures[@]}"
+} > "$LOG_DIR/phase_repl.out" 2>&1 &
+pid_repl=$!
 
 # --- Reproducibility ---------------------------------------------------------
 #
@@ -601,36 +657,68 @@ declare -a repro_failures
 
 repro_build() {
     rm -f "$REPRO_DEP.dll" "${REPRO_MAIN%.bjo}.exe"
-    env $1 dotnet "$COMPILER_DLL" "$REPRO_MAIN" > "$LOG_DIR/repro.log" 2>&1 \
+    # `env` execs the real binary, so the shell function above does not apply
+    # and the lock fd has to be closed here by hand.
+    env $1 dotnet "$COMPILER_DLL" "$REPRO_MAIN" 9>&- > "$LOG_DIR/repro.log" 2>&1 \
         || { cat "$LOG_DIR/repro.log"; return 1; }
     md5sum "$REPRO_DEP.dll" "${REPRO_MAIN%.bjo}.exe" | cut -d' ' -f1 | tr '\n' ' '
 }
 
+{
 echo "--------------------------------------------------"
 echo -e "${BLUE}Checking that a build reproduces...${NC}"
 
-repro_a=$(repro_build "BJOLANG_X=1") || exit 1
-repro_b=$(repro_build "BJOLANG_X=1") || exit 1
-repro_c=$(repro_build "BJOLANG_OUT_OF_PROCESS_DEPS=1") || exit 1
+# A build that will not compile is a failure of this phase rather than a reason
+# to leave: an `exit` here would only end the brace group, taking the tally with
+# it and reporting nothing at all. The summary fails the run on `repro_failed`,
+# so saying so is enough — and it gets to print the rest of the results first.
+if repro_a=$(repro_build "BJOLANG_X=1") \
+   && repro_b=$(repro_build "BJOLANG_X=1") \
+   && repro_c=$(repro_build "BJOLANG_OUT_OF_PROCESS_DEPS=1"); then
 
-if [ "$repro_a" = "$repro_b" ]; then
-    echo -e "  [${GREEN}PASS${NC}] the same source builds to the same bytes"
-else
-    echo -e "  [${RED}FAIL${NC}] the same source builds to the same bytes"
-    repro_failed=1
-    repro_failures+=("two identical builds differed: $repro_a vs $repro_b")
-fi
+    if [ "$repro_a" = "$repro_b" ]; then
+        echo -e "  [${GREEN}PASS${NC}] the same source builds to the same bytes"
+    else
+        echo -e "  [${RED}FAIL${NC}] the same source builds to the same bytes"
+        repro_failed=1
+        repro_failures+=("two identical builds differed: $repro_a vs $repro_b")
+    fi
 
-if [ "$repro_a" = "$repro_c" ]; then
-    echo -e "  [${GREEN}PASS${NC}] an in-process dependency build matches an out-of-process one"
+    if [ "$repro_a" = "$repro_c" ]; then
+        echo -e "  [${GREEN}PASS${NC}] an in-process dependency build matches an out-of-process one"
+    else
+        echo -e "  [${RED}FAIL${NC}] an in-process dependency build matches an out-of-process one"
+        repro_failed=1
+        repro_failures+=("in-process $repro_a vs out-of-process $repro_c — compilation state has leaked between modules")
+    fi
 else
-    echo -e "  [${RED}FAIL${NC}] an in-process dependency build matches an out-of-process one"
+    echo -e "  [${RED}FAIL${NC}] a reproducibility build did not compile"
     repro_failed=1
-    repro_failures+=("in-process $repro_a vs out-of-process $repro_c — compilation state has leaked between modules")
+    repro_failures+=("a reproducibility build did not compile; see $LOG_DIR/repro.log")
 fi
 
 rm -f "$REPRO_DEP.dll" "${REPRO_MAIN%.bjo}.exe" "${REPRO_MAIN%.bjo}.runtimeconfig.json" \
       "${REPRO_MAIN%.bjo}.deps.json" "$REPRO_DEP.pdb" "${REPRO_MAIN%.bjo}.pdb"
+write_phase_result repro 0 "$repro_failed" "${repro_failures[@]}"
+} > "$LOG_DIR/phase_repro.out" 2>&1 &
+pid_repro=$!
+
+# --- Joining the three -------------------------------------------------------
+#
+# Replayed in the order they used to run in, so a log reads as it always did,
+# and the tallies are read back out of the files each phase left behind.
+wait $pid_codegen
+wait $pid_repl
+wait $pid_repro
+
+cat "$LOG_DIR/phase_codegen.out" "$LOG_DIR/phase_repl.out" "$LOG_DIR/phase_repro.out"
+
+read -r codegen_total codegen_failed < "$LOG_DIR/phase_codegen.counts"
+read -r repl_total repl_failed < "$LOG_DIR/phase_repl.counts"
+read -r repro_total repro_failed < "$LOG_DIR/phase_repro.counts"
+mapfile -t codegen_failures < "$LOG_DIR/phase_codegen.failures"
+mapfile -t repl_failures < "$LOG_DIR/phase_repl.failures"
+mapfile -t repro_failures < "$LOG_DIR/phase_repro.failures"
 
 end_time=$(date +%s.%N 2>/dev/null || date +%s)
 duration=$(echo "$end_time - $start_time" | bc -l 2>/dev/null)
