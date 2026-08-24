@@ -58,6 +58,54 @@ module Lexer =
 
     type LexedToken = { Token: Token; Range: Range }
 
+    /// What a backslash escape stands for, or `None` for one this syntax does
+    /// not define.
+    ///
+    /// One table for both string syntaxes so they cannot drift apart — they
+    /// had, and a plain `"\r"` was two characters while an interpolated one was
+    /// a carriage return. `$` is the single difference and takes a flag rather
+    /// than a table of its own: it is special only where a hole can open, and
+    /// escaping it in a plain string would be escaping nothing.
+    let private escapeOf (allowDollar: bool) (c: char) : char option =
+        match c with
+        | 'n' -> Some '\n'
+        | 't' -> Some '\t'
+        | 'r' -> Some '\r'
+        | '"' -> Some '"'
+        | '\\' -> Some '\\'
+        | '$' when allowDollar -> Some '$'
+        | _ -> None
+
+    /// An unrecognized escape keeps both of its characters.
+    ///
+    /// So `"C:\path"` reads as itself rather than failing, and a backslash that
+    /// meant nothing in particular survives to be looked at.
+    let private appendEscape (sb: Text.StringBuilder) (allowDollar: bool) (escaped: char) =
+        match escapeOf allowDollar escaped with
+        | Some c -> sb.Append(c) |> ignore
+        | None -> sb.Append('\\').Append(escaped) |> ignore
+
+    /// Decode the escapes in a string literal's body, left to right.
+    ///
+    /// One pass, and that is the whole point. This was a chain of `Replace`
+    /// calls, which is order-dependent: `\n` was substituted before `\\` was, so
+    /// an escaped backslash could not protect the character after it and
+    /// `"\\n"` came out as a backslash followed by a newline. A literal
+    /// backslash before an `n`, a `t` or a quote was unwritable.
+    let private unescapeString (raw: string) : string =
+        let sb = Text.StringBuilder(raw.Length)
+        let mutable i = 0
+
+        while i < raw.Length do
+            if raw[i] = '\\' && i + 1 < raw.Length then
+                appendEscape sb false raw[i + 1]
+                i <- i + 2
+            else
+                sb.Append(raw[i]) |> ignore
+                i <- i + 1
+
+        sb.ToString()
+
     /// One piece of a `#"..."` string: literal text, or the source of a
     /// `${ ... }` hole together with where it starts in the enclosing file.
     ///
@@ -228,9 +276,7 @@ module Lexer =
                     let len = nextPos - pos
                     let rawStr = input.Substring(pos + 1, len - 2)
 
-                    // Simple unescaping for the final AST value
-                    let unescaped =
-                        rawStr.Replace("\\n", "\n").Replace("\\t", "\t").Replace("\\\"", "\"").Replace("\\\\", "\\")
+                    let unescaped = unescapeString rawStr
 
                     let text = input.Substring(pos, len)
                     let endLine, endCol = advance text line col
@@ -446,19 +492,7 @@ module Lexer =
             // else escapes as it does in an ordinary string.
             | '\\' when p + 1 < length ->
                 let escaped = input[p + 1]
-
-                literal.Append(
-                    match escaped with
-                    | 'n' -> "\n"
-                    | 't' -> "\t"
-                    | 'r' -> "\r"
-                    | '"' -> "\""
-                    | '\\' -> "\\"
-                    | '$' -> "$"
-                    | other -> "\\" + string other
-                )
-                |> ignore
-
+                appendEscape literal true escaped
                 step '\\'
                 step escaped
 

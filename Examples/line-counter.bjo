@@ -1,0 +1,20 @@
+(import (only (std ports) port->seq))
+(import (std fmt))
+
+;; Characters that are not whitespace.
+(: visible-count (-> string int))
+(defun (visible-count s)
+  {summing 1 :when (not (char-whitespace? ch)) (:for ch s)})
+
+;; Lines are counted by `read-line`, not by looking for a newline character.
+;; because read-line handles all kinds of line endings. 
+(defun (main args)
+  ;; port->seq reads the port lazily. For maximum speed and memory usage
+  ;; you could use port->vec ord port->list
+  (def line-seq (port->seq read-line (parameter-ref current-input-port)))
+  (loop (:for line line-seq)
+        (:acc lines (summing 1))
+        (:acc chars (summing (visible-count line)))
+        => (show [(tabular [["Lines:" nl "Chars:" nl]
+                            [lines  nl chars  nl]])]))
+  0)

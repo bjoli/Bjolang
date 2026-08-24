@@ -28,7 +28,7 @@
   ;; Layer 1 — interpolation
   println*
   ;; Running blocks
-  render render->string run-block run-blocks
+  render show render->string run-block run-blocks
   ;; Settings
   with-fmt with-pad
   current-pad current-width current-ellipsis current-string-width
@@ -146,6 +146,23 @@
   (let ((b (stringbuilder-empty)))
     (ignore (run-blocks #(stringbuilder-add-string! b &1) 0 bs))
     (stringbuilder->string b)))
+
+;; `render` to wherever the dynamic environment says, which is what `println*`
+;; already is for layer 1 and what layer 2 was missing: `render` names a port,
+;; `render->string` names none because it produces one, and the everyday case —
+;; put this on the output — had nothing.
+;;
+;; Not `(render bs #:port ...)`. A keyword default would evaluate per call and
+;; would work, but it still names a port *at the call site*, so redirecting the
+;; output of something that formats would mean touching every call or threading
+;; a port through everything in between. Reading the parameter here is what buys
+;; `parameterize` for free, and it is why `#:port` was dropped everywhere else.
+;;
+;; Read per call, and not into a `def`: a module-level
+;; `(def out (parameter-ref current-output-port))` captures the port the module
+;; was loaded with and ignores every `parameterize` after it.
+(: show (-> (Vec Block) void))
+(defun (show bs) (render (parameter-ref current-output-port) bs))
 
 
 ;; --- Settings --------------------------------------------------------------

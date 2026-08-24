@@ -33,6 +33,21 @@
                 (string-append " gave " (string-append actual
                 (string-append " but wanted " wanted))))))))
 
+;; A string as its codepoints, `92,110` and so on.
+;;
+;; The escape assertions below are written against this rather than against a
+;; second string literal, because two literals can be wrong in the same way and
+;; still compare equal — which is exactly how a broken `\\` went unnoticed. A
+;; number is not a spelling of the thing being tested.
+(: codes (-> string string))
+(defun (codes s)
+  (string-fold (fun (acc ch)
+                 (string-append acc
+                                (string-append (if (string-empty? acc) "" ",")
+                                               (int->string (char->int ch)))))
+               ""
+               s))
+
 ;; A type with a `->str` of its own, to pin that a hole goes through the trait.
 (type (: Money (Union (Kr int))))
 
@@ -66,6 +81,36 @@
   (expect "a bare dollar" #"100$ and ${x}" "100$ and 5")
   (expect "a quote and a backslash" #"she said \"${x}\" \\" "she said \"5\" \\")
   (expect "a newline" #"a${x}\nb" "a5\nb")
+
+  ;; ---- The escape table ---------------------------------------------------
+  ;;
+  ;; Both string syntaxes decode escapes with one table and one left-to-right
+  ;; pass. It used to be a chain of substitutions for a plain string, which is
+  ;; order-dependent: `\n` was replaced before `\\` was, so an escaped backslash
+  ;; could not protect what followed it and a literal backslash before an `n`
+  ;; was unwritable.
+  (expect "an escape is one character" (codes "\n") "10")
+  (expect "tab" (codes "\t") "9")
+  (expect "carriage return" (codes "\r") "13")
+  (expect "quote" (codes "\"") "34")
+
+  ;; The pair that was broken: backslash, then an ordinary letter n.
+  (expect "an escaped backslash does not escape what follows" (codes "\\n") "92,110")
+  (expect "...before a tab escape either" (codes "\\t") "92,116")
+  (expect "...nor before a quote" (codes "\\\"") "92,34")
+  (expect "two escaped backslashes are two backslashes" (codes "\\\\") "92,92")
+
+  ;; An escape nobody defined keeps both of its characters, so a Windows path
+  ;; reads as itself instead of failing.
+  (expect "an unknown escape keeps both characters" (codes "\\q") "92,113")
+
+  ;; The same table on the interpolated side — `\r` in particular, which a
+  ;; plain string used to leave as two characters while `#"..."` decoded it.
+  (expect "interpolated escapes agree" (codes #"\\n${x}") "92,110,53")
+  (expect "including carriage return" (codes #"\r${x}") "13,53")
+  (expect "and the dollar escape is still interpolation's own"
+          (codes #"\$") "36")
+  (expect "which a plain string has no need of" (codes "\$") "92,36")
 
   ;; ---- What a hole may contain --------------------------------------------
   ;;
