@@ -71,6 +71,55 @@ public static partial class BjolangRuntime {
         ?? throw new System.IO.EndOfStreamException(
             "read-line: the port is at end of input. Guard with (port-eof? p), or use read-line/opt.");
 
+    // The failing char read.
+    //
+    // A Bjolang `char` is a Unicode scalar and `TextReader.Read` answers a
+    // UTF-16 code unit, so this is not a cast: a character outside the BMP
+    // arrives as two units and has to be put back together here. Otherwise
+    // `read-char` would be the one traversal in the language that hands out
+    // half a character, which is exactly what walking a `string` goes to the
+    // trouble of not doing.
+    //
+    // That is also why there is no `peek-char`. `Peek` gives one unit of
+    // lookahead, one is not always a character, and a peek that could not
+    // promise the same answer `read-char` is about to give would be a trap.
+    // Buying it needs a pushback buffer, and a port is deliberately the bare
+    // .NET object. `port-eof?` answers the question peeking is usually asked
+    // for, and a parser that needs more wants the whole text and a
+    // `StringCursor`.
+    public static Bjolang.Runtime.BjoChar readersubreadsubchar_BANG(System.IO.TextReader reader) {
+        var first = reader.Read();
+        if (first < 0)
+            throw new System.IO.EndOfStreamException(
+                "read-char: the port is at end of input. Guard with (port-eof? p), or use read-char/opt.");
+
+        var unit = (char)first;
+        if (!char.IsSurrogate(unit)) return new Bjolang.Runtime.BjoChar((uint)first);
+
+        // A low surrogate first, or a high one with nothing after it, is text
+        // that was already broken before it got here. Saying so beats
+        // `BjoChar`'s constructor reporting an out-of-range codepoint, which
+        // names neither the port nor the read.
+        if (!char.IsHighSurrogate(unit))
+            throw new InvalidOperationException(
+                "read-char: the port holds an unpaired low surrogate, which is not a character.");
+
+        var second = reader.Read();
+        if (second < 0 || !char.IsLowSurrogate((char)second))
+            throw new InvalidOperationException(
+                "read-char: the port holds a high surrogate with no low surrogate after it, which is not a character.");
+
+        return new Bjolang.Runtime.BjoChar((uint)char.ConvertToUtf32(unit, (char)second));
+    }
+
+    // The counterpart, and not a `Write((char)c)` for the same reason: an
+    // astral character is two UTF-16 units and both have to go out.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Unit writersubwritesubchar_BANG(System.IO.TextWriter writer, Bjolang.Runtime.BjoChar c) {
+        c.WriteTo(writer);
+        return unit;
+    }
+
     // What a string output port has accumulated.
     //
     // A builtin for the same reason the failing read is one: the .NET answer for
@@ -557,6 +606,60 @@ public static partial class BjolangRuntime {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static T vecsubcursorsubcurrent<T>(VecCursor<T> cursor) where T : notnull => cursor.E.Current;
 
+    /// <summary>
+    /// A position in a walk of a `Seq`.
+    ///
+    /// Not for the reason `VecCursor` exists — an `IEnumerator&lt;T&gt;` is
+    /// already a class — but for two others.
+    ///
+    /// **A `Seq` has no cheap tail.** `IEnumerable` gives out enumerators and
+    /// nothing else, so "the rest of this sequence" can only be spelled as "the
+    /// source, minus a prefix", and walking with one costs a fresh enumeration
+    /// per element: quadratic, and it re-runs whatever the generator does on
+    /// the way. Holding the enumerator makes a walk linear and pulls each
+    /// element once, which is the only reading under which a `Seq` over a port
+    /// or a file behaves the way that test file says it does.
+    ///
+    /// **The enumerator is disposable.** `file->seq` owns a file handle and
+    /// `port->seq` a reader, and both are released by disposing the enumerator.
+    /// `Done` therefore disposes as soon as the walk is exhausted, which is
+    /// what `foreach` does at the same point.
+    ///
+    /// A walk abandoned part-way — a `:break` — does not reach that, and the
+    /// handle waits for the collector. Closing that would need the `Iterable`
+    /// protocol to have a notion of a walk being over, which today it has not:
+    /// there is no hook between the last `done?` and leaving the loop.
+    /// </summary>
+    public sealed class SeqCursor<T> {
+        /// Null once exhausted, which is what makes a second `Done` after the
+        /// end safe rather than a `MoveNext` on a disposed enumerator.
+        private IEnumerator<T>? _e;
+
+        public SeqCursor(IEnumerable<T> source) { _e = source.GetEnumerator(); }
+
+        public bool Done() {
+            var e = _e;
+            if (e is null) return true;
+            if (e.MoveNext()) return false;
+            _e = null;
+            e.Dispose();
+            return true;
+        }
+
+        /// Only ever reached after a `Done` that answered false, which is the
+        /// same contract `VecCursor` is read under.
+        public T Current => _e!.Current;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static SeqCursor<T> seqsubcursor<T>(IEnumerable<T> source) => new SeqCursor<T>(source);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool seqsubcursorsubdone_QMARK<T>(SeqCursor<T> cursor) => cursor.Done();
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static T seqsubcursorsubcurrent<T>(SeqCursor<T> cursor) => cursor.Current;
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static T[] makesubarray<T>(int length) => new T[length];
 
@@ -770,15 +873,6 @@ public static partial class BjolangRuntime {
         throw new InvalidOperationException("seq-head of an empty sequence");
     }
 
-    public static IEnumerable<T> seqsubtail<T>(IEnumerable<T> source) {
-        var seenAny = false;
-        foreach (var item in source) {
-            if (!seenAny) { seenAny = true; continue; }
-            yield return item;
-        }
-        if (!seenAny) throw new InvalidOperationException("seq-tail of an empty sequence");
-    }
-
     public static IEnumerable<U> seqsubmap<T, U>(Func<T, U> selector, IEnumerable<T> source) {
         foreach (var item in source) yield return selector(item);
     }
@@ -817,12 +911,15 @@ public static partial class BjolangRuntime {
         }
     }
 
-    public static IEnumerable<T> seqsubskip<T>(IEnumerable<T> source, int count) {
-        var skipped = 0;
-        foreach (var item in source) {
-            if (skipped < count) { skipped++; continue; }
-            yield return item;
-        }
+    /// Runs the enumerator forward rather than counting past elements it has
+    /// already yielded, so the per-element test disappears once the prefix is
+    /// gone — and a `count` past the end stops at the end instead of walking
+    /// what is left.
+    public static IEnumerable<T> seqsubdrop<T>(IEnumerable<T> source, int count) {
+        using var e = source.GetEnumerator();
+        for (var i = 0; i < count; i++)
+            if (!e.MoveNext()) yield break;
+        while (e.MoveNext()) yield return e.Current;
     }
 
     public static IEnumerable<T> seqsubappend<T>(IEnumerable<T> first, IEnumerable<T> second) {
@@ -936,10 +1033,16 @@ public static partial class BjolangRuntime {
     /// <summary>
     /// One immutable snapshot of the dynamic environment.
     ///
-    /// The three ports get fields rather than living in the champ with
-    /// everything else: the port reads are hot and a field beats a hash lookup,
-    /// and the runtime reaches for the output port from C#, where no Bjolang
-    /// `Param` is in scope.
+    /// Three parameters get fields rather than living in the champ with
+    /// everything else, and they are the three that are *read* hottest — not
+    /// the three that go together in a manual. A field beats a node access, and
+    /// the runtime reaches for the output port and the cancel token from C#,
+    /// where no Bjolang `Param` is in scope.
+    ///
+    /// So the error port is not among them: nothing in the runtime writes to it
+    /// and no loop reads it, which makes it a cold parameter like any other. The
+    /// field it vacated went to the ambient cancel token, which a
+    /// `(:until-cancelled)` loop reads once per iteration.
     ///
     /// All readonly, so installing an environment and undoing one are both a
     /// single reference assignment — which is what makes `parameterize` cheap
@@ -948,30 +1051,48 @@ public static partial class BjolangRuntime {
     public sealed class DynEnv {
         public readonly System.IO.TextWriter Out;
         public readonly System.IO.TextReader In;
-        public readonly System.IO.TextWriter Err;
+
+        /// The ambient cancellation token, and null when nothing has bound one.
+        ///
+        /// Null rather than the root token, so that this field means what a
+        /// champ miss means and `Dyn.Root` needs to know nothing about
+        /// `Concurrency.cs`: were the root token seeded here instead, the two
+        /// classes' static initializers would have to run in an order neither
+        /// of them states.
+        public readonly Bjoml.Promise<CancelReason>? Cancel;
 
         /// Every parameter that is not one of the three ports, keyed by the
-        /// `Param` object's own identity. `Map` hashes with
-        /// `EqualityComparer&lt;object&gt;.Default`, which for a `Param` is
-        /// reference equality — so two parameters never collide, whatever they
-        /// were named.
-        public readonly Map.Map<object, object> Vals;
+        /// parameter's <see cref="Param{T}.Id"/> rather than by the `Param`
+        /// object itself.
+        ///
+        /// An `int` key is its own hash, so a read costs a field load where an
+        /// identity key cost a call to `RuntimeHelpers.GetHashCode` — a
+        /// sync-block probe that also *assigns* the hash the first time it is
+        /// asked. `ParamIds` then hands out ids that place themselves: see the
+        /// id encoding there for which parameters land in a root slot of their
+        /// own.
+        ///
+        /// The champ is kept in preference to a flat vector because its nodes
+        /// are sized by occupancy: rebinding one parameter copies a node as
+        /// wide as the number of parameters *currently bound*, not as wide as
+        /// the number that exist. A program pays for what it overloads.
+        public readonly Map.Map<int, object> Vals;
 
         internal DynEnv(
             System.IO.TextWriter output,
             System.IO.TextReader input,
-            System.IO.TextWriter error,
-            Map.Map<object, object> vals) {
+            Bjoml.Promise<CancelReason>? cancel,
+            Map.Map<int, object> vals) {
             Out = output;
             In = input;
-            Err = error;
+            Cancel = cancel;
             Vals = vals;
         }
 
-        internal DynEnv WithOut(System.IO.TextWriter w) => new(w, In, Err, Vals);
-        internal DynEnv WithIn(System.IO.TextReader r) => new(Out, r, Err, Vals);
-        internal DynEnv WithErr(System.IO.TextWriter w) => new(Out, In, w, Vals);
-        internal DynEnv WithVal(object key, object value) => new(Out, In, Err, Vals.Set(key, value));
+        internal DynEnv WithOut(System.IO.TextWriter w) => new(w, In, Cancel, Vals);
+        internal DynEnv WithIn(System.IO.TextReader r) => new(Out, r, Cancel, Vals);
+        internal DynEnv WithCancel(Bjoml.Promise<CancelReason> c) => new(Out, In, c, Vals);
+        internal DynEnv WithVal(int id, object value) => new(Out, In, Cancel, Vals.Set(id, value));
     }
 
     /// <summary>
@@ -998,8 +1119,8 @@ public static partial class BjolangRuntime {
         private static readonly DynEnv Root = new(
             Console.Out,
             Console.In,
-            Console.Error,
-            Map.Map<object, object>.Empty);
+            null,
+            Map.Map<int, object>.Empty);
 
         public static DynEnv Current {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1010,27 +1131,99 @@ public static partial class BjolangRuntime {
     }
 
     /// <summary>
+    /// Where a parameter's champ key comes from, and why the key is shaped the
+    /// way it is.
+    ///
+    /// The champ files a key under its hash, and an `int` hashes to itself, so
+    /// an id is not just a name for a parameter — it is a *position* in the
+    /// trie, and handing out ids is deciding how deep each parameter sits. The
+    /// root branches 32 ways on the low five bits, so those five bits are the
+    /// whole of the budget:
+    ///
+    /// - **Hot ids are 0..30.** Each has the low bits to itself, so it occupies
+    ///   a root slot no other parameter can ever be filed under, and reading it
+    ///   is one node access however many parameters the program has. There are
+    ///   31 rather than 32 because the last slot is spoken for.
+    ///
+    /// - **Cold ids are `31 + (k &lt;&lt; 5)`.** Every one of them ends in the
+    ///   same five bits, so the whole cold population hangs off root slot 31
+    ///   and cannot push a hot parameter down a level. A cold parameter is not
+    ///   *slow*: while only one of them is bound the champ keeps it inline at
+    ///   root slot 31, and it is a second simultaneously-bound cold parameter
+    ///   that first costs anyone a second node access.
+    ///
+    /// `make-parameter` spends hot ids and then falls through to cold ones, so
+    /// exhausting the budget costs a pointer chase rather than hitting a wall —
+    /// there is no capacity to declare and no cliff to stay clear of.
+    /// `make-cold-parameter` skips the queue in the other direction, for a
+    /// parameter its author knows is not read in a loop.
+    ///
+    /// Widening the root would widen the hot region for free: with 64-way
+    /// branching these become 0..62 and `63 + (k &lt;&lt; 6)`, and nothing else
+    /// here changes.
+    /// </summary>
+    internal static class ParamIds {
+        /// One less than the root's branching factor. The odd slot out is the
+        /// cold wing.
+        internal const int HotSlots = 31;
+
+        /// The shift that reaches the root's second five bits, which is where
+        /// cold ids differ from one another.
+        private const int ColdShift = 5;
+
+        /// The largest `k` for which `31 + (k << 5)` is still positive. Past it
+        /// the shift would wrap and alias two parameters onto one id, which
+        /// would not fail — each would silently read the other's binding.
+        private const int MaxCold = (int.MaxValue - HotSlots) >> ColdShift;
+
+        private static int _hot = -1;
+        private static int _cold = -1;
+
+        internal static int NextHot() {
+            var n = System.Threading.Interlocked.Increment(ref _hot);
+            // Unsigned, because the counter goes on climbing after the budget
+            // is spent: a wrapped negative would otherwise read as in range and
+            // be handed out as an id some parameter already holds.
+            return (uint)n < HotSlots ? n : NextCold();
+        }
+
+        internal static int NextCold() {
+            var k = System.Threading.Interlocked.Increment(ref _cold);
+            if ((uint)k > MaxCold)
+                throw new InvalidOperationException(
+                    $"More than {MaxCold} parameters have been created; the dynamic environment has no key space left.");
+            return HotSlots + (k << ColdShift);
+        }
+    }
+
+    /// <summary>
     /// A parameter: an opaque, typed key into the dynamic environment.
     ///
-    /// The key is the object's own identity, so parameters cannot collide and
-    /// there is no namespace to share. `T` is what makes the champ — which
-    /// stores plain `object` — safe to read back: only `parameterize` at this
-    /// same `Param&lt;T&gt;` can write the key, so the cast in
+    /// Two parameters cannot collide, because <see cref="ParamIds"/> hands each
+    /// one an id no other will get. `T` is what makes the champ — which stores
+    /// plain `object` — safe to read back: only `parameterize` at this same
+    /// `Param&lt;T&gt;` can write the id, so the cast in
     /// <see cref="parametersubref"/> cannot fail. That cast is the whole of the
     /// unsoundness, and it is unreachable from Bjolang.
     /// </summary>
     public sealed class Param<T> {
-        /// 0 = output port, 1 = input port, 2 = error port, -1 = in the champ.
-        /// This is why `parameterize` is one form for both storage kinds.
+        /// 0 = output port, 1 = input port, 2 = ambient cancel token,
+        /// -1 = in the champ. This is why `parameterize` is one form for both
+        /// storage kinds.
         internal readonly int Slot;
+
+        /// The champ key, and meaningless for a port. `readonly`, so the JIT
+        /// can hoist it out of a loop that reads the same parameter repeatedly.
+        internal readonly int Id;
 
         /// The value seen when nothing has bound this parameter yet. Held on
         /// the parameter rather than seeded into the initial environment, so
         /// that a parameter made at any point still has an answer.
         internal readonly T Initial;
 
-        internal Param(int slot, T initial) {
+        internal Param(int slot, int id, T initial) {
             Slot = slot;
+            Id = id;
             Initial = initial;
         }
 
@@ -1039,23 +1232,51 @@ public static partial class BjolangRuntime {
 
     /// The output port. Bound to a value, not a nullary function: it is read
     /// with `parameter-ref` like every other parameter.
-    public static readonly Param<System.IO.TextWriter> currentsuboutputsubport = new(0, Console.Out);
-    public static readonly Param<System.IO.TextReader> currentsubinputsubport = new(1, Console.In);
-    public static readonly Param<System.IO.TextWriter> currentsuberrorsubport = new(2, Console.Error);
+    ///
+    /// A field parameter takes no id, so it spends none of the 31 hot slots and
+    /// a program's own parameters get the whole budget.
+    public static readonly Param<System.IO.TextWriter> currentsuboutputsubport = new(0, -1, Console.Out);
+    public static readonly Param<System.IO.TextReader> currentsubinputsubport = new(1, -1, Console.In);
+
+    /// The error port, which is a cold parameter and not a field.
+    ///
+    /// It is the one standard port the runtime never writes to itself, and
+    /// nothing reads it in a loop — a program reaches for it when something has
+    /// already gone wrong. So it earns neither a field nor one of the 31 slots
+    /// that stay cheap however many parameters exist.
+    public static readonly Param<System.IO.TextWriter> currentsuberrorsubport =
+        new(-1, ParamIds.NextCold(), Console.Error);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Param<T> makesubparameter<T>(T initial) => new(-1, initial);
+    public static Param<T> makesubparameter<T>(T initial) => new(-1, ParamIds.NextHot(), initial);
+
+    /// `(make-cold-parameter initial)`. A parameter that gives up its claim on
+    /// a root slot of its own.
+    ///
+    /// Same semantics as `make-parameter` in every respect — this says only
+    /// that the parameter is not read in a loop, and so should not spend one of
+    /// the 31 ids that are cheap to read no matter what else the program does.
+    /// Worth reaching for when a parameter is created per-request or
+    /// per-connection rather than once at module level, since those are the
+    /// ones that would otherwise crowd out the parameters that are read hot.
+    ///
+    /// See <see cref="ParamIds"/> for what it costs: nothing at all while it is
+    /// the only cold parameter bound, and one extra node access after that.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Param<T> makesubcoldsubparameter<T>(T initial) => new(-1, ParamIds.NextCold(), initial);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static T parametersubref<T>(Param<T> p) {
         var env = Dyn.Current;
         switch (p.Slot) {
-            // Safe by construction: only the three parameters declared above
-            // carry a slot, and each is declared at the matching port type.
+            // Safe by construction: only the three parameters that carry a slot
+            // reach these, and each is declared at the matching type.
             case 0: return (T)(object)env.Out;
             case 1: return (T)(object)env.In;
-            case 2: return (T)(object)env.Err;
-            default: return env.Vals.TryGetValue(p, out var v) ? (T)v : p.Initial;
+            // Null is "nothing has bound one", the same thing a champ miss
+            // means, and it falls back the same way.
+            case 2: return env.Cancel is { } tok ? (T)(object)tok : p.Initial;
+            default: return env.Vals.TryGetValue(p.Id, out var v) ? (T)v : p.Initial;
         }
     }
 
@@ -1073,8 +1294,8 @@ public static partial class BjolangRuntime {
         Dyn.Current = p.Slot switch {
             0 => prev.WithOut((System.IO.TextWriter)(object)value!),
             1 => prev.WithIn((System.IO.TextReader)(object)value!),
-            2 => prev.WithErr((System.IO.TextWriter)(object)value!),
-            _ => prev.WithVal(p, value!)
+            2 => prev.WithCancel((Bjoml.Promise<CancelReason>)(object)value!),
+            _ => prev.WithVal(p.Id, value!)
         };
         return prev;
     }

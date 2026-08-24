@@ -43,21 +43,48 @@ public readonly record struct BjoChar : IComparable<BjoChar>
     public static bool operator >=(BjoChar a, BjoChar b) => a.Value >= b.Value;
 
     /// <summary>
-    /// Zero-allocation append directly into a C# StringBuilder.
+    /// This scalar as UTF-16, written into <paramref name="dest" /> — which must hold two
+    /// units — and answering how many it took: one inside the BMP, two above it.
+    ///
+    /// The surrogate arithmetic is written once here because there is more than one sink
+    /// for it: a <see cref="StringBuilder" /> and a <see cref="System.IO.TextWriter" />
+    /// both want the units without a string in between.
     /// </summary>
-    public void AppendTo(StringBuilder sb)
+    public int EncodeUtf16(Span<char> dest)
     {
         if (Value <= 0xFFFF)
         {
             // Single UTF-16 code unit fit
-            sb.Append((char)Value);
+            dest[0] = (char)Value;
+            return 1;
         }
-        else
-        {
-            // High/Low surrogate pair calculation (zero string allocation)
-            uint scalar = Value - 0x10000;
-            sb.Append((char)((scalar >> 10) + 0xD800));
-            sb.Append((char)((scalar & 0x3FF) + 0xDC00));
-        }
+
+        // High/Low surrogate pair calculation
+        uint scalar = Value - 0x10000;
+        dest[0] = (char)((scalar >> 10) + 0xD800);
+        dest[1] = (char)((scalar & 0x3FF) + 0xDC00);
+        return 2;
+    }
+
+    /// <summary>
+    /// Zero-allocation append directly into a C# StringBuilder.
+    /// </summary>
+    public void AppendTo(StringBuilder sb)
+    {
+        Span<char> buf = stackalloc char[2];
+        sb.Append(buf[..EncodeUtf16(buf)]);
+    }
+
+    /// <summary>
+    /// Zero-allocation write directly to a port, for `write-char`.
+    ///
+    /// Not <c>Write((char)Value)</c>: that is a UTF-16 code unit and this is a scalar, so
+    /// an astral character has to go out as its two halves or the port receives a lone
+    /// surrogate.
+    /// </summary>
+    public void WriteTo(System.IO.TextWriter writer)
+    {
+        Span<char> buf = stackalloc char[2];
+        writer.Write(buf[..EncodeUtf16(buf)]);
     }
 }

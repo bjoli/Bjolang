@@ -140,6 +140,7 @@ let mapPrimitiveType (name: string) =
     // spells the type out, so they are qualified here.
     | "ListBuilder" -> "SchemeList.SchemeListBuilder"
     | "VecCursor" -> "BjolangRuntime.VecCursor"
+    | "SeqCursor" -> "BjolangRuntime.SeqCursor"
     // Fully qualified for the same reason `BjoChar` is: it lives in the
     // `Bjolang.Runtime` namespace rather than nested in the static class the
     // generated file has a `using static` for.

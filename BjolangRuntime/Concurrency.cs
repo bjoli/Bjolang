@@ -506,7 +506,19 @@ public static partial class BjolangRuntime {
     /// round binds the default to null.
     private static readonly Promise<CancelReason> RootCancel = new();
 
-    public static readonly Param<Promise<CancelReason>> currentsubcancel = makesubparameter(RootCancel);
+    /// Slot 2 on the environment — a field, not a champ entry, which is why it
+    /// is built here rather than by `make-parameter`.
+    ///
+    /// It earns the field by how it is read rather than by how often it is
+    /// bound: `(:until-cancelled)` hoists a read to the head of a loop and
+    /// `#:async` calls take one per call, so it is read on paths where nothing
+    /// else is happening. It took the slot the error port used to hold.
+    ///
+    /// The root token stays the parameter's initial value rather than being
+    /// seeded into the root environment, so an unparameterized program still
+    /// gets *this* promise — the one <see cref="AmbientCancellation"/> tests
+    /// for — out of an environment that holds null.
+    public static readonly Param<Promise<CancelReason>> currentsubcancel = new(2, -1, RootCancel);
 
     // -----------------------------------------------------------------------
     // The bridge to .NET

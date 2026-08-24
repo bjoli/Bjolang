@@ -3023,10 +3023,11 @@ and private desugarComprehension (allForms: SExpr list) (r: Range) : Expr =
 /// needs no new machinery. The break stays put because clause order decides
 /// *where in an iteration* the exit happens, and that is the author's to say.
 ///
-/// **The hoist is the point.** `current-cancel` is not one of `DynEnv`'s three
-/// port fields, so `parameter-ref` on it is `FiberContext.Current`, a cast, an
-/// identity-keyed CHAMP descent and an unbox. In a loop whose body is arithmetic
-/// that costs more than the work it guards.
+/// **The hoist is the point.** `current-cancel` holds a field on `DynEnv` — it
+/// is one of the three parameters that do — so `parameter-ref` on it is
+/// `FiberContext.Current`, a cast and a null test rather than a champ descent.
+/// A thread-static read every iteration is still more than a loop whose body is
+/// arithmetic should pay for something that cannot change under it.
 ///
 /// *Why it is safe:* only `parameterize` can rebind it, and that is a
 /// `try/finally`, so it has restored before control reaches the loop head again;

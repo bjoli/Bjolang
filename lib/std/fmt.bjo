@@ -64,11 +64,11 @@
 (type
   (: Disp
      (Union
-       (DStr string)
-       (DInt int)
-       (DDouble double)
-       (DChar char)
-       (DBool bool))))
+      (DStr string)
+      (DInt int)
+      (DDouble double)
+      (DChar char)
+      (DBool bool))))
 
 (: disp->string (-> Disp string))
 (defun (disp->string d)
@@ -85,9 +85,9 @@
 (defun (str* ds)
   (let ((b (stringbuilder-empty)))
     (ignore
-      (fold (fun (acc d) (stringbuilder-add-string! acc (disp->string d)) acc)
-            b
-            ds))
+     (fold (fun (acc d) (stringbuilder-add-string! acc (disp->string d)) acc)
+           b
+           ds))
     (stringbuilder->string b)))
 
 (: println* (-> (Vec Disp) void))
@@ -115,10 +115,10 @@
 (type
   (: Block
      (Union
-       (BStr string)
-       (BInt int)
-       (BChar char)
-       (BRun (-> Sink int int)))))
+      (BStr string)
+      (BInt int)
+      (BChar char)
+      (BRun (-> Sink int int)))))
 
 ;; Where the cursor ends up after `s` is written starting at `col`.
 (: column-after (-> int string int))
@@ -184,7 +184,7 @@
 
 ;; Put in place of whatever a `trimmed` cut off. Empty means cut silently.
 (: current-ellipsis (Param string))
-(def current-ellipsis (make-parameter ""))
+(def current-ellipsis (make-cold-parameter ""))
 
 ;; How wide a string is where it is going. `string-count` — one character, one
 ;; column — is right for a file, and right for a terminal until the text holds
@@ -196,7 +196,7 @@
 ;; SRFI's second hook for taking substrings, because measuring per character is
 ;; already enough to cut in the units it measures in.
 (: current-string-width (Param (-> string int)))
-(def current-string-width (make-parameter #(string-count &1)))
+(def current-string-width (make-cold-parameter #(string-count &1)))
 
 ;; --- Number settings -------------------------------------------------------
 ;;
@@ -206,21 +206,21 @@
 ;; Digits after the decimal separator. Negative means as many as the number
 ;; needs, which is what `double->string` would have given.
 (: current-precision (Param int))
-(def current-precision (make-parameter -1))
+(def current-precision (make-cold-parameter -1))
 
 ;; Digits per group in the integer part. Zero means no grouping.
 (: current-comma (Param int))
-(def current-comma (make-parameter 0))
+(def current-comma (make-cold-parameter 0))
 
 (: current-comma-sep (Param char))
-(def current-comma-sep (make-parameter #\,))
+(def current-comma-sep (make-cold-parameter #\,))
 
 (: current-decimal-sep (Param char))
-(def current-decimal-sep (make-parameter #\.))
+(def current-decimal-sep (make-cold-parameter #\.))
 
 ;; A leading `+` on a number that has no sign of its own.
 (: current-signed (Param bool))
-(def current-signed (make-parameter false))
+(def current-signed (make-cold-parameter false))
 
 
 ;; --- Measuring -------------------------------------------------------------
@@ -247,12 +247,12 @@
   (let* ((c (parameter-ref current-pad))
          (cw (width-of (char->string c)))
          (b (stringbuilder-empty)))
-    (when (> cw 0)
-      (let loop ((room w))
-        (when (>= room cw)
-          (stringbuilder-add! b c)
-          (loop (- room cw)))))
-    (stringbuilder->string b)))
+        (when (> cw 0)
+          (let loop ((room w))
+            (when (>= room cw)
+              (stringbuilder-add! b c)
+              (loop (- room cw)))))
+        (stringbuilder->string b)))
 
 ;; The longest prefix of `s` that fits in `w` columns, and the longest suffix.
 ;; Both stop at a character boundary, and both answer `s` itself when it
@@ -274,9 +274,9 @@
         s
         (let* ((p (string-cursor-prev s c))
                (cw (width-of (char->string (string-cursor-ref s p)))))
-          (if (<= cw room)
-              (loop p (- room cw))
-              (substring/cursors s c (string-cursor-end s)))))))
+              (if (<= cw room)
+                  (loop p (- room cw))
+                  (substring/cursors s c (string-cursor-end s)))))))
 
 (: pad/left (-> int string string))
 (defun (pad/left w s) (string-append (padding (- w (width-of s))) s))
@@ -289,7 +289,7 @@
 (defun (pad/both w s)
   (let* ((missing (- w (width-of s)))
          (left (/ missing 2)))
-    (string-append (padding left) (string-append s (padding (- missing left))))))
+        (string-append (padding left) (string-append s (padding (- missing left))))))
 
 ;; Cutting. The ellipsis takes room from the content rather than being added to
 ;; it, so the answer is never wider than `w` — and when `w` has no room even for
@@ -317,7 +317,7 @@
              (room (- w (* 2 (width-of e))))
              (dropped (- (width-of s) (max room 0)))
              (kept (suffix-of-width s (- (width-of s) (/ dropped 2)))))
-        (string-append e (string-append (prefix-of-width kept (max room 0)) e)))))
+            (string-append e (string-append (prefix-of-width kept (max room 0)) e)))))
 
 
 ;; --- The block algebra -----------------------------------------------------
@@ -504,21 +504,21 @@
 (: numeric (-> double (#:precision int) (#:comma int) (#:comma-sep char)
                (#:decimal-sep char) (#:signed bool) Block))
 (defun (numeric x #:precision -1 #:comma -1 #:comma-sep #\nul
-                  #:decimal-sep #\nul #:signed false)
+                #:decimal-sep #\nul #:signed false)
   (BRun (fun (out col)
           (run-block
-            out
-            col
-            (BStr (formatted x
-                             (if (< precision 0) (parameter-ref current-precision) precision)
-                             (if (< comma 0) (parameter-ref current-comma) comma)
-                             (if (char=? comma-sep #\nul)
-                                 (parameter-ref current-comma-sep)
-                                 comma-sep)
-                             (if (char=? decimal-sep #\nul)
-                                 (parameter-ref current-decimal-sep)
-                                 decimal-sep)
-                             (or signed (parameter-ref current-signed))))))))
+           out
+           col
+           (BStr (formatted x
+                            (if (< precision 0) (parameter-ref current-precision) precision)
+                            (if (< comma 0) (parameter-ref current-comma) comma)
+                            (if (char=? comma-sep #\nul)
+                                (parameter-ref current-comma-sep)
+                                comma-sep)
+                            (if (char=? decimal-sep #\nul)
+                                (parameter-ref current-decimal-sep)
+                                decimal-sep)
+                            (or signed (parameter-ref current-signed))))))))
 
 (: formatted (-> double int int char char bool string))
 (defun (formatted x precision comma comma-sep decimal-sep signed)
@@ -530,13 +530,13 @@
          (parts (split-at-point body))
          (whole (first-of parts))
          (fraction (second-of parts)))
-    (string-append
-      (if negative? "-" (if signed "+" ""))
-      (string-append
-        (grouped whole comma comma-sep)
-        (if (string-empty? fraction)
-            ""
-            (string-append (char->string decimal-sep) fraction))))))
+        (string-append
+         (if negative? "-" (if signed "+" ""))
+         (string-append
+          (grouped whole comma comma-sep)
+          (if (string-empty? fraction)
+              ""
+              (string-append (char->string decimal-sep) fraction))))))
 
 ;; The common case, and the reason `comma` is spelled that way: thousands.
 (: numeric/comma (-> double Block))
@@ -599,9 +599,9 @@
         (list-reverse (if (list-empty? line) lines (Cons (list-reverse line) lines)))
         (let* ((w (vec-ref ws i))
                (needed (if (= used 0) (width-of w) (+ used 1 (width-of w)))))
-          (if (or (= used 0) (<= needed budget))
-              (loop (+ i 1) (Cons w line) needed budget lines)
-              (loop i Nil 0 width (Cons (list-reverse line) lines)))))))
+              (if (or (= used 0) (<= needed budget))
+                  (loop (+ i 1) (Cons w line) needed budget lines)
+                  (loop i Nil 0 width (Cons (list-reverse line) lines)))))))
 
 (: list-empty? (-> (List %a) bool))
 (defun (list-empty? xs) (match xs (Nil true) ((Cons x rest) false)))
@@ -631,32 +631,32 @@
                (base (/ room gaps))
                (extra (% room gaps))
                (b (stringbuilder-empty)))
-          (ignore (list-foldl (fun (i w)
-                                (when (> i 0)
-                                  (stringbuilder-add-string!
-                                    b
-                                    (padding (+ base (if (<= i extra) 1 0)))))
-                                (stringbuilder-add-string! b w)
-                                (+ i 1))
-                              0
-                              ws))
-          (stringbuilder->string b)))))
+              (ignore (list-foldl (fun (i w)
+                                    (when (> i 0)
+                                      (stringbuilder-add-string!
+                                       b
+                                       (padding (+ base (if (<= i extra) 1 0)))))
+                                    (stringbuilder-add-string! b w)
+                                    (+ i 1))
+                                  0
+                                  ws))
+              (stringbuilder->string b)))))
 
 (: wrap (-> (Vec string) bool Block))
 (defun (wrap ws justify?)
   (BRun (fun (out col)
           (let* ((width (parameter-ref current-width))
                  (lines (packed ws (- width col) width)))
-            (let loop ((ls lines) (c col) (first? true))
-              (match ls
-                (Nil c)
-                ((Cons line rest)
-                 (let* ((c1 (if first? c (run-block out c nl)))
-                        (budget (if first? (- width col) width))
-                        (text (if (and justify? (not (list-empty? rest)))
-                                  (stretched line budget)
-                                  (spaced line))))
-                   (loop rest (run-block out c1 (BStr text)) false)))))))))
+                (let loop ((ls lines) (c col) (first? true))
+                  (match ls
+                    (Nil c)
+                    ((Cons line rest)
+                     (let* ((c1 (if first? c (run-block out c nl)))
+                            (budget (if first? (- width col) width))
+                            (text (if (and justify? (not (list-empty? rest)))
+                                      (stretched line budget)
+                                      (spaced line))))
+                           (loop rest (run-block out c1 (BStr text)) false)))))))))
 
 ;; Filled to the right margin, ragged on the right.
 (: wrapped (-> (Vec Block) Block))
@@ -683,9 +683,9 @@
 (defun (lines-of s)
   (let* ((parts (string-split s "\n"))
          (n (vec-length parts)))
-    (if (and (> n 1) (string-empty? (vec-ref parts (- n 1))))
-        (vec-slice parts 0 (- n 1))
-        parts)))
+        (if (and (> n 1) (string-empty? (vec-ref parts (- n 1))))
+            (vec-slice parts 0 (- n 1))
+            parts)))
 
 (: laid-out (-> (Vec (Vec string)) (Vec int) string bool Block))
 (defun (laid-out cells widths sep cut?)
@@ -713,11 +713,11 @@
                (text (if (< r (vec-length ls)) (vec-ref ls r) ""))
                (w (vec-ref widths i))
                (last? (= i (- n 1))))
-          (stringbuilder-add-string!
-            b
-            (cond (last? (if cut? (trim/right w text) text))
-                  (cut? (pad/right w (trim/right w text)))
-                  (else (pad/right w text)))))
+              (stringbuilder-add-string!
+               b
+               (cond (last? (if cut? (trim/right w text) text))
+                     (cut? (pad/right w (trim/right w text)))
+                     (else (pad/right w text)))))
         (loop (+ i 1))))
     (stringbuilder->string b)))
 
@@ -736,22 +736,22 @@
                  (room (- (parameter-ref current-width)
                           (* (width-of sep) (max (- n 1) 0))))
                  (each-width (if (> n 0) (max (/ room n) 0) 0)))
-            (run-block out
-                       col
-                       (laid-out cells (vec-map (fun (ls) each-width) cells) sep true))))))
+                (run-block out
+                           col
+                           (laid-out cells (vec-map (fun (ls) each-width) cells) sep true))))))
 
 (: tabular (-> (Vec (Vec Block)) (#:sep string) Block))
 (defun (tabular cols #:sep " ")
   (BRun (fun (out col)
           (let ((cells (rendered-columns cols)))
             (run-block
-              out
-              col
-              (laid-out cells
-                        (vec-map (fun (ls) (vec-fold (fun (acc l) (max acc (width-of l))) 0 ls))
-                                 cells)
-                        sep
-                        false))))))
+             out
+             col
+             (laid-out cells
+                       (vec-map (fun (ls) (vec-fold (fun (acc l) (max acc (width-of l))) 0 ls))
+                                cells)
+                       sep
+                       false))))))
 
 
 ;; ===========================================================================

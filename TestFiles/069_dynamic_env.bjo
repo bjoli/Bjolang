@@ -34,6 +34,35 @@
 (: verbose? (Param bool))
 (def verbose? (make-parameter #f))
 
+;; `make-cold-parameter` makes a parameter that gives up its claim on a cheap
+;; read, for one its author knows is not read in a loop. Nothing else about it
+;; differs — it is a `(Param %a)` like any other, read and bound by the same two
+;; forms — and this file's job is to pin that down, since the whole point of the
+;; distinction is that only the runtime is supposed to be able to tell.
+;;
+;; Two of them, because cold parameters share a place in the environment that
+;; hot ones do not: one bound alone and two bound at once take different paths
+;; through it, and both have to answer the same.
+(: cold-a (Param int))
+(def cold-a (make-cold-parameter 10))
+
+(: cold-b (Param int))
+(def cold-b (make-cold-parameter 20))
+
+;; Parameters past the point where the cheap places run out. `make-parameter`
+;; spends those and then keeps going, so a program that makes a lot of them gets
+;; slower reads rather than a failure — and, being the same allocator
+;; `make-cold-parameter` draws on, it must land the same way.
+(: nth-parameter (-> int (Param int)))
+(defun (nth-parameter n)
+  (let loop ((i 0) (p (make-parameter -1)))
+    (if (>= i n)
+        p
+        (loop (+ i 1) (make-parameter i)))))
+
+(: spilled (Param int))
+(def spilled (nth-parameter 40))
+
 ;; The point of a dynamic environment: `describe` never mentions the parameter
 ;; in its signature, and every caller between it and the `parameterize` is
 ;; unchanged. Passing this explicitly is what dynamic binding buys you out of.
@@ -112,9 +141,79 @@
   ;; the harness reads it.
   (expect "stdout restored" "back on stdout" "back on stdout")
 
+  ;; --- Capturing the error port -------------------------------------------
+  ;;
+  ;; The error port is the one standard port the runtime never writes to
+  ;; itself, so it is kept where a program's own parameters are kept rather than
+  ;; in a field beside the output port. That is invisible from here, which is
+  ;; the case being made: binding, nesting and restoring all read the same.
+  (def e1 (StringWriter.))
+  (def e2 (StringWriter.))
+  (parameterize ((current-error-port (cast TextOutputPort e1)))
+    (.Write (parameter-ref current-error-port) "outer")
+    (parameterize ((current-error-port (cast TextOutputPort e2)))
+      (.Write (parameter-ref current-error-port) "inner"))
+    (.Write (parameter-ref current-error-port) "-again"))
+
+  (expect "error port captured and restored" (.ToString e1) "outer-again")
+  (expect "error port nests" (.ToString e2) "inner")
+
+  ;; The two output ports are stored two different ways now, so this pins down
+  ;; that neither binding went to the other's place.
+  (def o3 (StringWriter.))
+  (def e3 (StringWriter.))
+  (parameterize ((current-output-port (cast TextOutputPort o3))
+                 (current-error-port (cast TextOutputPort e3)))
+    (display "to-out")
+    (.Write (parameter-ref current-error-port) "to-err"))
+
+  (expect "output and error do not alias"
+          (string-append (.ToString o3) (string-append "/" (.ToString e3)))
+          "to-out/to-err")
+
   ;; A parameter is an ordinary value, so it can be handed to a function that
   ;; does not know which one it is.
   (expect "parameter passed as a value" (int->string (read-twice indent)) "0")
+
+  ;; --- Cold parameters ----------------------------------------------------
+  ;;
+  ;; Everything above, again, for a parameter made the other way. `read-twice`
+  ;; takes this one too: which allocator made a parameter is not part of its
+  ;; type, so nothing that holds a `(Param int)` has to know.
+  (expect "cold reads its initial" (int->string (parameter-ref cold-a)) "10")
+
+  (parameterize ((cold-a 11))
+    (expect "cold binds" (int->string (parameter-ref cold-a)) "11")
+    (expect "cold passed as a value" (int->string (read-twice cold-a)) "22"))
+  (expect "cold restores" (int->string (parameter-ref cold-a)) "10")
+
+  ;; Two at once. Cold parameters share a place that hot ones each have to
+  ;; themselves, so this is the case where one could be found under the other's
+  ;; binding — neither may see the other's value, and both must come back.
+  (parameterize ((cold-a 1) (cold-b 2))
+    (expect "two cold, first" (int->string (parameter-ref cold-a)) "1")
+    (expect "two cold, second" (int->string (parameter-ref cold-b)) "2")
+    (parameterize ((cold-a 3))
+      (expect "cold shadowed" (int->string (parameter-ref cold-a)) "3")
+      (expect "its neighbour untouched" (int->string (parameter-ref cold-b)) "2")))
+  (expect "both cold restored" (string-append (int->string (parameter-ref cold-a))
+                                              (int->string (parameter-ref cold-b)))
+          "1020")
+
+  ;; Hot and cold in one form, which is the mixed environment the runtime
+  ;; actually sees.
+  (parameterize ((indent 4) (cold-a 5))
+    (expect "hot beside cold" (string-append (int->string (parameter-ref indent))
+                                             (int->string (parameter-ref cold-a)))
+            "45"))
+  (expect "hot beside cold restored" (describe) "0/quiet")
+
+  ;; A parameter from past the point where the cheap places ran out.
+  (expect "spilled reads its initial" (int->string (parameter-ref spilled)) "39")
+  (parameterize ((spilled 7))
+    (expect "spilled binds" (int->string (parameter-ref spilled)) "7")
+    (expect "and shadows nothing else" (int->string (parameter-ref cold-a)) "10"))
+  (expect "spilled restores" (int->string (parameter-ref spilled)) "39")
 
   ;; --- Unwinding through a failure ----------------------------------------
   ;;

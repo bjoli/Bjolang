@@ -27,6 +27,14 @@ let stringCursorType = TCon("StringCursor", [])
 let stringBuilderType = TCon("StringBuilder", [])
 let makeListType a = TCon("List", [a])
 let makeSeqType a = TCon("Seq", [a])
+
+/// A live position in a walk of a `Seq`, and the `Iterable` cursor for one.
+///
+/// Opaque, and used linearly: it holds the enumerator, so stepping it consumes
+/// the sequence. That is what distinguishes it from a `Cursor`, which is a
+/// value and may be held and compared — and why `Seq` implements `Iterable`
+/// and not `Cursor`.
+let makeSeqCursorType a = TCon("SeqCursor", [a])
 let makeOptionType a = TCon("Option", [a])
 let makeResultType e a = TCon("Result", [e; a])
 let makeArrayType a = TCon("Array", [a])
@@ -264,6 +272,14 @@ let prelude : Env =
         // user's own `(def verbose? (make-parameter #f))` is closed too, and one
         // that is not gets the existing "give it a signature" error.
         "make-parameter", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"] (makeParamType (TVar "a"))); IsMutable = false }
+
+        // The same parameter, declining the cheap read. A parameter is filed in
+        // the environment under an id that decides how deep it sits, and only
+        // the first 31 get a place of their own; this one gives that place up
+        // for a parameter that is not read in a loop, so that the ones that are
+        // keep theirs. Nothing else about it differs, which is why it shares
+        // `Param` and every operation on one.
+        "make-cold-parameter", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"] (makeParamType (TVar "a"))); IsMutable = false }
         "parameter-ref", {Scheme = Scheme(["a"], [], makeFunType [makeParamType (TVar "a")] (TVar "a")); IsMutable = false }
 
         // --- Concurrency -----------------------------------------------------
@@ -458,6 +474,12 @@ let prelude : Env =
         // end of input, and the two drains, which want the collection builders
         // directly.
         "reader-read-line!", {Scheme = Scheme([], [], makeFunType [TCon("System.IO.TextReader", [])] stringType); IsMutable = false }
+        // Char IO is a builtin pair rather than a `.Read` and a `.Write` at the
+        // call site because a Bjolang `char` is a Unicode scalar and .NET's is a
+        // UTF-16 code unit: both directions have to handle a surrogate pair, and
+        // neither is something a caller should be reassembling by hand.
+        "reader-read-char!", {Scheme = Scheme([], [], makeFunType [TCon("System.IO.TextReader", [])] charType); IsMutable = false }
+        "writer-write-char!", {Scheme = Scheme([], [], makeFunType [TCon("System.IO.TextWriter", []); charType] unitType); IsMutable = false }
         // What `get-output-string` is built on. A builtin because the failure it
         // has to report — a port that is not a string port — is a value rather
         // than an exception on the .NET side.
@@ -679,8 +701,12 @@ let prelude : Env =
         // work until the result is consumed.
         "seq-empty", {Scheme = Scheme(["a"], [], makeFunType [] (makeSeqType (TVar "a"))); IsMutable = false }
         "seq-empty?", {Scheme = Scheme(["a"], [], makeFunType [makeSeqType (TVar "a")] boolType); IsMutable = false }
+        // No `seq-tail`. `IEnumerable` has no cheap tail: the rest of a
+        // sequence can only be described as the source minus a prefix, so
+        // walking with one re-enumerates from the start per element and re-runs
+        // whatever the generator does. `(seq-drop s 1)` says the same thing
+        // without inviting the walk, and a walk is what `loop` is for.
         "seq-head", {Scheme = Scheme(["a"], [], makeFunType [makeSeqType (TVar "a")] (TVar "a")); IsMutable = false }
-        "seq-tail", {Scheme = Scheme(["a"], [], makeFunType [makeSeqType (TVar "a")] (makeSeqType (TVar "a"))); IsMutable = false }
         "seq-map", {Scheme = Scheme(["a"; "b"], [], makeFunType [makeFunType [TVar "a"] (TVar "b"); makeSeqType (TVar "a")] (makeSeqType (TVar "b"))); IsMutable = false }
         "seq-filter", {Scheme = Scheme(["a"], [], makeFunType [makeFunType [TVar "a"] boolType; makeSeqType (TVar "a")] (makeSeqType (TVar "a"))); IsMutable = false }
         // Folds take the function first, then the identity, then the
@@ -690,7 +716,7 @@ let prelude : Env =
         // it, or to None to stop.
         "seq-unfold", {Scheme = Scheme(["a"; "s"], [], makeFunType [makeFunType [TVar "s"] (makeOptionType (TTuple [TVar "a"; TVar "s"])); TVar "s"] (makeSeqType (TVar "a"))); IsMutable = false }
         "seq-take", {Scheme = Scheme(["a"], [], makeFunType [makeSeqType (TVar "a"); intType] (makeSeqType (TVar "a"))); IsMutable = false }
-        "seq-skip", {Scheme = Scheme(["a"], [], makeFunType [makeSeqType (TVar "a"); intType] (makeSeqType (TVar "a"))); IsMutable = false }
+        "seq-drop", {Scheme = Scheme(["a"], [], makeFunType [makeSeqType (TVar "a"); intType] (makeSeqType (TVar "a"))); IsMutable = false }
         "seq-append", {Scheme = Scheme(["a"], [], makeFunType [makeSeqType (TVar "a"); makeSeqType (TVar "a")] (makeSeqType (TVar "a"))); IsMutable = false }
         "seq-for-each", {Scheme = Scheme(["a"], [], makeFunType [makeFunType [TVar "a"] unitType; makeSeqType (TVar "a")] unitType); IsMutable = false }
         // `seq-length` walks the sequence, and a walk of a `Seq` over an
@@ -742,6 +768,19 @@ let prelude : Env =
         // after the cursor itself.
         "vec-cursor", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a")] (makeVecCursorType (TVar "a"))); IsMutable = false }
         "vec-cursor-done?", {Scheme = Scheme(["a"], [], makeFunType [makeVecCursorType (TVar "a")] boolType); IsMutable = false }
+
+        // The same three for a `Seq`, holding the enumerator so that a walk
+        // pulls each element once. A `Seq` has no tail to step to, so without
+        // these the only cursor available is the sequence itself and every step
+        // re-enumerates it from the start.
+        //
+        // Consuming, and the one cursor here that is: stepping it advances the
+        // underlying enumerator, so two walks from one cursor share a position.
+        // `(start s)` makes a fresh one per walk, which is what keeps a `Seq`
+        // re-enumerable.
+        "seq-cursor", {Scheme = Scheme(["a"], [], makeFunType [makeSeqType (TVar "a")] (makeSeqCursorType (TVar "a"))); IsMutable = false }
+        "seq-cursor-done?", {Scheme = Scheme(["a"], [], makeFunType [makeSeqCursorType (TVar "a")] boolType); IsMutable = false }
+        "seq-cursor-current", {Scheme = Scheme(["a"], [], makeFunType [makeSeqCursorType (TVar "a")] (TVar "a")); IsMutable = false }
         "vec-cursor-current", {Scheme = Scheme(["a"], [], makeFunType [makeVecCursorType (TVar "a")] (TVar "a")); IsMutable = false }
       ]
       Registry = emptyRegistry

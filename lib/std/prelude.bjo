@@ -91,9 +91,9 @@
   ;; Ports — closing
   close-input-port close-output-port flush-port
   ;; Ports — input
-  port-eof? read-line read-line/opt read-all port-fold
+  port-eof? read-line read-line/opt read-char read-char/opt read-all port-fold
   ;; Ports — output
-  write-string writeln get-output-string)
+  write-string write-char writeln get-output-string)
 
 
 (import/extern
@@ -517,16 +517,24 @@
 
 
 
-;; The same shape as the List impl: the cursor is the remaining sequence and
-;; every method reads `c`, never `s`. Reading `s` would restart from the head
-;; each iteration, forcing the same element forever.
+;; The Vec impl's shape, not the List impl's, and for a reason worth stating: a
+;; `Seq` is an `IEnumerable`, which hands out enumerators and nothing else. It
+;; has no tail. Making the cursor "the sequence minus what has been seen" meant
+;; a fresh enumeration per element — quadratic, and it re-ran everything the
+;; generator does on the way, so a `Seq` over a port read each line as many
+;; times as it had predecessors.
+;;
+;; The cursor holds the enumerator instead, so a walk pulls each element once.
+;; `start` makes a new one, which is what keeps a `Seq` re-enumerable: two
+;; loops over the same sequence each get their own position and each run the
+;; body from the beginning.
 (def/impl (Iterable (Seq %a))
   (type %elem %a)
-  (type %cursor (Seq %a))
-  (defun (start s) s)
-  (defun (done? s c) (seq-empty? c))
-  (defun (current s c) (seq-head c))
-  (defun (next s c) (seq-tail c)))
+  (type %cursor (SeqCursor %a))
+  (defun (start s) (seq-cursor s))
+  (defun (done? s c) (seq-cursor-done? c))
+  (defun (current s c) (seq-cursor-current c))
+  (defun (next s c) c))
 
 ;; ---------------------------------------------------------------------------
 ;; Cursor
@@ -1298,6 +1306,31 @@
       None
       (Some (reader-read-line! p))))
 
+;; The next character. **Throws at end of input** — guard with `port-eof?`, or
+;; use `read-char/opt`.
+;;
+;; A whole character, not a UTF-16 code unit: one outside the BMP is stored as
+;; two units and comes back as one `char`, the same way walking a `string`
+;; yields it whole. So `(port->seq read-char p)` is a `(Seq char)` that agrees
+;; with `(read-all p)` walked as a string, which it could not if this handed
+;; out halves.
+;;
+;; There is no `peek-char`. A port gives one code unit of lookahead, one unit is
+;; not always a character, and a peek that could not promise the answer
+;; `read-char` is about to give would be worse than none. `port-eof?` is the
+;; question peeking is usually asked, and text that needs real lookahead wants
+;; `read-all` and a `StringCursor`.
+(: read-char (-> TextInputPort char))
+(defun (read-char p) (reader-read-char! p))
+
+;; The next character, or `None` at end of input, for when the check and the
+;; read want to be one step.
+(: read-char/opt (-> TextInputPort (Option char)))
+(defun (read-char/opt p)
+  (if (port-eof? p)
+      None
+      (Some (reader-read-char! p))))
+
 ;; Everything remaining, as one string. Empty at end of input, which needs no
 ;; `Option`: there is no difference between "no more input" and "the empty
 ;; remainder" once the whole rest is what you asked for.
@@ -1316,6 +1349,12 @@
 
 (: write-string (-> TextOutputPort string void))
 (defun (write-string p s) (.Write p s))
+
+;; One character. The counterpart of `read-char`, and a whole character for the
+;; same reason: one outside the BMP goes out as the two units it is made of
+;; rather than as a lone surrogate.
+(: write-char (-> TextOutputPort char void))
+(defun (write-char p c) (writer-write-char! p c))
 
 (: writeln (-> TextOutputPort string void))
 (defun (writeln p s) (.WriteLine p s))
@@ -1680,10 +1719,12 @@
   (def sp (open-output-string))
   (def out #(write-string sp &1))
   (out "(seq")
-  (when (not (empty? sq))
-    (out (->str (seq-head sq)))
-    (loop (:for item (seq-tail sq))
-          (:do (out (str " " (->str item))))))
+  ;; One walk. The `empty?`-then-head-then-tail shape this replaces enumerated
+  ;; the sequence three times over before the loop even started, which for a
+  ;; `Seq` is three runs of whatever produces it.
+  (loop (:for item sq)
+        (:do (out " ")
+             (out (->str item))))
   (out ")")
   (get-output-string sp))
 

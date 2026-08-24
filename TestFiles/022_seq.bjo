@@ -49,6 +49,32 @@
           (yield (* h 100))
           (loop t))))))
 
+;; How many elements the sequence below has actually produced. An array because
+;; a counter has to survive the `seq` body's own scope, and this file is about
+;; sequences rather than about mutability.
+(: pulls (Array int))
+(def pulls (make-array 1))
+
+;; Four elements, and a record of how many times the generator ran to make
+;; them. This is the file's instrument for the one property a lazy sequence's
+;; walk has to have and cannot demonstrate from its output alone.
+(: counted (-> (Seq int)))
+(defun (counted)
+  (seq
+    (let loop ((i 0))
+      (when (< i 4)
+        (array-set! pulls 0 (+ 1 (array-ref pulls 0)))
+        (yield i)
+        (loop (+ i 1))))))
+
+(: expect (-> string string string void))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave " (string-append actual
+                (string-append " but wanted " wanted))))))))
+
 ;; Halves an even number, and answers None for an odd one.
 (: halve (-> int (Option int)))
 (defun (halve n)
@@ -69,14 +95,17 @@
 
   ;; Laziness: taking 5 of an endless sequence terminates.
   (show "naturals" (seq-take (naturals) 5))
-  (show "skipped" (seq-take (seq-skip (naturals) 10) 3))
+  (show "dropped" (seq-take (seq-drop (naturals) 10) 3))
 
   (show "walk" (walk (Cons 1 (Cons 2 (Cons 3 Nil)))))
   (show "unfold" (seq-unfold step 0))
   (show "mapped" (seq-map (fun (x) (* x 2)) (countdown 3)))
   (show "filtered" (seq-filter (fun (x) (= 0 (% x 3))) (seq-range 0 10)))
   (show "appended" (seq-append (countdown 1) (seq-range 7 9)))
-  (show "tail" (seq-tail (countdown 3)))
+  ;; What `seq-tail` used to be asked for. There is no tail to hand back — an
+  ;; `IEnumerable` gives out enumerators and nothing else — so the operation is
+  ;; "drop a prefix", and saying so keeps it from looking like a cheap step.
+  (show "dropped one" (seq-drop (countdown 3) 1))
   (show "empty" (seq-empty))
 
   (println (seq-fold + 0 (seq-range 1 101)))
@@ -106,4 +135,51 @@
   (println (if (none? (halve 7)) "none? yes" "none? no"))
   (println (match (halve 12) ((Some v) v) (None -1)))
   (println (match (halve 13) ((Some v) v) (None -1)))
+
+  ;; --- Walking a Seq ------------------------------------------------------
+  ;;
+  ;; `loop` goes through `Iterable`, whose cursor for a `Seq` holds the
+  ;; enumerator. That is the only way a walk can pull each element once: a
+  ;; cursor that was "the sequence minus what has been seen" had to re-enumerate
+  ;; from the start at every step, so this counted 10 rather than 4 and a `Seq`
+  ;; over a port read each line once per predecessor.
+  (array-set! pulls 0 0)
+  (loop (:for x (counted))
+        (:do (ignore x)))
+  (expect "a walk pulls each element once" (int->string (array-ref pulls 0)) "4")
+
+  ;; And the cursor is made fresh per walk, which is what keeps a `Seq`
+  ;; re-enumerable: the second loop runs the generator again from the top rather
+  ;; than finding it spent.
+  (array-set! pulls 0 0)
+  (def twice (counted))
+  (loop (:for x twice)
+        (:do (ignore x)))
+  (loop (:for x twice)
+        (:do (ignore x)))
+  (expect "and a second walk starts over" (int->string (array-ref pulls 0)) "8")
+
+  ;; A walk is lazy in the same way the combinators are: stopping early leaves
+  ;; the rest unproduced.
+  (array-set! pulls 0 0)
+  (loop (:for x (counted))
+        (:do (ignore x))
+        (:break (= x 1)))
+  (expect "and stops pulling when the walk does" (int->string (array-ref pulls 0)) "2")
+
+  ;; --- seq-drop -----------------------------------------------------------
+  (expect "drops a prefix"
+          (int->string (seq-fold + 0 (seq-drop (seq-range 1 5) 2)))
+          "7")
+  (expect "dropping none is the whole sequence"
+          (int->string (seq-fold + 0 (seq-drop (seq-range 1 5) 0)))
+          "10")
+  ;; Past the end is empty rather than an error — the operation is a prefix
+  ;; removal, and a prefix longer than the sequence removes all of it.
+  (expect "dropping past the end is empty"
+          (int->string (seq-length (seq-drop (seq-range 1 5) 99)))
+          "0")
+  (expect "dropping from empty is empty"
+          (int->string (seq-length (seq-drop (seq-empty) 3)))
+          "0")
   0)

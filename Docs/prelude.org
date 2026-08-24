@@ -293,9 +293,26 @@ Only the *reader-parameterised* drains — ~port->list~, ~port->vec~, ~port->seq
 - ~(port-eof? p)~ : Whether the port has no more input. Peeks, so asking consumes nothing.
 - ~(read-line p)~ : The next line, without its newline. *Throws at end of input* — guard with ~port-eof?~.
 - ~(read-line/opt p)~ : The next line, or ~None~ at end of input, for when the check and the read want to be one step.
+- ~(read-char p)~ : The next character. *Throws at end of input* — guard with ~port-eof?~.
+- ~(read-char/opt p)~ : The next character, or ~None~ at end of input.
 - ~(read-all p)~ : Everything remaining, as one string. Empty at end of input.
 - ~(port->lines p)~ : Every remaining line, as a ~(Vec string)~. The drain to reach for when the shape does not matter; it runs in the runtime, so each line is added once.
 - ~(write-string p s)~ / ~(write-line p s)~ : The port comes first, as it does for every operation here.
+- ~(write-char p c)~ : One character.
+
+~read-char~ and ~write-char~ deal in *characters* — Unicode scalars — and not in
+the UTF-16 code units a .NET port is made of. A character outside the BMP is two
+units in the text and one ~char~ to a program, so ~read-char~ puts the pair back
+together and ~write-char~ takes it apart. This is the promise walking a ~string~
+already makes, and it is what lets ~(port->seq read-char p)~ and ~(read-all p)~
+walked as a string agree about what the characters are.
+
+There is no ~peek-char~. A port offers one code unit of lookahead, one unit is
+not always a character, and a peek that could not promise the answer ~read-char~
+is about to give would be worse than none — buying it needs a pushback buffer,
+and a port is deliberately the bare .NET object. ~port-eof?~ is the question
+peeking is usually asked; text that needs real lookahead wants ~read-all~ and a
+~StringCursor~.
 
 Note that ~write-line~ is a prelude binding, and an ordinary binding wins over an ~import/extern~ alias of the same name — so a module that wants ~System.Console.WriteLine~ should alias it as something else, ~console-write-line~ say.
 
@@ -624,13 +641,12 @@ Lazy, demand-driven sequences.
 - ~(seq-empty)~ : Returns an empty sequence.
 - ~(seq-empty? s)~ : Returns true if the sequence is empty.
 - ~(seq-head s)~ : Returns the first element of the sequence.
-- ~(seq-tail s)~ : Returns the rest of the sequence.
 - ~(seq-map f s)~ : Lazily maps ~f~ over the sequence.
 - ~(seq-filter f s)~ : Lazily filters elements satisfying ~f~.
 - ~(seq-fold f init s)~ : Folds over the sequence; ~f~ receives ~(acc item)~.
 - ~(seq-unfold generator state)~ : Produces a sequence from ~state~ and a ~generator~ function returning ~(Some (Tuple next-item next-state))~ or ~None~.
 - ~(seq-take s n)~ : Takes the first ~n~ elements lazily.
-- ~(seq-skip s n)~ : Skips the first ~n~ elements lazily.
+- ~(seq-drop s n)~ : Drops the first ~n~ elements lazily. Dropping more than the sequence holds gives the empty sequence. This is what a ~seq-tail~ would have been: a ~Seq~ has no tail to step to, so walking one element at a time is ~loop~'s job, not a combinator's.
 - ~(seq-append s1 s2)~ : Lazily concatenates two sequences.
 - ~(seq-for-each f s)~ : Applies ~f~ to each element for side effects.
 - ~(seq-length s)~ : Consumes the sequence and returns the count.

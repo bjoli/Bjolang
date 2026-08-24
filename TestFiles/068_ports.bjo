@@ -307,6 +307,74 @@
             ((Err e) "FAILURE"))
           "firstsecond")
 
+  ;; --- Characters ---------------------------------------------------------
+  ;;
+  ;; `read-char` and `write-char` deal in *characters* — Unicode scalars — and
+  ;; not in the UTF-16 code units a .NET port is made of. That is the same
+  ;; promise walking a `string` makes, and it is what lets a char read off a
+  ;; port and the same text walked as a string agree with each other.
+  (def pc (open-input-string "abc"))
+  (expect "read-char takes one character at a time"
+          (string-append (char->string (read-char pc))
+                         (string-append (char->string (read-char pc))
+                                        (char->string (read-char pc))))
+          "abc")
+  (expect "and leaves the port at end of input" (if (port-eof? pc) "yes" "no") "yes")
+
+  ;; The `/opt` variant, for when the guard and the read want to be one step.
+  (def pc2 (open-input-string "x"))
+  (expect "read-char/opt gives the character"
+          (match (read-char/opt pc2) ((Some c) (char->string c)) (None "none"))
+          "x")
+  (expect "and None once there is none left"
+          (match (read-char/opt pc2) ((Some c) (char->string c)) (None "none"))
+          "none")
+
+  ;; Char and line reads are both just positions in the same port, so they
+  ;; interleave: this takes `a`, then the remainder of that line.
+  (def pmix (open-input-string "ab\ncd"))
+  (expect "a char, then the rest of the line"
+          (string-append (char->string (read-char pmix)) (read-line pmix))
+          "ab")
+
+  ;; --- Characters outside the BMP -----------------------------------------
+  ;;
+  ;; The case the whole design is for. U+1F600 is one character and two UTF-16
+  ;; units, so a `write-char` that cast to a .NET `char` would emit half of it
+  ;; and a `read-char` that cast back would hand out a lone surrogate — which is
+  ;; not a character at all, and which `char` cannot even hold.
+  (def grin (int->char 128512))
+  (def wg (open-output-string))
+  (write-char wg grin)
+  (def written (get-output-string wg))
+
+  (expect "write-char writes one character" (int->string (string-count written)) "1")
+  (expect "...which is two UTF-16 units" (int->string (string-length written)) "2")
+
+  (def pg (open-input-string written))
+  (expect "read-char puts the halves back together"
+          (int->string (char->int (read-char pg)))
+          "128512")
+  (expect "...having consumed both of them" (if (port-eof? pg) "yes" "no") "yes")
+
+  ;; --- Characters through the drains --------------------------------------
+  ;;
+  ;; `read-char` is an ordinary `(-> TextInputPort %a)`, so everything in
+  ;; `std/ports` that takes a reader takes it, and a port becomes a `(Seq char)`
+  ;; with nothing new written.
+  (expect "port->seq over read-char"
+          (seq-fold (fun (acc c) (string-append acc (char->string c))) ""
+                    (port->seq read-char (open-input-string "hey")))
+          "hey")
+
+  (expect "and an astral character counts as one element"
+          (int->string (seq-length (port->seq read-char (open-input-string written))))
+          "1")
+
+  (expect "port->list over read-char"
+          (int->string (list-length (port->list read-char (open-input-string "four"))))
+          "4")
+
   ;; --- Explicit closing ---------------------------------------------------
   (def p8 (open-input-string "closeme"))
   (close-input-port p8)

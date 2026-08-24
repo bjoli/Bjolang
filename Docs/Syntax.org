@@ -486,9 +486,8 @@ Operations that return a sequence are themselves lazy.
 | ~(seq-fold f init s)~     | left fold; consumes the sequence              |
 | ~(seq-unfold gen seed)~   | grow a sequence from a state                  |
 | ~(seq-head s)~            | first element; errors if empty                |
-| ~(seq-tail s)~            | all but the first; errors if empty            |
 | ~(seq-take s n)~          | at most the first ~n~                         |
-| ~(seq-skip s n)~          | all but the first ~n~                         |
+| ~(seq-drop s n)~          | all but the first ~n~                         |
 | ~(seq-append a b)~        | ~a~ then ~b~                                  |
 | ~(seq-range start stop)~  | ~start~ inclusive to ~stop~ exclusive         |
 | ~(seq-for-each action s)~ | run ~action~ on each element                  |
@@ -497,6 +496,12 @@ Operations that return a sequence are themselves lazy.
 
 ~list->seq~, ~seq->list~, ~vec->seq~ and ~seq->vec~ convert to and from the
 eager collections; the ~seq->~ direction is where laziness ends.
+
+There is no ~seq-tail~. A ~Seq~ hands out enumerators and nothing else, so it
+has no tail to return: the closest thing is the source minus a prefix, which is
+~(seq-drop s 1)~ and costs a walk rather than a step. To go through a sequence
+element by element, use ~loop~ — its cursor holds the enumerator, so the walk
+pulls each element exactly once.
 
 ~seq-unfold~ asks its generator, for a given state, what the next element is and
 what state follows it — or ~None~ to stop:
@@ -1376,9 +1381,9 @@ forms are ~:break~ underneath, so the exit happens where the clause is written:
 
 The zero-arity form is two clauses: a ~(:with ...)~ reading ~current-cancel~,
 hoisted to loop *entry* wherever the clause was written, and a ~:break~ left
-exactly where it was. The hoist is the point — ~current-cancel~ is not one of
-~DynEnv~'s port fields, so reading it is a CHAMP descent, which in an arithmetic
-loop costs more than the work it guards. Loop entry rather than function entry
+exactly where it was. The hoist is the point — reading ~current-cancel~ means
+reaching for the fiber's whole dynamic environment, and in an arithmetic loop
+that costs more than the work it guards. Loop entry rather than function entry
 because a loop inside a ~parameterize~ in the same function would otherwise read
 what was ambient *outside* it, which is usually the root token.
 
