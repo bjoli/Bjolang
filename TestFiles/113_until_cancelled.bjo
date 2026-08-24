@@ -17,14 +17,7 @@
 ;;     sync point to hang an event on at all.
 
 (import (std prelude))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
+(import (std simpletest))
 
 ;; ---------------------------------------------------------------------------
 ;; The combinator
@@ -103,7 +96,7 @@
   (def jobs (make-chan))
   (def f (bjo (feed jobs 4)))
   (expect "an uncancelled until-cancelled is just the event"
-          (int->string (bounded jobs 4)) "6")
+          (bounded jobs 4) 6)
 
   ;; ---- The combinator, cancelled while parked ------------------------------
   ;;
@@ -128,13 +121,12 @@
 
   ;; ---- The loop clause -----------------------------------------------------
   (expect "an uncancelled ambient clause runs to the limit"
-          (int->string (count-ambient 100)) "100")
+          (count-ambient 100) 100)
 
   (def (stop-scope! scope) (make-cancel))
   (def sc (stop-scope! Deadline))
   (expect "a cancelled ambient clause stops at once"
-          (int->string (parameterize ((current-cancel scope)) (count-ambient 100)))
-          "0")
+          (parameterize ((current-cancel scope)) (count-ambient 100)) 0)
 
   ;; The read is hoisted to loop *entry*, and entry is inside the
   ;; `parameterize` here — which is exactly why it is loop entry and not
@@ -142,24 +134,23 @@
   ;; count to 100.
   (def (stop-later! later) (make-cancel))
   (expect "an ambient clause under an unfired token runs to the limit"
-          (int->string (parameterize ((current-cancel later)) (count-ambient 100)))
-          "100")
+          (parameterize ((current-cancel later)) (count-ambient 100)) 100)
 
   ;; ---- The explicit form ---------------------------------------------------
   (def (never! quiet) (make-cancel))
   (expect "an explicit clause on an unfired token runs to the limit"
-          (int->string (count-explicit quiet 100)) "100")
+          (count-explicit quiet 100) 100)
 
   (def (now! fired) (make-cancel))
   (def n (now! (Requested "the test")))
   (expect "an explicit clause on a fired token stops at once"
-          (int->string (count-explicit fired 100)) "0")
+          (count-explicit fired 100) 0)
 
   ;; Clause order is the author's, and it is observable: with the exit written
   ;; after the accumulator, the iteration that sees the token has already
   ;; counted.
   (expect "and the exit happens where it was written"
-          (int->string (count-after fired 100)) "1")
+          (count-after fired 100) 1)
 
   (println "113 ok")
   0)

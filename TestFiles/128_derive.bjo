@@ -7,12 +7,7 @@
 ;; trait; they agree anyway, which is the whole point of the exercise.
 (import (std prelude))
 (import (std set))
-
-(: expect (-> string bool void))
-(defun (expect label actual)
-  (if actual
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " label))))
+(import (std simpletest))
 
 ;; ---------------------------------------------------------------------------
 ;; Derived shapes
@@ -75,40 +70,40 @@
   (def p (Point (x 1) (y 2)))
   (def q (Point (x 1) (y 2)))
   (def r (Point (x 1) (y 9)))
-  (expect "derived record" (= p q))
-  (expect "derived record, differing" (not (= p r)))
-  (expect "derived record hashes alike" (= (eq-hash p) (eq-hash q)))
+  (expect-true "derived record" (= p q))
+  (expect-true "derived record, differing" (not (= p r)))
+  (expect-true "derived record hashes alike" (= (eq-hash p) (eq-hash q)))
 
-  (expect "a derived field type" (= (Segment (head p) (tail q)) (Segment (head q) (tail p))))
-  (expect "a derived field type, differing"
+  (expect-true "a derived field type" (= (Segment (head p) (tail q)) (Segment (head q) (tail p))))
+  (expect-true "a derived field type, differing"
           (not (= (Segment (head p) (tail q)) (Segment (head p) (tail r)))))
 
-  (expect "derived struct" (= (Coord (lat 1) (lon 2)) (Coord (lat 1) (lon 2))))
-  (expect "derived struct, differing" (not (= (Coord (lat 1) (lon 2)) (Coord (lat 1) (lon 3)))))
+  (expect-true "derived struct" (= (Coord (lat 1) (lon 2)) (Coord (lat 1) (lon 2))))
+  (expect-true "derived struct, differing" (not (= (Coord (lat 1) (lon 2)) (Coord (lat 1) (lon 3)))))
 
   ;; ---- unions -------------------------------------------------------------
-  (expect "within a case" (= (Circle 3) (Circle 3)))
-  (expect "within a case, differing" (not (= (Circle 3) (Circle 4))))
-  (expect "across cases" (not (= (Circle 3) (Square 3))))
-  (expect "a case with no payload" (= Empty Empty))
-  (expect "no payload against one" (not (= Empty (Circle 0))))
-  (expect "two payloads" (= (Rect 1 2) (Rect 1 2)))
-  (expect "two payloads, differing" (not (= (Rect 1 2) (Rect 2 1))))
-  (expect "same payload, different case, hashes apart"
+  (expect-true "within a case" (= (Circle 3) (Circle 3)))
+  (expect-true "within a case, differing" (not (= (Circle 3) (Circle 4))))
+  (expect-true "across cases" (not (= (Circle 3) (Square 3))))
+  (expect-true "a case with no payload" (= Empty Empty))
+  (expect-true "no payload against one" (not (= Empty (Circle 0))))
+  (expect-true "two payloads" (= (Rect 1 2) (Rect 1 2)))
+  (expect-true "two payloads, differing" (not (= (Rect 1 2) (Rect 2 1))))
+  (expect-true "same payload, different case, hashes apart"
           (not (= (eq-hash (Circle 3)) (eq-hash (Square 3)))))
 
   ;; Recursion terminates: the payload comparison is the trait method again,
   ;; one level down, and the leaves are a case with nothing to compare.
-  (expect "recursive union"
+  (expect-true "recursive union"
           (= (Branch Leaf (Branch Leaf Leaf)) (Branch Leaf (Branch Leaf Leaf))))
-  (expect "recursive union, differing"
+  (expect-true "recursive union, differing"
           (not (= (Branch Leaf (Branch Leaf Leaf)) (Branch Leaf Leaf))))
 
   ;; ---- a derived generic type ---------------------------------------------
-  (expect "(Box int)" (= (Box (item 1) (label "a")) (Box (item 1) (label "a"))))
-  (expect "(Box int), differing" (not (= (Box (item 1) (label "a")) (Box (item 2) (label "a")))))
-  (expect "(Box Point)" (= (Box (item p) (label "a")) (Box (item q) (label "a"))))
-  (expect "(Box (List int))" (= (Box (item (list 1 2)) (label "a"))
+  (expect-true "(Box int)" (= (Box (item 1) (label "a")) (Box (item 1) (label "a"))))
+  (expect-true "(Box int), differing" (not (= (Box (item 1) (label "a")) (Box (item 2) (label "a")))))
+  (expect-true "(Box Point)" (= (Box (item p) (label "a")) (Box (item q) (label "a"))))
+  (expect-true "(Box (List int))" (= (Box (item (list 1 2)) (label "a"))
                                 (Box (item (list 1 2)) (label "a"))))
 
   ;; ---- the invariant ------------------------------------------------------
@@ -116,42 +111,42 @@
   ;; `=` says these are the same, so every other way of asking has to as well.
   (def c1 (Cached (key "k") (cache 1)))
   (def c2 (Cached (key "k") (cache 999)))
-  (expect "a hand-written implementation ignores a field" (= c1 c2))
+  (expect-true "a hand-written implementation ignores a field" (= c1 c2))
 
   ;; `Map` is a CHAMP trie written in C#. It keys on `GetHashCode` and
   ;; `Equals`, knows nothing about the trait, and finds the entry anyway.
   (def m (map-set (map-empty) c1 "found"))
-  (expect "a Map keyed on one finds it with the other"
+  (expect-true "a Map keyed on one finds it with the other"
           (= "found" (map-ref-or m c2 "MISSING")))
-  (expect "and still misses a key that is really different"
+  (expect-true "and still misses a key that is really different"
           (= "MISSING" (map-ref-or m (Cached (key "other") (cache 1)) "MISSING")))
 
   ;; `Set` is the same story in a different C# collection.
-  (expect "a Set agrees" (set-contains? (set-add (set-empty) c1) c2))
+  (expect-true "a Set agrees" (set-contains? (set-add (set-empty) c1) c2))
 
   ;; A derived type as a map key, where the two values were built separately.
   (def pm (map-set (map-empty) p "point"))
-  (expect "a derived type as a Map key" (= "point" (map-ref-or pm q "MISSING")))
-  (expect "a derived union as a Map key"
+  (expect-true "a derived type as a Map key" (= "point" (map-ref-or pm q "MISSING")))
+  (expect-true "a derived union as a Map key"
           (= "shape" (map-ref-or (map-set (map-empty) (Rect 1 2) "shape") (Rect 1 2) "MISSING")))
 
   ;; ---- the blanket --------------------------------------------------------
-  (expect "no implementation at all" (= (Plain (a 1) (b 2)) (Plain (a 1) (b 2))))
-  (expect "no implementation at all, differing" (not (= (Plain (a 1) (b 2)) (Plain (a 1) (b 3)))))
+  (expect-true "no implementation at all" (= (Plain (a 1) (b 2)) (Plain (a 1) (b 2))))
+  (expect-true "no implementation at all, differing" (not (= (Plain (a 1) (b 2)) (Plain (a 1) (b 3)))))
 
   ;; The blanket is .NET's equality, and .NET's equality for `Cached` is
   ;; `Cached`'s own implementation — so a hand-written one is reached through a
   ;; field whose own type has none.
-  (expect "the blanket reaches a hand-written implementation"
+  (expect-true "the blanket reaches a hand-written implementation"
           (= (Wrapper (plain (Plain (a 1) (b 2))) (cached c1))
              (Wrapper (plain (Plain (a 1) (b 2))) (cached c2))))
-  (expect "and still separates what really differs"
+  (expect-true "and still separates what really differs"
           (not (= (Wrapper (plain (Plain (a 1) (b 2))) (cached c1))
                   (Wrapper (plain (Plain (a 9) (b 2))) (cached c1)))))
 
   ;; A tuple of an arity nothing implements has a head key of its own, so it
   ;; falls to the blanket rather than off the end.
-  (expect "a five-tuple" (= (Tuple 1 2 3 4 5) (Tuple 1 2 3 4 5)))
-  (expect "a five-tuple, differing" (not (= (Tuple 1 2 3 4 5) (Tuple 1 2 3 4 6))))
+  (expect-true "a five-tuple" (= (Tuple 1 2 3 4 5) (Tuple 1 2 3 4 5)))
+  (expect-true "a five-tuple, differing" (not (= (Tuple 1 2 3 4 5) (Tuple 1 2 3 4 6))))
 
   0)

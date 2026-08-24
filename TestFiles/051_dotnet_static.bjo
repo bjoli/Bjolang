@@ -6,6 +6,7 @@
 ;; is what lets the name be used as a *value*, since a .NET method group is not
 ;; one.
 (import (std prelude))
+(import (std simpletest))
 
 ;; `console-write-line` rather than `write-line`: the prelude binds the latter
 ;; as the port operation, and an ordinary binding wins over an extern alias —
@@ -17,29 +18,21 @@
   (abs-int (: System.Math.Abs (-> int int)))
   (max-int (: System.Math.Max (-> int int int))))
 
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
-
 (defun (main)
   (console-write-line "Hello from static extern!")
 
   (expect "Concat" (concat2 "foreign " "functions") "foreign functions")
-  (expect "Math.Abs" (int->string (abs-int -7)) "7")
+  (expect "Math.Abs" (abs-int -7) 7)
 
   (if (is-empty? "") (println "ok: IsNullOrEmpty") (println "FAILURE: IsNullOrEmpty"))
 
   ;; The overload is chosen from the argument types: `Math.Max` has eight of
   ;; them, and two ints select the `int` one rather than the `long` or `double`.
-  (expect "Math.Max" (int->string (max-int 3 9)) "9")
+  (expect "Math.Max" (max-int 3 9) 9)
 
   ;; A first-class use. There is no .NET value to refer to, so this is the
   ;; eta-expansion the declared signature makes possible.
   (def magnitude abs-int)
-  (expect "extern as a value" (int->string (magnitude -12)) "12")
+  (expect "extern as a value" (magnitude -12) 12)
 
   0)

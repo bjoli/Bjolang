@@ -10,14 +10,7 @@
 ;; a UTF-16 string by codepoint is O(n), so a loop that looks linear is
 ;; quadratic. String traversal belongs to a cursor.
 (import (std prelude))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
+(import (std simpletest))
 
 ;; `char` is an ordinary type name, usable in a signature.
 (: vowel? (-> char bool))
@@ -43,29 +36,29 @@
 
 (defun (main)
   ;; Literals and codepoints.
-  (expect "plain literal" (int->string (char->int #\a)) "97")
-  (expect "uppercase" (int->string (char->int #\A)) "65")
-  (expect "digit char" (int->string (char->int #\7)) "55")
+  (expect "plain literal" (char->int #\a) 97)
+  (expect "uppercase" (char->int #\A) 65)
+  (expect "digit char" (char->int #\7) 55)
 
   ;; Named characters.
-  (expect "space" (int->string (char->int #\space)) "32")
-  (expect "newline" (int->string (char->int #\newline)) "10")
-  (expect "tab" (int->string (char->int #\tab)) "9")
-  (expect "null" (int->string (char->int #\null)) "0")
-  (expect "delete" (int->string (char->int #\delete)) "127")
+  (expect "space" (char->int #\space) 32)
+  (expect "newline" (char->int #\newline) 10)
+  (expect "tab" (char->int #\tab) 9)
+  (expect "null" (char->int #\null) 0)
+  (expect "delete" (char->int #\delete) 127)
 
   ;; Hex escapes, lower and upper case digits.
-  (expect "hex 41" (int->string (char->int #\x41)) "65")
-  (expect "hex ff" (int->string (char->int #\xff)) "255")
+  (expect "hex 41" (char->int #\x41) 65)
+  (expect "hex ff" (char->int #\xff) 255)
 
   ;; A character that is not a symbol character still lexes.
-  (expect "open paren" (int->string (char->int #\()) "40")
-  (expect "semicolon" (int->string (char->int #\;)) "59")
-  (expect "quote char" (int->string (char->int #\')) "39")
+  (expect "open paren" (char->int #\() 40)
+  (expect "semicolon" (char->int #\;) 59)
+  (expect "quote char" (char->int #\') 39)
 
   ;; Astral plane: one codepoint, spelled with a surrogate pair in the source.
-  (expect "emoji literal" (int->string (char->int #\😀)) "128512")
-  (expect "emoji hex" (int->string (char->int #\x1F600)) "128512")
+  (expect "emoji literal" (char->int #\😀) 128512)
+  (expect "emoji hex" (char->int #\x1F600) 128512)
 
   ;; Equality. `=` is `Eq`'s implementation for `char`, which is C# `==` and
   ;; which a record struct provides; `eq?` dispatches on IsValueType and so
@@ -77,16 +70,15 @@
   (expect "= astral" (if (= #\😀 #\x1F600) "yes" "no") "yes")
 
   ;; Round-tripping through int, including above the BMP.
-  (expect "int round trip" (int->string (char->int (int->char 65))) "65")
-  (expect "astral round trip" (int->string (char->int (int->char 128512))) "128512")
+  (expect "int round trip" (char->int (int->char 65)) 65)
+  (expect "astral round trip" (char->int (int->char 128512)) 128512)
 
   ;; char->string, where the astral case is the one that catches a 16-bit
   ;; assumption: it must produce a two-code-unit string, not a broken half.
   (expect "char->string ascii" (char->string #\a) "a")
-  (expect "char->string length" (int->string (string-length (char->string #\a))) "1")
+  (expect "char->string length" (string-length (char->string #\a)) 1)
   (expect "char->string astral length"
-          (int->string (string-length (char->string #\😀)))
-          "2")
+          (string-length (char->string #\😀)) 2)
 
   ;; Pattern matching.
   (expect "vowel yes" (if (vowel? #\e) "yes" "no") "yes")

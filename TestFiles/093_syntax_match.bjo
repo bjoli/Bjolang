@@ -9,11 +9,7 @@
 ;; would.
 
 (import (std syntax-match))
-
-(: check (-> string string string void))
-(defun (check what got want)
-  (unless (= got want)
-    (println (string-append "FAILURE: " (string-append what (string-append " gave " got))))))
+(import (std simpletest))
 
 (: rendered (-> (List Syntax) string))
 (defun (rendered items)
@@ -74,33 +70,33 @@
     (_ 0)))
 
 (defun (main args)
-  (check "literal-ident" (shape #'(else 1)) "else:1")
-  (check "not-that-ident" (shape #'(other 1)) "pair:other1")
-  (check "int" (shape #'17) "seventeen")
-  (check "other-int" (shape #'18) "atom:18")
-  (check "string" (shape #'"hi") "greeting")
-  (check "char" (shape #'#\q) "letter")
-  (check "keyword" (shape #'#:when) "keyword")
-  (check "pair" (shape #'(f x)) "pair:fx")
-  (check "rest" (shape #'(f x y z)) "rest:3")
-  (check "one" (shape #'(f)) "rest:0")
-  (check "empty" (shape #'()) "nothing")
-  (check "atom" (shape #'lonely) "atom:lonely")
+  (expect "literal-ident" (shape #'(else 1)) "else:1")
+  (expect "not-that-ident" (shape #'(other 1)) "pair:other1")
+  (expect "int" (shape #'17) "seventeen")
+  (expect "other-int" (shape #'18) "atom:18")
+  (expect "string" (shape #'"hi") "greeting")
+  (expect "char" (shape #'#\q) "letter")
+  (expect "keyword" (shape #'#:when) "keyword")
+  (expect "pair" (shape #'(f x)) "pair:fx")
+  (expect "rest" (shape #'(f x y z)) "rest:3")
+  (expect "one" (shape #'(f)) "rest:0")
+  (expect "empty" (shape #'()) "nothing")
+  (expect "atom" (shape #'lonely) "atom:lonely")
 
   ;; A quoted name in the input matches a quoted name in the pattern: an
   ;; identifier and a datum are the same name reached two ways.
-  (check "datum" (shape #'('else 2)) "else:2")
+  (expect "datum" (shape #'('else 2)) "else:2")
 
-  (check "bindings" (binding-list #'(let ((a 1) (b 2)) (+ a b) a)) "ab=12/(+ a b)a")
-  (check "no-bindings" (binding-list #'(let () x)) "=/x")
+  (expect "bindings" (binding-list #'(let ((a 1) (b 2)) (+ a b) a)) "ab=12/(+ a b)a")
+  (expect "no-bindings" (binding-list #'(let () x)) "=/x")
   ;; `(a)` is not `(name value)`, so the whole clause fails and the next one
   ;; answers — a check that fails falls through like a shape that does not fit.
-  (check "not-bindings" (binding-list #'(let (a) x)) "no")
+  (expect "not-bindings" (binding-list #'(let (a) x)) "no")
 
-  (check "nested-ellipsis" (calls #'(m (f 1 2) (g) (h 3))) "fgh:3")
-  (check "nested-empty" (calls #'(m)) ":0")
+  (expect "nested-ellipsis" (calls #'(m (f 1 2) (g) (h 3))) "fgh:3")
+  (expect "nested-empty" (calls #'(m)) ":0")
 
-  (check "several-bodies" (int->string (several #'(f a b))) "4")
+  (expect "several-bodies" (several #'(f a b)) 4)
 
   (println "93 ok")
   0)

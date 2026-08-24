@@ -5,6 +5,7 @@
 ;; real metadata — so `(.Append sb 42)` and `(.Append sb "42")` are two
 ;; different methods and neither is a guess.
 (import (std prelude))
+(import (std simpletest))
 
 (import/class
   (StringBuilder (: System.Text.StringBuilder (-> StringBuilder))))
@@ -15,14 +16,6 @@
   (abs-int (: System.Math.Abs (-> int int)))
   (abs-double (: System.Math.Abs (-> double double)))
   (abs-long (: System.Math.Abs (-> long long))))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
 
 (defun (main)
   ;; An exact match always beats a widening: `Append(int)` rather than
@@ -46,7 +39,7 @@
   (expect "Append(double)" (.ToString sd) "2.5")
 
   ;; Mixed overloads on a static method, told apart by their declared types.
-  (expect "Math.Abs(int)" (int->string (abs-int -3)) "3")
+  (expect "Math.Abs(int)" (abs-int -3) 3)
   (expect "Math.Abs(long)" (long->string (abs-long -3000000000L)) "3000000000")
   (expect "Math.Abs(double)" (double->string (abs-double -2.5)) "2.5")
 

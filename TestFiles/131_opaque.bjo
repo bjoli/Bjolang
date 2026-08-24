@@ -10,16 +10,10 @@
 ;; and a key resolves to itself wherever it is read, so `->str` on a `Handle`
 ;; dispatches to the implementation `vault` compiled — with nothing about the
 ;; union crossing to make it possible.
+(import (std simpletest))
+
 (import (prefix-types "inc/vault.bjo" "V/")
         "inc/vault.bjo")
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
 
 ;; The name in a signature of this module's own, at two different arguments —
 ;; an opaque type is a type constructor like any other.
@@ -43,8 +37,8 @@
 (defun (main)
   (def h (open-handle "payload" 7))
 
-  (expect "an opaque value round-trips" (int->string (tag-of h)) "7")
-  (expect "and through a prefixed spelling" (int->string (prefixed-tag h)) "7")
+  (expect "an opaque value round-trips" (tag-of h) 7)
+  (expect "and through a prefixed spelling" (prefixed-tag h) 7)
 
   (match (handle-value h)
     ((Some v) (expect "its contents come back through the API" v "payload"))
@@ -62,20 +56,19 @@
           "'(10 20)")
 
   (expect "an opaque value survives being reopened"
-          (int->string (handle-tag (reopen (close-handle (open-handle 5 5)))))
-          "0")
+          (handle-tag (reopen (close-handle (open-handle 5 5)))) 0)
 
   ;; The opaque record. Read and written only through the functions the module
   ;; exports, which is the same shape `record-set!` already required of a
   ;; mutable field — extended here to reading.
   (def l (ledger-add (new-ledger 100 "opening") 40))
-  (expect "an opaque record is built by its module" (int->string (ledger-total l)) "140")
+  (expect "an opaque record is built by its module" (ledger-total l) 140)
   (expect "and read by it" (ledger-note l) "opening")
 
   ;; The contrast: a plainly exported type is still built and taken apart here.
   (def r (Receipt (amount 3) (memo "tea")))
   (expect "a transparent export is still transparent" (record-ref r memo) "tea")
-  (expect "and constructible" (int->string (record-ref r amount)) "3")
+  (expect "and constructible" (record-ref r amount) 3)
 
   ;; A binding whose signature never mentions the module's private type still
   ;; works: `Scratch` stayed behind and nothing here had to know.

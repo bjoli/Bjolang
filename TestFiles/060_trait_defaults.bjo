@@ -12,17 +12,10 @@
 ;; impl and `Abs(double)` in the `double` one — from argument types that do not
 ;; exist until the implementor is known.
 (import (std prelude))
+(import (std simpletest))
 
 (import/extern
   (clr-abs (: System.Math.Abs)))
-
-(: expect (-> string string string void))
-(defun (expect label-text actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label-text))
-      (println (string-append "FAILURE: " (string-append label-text
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
 
 ;; Both methods are defaulted. `twice` calls `magnitude`, so a default may name
 ;; another method of its own trait — it is resolved at the impl, like everything
@@ -66,9 +59,9 @@
 
 (defun (main)
   ;; The same default body, resolved at three different types.
-  (expect "default at int" (int->string (magnitude -5)) "5")
+  (expect "default at int" (magnitude -5) 5)
   (expect "default at double" (double->string (magnitude -2.5)) "2.5")
-  (expect "default calling a default" (int->string (twice -5)) "10")
+  (expect "default calling a default" (twice -5) 10)
   (expect "default at double, twice" (double->string (twice -2.5)) "5")
 
   ;; The override wins, and the inherited `twice` picks it up.

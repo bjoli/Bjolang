@@ -8,49 +8,43 @@
 ;;
 ;; The library first, then the prelude. `kitchen` auto-exports `string-append`,
 ;; and the later import is the one that wins.
+(import (std simpletest))
+
 (import (prefix "inc/kitchen.bjo" "k/")
         (rename "inc/kitchen.bjo" (tally-up add-up) (count-extras tail-size) (thrice triple))
         (only "inc/kitchen.bjo" unwrap make-crate)
         (postfix (except "inc/kitchen.bjo" bump reads) "*")
         (std prelude))
 
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
-
 (defun (main)
   ;; prefix, on an ordinary def and on the foreign import alias beside it.
-  (expect "prefix" (int->string (k/unwrap (k/make-crate 7))) "7")
-  (expect "prefix on a foreign alias" (int->string (k/num-min 4 9)) "4")
+  (expect "prefix" (k/unwrap (k/make-crate 7)) 7)
+  (expect "prefix on a foreign alias" (k/num-min 4 9) 4)
 
   ;; rename, and the calling convention that travels with a name: a keyword
   ;; parameter defaulted and passed, and a rest tail. Neither is part of the
   ;; type, so both have to survive the renaming separately.
-  (expect "rename" (int->string (add-up 5)) "10")
-  (expect "renamed keyword arg" (int->string (add-up 5 #:by 3)) "15")
-  (expect "renamed rest arg" (int->string (tail-size 5 1 2 3)) "8")
+  (expect "rename" (add-up 5) 10)
+  (expect "renamed keyword arg" (add-up 5 #:by 3) 15)
+  (expect "renamed rest arg" (tail-size 5 1 2 3) 8)
 
   ;; only, which keeps two names and drops the rest.
-  (expect "only" (int->string (unwrap (make-crate 4))) "4")
+  (expect "only" (unwrap (make-crate 4)) 4)
 
   ;; except then postfix — the modifiers compose inside-out, so the postfix
   ;; applies to what is left after the filter.
-  (expect "except then postfix" (int->string (unwrap* (make-crate* 6))) "6")
+  (expect "except then postfix" (unwrap* (make-crate* 6)) 6)
 
   ;; A macro is a name like any other: prefixed at one edge, renamed at
   ;; another, and both run the one transformer.
-  (expect "prefixed macro" (int->string (k/thrice 5)) "15")
-  (expect "renamed macro" (int->string (triple 5)) "15")
+  (expect "prefixed macro" (k/thrice 5) 15)
+  (expect "renamed macro" (triple 5) 15)
 
   ;; A mutable module binding is one cell however it is spelled here.
-  (expect "prefixed mutable" (int->string k/reads) "0")
+  (expect "prefixed mutable" k/reads 0)
   (ignore (k/bump))
   (ignore (bump))
-  (expect "one cell, two spellings" (int->string reads) "2")
+  (expect "one cell, two spellings" reads 2)
 
   ;; Impls are never renamed and never filtered: they have no name to rename.
   ;; A trait method still finds the one compiled into the library.
@@ -58,7 +52,7 @@
   (expect "and its default" (shout 3) "int!")
 
   ;; An inline template spliced from a prefixed import.
-  (expect "inline impl through a prefix" (int->string (k/unwrap (k/crate-of 9))) "9")
+  (expect "inline impl through a prefix" (k/unwrap (k/crate-of 9)) 9)
 
   (println "104 ok")
   0)

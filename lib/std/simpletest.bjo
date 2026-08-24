@@ -1,0 +1,54 @@
+;; std/simpletest.bjo — the assertion the test suite is written in.
+;;
+;; One `expect` for every type, which is what `Eq` and `->str` buy between them:
+;; the comparison is a trait method and so is the report, so a test no longer
+;; has to convert its values to strings in order to be able to state what it
+;; expected. Before this, 87 test files each carried their own copy, in four
+;; shapes that differed only by the type they took — and a third of the call
+;; sites wrapped the value in an `int->string` and wrote the expected value as
+;; its spelling rather than as itself.
+;;
+;; **The output format is a contract, not a detail.** `run_tests.sh` decides a
+;; test failed by finding `FAILURE:` in its output, so that word has to appear
+;; on failure and must not appear otherwise. Everything else about the line is
+;; for whoever is reading the log.
+;;
+;; Deliberately not a macro, though it could be one: a macro would have to live
+;; outside the module using it and be compiled before it, and it would buy a
+;; file and line number that the label already stands in for. These labels are
+;; prose — "bindings are simultaneous" — and are worth more than a source
+;; location, so there is nothing here for a transformer to do.
+
+(export expect expect-true fail)
+
+(import (std prelude))
+
+;; The label first, then what happened, then what should have. That is the
+;; order every hand-written copy already used, so no call site has to move.
+;;
+;; `(where (Eq %a) (->str %a))` is the whole of the generalisation: any type
+;; that can be compared and printed can be expected, including one the test
+;; declares for itself.
+(: expect (-> string %a %a void) (where (Eq %a) (->str %a)))
+(defun (expect label actual wanted)
+  (if (= actual wanted)
+      (println #"ok: ${label}")
+      (println #"FAILURE: ${label} gave ${actual} but wanted ${wanted}")))
+
+;; For an assertion that is already a predicate, where `(expect label c true)`
+;; would say `true` twice and mean it once.
+;;
+;; No value is reported on failure: there is only one way for a `bool` to be
+;; wrong, and printing "gave false" says nothing the label did not.
+(: expect-true (-> string bool void))
+(defun (expect-true label ok)
+  (if ok
+      (println #"ok: ${label}")
+      (println #"FAILURE: ${label}")))
+
+;; A branch that should not have been reached — a `match` arm for the `Ok` a
+;; call was supposed to fail on, a line after a form that was supposed to throw.
+;; There is nothing to compare, so there is nothing for `expect` to take.
+(: fail (-> string void))
+(defun (fail label)
+  (println #"FAILURE: ${label}"))

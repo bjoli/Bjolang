@@ -7,12 +7,7 @@
 ;; so every level, cursor, `:when`, `:break` and `:with` is the loop facility's,
 ;; behaving exactly as it does in a `loop`.
 (import (std prelude))
-
-(: expect (-> string bool void))
-(defun (expect label ok)
-  (if ok
-      (println (string-append "ok " label))
-      (println (string-append "FAILURE: " label))))
+(import (std simpletest))
 
 (: render (-> (Seq int) string))
 (defun (render s)
@@ -156,34 +151,34 @@
 
 
 (defun (main args)
-  (expect "basic" (same? (basic 5) '(0 1 2 3 4)))
-  (expect "empty" (same? (basic 0) '()))
-  (expect "=> is one last yield" (same? (with-final 3) '(0 1 2 99)))
+  (expect-true "basic" (same? (basic 5) '(0 1 2 3 4)))
+  (expect-true "empty" (same? (basic 0) '()))
+  (expect-true "=> is one last yield" (same? (with-final 3) '(0 1 2 99)))
 
   ;; Infinite, and only ever pulled from.
-  (expect "infinite :with, taken lazily" (same? (seq-take (fibs) 10) '(0 1 1 2 3 5 8 13 21 34)))
-  (expect "...and again from the start" (same? (seq-take (fibs) 3) '(0 1 1)))
-  (expect "...dropping into it" (same? (seq-take (seq-drop (fibs) 10) 3) '(55 89 144)))
+  (expect-true "infinite :with, taken lazily" (same? (seq-take (fibs) 10) '(0 1 1 2 3 5 8 13 21 34)))
+  (expect-true "...and again from the start" (same? (seq-take (fibs) 3) '(0 1 1)))
+  (expect-true "...dropping into it" (same? (seq-take (seq-drop (fibs) 10) 3) '(55 89 144)))
 
-  (expect "lockstep ends with the shortest" (same? (zipped) '(10 21 32)))
-  (expect ":when filters" (same? (filtered) '(0 3 6 9)))
-  (expect ":break leaves early" (same? (stopped) '(0 1 2 3 4)))
-  (expect ":final finishes the iteration" (same? (inclusive) '(0 1 2 3)))
-  (expect "two yields per iteration" (same? (doubled-up) '(0 0 1 100 2 200)))
-  (expect ":let in clause order" (same? (with-let) '(1 4 9)))
+  (expect-true "lockstep ends with the shortest" (same? (zipped) '(10 21 32)))
+  (expect-true ":when filters" (same? (filtered) '(0 3 6 9)))
+  (expect-true ":break leaves early" (same? (stopped) '(0 1 2 3 4)))
+  (expect-true ":final finishes the iteration" (same? (inclusive) '(0 1 2 3)))
+  (expect-true "two yields per iteration" (same? (doubled-up) '(0 0 1 100 2 200)))
+  (expect-true ":let in clause order" (same? (with-let) '(1 4 9)))
 
-  (expect "subloop, one merged switch" (same? (product) '(0 1 10 11 20 21)))
-  (expect "three levels" (same? (three-deep) '(111 112 121 122 211 212 221 222)))
-  (expect ":break from an inner level leaves it all" (same? (broken) '(0 1 2 3 4 10)))
-  (expect ":end-subloop-if resumes the outer" (same? (cut-short) '(0 10 11 20 21 22)))
-  (expect "inner :with resets on each entry" (same? (resetting) '(0 1 0 1 0 1)))
-  (expect "endless outer, bounded inner" (same? (seq-take (endless) 7) '(0 1 10 11 20 21 30)))
-  (expect "nested via yield-from" (same? (nested) '(0 1 10 11 20 21)))
+  (expect-true "subloop, one merged switch" (same? (product) '(0 1 10 11 20 21)))
+  (expect-true "three levels" (same? (three-deep) '(111 112 121 122 211 212 221 222)))
+  (expect-true ":break from an inner level leaves it all" (same? (broken) '(0 1 2 3 4 10)))
+  (expect-true ":end-subloop-if resumes the outer" (same? (cut-short) '(0 10 11 20 21 22)))
+  (expect-true "inner :with resets on each entry" (same? (resetting) '(0 1 0 1 0 1)))
+  (expect-true "endless outer, bounded inner" (same? (seq-take (endless) 7) '(0 1 10 11 20 21 30)))
+  (expect-true "nested via yield-from" (same? (nested) '(0 1 10 11 20 21)))
 
   ;; It is an ordinary sequence: composable, and re-enumerable.
   (def s (basic 4))
-  (expect "re-enumerable" (same? s '(0 1 2 3)))
-  (expect "composes with seq-map" (same? (seq-map (fun (x) (* x 2)) s) '(0 2 4 6)))
-  (expect "composes with seq-filter" (same? (seq-filter (fun (x) (= 0 (% x 2))) s) '(0 2)))
-  (expect "is lazy end to end" (= 0 (seq-head (seq-filter (fun (x) (= 0 (% x 2))) (fibs)))))
+  (expect-true "re-enumerable" (same? s '(0 1 2 3)))
+  (expect-true "composes with seq-map" (same? (seq-map (fun (x) (* x 2)) s) '(0 2 4 6)))
+  (expect-true "composes with seq-filter" (same? (seq-filter (fun (x) (= 0 (% x 2))) s) '(0 2)))
+  (expect-true "is lazy end to end" (= 0 (seq-head (seq-filter (fun (x) (= 0 (% x 2))) (fibs)))))
   0)

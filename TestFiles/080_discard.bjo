@@ -28,17 +28,10 @@
 ;; `errors/ignore_result.bjo`.
 
 (import (std prelude))
+(import (std simpletest))
 
 (import/class
   (StringBuilder (: System.Text.StringBuilder (-> StringBuilder))))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Level 2: a discard that means something
@@ -116,25 +109,25 @@
 
   ;; And on an ordinary value, where it means exactly nothing.
   (ignore (+ 1 2))
-  (expect "the blanket drops" (int->string 1) "1")
+  (expect "the blanket drops" 1 1)
 
   ;; Level 2, resolved statically.
   (set! receipts-filed 0)
   (ignore (Slip 1))
   (ignore (Slip 2))
-  (expect "a Discard impl runs at the discard site" (int->string receipts-filed) "2")
+  (expect "a Discard impl runs at the discard site" receipts-filed 2)
 
   ;; Level 2, resolved through a dictionary. The generic body is the same one
   ;; that drops an int, and it still files the receipt.
   (set! receipts-filed 0)
   (drop-it (Slip 3))
-  (expect "and through a dictionary too" (int->string receipts-filed) "1")
+  (expect "and through a dictionary too" receipts-filed 1)
 
   (set! receipts-filed 0)
   (drop-it 7)
   (drop-it "not a receipt")
   (expect "while the blanket is what everything else gets"
-          (int->string receipts-filed) "0")
+          receipts-filed 0)
 
   ;; A promise's impl is `detach`: "I know this can fail and I still do not want
   ;; the result", which routes a failure to the scheduler's unhandled hook
@@ -148,15 +141,15 @@
   (bump 2)
   (bump-when true)
   (bump-when false)
-  (expect "void needs no ceremony" (int->string steps) "3")
+  (expect "void needs no ceremony" steps 3)
 
   ;; Builders, likewise.
-  (expect "a builder mutator is void" (int->string (list-length (collect-to 4))) "4")
+  (expect "a builder mutator is void" (list-length (collect-to 4)) 4)
 
   ;; A `#:finally` runs for its effect, so its value is dropped by construction
   ;; and needs saying — here by using a `void` call, which is the other way to
   ;; satisfy the rule.
   (set! steps 0)
   (def guarded (try (bump 5) #:finally (bump 1)))
-  (expect "a finally clause is statement position" (int->string steps) "6")
+  (expect "a finally clause is statement position" steps 6)
   0)

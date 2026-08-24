@@ -15,16 +15,10 @@
 ;; the boundary rule — a function declared to return `void` whose body ends in a
 ;; `void` .NET call runs the call as a statement and produces the unit itself.
 
+(import (std simpletest))
+
 (import/extern
   (clr-write-line (: System.Console.WriteLine (-> string void))))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; The boundary
@@ -94,12 +88,12 @@
   ;; A named function used as a value at the same type.
   (set! counter 0)
   (sum-into (list 1 2 3))
-  (expect "for-each over a Unit-returning function" (int->string counter) "6")
+  (expect "for-each over a Unit-returning function" counter 6)
 
   ;; `%b` instantiated at unit. The result is an honest `Unit` value.
   (set! counter 0)
   (apply-twice bump 5)
-  (expect "generic (-> %a %b) at %b = Unit" (int->string counter) "10")
+  (expect "generic (-> %a %b) at %b = Unit" counter 10)
 
   ;; The same generic function at a type that is not unit, so that the one
   ;; delegate shape really is serving both.
@@ -109,8 +103,8 @@
   ;; of units — which is only expressible because unit is a value.
   (set! counter 0)
   (def units (map bump (list 1 2 3 4)))
-  (expect "Functor at Unit runs every element" (int->string counter) "10")
-  (expect "and gives back a list of units" (int->string (list-length units)) "4")
+  (expect "Functor at Unit runs every element" counter 10)
+  (expect "and gives back a list of units" (list-length units) 4)
 
   ;; Units compare equal, which falls out of the struct rather than being a
   ;; special case anywhere.
@@ -119,5 +113,5 @@
   (set! counter 0)
   (bump-if true 3)
   (bump-if false 100)
-  (expect "when-shaped body" (int->string counter) "3")
+  (expect "when-shaped body" counter 3)
   0)

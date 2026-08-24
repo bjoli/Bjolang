@@ -5,10 +5,7 @@
 ;; `syntax-match`, in `lib/std/prelude.bjo` — which is why they can take a
 ;; branch that is not evaluated, and why `some->` can skip the rest of a chain.
 
-(: check (-> string int int void))
-(defun (check what got want)
-  (unless (= got want)
-    (println (string-append "FAILURE: " (string-append what (string-append " gave " (int->string got)))))))
+(import (std simpletest))
 
 (: check-str (-> string string string void))
 (defun (check-str what got want)
@@ -55,21 +52,21 @@
 
   ;; An arm may be several forms, and only the arm that is taken runs.
   (set! calls 0)
-  (check "cond-body" (cond ((= 1 2) (bump 1)) ((= 1 1) (def a 3) (* a 4)) (else (bump 0))) 12)
-  (check "cond-lazy" calls 0)
+  (expect "cond-body" (cond ((= 1 2) (bump 1)) ((= 1 1) (def a 3) (* a 4)) (else (bump 0))) 12)
+  (expect "cond-lazy" calls 0)
 
   ;; --- if-let -------------------------------------------------------------
-  (check "if-let-some" (if-let ((half (halve 8))) half -1) 4)
-  (check "if-let-none" (if-let ((half (halve 7))) half -1) -1)
+  (expect "if-let-some" (if-let ((half (halve 8))) half -1) 4)
+  (expect "if-let-none" (if-let ((half (halve 7))) half -1) -1)
 
   ;; The name is bound in the `then` branch only, and the `else` branch is not
   ;; evaluated when there was something to bind.
   (set! calls 0)
-  (check "if-let-then-only" (if-let ((half (halve 10))) half (bump -1)) 5)
-  (check "if-let-lazy" calls 0)
+  (expect "if-let-then-only" (if-let ((half (halve 10))) half (bump -1)) 5)
+  (expect "if-let-lazy" calls 0)
 
   ;; What it binds is the unwrapped value, so it nests without ceremony.
-  (check "if-let-nested"
+  (expect "if-let-nested"
          (if-let ((first (halve 12)))
            (if-let ((second (halve first)))
              second
@@ -84,31 +81,31 @@
     ;; A `when-let` *is* a `when`: it answers nothing, so the body's last value
     ;; is dropped and has to say so, exactly as it would inside a `when`.
     (ignore (bump half)))
-  (check "when-let-some" calls 2)
+  (expect "when-let-some" calls 2)
 
   (set! calls 0)
   (when-let ((half (halve 7)))
     (ignore (bump half)))
-  (check "when-let-none" calls 0)
+  (expect "when-let-none" calls 0)
 
   ;; --- some-> -------------------------------------------------------------
   ;; Each step answers an Option and receives what the one before unwrapped to.
-  (check "some-chain" (option-ref-or (some-> 8 (halve)) 0) 4)
-  (check "some-chain-two" (option-ref-or (some-> 8 (halve) (halve)) 0) 2)
-  (check "some-chain-three" (option-ref-or (some-> 16 (halve) (halve) (halve)) 0) 2)
+  (expect "some-chain" (option-ref-or (some-> 8 (halve)) 0) 4)
+  (expect "some-chain-two" (option-ref-or (some-> 8 (halve) (halve)) 0) 2)
+  (expect "some-chain-three" (option-ref-or (some-> 16 (halve) (halve) (halve)) 0) 2)
 
   ;; Threading is `->`'s, so `&` says where the value goes when it is not the
   ;; first argument.
-  (check "some-placeholder" (option-ref-or (some-> 8 (halve) (at-least & 3)) 0) 4)
-  (check "some-placeholder-fails" (option-ref-or (some-> 8 (halve) (at-least & 5)) 0) 0)
+  (expect "some-placeholder" (option-ref-or (some-> 8 (halve) (at-least & 3)) 0) 4)
+  (expect "some-placeholder-fails" (option-ref-or (some-> 8 (halve) (at-least & 5)) 0) 0)
 
   ;; A `None` anywhere stops the chain, and the steps after it do not run.
   (set! calls 0)
-  (check "some-stops" (option-ref-or (some-> 7 (halve) (noted) (halve)) 0) 0)
-  (check "some-stops-lazily" calls 0)
+  (expect "some-stops" (option-ref-or (some-> 7 (halve) (noted) (halve)) 0) 0)
+  (expect "some-stops-lazily" calls 0)
 
   ;; With no steps there is nothing that could have failed.
-  (check "some-no-steps" (option-ref-or (some-> 5) 0) 5)
+  (expect "some-no-steps" (option-ref-or (some-> 5) 0) 5)
 
   (println "95 ok")
   0)

@@ -29,14 +29,7 @@
 (import "074_lib.bjo")
 ;; For the `(do ...)` block over `Option` further down.
 (import (std monad))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
+(import (std simpletest))
 
 ;; ---------------------------------------------------------------------------
 ;; The signature is an ordinary arrow
@@ -172,8 +165,8 @@
 ;; is certainly not a pool thread.
 
 (defbjo (main args)
-  (expect "a bjoroutine call returns its payload" (int->string (double 21)) "42")
-  (expect "a bjoroutine calling a bjoroutine" (int->string (quadruple 3)) "12")
+  (expect "a bjoroutine call returns its payload" (double 21) 42)
+  (expect "a bjoroutine calling a bjoroutine" (quadruple 3) 12)
   (expect "and calling an ordinary function" (greet "world") "hello world!")
 
   ;; Mutual recursion, deep enough that both directions really run.
@@ -184,14 +177,14 @@
   (set! counter 0)
   (bump 5)
   (bump-twice 10)
-  (expect "a void bjoroutine runs" (int->string counter) "25")
+  (expect "a void bjoroutine runs" counter 25)
 
   ;; Yield points inside loops. 0+2+4+6+8 = 20.
-  (expect "a yield point in a named let" (int->string (sum-doubled 5)) "20")
+  (expect "a yield point in a named let" (sum-doubled 5) 20)
   (expect "and in a (loop ...)"
-          (int->string (list-length (double-all (list 1 2 3)))) "3")
+          (list-length (double-all (list 1 2 3))) 3)
   (expect "and in a self-recursive bjoroutine"
-          (int->string (countdown 4 0)) "20")
+          (countdown 4 0) 20)
 
   ;; A yield point inside a `do` block over a monad whose `bind` uses its
   ;; continuation once, so inlining leaves straight-line code behind.
@@ -203,14 +196,14 @@
           "2")
 
   ;; A `(bjoroutine ...)` lambda, bound and called.
-  (expect "a suspending lambda" (int->string (apply-bjo 5)) "7")
+  (expect "a suspending lambda" (apply-bjo 5) 7)
 
   ;; Across a compiled module boundary: `074_lib` published `triple` as
   ;; `(-bjo-> int int)`, and reading that back is what makes this call a yield
   ;; point here.
-  (expect "an imported bjoroutine" (int->string (triple 14)) "42")
+  (expect "an imported bjoroutine" (triple 14) 42)
   (expect "an imported bjoroutine calling one of its own"
-          (int->string (nonuple 2)) "18")
+          (nonuple 2) 18)
 
   ;; An ordinary function imported from the same module still is one.
   (expect "an imported ordinary function" (lib-shout "still sync") "still sync!")

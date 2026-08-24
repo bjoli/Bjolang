@@ -1,5 +1,6 @@
 ;; Lazy sequences: (seq ...), (yield v), (yield-from s), and the seq-* library.
 (import (std prelude))
+(import (std simpletest))
 
 ;; A `seq` body runs a `yield` at a time, as the sequence is consumed.
 (: countdown (-> int (Seq int)))
@@ -66,14 +67,6 @@
         (array-set! pulls 0 (+ 1 (array-ref pulls 0)))
         (yield i)
         (loop (+ i 1))))))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
 
 ;; Halves an even number, and answers None for an odd one.
 (: halve (-> int (Option int)))
@@ -146,7 +139,7 @@
   (array-set! pulls 0 0)
   (loop (:for x (counted))
         (:do (ignore x)))
-  (expect "a walk pulls each element once" (int->string (array-ref pulls 0)) "4")
+  (expect "a walk pulls each element once" (array-ref pulls 0) 4)
 
   ;; And the cursor is made fresh per walk, which is what keeps a `Seq`
   ;; re-enumerable: the second loop runs the generator again from the top rather
@@ -157,7 +150,7 @@
         (:do (ignore x)))
   (loop (:for x twice)
         (:do (ignore x)))
-  (expect "and a second walk starts over" (int->string (array-ref pulls 0)) "8")
+  (expect "and a second walk starts over" (array-ref pulls 0) 8)
 
   ;; A walk is lazy in the same way the combinators are: stopping early leaves
   ;; the rest unproduced.
@@ -165,21 +158,17 @@
   (loop (:for x (counted))
         (:do (ignore x))
         (:break (= x 1)))
-  (expect "and stops pulling when the walk does" (int->string (array-ref pulls 0)) "2")
+  (expect "and stops pulling when the walk does" (array-ref pulls 0) 2)
 
   ;; --- seq-drop -----------------------------------------------------------
   (expect "drops a prefix"
-          (int->string (seq-fold + 0 (seq-drop (seq-range 1 5) 2)))
-          "7")
+          (seq-fold + 0 (seq-drop (seq-range 1 5) 2)) 7)
   (expect "dropping none is the whole sequence"
-          (int->string (seq-fold + 0 (seq-drop (seq-range 1 5) 0)))
-          "10")
+          (seq-fold + 0 (seq-drop (seq-range 1 5) 0)) 10)
   ;; Past the end is empty rather than an error — the operation is a prefix
   ;; removal, and a prefix longer than the sequence removes all of it.
   (expect "dropping past the end is empty"
-          (int->string (seq-length (seq-drop (seq-range 1 5) 99)))
-          "0")
+          (seq-length (seq-drop (seq-range 1 5) 99)) 0)
   (expect "dropping from empty is empty"
-          (int->string (seq-length (seq-drop (seq-empty) 3)))
-          "0")
+          (seq-length (seq-drop (seq-empty) 3)) 0)
   0)

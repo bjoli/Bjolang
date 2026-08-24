@@ -1,22 +1,11 @@
 ;; The process's surroundings: environment variables, the working directory,
 ;; and the directory operations that go with the file ones.
 (import (std prelude))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
-
-(: expect-true (-> string bool void))
-(defun (expect-true label actual)
-  (expect label (if actual "true" "false") "true"))
+(import (std simpletest))
 
 (: expect-false (-> string bool void))
 (defun (expect-false label actual)
-  (expect label (if actual "true" "false") "false"))
+  (expect label actual false))
 
 ;; What a path operation answered, with the absent case spelled out.
 (: shown (-> (Option string) string))
@@ -60,8 +49,8 @@
 
   (file-write-text (path-combine root "a.txt") "a")
   (file-write-text (path-combine root "b.log") "b")
-  (expect "files, not subdirectories" (int->string (length (directory-files root))) "2")
-  (expect "subdirectories, not files" (int->string (length (directory-subdirectories root))) "1")
+  (expect "files, not subdirectories" (length (directory-files root)) 2)
+  (expect "subdirectories, not files" (length (directory-subdirectories root)) 1)
   (expect "and a pattern is a filter"
           (int->string (length (vec-filter #(string-ends-with? &1 ".txt")
                                            (directory-files root))))

@@ -19,19 +19,12 @@
 ;; `choose` is the alternative, and there is no `bind` — see §2.
 
 (import (std prelude))
+(import (std simpletest))
 
 (import/class
   (Exception (: System.Exception))
   ;; A clock, so that "the timer was rebuilt" is measured rather than asserted.
   (Env (: System.Environment)))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Rendezvous
@@ -139,7 +132,7 @@
   ;; A full rendezvous. 0+1+2+3+4 = 10, and the producer runs to completion.
   (def ch (make-chan))
   (def prod (bjo (producer ch 5)))
-  (expect "producer and consumer rendezvous" (int->string (consumer ch)) "10")
+  (expect "producer and consumer rendezvous" (consumer ch) 10)
   (expect "and the producer finished"
           (match (sync (promise-join prod)) ((Ok u) "done") ((Err e) "failed"))
           "done")
@@ -153,10 +146,10 @@
   (def j2 (sync (chan-send jobs 20)))
   (def j3 (sync (chan-send jobs 12)))
   (def c (sync (chan-send cancel true)))
-  (expect "a choose over two channels" (int->string (sync (chan-recv results))) "42")
+  (expect "a choose over two channels" (sync (chan-recv results)) 42)
 
   ;; `always` is available immediately; `never` never is.
-  (expect "always beats never" (int->string (sync (choose (never) (always 5)))) "5")
+  (expect "always beats never" (sync (choose (never) (always 5))) 5)
 
   ;; `wrap` outside a loop, to show it is just `map` on an event.
   (expect "wrap maps an event's value"
@@ -167,8 +160,8 @@
   ;; events. Without it the value would be fixed when the event was built.
   (set! guard-runs 0)
   (def g (counting-event))
-  (expect "guard builds fresh, sync 1" (int->string (sync g)) "1")
-  (expect "guard builds fresh, sync 2" (int->string (sync g)) "2")
+  (expect "guard builds fresh, sync 1" (sync g) 1)
+  (expect "guard builds fresh, sync 2" (sync g) 2)
 
   ;; A timeout, losing to a channel that already has a sender waiting.
   ;;
@@ -220,7 +213,6 @@
   ;; a promise about branches that actually raced.
   (def report (make-chan))
   (expect "the winner still wins"
-          (int->string (sync (choose (always-loses report) (always 42))))
-          "42")
+          (sync (choose (always-loses report) (always 42))) 42)
   (expect "and the losing branch was told" (sync (chan-recv report)) "nacked")
   0)

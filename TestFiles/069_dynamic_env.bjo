@@ -14,17 +14,10 @@
 ;; no `(import (std ports))` here — that module is only the drains that take a
 ;; reader procedure.
 (import (std prelude))
+(import (std simpletest))
 
 (import/class
   (StringWriter (: System.IO.StringWriter (-> StringWriter))))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
 
 ;; A parameter of a user's own. Module-level, and legal there because
 ;; `(Param int)` is closed — the restriction is on *open* types.
@@ -173,29 +166,29 @@
 
   ;; A parameter is an ordinary value, so it can be handed to a function that
   ;; does not know which one it is.
-  (expect "parameter passed as a value" (int->string (read-twice indent)) "0")
+  (expect "parameter passed as a value" (read-twice indent) 0)
 
   ;; --- Cold parameters ----------------------------------------------------
   ;;
   ;; Everything above, again, for a parameter made the other way. `read-twice`
   ;; takes this one too: which allocator made a parameter is not part of its
   ;; type, so nothing that holds a `(Param int)` has to know.
-  (expect "cold reads its initial" (int->string (parameter-ref cold-a)) "10")
+  (expect "cold reads its initial" (parameter-ref cold-a) 10)
 
   (parameterize ((cold-a 11))
-    (expect "cold binds" (int->string (parameter-ref cold-a)) "11")
-    (expect "cold passed as a value" (int->string (read-twice cold-a)) "22"))
-  (expect "cold restores" (int->string (parameter-ref cold-a)) "10")
+    (expect "cold binds" (parameter-ref cold-a) 11)
+    (expect "cold passed as a value" (read-twice cold-a) 22))
+  (expect "cold restores" (parameter-ref cold-a) 10)
 
   ;; Two at once. Cold parameters share a place that hot ones each have to
   ;; themselves, so this is the case where one could be found under the other's
   ;; binding — neither may see the other's value, and both must come back.
   (parameterize ((cold-a 1) (cold-b 2))
-    (expect "two cold, first" (int->string (parameter-ref cold-a)) "1")
-    (expect "two cold, second" (int->string (parameter-ref cold-b)) "2")
+    (expect "two cold, first" (parameter-ref cold-a) 1)
+    (expect "two cold, second" (parameter-ref cold-b) 2)
     (parameterize ((cold-a 3))
-      (expect "cold shadowed" (int->string (parameter-ref cold-a)) "3")
-      (expect "its neighbour untouched" (int->string (parameter-ref cold-b)) "2")))
+      (expect "cold shadowed" (parameter-ref cold-a) 3)
+      (expect "its neighbour untouched" (parameter-ref cold-b) 2)))
   (expect "both cold restored" (string-append (int->string (parameter-ref cold-a))
                                               (int->string (parameter-ref cold-b)))
           "1020")
@@ -209,11 +202,11 @@
   (expect "hot beside cold restored" (describe) "0/quiet")
 
   ;; A parameter from past the point where the cheap places ran out.
-  (expect "spilled reads its initial" (int->string (parameter-ref spilled)) "39")
+  (expect "spilled reads its initial" (parameter-ref spilled) 39)
   (parameterize ((spilled 7))
-    (expect "spilled binds" (int->string (parameter-ref spilled)) "7")
-    (expect "and shadows nothing else" (int->string (parameter-ref cold-a)) "10"))
-  (expect "spilled restores" (int->string (parameter-ref spilled)) "39")
+    (expect "spilled binds" (parameter-ref spilled) 7)
+    (expect "and shadows nothing else" (parameter-ref cold-a) 10))
+  (expect "spilled restores" (parameter-ref spilled) 39)
 
   ;; --- Unwinding through a failure ----------------------------------------
   ;;
@@ -234,7 +227,7 @@
   (expect "port restored after a throw" (.ToString w2) "")
 
   ;; --- Tail calls under the restore ---------------------------------------
-  (expect "named let inside parameterize" (int->string (sum-to 4)) "5")
+  (expect "named let inside parameterize" (sum-to 4) 5)
 
   0)
 

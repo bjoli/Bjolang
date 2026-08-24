@@ -1,14 +1,11 @@
 ;; `(std mutable deque)` — the double-ended queue that is written in place.
 (import (std prelude))
 (import (std mutable deque))
-
-(: expect (-> string bool void))
-(defun (expect label ok)
-  (println (string-append (if ok "ok: " "FAILURE: ") label)))
+(import (std simpletest))
 
 (: expect-int (-> string int int void))
 (defun (expect-int label actual want)
-  (expect (string-append label (string-append " => " (int->string actual)))
+  (expect-true (string-append label (string-append " => " (int->string actual)))
           (= actual want)))
 
 ;; `(Some x)` holding what was wanted.
@@ -44,11 +41,11 @@
 
   ;; Everything is on `back` at this point, so the first pop is the one that
   ;; pays for a split.
-  (expect "1 out first" (gave? (deque-pop-front! d) 1))
-  (expect "then 2" (gave? (deque-pop-front! d) 2))
-  (expect "then 3" (gave? (deque-pop-front! d) 3))
-  (expect "and then nothing" (nothing? (deque-pop-front! d)))
-  (expect "empty" (deque-empty? d)))
+  (expect-true "1 out first" (gave? (deque-pop-front! d) 1))
+  (expect-true "then 2" (gave? (deque-pop-front! d) 2))
+  (expect-true "then 3" (gave? (deque-pop-front! d) 3))
+  (expect-true "and then nothing" (nothing? (deque-pop-front! d)))
+  (expect-true "empty" (deque-empty? d)))
 
 (: as-a-stack (-> void))
 (defun (as-a-stack)
@@ -56,10 +53,10 @@
   (deque-push-back! d 1)
   (deque-push-back! d 2)
   (deque-push-back! d 3)
-  (expect "3 out first" (gave? (deque-pop-back! d) 3))
-  (expect "then 2" (gave? (deque-pop-back! d) 2))
-  (expect "then 1" (gave? (deque-pop-back! d) 1))
-  (expect "and then nothing" (nothing? (deque-pop-back! d))))
+  (expect-true "3 out first" (gave? (deque-pop-back! d) 3))
+  (expect-true "then 2" (gave? (deque-pop-back! d) 2))
+  (expect-true "then 1" (gave? (deque-pop-back! d) 1))
+  (expect-true "and then nothing" (nothing? (deque-pop-back! d))))
 
 (: both-ends (-> void))
 (defun (both-ends)
@@ -68,12 +65,12 @@
   (deque-push-front! d 1)
   (deque-push-back! d 3)
   (deque-push-back! d 4)
-  (expect "pushed at both ends" (= (show d) "1 2 3 4 "))
+  (expect-true "pushed at both ends" (= (show d) "1 2 3 4 "))
   (expect-int "and counted" (deque-length d) 4)
 
-  (expect "front is 1" (gave? (deque-pop-front! d) 1))
-  (expect "back is 4" (gave? (deque-pop-back! d) 4))
-  (expect "what is left" (= (show d) "2 3 ")))
+  (expect-true "front is 1" (gave? (deque-pop-front! d) 1))
+  (expect-true "back is 4" (gave? (deque-pop-back! d) 4))
+  (expect-true "what is left" (= (show d) "2 3 ")))
 
 ;; The case that decides how refilling is written. Popping alternately from
 ;; each end empties one side and then the other, over and over; moving the whole
@@ -83,15 +80,15 @@
 (: alternating (-> void))
 (defun (alternating)
   (def d (list->deque (list 1 2 3 4 5 6)))
-  (expect "front 1" (gave? (deque-pop-front! d) 1))
-  (expect "back 6" (gave? (deque-pop-back! d) 6))
-  (expect "front 2" (gave? (deque-pop-front! d) 2))
-  (expect "back 5" (gave? (deque-pop-back! d) 5))
-  (expect "front 3" (gave? (deque-pop-front! d) 3))
-  (expect "back 4" (gave? (deque-pop-back! d) 4))
-  (expect "drained" (deque-empty? d))
-  (expect "and stays drained" (nothing? (deque-pop-front! d)))
-  (expect "from either end" (nothing? (deque-pop-back! d))))
+  (expect-true "front 1" (gave? (deque-pop-front! d) 1))
+  (expect-true "back 6" (gave? (deque-pop-back! d) 6))
+  (expect-true "front 2" (gave? (deque-pop-front! d) 2))
+  (expect-true "back 5" (gave? (deque-pop-back! d) 5))
+  (expect-true "front 3" (gave? (deque-pop-front! d) 3))
+  (expect-true "back 4" (gave? (deque-pop-back! d) 4))
+  (expect-true "drained" (deque-empty? d))
+  (expect-true "and stays drained" (nothing? (deque-pop-front! d)))
+  (expect-true "from either end" (nothing? (deque-pop-back! d))))
 
 ;; A single element has to be reachable from both ends, which is the boundary
 ;; the split's `k = n / 2` has to get right: it rounds to zero, so the one
@@ -100,24 +97,24 @@
 (defun (singleton)
   (def d (deque))
   (deque-push-back! d 42)
-  (expect "one element, from the front" (gave? (deque-pop-front! d) 42))
-  (expect "gone" (deque-empty? d))
+  (expect-true "one element, from the front" (gave? (deque-pop-front! d) 42))
+  (expect-true "gone" (deque-empty? d))
 
   (deque-push-front! d 42)
-  (expect "one element, from the back" (gave? (deque-pop-back! d) 42))
-  (expect "gone again" (deque-empty? d)))
+  (expect-true "one element, from the back" (gave? (deque-pop-back! d) 42))
+  (expect-true "gone again" (deque-empty? d)))
 
 (: peeking (-> void))
 (defun (peeking)
   (def d (list->deque (list 1 2 3)))
-  (expect "peek front" (gave? (deque-peek-front! d) 1))
-  (expect "peek back" (gave? (deque-peek-back! d) 3))
-  (expect "twice, the same" (gave? (deque-peek-front! d) 1))
+  (expect-true "peek front" (gave? (deque-peek-front! d) 1))
+  (expect-true "peek back" (gave? (deque-peek-back! d) 3))
+  (expect-true "twice, the same" (gave? (deque-peek-front! d) 1))
   (expect-int "and consumed nothing" (deque-length d) 3)
 
   (def e (deque))
-  (expect "peeking an empty deque" (nothing? (deque-peek-front! e)))
-  (expect "from either end" (nothing? (deque-peek-back! e))))
+  (expect-true "peeking an empty deque" (nothing? (deque-peek-front! e)))
+  (expect-true "from either end" (nothing? (deque-peek-back! e))))
 
 ;; ---------------------------------------------------------------------------
 ;; It is one deque
@@ -136,7 +133,7 @@
 (defun (shared)
   (def d (deque))
   (fill! d 3)
-  (expect "a callee filled the caller's deque" (= (show d) "3 2 1 "))
+  (expect-true "a callee filled the caller's deque" (= (show d) "3 2 1 "))
 
   (def same d)
   (ignore (deque-pop-front! same))
@@ -157,8 +154,8 @@
 (defun (countdown)
   (def work (deque))
   (deque-push-back! work 3)
-  (expect "a worklist drains" (= (drain-worklist work "") "3 2 1 "))
-  (expect "and ends empty" (deque-empty? work)))
+  (expect-true "a worklist drains" (= (drain-worklist work "") "3 2 1 "))
+  (expect-true "and ends empty" (deque-empty? work)))
 
 ;; ---------------------------------------------------------------------------
 ;; Conversions, folds, printing
@@ -167,24 +164,24 @@
 (: converting (-> void))
 (defun (converting)
   (def d (list->deque (list 1 2 3)))
-  (expect "round trip" (= (deque->list d) (list 1 2 3)))
+  (expect-true "round trip" (= (deque->list d) (list 1 2 3)))
   (expect-int "with the length" (deque-length d) 3)
 
   ;; Both halves occupied, and the walk still comes out front to back.
   (deque-push-front! d 0)
   (deque-push-back! d 4)
-  (expect "across both halves" (= (deque->list d) (list 0 1 2 3 4)))
+  (expect-true "across both halves" (= (deque->list d) (list 0 1 2 3 4)))
 
   (expect-int "fold" (deque-fold (fun (acc x) (+ acc x)) 0 d) 10)
 
   (def e (deque))
-  (expect "an empty deque converts" (list-empty? (deque->list e)))
+  (expect-true "an empty deque converts" (list-empty? (deque->list e)))
   (expect-int "and folds" (deque-fold (fun (acc x) (+ acc x)) 0 e) 0))
 
 (: printing (-> void))
 (defun (printing)
-  (expect "->str" (= (->str (list->deque (list 1 2 3))) "#<1 2 3>"))
-  (expect "an empty one" (= (->str (no-ints)) "#<>")))
+  (expect-true "->str" (= (->str (list->deque (list 1 2 3))) "#<1 2 3>"))
+  (expect-true "an empty one" (= (->str (no-ints)) "#<>")))
 
 ;; ---------------------------------------------------------------------------
 ;; Equality
@@ -212,26 +209,26 @@
   (deque-push-front! b 2)
   (deque-push-front! b 1)
 
-  (expect "different halves, equal deques" (= a b))
+  (expect-true "different halves, equal deques" (= a b))
 
   ;; And after a pop has split one of them, still equal to a third built plainly.
   (ignore (deque-pop-front! a))
   (ignore (deque-pop-front! b))
-  (expect "still equal once split" (= a b))
-  (expect "and equal to one built from a list" (= a (list->deque (list 2 3))))
+  (expect-true "still equal once split" (= a b))
+  (expect-true "and equal to one built from a list" (= a (list->deque (list 2 3))))
 
   (deque-push-back! a 9)
-  (expect "and unequal once one is written" (not (= a b)))
+  (expect-true "and unequal once one is written" (not (= a b)))
 
-  (expect "order matters" (not (= (list->deque (list 1 2)) (list->deque (list 2 1)))))
-  (expect "length matters" (not (= (list->deque (list 1)) (list->deque (list 1 1)))))
-  (expect "two empties are equal" (= (no-ints) (no-ints)))
+  (expect-true "order matters" (not (= (list->deque (list 1 2)) (list->deque (list 2 1)))))
+  (expect-true "length matters" (not (= (list->deque (list 1)) (list->deque (list 1 1)))))
+  (expect-true "two empties are equal" (= (no-ints) (no-ints)))
 
   ;; A deque has no hash and says so, which is what stops .NET being asked a
   ;; question it would answer differently.
-  (expect "hashing a deque throws"
+  (expect-true "hashing a deque throws"
           (threw? (try (eq-hash a) #:catch (System.InvalidOperationException))))
-  (expect "and so does using one as a Map key"
+  (expect-true "and so does using one as a Map key"
           (threw? (try (map-set (map-empty) a "x") #:catch (System.InvalidOperationException)))))
 
 (defun (main args)

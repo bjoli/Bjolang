@@ -8,12 +8,7 @@
 ;; generic dictionary path, where the alias expansion meets a dictionary's
 ;; associated-type projection.
 (import (std prelude))
-
-(: expect (-> string bool void))
-(defun (expect label ok)
-  (if ok
-      (println (string-append "ok " label))
-      (println (string-append "FAILURE: " label))))
+(import (std simpletest))
 
 (: expect-str (-> string string string void))
 (defun (expect-str label actual wanted)
@@ -40,16 +35,16 @@
 (: test-literal (-> void))
 (defun (test-literal)
   (def m #map(("a" 1) ("b" 2)))
-  (expect "literal length" (= (map-length m) 2))
-  (expect "literal keys" (= (map-ref m "b") 2))
+  (expect-true "literal length" (= (map-length m) 2))
+  (expect-true "literal keys" (= (map-ref m "b") 2))
 
   ;; The empty case desugars to `(map-empty)` rather than to `list->map`, so it
   ;; is a different path through the reader.
-  (expect "empty literal" (map-empty? (nothing)))
+  (expect-true "empty literal" (map-empty? (nothing)))
 
   ;; `[k v]` is the other spelling of an entry.
   (def bracketed #map(["x" 10] ["y" 20]))
-  (expect "bracketed entries" (= (map-ref bracketed "y") 20)))
+  (expect-true "bracketed entries" (= (map-ref bracketed "y") 20)))
 
 ;; ---------------------------------------------------------------------------
 ;; 2. The loop — Iterable, through Map.MapCursor
@@ -61,7 +56,7 @@
 
   (def/mutable total 0)
   (loop (:for kv m) (:do (set! total (+ total (entry-value kv)))))
-  (expect "loop sums the values" (= total 6))
+  (expect-true "loop sums the values" (= total 6))
 
   ;; The cursor is the trie's own enumerator in a heap cell, and `done?` is what
   ;; advances it. Two loops over the same map must each get a fresh one, or the
@@ -69,7 +64,7 @@
   (def/mutable twice 0)
   (loop (:for kv m) (:do (set! twice (+ twice (entry-value kv)))))
   (loop (:for kv m) (:do (set! twice (+ twice (entry-value kv)))))
-  (expect "a loop starts a fresh cursor" (= twice 12)))
+  (expect-true "a loop starts a fresh cursor" (= twice 12)))
 
 ;; ---------------------------------------------------------------------------
 ;; 3. The comprehension — Collector (Mapping %k %v), through MapBuilder
@@ -78,15 +73,15 @@
 (: test-comprehension (-> void))
 (defun (test-comprehension)
   (def squares {mapping (Tuple a (* a a)) (:for a (range 1 5))})
-  (expect "comprehension length" (= (map-length squares) 4))
-  (expect "comprehension values" (= (map-ref squares 4) 16))
+  (expect-true "comprehension length" (= (map-length squares) 4))
+  (expect-true "comprehension values" (= (map-ref squares 4) 16))
 
   ;; Collecting the entries of an existing map copies it: `%elem` is the pair,
   ;; which is exactly what walking one yields.
   (def m #map(("a" 1) ("b" 2)))
   (def copied {mapping kv (:for kv m)})
-  (expect "a map collects into a map" (= (map-length copied) 2))
-  (expect "and keeps the values" (= (map-ref copied "b") 2)))
+  (expect-true "a map collects into a map" (= (map-length copied) 2))
+  (expect-true "and keeps the values" (= (map-ref copied "b") 2)))
 
 ;; ---------------------------------------------------------------------------
 ;; 4. The generic dictionary path
@@ -128,16 +123,16 @@
               (describe #map(("a" 1)))
               "<1: #map(a 1)>")
   ;; Two entries, so the trie's order decides which way round it comes out.
-  (expect "the same at two entries" (= (string-length (describe m)) 18))
+  (expect-true "the same at two entries" (= (string-length (describe m)) 18))
 
-  (expect "Foldable-generic count" (= (count-via-foldable m) 2))
-  (expect "Foldable-generic count at other types" (= (count-via-foldable n) 1))
-  (expect "unconstrained generic" (= (key-count m) 2))
+  (expect-true "Foldable-generic count" (= (count-via-foldable m) 2))
+  (expect-true "Foldable-generic count at other types" (= (count-via-foldable n) 1))
+  (expect-true "unconstrained generic" (= (key-count m) 2))
 
   ;; Collection and Functor, the other two implementations.
-  (expect "Collection length" (= (length m) 2))
-  (expect "Collection empty?" (not (empty? m)))
-  (expect "Functor moves values" (= (map-ref (map (fun (v) (* v 10)) m) "b") 20)))
+  (expect-true "Collection length" (= (length m) 2))
+  (expect-true "Collection empty?" (not (empty? m)))
+  (expect-true "Functor moves values" (= (map-ref (map (fun (v) (* v 10)) m) "b") 20)))
 
 ;; ---------------------------------------------------------------------------
 ;; 5. Printing
@@ -153,11 +148,11 @@
   ;; two strings, and neither is a .NET type name.
   (def m #map(("a" 1) ("b" 2)))
   (def shown (->str m))
-  (expect "two entries print as a literal"
+  (expect-true "two entries print as a literal"
           (or (= shown "#map(a 1 b 2)") (= shown "#map(b 2 a 1)")))
 
   ;; And it round-trips: what was printed reads back as the same map.
-  (expect "the literal round-trips" (= m #map(("a" 1) ("b" 2)))))
+  (expect-true "the literal round-trips" (= m #map(("a" 1) ("b" 2)))))
 
 ;; ---------------------------------------------------------------------------
 ;; The surface `map-*` did not have before
@@ -167,21 +162,21 @@
 (defun (test-new-surface)
   (def m #map(("a" 1) ("b" 2) ("c" 3)))
 
-  (expect "set-all" (= (map-length (map-set-all m (list->seq (Cons (Tuple "d" 4) Nil)))) 4))
-  (expect "remove-all" (= (map-length (map-remove-all m (list->seq (Cons "a" (Cons "b" Nil))))) 1))
-  (expect "any? hit" (map-any? (fun (_ v) (= v 3)) m))
-  (expect "any? miss" (not (map-any? (fun (k _) (= k "z")) m)))
-  (expect "add" (= (map-length (map-add m "d" 4)) 4))
-  (expect "clear" (map-empty? (map-clear m)))
-  (expect "keys" (= (seq-length (map-keys m)) 3))
-  (expect "values" (= (seq-length (map-values m)) 3))
+  (expect-true "set-all" (= (map-length (map-set-all m (list->seq (Cons (Tuple "d" 4) Nil)))) 4))
+  (expect-true "remove-all" (= (map-length (map-remove-all m (list->seq (Cons "a" (Cons "b" Nil))))) 1))
+  (expect-true "any? hit" (map-any? (fun (_ v) (= v 3)) m))
+  (expect-true "any? miss" (not (map-any? (fun (k _) (= k "z")) m)))
+  (expect-true "add" (= (map-length (map-add m "d" 4)) 4))
+  (expect-true "clear" (map-empty? (map-clear m)))
+  (expect-true "keys" (= (seq-length (map-keys m)) 3))
+  (expect-true "values" (= (seq-length (map-values m)) 3))
 
   (match (map-find (fun (_ v) (> v 2)) m)
-    ((Some entry) (expect "find" (= (entry-value entry) 3)))
+    ((Some entry) (expect-true "find" (= (entry-value entry) 3)))
     (None (println "FAILURE: find")))
 
   (match (map-try-ref m "a")
-    ((Some v) (expect "try-ref hit" (= v 1)))
+    ((Some v) (expect-true "try-ref hit" (= v 1)))
     (None (println "FAILURE: try-ref hit")))
   (match (map-try-ref m "z")
     ((Some _) (println "FAILURE: try-ref miss"))
@@ -191,25 +186,25 @@
   (def b (mapbuilder-empty))
   (mapbuilder-add! b "x" 1)
   (mapbuilder-add-all! b (list->seq (Cons (Tuple "y" 2) (Cons (Tuple "x" 9) Nil))))
-  (expect "builder counts appends, not entries" (= (mapbuilder-length b) 3))
+  (expect-true "builder counts appends, not entries" (= (mapbuilder-length b) 3))
   (def built (mapbuilder->map b))
-  (expect "builder resolves duplicates, last winning" (= (map-ref built "x") 9))
-  (expect "builder length" (= (map-length built) 2))
+  (expect-true "builder resolves duplicates, last winning" (= (map-ref built "x") 9))
+  (expect-true "builder length" (= (map-length built) 2))
 
   ;; The transient: the map's interface with the writes turned inside out. Its
   ;; count used to start at zero however full the map it came from was.
   (def t (map->transientmap m))
-  (expect "a transient keeps the count it came from" (= (transientmap-length t) 3))
+  (expect-true "a transient keeps the count it came from" (= (transientmap-length t) 3))
   (transientmap-set! t "d" 4)
   (transientmap-remove! t "a")
-  (expect "transient writes move the count" (= (transientmap-length t) 3))
-  (expect "transient reads see the writes" (transientmap-contains? t "d"))
-  (expect "transient ref-or" (= (transientmap-ref-or t "z" 99) 99))
+  (expect-true "transient writes move the count" (= (transientmap-length t) 3))
+  (expect-true "transient reads see the writes" (transientmap-contains? t "d"))
+  (expect-true "transient ref-or" (= (transientmap-ref-or t "z" 99) 99))
   (transientmap-filter! (fun (_ v) (> v 2)) t)
-  (expect "transient filter!" (= (transientmap-length t) 2))
+  (expect-true "transient filter!" (= (transientmap-length t) 2))
   (def rebuilt (transientmap->map t))
-  (expect "back to a map" (= (map-length rebuilt) 2))
-  (expect "and the map it came from is untouched" (= (map-length m) 3)))
+  (expect-true "back to a map" (= (map-length rebuilt) 2))
+  (expect-true "and the map it came from is untouched" (= (map-length m) 3)))
 
 (defun (main args)
   (test-literal)

@@ -18,14 +18,7 @@
 ;; depend on which lowering it got.
 (import (std prelude))
 (import "inc/kwconst.bjo")
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
+(import (std simpletest))
 
 ;; --- defaults C# can carry -------------------------------------------------
 
@@ -81,14 +74,14 @@
 
 (defun (main)
   ;; --- constant defaults, omitted and supplied -----------------------------
-  (expect "int defaulted" (int->string (scale 5)) "10")
-  (expect "int supplied" (int->string (scale 5 #:by 10)) "50")
-  (expect "int, the other one" (int->string (scale 5 #:offset 1)) "11")
-  (expect "int, both, out of order" (int->string (scale 5 #:offset 1 #:by 10)) "51")
+  (expect "int defaulted" (scale 5) 10)
+  (expect "int supplied" (scale 5 #:by 10) 50)
+  (expect "int, the other one" (scale 5 #:offset 1) 11)
+  (expect "int, both, out of order" (scale 5 #:offset 1 #:by 10) 51)
 
   ;; A supplied value equal to the default is not distinguishable from an
   ;; omitted one — which is exactly what makes the lowering sound.
-  (expect "int supplied at its default" (int->string (scale 5 #:by 2)) "10")
+  (expect "int supplied at its default" (scale 5 #:by 2) 10)
 
   (expect "string and bool defaulted" (greet "you") "hi, you")
   (expect "bool supplied" (greet "you" #:loud true) "HI, you")
@@ -98,23 +91,23 @@
   (expect "double defaulted" (double->string (grow 4.0)) "6")
   (expect "double supplied" (double->string (grow 4.0 #:factor 2.0)) "8")
 
-  (expect "reserved-word keyword defaulted" (int->string (offsetted 1)) "1001")
-  (expect "reserved-word keyword supplied" (int->string (offsetted 1 #:base 5)) "6")
+  (expect "reserved-word keyword defaulted" (offsetted 1) 1001)
+  (expect "reserved-word keyword supplied" (offsetted 1 #:base 5) 6)
 
   ;; --- defaults that stay behind -------------------------------------------
   (expect "char defaulted" (padded "x") ".x")
   (expect "char supplied" (padded "x" #:pad #\!) "!x")
 
-  (expect "mixed, both defaulted" (int->string (blended 1)) "15")
-  (expect "mixed, constant supplied" (int->string (blended 1 #:a 2)) "5")
-  (expect "mixed, dependent supplied" (int->string (blended 1 #:b 100)) "107")
-  (expect "mixed, both supplied" (int->string (blended 1 #:a 2 #:b 3)) "5")
+  (expect "mixed, both defaulted" (blended 1) 15)
+  (expect "mixed, constant supplied" (blended 1 #:a 2) 5)
+  (expect "mixed, dependent supplied" (blended 1 #:b 100) 107)
+  (expect "mixed, both supplied" (blended 1 #:a 2 #:b 3) 5)
 
-  (expect "statement-shaped defaulted" (int->string (looped 1)) "4")
-  (expect "statement-shaped supplied" (int->string (looped 1 #:acc 10)) "11")
+  (expect "statement-shaped defaulted" (looped 1) 4)
+  (expect "statement-shaped supplied" (looped 1 #:acc 10) 11)
 
-  (expect "generic defaulted" (int->string (pick 7)) "7")
-  (expect "generic supplied" (int->string (pick 7 #:fallback 9)) "9")
+  (expect "generic defaulted" (pick 7) 7)
+  (expect "generic supplied" (pick 7 #:fallback 9) 9)
   (expect "generic at string" (pick "a" #:fallback "z") "z")
 
   ;; A constant default on a function that is generic in something *else*: the
@@ -137,24 +130,24 @@
   (defun (local-blended n #:a 4 #:b (* a n))
     (+ a b))
 
-  (expect "local mixed, defaulted" (int->string (local-blended 3)) "16")
-  (expect "local mixed, supplied" (int->string (local-blended 3 #:b 1)) "5")
+  (expect "local mixed, defaulted" (local-blended 3) 16)
+  (expect "local mixed, supplied" (local-blended 3 #:b 1) 5)
 
   ;; --- across a `.dll` ------------------------------------------------------
   ;;
   ;; The importing side picks the parameter name out of the module's metadata
   ;; and cannot see the default expression at all, so it emits one call shape
   ;; for both lowerings.
-  (expect "imported, defaulted" (int->string (scaled 5)) "10")
-  (expect "imported, supplied" (int->string (scaled 5 #:by 10)) "50")
-  (expect "imported, both, out of order" (int->string (scaled 5 #:offset 1 #:by 10)) "51")
+  (expect "imported, defaulted" (scaled 5) 10)
+  (expect "imported, supplied" (scaled 5 #:by 10) 50)
+  (expect "imported, both, out of order" (scaled 5 #:offset 1 #:by 10) 51)
   (expect "imported string and bool" (greeting "you") "hi, you")
   (expect "imported bool supplied" (greeting "you" #:loud true) "HI, you")
-  (expect "imported reserved-word keyword" (int->string (based 1)) "1001")
-  (expect "imported reserved-word supplied" (int->string (based 1 #:base 5)) "6")
+  (expect "imported reserved-word keyword" (based 1) 1001)
+  (expect "imported reserved-word supplied" (based 1 #:base 5) 6)
   (expect "imported non-constant default" (dotted "x") ".x")
   (expect "imported non-constant supplied" (dotted "x" #:pad #\!) "!x")
-  (expect "imported mixed defaulted" (int->string (combined 1)) "15")
-  (expect "imported mixed supplied" (int->string (combined 1 #:a 2)) "5")
+  (expect "imported mixed defaulted" (combined 1) 15)
+  (expect "imported mixed supplied" (combined 1 #:a 2) 5)
 
   0)

@@ -9,14 +9,7 @@
 ;; it has nowhere to put one — so its parameter types come from the annotations
 ;; written at the parameters, and from use.
 (import (std prelude))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
+(import (std simpletest))
 
 (defun (main)
   ;; A keyword parameter with a default, called both ways.
@@ -31,28 +24,28 @@
   (defun (pad n #:fill (+ n 1))
     (+ fill 1))
 
-  (expect "default reads an earlier parameter" (int->string (pad 3)) "5")
-  (expect "and is not evaluated when given" (int->string (pad 3 #:fill 10)) "11")
+  (expect "default reads an earlier parameter" (pad 3) 5)
+  (expect "and is not evaluated when given" (pad 3 #:fill 10) 11)
 
   ;; A rest parameter, empty and not.
   (defun (count-after first #:rest more)
     (+ first (array-length more)))
 
-  (expect "rest parameter empty" (int->string (count-after 10)) "10")
-  (expect "rest parameter collects" (int->string (count-after 10 1 2 3)) "13")
+  (expect "rest parameter empty" (count-after 10) 10)
+  (expect "rest parameter collects" (count-after 10 1 2 3) 13)
 
   ;; A parameter's type written at the parameter, and a return type written
   ;; after the argument list. Both used to be parsed and thrown away.
   (defun (twice (: n int)) : int
     (* n 2))
 
-  (expect "annotated parameter and return type" (int->string (twice 21)) "42")
+  (expect "annotated parameter and return type" (twice 21) 42)
 
   ;; A local function is still generalized over whatever the annotations leave
   ;; open, and is still usable at two types.
   (defun (fst a b) a)
 
-  (expect "polymorphic at int" (int->string (fst 1 "one")) "1")
+  (expect "polymorphic at int" (fst 1 "one") 1)
   (expect "polymorphic at string" (fst "two" 2) "two")
 
   ;; Mutually recursive local functions, keyword parameters and all.

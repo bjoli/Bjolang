@@ -5,6 +5,7 @@
 ;; tradition. Instance members are reached with `(.Method target args...)` and
 ;; `(.-Property target)`.
 (import (std prelude))
+(import (std simpletest))
 
 (import/class
   (StreamWriter (: System.IO.StreamWriter (-> string StreamWriter)))
@@ -13,14 +14,6 @@
 (import/extern
   (read-all-text (: System.IO.File.ReadAllText (-> string string)))
   (file-delete! (: System.IO.File.Delete (-> string void))))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
 
 ;; The alias is a type, so it may be written in an ordinary signature.
 (: write-greeting (-> StreamWriter void))
@@ -49,7 +42,7 @@
   (expect "StringBuilder" (.ToString sb) "abc")
 
   ;; A property read, and a method on the result of another method.
-  (expect "property read" (int->string (.-Length sb)) "3")
+  (expect "property read" (.-Length sb) 3)
   (expect "instance method on a string" (.Substring "abcdef" 2 3) "cde")
 
   0)

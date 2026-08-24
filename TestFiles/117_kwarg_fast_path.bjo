@@ -27,14 +27,7 @@
 ;; plausibly get wrong: how many times a default is evaluated, and in what order.
 (import (std prelude))
 (import "inc/kwfast.bjo")
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
+(import (std simpletest))
 
 ;; A trace the defaults below write to, so that "was it evaluated, and when" is
 ;; an observable rather than an assumption.
@@ -85,31 +78,31 @@
 
 (defun (main)
   ;; --- the two entries agree ------------------------------------------------
-  (expect "twin, default evaluated" (int->string (shifted 5)) "11")
-  (expect "general entry, supplied" (int->string (shifted 5 #:by 100)) "105")
-  (expect "supplied at the default value" (int->string (shifted 5 #:by 6)) "11")
+  (expect "twin, default evaluated" (shifted 5) 11)
+  (expect "general entry, supplied" (shifted 5 #:by 100) 105)
+  (expect "supplied at the default value" (shifted 5 #:by 6) 11)
 
-  (expect "statement-shaped, twin" (int->string (looped 1)) "4")
-  (expect "statement-shaped, supplied" (int->string (looped 1 #:acc 10)) "11")
+  (expect "statement-shaped, twin" (looped 1) 4)
+  (expect "statement-shaped, supplied" (looped 1 #:acc 10) 11)
 
-  (expect "generic, twin" (int->string (pick 7)) "7")
-  (expect "generic, supplied" (int->string (pick 7 #:fallback 9)) "9")
+  (expect "generic, twin" (pick 7) 7)
+  (expect "generic, supplied" (pick 7 #:fallback 9) 9)
   (expect "generic at string, twin" (pick "a") "a")
 
-  (expect "all-constant, no twin" (int->string (scaled 5)) "15")
-  (expect "all-constant, supplied" (int->string (scaled 5 #:by 4)) "20")
+  (expect "all-constant, no twin" (scaled 5) 15)
+  (expect "all-constant, supplied" (scaled 5 #:by 4) 20)
 
   ;; --- a default is evaluated exactly once, in declaration order ------------
   (reset)
-  (expect "twin evaluates both defaults" (int->string (ordered 3)) "9")
+  (expect "twin evaluates both defaults" (ordered 3) 9)
   (expect "and in declaration order, once each" trace "ab")
 
   (reset)
-  (expect "general entry skips a supplied default" (int->string (ordered 3 #:a 10)) "30")
+  (expect "general entry skips a supplied default" (ordered 3 #:a 10) 30)
   (expect "so only the other one ran" trace "b")
 
   (reset)
-  (expect "general entry, both supplied" (int->string (ordered 3 #:a 1 #:b 2)) "3")
+  (expect "general entry, both supplied" (ordered 3 #:a 1 #:b 2) 3)
   (expect "no default ran at all" trace "")
 
   ;; --- recursion stays on the twin -----------------------------------------
@@ -117,23 +110,23 @@
   ;; Four levels, each evaluating the default once: the twin calls itself, not
   ;; the general entry.
   (reset)
-  (expect "recursion through the twin" (int->string (countdown 4)) "4")
+  (expect "recursion through the twin" (countdown 4) 4)
   (expect "one default evaluation per level" trace "sssss")
 
   ;; --- a local defun keeps the general entry -------------------------------
   (defun (local-shifted n #:by (+ n 1))
     (+ n by))
 
-  (expect "local, default evaluated" (int->string (local-shifted 5)) "11")
-  (expect "local, supplied" (int->string (local-shifted 5 #:by 100)) "105")
+  (expect "local, default evaluated" (local-shifted 5) 11)
+  (expect "local, supplied" (local-shifted 5 #:by 100) 105)
 
   ;; --- across a `.dll` ------------------------------------------------------
-  (expect "imported, twin" (int->string (bumped 5)) "11")
-  (expect "imported, supplied" (int->string (bumped 5 #:by 100)) "105")
-  (expect "imported twin beside a rest parameter" (int->string (counted 2 1 2 3)) "23")
-  (expect "imported, rest and keyword supplied" (int->string (counted 2 #:start 1 1 2 3)) "4")
-  (expect "imported, rest and no rest arguments" (int->string (counted 2)) "20")
-  (expect "imported mixed defaults, twin" (int->string (paired 1)) "15")
-  (expect "imported mixed defaults, supplied" (int->string (paired 1 #:a 2)) "5")
+  (expect "imported, twin" (bumped 5) 11)
+  (expect "imported, supplied" (bumped 5 #:by 100) 105)
+  (expect "imported twin beside a rest parameter" (counted 2 1 2 3) 23)
+  (expect "imported, rest and keyword supplied" (counted 2 #:start 1 1 2 3) 4)
+  (expect "imported, rest and no rest arguments" (counted 2) 20)
+  (expect "imported mixed defaults, twin" (paired 1) 15)
+  (expect "imported mixed defaults, supplied" (paired 1 #:a 2) 5)
 
   0)

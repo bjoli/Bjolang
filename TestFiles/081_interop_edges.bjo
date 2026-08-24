@@ -12,6 +12,7 @@
 ;;                       composes with everything. §7.6.
 
 (import (std prelude))
+(import (std simpletest))
 
 (import/extern
   ;; Synchronous on purpose: this is what `blocking` is for. `Thread.Sleep`
@@ -32,14 +33,6 @@
 
   (write-file (: System.IO.File.WriteAllTextAsync (-> string string void) #:async))
   (delete-file (: System.IO.File.Delete (-> string void))))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
 
 (type (: Outcome (Union (Got string) TimedOut Ended)))
 
@@ -124,7 +117,7 @@
             (TimedOut "timed out")
             (Ended "ended"))
           "finished")
-  (expect "and it really did run" (int->string ran-to-completion) "1")
+  (expect "and it really did run" ran-to-completion 1)
 
   ;; Losing: a thousand rounds is twenty seconds of work, and the timeout takes
   ;; it out after fifty milliseconds. The count below is what proves the child
@@ -143,7 +136,7 @@
   ;; going, and not long enough for one that had been to have finished anyway.
   (def settle (sync (timeout 200)))
   (expect "and the child was cancelled, not just ignored"
-          (int->string ran-to-completion) "0")
+          ran-to-completion 0)
 
   ;; ---- async-seq->chan ----------------------------------------------------
   (def path "81_stream.txt")

@@ -28,6 +28,10 @@ echo "Building standard library..."
 ./bjor --lib lib/std/stopwatch.bjo
 # `fmt` imports `prelude` and nothing else.
 ./bjor --lib lib/std/fmt.bjo
+# `simpletest` likewise. It is what the suite's assertions are written in, so
+# it is built with the library rather than beside the tests: a test file is an
+# ordinary program, and this is an ordinary module it imports.
+./bjor --lib lib/std/simpletest.bjo
 
 # The collections. Each imports `prelude` and nothing else, and each is
 # independent of the other two, so the order between them does not matter.

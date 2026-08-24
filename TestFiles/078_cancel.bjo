@@ -35,14 +35,7 @@
 ;; that has no `sync` at all — which is the limitation, and it is tested too.
 
 (import (std prelude))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
+(import (std simpletest))
 
 (: yes-no (-> bool string))
 (defun (yes-no b) (if b "yes" "no"))
@@ -189,16 +182,16 @@
   (def j2 (sync (chan-send jobs 20)))
   (def j3 (sync (chan-send jobs 12)))
   (def s (stop! (Requested "shutdown")))
-  (expect "a parked worker is cancellable" (int->string (sync (chan-recv results))) "42")
+  (expect "a parked worker is cancellable" (sync (chan-recv results)) 42)
 
   ;; ---- Polling, for the loop with no yield point ---------------------------
   (def (nope quiet-tok) (make-cancel))
   (expect "an uncancelled poll runs to the limit"
-          (int->string (count-until-cancelled quiet-tok 1000)) "1000")
+          (count-until-cancelled quiet-tok 1000) 1000)
   (def (stop-now! fired-tok) (make-cancel))
   (def n (stop-now! Deadline))
   (expect "a cancelled poll stops at once"
-          (int->string (count-until-cancelled fired-tok 1000)) "0")
+          (count-until-cancelled fired-tok 1000) 0)
 
   ;; ---- Linking ------------------------------------------------------------
   ;;

@@ -25,14 +25,7 @@
 ;; answer. That is what "out of order" below is for.
 (import (std prelude))
 (import "inc/kwrest.bjo")
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
+(import (std simpletest))
 
 ;; One keyword, one rest, and a constant default — a rest parameter does not
 ;; cost the callee the optimization: `int __kw_start = 100, params int[] __rest`.
@@ -59,24 +52,24 @@
 
 (defun (main)
   ;; --- the call that used not to compile ------------------------------------
-  (expect "keyword omitted" (int->string (counted 1 2 3)) "103")
-  (expect "keyword omitted, no rest arguments" (int->string (counted)) "100")
-  (expect "keyword supplied" (int->string (counted #:start 5 1 2 3)) "8")
-  (expect "keyword supplied, no rest arguments" (int->string (counted #:start 5)) "5")
+  (expect "keyword omitted" (counted 1 2 3) 103)
+  (expect "keyword omitted, no rest arguments" (counted) 100)
+  (expect "keyword supplied" (counted #:start 5 1 2 3) 8)
+  (expect "keyword supplied, no rest arguments" (counted #:start 5) 5)
 
   ;; --- a hole in the middle of the keywords ---------------------------------
-  (expect "both omitted" (int->string (ranged 1 2 3)) "123")
-  (expect "first supplied" (int->string (ranged #:lo 5 1 2 3)) "523")
-  (expect "second supplied" (int->string (ranged #:hi 5 1 2 3)) "153")
-  (expect "both supplied" (int->string (ranged #:lo 5 #:hi 6 1 2 3)) "563")
+  (expect "both omitted" (ranged 1 2 3) 123)
+  (expect "first supplied" (ranged #:lo 5 1 2 3) 523)
+  (expect "second supplied" (ranged #:hi 5 1 2 3) 153)
+  (expect "both supplied" (ranged #:lo 5 #:hi 6 1 2 3) 563)
 
   ;; Same types, written the other way round. Passed positionally these two
   ;; swapped places and the answer came out 653.
-  (expect "out of order" (int->string (ranged #:hi 6 #:lo 5 1 2 3)) "563")
+  (expect "out of order" (ranged #:hi 6 #:lo 5 1 2 3) 563)
 
   ;; --- a default that is still evaluated in the callee ----------------------
-  (expect "computed default omitted" (int->string (shifted 5 1 2)) "8")
-  (expect "computed default supplied" (int->string (shifted 5 #:by 100 1 2)) "102")
+  (expect "computed default omitted" (shifted 5 1 2) 8)
+  (expect "computed default supplied" (shifted 5 #:by 100 1 2) 102)
 
   ;; --- a mandatory argument ahead of them -----------------------------------
   (expect "mandatory, keyword omitted" (labelled "a" 1 2 3) "a-3")
@@ -89,20 +82,20 @@
   (defun (plain n #:rest xs)
     (+ n (array-length xs)))
 
-  (expect "rest alone" (int->string (plain 1 2 3 4)) "4")
-  (expect "rest alone, empty" (int->string (plain 1)) "1")
+  (expect "rest alone" (plain 1 2 3 4) 4)
+  (expect "rest alone, empty" (plain 1) 1)
 
   ;; --- a local function gets the same treatment -----------------------------
   (defun (local-counted #:start 7 #:rest xs)
     (+ start (array-length xs)))
 
-  (expect "local, keyword omitted" (int->string (local-counted 1 2)) "9")
-  (expect "local, keyword supplied" (int->string (local-counted #:start 1 2 3)) "3")
+  (expect "local, keyword omitted" (local-counted 1 2) 9)
+  (expect "local, keyword supplied" (local-counted #:start 1 2 3) 3)
 
   ;; --- across a `.dll` -------------------------------------------------------
-  (expect "imported, keyword omitted" (int->string (tally 1 2 3)) "103")
-  (expect "imported, keyword supplied" (int->string (tally #:start 5 1 2 3)) "8")
-  (expect "imported, no rest arguments" (int->string (tally)) "100")
+  (expect "imported, keyword omitted" (tally 1 2 3) 103)
+  (expect "imported, keyword supplied" (tally #:start 5 1 2 3) 8)
+  (expect "imported, no rest arguments" (tally) 100)
   (expect "imported, both omitted" (gather "a" 1 2 3) "a-3")
   (expect "imported, hole in the middle" (gather "a" #:cap 10 1 2 3) "a-13")
   (expect "imported, out of order" (gather "a" #:cap 10 #:sep "=" 1 2) "a=12")

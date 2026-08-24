@@ -10,14 +10,7 @@
 ;; metavariable and lets the flat unification against the instantiated function
 ;; type supply the real one. `FunMeta` is consulted only for the call's shape.
 (import (std prelude))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
+(import (std simpletest))
 
 ;; A rest parameter whose element type is a variable, used at three types and
 ;; at zero length.
@@ -37,20 +30,20 @@
 
 (defun (main)
   ;; One generic rest function, three element types, plus the empty call.
-  (expect "count-of int" (int->string (count-of 1 2 3)) "3")
-  (expect "count-of string" (int->string (count-of "a" "b")) "2")
-  (expect "count-of double" (int->string (count-of 1.5 2.5 3.5 4.5)) "4")
-  (expect "count-of empty" (int->string (count-of)) "0")
+  (expect "count-of int" (count-of 1 2 3) 3)
+  (expect "count-of string" (count-of "a" "b") 2)
+  (expect "count-of double" (count-of 1.5 2.5 3.5 4.5) 4)
+  (expect "count-of empty" (count-of) 0)
 
   ;; The mandatory argument and the rest elements share a variable.
-  (expect "first-of int" (int->string (first-of 5 6 7)) "5")
+  (expect "first-of int" (first-of 5 6 7) 5)
   (expect "first-of string" (first-of "x" "y") "x")
   (expect "first-of no rest" (double->string (first-of 2.5)) "2.5")
 
   ;; Generic keyword parameters, supplied and defaulted.
-  (expect "pick int supplied" (int->string (pick 1 #:fallback 99)) "99")
+  (expect "pick int supplied" (pick 1 #:fallback 99) 99)
   (expect "pick string supplied" (pick "a" #:fallback "z") "z")
   (expect "pick double defaulted" (double->string (pick 2.5)) "2.5")
-  (expect "pick int defaulted" (int->string (pick 7)) "7")
+  (expect "pick int defaulted" (pick 7) 7)
 
   0)

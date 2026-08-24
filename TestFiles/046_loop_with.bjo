@@ -3,12 +3,7 @@
 ;; it belongs to a level, advances in lockstep with that level, and its `end` is
 ;; one of the level's termination tests.
 (import (std prelude))
-
-(: expect (-> string bool void))
-(defun (expect label ok)
-  (if ok
-      (println (string-append "ok " label))
-      (println (string-append "FAILURE: " label))))
+(import (std simpletest))
 
 (: show (-> (List int) string))
 (defun (show xs)
@@ -214,37 +209,37 @@
         => last))
 
 (defun (main args)
-  (expect "fibonacci" (same? (fibs 10) '(0 1 1 2 3 5 8 13 21 34)))
-  (expect "self-bounded" (same? (fibs-under 100) '(0 1 1 2 3 5 8 13 21 34 55 89)))
-  (expect "tuple pattern" (same? (fibs-tupled 10) '(0 1 1 2 3 5 8 13 21 34)))
+  (expect-true "fibonacci" (same? (fibs 10) '(0 1 1 2 3 5 8 13 21 34)))
+  (expect-true "self-bounded" (same? (fibs-under 100) '(0 1 1 2 3 5 8 13 21 34 55 89)))
+  (expect-true "tuple pattern" (same? (fibs-tupled 10) '(0 1 1 2 3 5 8 13 21 34)))
 
-  (expect "simultaneous swap" (same? (swapping) '(0 1 0 1)))
-  (expect "sequential via :let" (same? (doubling 6) '(0 1 2 4 8 16)))
-  (expect "the two differ" (not (same? (doubling 6) (fibs 6))))
+  (expect-true "simultaneous swap" (same? (swapping) '(0 1 0 1)))
+  (expect-true "sequential via :let" (same? (doubling 6) '(0 1 2 4 8 16)))
+  (expect-true "the two differ" (not (same? (doubling 6) (fibs 6))))
 
-  (expect "lockstep is one level" (same? (lockstep) '(1 13 25)))
-  (expect "lockstep ends with the shortest" (= 3 (list-length (lockstep))))
+  (expect-true "lockstep is one level" (same? (lockstep) '(1 13 25)))
+  (expect-true "lockstep ends with the shortest" (= 3 (list-length (lockstep))))
 
   ;; `a` restarts on every entry to the subloop, so it is 0,1 three times over
   ;; and sums to 3. The accumulator beside it is hoisted and counts all six.
   (def (nested-sum nested-runs) (nested))
-  (expect "subloop resets its :with" (= nested-sum 3))
-  (expect "an accumulator beside it does not" (= nested-runs 6))
+  (expect-true "subloop resets its :with" (= nested-sum 3))
+  (expect-true "an accumulator beside it does not" (= nested-runs 6))
 
   (def (wf-n wf-probes) (with-first))
-  (expect "end before for: two iterations" (= wf-n 2))
-  (expect "end before for: cursor left un-advanced" (= wf-probes 2))
+  (expect-true "end before for: two iterations" (= wf-n 2))
+  (expect-true "end before for: cursor left un-advanced" (= wf-probes 2))
 
   (def (ff-n ff-probes) (for-first))
-  (expect "for before end: same two iterations" (= ff-n 2))
-  (expect "for before end: one probe more" (= ff-probes 3))
+  (expect-true "for before end: same two iterations" (= ff-n 2))
+  (expect-true "for before end: one probe more" (= ff-probes 3))
 
-  (expect ":when false still advances" (same? (skipping) '(0 2 4)))
-  (expect ":break updates nothing" (same? (breaking) '(0 1 2)))
+  (expect-true ":when false still advances" (same? (skipping) '(0 2 4)))
+  (expect-true ":break updates nothing" (same? (breaking) '(0 1 2)))
 
-  (expect "named loop overrides a :with"
+  (expect-true "named loop overrides a :with"
           (same? (skipper) '(0 1 2 3 10 11 12 13 14 15 16 17 18 19 20)))
 
-  (expect "loop-invariant :with" (= 21 (invariant)))
-  (expect "deep iteration" (= 199999 (deep 200000)))
+  (expect-true "loop-invariant :with" (= 21 (invariant)))
+  (expect-true "deep iteration" (= 199999 (deep 200000)))
   0)

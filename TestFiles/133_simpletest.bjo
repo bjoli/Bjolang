@@ -1,0 +1,106 @@
+;; `(std simpletest)` — the assertion the rest of this directory is written in.
+;;
+;; A test for the thing every other test depends on, so it cannot use `expect`
+;; to check `expect`: a broken assertion would agree with itself. Everything
+;; here is checked by capturing what was printed and comparing the text by hand,
+;; against a `string=?` and an `if` and nothing else.
+;;
+;; What has to hold:
+;;
+;;   * a passing assertion never prints `FAILURE:`, because the harness greps
+;;     for exactly that word and would fail a green run;
+;;   * a failing one always does, and says what it got and what it wanted;
+;;   * one `expect` serves every type, which is the whole point of routing the
+;;     comparison through `Eq` and the report through `->str`.
+(import (std prelude))
+(import (std simpletest))
+
+(import/class
+  (StringWriter (: System.IO.StringWriter (-> StringWriter))))
+
+;; What `body` printed, so an assertion's *output* can be examined rather than
+;; its effect on the console.
+(: printed (-> (-> void) string))
+(defun (printed body)
+  (def w (StringWriter.))
+  (parameterize ((current-output-port (cast TextOutputPort w)))
+    (body))
+  (.ToString w))
+
+;; The hand-rolled check this file has to use instead of `expect`.
+;;
+;; `.Equals` rather than `=`: `=` is the `Eq` method `expect` compares with, and
+;; a checker built on the thing being checked would agree with it however wrong
+;; both were.
+(: same (-> string string string void))
+(defun (same label actual wanted)
+  (if (.Equals actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " (string-append label
+                (string-append " gave [" (string-append actual
+                (string-append "] but wanted [" (string-append wanted "]")))))))))
+
+;; A type of the test's own, to show that `expect` reaches anything with the two
+;; impls rather than a fixed list of builtins.
+(type (: Money (Union (Kr int))))
+
+(def/impl (->str Money)
+  (defun (->str m) (match m ((Kr n) #"${n} kr"))))
+
+(def/impl (Eq Money)
+  (defun (= a b) (match (Tuple a b) ((Tuple (Kr x) (Kr y)) (= x y))))
+  (defun (eq-hash m) (match m ((Kr n) (eq-hash n)))))
+
+(defun (main)
+  ;; --- A passing assertion -------------------------------------------------
+  (same "a pass says ok"
+        (printed (fun () (expect "the label" 4 4)))
+        "ok: the label\n")
+
+  ;; The property the harness rests on: nothing in a green run may contain the
+  ;; word it greps for.
+  (same "a pass never says the F word"
+        (printed (fun () (expect "the label" "a" "a")))
+        "ok: the label\n")
+
+  ;; --- A failing assertion -------------------------------------------------
+  (same "a failure names both values"
+        (printed (fun () (expect "two and two" 4 5)))
+        "FAILURE: two and two gave 4 but wanted 5\n")
+
+  ;; --- One assertion, every type -------------------------------------------
+  ;;
+  ;; Each of these was a separate hand-written helper before, or a call that
+  ;; converted its value to a string to fit one.
+  (same "strings"  (printed (fun () (expect "s" "ab" "ab"))) "ok: s\n")
+  (same "ints"     (printed (fun () (expect "i" (+ 2 2) 4))) "ok: i\n")
+  (same "bools"    (printed (fun () (expect "b" (< 1 2) true))) "ok: b\n")
+  (same "chars"    (printed (fun () (expect "c" #\a #\a))) "ok: c\n")
+  (same "doubles"  (printed (fun () (expect "d" 1.5 1.5))) "ok: d\n")
+  (same "lists"    (printed (fun () (expect "l" (list 1 2) (list 1 2)))) "ok: l\n")
+
+  ;; And a type declared here, reported through its own `->str`.
+  (same "a type of the test's own"
+        (printed (fun () (expect "m" (Kr 5) (Kr 6))))
+        "FAILURE: m gave 5 kr but wanted 6 kr\n")
+
+  ;; --- expect-true ---------------------------------------------------------
+  ;;
+  ;; No value is reported: there is only one way for a `bool` to be wrong.
+  (same "expect-true passes quietly"
+        (printed (fun () (expect-true "p" true)))
+        "ok: p\n")
+
+  (same "expect-true fails with just the label"
+        (printed (fun () (expect-true "p" false)))
+        "FAILURE: p\n")
+
+  ;; --- fail ----------------------------------------------------------------
+  ;;
+  ;; For an arm that should not have been reached, where there is no pair of
+  ;; values to compare.
+  (same "fail always fails"
+        (printed (fun () (fail "unreachable arm")))
+        "FAILURE: unreachable arm\n")
+
+  0)

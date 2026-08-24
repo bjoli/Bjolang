@@ -4,14 +4,7 @@
 ;; rest of `System.Math` crosses as the imports themselves.
 (import (std maths))
 (import (std prelude))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
+(import (std simpletest))
 
 ;; A `Num`-constrained function defined on this side of the boundary, dispatched
 ;; through a dictionary built from the imported impls.
@@ -25,25 +18,25 @@
 
 (defun (main)
   ;; One name, three types, three different .NET methods.
-  (expect "abs int" (int->string (abs -5)) "5")
+  (expect "abs int" (abs -5) 5)
   (expect "abs long" (long->string (abs -3000000000L)) "3000000000")
   (expect "abs double" (double->string (abs -2.5)) "2.5")
 
   ;; The result type need not mention the implementor.
-  (expect "sign negative" (int->string (sign -2.5)) "-1")
-  (expect "sign zero" (int->string (sign 0)) "0")
-  (expect "sign positive" (int->string (sign 42L)) "1")
+  (expect "sign negative" (sign -2.5) -1)
+  (expect "sign zero" (sign 0) 0)
+  (expect "sign positive" (sign 42L) 1)
   (expect "sqrt of an int" (double->string (sqrt 9)) "3")
   (expect "sqrt of a double" (double->string (sqrt 2.25)) "1.5")
 
-  (expect "min int" (int->string (min 3 9)) "3")
+  (expect "min int" (min 3 9) 3)
   (expect "max double" (double->string (max 1.5 2.5)) "2.5")
-  (expect "clamp below" (int->string (clamp 1 3 9)) "3")
-  (expect "clamp inside" (int->string (clamp 5 3 9)) "5")
-  (expect "clamp above" (int->string (clamp 99 3 9)) "9")
+  (expect "clamp below" (clamp 1 3 9) 3)
+  (expect "clamp inside" (clamp 5 3 9) 5)
+  (expect "clamp above" (clamp 99 3 9) 9)
 
   ;; Through a dictionary rather than devirtualized.
-  (expect "constrained generic, int" (int->string (spread -7 3)) "7")
+  (expect "constrained generic, int" (spread -7 3) 7)
   (expect "constrained generic, double" (double->string (spread -1.5 2.5)) "2.5")
 
   ;; The double functions: one method each, imported and re-exported as such.

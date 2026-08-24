@@ -8,6 +8,7 @@
 ;; `#:finally` runs however the body leaves — normally, caught, or still on its
 ;; way out — and `with-open` is that plus `.Dispose`.
 (import (std prelude))
+(import (std simpletest))
 
 (import/class
   (StreamWriter (: System.IO.StreamWriter (-> string StreamWriter)))
@@ -17,14 +18,6 @@
 (import/extern
   (file-delete! (: System.IO.File.Delete (-> string void)))
   (file-exists? (: System.IO.File.Exists (-> string bool))))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
 
 ;; One guard around the whole region, not around each call.
 (: slurp (-> string (Result System.Exception string)))
@@ -58,7 +51,7 @@
     ((Err e) (println "ok: caught a Bjolang expression")))
 
   (match (try (+ 20 22) #:catch (System.DivideByZeroException))
-    ((Ok v) (expect "unguarded path still returns" (int->string v) "42"))
+    ((Ok v) (expect "unguarded path still returns" v 42))
     ((Err e) (println "FAILURE: caught something that did not throw")))
 
   ;; `#:finally` runs on the way out, including out of a failure.

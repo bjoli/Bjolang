@@ -6,12 +6,7 @@
 ;; trait signature fixes it: `Foldable`'s `%item` and `Iterable`'s `%elem` are
 ;; one element, so a callback reached through `fold` or a `loop` sees a pair.
 (import (std prelude))
-
-(: expect (-> string bool void))
-(defun (expect label ok)
-  (if ok
-      (println (string-append "ok " label))
-      (println (string-append "FAILURE: " label))))
+(import (std simpletest))
 
 (: sample (-> (Map string int)))
 (defun (sample)
@@ -39,40 +34,40 @@
 (defun (main args)
   (def m (sample))
 
-  (expect "fold" (= (total m) 6))
-  (expect "fold via Foldable" (= (total-via-trait m) 6))
-  (expect "keys reachable" (= (key-lengths m) 3))
+  (expect-true "fold" (= (total m) 6))
+  (expect-true "fold via Foldable" (= (total-via-trait m) 6))
+  (expect-true "keys reachable" (= (key-lengths m) 3))
 
   ;; map-map sees the key and the value and returns the new value.
   (def tagged (map-map (fun (k v) (string-append k (int->string v))) m))
-  (expect "map-map" (= (map-ref tagged "b") "b2"))
+  (expect-true "map-map" (= (map-ref tagged "b") "b2"))
 
   (def big (map-filter (fun (_ v) (> v 1)) m))
-  (expect "map-filter count" (= (map-length big) 2))
-  (expect "map-filter kept" (= (map-ref big "c") 3))
+  (expect-true "map-filter count" (= (map-length big) 2))
+  (expect-true "map-filter kept" (= (map-ref big "c") 3))
 
   ;; The merge resolver gets the key and both colliding values: three arguments.
   (def other (map-set (map-set (map-empty) "c" 30) "d" 40))
   (def merged (map-merge-with (fun (_ a b) (+ a b)) m other))
-  (expect "merge-with collision" (= (map-ref merged "c") 33))
-  (expect "merge-with untouched" (= (map-ref merged "a") 1))
-  (expect "merge-with added" (= (map-ref merged "d") 40))
+  (expect-true "merge-with collision" (= (map-ref merged "c") 33))
+  (expect-true "merge-with untouched" (= (map-ref merged "a") 1))
+  (expect-true "merge-with added" (= (map-ref merged "d") 40))
 
   ;; map-iter short-circuits on false.
-  (expect "iter all" (map-iter (fun (_ v) (> v 0)) m))
-  (expect "iter stops" (not (map-iter (fun (_ v) (> v 2)) m)))
+  (expect-true "iter all" (map-iter (fun (_ v) (> v 0)) m))
+  (expect-true "iter stops" (not (map-iter (fun (_ v) (> v 2)) m)))
 
   ;; map-any? is the same question the other way up.
-  (expect "any? hit" (map-any? (fun (k _) (= k "c")) m))
-  (expect "any? miss" (not (map-any? (fun (k _) (= k "z")) m)))
+  (expect-true "any? hit" (map-any? (fun (k _) (= k "c")) m))
+  (expect-true "any? miss" (not (map-any? (fun (k _) (= k "z")) m)))
 
   ;; map-find answers an Option over the whole entry: a value being handed
   ;; back, so a pair.
-  (expect "find hit"
+  (expect-true "find hit"
           (match (map-find (fun (_ v) (= v 2)) m)
             ((Some entry) (= (tuple-key entry) "b"))
             (None false)))
-  (expect "find miss"
+  (expect-true "find miss"
           (match (map-find (fun (_ v) (> v 99)) m)
             ((Some _) false)
             (None true)))
@@ -80,19 +75,19 @@
   ;; map-for-each is the same shape, for effect.
   (def/mutable seen 0)
   (map-for-each (fun (_ v) (set! seen (+ seen v))) m)
-  (expect "for-each" (= seen 6))
+  (expect-true "for-each" (= seen 6))
 
   ;; Functor is the exception: its (-> %a %b) has room for one element type and
   ;; that is the value, so map-map-values is what it needs. Keys ride along.
   (def doubled (map-map-values (fun (v) (* v 2)) m))
-  (expect "map-map-values" (= (map-ref doubled "b") 4))
+  (expect-true "map-map-values" (= (map-ref doubled "b") 4))
 
   ;; Through the trait, changing the value type as it goes.
   (def shown (map (fun (v) (int->string v)) m))
-  (expect "Functor via trait" (= (map-ref shown "c") "3"))
+  (expect-true "Functor via trait" (= (map-ref shown "c") "3"))
 
   ;; Functor still works for the other instances.
-  (expect "Functor on Option"
+  (expect-true "Functor on Option"
           (match (map (fun (n) (* n 2)) (Some 21))
             ((Some v) (= v 42))
             (None false)))
@@ -100,11 +95,11 @@
   ;; On Result the error is fixed by the impl and rides along.
   (def (: ok (Result string int)) (Ok 21))
   (def (: bad (Result string int)) (Err "nope"))
-  (expect "Functor on Ok"
+  (expect-true "Functor on Ok"
           (match (map (fun (n) (* n 2)) ok)
             ((Ok v) (= v 42))
             ((Err _) false)))
-  (expect "Functor on Err"
+  (expect-true "Functor on Err"
           (match (map (fun (n) (* n 2)) bad)
             ((Ok _) false)
             ((Err e) (= e "nope"))))
@@ -112,7 +107,7 @@
   ;; A loop over a Map walks its entries, so `kv` is a pair here too.
   (def/mutable looped 0)
   (loop (:for kv m) (:do (set! looped (+ looped (tuple-value kv)))))
-  (expect "loop over entries" (= looped 6))
+  (expect-true "loop over entries" (= looped 6))
   0)
 
 ;; A loop clause is a body of expressions and a `def` is a declaration, so a

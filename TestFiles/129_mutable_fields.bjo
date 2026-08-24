@@ -11,14 +11,11 @@
 ;; from it.
 (import (std prelude))
 (import "129_lib.bjo")
-
-(: expect (-> string bool void))
-(defun (expect label ok)
-  (println (string-append (if ok "ok: " "FAILURE: ") label)))
+(import (std simpletest))
 
 (: expect-int (-> string int int void))
 (defun (expect-int label actual want)
-  (expect (string-append label
+  (expect-true (string-append label
                          (string-append " => " (int->string actual)))
           (= actual want)))
 
@@ -124,17 +121,17 @@
   (expect-int "three in" (queue-size q) 3)
 
   ;; The first dequeue is the one that pays for the flip; the rest are free.
-  (expect "1 comes out first" (match (dequeue! q) ((Some x) (= x 1)) (None #f)))
-  (expect "then 2" (match (dequeue! q) ((Some x) (= x 2)) (None #f)))
+  (expect-true "1 comes out first" (match (dequeue! q) ((Some x) (= x 1)) (None #f)))
+  (expect-true "then 2" (match (dequeue! q) ((Some x) (= x 2)) (None #f)))
   (expect-int "one left" (queue-size q) 1)
 
   ;; Interleaving is where the two lists earn their keep: 4 lands on `back`
   ;; while 3 is still on `front`.
   (enqueue! q 4)
-  (expect "3 before 4" (match (dequeue! q) ((Some x) (= x 3)) (None #f)))
-  (expect "then 4" (match (dequeue! q) ((Some x) (= x 4)) (None #f)))
-  (expect "and then nothing" (match (dequeue! q) ((Some _) #f) (None #t)))
-  (expect "empty" (queue-empty? q)))
+  (expect-true "3 before 4" (match (dequeue! q) ((Some x) (= x 3)) (None #f)))
+  (expect-true "then 4" (match (dequeue! q) ((Some x) (= x 4)) (None #f)))
+  (expect-true "and then nothing" (match (dequeue! q) ((Some _) #f) (None #t)))
+  (expect-true "empty" (queue-empty? q)))
 
 ;; A queue passed to a function is the caller's queue. Nothing is returned and
 ;; nothing is threaded; this is the property the whole feature buys.
@@ -143,7 +140,7 @@
   (def q (queue))
   (enqueue! q 10)
   (enqueue! q 20)
-  (expect "drained in order" (= (show (drain q)) "10 20 "))
+  (expect-true "drained in order" (= (show (drain q)) "10 20 "))
   (expect-int "and the caller's queue is empty" (queue-size q) 0))
 
 ;; Two names, one queue.
@@ -153,7 +150,7 @@
   (def same q)
   (enqueue! q 7)
   (expect-int "an alias sees the write" (queue-size same) 1)
-  (expect "and gives the same item" (match (dequeue! same) ((Some x) (= x 7)) (None #f)))
+  (expect-true "and gives the same item" (match (dequeue! same) ((Some x) (= x 7)) (None #f)))
   (expect-int "which the first name has lost too" (queue-size q) 0))
 
 ;; `peek!` flips but does not consume, so asking twice gives the same answer and
@@ -163,10 +160,10 @@
   (def q (queue))
   (enqueue! q 5)
   (enqueue! q 6)
-  (expect "peek gives the front" (match (peek! q) ((Some x) (= x 5)) (None #f)))
-  (expect "and again" (match (peek! q) ((Some x) (= x 5)) (None #f)))
+  (expect-true "peek gives the front" (match (peek! q) ((Some x) (= x 5)) (None #f)))
+  (expect-true "and again" (match (peek! q) ((Some x) (= x 5)) (None #f)))
   (expect-int "without consuming" (queue-size q) 2)
-  (expect "and the order survived the flip" (= (show (queue->list q)) "5 6 ")))
+  (expect-true "and the order survived the flip" (= (show (queue->list q)) "5 6 ")))
 
 ;; Generic in the element type, and mutable in it: `Queue` is exactly the shape
 ;; the value restriction exists for, and it is used at two types here.
@@ -175,11 +172,11 @@
   (def qs (queue))
   (enqueue! qs "a")
   (enqueue! qs "b")
-  (expect "a queue of strings" (match (dequeue! qs) ((Some s) (= s "a")) (None #f)))
+  (expect-true "a queue of strings" (match (dequeue! qs) ((Some s) (= s "a")) (None #f)))
 
   (def qb (queue))
   (enqueue! qb #t)
-  (expect "and one of bools" (match (dequeue! qb) ((Some b) b) (None #f))))
+  (expect-true "and one of bools" (match (dequeue! qb) ((Some b) b) (None #f))))
 
 ;; Every value is evaluated, left to right, before any of them is written. So
 ;; the `size` operand below reads the size as it was, not the one being written
@@ -192,7 +189,7 @@
                (size 100)
                (front (Cons (record-ref q size) Nil)))
   (expect-int "the write landed" (queue-size q) 100)
-  (expect "the other operand read the old state" (= (show (record-ref q front)) "1 ")))
+  (expect-true "the other operand read the old state" (= (show (record-ref q front)) "1 ")))
 
 ;; A functional update is still a copy, and takes the mutable fields as they
 ;; stand. Writing one afterwards does not reach the other — which is what makes
@@ -240,22 +237,22 @@
 (defun (equality)
   (def a (Tally (name "a") (hits 1)))
   (def b (Tally (name "a") (hits 1)))
-  (expect "equal while the fields agree" (= a b))
+  (expect-true "equal while the fields agree" (= a b))
 
   (record-set! b (hits 2))
-  (expect "and unequal once one is written" (not (= a b)))
+  (expect-true "and unequal once one is written" (not (= a b)))
 
   (record-set! a (hits 2))
-  (expect "and equal again" (= a b))
+  (expect-true "and equal again" (= a b))
 
   ;; The derived `eq-hash` refuses.
-  (expect "hashing a mutable record throws"
+  (expect-true "hashing a mutable record throws"
           (threw? (try (eq-hash a) #:catch (System.InvalidOperationException))))
 
   ;; And so does .NET, which is the same refusal reached the other way round:
   ;; `Map` is a C# trie keying on `GetHashCode`, and materialization made that
   ;; the trait's. One refusal, both roads to it.
-  (expect "and so does using one as a Map key"
+  (expect-true "and so does using one as a Map key"
           (threw? (try (map-set (map-empty) a "x") #:catch (System.InvalidOperationException)))))
 
 ;; The refusal is what `derive` writes, not a property of the type. An
@@ -274,16 +271,16 @@
 (defun (hand-written-hash)
   (def a (Cached (key "k") (hits 1)))
   (def b (Cached (key "k") (hits 999)))
-  (expect "a hand-written implementation ignores the mutable field" (= a b))
-  (expect "and hashes them alike" (= (eq-hash a) (eq-hash b)))
+  (expect-true "a hand-written implementation ignores the mutable field" (= a b))
+  (expect-true "and hashes them alike" (= (eq-hash a) (eq-hash b)))
 
   ;; `Map` is a C# trie asking .NET, and .NET's answer for `Cached` is
   ;; `Cached`'s own implementation — so it agrees.
   (def m (map-set (map-empty) a "found"))
-  (expect "a Map keyed on one finds the other" (= "found" (map-ref-or m b "MISSING")))
+  (expect-true "a Map keyed on one finds the other" (= "found" (map-ref-or m b "MISSING")))
 
   (record-set! a (hits 42))
-  (expect "and still finds it after a write" (= "found" (map-ref-or m a "MISSING"))))
+  (expect-true "and still finds it after a write" (= "found" (map-ref-or m a "MISSING"))))
 
 ;; ---------------------------------------------------------------------------
 ;; Across a module boundary
@@ -313,7 +310,7 @@
 
   ;; Reading a mutable field of a foreign record is fine; only writing is not.
   (expect-int "a foreign mutable field reads" (record-ref s writes) 3)
-  (expect "and so does a foreign immutable one" (= (record-ref s label) "counter")))
+  (expect-true "and so does a foreign immutable one" (= (record-ref s label) "counter")))
 
 (defun (main args)
   (first-in-first-out)

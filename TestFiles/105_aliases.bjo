@@ -6,14 +6,7 @@
 ;; the same cell.
 (import "inc/kitchen.bjo")
 (import (std prelude))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
+(import (std simpletest))
 
 ;; An imported def, an imported macro, and a prelude binding.
 (:alias fetch unwrap)
@@ -46,26 +39,26 @@
   (f c))
 
 (defun (main)
-  (expect "alias of an import" (int->string (fetch (make-crate 3))) "3")
-  (expect "chained alias" (int->string (fetch-again (make-crate 4))) "4")
-  (expect "alias of a local def" (int->string (fetch (wrap-up 5))) "5")
+  (expect "alias of an import" (fetch (make-crate 3)) 3)
+  (expect "chained alias" (fetch-again (make-crate 4)) 4)
+  (expect "alias of a local def" (fetch (wrap-up 5)) 5)
 
   ;; Keyword metadata travels with the alias; without it the shorter argument
   ;; list would not unify.
-  (expect "alias keeps its keyword parameter" (int->string (bump-by 5)) "10")
-  (expect "and one passed by name" (int->string (bump-by 5 #:by 3)) "15")
+  (expect "alias keeps its keyword parameter" (bump-by 5) 10)
+  (expect "and one passed by name" (bump-by 5 #:by 3) 15)
 
   ;; `set!` through an alias to a mutable def writes the original's cell.
   (set! clicks 7)
-  (expect "set! writes through" (int->string ticks) "7")
+  (expect "set! writes through" ticks 7)
   (set! ticks 9)
-  (expect "and reads through" (int->string clicks) "9")
+  (expect "and reads through" clicks 9)
 
-  (expect "first class" (int->string (apply-it fetch (make-crate 8))) "8")
+  (expect "first class" (apply-it fetch (make-crate 8)) 8)
 
   ;; A macro alias, which had to reach the macro table before this file was
   ;; parsed — by the time inference runs, the call has already been read.
-  (expect "alias of a macro" (int->string (triple 5)) "15")
+  (expect "alias of a macro" (triple 5) 15)
 
   (say "105 ok")
   0)

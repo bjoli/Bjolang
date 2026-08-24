@@ -32,6 +32,7 @@
 ;; would catch.
 
 (import "079_lib.bjo")
+(import (std simpletest))
 
 (import/extern
   ;; Cancellable, like the library's, and imported again here to show that two
@@ -57,14 +58,6 @@
   ;; there and is not consulted. Two aliases rather than one so that each test
   ;; says which of the two shapes it is about.
   (fetch (: System.IO.File.ReadAllTextAsync (-> string string) #:async)))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
 
 ;; Cancellation arrives from .NET as an exception rather than as a value: the
 ;; task faults, the await rethrows, and the fiber dies. Joining it is how a
@@ -122,7 +115,7 @@
 (defbjo (main args)
   ;; A bjoroutine from another module whose suspension is a .NET await. The call
   ;; site looks like every other call.
-  (expect "a library bjoroutine that awaits a task" (int->string (nap 20)) "20")
+  (expect "a library bjoroutine that awaits a task" (nap 20) 20)
 
   ;; The republished alias, called directly. Without `#:async` surviving the
   ;; metadata round trip this would not be a yield point and would not typecheck

@@ -2,12 +2,7 @@
 ;; one, assigned by the module's static constructor in declaration order.
 (import "047_lib.bjo")
 (import (std prelude))
-
-(: expect (-> string bool void))
-(defun (expect label ok)
-  (if ok
-      (println (string-append "ok " label))
-      (println (string-append "FAILURE: " label))))
+(import (std simpletest))
 
 (def/mutable counter 0)
 
@@ -35,31 +30,31 @@
   (list-length cell))
 
 (defun (main args)
-  (expect "initialized" (= 0 counter))
-  (expect "written by a function" (= 1 (bump)))
-  (expect "and again" (= 2 (bump)))
-  (expect "read back" (= 2 counter))
+  (expect-true "initialized" (= 0 counter))
+  (expect-true "written by a function" (= 1 (bump)))
+  (expect-true "and again" (= 2 (bump)))
+  (expect-true "read back" (= 2 counter))
 
   (set! counter 100)
-  (expect "written from outside" (= 100 counter))
+  (expect-true "written from outside" (= 100 counter))
 
   ;; The initializer above ran after `base` was assigned, not before.
-  (expect "declaration order" (= derived "start-derived"))
-  (expect "and carries forward" (= copied "start-derived"))
+  (expect-true "declaration order" (= derived "start-derived"))
+  (expect-true "and carries forward" (= copied "start-derived"))
 
   ;; Reassigning the mutable does not disturb what was derived from it.
   (set! base "changed")
-  (expect "later assignment is independent" (= derived "start-derived"))
-  (expect "the mutable itself changed" (= base "changed"))
+  (expect-true "later assignment is independent" (= derived "start-derived"))
+  (expect-true "the mutable itself changed" (= base "changed"))
 
   (set! pending (Cons 1 (Cons 2 (Cons 3 Nil))))
-  (expect "monomorphic mutable" (= 3 (list-length pending)))
-  (expect "local mutable" (= 2 (local-cell)))
+  (expect-true "monomorphic mutable" (= 3 (list-length pending)))
+  (expect-true "local mutable" (= 2 (local-cell)))
 
   ;; Another module's mutable is that module's single field, not a copy.
-  (expect "cross-module tick" (= 1 (tick)))
-  (expect "cross-module tick again" (= 2 (tick)))
-  (expect "cross-module read" (= 2 reads))
+  (expect-true "cross-module tick" (= 1 (tick)))
+  (expect-true "cross-module tick again" (= 2 (tick)))
+  (expect-true "cross-module read" (= 2 reads))
   (reset)
-  (expect "cross-module write" (= 0 reads))
+  (expect-true "cross-module write" (= 0 reads))
   0)

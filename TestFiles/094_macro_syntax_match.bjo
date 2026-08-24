@@ -6,74 +6,70 @@
 ;; parsed. Nothing here can tell which of its macros were written with it.
 
 (import "inc/sm_macros.bjo")
-
-(: check (-> string int int void))
-(defun (check what got want)
-  (unless (= got want)
-    (println (string-append "FAILURE: " (string-append what (string-append " gave " (int->string got)))))))
+(import (std simpletest))
 
 (defun (main args)
   ;; A fixed shape.
-  (check "or-first" (my-or 1 2) 1)
-  (check "or-second" (my-or 0 7) 7)
+  (expect "or-first" (my-or 1 2) 1)
+  (expect "or-second" (my-or 0 7) 7)
 
   ;; Hygiene, unchanged by the pattern language: the template binds `tmp` and
   ;; the caller passes one. Without renaming the `,b` spliced into the template
   ;; would read the template's own temporary and give 0.
   (let ((tmp 9))
-    (check "no-capture" (my-or 0 tmp) 9))
+    (expect "no-capture" (my-or 0 tmp) 9))
 
   ;; The ellipsis over a compound. The names come from the input, so they are
   ;; left as written and the body means what it says.
-  (check "let" (my-let ((x 1) (y 2)) (+ x y)) 3)
-  (check "let-one" (my-let ((x 41)) (+ x 1)) 42)
-  (check "let-none" (my-let () 5) 5)
-  (check "let-body" (my-let ((x 2)) (def y (* x 3)) (+ x y)) 8)
+  (expect "let" (my-let ((x 1) (y 2)) (+ x y)) 3)
+  (expect "let-one" (my-let ((x 41)) (+ x 1)) 42)
+  (expect "let-none" (my-let () 5) 5)
+  (expect "let-body" (my-let ((x 2)) (def y (* x 3)) (+ x y)) 8)
 
   ;; Values are evaluated outside the bindings, so this is a `let` and not a
   ;; `let*`: the inner `x` is the outer one plus one.
   (let ((x 10))
-    (check "let-not-let*" (my-let ((x (+ x 1))) x) 11))
+    (expect "let-not-let*" (my-let ((x (+ x 1))) x) 11))
 
   ;; `else` as a literal identifier in a pattern.
-  (check "cond-first" (my-cond ((= 1 1) 10) (else 30)) 10)
-  (check "cond-middle" (my-cond ((= 1 2) 10) ((= 2 2) 20) (else 30)) 20)
-  (check "cond-else" (my-cond ((= 1 2) 10) (else 30)) 30)
-  (check "cond-body" (my-cond ((= 1 1) (def a 3) (* a 4)) (else 0)) 12)
+  (expect "cond-first" (my-cond ((= 1 1) 10) (else 30)) 10)
+  (expect "cond-middle" (my-cond ((= 1 2) 10) ((= 2 2) 20) (else 30)) 20)
+  (expect "cond-else" (my-cond ((= 1 2) 10) (else 30)) 30)
+  (expect "cond-body" (my-cond ((= 1 1) (def a 3) (* a 4)) (else 0)) 12)
 
   ;; Rule two through a macro that was itself written with `syntax-match`: the
   ;; template names `twice`, which is `sm_macros`'s and not in scope here under
   ;; that name — not even when something else here is.
-  (check "module-binding" (double-all 3) 6)
-  (check "module-binding-many" (double-all 1 2 3) 12)
+  (expect "module-binding" (double-all 3) 6)
+  (expect "module-binding-many" (double-all 1 2 3) 12)
   (let ((twice (fun (n) (- 0 n))))
-    (check "not-shadowed" (double-all 5) 10)
-    (check "local-still-works" (twice 5) -5))
+    (expect "not-shadowed" (double-all 5) 10)
+    (expect "local-still-works" (twice 5) -5))
 
   ;; A macro whose `syntax-match` has no catch-all clause. What it does accept
   ;; it answers; `TestFiles/errors/syntax_match_unmatched.bjo` is what it does
   ;; with the rest.
-  (check "only-pair" (only-pair 20 22) 42)
+  (expect "only-pair" (only-pair 20 22) 42)
 
   ;; Macros nest, in either direction.
-  (check "nested" (my-or (my-or 0 0) (double-all 2)) 4)
-  (check "nested-let" (my-let ((a (my-or 0 6))) (my-cond ((= a 6) (double-all a)) (else 0))) 12)
+  (expect "nested" (my-or (my-or 0 0) (double-all 2)) 4)
+  (expect "nested-let" (my-let ((a (my-or 0 6))) (my-cond ((= a 6) (double-all a)) (else 0))) 12)
 
   ;; A macro may expand to a call to itself, which is how a form of any length
   ;; is taken apart. The expander reads the result, so it meets the call and
   ;; expands that too — Scheme's arrangement, arrived at from the other side.
-  (check "recursive-none" (any-of) 0)
-  (check "recursive-one" (any-of 3) 3)
-  (check "recursive-many" (any-of 0 0 7) 7)
-  (check "recursive-deep" (any-of 0 0 0 0 0 0 0 0 0 0 0 0 42) 42)
+  (expect "recursive-none" (any-of) 0)
+  (expect "recursive-one" (any-of 3) 3)
+  (expect "recursive-many" (any-of 0 0 7) 7)
+  (expect "recursive-deep" (any-of 0 0 0 0 0 0 0 0 0 0 0 0 42) 42)
 
   ;; Every round renames its own `tmp`, so a caller's survives all of them.
   (let ((tmp 9))
-    (check "recursive-hygiene" (any-of 0 0 tmp) 9))
+    (expect "recursive-hygiene" (any-of 0 0 tmp) 9))
 
   ;; Recursion that expands to a definition each round, in body position.
-  (check "recursive-defs" (my-let* ((a 1) (b (+ a 1)) (c (+ b 1))) (+ a (+ b c))) 6)
-  (check "recursive-defs-none" (my-let* () 5) 5)
+  (expect "recursive-defs" (my-let* ((a 1) (b (+ a 1)) (c (+ b 1))) (+ a (+ b c))) 6)
+  (expect "recursive-defs-none" (my-let* () 5) 5)
 
   (println "94 ok")
   0)

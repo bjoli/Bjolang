@@ -18,14 +18,7 @@
 ;;     as a real `params` method; through a delegate it produced C# that did
 ;;     not compile.
 (import (std prelude))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
+(import (std simpletest))
 
 (: same? (-> (List int) (List int) bool))
 (defun (same? a b)
@@ -58,13 +51,13 @@
 
 (defun (main)
   ;; Variadic calls, at several arities and element types.
-  (expect "three ints" (int->string (list-length (list 1 2 3))) "3")
-  (expect "empty" (int->string (list-length (list))) "0")
-  (expect "head" (int->string (list-head (list 7 8 9))) "7")
+  (expect "three ints" (list-length (list 1 2 3)) 3)
+  (expect "empty" (list-length (list)) 0)
+  (expect "head" (list-head (list 7 8 9)) 7)
   (expect "strings" (list-head (list "a" "b")) "a")
 
   ;; The nested call is an ordinary argument, not a flattened one.
-  (expect "nested" (int->string (list-length (list (list 1 2) (list 3)))) "2")
+  (expect "nested" (list-length (list (list 1 2) (list 3))) 2)
 
   ;; Same value as the Cons spelling it replaces.
   (expect "agrees with Cons"
@@ -72,8 +65,8 @@
           "yes")
 
   ;; The alias spreads at its own call sites.
-  (expect "aliased variadic" (int->string (list-length (f 1 2 3 4 5))) "5")
-  (expect "aliased empty" (int->string (list-length (f))) "0")
+  (expect "aliased variadic" (list-length (f 1 2 3 4 5)) 5)
+  (expect "aliased empty" (list-length (f)) 0)
   (expect "alias agrees with list"
           (if (same? (f 1 2 3) (list 1 2 3)) "yes" "no")
           "yes")
@@ -84,11 +77,11 @@
     (array-set! arr 1 20)
     (array-set! arr 2 30)
     (expect "array form" (if (same? (g arr) (list 10 20 30)) "yes" "no") "yes")
-    (expect "array form length" (int->string (list-length (g arr))) "3"))
+    (expect "array form length" (list-length (g arr)) 3))
 
   ;; A local binding over a different name; the special form is unaffected.
-  (expect "shadowed" (int->string (shadowed)) "6")
+  (expect "shadowed" (shadowed) 6)
 
   ;; The special form works anywhere.
-  (expect "still works" (int->string (list-length (list 1 2))) "2")
+  (expect "still works" (list-length (list 1 2)) 2)
   0)

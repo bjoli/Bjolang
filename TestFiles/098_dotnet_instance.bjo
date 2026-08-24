@@ -20,6 +20,7 @@
 ;; module import only the read. A `#:set` alias is void, exactly as `set!` is.
 
 (import (std prelude))
+(import (std simpletest))
 
 (import/class
   (StringBuilder (: System.Text.StringBuilder (-> StringBuilder)))
@@ -54,14 +55,6 @@
   ;; be chosen and a cancelled scope would wait out the full thirty seconds.
   (sem-wait (: System.Threading.SemaphoreSlim.WaitAsync (-> SemaphoreSlim int bool) #:async)))
 
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
-
 ;; Waits on a semaphore nobody will ever post to. Only ever finishes by being
 ;; cancelled, which is the point: the token has to have reached .NET.
 (: blocked (-> SemaphoreSlim string))
@@ -75,16 +68,16 @@
   (expect "an instance method through import/extern" (sb->string sb) "abc")
 
   ;; ---- Accessors ----------------------------------------------------------
-  (expect "a #:get import" (int->string (sb-length sb)) "3")
+  (expect "a #:get import" (sb-length sb) 3)
 
   ;; Void, like `set!`. Truncating to two leaves "ab" behind it.
   (sb-length! sb 2)
   (expect "a #:set import" (sb->string sb) "ab")
-  (expect "the write is visible to the read" (int->string (sb-length sb)) "2")
+  (expect "the write is visible to the read" (sb-length sb) 2)
 
   ;; A static accessor, bare. `TForeignStaticGet` emits the member access
   ;; itself, so a property like this is re-read wherever the name stands.
-  (expect "a static #:get import is a value" (int->string int-max) "2147483647")
+  (expect "a static #:get import is a value" int-max 2147483647)
 
   ;; ---- As values ----------------------------------------------------------
   ;;
@@ -97,7 +90,7 @@
   ;; An accessor needs no signature for this: a property has no overload set,
   ;; so its type is known from the member alone.
   (def len sb-length)
-  (expect "a #:get import used as a value" (int->string (len sb)) "2")
+  (expect "a #:get import used as a value" (len sb) 2)
 
   ;; ---- #:exceptions over an instance call ---------------------------------
   (expect "an instance call that succeeds"

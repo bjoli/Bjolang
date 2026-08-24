@@ -7,6 +7,8 @@
 ;; identifier and `SDatum` is a quoted symbol written as data; they carry the
 ;; same payload and differ only in whether hygiene renames them.
 
+(import (std simpletest))
+
 (: describe (-> Syntax string))
 (defun (describe s)
   (match s
@@ -27,40 +29,35 @@
     ((SList items) (fold (fun (acc item) (+ acc (leaves item))) 0 items))
     (_ 1)))
 
-(: check (-> string string string void))
-(defun (check what got want)
-  (unless (= got want)
-    (println (string-append "FAILURE: " (string-append what (string-append " gave " got))))))
-
 (defun (main args)
   (def one (SInt "1"))
   (def x (SSym 'x))
   (def form (SList (list (SSym 'add) x one)))
 
-  (check "sym" (describe x) "sym:x")
-  (check "datum" (describe (SDatum 'x)) "datum:x")
-  (check "int" (describe one) "int:1")
-  (check "str" (describe (SStr "hi")) "str:hi")
-  (check "char" (describe (SChar #\q)) "char:q")
-  (check "key" (describe (SKey #:when)) "key:when")
-  (check "list" (describe form) "list:3")
+  (expect "sym" (describe x) "sym:x")
+  (expect "datum" (describe (SDatum 'x)) "datum:x")
+  (expect "int" (describe one) "int:1")
+  (expect "str" (describe (SStr "hi")) "str:hi")
+  (expect "char" (describe (SChar #\q)) "char:q")
+  (expect "key" (describe (SKey #:when)) "key:when")
+  (expect "list" (describe form) "list:3")
 
   ;; A nested form, counted through the list payload.
   (def nested (SList (list (SSym 'f) form (SList (list (SSym 'g))))))
-  (check "leaves" (int->string (leaves nested)) "5")
+  (expect "leaves" (leaves nested) 5)
 
   ;; `syntax->string` renders back to something that reads as source. This is
   ;; what a macro's error message quotes.
-  (check "render" (syntax->string form) "(add x 1)")
-  (check "render-nested" (syntax->string nested) "(f (add x 1) (g))")
-  (check "render-datum" (syntax->string (SDatum 'quoted)) "'quoted")
-  (check "render-str" (syntax->string (SStr "hi")) "\"hi\"")
-  (check "render-key" (syntax->string (SKey #:when)) "#:when")
+  (expect "render" (syntax->string form) "(add x 1)")
+  (expect "render-nested" (syntax->string nested) "(f (add x 1) (g))")
+  (expect "render-datum" (syntax->string (SDatum 'quoted)) "'quoted")
+  (expect "render-str" (syntax->string (SStr "hi")) "\"hi\"")
+  (expect "render-key" (syntax->string (SKey #:when)) "#:when")
 
   ;; A value built here has no range: only the expander fills those in, from the
   ;; call site of the macro that produced the node.
-  (check "no-file" (syntax-file form) "<unknown>")
-  (check "no-line" (int->string (syntax-line form)) "0")
+  (expect "no-file" (syntax-file form) "<unknown>")
+  (expect "no-line" (syntax-line form) 0)
 
   (println "89 ok")
   0)

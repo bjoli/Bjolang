@@ -18,17 +18,10 @@
 ;; different facts, and a supervisor needs the difference.
 
 (import (std prelude))
+(import (std simpletest))
 
 (import/class
   (Exception (: System.Exception)))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; The work
@@ -162,7 +155,7 @@
   ;; precisely because it does not run in the child.
   (set! trace 0)
   (def p2 (bjo (work (note 7))))
-  (expect "the operand ran in the parent" (int->string trace) "1")
+  (expect "the operand ran in the parent" trace 1)
   (expect "and the child got its value"
           (match (sync (promise-join p2)) ((Ok v) (int->string v)) ((Err e) "err"))
           "14")
@@ -175,8 +168,7 @@
 
   ;; Fan out with `map`, collect with a loop. 2*(1+2+3+4+5) = 30.
   (expect "spawn with map, collect with a loop"
-          (int->string (collect-all (spawn-all (list 1 2 3 4 5))))
-          "30")
+          (collect-all (spawn-all (list 1 2 3 4 5))) 30)
 
   ;; Spawned inside a `parameterize`, the child sees the binding...
   (def inside (parameterize ((depth 100)) (bjo (read-depth 3))))

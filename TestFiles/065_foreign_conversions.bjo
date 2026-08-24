@@ -13,6 +13,7 @@
 ;; landing on the same method this program was typed against.
 (import (std prelude))
 (import (std maths))
+(import (std simpletest))
 
 (import/class
   (StreamReader (: System.IO.StreamReader (-> string StreamReader))))
@@ -24,14 +25,6 @@
   (synchronized (: System.IO.TextReader.Synchronized))
   ;; The whole `Math.Max` overload set, called with mixed argument types.
   (clr-max (: System.Math.Max)))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
 
 (defun (main)
   ;; --- Widening -----------------------------------------------------------
@@ -49,7 +42,7 @@
   (expect "int and long" (long->string (clr-max 3 9000000000L)) "9000000000")
 
   ;; An exact match still beats a widening, which is what the scores are for.
-  (expect "exact still wins" (int->string (clr-max 3 9)) "9")
+  (expect "exact still wins" (clr-max 3 9) 9)
 
   ;; The other half, unchanged and worth pinning down. `n` has no declared type
   ;; and nothing else to fix it, so it is the *overload* that settles it: `0` is
@@ -58,8 +51,8 @@
   ;; That still happens for an argument left open — it is a *known* one that is
   ;; now converted rather than unified.
   (def at-least-zero (fun (n) (clr-max n 0)))
-  (expect "open argument pinned" (int->string (at-least-zero -5)) "0")
-  (expect "open argument pinned, positive" (int->string (at-least-zero 7)) "7")
+  (expect "open argument pinned" (at-least-zero -5) 0)
+  (expect "open argument pinned, positive" (at-least-zero 7) 7)
 
   ;; --- Boxing -------------------------------------------------------------
   ;; `String.Concat` has no (int, int) overload, so these box into (object,

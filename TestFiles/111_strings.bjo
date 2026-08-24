@@ -5,22 +5,11 @@
 ;; ordinal and every case mapping invariant, so the answers below are the same
 ;; on every machine, and that `string-split` and `string-join` are inverses.
 (import (std prelude))
-
-(: expect (-> string string string void))
-(defun (expect label actual wanted)
-  (if (= actual wanted)
-      (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave " (string-append actual
-                (string-append " but wanted " wanted))))))))
-
-(: expect-true (-> string bool void))
-(defun (expect-true label actual)
-  (expect label (if actual "true" "false") "true"))
+(import (std simpletest))
 
 (: expect-false (-> string bool void))
 (defun (expect-false label actual)
-  (expect label (if actual "true" "false") "false"))
+  (expect label actual false))
 
 (defun (main)
   ;; --- Searching -----------------------------------------------------------
@@ -70,12 +59,12 @@
 
   ;; --- Splitting and joining -----------------------------------------------
   (def fields (string-split "a,b,c" ","))
-  (expect "split" (int->string (length fields)) "3")
+  (expect "split" (length fields) 3)
   (expect "and its fields" (vec-ref fields 1) "b")
 
   ;; Empty fields are kept, which is what makes the two inverses.
   (def sparse (string-split "a,,b" ","))
-  (expect "an empty field is a field" (int->string (length sparse)) "3")
+  (expect "an empty field is a field" (length sparse) 3)
   (expect "join undoes split" (string-join sparse ",") "a,,b")
 
   (expect "a separator that is not there splits into one field"
