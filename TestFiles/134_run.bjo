@@ -16,11 +16,7 @@
 ;; parallel run of another test cannot collide with them.
 (import/extern
   (temp-directory (: System.IO.Path.GetTempPath (-> string)))
-  (read-lines-of (: BjoProc.ReadLinesAsync (-> TextInputPort (Array string)) #:async))
-  ;; How a plain `defun` drives a bjoroutine: spawn it and block on the promise.
-  ;; This is what `wait` does inside `(std run)`, reached directly here because
-  ;; the module has no reason to export it.
-  (await-promise (: BjoProc.Await (-> (Promise %a) %a) #:exceptions (System.Exception))))
+  (read-lines-of (: BjoProc.ReadLinesAsync (-> TextInputPort (Array string)) #:async)))
 
 ;; A filter is a `defbjo`, and `run` spawns it rather than calling it — so it
 ;; may `sync`, and every stage runs at once. `run` closes `out` when it returns.
@@ -524,7 +520,9 @@
   ;; ---- the other face ----------------------------------------------------
   ;; Everything above is this module seen from a plain function. The rest is it
   ;; seen from a fiber, driven from here the way any bjoroutine is.
-  (match (await-promise (bjo (cml-checks)))
+  ;; How a plain `defun` drives a bjoroutine: spawn it, then wait for the
+  ;; promise with `sync/blocking`. The same move `wait` makes above.
+  (match (sync/blocking (promise-join (bjo (cml-checks))))
     ((Ok u) unit)
     ((Err e) (fail (string-append "the bjoroutine checks raised: " (.-Message e)))))
   0)

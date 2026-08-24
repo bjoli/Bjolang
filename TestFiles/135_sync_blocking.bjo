@@ -1,0 +1,99 @@
+;; `sync/blocking` — waiting for an event from an ordinary function.
+;;
+;; `sync` is a yield point, so `ColourCheck` allows it only inside a bjoroutine,
+;; and a program whose `main` is a plain `defun` cannot take a value off a
+;; channel at all. This is the way in, and the mirror of `blocking`: that one
+;; carries a thread-parking call into fiber-land, this one carries an event out.
+;;
+;; **Every assertion below runs from a plain `defun`.** That is the whole point,
+;; and it is why `main` here is not a `defbjo` — if it were, the file would
+;; prove nothing that `076_channels.bjo` does not already prove.
+
+(import (std prelude))
+(import (std simpletest))
+
+(import/class
+  (Refusal (: System.InvalidOperationException (-> string Refusal))))
+
+(type (: (Raced %a) (Union (Got %a) TimedOut)))
+
+;; Ordinary bjoroutines. Nothing about them knows who is going to wait.
+(: chatter (-> (Chan string) Unit))
+(defbjo (chatter ch)
+  (loop (:for word (list "one" "two" "three"))
+        (:do (sync (chan-send ch word))))
+  (sync (chan-send ch "."))
+  unit)
+
+(: adds-up (-> int int))
+(defbjo (adds-up n)
+  (sync (timeout 10))
+  (+ n n))
+
+(: refuses (-> int))
+(defbjo (refuses)
+  (raise (cast Exception (Refusal. "no"))))
+
+(defun (main args)
+  ;; A rendezvous with a fiber, one value at a time. The sender suspends until
+  ;; this thread takes each one, so the backpressure is the same as it would be
+  ;; between two fibers.
+  (def ch (make-chan))
+  (ignore (bjo (chatter ch)))
+  (expect "values off a channel, from a defun"
+          (let go ((acc ""))
+            (let ((word (sync/blocking (chan-recv ch))))
+              (if (= word ".")
+                  (string-trim-end acc)
+                  (go (string-append acc (string-append word " "))))))
+          "one two three")
+
+  ;; Building an event is pure — only syncing suspends — so everything composes
+  ;; before it gets here. Which is just as well: nothing withdraws a
+  ;; `sync/blocking` once it is parked, so a wait that might not end needs its
+  ;; own way out built in.
+  (expect "a timeout composes, and wins"
+          (match (sync/blocking (choose (wrap (chan-recv (make-chan)) (fun (v) (Got v)))
+                                        (wrap (timeout 50) (fun (u) TimedOut))))
+            ((Got v) v)
+            (TimedOut "nothing came"))
+          "nothing came")
+
+  (expect "a timeout composes, and loses"
+          (match (sync/blocking (choose (wrap (always "here already") (fun (v) (Got v)))
+                                        (wrap (timeout 10000) (fun (u) TimedOut))))
+            ((Got v) v)
+            (TimedOut "timed out"))
+          "here already")
+
+  ;; A spawned bjoroutine's answer, collected without becoming one.
+  (expect "a promise joined from a defun"
+          (match (sync/blocking (promise-join (bjo (adds-up 21))))
+            ((Ok n) (int->string n))
+            ((Err e) "ERR"))
+          "42")
+
+  ;; Failure arrives as a value, as it does at every other sync point.
+  (expect "a bjoroutine that raised"
+          (match (sync/blocking (promise-join (bjo (refuses))))
+            ((Ok n) "no raise")
+            ((Err e) (.-Message e)))
+          "no")
+
+  ;; An event that is ready before anyone waits: the continuation runs on the
+  ;; calling thread inside `Cml.Sync`, before the monitor is ever entered. Worth
+  ;; pinning, because that is the path where a naive implementation deadlocks.
+  (expect "an event that is already ready"
+          (sync/blocking (always "immediate"))
+          "immediate")
+
+  ;; Several waits in a row, to show nothing is left behind between them.
+  (expect "repeated waits"
+          (let go ((i 0) (total 0))
+            (if (= i 5)
+                (int->string total)
+                (match (sync/blocking (promise-join (bjo (adds-up i))))
+                  ((Ok n) (go (+ i 1) (+ total n)))
+                  ((Err e) "ERR"))))
+          "20")
+  0)

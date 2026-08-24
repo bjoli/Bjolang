@@ -292,6 +292,10 @@ let prelude : Env =
         /// and the emitter wraps the call in an `await` because of the type
         /// rather than because of the name.
         "sync", {Scheme = Scheme(["a"], [], TFun([makeEventType (TVar "a")], TVar "a", EAsync)); IsMutable = false }
+        // The same wait from an ordinary function, parking the calling thread
+        // instead of suspending a fiber. An ESync arrow deliberately: this is
+        // what a `defun` reaches for, and a bjoroutine wants `sync` above.
+        "sync/blocking", {Scheme = Scheme(["a"], [], makeFunType [makeEventType (TVar "a")] (TVar "a")); IsMutable = false }
 
         /// Pure — it builds an event and does not suspend. Failure is a value:
         /// "the fiber died" is a fact a supervisor needs, and an exception

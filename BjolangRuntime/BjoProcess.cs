@@ -117,51 +117,6 @@ public static class BjoProc {
         await to.FlushAsync(cancel).ConfigureAwait(false);
     }
 
-    /// Block the calling thread until a spawned bjoroutine lands, rethrowing
-    /// whatever it raised.
-    ///
-    /// This is what lets `std/run`'s waiting be ordinary functions rather than
-    /// bjoroutines, so that a plain `defun` may shell out. The pumps themselves
-    /// stay fibers — `Bjo.Spawn` enqueues them on the pool, which needs nobody
-    /// driving it — and this waits for them from outside.
-    ///
-    /// The monitor, rather than a `ManualResetEventSlim`, is `Bjo.RunToCompletion`'s
-    /// own shape: the completing thread must not be able to touch a disposed
-    /// handle after we wake.
-    ///
-    /// Carries `Bjo.RunToCompletion`'s warning with it: **do not call this on a
-    /// thread-pool thread.** The fibers being waited for need pool threads to
-    /// finish, and this one is holding one. From inside a fiber, reach the
-    /// blocking entry points through `(blocking ...)`, which moves the parking
-    /// to a thread the pool can grow to cover.
-    public static T Await<T>(Bjoml.Promise<T> promise) {
-        var gate = new object();
-        bool landed = false;
-
-        promise.GetAwaiter().OnCompleted(() => {
-            lock (gate) {
-                landed = true;
-                Monitor.Pulse(gate);
-            }
-        });
-
-        lock (gate) {
-            while (!landed) { Monitor.Wait(gate); }
-        }
-
-        return promise.GetAwaiter().GetResult();
-    }
-
-    /// Every line of `from`, blocking. The counterpart of `ReadLinesAsync`, for
-    /// the same reason `Await` exists.
-    public static string[] ReadLines(TextReader from) {
-        var lines = new List<string>();
-        while (from.ReadLine() is string line) {
-            lines.Add(line);
-        }
-        return lines.ToArray();
-    }
-
     /// Every line of `from`, for `run/strings`.
     ///
     /// An array rather than a Bjolang `Vec`, which has no construction path

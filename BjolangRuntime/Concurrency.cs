@@ -383,6 +383,55 @@ public static partial class BjolangRuntime {
                         ? Result<Exception, T>.Err(r.Error!.SourceException)
                         : Result<Exception, T>.Ok(r.Value)));
 
+    /// `(sync/blocking ev)` — wait for an event from an ordinary function.
+    ///
+    /// `sync` is a yield point, so only a bjoroutine may write it, and a program
+    /// whose `main` is a plain `defun` cannot take a value off a channel at all.
+    /// This is the way in, and the mirror of `blocking` above: that one carries
+    /// a thread-parking call into fiber-land, this one carries an event out.
+    ///
+    /// `Cml.Sync` takes a continuation rather than suspending a fiber, so no
+    /// fiber is involved here at all. That is the whole reason this exists as a
+    /// primitive rather than as `(await-promise (bjo (syncing ev)))` written in
+    /// Bjolang: the spawning version costs a fiber per value, which on a channel
+    /// in a loop is a fiber per element.
+    ///
+    /// The continuation runs on whatever thread completes the event and does
+    /// nothing but hand the value over and wake this one — the "may wake a
+    /// fiber, may not *be* the work" rule that every nack callback follows.
+    ///
+    /// A monitor rather than a `ManualResetEventSlim`, as in `Bjo.RunToCompletion`:
+    /// the completing thread must not be able to touch a disposed handle after
+    /// we wake.
+    ///
+    /// **Do not call this from inside a bjoroutine.** It parks the thread it is
+    /// called on, and inside a fiber that thread belongs to the pool — which is
+    /// what the events being waited for need in order to fire. From fiber-land
+    /// the answer is `sync`, which is the whole point of there being two.
+    ///
+    /// Nothing withdraws this once it is parked, so a wait that might not end
+    /// needs its own way out built in before it gets here:
+    /// `(sync/blocking (choose (chan-recv c) (wrap (timeout 1000) ...)))`.
+    public static T syncdivblocking<T>(IEvent<T> ev) {
+        var gate = new object();
+        bool landed = false;
+        T value = default!;
+
+        Cml.Sync(ev, v => {
+            lock (gate) {
+                value = v;
+                landed = true;
+                Monitor.Pulse(gate);
+            }
+        });
+
+        lock (gate) {
+            while (!landed) { Monitor.Wait(gate); }
+        }
+
+        return value;
+    }
+
     /// `(async-seq->chan s)` — a .NET async stream as a channel, plus a promise
     /// that says when it is over.
     ///

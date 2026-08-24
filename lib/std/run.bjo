@@ -62,7 +62,7 @@
 ;;
 ;; The pumps between stages are fibers either way — `bjo` is colourless, and the
 ;; scheduler runs them on the pool whether or not anything drives it — and the
-;; blocking face reaches them from outside through `BjoProc.Await`.
+;; blocking face reaches them from outside through `sync/blocking`.
 ;;
 ;; A filter is a bjoroutine and may `sync`. That is a stage's own business and
 ;; does not reach the caller.
@@ -169,9 +169,7 @@
   (copy-stream  (: BjoProc.PumpAsync (-> TextInputPort TextOutputPort void) #:async))
   (copy-into    (: BjoProc.PumpIntoAsync (-> TextInputPort TextOutputPort void) #:async))
   (read-lines   (: BjoProc.ReadLinesAsync (-> TextInputPort (Array string)) #:async))
-  (read-rest    (: System.IO.TextReader.ReadToEndAsync (-> TextInputPort string) #:async))
-  (await-promise (: BjoProc.Await (-> (Promise %a) %a)
-                    #:exceptions (System.Exception))))
+  (read-rest    (: System.IO.TextReader.ReadToEndAsync (-> TextInputPort string) #:async)))
 
 ;; Nothing in the language builds an `Exception`, and every rejection below is
 ;; this module's own rather than .NET's, so they need a carrier.
@@ -758,7 +756,7 @@
 ;; flattened here rather than in every signature.
 (: blocking-result (-> (Promise (Result Exception %a)) (Result Exception %a)))
 (defun (blocking-result p)
-  (match (await-promise p)
+  (match (sync/blocking (promise-join p))
     ((Err e) (Err e))
     ((Ok answer) answer)))
 

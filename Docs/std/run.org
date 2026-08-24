@@ -1,0 +1,134 @@
+* std/run — running programs
+
+#+BEGIN_SRC scheme
+(import (std run))
+
+(run/string '(pipe (cat "hej.txt") (wc -l)))
+(run/status '(into-file "out.txt" (from-file "in.txt" (pipe (grep "x") sort))))
+#+END_SRC
+
+A *form* is one thing to run, written as a quoted literal. Its first word says
+what it is.
+
+** The grammar
+
+| ~'(cat "hej.txt")~                    | run a program                        |
+| ~'(sort)~, or ~sort~ in a pipe        | one taking no arguments              |
+| ~'(pipe (cat "a") (wc -l))~           | connect them                         |
+| ~'(from-file "in.txt" (wc -l))~       | stdin from a file                    |
+| ~'(into-file "out.txt" (ls))~         | stdout to a file, truncating         |
+| ~'(append-to-file "log" (date))~      | stdout to a file, appending          |
+| ~'(errors-into-file "e" (make))~      | stderr of every command inside       |
+| ~'(errors-append-to-file "e" (make))~ | the same, appending                  |
+| ~'(,(cmd program "-l"))~              | a computed program name              |
+| ~'(pipe (cat "x") ,my-filter)~        | a stage written in Bjolang           |
+| ~'(grep ["-i" "bomb"])~               | splice a computed argv               |
+| ~'("pipe" "-x")~                      | the *program* called ~pipe~          |
+
+Redirections nest: ~'(into-file "out" (from-file "in" (pipe (tr "a" "b") sort)))~.
+
+A word is a symbol, string, int, double, ~[...]~ argv vector, nested form,
+unquoted ~Cmd~ or unquoted ~Filter~ — eight cases, and nothing else. A
+character, say, is a type error where it is written. The *tags* are read at run
+time, so a misspelled one is an ~Err~ rather than a type error; ~run~ parses the
+whole tree before it starts anything, so a bad form leaves nothing running.
+
+** Types
+
+- ~Form~ : ~(List Word)~. What you write.
+- ~Word~ : one element of a form.
+- ~Cmd~ : a command with its arguments, built by ~cmd~.
+- ~Filter~ : ~(-bjo-> TextInputPort TextOutputPort Unit)~. A stage written in
+  Bjolang: read ~in~ to its end, write to ~out~, return. A ~defbjo~, so it may
+  ~sync~. *Do not close ~out~* — ~run~ does that when you return.
+- ~(Reader %a)~ : ~(-bjo-> TextInputPort (Chan %a) Unit)~. How ~run/channel~
+  turns output into items.
+- ~Proc~ : a form that has been started. Opaque.
+
+** Running one, from an ordinary function
+
+These block the calling thread. They are ~defun~, so a plain ~main~ can use them.
+
+- ~(run/string form)~ : ~(Result Exception string)~. Everything on stdout.
+- ~(run/strings form)~ : ~(Result Exception (Vec string))~. The same, by line.
+- ~(run/status form)~ : ~(Result Exception int)~. Drains the output and throws
+  it away; use this when only the exit code matters.
+- ~(run form)~ : ~(Result Exception Proc)~. Start it and hand back both ends.
+  Does *not* close the input or read the output — that is yours to do.
+- ~(cmd program arg ...)~ : a ~Cmd~, for ~,(cmd ...)~ in a form.
+
+** A running form
+
+- ~(proc-input p)~ : ~(Option TextOutputPort)~. Where to write. ~None~ when a
+  ~from-file~ took that end.
+- ~(proc-output p)~ : ~(Option TextInputPort)~. Where to read. ~None~ when an
+  ~into-file~ took it.
+- ~(wait p)~ : ~(Result Exception int)~. Blocks. The exit code of the last
+  command started, or ~0~ for a form of only filters.
+- ~(wait/all p)~ : ~(Result Exception (Vec int))~. Every command's code, in the
+  order they were started.
+- ~(kill p)~ : stop everything.
+
+** From inside a bjoroutine
+
+Blocking parks a *pool* thread, which the fibers being waited for need. Use
+these instead.
+
+- ~(exited p)~ : ~(Event (Result Exception int))~. Fires when the form is done.
+  *Observes only* — losing a ~choose~ does not stop anything, because the
+  processes are already running. Call ~kill~ yourself.
+- ~(running form)~ : ~(Event (Result Exception string))~. A whole form as one
+  event. *Owns it*: starts nothing until the branch is reached, and kills what
+  it started if the branch loses.
+- ~(run/channel form reader)~ : ~(Result Exception (Tuple (Chan %a) Proc))~.
+  Output as items on a channel. The reader is spawned like any other stage, so
+  ~exited~ covers it too — one event means both "no more items" and "here is
+  what happened", including a reader that raised.
+- ~by-lines~ : the stock ~(Reader string)~, one item per line.
+
+#+BEGIN_SRC scheme
+(match (run/channel '(cat "log.txt") by-lines)
+  ((Err e) 0)
+  ((Ok (Tuple items p))
+   (let go ((n 0))
+     (match (sync (choose (wrap (chan-recv items) (fun (line) (Got line)))
+                          (wrap (exited p)        (fun (r) Ended))))
+       ((Got line) (go (+ n 1)))
+       (Ended n)))))
+#+END_SRC
+
+** Scoped
+
+- ~(with-run (name form) body ...)~ : runs ~form~ for the length of the body and
+  kills it on the way out, however the body leaves. ~name~ is bound to the
+  ~(Result Exception Proc)~. A macro, so the body may ~sync~.
+
+** What to watch out for
+
+- *Close the input, or the first stage never sees end of file.* ~run/string~ and
+  friends do it for you; ~run~ does not.
+- *Drain the output, or ~wait~ never returns.* A last stage blocked on a full
+  pipe cannot exit.
+- *A form is one thing.* ~'((cat "a") (wc -l))~ is refused — say ~pipe~. This is
+  deliberate: guessing is how a form comes to mean something you did not write.
+- *A bare tag in stage position is refused.* ~'(pipe (cat "x") into-file "out")~
+  is a forgotten pair of parentheses far more often than a program called
+  ~into-file~. Reach it as ~'("into-file" ...)~ if you really meant the program.
+- *Piping out of a redirected stage is refused*, since there would be nothing to
+  pipe. Same for redirecting an end twice.
+- *After ~into-file~, ~run/string~ gives ~""~* — the output is in the file.
+  ~run/status~ is the one to use there.
+- *stderr is inherited* unless ~errors-into-file~ says otherwise, the way a
+  shell's is.
+- *A filter must not close its output port.* ~run~ closes it when the filter
+  returns, and closes it even if the filter raised — otherwise a downstream
+  stage waits forever on a stream that will never end.
+- *A filter that raises surfaces through ~wait~*, not as an exit code, which is
+  why ~wait~ answers with a ~Result~ rather than an ~int~.
+- *Blocking entry points inside a bjoroutine.* Legal, and wrong: it parks a pool
+  thread. Use ~exited~ / ~running~ / ~run/channel~, or ~(blocking ...)~.
+- *Arguments are not re-split.* One word is one argument, spaces and all.
+  Doubles render invariantly, so ~(sleep 0.5)~ is ~0.5~ whatever the machine's
+  locale says.
+- *A form's tags are checked at run time.* Everything is an ~Err~ before
+  anything starts, but the compiler will not catch a misspelled tag for you.

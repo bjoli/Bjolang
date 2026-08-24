@@ -586,6 +586,40 @@ anything or stored in a variable.
 (some-> 16 (halve) (halve) (at-least & 3))   ;; (Some 4)
 #+END_SRC
 
+** Waiting from an ordinary function =(std prelude)=
+
+~sync~ is a yield point, so only a ~defbjo~ may write it. A program whose ~main~
+is a plain ~defun~ therefore cannot take a value off a channel, join a promise,
+or wait for a timeout — all three are events, and getting a value out of an
+event means syncing it.
+
+~(sync/blocking ev)~ is the way out. It takes any event and parks the *calling
+thread* rather than suspending a fiber, so ordinary code can reach the whole
+concurrent vocabulary:
+
+#+BEGIN_SRC scheme
+(sync/blocking (chan-recv ch))
+(sync/blocking (promise-join (bjo (work 21))))
+(sync/blocking (choose (wrap (chan-recv ch) (fun (v) (Got v)))
+                       (wrap (timeout 1000) (fun (u) TimedOut))))
+#+END_SRC
+
+No fiber is spawned: the event is published with a continuation that hands the
+value over and wakes the parked thread, which is why this is a primitive rather
+than something spelled ~(sync)~ inside a ~bjo~ — the spawning version costs a
+fiber per value, and on a channel in a loop that is a fiber per element.
+
+It is the mirror of ~blocking~, which carries a thread-parking call *into*
+fiber-land; this carries an event *out*.
+
+*Do not call it from inside a bjoroutine.* It parks the thread it is called on,
+and inside a fiber that thread belongs to the pool — which is what the events
+being waited for need in order to fire. There the answer is ~sync~.
+
+*Nothing withdraws it once parked.* A wait that might not end needs its own way
+out composed in first, as in the ~choose~ above. Building an event is pure, so
+that composition costs nothing and happens before the thread ever parks.
+
 ** Cancellation scopes =(std prelude)=
 
 ~parameterize~ restores the binding on the way out but never *fires* the token.

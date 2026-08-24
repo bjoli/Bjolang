@@ -64,6 +64,24 @@ Spawning: ~(bjo expr)~ enqueues and returns a ~(Promise %a)~ without ever suspen
   ((Err e) 0))
 #+end_src
 
+And when the waiting has to happen in a plain ~defun~ after all -- a ~main~ that is not a bjoroutine, or a library that cannot dictate what colour its callers are -- ~sync/blocking~ is the door out. It takes any event and parks the calling thread instead of suspending a fiber, so channels, promises and timeouts are all reachable from ordinary code:
+
+#+begin_src scheme
+(defun (main args)
+  (def ch (make-chan))
+  (ignore (bjo (chatter ch)))
+  ;; Building an event is pure, so everything still composes before it
+  ;; gets here -- which matters, because nothing withdraws a
+  ;; sync/blocking once it has parked.
+  (match (sync/blocking (choose (wrap (chan-recv ch) (fun (v) (Got v)))
+                                (wrap (timeout 1000) (fun (u) TimedOut))))
+    ((Got v)  (println v))
+    (TimedOut (println "nothing came")))
+  0)
+#+end_src
+
+It is the mirror of ~blocking~, which carries a thread-parking call *into* fiber-land; this carries an event *out*. Do not use it from inside a bjoroutine: it would park a pool thread, which is what the events being waited for need in order to fire. Inside a bjoroutine the answer is ~sync~, which is the whole reason there are two.
+
 
 *** Calling .NET async without ever meeting a Task
 
