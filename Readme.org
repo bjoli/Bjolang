@@ -364,10 +364,12 @@ It also supports subloops. Anything that isn't a for clause followed by a :for c
 #+begin_src scheme
 (defun (main args)
   (loop (:for a '(1 2 3))
+        (:acc acclst (listing (* a a)))
         (:when (odd? a))
         (:for b [1 2])
-        (:acc (vectoring (a . b)))))
-;; => [(1 1) (1 2) (3 1) (3 2)]
+        (:acc accvecc (vectoring (a . b)))))
+;; => (1 4 9)
+;;    [(1 . 1) (1 . 2) (3 . 1) (3 . 2)]
 #+end_src
 
  And the best part? It is fast.
@@ -384,25 +386,6 @@ It also supports subloops. Anything that isn't a for clause followed by a :for c
   (seq-for-each #(println &) all-fibs))
  #+end_src
 
-*** Dotnet interop
-If you want to call c# it is possible:
-
-#+begin_src scheme
-(import/extern
-  (console-write-line (: System.Console.WriteLine (-> string void)))
-  (concat2 (: System.String.Concat (-> string string string))))
-
-(console-write-line (concat2 "hej" " hej"))
-
-;; and for classes
-(import/class
-  (StreamWriter (: System.IO.StreamWriter (-> string StreamWriter))))
-
-(def my-stream (StreamWriter. "a-file"))
-(.Write my-stream "banana")
-(.Flush my-stream)
-(.Dispose my-stream)
-#+end_src
 
 *** Constructorless DSLs
 
@@ -413,6 +396,9 @@ Lists, quasiquoted lists and vectors do not need constructors in some circumstan
 ;; This is our list of lines, Line being a record
 (: basket (List Line))
 (def basket
+     ;; This could of course be function, like
+     ;; (line "bananas" 1.24 24.90) or a list of tuples like
+     ;; (map mkline (list ("banana" . 1.24 . 24.90) ...))
   (list (Line (what "Bananas, organic") (qty 1.24) (unit 24.90))
         (Line (what "Coffee beans, dark roast, whole") (qty 2.0) (unit 89.00))
         (Line (what "Rye bread") (qty 1.0) (unit 32.50))
@@ -426,23 +412,31 @@ Lists, quasiquoted lists and vectors do not need constructors in some circumstan
          (vat (- total net)))
     ;; cloudberry jam gets truncated, with "..."
     [(with-fmt current-ellipsis "..."
+       ;; first print the heading.
        [(heading ["BJOLI'S GROCERY"])
         nl ;; Newline
         masthead ;; formatted header
-        (rule #\=) ;; ruler
+        (rule #\=) ;; ruler with the = char
         (joined item ls []) ;; item is a formatter for Lines
-        (rule #\-)
+        (rule #\-) ;; ruler with -
+        ;; labelled is a function (see receipt.bjo) that prints
+        ;; the first argument left justified and the second
+        ;; right justified
         (labelled ["Net"] net)
         (labelled ["VAT 12%"] vat)
         (rule #\=)
+        ;; function that pads a value with "TOTAL" and ...
+        ;; until it fills the complete width
         (total-line total)
-        nl
+        nl ;; newline
+        ;; prints three columns, rate, net and vat
         (vat-summary net vat)
         nl
+        ;; justified footer
         footer])]))
 
 (defun (main args)
-  (render (parameter-ref current-output-port) (receipt basket))
+  (show (receipt basket))
   0)
 
 ;; Prints:
@@ -477,20 +471,67 @@ returned within thirty days.
 
 And any declared (Vec block), also a def, gets this treatment, so any function that needs formatted strings can use this.
 
+The same machinery gives (std run) its shell notation. A form is one thing to run, spelled as a list of words whose first word says what it is: a program, or one of the tags pipe, from-file, into-file, append-to-file, errors-into-file and errors-append-to-file. Stages can be procedures of your own:
+
+#+begin_src scheme
+(import (std run))
+
+;; A Filter is a bjoroutine that takes an input port, an output port and returns unit
+;; It can be used in the run pipeline
+(: shout Filter)
+(defbjo (shout in out)
+  (write-string out (string-upcase (read-all in)))
+  unit)
+
+;; An ordinary defun. Waiting for a program blocks rather than suspends, the way
+;; read-all on a file port does, so shelling out does not turn its callers into
+;; bjoroutines. From inside one, go through (blocking ...).
+(defun (main args)
+  ;; A single command is a single form - no wrapper.
+  (match (run/string '(uname -r))
+    ((Ok s) (display s))
+    ((Err e) (displayln "no")))
+
+  ;; Symbols, strings, ints and doubles are all words, so -n and 2 need no
+  ;; quoting. A pipeline has to say pipe: a list of stages is never guessed at.
+  ;; a filter can be used anywhere in the pipeline.
+  (match (run/string '(pipe (cat "/etc/passwd") (grep "root") ,shout (head -n 2)))
+    ((Ok s) (display s))
+    ((Err e) (displayln "no")))
+
+  ;; Redirection nests around whatever it applies to, and a program taking no
+  ;; arguments is just its name.
+  (match (run/status '(into-file "roots.txt"
+                        (from-file "/etc/passwd"
+                                   (pipe (grep "root") sort))))
+    ((Ok code) (displayln "written"))
+    ((Err e) (displayln "no")))
+
+  ;; ,(cmd ...) for when the program name is computed rather than spelled, and
+  ;; [...] to splice a computed argv.
+  (def tool (list-head args))
+  (match (run/strings '(pipe (git ["log" "--oneline"]) ,(cmd tool "-l")))
+    ((Ok lines) (displayln (string-join lines "|")))
+    ((Err e) (displayln "no")))
+  0)
+#+end_src
+
+An error in the argument is going to be discovered at RUNTIME. The run DSL has no type safety in that regard.
+
+It is also handy if you want to 
+
 
 * TODO
 
 These are things I found while spelunking:
 
-- run, run/string, run/strings for executing commands
 - Make it possible to shadow trait methods and not have the typechecker vomit.
 - output LINE-directives a little bit better than I do now
 - A standard library that doesn't suck.
 - Annotations using @[c# annotation verbatim here] so that I can piggyback on c# json libraries.
 - vecbuilder should be transientvec 
-- I hate how numerics work currently. This needs to be fixed.
-- Definitiely fix cursors for seq. Currently (loop ...) over seq in quadratic.
-
+- I hate how numerics work currently. This needs to be fixed. In a perfect world I would have a generic number type that could specialize all numeric procedures.
+- Check how locales work so that we don't get bitten. Like (std run) and how it treats args.
 
 
 ** Things I need in the standard library
@@ -499,15 +540,13 @@ io for working with network thingies
 
 Heap, preferrably with a transient interface.
 
-Process notation, maybe taken from scsh.
-
 Maybe I should just steal all the functions from r6rs and bolt them onto what I can find in dotnet. Or maybe steal something from racket.
 
 
 ** Syntax ideas
 @-expr from racket?
 
-Extend do notation to be more usable. :match :traverse :and<- ( :and<- seems _very hard_ atm).
+Extend do notation to be more usable. :traverse :and<- ( :and<- seems _very hard_ atm).
 
 (with-return ...) that allows for (return ...). Disallowed in loops and seq. loops maybe allowed later. 
 
@@ -520,11 +559,10 @@ Naming a local variable list, will produce local shadowing and a c# exception. I
 
 [1 2 3 4] should codegen an array that is put directly into the tail, or split and inserted in chunks of 32. This needs changes to RrbList.
 
-
 Add array literals
 
 fix tail recursion and parameterization: Since tail calls have no code in the recursive function running after it, we can restore the parameters outside the recursion.
 
-The current parameter implementation is very practical. But it could be a lot faster since we only really push parameters into the transferrable environment when we do a (parameterize ...). Preferrably not slower than maybe 30ns to push a parameter and less that 10 to read one.
+The current parameter implementation is very practical, but perhaps limiting. There are 3 "super fast" parameter slots (current input and output port and current-cancel). Then there are 31 fast slots that get the fast path when parameterizing, and the rest are "cold paths" which has at least one extra indirection. Should I change this?
 
 Add #:align to columnar and tabular in (std fmt).

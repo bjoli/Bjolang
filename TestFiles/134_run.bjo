@@ -1,0 +1,530 @@
+;; Running programs, written as literals: tags, pipelines and redirection.
+;;
+;; Only programs every POSIX system has, and none with options that differ
+;; between GNU and BSD: `cat`, `tr`, `wc`, `sort`, `head`, `echo`, `false`. The
+;; shapes under test are the grammar and the wiring — which end belongs to whom
+;; and who closes it — not the programs.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std run))
+
+(import/class
+  (Refusal (: System.InvalidOperationException (-> string Refusal))))
+
+;; Scratch files go somewhere the suite is not, and are named apart so a
+;; parallel run of another test cannot collide with them.
+(import/extern
+  (temp-directory (: System.IO.Path.GetTempPath (-> string)))
+  (read-lines-of (: BjoProc.ReadLinesAsync (-> TextInputPort (Array string)) #:async))
+  ;; How a plain `defun` drives a bjoroutine: spawn it and block on the promise.
+  ;; This is what `wait` does inside `(std run)`, reached directly here because
+  ;; the module has no reason to export it.
+  (await-promise (: BjoProc.Await (-> (Promise %a) %a) #:exceptions (System.Exception))))
+
+;; A filter is a `defbjo`, and `run` spawns it rather than calling it — so it
+;; may `sync`, and every stage runs at once. `run` closes `out` when it returns.
+(: shout Filter)
+(defbjo (shout in out)
+  (write-string out (string-upcase (read-all in)))
+  unit)
+
+(: exclaim Filter)
+(defbjo (exclaim in out)
+  (write-string out (string-append (string-trim-end (read-all in)) "!\n"))
+  unit)
+
+;; A filter that suspends, which is the point of writing one in Bjolang: an
+;; ordinary function could not do this.
+(: slow Filter)
+(defbjo (slow in out)
+  (sync (timeout 20))
+  (write-string out (read-all in))
+  unit)
+
+;; A filter that raises. `run` closes its output anyway — a downstream stage
+;; waiting on end of stream would otherwise hang — and the exception comes back
+;; out of `wait`.
+(: broken Filter)
+(defbjo (broken in out)
+  (raise (cast Exception (Refusal. "this filter refuses"))))
+
+(: failed? (-> (Result Exception %a) bool))
+(defun (failed? r) (match r ((Ok v) false) ((Err e) true)))
+
+(: text-of (-> string string))
+(defun (text-of path)
+  (match (open-input-file path)
+    ((Ok p) (let ((s (read-all p))) (close-input-port p) s))
+    ((Err e) "ERR")))
+
+(: scratch (-> string string))
+(defun (scratch name)
+  (path-combine (temp-directory) (string-append "bjo-run-test-" name)))
+
+;; A filter that shells out itself, from inside fiber-land. `run/string` parks
+;; the thread it is called on, and here that thread belongs to the pool — so it
+;; goes through `blocking`, which is the documented way and the one this pins.
+(: nested Filter)
+(defbjo (nested in out)
+  (match (sync (blocking (fun () (run/string '(echo "from inside a fiber")))))
+    ((Ok (Ok s)) (write-string out s))
+    ((Ok (Err e)) (write-string out "ERR"))
+    ((Err e) (write-string out "ERR")))
+  unit)
+
+;; ===========================================================================
+;; The other face: a form from inside a bjoroutine
+;; ===========================================================================
+;;
+;; Blocking on a form is right for a script and wrong for a fiber, which would
+;; be parking a pool thread. These are the same module seen as events and a
+;; channel. Driven from `main` with `bjo` + a blocking join, so that `main`
+;; itself stays an ordinary `defun`.
+
+;; What a `choose` answers with. Generic, because the same race is run against a
+;; form that answers with an exit code and one that answers with its output.
+(type (: (Raced %a) (Union (Finished %a) TimedOut)))
+(type (: (Item %a) (Union (Got %a) Ended)))
+
+;; A reader of the caller's own: one item per line, upcased, to show that how a
+;; stream divides into items is not this module's business.
+(: shouted-lines (Reader string))
+(defbjo (shouted-lines out items)
+  (loop (:for line (read-lines-of out))
+        (:do (sync (chan-send items (string-upcase line)))))
+  unit)
+
+(: cml-checks (-> Unit))
+(defbjo (cml-checks)
+  ;; `exited` is an event, so it races.
+  (match (run '(pipe (echo "a b c") (wc -w)))
+    ((Ok p)
+     (match (proc-output p) ((Some out) (ignore (bjo (drain-away out)))) (None unit))
+     (expect "exited wins when the form finishes"
+             (match (sync (choose (wrap (exited p) (fun (r) (Finished r)))
+                                  (wrap (timeout 10000) (fun (u) TimedOut))))
+               ((Finished (Ok code)) (int->string code))
+               ((Finished (Err e)) "ERR")
+               (TimedOut "timed out"))
+             "0"))
+    ((Err e) (fail "exited wins when the form finishes")))
+
+  ;; ...and loses to a timeout without the form dying, because `exited` observes
+  ;; rather than owns. `cat` with nobody closing its stdin never finishes.
+  (match (run '(cat))
+    ((Ok p)
+     (expect "a timeout beats a form that will not finish"
+             (match (sync (choose (wrap (exited p) (fun (r) (Finished r)))
+                                  (wrap (timeout 50) (fun (u) TimedOut))))
+               ((Finished r) "finished")
+               (TimedOut "timed out"))
+             "timed out")
+     ;; Still alive: losing the choose withdrew nothing.
+     (expect "and the form is still running"
+             (match (proc-input p)
+               ((Some w) (write-string w "still here\n") (close-output-port w) "alive")
+               (None "gone"))
+             "alive")
+     (match (proc-output p) ((Some out) (ignore (bjo (drain-away out)))) (None unit))
+     (match (sync (exited p)) ((Ok code) unit) ((Err e) unit)))
+    ((Err e) (fail "a timeout beats a form that will not finish")))
+
+  ;; `running` owns what it starts: the losing branch is killed, not left behind.
+  ;;
+  ;; The marker is what makes this an assertion rather than a hope. The form
+  ;; would write it after 300ms; the race is decided at 50ms; and 600ms later
+  ;; the file is still absent, which it would not be if the loser were merely
+  ;; abandoned. `(sleep 0.3)` also happens to exercise a `double` word, which
+  ;; has to reach the program as `0.3` whatever the machine's locale says.
+  (let ((marker (scratch "not-killed.txt")))
+    (when (file-exists? marker) (file-delete marker))
+    (expect "running loses a race"
+            (match (sync (choose (wrap (running '("sh" "-c" ,(str "sleep 0.3; echo alive > " marker)))
+                                       (fun (r) (Finished r)))
+                                 (wrap (timeout 50) (fun (u) TimedOut))))
+              ((Finished r) "finished")
+              (TimedOut "timed out"))
+            "timed out")
+    (sync (timeout 600))
+    (expect "and the form it lost was killed" (file-exists? marker) false))
+
+  (expect "running wins when it is quick"
+          (match (sync (choose (wrap (running '(echo "quick")) (fun (r) (Finished r)))
+                               (wrap (timeout 10000) (fun (u) TimedOut))))
+            ((Finished (Ok s)) s)
+            ((Finished (Err e)) "ERR")
+            (TimedOut "timed out"))
+          "quick\n")
+
+  ;; A form as a channel, drained by a `choose` loop. `exited` covers the reader
+  ;; too, so one event means both "no more items" and "here is what happened".
+  (match (run/channel '(echo "one\ntwo\nthree") by-lines)
+    ((Err e) (fail "a form as a channel"))
+    ((Ok (Tuple items p))
+     (expect "a form as a channel" (collect items p) "one|two|three")))
+
+  ;; The reader is the caller's, so the items are whatever it says they are.
+  (match (run/channel '(echo "a\nb") shouted-lines)
+    ((Err e) (fail "a reader of one's own"))
+    ((Ok (Tuple items p))
+     (expect "a reader of one's own" (collect items p) "A|B")))
+
+  ;; `with-run` reaps on the way out, including out of a raise.
+  (expect "with-run kills on the way out"
+          (with-run (p '(cat))
+            (match p ((Ok started) "ran") ((Err e) "ERR")))
+          "ran")
+  unit)
+
+;; Take items until the form says there are no more.
+(: collect (-> (Chan string) Proc string))
+(defbjo (collect items p)
+  (let go ((acc (vec-empty)))
+    (match (sync (choose (wrap (chan-recv items) (fun (x) (Got x)))
+                         (wrap (exited p) (fun (r) Ended))))
+      ((Got x) (go (vec-add acc x)))
+      (Ended (string-join acc "|")))))
+
+(: drain-away (-> TextInputPort Unit))
+(defbjo (drain-away out) (ignore (read-all out)) unit)
+
+;; **A plain `defun`.** The whole point of the waiting being blocking rather
+;; than suspending: shelling out does not turn its callers into bjoroutines all
+;; the way to the top of the program.
+(defun (main args)
+  ;; ---- one command, with no extra nesting --------------------------------
+  ;; The whole reason for the tag grammar: a single command is a single form.
+  (expect "a bare command"
+          (match (run/string '(echo "hello")) ((Ok s) s) ((Err e) "ERR"))
+          "hello\n")
+
+  ;; A symbol, an int and a string are three `Word` cases, so none of these
+  ;; needs quoting. (`echo` is not given a leading-dash word here: `-n` is one
+  ;; of its own flags, which would test echo rather than this module. A dashed
+  ;; symbol as an argument is covered by `(wc -w)` and `(head -n 1)` below.)
+  (expect "words of every shape"
+          (match (run/string '(echo one 2 "three")) ((Ok s) s) ((Err e) "ERR"))
+          "one 2 three\n")
+
+  ;; A double is rendered invariantly, whatever the machine's locale says. The
+  ;; ordinary `double->string` would give `0,5` on a Swedish one, and
+  ;; `sleep 0,5` is an error rather than half a second.
+  (expect "a fractional argument"
+          (match (run/string '(echo 0.5)) ((Ok s) s) ((Err e) "ERR"))
+          "0.5\n")
+
+  ;; ---- pipe --------------------------------------------------------------
+  (expect "an explicit pipe"
+          (match (run/string '(pipe (echo "a b c") (wc -w))) ((Ok s) s) ((Err e) "ERR"))
+          "3\n")
+
+  ;; A form is one thing to run. A list of stages is not a pipeline unless it
+  ;; says so, because '((cat "a")) looks enough like '(cat "a") that guessing
+  ;; between them is how a form comes to mean something its writer did not say.
+  (expect-true "a form beginning with a form is an Err"
+               (failed? (run/string '((echo "a b c") (wc -w)))))
+
+  (expect "three stages"
+          (match (run/string '(pipe (echo "c\na\nb") (sort) (head -n 1)))
+            ((Ok s) s) ((Err e) "ERR"))
+          "a\n")
+
+  ;; A program taking no arguments is its own name.
+  (expect "a bare program name as a stage"
+          (match (run/string '(pipe (echo "c\na\nb") sort (head -n 1)))
+            ((Ok s) s) ((Err e) "ERR"))
+          "a\n")
+
+  (expect "a bare name and a parenthesised one agree"
+          (match (run/string '(pipe (echo "x") cat)) ((Ok s) s) ((Err e) "ERR"))
+          "x\n")
+
+  (expect "a bare string as a stage"
+          (match (run/string '(pipe (echo "x") "cat")) ((Ok s) s) ((Err e) "ERR"))
+          "x\n")
+
+  ;; A whole argv as one stage, for a computed command line.
+  (expect "a spliced argv as a stage"
+          (match (run/string '(pipe (echo "a b") ["wc" "-w"])) ((Ok s) s) ((Err e) "ERR"))
+          "2\n")
+
+  (expect "a pipe of one is just the command"
+          (match (run/string '(pipe (echo "alone"))) ((Ok s) s) ((Err e) "ERR"))
+          "alone\n")
+
+  (expect "a pipe of one bare name"
+          (match (run/string '(from-file "/etc/hostname" (pipe cat))) ((Ok s) s) ((Err e) "ERR"))
+          (match (run/string '(from-file "/etc/hostname" (cat))) ((Ok s) s) ((Err e) "ERR")))
+
+  ;; ---- filters -----------------------------------------------------------
+  (expect "a filter in the middle"
+          (match (run/string '(pipe (echo "quiet") ,shout (wc -c))) ((Ok s) s) ((Err e) "ERR"))
+          "6\n")
+
+  (expect "a filter last"
+          (match (run/string '(pipe (echo "quiet") ,shout)) ((Ok s) s) ((Err e) "ERR"))
+          "QUIET\n")
+
+  (expect "a filter first"
+          (match (run/string '(pipe ,shout (wc -c))) ((Ok s) s) ((Err e) "ERR"))
+          "0\n")
+
+  (expect "a filter alone"
+          (match (run/string '(,shout)) ((Ok s) s) ((Err e) "ERR"))
+          "")
+
+  (expect "only filters"
+          (match (run/string '(pipe ,shout ,exclaim)) ((Ok s) s) ((Err e) "ERR"))
+          "!\n")
+
+  ;; A `sync` inside a stage, which is what a `defun` filter could not do.
+  (expect "a filter that suspends"
+          (match (run/string '(pipe (echo "waited") ,slow (wc -c))) ((Ok s) s) ((Err e) "ERR"))
+          "7\n")
+
+  ;; ...and a whole pipeline run from inside one, through `blocking`.
+  (expect "a filter that shells out"
+          (match (run/string '(,nested)) ((Ok s) s) ((Err e) "ERR"))
+          "from inside a fiber\n")
+
+  ;; ---- the explicit command form -----------------------------------------
+  ;; An unquoted value has no literal shape and is selected by its type, so a
+  ;; `Cmd` can only be a command. This is the form for a computed program name.
+  (expect "a written-out command"
+          (match (run/string '(,(cmd "echo" "written" "out"))) ((Ok s) s) ((Err e) "ERR"))
+          "written out\n")
+
+  (expect "a written-out command in a pipe"
+          (match (run/string '(pipe (echo "x y") ,(cmd "wc" "-w"))) ((Ok s) s) ((Err e) "ERR"))
+          "2\n")
+
+  ;; ---- argv splicing -----------------------------------------------------
+  (expect "a spliced argv"
+          (match (run/string '(echo ["one" "two"])) ((Ok s) s) ((Err e) "ERR"))
+          "one two\n")
+
+  (expect "an argument with a space stays one argument"
+          (match (run/string '(pipe (echo ["a b"]) (wc -l))) ((Ok s) s) ((Err e) "ERR"))
+          "1\n")
+
+  ;; ---- a string head is the escape hatch ---------------------------------
+  ;; `(pipe ...)` is a tag, `("pipe" ...)` would be the program of that name.
+  ;; Nothing here is called `pipe`, so `echo` stands in for the mechanism.
+  (expect "a string head names a program"
+          (match (run/string '("echo" "quoted")) ((Ok s) s) ((Err e) "ERR"))
+          "quoted\n")
+
+  ;; ---- redirection -------------------------------------------------------
+  (let ((out (scratch "out.txt"))
+        (in (scratch "in.txt")))
+
+    ;; Output goes to the file, so there is nothing left to answer with.
+    (expect "into-file writes the file"
+            (match (run/status '(into-file ,out (echo "to a file")))
+              ((Ok c) (text-of out)) ((Err e) "ERR"))
+            "to a file\n")
+
+    (expect "into-file leaves no output"
+            (match (run/string '(into-file ,out (echo "swallowed"))) ((Ok s) s) ((Err e) "ERR"))
+            "")
+
+    (expect "into-file truncates"
+            (match (run/status '(into-file ,out (echo "second")))
+              ((Ok c) (text-of out)) ((Err e) "ERR"))
+            "second\n")
+
+    (expect "append-to-file does not"
+            (match (run/status '(append-to-file ,out (echo "third")))
+              ((Ok c) (text-of out)) ((Err e) "ERR"))
+            "second\nthird\n")
+
+    ;; A whole pipeline redirected at once.
+    (expect "into-file over a pipe"
+            (match (run/status '(into-file ,out (pipe (echo "a b c") (wc -w))))
+              ((Ok c) (text-of out)) ((Err e) "ERR"))
+            "3\n")
+
+    ;; And back in again.
+    (expect "from-file reads the file"
+            (match (run/string '(from-file ,out (cat))) ((Ok s) s) ((Err e) "ERR"))
+            "3\n")
+
+    (expect "from-file feeds a pipe"
+            (match (run/string '(from-file ,out (pipe (cat) (wc -c)))) ((Ok s) s) ((Err e) "ERR"))
+            "2\n")
+
+    (expect "from-file feeds a filter"
+            (match (run/string '(from-file ,out (pipe ,shout (cat)))) ((Ok s) s) ((Err e) "ERR"))
+            "3\n")
+
+    ;; A redirect straight into a filter, with no command anywhere in the form.
+    (expect "from-file into a bare filter"
+            (match (run/string '(from-file ,out ,shout)) ((Ok s) s) ((Err e) "ERR"))
+            "3\n")
+
+    ;; Nested, both ends at once.
+    (expect "from-file inside into-file"
+            (match (run/status '(into-file ,in (from-file ,out (tr "3" "9"))))
+              ((Ok c) (text-of in)) ((Err e) "ERR"))
+            "9\n")
+
+    ;; A missing input file is an Err, and nothing is started.
+    (expect-true "a missing input file is an Err"
+                 (failed? (run/string '(from-file ,(scratch "nope-4f2a") (cat)))))
+
+    ;; stderr, which is inherited unless this says otherwise.
+    (let ((errs (scratch "errs.txt")))
+      (expect "errors-into-file catches stderr"
+              (match (run/status '(errors-into-file ,errs (pipe ("sh" "-c" "echo boom >&2") (cat))))
+                ((Ok c) (text-of errs)) ((Err e) "ERR"))
+              "boom\n")
+
+      ;; One file, several commands, each writing from a fiber of its own.
+      (expect "errors-into-file over several commands"
+              (match (run/status '(errors-into-file ,errs
+                                    (pipe ("sh" "-c" "echo one >&2")
+                                          ("sh" "-c" "cat; echo two >&2"))))
+                ((Ok c) (string-length (text-of errs))) ((Err e) -1))
+              8)
+
+      (expect "stdout is untouched by an errors redirect"
+              (match (run/string '(errors-into-file ,errs (echo "on stdout"))) ((Ok s) s) ((Err e) "ERR"))
+              "on stdout\n")))
+
+  ;; ---- writing to a form yourself ----------------------------------------
+  ;; `run` hands back both ends. Closing the input is what lets the first stage
+  ;; see end of file; draining the output is what lets the last one finish.
+  (expect "written input"
+          (match (run '(tr "a-z" "A-Z"))
+            ((Ok p)
+             (match (proc-input p) ((Some w) (write-string w "from the caller") (close-output-port w)) (None unit))
+             (let ((out (match (proc-output p) ((Some r) (read-all r)) (None "none"))))
+               (match (wait p) ((Ok code) out) ((Err e) "ERR"))))
+            ((Err e) "ERR"))
+          "FROM THE CALLER")
+
+  ;; A redirected end is absent rather than empty, which is the whole reason
+  ;; those accessors answer with an `Option`.
+  (expect "a redirected input is absent"
+          (match (run '(from-file ,(scratch "out.txt") (cat)))
+            ((Ok p)
+             (let ((answer (match (proc-input p) ((Some w) "present") (None "absent"))))
+               (match (proc-output p) ((Some r) (ignore (read-all r))) (None unit))
+               (match (wait p) ((Ok c) answer) ((Err e) "ERR"))))
+            ((Err e) "ERR"))
+          "absent")
+
+  ;; ---- lines -------------------------------------------------------------
+  (expect "run/strings splits the output"
+          (match (run/strings '(echo "a\nb\nc"))
+            ((Ok v) (string-join v "|")) ((Err e) "ERR"))
+          "a|b|c")
+
+  (expect "no trailing empty line"
+          (match (run/strings '(echo "only"))
+            ((Ok v) (int->string (vec-length v))) ((Err e) "ERR"))
+          "1")
+
+  ;; ---- exit codes --------------------------------------------------------
+  (expect "a zero status"
+          (match (run/status '(true)) ((Ok c) (int->string c)) ((Err e) "ERR"))
+          "0")
+
+  (expect "a nonzero status"
+          (match (run/status '(false)) ((Ok c) (int->string c)) ((Err e) "ERR"))
+          "1")
+
+  ;; The last command's code is the form's, which is what a shell reports.
+  (expect "the last stage decides the status"
+          (match (run/status '(pipe (false) (cat))) ((Ok c) (int->string c)) ((Err e) "ERR"))
+          "0")
+
+  (expect "every code, in order"
+          (match (run '(pipe (false) (true)))
+            ((Ok p)
+             (match (proc-input p) ((Some w) (close-output-port w)) (None unit))
+             (let ((out (match (proc-output p) ((Some r) (read-all r)) (None ""))))
+               (match (wait/all p)
+                 ((Ok cs) (string-join (vec-map (fun (c) (int->string c)) cs) ","))
+                 ((Err e) "ERR"))))
+            ((Err e) "ERR"))
+          "1,0")
+
+  ;; ---- failure at run time -----------------------------------------------
+  (expect-true "a missing program is an Err"
+               (failed? (run/string '(no-such-program-anywhere-4f2a))))
+
+  (expect-true "a missing program later in the pipe is an Err"
+               (failed? (run/string '(pipe (echo "x") (no-such-program-anywhere-4f2a)))))
+
+  ;; A filter's exception travels out through `wait`, having first closed the
+  ;; stream so that nothing downstream is left waiting on it.
+  (expect-true "a raising filter is an Err"
+               (failed? (run/string '(pipe (echo "x") ,broken (cat)))))
+
+  ;; ---- failure at parse time ---------------------------------------------
+  ;; The tag is read at run time, so a malformed form is a value rather than a
+  ;; type error. It is read *before anything starts*, which is what makes that
+  ;; bearable.
+  (expect-true "an empty form is an Err"
+               (failed? (run/string '())))
+
+  (expect-true "a pipe with no stages is an Err"
+               (failed? (run/string '(pipe))))
+
+  ;; A bare tag in stage position is a forgotten pair of parentheses far more
+  ;; often than it is a program of that name, so it is refused rather than run.
+  (expect-true "a bare tag as a stage is an Err"
+               (failed? (run/string '(pipe (echo "x") into-file "out.txt"))))
+
+  ;; ...and a string head is how you would name a program called `pipe`. This
+  ;; discriminates: as a tag, `(wc -l)` would be a stage and the form would run;
+  ;; as a program name, `(wc -l)` is a nested form among its arguments, which a
+  ;; command's words may not contain.
+  (expect-true "a string head is never a tag"
+               (failed? (run/string '("pipe" (wc -l)))))
+
+  (expect "and a symbol head still is"
+          (match (run/string '(pipe (echo "tagged"))) ((Ok s) s) ((Err e) "ERR"))
+          "tagged\n")
+
+  (expect-true "a number where a stage belongs is an Err"
+               (failed? (run/string '(pipe (echo "x") 7))))
+
+  (expect-true "a filter followed by a word is an Err"
+               (failed? (run/string '(,shout (wc -l)))))
+
+  (expect-true "a redirect with no file name is an Err"
+               (failed? (run/string '(into-file (echo "x")))))
+
+  (expect-true "a redirect with nothing to run is an Err"
+               (failed? (run/string '(into-file "out.txt"))))
+
+  (expect-true "a nested form among a command's arguments is an Err"
+               (failed? (run/string '(echo "x" (wc -l)))))
+
+  ;; A misspelled tag reads as a command of that name, and the first thing wrong
+  ;; is then a stage among its arguments — true, and no help at all unless the
+  ;; tags are named.
+  (expect-true "a misspelled tag names the tags"
+               (match (run/string '(input-from-file "x" ,shout))
+                 ((Ok s) false)
+                 ((Err e) (string-contains? (.-Message e) "the tags are"))))
+
+  ;; Piping out of something whose output is already in a file would be a
+  ;; silent empty stage, so it is refused.
+  (expect-true "piping out of a redirected stage is an Err"
+               (failed? (run/string '(pipe (into-file ,(scratch "out.txt") (echo "x")) (wc -l)))))
+
+  (expect-true "redirecting an input twice is an Err"
+               (failed? (run/string '(from-file ,(scratch "out.txt")
+                                       (from-file ,(scratch "out.txt") (cat))))))
+
+  ;; ---- the other face ----------------------------------------------------
+  ;; Everything above is this module seen from a plain function. The rest is it
+  ;; seen from a fiber, driven from here the way any bjoroutine is.
+  (match (await-promise (bjo (cml-checks)))
+    ((Ok u) unit)
+    ((Err e) (fail (string-append "the bjoroutine checks raised: " (.-Message e)))))
+  0)

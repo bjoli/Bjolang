@@ -1,0 +1,24 @@
+;; A character among a command's words.
+;;
+;; `(std run)` reads its tags at run time — `(pipe ...)` and `(cat "x")` are one
+;; question to the elaborator, which sees only a literal's outermost shape — so
+;; the grammar is checked by `run` rather than by the type checker.
+;;
+;; The *leaves* are still checked, and that is what this pins. `Word` carries a
+;; symbol, a string, an int, a double, a vector of arguments, an unquoted
+;; command and an unquoted filter; a character is none of those, and there is
+;; nothing sensible it could mean on a command line. `"x"` is how you write it.
+;;
+;; So the guarantee the literal form still buys is: whatever else may be wrong
+;; with a form, everything in it is a word.
+
+;; EXPECT-ERROR: run/Word
+
+(import (std prelude))
+(import (std run))
+
+(defbjo (main args)
+  (match (run/string '(echo #\x))
+    ((Ok s) (displayln s))
+    ((Err e) (displayln "err")))
+  0)

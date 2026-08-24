@@ -28,6 +28,13 @@ echo "Building standard library..."
 ./bjor --lib lib/std/stopwatch.bjo
 # `fmt` imports `prelude` and nothing else.
 ./bjor --lib lib/std/fmt.bjo
+# `run` imports `prelude` and `syntax-match`, the latter because `with-run` is
+# written with it. It also binds `BjoPipe` and `BjoProc` out of the runtime
+# assembly, so a change to `BjolangRuntime/BjoProcess.cs` has to reach the
+# compiler before this line: the compiler links a copy of the runtime of its
+# own, and the default load context serves whichever identity loaded first.
+# Rebuild the compiler after the runtime, then run this.
+./bjor --lib lib/std/run.bjo
 # `simpletest` likewise. It is what the suite's assertions are written in, so
 # it is built with the library rather than beside the tests: a test file is an
 # ordinary program, and this is an ordinary module it imports.
