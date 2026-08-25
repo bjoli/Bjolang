@@ -1,0 +1,57 @@
+;; An imported binding named after a compiler builtin.
+;;
+;; Generated C# reaches both through a `using static` — the builtin's class is
+;; `BjolangRuntime`, the import's is the module that declared it — and C# gives
+;; a name two static imports provide to neither of them. So the reference has
+;; to be qualified: `(list-length list)` on an imported `list` used to emit
+;; `listsublength(list)`, which resolved `list` to the builtin's method group
+;; and failed to compile (CS0411).
+;;
+;; A local never had the problem and must not acquire one: a C# local wins
+;; lookup outright, so the innermost binding is still the one that runs.
+
+(import (std prelude))
+(import (std simpletest))
+(import "inc/builtinnames.bjo")
+
+;; The imported value. `list-length` is the builtin that takes what the builtin
+;; `list` produces, which is what makes the pair a collision rather than a
+;; curiosity: both names meet in one call.
+(: imported-value (-> int))
+(defun (imported-value)
+  (list-length list))
+
+;; The imported function. It shadows a builtin of the same arity, and returns
+;; 100 more than it would, so a call resolving to the wrong one is a wrong
+;; answer rather than a compile error.
+(: imported-function (-> int))
+(defun (imported-function)
+  (vec-length [1 2 3]))
+
+;; Passed on rather than called, so the reference is a value and not a callee.
+(: handed-on (-> (-> (Vec int) int) int))
+(defun (handed-on f) (f [1 2]))
+
+(: imported-as-value (-> int))
+(defun (imported-as-value)
+  (handed-on vec-length))
+
+;; A local of the same name, which is nearer than either.
+(: local-wins (-> int))
+(defun (local-wins)
+  (let ((vec-length (fun (v) 7)))
+    (vec-length [1 2 3])))
+
+;; And the import is still the import after the local's scope has closed.
+(: after-the-local (-> int))
+(defun (after-the-local)
+  (let ((shadowed (let ((vec-length (fun (v) 7))) (vec-length [1 2 3]))))
+    (+ shadowed (vec-length [1 2]))))
+
+(defun (main args)
+  (expect "an imported value named after a builtin" (imported-value) 3)
+  (expect "an imported function named after a builtin" (imported-function) 103)
+  (expect "the same one handed on as a value" (imported-as-value) 102)
+  (expect "a local shadows the import" (local-wins) 7)
+  (expect "and only inside its own scope" (after-the-local) 109)
+  0)

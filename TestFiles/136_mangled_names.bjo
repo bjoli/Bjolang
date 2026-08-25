@@ -1,0 +1,98 @@
+;; Two Bjolang names, one C# name — `AlphaRename`'s collision rule.
+;;
+;; `Naming.sanitizeIdent` is not injective: `-` becomes `sub`, `?` becomes
+;; `_QMARK`, and so on, so `a-b` and `asubb` are one identifier by the time C#
+;; sees them. Nothing in the source says they are related, which is what makes
+;; this a compiler problem rather than a user one — `(let ((a-b 1) (asubb 2)))`
+;; used to emit two locals called `asubb` and fail to compile (CS0128).
+;;
+;; Every case here is written so that the wrong rename gives a wrong *answer*
+;; rather than merely different code: each pair holds different values and both
+;; are read afterwards.
+
+(import (std prelude))
+(import (std simpletest))
+
+;; ---------------------------------------------------------------------------
+;; Bindings
+;; ---------------------------------------------------------------------------
+
+;; Simultaneous, so both are declared in one C# block: CS0128 rather than the
+;; CS0136 a nested scope would give.
+(: pair (-> int))
+(defun (pair)
+  (let ((a-b 1) (asubb 20))
+    (+ a-b asubb)))
+
+;; Nested, and the inner one is read after the outer: a rename that rewrote the
+;; wrong occurrence would return 2 or 22 instead.
+(: nested (-> int))
+(defun (nested)
+  (let ((x-y 2))
+    (let ((xsuby 20))
+      (+ x-y xsuby))))
+
+;; `def` in a body, which is the same declaration space.
+(: defs (-> int))
+(defun (defs)
+  (def c-d 3)
+  (def csubd 30)
+  (+ c-d csubd))
+
+;; ---------------------------------------------------------------------------
+;; Parameters
+;; ---------------------------------------------------------------------------
+
+;; Two parameters of one method. Not subtraction by accident: the operands are
+;; ordered, so swapping them changes the answer.
+(: subtract (-> int int int))
+(defun (subtract e-f esubf)
+  (- e-f esubf))
+
+;; A parameter and a local, which the C# method body shares.
+(: param-and-local (-> int int))
+(defun (param-and-local g-h)
+  (let ((gsubh 20))
+    (- g-h gsubh)))
+
+;; A lambda's parameters, bound where the enclosing function already has both
+;; spellings in scope.
+(: in-lambda (-> int))
+(defun (in-lambda)
+  (let ((i-j 1) (isubj 2))
+    (let ((f (fun (k-l ksubl) (- k-l ksubl))))
+      (+ (f 30 3) (- i-j isubj)))))
+
+;; ---------------------------------------------------------------------------
+;; The other non-injective spellings
+;; ---------------------------------------------------------------------------
+
+(: questions (-> int))
+(defun (questions)
+  (let ((a? 1) (a_QMARK 20))
+    (+ a? a_QMARK)))
+
+(: bangs (-> int))
+(defun (bangs)
+  (let ((b! 2) (b_BANG 30))
+    (+ b! b_BANG)))
+
+(: operators (-> int))
+(defun (operators)
+  (let ((c+d 3) (caddd 40))
+    (let ((e*f 4) (emulf 50))
+      (+ (+ c+d caddd) (+ e*f emulf)))))
+
+;; ---------------------------------------------------------------------------
+
+(defun (main args)
+  (expect "two names, one C# spelling" (pair) 21)
+  (expect "and nested rather than simultaneous" (nested) 22)
+  (expect "the same as two defs" (defs) 33)
+  (expect "two parameters of one method" (subtract 30 3) 27)
+  (expect "a parameter and a local" (param-and-local 30) 10)
+  (expect "a lambda's parameters" (in-lambda) 26)
+  (expect "a name ending in ?" (questions) 21)
+  (expect "a name ending in !" (bangs) 32)
+  (expect "names holding operators" (operators) 97)
+  0)

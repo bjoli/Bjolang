@@ -3957,6 +3957,16 @@ let builtinUnionCases: Map<string, UnionCaseInfo> =
 
     syntaxCases @ cancelReasonCases |> Map.ofList
 
+/// The names that arrive already bound, from `using static BjolangRuntime`.
+///
+/// A module may declare a binding of its own called `list`, and an importer
+/// then has two of that name in scope with nothing in the identifier to say
+/// which. Read off `Prelude` rather than listed here: the builtins are what
+/// that environment *is*, and a second copy would go stale the first time one
+/// was added.
+let private builtinBindings: Set<string> =
+    Prelude.prelude.Bindings |> Map.toSeq |> Seq.map fst |> Set.ofSeq
+
 let generateProgram (registry: TraitRegistry) (metadata: ModuleMetadata.Metadata) (linkedDlls: string list) (decls: TDecl list) : string =
     let unionCases =
         decls
@@ -3995,6 +4005,20 @@ let generateProgram (registry: TraitRegistry) (metadata: ModuleMetadata.Metadata
                     | TDefMutable (n, _, _, _) -> [ (n, (modName, n)) ]
                     | TDefTuple (names, _, _, _) -> names |> List.map (fun n -> (n, (modName, n)))
                     | TDefun (n, _, _, _, _, _, _, _, _) -> [ (n, (modName, n)) ]
+                    // An import named after a builtin. Both spellings reach the
+                    // call site through a `using static` — the builtin's from
+                    // `BjolangRuntime`, this one's from the class that defines
+                    // it — and C# resolves a name two static imports provide to
+                    // neither, so `(list-length list)` on an imported `list`
+                    // used to be a CS0411 in generated code. A bare identifier
+                    // cannot say which is meant; the class name can.
+                    //
+                    // Unconditionally, rather than only where the name also
+                    // moved: the branch below reads "differs from what a bare
+                    // identifier would find", and for these a bare identifier
+                    // finds the wrong thing even when nothing differs.
+                    | TExtern (visible, origin, _, _) when Set.contains visible builtinBindings ->
+                        [ (visible, (origin.OriginModule, origin.OriginalName)) ]
                     // An import whose spelling or whose home differs from what a
                     // bare identifier would find: a modifier renamed it, or the
                     // module publishing it was a facade and generated no code

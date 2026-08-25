@@ -3,6 +3,50 @@
 
 What each change guarantees, and what it leaves open.
 
+* A name means what the source says it means
+
+Two ways a program could be compiled into something it did not say, both of
+them a C# identifier standing for more than one Bjolang name.
+
+** Two names that mangle alike are two names
+
+~Naming.sanitizeIdent~ is not injective — ~-~ becomes ~sub~, ~?~ becomes
+~_QMARK~ — so ~a-b~ and ~asubb~ arrive at C# as one identifier:
+
+#+BEGIN_SRC scheme
+(let ((a-b 1) (asubb 2)) (+ a-b asubb))
+#+END_SRC
+
+used to declare ~asubb~ twice and fail to compile. The rename pass that already
+existed for shadowed locals now counts collisions in the *emitted* spelling
+rather than the written one, so the second binder is given a fresh name.
+Parameters are covered too, including two parameters of one signature.
+
+Nothing that was already correct changes: a name is renamed only where it
+collides.
+
+** A module may declare a binding named after a builtin
+
+#+BEGIN_SRC scheme
+(export list)
+(: list (List int))
+(def list (list 1 2 3))
+#+END_SRC
+
+An importer of that module has two ~list~ in scope — this one, and the builtin
+— and generated code reaches both through a ~using static~, which is a spelling
+C# resolves to neither. ~(list-length list)~ therefore failed to compile with a
+CS0411 about a method group. An imported binding whose name is a builtin's is
+now qualified to the class that declares it, so the import is what runs.
+
+The rule is the one the language already had: the nearest binding wins. A local
+or a definition in the same module always did win — C# lookup sees to that — and
+still does; what changed is that an import does too. The builtin is untouched
+wherever nothing shadows it.
+
+This is what made ~(def list ...)~ at a REPL prompt unusable from the next entry,
+since an entry imports the ones before it.
+
 * A type crosses a module boundary only when it is exported
 
 A module used to publish every type it declared, whatever its ~(export ...)~

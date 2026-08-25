@@ -328,8 +328,13 @@ let freshenTyped (roots: string list) (expr: TypedExpr) : TypedExpr * Map<string
 /// is two locals called `tmp` in one method. A macro makes this the common case
 /// rather than a curiosity: a template binds names the caller cannot see, and
 /// the caller binds names the template's author could not.
+///
+/// Collisions are counted in the *emitted* spelling, because that is where they
+/// happen: `Naming.sanitizeIdent` is not injective, so `a-b` and `asubb` are one
+/// C# name — `(let ((a-b 1) (asubb 2)) ...)` declared `asubb` twice — and two
+/// names C# cannot tell apart have to be told apart here.
 let private shadowing (used: System.Collections.Generic.HashSet<string>) (_scope: Set<string>) (name: string) : string option =
-    if used.Add name then
+    if used.Add(Naming.sanitizeIdent name) then
         None
     else
         // Fresh, so it needs no checking against `used` itself.
@@ -368,7 +373,7 @@ let rec uniquifyDeclWith (globals: Set<string>) (decl: TDecl) : TDecl =
     /// that goes into the same C# member shares it — a keyword parameter's
     /// default is evaluated in the method that declares it, not somewhere else.
     let inFunction (scope: Set<string>) (subst: Map<string, string>) =
-        let used = System.Collections.Generic.HashSet<string>(scope)
+        let used = System.Collections.Generic.HashSet<string>(scope |> Seq.map Naming.sanitizeIdent)
         fun (body: TypedExpr) -> renameCore (shadowing used) scope subst body
 
     match decl with
@@ -380,8 +385,16 @@ let rec uniquifyDeclWith (globals: Set<string>) (decl: TDecl) : TDecl =
         // A positional parameter may be renamed; a keyword parameter may not,
         // because `Codegen` emits its name as a C# named argument at every call
         // site, which makes the spelling part of the calling convention.
+        //
+        // In the emitted spelling, and seeded with the globals, so that one
+        // `HashSet` answers both questions a parameter raises: whether it takes
+        // a module-level name, and whether it takes a name an earlier parameter
+        // in the same signature already mangles to.
+        let taken =
+            System.Collections.Generic.HashSet<string>(globals |> Seq.map Naming.sanitizeIdent)
+
         let renameParam (n: string) =
-            if isRenamable n && not (n.StartsWith "_dict_") && Set.contains n globals then
+            if isRenamable n && not (n.StartsWith "_dict_") && not (taken.Add(Naming.sanitizeIdent n)) then
                 Some(n, Gensym.fresh (Gensym.baseName n))
             else
                 None

@@ -1,0 +1,27 @@
+;; A module whose bindings are named after compiler builtins.
+;;
+;; Nothing stops a module declaring a `list` of its own, and an importer then
+;; has two of that name in scope: this module's, through the `using static` for
+;; its class, and the runtime's, through the one for `BjolangRuntime`. A bare
+;; identifier names neither, so `Codegen` has to qualify the reference —
+;; `137_builtin_names.bjo` is the side that reads them.
+(export list vec-length)
+
+(import (std prelude))
+
+;; A value, which is what the collision was first found on: `(list-length list)`
+;; passed a method group instead of a list.
+(: list (List int))
+(def list (list 1 2 3))
+
+;; A function, shadowing a builtin of the same arity but a different meaning.
+;; The wrong resolution compiles here — both take one argument — and returns the
+;; other answer, so the test can tell them apart by value.
+;;
+;; Counted through `fold` rather than by calling the builtin: inside this module
+;; the name is this function's own, so `(vec-length v)` here is recursion.
+(: vec-length (-> (Vec int) int))
+(defun (vec-length v)
+  (+ 100 (fold (fun (acc x) (+ acc 1)) 0 v)))
+
+
