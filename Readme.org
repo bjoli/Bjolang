@@ -542,17 +542,10 @@ It is also handy if you want to
 * TODO
 
 These are things I found while spelunking:
-
-- Make it possible to shadow trait methods and not have the typechecker vomit.
 - output LINE-directives a little bit better than I do now
-- A standard library that doesn't suck.
 - Annotations using @[c# annotation verbatim here] so that I can piggyback on c# json libraries.
-- vecbuilder should be transientvec 
-- I hate how numerics work currently. This needs to be fixed. In a perfect world I would have a generic number type that could specialize all numeric procedures.
-- Check how locales work so that we don't get bitten. Like (std run) and how it treats args.
+- 
 
-- `port->lines` does not exist. The real thing is `reader->vec`, a builtin, `(-> TextReader (Vec string))`. RENAME
-- `write-line` does not exist. The real name is `writeln` (`prelude.bjo:1359`). RENAME FIX
 
 ** Things I need in the standard library
 
@@ -560,29 +553,62 @@ io for working with network thingies
 
 Heap, preferrably with a transient interface.
 
-Maybe I should just steal all the functions from r6rs and bolt them onto what I can find in dotnet. Or maybe steal something from racket.
+
+* Things to fix
+
+** major problems
+numeric literals are broken. int and long works. nothing else. (I should fix this and also implement literal polymorphism for numbers)
+
+staleness detection when building is incomplete: it does NOT look at imports, only original source and includes.
+
+module naming is based on filename so (import (std list)) and (import "imports/list.bjo") imports the same module name. 
+
+(let ((a-b 1) (asubb 2)) ...) tries to bind the same variable. 
+
+Naming a local variable list, will produce local shadowing and a c# exception. I need to hook in the alpharenamer.
+
+Trait resolution is based on the head, so a trait on (List int) overwrites the same trait on (List string) if defined after.
+
+** Problems
+
+pattern matching has no exhaustiveness checking.
+
+shadowing trait methods doesn't work, and produces very unhelpful error messages.
+
+defining how to pattern match a new data structure is impossible. 
+
+generalisation is o(n), meaning generalize walks THE WHOLE DAMN ENV on every let.
+
+pruning raises type resolution errors eagerly during environment traversals which causes the compiler to report errors on unrelated lines of code.
+
+Check how locales work so that we don't get bitten. Like (std run) and how it treats args.
+
+** Minor problems
+
+'(1 2 3) and (list 1 2 3) produces different code.
+
+vecbuilder should be transientvec
+
+[1 2 3 4] should codegen an array that is put directly into the tail, or split and inserted in chunks of 32. This needs changes to RrbList.
+
+fix tail recursion and parameterization: Since tail calls have no code in the recursive function running after it, we can restore the parameters outside the recursion. is this doable ?
+
+The current parameter implementation is very practical, but perhaps limiting. There are 3 "super fast" parameter slots (current input and output port and current-cancel). Then there are 31 fast slots that get the fast path when parameterizing, and the rest are "cold paths" which has at least one extra indirection. Should I change this? maybe an array of arrays giving us 1024 fast parameters and let the rest in the cold path? 1024 parameters should be enough for anyone. 
+
+`port->lines` does not exist. The real thing is `reader->vec`, a builtin, `(-> TextReader (Vec string))`. RENAME
+
+`write-line` does not exist. The real name is `writeln` (`prelude.bjo:1359`). RENAME FIX
 
 
-** Syntax ideas
-@-expr from racket?
+** features to add in no particular order
+
+add #:align to columnar and tabular in (std fmt)
+
+#('array 'literal)
 
 Extend do notation to be more usable. :traverse :and<- ( :and<- seems _very hard_ atm).
 
 (with-return ...) that allows for (return ...). Disallowed in loops and seq. loops maybe allowed later. 
 
+add some built-in number traits that m
 
-** Things to fix:
-
-Naming a local variable list, will produce local shadowing and a c# exception. I need to hook in the alpharenamer.
-
-'(1 2 3) and (list 1 2 3) produces different code.
-
-[1 2 3 4] should codegen an array that is put directly into the tail, or split and inserted in chunks of 32. This needs changes to RrbList.
-
-Add array literals
-
-fix tail recursion and parameterization: Since tail calls have no code in the recursive function running after it, we can restore the parameters outside the recursion.
-
-The current parameter implementation is very practical, but perhaps limiting. There are 3 "super fast" parameter slots (current input and output port and current-cancel). Then there are 31 fast slots that get the fast path when parameterizing, and the rest are "cold paths" which has at least one extra indirection. Should I change this?
-
-Add #:align to columnar and tabular in (std fmt).
