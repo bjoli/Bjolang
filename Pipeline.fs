@@ -679,67 +679,12 @@ let private dllCache = System.Collections.Generic.Dictionary<string * int64, Cac
 let mutable compileLibrary: string -> string =
     fun path -> failwithf $"No backend is installed to compile '%s{path}'."
 
-/// The `.dll` for an imported `.bjo`, built if there is not a current one.
+/// The modules the staleness walk in flight has already decided about.
 ///
-/// `(import "x.bjo")` means a compiled unit, always. Merging the source into
-/// the importing assembly is what it used to mean, and it never worked: only
-/// the last module was emitted, so the generated C# referenced a class nothing
-/// produced. Compiling it separately is also what makes `include` a distinct
-/// thing rather than a slower spelling of the same one.
-///
-/// Staleness is by timestamp against the whole source closure, which is what
-/// `expandIncludes` reports alongside the forms — the include walk is the only
-/// thing that knows what that closure is, so it is asked rather than repeated.
-///
-/// The compiler counts as part of that closure. What a `.dll` carries for an
-/// importer is this compiler's metadata format, so one built by a different
-/// build of the compiler is out of date however new its source is — and the
-/// symptom otherwise is not a rebuild but an unbound variable, because
-/// unreadable metadata describes a module that exports nothing.
-let private ensureLibrary (bjoPath: string) : string =
-    let dllPath = Path.ChangeExtension(bjoPath, ".dll")
-
-    let compilerBuilt =
-        let loc = System.Reflection.Assembly.GetExecutingAssembly().Location
-        if loc <> "" && File.Exists loc then File.GetLastWriteTimeUtc loc else DateTime.MinValue
-
-    let upToDate =
-        File.Exists dllPath
-        && (let built = File.GetLastWriteTimeUtc dllPath
-            let forms, _ = Lexer.tokenize bjoPath (File.ReadAllText bjoPath) |> read
-            let _, sources = expandIncludes [ bjoPath ] bjoPath forms
-
-            compilerBuilt <= built
-            && sources |> Set.forall (fun src -> File.GetLastWriteTimeUtc src <= built))
-
-    if upToDate then dllPath else compileLibrary bjoPath
-
-/// The path an import resolves to, which is always a `.dll`.
-///
-/// Where a source file exists it is the truth, and the `.dll` beside it may be
-/// behind it — so the `.bjo` is what this looks for first, and `ensureLibrary`
-/// decides whether the built artefact is still current. A `.dll` with no source
-/// is a prebuilt library and is taken as given.
-///
-/// A module path anchors to the installation, never to the working directory: a
-/// module import means the same file no matter where the compiler is invoked
-/// from, so the compiled standard library is the one that gets linked instead
-/// of being rebuilt from source per caller.
-let private resolveDependency (basePath: string) (spec: ImportSpec) : string option =
-    let raw =
-        match spec.Path with
-        | RelativePath p -> Path.GetFullPath(Path.Combine(Path.GetDirectoryName basePath, p))
-        | ModulePath parts ->
-            Path.GetFullPath(Path.Combine(Paths.libDir, Path.Combine(Array.ofList parts) + ".bjo"))
-
-    let bjoPath = if raw.EndsWith ".bjo" then raw else raw + ".bjo"
-    let dllPath = Path.ChangeExtension(bjoPath, ".dll")
-
-    if File.Exists bjoPath then Some(ensureLibrary bjoPath)
-    elif File.Exists dllPath then Some dllPath
-    // Neither is there. Answering with the path as written keeps an import that
-    // names a `.dll` outright working, and leaves the rest to fail by name.
-    else Some raw
+/// Emptied by the walk that started it rather than kept, so that nothing is
+/// remembered between two builds in one process: what a `.dll`'s timestamp says
+/// is only true until something rebuilds it, and a REPL rebuilds things.
+let private walking = System.Collections.Generic.HashSet<string>()
 
 /// `(std prelude)`, which every program gets whether it asks or not.
 let private preludePath = ModulePath [ "std"; "prelude" ]
@@ -812,6 +757,105 @@ let private withImplicitPrelude (absPath: string) (forms: SExpr list) : SExpr li
 
         let sym name = SAtom { Token = Lexer.Symbol name; Range = r }
         SList([ sym "import"; SList([ sym "std"; sym "prelude" ], r) ], r) :: forms
+
+/// The `.dll` for an imported `.bjo`, built if there is not a current one.
+///
+/// `(import "x.bjo")` means a compiled unit, always. Merging the source into
+/// the importing assembly is what it used to mean, and it never worked: only
+/// the last module was emitted, so the generated C# referenced a class nothing
+/// produced. Compiling it separately is also what makes `include` a distinct
+/// thing rather than a slower spelling of the same one.
+///
+/// Staleness is by timestamp against the whole source closure, which is what
+/// `expandIncludes` reports alongside the forms — the include walk is the only
+/// thing that knows what that closure is, so it is asked rather than repeated.
+///
+/// The compiler counts as part of that closure. What a `.dll` carries for an
+/// importer is this compiler's metadata format, so one built by a different
+/// build of the compiler is out of date however new its source is — and the
+/// symptom otherwise is not a rebuild but an unbound variable, because
+/// unreadable metadata describes a module that exports nothing.
+///
+/// So do the module's *imports*, and for the same reason: what crosses an
+/// import edge is metadata, read once, when the importer was compiled. A
+/// dependency that has changed since is a `.dll` describing a module that no
+/// longer exists, and the symptom is not an error — the old artefact keeps
+/// being linked, and an edit two modules down simply does not happen.
+///
+/// Each import is *resolved* rather than merely stat-ed, which is what makes
+/// this transitive: resolving builds the dependency if it is itself behind, so
+/// by the time its timestamp is compared it is current, and a change anywhere
+/// in the graph reaches everything above it one edge at a time.
+let rec private ensureLibrary (bjoPath: string) : string =
+    let dllPath = Path.ChangeExtension(bjoPath, ".dll")
+
+    // Reached from itself, or reached twice: the answer is the one this walk
+    // has already arrived at. A diamond is walked once rather than once per
+    // path through it, and a cycle terminates here rather than recurring —
+    // an illegal one is `Build.checkNotCyclic`'s to report, and it says so in
+    // terms of the import chain rather than as a stack overflow.
+    if not (walking.Add bjoPath) then
+        dllPath
+    else
+
+    let root = walking.Count = 1
+
+    try
+        let compilerBuilt =
+            let loc = System.Reflection.Assembly.GetExecutingAssembly().Location
+            if loc <> "" && File.Exists loc then File.GetLastWriteTimeUtc loc else DateTime.MinValue
+
+        let upToDate =
+            File.Exists dllPath
+            && (let built = File.GetLastWriteTimeUtc dllPath
+                let forms, _ = Lexer.tokenize bjoPath (File.ReadAllText bjoPath) |> read
+                let _, sources = expandIncludes [ bjoPath ] bjoPath forms
+
+                compilerBuilt <= built
+                && sources |> Set.forall (fun src -> File.GetLastWriteTimeUtc src <= built)
+                // The implicit prelude edge counts as much as a written one:
+                // a module that never names the prelude is still compiled
+                // against its metadata.
+                && (importsOf (withImplicitPrelude bjoPath forms)
+                    |> List.forall (fun (spec, _) ->
+                        match resolveDependency bjoPath spec with
+                        | Some dep -> File.GetLastWriteTimeUtc dep <= built
+                        | None -> true)))
+
+        if upToDate then dllPath else compileLibrary bjoPath
+    finally
+        // Only the walk that started it forgets, so that everything one build
+        // decided stays decided for the whole of it — including for the
+        // compilation this is about to start, which resolves the same imports
+        // again from `loadModuleGraph`.
+        if root then walking.Clear()
+
+/// The path an import resolves to, which is always a `.dll`.
+///
+/// Where a source file exists it is the truth, and the `.dll` beside it may be
+/// behind it — so the `.bjo` is what this looks for first, and `ensureLibrary`
+/// decides whether the built artefact is still current. A `.dll` with no source
+/// is a prebuilt library and is taken as given.
+///
+/// A module path anchors to the installation, never to the working directory: a
+/// module import means the same file no matter where the compiler is invoked
+/// from, so the compiled standard library is the one that gets linked instead
+/// of being rebuilt from source per caller.
+and private resolveDependency (basePath: string) (spec: ImportSpec) : string option =
+    let raw =
+        match spec.Path with
+        | RelativePath p -> Path.GetFullPath(Path.Combine(Path.GetDirectoryName basePath, p))
+        | ModulePath parts ->
+            Path.GetFullPath(Path.Combine(Paths.libDir, Path.Combine(Array.ofList parts) + ".bjo"))
+
+    let bjoPath = if raw.EndsWith ".bjo" then raw else raw + ".bjo"
+    let dllPath = Path.ChangeExtension(bjoPath, ".dll")
+
+    if File.Exists bjoPath then Some(ensureLibrary bjoPath)
+    elif File.Exists dllPath then Some dllPath
+    // Neither is there. Answering with the path as written keeps an import that
+    // names a `.dll` outright working, and leaves the rest to fail by name.
+    else Some raw
 
 /// The one shape an entry point has: `(-> (List string) int)`.
 ///

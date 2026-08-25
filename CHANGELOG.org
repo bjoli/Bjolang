@@ -3,6 +3,33 @@
 
 What each change guarantees, and what it leaves open.
 
+* A changed module is rebuilt, however far down it is
+
+Staleness used to be judged against a module's own source closure — the file and
+its ~include~s — and the compiler. Its *imports* were not part of that, and what
+crosses an import is metadata, read once, when the importer was compiled. So a
+chain of three:
+
+#+BEGIN_SRC scheme
+;; app.bjo   imports middle.bjo
+;; middle.bjo imports leaf.bjo
+#+END_SRC
+
+with an edit to ~leaf.bjo~ left ~middle.dll~ looking current — its own source was
+untouched — and the program went on being built against the module leaf used to
+be. The failure was a silence rather than an error: no diagnostic, no rebuild,
+and an edit that simply did not happen.
+
+An import is now part of what a module is judged against, and *resolved* rather
+than stat-ed: resolving a dependency builds it if it is itself behind, so a
+change reaches everything above it one edge at a time. The implicit
+~(import (std prelude))~ counts as an edge like any other.
+
+A build with nothing changed still rebuilds nothing — the walk remembers what it
+has decided for as long as that build lasts, so a diamond in the import graph is
+visited once, and a cycle stops there rather than recurring. An illegal cycle is
+still reported as one, in terms of the import chain.
+
 * A name means what the source says it means
 
 Two ways a program could be compiled into something it did not say, both of

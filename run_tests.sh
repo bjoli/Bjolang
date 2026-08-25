@@ -506,12 +506,13 @@ codegen_total=0
 codegen_failed=0
 declare -a codegen_failures
 
-# --- The three phases below run together -------------------------------------
+# --- The four phases below run together --------------------------------------
 #
-# Codegen, the REPL sessions and the reproducibility check touch none of each
-# other's files: codegen writes `TestFiles/codegen` and a dump directory of its
-# own, a REPL session writes nothing but logs, and reproducibility rebuilds
-# `TestFiles/006_*`. Run one after another they were 5.8s of a 15s run on a
+# Codegen, the REPL sessions, the reproducibility check and the staleness check
+# touch none of each other's files: codegen writes `TestFiles/codegen` and a
+# dump directory of its own, a REPL session writes nothing but logs,
+# reproducibility rebuilds `TestFiles/006_*`, and staleness works in a directory
+# it writes from scratch. Run one after another they were 5.8s of a 15s run on a
 # 24-core machine that averaged 11 busy cores, which is most of the idle time in
 # the whole script.
 #
@@ -703,21 +704,114 @@ write_phase_result repro 0 "$repro_failed" "${repro_failures[@]}"
 } > "$LOG_DIR/phase_repro.out" 2>&1 &
 pid_repro=$!
 
-# --- Joining the three -------------------------------------------------------
+# --- Staleness ---------------------------------------------------------------
+#
+# What crosses an import edge is metadata, read once, when the importer was
+# compiled — so a module is out of date when something it imports has changed,
+# and that may be two edges away. Nothing on disk says so: the importer's own
+# source is untouched, and its `.dll` is newer than it. Left unchecked the
+# symptom is not a failure but a silence, an edit that simply does not happen,
+# which is the kind of thing a test suite exists to notice.
+#
+# A chain of three, written here rather than kept in `TestFiles`, because the
+# fixture is a *sequence of edits* rather than a file: every other phase would
+# otherwise have to know not to touch it, and a half-applied edit left behind by
+# an interrupted run would be someone's confusing afternoon.
+STALE_DIR="$LOG_DIR/staleness"
+stale_total=0
+stale_failed=0
+declare -a stale_failures
+
+stale_check() {
+    local label="$1" wanted="$2" got="$3"
+    stale_total=$((stale_total + 1))
+
+    if [ "$got" = "$wanted" ]; then
+        echo -e "  [${GREEN}PASS${NC}] $label"
+    else
+        echo -e "  [${RED}FAIL${NC}] $label"
+        stale_failed=$((stale_failed + 1))
+        stale_failures+=("$label: got '$got', wanted '$wanted'")
+    fi
+}
+
+{
+echo "--------------------------------------------------"
+echo -e "${BLUE}Checking that a changed dependency is rebuilt...${NC}"
+
+mkdir -p "$STALE_DIR"
+
+cat > "$STALE_DIR/leaf.bjo" <<'EOF'
+(export flavour)
+(import (std prelude))
+(: flavour (-> string))
+(defun (flavour) "banana")
+EOF
+
+cat > "$STALE_DIR/middle.bjo" <<'EOF'
+(export describe)
+(import (std prelude))
+(import "leaf.bjo")
+(: describe (-> string))
+(defun (describe) (string-append "a " (flavour)))
+EOF
+
+cat > "$STALE_DIR/app.bjo" <<'EOF'
+(import (std prelude))
+(import "middle.bjo")
+(defun (main args) (println (describe)) 0)
+EOF
+
+if dotnet "$COMPILER_DLL" "$STALE_DIR/app.bjo" > "$LOG_DIR/stale.log" 2>&1; then
+    stale_check "a chain of three modules builds" \
+                "a banana" "$(dotnet "$STALE_DIR/app.exe" 2>&1)"
+
+    # Nothing but the leaf is touched. `middle.dll` is newer than its own source
+    # and older than nothing it names, so only its *imports* say it is stale.
+    sed -i 's/"banana"/"cloudberry"/' "$STALE_DIR/leaf.bjo"
+
+    if dotnet "$COMPILER_DLL" "$STALE_DIR/app.bjo" >> "$LOG_DIR/stale.log" 2>&1; then
+        stale_check "an edit two modules down reaches the program" \
+                    "a cloudberry" "$(dotnet "$STALE_DIR/app.exe" 2>&1)"
+    else
+        stale_check "an edit two modules down reaches the program" \
+                    "a cloudberry" "the rebuild did not compile; see $LOG_DIR/stale.log"
+    fi
+
+    # And the other half of it: staleness that is not there costs nothing. A
+    # walk that rebuilt on every build would pass everything above and make the
+    # cache worthless.
+    stale_check "a build with nothing changed rebuilds nothing" "0" \
+                "$(dotnet "$COMPILER_DLL" "$STALE_DIR/app.bjo" 2>&1 \
+                   | grep -c '^Building imported module')"
+else
+    stale_check "a chain of three modules builds" \
+                "a banana" "it did not compile; see $LOG_DIR/stale.log"
+fi
+
+write_phase_result staleness "$stale_total" "$stale_failed" "${stale_failures[@]}"
+} > "$LOG_DIR/phase_staleness.out" 2>&1 &
+pid_staleness=$!
+
+# --- Joining the four --------------------------------------------------------
 #
 # Replayed in the order they used to run in, so a log reads as it always did,
 # and the tallies are read back out of the files each phase left behind.
 wait $pid_codegen
 wait $pid_repl
 wait $pid_repro
+wait $pid_staleness
 
-cat "$LOG_DIR/phase_codegen.out" "$LOG_DIR/phase_repl.out" "$LOG_DIR/phase_repro.out"
+cat "$LOG_DIR/phase_codegen.out" "$LOG_DIR/phase_repl.out" "$LOG_DIR/phase_repro.out" \
+    "$LOG_DIR/phase_staleness.out"
 
 read -r codegen_total codegen_failed < "$LOG_DIR/phase_codegen.counts"
 read -r repl_total repl_failed < "$LOG_DIR/phase_repl.counts"
 read -r repro_total repro_failed < "$LOG_DIR/phase_repro.counts"
+read -r stale_total stale_failed < "$LOG_DIR/phase_staleness.counts"
 mapfile -t codegen_failures < "$LOG_DIR/phase_codegen.failures"
 mapfile -t repl_failures < "$LOG_DIR/phase_repl.failures"
+mapfile -t stale_failures < "$LOG_DIR/phase_staleness.failures"
 mapfile -t repro_failures < "$LOG_DIR/phase_repro.failures"
 
 end_time=$(date +%s.%N 2>/dev/null || date +%s)
@@ -752,6 +846,9 @@ fi
 if [ $repl_total -gt 0 ]; then
     echo -e "REPL sessions:      $((repl_total - repl_failed))/$repl_total match their transcript"
 fi
+if [ $stale_total -gt 0 ]; then
+    echo -e "Staleness:          $((stale_total - stale_failed))/$stale_total rebuilt as expected"
+fi
 echo -e "Total time:         ${duration}s"
 echo ""
 
@@ -779,6 +876,14 @@ if [ ${#repro_failures[@]} -ne 0 ]; then
     echo ""
 fi
 
+if [ ${#stale_failures[@]} -ne 0 ]; then
+    echo -e "${RED}=== Staleness Failures ===${NC}"
+    for failure in "${stale_failures[@]}"; do
+        echo -e "  $failure"
+    done
+    echo ""
+fi
+
 if [ ${#codegen_failures[@]} -ne 0 ]; then
     echo -e "${RED}=== Codegen Test Failures ===${NC}"
     for failure in "${codegen_failures[@]}"; do
@@ -789,7 +894,7 @@ fi
 
 # Print failure details
 if { [ $error_failed -ne 0 ] || [ $codegen_failed -ne 0 ] || [ $repl_failed -ne 0 ] \
-     || [ $repro_failed -ne 0 ]; } \
+     || [ $repro_failed -ne 0 ] || [ $stale_failed -ne 0 ]; } \
    && [ ${#compiled_failed[@]} -eq 0 ] && [ ${#run_failed[@]} -eq 0 ]; then
     exit 1
 fi

@@ -33,6 +33,9 @@
 ///     be unloaded from the default context, so forgetting where it came from
 ///     would only break the next lookup.
 ///   * `Pipeline.compileLibrary`. A backend hook, set once by `Program`.
+///   * `Pipeline.walking`, the staleness walk's memo. Empty except during a
+///     walk, and emptied by the one that started it, so there is nothing here
+///     for a compilation to inherit.
 ///   * `DotNetInterop.typeCache` and `extraAssemblies`. Reflection over what
 ///     the process has loaded, which is the same answer for every compilation
 ///     in it.
