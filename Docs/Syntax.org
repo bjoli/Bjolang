@@ -1,11 +1,34 @@
 * Syntax
 
 ** Literals
-- Numbers: ~42~, ~-100~, ~3.14159~
+- Numbers: ~42~, ~-100~, ~3.14159~, ~0x2A~, ~0b101010~
 - Strings: ~"hello world"~
 - Interpolated strings: ~#"x is ${x}"~
 - Booleans: ~true~, ~false~, ~#t~, ~#f~
 - Characters: ~#\a~, ~#\newline~
+
+*** Which number a number is
+
+A number written with a suffix is that type and nothing else:
+
+| ~21uy~ | ~byte~   | ~21u~  | ~uint~  |
+| ~21s~  | ~short~  | ~21L~  | ~long~  |
+| ~21us~ | ~ushort~ | ~21UL~ | ~ulong~ |
+| ~21d~  | ~double~ |        |         |
+
+A decimal point or an exponent makes it a ~double~ — ~2.5~, ~1e10~ — whatever
+else it looks like. ~0x2A~ and ~0b101010~ are 42.
+
+Written *without* one, a number says nothing about its type and takes whatever
+surrounds it, which is what lets a numeric function be written once and used at
+every type:
+
+#+BEGIN_SRC scheme
+(: low-bit (-> %a %a))
+(defun (low-bit x) (bitwise-and x 1))   ;; works at int, long, uint, ulong...
+#+END_SRC
+
+Where nothing says, it is an ~int~. See ~Numerics.org~ for the rest of it.
 
 *** String interpolation
 A string written ~#"..."~ may contain ~${expression}~ holes.
@@ -933,13 +956,17 @@ written as a trait default it is resolved once per implementation instead:
 #+BEGIN_SRC scheme
 (import/extern (clr-abs (: System.Math.Abs)))
 
-(def/trait (Num %a)
-  (: abs (-> %a %a))
-  (defun (abs x) (clr-abs x)))
+(def/trait (Magnitude %a)
+  (: size (-> %a %a))
+  (defun (size x) (clr-abs x)))
 
-(def/impl (Num int))              ;; Math.Abs(int)
-(def/impl (Num double))           ;; Math.Abs(double)
+(def/impl (Magnitude int))        ;; Math.Abs(int)
+(def/impl (Magnitude double))     ;; Math.Abs(double)
 #+END_SRC
+
+Where the overload set belongs to a .NET *interface* rather than to a static
+class, there is a shorter way that needs no implementations at all — see
+~#:clr-constraint~ below. The library's own ~Num~ is written that way.
 
 A defaulted method is not a second kind of method: by the time anything else
 looks at the implementation, it is a method that implementation wrote. It gets
@@ -1232,6 +1259,26 @@ A trait written this way compiles to a C# interface, with each implementation a
 sealed class holding a singleton ~Instance~. A call whose receiver type is known
 is spliced straight into the call site; a call on a type variable is dispatched
 through a dictionary parameter the compiler adds to the enclosing function.
+
+*** ~#:clr-constraint~ — a trait that *is* a .NET interface
+A trait may name a .NET interface instead of declaring implementations. It then
+has none, and no dictionary: a ~(where ...)~ on it becomes a C# ~where~ clause,
+and it is discharged by asking the runtime whether the implementor implements
+the interface.
+#+BEGIN_SRC scheme
+(def/trait (Ord %a)
+  (#:clr-constraint (System.IComparable %a))
+  (: compare (-> %a %a int) #:clr-member CompareTo))
+#+END_SRC
+
+~#:clr-member~ names the member a method stands for; whether it is static or an
+instance member is read from the metadata rather than written. ~def/impl~ for
+such a trait is an error, since a type either implements the interface or does
+not.
+
+This is how the library's ~Num~, ~Ord~, ~Ordered~ and ~Integral~ are written,
+and it is what licenses ~+~ and ~<~ at a type variable. ~Numerics.org~ has the
+rest, including what it cannot do.
 
 *** Inline traits
 A trait may instead apply its implementor to arguments:

@@ -51,6 +51,17 @@ let collectTraitConstraints (env: Env) (body: TypedExpr) : TraitConstraint list 
 
     let step (acc: Set<string * string>) (expr: TypedExpr) =
         match expr.Node with
+        // A numeric literal that settled at one of this function's own type
+        // variables. It is emitted as `T_a.CreateChecked(1)`, which is a member
+        // of `INumberBase` — so the function has to carry the constraint that
+        // puts it there, and the operators around the literal need not have
+        // asked for it: `(if (< x 3) 3 x)` is `IComparisonOperators` and
+        // nothing else.
+        | TInt _ ->
+            match prune registry expr.Type with
+            | TVar v -> Set.add ("Num", v) acc
+            | _ -> acc
+
         // A trait call, whether or not the solver pinned it down. The node says
         // which trait it belongs to, so there is nothing to guess: looking the
         // method name up across every trait picked an arbitrary one whenever two
@@ -107,15 +118,96 @@ let collectTraitConstraints (env: Env) (body: TypedExpr) : TraitConstraint list 
         { TraitName = traitName; TargetType = TVar varName })
 
 // --- INFERENCE ENGINE ---
+
+/// What a numeric literal's spelling says it is, with `int` where it says
+/// nothing.
+///
+/// The total answer, for the two places that need one whatever the literal
+/// looks like: a pattern, which is emitted as a C# constant and so has to have
+/// its type settled where it is written, and literal *elaboration*, which reads
+/// a shape rather than a type. Every other use goes through
+/// `numericLiteralType` below and leaves a bare integer open.
 let inferNumericType (value: string) : HMType =
-    if value.EndsWith("uy") then TypeConstants.byteType
-    elif value.EndsWith("s") then TypeConstants.shortType
-    elif value.EndsWith("us") then TypeConstants.ushortType
-    elif value.EndsWith("u") then TypeConstants.uintType
-    elif value.EndsWith("UL") || value.EndsWith("ul") || value.EndsWith("uL") then TypeConstants.ulongType
-    elif value.EndsWith("L") || value.EndsWith("l") then TypeConstants.longType
-    elif value.EndsWith("d") || value.EndsWith("D") || value.Contains(".") then TypeConstants.doubleType
-    else TypeConstants.intType
+    NumericLiteral.spelledType value |> Option.defaultValue TypeConstants.intType
+
+/// The numeric literals whose type is still open, and where each was written.
+///
+/// A literal with no suffix does not say what it is, so it is inferred as a
+/// metavariable and whatever it meets decides. That is the whole of numeric
+/// literal polymorphism: without it the `1` in `(bitwise-and x 1)` pinned `%a`
+/// to `int` before the body could say otherwise, and a generic numeric
+/// function could not be written however well the constraints worked.
+///
+/// Nothing may *stay* open. `defaultNumericLiterals` settles the survivors at
+/// `int` before the enclosing declaration generalizes, and is also where a
+/// literal that met a type no number can have is refused.
+///
+/// Per compilation, and emptied by every defaulting pass — which leaves the
+/// next one nothing to walk.
+let private openLiterals = ResizeArray<HMType * string * Range>()
+
+/// Drops whatever is still open. For the compilation that *failed*: see
+/// `clearWanteds`, which this is the other half of.
+let clearNumericLiterals () : unit = openLiterals.Clear()
+
+/// Refuses a literal the type it has ended up at cannot hold.
+let private checkLiteralFits (t: HMType) (text: string) (r: Range) : HMType =
+    if not (NumericLiteral.fits t text) then
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: '%s{text}' does not fit in a '%s{DotNetInterop.showType t}'."
+
+    t
+
+/// The type of a numeric literal as an expression.
+///
+/// A suffix fixes it outright. A bare integer becomes a fresh metavariable —
+/// see `openLiterals`.
+let private numericLiteralType (value: string) (r: Range) : HMType =
+    match NumericLiteral.spelledType value with
+    | Some t -> checkLiteralFits t value r
+    | None ->
+        let m = freshMeta ()
+        openLiterals.Add(m, value, r)
+        m
+
+/// Follows a metavariable's bindings without a registry.
+///
+/// `prune` wants one, and the callers below have none to hand. The answer is
+/// the same: nothing here resolves an associated type.
+let rec private followMeta (t: HMType) : HMType =
+    match t with
+    | TMeta { Value = Some inner } -> followMeta inner
+    | _ -> t
+
+/// The metavariables a type is still waiting on.
+///
+/// Deliberately registry-free: this is consulted from `generalize`, which has no
+/// business being handed a queue, let alone an environment.
+let rec private metaIdsOf (t: HMType) : int list =
+    t
+    |> foldType (function
+        | TMeta m ->
+            match m.Value with
+            | Some inner -> metaIdsOf inner
+            | None -> [ m.Id ]
+        | _ -> [])
+
+/// Settles the numeric literals among `types` at `int`, now.
+///
+/// For the .NET boundary, which needs a concrete type where the rest of
+/// inference can wait. Reflection picks an overload by argument type and scores
+/// one that is still open worst against every candidate, so leaving a literal
+/// open turned `(round 5)` from `Round(double)` into an ambiguity with
+/// `Round(decimal)`. A literal handed to .NET is an `int` and always was; C#'s
+/// own widening is what takes it the rest of the way.
+let private settleLiterals (types: HMType list) : unit =
+    let waiting = types |> List.collect metaIdsOf |> Set.ofList
+
+    if not (Set.isEmpty waiting) then
+        for (t, _, _) in openLiterals do
+            match followMeta t with
+            | TMeta m when Set.contains m.Id waiting -> m.Value <- Some TypeConstants.intType
+            | _ -> ()
 
 /// The environment slot a `seq` records its element type in, so that the
 /// `yield`s in its body have something to unify against.
@@ -162,8 +254,25 @@ let rec checkPattern (env: Env) (expectedType: HMType) (pat: Pattern) : TypedPat
           Range = r
           Node = TPIdent name },
         Map.add name expectedType Map.empty
+    // A pattern is emitted as a C# constant, so its type has to be settled
+    // where it is written: there is no obligation for it to carry, and nothing
+    // in a `case` label a `CreateChecked` could reach a type parameter through.
+    //
+    // So a suffix-free literal takes the scrutinee's type when that is already
+    // a number — which is what lets a `long` be matched on `5` — and `int`
+    // otherwise, as it always did.
     | PInt(value, r) ->
-        let inferredType = inferNumericType value
+        let inferredType =
+            match NumericLiteral.spelledType value with
+            | Some t -> t
+            | None ->
+                match prune env.Registry expectedType with
+                | scrutinee when NumericLiteral.isNumeric scrutinee -> scrutinee
+                | TVar _ ->
+                    failwithf
+                        $"Pattern Error at %s{Lexer.formatPos r}: '%s{value}' is matched against a generic type, and a number has no spelling at a type parameter. Compare it instead, or give the function a concrete type."
+                | _ -> TypeConstants.intType
+            |> fun t -> checkLiteralFits t value r
 
         unify env.Registry expectedType inferredType
         { Type = inferredType
@@ -556,19 +665,6 @@ type Wanted =
 
 let private wantedQueue = ResizeArray<Wanted>()
 
-/// Every metavariable a type still mentions, following bindings by hand.
-///
-/// Deliberately registry-free: this is consulted from `generalize`, which has no
-/// business being handed a queue, let alone an environment.
-let rec private metaIdsOf (t: HMType) : int list =
-    t
-    |> foldType (function
-        | TMeta m ->
-            match m.Value with
-            | Some inner -> metaIdsOf inner
-            | None -> [ m.Id ]
-        | _ -> [])
-
 /// The holes an unresolved obligation of `kind` is still watching.
 ///
 /// For `InlineTrait`: a local helper written without a signature —
@@ -592,7 +688,18 @@ let private heldWanteds (kind: TraitKind) () : Set<int> =
     |> Seq.collect (fun w -> w.HoleArgs |> Seq.collect (fun (m, _) -> metaIdsOf m))
     |> Set.ofSeq
 
-do Unification.heldMetaIds <- heldWanteds InlineTrait
+/// The metavariables an unsettled numeric literal is still watching.
+///
+/// Generalizing one would quantify a variable `defaultNumericLiterals` is about
+/// to answer, and the answer would arrive at a type parameter nothing
+/// instantiates: `(let ((n 5)) ...)` generalized to `forall t. t`, and codegen
+/// then emitted the digits `5` for a local declared at that parameter. Held
+/// back, such a binding is monomorphic — the only thing it can be, a literal
+/// having exactly one type in the code that comes out.
+let private heldLiterals () : Set<int> =
+    openLiterals |> Seq.collect (fun (t, _, _) -> metaIdsOf t) |> Set.ofSeq
+
+do Unification.heldMetaIds <- fun () -> Set.union (heldWanteds InlineTrait ()) (heldLiterals ())
 do Unification.heldLocalMetaIds <- heldWanteds InterfaceTrait
 
 let private pushWanted (w: Wanted) = wantedQueue.Add w
@@ -737,10 +844,39 @@ let solveWanteds (env: Env) (wanteds: Wanted list) : unit =
                 failwithf
                     $"Type Error at %s{Lexer.formatPos w.Range}: cannot determine which '%s{w.Trait}' instance '%s{w.Method}' uses here; add a type annotation. Nothing in this expression says what the constructor is — a `(do ...)` block with no `:bind` never mentions one."
 
+/// Settles every numeric literal that nothing pinned down, and holds the rest
+/// to being numbers.
+///
+/// The check has to be here rather than left to unification: a bare literal is
+/// a metavariable, so `(: greeting string) (def greeting 5)` unified rather
+/// than failing, and the mismatch surfaced as C# that would not compile.
+let private defaultNumericLiterals (env: Env) : unit =
+    for (t, text, r) in openLiterals do
+        match prune env.Registry t with
+        // Nothing said what it is, so it is an `int` — which is what a literal
+        // written without a suffix has always been.
+        | TMeta m -> m.Value <- Some TypeConstants.intType
+        // A type variable. The literal is emitted through the implementor's own
+        // `CreateChecked`, and the `Num` that `collectTraitConstraints` reads
+        // off it is what makes that legal.
+        | TVar _ -> ()
+        | numeric when NumericLiteral.isNumeric numeric -> checkLiteralFits numeric text r |> ignore
+        | other ->
+            failwithf
+                $"Type Error at %s{Lexer.formatPos r}: these types do not match. '%s{text}' is a number, and it is being used where a '%s{DotNetInterop.showType other}' is wanted."
+
+    openLiterals.Clear()
+
 /// Solves everything raised since the last call. Used at every point that is
 /// about to generalize, since a scheme must not be built over a constructor
 /// that resolution would still have pinned down.
-let solvePending (env: Env) : unit = solveWanteds env (takeWanteds ())
+///
+/// Literals first. A trait obligation dispatches on its implementor, and one
+/// that is still an open literal — `(= 1 2)` — resolves to nothing at all, so
+/// the queue has to be drained after the numbers have said what they are.
+let solvePending (env: Env) : unit =
+    defaultNumericLiterals env
+    solveWanteds env (takeWanteds ())
 
 /// Reads an impl's target as a pattern.
 ///
@@ -1031,6 +1167,9 @@ let private checkExceptionTypes (where: string) (exceptions: string list) : unit
 
 /// The .NET type a receiver expression has, or a diagnostic saying why not.
 let private receiverClrType (where: string) (form: string) (targetType: HMType) : System.Type =
+    // `(.ToString 5)` — a receiver is a place a type has to be concrete now.
+    settleLiterals [ targetType ]
+
     if DotNetInterop.isUnresolved targetType then
         failwithf
             $"Type Error at %s{where}: the type of the receiver of '%s{form}' is not known here. A .NET member is resolved at compile time, so the receiver's type has to be pinned down first — annotate it, or bind it with a signature."
@@ -1191,6 +1330,7 @@ let private resolveExternMethod
     (clrType: System.Type)
     (argTypes: HMType list)
     : DotNetInterop.ResolvedCall =
+    settleLiterals argTypes
     DotNetInterop.resolveMethod where (not info.IsInstance) clrType info.MemberName argTypes
 
 /// Resolve an extern call that threads the ambient cancellation token.
@@ -1462,7 +1602,7 @@ and private resolveAliasedHead (registry: TraitRegistry) (expr: Expr) : Expr =
 and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     match expr with
     | EInt(value, r) ->
-        let inferredType = inferNumericType value
+        let inferredType = numericLiteralType value r
 
         inferredType,
         { Type = inferredType
@@ -1895,6 +2035,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
             let typedArgs = rest |> List.map (infer env)
             let argTypes = typedArgs |> List.map fst
 
+            settleLiterals argTypes
             let resolved = DotNetInterop.resolveMethod where false clrTarget methodName argTypes
 
             let coercedArgs =
@@ -1925,6 +2066,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         let typedArgs = args |> List.map (infer env)
         let argTypes = typedArgs |> List.map fst
 
+        settleLiterals argTypes
         let resolved = DotNetInterop.resolveConstructor where clrType argTypes
 
         let coercedArgs =
@@ -4390,7 +4532,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
         // A trait that stands for a .NET interface. Everything about it is
         // checked here rather than at a use site: the interface is named in
         // this declaration, so this is the only place a diagnostic can point at
-        // where the name was written. See `Docs/Constraints.org`.
+        // where the name was written. See `Docs/Numerics.org`.
         let clrConstraint =
             clrSpec
             |> Option.map (fun (ifaceName, argExprs, memberSpecs) ->

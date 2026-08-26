@@ -203,6 +203,183 @@ module TypeConstants =
     let ulongType = TCon(UInt64Name, [])
     let doubleType = TCon(DoubleName, [])
 
+/// A number as it is written, and as C# has to read it back.
+///
+/// Two questions with one answer, which is why they live together: what type a
+/// spelling fixes, and how the same digits are spelled in the generated C#. A
+/// suffix nobody translated is a Bjolang program that type-checks and then
+/// fails in Roslyn — `21uy` reached C# as `21uy`, which is not a number there.
+module NumericLiteral =
+
+    /// A type with its solved metavariables followed, which is as far as a
+    /// registry-free caller can get.
+    let rec settled (t: HMType) : HMType =
+        match t with
+        | TMeta { Value = Some inner } -> settled inner
+        | _ -> t
+
+    let private isHex (text: string) =
+        let bare = text.TrimStart '-'
+        bare.StartsWith "0x" || bare.StartsWith "0X" || bare.StartsWith "0b" || bare.StartsWith "0B"
+
+    /// The suffixes Bjolang writes a numeric type with, longest first.
+    ///
+    /// Longest first because `us` ends with `s`: tried the other way round,
+    /// every `ushort` literal reads as a `short` — which is what used to
+    /// happen, `ushort` having been unwritable as a result.
+    let private suffixes =
+        [ "uy", TypeConstants.byteType
+          "us", TypeConstants.ushortType
+          "UL", TypeConstants.ulongType
+          "Ul", TypeConstants.ulongType
+          "uL", TypeConstants.ulongType
+          "ul", TypeConstants.ulongType
+          "u", TypeConstants.uintType
+          "U", TypeConstants.uintType
+          "s", TypeConstants.shortType
+          "L", TypeConstants.longType
+          "l", TypeConstants.longType
+          "d", TypeConstants.doubleType
+          "D", TypeConstants.doubleType ]
+
+    /// A hexadecimal literal's digits are letters, so only the suffixes that
+    /// are not also hex digits can be read off one: `0xD` is thirteen and not a
+    /// double, and `0x1s` is not a thing anybody writes.
+    let private applicable (text: string) =
+        if isHex text then
+            suffixes |> List.filter (fun (s, _) -> s |> Seq.forall (fun c -> c = 'u' || c = 'U' || c = 'l' || c = 'L'))
+        else
+            suffixes
+
+    /// The type this spelling fixes, or `None` when it fixes none.
+    ///
+    /// `None` is the bare integer — `1`, `0x20` — and it is deliberately not
+    /// `int`: a literal that says nothing about its type is what lets a generic
+    /// numeric function be written at all. See `Inference.numericLiteralType`.
+    let spelledType (text: string) : HMType option =
+        // A decimal point or an exponent is a real number however it ends,
+        // and it is asked first so that `0.5s` is a malformed double rather
+        // than a short with a fraction in it.
+        if not (isHex text) && (text.Contains "." || text.Contains "e" || text.Contains "E") then
+            Some TypeConstants.doubleType
+        else
+            applicable text
+            |> List.tryFind (fun (s, _) -> text.EndsWith s)
+            |> Option.map snd
+
+    /// The literal without whatever suffix Bjolang wrote on it.
+    let digits (text: string) : string =
+        match applicable text |> List.tryFind (fun (s, _) -> text.EndsWith s) with
+        | Some(s, _) -> text.Substring(0, text.Length - s.Length)
+        | None -> text
+
+    /// What a literal's digits are worth, or `None` when they do not spell an
+    /// integer at all.
+    let private value (text: string) : System.Numerics.BigInteger option =
+        let negative = text.StartsWith "-"
+        let bare = text.TrimStart '-'
+        let invariant = System.Globalization.CultureInfo.InvariantCulture
+
+        let parsed =
+            if bare.StartsWith "0x" || bare.StartsWith "0X" then
+                // A leading zero, because `BigInteger` reads a hexadecimal
+                // literal as two's complement: `0xFF` alone is −1.
+                match
+                    System.Numerics.BigInteger.TryParse(
+                        "0" + bare.Substring 2,
+                        System.Globalization.NumberStyles.HexNumber,
+                        invariant
+                    )
+                with
+                | true, v -> Some v
+                | _ -> None
+            elif bare.StartsWith "0b" || bare.StartsWith "0B" then
+                let bits = bare.Substring 2
+
+                if bits.Length > 0 && bits |> Seq.forall (fun c -> c = '0' || c = '1') then
+                    bits
+                    |> Seq.fold
+                        (fun acc c -> acc * System.Numerics.BigInteger 2 + System.Numerics.BigInteger(int c - int '0'))
+                        System.Numerics.BigInteger.Zero
+                    |> Some
+                else
+                    None
+            else
+                match
+                    System.Numerics.BigInteger.TryParse(bare, System.Globalization.NumberStyles.None, invariant)
+                with
+                | true, v -> Some v
+                | _ -> None
+
+        parsed |> Option.map (fun v -> if negative then -v else v)
+
+    let private bounds (t: HMType) =
+        let range (lo: System.Numerics.BigInteger) (hi: System.Numerics.BigInteger) = Some(lo, hi)
+        let big (n: int64) = System.Numerics.BigInteger n
+        let bigu (n: uint64) = System.Numerics.BigInteger n
+
+        match t with
+        | TCon(TypeConstants.ByteName, []) -> range (big 0L) (big 255L)
+        | TCon(TypeConstants.Int16Name, []) -> range (big -32768L) (big 32767L)
+        | TCon(TypeConstants.UInt16Name, []) -> range (big 0L) (big 65535L)
+        | TCon(TypeConstants.Int32Name, []) -> range (big (int64 System.Int32.MinValue)) (big (int64 System.Int32.MaxValue))
+        | TCon(TypeConstants.UInt32Name, []) -> range (big 0L) (big (int64 System.UInt32.MaxValue))
+        | TCon(TypeConstants.Int64Name, []) -> range (big System.Int64.MinValue) (big System.Int64.MaxValue)
+        | TCon(TypeConstants.UInt64Name, []) -> range (big 0L) (bigu System.UInt64.MaxValue)
+        // A `double` holds any literal anybody writes, give or take precision,
+        // and a type variable is answered at run time by `CreateChecked`.
+        | _ -> None
+
+    /// Does this literal fit the type it ended up at?
+    ///
+    /// Asked here because C# asks it too, and answers `CS0221` in generated
+    /// code. A literal's value is the one thing about a number that is known
+    /// while the program is still Bjolang, so there is no reason for the
+    /// question to be put in the other language.
+    let fits (t: HMType) (text: string) : bool =
+        match bounds (settled t) with
+        | None -> true
+        | Some(lo, hi) ->
+            match value (digits text) with
+            | Some v -> v >= lo && v <= hi
+            | None -> true
+
+    /// How C# spells these digits at this type, or `None` for a type no numeric
+    /// literal can have.
+    ///
+    /// The casts are parenthesised because a cast binds looser than member
+    /// access, and `byte` and the two shorts have no C# suffix to be spelled
+    /// with at all.
+    let csharp (t: HMType) (text: string) : string option =
+        let digits = digits text
+
+        let real =
+            not (isHex digits)
+            && (digits.Contains "." || digits.Contains "e" || digits.Contains "E")
+
+        // A solved metavariable is followed rather than pruned: emission has no
+        // trait registry to hand, and the answer is the same.
+        match settled t with
+        | TCon(TypeConstants.Int32Name, []) -> Some digits
+        | TCon(TypeConstants.Int64Name, []) -> Some(digits + "L")
+        | TCon(TypeConstants.UInt32Name, []) -> Some(digits + "u")
+        | TCon(TypeConstants.UInt64Name, []) -> Some(digits + "UL")
+        | TCon(TypeConstants.ByteName, []) -> Some $"((byte)%s{digits})"
+        | TCon(TypeConstants.Int16Name, []) -> Some $"((short)%s{digits})"
+        | TCon(TypeConstants.UInt16Name, []) -> Some $"((ushort)%s{digits})"
+        | TCon(TypeConstants.DoubleName, []) ->
+            if real then Some digits
+            elif isHex digits then Some $"((double)%s{digits})"
+            else Some(digits + "d")
+        | _ -> None
+
+    /// Is this a type a number can have?
+    ///
+    /// The question `csharp` answers by having a case for it, asked without a
+    /// literal to hand — so the types a literal may settle at and the types one
+    /// can be emitted at are one list rather than two that could drift.
+    let isNumeric (t: HMType) : bool = (csharp t "0").IsSome
+
 // ---------------------------------------------------------------------------
 // Foreign .NET interop
 // ---------------------------------------------------------------------------
@@ -734,7 +911,7 @@ type InlineTemplate =
 ///
 /// Such a trait has no implementations and no dictionary: a constraint on it
 /// becomes a C# `where` clause, and is discharged by asking the runtime whether
-/// the implementor implements the interface. See `Docs/Constraints.org`.
+/// the implementor implements the interface. See `Docs/Numerics.org`.
 type ClrConstraintInfo =
     { /// The interface, without the arity mark: `System.Numerics.INumber`.
       InterfaceName: string

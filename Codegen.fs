@@ -322,6 +322,28 @@ let rec typeToString (hm: HMType) : string =
     | TAssoc (traitName, assocName, implType) ->
         "object /* unresolved assoc */"
 
+/// A numeric literal, spelled for the type the checker gave it.
+///
+/// Two things happen here that did not used to. The digits are no longer
+/// emitted verbatim — `21uy` is Bjolang's spelling of a byte and not C#'s, so
+/// `(byte->string 21uy)` was a program that type-checked and would not compile
+/// — and a literal that settled at a *type parameter* is built through the
+/// implementor's own `CreateChecked`, which is the only way to write a number
+/// at a type C# does not know yet.
+///
+/// `CreateChecked` is a member of `INumberBase`, so it is legal exactly when
+/// the enclosing function carries the `Num` that `collectTraitConstraints`
+/// reads off the literal. Checked rather than truncating: a literal too large
+/// for the type it is used at is a mistake, and one `Inference` has already
+/// refused — this is what the run-time answer would be if it had not.
+let private numericLiteral (where: Lexer.Range) (t: HMType) (text: string) : string =
+    match NumericLiteral.settled t with
+    | TVar _ as v -> $"%s{typeToString v}.CreateChecked(%s{NumericLiteral.digits text})"
+    | concrete ->
+        match NumericLiteral.csharp concrete text with
+        | Some spelled -> spelled
+        | None -> codegenError where $"'%s{text}' is a number, and the type it reached emission at is not one."
+
 /// Does this expression yield no C# value at all?
 ///
 /// True for a foreign method reflected as `System.Void`, and for the
@@ -756,11 +778,13 @@ let private liveClauses (clauses: TMatchClause list) =
 /// callee cannot be told apart.
 let private csharpConstantDefault (kwType: HMType) (kwDefault: TypedExpr) : string option =
     match kwDefault.Node, typeToString kwType with
-    // `TInt` carries the literal's source text and is emitted verbatim, so it
-    // covers the floating-point literals too. The types are listed rather than
-    // defaulted to eligible because `mapPrimitiveType` is free to grow a case
-    // that a bare numeral is not a constant of.
-    | TInt text, ("int" | "byte" | "short" | "ushort" | "uint" | "long" | "ulong" | "double") -> Some text
+    // Spelled for its type rather than emitted verbatim — see `numericLiteral`
+    // above, which is the same table. A parenthesised cast is still a constant
+    // expression, so `((byte)21)` is a legal default. The types are listed
+    // rather than defaulted to eligible because `mapPrimitiveType` is free to
+    // grow a case that a bare numeral is not a constant of.
+    | TInt text, ("int" | "byte" | "short" | "ushort" | "uint" | "long" | "ulong" | "double") ->
+        NumericLiteral.csharp kwType text
     | TString value, "string" -> Some $"\"%s{escapeStringLiteral value}\""
     // The booleans are prelude *bindings*, not literal nodes. A shadowing
     // binding cannot be mistaken for one: a local is alpha-renamed and a
@@ -984,7 +1008,10 @@ let rec generatePattern (ctx: CodegenContext) (pat: TypedPattern) : unit =
     match pat.Node with
     | TPWildcard -> append ctx "_"
     | TPIdent name -> append ctx $"var {sanitizeIdent name}"
-    | TPInt value -> append ctx value
+    // A constant pattern, spelled for the scrutinee's type like any other
+    // literal. `((byte)21)` is still a constant expression, which is all a
+    // `case` label asks of it.
+    | TPInt value -> append ctx (numericLiteral pat.Range pat.Type value)
     | TPString value -> append ctx $"\"%s{escapeStringLiteral value}\""
     // A property pattern rather than a constant: `BjoChar` is a record struct,
     // and C# has no literal syntax for one.
@@ -1223,7 +1250,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     | _ ->
 
     match expr.Node with
-    | TInt i -> append ctx i
+    | TInt i -> append ctx (numericLiteral expr.Range expr.Type i)
     | TString s -> append ctx $"\"%s{escapeStringLiteral s}\""
     | TChar c -> append ctx $"new Bjolang.Runtime.BjoChar(%d{c})"
     | TKeyword k -> append ctx $"BjolangRuntime.Keyword.Intern(\"{escapeStringLiteral k}\")"
