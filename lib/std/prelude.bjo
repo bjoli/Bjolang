@@ -76,6 +76,8 @@
   ;; Conversions
   int->string long->string double->string byte->string number->string
   string->int string->double
+  ;; From `System.Math`; the rest of it is in `std/maths`.
+  sqrt
   ;; Files
   file-read-text file-write-text file-append-text file-exists? file-delete
   ;; Paths
@@ -706,7 +708,17 @@
 (import (std maths))
 
 ;; Remember: exporting one trait function exposes ALL functions.
-(re-export abs sign min max clamp sqrt zero?)
+(re-export abs sign min max clamp zero?)
+
+;; `sqrt` is imported here rather than re-exported from `std/maths`, where the
+;; rest of `System.Math` lives. It is an import alias, and `re-export` names
+;; something in scope as a *binding* — an alias is not one. Exporting it from
+;; the module that imports it is the same thing by a shorter route.
+;;
+;; `Math.Sqrt` is the one overload there is, so an integer argument widens to
+;; it: `(sqrt 9)` is 3.0, the same conversion C# would perform, emitted as one.
+(import/extern
+  (sqrt (: System.Math.Sqrt)))
 
 ;; ---------------------------------------------------------------------------
 ;; Strings, conversions, files and paths

@@ -5,9 +5,9 @@
 ;;
 ;; A handful are *overload sets*, one per numeric type with the type preserved:
 ;; `(abs -5)` is an int, `(abs -2.5)` a double, and no single signature says
-;; that. Those become the `Num` trait below, which is also what lets them be
-;; named in generic code — resolving an overload set needs argument types a
-;; polymorphic body does not have.
+;; that. Those are `Num` below, which is the .NET interface every numeric type
+;; already implements rather than a trait with implementations of its own —
+;; and which is also what lets them be named in generic code.
 
 ;; `=` is a trait method, so even this module — below the prelude, importing
 ;; nothing else — has to import the trait declaring it.
@@ -15,7 +15,7 @@
 
 (export
   ;; Num
-  abs sign min max clamp sqrt zero?
+  abs sign min max clamp zero?
   ;; Exponential and logarithmic
   cbrt exp pow log log2 log10
   ;; Rounding
@@ -29,63 +29,42 @@
 ;; Num
 ;; ---------------------------------------------------------------------------
 
-;; The overload sets, unexported; the trait method of the same shape is the
-;; exported name. A default body is re-checked at every impl, so one line
-;; covers every implementor: `(clr-abs x)` is `Abs(int)` under `(Num int)` and
-;; `Abs(double)` under `(Num double)`.
-(import/extern
-  (clr-abs   (: System.Math.Abs))
-  (clr-sign  (: System.Math.Sign))
-  (clr-min   (: System.Math.Min))
-  (clr-max   (: System.Math.Max))
-  (clr-clamp (: System.Math.Clamp))
-  (clr-sqrt  (: System.Math.Sqrt)))
-
-;; Exactly what `System.Math` overloads *per numeric type*; everything else in
-;; this file is a double function needing no dispatch.
+;; `Num` *is* `System.Numerics.INumber`, the interface every numeric type in
+;; .NET already implements. There is nothing to implement here and nothing to
+;; dispatch through: a `(where (Num %a))` becomes a C# `where` clause, and the
+;; runtime specializes the function per type it is used at.
 ;;
-;; `sign` and `sqrt` fix their result type and are still here: both are
-;; operations *on* a `Num`, which is what lets a `(where (Num %a))` function
-;; call them. A method's result need not mention the implementor.
+;; That is also what makes the members expressible at all. `System.Math.Abs` is
+;; an overload set, which is not a value and which no signature in this type
+;; system can name; `INumber<T>.Abs` is a single member, and naming it is what
+;; the `#:clr-member` bindings below do.
+;;
+;; Membership is now .NET's answer rather than a list kept here, which *widens*
+;; it: `byte`, `ushort`, `uint`, `ulong` and `short` are `Num` too. They were
+;; excluded because `Math.Abs` and `Math.Sign` have no overload for them —
+;; generic math does, so the reason is gone.
+;;
+;; `decimal` and `float` are in as soon as Bjolang can spell them, with nothing
+;; to add here.
+;;
+;; See `Docs/Constraints.org`.
 (def/trait (Num %a)
-  (: abs   (-> %a %a))
-  (: sign  (-> %a int))
-  (: min   (-> %a %a %a))
-  (: max   (-> %a %a %a))
-  (: clamp (-> %a %a %a %a))
-  (: sqrt  (-> %a double))
-  (: zero? (-> %a bool))
-  (: even? (-> %a bool))
-  (: odd?  (-> %a bool))
-
-  (defun (abs x) (clr-abs x))
-  (defun (sign x) (clr-sign x))
-  (defun (min a b) (clr-min a b))
-  (defun (max a b) (clr-max a b))
-  (defun (clamp x lo hi) (clr-clamp x lo hi))
-  ;; `Sqrt` is the one overload there is, so the integer implementors widen to
-  ;; it — the same conversion C# would perform, and emitted as one.
-  (defun (sqrt x) (clr-sqrt x))
-  (defun (zero? x) (= 0 x))
-
-  (defun (odd? x) (not (even? x)))
-  )
-
-;; The signed types only. `Math.Abs`/`Sign` have no unsigned overload, so
-;; `byte`, `ushort`, `uint` and `ulong` are not `Num` — `(abs b)` says so rather
-;; than widening behind your back. `short` is out because C# promotes it to int
-;; on every operation, making it a type you cannot do arithmetic in. `decimal`
-;; and `float` are out only until Bjolang can spell them; then they are impls
-;; and nothing else.
-(def/impl (Num int)
-  (defun (even? x) (= 0 (bitwise-and x 1))))
-(def/impl (Num long)
-  (defun (zero? x) (= 0L x))
-  (defun (even? x) (= 0L (bitwise-and x 1L)))
-  )
-(def/impl (Num double)
-  (defun (zero? x) (= 0.0 x))
-  (defun (even? x) #f)) ;; TODO: fix this.
+  (#:clr-constraint (System.Numerics.INumber %a))
+  (: abs   (-> %a %a)        #:clr-member Abs)
+  (: sign  (-> %a int)       #:clr-member Sign)
+  (: min   (-> %a %a %a)     #:clr-member Min)
+  (: max   (-> %a %a %a)     #:clr-member Max)
+  (: clamp (-> %a %a %a %a)  #:clr-member Clamp)
+  ;; `IsZero` and the parity tests are *explicit* interface implementations on
+  ;; the primitives, so `int.IsZero(x)` does not compile. Every member is
+  ;; reached through a constrained type parameter for that reason, which makes
+  ;; the distinction invisible from here.
+  ;;
+  ;; `even?` at a double is now right — `(even? 2.0)` is true, where the
+  ;; hand-written implementation this replaces answered false for every double.
+  (: zero? (-> %a bool)      #:clr-member IsZero)
+  (: even? (-> %a bool)      #:clr-member IsEvenInteger)
+  (: odd?  (-> %a bool)      #:clr-member IsOddInteger))
 
 
 ;; Todo: `min`/`max` over a sequence. That is a function over a
@@ -99,6 +78,13 @@
 
 ;; One method each, so the import *is* the export: a wrapper would add nothing,
 ;; and the importing module resolves against the same .NET metadata.
+
+;; `sqrt` is not here and not in `Num`. It was declared `(-> %a double)`, and
+;; `INumber` has no `Sqrt` at all — that is `IRootFunctions`, whose `Sqrt`
+;; returns the implementor rather than a double. It is an ordinary import of
+;; `System.Math.Sqrt`, and it lives in the prelude rather than here because the
+;; prelude publishes it: a `re-export` names something in `env.Bindings`, and an
+;; import alias is not one.
 
 ;; Exponential and logarithmic. `pow` is (base, exponent); `log` is the natural
 ;; logarithm at one argument and log-to-base at two, which is the overload set

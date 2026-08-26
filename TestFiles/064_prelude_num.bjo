@@ -7,7 +7,9 @@
 (import (std prelude))
 (import (std simpletest))
 
-;; A constraint on a trait this module got at second hand.
+;; A constraint on a trait this module got at second hand. `Num` stands for
+;; `System.Numerics.INumber`, so this is a C# `where` clause and no dictionary
+;; is passed — but the constraint still has to travel through the re-export.
 (: furthest-from-zero (-> %a %a %a) (where (Num %a)))
 (defun (furthest-from-zero x y)
   (max (abs x) (abs y)))
@@ -23,4 +25,26 @@
   (expect "clamp" (clamp 99 3 9) 9)
 
   (expect "constrained generic" (furthest-from-zero -7 3) 7)
+  (expect "constrained generic at double"
+          (double->string (furthest-from-zero -7.5 3.0)) "7.5")
+
+  ;; `zero?` is `IsZero`, an explicit interface implementation, so it is only
+  ;; reachable through a constrained type parameter.
+  (expect "zero? at int" (zero? 0) #t)
+  (expect "zero? at double" (zero? 0.0) #t)
+  (expect "zero? on a non-zero" (zero? 3) #f)
+
+  ;; Parity is `IsEvenInteger`/`IsOddInteger`, which are right at a double. The
+  ;; hand-written implementation these replace answered #f to `even?` for every
+  ;; double there is.
+  (expect "even? at int" (even? 4) #t)
+  (expect "odd? at int" (odd? 3) #t)
+  (expect "even? at double" (even? 2.0) #t)
+  (expect "odd? at double" (odd? 3.0) #t)
+  (expect "even? on a fraction" (even? 2.5) #f)
+
+  ;; `sqrt` takes an integer, as `Math.Sqrt` does: it widens at the call. It is
+  ;; the prelude's own import rather than one of `Num`'s members — `INumber`
+  ;; has no `Sqrt`, and this one's result is a double whatever went in.
+  (expect "sqrt of a double" (double->string (sqrt 2.25)) "1.5")
   0)
