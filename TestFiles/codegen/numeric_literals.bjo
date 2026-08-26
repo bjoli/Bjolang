@@ -1,0 +1,58 @@
+;; What a numeric literal compiles to.
+;;
+;; Behaviour cannot see any of this: `(bump 41)` is 42 whether the `1` in the
+;; body was baked in as an `int` or built at the call's own type. What is being
+;; pinned is that a literal at a type parameter goes through `CreateChecked`,
+;; that the constraint making that legal is on the method, and that a literal at
+;; a concrete type is spelled the way C# spells one rather than the way Bjolang
+;; wrote it.
+
+(import (std prelude))
+
+;; The literal is built at the implementor's type, and the `Num` that licenses
+;; `CreateChecked` is inferred from the literal itself — nothing here writes a
+;; `(where ...)`.
+;; EXPECT-CS: T_a bump<T_a>\(T_a x\) where T_a : System.Numerics.INumber<T_a>
+;; EXPECT-CS: return \(x \+ T_a\.CreateChecked\(1\)\);
+(: bump (-> %a %a))
+(defun (bump x) (+ x 1))
+
+;; Two constraints from two sources on one variable: `Integral` from the
+;; operator, `Num` from the literal it is applied to.
+;; EXPECT-CS: where T_a : System.Numerics.IBinaryInteger<T_a>, System.Numerics.INumber<T_a>
+(: low-bit (-> %a %a))
+(defun (low-bit x) (bitwise-and x 1))
+
+;; `<` is `IComparisonOperators`, which has no `CreateChecked` — so a function
+;; that only compares still carries `Num` once a literal appears in it.
+;; EXPECT-CS: where T_a : System.Numerics.INumber<T_a>, System.Numerics.IComparisonOperators<T_a, T_a, bool>
+(: at-least-three (-> %a %a))
+(defun (at-least-three x) (if (< x 3) 3 x))
+
+;; A concrete type is a plain literal again: nothing generic is emitted where
+;; nothing is generic.
+;; EXPECT-CS: return \(x \+ 1\);
+(: bump-int (-> int int))
+(defun (bump-int x) (+ x 1))
+
+;; Spelled for the type rather than as written. `21uy` is Bjolang's byte and
+;; not C#'s, and `byte` has no C# suffix at all — so the cast is the spelling.
+;; EXPECT-CS: \(\(byte\)21\)
+(: a-byte (-> byte))
+(defun (a-byte) 21uy)
+
+;; EXPECT-CS: \(\(ushort\)21\)
+(: a-ushort (-> ushort))
+(defun (a-ushort) 21us)
+
+;; The suffix is C#'s, not the one the source wrote: `21l` is legal in Bjolang
+;; and `21L` is what C# reads.
+;; EXPECT-CS: return 21L;
+(: a-long (-> long))
+(defun (a-long) 21l)
+
+;; A whole number at a double needs a spelling that is one — `1` is an int in
+;; C# and would pick a different overload of everything it touches.
+;; EXPECT-CS: return 21d;
+(: a-double (-> double))
+(defun (a-double) 21)

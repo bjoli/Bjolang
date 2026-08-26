@@ -1,0 +1,112 @@
+;; Numeric literals take their type from what surrounds them.
+;;
+;; `1` used to *be* an int, decided by its spelling before anything else had a
+;; say — so the `1` in `(bitwise-and x 1)` pinned `%a` to int and every generic
+;; numeric function tripped on the first literal in it. The constraints of the
+;; phases before this one were exactly as useful as the literals let them be.
+;;
+;; Now a literal written without a suffix is an open type that whatever it
+;; meets decides, `int` if nothing does. At a type variable it is emitted
+;; through the implementor's own `CreateChecked`, which is why a function like
+;; `bump` below carries `Num` without saying so: `INumberBase` is where that
+;; member lives.
+(import (std prelude))
+(import (std simpletest))
+(import (std maths))
+
+;; The one the whole phase is for. `bitwise-and` asks for `Integral`, the
+;; literal asks for `Num`, and both clauses land on the same type parameter.
+(: low-bit (-> %a %a))
+(defun (low-bit x) (bitwise-and x 1))
+
+(: bump (-> %a %a))
+(defun (bump x) (+ x 1))
+
+;; The literal is the only thing here that mentions arithmetic at all: `<` is
+;; `IComparisonOperators`, which has no `CreateChecked`. So the `Num` on this
+;; function comes from the `3` and from nowhere else.
+(: at-least-three (-> %a %a))
+(defun (at-least-three x) (if (< x 3) 3 x))
+
+;; A literal in an argument position takes the parameter's type, so a `ushort`
+;; can be written without a `ushort` spelling existing.
+(: doubled (-> ushort ushort))
+(defun (doubled x) (* x 2))
+
+;; Matching. A pattern is emitted as a C# constant, so its type is settled
+;; where it is written — which here is by the scrutinee, and a `long` could not
+;; be matched on a bare literal at all before.
+(: name-of (-> long string))
+(defun (name-of n)
+  (match n
+    (0 "zero")
+    (5 "five")
+    (_ "other")))
+
+;; A `case` label is spelled for its type too, so a suffix in a pattern is
+;; translated rather than passed through. Both arms here are bytes, written
+;; two ways.
+(: size-of (-> byte string))
+(defun (size-of n)
+  (match n
+    (0uy "none")
+    (255 "full")
+    (_ "some")))
+
+(defun (main)
+  ;; One function, one literal in its body, four types.
+  (expect "literal at int" (bump 41) 42)
+  (expect "literal at long" (bump 41L) 42L)
+  (expect "literal at double" (bump 1.5) 2.5)
+  (expect "literal at byte" (bump 41uy) 42uy)
+
+  (expect "masked at int" (low-bit 7) 1)
+  (expect "masked at long" (low-bit 8L) 0L)
+
+  ;; `Num` inferred from the literal rather than from the operators around it.
+  (expect "raised to the floor" (at-least-three 1) 3)
+  (expect "left alone" (at-least-three 9) 9)
+  (expect "at a double" (at-least-three 0.5) 3.0)
+
+  ;; Nothing says what these are, so they are ints — which is what a literal
+  ;; without a suffix has always been.
+  (def n 5)
+  (expect "defaulted" (+ n 1) 6)
+  (expect "defaulted in place" (+ 1 2) 3)
+
+  ;; A `let` binding is monomorphic in its literal, so a later use is what
+  ;; decides: this one is a `long` and never was an int.
+  (let ((start 5))
+    (expect "settled by a later use" (+ start 3L) 8L))
+
+  ;; Every spelling, back out again. `short` and `ushort` were unwritable —
+  ;; `21us` read as a short — and `byte` reached C# spelled `21uy`, which is
+  ;; not a number there.
+  (expect "byte" (byte->string 21uy) "21")
+  (expect "short" (->str 21s) "21")
+  (expect "ushort" (->str 21us) "21")
+  (expect "uint" (->str 21u) "21")
+  (expect "ulong" (->str 21UL) "21")
+  (expect "long" (long->string 21L) "21")
+  (expect "double, written" (double->string 2.5) "2.5")
+  (expect "double, inferred" (double->string (+ 1 1.5)) "2.5")
+
+  (expect "hexadecimal" 0x1F 31)
+  (expect "binary" 0b1010 10)
+
+  ;; Taken from the parameter, with no suffix written anywhere.
+  (expect "at a ushort parameter" (doubled 21) 42us)
+
+  ;; The .NET boundary settles a literal at `int` and lets C#'s own widening
+  ;; take it the rest of the way — the overload is picked by argument type, and
+  ;; one still open would fit every candidate equally badly.
+  (expect "widened into an overload" (double->string (sqrt 9)) "3")
+  (expect "still picks the double" (double->string (floor 5.7)) "5")
+
+  (expect "matched on a long" (name-of 5L) "five")
+  (expect "matched on a long, zero" (name-of 0L) "zero")
+  (expect "matched on a long, neither" (name-of 9L) "other")
+  (expect "matched on a byte, suffixed" (size-of 0uy) "none")
+  (expect "matched on a byte, bare" (size-of 255uy) "full")
+  (expect "matched on a byte, neither" (size-of 7uy) "some")
+  0)
