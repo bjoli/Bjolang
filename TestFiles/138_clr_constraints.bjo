@@ -1,0 +1,76 @@
+;; A trait that *is* a .NET interface.
+;;
+;; `(#:clr-constraint (System.Numerics.INumber %a))` says that `Num` is not a
+;; trait with implementations but a name for a constraint the runtime already
+;; enforces. A `(where (Num %a))` becomes a C# `where` clause, so the arithmetic
+;; primitives — which are emitted as C# operators and would otherwise not
+;; compile at a type variable — are licensed there.
+;;
+;; Nothing is passed at runtime: there is no dictionary, and .NET specializes
+;; the method per instantiation. See `Docs/Constraints.org`.
+(import (std prelude))
+(import (std simpletest))
+(import "138_lib.bjo")
+
+;; Declared here as well as in the library, under a different name, because the
+;; two are separate registrations: this one is local, `Num` arrives as metadata.
+(def/trait (Arith %a)
+  (#:clr-constraint (System.Numerics.INumber %a)))
+
+(: twice (-> %a %a) (where (Arith %a)))
+(defun (twice x) (+ x x))
+
+(: cube (-> %a %a) (where (Arith %a)))
+(defun (cube x) (* x (* x x)))
+
+(: diff (-> %a %a %a) (where (Arith %a)))
+(defun (diff a b) (- a b))
+
+;; No `(where ...)` of its own: the constraint is acquired by calling something
+;; that has one, exactly as a dictionary-passing constraint is. Nothing is
+;; passed at runtime either way, but the *scheme* still has to carry it or the
+;; emitted C# would use `+` at an unconstrained type parameter.
+(: quadruple (-> %a %a))
+(defun (quadruple x) (twice (twice x)))
+
+;; Two constrained variables, to pin that one clause is emitted per variable
+;; rather than one per function.
+(: combine (-> %a %b %a) (where (Arith %a) (Arith %b)))
+(defun (combine a b) (twice a))
+
+;; A non-generic caller: the constraint is discharged here, at `int`, and must
+;; leave no argument behind.
+(: concrete (-> int))
+(defun (concrete) (cube 3))
+
+(defun (main)
+  ;; The same function body, at three different .NET numeric types.
+  (expect "twice at int" (twice 21) 42)
+  (expect "twice at long" (long->string (twice 21L)) "42")
+  (expect "twice at double" (double->string (twice 1.25)) "2.5")
+
+  (expect "cube at int" (cube 3) 27)
+  (expect "cube at double" (double->string (cube 2.0)) "8")
+
+  ;; Subtraction, which `INumber` licenses and an unsigned type would not.
+  (expect "diff at int" (diff 10 4) 6)
+  (expect "diff at long" (long->string (diff 10L 4L)) "6")
+
+  ;; `byte` is an `INumber` too and would go through the same generic, but a
+  ;; `21uy` literal reaches C# spelled the way Bjolang writes it and does not
+  ;; compile. That is the numeric-literal problem in the Readme, not this one:
+  ;; `(byte->string 21uy)` fails on its own, with no constraint anywhere.
+
+  ;; The constraint travelled up to a function that never wrote it.
+  (expect "propagated constraint" (quadruple 5) 20)
+  (expect "propagated at double" (double->string (quadruple 0.5)) "2")
+
+  (expect "two constrained variables" (combine 3 1.5) 6)
+
+  (expect "discharged at a concrete type" (concrete) 27)
+
+  ;; The same, through a trait and a constrained function that live in another
+  ;; assembly.
+  (expect "across a dll" (scaled 6 7) 42)
+  (expect "across a dll at double" (double->string (scaled 1.5 2.0)) "3")
+  0)

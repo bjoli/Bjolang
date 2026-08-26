@@ -63,6 +63,15 @@ type CodegenContext = {
     /// registry a payload of alias type came out as a C# class named after the
     /// alias, which nothing declares.
     Registry: TraitRegistry
+    /// The C# `where` clause a module function's CLR constraints amount to,
+    /// by function name, for the functions that have any.
+    ///
+    /// Keyed by name, as `GlobalBindings` is, because that is the only handle a
+    /// `TDefun` offers: which constraints a function carries lives on its
+    /// `Scheme` in the environment, and a `CodegenContext` holds the registry
+    /// but not the bindings. Rendered rather than resolved here so that the one
+    /// place that knows how to spell a type is the one that spells it.
+    ClrConstraints: Map<string, string>
     /// Does the enclosing C# method return `void`?
     ///
     /// Only a function whose *inferred* return type came from a statement-shaped
@@ -3311,6 +3320,7 @@ let private generateMethod
     (ctx: CodegenContext)
     (modifier: string)
     (genericParams: string)
+    (constraintClause: string)
     (name: string)
     (args: (string * HMType) list)
     (kwArgs: (string * HMType * TypedExpr) list)
@@ -3332,7 +3342,12 @@ let private generateMethod
     append ctx genericParams
     append ctx "("
     generateParameterList ctx name args kwArgs restArg entry
-    append ctx ") {\n"
+    append ctx ")"
+    // A `where` clause sits between the parameter list and the body, and is
+    // where a CLR constraint ends up: no parameter, no dictionary, just a bound
+    // on the type parameter that the runtime specializes against.
+    append ctx constraintClause
+    append ctx " {\n"
     // A method is where `ReturnsVoid` is first established; every nested scope
     // that opens a C# method of its own overrides it.
     //
@@ -3465,7 +3480,13 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                 let tyArgsStr = tyArgs |> List.map typeParamName |> String.concat ", "
                 $"<%s{tyArgsStr}>"
 
-        generateMethod ctx "public static " genericParams name args kwArgs restArg retType effect body KeywordParameters
+        // Both entries below carry it: the keyword-free twin is a second
+        // signature over the same type parameters, and C# requires the clause
+        // on every declaration that introduces them.
+        let constraintClause =
+            Map.tryFind name ctx.ClrConstraints |> Option.defaultValue ""
+
+        generateMethod ctx "public static " genericParams constraintClause name args kwArgs restArg retType effect body KeywordParameters
 
         // The keyword-free entry, as a C# overload of the same name. Emitted
         // only where it can win anything — a function all of whose defaults are
@@ -3477,7 +3498,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
         // whole of `generateMethod`'s async, iterator and generic handling
         // repeated around a return type it no longer shares.
         if needsKeywordFreeEntry kwArgs then
-            generateMethod ctx "public static " genericParams name args kwArgs restArg retType effect body KeywordDefaultsOnly
+            generateMethod ctx "public static " genericParams constraintClause name args kwArgs restArg retType effect body KeywordDefaultsOnly
 
     | TType (defs, _) 
     | TTypeRec (defs, _) ->
@@ -3624,6 +3645,16 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
     // An inline trait emits nothing at all. There is no valid C# interface for
     // `Monad<M>`: the parameter would have to be a type constructor.
     | TTrait (_, _, InlineTrait, _, _, _, _) -> ()
+
+    // Nor does a trait that stands for a .NET interface: the interface it would
+    // emit already exists, in the framework, and a second one of the same shape
+    // would be a different type that no .NET value implements.
+    | TTrait (name, _, _, _, _, _, _) when
+        (match Map.tryFind name ctx.Registry.Traits with
+         | Some info -> info.ClrConstraint.IsSome
+         | None -> false)
+        ->
+        ()
 
     | TTrait (name, targetVar, _, _, assocTypes, signatures, _) ->
         // Helper to collect all TVar names from a type
@@ -3808,7 +3839,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                     // No twin for a trait-`impl` method: a keyword parameter on
                     // one is rejected before it reaches here, and an overload
                     // would in any case have no interface declaration to match.
-                    generateMethod methodCtx modifier methodTyArgsStr n args kwArgs restArg retType effect body KeywordParameters
+                    generateMethod methodCtx modifier methodTyArgsStr "" n args kwArgs restArg retType effect body KeywordParameters
                 | _ -> ()
         )
         indent ctx
@@ -3967,7 +3998,49 @@ let builtinUnionCases: Map<string, UnionCaseInfo> =
 let private builtinBindings: Set<string> =
     Prelude.prelude.Bindings |> Map.toSeq |> Seq.map fst |> Set.ofSeq
 
-let generateProgram (registry: TraitRegistry) (metadata: ModuleMetadata.Metadata) (linkedDlls: string list) (decls: TDecl list) : string =
+/// The C# `where` clauses a function's CLR constraints amount to.
+///
+/// `""` when it has none, which is every function in a program that never
+/// writes one — so this is also what keeps the emitted C# byte-identical for
+/// everything that came before.
+let private clrConstraintClauses (env: Env) : Map<string, string> =
+    env.Bindings
+    |> Map.toSeq
+    |> Seq.choose (fun (name, binding) ->
+        let (Scheme(_, constraints, _)) = binding.Scheme
+
+        let clauses =
+            constraints
+            |> List.choose (fun c ->
+                match Map.tryFind c.TraitName env.Registry.Traits with
+                | Some info ->
+                    info.ClrConstraint
+                    |> Option.bind (fun clr ->
+                        match c.TargetType with
+                        | TVar _ as target ->
+                            // The interface is written over the trait's own
+                            // implementor variable; the constraint says which
+                            // of *this* function's variables stands in for it.
+                            let subst = Map.ofList [ "'" + info.ImplementorVar, target ]
+                            let args = clr.Args |> List.map (substTypeVars subst)
+
+                            let applied =
+                                if args.IsEmpty then
+                                    clr.InterfaceName
+                                else
+                                    let argsStr = args |> List.map typeToString |> String.concat ", "
+                                    $"%s{clr.InterfaceName}<%s{argsStr}>"
+
+                            Some $" where %s{typeToString target} : %s{applied}"
+                        | _ -> None)
+                | None -> None)
+
+        if clauses.IsEmpty then None else Some(name, String.concat "" clauses))
+    |> Map.ofSeq
+
+let generateProgram (env: Env) (metadata: ModuleMetadata.Metadata) (linkedDlls: string list) (decls: TDecl list) : string =
+    let registry = env.Registry
+
     let unionCases =
         decls
         |> collectDecls (function
@@ -4063,6 +4136,7 @@ let generateProgram (registry: TraitRegistry) (metadata: ModuleMetadata.Metadata
           TypeParams = Set.empty
           InSeq = false
           Registry = registry
+          ClrConstraints = clrConstraintClauses env
           ReturnsVoid = false }
 
     appendLine ctx "using System;"

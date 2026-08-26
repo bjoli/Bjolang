@@ -41,6 +41,72 @@ let dictionaryType (env: Env) (traitName: string) (implType: HMType) : HMType =
 
     TCon(traitName, implType :: assocArgs)
 
+/// The .NET interface `traitName` stands for, if it stands for one.
+let clrConstraintOf (env: Env) (traitName: string) : ClrConstraintInfo option =
+    match Map.tryFind traitName env.Registry.Traits with
+    | Some info -> info.ClrConstraint
+    | None -> None
+
+/// Checks a CLR constraint at a concrete implementor, and produces nothing.
+///
+/// There is no evidence to build — that is the point of such a trait — so this
+/// is called for its failure. A type variable is passed over: it becomes a C#
+/// `where` clause, and the check happens again at whatever the caller
+/// instantiates it to.
+///
+/// The message deliberately does not read like the missing-impl one below. That
+/// one invites you to write an implementation; here there is none to write.
+let checkClrConstraint
+    (env: Env)
+    (clr: ClrConstraintInfo)
+    (traitName: string)
+    (implType: HMType)
+    (range: Lexer.Range)
+    (describe: string)
+    : unit =
+
+    match prune env.Registry implType with
+    | TVar _
+    | TMeta _ -> ()
+    | resolved ->
+        // The interface is written over the trait's own implementor variable,
+        // so putting the actual implementor in is what turns
+        // `(INumber %a)` into `INumber<int>`.
+        let implVar =
+            match Map.tryFind traitName env.Registry.Traits with
+            | Some info -> "'" + info.ImplementorVar
+            | None -> "'a"
+
+        let subst = Map.ofList [ implVar, resolved ]
+        let args = clr.Args |> List.map (substTypeVars subst >> prune env.Registry)
+
+        let clrArgs = args |> List.map DotNetInterop.tryClrTypeOf
+
+        let refuse (why: string) =
+            failwithf
+                $"Type Error at %s{Lexer.formatPos range}: '%s{DotNetInterop.showType resolved}' does not satisfy '%s{traitName}', needed %s{describe}. %s{why}"
+
+        if clrArgs |> List.exists Option.isNone then
+            refuse
+                $"'%s{traitName}' is the .NET interface '%s{clr.InterfaceName}', and this type has no .NET counterpart to ask about."
+        else
+
+        let clrArgs = clrArgs |> List.map Option.get
+
+        match DotNetInterop.tryResolveGenericInterface clr.InterfaceName clrArgs.Length with
+        | None ->
+            refuse $"'%s{clr.InterfaceName}' could not be found. The trait naming it will not work anywhere."
+        | Some definition ->
+            let satisfied =
+                DotNetInterop.tryConstructInterface definition clrArgs
+                |> Option.map (fun constructed ->
+                    DotNetInterop.implementsInterface (List.head clrArgs) constructed)
+                |> Option.defaultValue false
+
+            if not satisfied then
+                refuse
+                    $"'%s{traitName}' is the .NET interface '%s{clr.InterfaceName}', which '%s{DotNetInterop.showType resolved}' does not implement — and cannot be made to, since the interface belongs to .NET rather than to this program."
+
 /// Does this implementation stand on a `(where ...)`?
 ///
 /// The one question every dispatch site has to ask before naming a class: a
@@ -293,9 +359,15 @@ module DictionaryLowering =
                                     |> Map.ofList
 
                                 // Build dictionary arguments for each constraint
+                                //
+                                // A CLR constraint contributes none: it is a
+                                // `where` clause on the callee rather than a
+                                // parameter, so there is nothing to pass. It is
+                                // still *checked* here, because this is where
+                                // the implementor is finally concrete.
                                 let dictArgs =
                                     constraints
-                                    |> List.map (fun c ->
+                                    |> List.choose (fun c ->
                                         let resolvedType =
                                             match c.TargetType with
                                             | TVar varName ->
@@ -304,13 +376,27 @@ module DictionaryLowering =
                                                 | None -> c.TargetType
                                             | _ -> prune env.Registry c.TargetType
 
-                                        buildEvidence
-                                            env
-                                            scope
-                                            c.TraitName
-                                            resolvedType
-                                            expr.Range
-                                            $"to call '%s{calleeName}'")
+                                        match clrConstraintOf env c.TraitName with
+                                        | Some clr ->
+                                            checkClrConstraint
+                                                env
+                                                clr
+                                                c.TraitName
+                                                resolvedType
+                                                expr.Range
+                                                $"to call '%s{calleeName}'"
+
+                                            None
+                                        | None ->
+                                            Some(
+                                                buildEvidence
+                                                    env
+                                                    scope
+                                                    c.TraitName
+                                                    resolvedType
+                                                    expr.Range
+                                                    $"to call '%s{calleeName}'"
+                                            ))
 
                                 TApply(
                                     recurse target,
@@ -349,17 +435,24 @@ module DictionaryLowering =
 
             match Scheme([], constraints, retType) with
             | Scheme(_, constraints, _) ->
-                // Inject dictionary parameters into generic functions at the declaration level
+                // Inject dictionary parameters into generic functions at the
+                // declaration level. A CLR constraint gets none: `Codegen`
+                // emits it as a `where` clause on the type parameter, which
+                // costs no argument at any call site.
                 let dictParams =
                     constraints
-                    |> List.map (fun c ->
+                    |> List.choose (fun c ->
+                        if (clrConstraintOf env c.TraitName).IsSome then
+                            None
+                        else
+
                         let typeVarName =
                             match prune env.Registry c.TargetType with
                             | TVar n -> n
                             | _ -> "unknown"
 
                         let paramName = $"_dict_%s{c.TraitName}_%s{typeVarName}"
-                        paramName, dictionaryType env c.TraitName c.TargetType)
+                        Some(paramName, dictionaryType env c.TraitName c.TargetType))
 
                 // Each associated type of a constrained trait becomes a type
                 // parameter of the function itself. The caller never writes it:

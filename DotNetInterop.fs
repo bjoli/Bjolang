@@ -126,6 +126,79 @@ let resolveType (context: string) (fullName: string) : Type =
             $"Interop Error%s{context}: cannot find the .NET type '%s{fullName}'. Names must be fully qualified, as in System.IO.StreamWriter."
 
 // ---------------------------------------------------------------------------
+// CLR interface constraints
+// ---------------------------------------------------------------------------
+//
+// A trait may declare that it *is* a .NET interface, and is then discharged by
+// asking whether the implementor implements it rather than by finding a
+// `def/impl`. See `Docs/Constraints.org`.
+
+/// The interface a name and an arity denote, as a generic *definition*.
+///
+/// The arity is separate from the name because that is how a `def/trait`
+/// carries it: `(System.Numerics.INumber %a)` is a name and one argument, and
+/// reflection spells the same thing `System.Numerics.INumber``1`. Arity zero is
+/// an ordinary non-generic interface such as `System.IDisposable`.
+///
+/// A constructed interface — `IComparable<int>` — is deliberately not what
+/// comes back. The constraint is written over the trait's implementor variable,
+/// so the only stable thing to compare against is the definition.
+let tryResolveGenericInterface (fullName: string) (arity: int) : Type option =
+    let spelled =
+        if arity = 0 then
+            fullName
+        else
+            $"%s{fullName}`%d{arity}"
+
+    match tryResolveType spelled with
+    | Some t when t.IsInterface -> Some t
+    | _ -> None
+
+/// The interface definition applied to the arguments a `def/trait` wrote.
+///
+/// `None` rather than an exception when the arguments do not fit, and that is
+/// load-bearing rather than defensive: the generic-math interfaces constrain
+/// their own parameters — `INumber<TSelf>` demands `TSelf : INumber<TSelf>` —
+/// so `MakeGenericType` *throws* for `INumber<string>`. A type that cannot even
+/// be substituted does not implement the interface, which is the same answer,
+/// so the failure is the verdict.
+let tryConstructInterface (definition: Type) (args: Type list) : Type option =
+    if not definition.IsGenericTypeDefinition then
+        if List.isEmpty args then Some definition else None
+    elif definition.GetGenericArguments().Length <> args.Length then
+        None
+    else
+        try
+            Some(definition.MakeGenericType(Array.ofList args))
+        with _ ->
+            None
+
+/// Does `t` implement `iface`?
+///
+/// Both shapes of `iface` are accepted, because the two questions are asked at
+/// different times. A generic *definition* (`IComparable``1`) asks whether the
+/// type implements it at any arguments at all, which is what validating a
+/// `def/trait` wants. A *constructed* interface (`IComparable<int>`) asks
+/// whether it implements exactly that, which is what discharging a constraint
+/// wants — `int : IComparable<string>` must not satisfy `(Ord int)`.
+///
+/// Plain equality would answer neither: `IComparable<int>` and `IComparable``1`
+/// are different `System.Type`s, and a struct is not assignable to its own
+/// interface without the walk.
+let implementsInterface (t: Type) (iface: Type) : bool =
+    if iface.IsGenericTypeDefinition then
+        let definitionOf (candidate: Type) =
+            if candidate.IsGenericType then
+                candidate.GetGenericTypeDefinition()
+            else
+                candidate
+
+        definitionOf t = iface
+        || t.GetInterfaces() |> Array.exists (fun i -> definitionOf i = iface)
+    else
+        iface.IsAssignableFrom t
+
+// ---------------------------------------------------------------------------
 // System.Type <-> HMType
 // ---------------------------------------------------------------------------
 

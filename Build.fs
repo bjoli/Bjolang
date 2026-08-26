@@ -63,7 +63,7 @@ let generateSource
         { Exports.metadata env typedAst declaredMacros inputFilePath isLibrary with
             Deps = if isLibrary then dllDeps |> List.map Path.GetFullPath else [] }
 
-    Timing.phase "codegen" (fun () -> Codegen.generateProgram env.Registry metadata dllDeps typedAst)
+    Timing.phase "codegen" (fun () -> Codegen.generateProgram env metadata dllDeps typedAst)
 
 /// Compiles `inputFilePath`. Answers a process exit code.
 let compile (options: Options) (inputFilePath: string) : int =

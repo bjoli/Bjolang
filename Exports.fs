@@ -183,10 +183,15 @@ let metadata
         (info.Signatures |> Map.toList |> List.map fst)
         @ (info.Templates |> Map.toList |> List.map fst)
 
+    // A trait is published when one of its methods is, which is how a trait has
+    // always crossed — or when the trait's own *name* is exported, which is the
+    // only way a trait with no methods can. A CLR constraint is exactly that: it
+    // declares no members, so there is no method name to publish it by.
     let exportedTraits =
         env.Registry.Traits
-        |> Map.filter (fun _ info ->
-            traitMethodNames info |> List.exists (fun m -> List.contains m exports))
+        |> Map.filter (fun traitName info ->
+            List.contains traitName exports
+            || traitMethodNames info |> List.exists (fun m -> List.contains m exports))
 
     let exportedTraitMethods =
         exportedTraits
@@ -418,7 +423,23 @@ let metadata
                                     $"(defun (%s{mName} %s{paramsStr}) %s{Codegen.serializeExpr body})"
                         | _ -> None)
 
-                let parts = assocStrs @ methodStrs @ defaultStrs |> String.concat " "
+                // The .NET interface the trait stands for, if it does. It has
+                // to cross: an importing module writing `(where (Num %a))` is
+                // where the `where` clause gets emitted, and it cannot emit one
+                // without knowing which interface to name.
+                let clrStrs =
+                    match info.ClrConstraint with
+                    | Some clr ->
+                        let argsStr =
+                            clr.Args |> List.map Codegen.serializeHMType |> String.concat " "
+
+                        if clr.Args.IsEmpty then
+                            [ $"(#:clr-constraint %s{clr.InterfaceName})" ]
+                        else
+                            [ $"(#:clr-constraint (%s{clr.InterfaceName} %s{argsStr}))" ]
+                    | None -> []
+
+                let parts = clrStrs @ assocStrs @ methodStrs @ defaultStrs |> String.concat " "
                 $"(def/trait (%s{traitName} %s{implementorStr}) %s{parts})"
 
             // The `(where ...)` travels with the impl, and it is not

@@ -342,7 +342,7 @@ type Decl =
     | DDefun of string * DefunArg list * Expr * Colour * Range
     | DType of TypeDef list * Range
     | DTypeRec of TypeDef list * Range
-    // DTrait (Name, ImplementorVar, HoleArity, AssociatedTypes, Signatures, Defaults, Range)
+    // DTrait (Name, ImplementorVar, HoleArity, AssociatedTypes, Signatures, Defaults, ClrConstraint, Range)
     //
     // `HoleArity` is how many arguments the implementor was written applied to.
     // `(def/trait (Show %c) ...)` gives 0 and means an interface trait;
@@ -353,7 +353,12 @@ type Decl =
     // untyped and *unchecked* here: a default is checked once per impl, against
     // that impl's instantiation of the signature, which is what lets one body
     // mean something different at each implementor.
-    | DTrait of string * string * int * string list * (string * FType) list * Decl list * Range
+    //
+    // `ClrConstraint` is the .NET interface the trait stands for, if it was
+    // written with `(#:clr-constraint (Iface %a))`: the interface name and the
+    // arguments it was applied to. Unresolved here — the name is not looked up
+    // until inference, where the diagnostic can say where it was written.
+    | DTrait of string * string * int * string list * (string * FType) list * Decl list * (string * FType list) option * Range
     /// A binding an imported module publishes: the name it is visible under
     /// here, where it actually lives, its type and its constraints.
     ///
@@ -4296,7 +4301,7 @@ let rec boundNames (decls: Decl list) : Set<string> =
                     | Alias _
                     | Record _
                     | Opaque _ -> []))
-        | DTrait(name, _, _, _, signatures, defaults, _) ->
+        | DTrait(name, _, _, _, signatures, defaults, _, _) ->
             (name :: (signatures |> List.map fst)) @ Set.toList (boundNames defaults)
         | DImpl(_, _, _, _, methods, _) -> Set.toList (boundNames methods)
         | DExtern(visible, _, _, _, _) -> [ visible ]
@@ -4336,8 +4341,8 @@ let rec mapDeclExprs (f: Expr -> Expr) (d: Decl) : Decl =
     | DDefMutable(name, e, r) -> DDefMutable(name, f e, r)
     | DDefTuple(names, e, r) -> DDefTuple(names, f e, r)
     | DDefun(name, args, body, colour, r) -> DDefun(name, List.map mapArg args, f body, colour, r)
-    | DTrait(name, v, arity, assoc, signatures, defaults, r) ->
-        DTrait(name, v, arity, assoc, signatures, defaults |> List.map (mapDeclExprs f), r)
+    | DTrait(name, v, arity, assoc, signatures, defaults, clr, r) ->
+        DTrait(name, v, arity, assoc, signatures, defaults |> List.map (mapDeclExprs f), clr, r)
     | DImpl(name, target, assoc, constraints, methods, r) ->
         DImpl(name, target, assoc, constraints, methods |> List.map (mapDeclExprs f), r)
     | DModule(name, inner, r) -> DModule(name, inner |> List.map (mapDeclExprs f), r)
@@ -4684,9 +4689,31 @@ let rec tryParseDecl (s: SExpr) : Decl option =
         let mutable assocTypes = []
         let mutable signatures = []
         let mutable defaults = []
+        let mutable clrConstraint = None
 
         for item in flattenBegins body do
             match item with
+            // Match: (#:clr-constraint (System.Numerics.INumber %a))
+            //
+            // A list headed by the keyword rather than a keyword followed by
+            // one, so that reading it needs no lookahead and the `def/trait`
+            // head — which is matched at exactly two elements — is untouched.
+            // `(#:name type)` in an arrow type is the same shape.
+            | SList (SAtom { Token = Keyword "clr-constraint" } :: rest, cr) ->
+                if clrConstraint.IsSome then
+                    failwithf
+                        $"Syntax error in def/trait '%s{traitName}' at %s{Lexer.formatPos cr}: a trait stands for at most one .NET interface."
+
+                match rest with
+                | [ SList (SAtom { Token = Symbol ifaceName } :: ifaceArgs, _) ] ->
+                    clrConstraint <- Some(ifaceName, ifaceArgs |> List.map parseType)
+                // A non-generic interface may be written bare, since there are
+                // no arguments to parenthesize it around.
+                | [ SAtom { Token = Symbol ifaceName } ] -> clrConstraint <- Some(ifaceName, [])
+                | _ ->
+                    failwithf
+                        $"Syntax error in def/trait '%s{traitName}' at %s{Lexer.formatPos cr}: #:clr-constraint takes one fully qualified .NET interface, applied to the arguments it is implemented at, as in (#:clr-constraint (System.Numerics.INumber %%%s{implementorVar}))."
+
             // Match: (type 'item)
             | SList (SAtom { Token = Symbol "type" } :: SAtom { Token = QuotedSymbol assocName } :: [], _) ->
                 assocTypes <- assocName :: assocTypes
@@ -4724,9 +4751,9 @@ let rec tryParseDecl (s: SExpr) : Decl option =
 
             | _ ->
                 failwithf
-                    $"Syntax error in def/trait '%s{traitName}' at %s{Lexer.formatPos (getRange item)}: Expected (type ...), (: ...), (defun ...), a (begin ...) of those, or a macro producing default method bodies."
+                    $"Syntax error in def/trait '%s{traitName}' at %s{Lexer.formatPos (getRange item)}: Expected (type ...), (: ...), (defun ...), (#:clr-constraint ...), a (begin ...) of those, or a macro producing default method bodies."
 
-        Some(DTrait(traitName, implementorVar, holeArity, List.rev assocTypes, List.rev signatures, List.rev defaults, r))
+        Some(DTrait(traitName, implementorVar, holeArity, List.rev assocTypes, List.rev signatures, List.rev defaults, clrConstraint, r))
 
     // Parse: (def/impl (TraitName (Vec 'a)) (type 'item 'a) (defun (get v i) ...))
     //

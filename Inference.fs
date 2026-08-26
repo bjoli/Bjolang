@@ -4365,11 +4365,60 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
 
         newEnv, sigs, [ TExtern(name, origin, ftype, r) ]
 
-    | DTrait(traitName, implementorVar, holeArity, assocTypes, signatures, defaults, r) ->
+    | DTrait(traitName, implementorVar, holeArity, assocTypes, signatures, defaults, clrSpec, r) ->
         // The kind is derived, not declared: an implementor written applied to
         // arguments cannot be an interface, because there is no C# interface
         // that abstracts over a type constructor.
         let kind = if holeArity > 0 then InlineTrait else InterfaceTrait
+
+        // A trait that stands for a .NET interface. Everything about it is
+        // checked here rather than at a use site: the interface is named in
+        // this declaration, so this is the only place a diagnostic can point at
+        // where the name was written. See `Docs/Constraints.org`.
+        let clrConstraint =
+            clrSpec
+            |> Option.map (fun (ifaceName, argExprs) ->
+                let args = argExprs |> List.map (resolveTypeAnnotation env.Registry)
+
+                if holeArity > 0 then
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos r}: trait '%s{traitName}' applies its implementor, so it is inline-only and cannot stand for a .NET interface. A C# interface cannot abstract over a type constructor, which is the same reason the trait is inline-only."
+
+                if not assocTypes.IsEmpty then
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos r}: trait '%s{traitName}' stands for a .NET interface and cannot declare associated types. There is no implementation to bind one in — the interface is the implementation."
+
+                // Deferred rather than absent: a method needs `#:clr-member` to
+                // say which member of the interface it is, and the emitter for
+                // that is not written. Accepting one silently would produce a
+                // trait whose methods no impl and no interface supplies.
+                if not signatures.IsEmpty then
+                    let names = signatures |> List.map fst |> String.concat ", "
+
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos r}: trait '%s{traitName}' stands for a .NET interface, so its methods (%s{names}) would have to name the interface members they dispatch to — and `#:clr-member` is not implemented yet. A constraint with no methods already licenses the operators at a type variable."
+
+                if not defaults.IsEmpty then
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos r}: trait '%s{traitName}' stands for a .NET interface and cannot give default method bodies. There is no implementation for one to land in."
+
+                // The constraint has to *say* something about the implementor,
+                // or a `(where ...)` on it constrains nothing and the C# clause
+                // would name a type parameter the method does not have.
+                let implVar = "'" + implementorVar
+
+                if not (args |> List.exists (fun a -> freeTVars env.Registry a |> List.contains implVar)) then
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos r}: trait '%s{traitName}' stands for '%s{ifaceName}' but never applies it to %%%s{implementorVar}, so a constraint on it would say nothing about the implementor. Write (#:clr-constraint (%s{ifaceName} %%%s{implementorVar}))."
+
+                match DotNetInterop.tryResolveGenericInterface ifaceName args.Length with
+                | Some _ -> { InterfaceName = ifaceName; Args = args }
+                | None ->
+                    let applied =
+                        if args.IsEmpty then ifaceName else $"%s{ifaceName} at %d{args.Length} type argument(s)"
+
+                    failwithf
+                        $"Interop Error at %s{Lexer.formatPos r}: trait '%s{traitName}' stands for '%s{applied}', which is not a .NET interface this compiler can find. Names must be fully qualified, as in System.Numerics.INumber, and the number of arguments has to be the number the interface declares.")
 
         let hmSignatures =
             match kind with
@@ -4427,7 +4476,8 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
               Kind = kind
               HoleArity = holeArity
               Templates = templates
-              Defaults = Map.ofList defaultBodies }
+              Defaults = Map.ofList defaultBodies
+              ClrConstraint = clrConstraint }
 
         let newEnv = addTrait traitName traitInfo env
 
@@ -4542,6 +4592,15 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
             match Map.tryFind traitName env.Registry.Traits with
             | Some info -> info
             | None -> failwithf $"Unknown trait '%s{traitName}' at %s{Lexer.formatPos r}"
+
+        // A trait that stands for a .NET interface has no implementations to
+        // write: whether a type satisfies it is decided by the runtime, and a
+        // `def/impl` would be a second answer to a question already answered.
+        match traitInfo.ClrConstraint with
+        | Some clr ->
+            failwithf
+                $"Type Error at %s{Lexer.formatPos r}: '%s{traitName}' stands for the .NET interface '%s{clr.InterfaceName}', so it has no implementations to write — a type satisfies it by implementing the interface, which '%s{Naming.showTypeName typeKey}' either does or does not. Remove the def/impl."
+        | None -> ()
 
         // The `(where ...)`, checked against what the impl can actually hold.
         //
@@ -4961,7 +5020,7 @@ and private checkDeclGroup
             // An inline trait's signatures are not `HMType`s and never can be:
             // they mention the constructor variable applied. They are read as
             // templates by `DTrait` instead, and there is nothing to inject here.
-            | DTrait(_, _, holeArity, _, signatures, _, _) when holeArity = 0 ->
+            | DTrait(_, _, holeArity, _, signatures, _, _, _) when holeArity = 0 ->
                 signatures
                 |> List.map (fun (name, ftype) ->
                     name, (resolveTypeAnnotation sigRegistry ftype, Some ftype, []))
@@ -4970,10 +5029,16 @@ and private checkDeclGroup
 
     /// A trait method's signature comes from its `def/trait`, whichever kind of
     /// trait that is, so exporting one is never missing a signature.
+    ///
+    /// The trait's own name is here too, and has to be: a trait standing for a
+    /// .NET interface declares no methods, so there is no method name to
+    /// publish it by, and `(export Num)` is the only way it can cross a module
+    /// boundary at all.
     let traitMethodNames =
         decls
         |> List.collect (function
-            | DTrait(_, _, _, _, signatures, _, _) -> signatures |> List.map fst
+            | DTrait(traitName, _, _, _, signatures, _, _, _) ->
+                traitName :: (signatures |> List.map fst)
             | _ -> [])
         |> Set.ofList
 

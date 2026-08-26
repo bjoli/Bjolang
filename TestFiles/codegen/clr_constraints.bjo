@@ -1,0 +1,35 @@
+;; What a CLR constraint compiles to.
+;;
+;; The whole point of one is that it costs nothing at runtime, and no
+;; behavioural test can see the difference between that and a dictionary: both
+;; produce the right answer. What is being pinned is that the constraint becomes
+;; a `where` clause and the body stays the C# operator.
+
+(import (std prelude))
+
+(def/trait (Num %a)
+  (#:clr-constraint (System.Numerics.INumber %a)))
+
+;; A `where` clause on the type parameter, no dictionary parameter, and a plain
+;; `+` in the body. A dictionary would show up as an extra first argument.
+;; EXPECT-CS: T_a addsubthem<T_a>\(T_a a, T_a b\) where T_a : System.Numerics.INumber<T_a>
+;; EXPECT-CS: return \(a \+ b\);
+(: add-them (-> %a %a %a) (where (Num %a)))
+(defun (add-them a b) (+ a b))
+
+;; One clause per constrained variable.
+;; EXPECT-CS: where T_a : System.Numerics.INumber<T_a> where T_b : System.Numerics.INumber<T_b>
+(: both (-> %a %b %a) (where (Num %a) (Num %b)))
+(defun (both a b) (+ a a))
+
+;; A caller at a concrete type passes no evidence: `int` satisfies the interface
+;; or it does not, and either way there is nothing to hand over.
+;; EXPECT-CS: return clr_constraints_Module\.addsubthem\(1, 2\);
+(: at-int (-> int))
+(defun (at-int) (add-them 1 2))
+
+;; The trait itself emits no C# interface — the one it names already exists in
+;; the framework. That cannot be written as an `EXPECT-CS`, which only asserts
+;; matches; what stands in for it is `add-them` above having two parameters
+;; rather than three, since an emitted interface is only ever reached through a
+;; dictionary that would be the third.

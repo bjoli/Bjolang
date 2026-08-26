@@ -1,0 +1,15 @@
+;; A library publishing a trait that stands for a .NET interface.
+;;
+;; The trait has to survive the assembly boundary, and it carries no impl class
+;; to link against — nothing about it exists in this .dll but the metadata. What
+;; crosses is the interface name, which is what the *importing* module needs to
+;; emit its own `where` clause.
+(export Num scaled)
+
+(def/trait (Num %a)
+  (#:clr-constraint (System.Numerics.INumber %a)))
+
+;; A constrained generic compiled here, called from over there. The dictionary
+;; that is not passed has to be not passed on both sides of the boundary.
+(: scaled (-> %a %a %a) (where (Num %a)))
+(defun (scaled x k) (* x k))

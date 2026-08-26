@@ -31,7 +31,12 @@ open System.Text
 /// it declared. An assembly built before this offers its private types as
 /// though they were public, and knows nothing of the `(Opaque ...)` shape an
 /// `#:opaque` export is published as.
-let currentVersion = 4
+/// 5: a `def/trait` may carry a `(#:clr-constraint ...)` clause. Strictly an
+/// added field, so a reader of this version is unaffected — but an assembly
+/// built *after* this and read by a compiler built before it would fail in the
+/// parser, naming the clauses a trait body may hold, rather than saying the
+/// assembly is from another version.
+let currentVersion = 5
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {

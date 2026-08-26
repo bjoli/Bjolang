@@ -334,14 +334,14 @@ let private surfaceOf (moduleName: string) (decls: Decl list) (macros: ModuleMet
       Traits =
         decls
         |> List.choose (function
-            | DTrait(n, _, _, _, _, _, _) -> Some n
+            | DTrait(n, _, _, _, _, _, _, _) -> Some n
             | _ -> None)
         |> Set.ofList
 
       TraitMethods =
         decls
         |> List.collect (function
-            | DTrait(traitName, _, _, _, signatures, _, _) ->
+            | DTrait(traitName, _, _, _, signatures, _, _, _) ->
                 signatures |> List.map (fun (m, _) -> m, traitName)
             | _ -> [])
         |> Map.ofList }
@@ -951,7 +951,7 @@ let wrapInModule (moduleName: string) (filePath: string) (decls: Decl list) : De
             let getRange d = 
                 match d with
                 | DDef(_, _, r) | DDefun(_, _, _, _, r) | DDefTuple(_, _, r) | DDefMutable(_, _, r)
-                | DSignature(_, _, _, r) | DType(_, r) | DTypeRec(_, r) | DTrait(_, _, _, _, _, _, r) | DImpl(_, _, _, _, _, r)
+                | DSignature(_, _, _, r) | DType(_, r) | DTypeRec(_, r) | DTrait(_, _, _, _, _, _, _, r) | DImpl(_, _, _, _, _, r)
                 | DImplExtern(_, _, _, _, r) | DInlineImpl(_, _, _, _, _, _, _, r)
                 | DModule(_, _, r) | DImport(_, r) | DAlias(_, _, r) | DExport(_, r) | DReExport(_, r)
                 | DExtern(_, _, _, _, r) | DImportAlias(_, _, _, r)

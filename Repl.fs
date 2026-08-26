@@ -117,7 +117,7 @@ let private definedNames (decl: Parser.Decl) : string list =
     | Parser.DDefTuple(names, _, _) -> names
     | Parser.DType(defs, _)
     | Parser.DTypeRec(defs, _) -> defs |> List.map (fun d -> d.Name)
-    | Parser.DTrait(n, _, _, _, _, _, _) -> [ n ]
+    | Parser.DTrait(n, _, _, _, _, _, _, _) -> [ n ]
     | _ -> []
 
 /// Of those, the ones an `(export ...)` demands a signature for.
@@ -155,7 +155,7 @@ let private providedNames (decl: Parser.Decl) : string list =
                 // A record is constructed by its own name, and an opaque type
                 // and an alias offer no constructor at all.
                 | _ -> []))
-    | Parser.DTrait(name, _, _, _, signatures, _, _) -> name :: List.map fst signatures
+    | Parser.DTrait(name, _, _, _, signatures, _, _, _) -> name :: List.map fst signatures
     | other -> definedNames other
 
 /// Does this entry have to be linked by every entry after it?

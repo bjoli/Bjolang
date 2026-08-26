@@ -718,6 +718,20 @@ type InlineTemplate =
       Qualification: Map<string, string>
       OriginModule: string }
 
+/// A trait that *is* a .NET interface.
+///
+/// Such a trait has no implementations and no dictionary: a constraint on it
+/// becomes a C# `where` clause, and is discharged by asking the runtime whether
+/// the implementor implements the interface. See `Docs/Constraints.org`.
+type ClrConstraintInfo =
+    { /// The interface, without the arity mark: `System.Numerics.INumber`.
+      InterfaceName: string
+      /// The arguments as the `def/trait` wrote them, over the trait's own
+      /// variables. Kept rather than assumed to be `[implementor]`, because
+      /// `IAdditionOperators` takes three and `IComparisonOperators`' last one
+      /// is `bool` — not every argument is the implementor.
+      Args: HMType list }
+
 // Metadata resolution callbacks
 type TraitInfo =
     { ImplementorVar: string
@@ -739,7 +753,13 @@ type TraitInfo =
       /// of the signature. So a single default body may mean a different thing
       /// at each implementor — which is the whole point when the body resolves
       /// an overloaded foreign method from its argument types.
-      Defaults: Map<string, Decl> }
+      Defaults: Map<string, Decl>
+      /// The .NET interface this trait stands for, if it stands for one.
+      ///
+      /// `Some` makes the trait a closed world: there is nothing to implement,
+      /// so `def/impl` is refused, no interface is emitted, and a constraint on
+      /// it costs no parameter.
+      ClrConstraint: ClrConstraintInfo option }
 
 /// A declared union payload with the union's type arguments put in.
 ///
