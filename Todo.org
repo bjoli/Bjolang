@@ -120,9 +120,10 @@ could mean here. It is the same wall generic arithmetic hits everywhere else.
 
 * Constraints and numerics
 
-Found while opening ~Ord~ up and making the numeric constraints explicit. All
-four are about the same seam: a constraint that is discharged by *passing a
-dictionary* rather than by a C# ~where~ clause.
+Found while opening ~Ord~ up and making the numeric constraints explicit. All of
+them are the same seam: a constraint discharged by *passing a dictionary* rather
+than by a C# ~where~ clause. Direct recursion was one of these and is fixed;
+what is left is written as what remains rather than as what was found.
 
 ** ~type/derive~ cannot derive ~Ord~
 
@@ -136,20 +137,23 @@ to copy: compare fields in declaration order, stopping at the first non-zero,
 and a union by case index and then payload. The union case order is already the
 declaration order the hash seeds itself with, so the two agree for free.
 
-** A recursive call does not forward its dictionaries
+** Mutual recursion does not forward dictionaries
 
-Inside its own body a function is bound monomorphically, for recursion, and that
-binding quantifies nothing — so ~Lowering~ finds no constraints on it and passes
-no dictionary. A directly recursive constrained function therefore emits a call
-missing its first argument, and C# reports ~CS7036~ about generated code.
+*Direct* recursion does, now: ~Scope.SelfCall~ carries the function's own
+dictionary parameters and a call to its own name forwards them. That is correct
+by construction rather than by luck — inside its own body a function is bound
+monomorphically, so the call is at exactly the enclosing type variables and the
+dictionaries it was handed are the right evidence in the right order.
 
-Not hypothetical: ~list-sort~ hit it the moment ~Ord~ stopped being a CLR
-constraint, and now recurses through a local function that closes over the
-dictionary instead. That workaround is fine, and it should not be the only way.
+Two constrained functions calling *each other* are still stuck. Neither is its
+own callee, so each takes the ordinary route, finds no type arguments recorded —
+the mutual bindings are monomorphic for the same reason — and passes nothing.
+The result is the ~CS7036~ that direct recursion used to give.
 
-The fix is to give the recursive binding the constraints the signature declares,
-which are known before the body is checked — ~explicitConstraints~ is computed
-above ~recEnv~ in ~DDefun~ for exactly the wrong reason today.
+Nothing in the library does this yet, which is the only reason it is written here
+rather than fixed. The general answer is to record type arguments for a
+monomorphic recursive binding, which is a change to how recursion is typed rather
+than a patch to ~Lowering~.
 
 ** A constrained function cannot be used as a value
 
@@ -172,11 +176,18 @@ The C# error is the worst part: nothing in it names Bjolang.
 
 While ~Ord~ was ~System.IComparable~, every .NET type implementing it was
 ordered for free — ~DateTime~, ~Guid~, ~Version~. Now the primitives are
-implemented in ~std/eq.bjo~ and anything else wants
-~(def/impl (Ord System.DateTime) (defun (compare a b) (.CompareTo a b)))~ in the
-module that sorts one.
+implemented in ~std/eq.bjo~ and anything else writes its own, which works:
 
-One line, and newly *possible* rather than newly required — no Bjolang type
-could be ordered at all before. But it is a regression for interop code, and a
-~std/clr-ord~ holding the handful people actually sort would cost nothing.
+#+BEGIN_SRC scheme
+(import/class (DateTime (: System.DateTime (-> int int int System.DateTime))))
+(def/impl (Ord DateTime)
+  (defun (compare a b) (.CompareTo a b)))
+
+(.-Year (least a b))    ;; 2019
+#+END_SRC
+
+So this is not a gap in the language — it is checked, and one line. It is a
+convenience that is missing: a ~std/clr-ord~ holding the handful people actually
+sort would cost nothing, and until there is one every program that sorts dates
+writes the same three lines.
 

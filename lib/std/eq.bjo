@@ -131,25 +131,13 @@
             ys
             (drop (- n 1) (list-tail ys)))))
 
-  ;; The recursion is a local function rather than a call back to `list-sort`.
-  ;;
-  ;; `Ord` arrives as a dictionary now that it is an ordinary trait, and a
-  ;; function's recursive self-call does not forward one: inside its own body a
-  ;; function is bound monomorphically, for recursion, and that binding
-  ;; quantifies nothing for a dictionary to be chosen by. A local closes over
-  ;; the dictionary its enclosing function was handed, so the question does not
-  ;; arise.
-  (defun (sort ys)
-    ;; One element is sorted, and none is too. Splitting either would recur
-    ;; forever, a half of a one-element list being that list again.
-    (def n (list-length ys))
-
-    (if (< n 2)
-        ys
-        (merge (sort (take (/ n 2) ys))
-               (sort (drop (/ n 2) ys)))))
-
-  (sort xs))
+  (def n (list-length xs))
+  ;; One element is sorted, and none is too. Splitting either would recur
+  ;; forever, a half of a one-element list being that list again.
+  (if (< n 2)
+      xs
+      (merge (list-sort (take (/ n 2) xs))
+             (list-sort (drop (/ n 2) xs)))))
 
 ;; The smallest and largest of a list, seeded with the first element rather than
 ;; with a bound: `IMinMaxValue` is a different interface, `string` is not in it,

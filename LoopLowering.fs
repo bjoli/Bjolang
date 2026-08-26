@@ -52,7 +52,14 @@ type private LoopTarget =
       Names: string list
       Mandatory: (string * HMType) list
       Keywords: (string * HMType * TypedExpr) list
-      Rest: (string * HMType) option }
+      Rest: (string * HMType) option
+      /// How many dictionary parameters the function takes ahead of its own.
+      ///
+      /// They are not loop slots — a dictionary is the same on every iteration,
+      /// so reassigning it would be work with no effect — but `Lowering` does
+      /// forward them on a recursive call, so a jump arrives carrying this many
+      /// arguments that have nowhere to land. Dropped rather than stored.
+      Dicts: int }
 
     member this.Name = List.head this.Names
 
@@ -74,6 +81,10 @@ let private normalizeRecur
     (source: TypedExpr)
     : TExprNode =
     let mandatoryCount = t.Mandatory.Length
+
+    // The dictionaries a recursive call forwards are already in scope and
+    // unchanged; the loop has no slot for them. See `LoopTarget.Dicts`.
+    let args = if args.Length > mandatoryCount then args |> List.skip t.Dicts else args
 
     if args.Length < mandatoryCount then
         failwithf
@@ -324,7 +335,11 @@ and private lowerLetRec
                       Names = [ name ]
                       Mandatory = List.zip slots argTypes
                       Keywords = []
-                      Rest = None })
+                      Rest = None
+                      // A `loop` form's members take no dictionaries: they are
+                      // local, and a local takes its evidence from the function
+                      // it is written inside.
+                      Dicts = 0 })
                 names
                 slotNames
 
@@ -373,7 +388,8 @@ let private lowerFunctionBody
           Names = names
           Mandatory = args |> List.filter (fst >> isDictionaryParam >> not)
           Keywords = kwArgs
-          Rest = restArg }
+          Rest = restArg
+          Dicts = args |> List.filter (fst >> isDictionaryParam) |> List.length }
 
     let lowered = lowerExpr [ target ] true body
 

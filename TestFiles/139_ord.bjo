@@ -23,6 +23,19 @@
 (defun (middle-of a b c)
   (least (greatest a b) (greatest (least a b) c)))
 
+;; Directly recursive *and* constrained, which is the combination that used to
+;; emit a call missing its dictionary. The recursion forwards what this function
+;; was handed: the call is at its own type variable, so its own evidence is the
+;; right evidence.
+;;
+;; In tail position too, so it becomes a loop — and the dictionary is not one of
+;; the loop's slots, being the same on every iteration.
+(: smallest (-> (List %a) %a %a) (where (Ord %a)))
+(defun (smallest xs seed)
+  (if (list-empty? xs)
+      seed
+      (smallest (list-tail xs) (least seed (list-head xs)))))
+
 ;; --- A type of this program's own -------------------------------------------
 
 (type/derive (Eq) (: Version (Record (: major int) (: minor int))))
@@ -129,6 +142,11 @@
           (match (list-min vs) ((Some m) (show-version m)) (None "?"))
           "1.9")
   (expect "the predicates too" (less? (v 1 0) (v 1 1)) #t)
+  (expect "recursive and constrained" (smallest (list 5 3 9) 7) 3)
+  (expect "recursive at a string" (smallest (list "pear" "apple") "zebra") "apple")
+  (expect "recursive at our own type"
+          (show-version (smallest vs (v 9 9)))
+          "1.9")
   (expect "and a constrained generic of ours"
           (show-version (middle-of (v 3 0) (v 1 0) (v 2 0)))
           "2.0")

@@ -136,12 +136,32 @@ let isConditional (env: Env) (traitName: string) (ctor: string) =
 /// `Within` is diagnostic only: which implementation a body belongs to, for the
 /// failures that surface here rather than during inference. It is separate from
 /// `Self`, which is only set when there is a dictionary to reuse.
+/// `SelfCall` is the function being lowered together with the dictionary
+/// parameters it was given, in order — for a *direct* recursive call.
+///
+/// Such a call passes no dictionary by the ordinary route: inside its own body a
+/// function is bound monomorphically, for recursion, so `instantiate` records no
+/// type arguments and the substitution below has nothing to choose evidence by.
+/// The emitted call was then missing its first argument, which C# reported as
+/// `CS7036` about generated code.
+///
+/// That same monomorphic binding is what makes forwarding correct. The call is
+/// at exactly the enclosing function's own type variables, so the dictionaries
+/// it was handed are precisely the right evidence, already in the right order.
+///
+/// Direct recursion only. Two constrained functions calling each other are each
+/// other's callee rather than their own, and still take the ordinary route.
 type Scope =
     { Dicts: Map<string, string>
       Self: (string * HMType) option
+      SelfCall: (string * (string * HMType) list) option
       Within: string option }
 
-    static member Empty = { Dicts = Map.empty; Self = None; Within = None }
+    static member Empty =
+        { Dicts = Map.empty
+          Self = None
+          SelfCall = None
+          Within = None }
 
 /// The name a conditional impl reads its own dictionary under. Emitted by
 /// `Codegen` as a property returning `this`, so it costs no storage and the
@@ -382,6 +402,35 @@ module DictionaryLowering =
                         )
 
                     match target.Node with
+                    // A direct recursive call, forwarding what this function was
+                    // given. See `Scope.SelfCall` for why that is the right
+                    // evidence and not merely a convenient one.
+                    //
+                    // The name is compared as written rather than unqualified: a
+                    // self-call is emitted bare, and an inlined body from another
+                    // module carries a `Mod_Module::` prefix that unqualifies to
+                    // the same bare name while meaning someone else's function.
+                    | TIdent(calleeName, _) when
+                        (match scope.SelfCall with
+                         | Some(selfName, _) -> calleeName = selfName
+                         | None -> false)
+                        ->
+                        let _, selfDicts = scope.SelfCall.Value
+
+                        let dictArgs =
+                            selfDicts
+                            |> List.map (fun (dictName, dictType) ->
+                                { Type = dictType
+                                  Range = expr.Range
+                                  Node = TIdent(dictName, []) }
+                                : TypedExpr)
+
+                        TApply(
+                            recurse target,
+                            dictArgs @ (args |> List.map recurse),
+                            kwArgs |> List.map (fun (n, e) -> n, recurse e)
+                        )
+
                     | TIdent(calleeName, tArgs) ->
                         match Map.tryFind (unqualify calleeName) env.Bindings with
                         | Some binding ->
@@ -505,11 +554,14 @@ module DictionaryLowering =
 
                 // A function's dictionaries all arrive as parameters: there is
                 // no enclosing implementation for a call to be a self-call of.
+                // `SelfCall` is the other thing they are for — a recursive call
+                // forwards them rather than choosing evidence it cannot see.
                 let scope =
                     { Scope.Empty with
                         Dicts =
                             dictParams
-                            |> List.fold (fun acc (dName, _) -> Map.add dName dName acc) Map.empty }
+                            |> List.fold (fun acc (dName, _) -> Map.add dName dName acc) Map.empty
+                        SelfCall = if dictParams.IsEmpty then None else Some(name, dictParams) }
 
                 let loweredBody = lowerExpr env scope body
 
@@ -543,6 +595,10 @@ module DictionaryLowering =
                   // `size` over a list — is already holding the answer, and
                   // rebuilding it would allocate one dictionary per element.
                   Self = if dicts.IsEmpty then None else Some(traitName, targetType)
+                  // An impl method's recursion is already served by `Self`: it
+                  // dispatches through the class it is running on rather than
+                  // through parameters, so there is nothing to forward.
+                  SelfCall = None
                   Within =
                     Some
                         $"the implementation of '%s{traitName}' for '%s{DotNetInterop.showType targetType}'" }
