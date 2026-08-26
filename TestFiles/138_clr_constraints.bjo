@@ -26,7 +26,12 @@
   (: bare  (-> %a %a)        #:clr-member Abs)
   (: which (-> %a int)       #:clr-member Sign)
   (: pin   (-> %a %a %a %a)  #:clr-member Clamp)
-  (: even  (-> %a bool)      #:clr-member IsEvenInteger))
+  (: even  (-> %a bool)      #:clr-member IsEvenInteger)
+  ;; `IsZero` is an *explicit* interface implementation on the primitives, so
+  ;; `int.IsZero(x)` does not compile. Every member goes through the trait's
+  ;; generated helper for exactly this reason — reached through a constrained
+  ;; type parameter, an explicit implementation is no different from any other.
+  (: zeroish (-> %a bool)    #:clr-member IsZero))
 
 ;; An instance member. `IComparable` has no operators, so this is what lets a
 ;; generic function order values — including `string`, which is in no
@@ -107,6 +112,11 @@
   ;; `IsEvenInteger` is right at double, which the hand-written `even?` in
   ;; `std/maths` is not — it answers #f for every double.
   (expect "even at double" (even 2.0) #t)
+
+  ;; An explicitly implemented member, which no direct spelling could reach.
+  (expect "explicit member at int" (zeroish 0) #t)
+  (expect "explicit member at double" (zeroish 0.5) #f)
+  (expect "explicit member at long" (zeroish 0L) #t)
 
   ;; An instance member: a call on the receiver rather than on the type.
   ;; `string` reaches this and no `System.Numerics` constraint.

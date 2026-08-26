@@ -499,15 +499,18 @@ and TExprNode =
     | TNewObject of string * TypedExpr list * DotNetConstructorMetadata option
     /// A static method imported by `import/extern`, as declaring type and name.
     | TForeignStaticCall of string * string * TypedExpr list * DotNetMethodMetadata option
-    /// A static member of the .NET interface a `#:clr-constraint` trait stands
-    /// for, called on the implementor *type*: `int.Abs(x)`, `T_a.Abs(x)`.
+    /// A method of a `#:clr-constraint` trait, at the implementor it was called
+    /// on: trait, method, implementor, arguments.
     ///
-    /// The declaring type is an `HMType` rather than the string
-    /// `TForeignStaticCall` carries, and that is the whole point: it is a type
-    /// parameter as often as it is a type, and only `Codegen` knows how to
-    /// spell either. One rule covers both, which is why such a trait needs no
-    /// dictionary and no landing pad.
-    | TClrStaticCall of HMType * string * TypedExpr list
+    /// Emitted as a call to the trait's generated helper —
+    /// `Num_Clr.abs<int>(x)` — rather than as `int.Abs(x)` directly, and the
+    /// indirection is not free-floating: *some* interface members are
+    /// implemented explicitly by *some* primitives, so `int.Abs(x)` compiles
+    /// while `int.IsZero(x)` and `byte.Abs(x)` do not. Reached through a
+    /// constrained type parameter every member is accessible, which makes one
+    /// rule cover every member at every implementor. The JIT inlines the
+    /// helper away.
+    | TClrMemberCall of string * string * HMType * TypedExpr list
     /// A static field or property read, as `Class.Member` — how an enum value
     /// such as `FileMode.Open` is written.
     | TForeignStaticGet of string * string * HMType

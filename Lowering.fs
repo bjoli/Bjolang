@@ -285,27 +285,14 @@ module DictionaryLowering =
 
                 checkClrConstraint env clr tref.Trait hole expr.Range $"to call '%s{tref.Method}'"
 
-                let binding =
-                    match Map.tryFind tref.Method clr.Members with
-                    | Some b -> b
-                    | None ->
-                        failwithf
-                            $"Internal error: '%s{tref.Method}' is a method of '%s{tref.Trait}' with no #:clr-member at %s{Lexer.formatPos expr.Range}"
+                if not (Map.containsKey tref.Method clr.Members) then
+                    failwithf
+                        $"Internal error: '%s{tref.Method}' is a method of '%s{tref.Trait}' with no #:clr-member at %s{Lexer.formatPos expr.Range}"
 
-                let node =
-                    if binding.IsStatic then
-                        TClrStaticCall(hole, binding.MemberName, loweredArgs)
-                    else
-                        // An instance member takes its receiver from the first
-                        // argument, which is what a method over the implementor
-                        // has as its first parameter anyway.
-                        match loweredArgs with
-                        | receiver :: rest -> TDotMethodCall(receiver, binding.MemberName, rest, None)
-                        | [] ->
-                            failwithf
-                                $"Type Error at %s{Lexer.formatPos expr.Range}: '%s{tref.Method}' is the instance member '%s{binding.MemberName}' of '%s{clr.InterfaceName}', so it needs a receiver — it must take at least one argument."
-
-                { expr with Node = node }
+                // Static or instance is not decided here. Both go through the
+                // trait's generated helper, which is what makes every member
+                // reachable at every implementor — see `TClrMemberCall`.
+                { expr with Node = TClrMemberCall(tref.Trait, tref.Method, hole, loweredArgs) }
 
             | None ->
 

@@ -38,29 +38,37 @@
 ;; Members
 ;; ---------------------------------------------------------------------------
 
+;; The trait emits one generic method per member, constrained by the interface.
+;; `zeroish` is the reason they exist rather than emitting `int.IsZero(x)`
+;; directly: `IsZero` is an *explicit* interface implementation on the
+;; primitives, so that spelling does not compile, while through a constrained
+;; type parameter every member is reachable.
+;; EXPECT-CS: public static class Arith_Clr \{
+;; EXPECT-CS: public static T_a bare<T_a>\(T_a a0\) where T_a : System.Numerics.INumber<T_a> => T_a\.Abs\(a0\);
+;; EXPECT-CS: public static bool zeroish<T_a>\(T_a a0\) where T_a : System.Numerics.INumber<T_a> => T_a\.IsZero\(a0\);
 (def/trait (Arith %a)
   (#:clr-constraint (System.Numerics.INumber %a))
-  (: bare (-> %a %a) #:clr-member Abs))
+  (: bare    (-> %a %a)   #:clr-member Abs)
+  (: zeroish (-> %a bool) #:clr-member IsZero))
 
+;; An instance member takes its receiver from the first argument, so the helper
+;; body is a call *on* the value rather than on the type.
+;; EXPECT-CS: public static int rel<T_a>\(T_a a0, T_a a1\) where T_a : System.IComparable<T_a> => a0\.CompareTo\(a1\);
 (def/trait (Order %a)
   (#:clr-constraint (System.IComparable %a))
   (: rel (-> %a %a int) #:clr-member CompareTo))
 
-;; A static member is called on the implementor: the type at a concrete one,
-;; the type *parameter* under a constraint. One rule, two spellings.
-;; EXPECT-CS: return int\.Abs\(-5\);
+;; Every call goes through the helper, and the concrete case differs from the
+;; generic one only in the type argument.
+;; EXPECT-CS: return Arith_Clr\.bare<int>\(-5\);
 (: at-a-type (-> int))
 (defun (at-a-type) (bare -5))
 
-;; EXPECT-CS: return T_a\.Abs\(x\);
+;; EXPECT-CS: return Arith_Clr\.bare<T_a>\(x\);
 (: at-a-variable (-> %a %a) (where (Arith %a)))
 (defun (at-a-variable x) (bare x))
 
-;; An instance member takes its receiver from the first argument, so it is a
-;; call *on* the value rather than on the type.
-;; EXPECT-CS: return a\.CompareTo\(b\);
+;; `string` reaches `Order`, which no System.Numerics constraint would allow.
+;; EXPECT-CS: where T_a : System.IComparable<T_a>
 (: compare-them (-> %a %a int) (where (Order %a)))
 (defun (compare-them a b) (rel a b))
-
-;; And `string` reaches it, which no System.Numerics constraint would allow.
-;; EXPECT-CS: where T_a : System.IComparable<T_a>

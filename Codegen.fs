@@ -234,6 +234,12 @@ let moduleClassName = Naming.moduleClassName
 /// The C# spelling of a Bjolang type parameter.
 let typeParamName = Naming.typeParamName
 
+/// The class holding a CLR-constraint trait's members, as generic methods.
+///
+/// Named after the trait and emitted into the module that declares it, exactly
+/// as an impl class is, so an importing module reaches it the same way.
+let clrHelperClassName (traitName: string) = Naming.sanitizeIdent traitName + "_Clr"
+
 /// The canonical key a type parameter is tracked under, independent of whether
 /// the source wrote it quoted.
 let typeParamKey = Naming.typeParamKey
@@ -1364,11 +1370,11 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     | TForeignStaticGet (clrType, memberName, _) ->
         append ctx $"%s{clrType}.%s{memberName}"
 
-    // `int.Abs(x)` and `T_a.Abs(x)` are the same emission, which is what makes
-    // a CLR constraint cost nothing: the concrete case is a static call the JIT
-    // inlines, and the generic case is a constrained one it specializes.
-    | TClrStaticCall (implType, memberName, args) ->
-        append ctx $"%s{typeToString implType}.%s{memberName}("
+    // Through the trait's helper, with the implementor as its type argument.
+    // The concrete case and the generic case differ only in what that argument
+    // is — `<int>` against `<T_a>` — and the JIT inlines the helper in both.
+    | TClrMemberCall (traitName, methodName, implType, args) ->
+        append ctx $"%s{clrHelperClassName traitName}.%s{sanitizeIdent methodName}<%s{typeToString implType}>("
 
         for i, emit in List.indexed (prepareOperands ctx args) do
             if i > 0 then append ctx ", "
@@ -3658,15 +3664,86 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
     // `Monad<M>`: the parameter would have to be a type constructor.
     | TTrait (_, _, InlineTrait, _, _, _, _) -> ()
 
-    // Nor does a trait that stands for a .NET interface: the interface it would
-    // emit already exists, in the framework, and a second one of the same shape
-    // would be a different type that no .NET value implements.
-    | TTrait (name, _, _, _, _, _, _) when
+    // A trait that stands for a .NET interface emits no interface of its own —
+    // the one it names already exists, and a second of the same shape would be
+    // a different type that no .NET value implements.
+    //
+    // What it does emit is one generic method per declared member, constrained
+    // by the interface. Every call goes through these, concrete or not, because
+    // a constrained type parameter is the only place *every* member is
+    // reachable: `int.Abs(x)` compiles, `int.IsZero(x)` and `byte.Abs(x)` do
+    // not, those being explicit implementations. Written this way the question
+    // never arises, and the JIT inlines the whole thing.
+    | TTrait (name, targetVar, _, _, _, signatures, _) when
         (match Map.tryFind name ctx.Registry.Traits with
          | Some info -> info.ClrConstraint.IsSome
          | None -> false)
         ->
-        ()
+        let info = ctx.Registry.Traits[name]
+        let clr = info.ClrConstraint.Value
+
+        let implVar = "'" + targetVar
+        let implParam = typeParamName implVar
+
+        // The signatures are written over the implementor variable, so naming
+        // the helper's type parameter after it makes them render as they stand.
+        let applied =
+            if clr.Args.IsEmpty then
+                clr.InterfaceName
+            else
+                let argsStr = clr.Args |> List.map typeToString |> String.concat ", "
+                $"%s{clr.InterfaceName}<%s{argsStr}>"
+
+        indent ctx
+        appendLine ctx $"public static class %s{clrHelperClassName name} {{"
+
+        withIndent ctx (fun ctx ->
+            for KeyValue(mName, mType) in signatures do
+                match Map.tryFind mName clr.Members, mType with
+                | Some binding, TFun(argTypes, retType, _) ->
+                    // A method may be generic in its own right; anything beyond
+                    // the implementor is a type parameter of the helper too.
+                    let extraVars =
+                        (argTypes @ [ retType ])
+                        |> List.collect collectTypeVars
+                        |> List.distinct
+                        |> List.filter (fun v -> typeParamKey v <> typeParamKey implVar)
+
+                    let tyParams =
+                        (implParam :: (extraVars |> List.map typeParamName)) |> String.concat ", "
+
+                    let ctx = { ctx with TypeParams = (implVar :: extraVars) |> List.map typeParamKey |> Set.ofList }
+
+                    let parameters =
+                        argTypes
+                        |> List.mapi (fun i t -> $"%s{typeToString t} a%d{i}")
+                        |> String.concat ", "
+
+                    let arguments = argTypes |> List.mapi (fun i _ -> $"a%d{i}")
+
+                    // A static member is named on the type parameter; an
+                    // instance one takes its receiver from the first argument,
+                    // which a method over the implementor has anyway.
+                    let call =
+                        if binding.IsStatic then
+                            let allArgs = String.concat ", " arguments
+                            $"%s{implParam}.%s{binding.MemberName}(%s{allArgs})"
+                        else
+                            match arguments with
+                            | receiver :: rest ->
+                                let restArgs = String.concat ", " rest
+                                $"%s{receiver}.%s{binding.MemberName}(%s{restArgs})"
+                            | [] ->
+                                failwithf
+                                    $"Type Error: '%s{mName}' is an instance member of '%s{clr.InterfaceName}', so it needs a receiver — it must take at least one argument."
+
+                    indent ctx
+                    appendLine ctx
+                        $"public static %s{typeToString retType} %s{sanitizeIdent mName}<%s{tyParams}>(%s{parameters}) where %s{implParam} : %s{applied} => %s{call};"
+                | _ -> ())
+
+        indent ctx
+        appendLine ctx "}"
 
     | TTrait (name, targetVar, _, _, assocTypes, signatures, _) ->
         // Helper to collect all TVar names from a type
