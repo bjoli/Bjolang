@@ -1,0 +1,414 @@
+* Numbers
+
+Everything a program does with numbers, roughly in the order you will need it.
+~prelude.org~ is the list of procedures; this is what they mean.
+
+** The types
+
+Eight, each a .NET primitive under a name a signature can write:
+
+| ~byte~   | 0 … 255                        | ~uint~   | 0 … 2^32−1        |
+| ~short~  | −32 768 … 32 767               | ~long~   | −2^63 … 2^63−1    |
+| ~ushort~ | 0 … 65 535                     | ~ulong~  | 0 … 2^64−1        |
+| ~int~    | −2 147 483 648 … 2 147 483 647 | ~double~ | IEEE 754 binary64 |
+
+There is no ~float~ and no ~decimal~. Nothing else in the language depends on
+their absence — the constraints below are .NET's own interfaces, so both arrive
+working the day they can be spelled — but today they cannot be written.
+
+~char~ is not one of these. It is a Unicode scalar value; it can be compared and
+converted (~char->int~, ~int->char~), and it cannot be added.
+
+** Writing one
+
+A number written with a suffix is that type and nothing else:
+
+| ~21uy~ | ~byte~   | ~21u~  | ~uint~  |
+| ~21s~  | ~short~  | ~21L~  | ~long~  |
+| ~21us~ | ~ushort~ | ~21UL~ | ~ulong~ |
+| ~21d~  | ~double~ |        |         |
+
+A decimal point or an exponent makes it a ~double~ — ~2.5~, ~1e10~ — whatever
+else it looks like. ~0x2A~ and ~0b101010~ are 42.
+
+Written *without* a suffix, a number says nothing about its type and takes
+whatever surrounds it:
+
+#+BEGIN_SRC scheme
+(: doubled (-> ushort ushort))
+(defun (doubled x) (* x 2))
+(doubled 21)                  ;; every number here is a ushort
+#+END_SRC
+
+Where nothing says, it is an ~int~:
+
+#+BEGIN_SRC scheme
+(def n 5)                     ;; int
+(+ 1 2)                       ;; int
+#+END_SRC
+
+A ~let~ binding takes its answer from any use, not only the first:
+
+#+BEGIN_SRC scheme
+(let ((start 5))
+  (+ start 3L))               ;; 8L — start is a long and never was an int
+#+END_SRC
+
+This is what lets a numeric function be written once and used at every type; see
+*Working at any number* below.
+
+A number too large for the type it ends up at is an error here rather than in
+the generated C#: ~(doubled 99999)~ says that 99999 does not fit in a ~ushort~.
+
+*** Two places a number cannot stay open
+
+A *pattern* becomes a C# ~case~ label, so a number in one takes the type of the
+thing being matched — which is a gain, a ~long~ having been unmatchable against
+a bare ~5~ before — and is refused against a type variable.
+
+#+BEGIN_SRC scheme
+(: name-of (-> long string))
+(defun (name-of n)
+  (match n
+    (0 "zero")
+    (5 "five")
+    (_ "other")))
+#+END_SRC
+
+An argument to a *.NET* method is settled at ~int~ before the overload is
+chosen, then widened as C# would widen it. ~(sqrt 9)~ is 3.0.
+
+** Arithmetic
+
+~+ - * / %~, with ~(- x)~ and ~(/ x)~ for negation and reciprocal. They are C#
+operators, so they mean what C# means.
+
+*** Division truncates at an integer type
+
+#+BEGIN_SRC scheme
+(/ 7 2)       ;; 3
+(/ 7.0 2.0)   ;; 3.5
+#+END_SRC
+
+Integer division by zero throws ~System.DivideByZeroException~. Double division
+by zero is ~∞~, and ~(/ 0.0 0.0)~ is NaN.
+
+*** The remainder takes the sign of the dividend
+
+#+BEGIN_SRC scheme
+(% -7 2)      ;; -1, not 1
+(%  7 -2)     ;;  1
+#+END_SRC
+
+A remainder, not a modulus. ~(% (+ (% a n) n) n)~ is the always-positive one.
+
+*** Overflow wraps
+
+#+BEGIN_SRC scheme
+(: bump (-> int int))
+(defun (bump n) (+ n 1))
+(bump 2147483647)        ;; -2147483648
+
+(: sum-bytes (-> byte byte byte))
+(defun (sum-bytes a b) (+ a b))
+(sum-bytes 200uy 100uy)  ;; 44
+#+END_SRC
+
+Nothing checks at run time. Widen first where a computation must not overflow.
+
+*** Shifts mask their count
+
+~shift-left~, ~shift-right~ and ~shift-right-logical~ take an ~int~ count
+whatever they shift, and C# masks it to the operand's width — so
+~(shift-left 1 32)~ is 1, not 0. ~shift-right~ is arithmetic on a signed type
+and logical on an unsigned one; ~shift-right-logical~ shifts zeroes in whatever
+the sign.
+
+** Comparing
+
+Two orderings, and knowing which one you are reaching for is the whole of it.
+
+*** ~<~ ~>~ ~<=~ ~>=~ — the operators
+
+Numbers and ~char~. C# operators, so they order NaN as IEEE says — a comparison
+against NaN is false whichever way round it is written — and they are not
+available on ~string~.
+
+*** ~compare~ — the total one
+
+~(compare a b)~ is negative, zero or positive. It reaches every type .NET calls
+comparable, ~string~ and ~bool~ included, and everything ordering-shaped is
+built on it: ~less?~, ~greater?~, ~at-most?~, ~at-least?~, ~least~, ~greatest~,
+~list-sort~, ~list-min~, ~list-max~.
+
+#+BEGIN_SRC scheme
+(compare 2.5 1.5)             ;; 1
+(least "pear" "apple")        ;; "apple"
+(list-sort (list 5 3 9))      ;; '(3 5 9)
+#+END_SRC
+
+Which explains a pair that looks like a duplicate and is not:
+
+#+BEGIN_SRC scheme
+(min 3 7)                     ;; 3 — Num's. Numbers only.
+(least 3 7)                   ;; 3 — Ord's. Anything ordered.
+(least "pear" "apple")        ;; "apple"
+(min  "pear" "apple")         ;; rejected: string is not a Num
+#+END_SRC
+
+Equality is ~=~, a method of ~Eq~, and works on everything. ~eq?~ is reference
+identity: it is about mutable cells, not about values.
+
+*** Ordering your own types
+
+~Ord~ is an ordinary trait, so a type of your own can be ordered by writing one
+method — and then everything above works at it, including ~list-sort~, which
+knows nothing about your type:
+
+#+BEGIN_SRC scheme
+(type/derive (Eq) (: Version (Record (: major int) (: minor int))))
+
+(def/impl (Ord Version)
+  (defun (compare a b)
+    (def m (compare (record-ref a major) (record-ref b major)))
+    (if (= m 0)
+        (compare (record-ref a minor) (record-ref b minor))
+        m)))
+
+(list-sort vs)          ;; 1.9, 2.0, 2.1
+(list-min vs)           ;; (Some 1.9)
+(less? a b)             ;; and the rest, for free
+#+END_SRC
+
+Negative, zero or positive is the contract — not −1, 0 and 1 — which is what
+~CompareTo~ promises and what the predicates above test against.
+
+The primitives implement it by delegating to their own ~IComparable~, so a
+comparison at a known type still compiles to ~a.CompareTo(b)~. Generic code
+pays a dictionary, which is the price of your types being orderable at all.
+
+** Printing and reading
+
+~println~ and ~print~ take any value and go through ~->str~. ~displayln~ takes a
+string.
+
+#+BEGIN_SRC scheme
+(println 42)                  ;; 42
+(println 2.5)                 ;; 2.5
+(displayln (int->string 42))
+#+END_SRC
+
+~int->string~, ~long->string~, ~double->string~ and ~byte->string~ exist under
+those names; the other three types have no wrapper of their own, so use ~->str~.
+~number->string~ is ~int->string~ under the name R7RS uses.
+
+Conversion to string is .NET's ~ToString()~, so ~6.0~ prints as ~6~ and infinity
+prints as ~∞~. Reach for ~(std fmt)~ when the shape of the output matters.
+
+~string->int~ and ~string->double~ *throw* ~System.FormatException~ on input that
+is not a number. Wrap them wherever the input is not yours:
+
+#+BEGIN_SRC scheme
+(: parse (-> string (Result System.Exception int)))
+(defun (parse s) (try (string->int s) #:catch (System.FormatException)))
+#+END_SRC
+
+** Converting between numeric types
+
+There is no implicit widening between *variables*. This is a type error:
+
+#+BEGIN_SRC scheme
+(: scale (-> int double))
+(defun (scale n) (* n 1.5))              ;; Type error: int / double
+#+END_SRC
+
+~cast~ is the conversion, and it is C#'s:
+
+#+BEGIN_SRC scheme
+(: scale (-> int double))
+(defun (scale n) (* (cast System.Double n) 1.5))
+
+(: widen (-> int long))
+(defun (widen n) (cast System.Int64 n))
+
+(: narrow (-> int byte))
+(defun (narrow n) (cast System.Byte n))  ;; wraps: 300 arrives as 44
+
+(cast System.Int32 2.7)                  ;; 2  — toward zero
+(cast System.Int32 -2.7)                 ;; -2
+#+END_SRC
+
+A *literal* needs none of this, having had no type to convert from: ~(* n 1.5)~
+fails and ~(* 2 1.5)~ is 3.0.
+
+** The maths surface
+
+~sqrt~ is in the prelude. The rest of ~System.Math~ is ~(std maths)~:
+
+#+BEGIN_SRC scheme
+(import (std maths))
+;; cbrt exp pow log log2 log10
+;; floor ceiling truncate round
+;; sin cos tan asin acos atan atan2
+;; sinh cosh tanh asinh acosh atanh
+#+END_SRC
+
+All over ~double~; an integer argument widens at the call as it would in C#.
+~log~ is the natural logarithm at one argument and log-to-base at two. ~atan2~
+takes ~(y x)~, in that order.
+
+~round~ is *banker's rounding*, because ~Math.Round~ is:
+
+#+BEGIN_SRC scheme
+(round 2.5)      ;; 2.0
+(round 3.5)      ;; 4.0
+(floor -2.5)     ;; -3.0
+(truncate -2.5)  ;; -2.0
+#+END_SRC
+
+The ~Num~ members need no import — they arrive with the prelude:
+
+#+BEGIN_SRC scheme
+(abs -5)              ;; 5, and (abs -2.5) is 2.5
+(sign -5)             ;; -1
+(min 3 7) (max 3 7)
+(clamp 5 1 3)         ;; 3
+(zero? 0)             ;; #t
+(even? 2.0) (odd? 3)  ;; both #t — even? is right at a double
+#+END_SRC
+
+** Working at any number
+
+Write the signature with a type variable and say which constraint it carries:
+
+#+BEGIN_SRC scheme
+(: low-bit (-> %a %a) (where (Integral %a) (Num %a)))
+(defun (low-bit x) (bitwise-and x 1))
+
+(low-bit 7)     ;; 1
+(low-bit 8L)    ;; 0L
+#+END_SRC
+
+Two constraints there because there are two demands: ~bitwise-and~ wants
+~Integral~, and the literal ~1~ wants ~Num~ — it is built through the
+implementor's ~CreateChecked~, which lives on ~INumberBase~. The compiler works
+out what is needed and refuses until you have written it, handing you the clause
+to paste:
+
+#+BEGIN_EXAMPLE
+'low-bit' needs (Num %a), which its signature does not declare. Write:
+  (: low-bit ... (where (Integral %a) (Num %a)))
+#+END_EXAMPLE
+
+*This is unlike ~Eq~ and ~->str~*, which are inferred from the body and need no
+clause. The difference is that those are open — anyone may implement one, so the
+constraint names something a type can *do*. A CLR constraint is closed: nothing
+declared in Bjolang can ever satisfy ~INumber~, so ~(where (Num %a))~ enumerates
+the eight types .NET ships, which is a statement about what ~%a~ *is*. Bjolang
+writes types down.
+
+Three of them exist, because there are three questions:
+
+| ~Num~      | ~+ - * / %~, negate | every numeric type                |
+| ~Ordered~  | ~< > <= >=~         | numbers and ~char~                |
+| ~Integral~ | bitwise, shifts     | the integer types, signed and not |
+
+Reach for ~(where (Ord %a))~ instead when the function only *compares*. That one
+is an ordinary trait — open, inferred if you leave it out, and reaching ~string~
+and any type of your own:
+
+#+BEGIN_SRC scheme
+(: pick (-> %a %a %a) (where (Ord %a)))
+(defun (pick a b) (least a b))
+
+(pick 3 7)                    ;; 3
+(pick "pear" "apple")         ;; "apple"
+#+END_SRC
+
+Each constraint is a .NET interface, so it costs nothing at run time: no
+dictionary is passed, and the runtime specializes the function per type it is
+used at. It also means the answer is not yours to change, and a failure says so
+rather than inviting you to write an implementation.
+
+#+BEGIN_EXAMPLE
+Type Error: 'string' does not satisfy 'Num', needed to call '+'. 'Num' is the
+.NET interface 'System.Numerics.INumber', which 'string' does not implement —
+and cannot be made to, since the interface belongs to .NET rather than to this
+program.
+#+END_EXAMPLE
+
+~(+ "a" "b")~ is that error. ~string-append~ is the one that means it.
+
+** Declaring a constraint of your own
+
+~Num~, ~Ordered~ and ~Integral~ are not built into the compiler. Each is an
+ordinary ~def/trait~ that names a .NET interface instead of declaring
+implementations:
+
+#+BEGIN_SRC scheme
+(def/trait (Num %a)
+  (#:clr-constraint (System.Numerics.INumber %a))
+  (: abs (-> %a %a) #:clr-member Abs)
+  ...)
+#+END_SRC
+
+~#:clr-constraint~ says which interface the trait *is*. ~#:clr-member~ says
+which member of that interface a method stands for. Everything .NET's numeric
+interfaces offer is reachable this way, and most of it nobody has needed yet:
+
+#+BEGIN_SRC scheme
+(def/trait (Float %a)
+  (#:clr-constraint (System.Numerics.IFloatingPointIeee754 %a))
+  (: nan?    (-> %a bool) #:clr-member IsNaN)
+  (: finite? (-> %a bool) #:clr-member IsFinite))
+
+(: safe? (-> %a bool) (where (Float %a)))
+(defun (safe? x) (finite? x))
+
+(nan? (/ 0.0 0.0))      ;; #t
+(safe? (/ 1.0 0.0))     ;; #f
+#+END_SRC
+
+Four things to know before writing one.
+
+*Static or instance is not something you write.* It is read from the metadata —
+~INumber.Abs~ is static, ~IComparable.CompareTo~ is not — and a fact the
+metadata already holds is not something the source should have to restate, or be
+able to get wrong.
+
+*There is no ~def/impl~.* A type satisfies the interface or it does not, and
+writing one is an error saying so. Coherence comes free with that: .NET decides,
+globally, so there is no possibility of two answers.
+
+*The world is closed.* ~int~ implements ~INumber~ because Microsoft said so, and
+no type declared in Bjolang can join — nothing emits a .NET interface on a
+generated type. So these constraints are for the types .NET already ships, and a
+record of your own wants an ordinary trait.
+
+That closedness is why ~Ord~ is *not* one of these. It was
+~System.IComparable~ for a while, which made sorting reach ~string~ and ~bool~
+and no type any program declared. It is an ordinary trait now — see *Ordering
+your own types* — and the primitives implement it by delegating to the
+interface, so a call at a known type still compiles to ~a.CompareTo(b)~.
+
+*The declaration is checked; the signatures are not.* The interface has to
+resolve, its arity has to match, and every ~#:clr-member~ has to exist — a
+misspelling is an error at the ~def/trait~, and the message lists what the
+interface does offer. What is *not* checked is the shape you declared against
+the shape the member has, so a wrong arity survives to be a C# error in
+generated code.
+
+** Rough edges
+
+- *No ~float~, no ~decimal~.* See *The types*.
+- *No digit separators.* ~1_000~ reads as ~1~ followed by the name ~_000~.
+- *A constant that overflows is a C# error rather than a Bjolang one.* Roslyn
+  folds constant expressions in checked mode, so ~(+ 2147483647 1)~ and
+  ~(cast System.Byte 300)~ are rejected with a message naming a C# file. Through
+  a variable both wrap, as documented above.
+- *No implicit widening.* ~(* n 1.5)~ at an ~int~ ~n~ needs a ~cast~. Only
+  literals adapt, and only because they had no type to begin with.
+- *A number in a pattern cannot be generic.* See *Two places a number cannot
+  stay open*.
+- *A ~#:clr-member~ is checked to exist and not to fit.* See *Declaring a
+  constraint of your own*.

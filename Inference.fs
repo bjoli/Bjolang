@@ -3923,6 +3923,70 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
             [ for c in explicitConstraints @ inferredConstraints do
                 let key = (c.TraitName, match c.TargetType with TVar v -> v | _ -> "")
                 if seen.Add(key) then yield c ]
+        // A constraint may only land on a type variable this signature
+        // quantifies.
+        //
+        // A local binding is generalized over variables of its own, and a
+        // constraint collected from the body can land on one of *those*:
+        // `(defun (inner y) (+ y y))` inside a generic function acquires `Num`
+        // at `inner`'s variable rather than at the enclosing function's.
+        // Attached to this scheme anyway it became a C# `where` clause naming a
+        // type parameter the method does not declare — `CS0699`, in generated
+        // code — and a published signature constraining a variable it never
+        // mentions. Nothing compared the two, because nobody wrote either down.
+        //
+        // Checked before the declaration rule below, which would otherwise ask
+        // for a clause naming that same unmentionable variable.
+        for c in allConstraints do
+            match c.TargetType with
+            | TVar v when not (List.contains v vars) ->
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos r}: '%s{name}' would carry the constraint '%s{c.TraitName}' at a type variable its signature does not mention. A local binding in the body was generalized on its own and picked the constraint up there. Annotate that local's parameter with one of this signature's variables — (defun (helper (: y %%a)) ...) — so the constraint lands where it can be declared."
+            | _ -> ()
+
+        // A CLR constraint has to be written down.
+        //
+        // `Eq` or `->str` at a type variable is a *capability*: an open world,
+        // anyone may implement one, and inferring it from the body says no more
+        // than the body already said. `Num` is not that. Nothing declared in
+        // Bjolang can ever satisfy it, so the constraint is an enumeration of
+        // the types .NET ships — a statement about what the type *is*, and this
+        // language writes types down. Every top-level `defun` needs a signature
+        // for the same reason.
+        //
+        // Inferred silently it also made a published contract depend on a body:
+        // adding a `/` widened a signature with no diff in it, and a partial
+        // `(where (Ordered %a))` was completed to include `Num` without a word.
+        let undeclared =
+            inferredConstraints
+            |> List.filter (fun c ->
+                (match Map.tryFind c.TraitName env.Registry.Traits with
+                 | Some info -> info.ClrConstraint.IsSome
+                 | None -> false)
+                && not (
+                    explicitConstraints
+                    |> List.exists (fun d -> d.TraitName = c.TraitName && d.TargetType = c.TargetType)
+                ))
+
+        if not undeclared.IsEmpty then
+            // The whole clause, explicit ones included, so the message is
+            // something to paste rather than something to merge by hand.
+            let shown (c: TraitConstraint) =
+                let written =
+                    match prune env.Registry c.TargetType with
+                    | TVar v -> "%" + v.TrimStart('\'')
+                    | t -> DotNetInterop.showType t
+
+                $"(%s{c.TraitName} %s{written})"
+
+            let clause =
+                (explicitConstraints @ undeclared) |> List.map shown |> String.concat " "
+
+            let needs = undeclared |> List.map shown |> String.concat " and "
+
+            failwithf
+                $"Type Error at %s{Lexer.formatPos r}: '%s{name}' needs %s{needs}, which its signature does not declare. A constraint on a .NET interface says which types this *is* rather than what they can do, and nothing written in Bjolang can ever satisfy one — so it belongs in the signature. Write:\n  (: %s{name} ... (where %s{clause}))"
+
         let schemeWithConstraints = Scheme(vars, allConstraints, schemeType)
 
         let finalEnv =

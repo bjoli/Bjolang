@@ -1,0 +1,21 @@
+;; EXPECT-ERROR: at a type variable its signature does not mention
+;;
+;; `inner` is generalized on a variable of its own, and `+` puts `Num` on *that*
+;; one. Hung on `outer`'s scheme it became a C# `where` clause naming a type
+;; parameter the method does not declare — CS0699, in generated code — and a
+;; published signature `(-> 'a 'a) (where (Num 't__1))` constraining a variable
+;; it never mentions.
+;;
+;; Annotating the local — `(defun (inner (: y %a)) ...)` — lands the constraint
+;; on `%a`, where the signature can carry it. So does mentioning `x` in the
+;; body, which unifies the two.
+(import (std prelude))
+
+(: outer (-> %a %a))
+(defun (outer x)
+  (defun (inner y) (+ y y))
+  (inner x))
+
+(defun (main)
+  (println (outer 21))
+  0)

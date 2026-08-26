@@ -1266,9 +1266,10 @@ has none, and no dictionary: a ~(where ...)~ on it becomes a C# ~where~ clause,
 and it is discharged by asking the runtime whether the implementor implements
 the interface.
 #+BEGIN_SRC scheme
-(def/trait (Ord %a)
-  (#:clr-constraint (System.IComparable %a))
-  (: compare (-> %a %a int) #:clr-member CompareTo))
+(def/trait (Float %a)
+  (#:clr-constraint (System.Numerics.IFloatingPointIeee754 %a))
+  (: nan?    (-> %a bool) #:clr-member IsNaN)
+  (: finite? (-> %a bool) #:clr-member IsFinite))
 #+END_SRC
 
 ~#:clr-member~ names the member a method stands for; whether it is static or an
@@ -1276,9 +1277,10 @@ instance member is read from the metadata rather than written. ~def/impl~ for
 such a trait is an error, since a type either implements the interface or does
 not.
 
-This is how the library's ~Num~, ~Ord~, ~Ordered~ and ~Integral~ are written,
-and it is what licenses ~+~ and ~<~ at a type variable. ~Numerics.org~ has the
-rest, including what it cannot do.
+This is how the library's ~Num~, ~Ordered~ and ~Integral~ are written, and it is
+what licenses ~+~ and ~<~ at a type variable. It is a *closed* world — no type
+declared in Bjolang can ever satisfy one — which is why ~Eq~ and ~Ord~ are
+ordinary traits instead. ~Numerics.org~ has the rest.
 
 *** Inline traits
 A trait may instead apply its implementor to arguments:

@@ -118,3 +118,65 @@ type 'T_a'~. The other routes are already closed by rules that predate this:
 The message is the gap, not the rejection — there is nothing a C# type parameter
 could mean here. It is the same wall generic arithmetic hits everywhere else.
 
+* Constraints and numerics
+
+Found while opening ~Ord~ up and making the numeric constraints explicit. All
+four are about the same seam: a constraint that is discharged by *passing a
+dictionary* rather than by a C# ~where~ clause.
+
+** ~type/derive~ cannot derive ~Ord~
+
+~(type/derive (Eq Ord) ...)~ is refused with "the only trait that can be derived
+is Eq". Ordering a record means writing ~compare~ by hand, field by field, and
+getting the short-circuit right — which is exactly the mechanical work ~derive~
+exists to remove, and the reason ~Ord~ was opened up in the first place.
+
+~derive-eq-record~ and ~derive-eq-union~ in ~lib/std/prelude.bjo~ are the shape
+to copy: compare fields in declaration order, stopping at the first non-zero,
+and a union by case index and then payload. The union case order is already the
+declaration order the hash seeds itself with, so the two agree for free.
+
+** A recursive call does not forward its dictionaries
+
+Inside its own body a function is bound monomorphically, for recursion, and that
+binding quantifies nothing — so ~Lowering~ finds no constraints on it and passes
+no dictionary. A directly recursive constrained function therefore emits a call
+missing its first argument, and C# reports ~CS7036~ about generated code.
+
+Not hypothetical: ~list-sort~ hit it the moment ~Ord~ stopped being a CLR
+constraint, and now recurses through a local function that closes over the
+dictionary instead. That workaround is fine, and it should not be the only way.
+
+The fix is to give the recursive binding the constraints the signature declares,
+which are known before the body is checked — ~explicitConstraints~ is computed
+above ~recEnv~ in ~DDefun~ for exactly the wrong reason today.
+
+** A constrained function cannot be used as a value
+
+~(list-foldl least ...)~ is ~CS0123~ in generated code: ~least~ takes its
+dictionary as a first parameter, so it is not the ~(-> %a %a %a)~ a fold wants.
+The workaround is to write ~(fun (a b) (least a b))~, where the call site
+supplies the dictionary as usual.
+
+This is an elaboration gap rather than something impossible. ~Lowering~ injects
+dictionaries on ~TApply(TIdent ...)~ — it recognises a *call* — and a bare
+~TIdent~ in a value position falls through to the raw method name. Eta-expanding
+a constrained binding mentioned unapplied, into a lambda of its arity, would let
+the existing machinery fill in the rest. Unapplied *operators* are already
+eta-expanded for a related reason, so the precedent and the arity source
+(~FunMeta~) both exist.
+
+The C# error is the worst part: nothing in it names Bjolang.
+
+** Ordering a .NET type takes a line it did not used to
+
+While ~Ord~ was ~System.IComparable~, every .NET type implementing it was
+ordered for free — ~DateTime~, ~Guid~, ~Version~. Now the primitives are
+implemented in ~std/eq.bjo~ and anything else wants
+~(def/impl (Ord System.DateTime) (defun (compare a b) (.CompareTo a b)))~ in the
+module that sorts one.
+
+One line, and newly *possible* rather than newly required — no Bjolang type
+could be ordered at all before. But it is a regression for interop code, and a
+~std/clr-ord~ holding the handful people actually sort would cost nothing.
+

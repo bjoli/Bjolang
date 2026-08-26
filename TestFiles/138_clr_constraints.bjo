@@ -49,25 +49,28 @@
 (: size-of (-> %a %a) (where (Arith %a)))
 (defun (size-of x) (bare x))
 
-(: twice (-> %a %a) (where (Arith %a)))
+;; `Num` beside `Arith`, and it has to be written: the operators ask for
+;; `System.Numerics.INumber` and `Arith` is a trait of this file's own, so one
+;; does not imply the other. A CLR constraint is never inferred.
+(: twice (-> %a %a) (where (Arith %a) (Num %a)))
 (defun (twice x) (+ x x))
 
-(: cube (-> %a %a) (where (Arith %a)))
+(: cube (-> %a %a) (where (Arith %a) (Num %a)))
 (defun (cube x) (* x (* x x)))
 
-(: diff (-> %a %a %a) (where (Arith %a)))
+(: diff (-> %a %a %a) (where (Arith %a) (Num %a)))
 (defun (diff a b) (- a b))
 
-;; No `(where ...)` of its own: the constraint is acquired by calling something
-;; that has one, exactly as a dictionary-passing constraint is. Nothing is
-;; passed at runtime either way, but the *scheme* still has to carry it or the
-;; emitted C# would use `+` at an unconstrained type parameter.
-(: quadruple (-> %a %a))
+;; A constraint acquired by *calling* something that has one is declared too.
+;; Nothing is passed at runtime either way, but the scheme still has to carry it
+;; or the emitted C# would use `+` at an unconstrained type parameter.
+(: quadruple (-> %a %a) (where (Arith %a) (Num %a)))
 (defun (quadruple x) (twice (twice x)))
 
 ;; Two constrained variables, to pin that one clause is emitted per variable
-;; rather than one per function.
-(: combine (-> %a %b %a) (where (Arith %a) (Arith %b)))
+;; rather than one per function. `%b` is constrained and unused, which is
+;; allowed: a signature may promise more than its body needs.
+(: combine (-> %a %b %a) (where (Arith %a) (Arith %b) (Num %a)))
 (defun (combine a b) (twice a))
 
 ;; A non-generic caller: the constraint is discharged here, at `int`, and must

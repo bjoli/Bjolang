@@ -9,24 +9,23 @@
 
 (import (std prelude))
 
-;; The literal is built at the implementor's type, and the `Num` that licenses
-;; `CreateChecked` is inferred from the literal itself — nothing here writes a
-;; `(where ...)`.
+;; The literal is built at the implementor's type, and `Num` is what licenses
+;; `CreateChecked`.
 ;; EXPECT-CS: T_a bump<T_a>\(T_a x\) where T_a : System.Numerics.INumber<T_a>
 ;; EXPECT-CS: return \(x \+ T_a\.CreateChecked\(1\)\);
-(: bump (-> %a %a))
+(: bump (-> %a %a) (where (Num %a)))
 (defun (bump x) (+ x 1))
 
 ;; Two constraints from two sources on one variable: `Integral` from the
 ;; operator, `Num` from the literal it is applied to.
 ;; EXPECT-CS: where T_a : System.Numerics.IBinaryInteger<T_a>, System.Numerics.INumber<T_a>
-(: low-bit (-> %a %a))
+(: low-bit (-> %a %a) (where (Integral %a) (Num %a)))
 (defun (low-bit x) (bitwise-and x 1))
 
 ;; `<` is `IComparisonOperators`, which has no `CreateChecked` — so a function
-;; that only compares still carries `Num` once a literal appears in it.
+;; that only compares still needs `Num` once a literal appears in it.
 ;; EXPECT-CS: where T_a : System.Numerics.INumber<T_a>, System.Numerics.IComparisonOperators<T_a, T_a, bool>
-(: at-least-three (-> %a %a))
+(: at-least-three (-> %a %a) (where (Num %a) (Ordered %a)))
 (defun (at-least-three x) (if (< x 3) 3 x))
 
 ;; A concrete type is a plain literal again: nothing generic is emitted where

@@ -1,0 +1,21 @@
+;; EXPECT-ERROR: needs (Num %a), which its signature does not declare
+;; EXPECT-ERROR: (where (Ordered %a) (Num %a))
+;;
+;; A CLR constraint is written down; an ordinary one is inferred. The line is
+;; not style: `Eq` and `->str` are open worlds, so a constraint on one names
+;; something a type can *do* and any type may come to do it. Nothing declared in
+;; Bjolang can ever satisfy `System.Numerics.INumber`, so `(where (Num %a))`
+;; enumerates the types .NET ships — a statement about what `%a` *is*, and this
+;; language writes types down.
+;;
+;; This one is the case that made it worth enforcing: the `Num` comes from the
+;; literal `3`, not from any operator. `<` is `IComparisonOperators` and has no
+;; `CreateChecked`. A partial clause used to be completed in silence.
+(import (std prelude))
+
+(: at-least-three (-> %a %a) (where (Ordered %a)))
+(defun (at-least-three x) (if (< x 3) 3 x))
+
+(defun (main)
+  (println (at-least-three 1))
+  0)

@@ -38,26 +38,31 @@
 ;; Ord — the one ordering
 ;; ---------------------------------------------------------------------------
 ;;
-;; `Ord` *is* `System.IComparable`, so a type is ordered when .NET says it is
-;; and there is nothing to implement. See `Docs/Numerics.org`.
+;; One ordering, open the way `Eq` is: `compare` is an ordinary trait method, so
+;; a program can order its own types and everything below — `least`, `list-sort`,
+;; `list-min` — works at them without knowing they exist.
 ;;
-;; Not `System.Numerics.IComparisonOperators`, which would give `<` directly:
-;; `string` and `bool` are in no `System.Numerics` interface at all, and sorting
-;; strings is worth more than saving a call that costs nothing. Measured over a
-;; 100k scan with tiered PGO off, `CompareTo` through a constrained type
-;; parameter and the raw operator were 114ms and 113ms — the JIT devirtualizes
-;; and inlines both.
+;; It was `System.IComparable` as a `#:clr-constraint` for a while, which made
+;; membership .NET's answer and therefore closed: no type declared in Bjolang
+;; could ever be ordered, because nothing emits a .NET interface on a generated
+;; type. That is the wrong trade for the one ordering in the language. What the
+;; constraint bought was a `where` clause instead of a dictionary; what it cost
+;; was every record and every union.
+;;
+;; The primitives implement it by delegating to the interface anyway, so nothing
+;; is slower where the type is known: a resolved call is spliced back down to
+;; `a.CompareTo(b)`.
 ;;
 ;; `<` and friends are untouched and remain builtins. They are C# operators,
 ;; which every numeric type has and `string` does not; `compare` is the one that
 ;; works at a type variable, and the one everything below is written in terms
 ;; of.
 ;;
-;; `Char` is in without the runtime being touched: `BjoChar` already declares
-;; `IComparable<BjoChar>`, so that `<` would work on it.
+;; No default body, for the reason `Eq` has none: the only body a default could
+;; have is "ask .NET", which is wrong in exactly the case someone wrote an
+;; implementation for.
 (def/trait (Ord %a)
-  (#:clr-constraint (System.IComparable %a))
-  (: compare (-> %a %a int) #:clr-member CompareTo))
+  (: compare (-> %a %a int)))
 
 ;; The predicates, in terms of the one method. Negative, zero and positive is
 ;; what `CompareTo` promises — not -1, 0 and 1 — so these compare against zero
@@ -126,30 +131,45 @@
             ys
             (drop (- n 1) (list-tail ys)))))
 
-  (def n (list-length xs))
-  ;; One element is sorted, and none is too. Splitting either would recur
-  ;; forever, a half of a one-element list being that list again.
-  (if (< n 2)
-      xs
-      (merge (list-sort (take (/ n 2) xs))
-             (list-sort (drop (/ n 2) xs)))))
+  ;; The recursion is a local function rather than a call back to `list-sort`.
+  ;;
+  ;; `Ord` arrives as a dictionary now that it is an ordinary trait, and a
+  ;; function's recursive self-call does not forward one: inside its own body a
+  ;; function is bound monomorphically, for recursion, and that binding
+  ;; quantifies nothing for a dictionary to be chosen by. A local closes over
+  ;; the dictionary its enclosing function was handed, so the question does not
+  ;; arise.
+  (defun (sort ys)
+    ;; One element is sorted, and none is too. Splitting either would recur
+    ;; forever, a half of a one-element list being that list again.
+    (def n (list-length ys))
+
+    (if (< n 2)
+        ys
+        (merge (sort (take (/ n 2) ys))
+               (sort (drop (/ n 2) ys)))))
+
+  (sort xs))
 
 ;; The smallest and largest of a list, seeded with the first element rather than
 ;; with a bound: `IMinMaxValue` is a different interface, `string` is not in it,
 ;; and a fold over a non-empty list needs no seed but its own head.
 ;;
 ;; An empty list has no answer, so these say so rather than inventing one.
+;; `least` is wrapped rather than passed by name. A constrained function takes
+;; its dictionary as a first argument, so it is not a `(-> %a %a %a)` and cannot
+;; be a fold's operator; the lambda is where the dictionary gets supplied.
 (: list-min (-> (List %a) (Option %a)) (where (Ord %a)))
 (defun (list-min xs)
   (if (list-empty? xs)
       None
-      (Some (list-foldl least (list-head xs) (list-tail xs)))))
+      (Some (list-foldl (fun (a b) (least a b)) (list-head xs) (list-tail xs)))))
 
 (: list-max (-> (List %a) (Option %a)) (where (Ord %a)))
 (defun (list-max xs)
   (if (list-empty? xs)
       None
-      (Some (list-foldl greatest (list-head xs) (list-tail xs)))))
+      (Some (list-foldl (fun (a b) (greatest a b)) (list-head xs) (list-tail xs)))))
 
 
 ;; --- The blanket -----------------------------------------------------------
@@ -260,6 +280,46 @@
 (def/impl (Eq void)
   (defun (= a b) #t)
   (defun (eq-hash a) 0))
+
+
+;; --- Ord for the primitives ------------------------------------------------
+;;
+;; Each delegates to the type's own `IComparable`, so a resolved call is spliced
+;; back down to `a.CompareTo(b)` and costs what it did when `Ord` *was* that
+;; interface. Only genuinely generic code pays a dictionary, which is the price
+;; of a program being able to order its own types at all.
+;;
+;; `.CompareTo` is an ordinary interop call and needs no import, which is what
+;; lets these live in the module that imports nothing.
+;;
+;; Not listed: `Keyword` and `Symbol`, which are interned and have no order
+;; anybody would agree on, and `void`, which has one value. A .NET type that is
+;; `IComparable` and not here — `System.DateTime`, `System.Guid` — is one line
+;; in the module that wants it sorted, which is new: it could not be written
+;; before at all.
+
+(def/impl (Ord int)    (defun (compare a b) (.CompareTo a b)))
+(def/impl (Ord long)   (defun (compare a b) (.CompareTo a b)))
+(def/impl (Ord short)  (defun (compare a b) (.CompareTo a b)))
+(def/impl (Ord byte)   (defun (compare a b) (.CompareTo a b)))
+(def/impl (Ord uint)   (defun (compare a b) (.CompareTo a b)))
+(def/impl (Ord ulong)  (defun (compare a b) (.CompareTo a b)))
+(def/impl (Ord ushort) (defun (compare a b) (.CompareTo a b)))
+
+;; `NaN` has no place in a total order and `CompareTo` picks one anyway: it
+;; sorts below every number, and equal to itself. That is what makes sorting a
+;; list of doubles terminate, and it is deliberately not what `<` says — see
+;; the note on `Eq double` above, which faces the same disagreement.
+(def/impl (Ord double) (defun (compare a b) (.CompareTo a b)))
+
+(def/impl (Ord bool)   (defun (compare a b) (.CompareTo a b)))
+
+;; `String.CompareTo` is culture-sensitive, as it was when this was the
+;; interface. `string-compare-ordinal` is the one to reach for where the answer
+;; must not depend on where the program runs.
+(def/impl (Ord string) (defun (compare a b) (.CompareTo a b)))
+
+(def/impl (Ord char)   (defun (compare a b) (.CompareTo a b)))
 
 
 ;; --- The containers --------------------------------------------------------

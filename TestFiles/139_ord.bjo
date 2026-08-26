@@ -1,9 +1,14 @@
-;; `Ord` — the one ordering.
+;; `Ord` — the one ordering, and open.
 ;;
-;; `Ord` is `System.IComparable`, so a type is ordered when .NET says it is.
-;; That reaches further than `System.Numerics` does: `string`, `bool` and
-;; `Char` are in no numeric interface at all, and sorting a list of strings was
-;; not possible at any type before.
+;; One method, `compare`, and everything else written in terms of it. The
+;; primitives implement it by delegating to their own `System.IComparable`, so a
+;; comparison at a known type compiles to `a.CompareTo(b)` and costs what it did
+;; when `Ord` *was* that interface.
+;;
+;; What being an ordinary trait buys is the bottom half of this file: a type
+;; this program declares can be ordered, and then `list-sort` — which knows
+;; nothing about it — sorts it. As a `#:clr-constraint` that was impossible,
+;; because nothing emits a .NET interface on a generated type.
 ;;
 ;; Nothing here imports `(std eq)`, where the trait is declared. It arrives
 ;; through the prelude's re-export of `compare`, which is what carries the
@@ -17,6 +22,32 @@
 (: middle-of (-> %a %a %a %a) (where (Ord %a)))
 (defun (middle-of a b c)
   (least (greatest a b) (greatest (least a b) c)))
+
+;; --- A type of this program's own -------------------------------------------
+
+(type/derive (Eq) (: Version (Record (: major int) (: minor int))))
+
+;; Lexicographic by hand: major first, minor only where majors agree. Negative,
+;; zero or positive is the contract — not -1, 0 and 1 — so the outer test asks
+;; whether the first comparison settled it rather than what it answered.
+(def/impl (Ord Version)
+  (defun (compare a b)
+    (def m (compare (record-ref a major) (record-ref b major)))
+    (if (= m 0)
+        (compare (record-ref a minor) (record-ref b minor))
+        m)))
+
+(: v (-> int int Version))
+(defun (v major minor) (Version (major major) (minor minor)))
+
+(: show-version (-> Version string))
+(defun (show-version x)
+  (string-append (int->string (record-ref x major))
+                 (string-append "." (int->string (record-ref x minor)))))
+
+(: join-versions (-> (List Version) string))
+(defun (join-versions xs)
+  (list-foldl (fun (acc x) (string-append acc (string-append " " (show-version x)))) "" xs))
 
 ;; Ordering is not equality, and a type may be `Ord` without the comparison
 ;; being arithmetic. This one runs at `string`.
@@ -88,4 +119,17 @@
   (expect "reverse sort"
           (join (longest-first (list "b" "c" "a")))
           "c,b,a")
+
+  ;; A type this program declared, ordered by one method — and then reused by
+  ;; every function above, none of which knows it exists.
+  (def vs (list (v 2 1) (v 1 9) (v 2 0)))
+  (expect "sorting a type of our own" (join-versions (list-sort vs)) " 1.9 2.0 2.1")
+  (expect "least of our own" (show-version (least (v 3 0) (v 1 0))) "1.0")
+  (expect "min of our own"
+          (match (list-min vs) ((Some m) (show-version m)) (None "?"))
+          "1.9")
+  (expect "the predicates too" (less? (v 1 0) (v 1 1)) #t)
+  (expect "and a constrained generic of ours"
+          (show-version (middle-of (v 3 0) (v 1 0) (v 2 0)))
+          "2.0")
   0)

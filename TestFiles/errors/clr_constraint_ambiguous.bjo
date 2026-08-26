@@ -1,11 +1,19 @@
-;; EXPECT-ERROR: nothing here says what type 'Ord' is needed at
+;; EXPECT-ERROR: nothing here says what type 'Num' is needed at
 ;;
-;; A constraint has to be discharged at a type, and `(list-empty)` never says
-;; which one. Left alone the type variable reaches C# as `object`, which fails
+;; A CLR constraint has to be discharged at a type, and `(list-empty)` never
+;; says which one. Left alone the variable reaches C# as `object`, which fails
 ;; there against the interface — a true report of a real problem, in the wrong
 ;; language.
+;;
+;; This used to be written with `list-sort`, which was `Ord` when `Ord` was
+;; `System.IComparable`. `Ord` is an ordinary trait now, so that route reaches
+;; the dictionary path instead — see `ord_at_an_unknown_type.bjo`, which pins
+;; the other message.
 (import (std prelude))
 
+(: twice (-> %a %a) (where (Num %a)))
+(defun (twice x) (+ x x))
+
 (defun (main)
-  (displayln (int->string (list-length (list-sort (list-empty)))))
+  (displayln (->str (twice (list-head (list-empty)))))
   0)

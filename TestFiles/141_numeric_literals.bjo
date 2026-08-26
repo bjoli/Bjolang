@@ -7,25 +7,27 @@
 ;;
 ;; Now a literal written without a suffix is an open type that whatever it
 ;; meets decides, `int` if nothing does. At a type variable it is emitted
-;; through the implementor's own `CreateChecked`, which is why a function like
-;; `bump` below carries `Num` without saying so: `INumberBase` is where that
-;; member lives.
+;; through the implementor's own `CreateChecked` — which is why `at-least-three`
+;; below declares `Num` even though it only ever *compares*: `INumberBase` is
+;; where that member lives, and the `3` is what needs it.
 (import (std prelude))
 (import (std simpletest))
 (import (std maths))
 
 ;; The one the whole phase is for. `bitwise-and` asks for `Integral`, the
 ;; literal asks for `Num`, and both clauses land on the same type parameter.
-(: low-bit (-> %a %a))
+(: low-bit (-> %a %a) (where (Integral %a) (Num %a)))
 (defun (low-bit x) (bitwise-and x 1))
 
-(: bump (-> %a %a))
+(: bump (-> %a %a) (where (Num %a)))
 (defun (bump x) (+ x 1))
 
 ;; The literal is the only thing here that mentions arithmetic at all: `<` is
-;; `IComparisonOperators`, which has no `CreateChecked`. So the `Num` on this
-;; function comes from the `3` and from nowhere else.
-(: at-least-three (-> %a %a))
+;; `IComparisonOperators`, which has no `CreateChecked`. So the `Num` in this
+;; signature is there because of the `3` and for no other reason — which is the
+;; case that makes declaring worth the trouble, since inferring it silently was
+;; the least guessable thing the rule ever did.
+(: at-least-three (-> %a %a) (where (Num %a) (Ordered %a)))
 (defun (at-least-three x) (if (< x 3) 3 x))
 
 ;; A literal in an argument position takes the parameter's type, so a `ushort`
