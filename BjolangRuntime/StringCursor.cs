@@ -39,7 +39,9 @@ namespace Bjolang.Runtime;
 /// bargain the other cursors in the runtime strike.
 /// </para>
 /// </remarks>
-public readonly record struct StringCursor : IComparable<StringCursor>
+// See `BjoChar`: the operators are already here, and the interface is what
+// makes them reachable from a constrained generic.
+public readonly record struct StringCursor : IComparable<StringCursor>, System.Numerics.IComparisonOperators<StringCursor, StringCursor, bool>
 {
     internal int Offset { get; }
 

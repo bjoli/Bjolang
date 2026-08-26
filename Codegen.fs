@@ -4098,7 +4098,7 @@ let private clrConstraintClauses (env: Env) : Map<string, string> =
     |> Seq.choose (fun (name, binding) ->
         let (Scheme(_, constraints, _)) = binding.Scheme
 
-        let clauses =
+        let bounds =
             constraints
             |> List.choose (fun c ->
                 match Map.tryFind c.TraitName env.Registry.Traits with
@@ -4120,9 +4120,21 @@ let private clrConstraintClauses (env: Env) : Map<string, string> =
                                     let argsStr = args |> List.map typeToString |> String.concat ", "
                                     $"%s{clr.InterfaceName}<%s{argsStr}>"
 
-                            Some $" where %s{typeToString target} : %s{applied}"
+                            Some(typeToString target, applied)
                         | _ -> None)
                 | None -> None)
+
+        // Grouped by type parameter, because C# takes one `where` per parameter
+        // with its bounds comma-separated and rejects a second clause for the
+        // same one. A variable with two constraints is ordinary — `(+ a b)`
+        // beside `(< a b)` is `INumber` and `IComparisonOperators` — so this is
+        // the common case rather than a corner.
+        let clauses =
+            bounds
+            |> List.groupBy fst
+            |> List.map (fun (param, group) ->
+                let all = group |> List.map snd |> List.distinct |> String.concat ", "
+                $" where %s{param} : %s{all}")
 
         if clauses.IsEmpty then None else Some(name, String.concat "" clauses))
     |> Map.ofSeq

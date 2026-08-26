@@ -1,4 +1,5 @@
 using System;
+using System.Numerics;
 using System.Text;
 
 namespace Bjolang.Runtime;
@@ -6,7 +7,11 @@ namespace Bjolang.Runtime;
 /// <summary>
 /// Represents a 32-bit Unicode scalar value (Scheme-style character).
 /// </summary>
-public readonly record struct BjoChar : IComparable<BjoChar>
+// `IComparisonOperators` is what Bjolang's `<` asks of an operand type: the
+// operators below already exist, and declaring the interface is what lets a
+// constrained generic function reach them. `IComparable` is the other half,
+// and is what `Ord`'s `compare` — and so sorting — goes through.
+public readonly record struct BjoChar : IComparable<BjoChar>, IComparisonOperators<BjoChar, BjoChar, bool>
 {
     public uint Value { get; }
 

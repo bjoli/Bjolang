@@ -198,6 +198,32 @@ let implementsInterface (t: Type) (iface: Type) : bool =
     else
         iface.IsAssignableFrom t
 
+/// The nullary builtin types whose .NET name is not the name Bjolang uses.
+///
+/// `genericTypeCorrespondence` is the same thing for the constructed generics.
+/// This is the rest: types that take no arguments and are still not called what
+/// they are called here — a Bjolang `char` is a 32-bit codepoint and so cannot
+/// be `System.Char`, which is a UTF-16 code unit.
+///
+/// `Codegen.mapPrimitiveType` has to agree with this. It is the same
+/// correspondence in the direction of emission, and it cannot be shared: it is
+/// compiled after this module.
+///
+/// Only the ones that differ are here. Everything else — `System.Int32`, and a
+/// type a program declared — resolves under the name it already has.
+let private nullaryCorrespondence =
+    dict
+        [ "Unit", "Bjoml.Unit"
+          TypeConstants.CharName, "Bjolang.Runtime.BjoChar"
+          "StringCursor", "Bjolang.Runtime.StringCursor"
+          "Syntax", "Bjolang.Runtime.Syntax"
+          "StringBuilder", "System.Text.StringBuilder"
+          "Keyword", "BjolangRuntime.Keyword"
+          "Symbol", "BjolangRuntime.Symbol"
+          "CancelReason", "BjolangRuntime.CancelReason"
+          "VecCursor", "BjolangRuntime.VecCursor"
+          "SeqCursor", "BjolangRuntime.SeqCursor" ]
+
 /// A member of an interface, and whether it is reached through the type or
 /// through a value: `T.Abs(x)` against `x.CompareTo(y)`.
 type ClrMemberKind =
@@ -409,15 +435,10 @@ let rec mapClrType (t: Type) : HMType =
 let rec tryClrTypeOf (t: HMType) : Type option =
     match pruneLocal t with
     | TCon("Array", [ elem ]) -> tryClrTypeOf elem |> Option.map (fun e -> e.MakeArrayType())
-    // The unit *value*'s type, which is a real one — as against `System.Void`,
-    // which resolves by its own name and is not a type anything can hold.
-    | TCon("Unit", []) -> tryResolveType "Bjoml.Unit"
-    // A Bjolang `char` is a 32-bit codepoint and so cannot be `System.Char`,
-    // which is a UTF-16 code unit. The name it goes by here is not the name it
-    // has in .NET, and `Codegen.mapPrimitiveType` says the same thing in the
-    // direction of emission.
-    | TCon(TypeConstants.CharName, []) -> tryResolveType "Bjolang.Runtime.BjoChar"
-    | TCon(name, []) -> tryResolveType name
+    | TCon(name, []) ->
+        match nullaryCorrespondence.TryGetValue name with
+        | true, clrName -> tryResolveType clrName
+        | _ -> tryResolveType name
     | TCon(name, args) ->
         // A constructed generic: resolve the definition by arity and fill it in.
         // The definition is spelled with its arity mark, which the Bjolang name

@@ -1,0 +1,80 @@
+;; The operators carry their own constraints.
+;;
+;; `+` and friends are emitted as C# operators, and a C# operator does not
+;; exist at an unconstrained type parameter. So they are typed with the
+;; constraint that makes them legal there, and a generic function acquires it
+;; from its own body — nothing below writes a `(where ...)`.
+;;
+;; Before this, every function here type-checked and then failed in Roslyn with
+;; a `T_a` in the message: a program the compiler accepted and could not
+;; compile.
+(import (std prelude))
+(import (std simpletest))
+
+;; `Num` — System.Numerics.INumber.
+(: twice (-> %a %a))
+(defun (twice x) (+ x x))
+
+(: span (-> %a %a %a))
+(defun (span lo hi) (- hi lo))
+
+(: scale-down (-> %a %a %a))
+(defun (scale-down x k) (/ x k))
+
+(: flip (-> %a %a))
+(defun (flip x) (negate x))
+
+;; `Ordered` — System.Numerics.IComparisonOperators, which is not `Num`:
+;; comparing is not arithmetic, and a `StringCursor` does one and not the other.
+(: below? (-> %a %a bool))
+(defun (below? a b) (< a b))
+
+(: pick-larger (-> %a %a %a))
+(defun (pick-larger a b) (if (>= a b) a b))
+
+;; Both at once, on one variable. C# takes one `where` per type parameter with
+;; its bounds comma-separated, so these have to be merged rather than emitted
+;; twice.
+(: gap-above (-> %a %a %a))
+(defun (gap-above x lo) (if (< x lo) lo (- x lo)))
+
+;; `Integral` — System.Numerics.IBinaryInteger, which covers the unsigned types
+;; `Num` leaves out. Bit twiddling is where `uint` and `ulong` live.
+;;
+;; The mask is a parameter rather than a literal, and it has to be: a `1`
+;; written here is an `int` and would pin `%a` to `int`, generic or not. That is
+;; the numeric-literal problem in the Readme, and it is what stands between
+;; these constraints and being comfortable to use.
+(: low-bit (-> %a %a %a))
+(defun (low-bit x mask) (bitwise-and x mask))
+
+(: doubled-by-shift (-> %a %a))
+(defun (doubled-by-shift x) (shift-left x 1))
+
+(defun (main)
+  (expect "inferred Num at int" (twice 21) 42)
+  (expect "inferred Num at long" (long->string (twice 21L)) "42")
+  (expect "inferred Num at double" (double->string (twice 1.25)) "2.5")
+  (expect "subtraction" (span 4 10) 6)
+  (expect "division at double" (double->string (scale-down 9.0 2.0)) "4.5")
+  (expect "unary negate" (flip 7) -7)
+  (expect "unary negate at double" (double->string (flip 2.5)) "-2.5")
+
+  (expect "inferred Ordered at int" (below? 3 7) #t)
+  (expect "inferred Ordered at double" (below? 2.5 1.5) #f)
+  ;; `char` reaches this because `BjoChar` declares `IComparisonOperators`. It
+  ;; had the operators already; the interface is what makes them reachable from
+  ;; a constrained generic.
+  (expect "inferred Ordered at char" (below? #\a #\b) #t)
+  (expect "pick larger" (pick-larger 3 7) 7)
+  (expect "pick larger at char" (char->string (pick-larger #\a #\b)) "b")
+
+  (expect "two constraints on one variable" (gap-above 3 5) 5)
+  (expect "two constraints, other branch" (gap-above 9 5) 4)
+
+  (expect "inferred Integral" (low-bit 7 1) 1)
+  (expect "inferred Integral, even" (low-bit 8 1) 0)
+  (expect "inferred Integral at long" (long->string (low-bit 7L 1L)) "1")
+  (expect "shift at int" (doubled-by-shift 21) 42)
+  (expect "shift at long" (long->string (doubled-by-shift 21L)) "42")
+  0)

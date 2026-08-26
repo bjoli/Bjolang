@@ -123,13 +123,87 @@ let textOutputPortType = TCon("System.IO.TextWriter", [])
 let syntaxType = TCon("Syntax", [])
 
 
+/// `Num`, before any source has declared it.
+///
+/// Seeded rather than declared, for the reason `NoDiscard`'s `Result` is: the
+/// operators it constrains are builtins, and there is nowhere in source to hang
+/// a declaration that is in scope for them. `std/eq.bjo` is the case that
+/// forces it — the bottom of the library, importing nothing, and it adds and
+/// divides.
+///
+/// Methodless on purpose. This is only enough for `+` to mean something at a
+/// type variable; `std/maths.bjo` declares the same trait *with* its members
+/// and overwrites this one for every module above it. Both name the same .NET
+/// interface, so which of the two a module sees changes nothing about what its
+/// arithmetic compiles to.
+let private bootstrapNum : TraitInfo =
+    { ImplementorVar = "a"
+      AssociatedTypes = []
+      Signatures = Map.empty
+      Kind = InterfaceTrait
+      HoleArity = 0
+      Templates = Map.empty
+      Defaults = Map.empty
+      ClrConstraint =
+        Some
+            { InterfaceName = "System.Numerics.INumber"
+              Args = [ TVar "'a" ]
+              Members = Map.empty } }
+
+/// `Ordered`, which is what `<` asks of its operands.
+///
+/// Separate from `Num` because the two are separate questions: `StringCursor`
+/// compares and does not add. Separate from `Ord` — declared in `std/eq.bjo`
+/// over `System.IComparable` — because that one is `compare`, an ordinary
+/// method every ordered type has including `string`, while this is the C#
+/// *operator*, which `string` does not have and which orders `NaN` as IEEE
+/// says rather than as a total order must.
+///
+/// Every numeric type has it: `INumber` extends `IComparisonOperators`.
+let private bootstrapOrdered : TraitInfo =
+    { bootstrapNum with
+        ClrConstraint =
+            Some
+                { InterfaceName = "System.Numerics.IComparisonOperators"
+                  // The result is `bool` and not the implementor, which is why
+                  // the arguments are written out rather than assumed.
+                  Args = [ TVar "'a"; TVar "'a"; TypeConstants.boolType ]
+                  Members = Map.empty } }
+
+/// `Integral`, which is what the bitwise and shift builtins ask for.
+///
+/// `IBinaryInteger` and not `INumber`: bit twiddling is where `uint` and
+/// `ulong` live, and they are not `Num` — .NET draws that line, and this file
+/// no longer has to. It covers the shifts too, `IBinaryInteger` extending
+/// `IShiftOperators`.
+let private bootstrapIntegral : TraitInfo =
+    { bootstrapNum with
+        ClrConstraint =
+            Some
+                { InterfaceName = "System.Numerics.IBinaryInteger"
+                  Args = [ TVar "'a" ]
+                  Members = Map.empty } }
+
+/// What the arithmetic and comparison builtins ask of their operand type.
+///
+/// `TVar "a"` and not `"'a"`: it has to align positionally with the scheme's
+/// own variable list, which is how `Lowering` and `collectTraitConstraints`
+/// both read a constraint back out.
+let private numeric = [ { TraitName = "Num"; TargetType = TVar "a" } ]
+let private ordered = [ { TraitName = "Ordered"; TargetType = TVar "a" } ]
+let private integral = [ { TraitName = "Integral"; TargetType = TVar "a" } ]
+
 let emptyRegistry : TraitRegistry =
     { LocalTraits = Set.empty
       // The types with no declaring module, which is exactly what `typeKey`
       // leaves unkeyed. One list, in `Naming`, so the registry that holds them
       // and the rule that exempts them cannot drift apart.
       LocalTypes = Naming.builtinTypeNames
-      Traits = Map.empty
+      Traits =
+        Map.ofList
+            [ "Num", bootstrapNum
+              "Ordered", bootstrapOrdered
+              "Integral", bootstrapIntegral ]
       TraitMethods = Map.empty
       Implementations = Map.empty
       ImplTargets = Map.empty
@@ -170,12 +244,22 @@ let prelude : Env =
         /// spelling. See §8.2.
         "unit", {Scheme = Scheme([], [], unitType); IsMutable = false }
 
-        // Math Operators (Polymorphic, deferring resolution to C#)
-        "+", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
-        "-", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
-        "*", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
-        "/", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
-        "%", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
+        // Math Operators.
+        //
+        // Emitted as the C# operator, which is why they carry `Num`: a C#
+        // operator does not exist at an unconstrained type parameter, so
+        // without the constraint `(defun (twice x) (+ x x))` type-checked here
+        // and then failed in Roslyn with a `T_a` in the message — a program
+        // this compiler accepted and could not compile.
+        //
+        // The constraint is `System.Numerics.INumber`, so it is a C# `where`
+        // clause and costs nothing: no dictionary is passed, and the runtime
+        // specializes the function at each type it is used at.
+        "+", {Scheme = Scheme(["a"], numeric, makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
+        "-", {Scheme = Scheme(["a"], numeric, makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
+        "*", {Scheme = Scheme(["a"], numeric, makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
+        "/", {Scheme = Scheme(["a"], numeric, makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
+        "%", {Scheme = Scheme(["a"], numeric, makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
 
         // Unary arithmetic, which `(- x)` and `(/ x)` desugar to.
         //
@@ -183,18 +267,18 @@ let prelude : Env =
         // as `(- 0 x)` unifies the literal's `int` with `x`, so negating a
         // double is a type error. A primitive keeps the operand's own type,
         // and codegen emits C#'s unary minus rather than a subtraction.
-        "negate", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"] (TVar "a")); IsMutable = false }
-        "recip",  {Scheme = Scheme(["a"], [], makeFunType [TVar "a"] (TVar "a")); IsMutable = false }
+        "negate", {Scheme = Scheme(["a"], numeric, makeFunType [TVar "a"] (TVar "a")); IsMutable = false }
+        "recip",  {Scheme = Scheme(["a"], numeric, makeFunType [TVar "a"] (TVar "a")); IsMutable = false }
 
         // Bitwise operators, typed and emitted exactly as the arithmetic ones
         // are: C# resolves each from the operand type, so they work on every
         // integral type including the unsigned ones `Num` leaves out. That is
         // why they are primitives rather than a trait — bit twiddling is where
         // `uint` and `ulong` live.
-        "bitwise-and", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
-        "bitwise-ior", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
-        "bitwise-xor", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
-        "bitwise-not", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"] (TVar "a")); IsMutable = false }
+        "bitwise-and", {Scheme = Scheme(["a"], integral, makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
+        "bitwise-ior", {Scheme = Scheme(["a"], integral, makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
+        "bitwise-xor", {Scheme = Scheme(["a"], integral, makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
+        "bitwise-not", {Scheme = Scheme(["a"], integral, makeFunType [TVar "a"] (TVar "a")); IsMutable = false }
 
         // Shifts. The count is an `int` whatever is being shifted, and C# masks
         // it to the operand's width, so `(shift-left 1 32)` is 1 and not 0.
@@ -202,17 +286,26 @@ let prelude : Env =
         // `shift-right` is C#'s `>>`: arithmetic on a signed type, logical on an
         // unsigned one. `shift-right-logical` is `>>>`, which shifts zeroes in
         // whatever the operand's sign.
-        "shift-left", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; intType] (TVar "a")); IsMutable = false }
-        "shift-right", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; intType] (TVar "a")); IsMutable = false }
-        "shift-right-logical", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; intType] (TVar "a")); IsMutable = false }
+        "shift-left", {Scheme = Scheme(["a"], integral, makeFunType [TVar "a"; intType] (TVar "a")); IsMutable = false }
+        "shift-right", {Scheme = Scheme(["a"], integral, makeFunType [TVar "a"; intType] (TVar "a")); IsMutable = false }
+        "shift-right-logical", {Scheme = Scheme(["a"], integral, makeFunType [TVar "a"; intType] (TVar "a")); IsMutable = false }
 
         // Comparison Operators. `=` is not here: it is a method of the `Eq`
         // trait declared in `std/prelude`, so that one equality serves the
         // primitives, the containers and a user's own types alike.
-        "<", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] boolType); IsMutable = false }
-        ">", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] boolType); IsMutable = false }
-        "<=", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] boolType); IsMutable = false }
-        ">=", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] boolType); IsMutable = false }
+        // `Ordered` rather than `Num`: `StringCursor` compares and does not
+        // add, and a constraint that demanded arithmetic of it would be asking
+        // for something the operator never needed.
+        //
+        // Not `Ord` either, though that would type-check. `Ord` is
+        // `IComparable`, whose `compare` reaches every ordered type including
+        // `string`; these are the C# *operators*, which `string` does not have
+        // and which order `NaN` as IEEE says rather than as a total order must.
+        // `(< nan x)` is false and stays false.
+        "<", {Scheme = Scheme(["a"], ordered, makeFunType [TVar "a"; TVar "a"] boolType); IsMutable = false }
+        ">", {Scheme = Scheme(["a"], ordered, makeFunType [TVar "a"; TVar "a"] boolType); IsMutable = false }
+        "<=", {Scheme = Scheme(["a"], ordered, makeFunType [TVar "a"; TVar "a"] boolType); IsMutable = false }
+        ">=", {Scheme = Scheme(["a"], ordered, makeFunType [TVar "a"; TVar "a"] boolType); IsMutable = false }
 
         // --- The primitives `Eq` is built out of -----------------------------
         //
