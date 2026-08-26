@@ -1,0 +1,91 @@
+;; `Ord` — the one ordering.
+;;
+;; `Ord` is `System.IComparable`, so a type is ordered when .NET says it is.
+;; That reaches further than `System.Numerics` does: `string`, `bool` and
+;; `Char` are in no numeric interface at all, and sorting a list of strings was
+;; not possible at any type before.
+;;
+;; Nothing here imports `(std eq)`, where the trait is declared. It arrives
+;; through the prelude's re-export of `compare`, which is what carries the
+;; trait — so `(where (Ord %a))` below is written against a trait this module
+;; only ever got at third hand.
+(import (std prelude))
+(import (std simpletest))
+
+;; A constrained generic of this module's own, over a trait it did not declare
+;; and did not directly import.
+(: middle-of (-> %a %a %a %a) (where (Ord %a)))
+(defun (middle-of a b c)
+  (least (greatest a b) (greatest (least a b) c)))
+
+;; Ordering is not equality, and a type may be `Ord` without the comparison
+;; being arithmetic. This one runs at `string`.
+(: longest-first (-> (List string) (List string)))
+(defun (longest-first xs) (list-reverse (list-sort xs)))
+
+;; `string-join` takes a `Vec`; this is the list-shaped one, written here
+;; because what is being tested is the sort rather than the printing.
+(: join (-> (List string) string))
+(defun (join xs)
+  (if (list-empty? xs)
+      ""
+      (list-foldl (fun (acc s) (string-append acc (string-append "," s)))
+                  (list-head xs)
+                  (list-tail xs))))
+
+(defun (main)
+  ;; `compare` promises negative, zero and positive rather than -1, 0 and 1,
+  ;; so these ask about the sign.
+  (expect "compare less" (< (compare 3 7) 0) #t)
+  (expect "compare equal" (compare 5 5) 0)
+  (expect "compare greater" (> (compare 7 3) 0) #t)
+
+  ;; The predicates, at types with no C# `<` between them.
+  (expect "less? on strings" (less? "apple" "quince") #t)
+  (expect "greater? on strings" (greater? "quince" "apple") #t)
+  (expect "at-most? on equals" (at-most? "pear" "pear") #t)
+  (expect "at-least? on equals" (at-least? "pear" "pear") #t)
+  (expect "less? on doubles" (less? 1.5 2.5) #t)
+  (expect "less? on bools" (less? #f #t) #t)
+  (expect "less? on chars" (less? #\a #\b) #t)
+
+  ;; `least`/`greatest` rather than `min`/`max`: those are `Num`'s, and they do
+  ;; not reach a string.
+  (expect "least of strings" (least "pear" "apple") "apple")
+  (expect "greatest of strings" (greatest "pear" "apple") "pear")
+  (expect "least of ints" (least 3 7) 3)
+  (expect "greatest of doubles" (double->string (greatest 1.5 2.5)) "2.5")
+
+  ;; Sorting, which needed a constraint that could reach a string.
+  (expect "sort strings"
+          (join (list-sort (list "pear" "apple" "quince" "fig")))
+          "apple,fig,pear,quince")
+  (expect "sort ints"
+          (join (list-map int->string (list-sort (list 5 3 9 1 7))))
+          "1,3,5,7,9")
+  (expect "sort is stable on equals"
+          (join (list-sort (list "b" "a" "b" "a")))
+          "a,a,b,b")
+  (expect "sort of one" (join (list-sort (list "only"))) "only")
+  ;; Annotated, and it has to be: `(list-empty)` says nothing about its element
+  ;; type, and a constraint must be discharged at a type. Unannotated this is a
+  ;; Bjolang error rather than an `object` reaching C#.
+  (def (: no-strings (List string)) (list-empty))
+  (expect "sort of none" (list-empty? (list-sort no-strings)) #t)
+
+  ;; An empty list has no smallest element, so it says so.
+  (expect "min of a list" (match (list-min (list 5 3 9)) ((Some m) m) (None -1)) 3)
+  (expect "max of a list" (match (list-max (list 5 3 9)) ((Some m) m) (None -1)) 9)
+  (expect "min of strings"
+          (match (list-min (list "pear" "apple")) ((Some m) m) (None "?"))
+          "apple")
+  (expect "min of an empty list" (none? (list-min no-strings)) #t)
+
+  ;; Three-way, through a constraint this module wrote itself.
+  (expect "middle of ints" (middle-of 7 3 5) 5)
+  (expect "middle of strings" (middle-of "pear" "apple" "fig") "fig")
+
+  (expect "reverse sort"
+          (join (longest-first (list "b" "c" "a")))
+          "c,b,a")
+  0)

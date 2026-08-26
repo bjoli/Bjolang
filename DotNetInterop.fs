@@ -412,6 +412,11 @@ let rec tryClrTypeOf (t: HMType) : Type option =
     // The unit *value*'s type, which is a real one — as against `System.Void`,
     // which resolves by its own name and is not a type anything can hold.
     | TCon("Unit", []) -> tryResolveType "Bjoml.Unit"
+    // A Bjolang `char` is a 32-bit codepoint and so cannot be `System.Char`,
+    // which is a UTF-16 code unit. The name it goes by here is not the name it
+    // has in .NET, and `Codegen.mapPrimitiveType` says the same thing in the
+    // direction of emission.
+    | TCon(TypeConstants.CharName, []) -> tryResolveType "Bjolang.Runtime.BjoChar"
     | TCon(name, []) -> tryResolveType name
     | TCon(name, args) ->
         // A constructed generic: resolve the definition by arity and fill it in.

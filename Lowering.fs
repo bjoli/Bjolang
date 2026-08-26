@@ -66,8 +66,17 @@ let checkClrConstraint
     : unit =
 
     match prune env.Registry implType with
-    | TVar _
-    | TMeta _ -> ()
+    // A rigid variable is the constrained-generic case: it becomes a C# `where`
+    // clause, and the check runs again at whatever a caller instantiates it to.
+    | TVar _ -> ()
+    // A metavariable still unsolved *here* is not that. Inference has run and
+    // generalization has turned every variable it kept into a `TVar`, so what
+    // is left is a type nothing in the program ever said. Left alone it reaches
+    // C# as `object`, which fails there against the interface constraint — a
+    // true report of a real problem, in the wrong language.
+    | TMeta _ ->
+        failwithf
+            $"Type Error at %s{Lexer.formatPos range}: nothing here says what type '%s{traitName}' is needed at, %s{describe}. A constraint has to be discharged at a type, and this expression never says which one — annotate it."
     | resolved ->
         // The interface is written over the trait's own implementor variable,
         // so putting the actual implementor in is what turns
