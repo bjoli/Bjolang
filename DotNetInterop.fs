@@ -198,6 +198,58 @@ let implementsInterface (t: Type) (iface: Type) : bool =
     else
         iface.IsAssignableFrom t
 
+/// A member of an interface, and whether it is reached through the type or
+/// through a value: `T.Abs(x)` against `x.CompareTo(y)`.
+type ClrMemberKind =
+    | StaticMember
+    | InstanceMember
+
+/// Finds `memberName` on `iface` or on any interface it extends.
+///
+/// The walk is the whole of it. An interface does *not* inherit its bases'
+/// members through `GetMethods`, so asking `INumber``1` for `Abs` finds
+/// nothing — `Abs` is declared on `INumberBase``1`, which `INumber` merely
+/// extends. The same is true of every transcendental function on
+/// `IFloatingPointIeee754`, which are spread across `ITrigonometricFunctions`,
+/// `IExponentialFunctions` and `IRootFunctions`.
+///
+/// Static wins a tie. The generic-math members are static abstract, and
+/// `INumber` also carries the instance `CompareTo` it gets from `IComparable`,
+/// so a name present as both is the static one being asked for.
+let tryFindInterfaceMember (iface: Type) (memberName: string) : ClrMemberKind option =
+    let staticFlags =
+        BindingFlags.Public ||| BindingFlags.Static ||| BindingFlags.FlattenHierarchy
+
+    let instanceFlags =
+        BindingFlags.Public ||| BindingFlags.Instance ||| BindingFlags.FlattenHierarchy
+
+    let candidates = Array.append [| iface |] (iface.GetInterfaces())
+
+    let has (flags: BindingFlags) =
+        candidates
+        |> Array.exists (fun t -> t.GetMethods flags |> Array.exists (fun m -> m.Name = memberName))
+
+    if has staticFlags then Some StaticMember
+    elif has instanceFlags then Some InstanceMember
+    else None
+
+/// Every member name an interface and its bases offer, for a diagnostic that
+/// has to suggest something.
+let interfaceMemberNames (iface: Type) : string list =
+    let flags =
+        BindingFlags.Public
+        ||| BindingFlags.Static
+        ||| BindingFlags.Instance
+        ||| BindingFlags.FlattenHierarchy
+
+    Array.append [| iface |] (iface.GetInterfaces())
+    |> Array.collect (fun t -> t.GetMethods flags)
+    |> Array.map (fun m -> m.Name)
+    |> Array.filter (fun n -> not (n.StartsWith "op_") && not (n.StartsWith "get_"))
+    |> Array.distinct
+    |> Array.sort
+    |> List.ofArray
+
 // ---------------------------------------------------------------------------
 // System.Type <-> HMType
 // ---------------------------------------------------------------------------

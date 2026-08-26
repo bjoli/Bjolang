@@ -355,10 +355,15 @@ type Decl =
     // mean something different at each implementor.
     //
     // `ClrConstraint` is the .NET interface the trait stands for, if it was
-    // written with `(#:clr-constraint (Iface %a))`: the interface name and the
-    // arguments it was applied to. Unresolved here — the name is not looked up
-    // until inference, where the diagnostic can say where it was written.
-    | DTrait of string * string * int * string list * (string * FType) list * Decl list * (string * FType list) option * Range
+    // written with `(#:clr-constraint (Iface %a))`: the interface name, the
+    // arguments it was applied to, and each method's `#:clr-member` binding.
+    // Unresolved here — neither the interface nor its members are looked up
+    // until inference, where the diagnostic can say where they were written.
+    //
+    // The member bindings ride here rather than in `Signatures` so that the
+    // signature list keeps its shape, and with it every site that reads a
+    // trait's method names.
+    | DTrait of string * string * int * string list * (string * FType) list * Decl list * (string * FType list * (string * string) list) option * Range
     /// A binding an imported module publishes: the name it is visible under
     /// here, where it actually lives, its type and its constraints.
     ///
@@ -4690,6 +4695,7 @@ let rec tryParseDecl (s: SExpr) : Decl option =
         let mutable signatures = []
         let mutable defaults = []
         let mutable clrConstraint = None
+        let mutable clrMembers = []
 
         for item in flattenBegins body do
             match item with
@@ -4717,6 +4723,16 @@ let rec tryParseDecl (s: SExpr) : Decl option =
             // Match: (type 'item)
             | SList (SAtom { Token = Symbol "type" } :: SAtom { Token = QuotedSymbol assocName } :: [], _) ->
                 assocTypes <- assocName :: assocTypes
+
+            // Match: (: methodName signatureExpr #:clr-member Abs)
+            //
+            // Which member of the interface this method is. Only meaningful on
+            // a trait that stands for one, and checked against the interface at
+            // inference; here it is only read.
+            | SList (SAtom { Token = Colon } :: SAtom { Token = Symbol methodName } :: typeExpr
+                     :: SAtom { Token = Keyword "clr-member" } :: SAtom { Token = Symbol memberName } :: [], _) ->
+                signatures <- (methodName, parseType typeExpr) :: signatures
+                clrMembers <- (methodName, memberName) :: clrMembers
 
             // Match: (: methodName signatureExpr)
             | SList (SAtom { Token = Colon } :: SAtom { Token = Symbol methodName } :: typeExpr :: [], _) ->
@@ -4753,7 +4769,11 @@ let rec tryParseDecl (s: SExpr) : Decl option =
                 failwithf
                     $"Syntax error in def/trait '%s{traitName}' at %s{Lexer.formatPos (getRange item)}: Expected (type ...), (: ...), (defun ...), (#:clr-constraint ...), a (begin ...) of those, or a macro producing default method bodies."
 
-        Some(DTrait(traitName, implementorVar, holeArity, List.rev assocTypes, List.rev signatures, List.rev defaults, clrConstraint, r))
+        let clrSpec =
+            clrConstraint
+            |> Option.map (fun (ifaceName, ifaceArgs) -> ifaceName, ifaceArgs, List.rev clrMembers)
+
+        Some(DTrait(traitName, implementorVar, holeArity, List.rev assocTypes, List.rev signatures, List.rev defaults, clrSpec, r))
 
     // Parse: (def/impl (TraitName (Vec 'a)) (type 'item 'a) (defun (get v i) ...))
     //

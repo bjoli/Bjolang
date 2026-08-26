@@ -1364,6 +1364,18 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     | TForeignStaticGet (clrType, memberName, _) ->
         append ctx $"%s{clrType}.%s{memberName}"
 
+    // `int.Abs(x)` and `T_a.Abs(x)` are the same emission, which is what makes
+    // a CLR constraint cost nothing: the concrete case is a static call the JIT
+    // inlines, and the generic case is a constrained one it specializes.
+    | TClrStaticCall (implType, memberName, args) ->
+        append ctx $"%s{typeToString implType}.%s{memberName}("
+
+        for i, emit in List.indexed (prepareOperands ctx args) do
+            if i > 0 then append ctx ", "
+            emit ctx
+
+        append ctx ")"
+
     | TNewObject (clrName, args, meta) ->
         let exceptions =
             meta |> Option.map (fun m -> m.Exceptions) |> Option.defaultValue []

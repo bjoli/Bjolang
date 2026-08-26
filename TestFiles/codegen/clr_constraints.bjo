@@ -33,3 +33,34 @@
 ;; matches; what stands in for it is `add-them` above having two parameters
 ;; rather than three, since an emitted interface is only ever reached through a
 ;; dictionary that would be the third.
+
+;; ---------------------------------------------------------------------------
+;; Members
+;; ---------------------------------------------------------------------------
+
+(def/trait (Arith %a)
+  (#:clr-constraint (System.Numerics.INumber %a))
+  (: bare (-> %a %a) #:clr-member Abs))
+
+(def/trait (Order %a)
+  (#:clr-constraint (System.IComparable %a))
+  (: rel (-> %a %a int) #:clr-member CompareTo))
+
+;; A static member is called on the implementor: the type at a concrete one,
+;; the type *parameter* under a constraint. One rule, two spellings.
+;; EXPECT-CS: return int\.Abs\(-5\);
+(: at-a-type (-> int))
+(defun (at-a-type) (bare -5))
+
+;; EXPECT-CS: return T_a\.Abs\(x\);
+(: at-a-variable (-> %a %a) (where (Arith %a)))
+(defun (at-a-variable x) (bare x))
+
+;; An instance member takes its receiver from the first argument, so it is a
+;; call *on* the value rather than on the type.
+;; EXPECT-CS: return a\.CompareTo\(b\);
+(: compare-them (-> %a %a int) (where (Order %a)))
+(defun (compare-them a b) (rel a b))
+
+;; And `string` reaches it, which no System.Numerics constraint would allow.
+;; EXPECT-CS: where T_a : System.IComparable<T_a>

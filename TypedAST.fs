@@ -499,6 +499,15 @@ and TExprNode =
     | TNewObject of string * TypedExpr list * DotNetConstructorMetadata option
     /// A static method imported by `import/extern`, as declaring type and name.
     | TForeignStaticCall of string * string * TypedExpr list * DotNetMethodMetadata option
+    /// A static member of the .NET interface a `#:clr-constraint` trait stands
+    /// for, called on the implementor *type*: `int.Abs(x)`, `T_a.Abs(x)`.
+    ///
+    /// The declaring type is an `HMType` rather than the string
+    /// `TForeignStaticCall` carries, and that is the whole point: it is a type
+    /// parameter as often as it is a type, and only `Codegen` knows how to
+    /// spell either. One rule covers both, which is why such a trait needs no
+    /// dictionary and no landing pad.
+    | TClrStaticCall of HMType * string * TypedExpr list
     /// A static field or property read, as `Class.Member` — how an enum value
     /// such as `FileMode.Open` is written.
     | TForeignStaticGet of string * string * HMType
@@ -730,7 +739,21 @@ type ClrConstraintInfo =
       /// variables. Kept rather than assumed to be `[implementor]`, because
       /// `IAdditionOperators` takes three and `IComparisonOperators`' last one
       /// is `bool` — not every argument is the implementor.
-      Args: HMType list }
+      Args: HMType list
+      /// Trait method name -> the interface member it dispatches to.
+      ///
+      /// Whether the member is static is *reflected* at the declaration rather
+      /// than written: it is a fact the metadata already holds, so asking the
+      /// source to restate it only creates a way to be wrong.
+      Members: Map<string, ClrMemberBinding> }
+
+/// What a trait method of a CLR-constraint trait compiles to.
+and ClrMemberBinding =
+    { MemberName: string
+      /// `T.Abs(x)` against `x.CompareTo(y)`. The generic-math members are
+      /// static abstract; `IComparable`'s one is an ordinary instance method,
+      /// and takes its receiver from the method's first argument.
+      IsStatic: bool }
 
 // Metadata resolution callbacks
 type TraitInfo =

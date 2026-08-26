@@ -633,6 +633,22 @@ let private tryResolveWanted (env: Env) (w: Wanted) : bool =
 
     let registry = env.Registry
 
+    // A trait that stands for a .NET interface is never resolved to an
+    // implementation, and the lookup below is not merely pointless for it but
+    // wrong: `ImplTargets` is keyed by trait *name*, so a local `Num` would
+    // otherwise pick up the impls of an imported trait that happens to share
+    // the name, and dispatch to a class that knows nothing about it.
+    //
+    // Left unresolved on purpose. `TraitInline` passes an unresolved call
+    // through untouched and `Lowering` turns it into the member call, which is
+    // the same emission at a concrete implementor as at a generic one — so
+    // there is nothing here for resolution to decide.
+    if (match Map.tryFind w.Trait registry.Traits with
+        | Some info -> info.ClrConstraint.IsSome
+        | None -> false) then
+        false
+    else
+
     let ctorOpt =
         w.HoleArgs
         |> List.tryPick (fun (m, _) ->
@@ -4377,7 +4393,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
         // where the name was written. See `Docs/Constraints.org`.
         let clrConstraint =
             clrSpec
-            |> Option.map (fun (ifaceName, argExprs) ->
+            |> Option.map (fun (ifaceName, argExprs, memberSpecs) ->
                 let args = argExprs |> List.map (resolveTypeAnnotation env.Registry)
 
                 if holeArity > 0 then
@@ -4387,16 +4403,6 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                 if not assocTypes.IsEmpty then
                     failwithf
                         $"Type Error at %s{Lexer.formatPos r}: trait '%s{traitName}' stands for a .NET interface and cannot declare associated types. There is no implementation to bind one in — the interface is the implementation."
-
-                // Deferred rather than absent: a method needs `#:clr-member` to
-                // say which member of the interface it is, and the emitter for
-                // that is not written. Accepting one silently would produce a
-                // trait whose methods no impl and no interface supplies.
-                if not signatures.IsEmpty then
-                    let names = signatures |> List.map fst |> String.concat ", "
-
-                    failwithf
-                        $"Type Error at %s{Lexer.formatPos r}: trait '%s{traitName}' stands for a .NET interface, so its methods (%s{names}) would have to name the interface members they dispatch to — and `#:clr-member` is not implemented yet. A constraint with no methods already licenses the operators at a type variable."
 
                 if not defaults.IsEmpty then
                     failwithf
@@ -4411,14 +4417,55 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                     failwithf
                         $"Type Error at %s{Lexer.formatPos r}: trait '%s{traitName}' stands for '%s{ifaceName}' but never applies it to %%%s{implementorVar}, so a constraint on it would say nothing about the implementor. Write (#:clr-constraint (%s{ifaceName} %%%s{implementorVar}))."
 
-                match DotNetInterop.tryResolveGenericInterface ifaceName args.Length with
-                | Some _ -> { InterfaceName = ifaceName; Args = args }
-                | None ->
-                    let applied =
-                        if args.IsEmpty then ifaceName else $"%s{ifaceName} at %d{args.Length} type argument(s)"
+                let iface =
+                    match DotNetInterop.tryResolveGenericInterface ifaceName args.Length with
+                    | Some t -> t
+                    | None ->
+                        let applied =
+                            if args.IsEmpty then ifaceName else $"%s{ifaceName} at %d{args.Length} type argument(s)"
 
-                    failwithf
-                        $"Interop Error at %s{Lexer.formatPos r}: trait '%s{traitName}' stands for '%s{applied}', which is not a .NET interface this compiler can find. Names must be fully qualified, as in System.Numerics.INumber, and the number of arguments has to be the number the interface declares.")
+                        failwithf
+                            $"Interop Error at %s{Lexer.formatPos r}: trait '%s{traitName}' stands for '%s{applied}', which is not a .NET interface this compiler can find. Names must be fully qualified, as in System.Numerics.INumber, and the number of arguments has to be the number the interface declares."
+
+                // Every method must say which member it is. There is no
+                // implementation to fall back on and no default body to inherit,
+                // so a method without one names nothing at all.
+                let memberMap = Map.ofList memberSpecs
+
+                for (mName, _) in signatures do
+                    if not (Map.containsKey mName memberMap) then
+                        failwithf
+                            $"Type Error at %s{Lexer.formatPos r}: '%s{mName}' is a method of '%s{traitName}', which stands for the .NET interface '%s{ifaceName}', so it has to say which member of it to call. Write (: %s{mName} ... #:clr-member SomeMember)."
+
+                let declared = signatures |> List.map fst |> Set.ofList
+
+                for (mName, _) in memberSpecs do
+                    if not (Set.contains mName declared) then
+                        failwithf
+                            $"Type Error at %s{Lexer.formatPos r}: trait '%s{traitName}' binds a #:clr-member for '%s{mName}', which it does not declare. Add (: %s{mName} ...) to the trait, or remove the binding."
+
+                // Resolved against the interface here, where the diagnostic can
+                // point at the declaration. Whether the member is static is
+                // read rather than written: the metadata already knows.
+                let members =
+                    memberSpecs
+                    |> List.map (fun (mName, memberName) ->
+                        match DotNetInterop.tryFindInterfaceMember iface memberName with
+                        | Some kind ->
+                            mName,
+                            { MemberName = memberName
+                              IsStatic = (kind = DotNetInterop.StaticMember) }
+                        | None ->
+                            let available =
+                                DotNetInterop.interfaceMemberNames iface |> String.concat ", "
+
+                            failwithf
+                                $"Interop Error at %s{Lexer.formatPos r}: '%s{ifaceName}' has no member '%s{memberName}', named by '%s{mName}' in trait '%s{traitName}'. It offers: %s{available}.")
+                    |> Map.ofList
+
+                { InterfaceName = ifaceName
+                  Args = args
+                  Members = members })
 
         let hmSignatures =
             match kind with

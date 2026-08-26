@@ -386,7 +386,18 @@ let metadata
                     | TypedAST.InterfaceTrait ->
                         info.Signatures
                         |> Map.toList
-                        |> List.map (fun (mName, mType) -> $"(: %s{mName} %s{Codegen.serializeHMType mType})")
+                        |> List.map (fun (mName, mType) ->
+                            // A method of a CLR-constraint trait is nothing but
+                            // the member it names, so the binding has to travel
+                            // with the signature or the importing module has a
+                            // method it cannot emit.
+                            let clrMember =
+                                info.ClrConstraint
+                                |> Option.bind (fun clr -> Map.tryFind mName clr.Members)
+                                |> Option.map (fun b -> $" #:clr-member %s{b.MemberName}")
+                                |> Option.defaultValue ""
+
+                            $"(: %s{mName} %s{Codegen.serializeHMType mType}%s{clrMember})")
 
                 // Default bodies travel with the trait, so that an
                 // importing module can write an implementation of it and

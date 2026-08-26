@@ -270,6 +270,45 @@ module DictionaryLowering =
             let loweredArgs = args |> List.map recurse
             let loweredKwArgs = kwArgs |> List.map (fun (n, e) -> n, recurse e)
 
+            match clrConstraintOf env tref.Trait with
+            // A method of a trait that stands for a .NET interface. There is no
+            // implementation to dispatch to and no dictionary to dispatch
+            // through: the member is named on the implementor, whether that is
+            // a type or a type parameter.
+            | Some clr ->
+                let hole =
+                    match tref.Holes with
+                    | h :: _ -> prune env.Registry h
+                    | [] ->
+                        failwithf
+                            $"Trait method '%s{tref.Method}' has no implementor to dispatch on at %s{Lexer.formatPos expr.Range}"
+
+                checkClrConstraint env clr tref.Trait hole expr.Range $"to call '%s{tref.Method}'"
+
+                let binding =
+                    match Map.tryFind tref.Method clr.Members with
+                    | Some b -> b
+                    | None ->
+                        failwithf
+                            $"Internal error: '%s{tref.Method}' is a method of '%s{tref.Trait}' with no #:clr-member at %s{Lexer.formatPos expr.Range}"
+
+                let node =
+                    if binding.IsStatic then
+                        TClrStaticCall(hole, binding.MemberName, loweredArgs)
+                    else
+                        // An instance member takes its receiver from the first
+                        // argument, which is what a method over the implementor
+                        // has as its first parameter anyway.
+                        match loweredArgs with
+                        | receiver :: rest -> TDotMethodCall(receiver, binding.MemberName, rest, None)
+                        | [] ->
+                            failwithf
+                                $"Type Error at %s{Lexer.formatPos expr.Range}: '%s{tref.Method}' is the instance member '%s{binding.MemberName}' of '%s{clr.InterfaceName}', so it needs a receiver — it must take at least one argument."
+
+                { expr with Node = node }
+
+            | None ->
+
             let node =
                 match tref.Resolved with
                 | Some(ctor, tyArgs) when isConditional env tref.Trait ctor ->

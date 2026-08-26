@@ -107,6 +107,7 @@ let mapChildren (f: TypedExpr -> TypedExpr) (expr: TypedExpr) : TypedExpr =
         | TDotPropertySet(target, name, value) -> TDotPropertySet(f target, name, f value)
         | TNewObject(clrName, args, meta) -> TNewObject(clrName, List.map f args, meta)
         | TForeignStaticCall(clrType, name, args, meta) -> TForeignStaticCall(clrType, name, List.map f args, meta)
+        | TClrStaticCall(implType, name, args) -> TClrStaticCall(implType, name, List.map f args)
         | TForeignStaticSet(clrType, name, value) -> TForeignStaticSet(clrType, name, f value)
         | TForeignStaticGet _ as leaf -> leaf
 

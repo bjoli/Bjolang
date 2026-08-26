@@ -13,9 +13,36 @@
 (import "138_lib.bjo")
 
 ;; Declared here as well as in the library, under a different name, because the
-;; two are separate registrations: this one is local, `Num` arrives as metadata.
+;; two are separate registrations: this one is local, `Numeric` arrives as
+;; metadata.
+;;
+;; The name is not `Num`: `std/maths` declares one and the prelude re-exports
+;; it, and a trait registry is keyed by name. A local trait of the same name
+;; would be reached through the imported one's implementations.
 (def/trait (Arith %a)
-  (#:clr-constraint (System.Numerics.INumber %a)))
+  (#:clr-constraint (System.Numerics.INumber %a))
+  ;; Static members, called on the implementor *type*: `int.Abs(x)` concretely
+  ;; and `T_a.Abs(x)` under the constraint, which is one emission rule.
+  (: bare  (-> %a %a)        #:clr-member Abs)
+  (: which (-> %a int)       #:clr-member Sign)
+  (: pin   (-> %a %a %a %a)  #:clr-member Clamp)
+  (: even  (-> %a bool)      #:clr-member IsEvenInteger))
+
+;; An instance member. `IComparable` has no operators, so this is what lets a
+;; generic function order values — including `string`, which is in no
+;; `System.Numerics` interface at all and could not be ordered before.
+;;
+;; Not called `Order`: the library below exports one, and a trait registry is
+;; keyed by name, so two of a name silently become one.
+(def/trait (Cmp %a)
+  (#:clr-constraint (System.IComparable %a))
+  (: rel (-> %a %a int) #:clr-member CompareTo))
+
+(: larger (-> %a %a %a) (where (Cmp %a)))
+(defun (larger a b) (if (> (rel a b) 0) a b))
+
+(: size-of (-> %a %a) (where (Arith %a)))
+(defun (size-of x) (bare x))
 
 (: twice (-> %a %a) (where (Arith %a)))
 (defun (twice x) (+ x x))
@@ -69,8 +96,30 @@
 
   (expect "discharged at a concrete type" (concrete) 27)
 
+  ;; Static members, at a concrete type and under a constraint.
+  (expect "static member at int" (bare -5) 5)
+  (expect "static member at double" (double->string (bare -2.5)) "2.5")
+  (expect "static member, generic" (size-of -7) 7)
+  (expect "static member, generic at long" (long->string (size-of -7L)) "7")
+  (expect "a member returning int" (which -42) -1)
+  (expect "a four-argument member" (pin 99 3 9) 9)
+  (expect "a member returning bool" (even 4) #t)
+  ;; `IsEvenInteger` is right at double, which the hand-written `even?` in
+  ;; `std/maths` is not — it answers #f for every double.
+  (expect "even at double" (even 2.0) #t)
+
+  ;; An instance member: a call on the receiver rather than on the type.
+  ;; `string` reaches this and no `System.Numerics` constraint.
+  (expect "instance member at int" (rel 3 7) -1)
+  (expect "ordering ints" (larger 3 7) 7)
+  (expect "ordering strings" (larger "apple" "quince") "quince")
+  (expect "ordering strings the other way" (larger "quince" "apple") "quince")
+
   ;; The same, through a trait and a constrained function that live in another
   ;; assembly.
   (expect "across a dll" (scaled 6 7) 42)
   (expect "across a dll at double" (double->string (scaled 1.5 2.0)) "3")
+  ;; And a *method* whose `#:clr-member` binding crossed with it.
+  (expect "imported static member" (magnitude -8) 8)
+  (expect "imported instance member" (rank "a" "b") -1)
   0)
