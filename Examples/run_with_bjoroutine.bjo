@@ -4,8 +4,11 @@
 ;; "bomb".
 ;;
 ;; my-rot13 runs in a background thread and interacts with the pipe in the same way
-;; a program would in the same pipe position. 
-
+;; a program would in the same pipe position.
+;;
+;; This prints
+;; DANGER!
+;; ;; this function is THE BOMB!
 
 (import (std run))
 
@@ -15,7 +18,7 @@
   (defun (doit ch change)
     (-> (char->integer ch)
         (+ & change)
-        (integer->char &)))
+        integer->char))
   (cond
    ((and (char-ci<=? #\a ch) (char-ci>=? #\m ch))
     (doit ch 13))
@@ -36,12 +39,12 @@
 
 (defun (main args)
   ;; run/strings returns a Result of (Ok [string strings ...])
-  (match   (run/strings '(pipe (cat "Examples/run_with_bjoroutine.bjo")
+  (match   (run/string '(pipe (cat "Examples/run_with_bjoroutine.bjo")
                                ,my-rot13
                                (grep "-i" "bomb")))
     ((Err e) (println "Command failed with ${e}"))
     ;; An empty result. 
-    ((Ok [])
+    ((Ok "")
      (println "Everything is safe"))
     ((Ok r)
      (println "DANGER!")

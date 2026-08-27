@@ -489,53 +489,7 @@ returned within thirty days.
 
 And any declared (Vec block), also a def, gets this treatment, so any function that needs formatted strings can use this.
 
-The same machinery gives (std run) its shell notation. A form is one thing to run, spelled as a list of words whose first word says what it is: a program, or one of the tags pipe, from-file, into-file, append-to-file, errors-into-file and errors-append-to-file. Stages can be procedures of your own:
-
-#+begin_src scheme
-(import (std run))
-
-;; A Filter is a bjoroutine that takes an input port, an output port and returns unit
-;; It can be used in the run pipeline
-(: shout Filter)
-(defbjo (shout in out)
-  (write-string out (string-upcase (read-all in)))
-  unit)
-
-;; An ordinary defun. Waiting for a program blocks rather than suspends, the way
-;; read-all on a file port does, so shelling out does not turn its callers into
-;; bjoroutines. From inside one, go through (blocking ...).
-(defun (main args)
-  ;; A single command is a single form - no wrapper.
-  (match (run/string '(uname -r))
-    ((Ok s) (display s))
-    ((Err e) (displayln "no")))
-
-  ;; Symbols, strings, ints and doubles are all words, so -n and 2 need no
-  ;; quoting. A pipeline has to say pipe: a list of stages is never guessed at.
-  ;; a filter can be used anywhere in the pipeline.
-  (match (run/string '(pipe (cat "/etc/passwd") (grep "root") ,shout (head -n 2)))
-    ((Ok s) (display s))
-    ((Err e) (displayln "no")))
-
-  ;; Redirection nests around whatever it applies to, and a program taking no
-  ;; arguments is just its name.
-  (match (run/status '(into-file "roots.txt"
-                        (from-file "/etc/passwd"
-                                   (pipe (grep "root") sort))))
-    ((Ok code) (displayln "written"))
-    ((Err e) (displayln "no")))
-
-  ;; ,(cmd ...) for when the program name is computed rather than spelled, and
-  ;; [...] to splice a computed argv.
-  (def tool (list-head args))
-  (match (run/strings '(pipe (git ["log" "--oneline"]) ,(cmd tool "-l")))
-    ((Ok lines) (displayln (string-join lines "|")))
-    ((Err e) (displayln "no")))
-  0)
-#+end_src
-
-An error in the argument is going to be discovered at RUNTIME. The run DSL has no type safety in that regard.
-
+The same machinery gives (std run) its shell notation, have a look at [[file:Examples/run_with_bjoroutine.bjo]] which finds insidious plans!
 
 * Things to fix/TODO
 
