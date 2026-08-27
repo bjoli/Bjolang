@@ -254,6 +254,22 @@ let private unshadow (name: string) (env: Env) : Env =
     match Map.tryFind name env.Resolved with
     | Some binding when Map.tryFind name env.Bindings <> Some binding ->
         { env with Bindings = Map.add name binding env.Bindings }
+
+    // Nothing at module level had this name, and yet something in scope does.
+    // The name is a *spelling* then — a union case's, filed against the key that
+    // holds the binding — so taking the local out of the way is what restores
+    // the module-level meaning: `resolveAliasedHead` compares what is bound
+    // against module level, and with the local gone the two agree again.
+    | _ when
+        Map.tryFind name env.Bindings <> Map.tryFind name env.Resolved
+        && originalName env.Registry name <> name
+        ->
+        { env with
+            Bindings =
+                match Map.tryFind name env.Resolved with
+                | Some binding -> Map.add name binding env.Bindings
+                | None -> Map.remove name env.Bindings }
+
     | _ -> env
 
 let private withoutSeqElement (env: Env) : Env =
@@ -1612,7 +1628,7 @@ let private localFunShape (env: Env) (args: DefunArg list) (retAnn: FType option
 /// exception that is not a diagnostic is never caught here and keeps its trace.
 let rec infer (env: Env) (expr: Expr) : HMType * TypedExpr =
     try
-        inferNode env (resolveAliasedHead env.Registry expr)
+        inferNode env (resolveAliasedHead env expr)
     with ex when Diagnostics.needsLocation ex ->
         raise (Diagnostics.withLocation (exprRange expr) ex)
 
@@ -1622,13 +1638,36 @@ let rec infer (env: Env) (expr: Expr) : HMType * TypedExpr =
 /// Once, here, rather than at each of the guards in `inferNode`: that function
 /// dispatches on `EIdent` and on `EApp(EIdent ...)` in a dozen places, and a
 /// spelling is not meant to be visible to any of them.
-and private resolveAliasedHead (registry: TraitRegistry) (expr: Expr) : Expr =
+///
+/// A *binding* of that name is not a spelling of anything, and wins. Without
+/// this the rewrite ran before scope was consulted, so a lowercase union case
+/// beat every binder: `(let ((counting 7)) (int->string counting))` reported
+/// `int` against `(prelude/Counting ?a)` — the reference had already become the
+/// constructor's key, and the local was never asked about. That made `mapping`,
+/// `counting`, `folding` and their four siblings unusable as variable names
+/// anywhere in a program that imports the prelude, which is every program.
+///
+/// The test is `Bindings` rather than a kind, because that is what a spelling
+/// resolves *past*. A constructor's key is what holds the binding, so a bare
+/// name is in `Bindings` only when something else put it there.
+and private resolveAliasedHead (env: Env) (expr: Expr) : Expr =
+    let resolve (name: string) =
+        // A binder inside this declaration wins; a name that still means what it
+        // meant at module level does not. The comparison is against `Resolved`
+        // rather than a mere `containsKey` because a declaration's own name can
+        // be bound under its bare spelling too, and that binding *is* what the
+        // spelling stands for rather than something in its way.
+        if Map.tryFind name env.Bindings <> Map.tryFind name env.Resolved then
+            name
+        else
+            originalName env.Registry name
+
     match expr with
     | EIdent(name, r) ->
-        let original = originalName registry name
+        let original = resolve name
         if original = name then expr else EIdent(original, r)
     | EApp(EIdent(name, ir), args, r) ->
-        let original = originalName registry name
+        let original = resolve name
         if original = name then expr else EApp(EIdent(original, ir), args, r)
     | _ -> expr
 

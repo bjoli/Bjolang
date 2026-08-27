@@ -21,13 +21,17 @@
 (defun (same? a b) (= a b))
 
 (defun (main)
-  ;; `folding` is a union constructor, not a trait method, and is written by
-  ;; both the `:acc` desugaring and `:final`.
+  ;; `folding` is a union constructor rather than a trait method, and `:final`
+  ;; writes one: a comprehension remembers that it should stop by folding over a
+  ;; seed of `#f`. So the shadow goes round the comprehension and not round the
+  ;; `(:acc ...)` below it — that `folding` is written by hand, and a local of
+  ;; the same name captures it like any other reference, which is what
+  ;; `149_shadowed_constructors.bjo` is about.
+  (expect "an accumulator"
+          (loop (:for x (list 1 2 3)) (:acc s (folding 0 (+ s x))) => s)
+          6)
   (let ((folding 5))
-    (expect "an accumulator"
-            (loop (:for x (list 1 2 3)) (:acc s (folding 0 (+ s x))) => s)
-            6)
-    (expect "and a comprehension with :final"
+    (expect "a comprehension with :final"
             {counting a (:for a (range 0 100)) (:final (>= a 3))}
             4))
 

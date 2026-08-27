@@ -1,0 +1,76 @@
+;; A union case constructor is a name, and a binder may bind over it.
+;;
+;; It could not, and the reason had nothing to do with scope. A declared type's
+;; identity is its module plus its name, so `counting` is a *spelling* of the key
+;; `prelude__counting`, filed in the same table an import modifier's renames go
+;; in — and the rewrite that resolves a spelling ran on every expression before
+;; the environment was consulted at all. A reference had already become the
+;; constructor by the time anything asked what was in scope, so
+;;
+;;     (let ((counting 7)) (int->string counting))
+;;
+;; reported `int` against `(prelude/Counting ?a)`, with no line number and
+;; nothing in it naming the collision. The prelude's lowercase cases are
+;; `listing`, `vecing`, `mapping`, `stringing`, `summing`, `counting` and
+;; `folding`, so those seven words were unusable as variables in every program.
+;;
+;; Uppercase cases were never affected: an uppercase name is not a binder.
+(import (std prelude))
+(import (std simpletest))
+
+;; A union of this file's own, so that the rule is about the declaration rather
+;; than about crossing a module boundary. Both are tested below. Derived, because
+;; `=` is how the constructions below are checked: a *pattern* cannot tell a bare
+;; lowercase case from a binder — `(match s (blob "a") ...)` binds `s` to `blob`
+;; and answers "a" for every shape — which is a separate wart, in `Todo.org`.
+(type/derive (Eq) (: Shape (Union blob (dot int) Big)))
+
+;; --- the four binder forms ------------------------------------------------
+
+;; A parameter.
+(: through-a-parameter (-> int int))
+(defun (through-a-parameter counting) (+ counting 1))
+
+;; A parameter over a case of this file's own union, and one that takes a
+;; payload — its constructor is a function rather than a constant, which is a
+;; different binding shape.
+(: over-a-data-case (-> string string))
+(defun (over-a-data-case dot) (string-append dot "!"))
+
+(defun (main)
+  (expect "a parameter" (through-a-parameter 41) 42)
+  (expect "a parameter over a data case" (over-a-data-case "x") "x!")
+
+  ;; A `let`.
+  (expect "a let binding" (let ((mapping 7)) (+ mapping 1)) 8)
+
+  ;; A lambda parameter.
+  (expect "a lambda parameter" ((fun (summing) (* summing 2)) 21) 42)
+
+  ;; A body-level `def`, which is the fourth form and becomes a `let` of its own.
+  (expect "a local def"
+          (let ()
+            (def folding "not the constructor")
+            folding)
+          "not the constructor")
+
+  ;; A case of this file's own union, bound over locally.
+  (expect "a local union's case" (let ((blob 3)) (+ blob 4)) 7)
+
+  ;; --- and the constructor, where nothing binds over it --------------------
+  ;;
+  ;; The spelling still resolves: it is only a *binding* that stops it, which is
+  ;; what makes this a scoping rule rather than the removal of one.
+  (expect "a nullary case still constructs" (= blob blob) #t)
+  (expect "a case with a payload still constructs" (= (dot 9) (dot 9)) #t)
+  (expect "and carries it" (= (dot 9) (dot 8)) #f)
+  (expect "cases stay distinct" (= blob (dot 9)) #f)
+  (expect "an uppercase case is untouched" (= Big Big) #t)
+  (expect "and is not the lowercase one" (= Big blob) #f)
+
+  ;; The prelude's own, which is what a comprehension is built out of. If the
+  ;; spelling had stopped resolving, this would not accumulate.
+  (expect "an imported constructor still constructs"
+          (list-length (loop (:for x (list 1 2 3)) (:acc o (listing x)) => o))
+          3)
+  0)

@@ -201,3 +201,30 @@ another, which the ~EApp(EIdent ...)~ case is not shaped for: it is one branch
 covering trait dispatch, extern resolution and keyword arguments. Renaming the
 shadow apart in the arguments instead does not work either — the binder keeps
 its spelling into the emitted C#, so only one end of the rename would move.
+
+* A lowercase union case cannot be matched by name
+
+Found while letting a binder shadow a union case constructor, and separate from
+it: in *expression* position the two are now told apart by scope, but a pattern
+has no such thing to consult.
+
+#+BEGIN_SRC scheme
+(type (: Shape (Union blob (dot int) Big)))
+
+(match s
+  (blob "a")     ;; binds `s` to `blob` and answers "a" for every shape
+  ((dot _) "b")
+  (Big "c"))
+#+END_SRC
+
+~parsePattern~ reads a bare lowercase symbol as a binder, before any registry
+exists to say otherwise — which is right for the overwhelmingly common case and
+leaves no way to *test* for a nullary lowercase case. A case with a payload is
+fine: ~(dot _)~ is a list, so it reads as a constructor. An uppercase case is
+fine for the same reason the binder rule is safe.
+
+Two ways out. Resolve the pattern's constructors after parsing, where the
+registry is known — which is where the expression side resolves and would make
+the two agree. Or refuse a lowercase nullary case at the ~type~ declaration,
+which is smaller and would cost the prelude nothing: its lowercase cases all
+carry payloads.
