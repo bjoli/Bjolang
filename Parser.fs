@@ -1533,7 +1533,17 @@ let rec private renamePattern (subst: Map<string, string>) (pat: Pattern) : Patt
 /// substitution that must *not* freshen: `bind` then drops the name from the
 /// substitution instead of adding to it, so a binder shadows an outer name
 /// exactly as it does at runtime.
-let private renameWith (renameBinder: string -> string) (rootSubst: Map<string, string>) (expr: Expr) : Expr =
+///
+/// A name in `resolved` becomes an `EResolved` where it is *called* rather than
+/// an ordinary reference. Only this traversal knows which occurrences are free,
+/// which is why the choice is made here and not in a pass of its own: a name the
+/// expression binds for itself is not the one being resolved.
+let private renameWith
+    (resolved: Set<string>)
+    (renameBinder: string -> string)
+    (rootSubst: Map<string, string>)
+    (expr: Expr)
+    : Expr =
 
     /// Extends `subst` with a new name for each binder, returning the new names
     /// in the order given.
@@ -1598,6 +1608,8 @@ let private renameWith (renameBinder: string -> string) (rootSubst: Map<string, 
         | EKeyword _ -> e
         | EIdent(n, r) -> EIdent(reference n, r)
         | ETuple(items, r) -> ETuple(List.map sub items, r)
+        | EApp(EIdent(n, ir), args, r) when Set.contains n resolved && Map.containsKey n subst ->
+            EApp(EResolved(subst[n], ir), List.map sub args, r)
         | EApp(target, args, r) -> EApp(sub target, List.map sub args, r)
         | ECast(t, v, r) -> ECast(t, sub v, r)
 
@@ -1685,7 +1697,7 @@ let freshen (roots: string list) (expr: Expr) : Expr * Map<string, string> =
         |> List.map (fun r -> r, Gensym.fresh r)
         |> Map.ofList
 
-    renameWith (fun n -> if isRenamable n then Gensym.fresh n else n) rootSubst expr, rootSubst
+    renameWith Set.empty (fun n -> if isRenamable n then Gensym.fresh n else n) rootSubst expr, rootSubst
 
 /// Rewrites the *free* occurrences of the names in `subst`, leaving binders as
 /// they are.
@@ -1694,7 +1706,16 @@ let freshen (roots: string list) (expr: Expr) : Expr * Map<string, string> =
 /// dropped for the extent of that binder, so this cannot reach inside a scope
 /// where the name means something else.
 let renameFree (subst: Map<string, string>) (expr: Expr) : Expr =
-    if Map.isEmpty subst then expr else renameWith id subst expr
+    if Map.isEmpty subst then expr else renameWith Set.empty id subst expr
+
+/// The same, except that a name in `resolved` becomes an `EResolved` wherever it
+/// is called.
+///
+/// What a macro expansion needs for a trait method its template wrote: the
+/// method has to dispatch as the macro's author meant it, which is not what a
+/// binding of that name at the call site would do.
+let renameFreeResolving (resolved: Set<string>) (subst: Map<string, string>) (expr: Expr) : Expr =
+    if Map.isEmpty subst then expr else renameWith resolved id subst expr
 
 /// Every name `expr` references without binding, given `bound` already in scope.
 let freeNames (bound: Set<string>) (expr: Expr) : Set<string> =
@@ -1905,8 +1926,19 @@ let private isAtomicOperand (e: Expr) : bool =
 /// not `(a < b) < c`. Each middle operand appears in two comparisons, so one
 /// that is not atomic is bound to a temporary first — `(< 0 (next!) 10)` must
 /// call `next!` once, not twice.
-let private desugarNaryOp (op: string) (args: Expr list) (r: Range) : Expr =
-    let binary a b = EApp(EIdent(op, r), [ a; b ], r)
+///
+/// `marked` says the head carried a macro's rename, which the operator table
+/// stripped in order to recognise it. Every operator here is a trait method —
+/// `=` is `Eq`'s, `<` is `Ord`'s, `+` is `Num`'s — so a template that wrote one
+/// meant the method, and the reference resolves where it was written rather than
+/// where the expansion lands. `EResolved` is that spelling; without it a module
+/// that binds `=` for its own purposes silently redefines the arithmetic of
+/// every macro it calls, `type/derive` included. The stripping is why this
+/// cannot be left to `Macro.resolveIntroduced` like an ordinary call head: by
+/// the time it runs, the mark is gone.
+let private desugarNaryOp (marked: bool) (op: string) (args: Expr list) (r: Range) : Expr =
+    let opRef = if marked then EResolved(op, r) else EIdent(op, r)
+    let binary a b = EApp(opRef, [ a; b ], r)
 
     let arityError (wanted: string) =
         failwithf
@@ -1999,7 +2031,11 @@ let rec parseExpr (s: SExpr) : Expr =
     | Ident sym when Map.containsKey (headName sym) operatorArity ->
         let op = headName sym
         let ps = List.init operatorArity[op] (fun _ -> Gensym.fresh "op")
-        EFun(ps, EApp(EIdent(op, r), ps |> List.map (fun p -> EIdent(p, r)), r), Ordinary, r)
+        // The call inside the lambda is in call position like any other, so a
+        // marked operator resolves where the template wrote it. See
+        // `desugarNaryOp`.
+        let opRef = if op <> sym then EResolved(op, r) else EIdent(op, r)
+        EFun(ps, EApp(opRef, ps |> List.map (fun p -> EIdent(p, r)), r), Ordinary, r)
 
     | Ident sym -> EIdent(sym, r)
 
@@ -2705,7 +2741,7 @@ let rec parseExpr (s: SExpr) : Expr =
                                              | SAtom { Token = Keyword _ } -> true
                                              | _ -> false))
                 ->
-                desugarNaryOp op (processArgs args) listRange
+                desugarNaryOp (op <> sym) op (processArgs args) listRange
 
             // A macro, tried last so that a special form always wins. Anything
             // reaching here is either a macro call or an ordinary application,

@@ -53,8 +53,10 @@
 ;; The last form may be *any* `m a` rather than only a `:return`, so that a
 ;; monadic loop can put its recursive call in tail position.
 ;;
-;; `bind` and `pure` are trait methods, so hygiene leaves them meaning whatever
-;; they mean at the call site: a block runs over any `Monad` in scope.
+;; `bind` and `pure` are trait methods, and a trait method a template calls is
+;; resolved to its trait rather than looked up where the expansion lands. So a
+;; block runs over any `Monad` — dispatch is on the type of what is bound — and
+;; a call site that has a `bind` of its own does not intercept it.
 (def/macro (do form inject compare)
   (syntax-match form
     ((_ step ...) (do-block step form))

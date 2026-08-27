@@ -161,3 +161,43 @@ touch and the rebuild that follows. The suite already takes a lock against two
 runs sharing a working tree for that reason, so this wants to be the last phase
 or a script of its own.
 
+
+* Macros and trait methods
+
+Both found while making a trait method in a template mean the trait. Neither is
+reachable from the standard library as it stands, which is why they are written
+here.
+
+** A trait a macro's module imports is not among the ones it resolves
+
+The set is read off the macro module's own ~def/trait~ declarations, at the
+point where its assembly's macros are registered. Every import edge in the
+module graph names a compiled ~.dll~, and a ~.dll~'s node carries its own
+declarations and no dependencies, so nothing further is reachable from there.
+
+So ~time-it~ in ~std/stopwatch~ writes ~(->str ...)~ in its template and gets
+the old behaviour: the bare name, resolved where the expansion lands. Closing it
+means the module's metadata carrying the set, which is where the compiler
+genuinely knows it — inference has the whole registry for the module it is
+compiling.
+
+** A resolved call reads its arguments in the resolved name's scope
+
+~Inference.unshadow~ puts module level's binding for one name back over what is
+in scope, and the ~EApp(EResolved ...)~ case then infers the whole application
+in that environment — arguments included. Its docstring says otherwise.
+
+The visible consequence is that a name written by hand *inside* an argument of a
+compiler-written call means the compiler's binding rather than the caller's:
+
+#+BEGIN_SRC scheme
+(defun (through m bind)
+  (do (:bind x m)
+      (:return (bind x))))     ;; reaches Monad's bind, not the parameter
+#+END_SRC
+
+Fixing it means inferring the callee in one environment and the arguments in
+another, which the ~EApp(EIdent ...)~ case is not shaped for: it is one branch
+covering trait dispatch, extern resolution and keyword arguments. Renaming the
+shadow apart in the arguments instead does not work either — the binder keeps
+its spelling into the emitted C#, so only one end of the rename would move.

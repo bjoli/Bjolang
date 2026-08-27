@@ -32,7 +32,12 @@ open Bjolang.Parser
 ///      `Module_Module::name`, which no local at the call site can shadow.
 ///   3. Anything else has its mark stripped: a prelude binding, a data
 ///      constructor, or — via `Parser.headName` — a special form, which is what
-///      lets a template write `let`, `if` and `->` unchanged.
+///      lets a template write `let`, `if` and `->` unchanged. A *called* trait
+///      method is stripped to an `EResolved` rather than to a bare name, so it
+///      dispatches as the trait it belonged to where the template was written.
+///      A trait method is published as part of its trait rather than as a
+///      binding, so rule 2 has nothing to qualify it to; `EResolved` is the
+///      spelling that stands in for the qualification.
 
 type private Syn = Bjolang.Runtime.Syntax
 type private Origin = Bjolang.Runtime.SyntaxOrigin
@@ -66,6 +71,10 @@ type MacroBinding =
       /// What that module publishes. A template may only name an exported
       /// binding of its own module; anything else has nowhere to resolve to.
       Exports: Set<string>
+      /// The methods of the traits that module *declares*. Rule 3a: a template
+      /// calling one of these meant the method, whatever the call site binds.
+      /// A trait it merely imports is not in here — see `Todo.org`.
+      TraitMethods: Set<string>
       Method: MethodInfo }
 
 let private table = Dictionary<string, MacroBinding>()
@@ -307,7 +316,17 @@ let private resolveIntroduced
                     Some(n, original))
         |> Map.ofSeq
 
-    AlphaRename.renameFree subst e
+    // Rule 3a: of those, the trait methods, which resolve rather than merely
+    // strip. Keyed on the fresh spelling because that is what the expression
+    // still holds — `subst` is what turns it back.
+    let resolved =
+        subst
+        |> Map.toSeq
+        |> Seq.filter (fun (_, original) -> Set.contains original binding.TraitMethods)
+        |> Seq.map fst
+        |> Set.ofSeq
+
+    AlphaRename.renameFreeResolving resolved subst e
 
 // ---------------------------------------------------------------------------
 // Expansion

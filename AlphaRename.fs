@@ -49,6 +49,10 @@ let freshen = Parser.freshen
 /// binders as they are.
 let renameFree = Parser.renameFree
 
+/// The same, except that a chosen set of names becomes an `EResolved` wherever
+/// it is called — a trait method a macro template wrote.
+let renameFreeResolving = Parser.renameFreeResolving
+
 /// Every name an untyped expression references without binding, given `bound`
 /// already in scope.
 ///

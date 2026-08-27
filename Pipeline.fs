@@ -573,7 +573,9 @@ let private installAssemblyResolver () =
 /// `public static` method on the module class, so all that is left is to find
 /// it. `Exports` comes from the same assembly's declarations, because a
 /// template may only name an exported binding of its own module — anything else
-/// has nowhere for rule two to resolve to.
+/// has nowhere for rule two to resolve to. `TraitMethods` comes from the same
+/// place, for the names rule three resolves to the trait rather than merely
+/// stripping.
 ///
 /// `renaming` is the importing edge's: a macro is registered under the name
 /// *this* import makes it visible as, and one the edge filtered out is not
@@ -597,6 +599,19 @@ let private registerMacros
                 | _ -> None)
             |> Set.ofList
 
+        // The names rule three *resolves* rather than merely strips. Read off
+        // the same declarations as `exports`, which is what limits it to the
+        // traits this module declares: every import edge in the graph points at
+        // a `.dll`, and a `.dll`'s node carries its own declarations and no
+        // dependencies, so what a macro's module imported is not reachable from
+        // here. See `Todo.org`.
+        let traitMethods =
+            decls
+            |> List.collect (function
+                | DTrait(_, _, _, _, signatures, _, _, _) -> signatures |> List.map fst
+                | _ -> [])
+            |> Set.ofList
+
         for entry in entries do
             match Map.tryFind entry.Name renaming with
             | None -> ()
@@ -618,6 +633,7 @@ let private registerMacros
                     { Name = visibleName
                       ModuleName = entry.ModuleName
                       Exports = exports
+                      TraitMethods = traitMethods
                       Method = method }
 
         Macro.install ()

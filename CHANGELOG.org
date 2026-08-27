@@ -3,6 +3,36 @@
 
 What each change guarantees, and what it leaves open.
 
+* A trait method in a macro template means the trait
+
+A macro's template that *calls* a trait method now gets the method, whatever the
+module the expansion lands in has bound that name to. Before, the name was
+handed to the call site's scope, so this quietly derived nonsense:
+
+#+BEGIN_SRC scheme
+(defun (= a b) "not equality at all")
+
+(type/derive (Eq Ord)
+  (: Point (Record (: x int) (: y int))))
+#+END_SRC
+
+~type/derive~ compares two ~int~ fields with ~=~, and that ~=~ was whichever one
+was in scope where the derivation landed. It could not arise until a trait method
+name became an ordinary binding; once it could, hygiene had a hole in it exactly
+where hygiene is for.
+
+This is the third of the three renaming rules changing: a trait method has no
+qualified spelling for rule 2 to use, and stripping the mark — rule 3 — was the
+old answer for want of one. The compiler now writes such a reference as a
+*resolved* name, the same node behind the ~->str~ of a string interpolation and
+the ~iterable-next~ of a ~loop~.
+
+What it does not cover: a trait the macro's own module merely *imports* rather
+than declares, and the arguments of such a call, which are read in the resolved
+name's scope as well. Both are in ~Todo.org~. Nothing about calling a macro
+changes, and code that shadows a trait method for its own use goes on meaning its
+own — resolving a template's name is not un-shadowing the name.
+
 * The Iterable and Collector methods are namespaced
 
 *Breaking.* ~start~, ~done?~, ~current~ and ~next~ are ~iterable-start~,

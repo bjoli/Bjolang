@@ -1,0 +1,36 @@
+;; A module that binds over every name `type/derive`'s templates write.
+;;
+;; Nothing here is an `Eq`, an `Ord` or a `Hash` implementation: these are
+;; ordinary functions that happen to be called `=`, `compare` and `eq-hash`,
+;; which since trait method names became ordinary bindings is a thing a module
+;; may do. What lands in the middle of them is a derived implementation the
+;; prelude wrote, and it has to go on meaning the prelude's methods.
+(export shadow-eq shadow-compare shadow-hash Point Ver)
+(import (std prelude))
+
+(: = (-> %a %a string))
+(defun (= a b) "the local =")
+
+(: compare (-> %a %a string))
+(defun (compare a b) "the local compare")
+
+(: eq-hash (-> %a string))
+(defun (eq-hash v) "the local eq-hash")
+
+;; The derivations sit *after* the shadows, so the expansion cannot be read
+;; before them: whatever resolves these names sees the shadows in scope.
+(type/derive (Eq Ord)
+  (: Point (Record (: x int) (: y int))))
+
+(type/derive (Eq Ord)
+  (: Ver (Union Unreleased (Alpha int) (Release int int))))
+
+;; The shadows are live here, which is the other half of the claim.
+(: shadow-eq (-> string))
+(defun (shadow-eq) (= 1 1))
+
+(: shadow-compare (-> string))
+(defun (shadow-compare) (compare 1 2))
+
+(: shadow-hash (-> string))
+(defun (shadow-hash) (eq-hash 1))

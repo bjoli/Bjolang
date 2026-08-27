@@ -1,0 +1,78 @@
+;; A trait method written in a macro template means the trait.
+;;
+;; Hygiene's promise is that a template's own names cannot be captured by the
+;; call site. Rule 3 used to break that promise for trait methods: the mark was
+;; stripped and the bare name handed to whatever scope the expansion landed in,
+;; so a module that bound `=` for its own purposes silently redefined what
+;; `type/derive` derived. The justification was that a trait method has no
+;; qualified spelling for rule 2 to use — which was true until `EResolved`,
+;; the node for a name the compiler wrote.
+;;
+;; Every call below expands to a template written somewhere else, in a scope
+;; that binds the method the template calls.
+(import (std prelude))
+(import (std monad))
+(import (std simpletest))
+(import "inc/derive_shadowed.bjo")
+
+;; ---------------------------------------------------------------------------
+;; A local scope over what `do` calls
+;; ---------------------------------------------------------------------------
+;;
+;; `(do ...)` expands to `bind` and `pure`, which are `Monad`'s. Both are
+;; ordinary names here, so a `let` binds them like any other.
+
+(: doubles (-> (List int) (List int)))
+(defun (doubles xs)
+  (let ((bind (fun (m k) Nil))
+        (pure (fun (x) Nil)))
+    (do (:bind x xs)
+        (:return (* x 2)))))
+
+;; The same over a parameter rather than a `let`, and over the other method.
+;;
+;; `report` is never called. It is a parameter that happens to be named `pure`,
+;; which is all it takes: the `(:return ...)` below expands to a call to one.
+(: through (-> (Option int) (-> int string) (Option int)))
+(defun (through m pure)
+  (do (:bind x m)
+      (:return (* x 7))))
+
+(defun (main)
+  ;; ---- type/derive, expanded where its methods are bound ------------------
+  ;;
+  ;; `Point` and `Ver` are derived inside a module whose `=`, `compare` and
+  ;; `eq-hash` are functions of its own. The implementations arrive here, where
+  ;; nothing is shadowed, and are the ones the shape asks for.
+  (def p (Point (x 1) (y 2)))
+  (expect "a derived record is equal to itself" (= p (Point (x 1) (y 2))) #t)
+  (expect "and unequal where a field differs" (= p (Point (x 1) (y 3))) #f)
+  (expect "a derived record orders on its first field" (< (compare p (Point (x 2) (y 0))) 0) #t)
+  (expect "and on the second where the first ties" (< (compare p (Point (x 1) (y 3))) 0) #t)
+  (expect "equal fields compare equal" (compare p (Point (x 1) (y 2))) 0)
+  (expect "a derived hash agrees with equality"
+          (= (eq-hash p) (eq-hash (Point (x 1) (y 2))))
+          #t)
+
+  ;; A union: the case decides before the payload does.
+  (expect "a derived union case is equal to itself" (= (Alpha 3) (Alpha 3)) #t)
+  (expect "cases order by declaration" (< (compare Unreleased (Alpha 0)) 0) #t)
+  (expect "and a payload decides within one" (< (compare (Release 1 2) (Release 1 3)) 0) #t)
+
+  ;; The shadows really are the module's own bindings, so the assertions above
+  ;; are about a live shadow rather than about one that was never there.
+  (expect "the shadowing module's =" (shadow-eq) "the local =")
+  (expect "its compare" (shadow-compare) "the local compare")
+  (expect "its eq-hash" (shadow-hash) "the local eq-hash")
+
+  ;; ---- do, expanded where bind and pure are bound -------------------------
+  (expect "a do block over a let binding bind" (doubles (list 1 2 3)) (list 2 4 6))
+  (expect "and over a parameter called pure" (through (Some 5) (fun (n) "x")) (Some 35))
+
+  ;; ---- the shadow is still a binding ---------------------------------------
+  ;;
+  ;; Resolving a template's name is not un-shadowing the name: code the
+  ;; programmer wrote goes on meaning what scope says it means.
+  (let ((compare (fun (a b) "the caller's compare")))
+    (expect "written by hand" (compare 1 2) "the caller's compare"))
+  0)

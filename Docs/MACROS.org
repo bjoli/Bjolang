@@ -169,7 +169,9 @@ expansions of the same macro never share one. A renamed identifier is then an
    This is what lets a template call a helper of its own module.
 3. Otherwise the rename is stripped: a prelude binding, a data constructor, or a
    special form. Rule three is what lets a template write ~let~, ~if~ and ~->~
-   unchanged.
+   unchanged. A *called* trait method is the one exception: it is resolved
+   rather than stripped, and goes on meaning the trait it belonged to where the
+   template was written. See below.
 
 Diagnostics report names with renames stripped, so a message names what was
 written rather than a name that appears in no source file.
@@ -286,12 +288,49 @@ clauses; and the *name* of a method inside one, which has to match what the
 *parameters* do not — those are binders, and hygiene is exactly what should
 apply to them.
 
-A trait method written in a template — ~=~, in ~type/derive~'s case — takes rule
-3 and not rule 2, even though the prelude publishes it. Rule 2's set is the
-module's exported *bindings*, and a trait method is published as part of its
-trait rather than as a binding of its own. That is the right answer: there is no
-~prelude_Module.eq~ for a qualified spelling to name, and the method is meant to
-be whatever it means where the expansion lands.
+A trait method written in a template — ~=~, ~compare~ and ~eq-hash~, in
+~type/derive~'s case — takes rule 3 and not rule 2, even though the prelude
+publishes it: rule 2's set is the module's exported *bindings*, and a trait
+method is published as part of its trait rather than as a binding of its own.
+There is no ~prelude_Module.eq~ for a qualified spelling to name.
+
+Rule 3 for one of these is *resolution* rather than mere stripping. The method
+is called where the template wrote it, so it dispatches as the trait the
+template's author could see, and a binding of that name at the call site cannot
+take it over:
+
+#+BEGIN_SRC scheme
+;; In a module of one's own:
+(defun (= a b) "not equality at all")
+
+(type/derive (Eq Ord)
+  (: Point (Record (: x int) (: y int))))
+#+END_SRC
+
+The derived body compares two ~int~ fields with ~=~, and that ~=~ is ~Eq~'s.
+Until trait method names became ordinary bindings this could not arise, because
+nothing could bind one; once it could, stripping the mark handed ~type/derive~'s
+own arithmetic to whatever the using module had decided ~=~ should mean. The
+compiler now writes the reference as a *resolved* name — the same node it uses
+for the ~->str~ behind string interpolation and the ~iterable-next~ behind a
+~loop~ — which resolves at module level and is not a lookup the call site's
+scope can answer.
+
+This is *call position* only, which is where a trait method is dispatched. A
+template that passes one around as a value takes rule 3 as before. Two limits
+worth knowing:
+
+- The methods so resolved are those of the traits the macro's own module
+  *declares*. A trait it merely imports is not among them, because an import
+  edge in the module graph names a compiled ~.dll~ and a ~.dll~ carries its own
+  declarations and not its dependencies'.
+- Inside such a call, the arguments are read in the resolved name's scope as
+  well. Writing ~(do (:bind x m) (:return (bind x)))~ where ~bind~ is a
+  parameter of one's own therefore reaches ~Monad~'s ~bind~ rather than the
+  parameter.
+
+The positions listed above are unaffected: a method's *name* in a ~def/impl~
+clause selects rather than refers, and is stripped as it always was.
 
 Hygiene needs nothing extra. ~counter~ above is written in the template, so it
 is renamed and cannot be captured by — or capture — a ~counter~ at the call
