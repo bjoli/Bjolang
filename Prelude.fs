@@ -879,6 +879,8 @@ let prelude : Env =
       // Filled in by `checkDecl`, from `Bindings`, once per top-level
       // declaration. Empty here because nothing is being checked yet.
       Resolved = Map.empty
+      TraitMethodNames = Set.empty
+      ImplMethod = None
       Registry = emptyRegistry
       FunMetas = Map.ofList [
           // The recorded element type is the declaration's own rigid variable.

@@ -242,6 +242,15 @@ let private withSeqElement (elemType: HMType) (env: Env) : Env =
 /// is the usual case for a union constructor such as `folding`, which reaches
 /// its meaning through the registry, where nothing in scope can interfere.
 let private unshadow (name: string) (env: Env) : Env =
+    // Dispatch comes back with the binding. A trait method that something has
+    // bound over is no longer dispatched on, which is the point of the rule —
+    // but the compiler wrote *this* mention, and it meant the method.
+    let env =
+        if Map.containsKey name env.Registry.TraitMethods then
+            { env with TraitMethodNames = Set.add name env.TraitMethodNames }
+        else
+            env
+
     match Map.tryFind name env.Resolved with
     | Some binding when Map.tryFind name env.Bindings <> Some binding ->
         { env with Bindings = Map.add name binding env.Bindings }
@@ -1958,7 +1967,18 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     // it meant at module level.
     | EApp(EResolved(name, mr), args, r) -> infer (unshadow name env) (EApp(EIdent(name, mr), args, r))
 
-    | EApp(EIdent(methodName, _), args, r) when Map.containsKey methodName env.Registry.TraitMethods ->
+    // A trait method call, unless the name has been bound over.
+    //
+    // This used to dispatch on the name alone, before the environment was
+    // consulted at all, so nothing a program wrote could intercept it: a local
+    // called `next` or a parameter called `compare` was accepted, ignored, and
+    // dead — and the program's own calls to it failed on arity, against the
+    // programmer's line, naming a parameter they never wrote.
+    //
+    // `TraitMethodNames` is what distinguishes the method's own binding from a
+    // binding over it, which `Bindings` cannot: both sit there under one name.
+    // An inline trait's methods are not bound at all, hence the first half.
+    | EApp(EIdent(methodName, _), args, r) when Set.contains methodName env.TraitMethodNames ->
         let traitName = env.Registry.TraitMethods[methodName]
 
         // Every argument is positional, keywords included. A trait method's
@@ -3932,6 +3952,17 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                       IsMutable = false }
                     env
 
+            let bound =
+                // Implementing a method is not shadowing it. `addBinding` drops
+                // the name from `TraitMethodNames`, which is right for a program
+                // that binds over a method and wrong for the `def/impl` that
+                // supplies one: the body of `(defun (= xs ys) ...)` for lists
+                // compares the elements, and that call has to dispatch.
+                if bound.ImplMethod = Some name then
+                    { bound with TraitMethodNames = Set.add name bound.TraitMethodNames }
+                else
+                    bound
+
             { bound with FunMetas = Map.add name funMeta bound.FunMetas }
 
         // Bind mandatory args
@@ -4841,6 +4872,20 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                 let scheme = Scheme(allVars, [], methodTypeWithAssoc)
                 finalEnv <- addBinding kvp.Key { Scheme = scheme; IsMutable = false } finalEnv
 
+        // Last, because `addBinding` above cleared each name as it bound it.
+        // Declaring a trait is the one thing that makes a name mean "dispatch on
+        // the trait", and it is done here rather than beside each binding
+        // because an *inline* trait's methods are never bound at all.
+        //
+        // A name may be a prelude function and a trait method both — `wrap` is,
+        // being a CML combinator and the method of a `Wrapper` declared in a
+        // module of its own. The declaration wins there, which is what
+        // shadowing means.
+        finalEnv <-
+            { finalEnv with
+                TraitMethodNames =
+                    methodNames |> List.fold (fun acc m -> Set.add m acc) finalEnv.TraitMethodNames }
+
         finalEnv, sigs, [ TTrait(traitName, implementorVar, kind, holeArity, assocTypes, hmSignatures, r) ]
     | DTypeRec(typeDefs, r) ->
         let newEnv, keyed = registerTypeDefs true typeDefs env
@@ -5052,7 +5097,11 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                     // This forces DDefun to unify the expected types into the arguments
                     // BEFORE inference and generalization.
                     let methodSigs = Map.add name (instantiatedSig, None, []) Map.empty
-                    
+
+                    // Which method this is, so that the `defun`'s own recursion
+                    // binding is not taken for a shadow of it.
+                    let regEnv = { regEnv with ImplMethod = Some name }
+
                     let _, _, tDecls = checkDecl regEnv methodSigs methodDecl
                     let tDecl = List.head tDecls // The fully verified TDefun node
 

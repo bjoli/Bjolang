@@ -1312,6 +1312,25 @@ type Env =
       /// module's own definitions, and nothing a body binds. That is exactly
       /// the scope a name the compiler wrote was written in.
       Resolved: Map<string, Binding>
+      /// The trait method names whose binding is still the method's own.
+      ///
+      /// A method is bound like anything else, so a program that binds the same
+      /// name overwrites it and there is nothing in `Bindings` to tell the two
+      /// apart. `addBinding` drops the name from here, and only a `def/trait`
+      /// puts one in — so this says "calling this name still means dispatching
+      /// on the trait", which is what a call site has to know.
+      ///
+      /// An *inline* trait's methods are never bound at all and so are never
+      /// listed. Their calls are recognised by the absence of a binding.
+      TraitMethodNames: Set<string>
+      /// The trait method this declaration is the implementation of, if it is
+      /// one.
+      ///
+      /// A `defun` binds its own name so that its body can recurse, and inside
+      /// a `def/impl` that binding would otherwise read as shadowing the very
+      /// method being implemented. It is not: `(defun (= xs ys) ... (= (list-head
+      /// xs) (list-head ys)))` compares the *elements*, and has to dispatch.
+      ImplMethod: string option
       Registry: TraitRegistry
       FunMetas: Map<string, FunMeta>
       /// The module whose declarations are currently being checked.

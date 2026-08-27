@@ -61,7 +61,11 @@ let lookup (env: Env) (name: string) : Binding =
 let addBinding (name: string) (binding: Binding) (env: Env) : Env =
     { env with
         Bindings = Map.add name binding env.Bindings
-        FunMetas = Map.remove name env.FunMetas }
+        FunMetas = Map.remove name env.FunMetas
+        // Whatever this name meant, it now means this. A trait method is bound
+        // like anything else, so binding over one is what shadowing it *is*,
+        // and the call site has to stop dispatching on the trait.
+        TraitMethodNames = Set.remove name env.TraitMethodNames }
 
 let rec prune (registry: TraitRegistry) (t: HMType) : HMType =
     match t with

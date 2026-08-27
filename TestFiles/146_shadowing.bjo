@@ -1,0 +1,67 @@
+;; A trait method name is an ordinary binding, and ordinary scope shadows it.
+;;
+;; It used not to be. A call dispatched on the *name*, before the environment
+;; was consulted at all, so nothing a program wrote could intercept one: a
+;; parameter called `compare` was accepted, ignored and dead, and the program's
+;; own calls to it failed on arity — against the programmer's line, naming a
+;; parameter they never wrote.
+;;
+;; Value position always was lexical, so the two disagreed: `(m a b)` meant the
+;; trait and `(def f m) (f a b)` meant the local, three lines apart. The last
+;; group below is that.
+(import (std prelude))
+(import (std simpletest))
+
+;; A top-level definition over `Ord`'s method. Nothing here is an `Ord`
+;; implementation — this is a function that happens to be called `compare`.
+(: compare (-> int string))
+(defun (compare n) (string-append "mine:" (int->string n)))
+
+;; A parameter named after `Ord`'s predicate, which is what a higher-order
+;; function taking its own comparison wants to call it.
+(: pick (-> (-> int int bool) int int int))
+(defun (pick less? a b) (if (less? a b) a b))
+
+;; A trait of this file's own, to check that implementing a method is not
+;; shadowing it: `join` recurses on the *elements*, through the trait.
+(def/trait (Flatten %a)
+  (: join (-> %a string)))
+
+(def/impl (Flatten string)
+  (defun (join s) s))
+
+(def/impl (Flatten (List %a))
+  (where (Flatten %a))
+  (defun (join xs)
+    (list-foldl (fun (acc x) (string-append acc (join x))) "" xs)))
+
+(defun (main)
+  ;; ---- the four ways of binding over one ----------------------------------
+  (expect "a top-level definition" (compare 7) "mine:7")
+  (expect "a parameter" (pick (fun (a b) (> a b)) 3 9) 9)
+  (expect "a let binding"
+          (let ((->str (fun (n) "shadowed"))) (->str 5))
+          "shadowed")
+  (expect "a lambda parameter"
+          ((fun (=) (= 1 2)) (fun (a b) "from the lambda"))
+          "from the lambda")
+
+  ;; ---- and the trait where nothing binds over it --------------------------
+  (expect "the trait still dispatches" (= 1 1) #t)
+  (expect "and at another type" (->str 42) "42")
+
+  ;; ---- implementing a method is not shadowing it --------------------------
+  ;;
+  ;; `join` for a list calls `join` on its elements. The `defun` binds its own
+  ;; name so a body can recurse, and that binding must not read as a shadow of
+  ;; the method being supplied — the inner call dispatches, and lands on the
+  ;; `string` implementation.
+  (expect "an impl's own method dispatches" (join (list "a" "b" "c")) "abc")
+  (expect "nested" (join (list (list "a") (list "b"))) "ab")
+
+  ;; ---- call position and value position agree -----------------------------
+  (let ((compare (fun (a b) "the local")))
+    (expect "called" (compare 1 2) "the local")
+    (def f compare)
+    (expect "passed" (f 1 2) "the local"))
+  0)
