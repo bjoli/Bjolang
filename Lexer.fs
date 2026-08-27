@@ -50,6 +50,12 @@ module Lexer =
         /// astral character written literally in source arrives as a surrogate
         /// pair and has to be recombined into the one codepoint it stands for.
         | CharLit of int
+        /// `#t` and `#f`.
+        ///
+        /// A token of its own rather than a symbol, because a binder position
+        /// matches a symbol: spelled `Symbol "#t"` a boolean could be bound,
+        /// and `(let ((#t 1)) ...)` was accepted.
+        | BoolLit of bool
         | NumberLit of string
         | Keyword of string
         | Symbol of string
@@ -412,10 +418,28 @@ module Lexer =
                         else
                             failwithf $"Unterminated character literal at %s{formatAt file line col}."
 
-                    | _ -> // Fallback for booleans (#t, #f) or symbols starting with #
+                    // `#` introduces a reader form; it is not a name character.
+                    // What can follow it here is one of the two booleans, or
+                    // `#map`, which the reader consumes together with the
+                    // bracket after it.
+                    //
+                    // Anything else used to be read as a symbol and became an
+                    // ordinary identifier. Bjolang accepted it all the way
+                    // through and C# refused it, because `#` there begins a
+                    // preprocessor directive — so `(def #banana 5)` was a
+                    // CS1040 about a generated file.
+                    | _ ->
                         let nextPos = readSymbol pos
                         let len = nextPos - pos
-                        emit (Symbol(input.Substring(pos, len))) len
+                        let text = input.Substring(pos, len)
+
+                        match text with
+                        | "#t" -> emit (BoolLit true) len
+                        | "#f" -> emit (BoolLit false) len
+                        | "#map" -> emit (Symbol text) len
+                        | _ ->
+                            failwithf
+                                $"Unknown reader syntax '%s{text}' at %s{formatAt file line col}. '#' begins a reader form — #t, #f, #\\c, #:keyword, #'template, #(...), #[...], #map(...) or #\"...\" — and is not part of a name."
                 | '#' -> emit Hash 1
 
                 // Symbols

@@ -154,6 +154,9 @@ let rec private ofSExpr (s: SExpr) : Syn =
         | SAtom { Token = NumberLit n } -> Syn.SInt n
         | SAtom { Token = StringLit str } -> Syn.SStr str
         | SAtom { Token = CharLit c } -> Syn.SChar(Bjolang.Runtime.BjoChar(uint c))
+        // As the symbol it is spelled with: `Syntax` has no boolean node, and
+        // `neverRenamed` below already knows these two names.
+        | SAtom { Token = BoolLit b } -> Syn.SSym(BjolangRuntime.Symbol.Intern(if b then "#t" else "#f"))
         | SAtom { Token = Keyword k } -> Syn.SKey(BjolangRuntime.Keyword.Intern k)
         | SAtom { Token = t } ->
             match Map.tryFind t punctSpelling with
@@ -215,7 +218,14 @@ let rec private toSExpr (memo: Dictionary<string, string>) (callSite: Range) (no
             else
                 name
 
-        atom (Symbol spelled)
+        // Back to the token the reader would have produced. Without this a
+        // boolean that passed through a macro comes back as a symbol, and a
+        // symbol spelled `#t` is not something that reads any more.
+        // `neverRenamed` is what guarantees `spelled` is still the original.
+        match spelled with
+        | "#t" -> atom (BoolLit true)
+        | "#f" -> atom (BoolLit false)
+        | _ -> atom (Symbol spelled)
 
     | :? Syn.SDatum as d -> atom (QuotedSymbol d.Item1.Name)
     | :? Syn.SInt as n -> atom (NumberLit n.Item1)

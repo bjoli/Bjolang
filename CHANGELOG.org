@@ -39,6 +39,28 @@ constant pattern now, ~case true:~.
 a list of ints. A symbol in a quoted list is still a symbol, which is what lets
 ~'(true)~ name the program of that name to ~(std run)~.
 
+** ~#~ introduces a reader form and is not part of a name
+
+The reader used to fall back to reading anything after a ~#~ as a symbol. That
+is where ~#t~ came from, and it did not stop there: ~#banana~ was an ordinary
+identifier, accepted by the whole of Bjolang and refused by C#, where ~#~ begins
+a preprocessor directive. The diagnostic named a generated file and a rule of
+another language.
+
+What may follow ~#~ is now enumerated — ~#t~, ~#f~, ~#\c~, ~#:keyword~,
+~#'template~, ~#(...)~, ~#[...]~, ~#map(...)~ and ~#"..."~ — and anything else is
+refused where it is written.
+
+The two booleans are a token of their own rather than a symbol, and that is what
+makes them unbindable rather than merely undefined: every binder position matches
+a symbol, so there is no shape a boolean fits. ~(let ((#t 1)) ...)~ used to be
+accepted — the binding was made, and nothing could refer to it, a use of ~#t~
+being the literal.
+
+A boolean still crosses into a macro as the symbol it is spelled with, since
+~Syntax~ has no boolean node, and comes back as the token the reader would have
+produced. Nothing a template can write has changed.
+
 * A changed module is rebuilt, however far down it is
 
 Staleness used to be judged against a module's own source closure — the file and

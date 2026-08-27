@@ -578,8 +578,8 @@ let rec parsePattern (s: SExpr) : Pattern =
     // and match everything. That is what it did: a boolean pattern bound a
     // variable called `#t` and reached the code generator, which spelled it
     // into C# as written and produced a preprocessor directive.
-    | SAtom { Token = Symbol "#t" } -> PBool(true, r)
-    | SAtom { Token = Symbol "#f" } -> PBool(false, r)
+    | SAtom { Token = BoolLit true } -> PBool(true, r)
+    | SAtom { Token = BoolLit false } -> PBool(false, r)
     | SAtom { Token = Symbol sym } ->
         if System.Char.IsUpper(sym.[0]) then PConstruct(sym, [], r)
         else PIdent(sym, r)
@@ -1144,6 +1144,11 @@ let desugarSyntaxQuote (parseExprFn: SExpr -> Expr) (template: SExpr) (r: Range)
         | SAtom { Token = CharLit c } -> call "SChar" [ EChar(c, ir) ] ir
         | SAtom { Token = Keyword k } -> call "SKey" [ EKeyword(k, ir) ] ir
         | SAtom { Token = QuotedSymbol sym } -> call "SDatum" [ EQuotedSymbol(sym, ir) ] ir
+        // A boolean crosses into a template as the symbol it is spelled with.
+        // `Syntax` has no boolean node, and `Macro.neverRenamed` already knows
+        // these two names, so the round trip is what it always was — only the
+        // token on either side of it changed.
+        | SAtom { Token = BoolLit b } -> call "SSym" [ EQuotedSymbol((if b then "#t" else "#f"), ir) ] ir
         | SAtom { Token = Symbol sym } -> call "SSym" [ EQuotedSymbol(sym, ir) ] ir
         | SAtom { Token = Comma } ->
             failwithf $"Unexpected , at %s{Lexer.formatPos ir}: nothing to unquote."
@@ -1218,8 +1223,8 @@ let desugarQuotedList (parseExprFn: SExpr -> Expr) (items: SExpr list) (r: Range
         | SAtom { Token = Keyword kw } -> EKeyword(kw, ir)
         // Ahead of the symbol case: `'(#t #f)` is a list of booleans, the way
         // `'(1 2)` is a list of ints.
-        | SAtom { Token = Symbol "#t" } -> EBool(true, ir)
-        | SAtom { Token = Symbol "#f" } -> EBool(false, ir)
+        | SAtom { Token = BoolLit true } -> EBool(true, ir)
+        | SAtom { Token = BoolLit false } -> EBool(false, ir)
         // A symbol in a quoted list is a literal Symbol value, not a variable
         // reference — write ,(expr) to splice the value of a variable.
         | SAtom { Token = Symbol sym } -> EQuotedSymbol(sym, ir)
@@ -1964,8 +1969,8 @@ let rec parseExpr (s: SExpr) : Expr =
     | SAtom { Token = CharLit c } -> EChar(c, r)
     // Ahead of `Ident` below, which used to rewrite these two to the names
     // `true` and `false` and hand them to the environment to resolve.
-    | SAtom { Token = Symbol "#t" } -> EBool(true, r)
-    | SAtom { Token = Symbol "#f" } -> EBool(false, r)
+    | SAtom { Token = BoolLit true } -> EBool(true, r)
+    | SAtom { Token = BoolLit false } -> EBool(false, r)
     | SAtom { Token = QuotedSymbol sym } -> EQuotedSymbol(sym, r)
     | SAtom { Token = Keyword sym } -> EKeyword(sym, r)
 
@@ -2058,6 +2063,15 @@ let rec parseExpr (s: SExpr) : Expr =
                                     | "Tuple" :: restNames -> restNames
                                     | _ -> rawNames
                                 tupleNames, parseExpr v, bindRange, true
+                            // Named rather than left to the generic message: a
+                            // boolean is a literal, so it is not a symbol and
+                            // does not match the binder shapes above — which is
+                            // the whole point, but says nothing on its own.
+                            | SList([ SAtom { Token = BoolLit b }; _ ], bindRange) ->
+                                let spelling = if b then "#t" else "#f"
+
+                                failwithf
+                                    $"Cannot bind %s{spelling} at %s{Lexer.formatPos bindRange}: it is a boolean literal, not a name."
                             | _ -> failwith "Invalid let binding")
 
                     // A repeated name is meaningful under `let*` — the second
