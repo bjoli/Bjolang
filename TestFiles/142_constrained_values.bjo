@@ -1,0 +1,102 @@
+;; A constrained function used as a value.
+;;
+;; Its evidence is a leading parameter, so the method C# sees has an arity the
+;; Bjolang type does not mention: `least` is `(-> %a %a %a)` and arrives taking
+;; three arguments. A mention that is not a call is therefore eta-expanded into
+;; a lambda of the function's own arity, which puts it back into call position —
+;; the one place that already knows how to supply a dictionary.
+;;
+;; What the tests are really asking is where the evidence came from, so each
+;; runs at more than one type: a wrong dictionary is invisible at `int` alone.
+(import (std prelude))
+(import (std simpletest))
+
+(type/derive (Eq Ord) (: Ver (Record (: major int) (: minor int))))
+
+(: v (-> int int Ver))
+(defun (v major minor) (Ver (major major) (minor minor)))
+
+(: show (-> Ver string))
+(defun (show x)
+  (string-append (int->string (record-ref x major))
+                 (string-append "." (int->string (record-ref x minor)))))
+
+;; A constrained function of this program's own, to be passed by name.
+(: pick (-> %a %a %a) (where (Ord %a)))
+(defun (pick a b) (if (less? a b) a b))
+
+;; Two constraints, so the dictionaries have an order to get wrong.
+(: pick-unless-equal (-> %a %a %a) (where (Eq %a) (Ord %a)))
+(defun (pick-unless-equal a b) (if (= a b) a (pick a b)))
+
+;; Returned rather than passed: the dictionary comes from this function's own
+;; parameter, and the lambda that carries it outlives the call that made it.
+(: chooser (-> bool (-> %a %a %a)) (where (Ord %a)))
+(defun (chooser smallest?) (if smallest? least greatest))
+
+;; A higher-order function that is itself constrained, so the value handed in
+;; and the evidence used inside come from two different places.
+(: fold-with (-> (-> %a %a %a) (List %a) %a %a) (where (Ord %a)))
+(defun (fold-with f xs seed)
+  (if (list-empty? xs)
+      seed
+      (fold-with f (list-tail xs) (f seed (list-head xs)))))
+
+;; Mentioning a constrained function from inside a constrained function, where
+;; the mention is at the enclosing function's own type variable rather than at
+;; anything concrete.
+(: smallest-of (-> (List %a) %a %a) (where (Ord %a)))
+(defun (smallest-of xs seed) (fold-with least xs seed))
+
+;; A CLR constraint is a `where` clause on the emitted method rather than a
+;; parameter, so a function constrained only by one already has the arity it
+;; appears to have and must be left alone.
+(: twice (-> %a %a) (where (Num %a)))
+(defun (twice n) (+ n n))
+
+(defun (main)
+  ;; ---- a library function as a fold's operator ----------------------------
+  (expect "least at int" (list-foldl least 7 (list 5 3 9)) 3)
+  (expect "greatest at string" (list-foldl greatest "a" (list "pear" "fig")) "pear")
+  (expect "least at a type of our own"
+          (show (list-foldl least (v 9 9) (list (v 2 1) (v 1 9))))
+          "1.9")
+
+  ;; ---- one of our own -----------------------------------------------------
+  (expect "our own, at int" (list-foldl pick 7 (list 5 3 9)) 3)
+  (expect "our own, at string" (list-foldl pick "zebra" (list "pear" "fig")) "fig")
+  (expect "two constraints" (list-foldl pick-unless-equal 7 (list 5 3 9)) 3)
+
+  ;; ---- returned from a function -------------------------------------------
+  (expect "returned, smallest" ((chooser #t) 3 9) 3)
+  (expect "returned, greatest" ((chooser #f) 3 9) 9)
+  (expect "returned, at string" ((chooser #t) "pear" "fig") "fig")
+
+  ;; ---- through a constrained higher-order function ------------------------
+  (expect "passed in and used inside" (fold-with least (list 5 3 9) 7) 3)
+  (expect "at a string" (fold-with greatest (list "pear" "fig") "a") "pear")
+  (expect "mentioned at an enclosing type variable" (smallest-of (list 5 3 9) 7) 3)
+  (expect "and at our own type" (show (smallest-of (list (v 2 1) (v 1 9)) (v 9 9))) "1.9")
+
+  ;; ---- bound, and held in a container -------------------------------------
+  ;;
+  ;; Annotated because the binding is where the constraint has to be discharged,
+  ;; and `least` alone says nothing about which type it was taken at.
+  (def (: f (-> int int int)) least)
+  (expect "bound to a name" (f 3 9) 3)
+  (expect "held in a list"
+          (list-foldl (fun (acc g) (+ acc (g 3 9))) 0 (list least greatest))
+          12)
+
+  ;; ---- still a call when it is a call -------------------------------------
+  ;;
+  ;; The eta-expansion is for a mention that is not applied; an ordinary call
+  ;; must not become one applied to a fresh lambda.
+  (expect "a call is still a call" (least 3 9) 3)
+  (expect "and a sort still sorts" (list-length (list-sort (list 3 1 2))) 3)
+
+  ;; ---- a CLR constraint carries no dictionary -----------------------------
+  (expect "left alone at int" (list-foldl (fun (acc n) (+ acc (twice n))) 0 (list 1 2)) 6)
+  (expect "passed by name" (list-map twice (list 1 2)) (list 2 4))
+  (expect "and at a double" (double->string (list-foldl (fun (a b) (+ a (twice b))) 0.0 (list 1.5))) "3")
+  0)

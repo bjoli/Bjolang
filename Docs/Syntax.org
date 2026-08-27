@@ -1260,6 +1260,24 @@ sealed class holding a singleton ~Instance~. A call whose receiver type is known
 is spliced straight into the call site; a call on a type variable is dispatched
 through a dictionary parameter the compiler adds to the enclosing function.
 
+*** A constrained function is a value
+A ~(where ...)~ on an ordinary trait is passed as a dictionary — an extra,
+leading parameter on the emitted method. That is an implementation detail, and
+it stays one: a constrained function mentioned without being called is expanded
+into a lambda of its own arity, so it is the function its type says it is.
+#+BEGIN_SRC scheme
+(list-foldl least (list-head xs) (list-tail xs))    ;; least is (-> %a %a %a)
+(defun (chooser smallest?) (if smallest? least greatest))
+#+END_SRC
+
+What the constraint costs is that it has to be discharged somewhere, and a
+mention gives less to go on than a call does. Binding one to a name needs an
+annotation, for the reason ~(list-empty)~ does — there is no argument to read
+the type off:
+#+BEGIN_SRC scheme
+(def (: f (-> int int int)) least)
+#+END_SRC
+
 *** ~#:clr-constraint~ — a trait that *is* a .NET interface
 A trait may name a .NET interface instead of declaring implementations. It then
 has none, and no dictionary: a ~(where ...)~ on it becomes a C# ~where~ clause,

@@ -286,6 +286,26 @@ let rec buildEvidence
         failwithf
             $"Type Error at %s{Lexer.formatPos range}: no implementation of trait '%s{traitName}' for '%s{DotNetInterop.showType other}', needed %s{describe}. That type has no head constructor, so it cannot have one — and a blanket implementation is only reached through a head.%s{within}"
 
+/// Whether naming `name` here means naming a C# method that takes dictionary
+/// parameters — which is what makes such a method not the delegate its Bjolang
+/// type says it is.
+///
+/// A CLR constraint contributes none: it is a `where` clause on the method
+/// rather than a parameter, so a function constrained only by one already has
+/// the arity it appears to have.
+let private takesDictionaries (env: Env) (scope: Scope) (name: string) (tArgs: HMType list) : bool =
+    match scope.SelfCall with
+    // Inside its own body a function is bound monomorphically, so there are no
+    // type arguments to go by and the dictionaries it was handed are the answer.
+    | Some(selfName, dicts) when selfName = name -> not dicts.IsEmpty
+    | _ ->
+        not tArgs.IsEmpty
+        && (match Map.tryFind (unqualify name) env.Bindings with
+            | Some binding ->
+                let (Scheme(_, constraints, _)) = binding.Scheme
+                constraints |> List.exists (fun c -> (clrConstraintOf env c.TraitName).IsNone)
+            | None -> false)
+
 module DictionaryLowering =
 
     let rec lowerExpr (env: Env) (scope: Scope) (expr: TypedExpr) : TypedExpr =
@@ -394,9 +414,18 @@ module DictionaryLowering =
             // The callee may carry trait constraints that require us to pass
             // dictionaries explicitly.
             let node =
+                    // A callee that is a name is lowered as itself. The
+                    // eta-expansion below is for a mention that is *not* a
+                    // call, and recursing into the target would fire it here
+                    // and apply every constrained call to a fresh lambda.
+                    let lowerTarget (t: TypedExpr) =
+                        match t.Node with
+                        | TIdent _ -> t
+                        | _ -> recurse t
+
                     let standardCall () =
                         TApply(
-                            recurse target,
+                            lowerTarget target,
                             args |> List.map recurse,
                             kwArgs |> List.map (fun (n, e) -> n, recurse e)
                         )
@@ -426,7 +455,7 @@ module DictionaryLowering =
                                 : TypedExpr)
 
                         TApply(
-                            recurse target,
+                            lowerTarget target,
                             dictArgs @ (args |> List.map recurse),
                             kwArgs |> List.map (fun (n, e) -> n, recurse e)
                         )
@@ -483,7 +512,7 @@ module DictionaryLowering =
                                             ))
 
                                 TApply(
-                                    recurse target,
+                                    lowerTarget target,
                                     dictArgs @ (args |> List.map recurse),
                                     kwArgs |> List.map (fun (n, e) -> n, recurse e)
                                 )
@@ -493,6 +522,42 @@ module DictionaryLowering =
                     | _ -> standardCall ()
 
             { expr with Node = node }
+
+        // A constrained function named without being called.
+        //
+        // Its dictionaries are leading parameters, so the C# method has an arity
+        // its Bjolang type does not mention: `(-> %a %a %a)` reaches C# taking
+        // three arguments where a fold wants a two-argument delegate. Left
+        // alone that is a CS0123 about a method the programmer did write and a
+        // parameter they never saw.
+        //
+        // Eta-expanding puts the mention back into call position, which the case
+        // above already knows how to supply evidence for — so the lambda is
+        // built and then lowered, rather than lowered and then patched.
+        | TIdent(name, tArgs) when takesDictionaries env scope name tArgs ->
+            match prune env.Registry expr.Type with
+            | TFun(paramTypes, retType, _) ->
+                let argNames = paramTypes |> List.map (fun _ -> Gensym.fresh "__eta")
+
+                let argExprs: TypedExpr list =
+                    List.map2
+                        (fun n t ->
+                            { Type = t
+                              Range = expr.Range
+                              Node = TIdent(n, []) })
+                        argNames
+                        paramTypes
+
+                let call: TypedExpr =
+                    { Type = retType
+                      Range = expr.Range
+                      Node = TApply(expr, argExprs, []) }
+
+                { expr with Node = TLambda(argNames, lowerExpr env scope call) }
+
+            // A constrained binding that is not a function has no parameter list
+            // to hang a dictionary on, so there is nothing to expand into.
+            | _ -> expr
 
         // Everything else recurses structurally.
         | _ -> TypeVisitor.mapChildren recurse expr
