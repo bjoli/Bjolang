@@ -3,6 +3,27 @@
 
 What each change guarantees, and what it leaves open.
 
+* A vector literal is the array it looks like
+
+~[1 2 3]~ used to open an ~RrbBuilder~, ~Add~ each element as a statement of its
+own, and call ~ToImmutable~. It is now one array handed to ~RrbBuilder.FromArray~,
+which chunks straight into leaves — so a literal costs one array and one walk of
+it rather than an ~Add~ per element with the tail overflow check each one carries.
+Up to 32 elements, which is every literal anyone writes by hand, it is the array
+and nothing else: the vector's tail *is* that array, un-copied.
+
+That last part is the only thing worth knowing. ~FromArray~ is asked to reuse the
+array rather than copy it, which is sound here and nowhere else: the array is
+allocated by the literal, reaches no other name, and a ~Vec~ is immutable from
+there on. ~151_vec_literals~ asks the two questions that would catch it being
+wrong — a persistent write through the vector, and two evaluations of one
+literal.
+
+A literal is also an *expression* now rather than a statement, so it no longer
+forces a hoist where it appears. An element that needs statements of its own is
+still hoisted ahead of it, left to right, exactly as an argument to any other
+call is.
+
 * A name means what scope says it means
 
 A trait method's name, and a union case constructor's, are ordinary bindings.

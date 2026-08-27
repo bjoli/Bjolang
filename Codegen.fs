@@ -889,7 +889,6 @@ let rec isStatementShaped (expr: TypedExpr) : bool =
     | TForeignStaticSet _
     | TThrow _
     | TTryFinally _
-    | TVecMake _
     | TLoop _
     | TRecur _
     // A C# iterator is a *method*: the body has to be emitted as one, and this
@@ -1654,6 +1653,25 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
             emit ctx
         append ctx " }"
 
+    // `[1 2 3]`, as the array it already is.
+    //
+    // `FromArray` chunks straight into leaves, so a literal costs one array and
+    // one walk of it rather than an `Add` per element with the tail overflow
+    // check each one carries. Up to 32 elements — every literal anyone writes —
+    // it is the array *and nothing else*: the list's tail is this array.
+    //
+    // Which is why `reuseArrayIfShorterThan32` is safe to ask for here and
+    // nowhere else. The argument is allocated by this expression and reaches no
+    // other name, so the list is the only thing that can ever see it, and a
+    // `Vec` is immutable from there on.
+    | TVecMake items ->
+        let elementTypeStr = elementTypeString expr.Type
+        append ctx $"Collections.RrbBuilder<%s{elementTypeStr}>.FromArray(new %s{elementTypeStr}[] {{ "
+        for i, emit in List.indexed (prepareOperands ctx items) do
+            if i > 0 then append ctx ", "
+            emit ctx
+        append ctx " }, true)"
+
     | TMatch (matchTarget, clauses) ->
         // Reached only when every live arm and guard is expression-shaped.
         let live = liveClauses clauses
@@ -1691,7 +1709,6 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
             $"internal error: call to '{tref.Trait}.{tref.Method}' was never resolved to an implementation"
 
     | TThrow _
-    | TVecMake _
     | TLet _
     | TLetRec _
     | TLetTuple _
@@ -2681,19 +2698,6 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
         // own; it must not try to break or return out of one.
         withIndent ctx (fun c -> generateBlock c Effect cleanup)
         indent ctx; appendLine ctx "}"
-
-    | TVecMake items ->
-        let elementTypeStr = elementTypeString expr.Type
-
-        let builder = freshName "__vec"
-        indent ctx; appendLine ctx $"var %s{builder} = new Collections.RrbBuilder<%s{elementTypeStr}>();"
-        for item in items do
-            emitStatement ctx (fun c ->
-                indent c
-                append c $"%s{builder}.Add("
-                generateExpr c item
-                appendLine c ");")
-        emitTerminal ctx target expr.Type (fun c -> append c $"%s{builder}.ToImmutable()")
 
     | TIf (cond, t, f) ->
         let armTarget =

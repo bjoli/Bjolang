@@ -1,0 +1,30 @@
+;; A vector literal is the array it looks like.
+;;
+;; `[1 2 3]` used to open an `RrbBuilder`, `Add` each element as a statement of
+;; its own, and call `ToImmutable` — which also made the literal statement-shaped,
+;; so it could not appear where an expression was wanted without being hoisted to
+;; a local first. It is now one expression: an array, handed to `FromArray`,
+;; which chunks straight into leaves.
+;;
+;; No behavioural test can see the difference — the vector is the same vector —
+;; which is why the assertion is on the emitted C#.
+(import (std prelude))
+
+;; The whole of it on one line, `Add`-free.
+;; EXPECT-CS: Collections\.RrbBuilder<int>\.FromArray\(new int\[\] \{ 1, 2, 3 \}, true\)
+(: three (-> (Vec int)))
+(defun (three) [1 2 3])
+
+;; Empty is the same shape rather than a special case: `FromArray` answers
+;; `Empty` for a zero-length array.
+;; EXPECT-CS: Collections\.RrbBuilder<string>\.FromArray\(new string\[\] \{  \}, true\)
+(: none (-> (Vec string)))
+(defun (none) [])
+
+;; An element that needs statements of its own is still hoisted ahead of the
+;; literal, exactly as an argument to any other call is. `__hoist` is what
+;; `prepareOperands` names one, and the literal names it rather than inlining a
+;; `let` into an array initializer, which C# has no way to express.
+;; EXPECT-CS: Collections\.RrbBuilder<int>\.FromArray\(new int\[\] \{ __hoist__[0-9]+, [0-9]+ \}, true\)
+(: hoisting (-> (Vec int)))
+(defun (hoisting) [(let ((t 5)) (* t 2)) 7])

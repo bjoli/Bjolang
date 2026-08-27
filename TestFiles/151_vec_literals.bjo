@@ -1,0 +1,81 @@
+;; A vector literal is built from the array it looks like.
+;;
+;; `[1 2 3]` used to open an `RrbBuilder` and `Add` each element; it is now one
+;; array handed to `RrbBuilder.FromArray`, which chunks straight into leaves.
+;; `TestFiles/codegen/vec_literal.bjo` is what pins the shape — a vector is the
+;; same vector either way, so nothing here can see the difference directly.
+;;
+;; What it *can* see is the one thing the new path risks. `FromArray` is asked to
+;; reuse the array as the list's tail rather than copy it, which is only sound
+;; because the array is allocated by the literal and reaches no other name. These
+;; are the ways that could be wrong: a persistent write through the vector, and
+;; two evaluations of one literal.
+(import (std prelude))
+(import (std simpletest))
+
+(defun (main)
+  ;; ---- the array is not shared with anything -------------------------------
+  (def v [1 2 3])
+  (def added (vec-add v 4))
+  (def written (vec-set v 0 99))
+  (def popped (vec-pop v))
+
+  (expect "the literal survives an add" (vec-ref v 0) 1)
+  (expect "and a set" (vec-ref v 0) 1)
+  (expect "with its length" (vec-length v) 3)
+  (expect "and its tail" (vec-ref v 2) 3)
+
+  (expect "the add took" (vec-ref added 3) 4)
+  (expect "the set took" (vec-ref written 0) 99)
+  (expect "the pop took" (vec-length popped) 2)
+
+  ;; Two evaluations of the same literal are two arrays. They are written from
+  ;; one place in the emitted C#, so an array hoisted out of the expression —
+  ;; or a literal folded to a constant — would make these one.
+  (def once (vec-set [7 8] 0 1))
+  (expect "the second evaluation is untouched" (vec-ref [7 8] 0) 7)
+  (expect "and the first took the write" (vec-ref once 0) 1)
+
+  ;; ---- the boundary FromArray branches on -----------------------------------
+  ;;
+  ;; Up to 32 the array *is* the tail; past it the array is chunked into leaves
+  ;; and whatever is left over becomes the tail. Both sides, and the exact
+  ;; multiple, because that is where an off-by-one lands.
+  (def (: nothing (Vec int)) [])
+  (expect "empty" (vec-length nothing) 0)
+  (expect "one" (vec-length [1]) 1)
+  (expect "exactly 32"
+          (vec-length [0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
+                       16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31])
+          32)
+  (expect "33"
+          (vec-length [0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
+                       16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32])
+          33)
+
+  (def big [0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
+            16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
+            32 33 34 35 36 37 38 39])
+  (expect "past the boundary, length" (vec-length big) 40)
+  (expect "first" (vec-ref big 0) 0)
+  (expect "the last of the leaves" (vec-ref big 31) 31)
+  (expect "the first of the tail" (vec-ref big 32) 32)
+  (expect "last" (vec-ref big 39) 39)
+  (expect "and it still grows" (vec-ref (vec-add big 40) 40) 40)
+
+  ;; ---- an element that is not a plain expression ---------------------------
+  ;;
+  ;; The literal is an expression now, so an element needing statements of its
+  ;; own is hoisted ahead of it like any other argument. Evaluation order is
+  ;; left to right and each element is evaluated once.
+  (def/mutable calls 0)
+  (defun (bump)
+    (set! calls (+ calls 1))
+    calls)
+
+  (def order [(bump) (bump) (let ((t (bump))) (* t 10))])
+  (expect "left to right" (vec-ref order 0) 1)
+  (expect "then the second" (vec-ref order 1) 2)
+  (expect "and a hoisted one keeps its place" (vec-ref order 2) 30)
+  (expect "each element evaluated once" calls 3)
+  0)
