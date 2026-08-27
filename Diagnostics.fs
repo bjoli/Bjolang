@@ -54,6 +54,14 @@ module Diagnostics =
 
     let progress (message: string) = if verbose then printfn "%s" message
 
+    /// Prints something the compiler accepted and suspects was not meant.
+    ///
+    /// On stderr, and unconditional: a warning is not narration, so it survives
+    /// `verbose` being off — a REPL entry that shadows a trait method wants
+    /// saying just as much as a build does. Humanized for the reason a failure
+    /// is, since a warning can name a binder a macro introduced.
+    let warn (message: string) = eprintfn $"Warning: %s{humanize message}"
+
     /// Prints a failed compilation.
     ///
     /// A diagnostic is the message and nothing else: a stack trace through the

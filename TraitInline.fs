@@ -19,8 +19,7 @@ open Bjolang.Unification
 // Warnings
 // ---------------------------------------------------------------------------
 
-let private warn (message: string) =
-    eprintfn $"Warning: %s{message}"
+let private warn = Diagnostics.warn
 
 // ---------------------------------------------------------------------------
 // Substitution and beta reduction

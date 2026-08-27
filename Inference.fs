@@ -5595,10 +5595,47 @@ let private checkModuleValuesAreConcrete (registry: TraitRegistry) (decls: TDecl
 
     go decls
 
+/// Reports a top-level definition that binds over a trait method.
+///
+/// Legal, and since a method name became an ordinary binding it is also silent:
+/// the definition wins for the whole module and nothing says so. What it almost
+/// always means is `def/impl` — somebody writing `(defun (= a b) ...)` is
+/// implementing equality rather than defining a function called `=`. The case
+/// that prompted this was `sign`, a `Num` method by `#:clr-member`: a program's
+/// own `(defun (sign n) ...)` used to be silently dead, and its call sites
+/// reported an arity error against the programmer's own line.
+///
+/// Top level only. A parameter or a `let` is a local decision in a scope its
+/// reader can see the whole of — `lib/std/fmt.bjo` binds a `start` — and warning
+/// about one would be noise. A module-level binding is visible from everywhere
+/// in the file, which is what makes it worth a word.
+///
+/// A `def/impl`'s methods are not reached: they sit inside `TImpl`, and this
+/// descends through `TModule` and nothing else.
+let private warnAboutShadowedMethods (registry: TraitRegistry) (decls: TDecl list) : unit =
+    let check (form: string) (name: string) (r: Range) =
+        match Map.tryFind name registry.TraitMethods with
+        | Some traitName ->
+            Diagnostics.warn
+                $"'%s{name}' is a method of the trait '%s{traitName}', and this %s{form} binds over it at %s{Lexer.formatPos r}. A call to '%s{name}' written in this module reaches the definition rather than dispatching, and nothing outside the module can see it. To implement the method for a type of your own, write (def/impl (%s{traitName} YourType) (defun (%s{name} ...) ...))."
+        | None -> ()
+
+    let rec go (ds: TDecl list) =
+        for d in ds do
+            match d with
+            | TModule(_, inner, _) -> go inner
+            | TDefun(name, _, _, _, _, _, _, _, r) -> check "definition" name r
+            | TDef(name, _, _, r) -> check "definition" name r
+            | TDefMutable(name, _, _, r) -> check "mutable definition" name r
+            | _ -> ()
+
+    go decls
+
 let checkProgram (initialEnv: Env) (program: Decl list) : Env * TDecl list =
     let finalEnv, _, typedDecls = checkDeclGroup initialEnv Map.empty program
     // Anything raised outside a declaration that generalizes still has to be
     // answered for.
     solvePending finalEnv
     checkModuleValuesAreConcrete finalEnv.Registry typedDecls
+    warnAboutShadowedMethods finalEnv.Registry typedDecls
     finalEnv, typedDecls

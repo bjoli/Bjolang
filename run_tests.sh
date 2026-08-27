@@ -489,6 +489,90 @@ if [ -d "$ERROR_DIR" ] && ls "$ERROR_DIR"/*.bjo >/dev/null 2>&1; then
     done
 fi
 
+# --- Warning tests: programs that must COMPILE, and say something -------------
+#
+# `TestFiles/warnings/` holds programs the compiler accepts while suspecting they
+# were not meant. A warning has no other way of being tested: the behavioural
+# phase reads the program's own output and the error phase requires a rejection,
+# so a diagnostic on a program that builds fine falls between the two.
+#
+# Each file must compile *successfully*, and every
+#
+#   ;; EXPECT-WARNING: <substring>
+#
+# line in it must appear in the compiler's output. Compiling successfully is half
+# the assertion: a warning is not an error, and one that became an error would
+# pass a test that only looked for the text.
+WARNING_DIR="TestFiles/warnings"
+warning_total=0
+warning_failed=0
+declare -a warning_failures
+
+if [ -d "$WARNING_DIR" ] && ls "$WARNING_DIR"/*.bjo >/dev/null 2>&1; then
+    echo "--------------------------------------------------"
+    echo -e "${BLUE}Running warning tests (must compile, and say so)...${NC}"
+
+    run_warning_test() {
+        local bjo_file="$1"
+        local result_file="$2"
+        local warn_name
+        warn_name=$(basename "$bjo_file")
+
+        local output
+        output=$(dotnet "$COMPILER_DLL" "$bjo_file" 2>&1)
+        local status=$?
+
+        rm -f "${bjo_file%.bjo}.exe" "${bjo_file%.bjo}.dll" \
+              "${bjo_file%.bjo}.runtimeconfig.json" "${bjo_file%.bjo}.deps.json"
+
+        if [ $status -ne 0 ]; then
+            echo "FAIL|$warn_name|was expected to compile, and did not" > "$result_file"
+            return
+        fi
+
+        local missing=""
+        while IFS= read -r expected; do
+            [ -z "$expected" ] && continue
+            if ! printf '%s' "$output" | grep -qF -- "$expected"; then
+                missing="$expected"
+                break
+            fi
+        done < <(sed -n 's/^;;[[:space:]]*EXPECT-WARNING:[[:space:]]*//p' "$bjo_file")
+
+        if [ -n "$missing" ]; then
+            echo "FAIL|$warn_name|compiled, but said nothing about it. Expected to find: $missing" > "$result_file"
+        else
+            echo "PASS|$warn_name|" > "$result_file"
+        fi
+    }
+
+    declare -A warning_pids
+    for bjo_file in "$WARNING_DIR"/*.bjo; do
+        warn_name=$(basename "$bjo_file" .bjo)
+        run_warning_test "$bjo_file" "$LOG_DIR/warn_${warn_name}.result" &
+        warning_pids["$warn_name"]=$!
+
+        while [ $(jobs -r -p | wc -l) -ge $MAX_JOBS ]; do
+            sleep 0.02
+        done
+    done
+
+    for bjo_file in "$WARNING_DIR"/*.bjo; do
+        warn_name=$(basename "$bjo_file" .bjo)
+        wait ${warning_pids["$warn_name"]}
+        warning_total=$((warning_total + 1))
+
+        IFS='|' read -r verdict name reason < "$LOG_DIR/warn_${warn_name}.result"
+        if [ "$verdict" = "PASS" ]; then
+            echo -e "  [${GREEN}PASS${NC}] $name"
+        else
+            echo -e "  [${RED}FAIL${NC}] $name"
+            warning_failed=$((warning_failed + 1))
+            warning_failures+=("$name: $reason")
+        fi
+    done
+fi
+
 # --- Generated-C# assertions -------------------------------------------------
 #
 # A few properties are about the C# that comes out rather than about what the
@@ -840,6 +924,9 @@ echo -e "Successful runs:    $success_count"
 if [ $error_total -gt 0 ]; then
     echo -e "Error tests:        $((error_total - error_failed))/$error_total rejected as expected"
 fi
+if [ $warning_total -gt 0 ]; then
+    echo -e "Warning tests:      $((warning_total - warning_failed))/$warning_total warned as expected"
+fi
 if [ $codegen_total -gt 0 ]; then
     echo -e "Codegen tests:      $((codegen_total - codegen_failed))/$codegen_total emitted as expected"
 fi
@@ -855,6 +942,14 @@ echo ""
 if [ ${#error_failures[@]} -ne 0 ]; then
     echo -e "${RED}=== Error Test Failures ===${NC}"
     for failure in "${error_failures[@]}"; do
+        echo -e "  $failure"
+    done
+    echo ""
+fi
+
+if [ ${#warning_failures[@]} -ne 0 ]; then
+    echo -e "${RED}=== Warning Test Failures ===${NC}"
+    for failure in "${warning_failures[@]}"; do
         echo -e "  $failure"
     done
     echo ""
@@ -894,7 +989,7 @@ fi
 
 # Print failure details
 if { [ $error_failed -ne 0 ] || [ $codegen_failed -ne 0 ] || [ $repl_failed -ne 0 ] \
-     || [ $repro_failed -ne 0 ] || [ $stale_failed -ne 0 ]; } \
+     || [ $repro_failed -ne 0 ] || [ $stale_failed -ne 0 ] || [ $warning_failed -ne 0 ]; } \
    && [ ${#compiled_failed[@]} -eq 0 ] && [ ${#run_failed[@]} -eq 0 ]; then
     exit 1
 fi

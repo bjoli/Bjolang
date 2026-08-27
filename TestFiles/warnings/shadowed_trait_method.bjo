@@ -1,0 +1,35 @@
+;; A top-level definition over a trait method compiles, and says so.
+;;
+;; Binding over a method is allowed — a method name is an ordinary binding — but
+;; at module level it is almost never what was meant, and it used not to be
+;; visible at all. The `sign` case below is the one that prompted this: `sign` is
+;; a `Num` method by `#:clr-member`, so a program's own `(defun (sign n) ...)`
+;; was accepted, ignored, and dead, with the program's own call sites reporting
+;; an arity error against a line the programmer had written correctly.
+;;
+;; Each of these is a *shadow*, not an implementation: nothing outside this
+;; module can see one, which is the other half of what the message says.
+(import (std prelude))
+
+;; EXPECT-WARNING: 'sign' is a method of the trait 'Num'
+;; EXPECT-WARNING: (def/impl (Num YourType) (defun (sign ...) ...))
+(: sign (-> int string))
+(defun (sign n) "mine")
+
+;; A `def` rather than a `defun`, to check the warning is about the binding and
+;; not about the shape of the definition.
+;; EXPECT-WARNING: 'compare' is a method of the trait 'Ord'
+(: compare (-> int int string))
+(def compare (fun (a b) "mine"))
+
+;; And a mutable one, which is a third declaration form.
+;; EXPECT-WARNING: 'eq-hash' is a method of the trait 'Eq'
+;; EXPECT-WARNING: this mutable definition binds over it
+(: eq-hash int)
+(def/mutable eq-hash 0)
+
+(defun (main)
+  (println (sign 1))
+  (println (compare 1 2))
+  (println (int->string eq-hash))
+  0)
