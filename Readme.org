@@ -51,19 +51,6 @@ It is fully cooperative, and yields control when calling other bjoroutines or wh
 (sync (choose (never) (always 5))) ;; => 5
 #+end_src
 
-Spawning: ~(bjo expr)~ enqueues and returns a ~(Promise %a)~ without ever suspending, so a plain ~defun~ may spawn. Only /joining/ needs a bjoroutine, because joining is what waits. Operands to any (bjo ...) is evaluated before spawning.
-
-#+begin_src scheme
-(: start-work (-> int (Promise int)))
-(defun (start-work x) (bjo (work x)))
-
-;; Failure arrives as a value. "the operation failed" and "the fiber died"
-;; are different facts, and a supervisor needs the difference.
-(match (sync (promise-join p))
-  ((Ok v)  v)
-  ((Err e) 0))
-#+end_src
-
 And when the waiting has to happen in a plain ~defun~ after all -- a ~main~ that is not a bjoroutine, or a library that cannot dictate what colour its callers are -- ~sync/blocking~ is the door out. It takes any event and parks the calling thread instead of suspending a fiber, so channels, promises and timeouts are all reachable from ordinary code:
 
 #+begin_src scheme
@@ -142,29 +129,6 @@ Every non-~void~ (or non-unit) value in statement position must be used. If not 
 ;; (ignore (open-input-file "x"))
 #+end_src
 
-*** Ports, and a dynamic environment that survives unwinding
-
-#+begin_src scheme
-;; Opening a file is a Result, not an exception you forgot to catch.
-(match (open-input-file path)
-  ((Ok r) (with-open ((in r))          ;; try/finally + Dispose
-            (port->lines in)))
-  ((Err e) []))
-
-(match (file->seq read-line "big.txt")
-  ((Ok lines) (seq-for-each #(println &) lines))
-  ((Err e)    (println "could not open it")))
-
-
-(def indent (make-parameter 0))
-
-(parameterize ((indent 3) (verbose? #t))
-  (println (banner)))
-
-;; Redirecting stdout is just rebinding a parameter.
-(parameterize ((current-output-port (cast TextOutputPort w)))
-  (println "goes to w"))
-#+end_src
 
 *** Pattern matching that knows about the CLR
 
@@ -174,6 +138,7 @@ Every non-~void~ (or non-unit) value in statement position must be used. If not 
 (match (thing :> Object)
   ((:is System.String s) (string-length s))
   ((:is Exception e)     (.-Message e))
+  ([a b [1 2]] "an array of three subarrays where the last is [1 2]")
   (_                     "no idea"))
 
 (try (risky-thing)
@@ -200,13 +165,9 @@ Basic syntax
 
 * Planned features
 
-Make the seq functions take a Collection, meaning they can do ->seq. This would make (seq-map #(+ 5 &) [1 2 3 4 5]) work, while alos being lazy.
-
 Evaluate whether monomorphizing oven asyncness is a good idea so that any function can run either async or sync.
 
 Get an async io library based on c# async, wrapped in cml clothes, just to get started. 
-
-Extend do notation, preferably as a macro
 
 Pattern matching in function arguments. (defun (abc (Tuple fst snd)) ...)
 
@@ -489,7 +450,7 @@ returned within thirty days.
 
 And any declared (Vec block), also a def, gets this treatment, so any function that needs formatted strings can use this.
 
-The same machinery gives (std run) its shell notation, have a look at [[file:Examples/run_with_bjoroutine.bjo]] which finds insidious plans!
+The same machinery gives (std run) its shell notation, have a look at [[Ppfile:Examples/run_with_bjoroutine.bjo]] which finds insidious plans!
 
 * Things to fix/TODO
 
@@ -535,8 +496,9 @@ The current parameter implementation is very practical, but perhaps limiting. Th
 
 ** features to add in no particular order
 
-Annotations using @[c# annotation verbatim here] so that I can piggyback on c# json libraries.
+Make ->seq a part of iterable, and move all of seq over to work on every iterable. 
 
+Syntactic folding, because #:rest arrays means an allocation. Maybe (:and char<? #\a #\b #\c) = (and (char<? #\a #\b) (char<? #\b #\c)) or perhaps reader macros #foldl(compose fun1 fun2 fun3) => (compose (compose fun1 fun2) fun3).  #and(my= 1 2 3 4) (and (= 1 2) (= 2 3) (= 3 4)) (but with letbound terms).
 
 add #:align to columnar and tabular in (std fmt)
 
@@ -546,9 +508,9 @@ Extend do notation to be more usable. :traverse :and<- ( :and<- seems _very hard
 
 output LINE-directives a little bit better than I do now
 
-(with-return ...) that allows for (return ...). Disallowed in loops and seq. loops maybe allowed later. 
+(with-return ...) that allows for (return ...). Disallowed in loops and seq. loops maybe allowed later. Maybe maybe not.
 
-add some built-in number traits that make it possible for us to have generic maths on generic variables. 
+abandon c# strings, despite giving us a nice regex engine because utf16.
 
 ** Things for the stdlib
 
@@ -563,4 +525,16 @@ data structures:
 - heap with transients
 - mutable collections, defer to the BCL. 
 
-network io by wrapping c# async in events for the cml goodness. 
+network io by wrapping c# async in events for the cml goodness.
+
+** Performance things
+Hoist literals. Not just literal lists and vecs, but also symbols and keywords.
+
+Hoist the threadlocal loads of several parameter-ref in synchronous functions.
+
+Currently I do no CSE and no function inlining other than direct inlining of applied lambdas. 
+
+let bound lambdas that are only ever called should be a static local
+
+Unboxing small unions, say if someone call map-try-ref in a tight loop
+

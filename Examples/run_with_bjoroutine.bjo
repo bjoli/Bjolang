@@ -6,7 +6,7 @@
 ;; my-rot13 runs in a background thread and interacts with the pipe in the same way
 ;; a program would in the same pipe position.
 ;;
-;; This prints
+;; This prints:
 ;; DANGER!
 ;; ;; this function is THE BOMB!
 
@@ -20,13 +20,15 @@
         (+ & i)
         integer->char))
   (cond
-   ((<= #\a ch #\m)
+   ((<= #\a (char-downcase ch) #\m)
     (char+int ch 13))
-   ((<= #\n ch #\z)
+   ((<= #\n (char-downcase ch) #\z)
     (char+int ch -13))
    (else ch)))
 
 ;; A filter function takes an in, an out and returns unit (unit is void)
+;; The Filter type is defined in the (std run) module as a function that takes
+;; an input port, an output port and returns unit.
 (: my-rot13 Filter)
 (defbjo (my-rot13 in out)
   (let lp ()
@@ -38,10 +40,10 @@
 
 
 (defun (main args)
-  ;; run/strings returns a Result of (Ok [string strings ...])
-  (match   (run/string '(pipe (cat "Examples/run_with_bjoroutine.bjo")
-                               ,my-rot13
-                               (grep "-i" "bomb")))
+  ;; run/string returns a Result of (Ok a-string)
+  (match (run/string '(pipe (cat "Examples/run_with_bjoroutine.bjo")
+                            ,my-rot13
+                            (grep "-i" "bomb")))
     ((Err e) (println "Command failed with ${e}"))
     ;; An empty result. 
     ((Ok "")
