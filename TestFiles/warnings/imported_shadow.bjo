@@ -1,0 +1,23 @@
+;; An import that lands on a trait method's name takes it over, and says so.
+;;
+;; The same hazard as a top-level definition, arriving by a different route: a
+;; module you did not write decides that `sign` here means its function, and
+;; every `(sign x)` in this file stops dispatching. There is nothing in this file
+;; to point at, so the warning names the module it came from — which is also
+;; where the fix is, unless the importer would rather use `(except ...)` or
+;; `(rename ...)`, which it suggests.
+;;
+;; `TestFiles/148_renamed_shadow.bjo` is the same import with the remedy applied,
+;; and produces no warning at all.
+(import (std prelude))
+(import "../inc/exported_shadow.bjo")
+
+;; EXPECT-WARNING: 'sign' is imported from 'exported_shadow' and is a method of the trait 'Num'
+;; EXPECT-WARNING: 'compare' is imported from 'exported_shadow' and is a method of the trait 'Ord'
+;; EXPECT-WARNING: (except ... sign)
+;; EXPECT-WARNING: (rename ... (compare another-name))
+
+(defun (main)
+  (println (sign 1))
+  (println (compare 1 2))
+  0)

@@ -1,0 +1,30 @@
+;; A shadow crosses a module boundary, and takes the name over where it lands.
+;;
+;; The rule is the one the language already had: the nearest binding wins, and
+;; an import is nearer than the prelude. What is new is that a trait method is a
+;; binding like any other, so an import can be nearer than one — which used to be
+;; impossible and, once it became possible, was silently ignored. The import was
+;; resolved, bound, and then never called, because the *call* still dispatched.
+;;
+;; Compiling this file warns about the import, which is the point: taking a
+;; method's name over is a thing worth being told about, and `(except ...)` or
+;; `(rename ...)` is the answer. `148_renamed_shadow.bjo` is that answer.
+(import (std prelude))
+(import (std simpletest))
+(import "inc/exported_shadow.bjo")
+
+(defun (main)
+  ;; The exporting module's own calls, unaffected by anything here.
+  (expect "the module's own calls" (inside) "the module's sign / the module's compare")
+
+  (expect "an imported shadow wins in call position" (sign 5) "the module's sign")
+  (expect "and the other one" (compare 1 2) "the module's compare")
+
+  ;; Call position and value position agree, which is the property the whole
+  ;; shadowing rule is for — and the one that used to fail three lines apart.
+  (expect "and in value position" (let ((f sign)) (f 5)) "the module's sign")
+
+  ;; A method of a trait nothing here binds over is untouched.
+  (expect "an untouched method still dispatches" (->str 42) "42")
+  (expect "including one of the same traits" (= 1 1) #t)
+  0)

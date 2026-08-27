@@ -1,0 +1,25 @@
+;; The importer's remedy, and the proof that an exported shadow is an ordinary
+;; binding rather than the method it is named after.
+;;
+;; `(rename ...)` and `(except ...)` refuse a trait method by design: dispatch is
+;; under the name the `def/trait` declared, so remapping one name of a trait
+;; would leave the call sites resolving to something that no longer exists. Both
+;; are accepted here, and that is the whole assertion — it is only true because
+;; the exporting module publishes `sign` and `compare` as bindings of its own.
+;; While a shadow was read as the method, this file was refused with "a trait
+;; method is dispatched under the name it was declared with".
+(import (std prelude))
+(import (std simpletest))
+(import (rename (except "inc/exported_shadow.bjo" compare) (sign their-sign)))
+
+(defun (main)
+  (expect "under its new name" (their-sign 5) "the module's sign")
+
+  ;; And with the shadow out of the way, the methods are the trait's again.
+  ;; `Num`'s `sign` answers -1, 0 or 1; `Ord`'s `compare` answers a sign.
+  (expect "the method, where the rename moved the shadow" (sign -5) -1)
+  (expect "the method, where except dropped it" (< (compare 1 2) 0) #t)
+
+  ;; The exporting module is unaffected by what this one calls things.
+  (expect "the module's own calls" (inside) "the module's sign / the module's compare")
+  0)

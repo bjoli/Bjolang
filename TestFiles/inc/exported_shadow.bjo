@@ -1,0 +1,24 @@
+;; A module that binds over two trait methods and exports the bindings.
+;;
+;; Exporting one used to do two wrong things at once, both from reading the name
+;; rather than the binding it currently has: the module published `Num` and `Ord`
+;; as though it had declared them, and the bindings themselves were dropped as
+;; "already published by the trait". An importer got neither — `(sign 5)` over
+;; there went on dispatching, and nothing said so.
+;;
+;; Building this file warns twice, once per shadow. That is the diagnostic
+;; `TestFiles/warnings/shadowed_trait_method.bjo` asserts.
+(export sign compare inside)
+(import (std prelude))
+
+(: sign (-> int string))
+(defun (sign n) "the module's sign")
+
+(: compare (-> int int string))
+(defun (compare a b) "the module's compare")
+
+;; Its own calls reach its own definitions — the module-level shadow that
+;; `146_shadowing.bjo` covers, here so that both ends of the boundary are asked
+;; the same question.
+(: inside (-> string))
+(defun (inside) (string-append (sign 0) (string-append " / " (compare 0 0))))

@@ -4266,16 +4266,23 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                 | Some a -> { a with Kind = AliasDef }
                 | None -> { OriginModule = ""; OriginalName = oldName; Kind = AliasDef }
 
+            // `addBinding` for the reason `DExtern` uses it — a second spelling
+            // is a binder, and one that lands on a trait method's name shadows
+            // it. The `FunMeta` goes on *after*, since `addBinding` drops the
+            // one the new name had and this is the case that wants a new one.
             let newEnv =
-                { env with
-                    Bindings = Map.add newName binding env.Bindings
-                    FunMetas =
-                        match Map.tryFind oldName env.FunMetas with
-                        | Some meta -> Map.add newName meta env.FunMetas
-                        | None -> env.FunMetas
-                    Registry =
-                        { env.Registry with
-                            ImportAliases = Map.add newName resolution env.Registry.ImportAliases } }
+                addBinding
+                    newName
+                    binding
+                    { env with
+                        Registry =
+                            { env.Registry with
+                                ImportAliases = Map.add newName resolution env.Registry.ImportAliases } }
+
+            let newEnv =
+                match Map.tryFind oldName env.FunMetas with
+                | Some meta -> { newEnv with FunMetas = Map.add newName meta newEnv.FunMetas }
+                | None -> newEnv
 
             newEnv, sigs, [ TAlias(newName, Some resolution, r) ]
 
@@ -4645,7 +4652,22 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
             constraintPairs |> List.map (fun (traitName, varName) ->
                 { TraitName = originalName env.Registry traitName; TargetType = TVar varName })
         let schemeWithConstraints = Scheme(vars, constraints, schemeType)
-        let newEnv = { env with Bindings = Map.add name { Scheme = schemeWithConstraints; IsMutable = false } env.Bindings }
+        // The same hazard as a top-level definition over a method, arriving by
+        // a different route and with nothing in this file to point at — so the
+        // module it came from is the location, which is where the fix is.
+        match Map.tryFind name env.Registry.TraitMethods with
+        | Some traitName when Set.contains name env.TraitMethodNames ->
+            Diagnostics.warn
+                $"'%s{name}' is imported from '%s{origin.OriginModule}' and is a method of the trait '%s{traitName}', so the import binds over it. A call to '%s{name}' in this module reaches the imported binding rather than dispatching. Import that module with (except ... %s{name}) or (rename ... (%s{name} another-name)) if that is not what you meant."
+        | _ -> ()
+
+        // Through `addBinding`, because an import is a binder like any other.
+        // Writing `Bindings` directly left the name in `TraitMethodNames`, so a
+        // module that bound over `sign` and exported it published a binding the
+        // importer resolved and then never called: every `(sign x)` over there
+        // went on dispatching `Num`. That is the bug shadowing was supposed to
+        // have fixed, surviving across a module boundary.
+        let newEnv = addBinding name { Scheme = schemeWithConstraints; IsMutable = false } env
 
         // Every imported binding gets a table entry, whether or not a modifier
         // renamed it. The degenerate one carries no new spelling but does carry
@@ -5617,7 +5639,7 @@ let private warnAboutShadowedMethods (registry: TraitRegistry) (decls: TDecl lis
         match Map.tryFind name registry.TraitMethods with
         | Some traitName ->
             Diagnostics.warn
-                $"'%s{name}' is a method of the trait '%s{traitName}', and this %s{form} binds over it at %s{Lexer.formatPos r}. A call to '%s{name}' written in this module reaches the definition rather than dispatching, and nothing outside the module can see it. To implement the method for a type of your own, write (def/impl (%s{traitName} YourType) (defun (%s{name} ...) ...))."
+                $"'%s{name}' is a method of the trait '%s{traitName}', and this %s{form} binds over it at %s{Lexer.formatPos r}. A call to '%s{name}' written in this module reaches the definition rather than dispatching, and so does one in any module that imports it. To implement the method for a type of your own, write (def/impl (%s{traitName} YourType) (defun (%s{name} ...) ...))."
         | None -> ()
 
     let rec go (ds: TDecl list) =

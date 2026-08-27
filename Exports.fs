@@ -187,16 +187,25 @@ let metadata
     // always crossed — or when the trait's own *name* is exported, which is the
     // only way a trait with no methods can. A CLR constraint is exactly that: it
     // declares no members, so there is no method name to publish it by.
+    //
+    // `TraitMethodNames` is what makes "one of its methods" mean the method
+    // rather than the spelling. A module that binds over `sign` and exports that
+    // used to publish `Num` as though it had declared it, and to drop the
+    // binding it actually meant to export — the name was read as the method on
+    // both counts.
+    let stillTheMethod (m: string) = Set.contains m env.TraitMethodNames
+
     let exportedTraits =
         env.Registry.Traits
         |> Map.filter (fun traitName info ->
             List.contains traitName exports
-            || traitMethodNames info |> List.exists (fun m -> List.contains m exports))
+            || traitMethodNames info |> List.exists (fun m -> List.contains m exports && stillTheMethod m))
 
     let exportedTraitMethods =
         exportedTraits
         |> Map.toList
         |> List.collect (snd >> traitMethodNames)
+        |> List.filter stillTheMethod
         |> Set.ofList
 
     // Every inline template belonging to a trait this module publishes.
