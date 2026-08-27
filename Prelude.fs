@@ -876,6 +876,9 @@ let prelude : Env =
         "seq-cursor-current", {Scheme = Scheme(["a"], [], makeFunType [makeSeqCursorType (TVar "a")] (TVar "a")); IsMutable = false }
         "vec-cursor-current", {Scheme = Scheme(["a"], [], makeFunType [makeVecCursorType (TVar "a")] (TVar "a")); IsMutable = false }
       ]
+      // Filled in by `checkDecl`, from `Bindings`, once per top-level
+      // declaration. Empty here because nothing is being checked yet.
+      Resolved = Map.empty
       Registry = emptyRegistry
       FunMetas = Map.ofList [
           // The recorded element type is the declaration's own rigid variable.

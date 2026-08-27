@@ -56,6 +56,16 @@ module Lexer =
         /// matches a symbol: spelled `Symbol "#t"` a boolean could be bound,
         /// and `(let ((#t 1)) ...)` was accepted.
         | BoolLit of bool
+        /// A name the reader itself wrote, which the parser turns into an
+        /// `EResolved` rather than an ordinary reference.
+        ///
+        /// String interpolation expands to tokens rather than to a syntax tree
+        /// — that is what makes it a *reader* feature — so it has no node to
+        /// emit and needs a token to say "this `->str` is mine".
+        ///
+        /// Nothing else produces one, and no spelling reads as one, so a
+        /// program cannot write what would capture it.
+        | ResolvedSymbol of string
         | NumberLit of string
         | Keyword of string
         | Symbol of string
@@ -606,7 +616,7 @@ module Lexer =
                         failwithf
                             $"Empty ${{}} in the interpolated string at %s{formatAt file hl hc}: there is nothing to interpolate."
 
-                    [ mk LParen; mk (Symbol "->str") ] @ inner @ [ mk RParen ])
+                    [ mk LParen; mk (ResolvedSymbol "->str") ] @ inner @ [ mk RParen ])
             |> List.ofSeq
 
         // One part is already a string, and no parts is the empty one. Neither

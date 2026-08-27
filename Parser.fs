@@ -134,6 +134,18 @@ and Expr =
     /// redefined the literal, `and`, `or`, `not` and a loop's termination test,
     /// all of which are written in terms of it.
     | EBool of bool * Range
+    /// A name the *compiler* wrote, which resolves where it was written rather
+    /// than where it lands.
+    ///
+    /// A desugaring calls things by name — a loop calls `iterable-next`, string
+    /// interpolation calls `->str`, a record's synthesised equality calls `=` —
+    /// and those names went into the user's scope to be looked up like any
+    /// other. Nothing a program binds can reach one of these.
+    ///
+    /// Only the compiler and the macro expander construct it. It is a leaf in
+    /// every structural pass: not renamed, and not a free variable, because it
+    /// does not refer to anything the surrounding code can bind.
+    | EResolved of string * Range
     | EQuotedSymbol of string * Range
     | EKeyword of string * Range
     | EIdent of string * Range
@@ -957,9 +969,9 @@ let parseTypeDef (s: SExpr) : TypeDef =
 let private dTrue r = EBool(true, r)
 let private dFalse r = EBool(false, r)
 let private dAnd r a b = EIf(a, b, dFalse r, r)
-let private dEq r a b = EApp(EIdent("=", r), [ a; b ], r)
-let private dHash r x = EApp(EIdent("eq-hash", r), [ x ], r)
-let private dCombine r a b = EApp(EIdent("hash-combine", r), [ a; b ], r)
+let private dEq r a b = EApp(EResolved("=", r), [ a; b ], r)
+let private dHash r x = EApp(EResolved("eq-hash", r), [ x ], r)
+let private dCombine r a b = EApp(EResolved("hash-combine", r), [ a; b ], r)
 let private dInt r (n: int) = EInt(string n, r)
 
 let private dAllOf (r: Range) (items: (Range * Expr) list) : Expr =
@@ -1133,7 +1145,7 @@ let private parseDerive (isRec: bool) (traits: SExpr list) (typeDefForms: SExpr 
 /// is also why `''foo` is not needed, and it is just as well, since it does not
 /// read.
 let desugarSyntaxQuote (parseExprFn: SExpr -> Expr) (template: SExpr) (r: Range) : Expr =
-    let call name args range = EApp(EIdent(name, range), args, range)
+    let call name args range = EApp(EResolved(name, range), args, range)
 
     let rec go (s: SExpr) : Expr =
         let ir = getRange s
@@ -1278,6 +1290,7 @@ let exprRange (e: Expr) : Range =
     | EString(_, r)
     | EChar(_, r)
     | EBool(_, r)
+    | EResolved(_, r)
     | EQuotedSymbol(_, r)
     | EKeyword(_, r)
     | EIdent(_, r)
@@ -1348,6 +1361,7 @@ let freeNamesWith (reference: string -> Range -> bool -> unit) (guarded: bool) (
         | EString _
         | EChar _
         | EBool _
+        | EResolved _
         | EQuotedSymbol _
         | EKeyword _ -> ()
         | EIdent(n, r) -> refer n r
@@ -1436,6 +1450,7 @@ let exprChildren (e: Expr) : Expr list =
     | EString _
     | EChar _
     | EBool _
+    | EResolved _
     | EQuotedSymbol _
     | EKeyword _
     | EIdent _ -> []
@@ -1577,6 +1592,8 @@ let private renameWith (renameBinder: string -> string) (rootSubst: Map<string, 
         | EString _
         | EChar _
         | EBool _
+        // Deliberately not renamed: a substitution is what a shadow would do.
+        | EResolved _
         | EQuotedSymbol _
         | EKeyword _ -> e
         | EIdent(n, r) -> EIdent(reference n, r)
@@ -1911,8 +1928,8 @@ let private desugarNaryOp (op: string) (args: Expr list) (r: Range) : Expr =
             | "bitwise-and"
             | "bitwise-ior"
             | "bitwise-xor" -> single
-            | "-" -> EApp(EIdent("negate", r), [ single ], r)
-            | "/" -> EApp(EIdent("recip", r), [ single ], r)
+            | "-" -> EApp(EResolved("negate", r), [ single ], r)
+            | "/" -> EApp(EResolved("recip", r), [ single ], r)
             | _ -> arityError "at least two arguments"
         | first :: rest -> rest |> List.fold binary first
     else
@@ -1971,6 +1988,7 @@ let rec parseExpr (s: SExpr) : Expr =
     // `true` and `false` and hand them to the environment to resolve.
     | SAtom { Token = BoolLit true } -> EBool(true, r)
     | SAtom { Token = BoolLit false } -> EBool(false, r)
+    | SAtom { Token = ResolvedSymbol name } -> EResolved(name, r)
     | SAtom { Token = QuotedSymbol sym } -> EQuotedSymbol(sym, r)
     | SAtom { Token = Keyword sym } -> EKeyword(sym, r)
 
@@ -2248,7 +2266,7 @@ let rec parseExpr (s: SExpr) : Expr =
                 match args with
                 | [ SList(_ :: _, _) as call ] ->
                     EApp(
-                        EIdent("spawn-evt/start", listRange),
+                        EResolved("spawn-evt/start", listRange),
                         [ EFun([], EBjo(parseExpr call, listRange), Ordinary, listRange) ],
                         listRange
                     )
@@ -2617,13 +2635,13 @@ let rec parseExpr (s: SExpr) : Expr =
 
                                 let push =
                                     EApp(
-                                        EIdent("parameter-push!", bindRange),
+                                        EResolved("parameter-push!", bindRange),
                                         [ EIdent(paramTemp, bindRange); EIdent(valueTemp, bindRange) ],
                                         bindRange
                                     )
 
                                 let restore =
-                                    EApp(EIdent("dyn-restore!", bindRange), [ EIdent(saved, bindRange) ], bindRange)
+                                    EApp(EResolved("dyn-restore!", bindRange), [ EIdent(saved, bindRange) ], bindRange)
 
                                 ELet(saved, false, [], None, push, ETryFinally(acc, restore, bindRange), bindRange))
                             parsedBindings
@@ -3206,7 +3224,7 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
 
     let maxLevel = List.max levelOf
 
-    let call (name: string) (args: Expr list) (cr: Range) = EApp(EIdent(name, cr), args, cr)
+    let call (name: string) (args: Expr list) (cr: Range) = EApp(EResolved(name, cr), args, cr)
 
     /// The names a `:for` or `:let` pattern binds.
     let patternNames (pat: SExpr) =
@@ -3941,7 +3959,7 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         // spells `void`. Not `ETuple []`, which is an empty *tuple* and unifies
         // with nothing anyone can write; `(begin)` in expression position is
         // the form that made the difference reachable from source.
-        | [] -> EIdent("unit", fallbackRange)
+        | [] -> EResolved("unit", fallbackRange)
 
         // `(begin)` with nothing in it is `unit`, and *not* a splice of
         // nothing. The two differ in exactly one place, and it matters:
@@ -3964,10 +3982,10 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         // the unit type is what a Bjolang signature spells `void`. The two do
         // not unify, so a `(defun (f) (begin))` declared `(-> void)` would be a
         // type error naming a type nobody wrote.
-        | [ SList([ SAtom { Token = Symbol "begin" } ], r) ] -> EIdent("unit", r)
+        | [ SList([ SAtom { Token = Symbol "begin" } ], r) ] -> EResolved("unit", r)
 
         | SList([ SAtom { Token = Symbol "begin" } ], r) :: rest ->
-            ELet("_", false, [], None, EIdent("unit", r), parseItems rest, fallbackRange)
+            ELet("_", false, [], None, EResolved("unit", r), parseItems rest, fallbackRange)
 
         // A non-empty one splices into the body it stands in, which is what
         // lets a macro expand to several forms — a definition and the code

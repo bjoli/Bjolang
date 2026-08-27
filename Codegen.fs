@@ -587,6 +587,7 @@ let rec serializeExpr (e: Parser.Expr) : string =
     | Parser.EString(v, _) -> "\"" + escapeSexpr v + "\""
     | Parser.EChar(c, _) -> $"#\\x%X{c}"
     | Parser.EBool(b, _) -> if b then "#t" else "#f"
+    | Parser.EResolved(n, _) -> n
     | Parser.EQuotedSymbol(s, _) -> "'" + s
     | Parser.EKeyword(k, _) -> "#:" + k
     | Parser.EIdent(n, _) -> n

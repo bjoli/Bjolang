@@ -1304,6 +1304,14 @@ type TraitRegistry =
 
 type Env =
     { Bindings: Map<string, Binding>
+      /// `Bindings` as they stood at module level, which is what an `EResolved`
+      /// resolves against.
+      ///
+      /// Set once per top-level declaration, by `checkDecl`, and never by a
+      /// binder inside one — so it holds the imports, the prelude and this
+      /// module's own definitions, and nothing a body binds. That is exactly
+      /// the scope a name the compiler wrote was written in.
+      Resolved: Map<string, Binding>
       Registry: TraitRegistry
       FunMetas: Map<string, FunMeta>
       /// The module whose declarations are currently being checked.

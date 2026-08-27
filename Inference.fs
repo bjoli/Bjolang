@@ -230,6 +230,23 @@ let private withSeqElement (elemType: HMType) (env: Env) : Env =
 /// Leaves the enclosing `seq`, if any. A lambda body is compiled as a function
 /// of its own and cannot be resumed, so it cannot yield into the sequence it
 /// happens to be written inside.
+/// Module level's binding for `name`, put back over whatever is in scope.
+///
+/// What an `EResolved` needs: the compiler wrote that name, so it has to mean
+/// what it meant where it was written. Only the one name is restored, and only
+/// for the expression it heads — everything around it keeps the scope it has,
+/// which is why this is not simply `{ env with Bindings = env.Resolved }`: the
+/// arguments of a synthesised call are ordinary user code.
+///
+/// A name absent from `Resolved` was not a module-level *binding* at all. That
+/// is the usual case for a union constructor such as `folding`, which reaches
+/// its meaning through the registry, where nothing in scope can interfere.
+let private unshadow (name: string) (env: Env) : Env =
+    match Map.tryFind name env.Resolved with
+    | Some binding when Map.tryFind name env.Bindings <> Some binding ->
+        { env with Bindings = Map.add name binding env.Bindings }
+    | _ -> env
+
 let private withoutSeqElement (env: Env) : Env =
     { env with Bindings = Map.remove seqElementSlot env.Bindings }
 
@@ -1892,6 +1909,18 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
           Range = r
           Node = TIdent(name, tArgs) }
 
+    // A name the compiler wrote, in value position.
+    //
+    // Handled by putting module level's binding for it back and then taking the
+    // ordinary path, rather than by resolving it here. A name is not always a
+    // binding: `folding` is a union case and reaches its meaning through the
+    // registry, as record constructors and trait methods do, and those paths
+    // are not worth reproducing.
+    //
+    // Nothing to put back means nothing at module level had that name, so there
+    // is nothing a local could be shadowing and the registries decide.
+    | EResolved(name, r) -> infer (unshadow name env) (EIdent(name, r))
+
     | EFun(args, body, colour, r) ->
         let argTypes = args |> List.map (fun _ -> freshMeta ())
         let eff = colourEffect colour
@@ -1923,6 +1952,12 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     // lets `pure`, whose constructor appears only in its result, be resolved at
     // all: the metas are shared with the surrounding expression, so an enclosing
     // `bind` or a declared return type pins them.
+    // Ahead of every specialised application below, so that a call the compiler
+    // wrote reaches whichever of them it should — trait method, record
+    // constructor, union case or ordinary function — with its head meaning what
+    // it meant at module level.
+    | EApp(EResolved(name, mr), args, r) -> infer (unshadow name env) (EApp(EIdent(name, mr), args, r))
+
     | EApp(EIdent(methodName, _), args, r) when Map.containsKey methodName env.Registry.TraitMethods ->
         let traitName = env.Registry.TraitMethods[methodName]
 
@@ -3693,6 +3728,15 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
     { env with Registry = finalRegistry; Bindings = finalBindings }, List.ofSeq keyedDefs
 
 let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string * string) list>) (decl: Decl) : Env * Map<string, HMType * FType option * (string * string) list> * TDecl list =
+    // What module level looks like from inside this declaration: the imports,
+    // the prelude and whatever this module has defined so far. Nothing a body
+    // binds gets in, because every binder inside one goes through `addBinding`,
+    // which does not touch this.
+    //
+    // It is what an `EResolved` resolves against — a name the compiler wrote,
+    // which has to mean what it meant where it was written.
+    let env = { env with Resolved = env.Bindings }
+
     match decl with
     | DSignature(name, ftype, constraints, _) -> env, Map.add name (resolveTypeAnnotation env.Registry ftype, Some ftype, constraints) sigs, []
 
