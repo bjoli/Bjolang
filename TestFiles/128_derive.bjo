@@ -38,6 +38,35 @@
   (: Nest (Union Leaf (Branch Nest Nest))))
 
 ;; ---------------------------------------------------------------------------
+;; The same declarations, read for order
+;; ---------------------------------------------------------------------------
+;;
+;; `Ord` derives from the shape the way `Eq` does, and reads it the same way
+;; round: parts left to right, and a union's case before its payload. The case
+;; order is the declaration order the hash already seeds itself with, so the
+;; three derivations agree about what a union's cases are without being told.
+
+(type/derive (Eq Ord)
+  (: Ver (Record (: major int) (: minor int))))
+
+;; One field, so there is nothing to fall through to: the derivation is that
+;; field's comparison and no test around it.
+(type/derive (Ord)
+  (: Only (Record (: it string))))
+
+(type/derive (Eq Ord)
+  (: Span (Struct (: from int) (: to int))))
+
+(type/derive (Eq Ord)
+  (: Step (Union Stop (Wait int) (Move int int))))
+
+(type/derive (Eq Ord)
+  (: Tree (Union Tip (Fork Tree Tree))))
+
+(type/derive (Eq Ord)
+  (: (Tagged %a) (Record (: value %a) (: tag string))))
+
+;; ---------------------------------------------------------------------------
 ;; A hand-written implementation that ignores a field
 ;; ---------------------------------------------------------------------------
 ;;
@@ -148,5 +177,53 @@
   ;; falls to the blanket rather than off the end.
   (expect-true "a five-tuple" (= (Tuple 1 2 3 4 5) (Tuple 1 2 3 4 5)))
   (expect-true "a five-tuple, differing" (not (= (Tuple 1 2 3 4 5) (Tuple 1 2 3 4 6))))
+
+  ;; ---- derived ordering ---------------------------------------------------
+  ;;
+  ;; Negative, zero or positive is the contract, so these ask about the sign
+  ;; rather than for a number.
+  (def v19 (Ver (major 1) (minor 9)))
+  (def v20 (Ver (major 2) (minor 0)))
+  (def v21 (Ver (major 2) (minor 1)))
+  (expect-true "a field decides" (< (compare v19 v20) 0))
+  (expect-true "and the next is asked only where it did not" (< (compare v20 v21) 0))
+  (expect-true "equal fields, equal records" (= 0 (compare v20 (Ver (major 2) (minor 0)))))
+  (expect-true "the earlier field outranks the later" (> (compare v20 v19) 0))
+  (expect-true "one field and no test around it" (> (compare (Only (it "b")) (Only (it "a"))) 0))
+  (expect-true "a derived struct" (< (compare (Span (from 1) (to 2)) (Span (from 1) (to 3))) 0))
+
+  ;; A union is its case first. `(Wait 999)` losing to `(Move 0 0)` is the whole
+  ;; of it: no payload can outweigh the case it is in.
+  (expect-true "an earlier case is less" (< (compare Stop (Wait 0)) 0))
+  (expect-true "whatever the payload says" (< (compare (Wait 999) (Move 0 0)) 0))
+  (expect-true "the same case compares its payload" (< (compare (Wait 1) (Wait 2)) 0))
+  (expect-true "positionally" (< (compare (Move 1 2) (Move 1 3)) 0))
+  (expect-true "a case with no payload equals itself" (= 0 (compare Stop Stop)))
+
+  ;; Recursion terminates for the same reason the derived `=` does: the payload
+  ;; comparison is the trait method again, and the leaf has nothing to compare.
+  (expect-true "recursive union" (< (compare Tip (Fork Tip Tip)) 0))
+  (expect-true "recursive, at depth"
+          (< (compare (Fork Tip Tip) (Fork Tip (Fork Tip Tip))) 0))
+
+  ;; Conditional on its parameter, so the field's own implementation decides.
+  (expect-true "a derived generic" (< (compare (Tagged (value 1) (tag "a"))
+                                          (Tagged (value 2) (tag "a"))) 0))
+  (expect-true "over a derived field type" (< (compare (Tagged (value v19) (tag "a"))
+                                                  (Tagged (value v20) (tag "a"))) 0))
+  (expect-true "and the field after it" (< (compare (Tagged (value v20) (tag "a"))
+                                               (Tagged (value v20) (tag "b"))) 0))
+
+  ;; What deriving it is for: everything written against `Ord` works, none of it
+  ;; knowing these types exist.
+  (expect-true "sorting a derived record"
+          (= (list-sort (list v21 v19 v20)) (list v19 v20 v21)))
+  (expect-true "sorting a derived union"
+          (= (list-sort (list (Move 1 2) Stop (Wait 5) (Move 1 1)))
+             (list Stop (Wait 5) (Move 1 1) (Move 1 2))))
+  (expect-true "the predicates" (less? v19 v20))
+  (expect-true "least" (= v19 (least v20 v19)))
+  (expect-true "list-min"
+          (match (list-min (list v21 v19 v20)) ((Some m) (= m v19)) (None #f)))
 
   0)

@@ -1830,8 +1830,8 @@
 ;; declaration is passed through untouched and the implementation is written out
 ;; of the same S-expression.
 ;;
-;; The traits are a list — `(Eq)` today, `(Eq Ord)` later — so the shape does
-;; not have to change when there is a second one.
+;; The traits are a list: `(Eq)`, `(Ord)` or `(Eq Ord)`, each deriving its own
+;; methods from the one declaration.
 
 (: derive-sym (-> string Syntax))
 (defun (derive-sym name) (SSym (string->symbol name)))
@@ -2002,7 +2002,105 @@
     #'(defun (eq-hash v) (match v ,@(derive-hash-union-arms cases 0))))
   (Cons equals (Cons hashed Nil)))
 
+;; --- Ordering ---
+;;
+;; `compare` promises a sign rather than -1, 0 and 1, so a derived body hands
+;; back whatever the part that decided the answer said, unexamined.
+
+;; The comparisons of a value's parts, left to right, answering with the first
+;; that decides. A nest of `let` is what stopping early looks like without a
+;; special form for it: the tail is an arm of the `if`, so it is reached only
+;; where the head compared equal. The last part needs no test — there is nothing
+;; after it to prefer — so it is spliced in bare.
+(: derive-ord-chain (-> (List Syntax) int Syntax))
+(defun (derive-ord-chain parts i)
+  (match parts
+    (Nil #'0)
+    ((Cons p rest)
+     (def c (derive-sym (string-append "__derived-c" (int->string i))))
+     (if (list-empty? rest)
+         p
+         #'(let ((,c ,p))
+             (if (= ,c 0) ,(derive-ord-chain rest (+ i 1)) ,c))))))
+
+;; Lexicographic in declaration order, mutable fields included, for the reason
+;; `=` includes them: the order is over what the record holds now. Nothing here
+;; corresponds to `eq-hash`'s refusal, because ordering has no law saying an
+;; answer may not change — a sorted collection going stale under a write is the
+;; write's doing rather than the comparison's.
+(: derive-ord-record (-> (List Syntax) (List Syntax)))
+(defun (derive-ord-record names)
+  (Cons #'(defun (compare a b)
+            ,(derive-ord-chain
+              (list-map (fun (n) #'(compare (record-ref a ,n) (record-ref b ,n))) names)
+              0))
+        Nil))
+
+;; A payload bound to nothing, for the arms that only ask which case they have.
+(: derive-wildcards (-> int (List Syntax)))
+(defun (derive-wildcards n)
+  (if (= n 0)
+      Nil
+      (Cons (derive-sym "_") (derive-wildcards (- n 1)))))
+
+;; Which case a value is, as its position in the declaration — the order the
+;; hash already seeds itself with, so ordering and hashing read the union the
+;; same way.
+(: derive-ord-index-arms (-> (List Syntax) int (List Syntax)))
+(defun (derive-ord-index-arms cases index)
+  (match cases
+    (Nil Nil)
+    ((Cons c rest)
+     (Cons #'((,(derive-case-name c) ,@(derive-wildcards (list-length (derive-payload c))))
+              ,(SInt (int->string index)))
+           (derive-ord-index-arms rest (+ index 1))))))
+
+(: derive-ord-pairs (-> (List Syntax) (List Syntax) (List Syntax)))
+(defun (derive-ord-pairs ls rs)
+  (match ls
+    (Nil Nil)
+    ((Cons l lrest)
+     (match rs
+       (Nil Nil)
+       ((Cons r rrest) (Cons #'(compare ,l ,r) (derive-ord-pairs lrest rrest)))))))
+
+;; Same case, so the payloads decide it positionally. The inner wildcard cannot
+;; run — the indices were equal before this was reached — and is there because a
+;; match answers on every input.
+(: derive-ord-union-arm (-> Syntax Syntax))
+(defun (derive-ord-union-arm c)
+  (def name (derive-case-name c))
+  (def n (list-length (derive-payload c)))
+  (def ls (derive-binders "__derived-l" 0 n))
+  (def rs (derive-binders "__derived-r" 0 n))
+  #'((,name ,@ls)
+     (match b
+       ((,name ,@rs) ,(derive-ord-chain (derive-ord-pairs ls rs) 0))
+       (,(derive-sym "_") 0))))
+
+;; Case first, payload second. Both indices are taken before either is used, so
+;; the cross-case answer is one comparison of ints rather than an arm for every
+;; pair of cases.
+(: derive-ord-union (-> (List Syntax) (List Syntax)))
+(defun (derive-ord-union cases)
+  (def ia (derive-sym "__derived-ia"))
+  (def ib (derive-sym "__derived-ib"))
+  (def index-arms (derive-ord-index-arms cases 0))
+  (Cons #'(defun (compare a b)
+            (let ((,ia (match a ,@index-arms))
+                  (,ib (match b ,@index-arms)))
+              (if (= ,ia ,ib)
+                  (match a ,@(list-map derive-ord-union-arm cases))
+                  (compare ,ia ,ib))))
+        Nil))
+
 ;; --- Putting one implementation together ---
+
+;; What can be derived is a property of the declaration rather than of the
+;; trait, so the same refusal serves both of them.
+(: derive-shape-error (-> Syntax (List Syntax)))
+(defun (derive-shape-error bad)
+  (derive-fail bad "a type that derives has to be a Record, a Struct or a Union. An alias is a second spelling of a type rather than a type of its own — derive for the type it names."))
 
 ;; A `Struct` never reaches `derive-eq-record` with a mutable field: the parser
 ;; refuses the combination outright, so the flag it is handed is always false.
@@ -2014,13 +2112,25 @@
     (('Union cases ...) (derive-eq-union cases))
     (('Enum cases ...) (derive-eq-union cases))
     (('Sum cases ...) (derive-eq-union cases))
-    (bad (derive-fail bad "a type that derives has to be a Record, a Struct or a Union. An alias is a second spelling of a type rather than a type of its own — derive for the type it names."))))
+    (bad (derive-shape-error bad))))
+
+(: derive-ord-methods (-> Syntax (List Syntax)))
+(defun (derive-ord-methods shape)
+  (syntax-match shape
+    (('Record fields ...) (derive-ord-record (derive-field-names fields)))
+    (('Struct fields ...) (derive-ord-record (derive-field-names fields)))
+    (('Union cases ...) (derive-ord-union cases))
+    (('Enum cases ...) (derive-ord-union cases))
+    (('Sum cases ...) (derive-ord-union cases))
+    (bad (derive-shape-error bad))))
 
 (: derive-methods (-> Syntax Syntax Syntax (List Syntax)))
 (defun (derive-methods trait head shape)
   (if (syntax-ident=? trait (derive-sym "Eq"))
       (derive-eq-methods head shape)
-      (derive-fail trait "the only trait that can be derived is Eq.")))
+      (if (syntax-ident=? trait (derive-sym "Ord"))
+          (derive-ord-methods shape)
+          (derive-fail trait "the traits that can be derived are Eq and Ord."))))
 
 ;; A type with parameters derives a *conditional* implementation: every
 ;; parameter has to satisfy the same trait, because the fields hold values of

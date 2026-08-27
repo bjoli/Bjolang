@@ -90,7 +90,18 @@ Writing that out per field is what ~type/derive~ is for. It is a macro in ~(std 
 - a record or struct compares its fields in declaration order
 - a union compares the case first: different cases are unequal, the same case compares its payload positionally
 - a type with parameters derives a *conditional* implementation, ~(def/impl (Eq (Box %a)) (where (Eq %a)) ...)~
-- the traits are a list, ~(Eq)~ today and ~(Eq Ord)~ later, so the shape does not change when there is a second one
+- the traits are a list: ~(Eq)~, ~(Ord)~ or ~(Eq Ord)~, each deriving its own methods from the one declaration
+
+~Ord~ reads the same declaration the same way round, and answers with a sign rather than with a ~bool~: a record or struct compares its fields in declaration order and stops at the first that decides, a union compares the case index before the payload. The case order is the declaration order the hash already seeds itself with, so ordering and hashing agree about what a union's cases are without either being told.
+
+#+BEGIN_SRC scheme
+(type/derive (Eq Ord)
+  (: Version (Record (: major int) (: minor int))))
+
+(list-sort versions)    ;; and every other thing written against Ord
+#+END_SRC
+
+Nothing here corresponds to ~eq-hash~'s refusal on a mutable field. Hashing one breaks a law — a key's hash may not change — and ordering has none to break; a sorted collection going stale under a write is the write's doing rather than the comparison's.
 
 A field whose type has no ~Eq~ is reported against the ~type/derive~ form rather than against the field: every node a macro builds carries the call site's range. The message names the type that has no implementation and the implementation that needed it.
 

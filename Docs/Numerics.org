@@ -161,23 +161,27 @@ identity: it is about mutable cells, not about values.
 
 *** Ordering your own types
 
-~Ord~ is an ordinary trait, so a type of your own can be ordered by writing one
-method — and then everything above works at it, including ~list-sort~, which
-knows nothing about your type:
+~Ord~ is an ordinary trait, so a type of your own can be ordered — and then
+everything above works at it, including ~list-sort~, which knows nothing about
+your type. Lexicographic by field is what ~type/derive~ writes:
 
 #+BEGIN_SRC scheme
-(type/derive (Eq) (: Version (Record (: major int) (: minor int))))
+(type/derive (Eq Ord) (: Version (Record (: major int) (: minor int))))
 
+(list-sort vs)          ;; 1.9, 2.0, 2.1
+(list-min vs)           ;; (Some 1.9)
+(less? a b)             ;; and the rest, for free
+#+END_SRC
+
+Write it out where the order is not the one the fields are in. It is one method:
+
+#+BEGIN_SRC scheme
 (def/impl (Ord Version)
   (defun (compare a b)
     (def m (compare (record-ref a major) (record-ref b major)))
     (if (= m 0)
         (compare (record-ref a minor) (record-ref b minor))
         m)))
-
-(list-sort vs)          ;; 1.9, 2.0, 2.1
-(list-min vs)           ;; (Some 1.9)
-(less? a b)             ;; and the rest, for free
 #+END_SRC
 
 Negative, zero or positive is the contract — not −1, 0 and 1 — which is what
