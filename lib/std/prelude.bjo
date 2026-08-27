@@ -104,19 +104,14 @@
 ;; First, and before the includes: `=` is a trait method now, and a call to one
 ;; is only recognized as such once the trait has been registered.
 (import (std eq))
-;; `Ord` itself is not named here, as `Eq` is not: `re-export` names something
-;; in scope as a *binding*, and a trait is not one. The trait travels with its
-;; methods, so re-exporting `compare` republishes `Ord` and a program importing
-;; only the prelude can still write `(where (Ord %a))`.
+;; re-export ord and eq traits
 (re-export = eq-hash
            compare less? greater? at-most? at-least?
            least greatest list-sort list-min list-max)
 
 (include "Foldable.protobjo")
 
-;; The one list operation written here rather than built in. `(std monad)` is
-;; where it was, since `List`'s `bind` is a concat-map and needs one — and that
-;; module is above this one, so it stayed behind when the trait left.
+
 (: list-append (-> (List %a) (List %a) (List %a)))
 (defun (list-append xs ys)
   (list-foldr Cons ys xs))
@@ -176,11 +171,7 @@
 ;;   an impl of its own — `ignore` runs it, as `Promise` does below;
 ;;   named in the compiler's no-discard set — `ignore` is an error, which is
 ;;   what `Result` is, since a discarded error has no defensible default.
-;;
-;; That the specific impl is always the one that runs, even for a value routed
-;; through generic code, is the property §0.2 buys: a blanket is only ever
-;; selected at a ground constructor, and a type variable becomes a dictionary
-;; parameter filled in where the type is known.
+;;   
 (def/trait (Discard %a)
   (: ignore (-> %a void)))
 
@@ -213,29 +204,7 @@
 ;; A `(Map %k %v)` is a CHAMP trie keyed by hash: lookup, insertion and removal
 ;; are all effectively constant time, two maps share every subtree they have in
 ;; common, and a walk arrives in the trie's own order — which is to say, in no
-;; order a program should rely on. Reach for `(std orderedmap)` when the order
-;; is part of the answer.
-;;
-;; Nothing here is a builtin. The operations are `Map.MapModule` and its two
-;; siblings, imported directly, exactly as `(std set)` imports `Set.SetModule`.
-;; It lives in the prelude rather than in a `std/map.bjo` of its own for two
-;; reasons: `#map(...)` reads as a call to `list->map`, which has to be in scope
-;; wherever the literal is written, and the trait implementations below are the
-;; prelude's — a separate module would have to import the prelude for them while
-;; the prelude imported it back.
-;;
-;; Three interfaces, deliberately the same interface three times: the **map**,
-;; where every write answers a new map; the **builder**, shaped like
-;; `ListBuilder` and the fast way to make a map out of nothing; and the
-;; **transient**, the map's own interface with the writes turned inside out and
-;; the fast way to make a map out of *another* map.
-;;
-;; The vocabulary is `(std orderedmap)`'s `orderedmap-*` with the prefix
-;; shortened, so a program that outgrows the hashing can change the constructor
-;; and the prefix and stop.
-
-;; The types. Each is written applied, because a .NET generic type is a type
-;; *constructor*: `Map.Map` is not a type until it has its arguments.
+;; order a program should rely on.
 (import/class
   ((Map %k %v)          (: Map.Map))
   ((MapBuilder %k %v)   (: Map.MapBuilder))
@@ -275,11 +244,6 @@
   ;;
   ;; Every callback takes the key and the value as *two* arguments, which is
   ;; what a walk of the trie has to hand over anyway.
-  ;;
-  ;; The entry survives as a `(Tuple %k %v)` only where a trait fixes the shape:
-  ;; `Iterable`'s `%elem` and `Foldable`'s `%item` are one element, so a callback
-  ;; reached through `fold` or a `loop` sees a pair. The impls below take the
-  ;; pair apart and call these.
   (map-map        (: Map.MapModule.Map       (-> (-> %k %v %w) (Map %k %v) (Map %k %w))))
   ;; The functor's map: the value moves and the key rides along.
   (map-map-values (: Map.MapModule.MapValues (-> (-> %v %w) (Map %k %v) (Map %k %w))))
@@ -347,9 +311,7 @@
   (def (found value) (transientmap-try-ref/pair m key))
   (if found (Some value) None))
 
-;; Two spellings of one question, because `contains?` reads better about a set
-;; and `has-key?` about a map, and a program porting between the two should not
-;; have to change either.
+
 (: map-has-key? (-> (Map %k %v) %k bool))
 (defun (map-has-key? m key) (map-contains? m key))
 
@@ -360,16 +322,12 @@
   (def (found k v) (map-try-find pred m))
   (if found (Some (Tuple k v)) None))
 
-;; Written here rather than imported: the .NET `ForEach` takes an `Action`,
-;; where a Bjolang `(-> %k %v void)` is a `Func<TK, TV, Unit>` — the unit is a
-;; value, and that is what makes a callback's type uniform whatever it answers.
+
 (: map-for-each (-> (-> %k %v void) (Map %k %v) void))
 (defun (map-for-each f m)
   (ignore (map-iter (fun (k v) (f k v) #t) m)))
 
-;; A map's item is its entry, so the folder `Foldable` hands down takes one
-;; argument where `map-fold`'s takes two. The pair is put back together here,
-;; which is the only place that has to know the difference.
+;; to satisfy the interface, foldable on map has to take a Tuple
 (def/impl (Foldable (Map %k %v))
   (type %item (Tuple %k %v))
   (defun (fold f acc col)
@@ -402,28 +360,6 @@
   (defun (eq-hash m)
     (map-fold (fun (h k v) (bitwise-xor h (hash-combine (eq-hash k) (eq-hash v)))) 0 m)))
 
-;; --- Conversions ---
-;;
-;; Through `(Seq (Tuple %k %v))`, which every collection can produce and
-;; consume: a map is built from a walk of the source and nothing about the
-;; source's own shape matters. `seq->map` is the one that does the work.
-;;
-;; `list->map` is also what `#map(...)` reads as, so it has to be in scope
-;; wherever the literal may be written.
-
-(: list->map (-> (List (Tuple %k %v)) (Map %k %v)))
-(defun (list->map xs) (seq->map (list->seq xs)))
-
-(: map->list (-> (Map %k %v) (List (Tuple %k %v))))
-(defun (map->list m) (seq->list (map->seq m)))
-
-(: vec->map (-> (Vec (Tuple %k %v)) (Map %k %v)))
-(defun (vec->map v) (seq->map (vec->seq v)))
-
-(: map->vec (-> (Map %k %v) (Vec (Tuple %k %v))))
-(defun (map->vec m) (seq->vec (map->seq m)))
-
-
 ;; ---------------------------------------------------------------------------
 ;; Iterable
 ;; ---------------------------------------------------------------------------
@@ -432,10 +368,7 @@
 ;; rather than an inline-only one: it never returns a sequence at a new element
 ;; type, so there is no constructor variable to abstract over.
 ;;
-;; Every method takes the sequence *and* the cursor, which keeps the cursor
-;; minimal — folding `s` into it would make a vector's cursor a (vector, index)
-;; pair rather than a bare int. `s` is loop-invariant and substituted away by
-;; the inliner, so the arguments that go unread cost nothing.
+;; Every method takes the sequence *and* the cursor.
 ;;
 ;; The protocol's contract:
 ;;   1. `done?` is called exactly once per iteration. Nothing peeks and nothing
@@ -443,13 +376,19 @@
 ;;   2. `current` is called only when the preceding `done?` returned false.
 ;;   3. The cursor is used linearly: never copied, stepped twice, or captured.
 ;;   4. `start` is called once per entry to the level owning the cursor.
+;;   5. ->seq is just the lazy way of iterating through an iterable
 (def/trait (Iterable %s)
   (type %elem)
   (type %cursor)
   (: iterable-start (-> %s %cursor))
   (: iterable-done? (-> %s %cursor bool))
   (: iterable-current (-> %s %cursor %elem))
-  (: iterable-next (-> %s %cursor %cursor)))
+  (: iterable-next (-> %s %cursor %cursor))
+  (: ->seq (-> %s (Seq %elem)))
+
+  (defun (->seq s)
+    (seql (:for e s)
+          (:yield e))))
 
 (def/impl (Iterable (List %a))
   (type %elem %a)
@@ -702,6 +641,37 @@
 (def/impl (Functor (Result %e %a))
   (defun (map g r)
     (match r ((Ok v) (Ok (g v))) ((Err e) (Err e)))))
+
+
+
+;; ---------------------------------------------------------------------------
+;; Conversions
+;; ---------------------------------------------------------------------------
+;; the loop form is probably the fastest way to iterate over a list
+;; but this should be rewritten to use the iter versions over vec and
+;; map for maximum speed
+
+(: list->map (-> (List (Tuple %k %v)) (Map %k %v)))
+(defun (list->map xs)
+  (loop (:for kvp xs)
+        (:acc map (mapping kvp))))
+
+(: map->list (-> (Map %k %v) (List (Tuple %k %v))))
+(defun (map->list m)
+  (loop (:for kvp m)
+        (:acc lst (listing kvp))))
+(: vec->map (-> (Vec (Tuple %k %v)) (Map %k %v)))
+(defun (vec->map v)
+  (loop (:for kvp v)
+        (:acc map (mapping kvp))))
+
+(: map->vec (-> (Map %k %v) (Vec (Tuple %k %v))))
+(defun (map->vec m)
+  (loop (:for kvp m)
+        (:acc v (vecing kvp))))
+
+
+
 
 
 ;; ---------------------------------------------------------------------------
@@ -1404,26 +1374,21 @@
 (def/trait (Collection %a)
   (type %content)
   (: length (-> %a int))
-  (: empty? (-> %a bool))
-  (: ->seq (-> %a (Seq %content))))
+  (: empty? (-> %a bool)))
 
 (def/impl (Collection (List %a))
   (type %content %a)
   (defun (length lst)
     (list-length lst))
   (defun (empty? lst)
-    (list-empty? lst))
-  (defun (->seq lst)
-    (list->seq lst)))
+    (list-empty? lst)))
 
 (def/impl (Collection (Vec %a))
   (type %content %a)
   (defun (length vec)
     (vec-length vec))
   (defun (empty? vec)
-    (vec-empty? vec))
-  (defun (->seq vec)
-    (vec->seq vec)))
+    (vec-empty? vec)))
 
 ;; A map's element is its `(Tuple %k %v)` pair, so `(->seq m)` is a sequence of
 ;; pairs and `(length m)` counts entries, not keys and values separately.
@@ -1432,9 +1397,7 @@
   (defun (length m)
     (map-length m))
   (defun (empty? m)
-    (map-empty? m))
-  (defun (->seq m)
-    (map->seq m)))
+    (map-empty? m)))
 
 ;; The one member that holds no elements: a `Range` computes its answers from
 ;; `lo`, `hi` and `by` rather than looking at anything. `by` is positive by
@@ -1450,11 +1413,7 @@
         0
         (/ (+ (- hi lo) (- by 1)) by)))
   (defun (empty? r)
-    (>= (record-ref r lo) (record-ref r hi)))
-  (defun (->seq r)
-    (seql (:with i (record-ref r lo) (+ i (record-ref r by)))
-          (:break (>= i (record-ref r hi)))
-          (:yield i))))
+    (>= (record-ref r lo) (record-ref r hi))))
 
 ;; A string's content is its characters. `length` is `string-count` — the walk —
 ;; rather than `string-length`, so that it agrees with the sequence `->seq`
@@ -1465,11 +1424,7 @@
   (defun (length s)
     (string-count s))
   (defun (empty? s)
-    (string-empty? s))
-  (defun (->seq s)
-    (seql (:with c (string-cursor-start s) (string-cursor-next s c))
-          (:break (string-cursor-end? s c))
-          (:yield (string-cursor-ref s c)))))
+    (string-empty? s)))
 
 ;; `->seq` is the identity here, which is the point: generic code written
 ;; against `Collection` accepts a sequence without a conversion.
@@ -1485,9 +1440,7 @@
   (defun (length s)
     (seq-length s))
   (defun (empty? s)
-    (seq-empty? s))
-  (defun (->seq s)
-    s))
+    (seq-empty? s)))
 
 
 ;; ---------------------------------------------------------------------------
@@ -1550,9 +1503,9 @@
 ;; with a different name.
 (def/macro (if-let form inject compare)
   (syntax-match form
-    ((_ ((name value)) then else)
+    ((_ (name value) then else)
      #'(match ,value ((Some ,name) ,then) (None ,else)))
-    (bad (syntax-error bad "if-let takes one binding, a then and an else: (if-let ((name expr)) then else)"))))
+    (bad (syntax-error bad "if-let takes one binding, a then and an else: (if-let (name expr) then else)"))))
 
 ;; `(when-let ((name expr)) body ...)`
 ;;
@@ -1565,14 +1518,14 @@
 ;; anywhere else in the language.
 (def/macro (when-let form inject compare)
   (syntax-match form
-    ((_ ((name value)) first body ...)
+    ((_ (name value) first body ...)
      ;; `value` is bound before it is asked about, so it is evaluated once.
      #'(let ((found ,value))
          (when (some? found)
            (let ((,name (option-ref found)))
              ,first
              ,@body))))
-    (bad (syntax-error bad "when-let takes one binding and a body: (when-let ((name expr)) body ...)"))))
+    (bad (syntax-error bad "when-let takes one binding and a body: (when-let (name expr) body ...)"))))
 
 ;; `(some-> value step ...)` — `->`, stopping at the first `None`.
 ;;
@@ -1609,10 +1562,7 @@
 ;; scope does.
 ;;
 ;; `parameterize` restores the binding on the way out but never *fires* the
-;; token. So a scope can hand a child a token and then return, and what is left
-;; behind is a token nobody holds the canceller for — a child running on with
-;; nothing able to stop it. It is the same leak `spawn-evt` exists to close, in
-;; the shape a reader is most likely to write:
+;; token. 
 ;;
 ;;     (parameterize ((current-cancel tok))
 ;;       (bjo (worker jobs)))        ;; promise dropped
@@ -1624,22 +1574,11 @@
 ;;   * a failure    → `(Failed e)`, and the exception carries on out
 ;;   * either way   → the binding is restored
 ;;
-;; A macro rather than a special form, and deliberately: this is ordinary
-;; `make-cancel` + `parameterize` + `try`, so there is nothing here the parser
-;; needs to know about. Being a macro also means the import modifiers reach it —
-;; it can be renamed or excluded like any other binding, which a reserved word
-;; could not be.
-;;
 ;; **What it does not do.** Firing returns immediately, so a cooperating child
 ;; stops *soon*, not before the scope exits. A child midway through its cleanup
 ;; can still be writing to a port this scope has closed; guaranteeing otherwise
 ;; needs the children joined, which needs a nursery. This is the cheap half, and
 ;; it is the half that stops the leak.
-;;
-;; **The airlock.** Bare `(parameterize ((current-cancel t)) ...)` stays legal,
-;; for the token that genuinely must outlive its creator — a daemon whose token
-;; lives in a registry. That is a deliberate choice worth a second look at a
-;; review, not a thing to ban.
 (def/macro (with-cancel form inject compare)
   (syntax-match form
     ((_ (cancel) first body ...)
