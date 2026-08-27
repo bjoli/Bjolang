@@ -138,7 +138,8 @@
                                   System.InvalidOperationException)))
   ;; The suspending one, because it is the primitive here: `wait` blocks on a
   ;; spawned waiter rather than on a process, so a `defun` caller parks its own
-  ;; thread and nothing else.
+  ;; thread and nothing else. Called exactly once per child — see
+  ;; `awaiting-exit`, which is the only call site.
   (process-await (: System.Diagnostics.Process.WaitForExitAsync (-> Process void) #:async))
   (process-code  (: System.Diagnostics.Process.ExitCode (-> Process int) #:get))
   (process-stdin (: System.Diagnostics.Process.StandardInput (-> Process StreamWriter) #:get))
@@ -437,11 +438,15 @@
 ;; `waits` holds one promise per junction pump, per redirection pump and per
 ;; filter, and a filter that raised is still in there — which is why `wait`
 ;; answers with a `Result` rather than a bare exit code.
+;;
+;; `exits` holds one promise per child, and is the *only* place a child is
+;; waited for. See `awaiting-exit`.
 (type
   (: Proc #:opaque
      (Record (: input (Option TextOutputPort))
              (: output (Option TextInputPort))
              (: children (Vec Process))
+             (: exits (Vec (Promise Unit)))
              (: waits (Vec (Promise Unit))))))
 
 ;; One node, wired but not yet connected to its neighbours. A command and a
@@ -452,7 +457,25 @@
      (Record (: sink (Option TextOutputPort))
              (: source (Option TextInputPort))
              (: children (Vec Process))
+             (: exits (Vec (Promise Unit)))
              (: waits (Vec (Promise Unit))))))
+
+;; A child is waited for once, here, and everyone else joins this promise.
+;;
+;; `Process.WaitForExitAsync` may not be called twice on the same process. It
+;; races its own one-shot `Exited` event: a second call that arrives while the
+;; first is completing registers a handler the event has already passed, then
+;; finds `HasExited` still false, and parks forever with the child long since
+;; gone. `exited` builds a waiter at every sync, and a `choose` loop over
+;; `(chan-recv items)` and `(exited p)` therefore calls it once per item — so
+;; this module hit that race whenever it read a form as a channel.
+;;
+;; A promise has neither problem: it is persistent, so every joiner is answered
+;; however late it arrives, and there are as many joiners as anyone likes.
+(: awaiting-exit (-> Process Unit))
+(defbjo (awaiting-exit child)
+  (process-await child)
+  unit)
 
 (: start-command (-> Cmd (Option TextOutputPort) (Result Exception Wired)))
 (defun (start-command c errors)
@@ -478,6 +501,7 @@
        (Ok (Wired (sink (Some (cast TextOutputPort (process-stdin child))))
                   (source (Some (cast TextInputPort (process-stdout child))))
                   (children [child])
+                  (exits [(bjo (awaiting-exit child))])
                   ;; `copy-into`, not `copy-stream`: every command under one
                   ;; `errors-into-file` shares this writer, and the first to
                   ;; finish must not close it.
@@ -495,6 +519,7 @@
       (Wired (sink (Some (pipe-output in)))
              (source (Some (pipe-input out)))
              (children (vec-empty))
+             (exits (vec-empty))
              (waits [(bjo (close-after done (pipe-output out)))])))))
 
 ;; Close first, raise second: whatever is downstream is waiting on end of
@@ -550,11 +575,13 @@
         (let go ((remaining rest)
                  (upstream (record-ref head source))
                  (children (record-ref head children))
+                 (exits (record-ref head exits))
                  (waits (record-ref head waits)))
           (match remaining
             (Nil (Ok (Wired (sink (record-ref head sink))
                             (source upstream)
                             (children children)
+                            (exits exits)
                             (waits waits))))
             ((Cons node more)
              (match (wire node errors)
@@ -568,6 +595,7 @@
                    (go more
                        (record-ref w source)
                        (vec-merge children (record-ref w children))
+                       (vec-merge exits (record-ref w exits))
                        (vec-add (vec-merge waits (record-ref w waits)) link))))))))))))))
 
 ;; A junction only exists if both ends do. `(pipe (into-file "x" (ls)) (wc -l))`
@@ -637,6 +665,7 @@
         (Ok (Wired (sink None)
                    (source (record-ref w source))
                    (children (record-ref w children))
+                   (exits (record-ref w exits))
                    (waits (vec-add (record-ref w waits) (bjo (pump file to)))))))))))
 
 ;; ...and the file replaces the caller as the thing reading out, so `source`
@@ -653,6 +682,7 @@
         (Ok (Wired (sink (record-ref w sink))
                    (source None)
                    (children (record-ref w children))
+                   (exits (record-ref w exits))
                    (waits (vec-add (record-ref w waits) (bjo (pump from file)))))))))))
 
 ;; Standard error is not a stream this module wires between stages — every
@@ -666,6 +696,7 @@
        (Ok (Wired (sink (record-ref w sink))
                   (source (record-ref w source))
                   (children (record-ref w children))
+                  (exits (record-ref w exits))
                   (waits (vec-add (record-ref w waits)
                                   (bjo (close-when-all-done (record-ref w waits) shared))))))))))
 
@@ -692,6 +723,7 @@
         (Ok (Proc (input (record-ref w sink))
                   (output (record-ref w source))
                   (children (record-ref w children))
+                  (exits (record-ref w exits))
                   (waits (record-ref w waits)))))))))
 
 ;; Where to write the form's input, unless a `from-file` took it. Closing it is
@@ -722,33 +754,33 @@
           ((Err e) (Err e))
           ((Ok u) (go (+ i 1)))))))
 
-(: await-children (-> (Vec Process) Unit))
-(defbjo (await-children children)
-  (let go ((i 0))
-    (when (< i (vec-length children))
-      (process-await (vec-ref children i))
-      (go (+ i 1))))
-  unit)
-
 ;; Children first, then everything spawned around them: a pump between two
 ;; stages cannot finish before the stage feeding it has.
+;;
+;; The children are joined rather than awaited, because this runs once per
+;; `wait` and once per `exited` — several times over for a `choose` loop — and
+;; a process may only be awaited once. `awaiting-exit` is where that happens.
 (: waiting (-> Proc (Result Exception int)))
 (defbjo (waiting p)
-  (await-children (record-ref p children))
-  (match (join-all (record-ref p waits))
+  (match (join-all (record-ref p exits))
     ((Err e) (Err e))
-    ((Ok u)
-     (let ((children (record-ref p children)))
-       (Ok (if (vec-empty? children)
-               0
-               (process-code (vec-ref children (- (vec-length children) 1)))))))))
+    ((Ok gone)
+     (match (join-all (record-ref p waits))
+       ((Err e) (Err e))
+       ((Ok done)
+        (let ((children (record-ref p children)))
+          (Ok (if (vec-empty? children)
+                  0
+                  (process-code (vec-ref children (- (vec-length children) 1)))))))))))
 
 (: waiting/all (-> Proc (Result Exception (Vec int))))
 (defbjo (waiting/all p)
-  (await-children (record-ref p children))
-  (match (join-all (record-ref p waits))
+  (match (join-all (record-ref p exits))
     ((Err e) (Err e))
-    ((Ok u) (Ok (vec-map (fun (c) (process-code c)) (record-ref p children))))))
+    ((Ok gone)
+     (match (join-all (record-ref p waits))
+       ((Err e) (Err e))
+       ((Ok done) (Ok (vec-map (fun (c) (process-code c)) (record-ref p children))))))))
 
 ;; A spawned bjoroutine's answer, from outside fiber-land. The two `Result`s are
 ;; different failures — the outer one is the waiter itself dying, the inner one
@@ -798,6 +830,7 @@
   (Proc (input (record-ref p input))
         (output (record-ref p output))
         (children (record-ref p children))
+        (exits (record-ref p exits))
         (waits (vec-add (record-ref p waits) extra))))
 
 
