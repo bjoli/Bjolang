@@ -146,34 +146,18 @@ than a patch to ~Lowering~.
 
 * Incremental builds
 
-** Editing a standard library module does not rebuild the modules above it
+** ~bjor~'s staleness check is not covered by the suite
 
-#+BEGIN_SRC sh
-touch lib/std/eq.bjo && ./build_std.sh
-#+END_SRC
+~needs_compile~ decides whether to invoke the compiler at all, and it has been
+wrong twice in opposite directions: once rebuilding the whole standard library
+on every invocation, once leaving a module stale that a dependency had moved
+under. Neither was caught by a test, because the suite compiles fixtures with
+the compiler directly and ~bjor~ is only in the path of ~build_std.sh~ and of
+running a file by hand.
 
-rebuilds ~eq.dll~ and reports every other module — ~prelude~ among them, which
-imports it — as up to date. The tree left behind is inconsistent: the next
-compilation links a ~prelude.dll~ built against metadata that no longer
-describes ~eq~. It does not fail cleanly. What it did once was ~SIGBUS~ in the
-middle of building a fixture library, with a core dump and nothing naming the
-cause; deleting ~lib/std/*.dll~ and building again fixes it.
-
-~bjor~'s ~needs_compile~ is where the decision is made, and it has two halves
-that between them leave the hole. ~collect_sources~ follows only paths written
-as *string literals* — that is ~include~, not ~import~, whose module path is a
-symbol — so an imported module is not among the sources it compares against.
-And the "is any standard library ~.dll~ newer" check is deliberately skipped for
-files inside ~lib/std~, on the ground that ~Pipeline.ensureLibrary~ judges
-dependencies while compiling. It does, correctly and transitively — but only
-when the compiler runs, and this is the decision not to run it.
-
-The skip is not itself wrong: it replaced a check that compared against *every*
-library ~.dll~, which called every module but the last one stale, since
-~build_std.sh~ builds in dependency order. Rebuilding them reproduced the same
-shape, so the whole library rebuilt on every invocation forever.
-
-The fix is to compare against the ~.dll~ of each module the file actually
-imports, rather than against all of them or none. That means reading ~(import
-(std x))~ forms in the shell, which ~collect_sources~ is already the place for.
+Testing it means mutating ~lib/std~ mid-run — touching a module and asserting
+what the next invocation says — and the tree is left inconsistent between the
+touch and the rebuild that follows. The suite already takes a lock against two
+runs sharing a working tree for that reason, so this wants to be the last phase
+or a script of its own.
 

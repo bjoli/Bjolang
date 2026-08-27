@@ -157,6 +157,54 @@ collect_sources() {
     done < <(grep -oE '"[^"]+\.(bjo|protobjo)"' "$file" 2>/dev/null | tr -d '"')
 }
 
+# The library modules a file imports, as the `.dll` each of them resolves to.
+#
+# `collect_sources` follows only paths written as *string literals*, which is
+# what `include` and a relative import spell. A module path — `(std eq)` — is a
+# list of symbols resolved under `lib/`, and nothing was comparing a module
+# against the modules it is compiled from: editing `eq.bjo` rebuilt `eq.dll` and
+# left `prelude.dll`, which imports it, claiming to be current. That does not
+# fail cleanly. The next compilation links metadata describing a module that no
+# longer exists, and what it did once was crash with SIGBUS in the middle of an
+# unrelated file.
+#
+# One edge deep is enough, because `build_std.sh` builds in dependency order: a
+# rebuilt module is newer than everything above it, so the change reaches the
+# top of the graph one module at a time within a single pass. For the same
+# reason this cannot thrash — every module here was built before the one asking.
+#
+# The scan is deliberately loose. It reads the symbol lists inside `(import
+# ...)` forms and keeps the ones that name a file that exists, so a `(rename
+# ...)` clause, or anything else shaped like a path, costs a failed lookup and
+# nothing more.
+imported_dlls() {
+    local parts
+    while read -r parts; do
+        [ -n "$parts" ] && [ -f "$SCRIPT_DIR/lib/$parts.dll" ] && echo "$SCRIPT_DIR/lib/$parts.dll"
+    done < <(awk '
+        { sub(/;.*/, ""); gsub(/\(/, " ( "); gsub(/\)/, " ) ")
+          for (i = 1; i <= NF; i++) tok[++n] = $i }
+        END {
+            depth = 0; imports = 0
+            for (i = 1; i <= n; i++) {
+                if (tok[i] == "(") {
+                    depth++
+                    if (tok[i + 1] == "import") { imports = depth; continue }
+                    if (imports == 0) continue
+                    path = ""
+                    for (j = i + 1; j <= n && tok[j] != ")" && tok[j] != "("; j++) {
+                        if (tok[j] !~ /^[A-Za-z0-9_+-]+$/) { path = ""; break }
+                        path = (path == "" ? tok[j] : path "/" tok[j])
+                    }
+                    if (path != "" && tok[j] == ")") print path
+                } else if (tok[i] == ")") {
+                    if (imports == depth) imports = 0
+                    depth--
+                }
+            }
+        }' "$1" 2>/dev/null)
+}
+
 # Is the binary older than anything it was built from? Besides the sources
 # themselves that means the standard library it links against and the compiler
 # that produced it — a program built by a different compiler is stale even when
@@ -175,6 +223,13 @@ needs_compile() {
         [ "$dep" -nt "$OUT_FILE" ] && return 0
     done
 
+    # And the modules it imports by module path, which the sources above cannot
+    # name. Read from the current shell rather than a pipeline, so that `return`
+    # returns from here.
+    while read -r dep; do
+        [ -n "$dep" ] && [ "$dep" -nt "$OUT_FILE" ] && return 0
+    done < <(imported_dlls "$FILE")
+
     # A rebuilt compiler invalidates everything it produced: a `.dll` carries
     # metadata in the compiler's own format, and the source it was built from
     # says nothing about that.
@@ -192,9 +247,9 @@ needs_compile() {
     # rebuilt on every invocation, forever, with nothing having changed. It cost
     # about six seconds of every `run_tests.sh`.
     #
-    # Nothing is lost by skipping it. What a standard library module depends on
-    # is what it imports, and `Pipeline.ensureLibrary` judges that against the
-    # same rule — the source closure and the compiler — while compiling it.
+    # What a standard library module depends on is what it imports, and that is
+    # what `imported_dlls` above compares it against. Asking about the rest of
+    # the library on top of that is what thrashed.
     local file_dir
     file_dir="$(cd "$(dirname "$FILE")" && pwd)"
 
