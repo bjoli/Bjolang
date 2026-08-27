@@ -61,7 +61,7 @@ A generic function that compares two values acquires the constraint without bein
 Two deliberate choices worth knowing:
 
 - ~double~ uses ~Equals~ rather than ~==~, so ~(= x x)~ is true for ~NaN~. Every hash-based container assumes its keys are reflexive; IEEE's answer is the other one, and it is not available through ~=~.
-- ~=~ on a ~Map~ matches keys by lookup, so key equality there is the trie's — which is .NET's, which is the key type's own implementation.
+- ~=~ on a ~Map~ matches keys by lookup, so key equality there is the trie's — which is .NET's, which is the key type's own implementation. (FIXME)
 
 *** The blanket
 A type with no implementation of its own gets .NET's equality, through a blanket implementation in ~(std eq)~. For a record, struct or union the compiler emitted, .NET's equality *is* that type's own ~Eq~ implementation — see *What .NET asks* below — so the blanket is "derive, applied automatically" rather than a second equality, and it reaches a hand-written implementation through a field at any depth.
@@ -377,7 +377,7 @@ Persistent immutable vectors.
 - ~(vec-empty? vec)~ : Returns true if the vector has no elements. O(1), off the same stored count. Note the pair: ~vec-empty~ *constructs* an empty vector, ~vec-empty?~ *asks*.
 - ~(vec-contains vec item)~ : Checks if ~item~ is in the vector.
 - ~(vec-compact vec)~ : Compacts the vector's internal structure.
-
+  
 ** Vector Builders
 Mutable builders for efficiently constructing vectors.
 - ~(vecbuilder-empty)~ : Creates an empty builder.
@@ -471,8 +471,10 @@ costs no allocation.
 *** Builders and transients
 
 Two more ways to build a map, in the shape ~(std set)~ and =(std orderedmap)=
-use. The builder is the fast way to make a map out of nothing — appends land in
-a flat buffer and are scattered into the trie by hash in one pass at the end.
+use. The builder is the fast way to make a map out of nothing. You put things in it
+and call mapbuilder->map. It does not support getting or setting elements. If you add
+the same key two times, the last one is used.
+
 The transient is the map's own interface with the writes turned inside out, and
 the fast way to make a map out of *another* map: it owns the nodes it has
 touched, so ~transientmap->map~ is O(1). The mutators answer nothing.
@@ -495,12 +497,6 @@ Three libraries rather than builtins, and imported by name:
 (import (std orderedmap))   ;; (OrderedMap %k %v)
 #+END_SRC
 
-Nothing in them is a builtin. The operations are the collections' own static
-interfaces — ~Set.SetModule~ and its siblings — reached through ~import/extern~
-clauses that declare a Bjolang signature for each, so the whole of every module
-is Bjolang source. That is what generic interop bought, and these three are its
-first customers.
-
 Each collection has *three* interfaces, and deliberately the same interface
 three times over:
 
@@ -509,34 +505,15 @@ three times over:
   ~add-all!~, ~length~, and the conversion each way — and the fast way to make
   one out of nothing, since appends are sorted or scattered into place in a
   single pass at the end;
-- a **transient**, which is the collection's own interface with the writes
-  turned inside out: the same names in the same argument order, mutating in
-  place and answering nothing. It is the fast way to make one out of *another*,
-  because it owns the nodes it has touched and ~transientset->set~ hands the
-  result back in O(1). The snapshot is safe: what a transient hands over it
-  disowns, so the next edit copies rather than corrupting it.
+- a **transient**, which mutates in place.
 
-~(Set %a)~ is ~(Map %k %v)~ with the values left out — effectively constant time,
-and a walk in the trie's own order, which is to say in no order to rely on.
-~set-union~ is cheap where two sets have a history in common, since an untouched
-subtree is taken whole.
+~(Set %a)~ is ~(Map %k %v)~ with the values left out. Constant time access. Unordered.
 
 ~(OrderedSet %a)~ and ~(OrderedMap %k %v)~ are persistent B-trees keyed in the
-elements' natural order, by ~Comparer<T>.Default~. What that buys is the order
-itself — a walk arrives sorted — and the navigation nothing hashed can answer:
-~-min~, ~-max~, ~-successor~ and ~-predecessor~, each answering an ~Option~
-because "there is no smaller element" is a real answer; and ~-range~, ~-from~
-and ~-until~, which are lazy and cost their own size rather than the
-collection's. The key need not be a member: ~(orderedset-successor s 4)~ is the
-smallest element above 4 whether or not 4 is there. The price is the comparison,
-so a lookup is O(log n) and a key type with no natural order fails at the first
-comparison rather than when the collection is made.
+elements' natural order, by ~Comparer<T>.Default~. 
 
-~(OrderedMap %k %v)~'s vocabulary is the prelude's ~map-*~ under an
-~orderedmap-~ prefix, down to a callback taking the key and the value as two
-arguments and an entry being a ~(Tuple %k %v)~ wherever a trait fixes the shape
-— so a program that outgrows a hashed map changes the constructor and the prefix
-and stops. ~map->orderedmap~ and ~orderedmap->map~ cross between them.
+~(OrderedMap %k %v)~'s api is the prelude's ~map-*~ under an
+~orderedmap-~ prefix.
 
 All three implement ~Iterable~, ~Collection~, ~Foldable~, ~Functor~ and ~->str~,
 and each publishes a collector — ~setting~, ~ordered-setting~,
@@ -556,29 +533,16 @@ evaluated. They are written with ~syntax-match~ in ~lib/std/prelude.bjo~; see
 anything or stored in a variable.
 
 - ~(cond (test body ...) ... (else body ...))~ : ~if~ at any number of arms. The
-  final ~else~ is required rather than conventional: every arm answers a value of
-  one type, so there has to be a last answer. ~when~ and ~unless~ are the
-  one-armed forms and need none.
+  final ~else~ is required. Every arm needs the same return type.
 - ~(if-let ((name expr)) then else)~ : ~then~ with ~name~ bound to what ~expr~
   answered, if it answered ~(Some ...)~, and ~else~ if it was ~None~. The
-  binding is shaped like a ~let~'s, and there is exactly one of them.
+  binding is shaped like a ~let~'s, which should be changed.
 - ~(when-let ((name expr)) body ...)~ : the body with ~name~ bound, when there
-  was something to bind. It *is* a ~when~ — it answers nothing, and the body's
-  value is dropped, so a body that ends in a value has to ~ignore~ it.
+  was something to bind. 
 - ~(some-> value step ...)~ : ~->~ that stops at the first ~None~. Each step
-  answers an ~(Option ...)~ and is handed what the step before it unwrapped to,
-  so the whole answers one and nothing after a ~None~ runs. Threading is ~->~'s
-  own, ~&~ and all.
-- ~(let* ((name expr) ...) body ...)~ : sequential binding. ~let~ binds
-  *simultaneously* — every value expression is evaluated where the form is
-  written, with none of the group's names in scope — so this is the form to
-  reach for when a value is built from the binding before it. It expands to a
-  nest of single-binding ~let~s, which is all a sequential group is: a single
-  binding means the same thing under either reading.
-- ~(parameterize* ((param expr) ...) body ...)~ : the same distinction for the
-  dynamic environment. ~parameterize~ evaluates every value expression against
-  the environment outside the form and only then installs any of them; this
-  installs each before the next is evaluated. Unwinding is identical.
+  answers an ~(Option ...)~ and it unwraps every step befor going on.
+- ~(let* ((name expr) ...) body ...)~ : sequential binding. 
+- ~(parameterize* ((param expr) ...) body ...)~ : the let* version of ~parameterize~
 - ~(with-cancel (cancel) body ...)~ : a cancellation scope that ends when the
   scope does. See below.
 - ~(with-deadline ms body ...)~ : the same scope, with a timer holding the
