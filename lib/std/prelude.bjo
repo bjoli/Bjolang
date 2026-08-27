@@ -17,11 +17,11 @@
   ;; Functor
   map
   ;; Iterable
-  current done? next start
+  iterable-start iterable-done? iterable-current iterable-next
   ;; Cursor — a position, where Iterable is a walk
   cursor-start cursor-end cursor-end? cursor-ref cursor-next cursor-prev
-  ;; Collecter
-  init step finish
+  ;; Collector
+  collector-init collector-step collector-finish
   ;; Collection
   length empty? ->seq
   ;; Discard — how a program says "computed, and deliberately not wanted"
@@ -446,18 +446,18 @@
 (def/trait (Iterable %s)
   (type %elem)
   (type %cursor)
-  (: start (-> %s %cursor))
-  (: done? (-> %s %cursor bool))
-  (: current (-> %s %cursor %elem))
-  (: next (-> %s %cursor %cursor)))
+  (: iterable-start (-> %s %cursor))
+  (: iterable-done? (-> %s %cursor bool))
+  (: iterable-current (-> %s %cursor %elem))
+  (: iterable-next (-> %s %cursor %cursor)))
 
 (def/impl (Iterable (List %a))
   (type %elem %a)
   (type %cursor (List %a))
-  (defun (start s) s)
-  (defun (done? s c) (list-empty? c))
-  (defun (current s c) (list-head c))
-  (defun (next s c) (list-tail c)))
+  (defun (iterable-start s) s)
+  (defun (iterable-done? s c) (list-empty? c))
+  (defun (iterable-current s c) (list-head c))
+  (defun (iterable-next s c) (list-tail c)))
 
 ;; A Vec is a tree, so walking it by index pays O(log32 n) per element. Its
 ;; native enumerator descends once and then walks leaves, so the cursor is one
@@ -466,18 +466,18 @@
 (def/impl (Iterable (Vec %a))
   (type %elem %a)
   (type %cursor (VecCursor %a))
-  (defun (start s) (vec-cursor s))
-  (defun (done? s c) (vec-cursor-done? c))
-  (defun (current s c) (vec-cursor-current c))
-  (defun (next s c) c))
+  (defun (iterable-start s) (vec-cursor s))
+  (defun (iterable-done? s c) (vec-cursor-done? c))
+  (defun (iterable-current s c) (vec-cursor-current c))
+  (defun (iterable-next s c) c))
 
 (def/impl (Iterable (Array %a))
   (type %elem %a)
   (type %cursor int)
-  (defun (start s) 0)
-  (defun (done? s index) (= index (array-length s)))
-  (defun (current s index) (array-ref s index))
-  (defun (next s index) (+ index 1)))
+  (defun (iterable-start s) 0)
+  (defun (iterable-done? s index) (= index (array-length s)))
+  (defun (iterable-current s index) (array-ref s index))
+  (defun (iterable-next s index) (+ index 1)))
 
 ;; A half-open range of ints. Its cursor is the number itself, so a loop over
 ;; one is `c = lo`, `c < hi`, `c += by` — a hand-written `for`.
@@ -498,19 +498,19 @@
 (def/impl (Iterable Range)
   (type %elem int)
   (type %cursor int)
-  (defun (start s) (record-ref s lo))
-  (defun (done? s c) (>= c (record-ref s hi)))
-  (defun (current s c) c)
-  (defun (next s c) (+ c (record-ref s by))))
+  (defun (iterable-start s) (record-ref s lo))
+  (defun (iterable-done? s c) (>= c (record-ref s hi)))
+  (defun (iterable-current s c) c)
+  (defun (iterable-next s c) (+ c (record-ref s by))))
 
 ;; A Map's elements are its pairs, in the trie's own order.
 (def/impl (Iterable (Map %k %v))
   (type %elem (Tuple %k %v))
   (type %cursor (MapCursor %k %v))
-  (defun (start s) (map-cursor s))
-  (defun (done? s c) (map-cursor-done? c))
-  (defun (current s c) (map-cursor-current c))
-  (defun (next s c) c))
+  (defun (iterable-start s) (map-cursor s))
+  (defun (iterable-done? s c) (map-cursor-done? c))
+  (defun (iterable-current s c) (map-cursor-current c))
+  (defun (iterable-next s c) c))
 
 ;; A string's elements are its *characters*, so a walk yields one `char` per
 ;; codepoint and an astral character arrives whole rather than as two halves.
@@ -518,10 +518,10 @@
 (def/impl (Iterable string)
   (type %elem char)
   (type %cursor StringCursor)
-  (defun (start s) (string-cursor-start s))
-  (defun (done? s c) (string-cursor-end? s c))
-  (defun (current s c) (string-cursor-ref s c))
-  (defun (next s c) (string-cursor-next s c)))
+  (defun (iterable-start s) (string-cursor-start s))
+  (defun (iterable-done? s c) (string-cursor-end? s c))
+  (defun (iterable-current s c) (string-cursor-ref s c))
+  (defun (iterable-next s c) (string-cursor-next s c)))
 
 
 
@@ -539,10 +539,10 @@
 (def/impl (Iterable (Seq %a))
   (type %elem %a)
   (type %cursor (SeqCursor %a))
-  (defun (start s) (seq-cursor s))
-  (defun (done? s c) (seq-cursor-done? c))
-  (defun (current s c) (seq-cursor-current c))
-  (defun (next s c) c))
+  (defun (iterable-start s) (seq-cursor s))
+  (defun (iterable-done? s c) (seq-cursor-done? c))
+  (defun (iterable-current s c) (seq-cursor-current c))
+  (defun (iterable-next s c) c))
 
 ;; ---------------------------------------------------------------------------
 ;; Cursor
@@ -581,9 +581,9 @@
   (type %elem)
   (type %acc)
   (type %out)
-  (: init (-> %c %acc))
-  (: step (-> %c %acc %elem %acc))
-  (: finish (-> %c %acc %out)))
+  (: collector-init (-> %c %acc))
+  (: collector-step (-> %c %acc %elem %acc))
+  (: collector-finish (-> %c %acc %out)))
 
 ;; The stock collectors. Each one's *constructor* is the name written in an
 ;; `:acc` clause, which is what makes a new accumulator an ordinary impl rather
@@ -597,9 +597,9 @@
   (type %elem %a)
   (type %acc (ListBuilder %a))
   (type %out (List %a))
-  (defun (init c) (listbuilder-empty))
-  (defun (step c acc x) (listbuilder-add! acc x) acc)
-  (defun (finish c acc) (listbuilder->list acc)))
+  (defun (collector-init c) (listbuilder-empty))
+  (defun (collector-step c acc x) (listbuilder-add! acc x) acc)
+  (defun (collector-finish c acc) (listbuilder->list acc)))
 
 ;; The same, into a Vec — what to reach for when the result is going to be
 ;; indexed rather than walked.
@@ -609,9 +609,9 @@
   (type %elem %a)
   (type %acc (VecBuilder %a))
   (type %out (Vec %a))
-  (defun (init c) (vecbuilder-empty))
-  (defun (step c acc x) (vecbuilder-add! acc x) acc)
-  (defun (finish c acc) (vecbuilder->vec acc)))
+  (defun (collector-init c) (vecbuilder-empty))
+  (defun (collector-step c acc x) (vecbuilder-add! acc x) acc)
+  (defun (collector-finish c acc) (vecbuilder->vec acc)))
 
 ;; Collects pairs into a Map. Its elements are `(Tuple key value)`, which is
 ;; exactly what iterating a Map yields — so
@@ -625,12 +625,12 @@
   (type %elem (Tuple %k %v))
   (type %acc (MapBuilder %k %v))
   (type %out (Map %k %v))
-  (defun (init c) (mapbuilder-empty))
-  (defun (step c acc kv)
+  (defun (collector-init c) (mapbuilder-empty))
+  (defun (collector-step c acc kv)
     (def (k v) kv)
     (mapbuilder-add! acc k v)
     acc)
-  (defun (finish c acc) (mapbuilder->map acc)))
+  (defun (collector-finish c acc) (mapbuilder->map acc)))
 
 ;; Characters into a string, through one buffer. `string-append` in a loop
 ;; rebuilds the whole string per element and is quadratic.
@@ -640,9 +640,9 @@
   (type %elem char)
   (type %acc StringBuilder)
   (type %out string)
-  (defun (init c) (stringbuilder-empty))
-  (defun (step c acc x) (stringbuilder-add! acc x) acc)
-  (defun (finish c acc) (stringbuilder->string acc)))
+  (defun (collector-init c) (stringbuilder-empty))
+  (defun (collector-step c acc x) (stringbuilder-add! acc x) acc)
+  (defun (collector-finish c acc) (stringbuilder->string acc)))
 
 (type (: Summing (Union summing)))
 
@@ -650,9 +650,9 @@
   (type %elem int)
   (type %acc int)
   (type %out int)
-  (defun (init c) 0)
-  (defun (step c acc x) (+ acc x))
-  (defun (finish c acc) acc))
+  (defun (collector-init c) 0)
+  (defun (collector-step c acc x) (+ acc x))
+  (defun (collector-finish c acc) acc))
 
 (type (: (Counting %a) (Union counting)))
 
@@ -660,9 +660,9 @@
   (type %elem %a)
   (type %acc int)
   (type %out int)
-  (defun (init c) 0)
-  (defun (step c acc x) (+ acc 1))
-  (defun (finish c acc) acc))
+  (defun (collector-init c) 0)
+  (defun (collector-step c acc x) (+ acc 1))
+  (defun (collector-finish c acc) acc))
 
 ;; `folding` is the primitive the others could all be written in terms of: the
 ;; accumulator simply becomes the step expression's value. Its seed is a
@@ -673,9 +673,9 @@
   (type %elem %a)
   (type %acc %a)
   (type %out %a)
-  (defun (init c) (match c ((folding s) s)))
-  (defun (step c acc x) x)
-  (defun (finish c acc) acc))
+  (defun (collector-init c) (match c ((folding s) s)))
+  (defun (collector-step c acc x) x)
+  (defun (collector-finish c acc) acc))
 
 
 (def/trait (Functor (%f %a))

@@ -1543,7 +1543,8 @@ is a jump, not a value: using it anywhere but tail position in that final ~:do~
 is an error rather than a closure.
 
 Consecutive ~:for~ clauses advance in *lockstep* and are tested in clause order:
-when the first of them is done the level is over, and no later ~done?~ runs. A
+when the first of them is done the level is over, and no later ~iterable-done?~
+runs. A
 ~:for~ pattern only destructures and must always match — it is not a filter.
 
 *** ~:with~ — state carried across iterations
@@ -1567,9 +1568,10 @@ loop-invariant binding, and a ~:with~ written without an ~end~ never terminates
 the level on its own — the same as a ~:for~ over an infinite sequence, so the
 loop then needs a bounded lockstep partner, a ~:break~ or a ~:final~.
 
-A level's termination tests are its ~:for~ clauses' ~done?~ and its ~:with~
-clauses' ~end~, **interleaved in source order** and short-circuiting. The order
-is observable: ~done?~ may be effectful, so a ~:with~ whose ~end~ holds leaves a
+A level's termination tests are its ~:for~ clauses' ~iterable-done?~ and its
+~:with~ clauses' ~end~, **interleaved in source order** and short-circuiting. The
+order is observable: ~iterable-done?~ may be effectful, so a ~:with~ whose ~end~
+holds leaves a
 later ~:for~'s cursor un-advanced. ~end~ is tested at the top of the iteration,
 so it sees its own variable and every other ~:with~ at this level or an enclosing
 one — but *not* this level's ~:for~ elements, which are bound only once the test
@@ -1607,7 +1609,8 @@ Which edges update it:
 
 The third row is the one to remember: **a ~:with~ inside a subloop is reset on
 every entry to that subloop**, because ~start~ is per entry to the owning level —
-the same rule as ~start~ on a cursor. This is the opposite of an accumulator
+the same rule as ~iterable-start~ on a cursor. This is the opposite of an
+accumulator
 declared beside it, which is hoisted and persists across outer iterations.
 
 A ~:with~ is a loop variable, so it is **not in scope in the finish block**: that

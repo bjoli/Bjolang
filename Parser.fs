@@ -3407,7 +3407,7 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
     let advanced (i: int) (cr: Range) =
         let cursors =
             List.map2
-                (fun sn cn -> cn, call "next" [ EIdent(sn, cr); EIdent(cn, cr) ] cr)
+                (fun sn cn -> cn, call "iterable-next" [ EIdent(sn, cr); EIdent(cn, cr) ] cr)
                 levels[i].SeqNames
                 levels[i].CurNames
 
@@ -3447,7 +3447,7 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
             levels[i].IterOrder
             |> List.choose (function
                 | Choice1Of2 fi ->
-                    Some(call "done?" [ EIdent(levels[i].SeqNames[fi], r); EIdent(levels[i].CurNames[fi], r) ] r)
+                    Some(call "iterable-done?" [ EIdent(levels[i].SeqNames[fi], r); EIdent(levels[i].CurNames[fi], r) ] r)
                 | Choice2Of2 wi ->
                     let (_, _, _, endCond, _) = levels[i].Withs[wi]
                     endCond |> Option.map parseExpr)
@@ -3524,7 +3524,7 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
                     false,
                     [],
                     None,
-                    call "finish" [ EIdent(slot.Collector, slot.Range); EIdent(slot.Name, slot.Range) ] slot.Range,
+                    call "collector-finish" [ EIdent(slot.Collector, slot.Range); EIdent(slot.Name, slot.Range) ] slot.Range,
                     acc,
                     slot.Range
                 ))
@@ -3542,7 +3542,7 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
         let cr = slot.Range
 
         let stepped =
-            call "step" [ EIdent(slot.Collector, cr); EIdent(slot.Name, cr); parseExpr slot.StepForm ] cr
+            call "collector-step" [ EIdent(slot.Collector, cr); EIdent(slot.Name, cr); parseExpr slot.StepForm ] cr
 
         let value =
             match slot.Modifier with
@@ -3568,7 +3568,7 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
 
         let overrides =
             (List.map2 (fun sn t -> sn, EIdent(t, cr)) levels[i].SeqNames temps)
-            @ (List.map2 (fun cn t -> cn, call "start" [ EIdent(t, cr) ] cr) levels[i].CurNames temps)
+            @ (List.map2 (fun cn t -> cn, call "iterable-start" [ EIdent(t, cr) ] cr) levels[i].CurNames temps)
             @ (List.zip levels[i].WithNames levels[i].Withs
                |> List.map (fun (slot, (_, start, _, _, _)) -> slot, parseExpr start))
             |> Map.ofList
@@ -3734,7 +3734,7 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
     let bindCurrents (i: int) (inner: Expr) =
         List.foldBack
             (fun ((pat, _, cr), (sn, cn)) acc ->
-                bindLoopPattern pat (call "current" [ EIdent(sn, cr); EIdent(cn, cr) ] cr) acc cr)
+                bindLoopPattern pat (call "iterable-current" [ EIdent(sn, cr); EIdent(cn, cr) ] cr) acc cr)
             (List.zip levels[i].Fors (List.zip levels[i].SeqNames levels[i].CurNames))
             inner
 
@@ -3798,9 +3798,9 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
     // the accumulators.
     let initialArgs =
         (levels[0].SeqNames
-         |> List.map (fun sn -> call "start" [ EIdent(sn, r) ] r))
+         |> List.map (fun sn -> call "iterable-start" [ EIdent(sn, r) ] r))
         @ (levels[0].Withs |> List.map (fun (_, start, _, _, _) -> parseExpr start))
-        @ (accInfo |> List.map (fun slot -> call "init" [ EIdent(slot.Collector, slot.Range) ] slot.Range))
+        @ (accInfo |> List.map (fun slot -> call "collector-init" [ EIdent(slot.Collector, slot.Range) ] slot.Range))
 
     let group =
         ELetRec(members, EApp(EIdent(levels[0].Member, r), initialArgs, r), r)

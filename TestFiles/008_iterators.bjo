@@ -10,19 +10,19 @@
 ;; A List's cursor is the list itself.
 (: sum-list (-> (List int) int))
 (defun (sum-list xs)
-  (let lp ((c (start xs)) (acc 0))
-    (if (done? xs c)
+  (let lp ((c (iterable-start xs)) (acc 0))
+    (if (iterable-done? xs c)
         acc
-        (lp (next xs c) (+ acc (current xs c))))))
+        (lp (iterable-next xs c) (+ acc (iterable-current xs c))))))
 
 ;; A Vec's is a bare int, which is what passing the sequence to every method
 ;; buys: no (vector, index) pair, no allocation per step.
 (: sum-vec (-> (Vec int) int))
 (defun (sum-vec v)
-  (let lp ((c (start v)) (acc 0))
-    (if (done? v c)
+  (let lp ((c (iterable-start v)) (acc 0))
+    (if (iterable-done? v c)
         acc
-        (lp (next v c) (+ acc (current v c))))))
+        (lp (iterable-next v c) (+ acc (iterable-current v c))))))
 
 ;; The collector protocol, with the collector bound the way a loop prologue
 ;; binds it. A plain `let` here would generalize `listing` to `forall a. Listing a`
@@ -30,19 +30,19 @@
 (: collect (-> (List int) (List int)))
 (defun (collect xs)
   (let/mono col listing
-    (let lp ((c (start xs)) (acc (init col)))
-      (if (done? xs c)
-          (finish col acc)
-          (lp (next xs c) (step col acc (current xs c)))))))
+    (let lp ((c (iterable-start xs)) (acc (collector-init col)))
+      (if (iterable-done? xs c)
+          (collector-finish col acc)
+          (lp (iterable-next xs c) (collector-step col acc (iterable-current xs c)))))))
 
 ;; A collector with a construction argument.
 (: last-or (-> (List int) int int))
 (defun (last-or xs seed)
   (let/mono col (folding seed)
-    (let lp ((c (start xs)) (acc (init col)))
-      (if (done? xs c)
-          (finish col acc)
-          (lp (next xs c) (step col acc (current xs c)))))))
+    (let lp ((c (iterable-start xs)) (acc (collector-init col)))
+      (if (iterable-done? xs c)
+          (collector-finish col acc)
+          (lp (iterable-next xs c) (collector-step col acc (iterable-current xs c)))))))
 
 (defun (main)
   (def xs (Cons 1 (Cons 2 (Cons 3 Nil))))

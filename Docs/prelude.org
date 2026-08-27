@@ -693,12 +693,22 @@ direct-style — a call to a ~defbjo~ is the yield point — and a suspension in
 ~bind~'s continuation is a lambda that cannot suspend. ~bjo~, ~sync~ and
 ~with-cancel~ are the sequencing for those.
 
-** Iterators
-Standard iterator protocol for collections.
-- ~(iterate col)~ : Returns an iterator for the collection.
-- ~(done? iter)~ : Returns true if the iterator is exhausted.
-- ~(current iter)~ : Returns the current element.
-- ~(next iter)~ : Advances the iterator.
+** Walking a collection
+The protocol ~(loop ...)~ is built on, and the one ~Iterable~ declares. It is
+written out here because a program may use it directly, but it is not what a
+program normally reaches for: ~loop~, ~fold~ and the comprehensions are.
+
+The sequence is passed to every method, so a cursor need carry nothing — a
+~Vec~'s is a bare ~int~ rather than a pair, and costs no allocation per step.
+- ~(iterable-start s)~ : A cursor at the beginning.
+- ~(iterable-done? s c)~ : Whether the walk is over.
+- ~(iterable-current s c)~ : The element at the cursor.
+- ~(iterable-next s c)~ : The cursor after this one.
+
+The names are deliberately long. They are methods the compiler calls on your
+behalf rather than ones you write, they live here in the prelude where an import
+cannot rename them, and ~next~, ~start~ and ~current~ are words a program wants
+for itself.
 
 ** Traits
 - ~->str~ : Trait for string representation with method ~(->str x)~. Implemented for ~string~, ~int~, ~double~, ~byte~, ~long~, ~char~, ~Keyword~ and ~Symbol~. A ~char~ prints as itself, not as ~#\a~: ~->str~ is what ~display~ and ~print~ are built on, and those write text rather than a reread-able datum.
@@ -711,8 +721,8 @@ Standard iterator protocol for collections.
 
   Anything with no implementation of its own falls to the blanket, which is
   ~Object.ToString~.
-- ~Iterator~ : Trait for iterators.
-- ~Iterable~ : ~(start s)~, ~(done? s c)~, ~(current s c)~ and ~(next s c)~ —
+- ~Iterable~ : ~(iterable-start s)~, ~(iterable-done? s c)~,
+  ~(iterable-current s c)~ and ~(iterable-next s c)~ —
   how to walk a collection, and what a ~(:for ...)~ clause uses. Implemented for
   ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~, ~(Seq %a)~, ~Range~ and ~string~. A
   string's ~%cursor~ is a ~StringCursor~ and its ~%elem~ is ~char~, so
@@ -738,7 +748,8 @@ Standard iterator protocol for collections.
   mapping a ~(Result %e %a)~ leaves the error alone.
 - ~Monad~ : ~(pure x)~ and ~(bind m k)~ — in ~(std monad)~ rather than here.
   See the section above.
-- ~Collector~ : ~(init c)~, ~(step c acc x)~ and ~(finish c acc)~ — the
+- ~Collector~ : ~(collector-init c)~, ~(collector-step c acc x)~ and
+  ~(collector-finish c acc)~ — the
   accumulators an ~:acc~ clause names. The stock ones are ~listing~, ~vecing~,
   ~mapping~, ~stringing~, ~summing~, ~counting~ and ~folding~; ~stringing~
   collects ~char~ into a ~string~ through a ~StringBuilder~.

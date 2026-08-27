@@ -3,6 +3,24 @@
 
 What each change guarantees, and what it leaves open.
 
+* The Iterable and Collector methods are namespaced
+
+*Breaking.* ~start~, ~done?~, ~current~ and ~next~ are ~iterable-start~,
+~iterable-done?~, ~iterable-current~ and ~iterable-next~. ~init~, ~step~ and
+~finish~ are ~collector-init~, ~collector-step~ and ~collector-finish~. The
+~Cursor~ methods already read this way and are unchanged.
+
+These are methods the compiler calls on your behalf. A ~(loop ...)~ is written in
+terms of all seven, and almost nobody writes one by hand — but they sat in the
+prelude under the plainest words there are, where an import cannot rename them
+away. ~lib/std/fmt.bjo~ binds a local called ~start~; the test suite has
+functions called ~start~ and ~step~ that were dead, being shadowed by a trait
+method they had nothing to do with. Those three now mean what they say.
+
+Nothing about the protocol changed, only what it is called. A program that walks
+a collection by hand needs the new names; one that uses ~loop~, ~fold~ or a
+comprehension needs nothing.
+
 * A boolean is a literal
 
 *Breaking: ~true~ and ~false~ are no longer booleans.* Write ~#t~ and ~#f~. The
