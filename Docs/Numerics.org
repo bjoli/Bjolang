@@ -184,6 +184,40 @@ Write it out where the order is not the one the fields are in. It is one method:
         m)))
 #+END_SRC
 
+*** Ordering a .NET type
+
+The same one method, and ~(std clr-ord)~ has already written it for the types
+most likely to be sorted: ~DateTime~, ~DateTimeOffset~, ~TimeSpan~, ~DateOnly~,
+~TimeOnly~, ~Guid~ and ~Version~.
+
+#+BEGIN_SRC scheme
+(import (std clr-ord))
+
+(list-sort dates)       ;; and least, list-min, less? — all of it
+#+END_SRC
+
+It is opt-in rather than part of the prelude because a type arrives with the
+module that declares it, and a program that never mentions a ~Guid~ should not
+have one in scope.
+
+What it exports is the seven type names. A constructor cannot be exported, so a
+program that wants one declares its own ~import/class~ for the same .NET type —
+which does not cost it the implementation, since an ~Ord~ for ~System.DateTime~
+is found through whichever alias names it:
+
+#+BEGIN_SRC scheme
+(import/class (DateTime (: System.DateTime (-> int int int DateTime))))
+
+(list-sort (list (DateTime. 2021 1 1) (DateTime. 2019 6 5)))
+#+END_SRC
+
+Anything else is the same one-liner:
+
+#+BEGIN_SRC scheme
+(def/impl (Ord DateTime)
+  (defun (compare a b) (.CompareTo a b)))
+#+END_SRC
+
 Negative, zero or positive is the contract — not −1, 0 and 1 — which is what
 ~CompareTo~ promises and what the predicates above test against.
 

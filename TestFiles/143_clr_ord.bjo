@@ -1,0 +1,64 @@
+;; `(std clr-ord)` — ordering for the .NET types worth not writing twice.
+;;
+;; While `Ord` was `System.IComparable`, every .NET type implementing it was
+;; ordered for free. It is an ordinary trait now, so being ordered is something
+;; a program says rather than something .NET answers — and this module is where
+;; the handful everyone would otherwise say themselves are said once.
+;;
+;; The point of the file is that `list-sort`, `least` and `list-min` reach these
+;; types without knowing they exist, exactly as they reach a record.
+(import (std prelude))
+(import (std clr-ord))
+(import (std simpletest))
+
+;; A program that wants a constructor declares its own alias for the same .NET
+;; type. That is *not* a second type as far as the implementation goes: the
+;; `Ord` implemented in `clr-ord` is found through this alias too, which is what
+;; makes the module usable at all.
+(import/class
+  (DateTime (: System.DateTime (-> int int int DateTime)))
+  (TimeSpan (: System.TimeSpan (-> int int int TimeSpan)))
+  (Version (: System.Version (-> int int int Version))))
+
+;; Members are reached the ordinary way, against the same type.
+(import/extern
+  (date-year     (: System.DateTime.Year (-> DateTime int) #:get))
+  (span-hours    (: System.TimeSpan.Hours (-> TimeSpan int) #:get))
+  (version-minor (: System.Version.Minor (-> Version int) #:get)))
+
+(: years (-> (List DateTime) string))
+(defun (years ds)
+  (list-foldl (fun (acc d) (string-append acc (string-append " " (int->string (date-year d)))))
+              ""
+              ds))
+
+(defun (main)
+  (def ds (list (DateTime. 2021 1 1) (DateTime. 2019 6 5) (DateTime. 2020 3 3)))
+
+  ;; Sorting, through a function that knows nothing about .NET dates.
+  (expect "sorting dates" (years (list-sort ds)) " 2019 2020 2021")
+  (expect "least of two" (date-year (least (DateTime. 2021 1 1) (DateTime. 2019 6 5))) 2019)
+  (expect "greatest of two" (date-year (greatest (DateTime. 2021 1 1) (DateTime. 2019 6 5))) 2021)
+  (expect "the predicates" (less? (DateTime. 2019 1 1) (DateTime. 2020 1 1)) #t)
+  (expect "min of a list"
+          (match (list-min ds) ((Some m) (date-year m)) (None -1))
+          2019)
+  (expect "max of a list"
+          (match (list-max ds) ((Some m) (date-year m)) (None -1))
+          2021)
+
+  ;; Same date, so `compare` is zero rather than merely non-positive.
+  (expect "equal dates compare zero" (compare (DateTime. 2020 1 1) (DateTime. 2020 1 1)) 0)
+
+  ;; A `TimeSpan`, to show the module is not one implementation with company.
+  (expect "spans" (span-hours (greatest (TimeSpan. 1 0 0) (TimeSpan. 3 0 0))) 3)
+
+  ;; `Version` compares its components. A string sort would put 1.10 below 1.9,
+  ;; which is the reason to want .NET's answer here rather than an obvious one.
+  (expect "versions order by component"
+          (match (list-max (list (Version. 1 9 0) (Version. 1 10 0)))
+            ((Some m) (version-minor m))
+            (None -1))
+          10)
+  (expect "and not lexicographically" (less? (Version. 1 9 0) (Version. 1 10 0)) #t)
+  0)

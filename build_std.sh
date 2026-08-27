@@ -43,6 +43,9 @@ echo "Building standard library..."
 # The collections. Each imports `prelude` and nothing else, and each is
 # independent of the other two, so the order between them does not matter.
 ./bjor --lib lib/std/set.bjo
+# `clr-ord` imports `prelude` for the `Ord` trait it implements against, and
+# declares nothing else.
+./bjor --lib lib/std/clr-ord.bjo
 ./bjor --lib lib/std/orderedset.bjo
 ./bjor --lib lib/std/orderedmap.bjo
 

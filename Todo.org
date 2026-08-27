@@ -144,25 +144,6 @@ rather than fixed. The general answer is to record type arguments for a
 monomorphic recursive binding, which is a change to how recursion is typed rather
 than a patch to ~Lowering~.
 
-** Ordering a .NET type takes a line it did not used to
-
-While ~Ord~ was ~System.IComparable~, every .NET type implementing it was
-ordered for free — ~DateTime~, ~Guid~, ~Version~. Now the primitives are
-implemented in ~std/eq.bjo~ and anything else writes its own, which works:
-
-#+BEGIN_SRC scheme
-(import/class (DateTime (: System.DateTime (-> int int int System.DateTime))))
-(def/impl (Ord DateTime)
-  (defun (compare a b) (.CompareTo a b)))
-
-(.-Year (least a b))    ;; 2019
-#+END_SRC
-
-So this is not a gap in the language — it is checked, and one line. It is a
-convenience that is missing: a ~std/clr-ord~ holding the handful people actually
-sort would cost nothing, and until there is one every program that sorts dates
-writes the same three lines.
-
 * Incremental builds
 
 ** Editing a standard library module does not rebuild the modules above it
