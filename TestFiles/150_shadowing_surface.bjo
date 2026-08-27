@@ -1,0 +1,118 @@
+;; Every way of binding a name the compiler also uses, against every form that
+;; uses one.
+;;
+;; The other fixtures in this series each take one half: 145 that a compiler-
+;; written reference resolves where it was written, 146 that ordinary scope
+;; shadows a trait method, 147 that a macro template's method means the trait,
+;; 148 that a shadow crosses a module boundary, 149 that a union case is a name
+;; like any other. This one crosses them: each protocol is exercised *inside* a
+;; scope that has bound the name it uses, in each of the ways a name can be
+;; bound.
+;;
+;; The rule the whole grid states: a name a program writes means what scope says,
+;; and a name the compiler writes means what it meant where the compiler wrote
+;; it. Neither can reach the other.
+(import (std prelude))
+(import (std monad))
+(import (std simpletest))
+
+(type/derive (Eq) (: P (Record (: x int) (: y int))))
+
+;; Out here, where nothing is bound over: the arm below has to test the
+;; *synthesised* equality rather than its own call to `=`.
+(: same? (-> P P bool))
+(defun (same? a b) (= a b))
+
+;; ---------------------------------------------------------------------------
+;; A parameter over each name a form uses
+;; ---------------------------------------------------------------------------
+
+;; `iterable-next` and friends are what a `loop` is written in terms of. The
+;; parameter is never called; being bound is the whole of what it does here.
+(: loop-under-a-parameter (-> (List int) (-> int int) int))
+(defun (loop-under-a-parameter xs iterable-next)
+  (loop (:for x xs) (:acc s (folding 0 (+ s x))) => s))
+
+;; `->str` is what an interpolated string calls.
+(: interpolate-under-a-parameter (-> int (-> int int) string))
+(defun (interpolate-under-a-parameter n ->str)
+  #"n is ${n}")
+
+;; `=` and `hash-combine` are the two halves of a synthesised record equality.
+(: equality-under-a-parameter (-> P P (-> int int int) bool))
+(defun (equality-under-a-parameter a b hash-combine)
+  (same? a b))
+
+;; `bind` is what a `do` block is written in terms of.
+(: do-under-a-parameter (-> (Option int) (-> int int) (Option int)))
+(defun (do-under-a-parameter m bind)
+  (do (:bind v m)
+      (:return (* v 2))))
+
+(defun (main)
+  ;; ---- a parameter --------------------------------------------------------
+  (expect "a loop" (loop-under-a-parameter (list 1 2 3) (fun (n) n)) 6)
+  (expect "interpolation" (interpolate-under-a-parameter 4 (fun (n) n)) "n is 4")
+  (expect "synthesised equality"
+          (equality-under-a-parameter (P (x 1) (y 2)) (P (x 1) (y 2)) (fun (a b) 0))
+          #t)
+  (expect "a do block" (do-under-a-parameter (Some 5) (fun (n) n)) (Some 10))
+
+  ;; ---- a let --------------------------------------------------------------
+  ;;
+  ;; The collector protocol, bound to something that could not possibly work if
+  ;; it were reached. The collector's *name* is not in here: `listing` in
+  ;; `{listing ...}` is written by the programmer, so a binder over it captures
+  ;; it like any other reference — which is the rule, not an exception to it.
+  (let ((collector-init 1) (collector-step 2) (collector-finish 3))
+    (expect "a comprehension" (list-length {listing (* a a) (:for a (range 0 5))}) 5))
+
+  (let ((folding "not a collector"))
+    (expect "a comprehension with :final"
+            {counting a (:for a (range 0 100)) (:final (>= a 3))}
+            4))
+
+  (let ((->str 7) (= 8) (hash-combine 9))
+    (expect "interpolation under a let" #"a ${(+ 1 2)} b" "a 3 b")
+    (expect "and synthesised equality" (same? (P (x 1) (y 2)) (P (x 1) (y 2))) #t)
+    (expect "and one that differs" (same? (P (x 1) (y 2)) (P (x 9) (y 2))) #f))
+
+  ;; `unit` is what an empty `(begin)` is; `negate` and `recip` are what a unary
+  ;; `-` and `/` are.
+  (let ((unit 1) (negate 2) (recip 3))
+    (begin)
+    (expect "unary minus" (- 5) -5)
+    (expect "unary divide" (double->string (/ 2.0)) "0.5"))
+
+  ;; ---- a lambda parameter -------------------------------------------------
+  (expect "a lambda parameter over a method"
+          ((fun (compare) (compare 1 2)) (fun (a b) "the lambda's"))
+          "the lambda's")
+  (expect "and the loop still runs under one"
+          ((fun (iterable-done?) (loop (:for x (list 1 2)) (:acc s (folding 0 (+ s x))) => s)) 0)
+          3)
+
+  ;; ---- a local def --------------------------------------------------------
+  (expect "a local def over a constructor"
+          (let ()
+            (def mapping "not the constructor")
+            mapping)
+          "not the constructor")
+
+  ;; ---- and/or/not, which no binder can reach ------------------------------
+  ;;
+  ;; They are parser forms rather than bindings, so they are unrebindable by
+  ;; construction; what they desugar *to* is `#t` and `#f`, which are literals
+  ;; and not names either.
+  (let ((and 1) (or 2) (not 3))
+    (expect "and" (and #t #t) #t)
+    (expect "or" (or #f #t) #t)
+    (expect "not" (not #f) #t)
+    (expect "a chained comparison" (< 1 2 3) #t))
+
+  ;; ---- the shadows are live, which is what makes the rest an assertion -----
+  (expect "a parameter really is bound"
+          ((fun (iterable-next) (iterable-next 41)) (fun (n) (+ n 1)))
+          42)
+  (expect "and a let" (let ((folding (fun (n) (* n 2)))) (folding 21)) 42)
+  0)

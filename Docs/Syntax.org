@@ -1284,6 +1284,49 @@ the type off:
 (def (: f (-> int int int)) least)
 #+END_SRC
 
+*** A method's name is an ordinary binding
+A trait method is dispatched by name, and that name is a binding like any other.
+Every binder shadows one — a parameter, a ~let~, a lambda parameter, a
+definition — and inside the shadow the name means what the binder says:
+#+BEGIN_SRC scheme
+(defun (pick less? a b) (if (less? a b) a b))   ;; a parameter called less?
+(let ((->str (fun (n) "hidden"))) (->str 5))    ;; "hidden"
+#+END_SRC
+
+Call position and value position agree, which is the whole of the rule: ~(m a
+b)~ and ~(def f m) (f a b)~ mean the same thing three lines apart. Dispatch used
+to happen on the name before the environment was consulted at all, so neither
+was true — a parameter called ~compare~ was accepted, ignored and dead, and the
+program's own calls to it failed on arity against a line the programmer had
+written correctly.
+
+*Implementing a method is not shadowing it.* A ~def/impl~ supplies the method,
+and a body inside one that calls its own name dispatches:
+#+BEGIN_SRC scheme
+(def/impl (Eq (List %a))
+  (where (Eq %a))
+  (defun (= xs ys) ... (= (list-head xs) (list-head ys))))   ;; the elements'
+#+END_SRC
+
+*Two shadows are worth a word, and get one.* A top-level definition over a
+method name warns and suggests ~def/impl~, which is what someone writing
+~(defun (= a b) ...)~ almost always meant. So does an *import* that lands on
+one: the nearest binding wins, so a module you did not write can decide that
+~sign~ here means its function, and ~(except ...)~ or ~(rename ...)~ is the
+answer. A local shadow is silent — it is a decision in a scope its reader can
+see the whole of.
+
+*A union case constructor follows the same rule.* ~listing~, ~counting~,
+~folding~ and their siblings are ordinary names that happen to construct
+something, and a binder binds over one.
+
+*What the compiler writes is unaffected.* A ~loop~ calls ~iterable-next~, a
+comprehension constructs a ~folding~, an interpolated string calls ~->str~, a
+derived ~Eq~ calls ~=~, and a macro template's method call means the trait it
+belonged to where the template was written. None of those is a lookup in your
+scope, so none of them can be captured — see ~Docs/MACROS.org~ for the macro
+half.
+
 *** ~#:clr-constraint~ — a trait that *is* a .NET interface
 A trait may name a .NET interface instead of declaring implementations. It then
 has none, and no dictionary: a ~(where ...)~ on it becomes a C# ~where~ clause,
@@ -1384,9 +1427,11 @@ block imports:
     (:return (* y 2)))        ; sugar for (pure (* y 2))
 #+END_SRC
 
-The macro's templates write ~bind~ and ~pure~, which are trait methods, so
-hygiene leaves them meaning whatever they mean at the call site: a block runs
-over any ~Monad~ in scope, including one ~(std monad)~ has never heard of.
+The macro's templates write ~bind~ and ~pure~, which are trait methods, so they
+resolve to ~Monad~ and dispatch on the type of what is bound: a block runs over
+any ~Monad~, including one ~(std monad)~ has never heard of. A ~bind~ of your own
+at the call site does not intercept it — that is hygiene, and the rule is in
+~Docs/MACROS.org~.
 
 Five things are worth knowing:
 

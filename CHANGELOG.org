@@ -3,6 +3,53 @@
 
 What each change guarantees, and what it leaves open.
 
+* A name means what scope says it means
+
+A trait method's name, and a union case constructor's, are ordinary bindings.
+Every binder shadows one — a parameter, a ~let~, a lambda parameter, a
+definition — and inside the shadow the name means what the binder said.
+
+Neither did. A call dispatched on the *name*, before the environment was
+consulted at all, so nothing a program wrote could intercept one:
+
+#+BEGIN_SRC scheme
+(defun (pick less? a b) (if (less? a b) a b))   ;; the parameter was dead
+(let ((counting 7)) (int->string counting))     ;; int against (prelude/Counting ?a)
+#+END_SRC
+
+The first was accepted, ignored, and reported as an arity error against the
+programmer's own line. The second could not be written at all, so ~listing~,
+~vecing~, ~mapping~, ~stringing~, ~summing~, ~counting~ and ~folding~ were seven
+words no program could use as variables. And call position and value position
+disagreed: ~(m a b)~ meant the trait and ~(def f m) (f a b)~ meant the local,
+three lines apart.
+
+What this does *not* touch is what the compiler writes for you. A ~loop~ calls
+~iterable-next~, a comprehension constructs a ~folding~, an interpolated string
+calls ~->str~, a derived ~Eq~ calls ~=~, and a macro template's method call means
+the trait it belonged to where the template was written. Each of those is a
+resolved reference rather than a lookup in your scope, so none of them can be
+captured — which is what made shadowing safe to allow.
+
+Two shadows now say so. A top-level definition over a method name warns and
+suggests ~def/impl~, which is what someone writing ~(defun (= a b) ...)~ almost
+always meant; this is also what makes a definition of ~sign~ — a ~Num~ method by
+~#:clr-member~, and until now silently dead — work and be mentioned. An *import*
+that lands on a method name warns too: the nearest binding wins, so a module you
+did not write can decide what ~sign~ means here, and ~(except ...)~ or
+~(rename ...)~ is the answer. A local shadow is silent, being a decision in a
+scope its reader can see the whole of.
+
+A module may now export a shadow, and an importer gets it. It used to publish
+the *trait* instead — a module exporting a function called ~sign~ grew a
+~def/trait (Num ...)~ it had never declared — and to drop the binding as
+"already published by that trait", so an importer got neither and nothing said
+so.
+
+What it leaves open: ~Codegen~ still emits an operator infix on the name alone,
+so a local binding named ~+~ is ignored after inference resolved it correctly.
+That one is in ~Todo.org~ and predates all of this.
+
 * A trait method in a macro template means the trait
 
 A macro's template that *calls* a trait method now gets the method, whatever the
