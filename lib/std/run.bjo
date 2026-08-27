@@ -266,8 +266,8 @@
 (: tag? (-> string bool))
 (defun (tag? name)
   (if (= name "pipe")
-      true
-      (match (tag->redirection name) ((Some how) true) (None false))))
+      #t
+      (match (tag->redirection name) ((Some how) #t) (None #f))))
 
 (: command-of (-> (Vec string) (Result Exception Node)))
 (defun (command-of argv)
@@ -466,11 +466,11 @@
     ;; `UseShellExecute` off is what makes redirection legal at all, and also
     ;; what makes the program name resolve against PATH rather than against a
     ;; desktop association.
-    (settings-use-shell! settings false)
-    (settings-redirect-input! settings true)
-    (settings-redirect-output! settings true)
+    (settings-use-shell! settings #f)
+    (settings-redirect-input! settings #t)
+    (settings-redirect-output! settings #t)
     (match errors
-      ((Some w) (settings-redirect-errors! settings true))
+      ((Some w) (settings-redirect-errors! settings #t))
       (None unit))
     (match (process-start settings)
       ((Err e) (Err e))
@@ -608,19 +608,19 @@
          ((Err e) (Err e))
          ((Ok file) (redirect-input inner errors file))))
       (RInto
-       (match (open-for-writing path false)
+       (match (open-for-writing path #f)
          ((Err e) (Err e))
          ((Ok file) (redirect-output inner errors file))))
       (RAppend
-       (match (open-for-writing path true)
+       (match (open-for-writing path #t)
          ((Err e) (Err e))
          ((Ok file) (redirect-output inner errors file))))
       (RErrInto
-       (match (open-for-writing path false)
+       (match (open-for-writing path #f)
          ((Err e) (Err e))
          ((Ok file) (redirect-errors inner file))))
       (RErrAppend
-       (match (open-for-writing path true)
+       (match (open-for-writing path #t)
          ((Err e) (Err e))
          ((Ok file) (redirect-errors inner file)))))))
 
@@ -938,8 +938,8 @@
 ;; the work together is what makes this end either way.
 (: reap-on-loss (-> (Event Unit) Proc (Promise (Result Exception string)) Unit))
 (defbjo (reap-on-loss nack p done)
-  (when (sync (choose (wrap nack (fun (u) true))
-                      (wrap (promise-join done) (fun (r) false))))
+  (when (sync (choose (wrap nack (fun (u) #t))
+                      (wrap (promise-join done) (fun (r) #f))))
     (kill p))
   unit)
 

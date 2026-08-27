@@ -21,26 +21,26 @@
 
 (: expect-bool (-> string bool bool void))
 (defun (expect-bool label actual wanted)
-  (expect label (if actual "true" "false") (if wanted "true" "false")))
+  (expect label (if actual "#t" "#f") (if wanted "#t" "#f")))
 
 ;; Mutual recursion split across a `begin`, written by hand. `collectDefs` has
 ;; to look through the splice, or these land in two separate groups and the
 ;; first cannot see the second.
 (: even-here? (-> int bool))
 (defun (even-here? n)
-  (if (= n 0) true (odd-here? (- n 1))))
+  (if (= n 0) #t (odd-here? (- n 1))))
 
 (begin
   (: odd-here? (-> int bool))
   (defun (odd-here? n)
-    (if (= n 0) false (even-here? (- n 1)))))
+    (if (= n 0) #f (even-here? (- n 1)))))
 
 ;; The same thing inside a body, and from a macro.
 (: parity-of (-> int string))
 (defun (parity-of n)
-  (defun (top-even? k) (if (= k 0) true (top-odd? (- k 1))))
+  (defun (top-even? k) (if (= k 0) #t (top-odd? (- k 1))))
   (begin
-    (defun (top-odd? k) (if (= k 0) false (top-even? (- k 1)))))
+    (defun (top-odd? k) (if (= k 0) #f (top-even? (- k 1)))))
   (if (top-even? n) "even" "odd"))
 
 (: macro-parity (-> int string))
@@ -74,8 +74,8 @@
               6)
 
   ;; --- Mutual recursion across a splice ------------------------------------
-  (expect-bool "top-level mutual recursion across a begin" (even-here? 10) true)
-  (expect-bool "and the other way" (odd-here? 7) true)
+  (expect-bool "top-level mutual recursion across a begin" (even-here? 10) #t)
+  (expect-bool "and the other way" (odd-here? 7) #t)
   (expect "in a body" (parity-of 4) "even")
   (expect "and from a macro" (macro-parity 5) "odd")
 

@@ -3,6 +3,42 @@
 
 What each change guarantees, and what it leaves open.
 
+* A boolean is a literal
+
+*Breaking: ~true~ and ~false~ are no longer booleans.* Write ~#t~ and ~#f~. The
+two names are ordinary identifiers now and a program may use them for anything.
+
+They were bindings. ~#t~ lexed as the *symbol* ~#t~, the parser rewrote it to the
+name ~true~, and ~true~ was an entry in the prelude's environment — so a boolean
+was a variable, and anything that bound that name redefined it:
+
+#+BEGIN_SRC scheme
+(let ((true #f))
+  (if #t "t" "f"))        ;; "f"
+#+END_SRC
+
+Not only the literal. ~and~, ~or~, ~not~ and every chained comparison ~(< a b c)~
+are written in terms of these, so all of them inverted too. A loop level with two
+~:for~ clauses joins its termination tests through the same name, so with the
+shorter sequence first the walk was told it had not finished, ran off the end,
+and died inside the runtime with "Car is not defined on an empty list" — a crash
+in C# with nothing in it naming the cause, from a program whose only unusual act
+was a variable called ~true~.
+
+Nothing defends against this now, because there is nothing left to defend: a
+literal is not a name and no environment is consulted. What used to guard it was
+a comment in the code generator arguing that a shadowing binding could not be
+mistaken for the prelude's, which was true and beside the point.
+
+*A boolean pattern works.* It never had. ~(match b (#t "y") (#f "n"))~ read ~#t~
+as a *binder* — matching everything, and reaching the generator as a name, which
+spelled it into the C# as written and produced a preprocessor directive. It is a
+constant pattern now, ~case true:~.
+
+*A quoted boolean is a boolean.* ~'(#t #f)~ is a list of booleans as ~'(1 2)~ is
+a list of ints. A symbol in a quoted list is still a symbol, which is what lets
+~'(true)~ name the program of that name to ~(std run)~.
+
 * A changed module is rebuilt, however far down it is
 
 Staleness used to be judged against a module's own source closure — the file and

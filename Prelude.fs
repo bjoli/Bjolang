@@ -230,10 +230,6 @@ let emptyRegistry : TraitRegistry =
 
 let prelude : Env =
     { Bindings = Map.ofList [
-        // Literals / Constants
-        "true", {Scheme = Scheme([], [], boolType); IsMutable = false  }
-        "false", {Scheme = Scheme([], [], boolType); IsMutable = false }
-
         /// The unit value, for the one body that has to produce one without
         /// doing anything: `Discard`'s blanket implementation.
         ///

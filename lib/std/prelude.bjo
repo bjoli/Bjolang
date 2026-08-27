@@ -365,7 +365,7 @@
 ;; value, and that is what makes a callback's type uniform whatever it answers.
 (: map-for-each (-> (-> %k %v void) (Map %k %v) void))
 (defun (map-for-each f m)
-  (ignore (map-iter (fun (k v) (f k v) true) m)))
+  (ignore (map-iter (fun (k v) (f k v) #t) m)))
 
 ;; A map's item is its entry, so the folder `Foldable` hands down takes one
 ;; argument where `map-fold`'s takes two. The pair is put back together here,
@@ -850,7 +850,7 @@
 (: string-join (-> (Vec string) string string))
 (defun (string-join parts sep)
   (let ((b (stringbuilder-empty)))
-    (loop (:with first? true false)
+    (loop (:with first? #t #f)
           (:for part parts)
           (:do (unless first? (stringbuilder-add-string! b sep))
                (stringbuilder-add-string! b part)))
@@ -1151,7 +1151,7 @@
 (defun (directory-delete path) (clr-dir-delete path))
 
 (: directory-delete-tree (-> string void))
-(defun (directory-delete-tree path) (clr-dir-delete path true))
+(defun (directory-delete-tree path) (clr-dir-delete path #t))
 
 ;; Directly in `path`, not in its subdirectories.
 (: directory-files (-> string (Vec string)))
@@ -1767,7 +1767,7 @@
 (defun (map->str m)
   (let ((sb (stringbuilder-empty)))
     (stringbuilder-add-string! sb "#map(")
-    (loop (:with first? true false)
+    (loop (:with first? #t #f)
           (:for entry m)
           (:do (unless first? (stringbuilder-add-string! sb " "))
                (stringbuilder-add-string! sb (map-entry->str entry))))

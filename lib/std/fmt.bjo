@@ -77,7 +77,7 @@
     ((DInt n) (int->string n))
     ((DDouble x) (double->string x))
     ((DChar c) (char->string c))
-    ((DBool b) (if b "true" "false"))))
+    ((DBool b) (if b "#t" "#f"))))
 
 ;; In the prelude this replaces the `#:rest string` version and is simply
 ;; `str`. Named apart here so both can be in scope while you try it.
@@ -237,7 +237,7 @@
 
 ;; A leading `+` on a number that has no sign of its own.
 (: current-signed (Param bool))
-(def current-signed (make-cold-parameter false))
+(def current-signed (make-cold-parameter #f))
 
 
 ;; --- Measuring -------------------------------------------------------------
@@ -466,7 +466,7 @@
 (: joined/last (-> (-> %a Block) (-> %a Block) (List %a) (Vec Block) Block))
 (defun (joined/last f last-f xs sep)
   (BRun (fun (out col)
-          (let loop ((ys xs) (c col) (first? true))
+          (let loop ((ys xs) (c col) (first? #t))
             (match ys
               (Nil c)
               ((Cons x Nil)
@@ -474,7 +474,7 @@
               ((Cons x rest)
                (loop rest
                      (run-block out (if first? c (run-blocks out c sep)) (f x))
-                     false)))))))
+                     #f)))))))
 
 
 ;; --- Numbers ---------------------------------------------------------------
@@ -521,7 +521,7 @@
 (: numeric (-> double (#:precision int) (#:comma int) (#:comma-sep char)
                (#:decimal-sep char) (#:signed bool) Block))
 (defun (numeric x #:precision -1 #:comma -1 #:comma-sep #\nul
-                #:decimal-sep #\nul #:signed false)
+                #:decimal-sep #\nul #:signed #f)
   (BRun (fun (out col)
           (run-block
            out
@@ -595,14 +595,14 @@
 (: words-of (-> string (Vec string)))
 (defun (words-of s)
   (let ((out (vecbuilder-empty)))
-    (let loop ((c (string-cursor-start s)) (start (string-cursor-start s)) (in? false))
+    (let loop ((c (string-cursor-start s)) (start (string-cursor-start s)) (in? #f))
       (if (string-cursor-end? s c)
           (when in? (vecbuilder-add! out (substring/cursors s start c)))
           (if (char-whitespace? (string-cursor-ref s c))
               (let ()
                 (when in? (vecbuilder-add! out (substring/cursors s start c)))
-                (loop (string-cursor-next s c) (string-cursor-next s c) false))
-              (loop (string-cursor-next s c) (if in? start c) true))))
+                (loop (string-cursor-next s c) (string-cursor-next s c) #f))
+              (loop (string-cursor-next s c) (if in? start c) #t))))
     (vecbuilder->vec out)))
 
 ;; The words packed greedily into lines. The first line is given `first`
@@ -621,7 +621,7 @@
                   (loop i Nil 0 width (Cons (list-reverse line) lines)))))))
 
 (: list-empty? (-> (List %a) bool))
-(defun (list-empty? xs) (match xs (Nil true) ((Cons x rest) false)))
+(defun (list-empty? xs) (match xs (Nil #t) ((Cons x rest) #f)))
 
 ;; The words with a single pad character between them.
 (: spaced (-> (List string) string))
@@ -631,8 +631,8 @@
     (ignore (list-foldl (fun (first? w)
                           (unless first? (stringbuilder-add-string! b gap))
                           (stringbuilder-add-string! b w)
-                          false)
-                        true
+                          #f)
+                        #t
                         ws))
     (stringbuilder->string b)))
 
@@ -664,7 +664,7 @@
   (BRun (fun (out col)
           (let* ((width (parameter-ref current-width))
                  (lines (packed ws (- width col) width)))
-                (let loop ((ls lines) (c col) (first? true))
+                (let loop ((ls lines) (c col) (first? #t))
                   (match ls
                     (Nil c)
                     ((Cons line rest)
@@ -673,15 +673,15 @@
                             (text (if (and justify? (not (list-empty? rest)))
                                       (stretched line budget)
                                       (spaced line))))
-                           (loop rest (run-block out c1 (BStr text)) false)))))))))
+                           (loop rest (run-block out c1 (BStr text)) #f)))))))))
 
 ;; Filled to the right margin, ragged on the right.
 (: wrapped (-> (Vec Block) Block))
-(defun (wrapped bs) (captured (fun (s) (wrap (words-of s) false)) bs))
+(defun (wrapped bs) (captured (fun (s) (wrap (words-of s) #f)) bs))
 
 ;; Filled to the right margin and flush against both, the last line excepted.
 (: justified (-> (Vec Block) Block))
-(defun (justified bs) (captured (fun (s) (wrap (words-of s) true)) bs))
+(defun (justified bs) (captured (fun (s) (wrap (words-of s) #t)) bs))
 
 
 ;; --- Tables ----------------------------------------------------------------
@@ -755,7 +755,7 @@
                  (each-width (if (> n 0) (max (/ room n) 0) 0)))
                 (run-block out
                            col
-                           (laid-out cells (vec-map (fun (ls) each-width) cells) sep true))))))
+                           (laid-out cells (vec-map (fun (ls) each-width) cells) sep #t))))))
 
 (: tabular (-> (Vec (Vec Block)) (#:sep string) Block))
 (defun (tabular cols #:sep " ")
@@ -768,7 +768,7 @@
                        (vec-map (fun (ls) (vec-fold (fun (acc l) (max acc (width-of l))) 0 ls))
                                 cells)
                        sep
-                       false))))))
+                       #f))))))
 
 
 ;; ===========================================================================

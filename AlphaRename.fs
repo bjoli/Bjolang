@@ -67,6 +67,7 @@ let rec private typedPatternBinders (pat: TypedPattern) : string list =
     | TPInt _
     | TPString _
     | TPChar _
+    | TPBool _
     | TPKeyword _
     | TPSymbol _ -> []
     | TPIdent n -> [ n ]

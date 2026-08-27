@@ -1,0 +1,46 @@
+;; What a boolean compiles to.
+;;
+;; `#t` and `#f` became literal nodes, having been the prelude bindings `true`
+;; and `false`. A behavioural test cannot see the difference: an emitted `true`
+;; and an emitted reference to a binding called `true` run the same. What it
+;; would see far too late is a regression in the other direction — `and`, `or`,
+;; `not` and every chained comparison are written in terms of these, so a
+;; mistake here is wrong in every program rather than in an unusual one.
+;;
+;; Each `EXPECT-CS` line is an extended regex, matched against a single line of
+;; the generated C#. That is why the assertions below are about the literals and
+;; the pattern rather than about the shape of an `if`, which spans lines: the
+;; shapes are what `144_booleans.bjo` checks, by running them.
+
+;; A literal reaches C# as a literal, not as a name that has to resolve.
+;; EXPECT-CS: return true;
+(: yes (-> bool))
+(defun (yes) #t)
+
+;; EXPECT-CS: return false;
+(: no (-> bool))
+(defun (no) #f)
+
+;; `and` and `or` are an `if` whose other branch is the literal, so they
+;; short-circuit by construction. The branches are the two lines above; these
+;; assert the functions are still emitted as plain static methods, taking no
+;; dictionary and calling nothing.
+;; EXPECT-CS: public static bool both\(bool a, bool b\)
+(: both (-> bool bool bool))
+(defun (both a b) (and a b))
+
+;; EXPECT-CS: public static bool either\(bool a, bool b\)
+(: either (-> bool bool bool))
+(defun (either a b) (or a b))
+
+;; EXPECT-CS: public static bool negated\(bool a\)
+(: negated (-> bool bool))
+(defun (negated a) (not a))
+
+;; A boolean pattern is a C# constant pattern, which is what a literal buys. As
+;; a binding it arrived here as a *name* and was spelled `#t` into the C#, where
+;; `#` begins a preprocessor directive — so this never compiled at all.
+;; EXPECT-CS: case true:
+;; EXPECT-CS: case false:
+(: named (-> bool string))
+(defun (named b) (match b (#t "y") (#f "n")))

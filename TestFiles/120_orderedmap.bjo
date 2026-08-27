@@ -33,10 +33,10 @@
   (expect "ref" (orderedmap-ref m "fig") 2)
   (expect "ref-or with a key" (orderedmap-ref-or m "fig" 0) 2)
   (expect "ref-or without one" (orderedmap-ref-or m "plum" 0) 0)
-  (expect-bool "contains?" (orderedmap-contains? m "apple") true)
-  (expect-bool "has-key? is the same question" (orderedmap-has-key? m "plum") false)
-  (expect-bool "empty?" (orderedmap-empty? m) false)
-  (expect-bool "empty? of a cleared map" (orderedmap-empty? (orderedmap-clear m)) true)
+  (expect-bool "contains?" (orderedmap-contains? m "apple") #t)
+  (expect-bool "has-key? is the same question" (orderedmap-has-key? m "plum") #f)
+  (expect-bool "empty?" (orderedmap-empty? m) #f)
+  (expect-bool "empty? of a cleared map" (orderedmap-empty? (orderedmap-clear m)) #t)
 
   (match (orderedmap-try-ref m "apple")
     ((Some v) (expect "try-ref" v 1))
@@ -128,8 +128,8 @@
           (orderedmap-ref (orderedmap-map #(* 10 &2) m) "fig")
           20)
   (expect "map-values" (orderedmap-ref (orderedmap-map-values #(+ &1 1) m) "fig") 3)
-  (expect-bool "any?" (orderedmap-any? #(= 3 &2) m) true)
-  (expect-bool "iter stops early" (orderedmap-iter #(< &2 3) m) false)
+  (expect-bool "any?" (orderedmap-any? #(= 3 &2) m) #t)
+  (expect-bool "iter stops early" (orderedmap-iter #(< &2 3) m) #f)
 
   (match (orderedmap-find #(> &2 1) m)
     ;; In key order, so the first match is the one with the smallest key.
@@ -144,7 +144,7 @@
 (defun (test-traits)
   (def m (scores))
   (expect "Collection length" (length m) 3)
-  (expect-bool "Collection empty?" (empty? m) false)
+  (expect-bool "Collection empty?" (empty? m) #f)
   (expect "Collection ->seq" (seq-length (->seq m)) 3)
   (expect "Foldable fold" (fold #(+ &1 (entry-value &2)) 0 m) 6)
   ;; The functor moves values and leaves keys alone.
@@ -192,7 +192,7 @@
 (: test-transient (-> void))
 (defun (test-transient)
   (def t (transientorderedmap-empty))
-  (expect-bool "transient starts empty" (transientorderedmap-empty? t) true)
+  (expect-bool "transient starts empty" (transientorderedmap-empty? t) #t)
   (transientorderedmap-set! t "a" 1)
   (transientorderedmap-set! t "b" 2)
   (transientorderedmap-set! t "a" 10)
@@ -200,7 +200,7 @@
   (expect "transient length" (transientorderedmap-length t) 2)
   (expect "transient ref" (transientorderedmap-ref t "a") 10)
   (expect "transient ref-or" (transientorderedmap-ref-or t "z" 0) 0)
-  (expect-bool "transient contains?" (transientorderedmap-contains? t "b") true)
+  (expect-bool "transient contains?" (transientorderedmap-contains? t "b") #t)
 
   (match (transientorderedmap-try-ref t "b")
     ((Some v) (expect "transient try-ref" v 2))

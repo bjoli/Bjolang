@@ -293,6 +293,13 @@ let rec checkPattern (env: Env) (expectedType: HMType) (pat: Pattern) : TypedPat
           Range = r
           Node = TPChar value },
         Map.empty
+    | PBool(value, r) ->
+        unify env.Registry expectedType TypeConstants.boolType
+
+        { Type = TypeConstants.boolType
+          Range = r
+          Node = TPBool value },
+        Map.empty
     | PKeyword(value, r) ->
         unify env.Registry expectedType TypeConstants.keywordType
 
@@ -2921,6 +2928,14 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         { Type = t
           Range = r
           Node = TChar c }
+
+    | EBool(b, r) ->
+        let t = TypeConstants.boolType
+
+        t,
+        { Type = t
+          Range = r
+          Node = TBool b }
 
     | EKeyword(kw, r) ->
         let t = TypeConstants.keywordType

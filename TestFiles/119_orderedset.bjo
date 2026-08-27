@@ -30,9 +30,9 @@
 (defun (test-set)
   (def s (numbers))
   (expect "length" (orderedset-length s) 5)
-  (expect-bool "contains a member" (orderedset-contains? s 3) true)
-  (expect-bool "contains a stranger" (orderedset-contains? s 4) false)
-  (expect-bool "empty? of the empty set" (orderedset-empty? (orderedset-clear s)) true)
+  (expect-bool "contains a member" (orderedset-contains? s 3) #t)
+  (expect-bool "contains a stranger" (orderedset-contains? s 4) #f)
+  (expect-bool "empty? of the empty set" (orderedset-empty? (orderedset-clear s)) #t)
 
   (expect "add is idempotent" (orderedset-length (orderedset-add s 5)) 5)
   (expect "add" (orderedset-length (orderedset-add s 6)) 6)
@@ -44,8 +44,8 @@
   (expect "filter" (orderedset-length (orderedset-filter #(> &1 4) s)) 3)
   (expect "fold" (orderedset-fold + 0 s) 25)
   (expect "map" (orderedset-length (orderedset-map #(* &1 2) s)) 5)
-  (expect-bool "any?" (orderedset-any? #(= &1 7) s) true)
-  (expect-bool "iter stops early" (orderedset-iter #(< &1 5) s) false)
+  (expect-bool "any?" (orderedset-any? #(= &1 7) s) #t)
+  (expect-bool "iter stops early" (orderedset-iter #(< &1 5) s) #f)
 
   (match (orderedset-find #(> &1 4) s)
     ;; In order, so the *first* match is the smallest — which is the whole
@@ -113,7 +113,7 @@
 (defun (test-traits)
   (def s (numbers))
   (expect "Collection length" (length s) 5)
-  (expect-bool "Collection empty?" (empty? s) false)
+  (expect-bool "Collection empty?" (empty? s) #f)
   (expect "Foldable fold" (fold + 0 s) 25)
   (expect "Functor map" (orderedset-length (map #(* &1 3) s)) 5)
   (expect "loop over an ordered set" (loop (:for x s) (:acc total (summing x))) 25)
@@ -153,12 +153,12 @@
 (: test-transient (-> void))
 (defun (test-transient)
   (def t (transientorderedset-empty))
-  (expect-bool "transient starts empty" (transientorderedset-empty? t) true)
+  (expect-bool "transient starts empty" (transientorderedset-empty? t) #t)
   (transientorderedset-add! t 5)
   (transientorderedset-add! t 1)
   (transientorderedset-add! t 5)
   (expect "transient length" (transientorderedset-length t) 2)
-  (expect-bool "transient contains?" (transientorderedset-contains? t 5) true)
+  (expect-bool "transient contains?" (transientorderedset-contains? t 5) #t)
 
   ;; Reading is the persistent interface unchanged, navigation included.
   (match (transientorderedset-min t)

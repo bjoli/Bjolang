@@ -120,6 +120,7 @@ let rec private rewriteExpr (expr: Expr) : Expr =
     | EInt _
     | EString _
     | EChar _
+    | EBool _
     | EQuotedSymbol _
     | EKeyword _
     | EIdent _ -> expr

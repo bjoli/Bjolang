@@ -1,0 +1,82 @@
+;; `#t` and `#f` are literals.
+;;
+;; They used to be names. `#t` lexed as the symbol `#t`, the parser rewrote it
+;; to `true`, and `true` was an ordinary binding in the prelude — so a boolean
+;; was a variable, and everything written in terms of one could be redefined by
+;; anything that happened to bind that name.
+;;
+;; Everything below binds `true` and `false` to the wrong things, on purpose,
+;; and then asks whether the language still works. On the compiler that had them
+;; as bindings this file does not merely fail: the loop at the bottom walks past
+;; the end of its shorter list and dies inside the runtime.
+(import (std prelude))
+(import (std simpletest))
+
+;; Patterns, which never worked. A boolean pattern was read as a *binder* named
+;; `#t`, which matched everything and reached the code generator, where it was
+;; spelled into C# as written and became a preprocessor directive.
+(: describe (-> bool string))
+(defun (describe b)
+  (match b
+    (#t "yes")
+    (#f "no")))
+
+;; A boolean pattern nested inside another, so it is reached through a
+;; constructor rather than at the top.
+(: describe-maybe (-> (Option bool) string))
+(defun (describe-maybe b)
+  (match b
+    ((Some #t) "some yes")
+    ((Some #f) "some no")
+    (None "none")))
+
+(defun (main)
+  (expect "a pattern on #t" (describe #t) "yes")
+  (expect "a pattern on #f" (describe #f) "no")
+  (expect "nested, true" (describe-maybe (Some #t)) "some yes")
+  (expect "nested, false" (describe-maybe (Some #f)) "some no")
+  (expect "nested, absent" (describe-maybe None) "none")
+
+  ;; `'(#t #f)` is a list of booleans, the way `'(1 2)` is a list of ints. A
+  ;; symbol in a quoted list is still a symbol, so `'(true)` is unaffected —
+  ;; which is what `134_run.bjo` relies on to name a program.
+  (expect "quoted booleans" (list-head '(#t #f)) #t)
+  (expect "and the tail" (list-head (list-tail '(#t #f))) #f)
+
+  ;; ---- the names, bound to the wrong things -------------------------------
+  (let ((true #f) (false 99))
+    (expect "the literal" (if #t "t" "f") "t")
+    (expect "the other literal" (if #f "t" "f") "f")
+    (expect "and" (and #t #t) #t)
+    (expect "and, shortcircuiting" (and #f #t) #f)
+    (expect "or" (or #f #t) #t)
+    (expect "or, both false" (or #f #f) #f)
+    (expect "not" (not #f) #t)
+    ;; `(< a b c)` expands to a conjunction of pairs, through the same builder
+    (expect "a chained comparison" (< 1 2 3) #t)
+    (expect "a chained comparison that fails" (< 1 3 2) #f)
+
+    ;; The bindings are ordinary and still say what they were bound to.
+    (expect "a name called true is just a name" (if true "t" "f") "f")
+    (expect "a name called false is just a name" false 99)
+
+    ;; A level with two `:for` clauses has two termination tests, and joining
+    ;; them is what used to be written in terms of the name `true`. With the
+    ;; shorter list first, the captured test said "not finished" and the walk
+    ;; ran off the end of it.
+    (def out (vecbuilder-empty))
+    (loop (:for x (list 1 2))
+          (:for y (list 10 20 30))
+          (:do (vecbuilder-add! out (+ x y))))
+    (expect "a loop with two sequences stops at the shorter"
+            (vec-length (vecbuilder->vec out))
+            2))
+
+  ;; ---- and as a value, where a boolean has to survive a round trip --------
+  (expect "in a list" (list-length (list #t #f #t)) 3)
+  (expect "through a fold" (list-foldl (fun (acc b) (and acc b)) #t (list #t #t)) #t)
+  ;; .NET's spelling rather than the one the language reads. Asserted as it is
+  ;; rather than as it ought to be: `->str` on a boolean is a separate question
+  ;; from how a boolean is written, and this file is about the second.
+  (expect "printed" (->str #t) "True")
+  0)

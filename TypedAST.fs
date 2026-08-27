@@ -540,6 +540,7 @@ and TPatternNode =
     | TPInt of string
     | TPString of string
     | TPChar of int
+    | TPBool of bool
     | TPKeyword of string
     | TPSymbol of string
     | TPIdent of string
@@ -556,6 +557,7 @@ and TPatternNode =
 
 and TExprNode =
     | TInt of string
+    | TBool of bool
     | TString of string
     | TIdent of string * HMType list
     | TKeyword of string

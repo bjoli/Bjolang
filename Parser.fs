@@ -111,6 +111,7 @@ type Pattern =
     | PString of string * Range
     /// A Unicode scalar value. See `Lexer.CharLit`.
     | PChar of int * Range
+    | PBool of bool * Range
     | PKeyword of string * Range
     | PQuotedSymbol of string * Range
     | PList of Pattern list * Pattern option * Range // (items, optional tail, range)
@@ -126,6 +127,13 @@ and Expr =
     | EString of string * Range
     /// A Unicode scalar value. See `Lexer.CharLit`.
     | EChar of int * Range
+    /// `#t` and `#f`, which are literals rather than names.
+    ///
+    /// They used to be the prelude bindings `true` and `false`, which put a
+    /// boolean in the environment where a local could reach it: binding `true`
+    /// redefined the literal, `and`, `or`, `not` and a loop's termination test,
+    /// all of which are written in terms of it.
+    | EBool of bool * Range
     | EQuotedSymbol of string * Range
     | EKeyword of string * Range
     | EIdent of string * Range
@@ -566,6 +574,12 @@ let rec parsePattern (s: SExpr) : Pattern =
 
     match s with
     | SAtom { Token = Symbol "_" } -> PWildcard r
+    // Before the binder case below, which would otherwise read `#t` as a name
+    // and match everything. That is what it did: a boolean pattern bound a
+    // variable called `#t` and reached the code generator, which spelled it
+    // into C# as written and produced a preprocessor directive.
+    | SAtom { Token = Symbol "#t" } -> PBool(true, r)
+    | SAtom { Token = Symbol "#f" } -> PBool(false, r)
     | SAtom { Token = Symbol sym } ->
         if System.Char.IsUpper(sym.[0]) then PConstruct(sym, [], r)
         else PIdent(sym, r)
@@ -940,8 +954,8 @@ let parseTypeDef (s: SExpr) : TypeDef =
 /// Every generated node carries the range of the *field* or *case* it came
 /// from, so an unimplementable comparison is reported against the thing in the
 /// source that asked for it rather than against the whole declaration.
-let private dTrue r = EIdent("true", r)
-let private dFalse r = EIdent("false", r)
+let private dTrue r = EBool(true, r)
+let private dFalse r = EBool(false, r)
 let private dAnd r a b = EIf(a, b, dFalse r, r)
 let private dEq r a b = EApp(EIdent("=", r), [ a; b ], r)
 let private dHash r x = EApp(EIdent("eq-hash", r), [ x ], r)
@@ -1202,6 +1216,10 @@ let desugarQuotedList (parseExprFn: SExpr -> Expr) (items: SExpr list) (r: Range
         | SAtom { Token = StringLit str } -> EString(str, ir)
         | SAtom { Token = CharLit c } -> EChar(c, ir)
         | SAtom { Token = Keyword kw } -> EKeyword(kw, ir)
+        // Ahead of the symbol case: `'(#t #f)` is a list of booleans, the way
+        // `'(1 2)` is a list of ints.
+        | SAtom { Token = Symbol "#t" } -> EBool(true, ir)
+        | SAtom { Token = Symbol "#f" } -> EBool(false, ir)
         // A symbol in a quoted list is a literal Symbol value, not a variable
         // reference — write ,(expr) to splice the value of a variable.
         | SAtom { Token = Symbol sym } -> EQuotedSymbol(sym, ir)
@@ -1254,6 +1272,7 @@ let exprRange (e: Expr) : Range =
     | EInt(_, r)
     | EString(_, r)
     | EChar(_, r)
+    | EBool(_, r)
     | EQuotedSymbol(_, r)
     | EKeyword(_, r)
     | EIdent(_, r)
@@ -1290,6 +1309,7 @@ let rec patternBinders (pat: Pattern) : string list =
     | PInt _
     | PString _
     | PChar _
+    | PBool _
     | PKeyword _
     | PQuotedSymbol _ -> []
     | PIdent(n, _) -> [ n ]
@@ -1322,6 +1342,7 @@ let freeNamesWith (reference: string -> Range -> bool -> unit) (guarded: bool) (
         | EInt _
         | EString _
         | EChar _
+        | EBool _
         | EQuotedSymbol _
         | EKeyword _ -> ()
         | EIdent(n, r) -> refer n r
@@ -1409,6 +1430,7 @@ let exprChildren (e: Expr) : Expr list =
     | EInt _
     | EString _
     | EChar _
+    | EBool _
     | EQuotedSymbol _
     | EKeyword _
     | EIdent _ -> []
@@ -1549,6 +1571,7 @@ let private renameWith (renameBinder: string -> string) (rootSubst: Map<string, 
         | EInt _
         | EString _
         | EChar _
+        | EBool _
         | EQuotedSymbol _
         | EKeyword _ -> e
         | EIdent(n, r) -> EIdent(reference n, r)
@@ -1911,9 +1934,9 @@ let private desugarNaryOp (op: string) (args: Expr list) (r: Range) : Expr =
 
             let rec buildAnd items =
                 match items with
-                | [] -> EIdent("true", r)
+                | [] -> EBool(true, r)
                 | [ last ] -> last
-                | current :: rest -> EIf(current, buildAnd rest, EIdent("false", r), r)
+                | current :: rest -> EIf(current, buildAnd rest, EBool(false, r), r)
 
             List.foldBack
                 (fun (name, value) acc -> ELet(name, false, [], None, value, acc, r))
@@ -1932,8 +1955,6 @@ let rec parseExpr (s: SExpr) : Expr =
     // Treat specific operator tokens as valid identifiers in expressions
     let (|Ident|_|) =
         function
-        | SAtom { Token = Symbol "#t" } -> Some "true"
-        | SAtom { Token = Symbol "#f" } -> Some "false"
         | SAtom { Token = Symbol sym } -> Some sym
         | _ -> None
 
@@ -1941,6 +1962,10 @@ let rec parseExpr (s: SExpr) : Expr =
     | SAtom { Token = NumberLit n } -> EInt(n, r)
     | SAtom { Token = StringLit str } -> EString(str, r)
     | SAtom { Token = CharLit c } -> EChar(c, r)
+    // Ahead of `Ident` below, which used to rewrite these two to the names
+    // `true` and `false` and hand them to the environment to resolve.
+    | SAtom { Token = Symbol "#t" } -> EBool(true, r)
+    | SAtom { Token = Symbol "#f" } -> EBool(false, r)
     | SAtom { Token = QuotedSymbol sym } -> EQuotedSymbol(sym, r)
     | SAtom { Token = Keyword sym } -> EKeyword(sym, r)
 
@@ -2257,24 +2282,24 @@ let rec parseExpr (s: SExpr) : Expr =
             | "and" ->
                 let rec buildAnd items =
                     match items with
-                    | [] -> EIdent("true", listRange)
+                    | [] -> EBool(true, listRange)
                     | [last] -> parseExpr last
                     | current :: rest ->
-                        EIf(parseExpr current, buildAnd rest, EIdent("false", listRange), listRange)
+                        EIf(parseExpr current, buildAnd rest, EBool(false, listRange), listRange)
                 buildAnd args
 
             | "or" ->
                 let rec buildOr items =
                     match items with
-                    | [] -> EIdent("false", listRange)
+                    | [] -> EBool(false, listRange)
                     | [last] -> parseExpr last
                     | current :: rest ->
-                        EIf(parseExpr current, EIdent("true", listRange), buildOr rest, listRange)
+                        EIf(parseExpr current, EBool(true, listRange), buildOr rest, listRange)
                 buildOr args
 
             | "not" ->
                 match args with
-                | [arg] -> EIf(parseExpr arg, EIdent("false", listRange), EIdent("true", listRange), listRange)
+                | [arg] -> EIf(parseExpr arg, EBool(false, listRange), EBool(true, listRange), listRange)
                 | _ -> failwithf $"Invalid not syntax at %s{Lexer.formatPos r}"
 
             | "fun"
@@ -3287,7 +3312,7 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
                       // A gensym, so a user accumulator that happens to be
                       // called `tmp` cannot be captured by it.
                       Name = Gensym.fresh "loopfinal"
-                      CollectorExpr = call "folding" [ EIdent("false", cr) ] cr
+                      CollectorExpr = call "folding" [ EBool(false, cr) ] cr
                       StepForm = cond
                       Modifier = None
                       Hidden = true
@@ -3416,8 +3441,8 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
         let rec anyOf ts =
             match ts with
             | [ last ] -> last
-            | t :: tl -> EIf(t, EIdent("true", r), anyOf tl, r)
-            | [] -> EIdent("false", r)
+            | t :: tl -> EIf(t, EBool(true, r), anyOf tl, r)
+            | [] -> EBool(false, r)
 
         anyOf tests
 
@@ -3474,7 +3499,7 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
                 // that it can be the body of a `void` function. `when` is the
                 // language's only void-typed expression form, and with a
                 // constant-false condition it is also the emptiest one.
-                | [] -> EWhen(EIdent("false", r), ETuple([], r), false, r)
+                | [] -> EWhen(EBool(false, r), ETuple([], r), false, r)
                 | [ slot ] -> EIdent(slot.Name, slot.Range)
                 | _ -> ETuple(declared |> List.map (fun slot -> EIdent(slot.Name, slot.Range)), r)
 

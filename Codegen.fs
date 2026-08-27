@@ -529,6 +529,7 @@ let rec serializePattern (p: Parser.Pattern) : string =
     // Always the hex spelling: it round-trips through the lexer for every
     // codepoint, including ones with no name and ones that are not printable.
     | Parser.PChar(c, _) -> $"#\\x%X{c}"
+    | Parser.PBool(b, _) -> if b then "#t" else "#f"
     | Parser.PKeyword(k, _) -> "#:" + k
     | Parser.PQuotedSymbol(s, _) -> "'" + s
     // Always parenthesized, even with no arguments. A bare name reads back as a
@@ -585,6 +586,7 @@ let rec serializeExpr (e: Parser.Expr) : string =
     | Parser.EInt(v, _) -> v
     | Parser.EString(v, _) -> "\"" + escapeSexpr v + "\""
     | Parser.EChar(c, _) -> $"#\\x%X{c}"
+    | Parser.EBool(b, _) -> if b then "#t" else "#f"
     | Parser.EQuotedSymbol(s, _) -> "'" + s
     | Parser.EKeyword(k, _) -> "#:" + k
     | Parser.EIdent(n, _) -> n
@@ -786,11 +788,7 @@ let private csharpConstantDefault (kwType: HMType) (kwDefault: TypedExpr) : stri
     | TInt text, ("int" | "byte" | "short" | "ushort" | "uint" | "long" | "ulong" | "double") ->
         NumericLiteral.csharp kwType text
     | TString value, "string" -> Some $"\"%s{escapeStringLiteral value}\""
-    // The booleans are prelude *bindings*, not literal nodes. A shadowing
-    // binding cannot be mistaken for one: a local is alpha-renamed and a
-    // module-level one arrives module-qualified, so only the prelude's own
-    // reaches here under the bare name.
-    | TIdent (("true" | "false") as literal, _), "bool" -> Some literal
+    | TBool b, "bool" -> Some(if b then "true" else "false")
     | _ -> None
 
 /// Which of a keyword-taking function's two entry points is being emitted.
@@ -1016,6 +1014,7 @@ let rec generatePattern (ctx: CodegenContext) (pat: TypedPattern) : unit =
     // A property pattern rather than a constant: `BjoChar` is a record struct,
     // and C# has no literal syntax for one.
     | TPChar c -> append ctx $"Bjolang.Runtime.BjoChar {{ Value: %d{c} }}"
+    | TPBool b -> append ctx (if b then "true" else "false")
     | TPKeyword k -> append ctx $"BjolangRuntime.Keyword {{ Name: \"{escapeStringLiteral k}\" }}"
     | TPSymbol s -> append ctx $"BjolangRuntime.Symbol {{ Name: \"{escapeStringLiteral s}\" }}"
     // `Option` is the runtime's `Option<T>` struct — a flag and a value rather
@@ -1253,6 +1252,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     | TInt i -> append ctx (numericLiteral expr.Range expr.Type i)
     | TString s -> append ctx $"\"%s{escapeStringLiteral s}\""
     | TChar c -> append ctx $"new Bjolang.Runtime.BjoChar(%d{c})"
+    | TBool b -> append ctx (if b then "true" else "false")
     | TKeyword k -> append ctx $"BjolangRuntime.Keyword.Intern(\"{escapeStringLiteral k}\")"
     | TSymbol s -> append ctx $"BjolangRuntime.Symbol.Intern(\"{escapeStringLiteral s}\")"
     // A dictionary singleton: "Foldable_Vec::Instance" with the impl class's own

@@ -37,10 +37,10 @@
 (defun (test-set)
   (def s (numbers))
   (expect "length" (set-length s) 3)
-  (expect-bool "contains a member" (set-contains? s 2) true)
-  (expect-bool "contains a stranger" (set-contains? s 9) false)
-  (expect-bool "empty? of a set with elements" (set-empty? s) false)
-  (expect-bool "empty? of the empty set" (set-empty? (set-clear s)) true)
+  (expect-bool "contains a member" (set-contains? s 2) #t)
+  (expect-bool "contains a stranger" (set-contains? s 9) #f)
+  (expect-bool "empty? of a set with elements" (set-empty? s) #f)
+  (expect-bool "empty? of the empty set" (set-empty? (set-clear s)) #t)
 
   ;; Adding an element twice is adding it once: that is what makes it a set.
   (expect "add is idempotent" (set-length (set-add s 1)) 3)
@@ -57,12 +57,12 @@
   (expect "fold" (set-fold + 0 s) 6)
   ;; A mapping that collides merges, which a list's map cannot do.
   (expect "map" (set-length (set-map #(% &1 2) s)) 2)
-  (expect-bool "any?" (set-any? #(= &1 3) s) true)
-  (expect-bool "any? with no hit" (set-any? #(= &1 30) s) false)
+  (expect-bool "any?" (set-any? #(= &1 3) s) #t)
+  (expect-bool "any? with no hit" (set-any? #(= &1 30) s) #f)
   ;; `iter` reports whether the walk ran to the end, so a predicate that fails
   ;; somewhere answers false.
-  (expect-bool "iter runs out" (set-iter #(< &1 10) s) true)
-  (expect-bool "iter stops early" (set-iter #(< &1 3) s) false)
+  (expect-bool "iter runs out" (set-iter #(< &1 10) s) #t)
+  (expect-bool "iter stops early" (set-iter #(< &1 3) s) #f)
 
   (match (set-find #(> &1 2) s)
     ((Some found) (expect "find" found 3))
@@ -82,7 +82,7 @@
 (defun (test-traits)
   (def s (numbers))
   (expect "Collection length" (length s) 3)
-  (expect-bool "Collection empty?" (empty? s) false)
+  (expect-bool "Collection empty?" (empty? s) #f)
   (expect "Collection ->seq" (seq-length (->seq s)) 3)
   (expect "Foldable fold" (fold + 0 s) 6)
   (expect "Functor map" (set-length (map #(* &1 10) s)) 3)
@@ -93,7 +93,7 @@
   ;; And as an accumulator, through the builder.
   (def evens (loop (:for x (range 0 10)) (:when (= 0 (% x 2))) (:acc s (setting x))))
   (expect "setting collector" (set-length evens) 5)
-  (expect-bool "setting collector holds 8" (set-contains? evens 8) true)
+  (expect-bool "setting collector holds 8" (set-contains? evens 8) #t)
 
   (expect "list->set" (set-length (list->set (list 1 1 2))) 2)
   (expect "set->list" (list-length (set->list s)) 3)
@@ -131,14 +131,14 @@
 (: test-transient (-> void))
 (defun (test-transient)
   (def t (transientset-empty))
-  (expect-bool "transient starts empty" (transientset-empty? t) true)
+  (expect-bool "transient starts empty" (transientset-empty? t) #t)
   (transientset-add! t 1)
   (transientset-add! t 2)
   (transientset-add! t 1)
   ;; The persistent interface, in place: `add!` of a member already there is the
   ;; same no-op `set-add` is.
   (expect "transient length" (transientset-length t) 2)
-  (expect-bool "transient contains?" (transientset-contains? t 2) true)
+  (expect-bool "transient contains?" (transientset-contains? t 2) #t)
   (transientset-remove! t 1)
   (expect "transient remove!" (transientset-length t) 1)
 
@@ -165,7 +165,7 @@
 (defun (test-strings)
   (def s (set-add (set-add (set-empty) "a") "b"))
   (expect "a set of strings" (set-length s) 2)
-  (expect-bool "and it can be asked about" (set-contains? s "b") true))
+  (expect-bool "and it can be asked about" (set-contains? s "b") #t))
 
 (defun (main args)
   (test-set)

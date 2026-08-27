@@ -46,7 +46,7 @@
   (raise (cast Exception (Refusal. "this filter refuses"))))
 
 (: failed? (-> (Result Exception %a) bool))
-(defun (failed? r) (match r ((Ok v) false) ((Err e) true)))
+(defun (failed? r) (match r ((Ok v) #f) ((Err e) #t)))
 
 (: text-of (-> string string))
 (defun (text-of path)
@@ -143,7 +143,7 @@
               (TimedOut "timed out"))
             "timed out")
     (sync (timeout 600))
-    (expect "and the form it lost was killed" (file-exists? marker) false))
+    (expect "and the form it lost was killed" (file-exists? marker) #f))
 
   (expect "running wins when it is quick"
           (match (sync (choose (wrap (running '(echo "quick")) (fun (r) (Finished r)))
@@ -423,6 +423,10 @@
           "1")
 
   ;; ---- exit codes --------------------------------------------------------
+  ;;
+  ;; `true` and `false` here are the programs in /usr/bin, and a symbol in a
+  ;; quoted list is what names one. The booleans are `#t` and `#f` and are not
+  ;; symbols at all, so the two cannot be confused.
   (expect "a zero status"
           (match (run/status '(true)) ((Ok c) (int->string c)) ((Err e) "ERR"))
           "0")
@@ -505,7 +509,7 @@
   ;; tags are named.
   (expect-true "a misspelled tag names the tags"
                (match (run/string '(input-from-file "x" ,shout))
-                 ((Ok s) false)
+                 ((Ok s) #f)
                  ((Err e) (string-contains? (.-Message e) "the tags are"))))
 
   ;; Piping out of something whose output is already in a file would be a
