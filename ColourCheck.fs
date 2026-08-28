@@ -57,10 +57,11 @@ open Bjolang.Lexer
 open Bjolang.TypedAST
 
 /// Does this type describe something whose call is a yield point?
-let private suspends (t: HMType) =
-    match t with
-    | TFun(_, _, EAsync) -> true
-    | _ -> false
+///
+/// Shared with `Codegen`, which emits an `await` for exactly these. Two
+/// spellings of one question are how a program gets accepted here and then
+/// rejected by Roslyn.
+let private suspends (t: HMType) = callSuspends t
 
 /// What fixed the colour of an ordinary lambda.
 ///

@@ -85,13 +85,31 @@
 ;; slow, it was *inexpressible*: a suspending lambda handed to a parameter typed
 ;; `(-> ...)` is a type error, so there was no way to write it at all.
 ;;
-;; The reader is spelled out as a lambda rather than passed as the bare name
-;; `read-line`. That is the remaining step: a name with two copies still has the
-;; ordinary one's type when referenced as a value, so `(port->list read-line p)`
-;; selects the sync reader and parks.
+;; The reader may be spelled out as a lambda...
 (: drain-count (-bjo-> TextInputPort int))
 (defbjo (drain-count p)
   (list-length (port->list (bjoroutine (q) (read-line q)) p)))
+
+;; ...or passed as the bare name, which compiles to exactly the same thing.
+;;
+;; This was the last place a call site's colour was decided by something other
+;; than what the reader wrote. A reference to a name with two copies carries an
+;; effect variable rather than the ordinary copy's arrow, so the mention settles
+;; nothing by itself, and what settles it is the colour of the member the
+;; mention is written in. Spelling out `(bjoroutine (q) (read-line q))` was the
+;; workaround for that — and naming a colour is the one thing this design exists
+;; to avoid having to do.
+(: drain-count-named (-bjo-> TextInputPort int))
+(defbjo (drain-count-named p)
+  (list-length (port->list read-line p)))
+
+;; The same three words in a `defun`, where they must reach the *ordinary*
+;; reader — passing the suspending one would hand a `Func<A,Fiber<B>>` to a
+;; parameter emitted for `Func<A,B>`. Nothing here says which; the enclosing
+;; member does.
+(: drain-count-sync (-> TextInputPort int))
+(defun (drain-count-sync p)
+  (list-length (port->list read-line p)))
 
 ;; --- Running a bjoroutine to a value ----------------------------------------
 
@@ -138,6 +156,14 @@
   ;; --- Draining a port at the suspending colour -----------------------------
   (expect "port->list with a suspending reader"
           (run-bjo (bjo (drain-count (open-input-string "a\nb\nc"))))
+          3)
+
+  (expect "port->list with the reader named"
+          (run-bjo (bjo (drain-count-named (open-input-string "a\nb\nc"))))
+          3)
+
+  (expect "the same source, ordinarily"
+          (drain-count-sync (open-input-string "a\nb\nc"))
           3)
 
   ;; --- Across a module boundary ---------------------------------------------

@@ -140,12 +140,15 @@ let rec pruneEffect (eff: Effect) : Effect =
 
 /// The colour an arrow is actually emitted at.
 ///
-/// Effect defaulting, and the one place a colour is *chosen* rather than
-/// forced: a cell still unbound when solving finishes is bound to the colour of
-/// the enclosing member. Today that is always `ESync`, because the suspending
-/// instantiation of an `-?->` needs a second emitted body and there is no pass
-/// yet that makes one — so `unifyEffect` refuses to bind a cell to `EAsync` and
-/// this has one answer to give.
+/// The real defaulting — an unbound cell taking the colour of the member it is
+/// written in — is `EffectGraph.ground`, which has the context this does not:
+/// what runs here is the same rule with nothing left to read, so it can only
+/// answer `ESync`.
+///
+/// Which is the right answer for what reaches it. Anything that pass grounded is
+/// already solved by the time this is asked, so what is left is a cell in a type
+/// no expression carries — a signature printed for a diagnostic, a delegate
+/// spelled for a member nobody calls. Ordinary is what those are.
 ///
 /// Familiar shape regardless: it is the same move as defaulting an
 /// unconstrained numeric type variable.
@@ -154,6 +157,20 @@ let groundEffect (eff: Effect) : Effect =
     | EMeta _
     | EPoly -> ESync
     | other -> other
+
+/// Does calling a value of this type compile to an `await`?
+///
+/// The effect is pruned rather than matched literally, because by the time
+/// anyone asks, a colour can be sitting in a *solved cell* rather than written
+/// on the arrow: an `-?->` instantiated at a call site, or a two-copy name
+/// whose reference was grounded to the colour of the member it appears in.
+/// Reading such an arrow as ordinary because it is not spelled `EAsync` emits a
+/// call to a `Fiber<T>`-returning delegate with no `await` on it, which Roslyn
+/// then rejects in a file nobody wrote.
+let callSuspends (t: HMType) : bool =
+    match t with
+    | TFun(_, _, eff) -> pruneEffect eff = EAsync
+    | _ -> false
 
 let arrowHead (eff: Effect) : string =
     match pruneEffect eff with

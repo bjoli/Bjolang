@@ -1003,9 +1003,7 @@ let rec private containsAwait (expr: TypedExpr) : bool =
         | _ -> false
     | TForeignStaticCall (_, _, _, Some meta) when meta.Await -> true
     | TDotMethodCall (_, _, _, Some meta) when meta.Await -> true
-    | TApply (target, _, _) when (match target.Type with
-                                  | TFun (_, _, EAsync) -> true
-                                  | _ -> false) -> true
+    | TApply (target, _, _) when callSuspends target.Type -> true
     | _ -> TypeVisitor.children expr |> List.exists containsAwait
 
 /// Translates a typed pattern into C# pattern syntax.
@@ -1533,9 +1531,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
         // task-like from the delegate it is converted to, which `typeToString`
         // already spells `Func<..., Bjoml.Fiber<T>>`, so the keyword is the
         // whole difference.
-        (match expr.Type with
-         | TFun(_, _, EAsync) -> append ctx "async "
-         | _ -> ())
+        (if callSuspends expr.Type then append ctx "async ")
 
         append ctx "("
         append ctx (args |> List.map sanitizeIdent |> String.concat ", ")
@@ -2036,10 +2032,7 @@ and private generateApply
         // SynchronizationContext and never flows ExecutionContext, so there is
         // nothing to configure — unlike a BCL `Task`, where §7.2 makes it an
         // emitter obligation.
-        let isYieldPoint =
-            match target.Type with
-            | TFun(_, _, EAsync) -> true
-            | _ -> false
+        let isYieldPoint = callSuspends target.Type
 
         if isYieldPoint then append ctx "(await "
 

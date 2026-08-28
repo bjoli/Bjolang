@@ -234,6 +234,69 @@ let private wantsSuspendingCopy (t: HMType) =
             | _ -> false)
     | _ -> false
 
+/// Effect defaulting: an effect cell nothing has constrained becomes the colour
+/// of the member it is written in.
+///
+/// This is the rule `groundEffect` has always described and never got to apply,
+/// because until copies were generated a cell had only one colour it could
+/// legally take. It is what makes a *name* colourless in the same way a call
+/// already is: `(port->list read-line p)` leaves the reader's arrow open —
+/// nothing about `read-line` or about `-?->` decides it — and what settles it
+/// is whether the reading happens inside a bjoroutine.
+///
+/// Done here, in place, rather than as a pass of its own, because the context
+/// it defaults to is precisely `selectIn`'s `allowed`: the same walk that knows
+/// which C# member an expression lands in is the one that has to answer this,
+/// and two walks agreeing by construction beats two walks agreeing by
+/// inspection.
+///
+/// Whole types rather than outer arrows, because the cell a call has to read
+/// back sits in a *parameter's* arrow — the `-?->` — while the cell that
+/// decided it came from an argument's outer one, and unification chained them.
+/// Binding the root reaches both from either side.
+///
+/// Grounding is idempotent and monotone: a cell already solved is left alone,
+/// so an argument that pinned a colour keeps it and only the genuinely
+/// undecided ones are decided here.
+let rec private ground (allowed: bool) (t: HMType) : unit =
+    let colour = if allowed then EAsync else ESync
+
+    match t with
+    | TFun(args, ret, eff) ->
+        (match pruneEffect eff with
+         | EMeta cell -> cell.EValue <- Some colour
+         | _ -> ())
+
+        args |> List.iter (ground allowed)
+        ground allowed ret
+    | TCon(_, args)
+    | TTuple args -> args |> List.iter (ground allowed)
+    | TAssoc(_, _, implementor) -> ground allowed implementor
+    | TMeta { Value = Some inner } -> ground allowed inner
+    | _ -> ()
+
+/// A name with two copies, referenced as a value and grounded suspending.
+///
+/// The counterpart to the call-site rewrite below, and the harder half: a bare
+/// `read-line` is not a call, so nothing about where it sits says which copy it
+/// means, and the arrow it was grounded to is the only record of the decision.
+/// Reading it back here is what lets `(port->list read-line p)` and
+/// `(port->list (bjoroutine (q) (read-line q)) p)` compile to the same thing.
+///
+/// A cell that grounded to `ESync` is not one of these, so the test is exact
+/// without needing to know whether grounding or unification bound it.
+let private valueCopy (registry: TraitRegistry) (expr: TypedExpr) : TypedExpr option =
+    match expr.Node, expr.Type with
+    | TIdent(name, tyArgs), TFun(_, _, eff) when pruneEffect eff = EAsync ->
+        match Map.tryFind name registry.DoubleDefs with
+        | Some bjoName ->
+            Some
+                { expr with
+                    Node = TIdent(bjoName, tyArgs)
+                    Type = recolour EAsync expr.Type }
+        | None -> None
+    | _ -> None
+
 /// Point calls at the suspending copy of a `defbjouble`, wherever one may be
 /// awaited.
 ///
@@ -283,6 +346,10 @@ let rec private selectIn (registry: TraitRegistry) (allowed: bool) (expr: TypedE
     let descend = selectIn registry allowed
     let sealed_ = selectIn registry false
 
+    // Defaulting comes before every choice below, because every choice below is
+    // made by reading a colour back out of a type. See `ground`.
+    ground allowed expr.Type
+
     match expr.Node with
     | TLambda(ps, body) ->
         let inner =
@@ -296,14 +363,27 @@ let rec private selectIn (registry: TraitRegistry) (allowed: bool) (expr: TypedE
 
     | TBjo body ->
         // The operands run in the parent and the call runs in the child, which
-        // is always async — the same split `ColourCheck` makes.
+        // is always async — the same split `ColourCheck` makes, down to
+        // emptying the argument list so that the child's colour reaches the
+        // call and nothing else.
         match body.Node with
         | TApply(target, args, kwArgs) ->
-            let target = descend target
+            // The call first, and in the child's colour, because it is what
+            // decides which copy is meant — and therefore what colour an
+            // argument that is a bare name has to be. The arguments are
+            // selected afterwards in the parent's, where they are evaluated: an
+            // ordinary method builds a suspending delegate perfectly well, it
+            // is only *calling* one that needs an await.
+            let chosen = selectIn registry true { body with Node = TApply(target, [], []) }
+
+            let target =
+                match chosen.Node with
+                | TApply(t, _, _) -> t
+                | _ -> target
+
             let args = args |> List.map descend
             let kwArgs = kwArgs |> List.map (fun (n, v) -> n, descend v)
-            let spawned = selectIn registry true { body with Node = TApply(target, args, kwArgs) }
-            { expr with Node = TBjo spawned }
+            { expr with Node = TBjo { body with Node = TApply(target, args, kwArgs) } }
         | _ -> { expr with Node = TBjo(selectIn registry true body) }
 
     | TLoop(members, bodyOpt) ->
@@ -328,6 +408,14 @@ let rec private selectIn (registry: TraitRegistry) (allowed: bool) (expr: TypedE
         { expr with Node = TLetRec(bindings, descend body) }
 
     | TApply(target, args, kwArgs) ->
+        // The callee's own type, defaulted before it is read: the cell an
+        // `-?->` was instantiated to lives in one of its *parameters*, and this
+        // is the last point at which anything could still constrain it. The
+        // arguments below share that cell through unification, so grounding it
+        // here answers for them too — which is why the call is decided before
+        // its arguments are walked, and not after.
+        ground allowed target.Type
+
         let target =
             match target.Node with
             // Chosen by what the argument *is*, not by where the call is
@@ -363,7 +451,12 @@ let rec private selectIn (registry: TraitRegistry) (allowed: bool) (expr: TypedE
                     kwArgs |> List.map (fun (n, v) -> n, descend v)
                 ) }
 
-    | _ -> TypeVisitor.mapChildren descend expr
+    // A bare name, which is where the last colourless call site was decided by
+    // something other than what the reader wrote. See `valueCopy`.
+    | _ ->
+        match valueCopy registry expr with
+        | Some copy -> copy
+        | None -> TypeVisitor.mapChildren descend expr
 
 /// Runs unconditionally: there used to be a short circuit when no `defbjouble`
 /// was in scope, and a `-?->` needs no `defbjouble` anywhere to want its copy.

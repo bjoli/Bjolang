@@ -14,9 +14,10 @@
 ;;
 ;; Each `EXPECT-CS` line is an extended regex matched against one line.
 
-(export drain count-here count-suspending)
+(export drain count-here count-suspending names-here names-suspending seq-here)
 
 (import (std prelude))
+(import (std ports))
 
 ;; --- One source, two bodies --------------------------------------------------
 ;;
@@ -58,3 +59,40 @@
 ;; the degradation the blocking lint still reports.
 ;; EXPECT-CS: await portsubeof_QMARK__bjo\(p\)
 ;; EXPECT-CS: await readsubline__bjo\(p\)
+
+;; --- And which copy a *name* means -------------------------------------------
+;;
+;; `port->list` declares its reader `-?->`, so it has two copies; `read-line` is
+;; a `defbjouble`, so it has two bodies. The two definitions below are the same
+;; three words and neither says which pair it wants. A reference to a two-copy
+;; name carries an effect variable rather than the ordinary copy's arrow, so the
+;; mention decides nothing, and the colour of the enclosing member decides both:
+;; the callee *and* the delegate handed to it.
+;;
+;; The delegate types are why this is the assertion worth making. `Func<A,B>`
+;; and `Func<A,Fiber<B>>` are unrelated in C#, so picking one copy and not the
+;; other would not compile — but picking *neither* compiles fine and parks on
+;; every line, which is how this went unnoticed until it was looked for.
+
+;; EXPECT-CS: portsubgtlist\(\(\(Func<System.IO.TextReader, string>\)\(readsubline\)\), p\)
+(: names-here (-> TextInputPort int))
+(defun (names-here p) (list-length (port->list read-line p)))
+
+;; EXPECT-CS: await portsubgtlist__bjo\(\(\(Func<System.IO.TextReader, Bjoml.Fiber<string>>\)\(readsubline__bjo\)\), p\)
+(: names-suspending (-bjo-> TextInputPort int))
+(defbjo (names-suspending p) (list-length (port->list read-line p)))
+
+;; --- A written arrow still outranks the default ------------------------------
+;;
+;; `port->seq`'s reader is declared `(-> ...)`, deliberately: a sequence is a C#
+;; iterator and an iterator may not await, so promising a suspending copy there
+;; would promise a body the compiler must then refuse to build. That arrow pins
+;; the effect variable during unification, long before defaulting is asked, so
+;; even the *suspending* copy of the body below is handed the ordinary
+;; `read-line`. It parks, and the blocking lint is what says so.
+;;
+;; Defaulting only ever decides what nothing else has decided. This is the line
+;; that pins it.
+;; EXPECT-CS: portsubgtseq__bjo\(\(\(Func<System.IO.TextReader, string>\)\(readsubline\)\), p\)
+(: seq-here (-> TextInputPort int))
+(defun (seq-here p) (seq-length (port->seq read-line p)))

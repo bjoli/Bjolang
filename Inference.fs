@@ -2013,6 +2013,27 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         let binding = lookup env name
         let t, tArgs, constraints = instantiate env.Registry binding.Scheme
 
+        // A name with two emitted copies is colour-polymorphic, and its
+        // *reference* has to say so, not just its call.
+        //
+        // The binding is the ordinary copy's, so its arrow is `ESync`, and
+        // handing that to a `-?->` parameter bound the parameter's cell to
+        // `ESync` before anything had decided anything: `(port->list read-line
+        // p)` from a bjoroutine chose the ordinary reader and parked on every
+        // line, silently, while `(port->list (bjoroutine (q) (read-line q)) p)`
+        // suspended. Same call, and the difference was that one of them
+        // mentioned a colour — which is the thing this design exists to avoid.
+        //
+        // So the reference gets a cell of its own instead. Meeting a parameter
+        // declared `->` binds it to `ESync` exactly as before; meeting a `-?->`
+        // chains the two and leaves both open, and `EffectGraph` grounds the
+        // chain to the colour of the member the reference is written in.
+        let t =
+            match t with
+            | TFun(args, ret, ESync) when Map.containsKey name env.Registry.DoubleDefs ->
+                TFun(args, ret, freshEffect ())
+            | other -> other
+
         t,
         { Type = t
           Range = r
