@@ -224,6 +224,25 @@ let private nullaryCorrespondence =
           "VecCursor", "BjolangRuntime.VecCursor"
           "SeqCursor", "BjolangRuntime.SeqCursor" ]
 
+/// The same correspondence read backwards, for the one entry where it is
+/// unambiguous.
+///
+/// `mapClrType` did not consult the table at all, which made it
+/// one-directional: a Bjolang `char` knew it was a `BjoChar`, and a .NET method
+/// *returning* one came back as a type named `Bjolang.Runtime.BjoChar` that
+/// unified with nothing. No such method could be imported, which is why
+/// `read-char` was a builtin — the workaround, not the design.
+///
+/// Only `char`, and deliberately not the whole table. The others have a .NET
+/// name a program may also write: `(import/class (SB (: System.Text.StringBuilder ...)))`
+/// is a real thing to do, and mapping the reflected type to `StringBuilder`
+/// would make the imported alias and the reflected member disagree about what
+/// they are. `char` has no such spelling — `System.Char` is a *different* type,
+/// a UTF-16 code unit rather than a scalar — so there is nothing to collide
+/// with.
+let private clrToNullary =
+    dict [ "Bjolang.Runtime.BjoChar", TypeConstants.CharName ]
+
 /// A member of an interface, and whether it is reached through the type or
 /// through a value: `T.Abs(x)` against `x.CompareTo(y)`.
 type ClrMemberKind =
@@ -420,7 +439,10 @@ let rec mapClrType (t: Type) : HMType =
         // this, so a .NET member typed in terms of it is already in the
         // language.
         | "Bjoml.Unit" -> unitType
-        | name -> TCon(name, [])
+        | name ->
+            match clrToNullary.TryGetValue name with
+            | true, bjolang -> TCon(bjolang, [])
+            | _ -> TCon(name, [])
 
 /// The .NET type a Bjolang type corresponds to, when it has one.
 ///

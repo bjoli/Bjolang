@@ -63,12 +63,46 @@
   (+ (count-suspending (open-input-string text))
      (count-suspending (open-input-string text))))
 
+;; --- The prelude's own leaves, from both colours ----------------------------
+;;
+;; `read-line` and `port-eof?` are `defbjouble`s in `(std prelude)`, so these
+;; two functions are the same source written twice, differing only in the
+;; definer — and that difference is the whole of what decides whether the reads
+;; park a thread or suspend a fiber.
+(: join-lines (-> TextInputPort string))
+(defun (join-lines p)
+  (let go ((acc ""))
+    (if (port-eof? p)
+        acc
+        (go (string-append acc (string-append (read-line p) "|"))))))
+
+(: join-lines-bjo (-bjo-> TextInputPort string))
+(defbjo (join-lines-bjo p)
+  (let go ((acc ""))
+    (if (port-eof? p)
+        acc
+        (go (string-append acc (string-append (read-line p) "|"))))))
+
+;; Reading past the end from the suspending half. Both halves promise the same
+;; exception, which is the part no compiler can check.
+(: read-past-end (-bjo-> TextInputPort string))
+(defbjo (read-past-end p)
+  (match (try (read-line p) #:catch (System.IO.EndOfStreamException))
+    ((Ok l) "returned")
+    ((Err e) "threw")))
+
 ;; Run a bjoroutine from an ordinary function and wait for its answer.
 (: run-bjo (-> (Promise int) int))
 (defun (run-bjo p)
   (match (sync/blocking (promise-join p))
     ((Ok n) n)
     ((Err e) -1)))
+
+(: run-str (-> (Promise string) string))
+(defun (run-str p)
+  (match (sync/blocking (promise-join p))
+    ((Ok s) s)
+    ((Err e) "FAILURE")))
 
 (defun (main)
   ;; --- The ordinary copy --------------------------------------------------
@@ -104,6 +138,27 @@
   (expect "and empty afterwards"
           (run-bjo (bjo (count-suspending shared)))
           0)
+
+  ;; --- The prelude's own leaves -------------------------------------------
+  ;;
+  ;; The point of doing any of this. `read-line` and `port-eof?` are
+  ;; `defbjouble`s in `(std prelude)`, so the loop below is the one every
+  ;; program writes — and in a bjoroutine it awaits `ReadLineOrThrowAsync`
+  ;; rather than parking a pool thread on `ReadLine`. Nothing in the source
+  ;; says which.
+  (expect "prelude leaves, ordinarily"
+          (join-lines (open-input-string "a\nb\nc"))
+          "a|b|c|")
+
+  (expect "prelude leaves, suspending"
+          (run-str (bjo (join-lines-bjo (open-input-string "a\nb\nc"))))
+          "a|b|c|")
+
+  ;; The failure promise both halves make: `read-line` throws at end of input,
+  ;; in either colour, with the same exception.
+  (expect "the suspending half fails the same way"
+          (run-str (bjo (read-past-end (open-input-string ""))))
+          "threw")
 
   ;; --- Astral characters are not the leaf's business ------------------------
   ;;

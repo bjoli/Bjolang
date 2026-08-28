@@ -461,6 +461,68 @@ public sealed class BjoPort : TextReader {
 
     public static Task<string> ReadRestAsync(TextReader reader, CancellationToken cancel = default) =>
         reader.ReadToEndAsync(cancel);
+
+    /// The message both halves of `read-line` fail with.
+    ///
+    /// One string, because the two bodies of a `defbjouble` promising different
+    /// things at end of input is exactly the drift the form cannot check for.
+    private static Exception EndOfLine() =>
+        new EndOfStreamException(
+            "read-line: the port is at end of input. Guard with (port-eof? p), or use read-line/opt.");
+
+    public static string ReadLineOrThrow(TextReader reader) => reader.ReadLine() ?? throw EndOfLine();
+
+    public static async ValueTask<string> ReadLineOrThrowAsync(TextReader reader, CancellationToken cancel = default) =>
+        await ReadLineOrNullAsync(reader, cancel).ConfigureAwait(false) ?? throw EndOfLine();
+
+    // --- Characters ---------------------------------------------------------
+    //
+    // A Bjolang `char` is a Unicode scalar and a `TextReader` deals in UTF-16
+    // code units, so a character above the BMP arrives as two reads and has to
+    // be put back together. Written once, here, and shared by both colours:
+    // two copies of surrogate arithmetic is two chances to get it wrong, and
+    // the bug it produces is half a character rather than an exception.
+
+    private static BjoChar Assemble(int first, int second)
+    {
+        var unit = (char)first;
+        if (!char.IsSurrogate(unit)) return new BjoChar((uint)first);
+
+        if (!char.IsHighSurrogate(unit))
+            throw new InvalidOperationException(
+                "read-char: the port holds an unpaired low surrogate, which is not a character.");
+
+        if (second < 0 || !char.IsLowSurrogate((char)second))
+            throw new InvalidOperationException(
+                "read-char: the port holds a high surrogate with no low surrogate after it, which is not a character.");
+
+        return new BjoChar((uint)char.ConvertToUtf32(unit, (char)second));
+    }
+
+    /// Whether a second read is owed, without doing it. Splitting this out is
+    /// what lets the suspending half await the second unit rather than
+    /// blocking for it.
+    private static bool NeedsPair(int first) => first >= 0 && char.IsHighSurrogate((char)first);
+
+    private static Exception EndOfChar() =>
+        new EndOfStreamException(
+            "read-char: the port is at end of input. Guard with (port-eof? p), or use read-char/opt.");
+
+    public static BjoChar ReadCharOrThrow(TextReader reader)
+    {
+        var first = reader.Read();
+        if (first < 0) throw EndOfChar();
+        return Assemble(first, NeedsPair(first) ? reader.Read() : -1);
+    }
+
+    public static async ValueTask<BjoChar> ReadCharOrThrowAsync(TextReader reader, CancellationToken cancel = default)
+    {
+        var first = await ReadUnitAsync(reader, cancel).ConfigureAwait(false);
+        if (first < 0) throw EndOfChar();
+
+        var second = NeedsPair(first) ? await ReadUnitAsync(reader, cancel).ConfigureAwait(false) : -1;
+        return Assemble(first, second);
+    }
 }
 
 /// The symmetric type, and half the difficulty: a writer has no eof problem.

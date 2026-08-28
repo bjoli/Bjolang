@@ -1311,37 +1311,78 @@
 (: close-output-port (-> TextOutputPort void))
 (defun (close-output-port p) (.Dispose p))
 
+;; A leaf, and the only one on the writing side: a write goes into a buffer and
+;; is a memory copy whatever colour it is made in, so the syscall — and so the
+;; wait — is here.
+(import/extern
+  (clr-flush       (: Bjolang.Runtime.BjoWriter.FlushPort      (-> TextOutputPort void) #:blocking))
+  (clr-flush-await (: Bjolang.Runtime.BjoWriter.FlushPortAsync (-> TextOutputPort void) #:async)))
+
 (: flush-port (-> TextOutputPort void))
-(defun (flush-port p) (.Flush p))
+(defbjouble (flush-port p)
+  (#:sync (clr-flush p))
+  (#:bjo  (clr-flush-await p)))
 
 ;; --- Input ---
 
-;; `Peek` reports -1 at end of input without consuming anything.
+;; --- The leaves ---
 ;;
-;; Imported rather than written `(.Peek p)`, for one reason: a bare dot-call
-;; came through no import clause, so there is nowhere on it to write
-;; `#:blocking`. And peeking is exactly the call that wants marking — eof on a
-;; stream is a *read*, so this waits for a character whenever the port has none
-;; buffered, and it is the call at the top of every port loop ever written.
+;; These four are the *only* procedures here written twice, and the reason is
+;; specific to each: its two colours call different .NET methods, which is the
+;; one thing no inference derives. `TextReader` has `Peek` and has no async
+;; peek — that is not an oversight in .NET, because eof on a stream is a read —
+;; so the suspending answer is a different method on a different type.
+;;
+;; Everything above them is an ordinary `defun`, written once. `read-line/opt`,
+;; `port-fold`, `port->list` and the rest say nothing about colour and never
+;; will.
+;;
+;; **Both bodies of each pair agree on failure.** `read-line` throws at end of
+;; input in both; `port-eof?` answers `true` in both and never raises;
+;; `read-all` answers `""` in both. Nothing checks that — no compiler compares
+;; what two different .NET methods do when they fail — so it is a promise made
+;; here and kept.
+;;
+;; The sync halves are `#:blocking`: each waits on the thread it is called on,
+;; which is exactly true and is what lets the lint report a bjoroutine that
+;; reaches one through a `defun` that has no suspending copy yet.
 (import/extern
-  (clr-peek (: System.IO.TextReader.Peek (-> TextInputPort int) #:blocking)))
+  (clr-eof        (: Bjolang.Runtime.BjoPort.PortEof            (-> TextInputPort bool)   #:blocking))
+  (clr-eof-await  (: Bjolang.Runtime.BjoPort.PortEofAsync       (-> TextInputPort bool)   #:async))
+  (clr-line       (: Bjolang.Runtime.BjoPort.ReadLineOrThrow    (-> TextInputPort string) #:blocking))
+  (clr-line-await (: Bjolang.Runtime.BjoPort.ReadLineOrThrowAsync (-> TextInputPort string) #:async))
+  (clr-char       (: Bjolang.Runtime.BjoPort.ReadCharOrThrow    (-> TextInputPort char)   #:blocking))
+  (clr-char-await (: Bjolang.Runtime.BjoPort.ReadCharOrThrowAsync (-> TextInputPort char) #:async))
+  (clr-rest       (: Bjolang.Runtime.BjoPort.ReadRest           (-> TextInputPort string) #:blocking))
+  (clr-rest-await (: Bjolang.Runtime.BjoPort.ReadRestAsync      (-> TextInputPort string) #:async)))
 
 ;; Whether the port has no more input.
+;;
+;; Free whenever the port has anything buffered, which reading a line at a time
+;; is all but one call in a bufferful — that is what `BjoPort` is for.
 (: port-eof? (-> TextInputPort bool))
-(defun (port-eof? p) (= (clr-peek p) -1))
+(defbjouble (port-eof? p)
+  (#:sync (clr-eof p))
+  (#:bjo  (clr-eof-await p)))
 
 ;; The next line, without its newline. **Throws at end of input** — guard with
-;; `port-eof?`, or use `read-line/opt`.
+;; `port-eof?`, or use `read-line/opt`. Both halves throw the same exception
+;; with the same message.
 (: read-line (-> TextInputPort string))
-(defun (read-line p) (reader-read-line! p))
+(defbjouble (read-line p)
+  (#:sync (clr-line p))
+  (#:bjo  (clr-line-await p)))
 
 ;; The next line, or `None` at end of input, for when the check and the read
 ;; want to be one step.
 (: read-line/opt (-> TextInputPort (Option string)))
+;; Built on the leaves above rather than on the raw builtin, which is the shape
+;; the whole layering is meant to have: `read-line` and `port-eof?` are the two
+;; procedures that know about colour, and everything over them is written once.
 (defun (read-line/opt p)
   (if (port-eof? p)
       None
-      (Some (reader-read-line! p))))
+      (Some (read-line p))))
 
 ;; The next character. **Throws at end of input** — guard with `port-eof?`, or
 ;; use `read-char/opt`.
@@ -1357,8 +1398,12 @@
 ;; `read-char` is about to give would be worse than none. `port-eof?` is the
 ;; question peeking is usually asked, and text that needs real lookahead wants
 ;; `read-all` and a `StringCursor`.
+;; The surrogate arithmetic lives in the runtime and is shared by both halves,
+;; so the two colours cannot disagree about what a character is.
 (: read-char (-> TextInputPort char))
-(defun (read-char p) (reader-read-char! p))
+(defbjouble (read-char p)
+  (#:sync (clr-char p))
+  (#:bjo  (clr-char-await p)))
 
 ;; The next character, or `None` at end of input, for when the check and the
 ;; read want to be one step.
@@ -1366,15 +1411,27 @@
 (defun (read-char/opt p)
   (if (port-eof? p)
       None
-      (Some (reader-read-char! p))))
+      (Some (read-char p))))
 
 ;; Everything remaining, as one string. Empty at end of input, which needs no
 ;; `Option`: there is no difference between "no more input" and "the empty
 ;; remainder" once the whole rest is what you asked for.
 (: read-all (-> TextInputPort string))
-(defun (read-all p) (.ReadToEnd p))
+(defbjouble (read-all p)
+  (#:sync (clr-rest p))
+  (#:bjo  (clr-rest-await p)))
 
-(: port-fold (-> (-> TextInputPort %a %a) %a TextInputPort %a))
+;; The reader is `-?->`: this takes one of either colour, and its own copies
+;; follow. Declared rather than inferred, because that is the decision — left to
+;; inference, every higher-order function in the language would double for
+;; callbacks nobody will ever suspend.
+;;
+;; The collection functions are deliberately *not* converted. Nothing about
+;; `list-map` suggests IO, and until the second copy is actually generated the
+;; declaration would buy a published signature and a doubled emitted size for
+;; no program that can yet use it. This one is the port surface, where the whole
+;; question came from.
+(: port-fold (-> (-?-> TextInputPort %a %a) %a TextInputPort %a))
 (defun (port-fold f init port)
   (let loop ((acc init))
     (if (port-eof? port)
