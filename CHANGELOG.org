@@ -3,6 +3,143 @@
 
 What each change guarantees, and what it leaves open.
 
+* A procedure is written once and works in both colours
+
+~port-eof?~, ~read-line~, ~read-char~, ~read-all~ and ~flush-port~ each have two
+bodies now, and no call site knows. Inside a ~defbjo~ they await; anywhere else
+they are ordinary method calls. The source is the same source:
+
+#+BEGIN_SRC scheme
+(let go ((n 0))
+  (if (port-eof? p) n (let () (ignore (read-line p)) (go (+ n 1)))))
+#+END_SRC
+
+Written in a ~defun~ that loop calls ~PortEof~ and ~ReadLineOrThrow~ and parks
+the thread it is on. Written in a ~defbjo~ — the same characters — it calls
+~PortEofAsync~ and ~ReadLineOrThrowAsync~, hands its thread back to the
+scheduler, and honours the ambient cancellation token. Nothing in it mentions a
+colour, and there is no suffix to choose.
+
+Three pieces make that work, and each ships on its own.
+
+*** ~BjoPort~ owns a buffer, so eof is answerable without waiting
+
+~port-eof?~ was ~(= (.Peek p) -1)~, and ~TextReader~ has no async peek. That is
+not an oversight in .NET: *eof on a stream is a read* — you cannot know whether
+a socket is finished without waiting for a byte or a FIN, and peek is "read one
+and put it back" with the read being the part that waits.
+
+So ~open-input-file~ now hands back a ~BjoPort~: a ~TextReader~ that keeps the
+characters it has read. Eof costs nothing whenever anything is buffered, which
+reading a line at a time is all but one call in a bufferful, and
+~ReadLineValueAsync~ can return a ~ValueTask~ where ~TextReader.ReadLineAsync~
+must allocate a ~Task~. Standard input is wrapped too, once, shared — it is the
+port every program touches.
+
+~open-input-string~ is deliberately *not* wrapped. The text is already in
+memory, so there is nothing to buffer and nothing to wait on, and a string port
+correctly takes the ordinary path with no task and no allocation.
+
+Nothing in the type surface moved: ~TextInputPort~ is still
+~System.IO.TextReader~, so ~with-open~, ~(cast TextInputPort ...)~, ~(.Peek p)~
+and handing a port to a .NET API all go on working.
+
+The way this bites is *silent*. If any inherited read reached the underlying
+reader while the buffer held characters, those characters would be skipped —
+wrong output rather than an exception. So every virtual read is overridden, and
+~152_port_buffer~ interleaves all of them against one port with the buffer
+boundary placed inside a line, inside a ~\r\n~ and inside a surrogate pair.
+
+*Opening still blocks.* ~new StreamReader(path)~ is synchronous and .NET has no
+async constructor — ~FileOptions.Asynchronous~ affects reads, not the open. One
+call parks wherever it is made; everything done to the port afterwards need not.
+
+*** ~defbjouble~ is where the second body is written by hand
+
+One name, one signature, two bodies. It is the *only* place two bodies are
+written out, and the reason is specific to a leaf: its two colours call
+different .NET methods, which is the one thing no inference derives.
+
+#+BEGIN_SRC scheme
+(: read-line (-> TextInputPort string))
+(defbjouble (read-line p)
+  (#:sync (clr-line p))
+  (#:bjo  (clr-line-await p)))
+#+END_SRC
+
+Both bodies are checked against the one written signature, recoloured for each
+half, so neither gets to disagree with the declaration — arity and type drift
+is most of what rots between two hand-written bodies. What is *not* checked is
+that they agree about failure: nothing compares what two .NET methods do when
+they fail, so "both throw the same exception at end of input" is a promise the
+docstring makes and the author keeps.
+
+Leaves only, and mechanically: the ~#:bjo~ body must contain a yield point the
+~#:sync~ body does not. Two bodies differing only in which ordinary functions
+they call are a ~defun~, and writing them out by hand is two things that will
+drift for nothing.
+
+*What it leaves open.* Selection is by the *enclosing member's* colour, so a
+~defun~ that a bjoroutine calls keeps its ordinary copy — generating a second
+one is monomorphisation, which is a later layer. Until then a procedure that
+must suspend is written ~defbjo~ and says so, and the lint below reports the
+ones that do not.
+
+*** ~-?->~ says a parameter may be given either colour
+
+~-?->~ is to effects what ~%a~ is to types: one anonymous variable per
+signature, shared by every occurrence in it, freshened at each use the way a
+~%a~ is. One rather than one-per-arrow is what keeps it cheap — a signature has
+exactly two instantiations however many function parameters it has, so there is
+no 2^k of copies, and the mixed case is written by leaving the ordinary
+parameters ~->~.
+
+#+BEGIN_SRC scheme
+(: port-fold (-> (-?-> TextInputPort %a %a) %a TextInputPort %a))
+#+END_SRC
+
+It is refused everywhere it would mean nothing, each with its own message: as a
+definition's own arrow, where ~defun~ is already colour-polymorphic and the
+writer probably wants ~defbjouble~; as a return type or a record field, where a
+function value's colour *is* its type and always will be; and warned about on a
+parameter the body never calls, where the two copies would be identical.
+
+*What it leaves open.* The suspending instantiation is refused too — the second
+body it asks for needs monomorphisation. The declaration is accepted, checked
+and published, so a module compiled now will not need rewriting; it is the use
+that waits. The collection functions are deliberately not converted: until the
+copy is generated, ~-?->~ on ~list-map~ would buy a doubled emitted size for no
+program that can yet use it.
+
+* The compiler says which bjoroutines hold a thread
+
+A fiber that waits gives its thread back to the scheduler. A fiber that calls
+something which *parks* does not — it sits on a pool thread for the duration,
+and every other fiber has one fewer to run on. That is legal, occasionally
+deliberate, and invisible: nothing goes wrong until the pool is empty, at which
+point the program stops for reasons nothing in it explains.
+
+#+BEGIN_EXAMPLE
+Warning: 'parked' is a bjoroutine, and calling 'port-eof?' at p.bjo:15 parks the
+thread it runs on.
+  parked -> drain -> port-eof?
+#+END_EXAMPLE
+
+~#:blocking~ on an ~import/extern~ clause is how a call says it parks;
+~Prelude.blockingBuiltins~ is how the compiler's own primitives do, having no
+clause to say it on. The lint is a fixpoint over the call graph — nodes are
+bodies, an edge is a call, and the constraint is ≤ rather than equality, since
+equality would force every caller of ~map~ to supply a suspending callback the
+moment ~map~'s body yielded.
+
+Two things it is careful about. The fact crosses a module boundary, which is
+what makes it useful at all: the whole port surface lives behind one, so a graph
+that stopped there would stop at every call worth reporting. And a lambda handed
+to ~blocking~ or ~spawn-thunk~ runs somewhere else and is not walked into —
+reporting ~(sync (blocking (fun () ...)))~ would be reporting the advice the
+warning itself gives, and a lint that fires on its own recommendation is one
+nobody leaves switched on.
+
 * A vector literal is the array it looks like
 
 ~[1 2 3]~ used to open an ~RrbBuilder~, ~Add~ each element as a statement of its

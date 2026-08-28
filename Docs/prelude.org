@@ -299,7 +299,7 @@ Only the *reader-parameterised* drains — ~port->list~, ~port->vec~, ~port->seq
 - ~(open-output-file path)~ : ~(Result Exception TextOutputPort)~, truncating the file if it exists.
 - ~(close-input-port p)~ / ~(close-output-port p)~ : Rarely needed — ~with-open~ disposes a port however the body ends. Two functions rather than one, because ~.Dispose~ needs a concrete receiver.
 - ~(flush-port p)~
-- ~(port-eof? p)~ : Whether the port has no more input. Peeks, so asking consumes nothing.
+- ~(port-eof? p)~ : Whether the port has no more input. Asking consumes nothing.
 - ~(read-line p)~ : The next line, without its newline. *Throws at end of input* — guard with ~port-eof?~.
 - ~(read-line/opt p)~ : The next line, or ~None~ at end of input, for when the check and the read want to be one step.
 - ~(read-char p)~ : The next character. *Throws at end of input* — guard with ~port-eof?~.
@@ -324,6 +324,57 @@ peeking is usually asked; text that needs real lookahead wants ~read-all~ and a
 ~StringCursor~.
 
 Note that ~write-line~ is a prelude binding, and an ordinary binding wins over an ~import/extern~ alias of the same name — so a module that wants ~System.Console.WriteLine~ should alias it as something else, ~console-write-line~ say.
+
+*** A port reads the same in either colour
+
+~port-eof?~, ~read-line~, ~read-char~, ~read-all~ and ~flush-port~ each have two
+implementations, and no call site says which it wants. In an ordinary function
+they are ordinary method calls that park the thread they are on; inside a
+~defbjo~ the *same source* awaits, hands the thread back to the scheduler, and
+honours the ambient cancellation token — so ~with-deadline~ works on a stalled
+read.
+
+#+BEGIN_SRC scheme
+(: join-lines (-> TextInputPort string))          ;; parks
+(defun (join-lines p) ...)
+
+(: join-lines (-bjo-> TextInputPort string))      ;; suspends
+(defbjo (join-lines p) ...)                       ;; ...same body
+#+END_SRC
+
+Everything above those five is written once and mentions no colour at all:
+~read-line/opt~, ~port-fold~, ~port->list~, ~port->vec~ and ~file->seq~ are
+ordinary ~defun~ s.
+
+Two consequences worth knowing.
+
+*A file port is buffered and a string port is not.* ~open-input-file~ hands back
+a ~BjoPort~, which keeps the characters it has read — that is what lets
+~port-eof?~ answer without waiting, since eof on a stream is a *read* and there
+is no async peek to borrow. ~open-input-string~ has its text in memory already,
+so it stays a plain ~StringReader~ and pays neither a copy nor an allocation for
+a suspension that could not happen. Standard input is buffered, once and shared.
+~read-char~ is therefore an array index on a hit and a wait on a miss, rather
+than a syscall every time.
+
+*Opening a file still blocks.* ~StreamReader~ opens synchronously and .NET has
+no async constructor — ~FileOptions.Asynchronous~ affects reads, not the open.
+So ~open-input-file~ parks wherever it is called, and everything done to the
+port afterwards need not.
+
+*A read reached through your own ~defun~ still parks.* A ~defun~ has one
+emitted body, so a bjoroutine calling one gets the ordinary copy all the way
+down. The compiler says so rather than leaving it silent:
+
+#+BEGIN_EXAMPLE
+Warning: 'serve' is a bjoroutine, and calling 'port-eof?' at log.bjo:14 parks the
+thread it runs on.
+  serve -> drain -> port-eof?
+#+END_EXAMPLE
+
+Either write the loop in the ~defbjo~ itself, or move the whole thing off the
+fiber with ~(sync (blocking (fun () (drain p))))~, which is what the pool exists
+for.
 
 ** Keywords and Symbols
 Keywords (~:foo~ or ~#:foo~) and quoted symbols (~'foo~) are interned first-class types.

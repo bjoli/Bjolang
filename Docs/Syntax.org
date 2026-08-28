@@ -177,6 +177,91 @@ A top-level ~defun~ must have a signature — ~main~ is the only exception — s
 that a module's published surface is something its author wrote rather than
 something that happened to be inferred.
 
+*** Colour: ~defbjo~, ~defbjouble~ and ~-?->~
+A procedure that may suspend is defined with ~defbjo~ rather than ~defun~, and
+calling it is a yield point. Everything else about it is the same, including the
+signature — an arrow says what a function takes and returns, and the definer
+says how it is called.
+
+Almost nothing else in a program mentions colour. It is written in exactly three
+places, all of them declarations.
+
+**** ~defbjo~ — this body suspends
+#+BEGIN_SRC scheme
+(: worker (-bjo-> Chan int))
+(defbjo (worker ch) (sync (chan-recv ch)))
+#+END_SRC
+
+**** ~defbjouble~ — two bodies, because there are two .NET methods
+One name, one signature, and a body per colour. This is the *only* place two
+bodies are written by hand, and the reason is specific to a leaf: its two halves
+call different .NET methods, which is the one thing no inference derives.
+
+#+BEGIN_SRC scheme
+(: read-line (-> TextInputPort string))
+(defbjouble (read-line p)
+  (#:sync (clr-read-line p))
+  (#:bjo  (clr-read-line-await p)))
+#+END_SRC
+
+Callers never write a suffix, in either context. ~(read-line p)~ in a ~defun~ is
+the ~#:sync~ body; the same characters in a ~defbjo~ are the ~#:bjo~ one,
+awaited. The suspending copy has no Bjolang name and is never written by hand.
+
+Both bodies are checked against the one signature, recoloured for each half, so
+neither may disagree with the declaration — arity and type drift is most of what
+rots between two hand-written bodies. What is *not* checked is that they agree
+about failure: if one returns ~None~ at end of input and the other throws, the
+shared name is a lie, and only the docstring can say so.
+
+*Leaves only*, and mechanically: the ~#:bjo~ body must contain a yield point the
+~#:sync~ body does not. Two bodies differing only in which ordinary functions
+they call are a ~defun~, and writing them out by hand is two things that will
+drift apart for nothing.
+
+**** ~-?->~ — this parameter may be either colour
+An arrow in *parameter* position may be written ~-?->~, meaning the procedure
+accepts a callback of either colour.
+
+#+BEGIN_SRC scheme
+(: port-fold (-> (-?-> TextInputPort %a %a) %a TextInputPort %a))
+#+END_SRC
+
+It is one anonymous effect variable per signature, shared by every occurrence in
+it — so a signature has exactly two instantiations however many function
+parameters it has, and the mixed case is written by leaving the ordinary ones
+~->~:
+
+#+BEGIN_SRC scheme
+(: index-by (-> (-> %a %k) (-?-> TextInputPort %a) TextInputPort (Map %k %a)))
+#+END_SRC
+
+~-?->~ is refused everywhere it would mean nothing, and each case says which:
+
+- *As a definition's own arrow.* A ~defun~ is already colour-polymorphic; the
+  message points at ~defbjouble~, since someone writing this usually wants two
+  *bodies* rather than two copies of one.
+- *As a return type or a record field.* A function value's colour is the type it
+  is stored as, and that is permanent rather than pending — a ~(Vec (-> A B))~
+  cannot hold a mix either.
+- *On a parameter the body never calls*, which is a warning: the two copies
+  would be identical, so either the parameter is an ordinary ~->~ or the body
+  forgot to use it.
+
+A plain ~->~ in parameter position keeps meaning exactly what it always meant,
+so no existing signature changes meaning and converting one is opt-in.
+
+**** What is not yet there
+Generating the second copy of a ~defun~ — monomorphisation — is not implemented.
+Two things follow:
+
+- Selection is by the *enclosing member's* colour. A ~defun~ that a bjoroutine
+  calls keeps its ordinary copy, so a port read reached through one still parks.
+  The blocking lint reports exactly that, by name and by path.
+- Instantiating a ~-?->~ at the suspending colour is refused, since the body it
+  asks for does not exist. The declaration is still accepted, checked and
+  published, so a signature written today will not need rewriting.
+
 *** Writing the types at the definition
 The same signature may be written *on* the ~defun~ instead: a type at each
 parameter, and one after the argument list.
@@ -633,6 +718,50 @@ An instance call that arrives through a clause may also be decorated with
 ~#:exceptions~, which is the one thing ~(.Method x ...)~ can never be given: the
 clause is a place to say what the call may raise, and a bare member access is
 not.
+
+**** ~#:blocking~ — this call parks the thread
+A call that waits on the thread it is made on, rather than suspending the fiber.
+Nothing is emitted differently; it is a claim the blocking lint reads.
+
+#+BEGIN_SRC scheme
+(import/extern
+  (read-text (: System.IO.File.ReadAllText (-> string string) #:blocking)))
+#+END_SRC
+
+A bjoroutine that reaches one of these does not hand its thread back to the
+scheduler — it holds a pool thread for the duration, and every other fiber has
+one fewer to run on. That is legal, occasionally deliberate, and otherwise
+invisible: nothing goes wrong until the pool is empty. So the compiler reports
+it, naming the path:
+
+#+BEGIN_EXAMPLE
+Warning: 'serve' is a bjoroutine, and calling 'read-text' at app.bjo:14 parks the
+thread it runs on.
+  serve -> load -> read-text
+#+END_EXAMPLE
+
+Declared rather than guessed, because only the importer knows: a .NET method's
+signature says nothing about whether it waits. The fact crosses a module
+boundary, so a library marking its own imports makes the lint work for everyone
+who calls it.
+
+~#:blocking~ and ~#:async~ are opposites and cannot both be written: an
+~#:async~ call compiles to an await and hands its thread back, and a
+~#:blocking~ one holds it. Neither belongs on ~import/class~ — constructing is
+not the part that waits — nor on an accessor, which is not a call.
+
+The fix, where there is one, is ~blocking~: it moves the work to a pool thread
+the runtime can grow to replace, and the fiber suspends on the *result*.
+
+#+BEGIN_SRC scheme
+(defbjo (serve path)
+  (match (sync (blocking (fun () (read-text path))))
+    ((Ok text) (handle text))
+    ((Err e) (report e))))
+#+END_SRC
+
+A lambda handed to ~blocking~ or ~spawn-thunk~ is not walked into, so the shape
+above is never itself reported.
 
 **** ~#:get~ and ~#:set~ — properties and fields
 ~#:get~ names a property or field to read, and ~#:set~ one to write. One clause
