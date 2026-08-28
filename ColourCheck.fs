@@ -150,7 +150,7 @@ let private explain (site: Site) : string =
     | InSeq ->
         lines
             [ "It is inside a (seq ...) body — which is also what a (seql ...) becomes — and a sequence is emitted as a C# iterator, where `yield return` and `await` are mutually exclusive in one member."
-              "A stream of values produced by suspending work is a channel rather than a sequence: fill one with (bjo ...) and read it. If the sequence is short, build the whole list first and yield from that." ]
+              "A stream of values produced by suspending work is a channel rather than a sequence: fill one with (bjo ...) and read it. For a port that is written already — (std ports) has port->chan, which is port->seq with a channel where the iterator was. If the sequence is short, build the whole list first and yield from that." ]
 
     | InLocalFun name ->
         lines

@@ -1,0 +1,96 @@
+;; Streaming a port through a channel, which is what a sequence cannot do.
+;;
+;; `port->seq` is lazy and parks: a sequence is a C# iterator, and an iterator
+;; may not await. `port->chan` is lazy and suspends, because a channel is a
+;; rendezvous rather than a member. The two exist side by side and the
+;; difference is not a matter of degree — it is whether the reading fiber gives
+;; its thread back.
+;;
+;; The termination protocol is the part worth having in a library. A `Chan` has
+;; no close, so "no more items" is the reader's promise resolving, and a
+;; consumer that only received would wait at the end forever. `chan-next` is
+;; that race, written once.
+;;
+;; It is safe rather than lucky: a send completes only when a receiver has taken
+;; the item, so by the time the promise resolves there is nothing still in
+;; flight for `choose` to miss.
+
+(import (std prelude))
+(import (std ports))
+(import (std simpletest))
+
+;; --- Draining the channel ----------------------------------------------------
+;;
+;; Note what the call site says about colour: nothing. `read-line` is a name
+;; with two copies and the parameter is `-bjo->`, so the suspending one is what
+;; goes to the fiber — which is the point of the arrow being written that way.
+;; An ordinary reader here would park the fiber on every line.
+(: collect (-bjo-> TextInputPort (List string)))
+(defbjo (collect p)
+  (match (port->chan read-line p)
+    ((Tuple c done)
+     (let go ((acc (list)))
+       (match (chan-next c done)
+         ((Some line) (go (list-append acc (list line))))
+         (None acc))))))
+
+;; The same stream, counted from the reader's own promise rather than from the
+;; items. Both numbers come out of one traversal of the port.
+(: count-both (-bjo-> TextInputPort (Tuple int int)))
+(defbjo (count-both p)
+  (match (port->chan read-line p)
+    ((Tuple c done)
+     (let go ((seen 0))
+       (match (chan-next c done)
+         ((Some _) (go (+ seen 1)))
+         (None
+          (match (sync (promise-join done))
+            ((Ok n) (Tuple seen n))
+            ((Err e) (Tuple seen -1)))))))))
+
+;; A reader that is not `read-line`, to pin that the reader really is a
+;; parameter and not a special case. `read-all` takes the rest in one item, so
+;; the stream is one element long.
+(: whole (-bjo-> TextInputPort (List string)))
+(defbjo (whole p)
+  (match (port->chan read-all p)
+    ((Tuple c done)
+     (let go ((acc (list)))
+       (match (chan-next c done)
+         ((Some s) (go (list-append acc (list s))))
+         (None acc))))))
+
+;; --- Running a bjoroutine to a value -----------------------------------------
+
+(: run-lines (-> (Promise (List string)) (List string)))
+(defun (run-lines p)
+  (match (sync/blocking (promise-join p))
+    ((Ok xs) xs)
+    ((Err e) (list "err"))))
+
+(: run-pair (-> (Promise (Tuple int int)) (Tuple int int)))
+(defun (run-pair p)
+  (match (sync/blocking (promise-join p))
+    ((Ok t) t)
+    ((Err e) (Tuple -1 -1))))
+
+(defun (main)
+  (expect "every line arrives, in order"
+          (run-lines (bjo (collect (open-input-string "a\nb\nc"))))
+          (list "a" "b" "c"))
+
+  (expect "an empty port ends immediately"
+          (run-lines (bjo (collect (open-input-string ""))))
+          (list))
+
+  ;; The consumer's count and the reader's own agree, which is what says the
+  ;; promise resolves after the last item was handed over rather than before.
+  (expect "the consumer and the reader agree"
+          (run-pair (bjo (count-both (open-input-string "one\ntwo\nthree\nfour"))))
+          (Tuple 4 4))
+
+  (expect "a different reader"
+          (run-lines (bjo (whole (open-input-string "all\nof\nit"))))
+          (list "all\nof\nit"))
+
+  0)

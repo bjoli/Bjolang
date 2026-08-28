@@ -26,7 +26,8 @@
   ;; Draining
   port->list port->vec
   ;; Streaming
-  port->seq file->seq)
+  port->seq file->seq
+  port->chan chan-next)
 
 (import (std prelude))
 
@@ -79,12 +80,98 @@
 ;; is a C# iterator — and `yield return` and `await` are mutually exclusive in
 ;; one member. Declaring `-?->` here would promise a suspending copy that cannot
 ;; be built, and the compiler would rightly refuse it. A stream of items read by
-;; suspending work is a channel rather than a sequence.
+;; suspending work is a channel rather than a sequence, and that is `port->chan`
+;; below — this one, with a rendezvous where the iterator is.
+;;
+;; So a bjoroutine calling this parks, and the blocking lint says so. That is
+;; not a defect being tolerated: it is the honest report that this shape of
+;; laziness is the one a C# iterator can express.
 (: port->seq (-> (-> TextInputPort %a) TextInputPort (Seq %a)))
 (defun (port->seq reader p)
   (seql (:with i 0 0)
         (:break (port-eof? p))
         (:yield (reader p))))
+
+;; ---------------------------------------------------------------------------
+;; Streaming that suspends
+;; ---------------------------------------------------------------------------
+;;
+;; The same shape as `port->seq` and the answer to what `port->seq` cannot do.
+;; A sequence is a C# iterator, so it may not await; a channel is a rendezvous,
+;; so it may. That is the whole difference, and it is why this exists rather
+;; than `port->seq` being made to suspend.
+;;
+;; What a channel buys beyond suspending is that it is a *CML event*. A sequence
+;; composes with nothing; a channel composes with `choose`, `timeout`,
+;; `with-nack` and the rest — so reading a port with a deadline, or racing two
+;; ports, is written here rather than arranged around the outside.
+;;
+;; The rendezvous is also the backpressure: a send waits until a receiver takes
+;; the item, so a slow consumer stops the reader instead of growing a buffer
+;; behind it.
+
+;; A port, read on a fiber of its own, as a channel and the reader's promise.
+;;
+;; The promise is the end of the stream, because a `Chan` has no close. It
+;; carries the failure too: a read that throws resolves it as `Err`, and the
+;; consumer sees the exception rather than a stream that merely stopped. This is
+;; the pair `async-seq->chan` hands back, for the same reason and in the same
+;; shape.
+;;
+;; The reader is `-bjo->` and not `-?->`, which is the one declaration here
+;; worth arguing about. It is called on a *spawned fiber*, so an ordinary reader
+;; would park that fiber on every item — and `-?->` would let a caller in a
+;; `defun` choose exactly that, silently, since an unconstrained colour defaults
+;; to the one at the call site. A reader that runs on a fiber suspends; the
+;; arrow says so. `(port->chan read-line p)` is still what you write: a name
+;; with two copies has the suspending one here, because that is what this asks
+;; for.
+;;
+;; This function itself is an ordinary `defun`. Spawning is colourless, so a
+;; port stream can be started from `main`.
+;;
+;; The port stays the caller's: neither opened nor closed here.
+(: port->chan (-> (-bjo-> TextInputPort %a) TextInputPort (Tuple (Chan %a) (Promise int))))
+(defun (port->chan reader p)
+  (let ((c (make-chan)))
+    (Tuple c (bjo (port-fill c reader p)))))
+
+;; The reader loop, which is what the fiber runs. Private: the pair above is the
+;; interface, and a caller holding this would have a fiber's body without the
+;; channel it fills.
+;;
+;; Answers the number of items read, so a consumer that only wants the count can
+;; take it from the promise and ignore the channel.
+(: port-fill (-bjo-> (Chan %a) (-bjo-> TextInputPort %a) TextInputPort int))
+(defbjo (port-fill c reader p)
+  (let go ((n 0))
+    (if (port-eof? p)
+        n
+        (let ()
+          ;; The send is the backpressure: this waits here until the consumer
+          ;; takes the item, so the port is read no faster than it is drained.
+          (ignore (sync (chan-send c (reader p))))
+          (go (+ n 1))))))
+
+;; The next item, or `None` when the reader has finished.
+;;
+;; The termination protocol in one place, because it is the part of a channel
+;; stream that is easy to get wrong: a `Chan` has no close, so "no more items"
+;; is the producer's promise resolving, and a consumer that only received would
+;; wait forever at the end.
+;;
+;; The race is safe rather than merely unlikely, and the rendezvous is why. A
+;; send completes only when a receiver has taken the item, so by the time the
+;; promise resolves every item has already been handed over and there is nothing
+;; left in flight for `choose` to miss.
+;;
+;; A failed read surfaces as `None` here and as `Err` on the promise, which the
+;; caller still holds. Ending and failing look alike to a loop and different to
+;; anyone who asks.
+(: chan-next (-bjo-> (Chan %a) (Promise int) (Option %a)))
+(defbjo (chan-next c done)
+  (sync (choose (wrap (chan-recv c) (fun (x) (Some x)))
+                (wrap (promise-join done) (fun (r) None)))))
 
 ;; The contents of a file, pulled through `reader` one item at a time and
 ;; closed for you. It can be re-enumerated.
