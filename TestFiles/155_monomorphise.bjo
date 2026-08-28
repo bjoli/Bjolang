@@ -1,0 +1,131 @@
+;; Monomorphisation: a `-?->` procedure is written once and *both* copies are
+;; generated.
+;;
+;; `defbjouble` (154) is the case where two bodies must be written by hand,
+;; because a leaf's two colours call different .NET methods. This is the case
+;; above a leaf: one body, and the compiler makes the second. The declaration is
+;; the only thing the author writes — `-?->` on the parameter that may be given
+;; either colour.
+;;
+;; This file replaces `errors/poly_arrow_needs_copies.bjo`, which existed to pin
+;; the refusal that used to stand here: the declaration was accepted and
+;; published, and instantiating it at the suspending colour failed with "copies
+;; are not generated yet". They are generated now, so what was an error fixture
+;; is a behavioural one.
+;;
+;; The copy is chosen by **what the argument is**, not by where the call is
+;; written. That is the assertion to keep: the two copies take `Func<A,B>` and
+;; `Func<A,Fiber<B>>`, which are unrelated C# types, so exactly one of them fits
+;; and the enclosing member's colour has no vote. `sync-inside-bjoroutine` below
+;; is the test that pins it.
+
+(import (std prelude))
+(import (std simpletest))
+(import "155_lib.bjo")
+
+;; --- Written once, in this module -------------------------------------------
+
+(: apply-twice (-> (-?-> int int) int int))
+(defun (apply-twice f x) (f (f x)))
+
+;; --- Ordinary callers -------------------------------------------------------
+
+(: doubled-twice (-> int int))
+(defun (doubled-twice n)
+  (apply-twice (fun (x) (* x 2)) n))
+
+;; --- Suspending callers -----------------------------------------------------
+;;
+;; The lambda is a `(bjoroutine ...)`, so the effect variable is instantiated
+;; async and the call goes to the generated copy — `await apply_twice__bjo(...)`
+;; in the emitted C#, with an `async` lambda handed to it.
+(: bumped-twice (-bjo-> int int))
+(defbjo (bumped-twice n)
+  (apply-twice (bjoroutine (x) (+ x 1)) n))
+
+;; A suspending caller that passes an *ordinary* lambda. This must still reach
+;; the ordinary copy: being inside a bjoroutine says nothing about what the
+;; callback is, and calling the suspending copy here would hand a `Func<int,int>`
+;; where a `Func<int,Fiber<int>>` is wanted.
+(: sync-inside-bjoroutine (-bjo-> int int))
+(defbjo (sync-inside-bjoroutine n)
+  (apply-twice (fun (x) (* x 2)) n))
+
+;; The suspending lambda actually suspends: it awaits a leaf rather than just
+;; being painted the colour. Without this the test would pass on a copy that was
+;; async in name only.
+(: read-lengths (-bjo-> TextInputPort int))
+(defbjo (read-lengths p)
+  (port-fold (bjoroutine (port acc) (+ acc (string-length (read-line port))))
+             0
+             p))
+
+;; The same fold, ordinarily. One source, one name, two emitted bodies.
+(: read-lengths-sync (-> TextInputPort int))
+(defun (read-lengths-sync p)
+  (port-fold (fun (port acc) (+ acc (string-length (read-line port))))
+             0
+             p))
+
+;; --- Across a module boundary -----------------------------------------------
+
+(: sum-doubled (-> (List int) int))
+(defun (sum-doubled xs)
+  (sum-with (fun (x) (* x 2)) xs))
+
+(: sum-bumped (-bjo-> (List int) int))
+(defbjo (sum-bumped xs)
+  (sum-with (bjoroutine (x) (+ x 1)) xs))
+
+;; --- Running a bjoroutine to a value ----------------------------------------
+
+(: run-bjo (-> (Promise int) int))
+(defun (run-bjo p)
+  (match (sync/blocking (promise-join p))
+    ((Ok n) n)
+    ((Err e) -1)))
+
+(defun (main)
+  ;; --- The ordinary copy ----------------------------------------------------
+  (expect "an ordinary caller" (doubled-twice 3) 12)
+
+  ;; --- The generated copy ---------------------------------------------------
+  (expect "a suspending caller" (run-bjo (bjo (bumped-twice 10))) 12)
+
+  ;; --- Selection follows the argument, not the caller -----------------------
+  ;;
+  ;; Inside a bjoroutine, passing an ordinary lambda. If selection were by the
+  ;; enclosing member's colour this would pick the suspending copy and hand it
+  ;; the wrong delegate type.
+  (expect "an ordinary lambda inside a bjoroutine"
+          (run-bjo (bjo (sync-inside-bjoroutine 3)))
+          12)
+
+  ;; --- Both copies in one program -------------------------------------------
+  (expect "the two copies agree"
+          (+ (doubled-twice 5) (run-bjo (bjo (bumped-twice 5))))
+          27)
+
+  ;; --- The prelude's own -?-> -----------------------------------------------
+  ;;
+  ;; `port-fold` is the reason `-?->` exists: a fold over a port whose reader
+  ;; may suspend. The suspending copy awaits `ReadLineOrThrowAsync` through
+  ;; `read-line`, which is a `defbjouble`, so both mechanisms are in one call.
+  (expect "port-fold, ordinarily"
+          (read-lengths-sync (open-input-string "ab\ncde\nf"))
+          6)
+
+  (expect "port-fold, suspending"
+          (run-bjo (bjo (read-lengths (open-input-string "ab\ncde\nf"))))
+          6)
+
+  ;; --- Across a module boundary ---------------------------------------------
+  ;;
+  ;; `sum-with` is imported, so its twin was generated in the *other* module and
+  ;; found here through the published `-?->` in its signature.
+  (expect "an imported -?->, ordinarily" (sum-doubled (list 1 2 3)) 12)
+  (expect "an imported -?->, suspending"
+          (run-bjo (bjo (sum-bumped (list 1 2 3))))
+          9)
+
+  0)

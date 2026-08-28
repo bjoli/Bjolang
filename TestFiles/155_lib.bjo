@@ -1,0 +1,24 @@
+;; A `-?->` on the far side of a module boundary.
+;;
+;; The importer has to learn that `sum-with` has two copies, and it learns it
+;; from the *signature*: `-?->` is published like any other part of a type, and
+;; the twin's name is derived from the written one on both sides. So there is no
+;; new metadata for this and no version bump — the arrow that asks for two
+;; copies is the same arrow that says they exist.
+(export sum-with)
+
+(import (std prelude))
+
+;; Written once. The callback may be either colour, and this body says nothing
+;; about which — it just calls it.
+;;
+;; The loop matters: its recursive edge is in tail position, so `LoopLowering`
+;; promotes it to a `while` in the enclosing method. In the suspending copy that
+;; method is `async`, which is what lets `(f x)` be awaited there. A loop that
+;; escaped would stay a C# local function and the copy could not be built.
+(: sum-with (-> (-?-> int int) (List int) int))
+(defun (sum-with f xs)
+  (let loop ((rest xs) (acc 0))
+    (match rest
+      ((Nil) acc)
+      ((Cons x more) (loop more (+ acc (f x)))))))

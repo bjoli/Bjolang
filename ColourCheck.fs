@@ -358,7 +358,7 @@ and private descendBinding (name: string) (value: TypedExpr) : unit =
 /// Everything else is emitted somewhere that cannot be async: a module-level
 /// value is a static field, initialised by the class's static constructor,
 /// which has no fiber to suspend.
-let private checkDecl (decl: TDecl) : unit =
+let private checkDecl (registry: TraitRegistry) (decl: TDecl) : unit =
     decl
     |> TypeVisitor.mapDeclWithContext (fun owner e ->
         let site =
@@ -367,8 +367,24 @@ let private checkDecl (decl: TDecl) : unit =
             | TDefun(name, _, _, _, _, _, _, _, _) -> InDefun name
             | _ -> InModuleValue
 
-        checkExpr site e
+        match owner with
+        // A generated copy has no source of its own — its ranges are those of
+        // the definition it was copied from. So the position is right and the
+        // framing is wrong: the reader is told a yield point is not allowed at
+        // a line where, as written, there is no yield point. The call only
+        // becomes one in the copy, and the copy is the compiler's doing.
+        | TDefun(name, _, _, _, _, _, _, _, _) when Set.contains name registry.GeneratedCopies ->
+            try
+                checkExpr site e
+            with ex ->
+                // The generated name is stripped when this prints, so it reads
+                // as the written one.
+                failwithf
+                    $"%s{ex.Message}\n  This is the suspending copy of '%s{name}', which exists because its signature declares a -?-> parameter. As written the definition is fine — it is the second colour that has nowhere to put the yield point.\n  Either that parameter does not need to take both colours, in which case declare it -> and there is only one copy; or the construct in the way has to go, since both copies are made from this one body."
+        | _ -> checkExpr site e
+
         e)
     |> ignore
 
-let run (decls: TDecl list) : unit = decls |> List.iter checkDecl
+let run (registry: TraitRegistry) (decls: TDecl list) : unit =
+    decls |> List.iter (checkDecl registry)

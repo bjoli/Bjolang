@@ -1206,7 +1206,19 @@ type TraitRegistry =
       /// in it too — a `defbjouble` in the prelude has to be selectable from
       /// every module that imports it, which is the whole point of the port
       /// surface being written this way.
-      DoubleDefs: Map<string, string> }
+      DoubleDefs: Map<string, string>
+
+      /// The emitted names of definitions the compiler *generated* rather than
+      /// read: the suspending copy every `-?->` signature asks for.
+      ///
+      /// Only diagnostics need this, and they need it badly. A generated copy
+      /// shares the source ranges of the definition it was copied from, so a
+      /// failure in one is reported at a line where, as written, nothing is
+      /// wrong — the call that cannot be coloured only becomes a yield point in
+      /// the copy. Without knowing which definitions are copies there is no way
+      /// to say so, and a `defbjouble`'s hand-written half must not be told it
+      /// was generated.
+      GeneratedCopies: Set<string> }
 
     member this.IsTraitDefinedLocally(name) = Set.contains name this.LocalTraits
     member this.IsTypeDefinedLocally(name) = Set.contains name this.LocalTypes

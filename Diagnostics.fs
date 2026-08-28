@@ -30,6 +30,10 @@ module Diagnostics =
     /// An invented name's `__12` suffix, wherever one appears in a message.
     let private invented = Regex(@"(?<=[A-Za-z0-9_?!*/<>=+'&.-])__\d+\b", RegexOptions.Compiled)
 
+    /// The suffix `Naming.suspendingCopy` adds to a generated second body.
+    let private generatedCopy =
+        Regex(@"(?<=[A-Za-z0-9_?!*/<>=+'&.-])__bjo\b", RegexOptions.Compiled)
+
     /// Strips the suffix `Gensym.fresh` adds.
     ///
     /// Every renaming in the compiler goes through `Gensym`, and none of the
@@ -43,7 +47,15 @@ module Diagnostics =
     /// hundred sites that raise, and only there: the names themselves have to
     /// stay distinct right up until the message is built, since being distinct
     /// is their whole purpose.
-    let humanize (message: string) = invented.Replace(message, "")
+    ///
+    /// A generated suspending copy is stripped here for the same reason. The
+    /// copy a `-?->` or a `defbjouble` promises is emitted as `read-line__bjo`,
+    /// and a call site rewritten to it carries that name into whatever is
+    /// reported next. A stack trace naming it is fine — it is a real method. A
+    /// compiler error naming it is not, because it appears in no source file
+    /// and the reader has no way to find it.
+    let humanize (message: string) =
+        generatedCopy.Replace(invented.Replace(message, ""), "")
 
     /// Whether the compiler narrates what it is doing.
     ///

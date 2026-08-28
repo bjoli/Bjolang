@@ -3,6 +3,57 @@
 
 What each change guarantees, and what it leaves open.
 
+* Both copies of a ~-?->~ procedure are generated
+
+~-?->~ declared that a parameter may be given a callback of either colour, and
+then refused the suspending instantiation, because the second body it asks for
+did not exist. It exists now, so the declaration means what it said.
+
+#+BEGIN_SRC scheme
+(: apply-twice (-> (-?-> int int) int int))
+(defun (apply-twice f x) (f (f x)))
+
+(apply-twice (fun (x) (* x 2)) 3)          ; ordinary
+(apply-twice (bjoroutine (x) (+ x 1)) 3)   ; suspending, awaited
+#+END_SRC
+
+One body written, two emitted: ~applysubtwice(Func<int,int>, int)~ and ~async
+applysubtwice__bjo(Func<int,Fiber<int>>, int)~, whose body is ~return (await
+f((await f(x))))~. The prelude's ~port-fold~ is the one that matters — a fold
+over a port whose reader may suspend, which is the question the arrow was
+introduced for.
+
+**Which copy a call means is decided by the argument, not by the caller.** The
+two take unrelated C# delegate types, so exactly one of them fits; an ordinary
+lambda passed from inside a bjoroutine still reaches the ordinary copy. Choosing
+by the enclosing colour instead would emit C# handing a fiber-returning delegate
+to a parameter that takes a plain one.
+
+The copy is generated as *source*, before anything is checked, and re-checked
+against the signature with its ~-?->~ repainted. The alternative — copying the
+checked tree and substituting the effect — has to replace a value that lives in
+every type on every node, and each occurrence it missed would be silent, since
+~Codegen~ grounds a stray effect variable to the ordinary colour and emits a
+body of the wrong one. Re-checking cannot miss one, and it is what ~defbjouble~
+already did with a body written by hand.
+
+It crosses a module boundary on the published signature alone. ~-?->~ is part of
+the type, and the copy's name is derived from the written one at both ends, so
+nothing new is serialized and no metadata version moved.
+
+*What it leaves open.* A ~defun~ gets a second copy only when its signature says
+~-?->~. One that merely reaches a ~defbjouble~ through its call graph does not,
+so a port read reached through an undeclared ~defun~ still parks and the lint
+still reports it. That is the remaining distance to the Guile-fibers model, and
+closing it means inferring the copies rather than declaring them — which is the
+thing the design keeps choosing not to do, because inference would double every
+higher-order function in the library for callbacks nobody will ever suspend.
+
+A copy that cannot be coloured is a compile error against the definition it was
+copied from, since the two share their source ranges. The message says whose
+copy it is, because otherwise it reports a yield point at a line where, as
+written, there is none.
+
 * A refused yield point says which construct refused it
 
 There are six ways to be somewhere a yield point cannot live — an ordinary

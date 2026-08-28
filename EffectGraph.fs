@@ -215,6 +215,25 @@ let blockingDefinitions (registry: TraitRegistry) (decls: TDecl list) : Set<stri
 // Call-site selection
 // ---------------------------------------------------------------------------
 
+/// Was this call's `-?->` parameter instantiated at the suspending colour?
+///
+/// `EMeta` is the whole test, and it is exact: `freshEffect` is called in one
+/// place, `instantiate`'s `EPoly` case, so a cell in a parameter's arrow *is* an
+/// `-?->` instantiated at this call. A parameter declared `-bjo->` arrives as a
+/// plain `EAsync` and must not be mistaken for one — it was never polymorphic
+/// and has no second copy to choose.
+///
+/// One cell is shared by every `-?->` in a signature, so any one occurrence
+/// answers for all of them and `exists` is not an approximation.
+let private wantsSuspendingCopy (t: HMType) =
+    match t with
+    | TFun(paramTypes, _, _) ->
+        paramTypes
+        |> List.exists (function
+            | TFun(_, _, (EMeta _ as eff)) -> pruneEffect eff = EAsync
+            | _ -> false)
+    | _ -> false
+
 /// Point calls at the suspending copy of a `defbjouble`, wherever one may be
 /// awaited.
 ///
@@ -234,6 +253,9 @@ let blockingDefinitions (registry: TraitRegistry) (decls: TDecl list) : Set<stri
 /// a call into a copy that awaits, somewhere an await is illegal, would turn a
 /// clean rejection into one that names a generated member the programmer has
 /// never seen.
+///
+/// A `-?->` is chosen differently, and cannot use `allowed` at all — see
+/// `wantsSuspendingCopy`.
 let rec private selectIn (registry: TraitRegistry) (allowed: bool) (expr: TypedExpr) : TypedExpr =
     let descend = selectIn registry allowed
     let sealed_ = selectIn registry false
@@ -285,6 +307,20 @@ let rec private selectIn (registry: TraitRegistry) (allowed: bool) (expr: TypedE
     | TApply(target, args, kwArgs) ->
         let target =
             match target.Node with
+            // Chosen by what the argument *is*, not by where the call is
+            // written. The two copies take different delegate types —
+            // `Func<A,B>` against `Func<A,Fiber<B>>` — so exactly one of them
+            // fits the argument, and the enclosing colour has no say.
+            //
+            // Which means this fires even where an await is illegal, unlike the
+            // `defbjouble` case below. That is not an oversight: calling the
+            // ordinary copy there would emit C# handing a fiber-returning
+            // delegate to a parameter that takes an ordinary one, and a clean
+            // rejection from `ColourCheck` is the better of the two.
+            | TIdent(name, tyArgs) when wantsSuspendingCopy target.Type ->
+                { target with
+                    Node = TIdent(Naming.suspendingCopy name, tyArgs)
+                    Type = recolour EAsync target.Type }
             | TIdent(name, tyArgs) when allowed ->
                 match Map.tryFind name registry.DoubleDefs with
                 // The copy's type is the declared one repainted, which is
@@ -306,10 +342,9 @@ let rec private selectIn (registry: TraitRegistry) (allowed: bool) (expr: TypedE
 
     | _ -> TypeVisitor.mapChildren descend expr
 
+/// Runs unconditionally: there used to be a short circuit when no `defbjouble`
+/// was in scope, and a `-?->` needs no `defbjouble` anywhere to want its copy.
 let selectDoubles (registry: TraitRegistry) (decls: TDecl list) : TDecl list =
-    if Map.isEmpty registry.DoubleDefs then
-        decls
-    else
         decls
         |> List.map (
             TypeVisitor.mapDeclWithContext (fun owner e ->

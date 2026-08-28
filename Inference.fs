@@ -5507,6 +5507,98 @@ and private checkDeclGroup
     (decls: Decl list)
     : Env * Map<string, HMType * FType option * (string * string) list> * TDecl list =
 
+    /// Every `defun` whose signature declares a `-?->` parameter gets a second
+    /// definition, generated from the same body and checked at the suspending
+    /// colour. This is monomorphisation: `-?->` promises two copies, and this
+    /// is where the one that was not written is made.
+    ///
+    /// Generated as *source*, before anything is checked, rather than by
+    /// copying the checked tree. The twin's parameters have to change colour,
+    /// and an `Effect` lives in every type on every node of a body, so a
+    /// substitution after the fact would be a new type-level traversal — and
+    /// every occurrence it missed would be silent, because `Codegen` grounds a
+    /// stray `EPoly` to `ESync` and emits an ordinary body where a suspending
+    /// one was meant. Re-checking the same source against a repainted
+    /// signature cannot miss one. It is also what `defbjouble` already does,
+    /// with the difference that there the second body is written by hand.
+    ///
+    /// Both copies are made whether or not the suspending one is used. The set
+    /// is not knowable from this module alone — an importer's call site is the
+    /// other place it could be demanded from — and the published `-?->` in the
+    /// signature is what tells that importer the twin exists.
+    let expandPolymorphicDefuns (decls: Decl list) : Decl list =
+        /// Only a parameter that is *itself* `-?->` is repainted. That is the
+        /// whole of what the parser lets through: an arrow nested inside a
+        /// container is refused, so there is no deeper case to reach.
+        let repaint (t: FType) =
+            match t with
+            | TApp("-?->", args, r) -> TApp("-bjo->", args, r)
+            | other -> other
+
+        let parameters (ftype: FType) =
+            match ftype with
+            | TArrow(mandatory, keywords, restOpt, _, _, _) ->
+                mandatory @ (keywords |> List.map snd) @ (restOpt |> Option.toList)
+            | _ -> []
+
+        let declaresPoly (ftype: FType) =
+            parameters ftype
+            |> List.exists (function
+                | TApp("-?->", _, _) -> true
+                | _ -> false)
+
+        let suspendingSignature (ftype: FType) =
+            match ftype with
+            | TArrow(mandatory, keywords, restOpt, ret, colour, r) ->
+                TArrow(
+                    mandatory |> List.map repaint,
+                    keywords |> List.map (fun (n, t) -> n, repaint t),
+                    restOpt |> Option.map repaint,
+                    ret,
+                    colour,
+                    r
+                )
+            | other -> other
+
+        let signatures =
+            decls
+            |> List.choose (function
+                | DSignature(name, ftype, constraints, r) -> Some(name, (ftype, constraints, r))
+                | _ -> None)
+            |> Map.ofList
+
+        decls
+        |> List.collect (fun d ->
+            match d with
+            | DDefun(name, args, body, Ordinary, r) ->
+                match Map.tryFind name signatures with
+                | Some(ftype, constraints, sigRange) when declaresPoly ftype ->
+                    // A signature of its own, so that the twin is an ordinary
+                    // definition from here on: `explicitSigs` reads it,
+                    // `declaredFunctions` binds it, and exporting and metadata
+                    // need no case for it.
+                    [ d
+                      DSignature(Naming.suspendingCopy name, suspendingSignature ftype, constraints, sigRange)
+                      DDefun(Naming.suspendingCopy name, args, body, Suspending, r) ]
+                | _ -> [ d ]
+            | _ -> [ d ])
+
+    let decls = expandPolymorphicDefuns decls
+
+    /// Which of those are copies, so that a diagnostic about one can say so.
+    let env =
+        let generated =
+            decls
+            |> List.choose (function
+                | DDefun(name, _, _, Suspending, _) when Naming.isSuspendingCopy name -> Some name
+                | _ -> None)
+            |> Set.ofList
+
+        { env with
+            Registry =
+                { env.Registry with
+                    GeneratedCopies = Set.union env.Registry.GeneratedCopies generated } }
+
     /// The registry a signature is *read* with: this one, plus the group's own
     /// type declarations.
     ///

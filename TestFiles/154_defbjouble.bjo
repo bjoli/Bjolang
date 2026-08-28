@@ -43,9 +43,11 @@
 ;; to `await PortEofAsync(p)`, which is a different method, a different return
 ;; type and a state machine — and the source above says none of that.
 ;;
-;; `drain` itself stays the ordinary copy: generating a second one is
-;; monomorphisation, which is a later layer. So the loop is written out here,
-;; which is what "layer 1 ships with explicit defbjo callers" means in practice.
+;; `drain` itself stays the ordinary copy. A second one is generated only for a
+;; signature that declares `-?->`, and `drain`'s does not — it takes a port, not
+;; a callback, so there is nothing in its type to be polymorphic in. Reaching a
+;; `defbjouble` through the call graph is not enough on its own, which is why
+;; the loop is written out again here.
 (: count-suspending (-bjo-> TextInputPort int))
 (defbjo (count-suspending p)
   (let loop ((n 0))

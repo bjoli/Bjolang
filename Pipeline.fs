@@ -1581,7 +1581,7 @@ let runFullFrontendPipeline (mainFilePath: string) =
         // `ColourCheck` asks and has the same answer.
         let loopLoweredAst = EffectGraph.selectDoubles env.Registry loopLoweredAst
 
-        ColourCheck.run loopLoweredAst
+        ColourCheck.run env.Registry loopLoweredAst
 
         // Beside `ColourCheck` and for the same reason: both are about what a
         // body does with the thread it is on, and both want the program as it

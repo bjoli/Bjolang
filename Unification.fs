@@ -291,17 +291,16 @@ let rec private awaitsImplementor (registry: TraitRegistry) (t: HMType) : bool =
 let unifyEffect (e1: Effect) (e2: Effect) =
     match pruneEffect e1, pruneEffect e2 with
     | EMeta a, EMeta b when a.EId = b.EId -> ()
-    // The suspending instantiation of an `-?->` is a *second emitted body*, and
-    // there is no pass yet that makes one. Refused here rather than allowed to
-    // type-check, because what it would otherwise produce is one sync body
-    // whose C# calls a `Func<..., Fiber<R>>` — a Roslyn error in a file nobody
-    // wrote, about a type the language does not have.
-    | EMeta _, EAsync
-    | EAsync, EMeta _ ->
-        failwith
-            "This wants the suspending copy of a procedure declared -?->, and copies are not generated yet. \
-             The declaration is accepted and published; instantiating it at a bjoroutine is what still needs \
-             monomorphisation. Call it from an ordinary function, or write the leaf as a defbjouble."
+    // A cell binds to either colour now. Binding it to `EAsync` is what asks
+    // for the suspending copy of the procedure it came from, and that copy
+    // exists: `checkDeclGroup` generates one for every signature declaring a
+    // `-?->`, and `EffectGraph.selectDoubles` reads this cell back to decide
+    // which of the two a call site meant.
+    //
+    // This branch used to refuse, because emitting one ordinary body and then
+    // handing it a `Func<..., Fiber<R>>` is a Roslyn error in a file nobody
+    // wrote. What made it safe to lift is that there are now two bodies rather
+    // than one guess.
     | EMeta a, other -> a.EValue <- Some other
     | other, EMeta a -> a.EValue <- Some other
     | ESync, ESync

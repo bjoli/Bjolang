@@ -1,0 +1,26 @@
+;; A `-?->` whose suspending copy cannot be built.
+;;
+;; `bad` is fine as written: `f` is called at the ordinary colour, and an
+;; ordinary call inside a `(seq ...)` is exactly what a sequence body is for.
+;; But `-?->` promises *two* copies from this one body, and in the other one
+;; `(f 1)` is a yield point — inside an iterator, where an await cannot go.
+;;
+;; So the error is at a line where nothing is visibly wrong, which is why the
+;; message says whose copy it is. Reporting the reason alone would tell the
+;; reader that `f` is a yield point at a line where, as written, it is not.
+;;
+;; The generated copy is named `bad__bjo` internally and that name is stripped
+;; before printing: it appears in no source file, and `Diagnostics.humanize` is
+;; where every invented name is removed.
+
+;; EXPECT-ERROR: calling 'f' is a yield point
+;; EXPECT-ERROR: inside a (seq ...) body
+;; EXPECT-ERROR: This is the suspending copy of 'bad'
+;; EXPECT-ERROR: As written the definition is fine
+
+(import (std prelude))
+
+(: bad (-> (-?-> int int) (Seq int)))
+(defun (bad f) (seq (yield (f 1))))
+
+(defun (main args) 0)

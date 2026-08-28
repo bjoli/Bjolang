@@ -1,0 +1,30 @@
+;; Asking for the suspending copy from somewhere it cannot be awaited.
+;;
+;; The copy is chosen by what the argument is: a `(bjoroutine ...)` instantiates
+;; the effect variable async, so this call means the suspending copy of
+;; `apply-twice` — and calling that is a yield point, which `caller` is not
+;; allowed to contain because it is a `defun`.
+;;
+;; Selection happens anyway rather than falling back to the ordinary copy. The
+;; ordinary copy takes `Func<int,int>` and would be handed a
+;; `Func<int,Fiber<int>>`, which is a Roslyn error in generated code; a clean
+;; rejection here is the better of the two.
+;;
+;; What this pins is the *name*. The call has been rewritten to `apply-twice__bjo`
+;; by the time it is checked, and the message must not say so — that member
+;; appears in no source file. It says `apply-twice`, which is what was written.
+
+;; EXPECT-ERROR: calling 'apply-twice' is a yield point
+;; EXPECT-ERROR: 'caller' is defined with (defun ...)
+;; EXPECT-ERROR: Define it with (defbjo ...)
+
+(import (std prelude))
+
+(: apply-twice (-> (-?-> int int) int int))
+(defun (apply-twice f x) (f (f x)))
+
+(: caller (-> int int))
+(defun (caller n)
+  (apply-twice (bjoroutine (x) (+ x 1)) n))
+
+(defun (main args) 0)

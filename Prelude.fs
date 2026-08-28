@@ -279,7 +279,8 @@ let emptyRegistry : TraitRegistry =
       OpaqueTypes = Set.empty
       HiddenMembers = Map.empty
       BlockingNames = blockingBuiltins
-      DoubleDefs = Map.empty }
+      DoubleDefs = Map.empty
+      GeneratedCopies = Set.empty }
 
 let prelude : Env =
     { Bindings = Map.ofList [

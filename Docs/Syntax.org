@@ -287,16 +287,42 @@ A loop that only ever jumps to itself becomes a ~while~ in the enclosing method,
 where a yield point is perfectly legal. That is what makes "write the loop
 instead" a real answer to the higher-order restriction rather than a deflection.
 
-**** What is not yet there
-Generating the second copy of a ~defun~ — monomorphisation — is not implemented.
-Two things follow:
+**** Both copies are generated
+A signature declaring ~-?->~ gets two emitted bodies: the ordinary one and a
+suspending one, made from the same source. Which a call means is decided by
+*what the argument is*, not by where the call is written —
 
-- Selection is by the *enclosing member's* colour. A ~defun~ that a bjoroutine
-  calls keeps its ordinary copy, so a port read reached through one still parks.
-  The blocking lint reports exactly that, by name and by path.
-- Instantiating a ~-?->~ at the suspending colour is refused, since the body it
-  asks for does not exist. The declaration is still accepted, checked and
-  published, so a signature written today will not need rewriting.
+#+BEGIN_SRC scheme
+(: apply-twice (-> (-?-> int int) int int))
+(defun (apply-twice f x) (f (f x)))
+
+(apply-twice (fun (x) (* x 2)) 3)          ; the ordinary copy
+(apply-twice (bjoroutine (x) (+ x 1)) 3)   ; the suspending one, awaited
+#+END_SRC
+
+— because the two take ~Func<A,B>~ and ~Func<A,Fiber<B>>~, which are unrelated
+C# types, so exactly one of them fits. Passing an ordinary lambda from inside a
+bjoroutine still calls the ordinary copy.
+
+The copy is generated before the body is checked, from the same source against a
+repainted signature, so it cannot drift from the original. It crosses a module
+boundary on the strength of the published signature alone: ~-?->~ is part of the
+type, and the copy's name is derived from the written one on both sides.
+
+Asking for the suspending copy somewhere it cannot be awaited is an ordinary
+colour error, and names the written procedure rather than the generated one.
+
+**** What is not yet there
+A ~defun~ gets a second copy only when its signature *says* ~-?->~. One that
+merely reaches a ~defbjouble~ through its call graph does not, so a port read
+reached through an undeclared ~defun~ still parks. The blocking lint reports
+exactly that, by name and by path.
+
+That is the remaining distance to the Guile-fibers model, where any call chain
+suspends at any depth. Closing it means inferring the copies rather than
+declaring them, and the declaration is deliberate: left to inference, every
+higher-order function in the library would double for callbacks nobody will ever
+suspend, and traits would multiply that by the number of implementations.
 
 *** Writing the types at the definition
 The same signature may be written *on* the ~defun~ instead: a type at each

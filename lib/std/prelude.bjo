@@ -1421,16 +1421,21 @@
   (#:sync (clr-rest p))
   (#:bjo  (clr-rest-await p)))
 
-;; The reader is `-?->`: this takes one of either colour, and its own copies
-;; follow. Declared rather than inferred, because that is the decision — left to
-;; inference, every higher-order function in the language would double for
-;; callbacks nobody will ever suspend.
+;; The reader is `-?->`: this takes one of either colour, and both copies of
+;; `port-fold` are generated from this one body. Declared rather than inferred,
+;; because that is the decision — left to inference, every higher-order function
+;; in the language would double for callbacks nobody will ever suspend.
 ;;
-;; The collection functions are deliberately *not* converted. Nothing about
-;; `list-map` suggests IO, and until the second copy is actually generated the
-;; declaration would buy a published signature and a doubled emitted size for
-;; no program that can yet use it. This one is the port surface, where the whole
-;; question came from.
+;; The collection functions are deliberately *not* converted, and the reason is
+;; the same one. Nothing about `list-map` suggests IO, so declaring it `-?->`
+;; would double its emitted size to buy a copy no program asks for. This one is
+;; the port surface, where the whole question came from and where a suspending
+;; reader is the ordinary case.
+;;
+;; The loop below has to stay tail-recursive. `LoopLowering` promotes it to a
+;; `while` in the enclosing method, and in the generated copy that method is
+;; `async` — which is what lets `(f port acc)` be awaited there. A loop that
+;; escaped would stay a C# local function and the copy could not be built.
 (: port-fold (-> (-?-> TextInputPort %a %a) %a TextInputPort %a))
 (defun (port-fold f init port)
   (let loop ((acc init))

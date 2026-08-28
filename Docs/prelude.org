@@ -342,9 +342,13 @@ read.
 (defbjo (join-lines p) ...)                       ;; ...same body
 #+END_SRC
 
-Everything above those five is written once and mentions no colour at all:
-~read-line/opt~, ~port-fold~, ~port->list~, ~port->vec~ and ~file->seq~ are
-ordinary ~defun~ s.
+Everything above those five is written once: ~read-line/opt~, ~port-fold~,
+~port->list~, ~port->vec~ and ~file->seq~ are ordinary ~defun~ s.
+
+Of those only ~port-fold~ mentions colour, and only about its *callback* —
+~(: port-fold (-> (-?-> TextInputPort %a %a) %a TextInputPort %a))~ says the
+reader may be of either colour. Both copies of ~port-fold~ are generated from
+the one body, and which a call gets is decided by the reader it is given.
 
 Two consequences worth knowing.
 
@@ -362,9 +366,11 @@ no async constructor — ~FileOptions.Asynchronous~ affects reads, not the open.
 So ~open-input-file~ parks wherever it is called, and everything done to the
 port afterwards need not.
 
-*A read reached through your own ~defun~ still parks.* A ~defun~ has one
-emitted body, so a bjoroutine calling one gets the ordinary copy all the way
-down. The compiler says so rather than leaving it silent:
+*A read reached through your own ~defun~ still parks.* A ~defun~ gets a second
+emitted body only when its signature declares ~-?->~; reaching a suspending leaf
+through the call graph is not enough on its own. So a bjoroutine calling an
+undeclared ~defun~ gets the ordinary copy all the way down. The compiler says so
+rather than leaving it silent:
 
 #+BEGIN_EXAMPLE
 Warning: 'serve' is a bjoroutine, and calling 'port-eof?' at log.bjo:14 parks the
