@@ -1118,7 +1118,7 @@ public static partial class BjolangRuntime {
         /// finds the standard ports.
         private static readonly DynEnv Root = new(
             Console.Out,
-            Console.In,
+            StdIn,
             null,
             Map.Map<int, object>.Empty);
 
@@ -1230,13 +1230,30 @@ public static partial class BjolangRuntime {
         public override string ToString() => "#<parameter>";
     }
 
+    /// Standard input, buffered.
+    ///
+    /// **One instance, and that is the whole reason it is a field.** `Dyn.Root`
+    /// and `current-input-port` both need standard input, and two `BjoPort`s
+    /// over one `Console.In` would each be holding characters the other had
+    /// already taken — the buffer that makes `port-eof?` free is also a claim
+    /// on input nobody else may read.
+    ///
+    /// Wrapped rather than left bare because stdin is the port every program
+    /// touches, and an unbuffered one is the port whose eof question always
+    /// costs a syscall. Nothing is read here: `Wrap` only allocates.
+    ///
+    /// Standard *output* is deliberately not wrapped. A writer has no eof
+    /// problem to solve, and a buffer in front of the console would only delay
+    /// output past the point a program crashed.
+    public static readonly System.IO.TextReader StdIn = Bjolang.Runtime.BjoPort.Wrap(Console.In);
+
     /// The output port. Bound to a value, not a nullary function: it is read
     /// with `parameter-ref` like every other parameter.
     ///
     /// A field parameter takes no id, so it spends none of the 31 hot slots and
     /// a program's own parameters get the whole budget.
     public static readonly Param<System.IO.TextWriter> currentsuboutputsubport = new(0, -1, Console.Out);
-    public static readonly Param<System.IO.TextReader> currentsubinputsubport = new(1, -1, Console.In);
+    public static readonly Param<System.IO.TextReader> currentsubinputsubport = new(1, -1, StdIn);
 
     /// The error port, which is a cold parameter and not a field.
     ///

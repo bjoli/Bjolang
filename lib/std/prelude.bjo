@@ -1213,6 +1213,20 @@
                                   System.UnauthorizedAccessException)))
   ;; Writes into a buffer of its own, so it takes nothing and cannot fail.
   (StringWriter (: System.IO.StringWriter (-> StringWriter)))
+
+  ;; The buffered pair, wrapped around a file's reader and writer by `open-*`.
+  ;;
+  ;; A `BjoPort` owns the characters it has read, which is what lets it answer
+  ;; `port-eof?` without a syscall — `Peek` is "read one and put it back", and
+  ;; the read is the part that waits. Owning the buffer is also what lets the
+  ;; port have suspending reads at all: `TextReader` has no async peek, and
+  ;; there is no adding one from outside.
+  ;;
+  ;; Both are ordinary `TextReader`/`TextWriter` subclasses, so nothing in the
+  ;; type surface below moves.
+  (BjoPort (: Bjolang.Runtime.BjoPort (-> TextReader BjoPort)))
+  (BjoWriter (: Bjolang.Runtime.BjoWriter (-> TextWriter BjoWriter)))
+
   (Exception (: System.Exception)))
 
 ;; The port types, under exported names: an `import/class` alias is
@@ -1228,14 +1242,27 @@
 
 ;; Open a file for text input. `Err` carries the .NET exception, so an arm may
 ;; tell one failure from another with `(:is System.IO.FileNotFoundException e)`.
+;;
+;; The reader is wrapped in a `BjoPort`, which is what gives a file port a
+;; buffer of its own and so an eof question that usually costs nothing.
+;;
+;; **The open itself still blocks.** `StreamReader.` opens synchronously and
+;; .NET has no async constructor — `FileOptions.Asynchronous` affects reads, not
+;; the open. So this is one call that parks wherever it is made; everything
+;; done to the port afterwards need not.
 (: open-input-file (-> string (Result Exception TextInputPort)))
 (defun (open-input-file path)
   (match (StreamReader. path)
-    ((Ok r) (Ok (cast TextInputPort r)))
+    ((Ok r) (Ok (cast TextInputPort (BjoPort. (cast TextInputPort r)))))
     ((Err e) (Err e))))
 
 ;; A string as an input port. Cannot fail, so no `Result` — the asymmetry with
 ;; `open-input-file` is the honest one.
+;;
+;; Deliberately *not* wrapped: the text is already in memory, so there is
+;; nothing for a buffer to save and nothing for a read to wait on. A string
+;; port takes the ordinary path and pays neither a copy nor an allocation for
+;; a suspension that could never happen.
 (: open-input-string (-> string TextInputPort))
 (defun (open-input-string contents)
   (cast TextInputPort (StringReader. contents)))
@@ -1244,7 +1271,7 @@
 (: open-output-file (-> string (Result Exception TextOutputPort)))
 (defun (open-output-file path)
   (match (StreamWriter. path)
-    ((Ok w) (Ok (cast TextOutputPort w)))
+    ((Ok w) (Ok (cast TextOutputPort (BjoWriter. (cast TextOutputPort w)))))
     ((Err e) (Err e))))
 
 ;; A port that collects what is written to it, to be asked for with
@@ -1254,6 +1281,11 @@
 ;;
 ;; It is a `TextOutputPort` like any other, which is the whole point — a
 ;; procedure that writes to a port does not learn where the text is going.
+;;
+;; Unwrapped, for the reason `open-input-string` is: a buffer in front of a
+;; writer that is already a buffer buys nothing. It is also what
+;; `get-output-string` needs — it asks the port for the text it accumulated,
+;; and only a `StringWriter` has any.
 (: open-output-string (-> TextOutputPort))
 (defun (open-output-string)
   (cast TextOutputPort (StringWriter.)))

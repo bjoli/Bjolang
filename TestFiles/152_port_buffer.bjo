@@ -1,0 +1,219 @@
+;; A port owns a buffer, and every read has to go through it.
+;;
+;; `port-eof?` is `Peek`, and peek is "read one and put it back" — so a port
+;; that could answer it had already read the character, and has to hold it
+;; somewhere. `BjoPort` is that somewhere, which is what makes the eof question
+;; free once anything is buffered, and what makes a suspending read possible at
+;; all: `TextReader` has no async peek and there is no adding one from outside.
+;;
+;; The hazard the whole file is about: **if any read reaches the underlying
+;; reader while the buffer still holds characters, those characters are
+;; skipped.** Nothing throws. The program simply produces the wrong text, which
+;; is the worst way for a bug to present. So every read method is exercised
+;; against the same port, in every order, with the buffer boundary deliberately
+;; placed inside the thing being read.
+(import (std prelude))
+(import (std ports))
+(import (std simpletest))
+
+;; The two-argument constructor, so a test can choose where the boundary falls.
+;;
+;; `open-input-file` uses the one-argument form and gets 4096 characters, at
+;; which size none of the cases below would cross a boundary at all — a line
+;; spanning two fills, a `\r\n` split down the middle, a surrogate pair with a
+;; refill between its halves. Those are where the bugs are, so the test buys
+;; the ability to reach them.
+(import/class
+  (Port (: Bjolang.Runtime.BjoPort (-> TextInputPort int Port))))
+
+;; A port over `text` whose buffer holds `n` characters.
+(: sized (-> string int TextInputPort))
+(defun (sized text n)
+  (cast TextInputPort (Port. (open-input-string text) n)))
+
+;; Everything still in the port, one character at a time. Used to check what a
+;; sequence of reads left behind — a skip shows up here as a hole.
+(: rest-by-char (-> TextInputPort string))
+(defun (rest-by-char p)
+  (let loop ((acc ""))
+    (match (read-char/opt p)
+      ((Some c) (loop (string-append acc (char->string c))))
+      (None acc))))
+
+(defun (main)
+  ;; --- The buffer is real -------------------------------------------------
+  ;;
+  ;; Asking whether a port is finished must not consume from it, however many
+  ;; times it is asked and wherever the buffer happens to sit.
+  (def p1 (sized "abc" 2))
+  (ignore (port-eof? p1))
+  (ignore (port-eof? p1))
+  (ignore (port-eof? p1))
+  (expect "asking about eof does not consume" (read-all p1) "abc")
+
+  ;; --- read-all after a partial read --------------------------------------
+  ;;
+  ;; The classic form of the bug: `ReadToEnd` on the underlying reader knows
+  ;; nothing about what the buffer is holding, so a port that forwarded it
+  ;; would drop everything already read ahead. Here `port-eof?` has filled a
+  ;; two-character buffer, and the answer must still be the whole remainder.
+  (def p2 (sized "hello world" 2))
+  (ignore (port-eof? p2))
+  (expect "read-all sees what the buffer holds" (read-all p2) "hello world")
+
+  (def p3 (sized "hello world" 4))
+  (expect "one character first" (char->string (read-char p3)) "h")
+  (ignore (port-eof? p3))
+  (expect "read-all after a char and a peek" (read-all p3) "ello world")
+
+  ;; --- Lines that cross a boundary ----------------------------------------
+  ;;
+  ;; With a three-character buffer, no line below fits in one fill.
+  (def p4 (sized "first\nsecond\nthird" 3))
+  (expect "a line longer than the buffer" (read-line p4) "first")
+  (expect "and the next one" (read-line p4) "second")
+  (expect "and the last, unterminated" (read-line p4) "third")
+  (expect "then eof" (if (port-eof? p4) "eof" "more") "eof")
+
+  ;; --- \r\n split across a fill -------------------------------------------
+  ;;
+  ;; The one case a line-splitting buffer gets wrong on its own: the `\r` is
+  ;; the last character of one fill and the `\n` the first of the next, so a
+  ;; port that decided at the `\r` without looking further reports a phantom
+  ;; empty line. Buffer of 3 over "ab\r\ncd" puts the boundary exactly there.
+  (def p5 (sized "ab\r\ncd\r\n" 3))
+  (expect "CRLF across a boundary" (read-line p5) "ab")
+  (expect "no phantom empty line" (read-line p5) "cd")
+  (expect "and nothing after the final CRLF"
+          (match (read-line/opt p5) ((Some l) (string-append "line:" l)) (None "none"))
+          "none")
+
+  ;; All three terminators end a line, and a bare \r is not a line of its own.
+  (def p6 (sized "a\nb\rc\r\nd" 2))
+  (expect "LF" (read-line p6) "a")
+  (expect "bare CR" (read-line p6) "b")
+  (expect "CRLF" (read-line p6) "c")
+  (expect "unterminated tail" (read-line p6) "d")
+
+  ;; An empty line is a line.
+  (def p7 (sized "\n\na\n" 2))
+  (expect "first empty line" (read-line p7) "")
+  (expect "second empty line" (read-line p7) "")
+  (expect "then content" (read-line p7) "a")
+  (expect "and eof" (if (port-eof? p7) "eof" "more") "eof")
+
+  ;; --- A surrogate pair split by a refill ----------------------------------
+  ;;
+  ;; U+1F600 is one character and two UTF-16 units. With a two-character buffer
+  ;; and one character in front of it, the halves land in different fills, so
+  ;; `read-char` has to survive a refill in the middle of a single character.
+  (def grin (int->char 128512))
+  (def wg (open-output-string))
+  (write-string wg "x")
+  (write-char wg grin)
+  (write-string wg "y")
+
+  (def p8 (sized (get-output-string wg) 2))
+  (expect "the character before" (char->string (read-char p8)) "x")
+  (expect "an astral character across a fill" (char->int (read-char p8)) 128512)
+  (expect "and the one after" (char->string (read-char p8)) "y")
+  (expect "then eof" (if (port-eof? p8) "eof" "more") "eof")
+
+  ;; --- Every read method against one port ----------------------------------
+  ;;
+  ;; The interleaving the design asks for. A char, an eof question, a line, a
+  ;; char, a line, an eof question, and the remainder — over a buffer far too
+  ;; small to hold any of it, so a fill happens between almost every pair.
+  ;; Anything skipped shows up as a wrong answer here rather than as a throw.
+  (def p9 (sized "abc\ndef\nghi\njkl" 2))
+  (expect "char" (char->string (read-char p9)) "a")
+  (expect "not eof" (if (port-eof? p9) "eof" "more") "more")
+  (expect "rest of the line" (read-line p9) "bc")
+  (expect "char from the next line" (char->string (read-char p9)) "d")
+  (expect "char again" (char->string (read-char p9)) "e")
+  (expect "rest of that line" (read-line p9) "f")
+  (expect "opt line" (match (read-line/opt p9) ((Some l) l) (None "none")) "ghi")
+  (expect "opt char" (match (read-char/opt p9) ((Some c) (char->string c)) (None "none")) "j")
+  (expect "not eof yet" (if (port-eof? p9) "eof" "more") "more")
+  (expect "read-all takes the remainder" (read-all p9) "kl")
+  (expect "eof at last" (if (port-eof? p9) "eof" "more") "eof")
+  (expect "read-all at eof is empty" (read-all p9) "")
+
+  ;; The same interleaving again, checked the other way round: whatever the
+  ;; reads took, `rest-by-char` must find exactly the rest — no hole, no
+  ;; repetition.
+  (def p10 (sized "0123456789" 3))
+  (ignore (port-eof? p10))
+  (ignore (read-char p10))
+  (ignore (port-eof? p10))
+  (ignore (read-char p10))
+  (expect "nothing was skipped or repeated" (rest-by-char p10) "23456789")
+
+  ;; --- The endings, never conflated ---------------------------------------
+  ;;
+  ;; Three things end a read, and telling them apart is the point. A genuine
+  ;; end of input is a value; a port that has been closed is a mistake and
+  ;; throws. (The third — a read cut short by cancellation — is not reachable
+  ;; from an ordinary function, because nothing here suspends yet.)
+  (def p11 (sized "" 4))
+  (expect "an empty port is at eof" (if (port-eof? p11) "eof" "more") "eof")
+  (expect "and reads nothing" (match (read-line/opt p11) ((Some _) "some") (None "none")) "none")
+
+  (def p12 (sized "still here" 4))
+  (close-input-port p12)
+  (expect "a closed port throws rather than reporting eof"
+          (match (try (port-eof? p12) #:catch (System.ObjectDisposedException))
+            ((Ok _) "returned") ((Err e) "threw"))
+          "threw")
+  (expect "and so does reading it"
+          (match (try (read-line p12) #:catch (System.ObjectDisposedException))
+            ((Ok _) "returned") ((Err e) "threw"))
+          "threw")
+
+  ;; --- The wiring ----------------------------------------------------------
+  ;;
+  ;; `open-input-file` hands back one of these, so the same interleaving has to
+  ;; hold over a real file — including that the port is still an ordinary
+  ;; `TextInputPort` to everything above it.
+  (def path "152_port_buffer.tmp")
+  (match (open-output-file path)
+    ((Ok w) (with-open ((out w))
+              (writeln out "alpha")
+              (writeln out "beta")
+              (write-string out "gamma")))
+    ((Err e) (println "FAILURE: could not open the file for writing")))
+
+  (match (open-input-file path)
+    ((Ok r) (with-open ((in r))
+              (expect "a char off a file port" (char->string (read-char in)) "a")
+              (expect "not eof" (if (port-eof? in) "eof" "more") "more")
+              (expect "the rest of the line" (read-line in) "lpha")
+              (expect "the next line" (read-line in) "beta")
+              (expect "and the remainder" (read-all in) "gamma")))
+    ((Err e) (println "FAILURE: could not reopen the file")))
+
+  ;; A buffered writer still has to put its text out in the order it was
+  ;; written, whichever call wrote it.
+  (match (open-output-file path)
+    ((Ok w) (with-open ((out w))
+              (write-string out "one")
+              (write-char out (int->char 45))
+              (writeln out "two")
+              (write-string out "three")))
+    ((Err e) (println "FAILURE: could not reopen for writing")))
+  ;; Read back a line at a time rather than asserting the whole text, so the
+  ;; newline `writeln` chose stays the platform's business.
+  (match (open-input-file path)
+    ((Ok r) (with-open ((in r))
+              (expect "a buffered writer preserves order" (read-line in) "one-two")
+              (expect "and what was written after it" (read-all in) "three")))
+    ((Err e) (println "FAILURE: could not reopen the file")))
+
+  ;; The port is still a plain `TextInputPort`, so a .NET method on it works.
+  (match (open-input-file path)
+    ((Ok r) (with-open ((in r))
+              (expect "a .NET call on the port" (.Peek in) 111)))
+    ((Err e) (println "FAILURE: could not reopen the file")))
+
+  (file-delete path)
+  0)
