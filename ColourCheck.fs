@@ -38,6 +38,19 @@
 /// running must-use checking *before* `TraitInline` (§8.3): that check would
 /// see the same body once per call site, whereas this one cannot see a body it
 /// did not already see.
+///
+/// # Why the message names one construct
+///
+/// There are six ways to be somewhere a yield point cannot live, and from
+/// inside the program they look identical: a call that would be fine one line
+/// out is rejected here, and nothing on the page says which enclosing thing
+/// objected. So the traversal carries *which* construct sealed it rather than a
+/// boolean, and the message names that one and prescribes the fix for that one.
+///
+/// The pass has always known this exactly — the seal is set at the construct
+/// that causes it — and used to throw the knowledge away, emitting a paragraph
+/// listing all six for the reader to narrow down by hand. Listing every reason
+/// is a worse message than any single one of them.
 module Bjolang.ColourCheck
 
 open Bjolang.Lexer
@@ -49,22 +62,157 @@ let private suspends (t: HMType) =
     | TFun(_, _, EAsync) -> true
     | _ -> false
 
-/// `allowed` is whether the expression is being emitted into an `async` C#
-/// member. It is set once, by a bjoroutine's own body, and cleared by every
-/// construct that opens a member of its own.
-let rec private checkExpr (allowed: bool) (expr: TypedExpr) : unit =
-    let descend = checkExpr allowed
-    let sealed_ = checkExpr false
+/// What fixed the colour of an ordinary lambda.
+///
+/// A lambda declares nothing, so the reason it may not suspend is never written
+/// inside it — it is the position it was written *in*, one level up. The pin is
+/// therefore carried down from the call rather than read off the lambda, which
+/// knows only that it is ordinary and not why it had to be.
+/// A lambda handed to a .NET `Func` parameter is pinned for a third reason —
+/// a delegate's colour is part of its type, and there is no suspending `Func`
+/// to ask for — but there is no case for it here, because that message cannot
+/// currently be reached from a test. Every `Func`-taking method in the runtime
+/// is generic, and the one non-generic BCL candidate, `Task.Run`, does not
+/// resolve through `import/extern` at all. `Unpinned` says something true about
+/// such a lambda; a branch no fixture can trigger would not.
+type private Pin =
+    /// Written where nothing constrains it: bound to a name, stored in a
+    /// record, returned, or handed to a foreign call. There is nothing to name
+    /// but the lambda itself.
+    | Unpinned
+    /// An argument to a Bjolang function whose parameter is declared `->`.
+    | ByParameter of callee: string * declared: HMType
+
+/// Which construct between the yield point and the enclosing bjoroutine became
+/// a C# member of its own — which is the whole of why an `await` cannot be
+/// written here.
+///
+/// The innermost wins, which is what overwriting the flag already did when this
+/// was a boolean: it is the first thing in the way, and fixing it is what
+/// uncovers the next.
+type private Site =
+    /// A bjoroutine's own body — the one place a yield point belongs.
+    | Allowed
+    /// The body of an ordinary top-level definition, named.
+    | InDefun of string
+    /// A module-level initializer, which runs in the static constructor.
+    | InModuleValue
+    | InLambda of Pin
+    /// A `(seq ...)` body, which is emitted as a C# iterator.
+    | InSeq
+    /// A function-shaped `let` binding, which is emitted as a C# local
+    /// function.
+    | InLocalFun of string
+    /// A loop that stayed a local function instead of becoming a `while`.
+    | InEscapingLoop of string
+
+let private isAllowed (site: Site) =
+    match site with
+    | Allowed -> true
+    | _ -> false
+
+/// The same arrow, spelled `-?->`. Rebuilt through `showType` rather than
+/// spliced together as text, so the suggestion cannot disagree with how the
+/// type prints everywhere else.
+let private asPolyArrow (t: HMType) : string =
+    match t with
+    | TFun(args, ret, _) -> DotNetInterop.showType (TFun(args, ret, EPoly))
+    | _ -> DotNetInterop.showType t
+
+/// The lines under a verdict: why this place cannot suspend, and what to do
+/// about it.
+///
+/// Every answer here has to be one that works *today*. Advice that lands the
+/// reader in a second error is worse than no advice, which is why `-?->` is
+/// never offered as a fix without saying what it does not yet do: declaring it
+/// is accepted, and then instantiating it at the suspending colour fails in
+/// `unifyEffect` with "copies are not generated yet".
+let private explain (site: Site) : string =
+    let lines (parts: string list) =
+        parts |> List.map (fun p -> "  " + p) |> String.concat "\n"
+
+    match site with
+    // Unreachable — `refuse` is only called when the site is sealed — but a
+    // wildcard here would silently swallow a `Site` added later.
+    | Allowed -> lines [ "A yield point is allowed here, and this message is a bug in the compiler." ]
+
+    | InDefun name ->
+        lines
+            [ $"'%s{name}' is defined with (defun ...), which is emitted as an ordinary C# method, and an ordinary method cannot await."
+              $"Define it with (defbjo ...), or move the suspending call out of it. Note that (defbjo ...) spreads: whoever calls '%s{name}' needs to be one too." ]
+
+    | InModuleValue ->
+        lines
+            [ "This is not inside a function at all — it is a module-level initializer, emitted into the class's static constructor, which has no fiber under it to suspend."
+              "Move the work into a (defbjo ...) and call it from somewhere a fiber is running." ]
+
+    | InSeq ->
+        lines
+            [ "It is inside a (seq ...) body — which is also what a (seql ...) becomes — and a sequence is emitted as a C# iterator, where `yield return` and `await` are mutually exclusive in one member."
+              "A stream of values produced by suspending work is a channel rather than a sequence: fill one with (bjo ...) and read it. If the sequence is short, build the whole list first and yield from that." ]
+
+    | InLocalFun name ->
+        lines
+            [ $"It is inside '%s{name}', a body-local function, which is emitted as a C# local function — and a local function inside an async method is not itself async."
+              $"Inline '%s{name}' into the bjoroutine's body, or lift it out to a top-level (defbjo ...) and call it." ]
+
+    | InEscapingLoop name ->
+        lines
+            [ $"'%s{name}' is a loop, but it still mentions its own name — it is passed somewhere as a value, or called from somewhere that is not its own tail — so it has to be a real function for that name to refer to, and it stays a C# local function rather than becoming a while."
+              $"A loop that only ever jumps to itself is emitted as a while in the enclosing bjoroutine, where a yield point is fine. Stop using '%s{name}' as a value and it becomes one." ]
+
+    | InLambda pin ->
+        let where =
+            match pin with
+            | Unpinned ->
+                "It is inside an ordinary (fun ...), which is emitted as a delegate of its own, and a delegate that is not async cannot await."
+            | ByParameter(callee, declared) ->
+                $"It is inside an ordinary (fun ...) passed to '%s{callee}', whose parameter is declared %s{DotNetInterop.showType declared} — an arrow that does not say it may suspend. So '%s{callee}' is emitted once, for the ordinary case, and the lambda handed to it has to match."
+
+        let loop =
+            "Write the loop instead: a (loop ...) lowers to a while in the enclosing bjoroutine, so a yield point inside one is still inside the bjoroutine."
+
+        match pin with
+        | ByParameter(_, declared) ->
+            lines
+                [ where
+                  loop
+                  $"Declaring the parameter %s{asPolyArrow declared} is the eventual answer, but the suspending copy is not generated yet." ]
+        | Unpinned -> lines [ where; loop ]
+
+/// One verdict, one reason, one answer.
+///
+/// `lead` says what suspends rather than what it was defined with — "calling
+/// 'sync' is a yield point", not "'sync' is a bjoroutine" — because `sync` is
+/// one and nobody wrote it with `defbjo`. The property is what is true of all
+/// of them.
+///
+/// A `lead` that carries an aside parenthesises it rather than setting it off
+/// with dashes, because the verdict is appended here and an unclosed dash would
+/// swallow it: "…compiles to an await, and a yield point is not allowed here"
+/// reads as though the await were the thing not allowed.
+let private refuse (site: Site) (range: Range) (lead: string) (hint: string list) : unit =
+    let detail =
+        explain site :: (hint |> List.map (fun h -> "  " + h)) |> String.concat "\n"
+
+    failwithf $"Type Error at %s{formatPos range}: %s{lead}, and a yield point is not allowed here.\n%s{detail}"
+
+/// `site` is where the expression is being emitted. It is set to `Allowed` by a
+/// bjoroutine's own body, and replaced by every construct that opens a member
+/// of its own with the reason that construct is one.
+let rec private checkExpr (site: Site) (expr: TypedExpr) : unit =
+    let descend = checkExpr site
 
     match expr.Node with
     // A lambda is a delegate, and its own colour decides: a `(bjoroutine ...)`
     // is an async lambda and may suspend, a `(fun ...)` may not — whatever it
-    // is written inside.
-    | TLambda(_, body) -> checkExpr (suspends expr.Type) body
+    // is written inside. Nothing pinned this one that we can see from here;
+    // the argument positions below know better and say so.
+    | TLambda(_, body) -> checkLambda Unpinned expr body
 
     // A `seq` body is emitted as a C# iterator, and an iterator cannot be
     // async: `yield return` and `await` are mutually exclusive in one member.
-    | TSeq body -> sealed_ body
+    | TSeq body -> checkExpr InSeq body
 
     // `(bjo (f x y))` splits in two, and the halves have different colours.
     //
@@ -83,8 +231,8 @@ let rec private checkExpr (allowed: bool) (expr: TypedExpr) : unit =
             args |> List.iter descend
             kwArgs |> List.iter (snd >> descend)
             // The call is checked in the child's colour, which is always async.
-            checkExpr true { body with Node = TApply(target, [], []) }
-        | _ -> checkExpr true body
+            checkExpr Allowed { body with Node = TApply(target, [], []) }
+        | _ -> checkExpr Allowed body
 
     // `TLoop(_, None)` *is* the enclosing member's body — a `while` over a
     // state switch, in the same method — so it inherits.
@@ -103,18 +251,21 @@ let rec private checkExpr (allowed: bool) (expr: TypedExpr) : unit =
         | None -> members |> List.iter (fun m -> descend m.Body)
         | Some body ->
             let inlined = LoopLowering.isInlinedLoop members body
-            members |> List.iter (fun m -> checkExpr (allowed && inlined) m.Body)
+
+            members
+            |> List.iter (fun m -> checkExpr (if inlined then site else InEscapingLoop m.LoopName) m.Body)
+
             descend body
 
     // A function-shaped binding is a C# local function; a value binding is just
     // a local, and its initializer runs where it is written.
-    | TLet(_, isFun, _, value, body) ->
-        (if isFun then sealed_ value else descend value)
+    | TLet(name, isFun, _, value, body) ->
+        (if isFun then descendBinding name value else descend value)
         descend body
 
     | TLetRec(bindings, body) ->
-        for (_, isFun, _, value) in bindings do
-            if isFun then sealed_ value else descend value
+        for (name, isFun, _, value) in bindings do
+            if isFun then descendBinding name value else descend value
 
         descend body
 
@@ -124,38 +275,83 @@ let rec private checkExpr (allowed: bool) (expr: TypedExpr) : unit =
     // language has a type for. The fact is read off the call's own metadata
     // rather than by looking the import back up: by the time this runs, the
     // registry that knew is three passes behind.
-    | TForeignStaticCall(clrType, methodName, args, Some meta) when meta.Await && not allowed ->
-        failwithf
-            $"Type Error at %s{formatPos expr.Range}: calling '%s{clrType}.%s{methodName}' is a yield point — it is imported #:async, so it compiles to an await — and a yield point is not allowed here.\n  A yield point may only appear in the body of the bjoroutine it is written in. An ordinary (fun ...), a body-local (defun ...), a (seq ...) and a loop that is not tail-recursive each become a C# member of their own, and a member that is not async cannot suspend.\n  If what you want is to start this and carry on, that is (bjo (%s{methodName} ...)), which is colourless and may be written anywhere."
+    | TForeignStaticCall(clrType, methodName, _, Some meta) when meta.Await && not (isAllowed site) ->
+        refuse
+            site
+            expr.Range
+            $"calling '%s{clrType}.%s{methodName}' is a yield point (it is imported #:async, so it compiles to an await)"
+            [ $"If what you want is to start this and carry on, that is (bjo (%s{methodName} ...)), which is colourless and may be written anywhere." ]
 
     // The same rule for an `#:async` import that names an *instance* method.
     // It arrives as the node `(.Method x ...)` also produces, and only the
     // metadata says which of the two it was — which is the point of reading the
     // fact there rather than from the registry.
-    | TDotMethodCall(receiver, methodName, args, Some meta) when meta.Await && not allowed ->
-        failwithf
-            $"Type Error at %s{formatPos expr.Range}: calling '%s{meta.DeclaringType}.%s{methodName}' is a yield point — it is imported #:async, so it compiles to an await — and a yield point is not allowed here.\n  A yield point may only appear in the body of the bjoroutine it is written in. An ordinary (fun ...), a body-local (defun ...), a (seq ...) and a loop that is not tail-recursive each become a C# member of their own, and a member that is not async cannot suspend.\n  If what you want is to start this and carry on, that is (bjo (%s{methodName} ...)), which is colourless and may be written anywhere."
+    | TDotMethodCall(_, methodName, _, Some meta) when meta.Await && not (isAllowed site) ->
+        refuse
+            site
+            expr.Range
+            $"calling '%s{meta.DeclaringType}.%s{methodName}' is a yield point (it is imported #:async, so it compiles to an await)"
+            [ $"If what you want is to start this and carry on, that is (bjo (%s{methodName} ...)), which is colourless and may be written anywhere." ]
 
     | TApply(target, args, kwArgs) ->
-        if suspends target.Type && not allowed then
+        if suspends target.Type && not (isAllowed site) then
             let what =
                 match target.Node with
                 | TIdent(name, _) -> $"'%s{name}'"
                 | _ -> "this"
 
-            // "calling X is a yield point" rather than "X is a bjoroutine",
-            // because `sync` is one too and nobody wrote it with `defbjo`. What
-            // is true of both is the property that matters here.
-            failwithf
-                $"Type Error at %s{formatPos expr.Range}: calling %s{what} is a yield point, and a yield point is not allowed here.\n  A yield point may only appear in the body of the bjoroutine it is written in. An ordinary (fun ...), a body-local (defun ...), a (seq ...) and a loop that is not tail-recursive each become a C# member of their own, and a member that is not async cannot suspend.\n  If this is inside a lambda passed to a higher-order function like map, the reason is that map's callback is written (-> %%a %%b), which does not say it may suspend — so map is emitted once, for the ordinary case. Declare the parameter (-?-> %%a %%b) if it should take either colour, or write a loop instead."
+            refuse site expr.Range $"calling %s{what} is a yield point" []
 
         descend target
-        args |> List.iter descend
-        kwArgs |> List.iter (snd >> descend)
+
+        // Which parameter an argument lands on is visible here and nowhere
+        // else, so the pin is decided here and carried down.
+        let pinAt (i: int) =
+            match target.Type, target.Node with
+            | TFun(paramTypes, _, _), TIdent(callee, _) when i < List.length paramTypes ->
+                match paramTypes[i] with
+                // Only a parameter genuinely declared `->` is described as one.
+                // An instantiated `-?->` arrives as a bound cell, and calling
+                // that "declared ->" would be a lie about the source.
+                | TFun(_, _, ESync) -> ByParameter(callee, paramTypes[i])
+                | _ -> Unpinned
+            | _ -> Unpinned
+
+        args |> List.iteri (fun i a -> descendArg site (pinAt i) a)
+        // A keyword argument's declared type is not positional in `TFun`, so
+        // there is nothing here to name it by.
+        kwArgs |> List.iter (snd >> descendArg site Unpinned)
 
     | _ -> TypeVisitor.children expr |> List.iter descend
 
-/// A `TDefun`'s own effect is the only source of `allowed`, and every
+/// A lambda's body, checked in the colour the lambda itself is, with `pin`
+/// describing what made it that if the caller could tell.
+and private checkLambda (pin: Pin) (lam: TypedExpr) (body: TypedExpr) : unit =
+    if suspends lam.Type then
+        checkExpr Allowed body
+    else
+        checkExpr (InLambda pin) body
+
+/// Descend into an argument, telling a lambda written there what pinned it.
+/// Anything else is an ordinary subexpression evaluated in the caller.
+and private descendArg (site: Site) (pin: Pin) (arg: TypedExpr) : unit =
+    match arg.Node with
+    | TLambda(_, body) -> checkLambda pin arg body
+    | _ -> checkExpr site arg
+
+/// Descend into a function-shaped binding — a body-local `(defun ...)`, which
+/// arrives here as a name bound to a lambda.
+///
+/// The lambda *is* the local function, so its body is checked as one and the
+/// message can say which. Letting the ordinary `TLambda` case have it instead
+/// would be true but useless: it would report an anonymous `(fun ...)` for
+/// something the reader gave a name to and can see on the page.
+and private descendBinding (name: string) (value: TypedExpr) : unit =
+    match value.Node with
+    | TLambda(_, body) when not (suspends value.Type) -> checkExpr (InLocalFun name) body
+    | _ -> checkExpr (InLocalFun name) value
+
+/// A `TDefun`'s own effect is the only source of `Allowed`, and every
 /// expression it holds — its body and its keyword defaults, which are emitted
 /// in the method's prologue — is inside that one C# member.
 ///
@@ -165,12 +361,13 @@ let rec private checkExpr (allowed: bool) (expr: TypedExpr) : unit =
 let private checkDecl (decl: TDecl) : unit =
     decl
     |> TypeVisitor.mapDeclWithContext (fun owner e ->
-        let allowed =
+        let site =
             match owner with
-            | TDefun(_, _, _, _, _, _, effect, _, _) -> effect = EAsync
-            | _ -> false
+            | TDefun(_, _, _, _, _, _, EAsync, _, _) -> Allowed
+            | TDefun(name, _, _, _, _, _, _, _, _) -> InDefun name
+            | _ -> InModuleValue
 
-        checkExpr allowed e
+        checkExpr site e
         e)
     |> ignore
 

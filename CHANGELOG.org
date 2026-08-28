@@ -3,6 +3,53 @@
 
 What each change guarantees, and what it leaves open.
 
+* A refused yield point says which construct refused it
+
+There are six ways to be somewhere a yield point cannot live — an ordinary
+~defun~, a module-level initializer, a ~(fun ...)~, a ~(seq ...)~ body, a
+body-local function, and a loop that is used as a value — and from inside the
+program they look identical. A call that would be fine one line out is refused
+here, and nothing on the page says what objected.
+
+The pass has always known exactly which, because the seal is set at the
+construct that causes it. It used to throw that away and print a paragraph
+listing all six for the reader to narrow down by hand.
+
+#+BEGIN_EXAMPLE
+Type Error at outer.bjo:6: calling 'fetch' is a yield point, and a yield point
+is not allowed here.
+  It is inside 'helper', a body-local function, which is emitted as a C# local
+  function — and a local function inside an async method is not itself async.
+  Inline 'helper' into the bjoroutine's body, or lift it out to a top-level
+  (defbjo ...) and call it.
+#+END_EXAMPLE
+
+Named constructs are named. ~helper~ and the escaping loop ~go~ are things the
+reader wrote and can see; reporting an anonymous ~(fun ...)~ for either would
+send them looking for a lambda they never wrote. Where the constraint is a
+parameter, the message names the callee and the arrow it is declared with,
+because that declaration is what would have to change.
+
+The old message ended by recommending ~-?->~ on that parameter. Following it
+landed you in ~copies are not generated yet~ from ~unifyEffect~ — advice that
+produces a second error is worse than none — so ~-?->~ is now offered as the
+eventual answer and says what it does not yet do. The fix that works is the
+loop, which is why a promoted loop being allowed to suspend matters: it is the
+one workaround the higher-order restriction has.
+
+*What it leaves open.* A lambda handed to a .NET ~Func~ parameter is pinned for
+a third reason — a delegate's colour is part of its type — and has no case of
+its own, because no fixture can currently reach one: every ~Func~-taking method
+in the runtime is generic, and ~Task.Run~ does not resolve through
+~import/extern~. Such a lambda gets the ordinary ~(fun ...)~ message, which is
+true about it.
+
+This is the diagnostic half of declaration checking. The other half — warning
+that a ~defbjo~ never suspends, so it pays for a state machine it does not use —
+waits for monomorphisation, because today it would fire on correct code with no
+available fix: ~run.bjo~ declares ~Filter~ and ~Reader~ as ~-bjo->~ types, and a
+filter that happens not to suspend must still be written ~defbjo~ to have one.
+
 * A procedure is written once and works in both colours
 
 ~port-eof?~, ~read-line~, ~read-char~, ~read-all~ and ~flush-port~ each have two

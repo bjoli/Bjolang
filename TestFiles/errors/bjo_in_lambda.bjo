@@ -14,9 +14,18 @@
 ;; The loop is what you write instead: `(loop ...)` lowers to a `while` in the
 ;; *enclosing* method, so a yield point inside one is still inside the
 ;; bjoroutine.
+;;
+;; The message names `twice` and the arrow its parameter is declared with,
+;; because that parameter is the thing that would have to change. It offers
+;; `-?->` as the eventual answer rather than the fix, which is the truth: the
+;; declaration is accepted today and instantiating it at the suspending colour
+;; is refused by `unifyEffect` until copies are generated. Advice that lands the
+;; reader in a second error would be worse than none.
 
 ;; EXPECT-ERROR: calling 'fetch' is a yield point
 ;; EXPECT-ERROR: yield point is not allowed here
+;; EXPECT-ERROR: passed to 'twice', whose parameter is declared (-> int int)
+;; EXPECT-ERROR: Declaring the parameter (-?-> int int) is the eventual answer
 
 (: fetch (-> int int))
 (defbjo (fetch x) (* x 2))

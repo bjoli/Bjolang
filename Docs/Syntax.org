@@ -251,6 +251,42 @@ parameters it has, and the mixed case is written by leaving the ordinary ones
 A plain ~->~ in parameter position keeps meaning exactly what it always meant,
 so no existing signature changes meaning and converting one is opt-in.
 
+**** Where a yield point may go
+A yield point — a call to a ~defbjo~, to ~sync~, or to an ~#:async~ import — may
+appear only in the body of the bjoroutine it is written in, and not inside
+anything that becomes a C# member of its own. Six things do:
+
+- the enclosing ~defun~, which is an ordinary method
+- a module-level ~def~, whose initializer runs in the static constructor
+- an ordinary ~(fun ...)~, which is a delegate
+- a ~(seq ...)~ body — and so a ~(seql ...)~ — which is an iterator
+- a body-local ~(defun ...)~, which is a C# local function
+- a loop used as a value, which stays a local function rather than becoming a
+  ~while~
+
+From inside the program these look identical: a call that would be fine one line
+out is refused here. So the rejection names whichever of the six it was, and
+gives the fix for that one.
+
+#+BEGIN_EXAMPLE
+Type Error at outer.bjo:6: calling 'fetch' is a yield point, and a yield point
+is not allowed here.
+  It is inside 'helper', a body-local function, which is emitted as a C# local
+  function — and a local function inside an async method is not itself async.
+  Inline 'helper' into the bjoroutine's body, or lift it out to a top-level
+  (defbjo ...) and call it.
+#+END_EXAMPLE
+
+Where the constraint is a parameter, it names the callee and the arrow that
+parameter is declared with, because that declaration is the thing that would
+have to change. It offers ~-?->~ as the eventual answer rather than as the fix,
+which is the truth: writing it is accepted, and instantiating it at the
+suspending colour is refused until copies are generated.
+
+A loop that only ever jumps to itself becomes a ~while~ in the enclosing method,
+where a yield point is perfectly legal. That is what makes "write the loop
+instead" a real answer to the higher-order restriction rather than a deflection.
+
 **** What is not yet there
 Generating the second copy of a ~defun~ — monomorphisation — is not implemented.
 Two things follow:

@@ -1,0 +1,27 @@
+;; A yield point in a lambda that is bound rather than passed.
+;;
+;; The companion to `bjo_in_lambda.bjo`. There the lambda is an argument, so the
+;; parameter it lands on is visible and the message names it and the arrow it is
+;; declared with. Here the lambda is bound to a name and then called, and
+;; nothing declared anything — the colour is the lambda's own, because `(fun
+;; ...)` is the ordinary lambda and that is all it ever is.
+;;
+;; So the message says less, and should: there is no parameter to point at and
+;; no `-?->` to suggest, because there is no signature anywhere in this program
+;; that could carry one. Naming a culprit here would mean inventing it.
+
+;; EXPECT-ERROR: calling 'fetch' is a yield point
+;; EXPECT-ERROR: yield point is not allowed here
+;; EXPECT-ERROR: inside an ordinary (fun ...), which is emitted as a delegate of its own
+
+(import (std prelude))
+
+(: fetch (-> int int))
+(defbjo (fetch x) (* x 2))
+
+(: outer (-> int int))
+(defbjo (outer n)
+  (def f (fun (x) (fetch x)))
+  (f n))
+
+(defun (main args) 0)

@@ -1,0 +1,25 @@
+;; A yield point in a module-level value.
+;;
+;; Every other way of being in the wrong place is some construct *inside* a
+;; function. This one is outside all of them: a module-level `def` is a static
+;; field, and its initializer runs in the class's static constructor. There is
+;; no fiber under a static constructor to suspend and nothing to resume it, so
+;; the question is not whether the member is async — it is that there is no
+;; member of the user's making at all.
+;;
+;; Which is why the fix is different too. Everywhere else the answer is to
+;; change the enclosing construct; here there is nothing to change, and the
+;; value has to be computed somewhere a fiber is running instead.
+
+;; EXPECT-ERROR: calling 'fetch' is a yield point
+;; EXPECT-ERROR: yield point is not allowed here
+;; EXPECT-ERROR: not inside a function at all
+;; EXPECT-ERROR: which has no fiber under it to suspend
+
+(: fetch (-> int int))
+(defbjo (fetch x) (* x 2))
+
+(: top int)
+(def top (fetch 1))
+
+(defun (main args) top)
