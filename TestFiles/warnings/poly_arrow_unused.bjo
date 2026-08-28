@@ -1,0 +1,38 @@
+;; A `-?->` parameter the body never calls.
+;;
+;; `-?->` says "give me this at either colour, and I will do the right thing
+;; with it". What the two copies of the function differ in is exactly the *call*
+;; — one emits `f(x)` and the other `await f(x)` — so a parameter that is stored
+;; somewhere, or passed straight on, makes the two copies come out identical.
+;;
+;; That is not an error. It compiles, it runs, and the extra copy costs emitted
+;; size and nothing else. But it is always one of two mistakes: the parameter is
+;; an ordinary function and should say `->`, or the body meant to call it and
+;; does not. Both are worth a word.
+
+(import (std prelude))
+
+;; EXPECT-WARNING: declares its parameter 'f' as -?->
+;; EXPECT-WARNING: but the body never calls it
+;; EXPECT-WARNING: Both copies of 'ignores' would be identical
+
+(: ignores (-> (-?-> int int) int int))
+(defun (ignores f x)
+  (+ x 1))
+
+;; Not warned about: this one calls it, so the two copies genuinely differ.
+(: applies (-> (-?-> int int) int int))
+(defun (applies f x)
+  (f x))
+
+;; Not warned about either: an ordinary `->` parameter promises one colour, so
+;; there is only ever one copy and nothing to compare.
+(: plain (-> (-> int int) int int))
+(defun (plain f x)
+  (+ x 1))
+
+(defun (main args)
+  (println (int->string (+ (ignores (fun (n) n) 1)
+                           (+ (applies (fun (n) (* n 2)) 3)
+                              (plain (fun (n) n) 5)))))
+  0)

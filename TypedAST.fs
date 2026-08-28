@@ -34,38 +34,56 @@ and HMType =
 
 /// Whether calling a function can suspend the fiber it runs on.
 ///
-/// Today this is `ESync` everywhere: `defbjo` does not exist yet, so nothing
-/// constructs anything else, and `unifyEffect` rejects the cases that cannot
-/// arise. The field is here early on purpose. An arrow type is the one thing
-/// published into module metadata, and a signature written without an effect
-/// slot is a signature that has to be re-read once effects arrive — with every
-/// already-compiled `.dll` in the world spelling the old shape. Adding the slot
-/// while `ESync` is the only inhabitant costs a wildcard in sixty pattern
-/// matches and nothing else.
-///
-/// The reason it is a property of the *arrow* and not of the function is
-/// `map`. `(-> (-> %a %b) (List %a) (List %b))` says nothing about whether the
-/// callback suspends, so `map` is emitted as an ordinary C# method whose
-/// `Func<A, B>` cannot contain an `await` — which is the higher-order
-/// restriction in the design's §3.1. Effect polymorphism lifts that by letting
-/// the callback's effect be a variable the arrow quantifies over, and the
-/// variable has to live where the callback's type lives.
-///
-/// See `concurrency-design.md` §3.1 for what `EAsync` and `EEffVar` will mean
-/// and what else has to land before either can be constructed.
+/// It is a property of the *arrow* rather than of the function, and the reason
+/// is `map`. `(-> (-> %a %b) (List %a) (List %b))` says nothing about whether
+/// the callback suspends, so `map` is emitted as an ordinary C# method whose
+/// `Func<A, B>` cannot contain an `await`. Effect polymorphism lifts that by
+/// letting the callback's effect be a variable the arrow quantifies over, and
+/// the variable has to live where the callback's type lives.
 and Effect =
     /// An ordinary function. Calling it is not a yield point.
     | ESync
     /// A bjoroutine: calling it may suspend. Compiles to a C# async state
     /// machine returning `Fiber<T>` rather than `T`.
     | EAsync
-    /// An effect variable, for a function generic over the effect of a callback
-    /// it is given. Never constructed yet: solving one needs a mutable binding
-    /// cell and a union-find the way `MetaVar` has, and *using* one needs the
-    /// effect-monomorphisation pass described in §3.1, because C# cannot be
-    /// generic over async-ness and the body must be emitted once per ground
-    /// effect.
+    /// `-?->`: the signature's one anonymous effect variable.
+    ///
+    /// One per signature, shared by every occurrence in it, and freshened into
+    /// an `EMeta` at each use exactly the way `instantiate` freshens a `TVar`
+    /// into a `TMeta`. One rather than one-per-arrow on purpose: it gives a
+    /// signature exactly two instantiations however many function parameters it
+    /// has, so there is no 2^k of emitted copies and no mixed instantiation to
+    /// have a rule about.
+    ///
+    /// What it costs is expressiveness nobody has wanted yet:
+    /// `(-?-> (-?-> A B) (-?-> B C) A C)` makes all three agree, and "the first
+    /// may suspend, the second may not" needs named variables — which is what
+    /// `EEffVar` is reserved for.
+    | EPoly
+    /// A named effect variable, `-e0->`. Reserved, still never constructed:
+    /// it is what `EPoly` becomes when one variable per signature stops being
+    /// enough.
     | EEffVar of int
+    /// Inference-internal, and never serialized: what an `EPoly` becomes when a
+    /// signature is instantiated, and what gets solved.
+    | EMeta of EffectCell
+
+/// A solved-or-not effect, with the same shape `MetaVar` has and for the same
+/// reason: unification needs somewhere to write the answer.
+///
+/// Equality is by id rather than structural, because the field is mutable —
+/// and because `Effect` is compared with `=` in a dozen places that mean "is
+/// this the same variable", not "do these two hold equal contents".
+and [<CustomEquality; NoComparison>] EffectCell =
+    { EId: int
+      mutable EValue: Effect option }
+
+    override this.Equals(o) =
+        match o with
+        | :? EffectCell as other -> this.EId = other.EId
+        | _ -> false
+
+    override this.GetHashCode() = this.EId
 
 /// `(-> ...)` as written in every signature that exists today.
 let tfun (args: HMType list) (ret: HMType) : HMType = TFun(args, ret, ESync)
@@ -104,11 +122,49 @@ let recolour (eff: Effect) (t: HMType) : HMType =
     | TFun(args, ret, _) -> TFun(args, ret, eff)
     | other -> other
 
-let arrowHead (eff: Effect) : string =
+/// Follow a solved effect cell to whatever it stands for.
+///
+/// Path-compressing, like `prune`: a chain of cells is collapsed as it is
+/// walked, so the same question asked twice is answered from one hop the second
+/// time.
+let rec pruneEffect (eff: Effect) : Effect =
     match eff with
+    | EMeta cell ->
+        match cell.EValue with
+        | Some inner ->
+            let resolved = pruneEffect inner
+            cell.EValue <- Some resolved
+            resolved
+        | None -> eff
+    | _ -> eff
+
+/// The colour an arrow is actually emitted at.
+///
+/// Effect defaulting, and the one place a colour is *chosen* rather than
+/// forced: a cell still unbound when solving finishes is bound to the colour of
+/// the enclosing member. Today that is always `ESync`, because the suspending
+/// instantiation of an `-?->` needs a second emitted body and there is no pass
+/// yet that makes one — so `unifyEffect` refuses to bind a cell to `EAsync` and
+/// this has one answer to give.
+///
+/// Familiar shape regardless: it is the same move as defaulting an
+/// unconstrained numeric type variable.
+let groundEffect (eff: Effect) : Effect =
+    match pruneEffect eff with
+    | EMeta _
+    | EPoly -> ESync
+    | other -> other
+
+let arrowHead (eff: Effect) : string =
+    match pruneEffect eff with
     | ESync -> "->"
     | EAsync -> "-bjo->"
+    | EPoly -> "-?->"
     | EEffVar n -> $"-e%d{n}->"
+    // An unsolved cell reaching a printer is a signature published before
+    // defaulting ran. Spelled as what it will become rather than as a number
+    // nobody can act on.
+    | EMeta _ -> "-?->"
 
 
 
@@ -460,7 +516,7 @@ type ClrExternInfo =
       Exceptions: string list
       /// `#:async`: the .NET method returns a task, so calling it is a yield
       /// point and the Bjolang type of the call is the task's result. `Task`
-      /// itself is never a Bjolang type — see concurrency-design.md §7.2.
+      /// itself is never a Bjolang type.
       IsAsync: bool
       /// `#:uncancellable`: do not thread the ambient cancellation token into
       /// the call. Written at the import because that is where the fact is

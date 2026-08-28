@@ -549,6 +549,16 @@ let rec resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType 
     | TApp("-bjo->", args, _) ->
         let resolvedArgs = args |> List.map (resolveTypeAnnotation registry)
         TFun(List.take (resolvedArgs.Length - 1) resolvedArgs, List.last resolvedArgs, EAsync)
+    // `(-?-> ...)`: a parameter this signature accepts at either colour.
+    //
+    // `EPoly` is a *quantified* variable — one per signature, shared by every
+    // occurrence — so it is `instantiate` that turns it into something
+    // solvable, exactly as a `TVar` becomes a `TMeta` there. The parser has
+    // already refused every position where it would mean nothing, so anything
+    // reaching here is a parameter arrow or came back from metadata.
+    | TApp("-?->", args, _) ->
+        let resolvedArgs = args |> List.map (resolveTypeAnnotation registry)
+        TFun(List.take (resolvedArgs.Length - 1) resolvedArgs, List.last resolvedArgs, EPoly)
     | TArrow(mandatory, keywords, restOpt, ret, colour, _) ->
         let mandatoryTypes = mandatory |> List.map (resolveTypeAnnotation registry)
         let keywordTypes = keywords |> List.map (fun (_, t) -> resolveTypeAnnotation registry t)
@@ -1451,6 +1461,21 @@ let private resolveAsyncExtern
 /// is a bjoroutine, and unification will pin it as an ordinary arrow. That is
 /// the right default, because the only way to *become* a bjoroutine is to be
 /// written as one.
+/// Does this body ever *call* `name`?
+///
+/// Applied position specifically, not merely mentioned: what a `-?->` parameter
+/// buys is a second body in which the call awaits, so a parameter that is
+/// stored or handed on rather than called makes the two bodies identical.
+let private isApplied (name: string) (body: TypedExpr) : bool =
+    TypeVisitor.foldExpr
+        (fun found e ->
+            found
+            || (match e.Node with
+                | TApply({ Node = TIdent(n, _) }, _, _) -> n = name
+                | _ -> false))
+        false
+        body
+
 let private demandedEffect (env: Env) (targetType: HMType) : Effect =
     match prune env.Registry targetType with
     | TFun(_, _, eff) -> eff
@@ -4136,6 +4161,20 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
             match restArgName, restArgType with
             | Some rn, Some rt -> Some(rn, rt)
             | _ -> None
+
+        // A `-?->` parameter the body never calls.
+        //
+        // The two copies would come out byte-identical. What makes them differ
+        // is the *call* — one emits `f(x)`, the other `await f(x)` — so a
+        // parameter that is only stored, or passed straight on, gives the
+        // second copy nothing to do. Either it should be written `->`, or the
+        // body meant to use it and does not.
+        for (paramName, paramType) in mandatoryTypes do
+            match prune env.Registry paramType with
+            | TFun(_, _, EPoly) when not (isApplied paramName typedBody) ->
+                Diagnostics.warn
+                    $"'%s{name}' declares its parameter '%s{paramName}' as -?->, which says it will be given a function of either colour — but the body never calls it. Both copies of '%s{name}' would be identical. Write the parameter -> if it is an ordinary function, or call it if the body meant to.\n  at %s{Lexer.formatPos r}"
+            | _ -> ()
 
         let decl = TDefun(name, vars, mandatoryTypes, typedKeywordArgs, restArgInfo, expectedRetType, effect, typedBody, r)
         finalEnv, Map.remove name sigs, [ decl ]

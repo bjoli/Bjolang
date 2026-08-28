@@ -278,18 +278,24 @@ let rec typeToString (hm: HMType) : string =
     // this point knows whether `%b` will turn out to be unit — so a delegate
     // type that depends on the answer cannot be emitted at all.
     //
-    // The effect is ignored because only `ESync` exists. It is the field that
-    // will *not* stay ignorable: an `EAsync` arrow's C# counterpart returns
-    // `Fiber<TRet>` rather than `TRet`, so it is `Func<..., Fiber<TRet>>` here,
-    // and an effect *variable* has no single spelling at all — C# cannot be
-    // generic over async-ness, which is why the design's §3.1 needs an
-    // effect-monomorphisation pass rather than a wider delegate type.
+    // The effect decides which delegate this is: an `EAsync` arrow's C#
+    // counterpart returns `Fiber<TRet>` rather than `TRet`, so it is
+    // `Func<..., Fiber<TRet>>`. An effect *variable* has no spelling at all —
+    // C# cannot be generic over async-ness — which is the whole reason a
+    // polymorphic body has to be emitted once per ground effect rather than
+    // once behind a wider delegate type.
     | TFun (args, ret, eff) ->
         let argsStr = args |> List.map typeToString |> String.concat ", "
         // A bjoroutine value hands back the state machine, so its delegate is
         // always a `Func` — `Fiber<Bjoml.Unit>` is a real type even where the
         // payload is nothing, which is the second reason the unit had to become
         // a value before any of this could work.
+        // Grounded, because by here a delegate's colour may be sitting in a
+        // solved cell rather than written on the arrow, and an unsolved cell
+        // defaults rather than being an error: nothing forced it either way,
+        // which is precisely when the enclosing member's colour decides.
+        let eff = groundEffect eff
+
         let retStr =
             match eff with
             | ESync -> typeToString ret
@@ -365,17 +371,18 @@ let private isVoidType (t: HMType) = typeToString t = "void"
 /// spelling it `Fiber<Bjoml.Unit>` keeps one shape for every colour: one
 /// awaited-result rule, and one `Promise<T>` for `bjo` to hand back later.
 let private returnTypeString (effect: Effect) (retType: HMType) : string =
-    match effect with
+    match groundEffect effect with
     | ESync -> typeToString retType
     | EAsync ->
         let payload = if isVoidType retType then "Bjoml.Unit" else typeToString retType
         $"Bjoml.Fiber<%s{payload}>"
-    | EEffVar _ ->
-        // Unreachable: nothing constructs one. If it ever is reachable, this is
-        // the wall §3.1 describes — C# cannot be generic over async-ness, so
-        // there is no single string to return and the body has to be emitted
-        // once per ground effect instead.
-        failwith "Internal error: cannot emit a method generic over its effect (concurrency-design.md §3.1)"
+    // The wall: C# cannot be generic over async-ness, so an arrow that has not
+    // been pinned to one colour has no single string to return. `groundEffect`
+    // has already defaulted everything that could be defaulted, so what is left
+    // is a *named* effect variable — which nothing constructs.
+    | EPoly
+    | EMeta _
+    | EEffVar _ -> failwith "Internal error: cannot emit a method whose effect is still undecided"
 
 /// The C# spelling of the unit value. One place, because it is written both
 /// where a unit is returned and where one is discarded.

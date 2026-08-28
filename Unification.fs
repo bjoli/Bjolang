@@ -9,6 +9,19 @@ let freshMeta () =
     nextMetaId <- nextMetaId + 1
     TMeta { Id = id; Value = None }
 
+let mutable private nextEffectId = 0
+
+/// A fresh, unsolved effect: what an `EPoly` becomes at a use site.
+///
+/// A counter of its own rather than sharing the type one, because the two are
+/// never compared with each other — an effect cell and a metavariable are
+/// different kinds of unknown, and one counter would only make each of them
+/// depend on how many of the other happened to be made first.
+let freshEffect () : Effect =
+    let id = nextEffectId
+    nextEffectId <- nextEffectId + 1
+    EMeta { EId = id; EValue = None }
+
 /// The counter, and a way to put it back.
 ///
 /// A metavariable's id has to be unique within one inference run and means
@@ -18,7 +31,10 @@ let freshMeta () =
 /// compiled first is a message that changes for no reason the reader can see.
 let snapshotMetaCounter () : int = nextMetaId
 
-let restoreMetaCounter (n: int) : unit = nextMetaId <- n
+/// Both counters, since an effect cell's id is per-run in exactly the same way.
+let restoreMetaCounter (n: int) : unit =
+    nextMetaId <- n
+    nextEffectId <- n
 
 /// A binding, or the reason there is none.
 ///
@@ -179,13 +195,37 @@ let instantiate
     // ['col; 'acc] came back as ['acc; 'col].
     let boundFreshTypes = boundVars |> List.map (fun name -> Map.find name boundSubst)
 
+    /// The one cell every `EPoly` in this signature becomes, made on demand.
+    ///
+    /// **One**, shared by every occurrence — which is the whole of what makes
+    /// `-?->` cheap. A signature therefore has exactly two instantiations
+    /// however many function parameters it has, so a use either wants all of
+    /// them suspending or none, there is no 2^k of emitted copies, and the
+    /// mixed case is written by declaring the ones that should stay ordinary
+    /// with a plain `->`.
+    ///
+    /// Lazy so that the overwhelming majority of signatures, which contain no
+    /// `EPoly` at all, allocate nothing.
+    let mutable polyCell : Effect option = None
+
+    let effectFor (eff: Effect) =
+        match eff with
+        | EPoly ->
+            match polyCell with
+            | Some cell -> cell
+            | None ->
+                let cell = freshEffect ()
+                polyCell <- Some cell
+                cell
+        | other -> other
+
     let rec walk node =
         match prune registry node with
         | TVar name ->
             match Map.tryFind name boundSubst with
             | Some fresh -> fresh
             | None -> node
-        | TFun(args, ret, eff) -> TFun(List.map walk args, walk ret, eff)
+        | TFun(args, ret, eff) -> TFun(List.map walk args, walk ret, effectFor eff)
         | TCon(name, args) -> TCon(name, List.map walk args)
         | TTuple args -> TTuple(List.map walk args)
         | TAssoc(tName, aName, impl) -> TAssoc(tName, aName, walk impl)
@@ -241,24 +281,39 @@ let rec private awaitsImplementor (registry: TraitRegistry) (t: HMType) : bool =
 /// There is no subsumption here and there deliberately will not be one: a
 /// bjoroutine is not a drop-in for an ordinary function, because the C# it
 /// compiles to returns `Fiber<T>` rather than `T`. Letting one flow into a
-/// position expecting the other is exactly the higher-order restriction the
-/// design's §3.1 keeps.
+/// position expecting the other is the higher-order restriction, and it is
+/// what monomorphisation exists to lift — by emitting a second body, not by
+/// making one body serve both.
 ///
-/// While `defbjo` does not exist there is nothing but `ESync` on either side,
-/// so the failure branches are unreachable. They are written out rather than
-/// left to a wildcard so that the day `EAsync` appears, the compiler says so at
-/// the call site instead of quietly unifying two different calling conventions.
+/// A cell binds to whatever it meets, and there is no occurs check to do: an
+/// effect cannot contain another effect, so the cycle a type unifier has to
+/// guard against has no shape here.
 let unifyEffect (e1: Effect) (e2: Effect) =
-    match e1, e2 with
+    match pruneEffect e1, pruneEffect e2 with
+    | EMeta a, EMeta b when a.EId = b.EId -> ()
+    // The suspending instantiation of an `-?->` is a *second emitted body*, and
+    // there is no pass yet that makes one. Refused here rather than allowed to
+    // type-check, because what it would otherwise produce is one sync body
+    // whose C# calls a `Func<..., Fiber<R>>` — a Roslyn error in a file nobody
+    // wrote, about a type the language does not have.
+    | EMeta _, EAsync
+    | EAsync, EMeta _ ->
+        failwith
+            "This wants the suspending copy of a procedure declared -?->, and copies are not generated yet. \
+             The declaration is accepted and published; instantiating it at a bjoroutine is what still needs \
+             monomorphisation. Call it from an ordinary function, or write the leaf as a defbjouble."
+    | EMeta a, other -> a.EValue <- Some other
+    | other, EMeta a -> a.EValue <- Some other
     | ESync, ESync
     | EAsync, EAsync -> ()
     | EEffVar a, EEffVar b when a = b -> ()
-    // An effect variable is never constructed, so reaching this means effect
-    // polymorphism landed without the solver it needs. Solving one requires a
-    // mutable binding cell and an occurs check of its own, the way `MetaVar`
-    // has; see §3.1.
+    // `EPoly` is a *quantified* variable and instantiation is what removes it,
+    // so meeting one here means a signature was used without being
+    // instantiated. `EEffVar` is never constructed at all.
+    | EPoly, _
+    | _, EPoly -> failwith "Internal error: an -?-> arrow reached unification without being instantiated"
     | EEffVar _, _
-    | _, EEffVar _ -> failwith "Internal error: effect variables have no solver yet (concurrency-design.md §3.1)"
+    | _, EEffVar _ -> failwith "Internal error: named effect variables have no solver"
     | ESync, EAsync
     | EAsync, ESync ->
         failwith

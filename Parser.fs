@@ -700,13 +700,23 @@ let parseArrowType (colour: Colour) (items: SExpr list) (r: Range) : FType =
             TApp("'" + sym, List.map parseArrowTypeInner typeArgs, r)
         | _ -> failwithf $"Invalid type syntax in arrow type at %s{Lexer.formatPos r}"
 
+    // The return type is not a parameter either, and reaches
+    // `parseArrowTypeInner` — which cannot tell the two apart — so it is
+    // checked here, where the split is known.
+    let parseReturnType () =
+        match stripTypeMark returnTypeExpr with
+        | SList(SAtom { Token = Symbol "-?->" } :: _, _) ->
+            failwithf
+                $"Syntax error at %s{Lexer.formatPos (getRange returnTypeExpr)}: -?-> says that a *parameter* may be given a function of either colour, and this is the return type. A function that hands one back has to have decided which it is building, and saying otherwise needs an effect variable with a name of its own, which does not exist yet."
+        | _ -> parseArrowTypeInner returnTypeExpr
+
     let rec collectArgs mandatory keywords argItems =
         match argItems with
-        | [] -> TArrow(List.rev mandatory, List.rev keywords, None, parseArrowTypeInner returnTypeExpr, colour, r)
+        | [] -> TArrow(List.rev mandatory, List.rev keywords, None, parseReturnType (), colour, r)
         | [SAtom { Token = Keyword "rest" }] ->
             failwithf $"Expected rest element type after #:rest at %s{Lexer.formatPos r}"
         | SAtom { Token = Keyword "rest" } :: restTypeExpr :: [] ->
-            TArrow(List.rev mandatory, List.rev keywords, Some (parseArrowTypeInner restTypeExpr), parseArrowTypeInner returnTypeExpr, colour, r)
+            TArrow(List.rev mandatory, List.rev keywords, Some (parseArrowTypeInner restTypeExpr), parseReturnType (), colour, r)
         | SList(SAtom { Token = Keyword name } :: [ typeExpr ], _) :: rest ->
             collectArgs mandatory ((name, parseArrowTypeInner typeExpr) :: keywords) rest
         | item :: rest when keywords.IsEmpty ->
@@ -729,6 +739,14 @@ let rec parseType (s: SExpr) : FType =
     // Nothing stops a program spelling one by hand, and `checkDecl` catches the
     // case where it disagrees with the definer.
     | SList(SAtom { Token = Symbol "-bjo->" } :: arrowArgs, _) -> parseArrowType Suspending arrowArgs r
+    // `-?->` says a *parameter* may be either colour, so an arrow that is not a
+    // parameter has nothing to say with it. This case is every position that is
+    // not one: the type of a definition, a record field, a `let` annotation, an
+    // element type. A parameter arrow never reaches here — it is read by
+    // `parseArrowTypeInner`, which builds a `TApp` for every applied form.
+    | SList(SAtom { Token = Symbol "-?->" } :: _, _) ->
+        failwithf
+            $"Syntax error at %s{Lexer.formatPos r}: -?-> says that a *parameter* may be given a function of either colour, and this arrow is not a parameter.\n  As the type of a definition it would say nothing: a defun is already colour-polymorphic, and a copy of it is made for each colour actually used. If what you need is two different *bodies* rather than two copies of one — because the two halves call different .NET methods — that is defbjouble.\n  As a record field, a let annotation or a return type it would need an effect variable with a name of its own, which does not exist yet."
     | SList(SAtom { Token = Symbol name } :: typeArgs, _) -> TApp(name, List.map parseType typeArgs, r)
     // `(%m %a)` — a type variable applied to arguments. See `parseArrowTypeInner`.
     | SList(SAtom { Token = QuotedSymbol sym } :: typeArgs, _) ->
@@ -4115,7 +4133,7 @@ type ForeignImportOptions =
       Exceptions: string list
       /// `#:async` — the target returns a task, and calling it is a yield
       /// point. The Bjolang type is the task's *result*; `Task` is never a
-      /// Bjolang type. See concurrency-design.md §7.2.
+      /// Bjolang type.
       IsAsync: bool
       /// `#:uncancellable` — do not thread the ambient token into this call.
       /// Required where the method has no `CancellationToken` overload, so that

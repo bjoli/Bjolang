@@ -147,7 +147,7 @@ let rec private checkExpr (allowed: bool) (expr: TypedExpr) : unit =
             // because `sync` is one too and nobody wrote it with `defbjo`. What
             // is true of both is the property that matters here.
             failwithf
-                $"Type Error at %s{formatPos expr.Range}: calling %s{what} is a yield point, and a yield point is not allowed here.\n  A yield point may only appear in the body of the bjoroutine it is written in. An ordinary (fun ...), a body-local (defun ...), a (seq ...) and a loop that is not tail-recursive each become a C# member of their own, and a member that is not async cannot suspend.\n  If this is inside a lambda passed to a higher-order function like map, that is the restriction in concurrency-design.md §3.1: the arrow (-> %%a %%b) does not say its argument may suspend, so the function is emitted once, for the ordinary case. Write a loop instead."
+                $"Type Error at %s{formatPos expr.Range}: calling %s{what} is a yield point, and a yield point is not allowed here.\n  A yield point may only appear in the body of the bjoroutine it is written in. An ordinary (fun ...), a body-local (defun ...), a (seq ...) and a loop that is not tail-recursive each become a C# member of their own, and a member that is not async cannot suspend.\n  If this is inside a lambda passed to a higher-order function like map, the reason is that map's callback is written (-> %%a %%b), which does not say it may suspend — so map is emitted once, for the ordinary case. Declare the parameter (-?-> %%a %%b) if it should take either colour, or write a loop instead."
 
         descend target
         args |> List.iter descend

@@ -105,10 +105,9 @@ let compile (options: Options) (inputFilePath: string) : int =
             
             /// Does the entry point have to drive a fiber to call `main`?
             ///
-            /// `main` is allowed to be a bjoroutine, and that is the only way a
-            /// program gets *into* fiber-land today: `bjo` and `sync` do not
-            /// exist yet, so without it there would be no caller a yield point
-            /// could legally appear under.
+            /// `main` is allowed to be a bjoroutine, which is one of the two
+            /// ways a program gets into fiber-land — the other being `bjo`,
+            /// which is colourless and so may be written in a plain `main`.
             ///
             /// The rest of `main`'s type is not a question. It is
             /// `(-> (List string) int)`, given to the module rather than read

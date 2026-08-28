@@ -3,7 +3,7 @@
 /// F#'s rule, and universal: no opt-in, no per-type attribute, no per-module
 /// flag. A value in statement position must have type `Unit`, or be handed to
 /// `ignore`, which is an ordinary function whose whole job is to have the right
-/// type. See concurrency-design.md §8.2.
+/// type.
 ///
 /// # Why universal
 ///
@@ -68,7 +68,7 @@ let private checkDiscard (registry: TraitRegistry) (what: string) (expr: TypedEx
             $"Type Error at %s{formatPos expr.Range}: this value has type %s{describe expr.Type}, which may not be discarded — not even with `ignore`.\n  %s{what}\n  A discarded error is the bug the type exists to prevent, and there is no sensible default for one. Handle it with `match`, or take the value out with `unwrap`."
     elif not (carriesNothing registry expr.Type) then
         failwithf
-            $"Type Error at %s{formatPos expr.Range}: this value has type %s{describe expr.Type} and is discarded.\n  %s{what}\n  Every value that is computed and then dropped has to say so: write `(ignore ...)` around it. A value that goes missing without a word is the bug this rule exists to catch — see concurrency-design.md §8.2."
+            $"Type Error at %s{formatPos expr.Range}: this value has type %s{describe expr.Type} and is discarded.\n  %s{what}\n  Every value that is computed and then dropped has to say so: write `(ignore ...)` around it. A value that goes missing without a word is the bug this rule exists to catch."
 
 /// `(ignore x)` where `x` may not be discarded.
 ///
