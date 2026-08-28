@@ -1476,6 +1476,38 @@ let private isApplied (name: string) (body: TypedExpr) : bool =
         false
         body
 
+/// Every yield point in a body, named.
+///
+/// Named rather than counted, because the check that reads this is a *set
+/// difference*: what the suspending half of a `defbjouble` does that the
+/// ordinary half does not. Two bodies that both call `read-line` and differ
+/// only in a branch are not a pair of colours, however different they look.
+let private yieldPointsOfDecl (decl: TDecl) : string list =
+    let found = ResizeArray<string>()
+
+    decl
+    |> TypeVisitor.foldDecl
+        (fun () e ->
+            match e.Node with
+            | TForeignStaticCall(clrType, methodName, _, Some meta) when meta.Await ->
+                found.Add $"%s{clrType}.%s{methodName}"
+            | TDotMethodCall(_, methodName, _, Some meta) when meta.Await ->
+                found.Add $"%s{meta.DeclaringType}.%s{methodName}"
+            | TApply(target, _, _) ->
+                match pruneEffect (match target.Type with
+                                   | TFun(_, _, eff) -> eff
+                                   | _ -> ESync) with
+                | EAsync ->
+                    match target.Node with
+                    | TIdent(n, _) -> found.Add n
+                    | _ -> found.Add "an expression"
+                | _ -> ()
+            | _ -> ())
+        ()
+    |> ignore
+
+    List.ofSeq found
+
 let private demandedEffect (env: Env) (targetType: HMType) : Effect =
     match prune env.Registry targetType with
     | TFun(_, _, eff) -> eff
@@ -3893,6 +3925,50 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
 
         newEnv, Map.remove name sigs, [ TDef(name, typedExpr, exprType, r) ]
 
+    // One name, one signature, two hand-written bodies.
+    //
+    // The split happens here rather than in the parser because the second body
+    // needs a signature to be checked against, and the signature is a separate
+    // `(: name ...)` form the parser has not read yet. Here `sigs` holds it, so
+    // the suspending copy can be given the *same* one — which is most of what
+    // this form buys: arity and type drift between two hand-written bodies is
+    // what rots, and neither body gets to disagree with the declaration.
+    | DDefDouble(name, defunArgs, syncBody, bjoBody, r) ->
+        let bjoName = Naming.suspendingCopy name
+
+        match Map.tryFind name sigs with
+        | None ->
+            failwithf
+                $"Type Error at %s{Lexer.formatPos r}: '%s{name}' requires a type signature (: %s{name} ...). A defbjouble is two bodies checked against one declaration, so the declaration is the part that cannot be left out."
+        | Some signature ->
+            // Both halves are checked as ordinary definitions, one per colour,
+            // against the one signature — which `recolour` repaints for each.
+            let env, sigs, syncDecls = checkDecl env sigs (DDefun(name, defunArgs, syncBody, Ordinary, r))
+
+            let env, sigs, bjoDecls =
+                checkDecl env (Map.add bjoName signature sigs) (DDefun(bjoName, defunArgs, bjoBody, Suspending, r))
+
+            // **Leaves only**, and the check is mechanical: the `#:bjo` body
+            // has to contain a yield point the `#:sync` body does not.
+            //
+            // Two bodies differing only in which ordinary functions they call
+            // is a `defun` — one body, and a copy generated per colour. Writing
+            // it by hand instead means maintaining two things that will drift,
+            // for no gain the compiler could not have given for free.
+            let syncPoints = syncDecls |> List.collect yieldPointsOfDecl |> Set.ofList
+            let bjoPoints = bjoDecls |> List.collect yieldPointsOfDecl |> Set.ofList
+            let added = Set.difference bjoPoints syncPoints
+
+            if Set.isEmpty added then
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos r}: the two bodies of '%s{name}' contain the same yield points, so there is nothing a defbjouble is doing here that a defun would not do better.\n  A defbjouble is for a *leaf*: a procedure whose two colours call different .NET methods, which is the one thing no inference can derive. Anything above a leaf is written once with defun, and the copy for each colour is generated.\n  If the suspending half was meant to await something, it does not yet."
+
+            let registry =
+                { env.Registry with
+                    DoubleDefs = Map.add name bjoName env.Registry.DoubleDefs }
+
+            { env with Registry = registry }, Map.remove name sigs, syncDecls @ bjoDecls
+
     | DDefun(name, defunArgs, body, colour, r) ->
         // `defbjo` is the only thing that says a function may suspend. The
         // signature does not: `(: fetch (-> string string))` is what you write
@@ -5583,13 +5659,35 @@ and private checkDeclGroup
 
     let combinedSigs = Map.fold (fun acc k v -> Map.add k v acc) sigs explicitSigs
 
+    // The suspending copy of a `defbjouble` shares the written signature, and
+    // has to have it here as well as in `checkDecl`: the forward-declaration
+    // fold below reads `explicitSigs`, so without this the copy is in
+    // `declaredFunctions` with nothing to bind it to and a forward call to it
+    // finds nothing.
+    let explicitSigs =
+        decls
+        |> List.fold
+            (fun acc d ->
+                match d with
+                | DDefDouble(name, _, _, _, _) ->
+                    match Map.tryFind name acc with
+                    | Some signature -> Map.add (Naming.suspendingCopy name) signature acc
+                    | None -> acc
+                | _ -> acc)
+            explicitSigs
+
     // Bind every function with a signature before checking them, 
     // allowing out-of-order and mutually recursive calls within the group.
     let declaredFunctions =
         decls
-        |> List.choose (function
-            | DDefun(name, _, _, colour, _) -> Some(name, colourEffect colour)
-            | _ -> None)
+        |> List.collect (function
+            | DDefun(name, _, _, colour, _) -> [ name, colourEffect colour ]
+            // Both halves, so that a forward call to either resolves. The
+            // suspending copy is bound under the same signature it will be
+            // checked against, repainted — which is the same thing `checkDecl`
+            // does for it a moment later, and has to agree with.
+            | DDefDouble(name, _, _, _, _) -> [ name, ESync; Naming.suspendingCopy name, EAsync ]
+            | _ -> None |> Option.toList)
         |> Map.ofList
 
     let envWithForwardDecls =

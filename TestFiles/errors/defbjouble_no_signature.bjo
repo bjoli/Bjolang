@@ -1,0 +1,22 @@
+;; A `defbjouble` with no signature.
+;;
+;; A `defun` needs one because inference has to be checked against something.
+;; A `defbjouble` needs one *more*: it is two bodies checked against one
+;; declaration, and the declaration is the whole of what keeps them honest.
+;; Arity and type drift between two hand-written bodies is most of what rots
+;; between them, and one signature is what catches it.
+
+;; EXPECT-ERROR: requires a type signature
+;; EXPECT-ERROR: two bodies checked against one declaration
+
+(import (std prelude))
+
+(import/extern
+  (clr-eof       (: Bjolang.Runtime.BjoPort.PortEof      (-> TextInputPort bool)))
+  (clr-eof-await (: Bjolang.Runtime.BjoPort.PortEofAsync (-> TextInputPort bool) #:async)))
+
+(defbjouble (finished? p)
+  (#:sync (clr-eof p))
+  (#:bjo  (clr-eof-await p)))
+
+(defun (main args) 0)

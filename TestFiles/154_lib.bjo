@@ -1,0 +1,39 @@
+;; A `defbjouble` on the far side of a module boundary.
+;;
+;; The pair has to survive being published and read back, because that is where
+;; the port surface actually lives: `read-line` is the prelude's, and a
+;; bjoroutine calling it is in somebody else's module. If the fact that a name
+;; has two copies did not cross, an importer would see only the ordinary one and
+;; park where it should suspend — silently, since the ordinary copy is a
+;; perfectly good function.
+(export port-finished? port-next-char)
+
+(import (std prelude))
+
+;; The two .NET methods. This is what makes these procedures leaves: no
+;; inference derives that `PortEof` and `PortEofAsync` are the same question
+;; asked of the same object in two calling conventions.
+(import/extern
+  (clr-eof       (: Bjolang.Runtime.BjoPort.PortEof       (-> TextInputPort bool)))
+  (clr-eof-await (: Bjolang.Runtime.BjoPort.PortEofAsync  (-> TextInputPort bool) #:async))
+  (clr-unit      (: Bjolang.Runtime.BjoPort.ReadUnit      (-> TextInputPort int)))
+  (clr-unit-await(: Bjolang.Runtime.BjoPort.ReadUnitAsync (-> TextInputPort int) #:async)))
+
+;; Whether the port is finished.
+;;
+;; **Both bodies agree on failure**: neither throws, and both answer `true` at
+;; end of input. That is not mechanically checkable — nothing compares what two
+;; different .NET methods do when they fail — so it is a promise the docstring
+;; makes and the author keeps. A pair where one returned a value and the other
+;; threw would make the shared name a lie.
+(: port-finished? (-> TextInputPort bool))
+(defbjouble (port-finished? p)
+  (#:sync (clr-eof p))
+  (#:bjo  (clr-eof-await p)))
+
+;; The next UTF-16 code unit, or -1. Same promise: -1 at end of input, from
+;; both halves, never an exception.
+(: port-next-char (-> TextInputPort int))
+(defbjouble (port-next-char p)
+  (#:sync (clr-unit p))
+  (#:bjo  (clr-unit-await p)))

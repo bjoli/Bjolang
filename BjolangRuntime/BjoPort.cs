@@ -431,19 +431,35 @@ public sealed class BjoPort : TextReader {
     // sync one, with no task and no allocation; and a raw `TextReader` from a
     // .NET API still works, and honestly parks.
 
+    // In pairs, and that is the point: a `defbjouble` body names one of these
+    // per colour, and the two have to be the same question asked twice. A
+    // dispatcher with no twin would be half a leaf.
+
     public static bool PortEof(TextReader reader) =>
         reader is BjoPort p ? p.Eof() : reader.Peek() == -1;
 
     public static ValueTask<bool> PortEofAsync(TextReader reader, CancellationToken cancel = default) =>
         reader is BjoPort p ? p.EofAsync(cancel) : new ValueTask<bool>(reader.Peek() == -1);
 
+    /// `null` at end of input, from both halves. `read-line/opt` turns that
+    /// into `None`; `read-line` turns it into the exception its docstring
+    /// promises.
+    public static string? ReadLineOrNull(TextReader reader) => reader.ReadLine();
+
     public static ValueTask<string?> ReadLineOrNullAsync(TextReader reader, CancellationToken cancel = default) =>
         reader is BjoPort p ? p.ReadLineValueAsync(cancel) : reader.ReadLineAsync(cancel);
+
+    /// One UTF-16 code unit, or -1. Deliberately *not* a scalar: putting a
+    /// surrogate pair back together is `read-char`'s job and is done once,
+    /// above this, so that both halves of the leaf answer the same shape.
+    public static int ReadUnit(TextReader reader) => reader.Read();
 
     public static ValueTask<int> ReadUnitAsync(TextReader reader, CancellationToken cancel = default) =>
         reader is BjoPort p ? p.ReadValueAsync(cancel) : new ValueTask<int>(reader.Read());
 
-    public static Task<string> ReadToEndAsync(TextReader reader, CancellationToken cancel = default) =>
+    public static string ReadRest(TextReader reader) => reader.ReadToEnd();
+
+    public static Task<string> ReadRestAsync(TextReader reader, CancellationToken cancel = default) =>
         reader.ReadToEndAsync(cancel);
 }
 

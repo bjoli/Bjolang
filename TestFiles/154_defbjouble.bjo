@@ -1,0 +1,120 @@
+;; `defbjouble`: one name, one signature, two bodies — and no call site that
+;; has to know.
+;;
+;; The point of the whole exercise is that **a procedure is written once and
+;; works in both contexts**. No suffix at a call site, no second standard
+;; library, no rule to remember about which functions a bjoroutine may call.
+;;
+;; What cannot be written once is a *leaf*, and the reason is specific: its two
+;; halves call different .NET methods, and nothing infers that. `TextReader` has
+;; `Peek` and it has no async peek, so the suspending answer to "is this port
+;; finished" is a different method on a different type — which is exactly the
+;; thing a compiler cannot derive and a person has to write down.
+;;
+;; So `defbjouble` is the one place two bodies are written by hand, and
+;; everything above it is an ordinary `defun`. `drain` below is written once and
+;; is called from both colours.
+
+(import (std prelude))
+(import (std simpletest))
+(import "154_lib.bjo")
+
+;; --- Written once, called from both colours ---------------------------------
+;;
+;; Nothing in `drain` mentions a colour. It is not `-bjo->`, it takes no flag,
+;; and it does not choose between two spellings of `port-finished?` — there is
+;; only one spelling.
+(: drain (-> TextInputPort int))
+(defun (drain p)
+  (let loop ((n 0))
+    (if (port-finished? p)
+        n
+        (let ()
+          (ignore (port-next-char p))
+          (loop (+ n 1))))))
+
+;; An ordinary caller. `drain` here is the ordinary copy all the way down, and
+;; `port-finished?` compiles to `PortEof` — a plain C# method call.
+(: count-here (-> string int))
+(defun (count-here text)
+  (drain (open-input-string text)))
+
+;; A suspending caller, calling the *same* leaf. Here `port-finished?` compiles
+;; to `await PortEofAsync(p)`, which is a different method, a different return
+;; type and a state machine — and the source above says none of that.
+;;
+;; `drain` itself stays the ordinary copy: generating a second one is
+;; monomorphisation, which is a later layer. So the loop is written out here,
+;; which is what "layer 1 ships with explicit defbjo callers" means in practice.
+(: count-suspending (-bjo-> TextInputPort int))
+(defbjo (count-suspending p)
+  (let loop ((n 0))
+    (if (port-finished? p)
+        n
+        (let ()
+          (ignore (port-next-char p))
+          (loop (+ n 1))))))
+
+;; Nested one level: a bjoroutine calling a bjoroutine, both of which reach the
+;; leaf. Pins that selection is not a property of being *directly* inside the
+;; definition, but of the member the call is emitted into.
+(: count-twice (-bjo-> string int))
+(defbjo (count-twice text)
+  (+ (count-suspending (open-input-string text))
+     (count-suspending (open-input-string text))))
+
+;; Run a bjoroutine from an ordinary function and wait for its answer.
+(: run-bjo (-> (Promise int) int))
+(defun (run-bjo p)
+  (match (sync/blocking (promise-join p))
+    ((Ok n) n)
+    ((Err e) -1)))
+
+(defun (main)
+  ;; --- The ordinary copy --------------------------------------------------
+  (expect "an ordinary caller counts" (count-here "abcd") 4)
+  (expect "and an empty port" (count-here "") 0)
+
+  ;; --- The suspending copy, from the same source --------------------------
+  (expect "a bjoroutine counts the same"
+          (run-bjo (bjo (count-suspending (open-input-string "abcd"))))
+          4)
+  (expect "and an empty port the same"
+          (run-bjo (bjo (count-suspending (open-input-string ""))))
+          0)
+
+  ;; Two suspending calls, one bjoroutine.
+  (expect "nested bjoroutines"
+          (run-bjo (bjo (count-twice "hey")))
+          6)
+
+  ;; --- Both in one program ------------------------------------------------
+  ;;
+  ;; The assertion the whole design is for: these two lines call one name, get
+  ;; two different .NET methods, and neither says so.
+  (expect "the two copies agree"
+          (+ (count-here "12345")
+             (run-bjo (bjo (count-suspending (open-input-string "12345")))))
+          10)
+
+  ;; A port that has been drained by the ordinary copy is still a port the
+  ;; suspending one can be handed.
+  (def shared (open-input-string "xy"))
+  (expect "drained once" (drain shared) 2)
+  (expect "and empty afterwards"
+          (run-bjo (bjo (count-suspending shared)))
+          0)
+
+  ;; --- Astral characters are not the leaf's business ------------------------
+  ;;
+  ;; `port-next-char` answers a UTF-16 *code unit*, which is what the .NET
+  ;; method answers, and both halves agree about that too. One character above
+  ;; the BMP is therefore two of them — the leaf does not put them back
+  ;; together, `read-char` does, and that is a `defun` above this one.
+  (def wg (open-output-string))
+  (write-char wg (int->char 128512))
+  (expect "an astral character is two code units"
+          (count-here (get-output-string wg))
+          2)
+
+  0)

@@ -966,7 +966,7 @@ let wrapInModule (moduleName: string) (filePath: string) (decls: Decl list) : De
             let last = List.last decls
             let getRange d = 
                 match d with
-                | DDef(_, _, r) | DDefun(_, _, _, _, r) | DDefTuple(_, _, r) | DDefMutable(_, _, r)
+                | DDef(_, _, r) | DDefun(_, _, _, _, r) | DDefDouble(_, _, _, _, r) | DDefTuple(_, _, r) | DDefMutable(_, _, r)
                 | DSignature(_, _, _, r) | DType(_, r) | DTypeRec(_, r) | DTrait(_, _, _, _, _, _, _, r) | DImpl(_, _, _, _, _, r)
                 | DImplExtern(_, _, _, _, r) | DInlineImpl(_, _, _, _, _, _, _, r)
                 | DModule(_, _, r) | DImport(_, r) | DAlias(_, _, r) | DExport(_, r) | DReExport(_, r)
@@ -976,7 +976,7 @@ let wrapInModule (moduleName: string) (filePath: string) (decls: Decl list) : De
     
     [ DModule(moduleName, decls, r) ]
 
-let loadModuleGraph (mainFilePath: string) : Decl list * string list * Set<string> =
+let loadModuleGraph (mainFilePath: string) : Decl list * string list * Set<string> * Set<string> =
     // Unconditionally, not only when something publishes a macro: the expander
     // is also what reports a macro used in the module that defines it.
     Macro.install ()
@@ -997,6 +997,11 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list * Set<strin
     /// one. Under the names the origin published — a module that renamed the
     /// import is resolved back through `ImportAliases` when the set is asked.
     let blockingDefs = System.Collections.Generic.HashSet<string>()
+
+    /// Imported definitions written with `defbjouble`, under the names their
+    /// origin published. The suspending copy is an ordinary imported binding
+    /// like any other; what this adds is that the two are a pair.
+    let doubleDefs = System.Collections.Generic.HashSet<string>()
 
     /// Every import edge that reaches a given module, as the renaming it
     /// produces and the position of the form that wrote it.
@@ -1090,6 +1095,9 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list * Set<strin
                     // parks a thread is a fact about the body it still reaches.
                     for name in meta.BlockingDefs do
                         blockingDefs.Add name |> ignore
+
+                    for name in meta.DoubleDefs do
+                        doubleDefs.Add name |> ignore
 
                     // Inlineable method bodies, if this assembly published any.
                     // Without them everything that would have been inlined
@@ -1413,7 +1421,7 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list * Set<strin
             failwithf
                 $"Import collision at %s{Lexer.formatPos r}: '%s{visible}' would name %s{both}. A modifier or (:alias ...) that produces a name another import already produces is an error, not a shadowing."
 
-    allDecls, dllDeps |> Seq.toList, Set.ofSeq blockingDefs
+    allDecls, dllDeps |> Seq.toList, Set.ofSeq blockingDefs, Set.ofSeq doubleDefs
 
 /// Which module each top-level name belongs to.
 ///
@@ -1482,7 +1490,7 @@ let private qualifyInlineTemplates (env: TypedAST.Env) (decls: TypedAST.TDecl li
 let runFullFrontendPipeline (mainFilePath: string) =
     try
         Diagnostics.progress "=== Step 1: Parsing & Module Resolution ==="
-        let parsedModuleDecls, dllDeps, importedBlocking =
+        let parsedModuleDecls, dllDeps, importedBlocking, importedDoubles =
             Timing.phase "parse + module graph" (fun () -> loadModuleGraph mainFilePath)
 
         // The macros *this* compilation publishes. The main module is last, and
@@ -1514,11 +1522,23 @@ let runFullFrontendPipeline (mainFilePath: string) =
         // builtins say about themselves. Added after inference because nothing
         // in inference reads it — the claim is about a call's cost, not its
         // type — and the passes that do all run below.
+        // A dependency's `defbjouble`s are joined to this module's own before
+        // anything reads them, and the twin's name is derived rather than
+        // published — one function decides it on both sides, so the two cannot
+        // drift.
+        let importedDoublePairs =
+            importedDoubles
+            |> Seq.map (fun name -> name, Naming.suspendingCopy name)
+            |> Map.ofSeq
+
         let env =
             { env with
                 Registry =
                     { env.Registry with
-                        BlockingNames = Set.union env.Registry.BlockingNames importedBlocking } }
+                        BlockingNames = Set.union env.Registry.BlockingNames importedBlocking
+                        DoubleDefs =
+                            importedDoublePairs
+                            |> Map.fold (fun acc k v -> Map.add k v acc) env.Registry.DoubleDefs } }
 
         // Before anything reads `main`: the entry point is generated code's
         // caller, and a type it cannot call is a diagnostic here rather than a
@@ -1555,6 +1575,12 @@ let runFullFrontendPipeline (mainFilePath: string) =
         // inside a C# member of its own is only decided once a named `let` has
         // either become a `while` or stayed a local function. See the module
         // docstring.
+        // Before `ColourCheck`, because it is what decides which copy of a
+        // `defbjouble` each call means — and after loop lowering, because
+        // whether a call sits somewhere it may await is the same question
+        // `ColourCheck` asks and has the same answer.
+        let loopLoweredAst = EffectGraph.selectDoubles env.Registry loopLoweredAst
+
         ColourCheck.run loopLoweredAst
 
         // Beside `ColourCheck` and for the same reason: both are about what a

@@ -211,6 +211,116 @@ let blockingDefinitions (registry: TraitRegistry) (decls: TDecl list) : Set<stri
     let _, blocked = analyse registry decls
     blocked |> Map.toSeq |> Seq.map fst |> Set.ofSeq
 
+// ---------------------------------------------------------------------------
+// Call-site selection
+// ---------------------------------------------------------------------------
+
+/// Point calls at the suspending copy of a `defbjouble`, wherever one may be
+/// awaited.
+///
+/// This is monomorphisation in its smallest possible form: the set of copies is
+/// fixed — both were written by hand — so there is nothing to generate and only
+/// the choice to make. `(read-line p)` in a `defun` is the `#:sync` body, the
+/// same source in a `defbjo` is the `#:bjo` one, and the call site says
+/// nothing either way. That is the whole point of the form.
+///
+/// The choice is made from the *enclosing member's* colour, which is a
+/// deliberate limitation and not an oversight: a `defun` that a bjoroutine
+/// calls keeps its ordinary copy, because giving it a second one is the
+/// generating half of monomorphisation and that is a later layer. Until then a
+/// procedure that must suspend is written `defbjo` and says so.
+///
+/// `allowed` tracks the same thing `ColourCheck`'s does, and has to: rewriting
+/// a call into a copy that awaits, somewhere an await is illegal, would turn a
+/// clean rejection into one that names a generated member the programmer has
+/// never seen.
+let rec private selectIn (registry: TraitRegistry) (allowed: bool) (expr: TypedExpr) : TypedExpr =
+    let descend = selectIn registry allowed
+    let sealed_ = selectIn registry false
+
+    match expr.Node with
+    | TLambda(ps, body) ->
+        let inner =
+            match expr.Type with
+            | TFun(_, _, eff) -> pruneEffect eff = EAsync
+            | _ -> false
+
+        { expr with Node = TLambda(ps, selectIn registry inner body) }
+
+    | TSeq body -> { expr with Node = TSeq(sealed_ body) }
+
+    | TBjo body ->
+        // The operands run in the parent and the call runs in the child, which
+        // is always async — the same split `ColourCheck` makes.
+        match body.Node with
+        | TApply(target, args, kwArgs) ->
+            let target = descend target
+            let args = args |> List.map descend
+            let kwArgs = kwArgs |> List.map (fun (n, v) -> n, descend v)
+            let spawned = selectIn registry true { body with Node = TApply(target, args, kwArgs) }
+            { expr with Node = TBjo spawned }
+        | _ -> { expr with Node = TBjo(selectIn registry true body) }
+
+    | TLoop(members, bodyOpt) ->
+        match bodyOpt with
+        | None ->
+            let members = members |> List.map (fun m -> { m with Body = descend m.Body })
+            { expr with Node = TLoop(members, None) }
+        | Some body ->
+            let inlined = LoopLowering.isInlinedLoop members body
+            let members = members |> List.map (fun m -> { m with Body = selectIn registry (allowed && inlined) m.Body })
+            { expr with Node = TLoop(members, Some(descend body)) }
+
+    | TLet(n, isFun, lf, value, body) ->
+        let value = if isFun then sealed_ value else descend value
+        { expr with Node = TLet(n, isFun, lf, value, descend body) }
+
+    | TLetRec(bindings, body) ->
+        let bindings =
+            bindings
+            |> List.map (fun (n, isFun, lf, value) -> n, isFun, lf, (if isFun then sealed_ value else descend value))
+
+        { expr with Node = TLetRec(bindings, descend body) }
+
+    | TApply(target, args, kwArgs) ->
+        let target =
+            match target.Node with
+            | TIdent(name, tyArgs) when allowed ->
+                match Map.tryFind name registry.DoubleDefs with
+                // The copy's type is the declared one repainted, which is
+                // exactly what `checkDecl` gave the definition itself.
+                | Some bjoName ->
+                    { target with
+                        Node = TIdent(bjoName, tyArgs)
+                        Type = recolour EAsync target.Type }
+                | None -> descend target
+            | _ -> descend target
+
+        { expr with
+            Node =
+                TApply(
+                    target,
+                    args |> List.map descend,
+                    kwArgs |> List.map (fun (n, v) -> n, descend v)
+                ) }
+
+    | _ -> TypeVisitor.mapChildren descend expr
+
+let selectDoubles (registry: TraitRegistry) (decls: TDecl list) : TDecl list =
+    if Map.isEmpty registry.DoubleDefs then
+        decls
+    else
+        decls
+        |> List.map (
+            TypeVisitor.mapDeclWithContext (fun owner e ->
+                let allowed =
+                    match owner with
+                    | TDefun(_, _, _, _, _, _, effect, _, _) -> pruneEffect effect = EAsync
+                    | _ -> false
+
+                selectIn registry allowed e)
+        )
+
 /// Reports every bjoroutine that can reach a call which parks its thread.
 ///
 /// A warning rather than an error, and that is the whole design: parking is

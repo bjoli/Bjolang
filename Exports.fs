@@ -676,6 +676,22 @@ let metadata
                     // binding to describe.
                     && not (Set.contains name exportedClassAliases))
                 |> List.distinct
+                // The suspending copy of an exported `defbjouble`, beside the
+                // written name.
+                //
+                // Published as an ordinary definition, under the name it is
+                // emitted with, so that an importing module binds and calls it
+                // through the machinery every other import already uses —
+                // including the qualification that sends the call to the class
+                // it really lives in. What makes the pair a pair is the
+                // `DoubleDefs` list below; this is only the second binding.
+                //
+                // It is not in `exports`, and deliberately so: nothing writes
+                // it, and a name in an export list is a name someone may write.
+                |> List.collect (fun name ->
+                    match Map.tryFind name env.Registry.DoubleDefs with
+                    | Some twin -> [ name; twin ]
+                    | None -> [ name ])
                 |> List.choose exportedDef
 
             let externDecls = externsToExport |> List.map serializeExtern
@@ -842,6 +858,15 @@ let metadata
         |> Set.filter (fun n -> Set.contains n exportedNames)
         |> Set.toList
 
+    // Which of the exported names have a suspending copy. The copy's own name
+    // is derived by the same mangling on the far side rather than published,
+    // so this is a list of written names and nothing else.
+    let doubleDefs =
+        env.Registry.DoubleDefs
+        |> Map.toList
+        |> List.map fst
+        |> List.filter (fun n -> Set.contains n exportedNames)
+
     { Version = ModuleMetadata.currentVersion
       Deps = []
       TypeDecls = typeDecls
@@ -851,4 +876,5 @@ let metadata
       Defs = defs
       InlineTemplates = inlineTemplates
       Macros = macros
-      BlockingDefs = blockingDefs }
+      BlockingDefs = blockingDefs
+      DoubleDefs = doubleDefs }

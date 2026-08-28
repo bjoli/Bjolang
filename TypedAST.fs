@@ -1195,7 +1195,18 @@ type TraitRegistry =
       /// dependencies as signatures, so without it `(read-line p)` inside a
       /// bjoroutine is a call to an opaque extern and the graph stops there —
       /// which is exactly the call worth reporting.
-      BlockingNames: Set<string> }
+      BlockingNames: Set<string>
+
+      /// Written name -> the name its suspending copy is emitted under, for
+      /// every `defbjouble` in scope.
+      ///
+      /// Both halves are ordinary definitions by the time anything downstream
+      /// sees them; this is the only record that they are two faces of one
+      /// name, and it is what call-site selection reads. Imported entries are
+      /// in it too — a `defbjouble` in the prelude has to be selectable from
+      /// every module that imports it, which is the whole point of the port
+      /// surface being written this way.
+      DoubleDefs: Map<string, string> }
 
     member this.IsTraitDefinedLocally(name) = Set.contains name this.LocalTraits
     member this.IsTypeDefinedLocally(name) = Set.contains name this.LocalTypes

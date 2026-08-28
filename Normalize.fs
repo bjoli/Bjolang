@@ -244,6 +244,15 @@ let rec normalizeDecl (decl: Decl) : Decl =
                 | other -> other)
 
         DDefun(name, normalizedArgs, normalizeExpr body, colour, r)
+
+    | DDefDouble(name, args, syncBody, bjoBody, r) ->
+        let normalizedArgs =
+            args
+            |> List.map (function
+                | KeywordArg(n, defaultExpr) -> KeywordArg(n, normalizeExpr defaultExpr)
+                | other -> other)
+
+        DDefDouble(name, normalizedArgs, normalizeExpr syncBody, normalizeExpr bjoBody, r)
     | DModule(name, decls, r) -> DModule(name, normalizeModule decls, r)
     | DTrait(name, implementor, arity, assocTypes, signatures, defaults, clr, r) ->
         // A trait default is a `DDefun` whose body is checked once per impl, so

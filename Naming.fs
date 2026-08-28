@@ -58,6 +58,23 @@ let keywordParamName (kwName: string) = sanitizeIdent ("__kw_" + kwName)
 /// nothing to disambiguate.
 let restParamName = "__rest"
 
+/// The suspending half of a `defbjouble`, under the name it is emitted with.
+///
+/// It has no Bjolang name — nothing writes it, and no diagnostic mentions it —
+/// but it *is* an ordinary top-level definition once the split has happened, so
+/// it needs a key to be bound under and published as. Derived rather than
+/// published, so that an importing module can name the twin of anything it was
+/// told is a double without the origin having to spell both.
+///
+/// A stack trace naming `readsubline__bjo` is acceptable; a compiler error
+/// naming it is not, which is what the `defbjouble` diagnostics are careful
+/// about.
+let suspendingCopy (name: string) = name + "__bjo"
+
+/// Whether this name is one of those, which is how a pass tells a generated
+/// definition from a written one.
+let isSuspendingCopy (name: string) = name.EndsWith "__bjo"
+
 /// The module a source or assembly path is known by.
 ///
 /// A module is named after its file, with the two characters that separate a

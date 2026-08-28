@@ -368,6 +368,17 @@ type Decl =
     | DDefMutable of string * Expr * Range
     /// `(defun (name args...) body)`, and with `Suspending`, `defbjo`.
     | DDefun of string * DefunArg list * Expr * Colour * Range
+    /// `(defbjouble (name args...) (#:sync body) (#:bjo body))`.
+    ///
+    /// One name, one signature, two hand-written bodies — the `#:sync` one and
+    /// the `#:bjo` one, in that order however they were written. The *only*
+    /// place two bodies are written by hand, and the reason is specific: the
+    /// two halves call different .NET methods, and no inference derives that.
+    ///
+    /// Not desugared into two `DDefun`s by the parser, because the second one
+    /// would need a signature and the signature is a separate form the parser
+    /// has not seen yet. `checkDecl` does the split, where `sigs` is in scope.
+    | DDefDouble of string * DefunArg list * Expr * Expr * Range
     | DType of TypeDef list * Range
     | DTypeRec of TypeDef list * Range
     // DTrait (Name, ImplementorVar, HoleArity, AssociatedTypes, Signatures, Defaults, ClrConstraint, Range)
@@ -4409,6 +4420,15 @@ let rec boundNames (decls: Decl list) : Set<string> =
                     | MandatoryArg(n, _) -> n
                     | KeywordArg(n, _) -> n
                     | RestArg n -> n))
+        // The same, and for the same reason. Both bodies see one parameter
+        // list, so it is bound once here rather than once per colour.
+        | DDefDouble(name, args, _, _, _) ->
+            name
+            :: (args
+                |> List.map (function
+                    | MandatoryArg(n, _) -> n
+                    | KeywordArg(n, _) -> n
+                    | RestArg n -> n))
         | DDefTuple(names, _, _) -> names
         // Not a binder. It is renamed from the same memo as the `defun` it
         // belongs to, so leaving it out would take the pair apart: the body
@@ -4475,6 +4495,8 @@ let rec mapDeclExprs (f: Expr -> Expr) (d: Decl) : Decl =
     | DDefMutable(name, e, r) -> DDefMutable(name, f e, r)
     | DDefTuple(names, e, r) -> DDefTuple(names, f e, r)
     | DDefun(name, args, body, colour, r) -> DDefun(name, List.map mapArg args, f body, colour, r)
+    | DDefDouble(name, args, syncBody, bjoBody, r) ->
+        DDefDouble(name, List.map mapArg args, f syncBody, f bjoBody, r)
     | DTrait(name, v, arity, assoc, signatures, defaults, clr, r) ->
         DTrait(name, v, arity, assoc, signatures, defaults |> List.map (mapDeclExprs f), clr, r)
     | DImpl(name, target, assoc, constraints, methods, r) ->
@@ -4526,6 +4548,7 @@ let declKindName (d: Decl) : string =
     | DDefTuple _ -> "a tuple definition"
     | DDefMutable _ -> "a mutable definition"
     | DDefun _ -> "a function"
+    | DDefDouble _ -> "a function with a body per colour"
     | DType _
     | DTypeRec _ -> "a type declaration"
     | DTrait _ -> "a trait"
@@ -4799,6 +4822,34 @@ let rec tryParseDecl (s: SExpr) : Decl option =
         |> List.tryPick (function
             | DDefun _ as d -> Some d
             | _ -> None)
+    | SList(SAtom { Token = Symbol "defbjouble" } :: SList(SAtom { Token = Symbol name } :: args, _) :: clauses, _) ->
+        let where = Lexer.formatPos r
+
+        // The two bodies, by keyword rather than by position. Order-independent
+        // because there is no reason for it not to be, and because `#:sync`
+        // first reads better in some pairs and `#:bjo` first in others.
+        let clauseNamed (want: string) =
+            clauses
+            |> List.tryPick (function
+                | SList(SAtom { Token = Keyword k } :: body, cr) when k = want -> Some(parseBody body cr)
+                | _ -> None)
+
+        for c in clauses do
+            match c with
+            | SList(SAtom { Token = Keyword("sync" | "bjo") } :: _, _) -> ()
+            | _ ->
+                failwithf
+                    $"Syntax error in defbjouble '%s{name}' at %s{where}: every clause is (#:sync body...) or (#:bjo body...), and this is neither."
+
+        match clauseNamed "sync", clauseNamed "bjo" with
+        | Some syncBody, Some bjoBody -> Some(DDefDouble(name, parseDefunArgs args, syncBody, bjoBody, r))
+        | None, _ ->
+            failwithf
+                $"Syntax error in defbjouble '%s{name}' at %s{where}: it has no (#:sync ...) body. A defbjouble is written when the two colours call *different* .NET methods, so both halves have to be here. If there is only one implementation, this is a defun."
+        | _, None ->
+            failwithf
+                $"Syntax error in defbjouble '%s{name}' at %s{where}: it has no (#:bjo ...) body. A defbjouble is written when the two colours call *different* .NET methods, so both halves have to be here. If there is only one implementation, this is a defun."
+
     | SList(SAtom { Token = Symbol "type" } :: typeDefs, _) -> Some(DType(List.map parseTypeDef typeDefs, r))
 
     | SList(SAtom { Token = Symbol "type-rec" } :: typeDefs, _) -> Some(DTypeRec(List.map parseTypeDef typeDefs, r))

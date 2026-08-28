@@ -1,0 +1,26 @@
+;; A `defbjouble` whose two bodies do the same thing.
+;;
+;; `defbjouble` is the *only* place two bodies are written by hand, and the
+;; reason is specific: the two halves call different .NET methods, which is the
+;; one thing no inference derives. `TextReader.Peek` has no async twin, so
+;; somebody has to write down that `PortEofAsync` is the same question.
+;;
+;; Two bodies that differ only in which ordinary functions they call are not
+;; that. They are a `defun` — one body, with a copy per colour generated — and
+;; writing them out by hand means maintaining two things that will drift apart,
+;; for nothing the compiler could not have done.
+;;
+;; The check is mechanical: the `#:bjo` body must contain a yield point the
+;; `#:sync` body does not.
+
+;; EXPECT-ERROR: contain the same yield points
+;; EXPECT-ERROR: A defbjouble is for a *leaf*
+
+(import (std prelude))
+
+(: twice (-> int int))
+(defbjouble (twice n)
+  (#:sync (* n 2))
+  (#:bjo  (+ n n)))
+
+(defun (main args) 0)
