@@ -21,6 +21,33 @@
   (.Write w "Bjolang interop")
   (.Flush w))
 
+;; Two spellings of one type, met above the definitions that carry them.
+;;
+;; `fill-builder` names the alias, `builder-text` names the .NET class it stands
+;; for, and `describe-builder` compiles only if those are the same type *here* —
+;; which is above both.
+;;
+;; Signatures are resolved in one pass before any declaration is checked, and
+;; that pass folded in `type` declarations but not `import/class` — so the alias
+;; was read as a type constructor of its own name. Each definition was then
+;; checked further down against its annotation resolved again in place, where
+;; the import had landed, so every definition agreed with itself and disagreed
+;; with whatever was written above it. That is why this needs a forward
+;; reference to show at all, and why it showed as a type refusing to unify with
+;; the same type spelled the other way.
+(: describe-builder (-> string string))
+(defun (describe-builder s)
+  (builder-text (fill-builder s)))
+
+(: fill-builder (-> string StringBuilder))
+(defun (fill-builder s)
+  (let ((sb (StringBuilder.)))
+    (ignore (.Append sb s))
+    sb))
+
+(: builder-text (-> System.Text.StringBuilder string))
+(defun (builder-text b) (.ToString b))
+
 (defun (main)
   (def path "51_dotnet_class_io.tmp")
 
@@ -40,6 +67,9 @@
   (ignore (.Append sb "b"))
   (ignore (.Append sb "c"))
   (expect "StringBuilder" (.ToString sb) "abc")
+
+  ;; The alias read from a signature above the definition that declares it.
+  (expect "a forward reference through an imported class" (describe-builder "xyz") "xyz")
 
   ;; A property read, and a method on the result of another method.
   (expect "property read" (.-Length sb) 3)

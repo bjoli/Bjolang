@@ -1230,6 +1230,100 @@ let private checkExceptionTypes (where: string) (exceptions: string list) : unit
             failwithf
                 $"Type Error at %s{where}: '%s{name}' is named in #:exceptions but does not derive from System.Exception."
 
+/// What an `import/class` spec declares, validated: the alias, its parameters,
+/// and the .NET type it stands for.
+///
+/// Split out because the *signature* pre-pass needs the alias too. Signatures
+/// are read before any declaration is checked, so `(: open-input-file (-> string
+/// (Result Exception TextInputPort)))` was resolved with no idea that
+/// `Exception` had been imported, and took it for a constructor of that name.
+/// The definition's own body was checked against the annotation resolved again
+/// in place, where the import had landed — so only a reference *above* the
+/// definition saw the other reading, and the two met as `System.Exception`
+/// against `Exception`: one type failing to match itself.
+///
+/// `CtorType` is left `None`. A constructor signature is written in terms of
+/// the alias it is declaring, so it can only be resolved once the alias is a
+/// type — which is the second pass in `DImportClass`, and is nothing a
+/// signature elsewhere can name.
+let private classInfoOfSpec (spec: ClassImportSpec) : ClrClassInfo =
+    let where = Lexer.formatPos spec.Range
+    // A generic type is spelled with its arity — `Set.Set`1` — but written in
+    // source without one, because the alias says how many arguments it takes.
+    // Both spellings are tried so that a clause reads the way C# does.
+    /// The generic definition of this name at *some* arity.
+    ///
+    /// Asked when the bare name does not resolve, so that a generic type
+    /// written without its parameters is reported as the type constructor it is
+    /// rather than as a name that does not exist. Eight is past every arity in
+    /// the BCL that anyone imports.
+    let genericAtAnyArity () =
+        [ 1..8 ]
+        |> List.tryPick (fun n -> DotNetInterop.tryResolveType $"%s{spec.ClrClass}`%d{n}")
+
+    let clrType =
+        if spec.TypeParams.IsEmpty then
+            match DotNetInterop.tryResolveType spec.ClrClass with
+            | Some t -> t
+            | None ->
+                match genericAtAnyArity () with
+                | Some t -> t
+                | None -> DotNetInterop.resolveType $" at %s{where}" spec.ClrClass
+        else
+            let arityName = $"%s{spec.ClrClass}`%d{spec.TypeParams.Length}"
+
+            match DotNetInterop.tryResolveType arityName with
+            | Some t -> t
+            | None ->
+                match genericAtAnyArity () with
+                | Some t -> t
+                | None -> DotNetInterop.resolveType $" at %s{where}" spec.ClrClass
+
+    // The two halves of the same claim: a generic type has to be imported
+    // applied, and an ordinary one cannot be.
+    if clrType.IsGenericTypeDefinition && spec.TypeParams.IsEmpty then
+        let arity = clrType.GetGenericArguments().Length
+        let written = List.init arity (fun i -> "%" + string (char (int 'a' + i))) |> String.concat " "
+
+        failwithf
+            $"Type Error at %s{where}: '%s{spec.ClrClass}' is a generic type taking %d{arity} argument(s), so it is a type constructor rather than a type. Import it applied to its parameters: ((%s{spec.Alias} %s{written}) (: %s{spec.ClrClass}))."
+
+    if not clrType.IsGenericTypeDefinition && not spec.TypeParams.IsEmpty then
+        failwithf
+            $"Type Error at %s{where}: '%s{spec.ClrClass}' is not a generic type, so '%s{spec.Alias}' takes no type parameters. Write the alias bare."
+
+    if clrType.IsGenericTypeDefinition
+       && clrType.GetGenericArguments().Length <> spec.TypeParams.Length then
+        let arity = clrType.GetGenericArguments().Length
+
+        failwithf
+            $"Type Error at %s{where}: '%s{spec.ClrClass}' takes %d{arity} type argument(s), but '%s{spec.Alias}' was declared with %d{spec.TypeParams.Length}."
+
+    if clrType.IsGenericTypeDefinition && not spec.Exceptions.IsEmpty then
+        failwithf
+            $"Type Error at %s{where}: #:exceptions describes the constructor, and a generic class is imported as a type only. Reach its constructor through a static factory imported with import/extern."
+
+    checkExceptionTypes where spec.Exceptions
+
+    { Alias = spec.Alias
+      TypeParams = spec.TypeParams
+      // Without the arity mark, which is what a Bjolang type constructor
+      // carries in the number of arguments it is applied to — and what the code
+      // generator emits before its angle brackets.
+      ClrName = DotNetInterop.clrTypeName clrType
+      CtorType = None
+      CtorExceptions = spec.Exceptions }
+
+/// The alias an imported class contributes to a registry: the name, and the
+/// .NET type it expands to.
+///
+/// A generic import becomes a type *alias with parameters*, which the
+/// annotation resolver already knows how to expand: `(Set int)` substitutes
+/// into `Set.Set<int>` the same way a hand-written `(type (: (Pair %a) ...))`
+/// does. The bare alias of an ordinary class is the arity-zero case of it.
+let private classAliasTarget (info: ClrClassInfo) : HMType =
+    TCon(info.ClrName, info.TypeParams |> List.map (fun p -> TVar("'" + p)))
+
 /// The .NET type a receiver expression has, or a diagnostic saying why not.
 let private receiverClrType (where: string) (form: string) (targetType: HMType) : System.Type =
     // `(.ToString 5)` — a receiver is a place a type has to be concrete now.
@@ -4527,77 +4621,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
     // alias it is declaring — `(-> string StreamWriter)` — so the alias has to
     // be a type before that signature can be resolved.
     | DImportClass(specs, r) ->
-        let baseInfos =
-            specs
-            |> List.map (fun spec ->
-                let where = Lexer.formatPos spec.Range
-                // A generic type is spelled with its arity — `Set.Set`1` — but
-                // written in source without one, because the alias says how many
-                // arguments it takes. Both spellings are tried so that a clause
-                // reads the way C# does.
-                /// The generic definition of this name at *some* arity.
-                ///
-                /// Asked when the bare name does not resolve, so that a generic
-                /// type written without its parameters is reported as the type
-                /// constructor it is rather than as a name that does not exist.
-                /// Eight is past every arity in the BCL that anyone imports.
-                let genericAtAnyArity () =
-                    [ 1..8 ]
-                    |> List.tryPick (fun n -> DotNetInterop.tryResolveType $"%s{spec.ClrClass}`%d{n}")
-
-                let clrType =
-                    if spec.TypeParams.IsEmpty then
-                        match DotNetInterop.tryResolveType spec.ClrClass with
-                        | Some t -> t
-                        | None ->
-                            match genericAtAnyArity () with
-                            | Some t -> t
-                            | None -> DotNetInterop.resolveType $" at %s{where}" spec.ClrClass
-                    else
-                        let arityName = $"%s{spec.ClrClass}`%d{spec.TypeParams.Length}"
-
-                        match DotNetInterop.tryResolveType arityName with
-                        | Some t -> t
-                        | None ->
-                            match genericAtAnyArity () with
-                            | Some t -> t
-                            | None -> DotNetInterop.resolveType $" at %s{where}" spec.ClrClass
-
-                // The two halves of the same claim: a generic type has to be
-                // imported applied, and an ordinary one cannot be.
-                if clrType.IsGenericTypeDefinition && spec.TypeParams.IsEmpty then
-                    let arity = clrType.GetGenericArguments().Length
-                    let written = List.init arity (fun i -> "%" + string (char (int 'a' + i))) |> String.concat " "
-
-                    failwithf
-                        $"Type Error at %s{where}: '%s{spec.ClrClass}' is a generic type taking %d{arity} argument(s), so it is a type constructor rather than a type. Import it applied to its parameters: ((%s{spec.Alias} %s{written}) (: %s{spec.ClrClass}))."
-
-                if not clrType.IsGenericTypeDefinition && not spec.TypeParams.IsEmpty then
-                    failwithf
-                        $"Type Error at %s{where}: '%s{spec.ClrClass}' is not a generic type, so '%s{spec.Alias}' takes no type parameters. Write the alias bare."
-
-                if clrType.IsGenericTypeDefinition
-                   && clrType.GetGenericArguments().Length <> spec.TypeParams.Length then
-                    let arity = clrType.GetGenericArguments().Length
-
-                    failwithf
-                        $"Type Error at %s{where}: '%s{spec.ClrClass}' takes %d{arity} type argument(s), but '%s{spec.Alias}' was declared with %d{spec.TypeParams.Length}."
-
-                if clrType.IsGenericTypeDefinition && not spec.Exceptions.IsEmpty then
-                    failwithf
-                        $"Type Error at %s{where}: #:exceptions describes the constructor, and a generic class is imported as a type only. Reach its constructor through a static factory imported with import/extern."
-
-                checkExceptionTypes where spec.Exceptions
-
-                { Alias = spec.Alias
-                  TypeParams = spec.TypeParams
-                  // Without the arity mark, which is what a Bjolang type
-                  // constructor carries in the number of arguments it is applied
-                  // to — and what the code generator emits before its angle
-                  // brackets.
-                  ClrName = DotNetInterop.clrTypeName clrType
-                  CtorType = None
-                  CtorExceptions = spec.Exceptions })
+        let baseInfos = specs |> List.map classInfoOfSpec
 
         // The alias becomes a type alias as well as a class: that is what lets
         // an ordinary signature say `StreamWriter` and mean
@@ -4606,14 +4630,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
             baseInfos
             |> List.fold
                 (fun (reg: TraitRegistry) info ->
-                    // A generic import becomes a type *alias with parameters*,
-                    // which the annotation resolver already knows how to expand:
-                    // `(Set int)` substitutes into `Set.Set<int>` the same way a
-                    // hand-written `(type (: (Pair %a) ...))` does. The bare
-                    // alias of an ordinary class is the arity-zero case of the
-                    // same thing.
-                    let aliasTarget =
-                        TCon(info.ClrName, info.TypeParams |> List.map (fun p -> TVar("'" + p)))
+                    let aliasTarget = classAliasTarget info
 
                     { reg with
                         ClrClasses = Map.add info.Alias info reg.ClrClasses
@@ -5876,9 +5893,14 @@ and private checkDeclGroup
     /// into the environment the group really uses. This copy is thrown away
     /// after the signatures have been read off it.
     ///
-    /// Imports need no such treatment: `DImport` adds nothing here, because an
-    /// imported module is a group of its own that has already been checked by
-    /// the time this one starts.
+    /// A module's own `import/class` aliases are folded in for the same reason
+    /// — `Exception` is a type here as much as a `type` declaration is one —
+    /// and only the alias, since a constructor signature is resolved later and
+    /// names nothing a signature elsewhere can.
+    ///
+    /// Imports of other modules need no such treatment: `DImport` adds nothing
+    /// here, because an imported module is a group of its own that has already
+    /// been checked by the time this one starts.
     ///
     /// The spellings are folded in too. A type is registered under its key, so
     /// a signature written above the `type` it names — or above the import
@@ -5891,6 +5913,20 @@ and private checkDeclGroup
                 match d with
                 | DType(typeDefs, _) -> fst (registerTypeDefs false typeDefs acc)
                 | DTypeRec(typeDefs, _) -> fst (registerTypeDefs true typeDefs acc)
+                | DImportClass(specs, _) ->
+                    specs
+                    |> List.map classInfoOfSpec
+                    |> List.fold
+                        (fun (inner: Env) info ->
+                            { inner with
+                                Registry =
+                                    { inner.Registry with
+                                        Aliases =
+                                            Map.add
+                                                info.Alias
+                                                (info.TypeParams, classAliasTarget info)
+                                                inner.Registry.Aliases } })
+                        acc
                 | DImportAlias(visible, original, kind, _) ->
                     { acc with
                         Registry =
