@@ -313,11 +313,19 @@ let unifyEffect (e1: Effect) (e2: Effect) =
     | _, EPoly -> failwith "Internal error: an -?-> arrow reached unification without being instantiated"
     | EEffVar _, _
     | _, EEffVar _ -> failwith "Internal error: named effect variables have no solver"
-    | ESync, EAsync
+    // The two directions are different mistakes with different answers, and one
+    // message served both — so the commoner of the two, an ordinary function
+    // handed to a suspending parameter, was reported as its own opposite.
+    //
+    // `e1` is the expectation and `e2` is what was supplied. That is not a
+    // convention `unify`'s callers state anywhere, so it is asserted by the two
+    // fixtures named below rather than by reading them.
+    | ESync, EAsync ->
+        failwith
+            "Type error: a bjoroutine cannot be used where an ordinary function is expected. Its C# counterpart returns Fiber<T> rather than T, so the two are different calling conventions.\n  If the parameter is yours to change, declaring it -?-> makes it accept either colour, and both copies are generated.\n  If it is not, the suspending work has to happen before the call rather than inside the callback."
     | EAsync, ESync ->
         failwith
-            "Type error: a bjoroutine cannot be used where an ordinary function is expected. \
-             Its C# counterpart returns a Fiber, so the two are different calling conventions."
+            "Type error: an ordinary function cannot be used where a bjoroutine is expected. A bjoroutine's C# counterpart returns Fiber<T> where an ordinary one returns T, so the two are different calling conventions.\n  A defun is colour-polymorphic only as far as it can suspend: it is given a second, suspending copy when its own call graph reaches a leaf that has one. A defun that cannot suspend has only its ordinary copy, so there is no second colour of it to pass.\n  Define it with defbjo if it should suspend; or, if the parameter is yours to change, declare it -?-> so that it accepts either colour."
 
 let rec unify (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
     let t1, t2 = prune registry t1, prune registry t2

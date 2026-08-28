@@ -1,0 +1,28 @@
+;; Passing an ordinary function where a bjoroutine is expected.
+;;
+;; The other half of `bjo_as_value.bjo`, and for a long time it was reported as
+;; that one: `unifyEffect` had a single message for both directions, so this
+;; said "a bjoroutine cannot be used where an ordinary function is expected"
+;; about a program containing no bjoroutine at all.
+;;
+;; It is also the direction with something to explain. `defun` is
+;; colour-polymorphic, so the reader has every reason to expect this to work —
+;; and it does, for a `defun` that can suspend. `pure-work` cannot: nothing in
+;; its call graph reaches a leaf with two bodies, so no second copy was
+;; generated and there is no second colour of it to pass. That is the sentence
+;; the message owes them, and it is why this fixture exists separately.
+
+;; EXPECT-ERROR: an ordinary function cannot be used where a bjoroutine is expected
+;; EXPECT-ERROR: A defun is colour-polymorphic only as far as it can suspend
+;; EXPECT-ERROR: Define it with defbjo if it should suspend
+
+(: pure-work (-> int int))
+(defun (pure-work x) (* x 2))
+
+(: apply-bjo (-> (-bjo-> int int) int int))
+(defbjo (apply-bjo f x) (f x))
+
+(: use-it (-bjo-> int int))
+(defbjo (use-it n) (apply-bjo pure-work n))
+
+(defun (main args) 0)

@@ -68,6 +68,22 @@
              0
              p))
 
+;; --- A defbjo may declare -?-> as well ---------------------------------------
+;;
+;; The two claims are independent: `defbjo` says this body suspends, `-?->` says
+;; the callback may be either colour. So both copies are async, and the only
+;; difference between them is the delegate the parameter is spelled with —
+;; `Func<int,int>` against `Func<int,Fiber<int>>`.
+;;
+;; This was accepted and silently meant nothing until an error message started
+;; recommending it: only `defun` was expanded, so no twin was made, the arrow
+;; was decoration, and after effect defaulting arrived the single copy awaited
+;; its own ordinary parameter and failed in Roslyn. Advice that produces a
+;; second error is worse than no advice, so the recommendation and the support
+;; for it landed together.
+(: twice-and-wait (-> (-?-> int int) int int))
+(defbjo (twice-and-wait f x) (f (f x)))
+
 ;; --- Across a module boundary -----------------------------------------------
 
 (: sum-doubled (-> (List int) int))
@@ -165,6 +181,18 @@
   (expect "the same source, ordinarily"
           (drain-count-sync (open-input-string "a\nb\nc"))
           3)
+
+  ;; --- A suspending definition with a polymorphic parameter -----------------
+  ;;
+  ;; Both copies are async; only the callback's colour differs. If the wrong one
+  ;; were selected this would not compile, the delegate types being unrelated.
+  (expect "a defbjo taking an ordinary callback"
+          (run-bjo (bjo (twice-and-wait (fun (x) (* x 2)) 3)))
+          12)
+
+  (expect "a defbjo taking a suspending callback"
+          (run-bjo (bjo (twice-and-wait (bjoroutine (x) (+ x 1)) 3)))
+          5)
 
   ;; --- Across a module boundary ---------------------------------------------
   ;;

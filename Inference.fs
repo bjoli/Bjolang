@@ -4132,12 +4132,32 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
 
             { bound with FunMetas = Map.add name funMeta bound.FunMetas }
 
+        /// The colour a `-?->` parameter has *inside this body*.
+        ///
+        /// Ordinary, always — because this definition is the ordinary copy.
+        /// `expandPolymorphicDefuns` built the other one from a signature where
+        /// the same arrow reads `-bjo->`, so between them the two copies cover
+        /// both colours and neither has a choice left to make. The `EPoly` stays
+        /// in `mandatoryTypes` and in the published scheme, which is where a
+        /// caller and an importing module read that a second copy exists.
+        ///
+        /// It matters because `EPoly` reaching a use site becomes a fresh cell,
+        /// and a cell nothing constrains is answered by *defaulting* — with the
+        /// enclosing member's colour. Inside a `defbjo` that made the ordinary
+        /// copy await its own `Func<A,B>` parameter, which Roslyn rejects in a
+        /// file nobody wrote. The parameter's colour is not the enclosing
+        /// member's business; it is decided by which copy this is.
+        let bodyParamType (t: HMType) =
+            match t with
+            | TFun(args, ret, EPoly) -> TFun(args, ret, ESync)
+            | other -> other
+
         // Bind mandatory args
         let envWithMandatory =
             mandatoryTypes
             |> List.fold
                 (fun acc (n, t) ->
-                    addBinding n { Scheme = Scheme([], [], t); IsMutable = false } acc)
+                    addBinding n { Scheme = Scheme([], [], bodyParamType t); IsMutable = false } acc)
                 recEnv
 
         // Bind keyword args
@@ -4145,14 +4165,14 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
             keywordTypes
             |> List.fold
                 (fun acc (n, t) ->
-                    addBinding n { Scheme = Scheme([], [], t); IsMutable = false } acc)
+                    addBinding n { Scheme = Scheme([], [], bodyParamType t); IsMutable = false } acc)
                 envWithMandatory
 
         // Bind rest arg as Array type
         let bodyEnv =
             match restArgName, restArgType with
             | Some rn, Some rt ->
-                addBinding rn { Scheme = Scheme([], [], TCon("Array", [rt])); IsMutable = false } bodyEnv
+                addBinding rn { Scheme = Scheme([], [], TCon("Array", [ bodyParamType rt ])); IsMutable = false } bodyEnv
             | _ -> bodyEnv
 
         let bodyType, typedBody = infer bodyEnv body
@@ -5591,13 +5611,30 @@ and private checkDeclGroup
         decls
         |> List.collect (fun d ->
             match d with
-            | DDefun(name, args, body, Ordinary, r) ->
+            // Either definer. A `defbjo` declaring a `-?->` parameter needs the
+            // pair for exactly the reason a `defun` does — the two copies take
+            // `Func<A,B>` and `Func<A,Fiber<B>>`, which are unrelated C# types
+            // — and the outer arrow is not what differs between them, so the
+            // twin keeps the colour the original was written with.
+            //
+            // Skipping `defbjo` here did not reject the declaration, it emitted
+            // one body: the parameter was spelled `Func<A,B>` and the call to it
+            // awaited, so the program failed in Roslyn with "'int' does not
+            // contain a definition for 'GetAwaiter'". A hole rather than a
+            // limitation, and the sort that only shows up in generated C#.
+            | DDefun(name, args, body, colour, r) ->
                 match Map.tryFind name signatures with
                 | Some(ftype, constraints, sigRange) when declaresPoly ftype ->
                     // A signature of its own, so that the twin is an ordinary
                     // definition from here on: `explicitSigs` reads it,
                     // `declaredFunctions` binds it, and exporting and metadata
                     // need no case for it.
+                    //
+                    // The twin is always `Suspending`: a `-?->` instantiated at
+                    // the suspending colour means the callback awaits, so the
+                    // body that calls it has to be able to. For an `Ordinary`
+                    // original that is a recolour; for a `defbjo` it is what it
+                    // already was.
                     [ d
                       DSignature(Naming.suspendingCopy name, suspendingSignature ftype, constraints, sigRange)
                       DDefun(Naming.suspendingCopy name, args, body, Suspending, r) ]
