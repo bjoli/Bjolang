@@ -55,6 +55,27 @@
 (defbjo (lazily p)
   (seq (yield (drain p))))
 
+;; --- Reported, and not as a bjoroutine ---------------------------------------
+;;
+;; The same shape as `lazily`, written `defun`. It still gets a suspending copy
+;; — its call graph reaches a `defbjouble` — and the copy still parks, for the
+;; same reason: the call it would have to await sits inside a `(seq ...)`.
+;;
+;; So the verdict is the same and the sentence must not be. Calling this a
+;; bjoroutine would be false about a definition the reader wrote `defun`, and
+;; `humanize` strips the `__bjo` before this prints, so there would be nothing
+;; on the page to reveal that the message was about a copy. The advice differs
+;; too, and has to: `sync` is a yield point, so `(sync (blocking ...))` cannot
+;; be written in a `defun` body at all.
+
+;; EXPECT-WARNING: 'lazy-drain' is not a bjoroutine, but the suspending copy of it
+;; EXPECT-WARNING: lazy-drain -> drain -> port-eof?
+;; EXPECT-WARNING: write the suspending version by hand with (defbjo ...)
+
+(: lazy-drain (-> TextInputPort (Seq int)))
+(defun (lazy-drain p)
+  (seq (yield (drain p))))
+
 ;; --- Reported: the leaf called directly --------------------------------------
 
 ;; EXPECT-WARNING: 'reader' is a bjoroutine

@@ -472,11 +472,31 @@ let selectDoubles (registry: TraitRegistry) (decls: TDecl list) : TDecl list =
                 selectIn registry allowed e)
         )
 
-/// Reports every bjoroutine that can reach a call which parks its thread.
+/// Reports every suspending body that can reach a call which parks its thread.
 ///
 /// A warning rather than an error, and that is the whole design: parking is
 /// legal, sometimes deliberate, and always the programmer's call. What it is
 /// not is *visible* — so this says it, names the path, and gets out of the way.
+///
+/// # Two kinds of suspending body, and only one of them was written
+///
+/// Every node with an `EAsync` effect is a candidate, and since layer 4 that
+/// includes the *generated copies*: a `defun` whose call graph reaches a
+/// `defbjouble` has one, and a copy whose leaf could not be reached in its
+/// suspending form parks exactly as the original does.
+///
+/// Reporting those is right — a bjoroutine calling that `defun` gets the copy,
+/// so the parking is real — but calling the definition a bjoroutine is not. The
+/// reader wrote `defun`, `humanize` strips `__bjo` before this prints, and the
+/// message would be telling them their `defun` is something it is not. That is
+/// worse than saying nothing: it teaches a model of the language in which
+/// `defun` and `defbjo` are not the distinction they are.
+///
+/// The advice has to differ too, and for a reason with teeth: the fix offered to
+/// a bjoroutine is `(sync (blocking ...))`, and `sync` is a yield point, so it
+/// cannot be written in the `defun` body a copy is made from. Offering it would
+/// be the "lint that fires on its own advice" trap with the advice unfollowable
+/// as well.
 let lint (registry: TraitRegistry) (decls: TDecl list) : unit =
     let nodes, blocked = analyse registry decls
 
@@ -485,7 +505,13 @@ let lint (registry: TraitRegistry) (decls: TDecl list) : unit =
             match Map.tryFind n.Name blocked with
             | Some w ->
                 let path = String.concat " -> " w.Path
+                let parks = "A parked thread is one the scheduler cannot hand to another fiber: nothing else runs on it until the call returns."
 
-                Diagnostics.warn
-                    $"'%s{n.Name}' is a bjoroutine, and calling '%s{w.Leaf}' at %s{formatPos w.Where} parks the thread it runs on.\n  %s{path}\n  A parked thread is one the scheduler cannot hand to another fiber: nothing else runs on it until the call returns. Move the wait off the fiber with (sync (blocking (fun () ...))), or use an operation that suspends rather than waits."
+                let message =
+                    if Set.contains n.Name registry.GeneratedCopies then
+                        $"'%s{n.Name}' is not a bjoroutine, but the suspending copy of it that a bjoroutine's call reaches still parks the thread it runs on: calling '%s{w.Leaf}' at %s{formatPos w.Where} does.\n  %s{path}\n  %s{parks} The copy is this same body, and nothing along that path could be given its suspending form here — either a callee has none, or the call sits somewhere an await is illegal, such as a (seq ...) body. Move the call out of whatever sealed it, or write the suspending version by hand with (defbjo ...)."
+                    else
+                        $"'%s{n.Name}' is a bjoroutine, and calling '%s{w.Leaf}' at %s{formatPos w.Where} parks the thread it runs on.\n  %s{path}\n  %s{parks} Move the wait off the fiber with (sync (blocking (fun () ...))), or use an operation that suspends rather than waits."
+
+                Diagnostics.warn message
             | None -> ()
