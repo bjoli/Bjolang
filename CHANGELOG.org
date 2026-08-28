@@ -3,6 +3,57 @@
 
 What each change guarantees, and what it leaves open.
 
+* A procedure that mentions no colour suspends anyway
+
+This is the one the rest was for. A ~defun~ whose call graph reaches a
+~defbjouble~ is given a suspending copy too, without declaring anything:
+
+#+BEGIN_SRC scheme
+(: drain (-> TextInputPort int))
+(defun (drain p)
+  (let loop ((n 0))
+    (if (port-eof? p) n (let () (ignore (read-line p)) (loop (+ n 1))))))
+#+END_SRC
+
+Called from a ~defun~ that is ~drain(p)~ and ~PortEof~. Called from a ~defbjo~ —
+the same two words at the call site — it is ~await drain__bjo(p)~, and inside
+that copy ~await portsubeof_QMARK__bjo(p)~. Nothing in either the definition or
+the call says which.
+
+~-?->~ is written down because it changes what a procedure *accepts*. This
+changes nothing about the type, only which of two bodies runs, so there is
+nothing for an author to say and no reason to make them say it.
+
+The graph is over names, on the untyped declarations, because generation has to
+precede inference while the real graph in ~EffectGraph~ needs types. It
+over-approximates in the two safe directions: a free name counts as a call even
+when the value is only passed around, and a call *through* a parameter is not
+counted at all — the same approximation the blocking lint already makes. Both
+cost at most a copy nobody calls, and neither can produce a wrong one, because a
+copy is only ever *chosen* by selection, which reads the real types.
+
+**A generated copy always type-checks, so nothing has to detect a bad one.** The
+original is a ~defun~, so it contains no yield point anywhere or it would not
+have compiled; the copy is the same body, and the only yield points it can gain
+are the ones selection puts there, which it only does where an await is legal.
+What that buys is graceful degradation rather than a diagnostic: a ~defun~ whose
+call to the leaf sits inside a ~(seq ...)~ still gets a copy, the call inside the
+sequence stays on the ordinary body, and the copy simply awaits nothing. It
+still parks, and the lint still says so.
+
+Which is the other half of the news: *the blocking warning went quiet.* What it
+reported was never a mistake in the program — it was the compiler declining to
+generate a body. It now fires only where the generated body cannot be reached,
+and ~warnings/blocking_in_bjoroutine~ was reshaped around that, since the case it
+was built on is the case that now works.
+
+*What it leaves open.* A copy that gains no yield point is still emitted, so a
+handful of async methods await nothing and pay for a state machine they do not
+use. Pruning them means redirecting their call sites back to the original after
+selection, which is a rewrite this change did not need. Trait methods still
+carry no colour at all, and ~seql~ still has no suspending form, because an
+async iterator does not exist to emit.
+
 * Both copies of a ~-?->~ procedure are generated
 
 ~-?->~ declared that a parameter may be given a callback of either colour, and

@@ -5599,6 +5599,129 @@ and private checkDeclGroup
                 { env.Registry with
                     GeneratedCopies = Set.union env.Registry.GeneratedCopies generated } }
 
+    /// Every `defun` that can *reach* a `defbjouble` gets a suspending copy as
+    /// well, whether or not it says so.
+    ///
+    /// This is the half of monomorphisation nobody declares. `-?->` is written
+    /// down because it changes what a procedure accepts; this changes nothing
+    /// about the type, only which of two bodies a bjoroutine calls, so there is
+    /// nothing for an author to say and no reason to make them say it. It is
+    /// what lets a `defun` that mentions no colour suspend when a bjoroutine
+    /// calls it, which is the whole point of the exercise.
+    ///
+    /// The graph is over *names*, on the untyped declarations, because
+    /// generation has to happen before inference — a copy made afterwards would
+    /// need its effects substituted into every type on every node, which is the
+    /// mistake `expandPolymorphicDefuns` exists to avoid. `EffectGraph` builds
+    /// the real graph, and cannot be used here: it needs types to know what a
+    /// yield point is.
+    ///
+    /// So this over-approximates, in the two ways that are safe. A free name is
+    /// counted as a call even when the value is only passed around, and a call
+    /// *through* a parameter is not counted at all — the same approximation the
+    /// blocking lint already makes. Both cost at most a copy nobody calls;
+    /// neither can produce a wrong one, because a copy is only ever *chosen* by
+    /// `selectDoubles`, which reads the real types.
+    let expandReachingDefuns (decls: Decl list) : Decl list * Map<string, string> =
+        let signatures =
+            decls
+            |> List.choose (function
+                | DSignature(name, ftype, constraints, r) -> Some(name, (ftype, constraints, r))
+                | _ -> None)
+            |> Map.ofList
+
+        /// Candidates: an ordinary top-level `defun` with a signature, that is
+        /// not itself a generated copy and does not already have one.
+        let candidates =
+            decls
+            |> List.choose (function
+                | DDefun(name, args, body, Ordinary, r) when
+                    not (Naming.isSuspendingCopy name)
+                    && Map.containsKey name signatures
+                    && not (Map.containsKey (Naming.suspendingCopy name) signatures)
+                    ->
+                    Some(name, (args, body, r))
+                | _ -> None)
+            |> Map.ofList
+
+        /// What each candidate mentions. Computed once — the fixpoint below
+        /// only ever re-tests membership.
+        let mentions =
+            candidates |> Map.map (fun _ (_, body, _) -> Parser.freeNames Set.empty body)
+
+        /// A `defbjouble` here, or one imported from a dependency. The imported
+        /// half is what makes this worth doing at all: the port surface is in
+        /// the prelude, so a graph seeded only locally would stop at every call
+        /// worth copying.
+        let seeds =
+            decls
+            |> List.choose (function
+                | DDefDouble(name, _, _, _, _) -> Some name
+                | _ -> None)
+            |> Set.ofList
+            |> Set.union (env.Registry.DoubleDefs |> Map.toSeq |> Seq.map fst |> Set.ofSeq)
+
+        // Two points, so a round that adds nothing is the fixpoint and no SCC
+        // decomposition is needed — the same argument `EffectGraph` makes.
+        let mutable reaching = Set.empty
+        let mutable changed = true
+
+        while changed do
+            changed <- false
+
+            for KeyValue(name, mentioned) in mentions do
+                if not (Set.contains name reaching) then
+                    let hits =
+                        mentioned
+                        |> Set.exists (fun n -> Set.contains n seeds || Set.contains n reaching)
+
+                    if hits then
+                        reaching <- Set.add name reaching
+                        changed <- true
+
+        let expanded =
+            decls
+            |> List.collect (fun d ->
+                match d with
+                | DDefun(name, args, body, Ordinary, r) when Set.contains name reaching ->
+                    let twin = Naming.suspendingCopy name
+                    let ftype, constraints, sigRange = Map.find name signatures
+
+                    // The *same* signature, unrepainted: `DDefun(..., Suspending,
+                    // ...)` recolours the outer arrow on its own, and unlike a
+                    // `-?->` there is no parameter whose colour changes.
+                    [ d
+                      DSignature(twin, ftype, constraints, sigRange)
+                      DDefun(twin, args, body, Suspending, r) ]
+                | _ -> [ d ])
+
+        expanded, (reaching |> Seq.map (fun n -> n, Naming.suspendingCopy n) |> Map.ofSeq)
+
+    let decls, inferredPairs = expandReachingDefuns decls
+
+    /// Registered as doubles, so that the *existing* enclosing-colour selection
+    /// in `EffectGraph.selectDoubles` picks them up with no case of its own.
+    /// Unlike a `-?->`, both copies here have the same parameter types, so
+    /// there is no argument to choose by and the caller's colour is the only
+    /// thing that could decide.
+    let env =
+        { env with
+            Registry =
+                { env.Registry with
+                    DoubleDefs = inferredPairs |> Map.fold (fun acc k v -> Map.add k v acc) env.Registry.DoubleDefs
+                    GeneratedCopies =
+                        inferredPairs
+                        |> Map.toSeq
+                        |> Seq.map snd
+                        |> Set.ofSeq
+                        |> Set.union env.Registry.GeneratedCopies
+                    InferredCopies =
+                        inferredPairs
+                        |> Map.toSeq
+                        |> Seq.map snd
+                        |> Set.ofSeq
+                        |> Set.union env.Registry.InferredCopies } }
+
     /// The registry a signature is *read* with: this one, plus the group's own
     /// type declarations.
     ///

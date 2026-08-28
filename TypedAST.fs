@@ -1218,7 +1218,18 @@ type TraitRegistry =
       /// the copy. Without knowing which definitions are copies there is no way
       /// to say so, and a `defbjouble`'s hand-written half must not be told it
       /// was generated.
-      GeneratedCopies: Set<string> }
+      GeneratedCopies: Set<string>
+
+      /// Of those, the ones nobody asked for by name: the copy given to a
+      /// `defun` because its call graph reaches a `defbjouble`.
+      ///
+      /// Kept apart from the declared ones because the two fail differently. A
+      /// `-?->` copy that cannot be coloured is an error — the author wrote the
+      /// arrow and is owed an answer. An inferred copy is the compiler's own
+      /// idea, so one that cannot be coloured is dropped, and the call keeps the
+      /// ordinary copy and the parking warning it already had. Erroring there
+      /// would be blaming the author for a decision they did not make.
+      InferredCopies: Set<string> }
 
     member this.IsTraitDefinedLocally(name) = Set.contains name this.LocalTraits
     member this.IsTypeDefinedLocally(name) = Set.contains name this.LocalTypes

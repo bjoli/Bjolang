@@ -1,0 +1,60 @@
+;; What a colourless procedure compiles to.
+;;
+;; `drain` mentions no colour. It is a `defun`, it takes a port, and it calls
+;; `port-eof?` and `read-line` — which are `defbjouble`s in the prelude, so
+;; `drain` can reach a suspending leaf. It therefore gets two emitted bodies,
+;; and which one a call means is decided by the colour of the member the call is
+;; emitted into.
+;;
+;; This has to be a codegen test rather than a behavioural one. Both copies
+;; compute the same answer, so running them cannot tell you which ran: the
+;; difference is whether the thread was held or handed back, and that is visible
+;; in the emitted C# and almost nowhere else. `154_defbjouble.bjo` checks that
+;; the answers agree; this checks that they were reached differently.
+;;
+;; Each `EXPECT-CS` line is an extended regex matched against one line.
+
+(export drain count-here count-suspending)
+
+(import (std prelude))
+
+;; --- One source, two bodies --------------------------------------------------
+;;
+;; Nothing below says `defbjo`, `-bjo->` or `-?->`. The second body exists
+;; because the call graph reaches a leaf that has one.
+
+;; EXPECT-CS: public static int drain\(System.IO.TextReader p\)
+;; EXPECT-CS: public static async Bjoml.Fiber<int> drain__bjo\(System.IO.TextReader p\)
+(: drain (-> TextInputPort int))
+(defun (drain p)
+  (let loop ((n 0))
+    (if (port-eof? p)
+        n
+        (let ()
+          (ignore (read-line p))
+          (loop (+ n 1))))))
+
+;; --- The ordinary caller gets the ordinary copy ------------------------------
+;;
+;; A plain call, and inside it a plain `PortEof`. No state machine, no fiber.
+;; EXPECT-CS: return colour_copies_Module\.drain\(p\);
+(: count-here (-> TextInputPort int))
+(defun (count-here p) (drain p))
+
+;; --- The bjoroutine gets the generated one -----------------------------------
+;;
+;; The same two words in the source, `(drain p)`, and an await in the output.
+;; This is the assertion the whole design is for: the call site said nothing
+;; about colour and the compiler chose.
+;; EXPECT-CS: return \(await colour_copies_Module\.drain__bjo\(p\)\);
+(: count-suspending (-bjo-> TextInputPort int))
+(defbjo (count-suspending p) (drain p))
+
+;; --- And the copy suspends, rather than merely being async -------------------
+;;
+;; Inside `drain__bjo` the leaf is the prelude's suspending half. Without this
+;; the test would pass on a copy that was async in name and still parked on
+;; `PortEof` — which is exactly what a `(seq ...)` body would produce, and is
+;; the degradation the blocking lint still reports.
+;; EXPECT-CS: await portsubeof_QMARK__bjo\(p\)
+;; EXPECT-CS: await readsubline__bjo\(p\)

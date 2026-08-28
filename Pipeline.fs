@@ -1515,22 +1515,35 @@ let runFullFrontendPipeline (mainFilePath: string) =
         let letrecifiedDecls = Timing.phase "letrecify" (fun () -> letrecifyModule normalizedDecls)
 
         Diagnostics.progress "=== Step 3: Type Checking ==="
-        let env, typedAst =
-            Timing.phase "type check" (fun () -> Inference.checkProgram Prelude.prelude letrecifiedDecls)
 
-        // What the dependencies said about their own bodies, joined to what the
-        // builtins say about themselves. Added after inference because nothing
-        // in inference reads it — the claim is about a call's cost, not its
-        // type — and the passes that do all run below.
-        // A dependency's `defbjouble`s are joined to this module's own before
-        // anything reads them, and the twin's name is derived rather than
-        // published — one function decides it on both sides, so the two cannot
-        // drift.
+        // A dependency's `defbjouble`s have to be in the registry *before*
+        // inference, not after: generating a suspending copy for every `defun`
+        // that reaches one is a pass over the declarations, and the port surface
+        // it reaches lives entirely behind this module boundary. An empty seed
+        // set here would mean no module but the prelude ever generated a copy.
+        //
+        // The twin's name is derived rather than published — one function
+        // decides it on both sides, so the two cannot drift.
         let importedDoublePairs =
             importedDoubles
             |> Seq.map (fun name -> name, Naming.suspendingCopy name)
             |> Map.ofSeq
 
+        let startEnv =
+            { Prelude.prelude with
+                Registry =
+                    { Prelude.prelude.Registry with
+                        DoubleDefs =
+                            importedDoublePairs
+                            |> Map.fold (fun acc k v -> Map.add k v acc) Prelude.prelude.Registry.DoubleDefs } }
+
+        let env, typedAst =
+            Timing.phase "type check" (fun () -> Inference.checkProgram startEnv letrecifiedDecls)
+
+        // What the dependencies said about their own bodies, joined to what the
+        // builtins say about themselves. Added after inference because nothing
+        // in inference reads it — the claim is about a call's cost, not its
+        // type — and the passes that do all run below.
         let env =
             { env with
                 Registry =

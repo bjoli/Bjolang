@@ -366,21 +366,25 @@ no async constructor — ~FileOptions.Asynchronous~ affects reads, not the open.
 So ~open-input-file~ parks wherever it is called, and everything done to the
 port afterwards need not.
 
-*A read reached through your own ~defun~ still parks.* A ~defun~ gets a second
-emitted body only when its signature declares ~-?->~; reaching a suspending leaf
-through the call graph is not enough on its own. So a bjoroutine calling an
-undeclared ~defun~ gets the ordinary copy all the way down. The compiler says so
-rather than leaving it silent:
+*A read reached through your own ~defun~ suspends too.* A ~defun~ whose call
+graph reaches one of those five gets a second emitted body, without declaring
+anything, and a bjoroutine calling it gets that one. So the ordinary loop over a
+port is written once and works in either colour at any depth.
+
+What still parks is a call the generated copy cannot be reached from: inside a
+~(seq ...)~, inside an ordinary ~(fun ...)~, or through a function value, since
+none of those may await and selection leaves them on the ordinary body. The
+compiler says so rather than leaving it silent:
 
 #+BEGIN_EXAMPLE
-Warning: 'serve' is a bjoroutine, and calling 'port-eof?' at log.bjo:14 parks the
-thread it runs on.
-  serve -> drain -> port-eof?
+Warning: 'lazily' is a bjoroutine, and calling 'port-eof?' at log.bjo:14 parks
+the thread it runs on.
+  lazily -> drain -> port-eof?
 #+END_EXAMPLE
 
-Either write the loop in the ~defbjo~ itself, or move the whole thing off the
-fiber with ~(sync (blocking (fun () (drain p))))~, which is what the pool exists
-for.
+Either move the call out of whatever cannot await it, or move the whole thing
+off the fiber with ~(sync (blocking (fun () (drain p))))~, which is what the pool
+exists for.
 
 ** Keywords and Symbols
 Keywords (~:foo~ or ~#:foo~) and quoted symbols (~'foo~) are interned first-class types.

@@ -256,6 +256,29 @@ let private wantsSuspendingCopy (t: HMType) =
 ///
 /// A `-?->` is chosen differently, and cannot use `allowed` at all — see
 /// `wantsSuspendingCopy`.
+///
+/// # Why a generated copy always type-checks, and needs no escape hatch
+///
+/// A copy given to a `defun` because its call graph reaches a `defbjouble`
+/// cannot fail `ColourCheck`, so nothing has to detect that and drop it.
+///
+/// The original is a `defun`, so it was checked with a sealed site and
+/// therefore contains no yield point anywhere — otherwise it would not have
+/// compiled. The copy is the same body, so the only yield points it can have
+/// are the ones this pass puts there, and this pass only rewrites where
+/// `allowed` holds. Every yield point in a generated copy is therefore in a
+/// position where an await is legal, by construction.
+///
+/// What that buys is graceful degradation rather than a diagnostic: a `defun`
+/// whose call to the leaf sits inside a `(seq ...)` still gets a copy, the call
+/// inside the sequence is left on the ordinary body, and the copy simply awaits
+/// nothing. It still parks, and the blocking lint still says so — which is the
+/// right outcome for a copy nobody asked for by name.
+///
+/// A `-?->` copy is the case that *can* fail, and for a reason that does not
+/// apply here: its parameter's own type is repainted, so calling that parameter
+/// is a yield point wherever it appears, `allowed` or not. That one is an error,
+/// because the arrow was written down and the author is owed an answer.
 let rec private selectIn (registry: TraitRegistry) (allowed: bool) (expr: TypedExpr) : TypedExpr =
     let descend = selectIn registry allowed
     let sealed_ = selectIn registry false

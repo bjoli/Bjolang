@@ -312,17 +312,26 @@ type, and the copy's name is derived from the written one on both sides.
 Asking for the suspending copy somewhere it cannot be awaited is an ordinary
 colour error, and names the written procedure rather than the generated one.
 
-**** What is not yet there
-A ~defun~ gets a second copy only when its signature *says* ~-?->~. One that
-merely reaches a ~defbjouble~ through its call graph does not, so a port read
-reached through an undeclared ~defun~ still parks. The blocking lint reports
-exactly that, by name and by path.
+**** A copy nobody declares
+A ~defun~ whose call graph reaches a ~defbjouble~ gets a second body too, with
+nothing written down. ~-?->~ is declared because it changes what a procedure
+*accepts*; this changes only which of two bodies runs, so there is nothing for
+an author to say.
 
-That is the remaining distance to the Guile-fibers model, where any call chain
-suspends at any depth. Closing it means inferring the copies rather than
-declaring them, and the declaration is deliberate: left to inference, every
-higher-order function in the library would double for callbacks nobody will ever
-suspend, and traits would multiply that by the number of implementations.
+That is what makes an ordinary call chain suspend at any depth: a loop over a
+port is written once, and a bjoroutine calling it four levels up gets the
+suspending copy the whole way.
+
+**** What is not yet there
+A call the generated copy cannot be reached from still parks — inside a
+~(seq ...)~, inside an ordinary ~(fun ...)~, or through a function value, since
+none of those may await. The copy is still emitted and simply awaits nothing
+there; the blocking lint reports it by name and by path.
+
+Trait methods carry no colour at all: the definers are refused in a trait
+default and in an ~impl~, so a trait method can be neither a bjoroutine nor a
+leaf. ~seql~ has no suspending form either, because that needs an async iterator
+and none is emitted.
 
 *** Writing the types at the definition
 The same signature may be written *on* the ~defun~ instead: a type at each

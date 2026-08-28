@@ -13,15 +13,16 @@
 
 (import (std prelude))
 
-;; --- Reported: reached through two calls ------------------------------------
+;; --- NOT reported: reached through an ordinary function ----------------------
 ;;
-;; Neither `drain` nor `worker` mentions a thread. `read-line` bottoms out in a
-;; `TextReader` method that waits, the prelude published that fact about
-;; `read-line`, and the fixpoint carries it back up to the bjoroutine.
-
-;; EXPECT-WARNING: 'worker' is a bjoroutine
-;; EXPECT-WARNING: worker -> drain -> port-eof?
-;; EXPECT-WARNING: parks the thread it runs on
+;; This used to be the headline case, and it is now the headline case for the
+;; opposite reason. Neither `drain` nor `worker` mentions a thread, and neither
+;; has to: `drain` reaches a `defbjouble`, so it is given a suspending copy, and
+;; `worker` calls that copy. Nothing parks, so there is nothing to say.
+;;
+;; What the lint reported here was never a mistake in the program — it was the
+;; compiler declining to generate a body. Generating it is the fix, and the
+;; silence is the fix landing.
 
 (: drain (-> TextInputPort int))
 (defun (drain p)
@@ -35,6 +36,24 @@
 (: worker (-bjo-> TextInputPort int))
 (defbjo (worker p)
   (drain p))
+
+;; --- Reported: where the copy cannot be reached ------------------------------
+;;
+;; `drain` has a suspending copy, and this cannot use it. A `(seq ...)` body is
+;; a C# iterator, so a call inside one may not await, and selection leaves it on
+;; the ordinary copy rather than rewriting it somewhere the await would be
+;; illegal. The copy exists; there is nowhere here to call it from.
+;;
+;; So the warning survives exactly where the generated body does not reach, and
+;; the path it names is the one still made of ordinary calls.
+
+;; EXPECT-WARNING: 'lazily' is a bjoroutine
+;; EXPECT-WARNING: lazily -> drain -> port-eof?
+;; EXPECT-WARNING: parks the thread it runs on
+
+(: lazily (-bjo-> TextInputPort (Seq int)))
+(defbjo (lazily p)
+  (seq (yield (drain p))))
 
 ;; --- Reported: the leaf called directly --------------------------------------
 
