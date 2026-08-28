@@ -14,6 +14,13 @@
 ;; The reader is any `(-> TextInputPort %a)` — `read-line` and `read-all` are
 ;; the stock two — and the element type follows it rather than being `string`
 ;; by fiat.
+;;
+;; The two *draining* readers are declared `-?->`, so they take a reader of
+;; either colour and a bjoroutine draining a port suspends rather than parking.
+;; The two *streaming* ones cannot be, and the reason is worth stating: a
+;; sequence is emitted as a C# iterator, and an iterator may not await. Their
+;; readers stay `(-> ...)` because that is the truth about where the value ends
+;; up, not because the declaration was forgotten.
 
 (export
   ;; Draining
@@ -39,13 +46,16 @@
 ;;
 
 
-(: port->list (-> (-> TextInputPort %a) TextInputPort (List %a)))
+;; The reader is `-?->`, so these drain at whichever colour it is given. A
+;; `loop` lowers to a `while` in the enclosing method, and in the generated copy
+;; that method is `async` — which is what lets `(reader p)` be awaited there.
+(: port->list (-> (-?-> TextInputPort %a) TextInputPort (List %a)))
 (defun (port->list reader p)
   (loop (:with i 1 1)
         (:break (port-eof? p))
         (:acc lst (listing (reader p)))))
 
-(: port->vec (-> (-> TextInputPort %a) TextInputPort (Vec %a)))
+(: port->vec (-> (-?-> TextInputPort %a) TextInputPort (Vec %a)))
 (defun (port->vec reader p)
   (loop (:with i 1 1)
         (:break (port-eof? p))
@@ -64,6 +74,12 @@
 ;;
 ;; `:break` is checked before the yield, so the last line is produced and the
 ;; end of input is not read past; the `:with` is just a counter.
+;;
+;; The reader stays `(-> ...)`: this body is a `seql`, which is a `seq`, which
+;; is a C# iterator — and `yield return` and `await` are mutually exclusive in
+;; one member. Declaring `-?->` here would promise a suspending copy that cannot
+;; be built, and the compiler would rightly refuse it. A stream of items read by
+;; suspending work is a channel rather than a sequence.
 (: port->seq (-> (-> TextInputPort %a) TextInputPort (Seq %a)))
 (defun (port->seq reader p)
   (seql (:with i 0 0)

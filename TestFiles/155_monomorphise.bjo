@@ -20,6 +20,7 @@
 ;; is the test that pins it.
 
 (import (std prelude))
+(import (std ports))
 (import (std simpletest))
 (import "155_lib.bjo")
 
@@ -77,6 +78,21 @@
 (defbjo (sum-bumped xs)
   (sum-with (bjoroutine (x) (+ x 1)) xs))
 
+;; --- The library's own drainers ---------------------------------------------
+;;
+;; `port->list` takes a `-?->` reader, so a bjoroutine can drain a port without
+;; parking on every line. Before the reader was declared this was not merely
+;; slow, it was *inexpressible*: a suspending lambda handed to a parameter typed
+;; `(-> ...)` is a type error, so there was no way to write it at all.
+;;
+;; The reader is spelled out as a lambda rather than passed as the bare name
+;; `read-line`. That is the remaining step: a name with two copies still has the
+;; ordinary one's type when referenced as a value, so `(port->list read-line p)`
+;; selects the sync reader and parks.
+(: drain-count (-bjo-> TextInputPort int))
+(defbjo (drain-count p)
+  (list-length (port->list (bjoroutine (q) (read-line q)) p)))
+
 ;; --- Running a bjoroutine to a value ----------------------------------------
 
 (: run-bjo (-> (Promise int) int))
@@ -118,6 +134,11 @@
   (expect "port-fold, suspending"
           (run-bjo (bjo (read-lengths (open-input-string "ab\ncde\nf"))))
           6)
+
+  ;; --- Draining a port at the suspending colour -----------------------------
+  (expect "port->list with a suspending reader"
+          (run-bjo (bjo (drain-count (open-input-string "a\nb\nc"))))
+          3)
 
   ;; --- Across a module boundary ---------------------------------------------
   ;;

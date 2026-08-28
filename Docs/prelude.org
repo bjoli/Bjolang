@@ -373,8 +373,23 @@ port is written once and works in either colour at any depth.
 
 What still parks is a call the generated copy cannot be reached from: inside a
 ~(seq ...)~, inside an ordinary ~(fun ...)~, or through a function value, since
-none of those may await and selection leaves them on the ordinary body. The
-compiler says so rather than leaving it silent:
+none of those may await and selection leaves them on the ordinary body.
+
+*A reader passed by name is one of those.* ~port->list~ and ~port->vec~ declare
+their reader ~(-?-> ...)~, so a bjoroutine may drain a port without parking —
+but the reader has to be written as a lambda, because a name with two copies has
+the ordinary one's type when it is passed rather than called:
+
+#+BEGIN_SRC scheme
+(port->list (bjoroutine (q) (read-line q)) p)   ; suspends
+(port->list read-line p)                        ; parks on every line
+#+END_SRC
+
+~port->seq~ and ~file->seq~ cannot take a suspending reader at all: their result
+is a sequence, a sequence is a C# iterator, and an iterator may not await.
+
+Where the path is made of ordinary calls, the compiler says so rather than
+leaving it silent:
 
 #+BEGIN_EXAMPLE
 Warning: 'lazily' is a bjoroutine, and calling 'port-eof?' at log.bjo:14 parks

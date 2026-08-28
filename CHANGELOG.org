@@ -3,6 +3,41 @@
 
 What each change guarantees, and what it leaves open.
 
+* Draining a port no longer parks the fiber
+
+~port->list~ and ~port->vec~ take their reader as ~-?->~, so a bjoroutine can
+drain a port at the suspending colour:
+
+#+BEGIN_SRC scheme
+(defbjo (slurp p)
+  (port->list (bjoroutine (q) (read-line q)) p))
+#+END_SRC
+
+That emits ~await portsubgtlist__bjo(async (q) => ...)~, awaiting both the
+drainer and each read. Before the reader was declared this was not merely slow,
+it was *inexpressible*: a suspending lambda handed to a parameter typed
+~(-> ...)~ is a type error, so there was no way to write it at all.
+
+It matters more than the shape suggests, because the failure it replaces was
+*silent*. A reader is called through a parameter, and the blocking lint does not
+treat that as an edge — so a fiber parking on every line of a file said nothing
+at all. The declaration is what makes the parameter something the compiler can
+see.
+
+~port->seq~ and ~file->seq~ keep ordinary ~(-> ...)~ readers, and the reason is
+worth stating rather than leaving as an omission: their bodies are sequences,
+a sequence is emitted as a C# iterator, and an iterator may not await.
+Declaring ~-?->~ there would promise a copy that cannot be built, and the
+compiler would rightly refuse it.
+
+*What it leaves open.* The reader is written as a lambda rather than passed as
+the bare name. ~(port->list read-line p)~ still selects the ordinary reader and
+parks, because a name with two copies has the ordinary one's type when it is
+referenced as a *value* rather than called. Fixing that means giving such a name
+a polymorphic effect on reference and defaulting the unconstrained case to the
+enclosing member's colour — which is what ~groundEffect~ was shaped for and does
+not yet do.
+
 * A procedure that mentions no colour suspends anyway
 
 This is the one the rest was for. A ~defun~ whose call graph reaches a
