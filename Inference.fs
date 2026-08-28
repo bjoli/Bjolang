@@ -647,9 +647,15 @@ let rec resolveTemplate (registry: TraitRegistry) (holeVar: string) (ftype: FTyp
         let resolved = args |> List.map go
         TplFun(List.take (resolved.Length - 1) resolved, List.last resolved, ESync)
     | TArrow(mandatory, keywords, restOpt, ret, colour, r) ->
+        // An *inline* trait, specifically. An interface trait's method may be
+        // declared `-bjo->`: it has a dictionary, so the colour has an emitted
+        // interface slot to live in and a dispatched call can read it before it
+        // knows which implementation it reached. An inline trait has neither —
+        // its methods are spliced at the call site — so there is nowhere to put
+        // the claim and nothing that would check it.
         if colour <> Ordinary then
             failwithf
-                $"Type Error at %s{Lexer.formatPos r}: an inline trait's methods cannot be bjoroutines — a trait signature has no way to say that calling a method suspends."
+                $"Type Error at %s{Lexer.formatPos r}: an inline trait's methods cannot be bjoroutines. An inline trait is spliced rather than dispatched, so it has no interface for the colour to be declared in. A trait over a plain implementor — one that does not apply it, like (Iterable %%s) — may declare a method -bjo->."
         if not keywords.IsEmpty || restOpt.IsSome then
             failwithf
                 $"Type Error at %s{Lexer.formatPos r}: an inline trait's methods may not take keyword or rest parameters."
@@ -1502,6 +1508,10 @@ let private yieldPointsOfDecl (decl: TDecl) : string list =
                     | TIdent(n, _) -> found.Add n
                     | _ -> found.Add "an expression"
                 | _ -> ()
+            // A dispatched trait method the trait declared `-bjo->`. Counted so
+            // that a `defbjouble` whose suspending half reaches one is a pair of
+            // colours rather than two spellings of the same body.
+            | TInterfaceCall(_, mName, eff, _, _) when pruneEffect eff = EAsync -> found.Add mName
             | _ -> ())
         ()
     |> ignore
@@ -2112,7 +2122,16 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
 
         let methodType, tref = traitCallType env traitName methodName r
         let retType = freshMeta ()
-        unify env.Registry methodType (tfun (typedArgs |> List.map fst) retType)
+
+        // The effect is the method's own, copied rather than chosen — the same
+        // move the ordinary application makes with `demandedEffect`. Building
+        // this arrow with `tfun` spelled it `->` unconditionally, so a trait
+        // that declared `-bjo->` met its own call site and was told an ordinary
+        // function cannot be used where a bjoroutine is expected.
+        unify
+            env.Registry
+            methodType
+            (TFun(typedArgs |> List.map fst, retType, demandedEffect env methodType))
 
         retType,
         { Type = retType
@@ -5006,25 +5025,18 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                   Args = args
                   Members = members })
 
-        // A colour written in a trait signature is refused here, where the
-        // reader can act on it.
+        // `-?->` on a trait method's parameter is refused. The method's *own*
+        // arrow may carry a colour, and is checked against each impl's definer
+        // in `DImpl`.
         //
-        // It was accepted and meant nothing: `resolveTypeAnnotation` carries the
-        // effect through into `TraitInfo.Signatures` faithfully, and then every
-        // consumer drops it — the impl's own outermost effect is overwritten by
-        // `recolour` from its definer, which the parser pins to ordinary, and
-        // the interface emitter spells the method's return type without asking
-        // what colour it is. A `-?->` fares no better: the pass that generates
-        // the second copy only ever sees a top-level `defun`.
-        //
-        // What made this worth a refusal rather than a note is that the three
-        // messages already in place lead into each other. Calling such a method
-        // says "an ordinary function cannot be used where a bjoroutine is
-        // expected. Define it with defbjo" — and defining the impl method with
-        // `defbjo` says "a trait signature has no way to say that calling a
-        // method suspends", which is a sentence about a program whose trait
-        // signature just said exactly that. Three steps, and the last one
-        // contradicts the first.
+        // The asymmetry is the difference between having a colour and having a
+        // *choice* of colour. `-bjo->` is one claim, made once, which every
+        // implementation then keeps — and the emitted interface can say it,
+        // because a method slot has a return type and that return type can be a
+        // `Fiber<T>`. `-?->` instead asks for two copies of every
+        // implementation and two slots to dispatch between, and the pass that
+        // makes copies only ever sees a top-level definition. Accepting it gave
+        // one ordinary copy and an arrow that meant nothing.
         for (name, fType) in signatures do
             let poly =
                 match fType with
@@ -5035,14 +5047,9 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                         | _ -> false)
                 | _ -> false
 
-            match fType with
-            | TArrow(_, _, _, _, Suspending, sr) ->
+            if poly then
                 failwithf
-                    $"Type Error at %s{Lexer.formatPos sr}: trait '%s{traitName}' declares '%s{name}' with -bjo->, and a trait method cannot carry a colour yet. Dispatch is the reason: a call through a dictionary has to know it is a yield point before it knows which implementation it reached, so the colour would have to be part of the emitted interface and of every impl — and it is not.\n  Write the method with -> and have its implementations return something a bjoroutine can wait on, or keep the suspending work in a top-level defbjo outside the trait."
-            | _ when poly ->
-                failwithf
-                    $"Type Error at %s{Lexer.formatPos r}: trait '%s{traitName}' declares '%s{name}' with a -?-> parameter, and a trait method cannot carry a colour yet. A -?-> asks for two copies of the definition, and the pass that generates them only sees top-level definitions — an impl would silently get one, so the arrow would mean nothing.\n  Write the parameter -> if the callback is an ordinary function."
-            | _ -> ()
+                    $"Type Error at %s{Lexer.formatPos r}: trait '%s{traitName}' declares '%s{name}' with a -?-> parameter, and a trait method's parameter cannot take either colour. A -?-> asks for two copies of the definition, and the pass that generates them only sees top-level definitions — an impl would silently get one, so the arrow would mean nothing.\n  The method's own arrow may be -bjo->, which every implementation of it then has to be. It is the *parameter* that has no second copy to choose between."
 
         let hmSignatures =
             match kind with
@@ -5329,7 +5336,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
             methods
             |> List.map (fun methodDecl ->
                 match methodDecl with
-                | DDefun(name, args, body, _, methodRange) ->
+                | DDefun(name, args, body, colour, methodRange) ->
                     // The definition-site check. Checking each body against the
                     // trait's own signature, instantiated at *this* impl, is what
                     // keeps errors out of the instantiation sites: an inline
@@ -5373,6 +5380,34 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                         |> List.map (fun v -> v, freshMeta())
                         |> Map.ofList
                     let instantiatedSig = substTypeVars freshSubst expectedSignature
+
+                    // The impl's definer against the trait's arrow.
+                    //
+                    // This is the only place the two can meet. An impl method
+                    // declares no signature of its own — it inherits the
+                    // trait's — so the top-level check for a `-bjo->` signature
+                    // over a `defun` cannot fire here: `checkDecl` is handed
+                    // `None` in the slot that check reads. And it must not be
+                    // left to unification either, because `recolour` repaints
+                    // the inherited signature's outermost arrow with the
+                    // definer's colour before anything is unified, so a
+                    // disagreement is erased rather than reported.
+                    //
+                    // Uniform across implementations, deliberately: the colour
+                    // is part of what the *trait* promises, because a call
+                    // dispatched through a dictionary has to know whether it is
+                    // a yield point before it knows which implementation it
+                    // reached.
+                    (match instantiatedSig with
+                     | TFun(_, _, declared) when declared <> colourEffect colour ->
+                         match declared with
+                         | EAsync ->
+                             failwithf
+                                 $"Type Error at %s{Lexer.formatPos methodRange}: trait '%s{traitName}' declares '%s{name}' with -bjo->, so calling it is a yield point wherever it is dispatched, and every implementation of it has to be able to suspend. Define this one with defbjo."
+                         | _ ->
+                             failwithf
+                                 $"Type Error at %s{Lexer.formatPos methodRange}: trait '%s{traitName}' declares '%s{name}' with ->, so a call to it is not a yield point and this implementation may not suspend. Define it with defun.\n  Declaring the method -bjo-> in the trait is the alternative, and it is a claim about all of them: a dispatched call cannot know which implementation it reached before deciding whether to await."
+                     | _ -> ())
 
                     // Pass instantiatedSig through 'sigs'.
                     // This forces DDefun to unify the expected types into the arguments

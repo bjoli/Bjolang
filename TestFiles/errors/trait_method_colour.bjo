@@ -1,21 +1,19 @@
-;; A colour written into a trait signature.
+;; An implementation whose definer disagrees with the trait's arrow.
 ;;
-;; Refused at the declaration, and that is the point of the fixture: it used to
-;; be *accepted* and mean nothing. `resolveTypeAnnotation` carries the effect
-;; into the trait's stored signature faithfully, and then every consumer drops
-;; it — an impl method's outermost effect is overwritten from its own definer,
-;; and the emitted interface spells the return type without asking what colour
-;; it is.
+;; An impl method writes no signature of its own — it inherits the trait's — so
+;; this is the only place the two can meet, and it has to be checked rather than
+;; unified: `recolour` repaints an inherited signature's outermost arrow with the
+;; definer's colour before anything is unified, so a disagreement left to the
+;; unifier is erased instead of reported.
 ;;
-;; What made silence untenable is that the messages downstream lead into each
-;; other. Calling such a method said "an ordinary function cannot be used where
-;; a bjoroutine is expected. Define it with defbjo", and defining the impl
-;; method with defbjo said "a trait signature has no way to say that calling a
-;; method suspends" — a sentence about a program whose trait signature had just
-;; said exactly that. Three messages, and the last contradicted the first.
+;; The colour is uniform across implementations, and the message says why. A
+;; call dispatched through a dictionary decides whether to await before it knows
+;; which implementation answered, so the claim belongs to the trait and every
+;; impl keeps it.
 
-;; EXPECT-ERROR: declares 'fetch' with -bjo->, and a trait method cannot carry a colour yet
-;; EXPECT-ERROR: has to know it is a yield point before it knows which implementation it reached
+;; EXPECT-ERROR: trait 'Fetcher' declares 'fetch' with -bjo->
+;; EXPECT-ERROR: every implementation of it has to be able to suspend
+;; EXPECT-ERROR: Define this one with defbjo
 
 (import (std prelude))
 
@@ -23,6 +21,6 @@
   (: fetch (-bjo-> %a string)))
 
 (def/impl (Fetcher int)
-  (defun (fetch x) "hi"))
+  (defun (fetch x) "ordinary, and the trait said otherwise"))
 
 (defun (main args) 0)

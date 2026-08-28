@@ -1,0 +1,44 @@
+;; What a suspending trait method compiles to.
+;;
+;; Three places have to agree, and before this they did not: the interface slot
+;; dropped the effect and spelled a plain `string`, while the implementation
+;; class honoured it and emitted `async Fiber<string>`. The impl did not
+;; implement its own interface, and Roslyn said so about a file nobody wrote.
+;;
+;; A dispatched call is the reason the colour has to be on the *trait* rather
+;; than on each implementation: it compiles to an await or to a plain call, and
+;; it is one of them before it knows which implementation answers. The interface
+;; is where that claim lives, so the interface is where it has to be spelled.
+
+(export fetch dispatched resolved)
+
+(import (std prelude))
+
+(def/trait (Fetch %a)
+  (: fetch (-bjo-> %a string)))
+
+;; --- The interface slot carries the colour -----------------------------------
+;; EXPECT-CS: public interface Fetch<T_a> \{
+;; EXPECT-CS: Bjoml.Fiber<string> fetch\(T_a arg0\);
+
+;; --- And the implementation matches it ---------------------------------------
+;; EXPECT-CS: public async Bjoml.Fiber<string> fetch\(int x\)
+(def/impl (Fetch int)
+  (defbjo (fetch x) (int->string x)))
+
+;; --- A dispatched call is awaited --------------------------------------------
+;;
+;; Through the dictionary the caller was handed, since the receiver is a type
+;; variable and no implementation is known here.
+;; EXPECT-CS: return \(await _dict_Fetch_a\.fetch\(x\)\);
+(: dispatched (-bjo-> %a string) (where (Fetch %a)))
+(defbjo (dispatched x) (fetch x))
+
+;; --- A resolved call lands on the method, and is not spliced ------------------
+;;
+;; The implementor is known here, so the inliner could paste the body in. It
+;; must not: splicing dissolves the call, and the call is what the colour check
+;; reads. The landing pad keeps it, and keeps the two receivers behaving alike.
+;; EXPECT-CS: return \(await Fetch_System_Int32\.Instance\.fetch\(n\)\);
+(: resolved (-bjo-> int string))
+(defbjo (resolved n) (fetch n))

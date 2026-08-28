@@ -126,6 +126,16 @@ let private scanBody (registry: TraitRegistry) (body: TypedExpr) : Scan =
             walk receiver
             args |> List.iter walk
 
+        // A dispatched trait method is deliberately not an edge, for the same
+        // reason `TImpl` is not entered: one node per method name would merge
+        // every implementation's body, and the lint would report the union of
+        // what they all do. So a path that runs through a dictionary stops
+        // there, and the lint under-reports — which is the right way for a lint
+        // to be wrong.
+        | TInterfaceCall(_, _, _, dict, args) ->
+            walk dict
+            args |> List.iter walk
+
         | _ -> TypeVisitor.children expr |> List.iter walk
 
     walk body

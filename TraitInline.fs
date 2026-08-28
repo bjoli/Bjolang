@@ -188,6 +188,19 @@ type private Ctx =
       /// the *current path* fall back to a call.
       Active: Set<string> }
 
+/// The colour the trait declared for this method.
+///
+/// One claim covering every implementation, so there is nothing per-impl to
+/// consult — which is what makes it readable here, before the implementor is
+/// necessarily known.
+let private methodEffect (env: Env) (tref: TraitRef) : Effect =
+    match Map.tryFind tref.Trait env.Registry.Traits with
+    | Some info ->
+        match Map.tryFind tref.Method info.Signatures with
+        | Some(TFun(_, _, eff)) -> eff
+        | _ -> ESync
+    | None -> ESync
+
 /// The call that stands in for an inlined body: the impl's own method, named
 /// directly. Emitted whenever inlining would recur, whenever the occurrence
 /// check refuses, and whenever no template was registered at all.
@@ -211,7 +224,14 @@ let private landingPad (env: Env) (tref: TraitRef) (ctor: string) (tyArgs: HMTyp
     else
 
     let calleeType =
-        tfun ((args |> List.map (fun a -> a.Type)) @ (kwArgs |> List.map (fun (_, e) -> e.Type))) expr.Type
+        TFun(
+            (args |> List.map (fun a -> a.Type)) @ (kwArgs |> List.map (fun (_, e) -> e.Type)),
+            expr.Type,
+            // The pad names the impl's own method, which was emitted at the
+            // colour the trait declared. An `->` here would leave the call
+            // unawaited against an `async` member.
+            methodEffect env tref
+        )
 
     let callee =
         { Type = calleeType
@@ -246,11 +266,27 @@ let rec private inlineExpr (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
             let key = inlineKey tref.Trait tref.Method ctor
             let template = Map.tryFind (tref.Trait, tref.Method, ctor) ctx.Env.Registry.InlineMethods
 
+            // A suspending method is never spliced, and the reason is not the
+            // splice itself — it is that splicing dissolves the *call*, and the
+            // call is what `ColourCheck` reads to decide whether a yield point
+            // is allowed where it is written.
+            //
+            // Inlined, `(defun (bad n) (fetch n))` became the impl's body with
+            // no call left in it, and was accepted; with a generic receiver the
+            // same source kept its call and was refused. A program whose
+            // acceptance depends on whether the inliner could see the
+            // implementor is what this codebase avoids everywhere else, and the
+            // landing pad is always a correct answer.
+            //
+            // The saving given up is negligible against what is left: an await
+            // is a state-machine transition, and no call it replaces is cheaper
+            // than that.
             match template with
             | Some tpl when
                 not (Set.contains key ctx.Active)
                 && tpl.Params.Length = args.Length
                 && kwArgs.IsEmpty
+                && methodEffect ctx.Env tref <> EAsync
                 ->
                 spliceTemplate ctx tref ctor tyArgs tpl args expr
             | _ -> landingPad ctx.Env tref ctor tyArgs args kwArgs expr

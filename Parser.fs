@@ -4933,12 +4933,12 @@ let rec tryParseDecl (s: SExpr) : Decl option =
             | SList (SAtom { Token = Symbol "defun" } :: _, _) as defunExpr ->
                 defaults <- parseDecl defunExpr :: defaults
 
-            // See the matching case in `def/impl`: the trait's signature has no
-            // colour, so a suspending default body would be invisible to a
-            // caller dispatching through it.
-            | SList (SAtom { Token = Symbol "defbjo" } :: _, r) ->
-                failwithf
-                    $"Syntax Error at %s{Lexer.formatPos r}: a trait's default method body cannot be a bjoroutine yet — a trait signature has no way to say that calling a method suspends."
+            // A suspending default body, for a method the trait declares
+            // `-bjo->`. A default is spliced into each impl as source and
+            // checked there, so its definer meets the trait's arrow by the same
+            // route a hand-written method's does, and needs no check here.
+            | SList (SAtom { Token = Symbol "defbjo" } :: _, _) as defbjoExpr ->
+                defaults <- parseDecl defbjoExpr :: defaults
 
             // A macro, which is how a `derive`-style transformer writes a
             // default body. It goes through `parseDeclForms` so that it gets
@@ -5008,14 +5008,13 @@ let rec tryParseDecl (s: SExpr) : Decl option =
             | SList (SAtom { Token = Symbol "defun" } :: _, _) as defunExpr ->
                 methods <- parseDecl defunExpr :: methods
 
-            // A trait method that may suspend needs the trait's *signature* to
-            // carry the colour, so that a call through a dictionary knows it is
-            // a yield point before it knows which impl it reached. That is not
-            // built, and silently accepting the definer would produce an impl
-            // whose colour no caller can see.
-            | SList (SAtom { Token = Symbol "defbjo" } :: _, r) ->
-                failwithf
-                    $"Syntax Error at %s{Lexer.formatPos r}: a trait implementation's method cannot be a bjoroutine yet — a trait signature has no way to say that calling a method suspends."
+            // A method that suspends, which the trait's signature has to have
+            // declared `-bjo->`. The definer is checked against that arrow in
+            // `DImpl` rather than here: this is the only place an impl method
+            // names a colour, and the trait it belongs to is not in scope until
+            // inference.
+            | SList (SAtom { Token = Symbol "defbjo" } :: _, _) as defbjoExpr ->
+                methods <- parseDecl defbjoExpr :: methods
 
             // The `derive` case: one macro call standing for the methods of a
             // whole implementation. See the matching arm in `def/trait`.

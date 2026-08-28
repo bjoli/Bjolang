@@ -294,6 +294,25 @@ let rec private checkExpr (site: Site) (expr: TypedExpr) : unit =
             $"calling '%s{meta.DeclaringType}.%s{methodName}' is a yield point (it is imported #:async, so it compiles to an await)"
             [ $"If what you want is to start this and carry on, that is (bjo (%s{methodName} ...)), which is colourless and may be written anywhere." ]
 
+    // A method dispatched through a dictionary. It arrives as a node of its own
+    // rather than as a `TApply`, so there is no arrow here for the case below
+    // to read — the colour is on the node, put there by `Lowering` from the
+    // trait's declaration.
+    //
+    // The trait's colour and not the implementation's, which is the point of
+    // the restriction: this call has to know whether it awaits before it knows
+    // which implementation answers it.
+    | TInterfaceCall(_, mName, eff, dict, args) ->
+        if pruneEffect eff = EAsync && not (isAllowed site) then
+            refuse
+                site
+                expr.Range
+                $"calling '%s{mName}' is a yield point (the trait that declares it writes -bjo->, so every implementation of it may suspend)"
+                []
+
+        checkExpr site dict
+        args |> List.iter (checkExpr site)
+
     | TApply(target, args, kwArgs) ->
         if suspends target.Type && not (isAllowed site) then
             let what =

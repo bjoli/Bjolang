@@ -1,0 +1,33 @@
+;; Calling a suspending trait method from an ordinary function.
+;;
+;; A dispatched method arrives as a node of its own rather than as an
+;; application, so there is no arrow for the usual yield-point test to read. The
+;; colour rides on the node instead, put there when the call was lowered, from
+;; the trait's declaration — the same choice a foreign call makes with its
+;; `#:async` metadata, and for the same reason: by the time this is asked, the
+;; registry that knew is several passes behind.
+;;
+;; Without it the program was accepted here and rejected by Roslyn, with
+;; "the 'await' operator can only be used within an async method" against a
+;; method the reader did not write.
+;;
+;; The receiver is generic, so this call goes through a dictionary. Its twin
+;; below is the concrete one, which resolves statically — the two must be
+;; refused alike.
+
+;; EXPECT-ERROR: calling 'fetch' is a yield point
+;; EXPECT-ERROR: the trait that declares it writes -bjo->
+;; EXPECT-ERROR: is defined with (defun ...)
+
+(import (std prelude))
+
+(def/trait (Fetcher %a)
+  (: fetch (-bjo-> %a string)))
+
+(def/impl (Fetcher int)
+  (defbjo (fetch x) (int->string x)))
+
+(: bad (-> %a string) (where (Fetcher %a)))
+(defun (bad x) (fetch x))
+
+(defun (main args) 0)

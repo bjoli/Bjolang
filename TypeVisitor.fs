@@ -86,7 +86,7 @@ let mapChildren (f: TypedExpr -> TypedExpr) (expr: TypedExpr) : TypedExpr =
         | TYield value -> TYield(f value)
         | TYieldFrom source -> TYieldFrom(f source)
         | TMatch(target, clauses) -> TMatch(f target, List.map mapClause clauses)
-        | TInterfaceCall(iType, mName, dict, args) -> TInterfaceCall(iType, mName, f dict, List.map f args)
+        | TInterfaceCall(iType, mName, eff, dict, args) -> TInterfaceCall(iType, mName, eff, f dict, List.map f args)
         | TTraitCall(tref, args, kwArgs) ->
             TTraitCall(tref, List.map f args, kwArgs |> List.map (fun (n, e) -> n, f e))
         | TThrow e -> TThrow(f e)

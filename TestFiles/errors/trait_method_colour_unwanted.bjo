@@ -1,0 +1,21 @@
+;; The other direction: an implementation that suspends where the trait's arrow
+;; is ordinary.
+;;
+;; Refused, and the alternative is stated with its cost. Declaring the method
+;; -bjo-> in the trait is not a change to this one implementation — it is a
+;; claim about all of them, because a dispatched call cannot know which
+;; implementation it reached before deciding whether to await.
+
+;; EXPECT-ERROR: trait 'Fetcher' declares 'fetch' with ->
+;; EXPECT-ERROR: this implementation may not suspend
+;; EXPECT-ERROR: a claim about all of them
+
+(import (std prelude))
+
+(def/trait (Fetcher %a)
+  (: fetch (-> %a string)))
+
+(def/impl (Fetcher int)
+  (defbjo (fetch x) "suspending, and the trait said otherwise"))
+
+(defun (main args) 0)

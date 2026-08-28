@@ -1,0 +1,34 @@
+;; The same mistake with a *concrete* receiver, which the inliner can resolve.
+;;
+;; This is the fixture that pins the rule, and it was a real bug: the inliner
+;; spliced the implementation's body at the call site, which dissolved the call,
+;; and with no call left there was nothing for the colour check to look at. The
+;; program was accepted. The identical source one file over — same trait, same
+;; method, generic receiver — was refused.
+;;
+;; A program whose acceptance depends on whether the inliner could see the
+;; implementor is the thing this compiler avoids everywhere else, so a
+;; suspending method is never spliced: it lands on the implementation's own
+;; method, named directly, and the call survives to be checked. The saving given
+;; up is negligible against what is left, an await being a state-machine
+;; transition either way.
+;;
+;; The message must name 'fetch' and not the pad it landed on. A stack trace may
+;; say `Fetcher_System_Int32.Instance::fetch`; a compiler error may not, because
+;; that name appears in no source file.
+
+;; EXPECT-ERROR: calling 'fetch' is a yield point
+;; EXPECT-ERROR: is defined with (defun ...)
+
+(import (std prelude))
+
+(def/trait (Fetcher %a)
+  (: fetch (-bjo-> %a string)))
+
+(def/impl (Fetcher int)
+  (defbjo (fetch x) (int->string x)))
+
+(: bad (-> int string))
+(defun (bad n) (fetch n))
+
+(defun (main args) 0)

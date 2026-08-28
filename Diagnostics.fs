@@ -34,6 +34,17 @@ module Diagnostics =
     let private generatedCopy =
         Regex(@"(?<=[A-Za-z0-9_?!*/<>=+'&.-])__bjo\b", RegexOptions.Compiled)
 
+    /// The qualifier on a landing pad — the impl's own method, named directly
+    /// instead of dispatched: `Fetcher_System_Int32.Instance::fetch`.
+    ///
+    /// Which method the reader wrote is the part after the `::`; everything
+    /// before it is the class `Codegen` will emit and a spelling of the
+    /// implementor nobody chose. Whether a call was inlined, landed on a pad or
+    /// went through a dictionary is the compiler's business, and a message that
+    /// leaks the answer is asking the reader to care about it.
+    let private landingPad =
+        Regex(@"[A-Za-z0-9_.]+::(?=[A-Za-z0-9_?!*/<>=+'&.-])", RegexOptions.Compiled)
+
     /// Strips the suffix `Gensym.fresh` adds.
     ///
     /// Every renaming in the compiler goes through `Gensym`, and none of the
@@ -55,7 +66,7 @@ module Diagnostics =
     /// compiler error naming it is not, because it appears in no source file
     /// and the reader has no way to find it.
     let humanize (message: string) =
-        generatedCopy.Replace(invented.Replace(message, ""), "")
+        landingPad.Replace(generatedCopy.Replace(invented.Replace(message, ""), ""), "")
 
     /// Whether the compiler narrates what it is doing.
     ///

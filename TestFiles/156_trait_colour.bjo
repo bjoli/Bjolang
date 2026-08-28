@@ -1,0 +1,96 @@
+;; A trait method that suspends.
+;;
+;; Until now colour stopped at the trait boundary: a method could not be a
+;; bjoroutine, could not take one, and a signature that said otherwise was
+;; accepted and ignored. So anything reached through a trait — which in this
+;; library is most iteration, comparison and printing — parked.
+;;
+;; The colour belongs to the *trait*, not to the implementation, and that is
+;; forced rather than chosen: a call dispatched through a dictionary compiles to
+;; an await or to a plain call, and it has to be one of them before it knows
+;; which implementation answers. So `-bjo->` on a method is a claim about every
+;; implementation of it, and each one's definer is checked against that claim.
+;;
+;; What that does *not* give is a method whose colour varies per implementation,
+;; and it is not a step towards one. Two traits are the answer there.
+
+(import (std prelude))
+(import (std simpletest))
+(import "156_lib.bjo")
+
+;; --- A suspending method, two implementations --------------------------------
+
+(def/trait (Fetch %a)
+  (: fetch (-bjo-> %a string)))
+
+(def/impl (Fetch int)
+  (defbjo (fetch x) (int->string x)))
+
+(def/impl (Fetch string)
+  (defbjo (fetch x) (string-append "s:" x)))
+
+;; --- Statically resolved -----------------------------------------------------
+;;
+;; The receiver's type is known, so the inliner could splice the body here. It
+;; deliberately does not: splicing dissolves the call, and the call is what says
+;; a yield point is allowed. This lands on the implementation's own method
+;; instead, and is awaited.
+(: resolved (-bjo-> int string))
+(defbjo (resolved n) (fetch n))
+
+;; --- Dispatched --------------------------------------------------------------
+;;
+;; The receiver is a type variable, so the method is reached through the
+;; dictionary the caller was handed. The emitted interface slot returns a fiber
+;; and the call awaits it.
+(: dispatched (-bjo-> %a string) (where (Fetch %a)))
+(defbjo (dispatched x) (fetch x))
+
+;; --- A default body that suspends --------------------------------------------
+;;
+;; A default is spliced into each implementation as source and checked there, so
+;; its definer meets the trait's arrow by the same route a hand-written method's
+;; does. `twice` is written once and suspends in every implementation.
+(def/trait (Twice %a)
+  (: once (-bjo-> %a string))
+  (: twice (-bjo-> %a string))
+
+  (defbjo (twice x) (string-append (once x) (once x))))
+
+(def/impl (Twice int)
+  (defbjo (once x) (int->string x)))
+
+(: twice-over (-bjo-> int string))
+(defbjo (twice-over n) (twice n))
+
+;; --- An ordinary method is untouched -----------------------------------------
+;;
+;; The point of the check being two-directional: nothing about this trait
+;; changed, and a call to it is not a yield point.
+(: plain-name (-> int string))
+(defun (plain-name n) (name-of n))
+
+;; --- Running a bjoroutine to a value ------------------------------------------
+
+(: run-bjo (-> (Promise string) string))
+(defun (run-bjo p)
+  (match (sync/blocking (promise-join p))
+    ((Ok s) s)
+    ((Err e) "err")))
+
+(defun (main)
+  (expect "a resolved receiver" (run-bjo (bjo (resolved 42))) "42")
+
+  (expect "a dispatched receiver, int" (run-bjo (bjo (dispatched 7))) "7")
+  (expect "a dispatched receiver, string" (run-bjo (bjo (dispatched "x"))) "s:x")
+
+  (expect "a suspending default body" (run-bjo (bjo (twice-over 3))) "33")
+
+  ;; An ordinary method of an ordinary trait, unaffected.
+  (expect "an ordinary trait method" (plain-name 5) "n5")
+
+  ;; The trait is declared in another module, so its colour crossed a module
+  ;; boundary in the published signature and the emitted interface.
+  (expect "an imported suspending method" (run-bjo (bjo (say-it 9))) "lib:9")
+
+  0)

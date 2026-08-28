@@ -708,7 +708,20 @@ and TExprNode =
     /// Produce every element of another sequence in turn. Always void.
     | TYieldFrom of TypedExpr
     | TMatch of TypedExpr * TMatchClause list
-    | TInterfaceCall of HMType * string * TypedExpr * TypedExpr list
+    /// A dispatched trait method: the dictionary's type, the method, the colour
+    /// the *trait* declared for it, the dictionary, and the arguments.
+    ///
+    /// The colour rides on the node rather than being looked up again, for the
+    /// reason `TForeignStaticCall` carries `Await`: by the time `ColourCheck`
+    /// and `Codegen` ask whether this call is a yield point, the trait registry
+    /// that knew is several passes behind, and the type recorded here names the
+    /// emitted *interface*, which an import alias may have renamed.
+    ///
+    /// It is the trait's colour and not the implementation's on purpose. A
+    /// dispatched call has to decide whether to await before it knows which
+    /// implementation it reached, which is the whole reason a trait's methods
+    /// carry one colour between them.
+    | TInterfaceCall of HMType * string * Effect * TypedExpr * TypedExpr list
     /// A call to a trait method, with the trait recorded rather than guessed.
     ///
     /// Every downstream pass reads `TraitRef.Resolved` and none of them

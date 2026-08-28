@@ -1,0 +1,27 @@
+;; The other side of the module boundary for `156_trait_colour.bjo`.
+;;
+;; A trait's colour is part of its published signature and of the interface the
+;; importer links against, so nothing here needs a mechanism of its own — which
+;; is the same result `-?->` had at the export boundary.
+
+(export Speaker say-it Namer name-of)
+
+(import (std prelude))
+
+;; A suspending method, declared and implemented here, called from there.
+(def/trait (Speaker %a)
+  (: speak (-bjo-> %a string)))
+
+(def/impl (Speaker int)
+  (defbjo (speak x) (string-append "lib:" (int->string x))))
+
+(: say-it (-bjo-> %a string) (where (Speaker %a)))
+(defbjo (say-it x) (speak x))
+
+;; An ordinary trait beside it, to pin that nothing about the ordinary path
+;; moved when the suspending one was added.
+(def/trait (Namer %a)
+  (: name-of (-> %a string)))
+
+(def/impl (Namer int)
+  (defun (name-of x) (string-append "n" (int->string x))))

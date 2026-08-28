@@ -1004,6 +1004,9 @@ let rec private containsAwait (expr: TypedExpr) : bool =
     | TForeignStaticCall (_, _, _, Some meta) when meta.Await -> true
     | TDotMethodCall (_, _, _, Some meta) when meta.Await -> true
     | TApply (target, _, _) when callSuspends target.Type -> true
+    // A dispatched trait method whose trait declared `-bjo->`. The colour is on
+    // the node rather than on an arrow, so the case above cannot see it.
+    | TInterfaceCall (_, _, eff, _, _) when groundEffect eff = EAsync -> true
     | _ -> TypeVisitor.children expr |> List.exists containsAwait
 
 /// Translates a typed pattern into C# pattern syntax.
@@ -1515,7 +1518,13 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
                 indent c
                 appendLine c (okOf tmp))
 
-    | TInterfaceCall (iType, mName, dict, args) ->
+    | TInterfaceCall (iType, mName, eff, dict, args) ->
+        // Parenthesised for the same reason a bjoroutine call is: `await` binds
+        // looser than member access, so a bare one regroups whatever the value
+        // is then used in.
+        let suspends = groundEffect eff = EAsync
+        if suspends then append ctx "(await "
+
         let emitters = prepareOperands ctx (dict :: args)
         emitters.Head ctx
         append ctx "."
@@ -1525,6 +1534,8 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
             if i > 0 then append ctx ", "
             emit ctx
         append ctx ")"
+
+        if suspends then append ctx ")"
 
     | TLambda (args, body) ->
         // A `(bjoroutine ...)` lambda is an async lambda. C# infers the
@@ -3810,9 +3821,15 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                     else "<" + (methodVars |> List.map typeParamName |> String.concat ", ") + ">"
 
                 match mType with
-                | TFun (args, ret, _) ->
+                | TFun (args, ret, eff) ->
                     indent ctx
-                    append ctx (typeToString ret)
+                    // The slot carries the trait's colour, so that a dispatched
+                    // call is an `await` on a `Fiber<T>` rather than a call on a
+                    // `T` that every implementation returns as a fiber. This is
+                    // the whole of what an interface has to say about colour —
+                    // one claim, in one place, ahead of knowing which
+                    // implementation answers it.
+                    append ctx (returnTypeString eff ret)
                     append ctx " "
                     append ctx (sanitizeIdent mName)
                     append ctx methodTyParamsStr
