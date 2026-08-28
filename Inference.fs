@@ -5006,6 +5006,44 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                   Args = args
                   Members = members })
 
+        // A colour written in a trait signature is refused here, where the
+        // reader can act on it.
+        //
+        // It was accepted and meant nothing: `resolveTypeAnnotation` carries the
+        // effect through into `TraitInfo.Signatures` faithfully, and then every
+        // consumer drops it — the impl's own outermost effect is overwritten by
+        // `recolour` from its definer, which the parser pins to ordinary, and
+        // the interface emitter spells the method's return type without asking
+        // what colour it is. A `-?->` fares no better: the pass that generates
+        // the second copy only ever sees a top-level `defun`.
+        //
+        // What made this worth a refusal rather than a note is that the three
+        // messages already in place lead into each other. Calling such a method
+        // says "an ordinary function cannot be used where a bjoroutine is
+        // expected. Define it with defbjo" — and defining the impl method with
+        // `defbjo` says "a trait signature has no way to say that calling a
+        // method suspends", which is a sentence about a program whose trait
+        // signature just said exactly that. Three steps, and the last one
+        // contradicts the first.
+        for (name, fType) in signatures do
+            let poly =
+                match fType with
+                | TArrow(mandatory, keywords, restOpt, _, _, _) ->
+                    mandatory @ (keywords |> List.map snd) @ (restOpt |> Option.toList)
+                    |> List.exists (function
+                        | TApp("-?->", _, _) -> true
+                        | _ -> false)
+                | _ -> false
+
+            match fType with
+            | TArrow(_, _, _, _, Suspending, sr) ->
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos sr}: trait '%s{traitName}' declares '%s{name}' with -bjo->, and a trait method cannot carry a colour yet. Dispatch is the reason: a call through a dictionary has to know it is a yield point before it knows which implementation it reached, so the colour would have to be part of the emitted interface and of every impl — and it is not.\n  Write the method with -> and have its implementations return something a bjoroutine can wait on, or keep the suspending work in a top-level defbjo outside the trait."
+            | _ when poly ->
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos r}: trait '%s{traitName}' declares '%s{name}' with a -?-> parameter, and a trait method cannot carry a colour yet. A -?-> asks for two copies of the definition, and the pass that generates them only sees top-level definitions — an impl would silently get one, so the arrow would mean nothing.\n  Write the parameter -> if the callback is an ordinary function."
+            | _ -> ()
+
         let hmSignatures =
             match kind with
             | InterfaceTrait ->

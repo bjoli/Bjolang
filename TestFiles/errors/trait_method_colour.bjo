@@ -1,0 +1,28 @@
+;; A colour written into a trait signature.
+;;
+;; Refused at the declaration, and that is the point of the fixture: it used to
+;; be *accepted* and mean nothing. `resolveTypeAnnotation` carries the effect
+;; into the trait's stored signature faithfully, and then every consumer drops
+;; it — an impl method's outermost effect is overwritten from its own definer,
+;; and the emitted interface spells the return type without asking what colour
+;; it is.
+;;
+;; What made silence untenable is that the messages downstream lead into each
+;; other. Calling such a method said "an ordinary function cannot be used where
+;; a bjoroutine is expected. Define it with defbjo", and defining the impl
+;; method with defbjo said "a trait signature has no way to say that calling a
+;; method suspends" — a sentence about a program whose trait signature had just
+;; said exactly that. Three messages, and the last contradicted the first.
+
+;; EXPECT-ERROR: declares 'fetch' with -bjo->, and a trait method cannot carry a colour yet
+;; EXPECT-ERROR: has to know it is a yield point before it knows which implementation it reached
+
+(import (std prelude))
+
+(def/trait (Fetcher %a)
+  (: fetch (-bjo-> %a string)))
+
+(def/impl (Fetcher int)
+  (defun (fetch x) "hi"))
+
+(defun (main args) 0)

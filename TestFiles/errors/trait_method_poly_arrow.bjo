@@ -1,0 +1,23 @@
+;; A -?-> parameter on a trait method.
+;;
+;; The other half of `trait_method_colour.bjo`, and it fails for its own reason
+;; rather than for dispatch: `-?->` is a request for two copies of a definition,
+;; and the pass that generates them only ever sees a top-level `defun`. A method
+;; inside an impl would quietly get one copy, so the arrow would be decoration.
+;;
+;; Refusing it is the same judgement as the outer arrow's. A declaration that is
+;; accepted and ignored is worse than one that is rejected, because the program
+;; that relies on it looks correct.
+
+;; EXPECT-ERROR: declares 'apply-it' with a -?-> parameter, and a trait method cannot carry a colour yet
+;; EXPECT-ERROR: the pass that generates them only sees top-level definitions
+
+(import (std prelude))
+
+(def/trait (Mapper %a)
+  (: apply-it (-> %a (-?-> int int) int)))
+
+(def/impl (Mapper int)
+  (defun (apply-it x f) (f x)))
+
+(defun (main args) 0)
