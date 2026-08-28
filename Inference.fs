@@ -5653,11 +5653,19 @@ and private checkDeclGroup
 
         /// Candidates: an ordinary top-level `defun` with a signature, that is
         /// not itself a generated copy and does not already have one.
+        ///
+        /// `main` is excluded because a copy is a thing a *call site* chooses,
+        /// and the entry point is the one definition with no call site inside
+        /// the language: the runtime enters it, and the runtime has one colour.
+        /// Its copy is therefore always dead code, and it is loud dead code —
+        /// the blocking lint has a node for it, so a `main` reaching anything
+        /// that parks reports a body nobody wrote and nobody can reach.
         let candidates =
             decls
             |> List.choose (function
                 | DDefun(name, args, body, Ordinary, r) when
                     not (Naming.isSuspendingCopy name)
+                    && name <> "main"
                     && Map.containsKey name signatures
                     && not (Map.containsKey (Naming.suspendingCopy name) signatures)
                     ->
