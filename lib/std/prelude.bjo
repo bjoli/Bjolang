@@ -1030,23 +1030,44 @@
 ;; wants a value wraps the call in `try`. The port openers take the other route
 ;; and return a `Result` directly.
 
-;; The three that move contents are `#:blocking`: each waits on however much
-;; text the file holds, and does it on the thread that called. That changes
-;; nothing about the emitted call — it is what lets the blocking lint say which
-;; bjoroutines end up holding a pool thread here.
+;; The two that write are `#:blocking`: each waits on however much text it is
+;; given, and does it on the thread that called. That changes nothing about the
+;; emitted call — it is what lets the blocking lint say which bjoroutines end up
+;; holding a pool thread here.
+;;
+;; `ReadAllText` is *not* beside them, and its absence is the point:
+;; `file-read-text` is written over a port instead, so it has a suspending copy.
+;; The writers cannot follow yet — `open-output-file` truncates, so
+;; `file-append-text` has no opener to be written over — and until they can, the
+;; lint reporting them is a true report rather than a gap in it.
 ;;
 ;; `Exists` and `Delete` are not marked. They ask the filesystem about a name
 ;; rather than waiting on contents, and marking every call that touches a disk
 ;; would make the lint report everything and so report nothing.
 (import/extern
-  (clr-read-all-text   (: System.IO.File.ReadAllText   #:blocking))
   (clr-write-all-text  (: System.IO.File.WriteAllText  #:blocking))
   (clr-append-all-text (: System.IO.File.AppendAllText #:blocking))
   (clr-file-exists     (: System.IO.File.Exists))
   (clr-file-delete     (: System.IO.File.Delete)))
 
+;; Opened, drained and closed, rather than `File.ReadAllText` — and the detour
+;; is what buys the colour. `read-all` is one of the leaf pairs, so this reaches
+;; a suspending body and is given a copy of its own: a bjoroutine reading a file
+;; awaits the read instead of holding the thread it runs on for the length of
+;; the file. The extra `BjoPort` is a buffer nobody reads through, on the one
+;; path that was already allocating the whole file.
+;;
+;; **The open still parks** — see `open-input-file` — so a bjoroutine calling
+;; this waits once, on the door rather than on the contents.
+;;
+;; Re-raising the `Err` is what keeps the promise above: a missing file throws
+;; here as it threw from `File.ReadAllText`, and with the same exception, since
+;; `StreamReader.` is what was going to raise it either way.
 (: file-read-text (-> string string))
-(defun (file-read-text path) (clr-read-all-text path))
+(defun (file-read-text path)
+  (match (open-input-file path)
+    ((Ok opened) (with-open ((p opened)) (read-all p)))
+    ((Err e) (raise e))))
 
 ;; Truncates the file if it is already there.
 (: file-write-text (-> string string void))

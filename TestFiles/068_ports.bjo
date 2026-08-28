@@ -33,6 +33,21 @@
   (write-string p " ")
   (write-string p "world"))
 
+;; A whole file read on a fiber, waited for from ordinary code.
+;;
+;; `file-read-text` is written over a port — `open-input-file`, `read-all`,
+;; close — rather than over `File.ReadAllText`, and that is what puts it on the
+;; suspending side: `read-all` has both colours, so this `bjo` reaches a copy
+;; that awaits the file instead of holding a pool thread for the length of it.
+;;
+;; The contents are all this can assert. That the thread came back is pinned in
+;; `warnings/blocking_in_bjoroutine.bjo`, by the lint having nothing to say.
+(: slurp-on-a-fiber (-> string string))
+(defun (slurp-on-a-fiber path)
+  (match (sync/blocking (promise-join (bjo (file-read-text path))))
+    ((Ok text) text)
+    ((Err e) "raised")))
+
 ;; The `/opt` variant, where the check and the read are one step. Also pins
 ;; that lines come back without their newline.
 (: join-lines (-> TextInputPort string))
@@ -149,6 +164,7 @@
     ((Ok w) (with-open ((out w)) (write-greeting out)))
     ((Err e) (println "FAILURE: could not open the output file")))
   (expect "the same writer over a file port" (file-read-text out-path) "hello world")
+  (expect "the same file, read on a fiber" (slurp-on-a-fiber out-path) "hello world")
 
   ;; The one port operation whose wrong argument is not a type error. A file
   ;; port and a string port are deliberately the same type, so nothing earlier

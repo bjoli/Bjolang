@@ -77,12 +77,39 @@
   (seq (yield (drain p))))
 
 ;; --- Reported: the leaf called directly --------------------------------------
+;;
+;; `File.WriteAllText` waits on the thread it is called on, is imported saying
+;; so, and has nothing between it and the bjoroutine — so the path the warning
+;; names is two names long.
+;;
+;; It stays reported because it stays true. Rewriting it over a port the way
+;; `file-read-text` was rewritten needs an opener that appends, so that
+;; `file-append-text` could follow it; until both can move, this is a wait the
+;; lint is right to keep printing.
 
-;; EXPECT-WARNING: 'reader' is a bjoroutine
-;; EXPECT-WARNING: reader -> file-read-text
+;; EXPECT-WARNING: 'writer' is a bjoroutine
+;; EXPECT-WARNING: writer -> file-write-text
 
-(: reader (-bjo-> string int))
-(defbjo (reader path)
+(: writer (-bjo-> string int))
+(defbjo (writer path)
+  (file-write-text path "hello")
+  0)
+
+;; --- Not reported: reading a whole file --------------------------------------
+;;
+;; `writer`'s shape, and silent, which is the whole of what the read side
+;; gained. `file-read-text` opens a port and drains it, `read-all` is one of the
+;; leaf pairs, so a suspending copy of `file-read-text` exists and this call
+;; reaches it: the fiber awaits the file instead of sitting on a pool thread
+;; for the length of it.
+;;
+;; The *open* still parks, once, and nothing here says so — `StreamReader.`'s
+;; constructor is not marked `#:blocking`, because a wait with no async form to
+;; move to is not a finding, and marking it would print this path forever with
+;; nothing to be done about it.
+
+(: slurp (-bjo-> string int))
+(defbjo (slurp path)
   (string-length (file-read-text path)))
 
 ;; --- Not reported: the fix ---------------------------------------------------
