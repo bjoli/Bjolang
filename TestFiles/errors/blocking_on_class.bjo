@@ -1,0 +1,16 @@
+;; `#:blocking` on an `import/class` clause.
+;;
+;; Constructing is not the part that waits. Whatever a constructor opens, the
+;; reads and writes afterwards are where a thread is parked, and each of those
+;; is an `import/extern` clause with a place of its own to say so. Accepting it
+;; here would attach the claim to the one call in the sequence that is not
+;; making it.
+
+;; EXPECT-ERROR: #:blocking marks a call that parks the thread it runs on
+
+(import (std prelude))
+
+(import/class
+  (Reader (: System.IO.StreamReader (-> string Reader) #:blocking)))
+
+(defun (main args) 0)

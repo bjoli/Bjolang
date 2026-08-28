@@ -472,6 +472,10 @@ type ClrExternInfo =
       /// `File.ReadLinesAsync` returns a stream rather than a task and takes
       /// one in every overload — so without this such a method is uncallable.
       Cancellable: bool
+      /// `#:blocking`: calling this parks the thread it runs on rather than
+      /// suspending the fiber. Changes no emitted code — it is read by the
+      /// blocking lint, which reports the ones a bjoroutine can reach.
+      IsBlocking: bool
       /// The target is a *generic* method, and these are its type arguments —
       /// one per parameter C# writes between the angle brackets, each a Bjolang
       /// type written in terms of `DeclaredType`'s own variables.
@@ -510,6 +514,13 @@ type DotNetMethodMetadata =
       /// overload was resolved *with* it, so `ParameterTypes` includes it and
       /// the user's arguments are the prefix.
       AmbientToken: bool
+      /// The call parks the thread it runs on, as declared by `#:blocking` on
+      /// the import it came through. Emits nothing; it is what the blocking
+      /// lint walks the call graph looking for.
+      ///
+      /// False for a bare `(.Method x)`, which came through no import and so
+      /// has nowhere the claim could have been written.
+      Blocking: bool
       /// The type arguments a generic method is called at, in order. Empty for
       /// an ordinary one.
       ///
@@ -1115,7 +1126,20 @@ type TraitRegistry =
       /// from the type because that is the direction the failing lookups run:
       /// a pattern has a constructor name and no type, and `record-ref` has a
       /// field name and often no resolved target yet.
-      HiddenMembers: Map<string, string> }
+      HiddenMembers: Map<string, string>
+
+      /// Names whose call parks the thread it runs on.
+      ///
+      /// Three sources, and the set exists because they have to be asked as
+      /// one: the builtins `Prelude.blockingBuiltins` names, the aliases an
+      /// `import/extern` marked `#:blocking`, and the *imported* definitions a
+      /// dependency published as reaching one of those.
+      ///
+      /// The third is what makes the lint work at all. A module sees its
+      /// dependencies as signatures, so without it `(read-line p)` inside a
+      /// bjoroutine is a call to an opaque extern and the graph stops there —
+      /// which is exactly the call worth reporting.
+      BlockingNames: Set<string> }
 
     member this.IsTraitDefinedLocally(name) = Set.contains name this.LocalTraits
     member this.IsTypeDefinedLocally(name) = Set.contains name this.LocalTypes

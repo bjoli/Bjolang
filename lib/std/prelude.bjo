@@ -1030,10 +1030,18 @@
 ;; wants a value wraps the call in `try`. The port openers take the other route
 ;; and return a `Result` directly.
 
+;; The three that move contents are `#:blocking`: each waits on however much
+;; text the file holds, and does it on the thread that called. That changes
+;; nothing about the emitted call — it is what lets the blocking lint say which
+;; bjoroutines end up holding a pool thread here.
+;;
+;; `Exists` and `Delete` are not marked. They ask the filesystem about a name
+;; rather than waiting on contents, and marking every call that touches a disk
+;; would make the lint report everything and so report nothing.
 (import/extern
-  (clr-read-all-text   (: System.IO.File.ReadAllText))
-  (clr-write-all-text  (: System.IO.File.WriteAllText))
-  (clr-append-all-text (: System.IO.File.AppendAllText))
+  (clr-read-all-text   (: System.IO.File.ReadAllText   #:blocking))
+  (clr-write-all-text  (: System.IO.File.WriteAllText  #:blocking))
+  (clr-append-all-text (: System.IO.File.AppendAllText #:blocking))
   (clr-file-exists     (: System.IO.File.Exists))
   (clr-file-delete     (: System.IO.File.Delete)))
 
@@ -1308,10 +1316,19 @@
 
 ;; --- Input ---
 
-;; Whether the port has no more input. `Peek` reports -1 at end of input
-;; without consuming anything.
+;; `Peek` reports -1 at end of input without consuming anything.
+;;
+;; Imported rather than written `(.Peek p)`, for one reason: a bare dot-call
+;; came through no import clause, so there is nowhere on it to write
+;; `#:blocking`. And peeking is exactly the call that wants marking — eof on a
+;; stream is a *read*, so this waits for a character whenever the port has none
+;; buffered, and it is the call at the top of every port loop ever written.
+(import/extern
+  (clr-peek (: System.IO.TextReader.Peek (-> TextInputPort int) #:blocking)))
+
+;; Whether the port has no more input.
 (: port-eof? (-> TextInputPort bool))
-(defun (port-eof? p) (= (.Peek p) -1))
+(defun (port-eof? p) (= (clr-peek p) -1))
 
 ;; The next line, without its newline. **Throws at end of input** — guard with
 ;; `port-eof?`, or use `read-line/opt`.

@@ -524,6 +524,12 @@ let metadata
                 let uncancellableStr = if info.Uncancellable then " #:uncancellable" else ""
                 let cancellableStr = if info.Cancellable then " #:cancellable" else ""
 
+                // Republished for the same reason `#:async` is, one step
+                // weaker: dropping it emits the same code, but the importing
+                // module's blocking lint then cannot see through this alias and
+                // reports nothing where it should report a parked thread.
+                let blockingStr = if info.IsBlocking then " #:blocking" else ""
+
                 // Whether the member is static or an instance one is
                 // deliberately *not* written here: the reader on the far
                 // side asks the same metadata and gets the same answer,
@@ -535,7 +541,7 @@ let metadata
                     | TypedAST.ExternSet -> " #:set"
                     | TypedAST.ExternMethod -> ""
 
-                $"(import/extern (%s{info.Alias} (: %s{info.ClrType}.%s{info.MemberName}%s{typeStr}%s{exceptionStr}%s{asyncStr}%s{uncancellableStr}%s{cancellableStr}%s{accessorStr})))"
+                $"(import/extern (%s{info.Alias} (: %s{info.ClrType}.%s{info.MemberName}%s{typeStr}%s{exceptionStr}%s{asyncStr}%s{blockingStr}%s{uncancellableStr}%s{cancellableStr}%s{accessorStr})))"
 
             /// `None` for a name with no binding to read a type off, so
             /// that a name which cannot be described is dropped rather
@@ -825,6 +831,17 @@ let metadata
 
     let typeDecls, externDecls, traitDecls, implDecls, defs = declMetadata
 
+    // Only the exported ones. A private helper that parks is this module's own
+    // business — nothing outside can call it, so nothing outside can be told
+    // about it — and the names here are read back as a claim about a *binding*
+    // the importer will have.
+    let exportedNames = defs |> List.map (fun d -> d.Name) |> Set.ofList
+
+    let blockingDefs =
+        EffectGraph.blockingDefinitions env.Registry typedAst
+        |> Set.filter (fun n -> Set.contains n exportedNames)
+        |> Set.toList
+
     { Version = ModuleMetadata.currentVersion
       Deps = []
       TypeDecls = typeDecls
@@ -833,4 +850,5 @@ let metadata
       ImplDecls = implDecls
       Defs = defs
       InlineTemplates = inlineTemplates
-      Macros = macros }
+      Macros = macros
+      BlockingDefs = blockingDefs }

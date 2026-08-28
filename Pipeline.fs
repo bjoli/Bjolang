@@ -976,7 +976,7 @@ let wrapInModule (moduleName: string) (filePath: string) (decls: Decl list) : De
     
     [ DModule(moduleName, decls, r) ]
 
-let loadModuleGraph (mainFilePath: string) : Decl list * string list =
+let loadModuleGraph (mainFilePath: string) : Decl list * string list * Set<string> =
     // Unconditionally, not only when something publishes a macro: the expander
     // is also what reports a macro used in the module that defines it.
     Macro.install ()
@@ -988,6 +988,15 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
     let resolvedModules = System.Collections.Generic.Dictionary<string, LoadedModule>()
     let currentPath = System.Collections.Generic.HashSet<string>()
     let dllDeps = System.Collections.Generic.HashSet<string>()
+
+    /// Imported definitions whose call parks the thread it runs on.
+    ///
+    /// Collected here because this is the only place a dependency's metadata is
+    /// read, and carried out whole rather than turned into declarations: it is a
+    /// fact about a binding's *body*, and there is no declaration form that says
+    /// one. Under the names the origin published — a module that renamed the
+    /// import is resolved back through `ImportAliases` when the set is asked.
+    let blockingDefs = System.Collections.Generic.HashSet<string>()
 
     /// Every import edge that reaches a given module, as the renaming it
     /// produces and the position of the form that wrote it.
@@ -1075,6 +1084,12 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
                         if depPath <> "" && File.Exists depPath then
                             dllDeps.Add(depPath) |> ignore
                             noteAssemblyPath depPath
+
+                    // Transitive, unlike the exports above: a name re-exported
+                    // through this DLL is bound here, and whether calling it
+                    // parks a thread is a fact about the body it still reaches.
+                    for name in meta.BlockingDefs do
+                        blockingDefs.Add name |> ignore
 
                     // Inlineable method bodies, if this assembly published any.
                     // Without them everything that would have been inlined
@@ -1398,7 +1413,7 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list =
             failwithf
                 $"Import collision at %s{Lexer.formatPos r}: '%s{visible}' would name %s{both}. A modifier or (:alias ...) that produces a name another import already produces is an error, not a shadowing."
 
-    allDecls, dllDeps |> Seq.toList
+    allDecls, dllDeps |> Seq.toList, Set.ofSeq blockingDefs
 
 /// Which module each top-level name belongs to.
 ///
@@ -1467,7 +1482,7 @@ let private qualifyInlineTemplates (env: TypedAST.Env) (decls: TypedAST.TDecl li
 let runFullFrontendPipeline (mainFilePath: string) =
     try
         Diagnostics.progress "=== Step 1: Parsing & Module Resolution ==="
-        let parsedModuleDecls, dllDeps =
+        let parsedModuleDecls, dllDeps, importedBlocking =
             Timing.phase "parse + module graph" (fun () -> loadModuleGraph mainFilePath)
 
         // The macros *this* compilation publishes. The main module is last, and
@@ -1494,6 +1509,16 @@ let runFullFrontendPipeline (mainFilePath: string) =
         Diagnostics.progress "=== Step 3: Type Checking ==="
         let env, typedAst =
             Timing.phase "type check" (fun () -> Inference.checkProgram Prelude.prelude letrecifiedDecls)
+
+        // What the dependencies said about their own bodies, joined to what the
+        // builtins say about themselves. Added after inference because nothing
+        // in inference reads it — the claim is about a call's cost, not its
+        // type — and the passes that do all run below.
+        let env =
+            { env with
+                Registry =
+                    { env.Registry with
+                        BlockingNames = Set.union env.Registry.BlockingNames importedBlocking } }
 
         // Before anything reads `main`: the entry point is generated code's
         // caller, and a type it cannot call is a diagnostic here rather than a
@@ -1531,6 +1556,12 @@ let runFullFrontendPipeline (mainFilePath: string) =
         // either become a `while` or stayed a local function. See the module
         // docstring.
         ColourCheck.run loopLoweredAst
+
+        // Beside `ColourCheck` and for the same reason: both are about what a
+        // body does with the thread it is on, and both want the program as it
+        // will be emitted. This one only warns — parking is legal, and the
+        // point is that it is otherwise invisible.
+        EffectGraph.lint env.Registry loopLoweredAst
 
         // Last, and a cleanup pass only: C# rejects a local that shadows an
         // enclosing one, and every pass above is free to produce that.

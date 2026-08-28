@@ -1,0 +1,76 @@
+;; The blocking lint: which bjoroutines end up holding a thread.
+;;
+;; A fiber that waits is supposed to give its thread back to the scheduler.
+;; A fiber that calls something which *parks* does not — it sits on a pool
+;; thread for the duration, and every other fiber has one fewer to run on. That
+;; is legal, occasionally deliberate, and invisible: nothing goes wrong until
+;; the pool is empty, at which point the program stops for reasons nothing in it
+;; explains.
+;;
+;; So it is a warning, and the warning names the path. Every case below compiles
+;; — that is half the assertion, since a lint that became an error would pass a
+;; test looking only for the text.
+
+(import (std prelude))
+
+;; --- Reported: reached through two calls ------------------------------------
+;;
+;; Neither `drain` nor `worker` mentions a thread. `read-line` bottoms out in a
+;; `TextReader` method that waits, the prelude published that fact about
+;; `read-line`, and the fixpoint carries it back up to the bjoroutine.
+
+;; EXPECT-WARNING: 'worker' is a bjoroutine
+;; EXPECT-WARNING: worker -> drain -> port-eof?
+;; EXPECT-WARNING: parks the thread it runs on
+
+(: drain (-> TextInputPort int))
+(defun (drain p)
+  (let loop ((n 0))
+    (if (port-eof? p)
+        n
+        (let ()
+          (ignore (read-line p))
+          (loop (+ n 1))))))
+
+(: worker (-bjo-> TextInputPort int))
+(defbjo (worker p)
+  (drain p))
+
+;; --- Reported: the leaf called directly --------------------------------------
+
+;; EXPECT-WARNING: 'reader' is a bjoroutine
+;; EXPECT-WARNING: reader -> file-read-text
+
+(: reader (-bjo-> string int))
+(defbjo (reader path)
+  (string-length (file-read-text path)))
+
+;; --- Not reported: the fix ---------------------------------------------------
+;;
+;; The same work, moved onto a pool thread the runtime can grow to replace. The
+;; fiber suspends on the *result* rather than on the read, so its own thread
+;; goes back to the scheduler.
+;;
+;; This is the case the lint has to stay quiet about. It is the advice the
+;; warning above gives, and a lint that fires on its own recommendation is one
+;; nobody leaves switched on.
+(: polite (-bjo-> TextInputPort int))
+(defbjo (polite p)
+  (match (sync (blocking (fun () (drain p))))
+    ((Ok n) n)
+    ((Err e) 0)))
+
+;; --- Not reported: an ordinary function --------------------------------------
+;;
+;; `counter` parks the thread it is called on, and that thread is whatever
+;; called it. There is no fiber to starve and nothing to report — this is what
+;; a `defun` doing IO is supposed to look like.
+(: counter (-> TextInputPort int))
+(defun (counter p)
+  (drain p))
+
+(defun (main args)
+  ;; Called so that nothing above is dead code, and to pin that a program the
+  ;; lint has complained about still runs.
+  (ignore (counter (open-input-string "one\ntwo\n")))
+  0)

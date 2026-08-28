@@ -193,6 +193,57 @@ let private numeric = [ { TraitName = "Num"; TargetType = TVar "a" } ]
 let private ordered = [ { TraitName = "Ordered"; TargetType = TVar "a" } ]
 let private integral = [ { TraitName = "Integral"; TargetType = TVar "a" } ]
 
+/// The builtins that park the thread they are called on.
+///
+/// `#:blocking` is how an *import* says this, and a builtin has no import
+/// clause to say it on — so the claim lives here instead. A list in the
+/// compiler is the thing to be suspicious of, and this one is the exception
+/// that earns it: these are the compiler's own primitives, they change only
+/// when someone edits the file below, and there is no third party whose method
+/// could quietly start waiting. A guess about *user* code would rot; this
+/// cannot.
+///
+/// What is deliberately absent:
+///
+/// - **`blocking`.** It is the cure rather than the disease: the work goes to a
+///   pool thread the runtime can grow to replace, and the fiber suspends on the
+///   *result*. A bjoroutine calling it does not hold its thread.
+/// - **`writer-write-char!`** and the other writes. A write to a buffered
+///   writer is a memory copy; the syscall is in the flush, and that is the
+///   operation with a suspending twin.
+/// - **`sync`.** It suspends, which is the opposite of this.
+let blockingBuiltins : Set<string> =
+    Set.ofList
+        [
+          // Parks the calling thread on a monitor until the event commits.
+          // The runtime's own docstring says not to call it from a bjoroutine;
+          // this is what makes saying so mechanical.
+          "sync/blocking"
+
+          // The port reads. Each is a `TextReader` method that waits.
+          "reader-read-line!"
+          "reader-read-char!"
+          "reader->list"
+          "reader->vec"
+
+          // Whole-file reads, which wait per pull rather than all at once —
+          // still a parked thread, just a later one.
+          "file-read-lines/seq"
+          "file-read/seq" ]
+
+/// Builtins that run the function they are given somewhere else.
+///
+/// The blocking lint walks into a lambda and attributes what it finds to the
+/// definition the lambda was written in — which is right for `(for-each (fun
+/// ...) xs)` and wrong for exactly these, where the body runs on a pool thread
+/// or a fiber of its own rather than on the caller's.
+///
+/// Getting this wrong in the permissive direction loses a warning. Getting it
+/// wrong in the other direction reports `(sync (blocking (fun () ...)))` —
+/// which is the *recommended* way to call blocking code from a bjoroutine — and
+/// a lint that fires on the fix it is recommending is one nobody leaves on.
+let elsewhereBuiltins : Set<string> = Set.ofList [ "blocking"; "spawn-thunk" ]
+
 let emptyRegistry : TraitRegistry =
     { LocalTraits = Set.empty
       // The types with no declaring module, which is exactly what `typeKey`
@@ -226,7 +277,8 @@ let emptyRegistry : TraitRegistry =
       NoDiscard = Set.ofList [ "Result" ]
 
       OpaqueTypes = Set.empty
-      HiddenMembers = Map.empty }
+      HiddenMembers = Map.empty
+      BlockingNames = blockingBuiltins }
 
 let prelude : Env =
     { Bindings = Map.ofList [

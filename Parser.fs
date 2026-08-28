@@ -320,6 +320,14 @@ type ExternImportSpec =
       /// `#:cancellable`: thread the ambient token into a non-`#:async` import,
       /// whose `CancellationToken` parameter is not optional. §7.6.
       Cancellable: bool
+      /// `#:blocking`: calling this parks the thread it runs on.
+      ///
+      /// Nothing is emitted differently. It is a claim the blocking lint reads:
+      /// a bjoroutine that reaches one of these does not suspend when it waits,
+      /// it holds a pool thread for the duration, and the scheduler has one
+      /// fewer. Declared rather than guessed because only the importer knows —
+      /// a .NET method's signature says nothing about whether it waits.
+      IsBlocking: bool
       /// `#:get`: the target is a property or field, and the alias reads it.
       IsGet: bool
       /// `#:set`: the target is a property or field, and the alias writes it.
@@ -4122,6 +4130,10 @@ type ForeignImportOptions =
       /// task, so it is not an `#:async` import, and every one of its overloads
       /// takes a token — which makes it uncallable without this.
       Cancellable: bool
+      /// `#:blocking` — calling the target parks the thread it runs on, so a
+      /// bjoroutine that reaches it holds a pool thread rather than suspending.
+      /// Read by the blocking lint and by nothing else.
+      IsBlocking: bool
       /// `#:get` — the target names a property or field, and the alias reads
       /// it.
       IsGet: bool
@@ -4148,7 +4160,7 @@ let parseForeignImportClause
 
     let malformed () : 'a =
         failwithf
-            $"Syntax error in %s{formName} at %s{Lexer.formatPos r}: expected (alias (: Fully.Qualified.Target type)), the type optionally followed by #:exceptions (ExceptionType ...), #:async, #:uncancellable, #:get or #:set."
+            $"Syntax error in %s{formName} at %s{Lexer.formatPos r}: expected (alias (: Fully.Qualified.Target type)), the type optionally followed by #:exceptions (ExceptionType ...), #:async, #:blocking, #:uncancellable, #:get or #:set."
 
     match s with
     // The alias may be written applied — `(Set %a)` — which is how a generic
@@ -4196,6 +4208,7 @@ let parseForeignImportClause
             | SAtom { Token = Keyword "async" } :: tail -> readOptions { opts with IsAsync = true } tail
             | SAtom { Token = Keyword "uncancellable" } :: tail -> readOptions { opts with Uncancellable = true } tail
             | SAtom { Token = Keyword "cancellable" } :: tail -> readOptions { opts with Cancellable = true } tail
+            | SAtom { Token = Keyword "blocking" } :: tail -> readOptions { opts with IsBlocking = true } tail
             | SAtom { Token = Keyword "get" } :: tail -> readOptions { opts with IsGet = true } tail
             | SAtom { Token = Keyword "set" } :: tail -> readOptions { opts with IsSet = true } tail
             | _ -> malformed ()
@@ -4207,6 +4220,7 @@ let parseForeignImportClause
                   IsAsync = false
                   Uncancellable = false
                   Cancellable = false
+                  IsBlocking = false
                   IsGet = false
                   IsSet = false }
                 optionForms
@@ -4230,6 +4244,10 @@ let private checkAccessorOptions (formName: string) (opts: ForeignImportOptions)
         if opts.IsAsync || opts.Cancellable || opts.Uncancellable then
             failwithf
                 $"Syntax error in %s{formName} at %s{where}: #:async, #:cancellable and #:uncancellable describe how a *call* is made, and reading or writing a property is not a call. Nothing about a property can be awaited or cancelled."
+
+        if opts.IsBlocking then
+            failwithf
+                $"Syntax error in %s{formName} at %s{where}: #:blocking says a *call* parks the thread it runs on, and reading or writing a property is not a call. A property that does real work behind an accessor is better imported as the method it is."
 
         if not opts.Exceptions.IsEmpty then
             failwithf
@@ -4655,6 +4673,7 @@ let rec tryParseDecl (s: SExpr) : Decl option =
                   IsAsync = opts.IsAsync
                   Uncancellable = opts.Uncancellable
                   Cancellable = opts.Cancellable
+                  IsBlocking = opts.IsBlocking
                   IsGet = opts.IsGet
                   IsSet = opts.IsSet
                   Range = cr })
@@ -4677,6 +4696,13 @@ let rec tryParseDecl (s: SExpr) : Decl option =
                 if opts.IsAsync || opts.Uncancellable || opts.Cancellable then
                     failwithf
                         $"Syntax error in import/class at %s{Lexer.formatPos cr}: #:async, #:cancellable and #:uncancellable describe how a call is made, and a constructor is not made that way. They belong on an import/extern clause."
+
+                // Constructing is not the part that waits. Whatever a
+                // constructor opens, the reads and writes afterwards are where
+                // a thread is parked, and those are import/extern clauses.
+                if opts.IsBlocking then
+                    failwithf
+                        $"Syntax error in import/class at %s{Lexer.formatPos cr}: #:blocking marks a call that parks the thread it runs on, and this form declares a type and its constructor. Put it on the import/extern clause for the method that does the waiting."
 
                 // A class is not an accessor. `import/class` declares a type and
                 // its constructor, and a property of that type is imported with

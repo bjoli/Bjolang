@@ -1311,7 +1311,10 @@ let private metadataOf (resolved: DotNetInterop.ResolvedCall) (exceptions: strin
       // Ordinary calls, which are all of them but an `#:async` import's. The
       // async path builds on this and overrides both.
       Await = false
-      AmbientToken = false }
+      AmbientToken = false
+      // A direct `(.Method x)` reaches here, and there is no import clause it
+      // could have carried a `#:blocking` claim on. An alias overrides this.
+      Blocking = false }
 
 /// One use of a generic extern alias: its parameter types, its return type and
 /// its .NET type arguments, all instantiated at fresh metavariables.
@@ -1849,7 +1852,8 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
                           IsStatic = not info.IsInstance
                           Exceptions = info.Exceptions
                           Await = false
-                          AmbientToken = false }
+                          AmbientToken = false
+                          Blocking = info.IsBlocking }
 
                 let node =
                     if info.IsInstance then
@@ -2346,7 +2350,8 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
                       IsStatic = not info.IsInstance
                       Exceptions = info.Exceptions
                       Await = false
-                      AmbientToken = false }
+                      AmbientToken = false
+                      Blocking = info.IsBlocking }
 
             resultType,
             { Type = resultType
@@ -2418,7 +2423,8 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
                         ParameterTypes = visibleParams
                         ReturnType = callResultType
                         Await = info.IsAsync
-                        AmbientToken = threadsToken }
+                        AmbientToken = threadsToken
+                        Blocking = info.IsBlocking }
 
             retType,
             { Type = retType
@@ -4573,6 +4579,14 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                         failwithf
                             $"Syntax error at %s{where}: #:cancellable is what #:async already does — the ambient token is threaded into every #:async call that has an overload to take it. Write one or the other."
 
+                    // The two say opposite things about the same call. An
+                    // `#:async` import compiles to an await, which is a fiber
+                    // giving its thread back; `#:blocking` says the thread is
+                    // held. A call does one or the other.
+                    if spec.IsBlocking && spec.IsAsync then
+                        failwithf
+                            $"Syntax error at %s{where}: '%s{clrType.FullName}.%s{memberName}' is imported both #:async and #:blocking, and those are opposites. An #:async call compiles to an await and hands its thread back; a #:blocking one holds it. Write whichever the method actually does."
+
                     if spec.Cancellable && not (DotNetInterop.hasTokenOverload (not isInstance) clrType memberName None) then
                         failwithf
                             $"Type Error at %s{where}: '%s{clrType.FullName}.%s{memberName}' is imported #:cancellable, but no overload of it takes a System.Threading.CancellationToken. There is nothing to thread."
@@ -4648,7 +4662,8 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                   Exceptions = spec.Exceptions
                   IsAsync = spec.IsAsync
                   Uncancellable = spec.Uncancellable
-                  Cancellable = spec.Cancellable })
+                  Cancellable = spec.Cancellable
+                  IsBlocking = spec.IsBlocking })
 
         let newRegistry =
             infos

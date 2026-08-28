@@ -1,0 +1,16 @@
+;; `#:blocking` on a property read.
+;;
+;; The keyword describes a *call*, and reading a property is not one. The same
+;; reason `#:async` is refused here: there is nothing about a property access to
+;; await, and nothing to hold a thread for. A property that does real work
+;; behind an accessor is better imported as the method it actually is, where the
+;; claim has somewhere to live.
+
+;; EXPECT-ERROR: #:blocking says a *call* parks the thread it runs on
+
+(import (std prelude))
+
+(import/extern
+  (proc-id (: System.Diagnostics.Process.Id (-> System.Diagnostics.Process int) #:get #:blocking)))
+
+(defun (main args) 0)

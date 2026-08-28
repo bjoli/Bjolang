@@ -36,7 +36,11 @@ open System.Text
 /// built *after* this and read by a compiler built before it would fail in the
 /// parser, naming the clauses a trait body may hold, rather than saying the
 /// assembly is from another version.
-let currentVersion = 5
+/// 6: `BlockingDefs` names the exports whose call parks the thread it runs on.
+/// An assembly built before this offers none, so an importing module's blocking
+/// lint stops at every call into it — silently, and at exactly the calls worth
+/// reporting, since the whole port surface lives behind one.
+let currentVersion = 6
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {
@@ -87,6 +91,13 @@ type Metadata = {
     Defs: ExportedDef list
     InlineTemplates: InlineTemplateEntry list
     Macros: MacroEntry list
+    /// Exported definitions whose call parks the thread it runs on.
+    ///
+    /// A separate list rather than a flag on `ExportedDef` because it is about
+    /// the *body*, and an `ExportedDef` is otherwise entirely about the
+    /// signature — a re-exported facade has a signature to publish and no body
+    /// to have analysed.
+    BlockingDefs: string list
 }
 
 let empty = {
@@ -99,9 +110,13 @@ let empty = {
     Defs = []
     InlineTemplates = []
     Macros = []
+    BlockingDefs = []
 }
 
 /// Nothing worth writing: an executable, or a library that exports nothing.
+///
+/// `BlockingDefs` is not among the tests: it names definitions that are already
+/// in `Defs`, so it cannot be the only thing a module has.
 let isEmpty (m: Metadata) =
     m.Deps.IsEmpty
     && m.TypeDecls.IsEmpty
@@ -111,6 +126,7 @@ let isEmpty (m: Metadata) =
     && m.Defs.IsEmpty
     && m.InlineTemplates.IsEmpty
     && m.Macros.IsEmpty
+
 
 // ---------------------------------------------------------------------------
 // The format
@@ -236,6 +252,7 @@ let serialize (m: Metadata) : string =
     putList sb putDef m.Defs
     putList sb putTemplate m.InlineTemplates
     putList sb putMacro m.Macros
+    putList sb putStr m.BlockingDefs
     sb.ToString()
 
 /// `assemblyPath` names the dependency in the error, because the fix is to
@@ -262,6 +279,7 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
     let defs = getList getDef c
     let templates = getList getTemplate c
     let macros = getList getMacro c
+    let blockingDefs = getList getStr c
 
     { Version = version
       Deps = deps
@@ -271,4 +289,5 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
       ImplDecls = implDecls
       Defs = defs
       InlineTemplates = templates
-      Macros = macros }
+      Macros = macros
+      BlockingDefs = blockingDefs }

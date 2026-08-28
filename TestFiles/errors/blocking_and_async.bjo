@@ -1,0 +1,17 @@
+;; `#:async` and `#:blocking` on one clause.
+;;
+;; They are opposites, and about the same thing: what the call does to the
+;; thread it is made on. An `#:async` import compiles to an await, which is a
+;; fiber handing its thread back to the scheduler; `#:blocking` says the thread
+;; is held for the duration. A call does one or the other, and an import that
+;; claimed both would make the blocking lint's answer meaningless — it exists
+;; to tell the two apart.
+
+;; EXPECT-ERROR: imported both #:async and #:blocking, and those are opposites
+
+(import (std prelude))
+
+(import/extern
+  (read-text (: System.IO.File.ReadAllTextAsync (-> string string) #:async #:blocking)))
+
+(defun (main args) 0)
