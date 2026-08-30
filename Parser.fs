@@ -4009,14 +4009,19 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         | SList(SAtom { Token = Symbol "def" } :: SList([ SAtom { Token = Colon }; SAtom { Token = Symbol name }; tType ], _) :: [ expr ], _) :: rest ->
             collectDefs ((name, false, [], Some(parseType tType), parseExpr expr) :: acc) rest
 
-        // A body-local `defbjo`. Rejected rather than parsed, because a local
-        // function is emitted as a C# *local function* and a local function
-        // inside an async method is not itself async — the body would compile
-        // to something that cannot await, and the failure would land in
-        // generated code rather than here. Lift it to the top level.
+        // A body-local `defbjo`. Still rejected, and no longer for the reason it
+        // used to be: a body-local function may suspend now, emitted as an
+        // async C# local function. What it may not do is *declare* that, and
+        // that is the language's own rule rather than a limit of the emitter —
+        // colour is declared where a signature is required, and a local
+        // definition has none. Its colour is read off what its body reaches.
+        //
+        // So the form has nothing left to mean. Accepting it would give the
+        // reader two spellings with one behaviour, and the wrong impression
+        // that the other spelling does not suspend.
         | SList(SAtom { Token = Symbol "defbjo" } :: SList(SAtom { Token = Symbol name } :: _, _) :: _, r) :: _ ->
             failwithf
-                $"Syntax Error at %s{Lexer.formatPos r}: a bjoroutine may only be defined at the top level, and '%s{name}' is inside a body. A local definition is compiled as a C# local function, which cannot suspend."
+                $"Syntax Error at %s{Lexer.formatPos r}: a bjoroutine may only be defined at the top level, and '%s{name}' is inside a body. Write it (defun ...): a body-local function takes its colour from what its body reaches, so it suspends when it needs to and costs nothing when it does not."
 
         | SList(SAtom { Token = Symbol "defun" } :: SList(SAtom { Token = Symbol name } :: args, _) :: rest, r) :: rest' ->
             let parsedArgs = parseDefunArgs args

@@ -407,13 +407,14 @@ let rec private selectIn (registry: TraitRegistry) (allowed: bool) (expr: TypedE
             { expr with Node = TLoop(members, Some(descend body)) }
 
     | TLet(n, isFun, lf, value, body) ->
-        let value = if isFun then sealed_ value else descend value
+        let value = if isFun then localFun registry allowed value else descend value
         { expr with Node = TLet(n, isFun, lf, value, descend body) }
 
     | TLetRec(bindings, body) ->
         let bindings =
             bindings
-            |> List.map (fun (n, isFun, lf, value) -> n, isFun, lf, (if isFun then sealed_ value else descend value))
+            |> List.map (fun (n, isFun, lf, value) ->
+                n, isFun, lf, (if isFun then localFun registry allowed value else descend value))
 
         { expr with Node = TLetRec(bindings, descend body) }
 
@@ -467,6 +468,55 @@ let rec private selectIn (registry: TraitRegistry) (allowed: bool) (expr: TypedE
         match valueCopy registry expr with
         | Some copy -> copy
         | None -> TypeVisitor.mapChildren descend expr
+
+/// A body-local function, and the colour it is emitted in.
+///
+/// This is the one construct whose colour nothing else can answer. A top-level
+/// definition declares it, a lambda takes it from the arrow it is written
+/// against, and a generated copy is told — but a local function has no
+/// signature to declare anything in, which by this language's own rule leaves
+/// it inferred. Here is the only place that knows both halves of the question:
+/// what the body reaches, and which C# member the definition lands in.
+///
+/// **Optimistically, in one pass.** The body is selected as though suspending
+/// were allowed and the answer is whether it then holds a yield point. That is
+/// enough because both outcomes are well formed, not because the guess is
+/// usually right: a suspending copy chosen for a bare name inside a function
+/// that turns out ordinary is a `Func<A,Fiber<B>>` being *built*, and an
+/// ordinary C# method builds one perfectly well. Only calling one needs an
+/// await — and a call is the very thing that would have made the function
+/// async, so the case where the guess would matter cannot arise.
+///
+/// Sealed as before when the enclosing member is ordinary. There is nothing for
+/// a local function to be async *for* there: its caller could not await it. The
+/// yield point inside is then a real error, and `ColourCheck` reports it
+/// against the local function by name.
+and private localFun (registry: TraitRegistry) (allowed: bool) (value: TypedExpr) : TypedExpr =
+    match value.Node with
+    | TLambda(ps, body) when allowed ->
+        // The body directly, rather than through `selectIn`'s `TLambda` case:
+        // that case reads the colour off the arrow to decide how to walk the
+        // body, and the arrow is precisely what is not decided yet.
+        let selected = selectIn registry true body
+
+        let colour =
+            if TypeVisitor.reachesAwait selected then EAsync else ESync
+
+        (match value.Type with
+         | TFun(_, _, eff) ->
+             match pruneEffect eff with
+             | EMeta cell -> cell.EValue <- Some colour
+             | _ -> ()
+         | _ -> ())
+
+        // Grounded in the colour just decided rather than the enclosing one:
+        // whatever is still open in this arrow belongs to *this* member, and it
+        // is this member's colour that answers for it.
+        ground (colour = EAsync) value.Type
+
+        { value with Node = TLambda(ps, selected) }
+
+    | _ -> selectIn registry false value
 
 /// Runs unconditionally: there used to be a short circuit when no `defbjouble`
 /// was in scope, and a `-?->` needs no `defbjouble` anywhere to want its copy.

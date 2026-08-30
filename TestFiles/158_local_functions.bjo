@@ -1,0 +1,128 @@
+;; A body-local function may suspend.
+;;
+;; This used to be `errors/bjo_in_local_function.bjo`, and the message it
+;; carried was a true statement about the emitter that had stopped being a true
+;; statement about C#: a local function inside an async method is not *itself*
+;; async, but it may be declared async, and has been able to be since C# 7.0.
+;;
+;; The colour is inferred rather than written, which is the language's own rule
+;; landing where it always pointed. Colour is declared where a signature is
+;; required; a body-local definition has no signature, so nothing here says
+;; `-bjo->` and nothing needs to. What decides is what the body reaches, and
+;; the enclosing member: a local function that suspends is emitted `async
+;; Fiber<T>` and its callers await it, which only a bjoroutine's body can do.
+;;
+;; So `(defbjo ...)` is still refused inside a body — see
+;; `errors/bjo_local.bjo` — and a local function inside an ordinary `defun`
+;; still cannot suspend, see `errors/suspend_in_local_function.bjo`. Both of
+;; those now say so for the right reason.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: fetch (-> int int))
+(defbjo (fetch x) (* x 2))
+
+;; --- The case that was refused -----------------------------------------------
+;;
+;; `helper` is called twice on purpose, and that was true when this was an error
+;; test too: called once, beta reduction would substitute it away and the yield
+;; point would land in the bjoroutine's own body, where it was always legal. Two
+;; calls are what make the local function real.
+(: outer (-> int int))
+(defbjo (outer n)
+  (defun (helper y) (fetch y))
+  (+ (helper n) (helper (+ n 1))))
+
+;; --- A local function that suspends nothing stays ordinary --------------------
+;;
+;; The colour is not the enclosing member's, it is the body's. `twice` is inside
+;; a bjoroutine and reaches no yield point, so it is emitted as a plain C# local
+;; function and called without an await — no state machine, no `FiberCore` per
+;; call. A rule that painted every local function in a bjoroutine would have
+;; been simpler to write and would have cost this.
+(: mixed (-> int int))
+(defbjo (mixed n)
+  (defun (twice y) (* y 2))
+  (defun (fetch-twice y) (twice (fetch y)))
+  (+ (fetch-twice n) (twice n)))
+
+;; --- One local function calling another ---------------------------------------
+;;
+;; The colour travels: `inner` suspends, so `middle` does for calling it, and
+;; `outer-most` does for calling `middle`. Each decision is made where the
+;; binding is, and each is read back at the call — one effect cell per binding,
+;; shared with every reference to it, so nothing walks back to repaint anything.
+(: chained (-> int int))
+(defbjo (chained n)
+  (defun (inner y) (fetch y))
+  (defun (middle y) (+ (inner y) 1))
+  (defun (outer-most y) (* (middle y) 2))
+  (outer-most n))
+
+;; --- Recursion is not this ----------------------------------------------------
+;;
+;; A recursive body-local function — self or mutual, tail or not — is not a
+;; binding at all by the time colour is decided. `LetRecify` and `LoopLowering`
+;; turn it into a `TLoop`, and a loop is either promoted to a `while` in the
+;; enclosing member, where a yield point was always legal, or left as a loop
+;; member emitted by a different pair of emitters entirely.
+;;
+;; A tail-recursive one is the first case, so it suspends and always could:
+(: countdown (-> int int))
+(defbjo (countdown n)
+  (defun (go i acc)
+    (if (<= i 0)
+        acc
+        (go (- i 1) (+ acc (fetch i)))))
+  (go n 0))
+
+;; A non-tail-recursive one is the second, and is still refused — see
+;; `errors/bjo_in_escaping_loop.bjo`. A loop member carries no arrow of its own
+;; for a colour to live in, which is exactly what made the binding case cheap,
+;; so it is a separate piece of work rather than a line of it.
+
+;; --- Reading a port from a local function -------------------------------------
+;;
+;; The case the restriction was actually costing. `read-line` is a `defbjouble`,
+;; so this local function reaches a generated copy rather than a hand-written
+;; bjoroutine — the colour has to travel through selection to get here.
+(: pair-up (-> TextInputPort string))
+(defbjo (pair-up p)
+  (defun (take-two)
+    (string-append (read-line p) (read-line p)))
+  (string-append (take-two) (take-two)))
+
+;; --- A local function inside an ordinary function is unaffected ---------------
+;;
+;; Nothing here suspends, so nothing changes: an ordinary `defun` with an
+;; ordinary local function, emitted exactly as before.
+(: plain (-> int int))
+(defun (plain n)
+  (defun (add-one y) (+ y 1))
+  (add-one (add-one n)))
+
+;; --- Running one to a value ---------------------------------------------------
+
+(: run-int (-> (Promise int) int))
+(defun (run-int p)
+  (match (sync/blocking (promise-join p))
+    ((Ok n) n)
+    ((Err e) -1)))
+
+(: run-str (-> (Promise string) string))
+(defun (run-str p)
+  (match (sync/blocking (promise-join p))
+    ((Ok s) s)
+    ((Err e) "raised")))
+
+(defun (main)
+  (expect "a local function that suspends" (run-int (bjo (outer 10))) 42)
+  (expect "one that suspends beside one that does not" (run-int (bjo (mixed 5))) 30)
+  (expect "a chain of local functions" (run-int (bjo (chained 5))) 22)
+  (expect "a tail-recursive one, which is a while" (run-int (bjo (countdown 3))) 12)
+  (expect "a local function reading a port"
+          (run-str (bjo (pair-up (open-input-string "a\nb\nc\nd\n"))))
+          "abcd")
+  (expect "an ordinary local function in an ordinary function" (plain 1) 3)
+  0)

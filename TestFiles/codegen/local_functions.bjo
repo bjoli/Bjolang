@@ -1,0 +1,82 @@
+;; What a body-local function compiles to, in each colour.
+;;
+;; This has to be a codegen test. `158_local_functions.bjo` checks that the
+;; answers come out right, and they would come out right either way — a local
+;; function that parked the thread would compute exactly the same number. The
+;; difference is `async` on the local function and `await` at its call sites,
+;; and that is visible here and almost nowhere else.
+;;
+;; Each `EXPECT-CS` line is an extended regex matched against one line.
+
+(export suspending ordinary both chained)
+
+(import (std prelude))
+
+(: fetch (-> int int))
+(defbjo (fetch x) (* x 2))
+
+;; --- A local function that reaches a yield point -----------------------------
+;;
+;; `async` on a *local* function, which C# has allowed since 7.0, and `Fiber<T>`
+;; carries its own `[AsyncMethodBuilder]` — so the local one needs nothing the
+;; method around it did not.
+;;
+;; The call sites are the other half. They await because the arrow says so, and
+;; the arrow says so because one effect cell is shared by the binding and by
+;; every reference to it — which is why nothing had to walk back and repaint
+;; them.
+
+;; EXPECT-CS: async Bjoml.Fiber<int> helper\(int y\)
+;; EXPECT-CS: \(await helper\(n\)\)
+(: suspending (-> int int))
+(defbjo (suspending n)
+  (defun (helper y) (fetch y))
+  (+ (helper n) (helper (+ n 1))))
+
+;; --- One that does not -------------------------------------------------------
+;;
+;; Inside a bjoroutine, and still an ordinary local function: the colour comes
+;; from the body, not from the member around it. Emitted with a plain return
+;; type and called with no await, which is what keeps a helper that only does
+;; arithmetic from allocating a `FiberCore` on every call.
+
+;; EXPECT-CS: ^\s*int quiet\(int y\) \{
+;; EXPECT-CS: return \(quiet\(n\) \+ quiet\(n\)\);
+(: ordinary (-> int int))
+(defbjo (ordinary n)
+  (defun (quiet y) (* y 3))
+  (+ (quiet n) (quiet n)))
+
+;; --- Both, in one body -------------------------------------------------------
+;;
+;; The two decisions are independent and made per binding, so a bjoroutine may
+;; hold one of each.
+
+;; The parameter names are not pinned: two local functions in one body take the
+;; same `y`, and `AlphaRename` gives the second a suffix of its own.
+
+;; EXPECT-CS: async Bjoml.Fiber<int> loud\(int
+;; EXPECT-CS: ^\s*int soft\(int
+(: both (-> int int))
+(defbjo (both n)
+  (defun (soft y) (+ y 1))
+  (defun (loud y) (fetch y))
+  (+ (loud n) (soft n)))
+
+;; --- A chain of them ---------------------------------------------------------
+;;
+;; Each binding decides for itself and each call reads the decision back, so the
+;; colour travels down a chain with nothing propagating it: `inner` suspends
+;; because of `fetch`, `middle` because of `inner`, `outer-most` because of
+;; `middle`. Three `async` local functions and three awaits.
+
+;; EXPECT-CS: async Bjoml.Fiber<int> inner\(int
+;; EXPECT-CS: async Bjoml.Fiber<int> middle\(int
+;; EXPECT-CS: async Bjoml.Fiber<int> outersubmost\(int
+;; EXPECT-CS: \(await middle\(
+(: chained (-> int int))
+(defbjo (chained n)
+  (defun (inner y) (fetch y))
+  (defun (middle y) (+ (inner y) 1))
+  (defun (outer-most y) (* (middle y) 2))
+  (outer-most n))

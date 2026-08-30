@@ -1,15 +1,20 @@
 ;; A body-local `defbjo`.
 ;;
-;; A local definition is compiled to a C# *local function*, and a local function
-;; inside an async method is not itself async. Rejected in the parser, by name,
-;; rather than allowed through to fail somewhere the user cannot see it.
+;; Still refused, and the reason has moved. It used to be that a local function
+;; could not suspend at all; now it can — `158_local_functions.bjo` is the whole
+;; group of that — so what is refused here is the *declaration*, not the thing
+;; declared.
 ;;
-;; There is no deep reason it must stay this way — a local bjoroutine could be
-;; lifted, or emitted as an async local function — but neither is written, and
-;; a form that silently compiles to the wrong thing is worse than one that says
-;; no.
+;; Which is the language's own rule rather than a limit of the emitter. Colour
+;; is declared where a signature is required, and a body-local definition has
+;; no signature: it takes its colour from what its body reaches. `defbjo` here
+;; would be a second spelling with one behaviour, and would leave the reader
+;; thinking the first spelling does not suspend.
+;;
+;; So the advice is the point of the message: write `defun`, and it suspends.
 
 ;; EXPECT-ERROR: bjoroutine may only be defined at the top level
+;; EXPECT-ERROR: takes its colour from what its body reaches
 
 (: outer (-> int int))
 (defbjo (outer x)

@@ -191,6 +191,45 @@ let rec mapDeclWithContext (f: TDecl -> TypedExpr -> TypedExpr) (decl: TDecl) : 
         TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods |> List.map (mapDeclWithContext f), r)
     | _ -> mapDecl (f decl) decl
 
+/// Does evaluating this expression *in the member it is written in* reach an
+/// `await`?
+///
+/// "In the member it is written in" is the whole content of the question, and
+/// is why the sub-member cases answer `false` without looking inside: a lambda,
+/// a sequence and a body-local function each open a C# member of their own, so
+/// an await in one of them is that member's business and not this one's. A
+/// local function that awaits still makes its *caller* await — but through the
+/// call, which is the `TApply` case, not through the definition.
+///
+/// `bjo` is the one shape where the distinction is live: its operands are
+/// evaluated here and its call is not.
+///
+/// Two callers, and they have to agree: `EffectGraph` asks it to decide whether
+/// a body-local function is async, and `Codegen` asks it to decide whether a
+/// guarded region — `#:exceptions`, or a `(try ...)` — has to become an async
+/// lambda rather than a plain one. Two copies of this walk would be two
+/// answers, and the second would be found by Roslyn rather than by a test.
+let rec reachesAwait (expr: TypedExpr) : bool =
+    match expr.Node with
+    // A function-shaped binding's value is a `TLambda`, so both are covered
+    // here, and a `TLetRec` group's members likewise.
+    | TLambda _
+    | TSeq _ -> false
+    | TBjo body ->
+        match body.Node with
+        | TApply(target, args, kwArgs) ->
+            reachesAwait target
+            || List.exists reachesAwait args
+            || kwArgs |> List.exists (snd >> reachesAwait)
+        | _ -> false
+    | TForeignStaticCall(_, _, _, Some meta) when meta.Await -> true
+    | TDotMethodCall(_, _, _, Some meta) when meta.Await -> true
+    | TApply(target, _, _) when callSuspends target.Type -> true
+    // A dispatched trait method whose trait declared `-bjo->`. The colour is on
+    // the node rather than on an arrow, so the case above cannot see it.
+    | TInterfaceCall(_, _, eff, _, _) when groundEffect eff = EAsync -> true
+    | _ -> children expr |> List.exists reachesAwait
+
 /// Deep pre-order fold over every expression contained in `decl`.
 let foldDecl (f: 'S -> TypedExpr -> 'S) (state: 'S) (decl: TDecl) : 'S =
     let acc = ref state

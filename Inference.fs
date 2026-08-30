@@ -1773,7 +1773,18 @@ let private localFunShape (env: Env) (args: DefunArg list) (retAnn: FType option
       Keywords = keywords
       Rest = rest
       RetType = retType
-      FunType = tfun argTypes retType
+      // A *cell*, not `ESync`, because a body-local function has no signature
+      // and so nothing to declare a colour in — which by this language's own
+      // rule means the colour is inferred. `EffectGraph` binds it once it has
+      // seen the body: a local function that reaches a yield point becomes an
+      // `async` C# local function, and one that does not stays ordinary.
+      //
+      // The cell is shared by every reference, which is what makes this work
+      // with no repainting anywhere. `generalizeLocal` quantifies `MetaVar`s
+      // and an `EffectCell` is not one, and `instantiate` freshens `EPoly` and
+      // passes every other effect through — so each use of the name, including
+      // a recursive one, reads back the same cell the binding decided.
+      FunType = TFun(argTypes, retType, freshEffect ())
       Meta =
         { MandatoryCount = mandatory.Length
           KeywordParams = keywords |> List.map (fun (n, t, _) -> n, t)

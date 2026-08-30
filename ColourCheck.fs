@@ -154,8 +154,8 @@ let private explain (site: Site) : string =
 
     | InLocalFun name ->
         lines
-            [ $"It is inside '%s{name}', a body-local function, which is emitted as a C# local function — and a local function inside an async method is not itself async."
-              $"Inline '%s{name}' into the bjoroutine's body, or lift it out to a top-level (defbjo ...) and call it." ]
+            [ $"It is inside '%s{name}', a body-local function, and the definition around it is not a bjoroutine. A local function may suspend — it is emitted async and its callers await it — but its callers are here, and an ordinary member cannot await."
+              $"Make the enclosing definition a (defbjo ...). '%s{name}' needs no annotation of its own: a body-local function takes its colour from what its body reaches." ]
 
     | InEscapingLoop name ->
         lines

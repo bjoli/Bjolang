@@ -4,7 +4,15 @@
 ;; is written exactly like the named `let` in `074_bjoroutine.bjo`, which is allowed to
 ;; suspend — but it is also *passed to* `apply2`, and a thing you pass has to be
 ;; a value, so it cannot be a jump target. Loop lowering leaves it as a C# local
-;; function, and a local function inside an async method is not itself async.
+;; function.
+;;
+;; A body-local `(defun ...)` may suspend now — see `158_local_functions.bjo` —
+;; and this is the same emitted shape wanting the same treatment. It has not had
+;; it: a loop member is not a function-shaped binding, has no arrow of its own
+;; to carry a colour, and is emitted by a different pair of emitters. So this
+;; stays refused, and the message stays about the escape rather than about the
+;; colour: the fix it names — stop passing `go` as a value — turns this into a
+;; `while` in the enclosing bjoroutine, where a yield point was always fine.
 ;;
 ;; Two syntactically identical forms, two different answers, and nothing at type
 ;; checking time can tell them apart. So the check runs after `LoopLowering` and

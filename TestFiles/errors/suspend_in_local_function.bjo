@@ -1,0 +1,36 @@
+;; A yield point inside a body-local function, in an ordinary definition.
+;;
+;; The half of `errors/bjo_in_local_function.bjo` that survived. A local
+;; function may suspend now — `158_local_functions.bjo` is the group of that —
+;; but only where its *callers* can await it, and its callers are the enclosing
+;; body. `outer` is a `defun`, so they cannot.
+;;
+;; Which means the reason has moved from the local function to the thing around
+;; it, and the message had to move with it. Saying "a local function inside an
+;; async method is not itself async" would now be false twice over: local
+;; functions can be async, and there is no async method here anyway.
+;;
+;; The advice has to work, so it names the one change that fixes this: make
+;; `outer` a bjoroutine. It deliberately does *not* offer `(defbjo (helper ...))`
+;; — that is refused by the parser, and offering it would land the reader in a
+;; second error, which is the one thing a diagnostic here may never do.
+;;
+;; `helper` is called twice on purpose. Called once, beta reduction would
+;; substitute it away and the yield point would land in `outer`'s own body,
+;; which is a different diagnostic.
+
+;; EXPECT-ERROR: calling 'fetch' is a yield point
+;; EXPECT-ERROR: yield point is not allowed here
+;; EXPECT-ERROR: inside 'helper', a body-local function
+;; EXPECT-ERROR: the definition around it is not a bjoroutine
+;; EXPECT-ERROR: Make the enclosing definition a (defbjo ...)
+
+(: fetch (-> int int))
+(defbjo (fetch x) (* x 2))
+
+(: outer (-> int int))
+(defun (outer n)
+  (defun (helper y) (fetch y))
+  (+ (helper n) (helper (+ n 1))))
+
+(defun (main args) 0)

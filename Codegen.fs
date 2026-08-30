@@ -979,35 +979,9 @@ let private foreignTypeArguments (meta: DotNetMethodMetadata option) =
     | _ -> ""
 
 /// Does evaluating this expression *in the member it is written in* reach an
-/// `await`?
-///
-/// Only used to decide whether a guarded region — `#:exceptions`, or a `(try
-/// ...)` — has to become an async lambda rather than a plain one. A `Func<R>`
-/// body cannot contain an await, and a `Func<Fiber<R>>` body can.
-///
-/// The sub-member cases answer `false` without looking inside, and that is
-/// exact rather than approximate: `ColourCheck` has already rejected an await
-/// in any of them, so a program that reaches the emitter has none to find.
-/// `bjo` is the one shape where the distinction is live — its operands are
-/// evaluated here and its call is not.
-let rec private containsAwait (expr: TypedExpr) : bool =
-    match expr.Node with
-    | TLambda _
-    | TSeq _ -> false
-    | TBjo body ->
-        match body.Node with
-        | TApply (target, args, kwArgs) ->
-            containsAwait target
-            || List.exists containsAwait args
-            || kwArgs |> List.exists (snd >> containsAwait)
-        | _ -> false
-    | TForeignStaticCall (_, _, _, Some meta) when meta.Await -> true
-    | TDotMethodCall (_, _, _, Some meta) when meta.Await -> true
-    | TApply (target, _, _) when callSuspends target.Type -> true
-    // A dispatched trait method whose trait declared `-bjo->`. The colour is on
-    // the node rather than on an arrow, so the case above cannot see it.
-    | TInterfaceCall (_, _, eff, _, _) when groundEffect eff = EAsync -> true
-    | _ -> TypeVisitor.children expr |> List.exists containsAwait
+/// `await`? Shared with `EffectGraph`, which decides a body-local function's
+/// colour with the same walk that decides a guarded region's here.
+let private containsAwait = TypeVisitor.reachesAwait
 
 /// Translates a typed pattern into C# pattern syntax.
 let rec generatePattern (ctx: CodegenContext) (pat: TypedPattern) : unit =
@@ -3345,8 +3319,18 @@ and private generateLocalFunction
         if typeParams.IsEmpty then ""
         else "<" + (typeParams |> List.map typeParamName |> String.concat ", ") + ">"
 
+    // The colour `EffectGraph` decided for this function, which is emitted here
+    // exactly as a method's is. C# has had async local functions since 7.0, and
+    // `Fiber<T>` carries its own `[AsyncMethodBuilder]`, so a local one needs
+    // nothing a method did not.
+    let effect =
+        match funType with
+        | TFun(_, _, eff) -> groundEffect eff
+        | _ -> ESync
+
     indent ctx
-    append ctx (typeToString retType)
+    if effect = EAsync then append ctx "async "
+    append ctx (returnTypeString effect retType)
     append ctx " "
     append ctx (sanitizeIdent name)
     append ctx tyParamsStr
@@ -3359,8 +3343,15 @@ and private generateLocalFunction
     appendLine ctx ") {"
     // A local function is a new function scope: it cannot jump into the
     // enclosing loop, nor yield into the enclosing sequence.
+    //
+    // A suspending one never returns void, for the reason a bjoroutine does
+    // not: `async Fiber<Bjoml.Unit>` owes its builder a `SetResult(value)`, so
+    // the body has to produce a unit rather than fall off the end.
     withIndent
-        { ctx with Loop = None; InSeq = false; ReturnsVoid = isVoidType retType }
+        { ctx with
+            Loop = None
+            InSeq = false
+            ReturnsVoid = isVoidType retType && effect <> EAsync }
         (fun c ->
             generateArgumentPrologue c fn.KeywordArgs fn.RestArg KeywordParameters
             generateBlock c Return lambdaBody)
