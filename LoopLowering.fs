@@ -471,6 +471,25 @@ let mergedLoopEntry (members: TLoopMember list) (body: TypedExpr) : (int * Typed
 let isInlinedLoop (members: TLoopMember list) (body: TypedExpr) : bool =
     (flatLoopEntry members body).IsSome || (mergedLoopEntry members body).IsSome
 
+/// Which of the group's names are mentioned somewhere that is not a jump.
+///
+/// `isInlinedLoop` answers *whether* a group stays a local function; this
+/// answers *what made it*, which is what a diagnostic needs and what it used to
+/// guess. The guess was "it still mentions its own name", which is true of a
+/// single self-recursive member and false of a mutually recursive pair — where
+/// each member escapes because of the *other*, and a message naming the wrong
+/// one sends the reader looking for a use that is not there.
+///
+/// Empty when the group is inlined, and also when it was refused for a reason
+/// that is not a name at all: a group entered by something other than an
+/// immediate call to a member has no escaping name to report.
+let escapingNames (members: TLoopMember list) (body: TypedExpr) : string list =
+    let names = members |> List.map (fun m -> m.LoopName) |> Set.ofList
+
+    members
+    |> List.collect (fun m -> referencedNames m.Body |> Set.intersect names |> Set.toList)
+    |> List.distinct
+
 /// `aliasFor` supplies the extra name a trait-`impl` method answers to.
 let rec private lowerDeclWith (aliasFor: string -> string list) (decl: TDecl) : TDecl =
     match decl with

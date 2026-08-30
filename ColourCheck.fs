@@ -104,8 +104,11 @@ type private Site =
     /// A function-shaped `let` binding, which is emitted as a C# local
     /// function.
     | InLocalFun of string
-    /// A loop that stayed a local function instead of becoming a `while`.
-    | InEscapingLoop of string
+    /// A loop that stayed a local function instead of becoming a `while`, and
+    /// the group names whose use kept it one. The second is what makes the
+    /// message true of a mutually recursive pair, where a member escapes
+    /// because of its partner rather than because of itself.
+    | InEscapingLoop of name: string * escaped: string list
 
 let private isAllowed (site: Site) =
     match site with
@@ -157,10 +160,33 @@ let private explain (site: Site) : string =
             [ $"It is inside '%s{name}', a body-local function, and the definition around it is not a bjoroutine. A local function may suspend — it is emitted async and its callers await it — but its callers are here, and an ordinary member cannot await."
               $"Make the enclosing definition a (defbjo ...). '%s{name}' needs no annotation of its own: a body-local function takes its colour from what its body reaches." ]
 
-    | InEscapingLoop name ->
+    | InEscapingLoop(name, escaped) ->
+        // Which name to blame. A single self-recursive member is blamed for
+        // itself; a mutually recursive group is blamed for whichever of its
+        // names is used in a way a jump cannot express, which is usually not
+        // the member the yield point happens to sit in.
+        let cause =
+            match escaped with
+            | [] ->
+                $"'%s{name}' is a loop that is not entered by a plain call to it, so there is nothing to jump *to* and it stays a C# local function."
+            | [ single ] when single = name ->
+                $"'%s{name}' is a loop, but it still mentions its own name — it is passed somewhere as a value, or called from somewhere that is not its own tail — so it has to be a real function for that name to refer to, and it stays a C# local function rather than becoming a while."
+            | [ single ] ->
+                $"'%s{name}' is one of a group of loops, and '%s{single}' is mentioned somewhere that is not a jump — passed as a value, or called from somewhere that is not a tail position. A name used that way needs a real function to refer to, so the whole group stays C# local functions."
+            | many ->
+                let named = many |> List.map (fun n -> $"'%s{n}'") |> String.concat " and "
+
+                $"'%s{name}' is one of a group of loops, and %s{named} are mentioned somewhere that is not a jump — passed as a value, or called from somewhere that is not a tail position. A name used that way needs a real function to refer to, so the whole group stays C# local functions."
+
+        // Two fixes, because one of them does not always apply: a non-tail call
+        // can be made tail, and a genuine value use cannot. Lifting works for
+        // both, at the price of passing what the loop captured.
+        let blamed = if escaped.IsEmpty then [ name ] else escaped
+        let subject = blamed |> List.map (fun n -> $"'%s{n}'") |> String.concat " and "
+
         lines
-            [ $"'%s{name}' is a loop, but it still mentions its own name — it is passed somewhere as a value, or called from somewhere that is not its own tail — so it has to be a real function for that name to refer to, and it stays a C# local function rather than becoming a while."
-              $"A loop that only ever jumps to itself is emitted as a while in the enclosing bjoroutine, where a yield point is fine. Stop using '%s{name}' as a value and it becomes one." ]
+            [ cause
+              $"A loop that is only ever jumped to is emitted as a while in the enclosing bjoroutine, where a yield point is fine — so make every mention of %s{subject} a tail call, and none of them a value. Where the recursion cannot be made tail, lift it out to a top-level (defbjo ...) and call it, passing what it used to capture." ]
 
     | InLambda pin ->
         let where =
@@ -254,7 +280,10 @@ let rec private checkExpr (site: Site) (expr: TypedExpr) : unit =
             let inlined = LoopLowering.isInlinedLoop members body
 
             members
-            |> List.iter (fun m -> checkExpr (if inlined then site else InEscapingLoop m.LoopName) m.Body)
+            let escaped = if inlined then [] else LoopLowering.escapingNames members body
+
+            members
+            |> List.iter (fun m -> checkExpr (if inlined then site else InEscapingLoop(m.LoopName, escaped)) m.Body)
 
             descend body
 

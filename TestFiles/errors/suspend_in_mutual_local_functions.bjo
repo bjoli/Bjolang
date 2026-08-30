@@ -1,0 +1,37 @@
+;; A yield point in a mutually recursive pair of body-local functions.
+;;
+;; This is the shape that made the old message wrong. A body-local function may
+;; suspend now — `158_local_functions.bjo` — but a *recursive* one is not a
+;; binding by the time colour is decided: `LetRecify` and `LoopLowering` turn it
+;; into a loop, and a loop either becomes a `while` in the enclosing member or
+;; stays a group of C# local functions. Only the first can suspend.
+;;
+;; What decides is tail position, not recursion. `evens` calls `odds` inside a
+;; `+`, so it is a call rather than a jump, and a call needs a real function to
+;; refer to.
+;;
+;; The message had been "'evens' is a loop, but it still mentions its own name
+;; ... Stop using 'evens' as a value and it becomes one". Both halves are false
+;; here: `evens` mentions `odds`, not itself, and neither is used as a value
+;; anywhere — so the reader was sent looking for something that is not in the
+;; program. It now names `odds`, which is the one that cannot be jumped to.
+;;
+;; Both fixes it offers are checked. Making the mention a tail call is
+;; `158_local_functions.bjo`'s `parity`, which compiles; lifting to a top-level
+;; `defbjo` is what `errors/suspend_in_recursive_local_function.bjo` describes.
+
+;; EXPECT-ERROR: calling 'fetch' is a yield point
+;; EXPECT-ERROR: 'evens' is one of a group of loops
+;; EXPECT-ERROR: 'odds' is mentioned somewhere that is not a jump
+;; EXPECT-ERROR: make every mention of 'odds' a tail call
+
+(: fetch (-> int int))
+(defbjo (fetch x) (* x 2))
+
+(: outer (-> int int))
+(defbjo (outer n)
+  (defun (evens i) (if (<= i 0) 0 (+ (fetch i) (odds (- i 1)))))
+  (defun (odds i) (if (<= i 0) 0 (evens (- i 1))))
+  (evens n))
+
+(defun (main args) 0)

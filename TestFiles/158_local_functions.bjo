@@ -68,7 +68,9 @@
 ;; enclosing member, where a yield point was always legal, or left as a loop
 ;; member emitted by a different pair of emitters entirely.
 ;;
-;; A tail-recursive one is the first case, so it suspends and always could:
+;; What decides is **tail position, not recursion**, and that is worth pinning
+;; because it is not what the shape of the source suggests. A tail-recursive
+;; one is jumped to, so it becomes a `while` and suspends:
 (: countdown (-> int int))
 (defbjo (countdown n)
   (defun (go i acc)
@@ -77,10 +79,21 @@
         (go (- i 1) (+ acc (fetch i)))))
   (go n 0))
 
-;; A non-tail-recursive one is the second, and is still refused — see
-;; `errors/bjo_in_escaping_loop.bjo`. A loop member carries no arrow of its own
-;; for a colour to live in, which is exactly what made the binding case cheap,
-;; so it is a separate piece of work rather than a line of it.
+;; And so does a *mutually* recursive pair, as long as both calls are tails.
+;; Two names, one `while`, and a yield point in either of them is fine — which
+;; is the case a rule about recursion would have got wrong.
+(: parity (-> int int))
+(defbjo (parity n)
+  (defun (evens i) (if (<= i 0) 0 (odds (- i 1))))
+  (defun (odds i) (if (<= i 0) (fetch 21) (evens (- i 1))))
+  (evens n))
+
+;; A call that is *not* a tail is refused, self or mutual — see
+;; `errors/suspend_in_recursive_local_function.bjo` and
+;; `errors/suspend_in_mutual_local_functions.bjo`. A loop member carries no
+;; arrow of its own for a colour to live in, which is exactly what made the
+;; binding case cheap, so it is a separate piece of work rather than a line of
+;; it.
 
 ;; --- Reading a port from a local function -------------------------------------
 ;;
@@ -121,6 +134,11 @@
   (expect "one that suspends beside one that does not" (run-int (bjo (mixed 5))) 30)
   (expect "a chain of local functions" (run-int (bjo (chained 5))) 22)
   (expect "a tail-recursive one, which is a while" (run-int (bjo (countdown 3))) 12)
+  ;; An odd argument is the one that lands on `odds`, which is where the yield
+  ;; point is; an even one walks down to `(evens 0)` and answers 0 without ever
+  ;; suspending. Both are the same `while`.
+  (expect "a mutually tail-recursive pair, which is one while" (run-int (bjo (parity 3))) 42)
+  (expect "the same pair, taking the arm that does not suspend" (run-int (bjo (parity 4))) 0)
   (expect "a local function reading a port"
           (run-str (bjo (pair-up (open-input-string "a\nb\nc\nd\n"))))
           "abcd")
