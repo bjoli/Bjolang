@@ -9,12 +9,13 @@
 
 (import (std prelude))
 
-;; Both culture-free, and `ToInt64` overflows rather than saturating: a number
-;; too wide for a long has to be caught and read again as a double. Called
-;; here rather than through the prelude's `string->double`, which is the same
-;; function under three more frames.
+;; Both culture-free, and the long one overflows rather than saturating: a
+;; number too wide for a long has to be caught and read again as a double.
+;;
+;; They read the scanned digits off the builder rather than out of a string,
+;; because a `string` per number is an allocation per number.
 (import/extern
-  (clr-to-long   (: System.Xml.XmlConvert.ToInt64))
+  (clr-to-long   (: Bjolang.Runtime.BjoNum.ParseLong))
   (clr-to-double (: Bjolang.Runtime.BjoNum.ParseDouble)))
 
 ;; One UTF-16 unit, or -1 at the end. `read-char/opt` is this with an eof test
@@ -406,14 +407,13 @@
     (match (scan-number rd sb)
       ((Err e) (Err e))
       ((Ok fractional?)
-       (let ((text (stringbuilder->string sb)))
-         (if fractional?
-             (Ok (JsonFloat (clr-to-double text)))
-             ;; Wider than a long is still a number, and a double is what every
-             ;; other reader answers with.
-             (match (try (clr-to-long text) #:catch (System.OverflowException))
-               ((Ok n) (Ok (JsonInt n)))
-               ((Err _) (Ok (JsonFloat (clr-to-double text)))))))))))
+       (if fractional?
+           (Ok (JsonFloat (clr-to-double sb)))
+           ;; Wider than a long is still a number, and a double is what every
+           ;; other reader answers with.
+           (match (try (clr-to-long sb) #:catch (System.OverflowException))
+             ((Ok n) (Ok (JsonInt n)))
+             ((Err _) (Ok (JsonFloat (clr-to-double sb))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Values

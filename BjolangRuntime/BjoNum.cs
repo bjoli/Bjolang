@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 
 namespace Bjolang.Runtime;
 
@@ -25,4 +26,32 @@ public static class BjoNum {
 
     public static string DoubleToString(double d) =>
         d.ToString(CultureInfo.InvariantCulture);
+
+    // A scanner that has just spelled a number into a builder wants the number,
+    // not the string. `ToString` allocates one per number read; these copy into
+    // the stack instead.
+    //
+    // The bound is longer than any number worth writing. Past it the digits
+    // cannot change the answer, but they are still copied, because a number is
+    // allowed to be as long as it likes and refusing one here would be a
+    // parse error invented by an optimisation.
+    private const int Stacked = 512;
+
+    public static double ParseDouble(StringBuilder b) {
+        char[]? spilled = null;
+        Span<char> chars = b.Length <= Stacked ? stackalloc char[Stacked]
+                                               : (spilled = new char[b.Length]);
+        b.CopyTo(0, chars, b.Length);
+        return double.Parse(chars[..b.Length], NumberStyles.Float, CultureInfo.InvariantCulture);
+    }
+
+    /// Overflows rather than saturating, so a number too wide for a long can be
+    /// caught and read again as a double.
+    public static long ParseLong(StringBuilder b) {
+        char[]? spilled = null;
+        Span<char> chars = b.Length <= Stacked ? stackalloc char[Stacked]
+                                               : (spilled = new char[b.Length]);
+        b.CopyTo(0, chars, b.Length);
+        return long.Parse(chars[..b.Length], NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture);
+    }
 }
