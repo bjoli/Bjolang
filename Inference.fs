@@ -1324,6 +1324,36 @@ let private classInfoOfSpec (spec: ClassImportSpec) : ClrClassInfo =
 let private classAliasTarget (info: ClrClassInfo) : HMType =
     TCon(info.ClrName, info.TypeParams |> List.map (fun p -> TVar("'" + p)))
 
+/// The same signature, with every `-?->` parameter fixed at the suspending
+/// colour — what the suspending half of a pair is checked and emitted against.
+///
+/// Only a parameter that is *itself* `-?->` is repainted. That is the whole of
+/// what the parser lets through: an arrow nested inside a container is refused,
+/// so there is no deeper case to reach.
+///
+/// Two callers, and they are the two ways a pair comes about.
+/// `expandPolymorphicDefuns` generates the second body from the first, and
+/// `defbjouble` has it written by hand — but both need the *same* repainting,
+/// or the hand-written one is emitted taking a `Func<A,B>` while its body
+/// awaits it.
+let suspendingSignature (ftype: FType) : FType =
+    let repaint (t: FType) =
+        match t with
+        | TApp("-?->", args, r) -> TApp("-bjo->", args, r)
+        | other -> other
+
+    match ftype with
+    | TArrow(mandatory, keywords, restOpt, ret, colour, r) ->
+        TArrow(
+            mandatory |> List.map repaint,
+            keywords |> List.map (fun (n, t) -> n, repaint t),
+            restOpt |> Option.map repaint,
+            ret,
+            colour,
+            r
+        )
+    | other -> other
+
 /// The .NET type a receiver expression has, or a diagnostic saying why not.
 let private receiverClrType (where: string) (form: string) (targetType: HMType) : System.Type =
     // `(.ToString 5)` — a receiver is a place a type has to be concrete now.
@@ -4090,8 +4120,23 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
             // against the one signature — which `recolour` repaints for each.
             let env, sigs, syncDecls = checkDecl env sigs (DDefun(name, defunArgs, syncBody, Ordinary, r))
 
+            // The suspending half is checked against the signature *repainted*,
+            // exactly as a generated twin is. Without it a `-?->` parameter
+            // here would be emitted `Func<A,B>` while the body awaited it, and
+            // the mismatch would land in generated C#.
+            //
+            // Re-resolved from the repainted annotation rather than patched in
+            // the `HMType`, so there is one place that knows what repainting
+            // means.
+            let bjoSignature =
+                match signature with
+                | _, Some ftype, constraints ->
+                    let repainted = suspendingSignature ftype
+                    resolveTypeAnnotation env.Registry repainted, Some repainted, constraints
+                | other -> other
+
             let env, sigs, bjoDecls =
-                checkDecl env (Map.add bjoName signature sigs) (DDefun(bjoName, defunArgs, bjoBody, Suspending, r))
+                checkDecl env (Map.add bjoName bjoSignature sigs) (DDefun(bjoName, defunArgs, bjoBody, Suspending, r))
 
             // **Leaves only**, and the check is mechanical: the `#:bjo` body
             // has to contain a yield point the `#:sync` body does not.
@@ -4258,12 +4303,12 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
 
         /// The colour a `-?->` parameter has *inside this body*.
         ///
-        /// Ordinary, always — because this definition is the ordinary copy.
-        /// `expandPolymorphicDefuns` built the other one from a signature where
-        /// the same arrow reads `-bjo->`, so between them the two copies cover
-        /// both colours and neither has a choice left to make. The `EPoly` stays
-        /// in `mandatoryTypes` and in the published scheme, which is where a
-        /// caller and an importing module read that a second copy exists.
+        /// Whichever copy this body is. A generated pair covers both colours
+        /// between them — `expandPolymorphicDefuns` builds the other one from a
+        /// signature where the same arrow reads `-bjo->` — so neither has a
+        /// choice left to make. The `EPoly` stays in `mandatoryTypes` and in the
+        /// published scheme, which is where a caller and an importing module
+        /// read that a second copy exists.
         ///
         /// It matters because `EPoly` reaching a use site becomes a fresh cell,
         /// and a cell nothing constrains is answered by *defaulting* — with the
@@ -4271,6 +4316,14 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
         /// copy await its own `Func<A,B>` parameter, which Roslyn rejects in a
         /// file nobody wrote. The parameter's colour is not the enclosing
         /// member's business; it is decided by which copy this is.
+        ///
+        /// `ESync` and not the definition's own colour, which is a distinction
+        /// worth stating because they look interchangeable and are not: a
+        /// `defbjo` declaring a `-?->` parameter is `Suspending` and is still
+        /// the *ordinary-callback* copy. What tells the two apart is the
+        /// signature, not the definer — a suspending copy is checked against a
+        /// repainted one where the arrow already reads `-bjo->`, so `EPoly`
+        /// never reaches here for it and this case cannot fire.
         let bodyParamType (t: HMType) =
             match t with
             | TFun(args, ret, EPoly) -> TFun(args, ret, ESync)
@@ -5669,14 +5722,6 @@ and private checkDeclGroup
     /// other place it could be demanded from — and the published `-?->` in the
     /// signature is what tells that importer the twin exists.
     let expandPolymorphicDefuns (decls: Decl list) : Decl list =
-        /// Only a parameter that is *itself* `-?->` is repainted. That is the
-        /// whole of what the parser lets through: an arrow nested inside a
-        /// container is refused, so there is no deeper case to reach.
-        let repaint (t: FType) =
-            match t with
-            | TApp("-?->", args, r) -> TApp("-bjo->", args, r)
-            | other -> other
-
         let parameters (ftype: FType) =
             match ftype with
             | TArrow(mandatory, keywords, restOpt, _, _, _) ->
@@ -5688,19 +5733,6 @@ and private checkDeclGroup
             |> List.exists (function
                 | TApp("-?->", _, _) -> true
                 | _ -> false)
-
-        let suspendingSignature (ftype: FType) =
-            match ftype with
-            | TArrow(mandatory, keywords, restOpt, ret, colour, r) ->
-                TArrow(
-                    mandatory |> List.map repaint,
-                    keywords |> List.map (fun (n, t) -> n, repaint t),
-                    restOpt |> Option.map repaint,
-                    ret,
-                    colour,
-                    r
-                )
-            | other -> other
 
         let signatures =
             decls
