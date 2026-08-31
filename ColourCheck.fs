@@ -296,7 +296,6 @@ let rec private checkExpr (site: Site) (expr: TypedExpr) : unit =
         | Some body ->
             let inlined = LoopLowering.isInlinedLoop members body
 
-            members
             let escaped = if inlined then [] else LoopLowering.escapingNames members body
 
             // A group that stays C# local functions may still suspend — it is
