@@ -580,21 +580,28 @@
 ;; ---------------------------------------------------------------------------
 ;; Lists, where the callback may suspend
 ;; ---------------------------------------------------------------------------
-;;
+;; The -?-> arrow means the callback may suspend. bjolang compiles both a
+;; regular and a defbjo version of list-map. 
 (: list-map (-> (-?-> %a %b) (List %a) (List %b)))
 (defun (list-map f xs)
-  (let go ((rest xs) (acc (list-empty)))
-    (if (list-empty? rest)
-        (list-reverse acc)
-        (go (list-tail rest) (cons (f (list-head rest)) acc)))))
+  (let ((b (listbuilder-empty)))
+    (let go ((rest xs))
+      (if (list-empty? rest)
+          (listbuilder->list b)
+          (let ()
+            (listbuilder-add! b (f (list-head rest)))
+            (go (list-tail rest)))))))
 
 (: list-filter (-> (-?-> %a bool) (List %a) (List %a)))
 (defun (list-filter keep? xs)
-  (let go ((rest xs) (acc (list-empty)))
-    (if (list-empty? rest)
-        (list-reverse acc)
-        (let ((x (list-head rest)))
-          (go (list-tail rest) (if (keep? x) (cons x acc) acc))))))
+  (let ((b (listbuilder-empty)))
+    (let go ((rest xs))
+      (if (list-empty? rest)
+          (listbuilder->list b)
+          (let ((x (list-head rest)))
+            (when (keep? x)
+              (listbuilder-add! b x))
+            (go (list-tail rest)))))))
 
 ;; The folds take the function first, then the identity, then the collection:
 ;; the two parts that describe *how* to fold stay together at the call site
@@ -629,25 +636,12 @@
 ;; Vecs, where the callback may suspend
 ;; ---------------------------------------------------------------------------
 ;;
-;; The same `-?->` callbacks the list functions above have, and a different
-;; arrangement underneath. A `(Vec %a)` is an RRB tree, and mapping one is an
-;; algorithm — it copies the spine and shares every subtree it can — so the
-;; ordinary colour keeps calling it. Only the suspending copy is written here,
-;; as a plain indexed walk.
+;; `defbjouble` rather than the plain `defun` the list functions use, because a
+;; `(Vec %a)` is an RRB tree and the C# map shares every subtree it can. The
+;; ordinary colour keeps that; only the suspending copy is written here.
 ;;
-;; That is what `defbjouble` is for, and it is the first use of one that is not
-;; a leaf: two bodies, one signature, and the second body exists because the
-;; first cannot be awaited rather than because it calls a different .NET method.
-;; A `-?->` parameter is repainted for the `#:bjo` half, so `(f x)` there is a
-;; yield point and `(f x)` in the `#:sync` half is not.
-;;
-;; The suspending walks are slower than the trees they replace, and that is the
-;; trade: a caller awaiting on every element is not in a position to care, and a
-;; caller who is not never reaches these bodies.
-;;
-;; `vec-any?`, `vec-find` and the rest are deliberately absent. Their callbacks
-;; ask a question rather than do work, and a suspending one is a `vec-fold`
-;; away — so they would double for something already expressible.
+;; `vec-any?`, `vec-find` and the rest are absent on purpose: their callbacks
+;; ask a question rather than do work, and a suspending one is a `vec-fold`.
 
 (import/extern
   (clr-vec-map            (: BjolangRuntime.RrbMap          (-> (-> %a %b) (Vec %a) (Vec %b))))
@@ -658,24 +652,33 @@
   (clr-vec-for-each/range (: BjolangRuntime.RrbForEachRange (-> (-> %a Unit) (Vec %a) int int Unit)))
   (clr-vec-iter           (: BjolangRuntime.RrbIter         (-> (-> %a bool) (Vec %a) bool))))
 
+;; A builder rather than `vec-add`, because nothing can observe the result until
+;; it is returned: persistence would buy a fresh path through the tree per
+;; element and protect nobody.
 (: vec-map (-> (-?-> %a %b) (Vec %a) (Vec %b)))
 (defbjouble (vec-map f v)
   (#:sync (clr-vec-map f v))
   (#:bjo
-    (let go ((i 0) (acc (vec-empty)))
-      (if (= i (vec-length v))
-          acc
-          (go (+ i 1) (vec-add acc (f (vec-ref v i))))))))
+    (let ((b (vecbuilder-empty)))
+      (let go ((i 0))
+        (if (= i (vec-length v))
+            (vecbuilder->vec b)
+            (let ()
+              (vecbuilder-add! b (f (vec-ref v i)))
+              (go (+ i 1))))))))
 
 (: vec-filter (-> (-?-> %a bool) (Vec %a) (Vec %a)))
 (defbjouble (vec-filter keep? v)
   (#:sync (clr-vec-filter keep? v))
   (#:bjo
-    (let go ((i 0) (acc (vec-empty)))
-      (if (= i (vec-length v))
-          acc
-          (let ((x (vec-ref v i)))
-            (go (+ i 1) (if (keep? x) (vec-add acc x) acc)))))))
+    (let ((b (vecbuilder-empty)))
+      (let go ((i 0))
+        (if (= i (vec-length v))
+            (vecbuilder->vec b)
+            (let ((x (vec-ref v i)))
+              (when (keep? x)
+                (vecbuilder-add! b x))
+              (go (+ i 1))))))))
 
 (: vec-fold (-> (-?-> %b %a %b) %b (Vec %a) %b))
 (defbjouble (vec-fold f init v)
