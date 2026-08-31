@@ -6,14 +6,13 @@ Nothing here has to be imported. ~(std prelude)~ is linked into every module the
 
 The prelude is nevertheless made of two halves, and it is worth knowing which is which when reading the sources:
 
-- The *builtin* environment (~Prelude.fs~, backed by ~BjolangRuntime~) holds what cannot be written in Bjolang: the operators, the generic collections, the dynamic environment, and the handful of places where a .NET ~null~ has to be turned into something the language can talk about.
+- The *builtin* environment (~Prelude.fs~, backed by ~BjolangRuntime~) holds what currently isn't written in bjolang.
 - ~lib/std/prelude.bjo~ is an ordinary Bjolang module. It holds everything that *is* just a .NET call — the string, conversion, file, path, directory, environment and port operations below — plus the traits (~->str~, ~Iterable~, ~Collector~, ~Functor~, ~Num~) and ~print~/~println~.
 
 Sections below are marked =(std prelude)= where they live in the second.
 
 ** Core Values and Constants
-- ~void~ (also ~Unit~, ~System.Void~) : the unit type. A *value* type, not C#'s
-  ~void~ — see "~void~ is the unit type" in ~Syntax.org~ for why. Procedures
+- ~void~ (also ~Unit~) : the unit type. Procedures
   documented below as returning nothing return this.
 
 ** I/O
@@ -23,10 +22,10 @@ Sections below are marked =(std prelude)= where they live in the second.
 - ~(println x)~ : Generic println utilizing the ~->str~ trait. =(std prelude)=
 - ~(newline)~ : Prints a newline character.
 
-There is no nullary ~read-line~. Standard input is a port like any other, reached through the dynamic environment: ~(read-line (parameter-ref current-input-port))~, with ~read-line~ the port operation under "Ports" below. That is what makes input redirectable with ~parameterize~ instead of being wired to the console.
+There is no nullary ~read-line~. Standard input is a port like any other, reached through the dynamic environment: ~(read-line (parameter-ref current-input-port))~. current-input-port can be rebound with the parameterize form.
 
 ** Math Operators
-Standard polymorphic math operators (deferred to C# for resolution):
+Standard polymorphic math operators:
 - ~(+ a b)~
 - ~(- a b)~
 - ~(* a b)~
@@ -59,10 +58,10 @@ A generic function that compares two values acquires the constraint without bein
 Two deliberate choices worth knowing:
 
 - ~double~ uses ~Equals~ rather than ~==~, so ~(= x x)~ is true for ~NaN~. Every hash-based container assumes its keys are reflexive; IEEE's answer is the other one, and it is not available through ~=~.
-- ~=~ on a ~Map~ matches keys by lookup, so key equality there is the trie's — which is .NET's, which is the key type's own implementation. (FIXME)
+- ~=~ on a ~Map~ matches keys by lookup, so key equality there is the trie's . (FIXME)
 
 *** The blanket
-A type with no implementation of its own gets .NET's equality, through a blanket implementation in ~(std eq)~. For a record, struct or union the compiler emitted, .NET's equality *is* that type's own ~Eq~ implementation — see *What .NET asks* below — so the blanket is "derive, applied automatically" rather than a second equality, and it reaches a hand-written implementation through a field at any depth.
+A type with no implementation of its own gets a default equality implementation in ~(std eq)~. 
 
 Two consequences worth knowing. Nothing can opt *out*: ~(= p q)~ on two ports, or two fibers, compiles and means reference identity, and there is no negative-implementation mechanism to say otherwise. And a type with no *head constructor* is not covered at all, because resolution needs a head to look up before it can fall back to a blanket — so ~(= f g)~ on two functions is a type error saying so.
 
@@ -103,24 +102,9 @@ Nothing here corresponds to ~eq-hash~'s refusal on a mutable field. Hashing one 
 
 A field whose type has no ~Eq~ is reported against the ~type/derive~ form rather than against the field: every node a macro builds carries the call site's range. The message names the type that has no implementation and the implementation that needed it.
 
-*** What .NET asks
-When a record, struct or union has an ~Eq~ implementation, its ~Equals~ and ~GetHashCode~ are *emitted as calls to that implementation*. C# only synthesizes those when they are not written, and a record's ~==~ calls ~Equals~ — so ~EqualityComparer<T>.Default~ is the implementation the program wrote.
-
-That is what makes ~Map~ and ~Set~ correct without either of them being told about the trait, and it is what makes interop correct: a ~HashSet<Point>~ or a ~Distinct()~ agrees with ~=~. An implementation that deliberately ignores a field is therefore ignored by every one of them too, which is the point:
-
-#+BEGIN_SRC scheme
-(def/impl (Eq Cached)
-  (defun (= a b) (= (record-ref a key) (record-ref b key)))
-  (defun (eq-hash c) (eq-hash (record-ref c key))))
-#+END_SRC
-
-A ~Map~ keyed on one ~Cached~ finds the entry when looked up with another that differs only in ~cache~.
-
-Two limits. A union's override goes into every *case* class, because a derived record synthesizes its own ~Equals~ which overrides the base's — an override written only on the abstract base would be silently dead. And a type with type parameters is left with C#'s synthesized equality: its implementation is conditional, and there is nothing inside ~Box<T>~ that could build the ~Eq<T>~ dictionary the ~(where ...)~ asks for. A derived implementation is field-wise, so the two agree; a hand-written one for a generic type can differ from what .NET asks.
-
 ** String Operations
 - ~(string-append a b)~ : Concatenates strings ~a~ and ~b~. =(std prelude)=
-- ~(string-length s)~ : The length of ~s~ in *storage units*. O(1). Today those are UTF-16 code units, so a string holding one emoji has length 2. =(std prelude)=
+- ~(string-length s)~ : The length of ~s~ in *storage units*. O(1). In current storage units. =(std prelude)=
 - ~(string-count s)~ : The number of *characters* in ~s~. O(n), because it walks. The same emoji string counts 1.
 - ~(string-empty? s)~ : Returns true if ~s~ has no characters. Builtin rather than =(std prelude)=, so that it sits with ~list-empty?~, ~vec-empty?~ and ~map-empty?~ rather than alone in the library.
 
@@ -156,12 +140,12 @@ A ~Vec~ rather than the ~(Array %a)~ .NET answers with, because an array is ~Ite
 ** Characters
 A ~char~ is a Unicode *scalar value* — a codepoint — backed by ~Bjolang.Runtime.BjoChar~, not a C# ~char~. A C# ~char~ is a 16-bit UTF-16 code unit and cannot hold an astral codepoint on its own, so every predicate here classifies by codepoint and an emoji gets a real answer rather than whatever its leading surrogate would have said.
 
-These are builtin rather than =(std prelude)= wherever they touch the value: interop cannot resolve a method on a ~BjoChar~, which is not a .NET type Bjolang can name.
+
 
 There is no ~char?~. Every other Scheme needs one because a value's type is a runtime question; here it is a static one, and the predicate could only ever answer true.
 
 *** Conversions
-- ~(char->int c)~ / ~(char->integer c)~ : The codepoint. The second is R6RS's spelling of the first. =(std prelude)= for the R6RS name.
+- ~(char->int c)~ / ~(char->integer c)~ : The codepoint. =(std prelude)=
 - ~(int->char n)~ / ~(integer->char n)~ : The character with codepoint ~n~.
 - ~(char->string c)~ : A one-character string. For an astral character that string has ~string-length~ 2 and ~string-count~ 1.
 
@@ -324,82 +308,6 @@ peeking is usually asked; text that needs real lookahead wants ~read-all~ and a
 ~StringCursor~.
 
 Note that ~write-line~ is a prelude binding, and an ordinary binding wins over an ~import/extern~ alias of the same name — so a module that wants ~System.Console.WriteLine~ should alias it as something else, ~console-write-line~ say.
-
-*** A port reads the same in either colour
-
-~port-eof?~, ~read-line~, ~read-char~, ~read-all~ and ~flush-port~ each have two
-implementations, and no call site says which it wants. In an ordinary function
-they are ordinary method calls that park the thread they are on; inside a
-~defbjo~ the *same source* awaits, hands the thread back to the scheduler, and
-honours the ambient cancellation token — so ~with-deadline~ works on a stalled
-read.
-
-#+BEGIN_SRC scheme
-(: join-lines (-> TextInputPort string))          ;; parks
-(defun (join-lines p) ...)
-
-(: join-lines (-bjo-> TextInputPort string))      ;; suspends
-(defbjo (join-lines p) ...)                       ;; ...same body
-#+END_SRC
-
-Everything above those five is written once: ~read-line/opt~, ~port-fold~,
-~port->list~, ~port->vec~ and ~file->seq~ are ordinary ~defun~ s.
-
-Of those only ~port-fold~ mentions colour, and only about its *callback* —
-~(: port-fold (-> (-?-> TextInputPort %a %a) %a TextInputPort %a))~ says the
-reader may be of either colour. Both copies of ~port-fold~ are generated from
-the one body, and which a call gets is decided by the reader it is given.
-
-Two consequences worth knowing.
-
-*A file port is buffered and a string port is not.* ~open-input-file~ hands back
-a ~BjoPort~, which keeps the characters it has read — that is what lets
-~port-eof?~ answer without waiting, since eof on a stream is a *read* and there
-is no async peek to borrow. ~open-input-string~ has its text in memory already,
-so it stays a plain ~StringReader~ and pays neither a copy nor an allocation for
-a suspension that could not happen. Standard input is buffered, once and shared.
-~read-char~ is therefore an array index on a hit and a wait on a miss, rather
-than a syscall every time.
-
-*Opening a file still blocks.* ~StreamReader~ opens synchronously and .NET has
-no async constructor — ~FileOptions.Asynchronous~ affects reads, not the open.
-So ~open-input-file~ parks wherever it is called, and everything done to the
-port afterwards need not.
-
-*A read reached through your own ~defun~ suspends too.* A ~defun~ whose call
-graph reaches one of those five gets a second emitted body, without declaring
-anything, and a bjoroutine calling it gets that one. So the ordinary loop over a
-port is written once and works in either colour at any depth.
-
-What still parks is a call the generated copy cannot be reached from: inside a
-~(seq ...)~, inside an ordinary ~(fun ...)~, or through a function value, since
-none of those may await and selection leaves them on the ordinary body.
-
-*A reader passed by name is one of those.* ~port->list~ and ~port->vec~ declare
-their reader ~(-?-> ...)~, so a bjoroutine may drain a port without parking —
-but the reader has to be written as a lambda, because a name with two copies has
-the ordinary one's type when it is passed rather than called:
-
-#+BEGIN_SRC scheme
-(port->list (bjoroutine (q) (read-line q)) p)   ; suspends
-(port->list read-line p)                        ; parks on every line
-#+END_SRC
-
-~port->seq~ and ~file->seq~ cannot take a suspending reader at all: their result
-is a sequence, a sequence is a C# iterator, and an iterator may not await.
-
-Where the path is made of ordinary calls, the compiler says so rather than
-leaving it silent:
-
-#+BEGIN_EXAMPLE
-Warning: 'lazily' is a bjoroutine, and calling 'port-eof?' at log.bjo:14 parks
-the thread it runs on.
-  lazily -> drain -> port-eof?
-#+END_EXAMPLE
-
-Either move the call out of whatever cannot await it, or move the whole thing
-off the fiber with ~(sync (blocking (fun () (drain p))))~, which is what the pool
-exists for.
 
 ** Keywords and Symbols
 Keywords (~:foo~ or ~#:foo~) and quoted symbols (~'foo~) are interned first-class types.

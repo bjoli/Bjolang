@@ -148,30 +148,6 @@ Every non-~void~ (or non-unit) value in statement position must be used. If not 
 #+end_src
 
 
-*** ~case~, and the jump table under it
-
-~case~ takes a key and clauses of literal data. It is ~match~ underneath — a
-clause's data become one ~(or ...)~ pattern — so it is a C# ~switch~ whose
-sections carry a label each, which is what Roslyn lowers to a jump table.
-
-#+begin_src scheme
-(case (read-char port)
-  ((#\space #\tab #\newline) (skip-whitespace port))
-  ((#\0 #\1 #\2 #\3 #\4 #\5 #\6 #\7 #\8 #\9) (read-number port))
-  ((#\( #\[) (read-list port))
-  (else (read-symbol port)))
-#+end_src
-
-The data are literals of the key's type: numbers, strings, characters,
-booleans, keywords and quoted symbols. A bare name is refused rather than read
-as a binder, which is what it would mean to ~match~ — ~((red) ...)~ would
-otherwise match every colour. A datum listed twice is refused too, because C#
-refuses a repeated ~case~ label and that error would land in generated code.
-
-~(or p q ...)~ works in ~match~ on its own, for the same reason and with the
-same restriction: no alternative may bind, since only one of them runs.
-
-
 * Examples
 
 Basic syntax
@@ -434,7 +410,7 @@ Lists, quasiquoted lists and vectors do not need constructors in some circumstan
         nl ;; newline
         ;; prints three columns, rate, net and vat
         (vat-summary net vat)
-        nl
+        nl              
         ;; justified footer
         footer])]))
 
