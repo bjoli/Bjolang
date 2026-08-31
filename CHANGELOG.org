@@ -3,6 +3,27 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~case~ dispatches on a jump table
+
+~(case key ((datum ...) body ...) ... (else body ...))~. A clause's data become
+one ~(or ...)~ pattern, so the form is a C# ~switch~ with a label per datum and
+a section per clause — the shape Roslyn lowers to a jump table. Written as a
+~cond~ of comparisons it would have been a chain of tests down the clauses.
+
+The data are literals of the key's type. A bare name is *refused* rather than
+read as a binder: ~((red orange) ...)~ means "the symbols red and orange" to
+anyone writing Scheme, and would have meant "bind red to the key and match
+everything" — silently, in the clause that then swallowed all the others. A
+datum listed twice is refused too, because C# refuses a repeated ~case~ label
+and the error would arrive against generated code.
+
+What it leaves open: ~(else => proc)~ is not a clause, and neither is a datum
+that is not a literal. Both are rejected with a message rather than accepted at
+another meaning.
+
+~(or p q ...)~ is available in ~match~ on its own. No alternative may bind,
+since only one of them runs.
+
 * Draining a port no longer parks the fiber
 
 ~port->list~ and ~port->vec~ take their reader as ~-?->~, so a bjoroutine can

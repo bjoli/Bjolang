@@ -1,0 +1,79 @@
+;; What `case` compiles to.
+;;
+;; The whole reason the form exists rather than being a `cond` with `=` down the
+;; side: one `switch` section per clause, carrying a label per datum. That is
+;; what Roslyn lowers to a jump table, and it is invisible to any test that only
+;; checks the answers — a chain of comparisons gives the same ones.
+;;
+;; Each `EXPECT-CS` line is an extended regex matched against a single line, so
+;; the assertions are about the labels rather than about the shape of a section,
+;; which spans lines. `165_case.bjo` runs them.
+
+(import (std prelude))
+
+;; Three data, three labels, one section. The bodies are distinct so that a
+;; clause emitted three times over would show up as three `return`s.
+;; EXPECT-CS: switch \(n\)
+;; EXPECT-CS: case 2:
+;; EXPECT-CS: case 3:
+;; EXPECT-CS: case 4:
+(: size (-> int string))
+(defun (size n)
+  (case n
+    ((2 3 4) "small")
+    ((5) "medium")
+    (else "large")))
+
+;; `else` is the `default:` section rather than a label — a `case _:` is not
+;; legal C#, and a switch statement is only exhaustive to the definite
+;; assignment analysis with one.
+;; EXPECT-CS: default: \{
+
+;; A string switch is a jump table too: C# hashes and dispatches rather than
+;; comparing down the list.
+;; EXPECT-CS: case "hi":
+;; EXPECT-CS: case "hello":
+(: greeting? (-> string bool))
+(defun (greeting? s)
+  (case s
+    (("hi" "hello") #t)
+    (else #f)))
+
+;; A `char` is a `BjoChar`, so its labels are property patterns rather than
+;; constants. Roslyn still lowers a set of them on one property to a switch on
+;; that property, so this is a jump table as much as the integer one is —
+;; emitting `switch (c.Value)` by hand was measured against it and produced the
+;; same IL, minus the local it needed.
+;; EXPECT-CS: case Bjolang.Runtime.BjoChar \{ Value: 97 \}:
+;; EXPECT-CS: case Bjolang.Runtime.BjoChar \{ Value: 101 \}:
+(: vowel? (-> char bool))
+(defun (vowel? c)
+  (case c
+    ((#\a #\e) #t)
+    (else #f)))
+
+;; EXPECT-CS: case true:
+;; EXPECT-CS: case false:
+(: describe (-> bool string))
+(defun (describe b)
+  (case b
+    ((#t) "yes")
+    ((#f) "no")))
+
+;; The same clauses in argument position are a switch *expression* instead, and
+;; there the fallback arm has to be left off: `#t` and `#f` cover `bool`, and C#
+;; rejects an arm it can prove unreachable (CS8510). Nothing else in the
+;; language can be exhausted by listing its values.
+;; EXPECT-CS: true => "yes"
+;; EXPECT-CS: false => "no"
+(: shout (-> bool string))
+(defun (shout b)
+  (string-append (case b ((#t) "yes") ((#f) "no")) "!"))
+
+(defun (main args)
+  (println (size 3))
+  (println (if (greeting? "hi") "y" "n"))
+  (println (if (vowel? #\a) "y" "n"))
+  (println (describe #t))
+  (println (shout #f))
+  0)

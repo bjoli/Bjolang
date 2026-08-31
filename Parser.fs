@@ -121,6 +121,9 @@ type Pattern =
     /// `(:is System.IO.IOException e)` — matches when the value is of that .NET type, binding it there at the narrowed type.
     /// The binder is optional. Used in `Err` arms.
     | PTypeTest of string * string option * Range
+    /// Alternatives, none of which may bind: what `case` builds from a clause's
+    /// datum list, and what makes one `switch` section carry several labels.
+    | POr of Pattern list * Range
 
 and Expr =
     | EInt of string * Range
@@ -646,6 +649,17 @@ let rec parsePattern (s: SExpr) : Pattern =
     // `(Tuple a b ...)` and dotted pairs `(a . b ...)` which the reader rewrites to `(Tuple a b ...)`
     | SList(SAtom { Token = Symbol "Tuple" } :: args, _) ->
         PTuple(List.map parsePattern args, r)
+
+    // `(or p q ...)` — several patterns in one position, which a `switch`
+    // statement gives a label each. Before the constructor case below, which
+    // would otherwise read `or` as one.
+    | SList(SAtom { Token = Symbol "or" } :: args, _) ->
+        match args with
+        | [] ->
+            failwithf
+                $"Invalid or pattern at %s{Lexer.formatPos r}. (or ...) needs alternatives to choose between."
+        | [ single ] -> parsePattern single
+        | _ -> POr(List.map parsePattern args, r)
 
     | SList(SAtom { Token = Symbol name } :: args, _) -> PConstruct(name, List.map parsePattern args, r)
 
@@ -1375,6 +1389,7 @@ let rec patternBinders (pat: Pattern) : string list =
         @ (tailOpt |> Option.map patternBinders |> Option.defaultValue [])
     | PTuple(items, _) -> items |> List.collect patternBinders
     | PConstruct(_, args, _) -> args |> List.collect patternBinders
+    | POr(alts, _) -> alts |> List.collect patternBinders
 
 /// One walk over an untyped expression, calling `reference name range guarded`
 /// at every name it mentions but does not bind.
@@ -2444,6 +2459,117 @@ let rec parseExpr (s: SExpr) : Expr =
 
                     EMatch(target, parsedClauses, r)
                 | _ -> failwithf $"Invalid match syntax at %s{Lexer.formatPos r}"
+
+            // `(case key ((datum ...) body ...) ... (else body ...))`.
+            //
+            // Desugared to `match` over or-patterns, which is what puts several
+            // labels on one `switch` section.
+            //
+            // Read here rather than expanded by a macro because the datum rules
+            // have to be enforced where the source is. A bare name in a datum
+            // list is a *binder* to `match`, so `(case c ((a) ...))` would
+            // match everything and bind `a` — silently, and only in the clause
+            // the author thought was about a symbol.
+            | "case" ->
+                match args with
+                | keyExpr :: (_ :: _ as clauses) ->
+                    let datumPattern (d: SExpr) : Pattern =
+                        let dr = getRange d
+
+                        match d with
+                        | SAtom { Token = NumberLit n } -> PInt(n, dr)
+                        | SAtom { Token = StringLit str } -> PString(str, dr)
+                        | SAtom { Token = CharLit c } -> PChar(c, dr)
+                        | SAtom { Token = BoolLit b } -> PBool(b, dr)
+                        | SAtom { Token = Keyword k } -> PKeyword(k, dr)
+                        | SAtom { Token = QuotedSymbol sym } -> PQuotedSymbol(sym, dr)
+                        | SAtom { Token = Symbol sym } ->
+                            failwithf
+                                $"Invalid case datum at %s{Lexer.formatPos dr}: '%s{sym}' is a name, and the data of a clause are literals. Write '%s{sym} for the symbol of that name, or use match to bind."
+                        | _ ->
+                            failwithf
+                                $"Invalid case datum at %s{Lexer.formatPos dr}: the data of a clause are literals — a number, string, character, boolean, keyword or quoted symbol."
+
+                    // A repeat is refused here because C# refuses it too, and a
+                    // duplicate `case` label reported against generated code is
+                    // a compiler error about a file nobody wrote. The second
+                    // one is unreachable either way.
+                    let seen = System.Collections.Generic.Dictionary<string, Range>()
+
+                    let noteDatum (p: Pattern) =
+                        let key, shown, dr =
+                            match p with
+                            // Normalised, so that `01` and `1` are the one
+                            // label they will be emitted as.
+                            | PInt(v, dr) ->
+                                match System.Int64.TryParse v with
+                                | true, n -> $"int:%d{n}", v, dr
+                                | _ -> "num:" + v, v, dr
+                            | PString(v, dr) -> "str:" + v, $"\"%s{v}\"", dr
+                            | PChar(c, dr) -> $"char:%d{c}", $"#\\x%X{c}", dr
+                            | PBool(b, dr) -> $"bool:%b{b}", (if b then "#t" else "#f"), dr
+                            | PKeyword(k, dr) -> "kw:" + k, "#:" + k, dr
+                            | PQuotedSymbol(s, dr) -> "sym:" + s, "'" + s, dr
+                            | _ -> "", "", r
+
+                        match seen.TryGetValue key with
+                        | true, first ->
+                            failwithf
+                                $"Duplicate case datum at %s{Lexer.formatPos dr}: %s{shown} is already covered by the clause at %s{Lexer.formatPos first}, so this one can never run."
+                        | _ -> seen[key] <- dr
+
+                    let lastIndex = List.length clauses - 1
+
+                    let parsedClauses =
+                        clauses
+                        |> List.mapi (fun i clause ->
+                            let cr = getRange clause
+
+                            let body bodyExprs =
+                                match bodyExprs with
+                                | [] ->
+                                    failwithf
+                                        $"Invalid case clause at %s{Lexer.formatPos cr}: this clause has nothing to do."
+                                | _ -> parseBody bodyExprs cr
+
+                            match clause with
+                            | SList(_ :: SAtom { Token = Symbol "=>" } :: _, _) ->
+                                failwithf
+                                    $"Invalid case clause at %s{Lexer.formatPos cr}: (=> proc) is not a Bjolang clause. Write the call out, naming the key: (case k ((1 2) (proc k)) ...)."
+
+                            | SList(SAtom { Token = Symbol "else" } :: bodyExprs, _) ->
+                                if i <> lastIndex then
+                                    failwithf
+                                        $"Invalid case at %s{Lexer.formatPos cr}: (else ...) answers whatever the clauses before it did not, so nothing may follow it."
+
+                                (PWildcard cr, None, body bodyExprs)
+
+                            | SList(SList(datums, _) :: bodyExprs, _) ->
+                                if List.isEmpty datums then
+                                    failwithf
+                                        $"Invalid case clause at %s{Lexer.formatPos cr}: this clause lists no data, so nothing reaches it. Remove it, or write (else ...) if it was meant to catch the rest."
+
+                                let pats = datums |> List.map datumPattern
+                                List.iter noteDatum pats
+
+                                let pat =
+                                    match pats with
+                                    | [ single ] -> single
+                                    | many -> POr(many, cr)
+
+                                (pat, None, body bodyExprs)
+
+                            | _ ->
+                                failwithf
+                                    $"Invalid case clause at %s{Lexer.formatPos cr}: a clause is ((datum ...) body ...), or (else body ...) for the last one.")
+
+                    EMatch(parseExpr keyExpr, parsedClauses, r)
+                | [ _ ] ->
+                    failwithf
+                        $"Invalid case at %s{Lexer.formatPos r}: there are no clauses, so there is nothing for the key to be."
+                | _ ->
+                    failwithf
+                        $"Invalid case at %s{Lexer.formatPos r}: case takes a key and then its clauses: (case key ((datum ...) body ...) ... (else body ...))."
 
             // Construction is spelled with the type name — `(Car (brand "x")
             // (year 3000))` — so there is no anonymous `record` form to infer a

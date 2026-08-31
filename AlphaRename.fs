@@ -85,6 +85,10 @@ let rec private typedPatternBinders (pat: TypedPattern) : string list =
     // `TPApp` holds an expression, not a binder; the pattern it wraps binds.
     | TPApp(_, inner) -> typedPatternBinders inner
     | TPAs(inner, n) -> n :: typedPatternBinders inner
+    // Checked to bind nothing where it is built, so this is always empty. It
+    // recurses anyway rather than answering `[]`, so that the day an
+    // alternative may bind, every binder still arrives here.
+    | TPOr alts -> alts |> List.collect typedPatternBinders
 
 /// Kept for callers that only need the names.
 let patternNames = typedPatternBinders

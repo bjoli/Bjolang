@@ -1,0 +1,153 @@
+;; `case` — a key against literal data, one clause per group of them.
+;;
+;; It is `match` underneath: a clause's data become one or-pattern, so the whole
+;; form is a C# `switch` whose sections carry a label each. That is the shape
+;; Roslyn turns into a jump table, which is the reason `case` exists rather than
+;; being a `cond` with `=` down the side.
+;;
+;; What is checked here is the answers. `codegen/case_labels.bjo` checks the
+;; labels, because a `case` that compiled to a chain of comparisons would give
+;; every answer below correctly.
+
+(import (std prelude))
+(import (std simpletest))
+
+;; --- The data are literals, of the key's type -------------------------------
+
+(: roman (-> int string))
+(defun (roman n)
+  (case n
+    ((1) "I")
+    ((2 3) "small")
+    ((4 5 6) "middling")
+    (else "big")))
+
+(: kind (-> char string))
+(defun (kind c)
+  (case c
+    ((#\a #\e #\i #\o #\u) "vowel")
+    ((#\0 #\1 #\2 #\3 #\4 #\5 #\6 #\7 #\8 #\9) "digit")
+    ((#\space #\tab) "space")
+    (else "other")))
+
+(: greeting? (-> string int))
+(defun (greeting? s)
+  (case s
+    (("hi" "hello" "yo") 1)
+    (("bye" "later") 2)
+    (else 0)))
+
+;; `#t` and `#f` exhaust `bool`, and C# knows it — a fallback arm after both is
+;; an error in the generated code, so there must not be one. No `else` here on
+;; purpose.
+(: describe (-> bool string))
+(defun (describe b)
+  (case b
+    ((#t) "yes")
+    ((#f) "no")))
+
+;; Keywords and quoted symbols are literals too. Neither is a constant in C#, so
+;; neither gets a jump table — they are here because `case` should not be a form
+;; that quietly refuses half the literals in the language.
+(: level (-> Keyword int))
+(defun (level k)
+  (case k
+    ((#:low) 1)
+    ((#:mid #:middle) 2)
+    ((#:high) 3)
+    (else 0)))
+
+(: shape (-> Symbol string))
+(defun (shape s)
+  (case s
+    (('circle 'round) "curved")
+    (('square 'rect) "straight")
+    (else "unknown")))
+
+;; --- Statement position -----------------------------------------------------
+;;
+;; Arms holding several statements, and a `case` that answers nothing. A switch
+;; *statement*, where a switch expression could not go.
+
+(def/mutable tally 0)
+
+(: count (-> int void))
+(defun (count n)
+  (case n
+    ((1 2) (set! tally (+ tally 1))
+           (set! tally (+ tally 10)))
+    ((3) (set! tally (+ tally 100)))
+    (else (set! tally (+ tally 1000)))))
+
+;; --- Inside a loop ----------------------------------------------------------
+;;
+;; A loop is emitted as a `switch` of its own when its members are merged, and
+;; `goto case` binds to the nearest one. A `case` in the body puts a second
+;; switch between the jump and its target.
+
+(: vowels (-> string int))
+(defun (vowels s)
+  (loop (:for c s)
+        (:acc found (summing (case c
+                               ((#\a #\e #\i #\o #\u) 1)
+                               (else 0))))))
+
+;; --- The or-pattern on its own ----------------------------------------------
+;;
+;; `case` builds these; `match` can spell one directly.
+(: small? (-> int bool))
+(defun (small? n)
+  (match n
+    ((or 1 2 3) #t)
+    (_ #f)))
+
+;; With a guard, which every label of the section carries — a C# `when` belongs
+;; to the label it follows. Only the matching label's guard runs, so the clause
+;; is entered exactly when it says.
+(: allowed (-> int int string))
+(defun (allowed n limit)
+  (match n
+    ((or 1 2 3) #:when (> limit 0) "small, allowed")
+    ((or 1 2 3) "small, blocked")
+    (_ "big")))
+
+(defun (main)
+  (expect "one datum" (roman 1) "I")
+  (expect "several data" (roman 3) "small")
+  (expect "the last of several" (roman 6) "middling")
+  (expect "else" (roman 99) "big")
+
+  (expect "a char" (kind #\e) "vowel")
+  (expect "a char in a long clause" (kind #\7) "digit")
+  (expect "a named char" (kind #\tab) "space")
+  (expect "a char reaching else" (kind #\z) "other")
+
+  (expect "a string" (greeting? "hello") 1)
+  (expect "another string clause" (greeting? "later") 2)
+  (expect "a string reaching else" (greeting? "what") 0)
+
+  (expect "true" (describe #t) "yes")
+  (expect "false, with no else" (describe #f) "no")
+
+  (expect "a keyword" (level #:mid) 2)
+  (expect "a keyword reaching else" (level #:none) 0)
+
+  (expect "a symbol" (shape 'round) "curved")
+  (expect "a symbol reaching else" (shape 'blob) "unknown")
+
+  (set! tally 0)
+  (count 2)
+  (expect "an arm of several statements" tally 11)
+  (count 3)
+  (expect "a second arm" tally 111)
+  (count 9)
+  (expect "the else arm" tally 1111)
+
+  (expect "inside a loop" (vowels "beautiful") 5)
+
+  (expect "an or-pattern in match" (small? 2) #t)
+  (expect "an or-pattern that misses" (small? 9) #f)
+  (expect "a guard on every label" (allowed 2 5) "small, allowed")
+  (expect "the same labels, guard failing" (allowed 2 0) "small, blocked")
+  (expect "past both" (allowed 9 5) "big")
+  0)

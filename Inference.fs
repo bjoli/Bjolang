@@ -356,6 +356,31 @@ let rec checkPattern (env: Env) (expectedType: HMType) (pat: Pattern) : TypedPat
           Range = r
           Node = TPSymbol value },
         Map.empty
+    // Alternatives, all against the one scrutinee type — so `(case c ((#\a 1)
+    // ...))` is a type error on the `1` rather than something the emitter
+    // discovers.
+    //
+    // None may bind. A name bound down one alternative and not another has no
+    // value on the arm that reads it, and C# says the same of a `case` label
+    // pair whose designations differ.
+    | POr(alts, r) ->
+        let typedAlts =
+            alts
+            |> List.map (fun alt ->
+                let typed, binders = checkPattern env expectedType alt
+
+                if not (Map.isEmpty binders) then
+                    let names = binders |> Map.toList |> List.map fst |> String.concat ", "
+
+                    failwithf
+                        $"Pattern Error at %s{Lexer.formatPos typed.Range}: this alternative binds %s{names}, and one of several alternatives cannot. Only one of them runs, so a name bound here has no value on the arms reached through the others."
+
+                typed)
+
+        { Type = expectedType
+          Range = r
+          Node = TPOr typedAlts },
+        Map.empty
     // `(:is Clr.Type binder)` — a .NET type test, which is how one exception is
     // told from another inside an `Err` arm.
     //

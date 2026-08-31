@@ -549,6 +549,7 @@ let rec serializePattern (p: Parser.Pattern) : string =
     | Parser.PTuple(items, _) -> "(" + String.concat " " ("Tuple" :: List.map serializePattern items) + ")"
     | Parser.PTypeTest(t, binder, _) ->
         "(:is " + String.concat " " (t :: Option.toList binder) + ")"
+    | Parser.POr(alts, _) -> "(or " + String.concat " " (List.map serializePattern alts) + ")"
 
 and private serializeSeqPattern (head: string) items tailOpt =
     let itemStrs = items |> List.map serializePattern
@@ -742,6 +743,33 @@ let private fitsDefaultSection (c: TMatchClause) =
         | TPWildcard
         | TPIdent _ -> true
         | _ -> false)
+
+/// Do these clauses cover `bool` between them?
+///
+/// The one type a program can exhaust by listing its values, and C# knows it:
+/// a fallback arm after both `true` and `false` is CS8510, an error in
+/// generated code. `(case b ((#t) ...) ((#f) ...))` makes that shape ordinary,
+/// so it is worth the check.
+///
+/// Guarded clauses do not count. A guard may fail, and then the value is still
+/// unmatched.
+let private coversBool (clauses: TMatchClause list) =
+    let labels =
+        clauses
+        |> List.filter (fun c -> c.Guard.IsNone)
+        |> List.collect (fun c ->
+            match c.Pattern.Node with
+            | TPOr alts -> alts
+            | _ -> [ c.Pattern ])
+
+    let has b =
+        labels
+        |> List.exists (fun l ->
+            match l.Node with
+            | TPBool v -> v = b
+            | _ -> false)
+
+    has true && has false
 
 /// Bjolang matches are first-match-wins. C# rejects arms it can prove are
 /// unreachable (CS8510), so drop everything following the first irrefutable clause.
@@ -997,6 +1025,14 @@ let rec generatePattern (ctx: CodegenContext) (pat: TypedPattern) : unit =
     // and C# has no literal syntax for one.
     | TPChar c -> append ctx $"Bjolang.Runtime.BjoChar {{ Value: %d{c} }}"
     | TPBool b -> append ctx (if b then "true" else "false")
+    // C#'s own or-pattern. Only reached where the alternatives share one
+    // pattern position — a switch *expression* arm; a switch statement gives
+    // them a label each instead, which is what makes a jump table.
+    | TPOr alts ->
+        alts
+        |> List.iteri (fun i alt ->
+            if i > 0 then append ctx " or "
+            generatePattern ctx alt)
     | TPKeyword k -> append ctx $"BjolangRuntime.Keyword {{ Name: \"{escapeStringLiteral k}\" }}"
     | TPSymbol s -> append ctx $"BjolangRuntime.Symbol {{ Name: \"{escapeStringLiteral s}\" }}"
     // `Option` is the runtime's `Option<T>` struct — a flag and a value rather
@@ -1679,7 +1715,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
                 append armCtx " => "
                 generateExpr armCtx clause.Body
                 appendLine armCtx ","
-            if not (live |> List.exists isIrrefutable) then
+            if not (live |> List.exists isIrrefutable) && not (coversBool live) then
                 indent armCtx
                 appendLine armCtx $"_ => throw new Exception(\"Match failure at %s{Lexer.formatPos expr.Range}\")"
         )
@@ -2931,6 +2967,19 @@ and private generateMatch
         | last :: revRest when fitsDefaultSection last -> Some last, List.rev revRest
         | _ -> None, live
 
+    /// Every label this switch will carry, alternatives flattened.
+    let labelsOf (c: TMatchClause) =
+        match c.Pattern.Node with
+        | TPOr alts -> alts
+        | _ -> [ c.Pattern ]
+
+    // A `char` is a `BjoChar`, so `TPChar` is the property pattern
+    // `BjoChar { Value: 97 }` rather than a constant — which looks like it
+    // should cost the jump table, and does not. Roslyn lowers a set of property
+    // patterns on one property to a switch on that property: emitting
+    // `switch (c.Value)` with integer labels by hand was measured against it
+    // and produced the same IL, to the byte. Left alone on purpose.
+
     // `default:` carries no pattern, so an irrefutable `TPIdent` clause needs the
     // scrutinee hoisted into a local that it can alias.
     let needsTemp =
@@ -2986,13 +3035,24 @@ and private generateMatch
 
         withIndent inner (fun c ->
             for clause in cases do
+                // One label per alternative rather than C#'s `a or b` pattern:
+                // a section headed by constant labels is what Roslyn lowers to
+                // a jump table, and an or-pattern is a chain of tests.
+                //
+                // A guard repeats on each label. It has to — a `when` belongs
+                // to the label it follows — and it is the same expression, so
+                // the arm is still entered exactly when the clause says.
+                for label in labelsOf clause do
+                    indent c
+                    append c "case "
+                    generatePattern c label
+                    clause.Guard |> Option.iter (generateGuard c)
+                    appendLine c ":"
+
                 indent c
-                append c "case "
-                generatePattern c clause.Pattern
-                clause.Guard |> Option.iter (generateGuard c)
                 // Each section gets its own block so locals declared by different
                 // arms cannot collide in the shared switch scope.
-                appendLine c ": {"
+                appendLine c "{"
                 withIndent c (fun cb ->
                     generateBlock cb armTarget clause.Body
                     emitBreak cb)

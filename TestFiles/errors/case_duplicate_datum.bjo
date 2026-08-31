@@ -1,0 +1,24 @@
+;; A datum listed twice in one `case`.
+;;
+;; Refused here because C# refuses it too: a `switch` with two `case 2:` labels
+;; is CS0152, reported against a generated file nobody wrote. The second one can
+;; never run either way, so there is nothing to lose by saying so.
+;;
+;; Normalised before comparing, so `02` and `2` are caught as the one label they
+;; would be emitted as.
+
+;; EXPECT-ERROR: Duplicate case datum
+;; EXPECT-ERROR: is already covered by the clause at
+
+(import (std prelude))
+
+(: size (-> int string))
+(defun (size n)
+  (case n
+    ((1 2) "small")
+    ((3 02) "medium")
+    (else "large")))
+
+(defun (main args)
+  (println (size 1))
+  0)

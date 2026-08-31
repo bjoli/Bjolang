@@ -1,0 +1,25 @@
+;; A bare name where a `case` wants a datum.
+;;
+;; The one mistake worth catching in this form, and the reason `case` is read by
+;; the parser rather than expanded by a macro into `match`. A clause's data
+;; become patterns, and a lowercase name is a *binder* to `match` — so this
+;; would have compiled, matched everything, and bound `red` to the key.
+;;
+;; Silently: the clause the author meant to be about a symbol becomes the clause
+;; that catches every other colour.
+
+;; EXPECT-ERROR: Invalid case datum
+;; EXPECT-ERROR: is a name, and the data of a clause are literals
+;; EXPECT-ERROR: Write 'red for the symbol of that name
+
+(import (std prelude))
+
+(: warm? (-> Symbol bool))
+(defun (warm? s)
+  (case s
+    ((red orange) #t)
+    (else #f)))
+
+(defun (main args)
+  (println (if (warm? 'red) "y" "n"))
+  0)

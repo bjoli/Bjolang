@@ -638,6 +638,9 @@ and TPatternNode =
     | TPTypeTest of string * string option
     | TPApp of TypedExpr * TypedPattern
     | TPAs of TypedPattern * string
+    /// Alternatives, none of which binds. Emitted as several labels on one
+    /// `switch` section, which is the shape Roslyn turns into a jump table.
+    | TPOr of TypedPattern list
 
 and TExprNode =
     | TInt of string
