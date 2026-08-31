@@ -5,8 +5,7 @@
   ;; Types. A type crosses a module boundary only when it is named here, so
   ;; every type that appears in a signature below has to appear in this list
   ;; too — including the `import/class` aliases, which are types like any
-  ;; other. A collector's type is here because its *constructor* is what an
-  ;; `:acc` clause writes, and a constructor follows its type.
+  ;; other.
   Map MapBuilder TransientMap MapCursor
   Range
   Listing Vecing Mapping Stringing Summing Counting Folding
@@ -32,14 +31,17 @@
   print println ->str list->str
   list-append
 
-  ;; The list operations that take a procedure. Builtins until their callbacks
-  ;; were declared `-?->`, which needs a Bjolang body for the second copy to be
-  ;; generated from — so they are ordinary bindings now and have to be named
-  ;; here. The rest of the list surface takes no procedure and stays builtin.
+  ;; The list operations that are not builtins because having them here
+  ;; makes it easier to make them defbjouble
   list-map list-filter list-foldl list-foldr list-for-each
 
-  ;; Maps. These were compiler builtins and so appeared in no export list; they
-  ;; are ordinary bindings now, and every one of them has to be named here.
+  ;; The same, for vecs. These keep their C# bodies for the ordinary colour —
+  ;; see the `defbjouble`s below — but the name is a prelude binding either way,
+  ;; so it has to be exported like any other.
+  vec-map vec-filter vec-fold vec-reduce
+  vec-for-each vec-for-each/range vec-iter
+
+  ;; Maps. 
   map-empty map-ref map-ref-or map-try-ref
   map-set map-add map-set-all map-remove map-remove-all
   map-contains? map-has-key? map-length map-empty? map-clear
@@ -107,17 +109,17 @@
 (import/extern
   (clr-tostring (: System.Convert.ToString)))
 
-;; First, and before the includes: `=` is a trait method now, and a call to one
-;; is only recognized as such once the trait has been registered.
+;; First, and before the includes. = is a trait and needs to be imported
 (import (std eq))
 ;; re-export ord and eq traits
 (re-export = eq-hash
            compare less? greater? at-most? at-least?
            least greatest list-sort list-min list-max)
 
+;; the foldable trait, and some of it's implementations
 (include "Foldable.protobjo")
 
-
+;; This is defined up here because some functions depend on it further down.
 (: list-append (-> (List %a) (List %a) (List %a)))
 (defun (list-append xs ys)
   (list-foldr Cons ys xs))
@@ -165,18 +167,7 @@
 ;; ---------------------------------------------------------------------------
 ;;
 ;; `(ignore x)` is how a program says "I computed this and I do not want it".
-;; Under §8.2's must-use rule every value that is dropped has to say so, and
-;; this is the saying: an ordinary function, greppable, usable in a pipeline,
-;; with no lexer change and no sigil.
-;;
-;; It is a *trait* method rather than one function because some types need
-;; behaviour at the discard site and not merely permission to vanish. The three
-;; levels are:
-;;
-;;   no impl of its own — the blanket applies, and the value is dropped;
-;;   an impl of its own — `ignore` runs it, as `Promise` does below;
-;;   named in the compiler's no-discard set — `ignore` is an error, which is
-;;   what `Result` is, since a discarded error has no defensible default.
+;; This discards the value, and silences the must-use error. 
 ;;   
 (def/trait (Discard %a)
   (: ignore (-> %a void)))
@@ -184,11 +175,9 @@
 (def/impl (Discard %a)
   (defun (ignore x) unit))
 
-;; Level two. Dropping a promise loses any exception inside it silently: nothing
-;; else is watching, so a fiber that died is simply never mentioned. `(ignore p)`
-;; therefore means "detach deliberately", routing a failure to the scheduler's
-;; unhandled hook — the only reading of "discard this promise" that is not a
-;; quiet bug.
+;; Dropping a promise loses any exception inside it silently: nothing
+;; else is watching. ignore makes it a deliberate detach so that no errors stay
+;; quiet.
 ;; 
 (def/impl (Discard (Promise %a))
   (defun (ignore p) (detach p)))
@@ -208,9 +197,7 @@
 ;; ---------------------------------------------------------------------------
 ;;
 ;; A `(Map %k %v)` is a CHAMP trie keyed by hash: lookup, insertion and removal
-;; are all effectively constant time, two maps share every subtree they have in
-;; common, and a walk arrives in the trie's own order — which is to say, in no
-;; order a program should rely on.
+;; are all effectively constant time.
 (import/class
   ((Map %k %v)          (: Map.Map))
   ((MapBuilder %k %v)   (: Map.MapBuilder))
@@ -274,10 +261,7 @@
   ;; --- Builders ---
   ;;
   ;; Appends land in a flat buffer and are scattered into the trie by hash in one
-  ;; pass at the end, which beats inserting a key at a time by enough to be the
-  ;; default way to build one. The mutators answer nothing: a builder is a class
-  ;; that mutates in place and whose identity never changes, so handing the
-  ;; reference back would buy nothing and cost a discard at every call site.
+  ;; pass at the end.
   (mapbuilder-empty    (: Map.MapBuilderModule.Empty    (-> (MapBuilder %k %v))))
   (map->mapbuilder     (: Map.MapBuilderModule.FromMap  (-> (Map %k %v) (MapBuilder %k %v))))
   (mapbuilder-add!     (: Map.MapBuilderModule.Add      (-> (MapBuilder %k %v) %k %v void)))
@@ -305,8 +289,7 @@
   (transientmap-filter!     (: Map.TransientMapModule.FilterInPlace  (-> (-> %k %v bool) (TransientMap %k %v) void)))
   (transientmap-try-ref/pair (: Map.TransientMapModule.TryGetValue   (-> (TransientMap %k %v) %k (Tuple bool %v)))))
 
-;; The value under `key`, or `None`. The `Option` is put on here because a
-;; static C# method has no `Option` to hand back — the type is Bjolang's.
+;; The value under `key`, or `None`.
 (: map-try-ref (-> (Map %k %v) %k (Option %v)))
 (defun (map-try-ref m key)
   (def (found value) (map-try-ref/pair m key))
@@ -340,12 +323,7 @@
     (map-fold (fun (acc2 k v) (f acc2 (Tuple k v))) acc col)))
 
 ;; Two maps are equal when they hold the same entries.
-;;
-;; Keys are matched by *lookup*, so key equality here is the trie's, which is
-;; .NET's; only the values go through `Eq %v`. That is the one place `=` is not
-;; yet the single answer §0 asks for, and it closes when a type's `Equals` is
-;; emitted as a call to its `Eq` implementation — after which the trie is asking
-;; the same question this trait is.
+
 (def/impl (Eq (Map %k %v))
   (where (Eq %k) (Eq %v))
   (defun (= a b)
@@ -356,26 +334,13 @@
                        (None #f)))
                    a)))
   ;; Order-independent, because the trie's walk order is: xor commutes, so two
-  ;; equal maps built by different routes still hash alike. Combination *within*
-  ;; an entry does not commute, so a key and its value cannot swap places
-  ;; unnoticed.
-  ;;
-  ;; The fold is `Map<TK, TV>`'s own, operation and seed both, so `eq-hash` and
-  ;; `GetHashCode` answer the same number for one map rather than merely each
-  ;; agreeing with itself.
+  ;; equal maps built by different routes still hash alike. 
   (defun (eq-hash m)
     (map-fold (fun (h k v) (bitwise-xor h (hash-combine (eq-hash k) (eq-hash v)))) 0 m)))
 
 ;; ---------------------------------------------------------------------------
 ;; Iterable
 ;; ---------------------------------------------------------------------------
-
-;; First-order with two associated types, and an ordinary interface trait
-;; rather than an inline-only one: it never returns a sequence at a new element
-;; type, so there is no constructor variable to abstract over.
-;;
-;; Every method takes the sequence *and* the cursor.
-;;
 ;; The protocol's contract:
 ;;   1. `done?` is called exactly once per iteration. Nothing peeks and nothing
 ;;      tests at both top and bottom, which is what lets `done?` be effectful.
@@ -470,17 +435,6 @@
 
 
 
-;; The Vec impl's shape, not the List impl's, and for a reason worth stating: a
-;; `Seq` is an `IEnumerable`, which hands out enumerators and nothing else. It
-;; has no tail. Making the cursor "the sequence minus what has been seen" meant
-;; a fresh enumeration per element — quadratic, and it re-ran everything the
-;; generator does on the way, so a `Seq` over a port read each line as many
-;; times as it had predecessors.
-;;
-;; The cursor holds the enumerator instead, so a walk pulls each element once.
-;; `start` makes a new one, which is what keeps a `Seq` re-enumerable: two
-;; loops over the same sequence each get their own position and each run the
-;; body from the beginning.
 (def/impl (Iterable (Seq %a))
   (type %elem %a)
   (type %cursor (SeqCursor %a))
@@ -627,24 +581,6 @@
 ;; Lists, where the callback may suspend
 ;; ---------------------------------------------------------------------------
 ;;
-;; `cons`, `list-head`, `list-tail`, `list-reverse` and the rest stay builtins:
-;; none of them takes a procedure, so there is nothing about them a colour could
-;; describe. The four that do take one are written here instead, and the `-?->`
-;; is the whole reason. A declared `-?->` is what makes the compiler generate a
-;; second copy taking a suspending callback, and it can only generate one from a
-;; body it can see — a builtin's body is C#, so it has none to copy.
-;;
-;; So `(list-map (bjoroutine (p) (read-line p)) ports)` works, and
-;; `(list-map string-length names)` is unchanged. Which copy a call means is
-;; decided by the callback it is handed, not by where the call is written.
-;;
-;; Each is a tail-recursive `let`, which `LoopLowering` turns into a `while` in
-;; the enclosing method. That is for the stack rather than for the colour — a
-;; non-tail local function may suspend now too — and a fold over a long list is
-;; exactly where the stack would have run out.
-
-;; Built backwards and reversed once at the end. A `(List %a)` is a cons list,
-;; so appending in order would be quadratic; this is two linear passes.
 (: list-map (-> (-?-> %a %b) (List %a) (List %b)))
 (defun (list-map f xs)
   (let go ((rest xs) (acc (list-empty)))
@@ -688,6 +624,113 @@
         (let ()
           (ignore (f (list-head rest)))
           (go (list-tail rest))))))
+
+;; ---------------------------------------------------------------------------
+;; Vecs, where the callback may suspend
+;; ---------------------------------------------------------------------------
+;;
+;; The same `-?->` callbacks the list functions above have, and a different
+;; arrangement underneath. A `(Vec %a)` is an RRB tree, and mapping one is an
+;; algorithm — it copies the spine and shares every subtree it can — so the
+;; ordinary colour keeps calling it. Only the suspending copy is written here,
+;; as a plain indexed walk.
+;;
+;; That is what `defbjouble` is for, and it is the first use of one that is not
+;; a leaf: two bodies, one signature, and the second body exists because the
+;; first cannot be awaited rather than because it calls a different .NET method.
+;; A `-?->` parameter is repainted for the `#:bjo` half, so `(f x)` there is a
+;; yield point and `(f x)` in the `#:sync` half is not.
+;;
+;; The suspending walks are slower than the trees they replace, and that is the
+;; trade: a caller awaiting on every element is not in a position to care, and a
+;; caller who is not never reaches these bodies.
+;;
+;; `vec-any?`, `vec-find` and the rest are deliberately absent. Their callbacks
+;; ask a question rather than do work, and a suspending one is a `vec-fold`
+;; away — so they would double for something already expressible.
+
+(import/extern
+  (clr-vec-map            (: BjolangRuntime.RrbMap          (-> (-> %a %b) (Vec %a) (Vec %b))))
+  (clr-vec-filter         (: BjolangRuntime.RrbFilter       (-> (-> %a bool) (Vec %a) (Vec %a))))
+  (clr-vec-fold           (: BjolangRuntime.RrbFold         (-> (-> %b %a %b) %b (Vec %a) %b)))
+  (clr-vec-reduce         (: BjolangRuntime.RrbReduce       (-> (-> %a %a %a) (Vec %a) %a)))
+  (clr-vec-for-each       (: BjolangRuntime.RrbForEach      (-> (-> %a Unit) (Vec %a) Unit)))
+  (clr-vec-for-each/range (: BjolangRuntime.RrbForEachRange (-> (-> %a Unit) (Vec %a) int int Unit)))
+  (clr-vec-iter           (: BjolangRuntime.RrbIter         (-> (-> %a bool) (Vec %a) bool))))
+
+(: vec-map (-> (-?-> %a %b) (Vec %a) (Vec %b)))
+(defbjouble (vec-map f v)
+  (#:sync (clr-vec-map f v))
+  (#:bjo
+    (let go ((i 0) (acc (vec-empty)))
+      (if (= i (vec-length v))
+          acc
+          (go (+ i 1) (vec-add acc (f (vec-ref v i))))))))
+
+(: vec-filter (-> (-?-> %a bool) (Vec %a) (Vec %a)))
+(defbjouble (vec-filter keep? v)
+  (#:sync (clr-vec-filter keep? v))
+  (#:bjo
+    (let go ((i 0) (acc (vec-empty)))
+      (if (= i (vec-length v))
+          acc
+          (let ((x (vec-ref v i)))
+            (go (+ i 1) (if (keep? x) (vec-add acc x) acc)))))))
+
+(: vec-fold (-> (-?-> %b %a %b) %b (Vec %a) %b))
+(defbjouble (vec-fold f init v)
+  (#:sync (clr-vec-fold f init v))
+  (#:bjo
+    (let go ((i 0) (acc init))
+      (if (= i (vec-length v))
+          acc
+          (go (+ i 1) (f acc (vec-ref v i)))))))
+
+;; No seed: the first element is the seed, so an empty vec has no answer and
+;; this throws where `vec-ref` does. Both halves agree on that, which is a
+;; promise made here rather than checked anywhere.
+(: vec-reduce (-> (-?-> %a %a %a) (Vec %a) %a))
+(defbjouble (vec-reduce f v)
+  (#:sync (clr-vec-reduce f v))
+  (#:bjo
+    (let go ((i 1) (acc (vec-ref v 0)))
+      (if (= i (vec-length v))
+          acc
+          (go (+ i 1) (f acc (vec-ref v i)))))))
+
+(: vec-for-each (-> (-?-> %a Unit) (Vec %a) Unit))
+(defbjouble (vec-for-each f v)
+  (#:sync (clr-vec-for-each f v))
+  (#:bjo
+    (let go ((i 0))
+      (if (= i (vec-length v))
+          unit
+          (let ()
+            (ignore (f (vec-ref v i)))
+            (go (+ i 1)))))))
+
+(: vec-for-each/range (-> (-?-> %a Unit) (Vec %a) int int Unit))
+(defbjouble (vec-for-each/range f v index count)
+  (#:sync (clr-vec-for-each/range f v index count))
+  (#:bjo
+    (let go ((i index) (left count))
+      (if (= left 0)
+          unit
+          (let ()
+            (ignore (f (vec-ref v i)))
+            (go (+ i 1) (- left 1)))))))
+
+;; Walks while the callback answers true, and answers whether it got to the end.
+(: vec-iter (-> (-?-> %a bool) (Vec %a) bool))
+(defbjouble (vec-iter f v)
+  (#:sync (clr-vec-iter f v))
+  (#:bjo
+    (let go ((i 0))
+      (if (= i (vec-length v))
+          #t
+          (if (f (vec-ref v i))
+              (go (+ i 1))
+              #f)))))
 
 (def/trait (Functor (%f %a))
   (: map (-> (-> %a %b) (%f %a)  (%f %b))))

@@ -461,34 +461,34 @@ public static partial class BjolangRuntime {
     public static ValueTuple<Collections.RrbList<T>, Collections.RrbList<T>> vecsubsplit<T>(Collections.RrbList<T> list, int index) where T : notnull => Collections.RrbFun.Split(list, index);
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    public static Collections.RrbList<TResult> vecsubmap<T, TResult>(Func<T, TResult> mapper, Collections.RrbList<T> list) where T : notnull where TResult : notnull => Collections.RrbFun.Map(list, mapper);
+    public static Collections.RrbList<TResult> RrbMap<T, TResult>(Func<T, TResult> mapper, Collections.RrbList<T> list) where T : notnull where TResult : notnull => Collections.RrbFun.Map(list, mapper);
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    public static Collections.RrbList<T> vecsubfilter<T>(Func<T, bool> predicate, Collections.RrbList<T> list) where T : notnull => Collections.RrbFun.Filter(list, predicate);
+    public static Collections.RrbList<T> RrbFilter<T>(Func<T, bool> predicate, Collections.RrbList<T> list) where T : notnull => Collections.RrbFun.Filter(list, predicate);
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    public static TState vecsubfold<T, TState>(Func<TState, T, TState> func, TState seed, Collections.RrbList<T> list) where T : notnull => Collections.RrbFun.Fold(list, seed, func);
+    public static TState RrbFold<T, TState>(Func<TState, T, TState> func, TState seed, Collections.RrbList<T> list) where T : notnull => Collections.RrbFun.Fold(list, seed, func);
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    public static T vecsubreduce<T>(Func<T, T, T> func, Collections.RrbList<T> list) where T : notnull => Collections.RrbFun.Reduce(list, func);
+    public static T RrbReduce<T>(Func<T, T, T> func, Collections.RrbList<T> list) where T : notnull => Collections.RrbFun.Reduce(list, func);
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     // `Func<T, Unit>` rather than `Action<T>`: a Bjolang `(-> %a void)` is
     // `(-> %a Unit)`, and only one delegate shape can also be an instantiation
     // of a generic `(-> %a %b)`. The adapter lambda is the price of `for-each`
     // and `map` taking the same function, and the JIT inlines through it.
-    public static Unit vecsubforsubeach<T>(Func<T, Unit> action, Collections.RrbList<T> list) where T : notnull {
+    public static Unit RrbForEach<T>(Func<T, Unit> action, Collections.RrbList<T> list) where T : notnull {
         Collections.RrbFun.ForEach(list, x => action(x));
         return unit;
     }
 
-    public static Unit vecsubforsubeachdivrange<T>(Func<T, Unit> action, Collections.RrbList<T> list, int index, int count) where T : notnull {
+    public static Unit RrbForEachRange<T>(Func<T, Unit> action, Collections.RrbList<T> list, int index, int count) where T : notnull {
         Collections.RrbFun.ForEach(list, x => action(x), index, count);
         return unit;
     }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    public static bool vecsubiter<T>(Func<T, bool> action, Collections.RrbList<T> list) where T : notnull => Collections.RrbFun.Iter(list, action);
+    public static bool RrbIter<T>(Func<T, bool> action, Collections.RrbList<T> list) where T : notnull => Collections.RrbFun.Iter(list, action);
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     // `vec-length`, not `vec-count`: the underlying member is `Count`, but the

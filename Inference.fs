@@ -4153,9 +4153,36 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                 failwithf
                     $"Type Error at %s{Lexer.formatPos r}: the two bodies of '%s{name}' contain the same yield points, so there is nothing a defbjouble is doing here that a defun would not do better.\n  A defbjouble is for a *leaf*: a procedure whose two colours call different .NET methods, which is the one thing no inference can derive. Anything above a leaf is written once with defun, and the copy for each colour is generated.\n  If the suspending half was meant to await something, it does not yet."
 
+            // `DoubleDefs` is "a call from a bjoroutine means the other body",
+            // and that is only true when the two bodies take the *same*
+            // arguments — a leaf like `read-line`, where the caller's colour is
+            // the whole of the question.
+            //
+            // A `-?->` parameter makes it false. There the copy is chosen by
+            // the callback that was handed over, not by where the call sits, so
+            // `vec-map` called from a bjoroutine with an ordinary lambda still
+            // means the ordinary body. Registering it here would rewrite that
+            // call to a twin whose parameter is a `Func<A,Fiber<B>>` and hand
+            // it a `Func<A,B>`, and it would also give every caller a copy of
+            // its own for a call that never suspends.
+            //
+            // `wantsSuspendingCopy` selects it instead, under the same name, so
+            // nothing is lost by staying out of this map.
+            let declaresPoly =
+                match signature with
+                | _, Some(TArrow(mandatory, keywords, restOpt, _, _, _)), _ ->
+                    mandatory @ (keywords |> List.map snd) @ (restOpt |> Option.toList)
+                    |> List.exists (function
+                        | TApp("-?->", _, _) -> true
+                        | _ -> false)
+                | _ -> false
+
             let registry =
-                { env.Registry with
-                    DoubleDefs = Map.add name bjoName env.Registry.DoubleDefs }
+                if declaresPoly then
+                    env.Registry
+                else
+                    { env.Registry with
+                        DoubleDefs = Map.add name bjoName env.Registry.DoubleDefs }
 
             { env with Registry = registry }, Map.remove name sigs, syncDecls @ bjoDecls
 

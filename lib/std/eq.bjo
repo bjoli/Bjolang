@@ -356,8 +356,14 @@
                (same-from (+ i 1)))))
     (and (= (vec-length xs) (vec-length ys))
          (same-from 0)))
+  ;; Indexed by hand, for the reason `fold-left` above exists: `vec-fold` is a
+  ;; prelude function now, and this module is compiled before the prelude.
   (defun (eq-hash xs)
-    (vec-fold (fun (h x) (hash-combine h (eq-hash x))) 17 xs)))
+    (defun (hash-from i h)
+      (if (= i (vec-length xs))
+          h
+          (hash-from (+ i 1) (hash-combine h (eq-hash (vec-ref xs i))))))
+    (hash-from 0 17)))
 
 (def/impl (Eq (Option %a))
   (where (Eq %a))

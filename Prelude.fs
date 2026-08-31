@@ -769,13 +769,15 @@ let prelude : Env =
         "vec-merge", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a"); makeVecType (TVar "a")] (makeVecType (TVar "a"))); IsMutable = false }
         "vec-merge/pure", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a"); makeVecType (TVar "a")] (makeVecType (TVar "a"))); IsMutable = false }
         "vec-split", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a"); intType] (TTuple [makeVecType (TVar "a"); makeVecType (TVar "a")])); IsMutable = false }
-        "vec-map", {Scheme = Scheme(["a"; "b"], [], makeFunType [makeFunType [TVar "a"] (TVar "b"); makeVecType (TVar "a")] (makeVecType (TVar "b"))); IsMutable = false }
-        "vec-filter", {Scheme = Scheme(["a"], [], makeFunType [makeFunType [TVar "a"] boolType; makeVecType (TVar "a")] (makeVecType (TVar "a"))); IsMutable = false }
-        "vec-fold", {Scheme = Scheme(["a"; "b"], [], makeFunType [makeFunType [TVar "b"; TVar "a"] (TVar "b"); TVar "b"; makeVecType (TVar "a")] (TVar "b")); IsMutable = false }
-        "vec-reduce", {Scheme = Scheme(["a"], [], makeFunType [makeFunType [TVar "a"; TVar "a"] (TVar "a"); makeVecType (TVar "a")] (TVar "a")); IsMutable = false }
-        "vec-for-each", {Scheme = Scheme(["a"], [], makeFunType [makeFunType [TVar "a"] unitType; makeVecType (TVar "a")] unitType); IsMutable = false }
-        "vec-for-each/range", {Scheme = Scheme(["a"], [], makeFunType [makeFunType [TVar "a"] unitType; makeVecType (TVar "a"); intType; intType] unitType); IsMutable = false }
-        "vec-iter", {Scheme = Scheme(["a"], [], makeFunType [makeFunType [TVar "a"] boolType; makeVecType (TVar "a")] boolType); IsMutable = false }
+        // The seven `vec-` operations that take a procedure are not here, for
+        // the reason the `list-` ones are not: their callbacks are declared
+        // `-?->` and a suspending copy is only generated from a Bjolang body.
+        //
+        // Unlike the list ones they did *not* give up their C# implementation.
+        // An RRB tree is copied by an algorithm worth keeping, so each is a
+        // `defbjouble` in `prelude.bjo` whose ordinary half is still the call
+        // below — renamed `Rrb*` so that the two are never both in scope — and
+        // whose suspending half is a walk written by hand.
         // `vec-length` rather than `vec-count`, even though the RRB member is
         // `Count`: the name a Bjolang program writes is the language's, not the
         // one the backing type happens to use, and `list-length`, `string-length`
