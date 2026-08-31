@@ -1,0 +1,60 @@
+;; What a lift does not do, and what says so.
+;;
+;; An ordinary function may now be passed where a bjoroutine is expected —
+;; `159_subeffecting.bjo` — and `Bjolang.Runtime.Colour.Lift` bridges the
+;; delegate. What it cannot bridge is the waiting: the lifted body still runs to
+;; completion on the fiber that calls it, so lifting one that *parks* parks that
+;; fiber.
+;;
+;; That is exactly the failure the colour system exists to prevent, arriving by
+;; a new road, and it is invisible by construction: the call is made through a
+;; delegate, and the call graph records no edge for a call through a value —
+;; "names nothing this graph has a node for", as `scanBody` puts it.
+;;
+;; A lift is the exception, and the only one. It is the single place where a
+;; fiber reaches ordinary code through a value and the compiler still knows the
+;; function's name, so the lift itself is the edge. Without that, subeffecting
+;; would have quietly restored the whole class of bug.
+
+(import (std prelude))
+
+;; --- Reported: a parking function lifted onto a fiber ------------------------
+;;
+;; `slurp` is an ordinary function that waits on a file, and `run-on-fiber`
+;; takes a bjoroutine. Nothing in the program says the two meet, and nothing in
+;; the emitted C# does either — the name appears once, as an argument.
+
+;; EXPECT-WARNING: 'reader' is a bjoroutine
+;; EXPECT-WARNING: reader -> slurp -> file-write-text
+;; EXPECT-WARNING: parks the thread it runs on
+
+(: slurp (-> string int))
+(defun (slurp path)
+  (file-write-text path "x")
+  0)
+
+(: run-on-fiber (-> (-bjo-> string int) string int))
+(defbjo (run-on-fiber f path) (f path))
+
+(: reader (-bjo-> string int))
+(defbjo (reader path)
+  (run-on-fiber slurp path))
+
+;; --- Not reported: a lifted function that waits on nothing -------------------
+;;
+;; The lift is an edge, not a verdict. `pure-work` reaches no blocking leaf, so
+;; walking through it finds nothing and there is nothing to say — which is what
+;; keeps this from becoming a warning on every use of the feature.
+
+(: pure-work (-> string int))
+(defun (pure-work s) (string-length s))
+
+(: quiet (-bjo-> string int))
+(defbjo (quiet path)
+  (run-on-fiber pure-work path))
+
+(defun (main args)
+  ;; Called so that nothing above is dead code, and to pin that a program the
+  ;; lint has complained about still runs.
+  (ignore (pure-work "hi"))
+  0)

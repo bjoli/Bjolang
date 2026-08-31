@@ -1,0 +1,93 @@
+;; An ordinary function used where a bjoroutine is expected.
+;;
+;; This was `errors/defun_as_bjo_value.bjo`, whose comment said the reader "has
+;; every reason to expect this to work". They did, and it does now.
+;;
+;; It is ordinary subeffecting: a procedure that never suspends is usable
+;; wherever one that may is expected. What made it an error was not the type
+;; rule but the representation — `(-> A B)` is a `Func<A,B>` and `(-bjo-> A B)`
+;; is a `Func<A,Fiber<B>>`, so the slot cannot hold the delegate as it stands.
+;; `unifyEffect` accepts it and `Codegen` bridges it with
+;; `Bjolang.Runtime.Colour.Lift`.
+;;
+;; **One direction only.** The reverse stays an error, because there is no
+;; un-awaiting — see `errors/bjo_as_value.bjo`.
+;;
+;; The old advice was "Define it with defbjo if it should suspend", which is now
+;; the wrong shape of answer: `pure-work` should *not* suspend, and the cost of
+;; saying so was a second body for every procedure anyone might pass somewhere
+;; suspending. A lift is one delegate instead, and costs the same at run time —
+;; an `async` method returning `Fiber<T>` allocates a `FiberCore` whether or not
+;; it awaits.
+
+(import (std prelude))
+(import (std simpletest))
+
+;; --- The case that was refused ------------------------------------------------
+
+(: pure-work (-> int int))
+(defun (pure-work x) (* x 2))
+
+(: apply-bjo (-> (-bjo-> int int) int int))
+(defbjo (apply-bjo f x) (f x))
+
+(: use-it (-bjo-> int int))
+(defbjo (use-it n) (apply-bjo pure-work n))
+
+;; --- A lambda, not only a named definition ------------------------------------
+;;
+;; The lift is decided from the argument's *type* against the parameter's, so
+;; nothing about it depends on the argument being a name. An ordinary `(fun ...)`
+;; is a `Func<A,B>` like any other.
+
+(: use-lambda (-bjo-> int int))
+(defbjo (use-lambda n) (apply-bjo (fun (x) (+ x 100)) n))
+
+;; --- A bjoroutine still goes in unlifted --------------------------------------
+;;
+;; The slot takes either now, which is the point, and the suspending one is
+;; passed as it is rather than through anything.
+
+(: real-bjo (-bjo-> int int))
+(defbjo (real-bjo x) (* x 3))
+
+(: use-bjo (-bjo-> int int))
+(defbjo (use-bjo n) (apply-bjo real-bjo n))
+
+;; --- Nullary, and void --------------------------------------------------------
+;;
+;; Two overload families rather than one. A suspending arrow is always a `Func`,
+;; because `Fiber<Unit>` is a real type where `void` is not — so a void-returning
+;; ordinary function is an `Action` on the way in and a `Func<Fiber<Unit>>` on
+;; the way out, and the lift produces the unit rather than nothing.
+;;
+;; Which overload applies is C#'s own resolution rather than anything in the
+;; compiler counting parameters.
+
+(: bump (-> void))
+(defun (bump) (ignore 1))
+
+(: run-thunk (-> (-bjo-> void) int))
+(defbjo (run-thunk f) (f) 7)
+
+(: nullary-value (-> int))
+(defun (nullary-value) 11)
+
+(: call-nullary (-> (-bjo-> int) int))
+(defbjo (call-nullary f) (f))
+
+;; --- Running them -------------------------------------------------------------
+
+(: run-int (-> (Promise int) int))
+(defun (run-int p)
+  (match (sync/blocking (promise-join p))
+    ((Ok n) n)
+    ((Err e) -1)))
+
+(defun (main)
+  (expect "an ordinary defun in a suspending slot" (run-int (bjo (use-it 21))) 42)
+  (expect "an ordinary lambda in a suspending slot" (run-int (bjo (use-lambda 1))) 101)
+  (expect "a bjoroutine in the same slot" (run-int (bjo (use-bjo 5))) 15)
+  (expect "a void-returning one" (run-int (bjo (run-thunk bump))) 7)
+  (expect "a nullary one" (run-int (bjo (call-nullary nullary-value))) 11)
+  0)

@@ -2001,7 +2001,57 @@ and private generateApply
         let calleeEmitters, argEmitters =
             if calleeIsIdent then [], emitters else [ emitters.Head ], emitters.Tail
 
-        let positionalEmitters = argEmitters |> List.truncate args.Length
+        // An ordinary function accepted into a suspending slot, bridged.
+        //
+        // `unifyEffect` allowed it — a procedure that never suspends is usable
+        // wherever one that may is expected — but the two are still different
+        // C# types, `Func<A,B>` against `Func<A,Fiber<B>>`, so the delegate has
+        // to be wrapped. `Colour.Lift` is an overload family, so the arity and
+        // the void case are chosen by C#'s own overload resolution rather than
+        // by anything here counting parameters.
+        //
+        // Only positional arguments. A keyword parameter's declared type is not
+        // positional in `TFun`, so there is nothing here to match it against —
+        // the same reason `ColourCheck` cannot name what pinned a lambda passed
+        // by keyword.
+        let paramTypes =
+            match target.Type with
+            | TFun(ps, _, _) -> ps
+            | _ -> []
+
+        let lifted (i: int) (emit: CodegenContext -> unit) : CodegenContext -> unit =
+            match List.tryItem i paramTypes with
+            | Some wanted when TypeVisitor.liftsToSuspending wanted args[i].Type ->
+                // A lambda is cast to its own delegate type on the way in,
+                // because it has none for the overload to be resolved from:
+                // `Lift(x => x + 1)` cannot choose between `Func<T,R>` and
+                // `Action<T>`. That is the same answer `generateApply` gives a
+                // lambda in callee position, for the same reason.
+                //
+                // Everything else already carries a type — a method group is
+                // emitted cast, a local is declared — so adding a second cast
+                // would only be noise in the emitted file.
+                let cast =
+                    match args[i].Node with
+                    | TLambda _ -> Some(typeToString args[i].Type)
+                    | _ -> None
+
+                fun c ->
+                    append c "Bjolang.Runtime.Colour.Lift("
+
+                    match cast with
+                    | Some t ->
+                        append c $"(%s{t})("
+                        emit c
+                        append c ")"
+                    | None -> emit c
+
+                    append c ")"
+            | _ -> emit
+
+        let positionalEmitters =
+            argEmitters |> List.truncate args.Length |> List.mapi lifted
+
         let keywordEmitters = argEmitters |> List.skip args.Length
 
         // A call to a bjoroutine is the yield point, and this is where it

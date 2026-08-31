@@ -1,0 +1,62 @@
+;; What a lift compiles to, and what does not get one.
+;;
+;; `159_subeffecting.bjo` checks the answers, and the answers would be the same
+;; either way — the difference between a lifted `defun` and a generated
+;; suspending copy is which body ran, not what it computed. That is visible
+;; here.
+;;
+;; Each `EXPECT-CS` line is an extended regex matched against one line.
+
+(export lifts keeps-the-copy passes-a-bjoroutine)
+
+(import (std prelude))
+
+(: takes-suspending (-> (-bjo-> TextInputPort int) TextInputPort int))
+(defbjo (takes-suspending f p) (f p))
+
+;; --- Lifted ------------------------------------------------------------------
+;;
+;; `measure` reaches no leaf with two bodies, so there is no suspending copy of
+;; it and never was. The delegate is bridged instead: cast to its own type,
+;; which is what picks the overload family, then wrapped.
+
+;; EXPECT-CS: Colour.Lift\(\(\(Func<System.IO.TextReader, int>\)\(.*measure\)\)\)
+(: measure (-> TextInputPort int))
+(defun (measure p) 0)
+
+(: lifts (-> TextInputPort int))
+(defbjo (lifts p) (takes-suspending measure p))
+
+;; --- Not lifted: a defun that has a copy -------------------------------------
+;;
+;; `drain` calls `port-eof?` and `read-line`, which are `defbjouble`s, so it is
+;; given a suspending copy — and the copy is what goes in the slot. A lift here
+;; would be wrong rather than merely wasteful: it would park the fiber on every
+;; line, which is the whole thing monomorphisation exists to avoid.
+;;
+;; So the two mechanisms do not compete. Monomorphisation answers first, and
+;; lifting is what happens when there is no second body to answer with.
+
+;; EXPECT-CS: takessubsuspending\(\(\(Func<System.IO.TextReader, Bjoml.Fiber<int>>\)\(.*drain__bjo\)\)
+(: drain (-> TextInputPort int))
+(defun (drain p)
+  (let loop ((n 0))
+    (if (port-eof? p)
+        n
+        (let ()
+          (ignore (read-line p))
+          (loop (+ n 1))))))
+
+(: keeps-the-copy (-> TextInputPort int))
+(defbjo (keeps-the-copy p) (takes-suspending drain p))
+
+;; --- Not lifted: a bjoroutine ------------------------------------------------
+;;
+;; Already the right colour, so it is passed as it is.
+
+;; EXPECT-CS: takessubsuspending\(\(\(Func<System.IO.TextReader, Bjoml.Fiber<int>>\)\(.*countsubasync\)\)
+(: count-async (-bjo-> TextInputPort int))
+(defbjo (count-async p) 1)
+
+(: passes-a-bjoroutine (-> TextInputPort int))
+(defbjo (passes-a-bjoroutine p) (takes-suspending count-async p))

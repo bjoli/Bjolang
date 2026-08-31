@@ -191,6 +191,23 @@ let rec mapDeclWithContext (f: TDecl -> TypedExpr -> TypedExpr) (decl: TDecl) : 
         TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods |> List.map (mapDeclWithContext f), r)
     | _ -> mapDecl (f decl) decl
 
+/// Does a value of type `supplied` need lifting to sit in a `wanted` slot?
+///
+/// True exactly where subeffecting was allowed by `unifyEffect` and the two
+/// types are still spelled differently in C#: an ordinary arrow accepted into a
+/// suspending one. `Codegen` wraps such an argument in `Colour.Lift`, and the
+/// blocking lint reads the same question to decide whether a fiber has reached
+/// ordinary code through a value.
+///
+/// Two callers and one definition, for the reason `reachesAwait` has one: the
+/// lint deciding differently from the emitter would mean either a wrapper with
+/// no edge — a fiber parking with nothing to say so — or an edge with no
+/// wrapper, which is a warning about a call that is not there.
+let liftsToSuspending (wanted: HMType) (supplied: HMType) : bool =
+    match wanted, supplied with
+    | TFun(_, _, w), TFun(_, _, s) -> groundEffect w = EAsync && groundEffect s = ESync
+    | _ -> false
+
 /// Does evaluating this expression *in the member it is written in* reach an
 /// `await`?
 ///

@@ -323,9 +323,21 @@ let unifyEffect (e1: Effect) (e2: Effect) =
     | ESync, EAsync ->
         failwith
             "Type error: a bjoroutine cannot be used where an ordinary function is expected. Its C# counterpart returns Fiber<T> rather than T, so the two are different calling conventions.\n  If the parameter is yours to change, declaring it -?-> makes it accept either colour, and both copies are generated.\n  If it is not, the suspending work has to happen before the call rather than inside the callback."
-    | EAsync, ESync ->
-        failwith
-            "Type error: an ordinary function cannot be used where a bjoroutine is expected. A bjoroutine's C# counterpart returns Fiber<T> where an ordinary one returns T, so the two are different calling conventions.\n  A defun is colour-polymorphic only as far as it can suspend: it is given a second, suspending copy when its own call graph reaches a leaf that has one. A defun that cannot suspend has only its ordinary copy, so there is no second colour of it to pass.\n  Define it with defbjo if it should suspend; or, if the parameter is yours to change, declare it -?-> so that it accepts either colour."
+    // Subeffecting, and the only direction of it there is: a procedure that
+    // never suspends is usable wherever one that may is expected. Accepted
+    // here; `Codegen` bridges the representation with `Colour.Lift`, since
+    // `Func<A,B>` and `Func<A,Fiber<B>>` are still different C# types.
+    //
+    // Only *ground* colours reach this. A `-?->` arrives as a cell and binds in
+    // the `EMeta` branches above, so nothing here can settle a colour that
+    // something else was still entitled to decide — which is what keeps
+    // subeffecting and effect defaulting out of each other's way.
+    //
+    // The asymmetry is the point, and it is why splitting this branch in two
+    // was worth doing before lifting either half. `ESync, EAsync` above stays
+    // an error because there is no un-awaiting: a caller that does not await
+    // cannot run a state machine to completion, and no wrapper can invent that.
+    | EAsync, ESync -> ()
 
 let rec unify (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
     let t1, t2 = prune registry t1, prune registry t2

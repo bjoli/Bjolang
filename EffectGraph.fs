@@ -95,6 +95,34 @@ let private scanBody (registry: TraitRegistry) (body: TypedExpr) : Scan =
             // makes those answerable; until then they are simply not edges.
             | None -> ()
 
+            // An ordinary function lifted into a suspending slot, which *is* a
+            // name and so is an edge.
+            //
+            // `Colour.Lift` does not make a function polite. The lifted body
+            // still runs to completion on the fiber that calls it, so lifting
+            // one that parks parks that fiber — silently, since the call is
+            // made through the delegate and the case above has nothing to
+            // record. The lift is the one place where a fiber reaches ordinary
+            // code through a value and the compiler still knows its name, so it
+            // is where the edge has to be added.
+            //
+            // Without this, subeffecting would have quietly restored the class
+            // of bug that deciding a name's colour at the name removed.
+            let paramTypes =
+                match target.Type with
+                | TFun(ps, _, _) -> ps
+                | _ -> []
+
+            args
+            |> List.iteri (fun i a ->
+                match List.tryItem i paramTypes, a.Node with
+                | Some wanted, TIdent(liftedName, _) when TypeVisitor.liftsToSuspending wanted a.Type ->
+                    if isBlocking registry liftedName then
+                        leaves.Add(liftedName, a.Range)
+                    else
+                        calls.Add(liftedName, a.Range)
+                | _ -> ())
+
             // `(blocking (fun () ...))` and `(spawn-thunk (fun () ...))` run
             // the lambda somewhere else, so what is inside it is not what this
             // body does. Walking in anyway would report the *recommended* way
