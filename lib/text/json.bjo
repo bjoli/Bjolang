@@ -1,0 +1,446 @@
+;; text/json.bjo
+;;
+;; RFC 8259, one character at a time.
+
+(export
+  Json
+  json-max-depth
+  read-json parse-json)
+
+(import (std prelude))
+
+;; Culture-free. System.Double.Parse reads the current culture, so "1.5" throws
+;; where the decimal separator is a comma.
+(import/extern
+  (clr-to-long   (: System.Xml.XmlConvert.ToInt64))
+  (clr-to-double (: System.Xml.XmlConvert.ToDouble)))
+
+(type
+  (: Json (Union
+           JsonNull
+           (JsonBool bool)
+           (JsonInt long)
+           (JsonFloat double)
+           (JsonStr string #:literal)
+           (JsonArr (Vec Json))
+           (JsonObj (Map string Json)))))
+
+;; Max stack depth. This should probably be a parameter.
+(: json-max-depth int)
+(def json-max-depth 1000)
+
+;; ---------------------------------------------------------------------------
+;; The reader
+;; ---------------------------------------------------------------------------
+;; One character of lookahead, held as a code so that the end of the port is a
+;; value rather than a second field.
+
+(: unfilled int)
+(def unfilled -2)
+
+(: spent int)
+(def spent -1)
+
+(type
+  (: Reader (Record (: port TextInputPort)
+                    (: held int #:mutable)
+                    (: row int #:mutable)
+                    (: col int #:mutable))))
+
+(: reader (-> TextInputPort Reader))
+(defun (reader port)
+  (Reader (port port) (held unfilled) (row 1) (col 1)))
+
+;; `port-eof?` and `read-char` rather than `read-char/opt`, which is the two of
+;; them with an `(Option char)` around the answer — one allocation per character
+;; of the document.
+(: held-code (-> Reader int))
+(defun (held-code rd)
+  (let ((h (record-ref rd held)))
+    (if (= h unfilled)
+        (let ((p (record-ref rd port)))
+          (if (port-eof? p)
+              (let ()
+                (record-set! rd (held spent))
+                spent)
+              (let ((n (char->integer (read-char p))))
+                (record-set! rd (held n))
+                n)))
+        h)))
+
+(: at-end? (-> Reader bool))
+(defun (at-end? rd)
+  (= (held-code rd) spent))
+
+;; #\nul past the end, which is never a character a document may hold unescaped.
+(: peek (-> Reader char))
+(defun (peek rd)
+  (let ((c (held-code rd)))
+    (if (= c spent) #\nul (integer->char c))))
+
+(: advance! (-> Reader void))
+(defun (advance! rd)
+  (let ((c (held-code rd)))
+    (cond
+      ((= c spent) unit)
+      ;; A line ends at the newline whether or not a return came before it.
+      ((= c 10)
+       (record-set! rd (held unfilled) (row (+ (record-ref rd row) 1)) (col 1)))
+      (else
+       (record-set! rd (held unfilled) (col (+ (record-ref rd col) 1)))))))
+
+(: skip-space! (-> Reader void))
+(defun (skip-space! rd)
+  (let go ()
+    (if (at-end? rd)
+        unit
+        (case (peek rd)
+          ((#\space #\tab #\newline #\return) (advance! rd) (go))
+          (else unit)))))
+
+;; ---------------------------------------------------------------------------
+;; Refusals
+;; ---------------------------------------------------------------------------
+;; Functions to raise errors
+
+(: at (-> Reader string string))
+(defun (at rd what)
+  (str "line " (int->string (record-ref rd row))
+       ", column " (int->string (record-ref rd col))
+       ": " what))
+
+(: found (-> Reader string))
+(defun (found rd)
+  (if (at-end? rd)
+      "the document ended"
+      (str "'" (list->string (list (peek rd))) "'")))
+
+(: too-deep (-> Reader string string))
+(defun (too-deep rd what)
+  (at rd (str "this " what " nests deeper than " (int->string json-max-depth)
+              ", which is as far as reading goes")))
+
+;; ---------------------------------------------------------------------------
+;; Strings
+;; ---------------------------------------------------------------------------
+
+;; The Bjolang lexer has no \b or \f of its own.
+(: escaped-backspace string)
+(def escaped-backspace (list->string (list (integer->char 8))))
+
+(: escaped-formfeed string)
+(def escaped-formfeed (list->string (list (integer->char 12))))
+
+(: hex-digit (-> char int))
+(defun (hex-digit c)
+  (cond
+    ((and (char>=? c #\0) (char<=? c #\9)) (- (char->integer c) 48))
+    ((and (char>=? c #\a) (char<=? c #\f)) (- (char->integer c) 87))
+    ((and (char>=? c #\A) (char<=? c #\F)) (- (char->integer c) 55))
+    (else -1)))
+
+(: high-surrogate? (-> int bool))
+(defun (high-surrogate? n) (and (>= n 55296) (<= n 56319)))
+
+(: low-surrogate? (-> int bool))
+(defun (low-surrogate? n) (and (>= n 56320) (<= n 57343)))
+
+(: read-hex4 (-> Reader (Result string int)))
+(defun (read-hex4 rd)
+  (let go ((n 0) (left 4))
+    (cond
+      ((= left 0) (Ok n))
+      ((at-end? rd) (Err (at rd "the document ended inside a \\u escape")))
+      (else
+       (def d (hex-digit (peek rd)))
+       (if (< d 0)
+           (Err (at rd (str "a \\u escape takes four hex digits, and this is " (found rd))))
+           (let ()
+             (advance! rd)
+             (go (+ (* n 16) d) (- left 1))))))))
+
+;; The pair is one character. A Bjolang char is a Unicode scalar... Not a match made in heaven
+(: read-low-surrogate (-> Reader int (Result string string)))
+(defun (read-low-surrogate rd hi)
+  (let ((incomplete "a high surrogate has to be followed by \\u and its low surrogate"))
+    (cond
+      ((or (at-end? rd) (not (char=? (peek rd) #\\))) (Err (at rd incomplete)))
+      (else
+       (advance! rd)
+       (cond
+         ((or (at-end? rd) (not (char=? (peek rd) #\u))) (Err (at rd incomplete)))
+         (else
+          (advance! rd)
+          (match (read-hex4 rd)
+            ((Err e) (Err e))
+            ((Ok lo)
+             (if (low-surrogate? lo)
+                 (Ok (list->string
+                      (list (integer->char (+ 65536
+                                              (* (- hi 55296) 1024)
+                                              (- lo 56320))))))
+                 (Err (at rd incomplete)))))))))))
+
+(: read-unicode (-> Reader (Result string string)))
+(defun (read-unicode rd)
+  (match (read-hex4 rd)
+    ((Err e) (Err e))
+    ((Ok n)
+     (cond
+       ((low-surrogate? n) (Err (at rd "a low surrogate with no high surrogate before it")))
+       ((high-surrogate? n) (read-low-surrogate rd n))
+       (else (Ok (list->string (list (integer->char n)))))))))
+
+(: read-escape (-> Reader (Result string string)))
+(defun (read-escape rd)
+  (if (at-end? rd)
+      (Err (at rd "the document ended after a backslash"))
+      (case (peek rd)
+        ((#\") (advance! rd) (Ok "\""))
+        ((#\\) (advance! rd) (Ok "\\"))
+        ((#\/) (advance! rd) (Ok "/"))
+        ((#\b) (advance! rd) (Ok escaped-backspace))
+        ((#\f) (advance! rd) (Ok escaped-formfeed))
+        ((#\n) (advance! rd) (Ok "\n"))
+        ((#\r) (advance! rd) (Ok "\r"))
+        ((#\t) (advance! rd) (Ok "\t"))
+        ((#\u) (advance! rd) (read-unicode rd))
+        (else
+         (Err (at rd (str "\\" (list->string (list (peek rd))) " is not an escape")))))))
+
+;; The opening quote is the caller's to have seen.
+(: read-text (-> Reader (Result string string)))
+(defun (read-text rd)
+  (advance! rd)
+  (def sb (stringbuilder-empty))
+  (let go ()
+    (if (at-end? rd)
+        (Err (at rd "the document ended inside a string"))
+        (let ((c (peek rd)))
+          (cond
+           ((char=? c #\") (advance! rd) (Ok (stringbuilder->string sb)))
+           ((char=? c #\\)
+            (advance! rd)
+            (match (read-escape rd)
+              ((Err e) (Err e))
+              ((Ok piece)
+               (stringbuilder-add-string! sb piece)
+               (go))))
+           ((< (char->integer c) 32)
+            (Err (at rd "a control character in a string has to be written as an escape")))
+           (else
+            (stringbuilder-add! sb c)
+            (advance! rd)
+            (go)))))))
+
+;; ---------------------------------------------------------------------------
+;; Numbers
+;; ---------------------------------------------------------------------------
+
+(: digit? (-> char bool))
+(defun (digit? c) (and (char>=? c #\0) (char<=? c #\9)))
+
+;; How many were taken.
+(: take-digits! (-> Reader StringBuilder int))
+(defun (take-digits! rd sb)
+  (let go ((n 0))
+    (if (and (not (at-end? rd)) (digit? (peek rd)))
+        (let ()
+          (stringbuilder-add! sb (peek rd))
+          (advance! rd)
+          (go (+ n 1)))
+        n)))
+
+;; Answers whether what was scanned has to be read as a double.
+(: scan-exponent (-> Reader StringBuilder (Result string bool)))
+(defun (scan-exponent rd sb)
+  (if (and (not (at-end? rd)) (or (char=? (peek rd) #\e) (char=? (peek rd) #\E)))
+      (let ()
+        (stringbuilder-add! sb #\e)
+        (advance! rd)
+        (when (and (not (at-end? rd)) (or (char=? (peek rd) #\+) (char=? (peek rd) #\-)))
+          (stringbuilder-add! sb (peek rd))
+          (advance! rd))
+        (if (= (take-digits! rd sb) 0)
+            (Err (at rd (str "a number needs a digit after its exponent, and this is " (found rd))))
+            (Ok #t)))
+      (Ok #f)))
+
+(: scan-fraction (-> Reader StringBuilder (Result string bool)))
+(defun (scan-fraction rd sb)
+  (if (and (not (at-end? rd)) (char=? (peek rd) #\.))
+      (let ()
+        (stringbuilder-add! sb #\.)
+        (advance! rd)
+        (if (= (take-digits! rd sb) 0)
+            (Err (at rd (str "a number needs a digit after its decimal point, and this is "
+                             (found rd))))
+            (match (scan-exponent rd sb)
+              ((Err e) (Err e))
+              ((Ok _) (Ok #t)))))
+      (scan-exponent rd sb)))
+
+(: scan-number (-> Reader StringBuilder (Result string bool)))
+(defun (scan-number rd sb)
+  (when (and (not (at-end? rd)) (char=? (peek rd) #\-))
+    (stringbuilder-add! sb #\-)
+    (advance! rd))
+  (cond
+    ((or (at-end? rd) (not (digit? (peek rd))))
+     (Err (at rd (str "a number needs a digit here, and this is " (found rd)))))
+    ;; A leading zero stands alone: 01 is two tokens to a reader that allows it
+    ;; and one to a reader that does not, which is how documents come to differ.
+    ((char=? (peek rd) #\0)
+     (stringbuilder-add! sb #\0)
+     (advance! rd)
+     (if (and (not (at-end? rd)) (digit? (peek rd)))
+         (Err (at rd "a number may not have a leading zero"))
+         (scan-fraction rd sb)))
+    (else
+     (ignore (take-digits! rd sb))
+     (scan-fraction rd sb))))
+
+(: read-number (-> Reader (Result string Json)))
+(defun (read-number rd)
+  (let ((sb (stringbuilder-empty)))
+    (match (scan-number rd sb)
+      ((Err e) (Err e))
+      ((Ok fractional?)
+       (let ((text (stringbuilder->string sb)))
+         (if fractional?
+             (Ok (JsonFloat (clr-to-double text)))
+             ;; Wider than a long is still a number, and a double is what every
+             ;; other reader answers with.
+             (match (try (clr-to-long text) #:catch (System.OverflowException))
+               ((Ok n) (Ok (JsonInt n)))
+               ((Err _) (Ok (JsonFloat (clr-to-double text)))))))))))
+
+;; ---------------------------------------------------------------------------
+;; Values
+;; ---------------------------------------------------------------------------
+
+(: read-word (-> Reader string Json (Result string Json)))
+(defun (read-word rd word value)
+  (let go ((left (string->list word)))
+    (match left
+      (Nil (Ok value))
+      ((Cons c rest)
+       (if (or (at-end? rd) (not (char=? (peek rd) c)))
+           (Err (at rd (str "'" word "' is spelled out to here, and then there is " (found rd))))
+           (let ()
+             (advance! rd)
+             (go rest)))))))
+
+(: read-array (-> Reader int (Result string Json)))
+(defun (read-array rd depth)
+  (cond
+   ((> depth json-max-depth) (Err (too-deep rd "array")))
+   (else
+    (advance! rd)
+    (skip-space! rd)
+    (def b (vecbuilder-empty))
+    (cond
+     ((at-end? rd) (Err (at rd "the document ended inside an array")))
+     ((char=? (peek rd) #\]) (advance! rd) (Ok (JsonArr (vecbuilder->vec b))))
+     (else
+      (let go ()
+        (match (read-value rd (+ depth 1))
+          ((Err e) (Err e))
+          ((Ok v)
+           (vecbuilder-add! b v)
+           (skip-space! rd)
+           (cond
+            ((at-end? rd) (Err (at rd "the document ended inside an array")))
+            ((char=? (peek rd) #\,) (advance! rd) (go))
+            ((char=? (peek rd) #\]) (advance! rd) (Ok (JsonArr (vecbuilder->vec b))))
+            (else
+             (Err (at rd (str "an array wants ',' or ']' here, and this is "
+                              (found rd))))))))))))))
+
+;; A key written twice keeps the second, which is what a map does with it.
+(: read-object (-> Reader int (Result string Json)))
+(defun (read-object rd depth)
+  (cond
+   ((> depth json-max-depth) (Err (too-deep rd "object")))
+   (else 
+    (advance! rd)
+    (skip-space! rd)
+    (def b (mapbuilder-empty))
+    (cond
+     ((at-end? rd) (Err (at rd "the document ended inside an object")))
+     ((char=? (peek rd) #\}) (advance! rd) (Ok (JsonObj (mapbuilder->map b))))
+     (else
+      (let go ()
+        (skip-space! rd)
+        (cond
+         ((at-end? rd) (Err (at rd "the document ended inside an object")))
+         ((not (char=? (peek rd) #\"))
+          (Err (at rd (str "an object's key has to be a string, and this is " (found rd)))))
+         (else
+          (match (read-text rd)
+            ((Err e) (Err e))
+            ((Ok key)
+             (skip-space! rd)
+             (cond
+              ((or (at-end? rd) (not (char=? (peek rd) #\:)))
+                 (Err (at rd (str "an object wants ':' after a key, and this is "
+                                  (found rd)))))
+              (else 
+               (advance! rd)
+               (match (read-value rd (+ depth 1))
+                 ((Err e) (Err e))
+                 ((Ok v)
+                  (mapbuilder-add! b key v)
+                  (skip-space! rd)
+                  (cond
+                   ((at-end? rd) (Err (at rd "the document ended inside an object")))
+                   ((char=? (peek rd) #\,) (advance! rd) (go))
+                       ((char=? (peek rd) #\})
+                        (advance! rd)
+                        (Ok (JsonObj (mapbuilder->map b))))
+                       (else
+                        (Err (at rd (str "an object wants ',' or '}' here, and this is "
+                                         (found rd))))))))))))))))))))
+
+(: read-value (-> Reader int (Result string Json)))
+(defun (read-value rd depth)
+  (skip-space! rd)
+  (if (at-end? rd)
+      (Err (at rd "the document ended where a value was expected"))
+      (case (peek rd)
+        ((#\{) (read-object rd depth))
+        ((#\[) (read-array rd depth))
+        ((#\") (match (read-text rd)
+                 ((Err e) (Err e))
+                 ((Ok s) (Ok (JsonStr s)))))
+        ((#\t) (read-word rd "true" (JsonBool #t)))
+        ((#\f) (read-word rd "false" (JsonBool #f)))
+        ((#\n) (read-word rd "null" JsonNull))
+        ((#\- #\0 #\1 #\2 #\3 #\4 #\5 #\6 #\7 #\8 #\9) (read-number rd))
+        (else (Err (at rd (str (found rd) " does not begin a value")))))))
+
+;; ---------------------------------------------------------------------------
+;; Reading a document
+;; ---------------------------------------------------------------------------
+
+;; The port is read as it is walked, so the document is never a string.
+(: read-json (-> TextInputPort (Result string Json)))
+(defun (read-json port)
+  (let ((rd (reader port)))
+    ;; A byte-order mark ahead of the value is skipped, and does
+    ;; not count as a column. Opening a file strips it; a string that was
+    ;; decoded elsewhere still carries it.
+    (when (and (not (at-end? rd)) (= (char->integer (peek rd)) 65279))
+      (advance! rd)
+      (record-set! rd (col 1)))
+    (match (read-value rd 1)
+      ((Err e) (Err e))
+      ((Ok v)
+       (skip-space! rd)
+       (if (at-end? rd)
+           (Ok v)
+           (Err (at rd (str "the value ended here, and then there is " (found rd)))))))))
+
+(: parse-json (-> string (Result string Json)))
+(defun (parse-json text)
+  (read-json (open-input-string text)))

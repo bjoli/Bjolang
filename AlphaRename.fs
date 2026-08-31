@@ -254,11 +254,6 @@ let rec private renameCore
             )
 
         | TLoop(members, bodyOpt) ->
-            // Member names are in scope throughout the group; a member's slots
-            // and per-iteration locals are in scope in its own body only.
-            let memberNames = members |> List.map (fun m -> m.LoopName)
-            let memberNames', gScope, gSubst = bind memberNames scope subst
-
             /// Follows an existing renaming without inventing a new one. The
             /// substitution is left in place, because these names are not a new
             /// binding — they are the same one, spelled wherever it was already
@@ -267,11 +262,29 @@ let rec private renameCore
                 let renamed = names |> List.map (fun n -> Map.tryFind n subst |> Option.defaultValue n)
                 renamed, (renamed |> List.fold (fun acc n -> Set.add n acc) scope), subst
 
-            // `TLoop (_, None)` *is* an enclosing function's body, and its slots
-            // name that function's own parameters — they are already declared,
-            // by the C# method signature, and renaming one here would leave the
-            // signature spelling the old name.
+            // `TLoop (_, None)` *is* an enclosing function's body. Its name is
+            // that function's own and its slots name that function's own
+            // parameters — all of them are already declared, by the C# method
+            // signature, and renaming one here would leave the signature
+            // spelling the old name.
+            //
+            // The *name* matters for a reason the slots do not have: it collides
+            // with itself. The function is a global, so binding its name again
+            // reads as a shadow and freshens it — and then every reference to
+            // the function left in its own body is rewritten to a name nothing
+            // declares. `Codegen` never emits `LoopName` for this shape, so
+            // there is no declaration for the new spelling to land on.
+            //
+            // Only a *tail* self-call becomes `TRecur`; one inside a lambda, or
+            // the name passed as a value, stays a reference. Those are the ones
+            // that went missing.
+            let bindMembers = if bodyOpt.IsSome then bind else keep
             let bindSlots = if bodyOpt.IsSome then bind else keep
+
+            // Member names are in scope throughout the group; a member's slots
+            // and per-iteration locals are in scope in its own body only.
+            let memberNames = members |> List.map (fun m -> m.LoopName)
+            let memberNames', gScope, gSubst = bindMembers memberNames scope subst
 
             TLoop(
                 List.zip memberNames' members

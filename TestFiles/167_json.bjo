@@ -1,0 +1,163 @@
+;; Reading JSON off a port.
+;;
+;; The reader never holds the document: it takes one character at a time and
+;; keeps one of lookahead. Every refusal names the line and column of the
+;; character it refused, which is the whole reason the reader counts them.
+
+(import (std prelude))
+(import (text json))
+(import (std simpletest))
+
+;; A summary to assert on, since the module reads and does not write.
+(: shape (-> Json string))
+(defun (shape j)
+  (match j
+    (JsonNull "null")
+    ((JsonBool b) (if b "true" "false"))
+    ((JsonInt n) (str "i" (long->string n)))
+    ((JsonFloat d) (str "f" (double->string d)))
+    ((JsonStr s) (str "\"" s "\""))
+    ((JsonArr v) (str "[" (string-join (vec-map shape v) ",") "]"))
+    ((JsonObj m) (str "{" (string-join (entries m) ",") "}"))))
+
+;; Sorted, so the assertion does not depend on a hash order.
+(: entries (-> (Map string Json) (Vec string)))
+(defun (entries m)
+  (let ((pairs (loop (:for (Tuple k v) m)
+                     (:acc out (listing (str "\"" k "\":" (shape v)))))))
+    (loop (:for e (list-sort pairs)) (:acc v (vecing e)))))
+
+(: ok (-> string string))
+(defun (ok text)
+  (match (parse-json text) ((Ok j) (shape j)) ((Err e) (str "REFUSED " e))))
+
+(: bad (-> string string))
+(defun (bad text)
+  (match (parse-json text) ((Ok j) (str "ACCEPTED " (shape j))) ((Err e) e)))
+
+(: accepted? (-> string bool))
+(defun (accepted? text)
+  (match (parse-json text) ((Ok _) #t) ((Err _) #f)))
+
+(: emoji string)
+(def emoji (list->string (list (integer->char 128512))))
+
+;; Deeper than anyone types.
+(: nest (-> int string))
+(defun (nest n)
+  (let ((sb (stringbuilder-empty)))
+    (loop (:for i (range 0 n)) (:do (stringbuilder-add! sb #\[)))
+    (loop (:for i (range 0 n)) (:do (stringbuilder-add! sb #\])))
+    (stringbuilder->string sb)))
+
+(: nest-objects (-> int string))
+(defun (nest-objects n)
+  (let ((sb (stringbuilder-empty)))
+    (loop (:for i (range 0 n)) (:do (stringbuilder-add-string! sb "{\"a\":")))
+    (stringbuilder-add-string! sb "1")
+    (loop (:for i (range 0 n)) (:do (stringbuilder-add! sb #\})))
+    (stringbuilder->string sb)))
+
+;; Nothing here says a colour, and the reader is the same source either way.
+(: read-in-a-fiber (-bjo-> TextInputPort string))
+(defbjo (read-in-a-fiber p)
+  (match (read-json p) ((Ok j) (shape j)) ((Err e) e)))
+
+(: run-str (-> (Promise string) string))
+(defun (run-str p)
+  (match (sync/blocking (promise-join p)) ((Ok s) s) ((Err e) "raised")))
+
+(defun (main)
+  ;; --- Values --------------------------------------------------------------
+  (expect "null" (ok "null") "null")
+  (expect "true" (ok "true") "true")
+  (expect "false" (ok "false") "false")
+  (expect "zero" (ok "0") "i0")
+  (expect "an integer" (ok "42") "i42")
+  (expect "a negative integer" (ok "-42") "i-42")
+  (expect "the widest long" (ok "9223372036854775807") "i9223372036854775807")
+  (expect "a fraction" (ok "1.5") "f1.5")
+  (expect "an exponent" (ok "1e3") "f1000")
+  (expect "a signed exponent" (ok "-2.5E-2") "f-0.025")
+  ;; A long is as wide as an integer goes; past it the value is still a number.
+  (expect "wider than a long" (ok "99999999999999999999") "f1E+20")
+
+  ;; --- Strings -------------------------------------------------------------
+  (expect "a string" (ok "\"hi\"") "\"hi\"")
+  (expect "an empty string" (ok "\"\"") "\"\"")
+  (expect "an escaped quote" (ok "\"a\\\"b\"") "\"a\"b\"")
+  (expect "an escaped solidus" (ok "\"a\\/b\"") "\"a/b\"")
+  (expect "a tab escape" (ok "\"a\\tb\"") "\"a\tb\"")
+  (expect "a \\u escape" (ok "\"\\u0041\"") "\"A\"")
+  ;; A char is a Unicode scalar, so the pair is one of them rather than two.
+  (expect "a surrogate pair is one character" (ok "\"\\uD83D\\uDE00\"") (str "\"" emoji "\""))
+  (expect "an astral character read raw" (ok (str "\"" emoji "\"")) (str "\"" emoji "\""))
+  ;; The reader's own end-of-port marker is #\nul, and this is not it.
+  (expect "an escaped nul is not the end of the port"
+          (ok "\"a\\u0000b\"")
+          (str "\"a" (list->string (list (integer->char 0))) "b\""))
+
+  ;; --- Arrays and objects --------------------------------------------------
+  (expect "an empty array" (ok "[]") "[]")
+  (expect "an array" (ok "[1, 2, 3]") "[i1,i2,i3]")
+  (expect "a ragged array" (ok "[1, \"a\", null, true]") "[i1,\"a\",null,true]")
+  (expect "an empty object" (ok "{}") "{}")
+  (expect "an object" (ok "{\"a\": 1, \"b\": [2]}") "{\"a\":i1,\"b\":[i2]}")
+  (expect "a repeated key keeps the second" (ok "{\"a\": 1, \"a\": 2}") "{\"a\":i2}")
+  (expect "whitespace everywhere" (ok "  {\n \"a\" :\t[ 1 ,2 ]\n}  ") "{\"a\":[i1,i2]}")
+  (expect "a byte-order mark is skipped"
+          (ok (str (list->string (list (integer->char 65279))) "\"x\""))
+          "\"x\"")
+
+  ;; --- Refusals name the position ------------------------------------------
+  (expect "a bare word" (bad "nope")
+          "line 1, column 2: 'null' is spelled out to here, and then there is 'o'")
+  (expect "a trailing comma" (bad "[1,]") "line 1, column 4: ']' does not begin a value")
+  (expect "a missing colon" (bad "{\"a\" 1}")
+          "line 1, column 6: an object wants ':' after a key, and this is '1'")
+  (expect "an unquoted key" (bad "{a: 1}")
+          "line 1, column 2: an object's key has to be a string, and this is 'a'")
+  (expect "a leading zero" (bad "01") "line 1, column 2: a number may not have a leading zero")
+  (expect "a lone decimal point" (bad "1.")
+          "line 1, column 3: a number needs a digit after its decimal point, and this is the document ended")
+  (expect "an unterminated string" (bad "\"abc")
+          "line 1, column 5: the document ended inside a string")
+  (expect "a raw newline in a string" (bad "\"a\nb\"")
+          "line 1, column 3: a control character in a string has to be written as an escape")
+  (expect "trailing content" (bad "1 2")
+          "line 1, column 3: the value ended here, and then there is '2'")
+  (expect "an empty document" (bad "")
+          "line 1, column 1: the document ended where a value was expected")
+  (expect "a lone high surrogate" (bad "\"\\uD83D\"")
+          "line 1, column 8: a high surrogate has to be followed by \\u and its low surrogate")
+  (expect "a bad escape" (bad "\"\\q\"") "line 1, column 3: \\q is not an escape")
+
+  ;; The row is the point of all this.
+  (expect "the third line" (bad "[\n  1,\n  @\n]")
+          "line 3, column 3: '@' does not begin a value")
+  (expect "the fourth line" (bad "{\n\"a\": 1,\n\"b\": 2\n@")
+          "line 4, column 1: an object wants ',' or '}' here, and this is '@'")
+
+  ;; --- Depth ---------------------------------------------------------------
+  (expect "as deep as it goes" (accepted? (nest json-max-depth)) #t)
+  (expect "one array deeper" (bad (nest (+ json-max-depth 1)))
+          "line 1, column 1001: this array nests deeper than 1000, which is as far as reading goes")
+  (expect "one object deeper" (bad (nest-objects (+ json-max-depth 1)))
+          "line 1, column 5001: this object nests deeper than 1000, which is as far as reading goes")
+
+  ;; --- Off a file, and off a fiber -----------------------------------------
+  (let ((path (path-combine (current-directory) "167-scratch.json")))
+    (file-write-text path "{\n  \"a\": [1, 2],\n  \"b\": \"x\"\n}\n")
+    (match (open-input-file path)
+      ((Err e) (expect "the scratch file opens" "no" "yes"))
+      ((Ok p)
+       (expect "read off a file port"
+               (match (read-json p) ((Ok j) (shape j)) ((Err e) e))
+               "{\"a\":[i1,i2],\"b\":\"x\"}")
+       (close-input-port p)))
+    (file-delete path))
+
+  (expect "read inside a bjoroutine"
+          (run-str (bjo (read-in-a-fiber (open-input-string "[1, 2, 3]"))))
+          "[i1,i2,i3]")
+  0)

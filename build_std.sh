@@ -53,4 +53,7 @@ echo "Building standard library..."
 # deliberate act. `deque` imports `prelude` and nothing else.
 ./bjor --lib lib/std/mutable/deque.bjo
 
+# `text/json` imports `prelude` and nothing else.
+./bjor --lib lib/text/json.bjo
+
 echo "Standard library built successfully!"

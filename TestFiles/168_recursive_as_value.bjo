@@ -1,0 +1,89 @@
+;; A function that both calls itself in tail position and hands its own name on.
+;;
+;; The tail call becomes a `while` in the method itself, and `LoopLowering`
+;; names that loop after the function. `AlphaRename` used to read the name as a
+;; binder that shadowed the global of the same name, freshen it, and rewrite
+;; every *other* reference in the body to the fresh spelling — which `Codegen`
+;; never declares, because for this shape the loop's name is the method's and
+;; the method already has it.
+;;
+;; Only a tail self-call becomes a jump. One inside a lambda, one that is not in
+;; tail position, and the bare name passed as a value all stay references, and
+;; those were the ones that went missing.
+
+(import (std prelude))
+(import (std simpletest))
+
+(type
+  (: Tree (Union (Leaf int) (Node (Vec Tree)))))
+
+(: apply-to (-> (-> Tree int) Tree int))
+(defun (apply-to f t) (f t))
+
+;; --- The name as a value, beside a tail self-call ---------------------------
+(: total (-> Tree int))
+(defun (total t)
+  (match t
+    ((Leaf n) n)
+    ((Node v)
+     (if (= (vec-length v) 1)
+         ;; Tail: a jump.
+         (total (vec-ref v 0))
+         ;; A value: still a reference to the method.
+         (vec-fold (fun (acc x) (+ acc (apply-to total x))) 0 v)))))
+
+;; --- The name called inside a lambda, beside a tail self-call ----------------
+(: depth (-> Tree int))
+(defun (depth t)
+  (match t
+    ((Leaf n) 1)
+    ((Node v)
+     (if (= (vec-length v) 1)
+         (depth (vec-ref v 0))
+         (+ 1 (vec-fold (fun (acc x) (max acc (depth x))) 0 v))))))
+
+;; --- A non-tail self-call, beside a tail one --------------------------------
+(: leaves (-> Tree int))
+(defun (leaves t)
+  (match t
+    ((Leaf n) 1)
+    ((Node v)
+     (if (= (vec-length v) 1)
+         (leaves (vec-ref v 0))
+         (vec-fold (fun (acc x) (+ acc (leaves x))) 0 v)))))
+
+;; --- The tail call still has to be a loop -----------------------------------
+;;
+;; Not decoration: a real call here would overflow the stack at this depth, so
+;; this fails loudly if the fix cost the promotion.
+(: count-down (-> int int int))
+(defun (count-down n acc)
+  (if (= n 0)
+      (+ acc (apply-to (fun (t) 0) (Leaf 0)))
+      (count-down (- n 1) (+ acc 1))))
+
+;; --- A local of the function's own name, inside the promoted body ------------
+;;
+;; The binder shadows within its own scope and has to be freshened; the tail
+;; call outside it is still the function's. Keeping the loop's name is not the
+;; same as keeping every name.
+(: pick (-> int int))
+(defun (pick n)
+  (if (= n 0)
+      (let ((pick 42)) pick)
+      (pick (- n 1))))
+
+(: sample (-> Tree))
+(defun (sample)
+  (Node [(Leaf 1) (Node [(Leaf 2) (Leaf 3)]) (Node [(Leaf 4)])]))
+
+(defun (main)
+  (expect "the name as a value" (total (sample)) 10)
+  (expect "unwrapped through the tail call" (total (Node [(Node [(Leaf 7)])])) 7)
+  ;; The one-child node unwraps through the tail call rather than counting a
+  ;; level, which is what makes this a jump and not a call.
+  (expect "called inside a lambda" (depth (sample)) 3)
+  (expect "a non-tail self-call" (leaves (sample)) 4)
+  (expect "the tail call is still a loop" (count-down 2000000 0) 2000000)
+  (expect "a local of the function's own name" (pick 100000) 42)
+  0)

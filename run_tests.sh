@@ -674,10 +674,27 @@ if [ -d "$CODEGEN_DIR" ] && ls "$CODEGEN_DIR"/*.bjo >/dev/null 2>&1; then
             fi
         done < <(sed -n 's/^;;[[:space:]]*EXPECT-CS:[[:space:]]*//p' "$bjo_file")
 
+        # `EXPECT-NO-CS`, for the assertions that are about something *not*
+        # being emitted. A name invented by a pass that had no business
+        # inventing one is the case: there is no shape to match, only the
+        # absence of one, and a positive pattern cannot say it.
+        cs_present=""
+        while IFS= read -r pattern; do
+            [ -z "$pattern" ] && continue
+            if grep -qE -- "$pattern" "$CS_WORK/out.cs"; then
+                cs_present="$pattern"
+                break
+            fi
+        done < <(sed -n 's/^;;[[:space:]]*EXPECT-NO-CS:[[:space:]]*//p' "$bjo_file")
+
         if [ -n "$cs_missing" ]; then
             echo -e "  [${RED}FAIL${NC}] $cs_name.bjo"
             codegen_failed=$((codegen_failed + 1))
             codegen_failures+=("$cs_name.bjo: the generated C# has no match for: $cs_missing")
+        elif [ -n "$cs_present" ]; then
+            echo -e "  [${RED}FAIL${NC}] $cs_name.bjo"
+            codegen_failed=$((codegen_failed + 1))
+            codegen_failures+=("$cs_name.bjo: the generated C# matches what it must not: $cs_present")
         else
             echo -e "  [${GREEN}PASS${NC}] $cs_name.bjo"
         fi

@@ -1,0 +1,40 @@
+;; A promoted tail call and a surviving reference to the same function.
+;;
+;; `LoopLowering` names the `while` after the function it replaced the body of,
+;; and `Codegen` never emits that name — the C# method already carries it. So
+;; `AlphaRename` must not treat it as a binder: freshening it rewrote every
+;; other reference in the body to a spelling nothing declares, and the failure
+;; landed in generated C# as CS0103.
+;;
+;; Both halves are asserted here because a fix for either one alone is easy and
+;; wrong: dropping the promotion would make the reference resolve, and it is the
+;; promotion that keeps deep recursion off the stack.
+
+(export Tree walk)
+
+(import (std prelude))
+
+(type
+  (: Tree (Union (Leaf int) (Node (Vec Tree)))))
+
+(: apply-to (-> (-> Tree int) Tree int))
+(defun (apply-to f t) (f t))
+
+;; --- The tail call is a jump, not a call -------------------------------------
+;; EXPECT-CS: while \(true\) \{
+;; EXPECT-CS: continue;
+
+;; --- And the name still reaches the method it belongs to ---------------------
+;;
+;; Qualified, and spelled as written: nothing invents a `walk__[0-9]+` for the
+;; loop and then leaves this pointing at it.
+;; EXPECT-CS: self_reference_Module\.walk\)\)
+;; EXPECT-NO-CS: walk__[0-9]
+(: walk (-> Tree int))
+(defun (walk t)
+  (match t
+    ((Leaf n) n)
+    ((Node v)
+     (if (= (vec-length v) 1)
+         (walk (vec-ref v 0))
+         (vec-fold (fun (acc x) (+ acc (apply-to walk x))) 0 v)))))

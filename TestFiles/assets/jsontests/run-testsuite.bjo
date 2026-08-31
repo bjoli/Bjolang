@@ -1,0 +1,156 @@
+;; JSONTestSuite against (text json). The corpus paths below are relative to the
+;; repository root, so that is where this runs from:
+;;
+;;   ./bjor TestFiles/assets/jsontests/run-testsuite.bjo
+;;   dotnet TestFiles/assets/jsontests/run-testsuite.exe
+;;
+;; Not part of run_tests.sh: the corpus is vendored, and a suite that fails
+;; because a directory is absent is worse than one that does not run it.
+;;
+;; `LICENSE`, `test_parsing` and `test_transform` beside this are the vendored
+;; corpus as it was downloaded. Re-fetching it would take this file with them.
+;;
+;;   y_  has to be accepted
+;;   n_  has to be refused
+;;   i_  either, and what was decided is printed
+
+(import (std prelude))
+(import (text json))
+
+(: corpus string)
+(def corpus "TestFiles/assets/jsontests")
+
+(: dir string)
+(def dir (path-combine corpus "test_parsing"))
+
+(: transform-dir string)
+(def transform-dir (path-combine corpus "test_transform"))
+
+;; A throw is a result too. Letting one out would hide every file after it.
+(: outcome (-> string string))
+(defun (outcome path)
+  (match (try
+          (match (open-input-file path)
+            ((Err e) (Err "the file would not open"))
+            ((Ok p) (let ((r (read-json p))) (close-input-port p) r)))
+          #:catch (System.Exception))
+    ((Err e) (str "crash " (.ToString e)))
+    ((Ok inner) (match inner ((Ok j) "ok") ((Err m) (str "err " m))))))
+
+(: accepted? (-> string bool))
+(defun (accepted? o) (= o "ok"))
+
+(: name-of (-> string string))
+(defun (name-of path)
+  (match (path-filename path) ((Some n) n) (None path)))
+
+(def/mutable y-pass 0)
+(def/mutable y-fail 0)
+(def/mutable n-pass 0)
+(def/mutable n-fail 0)
+(def/mutable i-accept 0)
+(def/mutable i-reject 0)
+(def/mutable crashes 0)
+
+(: check (-> string void))
+(defun (check path)
+  (let ((name (name-of path))
+        (o (outcome path)))
+    (when (string-starts-with? o "crash")
+      (set! crashes (+ crashes 1))
+      (println (str "CRASH  " name "  " o)))
+    (cond
+      ((string-starts-with? name "y_")
+       (if (accepted? o)
+           (set! y-pass (+ y-pass 1))
+           (let ()
+             (set! y-fail (+ y-fail 1))
+             (println (str "y FAIL " name "  " o)))))
+      ((string-starts-with? name "n_")
+       (if (accepted? o)
+           (let ()
+             (set! n-fail (+ n-fail 1))
+             (println (str "n FAIL " name "  accepted")))
+           (set! n-pass (+ n-pass 1))))
+      (else
+       (if (accepted? o)
+           (let ()
+             (set! i-accept (+ i-accept 1))
+             (println (str "i ACC  " name)))
+           (let ()
+             (set! i-reject (+ i-reject 1))
+             (println (str "i REJ  " name "  " o))))))))
+
+;; ---------------------------------------------------------------------------
+;; test_transform: not accept or refuse, but *what value*
+;; ---------------------------------------------------------------------------
+
+(: hex-digits string)
+(def hex-digits "0123456789ABCDEF")
+
+(: hex (-> int string))
+(defun (hex n)
+  (let go ((n n) (acc ""))
+    (if (= n 0)
+        (if (= (string-length acc) 0) "0" acc)
+        (go (/ n 16)
+            (str (list->string (list (vec-ref (string->vec hex-digits) (% n 16)))) acc)))))
+
+;; Code points, since the point of several of these files is two keys that look
+;; the same and are not.
+(: points (-> string string))
+(defun (points s)
+  (string-join (loop (:for c s) (:acc v (vecing (str "U+" (hex (char->integer c)))))) " "))
+
+;; Every file in this corpus wraps the value of interest in a one-element array,
+;; and that is unwrapped by the tail call below.
+(: render (-> Json string))
+(defun (render j)
+  (match j
+    (JsonNull "null")
+    ((JsonBool b) (if b "true" "false"))
+    ((JsonInt n) (str "long " (long->string n)))
+    ((JsonFloat d) (str "double " (double->string d)))
+    ((JsonStr s) (str "string [" (points s) "]"))
+    ((JsonArr v)
+     (if (= (vec-length v) 1)
+         (render (vec-ref v 0))
+         (str "[" (string-join (vec-map render v) ", ") "]")))
+    ((JsonObj m)
+     (str (int->string (map-length m)) " key(s): "
+          (string-join
+           (loop (:for (Tuple k v) m)
+                 (:acc out (vecing (str "[" (points k) "] = " (render v)))))
+           ", ")))))
+
+(: transform (-> string void))
+(defun (transform path)
+  (println
+   (str (string-pad-right (name-of path) 44)
+        (match (try (read-json (open-input-string (file-read-text path)))
+                    #:catch (System.Exception))
+          ((Err e) (str "crash " (.ToString e)))
+          ((Ok r) (match r ((Ok j) (render j)) ((Err m) (str "refused: " m))))))))
+
+(: sorted-files (-> string (List string)))
+(defun (sorted-files d)
+  (list-sort (loop (:for p (directory-files d)) (:acc l (listing p)))))
+
+(defun (main)
+  (if (not (directory-exists? dir))
+      (println (str "No corpus at " dir ", so there is nothing to run."))
+      (let ()
+        (loop (:for path (sorted-files dir))
+              (:do (when (string-ends-with? path ".json") (check path))))
+        (println "")
+        (println (str "y_ accepted  " (int->string y-pass) " / " (int->string (+ y-pass y-fail))))
+        (println (str "n_ refused   " (int->string n-pass) " / " (int->string (+ n-pass n-fail))))
+        (println (str "i_ accepted  " (int->string i-accept) ", refused " (int->string i-reject)))
+        (println (str "crashes      " (int->string crashes)))))
+
+  (when (directory-exists? transform-dir)
+    (println "")
+    (println "--- test_transform: the value each one reads to ---")
+    (loop (:for path (sorted-files transform-dir))
+          (:do (when (string-ends-with? path ".json") (transform path)))))
+  0)
