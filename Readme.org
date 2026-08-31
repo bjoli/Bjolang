@@ -3,7 +3,7 @@
 I think we have all had the thought: all programming languages suck in at least one way. Not all of us think it is a big deal, but some of us feel the urge to try our wings at designing a language. This is my 95% vibe coded try. Not really meant for real use, but to see if my thoughts made any sense.
 
 * Elevator pitch
-Bjolang is a scheme-inspired language with local HM type inference that bjompiles to constipated c#. It has traits instead of classes, meaning you don't ever have to think about two-way interop. The default bjollections are immutable. A fast RRB tree (Vec), a very fast CHAMP (hash table), a linked list (List) and both bjordered and unbjordered sets. There are more datastructures coming (deque, queue).
+Bjolang is a scheme-inspired language with local HM type inference that bjompiles to constipated c#. It has traits instead of classes, meaning you don't ever have to think about two-way interop. The default bjollections are immutable. A fast RRB tree (Vec), a very fast CHAMP (hash table), a bjordered map (b-tree),  a linked list (List) and both bjordered and unbjordered sets. There are more datastructures coming (deque, queue).
 
 It also fakes Brand/higher kinded types by inlining traits when the trait is known at compile time, giving us among other things, a Monad trait. It is eager and non-curried, but has a bjombda shorthand.
 
@@ -460,14 +460,15 @@ module naming is based on filename so (import (std list)) and (import "imports/l
 Trait resolution is based on the head, so a trait on (List int) overwrites the same trait on (List string) if defined after.
 
 ** Problems
+only reading functions can suspend, so writing to a network port may park the thread of a bjoroutine.
 
 pattern matching has no exhaustiveness checking.
 
 pattern matching has no extensibility
 
-mutual recursion doesn't do any dictionary passing, so it is monomorphic onec entered.
+mutual recursion doesn't do any dictionary passing, so it is monomorphic once entered. This is pretty minor, tbh.
 
-shadowing trait methods doesn't work, and produces very unhelpful error messages.
+shadowing trait methods and builtins doesn't work, and produces very unhelpful error messages.
 
 defining how to pattern match a new data structure is impossible. 
 
@@ -499,9 +500,11 @@ Syntactic folding, because #:rest arrays means an allocation. Maybe (:and char<?
 
 add #:align to columnar and tabular in (std fmt)
 
-#('array 'literal)
+#['array 'literal]
 
 Extend do notation to be more usable. :traverse :and<- ( :and<- seems _very hard_ atm).
+
+Even better: do a CPS macro like goof-loop and let users define their own do clauses. 
 
 output LINE-directives a little bit better than I do now
 
@@ -511,7 +514,7 @@ abandon c# strings, despite giving us a nice regex engine because utf16.
 
 ** Things for the stdlib
 
-a json library
+a json library. Preferrably written in bjolang since that makes serialization a lot easier.
 
 regexps, preferably with irregex syntax. 
 
@@ -525,13 +528,13 @@ data structures:
 network io by wrapping c# async in events for the cml goodness.
 
 ** Performance things
-Hoist literals. Not just literal lists and vecs, but also symbols and keywords.
+Hoist literals. Not just literal lists and vecs, but also symbols and keywords. They have a decently high init cost, since they do a parallel map lookup.
 
-Hoist the threadlocal loads of several parameter-ref in synchronous functions.
+Hoist the threadlocal loads of several parameter-ref in synchronous functions. Say I do 5 (parameter-ref ) in a body, since there is no parameter-set! we can hoist the environment so that we do not pay the [ThreadLocal] read cost.
 
 Currently I do no CSE and no function inlining other than direct inlining of applied lambdas. 
 
 let bound lambdas that are only ever called should be a static local
 
-Unboxing small unions, say if someone call map-try-ref in a tight loop
+Unboxing small unions, say if someone call map-try-ref in a tight loop.
 
