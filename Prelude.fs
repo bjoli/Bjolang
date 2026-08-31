@@ -803,6 +803,14 @@ let prelude : Env =
         "array-ref",    { Scheme = Scheme(["a"], [], makeFunType [makeArrayType (TVar "a"); intType] (TVar "a")); IsMutable = false }
         "array-set!",   { Scheme = Scheme(["a"], [], makeFunType [makeArrayType (TVar "a"); intType; TVar "a"] unitType); IsMutable = false }
         "array-length", { Scheme = Scheme(["a"], [], makeFunType [makeArrayType (TVar "a")] intType); IsMutable = false }
+        // What a growable array is written over: `make-array`, and this when it
+        // fills up. Shrinks too.
+        "array-resize", { Scheme = Scheme(["a"], [], makeFunType [makeArrayType (TVar "a"); intType] (makeArrayType (TVar "a"))); IsMutable = false }
+        // An array is the cheapest thing to build a `Vec` out of. `vecbuilder`
+        // is sized for a vec of a million; these are for a great many small
+        // ones. The slice is `start` and `count`, as `vec-slice` takes them.
+        "array->vec",   { Scheme = Scheme(["a"], [], makeFunType [makeArrayType (TVar "a")] (makeVecType (TVar "a"))); IsMutable = false }
+        "subarray->vec", { Scheme = Scheme(["a"], [], makeFunType [makeArrayType (TVar "a"); intType; intType] (makeVecType (TVar "a"))); IsMutable = false }
 
 
         // Option

@@ -63,7 +63,12 @@
                     ;; finished into a `string` before whatever follows it is
                     ;; read, and a number holds nothing while it is scanned.
                     ;; Anything that learns to nest them needs its own.
-                    (: scratch StringBuilder))))
+                    (: scratch StringBuilder)
+                    ;; One array for every array in the document, and how much
+                    ;; of it is in use. The elements of the array being read
+                    ;; are the top of it, and a nested array's sit above them.
+                    (: stack (Array Json) #:mutable)
+                    (: top int #:mutable))))
 
 (: reader (-> TextInputPort Reader))
 (defun (reader port)
@@ -71,7 +76,33 @@
           (held (read-unit port))
           (row 1)
           (col 1)
-          (scratch (stringbuilder-empty))))
+          (scratch (stringbuilder-empty))
+          (stack (make-array 16))
+          (top 0)))
+
+;; A `vecbuilder` carries a 32-slot tail and a 4 kB leaf chunk from the moment
+;; it exists, which is what a vec of a million elements needs and thirty times
+;; what a vec of two coordinates weighs. An array is what a `Vec` is made of,
+;; so the elements are gathered in one and handed over.
+
+(: push! (-> Reader Json void))
+(defun (push! rd v)
+  (let ((a (record-ref rd stack))
+        (n (record-ref rd top)))
+    (if (< n (array-length a))
+        (array-set! a n v)
+        (let ((bigger (array-resize a (* n 2))))
+          (array-set! bigger n v)
+          (record-set! rd (stack bigger))))
+    (record-set! rd (top (+ n 1)))))
+
+;; Everything pushed since `mark`, and the stack back to where it was. An empty
+;; array harvests nothing and costs nothing.
+(: harvest! (-> Reader int (Vec Json)))
+(defun (harvest! rd mark)
+  (let ((v (subarray->vec (record-ref rd stack) mark (- (record-ref rd top) mark))))
+    (record-set! rd (top mark))
+    v))
 
 ;; The buffer, emptied and ready.
 (: buffer (-> Reader StringBuilder))
@@ -405,21 +436,21 @@
    (else
     (advance! rd)
     (skip-space! rd)
-    (def b (vecbuilder-empty))
+    (def mark (record-ref rd top))
     (cond
      ((at-end? rd) (Err (at rd "the document ended inside an array")))
-     ((char=? (peek rd) #\]) (advance! rd) (Ok (JsonArr (vecbuilder->vec b))))
+     ((char=? (peek rd) #\]) (advance! rd) (Ok (JsonArr (harvest! rd mark))))
      (else
       (let go ()
         (match (read-value rd (+ depth 1))
           ((Err e) (Err e))
           ((Ok v)
-           (vecbuilder-add! b v)
+           (push! rd v)
            (skip-space! rd)
            (cond
             ((at-end? rd) (Err (at rd "the document ended inside an array")))
             ((char=? (peek rd) #\,) (advance! rd) (go))
-            ((char=? (peek rd) #\]) (advance! rd) (Ok (JsonArr (vecbuilder->vec b))))
+            ((char=? (peek rd) #\]) (advance! rd) (Ok (JsonArr (harvest! rd mark))))
             (else
              (Err (at rd (str "an array wants ',' or ']' here, and this is "
                               (found rd))))))))))))))

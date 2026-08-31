@@ -1,4 +1,28 @@
 (import (std prelude))
+(import (std simpletest))
+
+;; Filled with the squares.
+(: squares (-> int (Array int)))
+(defun (squares n)
+  (let ((a (make-array n)))
+    (let go ((i 0))
+      (if (< i n)
+          (let () (array-set! a i (* i i)) (go (+ i 1)))
+          a))))
+
+(: total (-> (Vec int) int))
+(defun (total v) (vec-fold (fun (acc x) (+ acc x)) 0 v))
+
+;; The three carry `where T : notnull` on the C# side and `%a` does not say so.
+(: pair->vec (-> %a %a (Vec %a)))
+(defun (pair->vec x y)
+  (let ((a (array-resize (make-array 1) 2)))
+    (array-set! a 0 x)
+    (array-set! a 1 y)
+    (array->vec a)))
+
+(: first-of (-> (Array %a) %a))
+(defun (first-of a) (vec-ref (subarray->vec a 0 1) 0))
 
 (defun (main)
   (def arr (make-array 3))
@@ -21,4 +45,55 @@
   (println (array-ref str-arr 1))
 
   (println "Array tests passed!")
+
+  ;; --- array-resize --------------------------------------------------------
+  (def four (squares 4))
+
+  (def wider (array-resize four 6))
+  (expect "resize keeps the length asked for" (array-length wider) 6)
+  (expect "resize keeps what it held" (array-ref wider 3) 9)
+  (expect "resize leaves the new slots empty" (array-ref wider 5) 0)
+
+  (def narrower (array-resize four 2))
+  (expect "resize shrinks" (array-length narrower) 2)
+  (expect "resize keeps what still fits" (array-ref narrower 1) 1)
+
+  (array-set! wider 0 77)
+  (expect "resize answers a new array" (array-ref four 0) 0)
+
+  ;; --- array->vec ----------------------------------------------------------
+  (def v (array->vec four))
+  (expect "the whole array" (vec-length v) 4)
+  (expect "in order" (vec-ref v 2) 4)
+
+  (array-set! four 2 77)
+  (expect "the vec does not share the array" (vec-ref v 2) 4)
+
+  (expect "an empty array" (vec-length (array->vec (make-array 0))) 0)
+
+  ;; --- subarray->vec -------------------------------------------------------
+  (def hundred (squares 100))
+
+  (expect "no elements" (vec-length (subarray->vec hundred 4 0)) 0)
+
+  ;; Under 32 the elements become the vec's tail; over it they are chunked
+  ;; into leaves, so both are worth reading back.
+  (def few (subarray->vec hundred 2 3))
+  (expect "a short slice" (vec-length few) 3)
+  (expect "starting where it was told" (vec-ref few 0) 4)
+  (expect "and ending there" (vec-ref few 2) 16)
+
+  (def many (subarray->vec hundred 5 90))
+  (expect "a long slice" (vec-length many) 90)
+  (expect "its first" (vec-ref many 0) 25)
+  (expect "its last" (vec-ref many 89) 8836)
+  ;; Every square but 0..4 and 95..99.
+  (expect "all of it" (total many) (- (total (array->vec hundred)) 47085))
+
+  (expect "the tail of the array" (vec-length (subarray->vec hundred 90 10)) 10)
+
+  ;; --- under a type variable -----------------------------------------------
+  (expect "a generic pair" (vec-ref (pair->vec 7 8) 1) 8)
+  (expect "a generic pair of strings" (vec-ref (pair->vec "a" "b") 0) "a")
+  (expect "a generic slice" (first-of str-arr) "hello")
   0)

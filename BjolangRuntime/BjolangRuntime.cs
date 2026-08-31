@@ -696,6 +696,23 @@ public static partial class BjolangRuntime {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int arraysublength<T>(T[] arr) => arr.Length;
 
+    // A new array of `length`, holding as much of the old one as fits.
+    public static T[] arraysubresize<T>(T[] arr, int length) {
+        var grown = new T[length];
+        Array.Copy(arr, grown, Math.Min(arr.Length, length));
+        return grown;
+    }
+
+    // Straight into leaves, one walk, no `Add` per element. Copied, so the
+    // caller keeps its array.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Collections.RrbList<T> arraysubgtvec<T>(T[] arr) where T : notnull =>
+        Collections.RrbBuilder<T>.FromSpan(arr);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Collections.RrbList<T> subarraysubgtvec<T>(T[] arr, int start, int count) where T : notnull =>
+        Collections.RrbBuilder<T>.FromSpan(new ReadOnlySpan<T>(arr, start, count));
+
     // The collection-to-rest-array conversions behind `apply`. Neither is
     // reachable from Bjolang source: `apply` is an intrinsic and builds the
     // call to one of these itself, so there is no prelude binding to spell.
