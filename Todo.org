@@ -162,6 +162,48 @@ runs sharing a working tree for that reason, so this wants to be the last phase
 or a script of its own.
 
 
+* Colourless concurrency
+
+Layers 0–4 all ship. Four things left; only the first blocks anything.
+
+** Shape C — ~-?->~ on a trait method's parameter
+
+~Functor.map~ and ~Foldable.fold~ cannot take a colour, so ~(map f xs)~ written
+generically stays ordinary even where ~list-map~ suspends. Every concrete name
+reaches the suspending copy; the trait is where it stops.
+
+Costs two copies of every implementation and two interface slots to dispatch
+between. Shape A — a method declared ~-bjo->~ — is built and is the machinery to
+extend.
+
+** A generated copy that never suspends is still emitted
+
+Size only. The copies that gain no yield point are async methods awaiting
+nothing. Pruning them needs call sites redirected back to the original *after*
+selection, which is a rewrite nothing so far has needed.
+
+** Two lambda pins have no message of their own
+
+A lambda handed to a .NET ~Func<A,B>~, and one stored in a structure whose
+element type is a ground ~->~. Both land in ~Unpinned~ and get the generic
+message, which is true about them.
+
+Neither is reachable from a fixture: every ~Func~-taking method in the runtime
+is generic, and ~Task.Run~ fails overload resolution through ~import/extern~.
+A message waiting for a case.
+
+** The lazy half of ~Seq~ has no suspending copy
+
+~seq-map~, ~seq-filter~, ~seq-unfold~. Closed as a decision rather than open
+work: the two copies would have different *types* — ~Seq~ against ~AsyncSeq~ —
+and a copy that changes its return type is two functions, not monomorphisation.
+~port->chan~ shipped instead.
+
+If a suspending sequence is ever wanted it is a separate form producing a
+separate type, with an ~AsyncIterable~ trait to consume it. Expressible now that
+a trait method may declare ~-bjo->~; not worth it at two ~seql~ producers in the
+whole library.
+
 * Macros and trait methods
 
 Both found while making a trait method in a template mean the trait. Neither is
