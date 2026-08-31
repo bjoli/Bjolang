@@ -1,23 +1,8 @@
 ;; std/orderedset.bjo — the sorted set.
-;;
-;; A `(OrderedSet %a)` is a persistent B-tree of elements kept in their natural
-;; order. That is what it buys over a `(Set %a)`, and the whole of it: a walk
-;; arrives sorted, and a program may ask for the smallest element, the one after
-;; a given key, or every element between two — none of which a hash trie can
-;; answer at all. The price is the comparison: membership is O(log n) rather than
-;; effectively constant, and the element type has to be comparable at run time.
-;;
-;; The three interfaces are `(std set)`'s three, for the same reasons: the set
-;; itself, a builder shaped like `ListBuilder`, and a transient that is the set's
-;; own interface with the writes turned inside out.
-;;
-;; **Ordering is `Comparer<T>.Default`.** A type with no natural order fails when
-;; the first comparison happens rather than when the set is made, which is a real
-;; edge and the price of not carrying a comparer through every signature.
+;; Persistent B-tree of elements kept in their natural order.
 
 (export
-  ;; The types. `OrderedSetting` is the collector, and its constructor is what
-  ;; an `:acc` clause writes.
+  ;; The types.
   OrderedSet OrderedSetBuilder TransientOrderedSet OrderedSetCursor
   OrderedSetting
 
@@ -65,8 +50,7 @@
 (import/extern
   (orderedset-empty      (: OrderedSet.OrderedSetModule.Empty       (-> (OrderedSet %a))))
   (orderedset-add        (: OrderedSet.OrderedSetModule.Add         (-> (OrderedSet %a) %a (OrderedSet %a))))
-  ;; Through a transient, so the tree is copied once rather than once per
-  ;; element — which is what makes adding a run of elements worth spelling.
+  ;; Add a run of elements.
   (orderedset-add-all    (: OrderedSet.OrderedSetModule.AddRange    (-> (OrderedSet %a) (Seq %a) (OrderedSet %a))))
   (orderedset-remove     (: OrderedSet.OrderedSetModule.Remove      (-> (OrderedSet %a) %a (OrderedSet %a))))
   (orderedset-remove-all (: OrderedSet.OrderedSetModule.RemoveRange (-> (OrderedSet %a) (Seq %a) (OrderedSet %a))))
@@ -76,26 +60,18 @@
   (orderedset-clear      (: OrderedSet.OrderedSetModule.Clear       (-> (OrderedSet %a) (OrderedSet %a))))
 
   ;; --- Set algebra ---
-  ;;
-  ;; The last three walk both trees once, in order, which is what the ordering
-  ;; makes possible: no hashing, and no second lookup per element.
   (orderedset-union                (: OrderedSet.OrderedSetModule.Merge (-> (OrderedSet %a) (OrderedSet %a) (OrderedSet %a))))
   (orderedset-intersection         (: OrderedSet.OrderedSetModule.Intersect (-> (OrderedSet %a) (OrderedSet %a) (OrderedSet %a))))
   (orderedset-difference           (: OrderedSet.OrderedSetModule.Except (-> (OrderedSet %a) (OrderedSet %a) (OrderedSet %a))))
   (orderedset-symmetric-difference (: OrderedSet.OrderedSetModule.SymmetricExcept (-> (OrderedSet %a) (OrderedSet %a) (OrderedSet %a))))
 
   ;; --- Order ---
-  ;;
-  ;; Each answers `(found, key)`, which `Option` is put on below: a static C#
-  ;; method has no `Option` to hand back, the type being Bjolang's.
   (orderedset-try-min         (: OrderedSet.OrderedSetModule.TryGetMin         (-> (OrderedSet %a) (Tuple bool %a))))
   (orderedset-try-max         (: OrderedSet.OrderedSetModule.TryGetMax         (-> (OrderedSet %a) (Tuple bool %a))))
   (orderedset-try-successor   (: OrderedSet.OrderedSetModule.TryGetSuccessor   (-> (OrderedSet %a) %a (Tuple bool %a))))
   (orderedset-try-predecessor (: OrderedSet.OrderedSetModule.TryGetPredecessor (-> (OrderedSet %a) %a (Tuple bool %a))))
 
-  ;; Lazy, and the reason a slice of a big set is cheap: the tree is descended
-  ;; to the lower bound once and then walked, so a range costs its own size
-  ;; rather than the set's.
+  ;; Range walks.
   (orderedset-range (: OrderedSet.OrderedSetModule.Range (-> (OrderedSet %a) %a %a (Seq %a))))
   (orderedset-from  (: OrderedSet.OrderedSetModule.From  (-> (OrderedSet %a) %a (Seq %a))))
   (orderedset-until (: OrderedSet.OrderedSetModule.Until (-> (OrderedSet %a) %a (Seq %a))))
@@ -103,8 +79,6 @@
   ;; --- Walking ---
   (orderedset-map        (: OrderedSet.OrderedSetModule.Map        (-> (-> %a %b) (OrderedSet %a) (OrderedSet %b))))
   (orderedset-filter     (: OrderedSet.OrderedSetModule.Filter     (-> (-> %a bool) (OrderedSet %a) (OrderedSet %a))))
-  ;; In order, which is what makes a fold over a sorted set worth having: the
-  ;; answer does not depend on where the elements happened to hash.
   (orderedset-fold       (: OrderedSet.OrderedSetModule.Fold       (-> (-> %s %a %s) %s (OrderedSet %a) %s)))
   (orderedset-iter       (: OrderedSet.OrderedSetModule.Iter       (-> (-> %a bool) (OrderedSet %a) bool)))
   (orderedset-any?       (: OrderedSet.OrderedSetModule.Exists     (-> (-> %a bool) (OrderedSet %a) bool)))
@@ -117,9 +91,7 @@
   (orderedset-cursor-done?   (: OrderedSet.OrderedSetModule.CursorDone    (-> (OrderedSetCursor %a) bool)))
   (orderedset-cursor-current (: OrderedSet.OrderedSetModule.CursorCurrent (-> (OrderedSetCursor %a) %a))))
 
-;; The four partial answers, as `Option`s. `None` for the empty set, and for a
-;; key with nothing beyond it — which is the reason they are not plain values:
-;; there is no element of `%a` that could stand for "there is no smaller one".
+;; Partial answers as Options.
 (: orderedset-min (-> (OrderedSet %a) (Option %a)))
 (defun (orderedset-min s)
   (def (found key) (orderedset-try-min s))
@@ -130,7 +102,7 @@
   (def (found key) (orderedset-try-max s))
   (if found (Some key) None))
 
-;; The smallest element greater than `key`. The key itself need not be a member.
+;; Successor.
 (: orderedset-successor (-> (OrderedSet %a) %a (Option %a)))
 (defun (orderedset-successor s key)
   (def (found next) (orderedset-try-successor s key))
@@ -149,18 +121,12 @@
 ;; ---------------------------------------------------------------------------
 ;; Builders and transients
 ;; ---------------------------------------------------------------------------
-;;
-;; The builder collects into a flat list and sorts it into a B-tree bottom-up in
-;; one pass, where adding to the set itself copies a path down the tree per
-;; element. The transient is for editing a set that already exists: it owns the
-;; nodes it has touched, so an edit rewrites rather than copies.
 
 (import/extern
   (orderedsetbuilder-empty         (: OrderedSet.OrderedSetBuilderModule.Empty    (-> (OrderedSetBuilder %a))))
   (orderedset->orderedsetbuilder   (: OrderedSet.OrderedSetBuilderModule.FromSet  (-> (OrderedSet %a) (OrderedSetBuilder %a))))
   (orderedsetbuilder-add!          (: OrderedSet.OrderedSetBuilderModule.Add      (-> (OrderedSetBuilder %a) %a void)))
   (orderedsetbuilder-add-all!      (: OrderedSet.OrderedSetBuilderModule.AddRange (-> (OrderedSetBuilder %a) (Seq %a) void)))
-  ;; Appends, not elements: duplicates are compacted when the set is built.
   (orderedsetbuilder-length        (: OrderedSet.OrderedSetBuilderModule.Count    (-> (OrderedSetBuilder %a) int)))
   (orderedsetbuilder->orderedset   (: OrderedSet.OrderedSetBuilderModule.Build    (-> (OrderedSetBuilder %a) (OrderedSet %a))))
 
@@ -174,7 +140,6 @@
   (transientorderedset-contains?   (: OrderedSet.TransientOrderedSetModule.Contains       (-> (TransientOrderedSet %a) %a bool)))
   (transientorderedset-length      (: OrderedSet.TransientOrderedSetModule.Count          (-> (TransientOrderedSet %a) int)))
   (transientorderedset-empty?      (: OrderedSet.TransientOrderedSetModule.IsEmpty        (-> (TransientOrderedSet %a) bool)))
-  ;; The transient's answer to `filter`, which cannot be "a new set" here.
   (transientorderedset-filter!     (: OrderedSet.TransientOrderedSetModule.FilterInPlace  (-> (-> %a bool) (TransientOrderedSet %a) void)))
 
   (transientorderedset-try-min     (: OrderedSet.TransientOrderedSetModule.TryGetMin      (-> (TransientOrderedSet %a) (Tuple bool %a))))
@@ -231,13 +196,9 @@
   (type %item %a)
   (defun (fold f acc col) (orderedset-fold f acc col)))
 
-;; The result is sorted by the *new* elements' order, not by the old one's — a
-;; mapping is free to reorder, and a set that came out of one is still sorted.
 (def/impl (Functor (OrderedSet %a))
   (defun (map g s) (orderedset-map g s)))
 
-;; `(loop (:for x xs) (:acc s (ordered-setting x)))` — sorted, whatever order the
-;; elements arrive in.
 (type (: (OrderedSetting %a) (Union ordered-setting)))
 
 (def/impl (Collector (OrderedSetting %a))
@@ -248,26 +209,12 @@
   (defun (collector-step c acc x) (orderedsetbuilder-add! acc x) acc)
   (defun (collector-finish c acc) (orderedsetbuilder->orderedset acc)))
 
-;; `#{1 2 3}`, in order — which for this set is a fact rather than an artefact,
-;; so two equal sets always print the same.
-;; Two ordered sets are equal when they hold the same elements.
-;;
-;; A paired walk rather than a membership test, and that is what the ordering
-;; buys: both trees walk in the same order, so the comparison is element against
-;; element through `Eq` and the tree's own `Comparer<T>` never has to be trusted
-;; to agree with it. `(Set %a)` cannot do this — it has to ask the trie.
-;;
-;; The lists are the price. `OrderedSet.OrderedSet` is a C# class with no
-;; structural `Equals` of its own, so before this `=` on two of them was
-;; reference identity; a walk that allocates is a great deal better than an
-;; answer that is wrong.
+;; Equality for ordered sets.
 (def/impl (Eq (OrderedSet %a))
   (where (Eq %a))
   (defun (= a b)
     (and (= (orderedset-length a) (orderedset-length b))
          (= (orderedset->list a) (orderedset->list b))))
-  ;; Order *does* matter here, and may: the walk is sorted, so two equal sets
-  ;; produce the same sequence whatever order they were built in.
   (defun (eq-hash s)
     (orderedset-fold (fun (h x) (hash-combine h (eq-hash x))) 17 s)))
 

@@ -1,26 +1,8 @@
 ;; std/orderedmap.bjo — the sorted map.
-;;
-;; An `(OrderedMap %k %v)` is a persistent B-tree keyed in the keys' natural
-;; order. Against the prelude's `(Map %k %v)`, which is a hash trie, what it buys
-;; is the order: a walk arrives sorted by key, and a program may ask for the
-;; smallest entry, the one after a given key, or every entry between two. The
-;; price is the comparison — a lookup is O(log n) rather than effectively
-;; constant, and the key type has to be comparable at run time.
-;;
-;; The vocabulary is the prelude's `map-*`, spelled `orderedmap-*`, so a program
-;; that outgrows one can change the constructor and the prefix and stop. An entry
-;; is a `(Tuple %k %v)` here as it is there, which is what makes a map iterable,
-;; foldable and collectable like any other collection.
-;;
-;; Three interfaces again: the map, a builder shaped like `ListBuilder`, and a
-;; transient that is the map's own interface with the writes turned inside out.
-;;
-;; **Ordering is `Comparer<TK>.Default`.** A key type with no natural order fails
-;; at the first comparison rather than when the map is made.
+;; Persistent B-tree keyed in the keys' natural order. Lookups are O(log n).
 
 (export
-  ;; The types. `OrderedMapping` is the collector, and its constructor is what
-  ;; an `:acc` clause writes.
+  ;; The types.
   OrderedMap OrderedMapBuilder TransientOrderedMap OrderedMapCursor
   OrderedMapping
 
@@ -67,12 +49,11 @@
 
 (import/extern
   (orderedmap-empty      (: OrderedMap.OrderedMapModule.Empty       (-> (OrderedMap %k %v))))
-  ;; Throws for a key that is not there. `orderedmap-try-ref` is the total one,
-  ;; and `orderedmap-ref-or` the one with a default.
+  ;; Lookups.
   (orderedmap-ref        (: OrderedMap.OrderedMapModule.Ref         (-> (OrderedMap %k %v) %k %v)))
   (orderedmap-ref-or     (: OrderedMap.OrderedMapModule.RefOr       (-> (OrderedMap %k %v) %k %v %v)))
   (orderedmap-set        (: OrderedMap.OrderedMapModule.Set         (-> (OrderedMap %k %v) %k %v (OrderedMap %k %v))))
-  ;; Through a transient, so the tree is copied once rather than once per entry.
+  ;; Bulk set.
   (orderedmap-set-all    (: OrderedMap.OrderedMapModule.SetRange    (-> (OrderedMap %k %v) (Seq (Tuple %k %v)) (OrderedMap %k %v))))
   (orderedmap-remove     (: OrderedMap.OrderedMapModule.Remove      (-> (OrderedMap %k %v) %k (OrderedMap %k %v))))
   (orderedmap-remove-all (: OrderedMap.OrderedMapModule.RemoveRange (-> (OrderedMap %k %v) (Seq %k) (OrderedMap %k %v))))
@@ -82,10 +63,8 @@
   (orderedmap-clear      (: OrderedMap.OrderedMapModule.Clear       (-> (OrderedMap %k %v) (OrderedMap %k %v))))
   (orderedmap-keys       (: OrderedMap.OrderedMapModule.Keys        (-> (OrderedMap %k %v) (Seq %k))))
   (orderedmap-values     (: OrderedMap.OrderedMapModule.Values      (-> (OrderedMap %k %v) (Seq %v))))
-  ;; The right-hand map wins where both have a key.
+  ;; Merging.
   (orderedmap-merge      (: OrderedMap.OrderedMapModule.Merge       (-> (OrderedMap %k %v) (OrderedMap %k %v) (OrderedMap %k %v))))
-  ;; The same, with the collisions decided by a function of the key, the value
-  ;; already there and the one arriving.
   (orderedmap-merge-with (: OrderedMap.OrderedMapModule.MergeWith   (-> (-> %k %v %v %v) (OrderedMap %k %v) (OrderedMap %k %v) (OrderedMap %k %v))))
 
   (orderedmap-try-ref/pair (: OrderedMap.OrderedMapModule.TryGetValue (-> (OrderedMap %k %v) %k (Tuple bool %v))))
@@ -96,23 +75,15 @@
   (orderedmap-try-successor   (: OrderedMap.OrderedMapModule.TryGetSuccessor   (-> (OrderedMap %k %v) %k (Tuple bool %k %v))))
   (orderedmap-try-predecessor (: OrderedMap.OrderedMapModule.TryGetPredecessor (-> (OrderedMap %k %v) %k (Tuple bool %k %v))))
 
-  ;; Lazy: the tree is descended to the lower bound once and then walked, so a
-  ;; slice of a big map costs its own size rather than the map's.
+  ;; Range walks.
   (orderedmap-range (: OrderedMap.OrderedMapModule.Range (-> (OrderedMap %k %v) %k %k (Seq (Tuple %k %v)))))
   (orderedmap-from  (: OrderedMap.OrderedMapModule.From  (-> (OrderedMap %k %v) %k (Seq (Tuple %k %v)))))
   (orderedmap-until (: OrderedMap.OrderedMapModule.Until (-> (OrderedMap %k %v) %k (Seq (Tuple %k %v)))))
 
   ;; --- Walking ---
   ;;
-  ;; Every callback takes the key and the value as *two* arguments, which is
-  ;; what a walk of the tree has to hand over anyway.
-  ;;
-  ;; The entry survives as a `(Tuple %k %v)` only where a trait fixes the shape:
-  ;; `Iterable`'s `%elem` and `Foldable`'s `%item` are one element, so the
-  ;; callbacks reached through `fold` or a `loop` see a pair. The impls below
-  ;; take a pair apart and call these.
   (orderedmap-map        (: OrderedMap.OrderedMapModule.Map       (-> (-> %k %v %w) (OrderedMap %k %v) (OrderedMap %k %w))))
-  ;; The functor's map: the value moves and the key rides along.
+  ;; Map values.
   (orderedmap-map-values (: OrderedMap.OrderedMapModule.MapValues (-> (-> %v %w) (OrderedMap %k %v) (OrderedMap %k %w))))
   (orderedmap-filter     (: OrderedMap.OrderedMapModule.Filter    (-> (-> %k %v bool) (OrderedMap %k %v) (OrderedMap %k %v))))
   (orderedmap-fold       (: OrderedMap.OrderedMapModule.Fold      (-> (-> %s %k %v %s) %s (OrderedMap %k %v) %s)))
@@ -127,21 +98,17 @@
   (orderedmap-cursor-done?   (: OrderedMap.OrderedMapModule.CursorDone    (-> (OrderedMapCursor %k %v) bool)))
   (orderedmap-cursor-current (: OrderedMap.OrderedMapModule.CursorCurrent (-> (OrderedMapCursor %k %v) (Tuple %k %v)))))
 
-;; The value under `key`, or `None`. The `Option` is put on here because a static
-;; C# method has no `Option` to hand back — the type is Bjolang's.
+;; Try ref, answering Option.
 (: orderedmap-try-ref (-> (OrderedMap %k %v) %k (Option %v)))
 (defun (orderedmap-try-ref m key)
   (def (found value) (orderedmap-try-ref/pair m key))
   (if found (Some value) None))
 
-;; The name the prelude's `Map` uses for the same question. Two spellings
-;; because `contains?` reads better about a set and `has-key?` about a map, and
-;; a program porting between the two should not have to change either.
+;; Alias for contains?.
 (: orderedmap-has-key? (-> (OrderedMap %k %v) %k bool))
 (defun (orderedmap-has-key? m key) (orderedmap-contains? m key))
 
-;; The four partial answers, as `Option`s over the whole entry. `None` for the
-;; empty map, and for a key with nothing beyond it.
+;; Min entry as Option.
 (: orderedmap-min (-> (OrderedMap %k %v) (Option (Tuple %k %v))))
 (defun (orderedmap-min m)
   (def (found key value) (orderedmap-try-min m))
@@ -152,8 +119,7 @@
   (def (found key value) (orderedmap-try-max m))
   (if found (Some (Tuple key value)) None))
 
-;; The entry whose key is the smallest one greater than `key`, which need not
-;; itself be in the map.
+;; Successor entry.
 (: orderedmap-successor (-> (OrderedMap %k %v) %k (Option (Tuple %k %v))))
 (defun (orderedmap-successor m key)
   (def (found k v) (orderedmap-try-successor m key))
@@ -164,8 +130,7 @@
   (def (found k v) (orderedmap-try-predecessor m key))
   (if found (Some (Tuple k v)) None))
 
-;; The first entry in key order satisfying `pred`, as an `Option`. The entry is
-;; a pair here because it is a *value* being handed back, not an argument list.
+;; Find entry satisfying pred.
 (: orderedmap-find (-> (-> %k %v bool) (OrderedMap %k %v) (Option (Tuple %k %v))))
 (defun (orderedmap-find pred m)
   (def (found k v) (orderedmap-try-find pred m))
@@ -180,8 +145,7 @@
   (orderedmap->orderedmapbuilder (: OrderedMap.OrderedMapBuilderModule.FromMap  (-> (OrderedMap %k %v) (OrderedMapBuilder %k %v))))
   (orderedmapbuilder-add!        (: OrderedMap.OrderedMapBuilderModule.Add      (-> (OrderedMapBuilder %k %v) %k %v void)))
   (orderedmapbuilder-add-all!    (: OrderedMap.OrderedMapBuilderModule.AddRange (-> (OrderedMapBuilder %k %v) (Seq (Tuple %k %v)) void)))
-  ;; Appends, not entries: a key appended twice is resolved when the map is
-  ;; built, last one winning.
+  ;; Length in builder.
   (orderedmapbuilder-length      (: OrderedMap.OrderedMapBuilderModule.Count    (-> (OrderedMapBuilder %k %v) int)))
   (orderedmapbuilder->orderedmap (: OrderedMap.OrderedMapBuilderModule.Build    (-> (OrderedMapBuilder %k %v) (OrderedMap %k %v))))
 
@@ -198,7 +162,6 @@
   (transientorderedmap-length      (: OrderedMap.TransientOrderedMapModule.Count          (-> (TransientOrderedMap %k %v) int)))
   (transientorderedmap-empty?      (: OrderedMap.TransientOrderedMapModule.IsEmpty        (-> (TransientOrderedMap %k %v) bool)))
   (transientorderedmap-filter!     (: OrderedMap.TransientOrderedMapModule.FilterInPlace  (-> (-> %k %v bool) (TransientOrderedMap %k %v) void)))
-  ;; A walk of the map as it stands. Finish it before the next write.
   (transientorderedmap-try-ref/pair (: OrderedMap.TransientOrderedMapModule.TryGetValue   (-> (TransientOrderedMap %k %v) %k (Tuple bool %v)))))
 
 (: transientorderedmap-try-ref (-> (TransientOrderedMap %k %v) %k (Option %v)))
@@ -222,8 +185,7 @@
 (: orderedmap->vec (-> (OrderedMap %k %v) (Vec (Tuple %k %v))))
 (defun (orderedmap->vec m) (seq->vec (orderedmap->seq m)))
 
-;; Both ways to the prelude's hashed map, for the program that builds one and
-;; then wants it in order — or the reverse, once the order has been used up.
+;; Hashed map conversions.
 (: map->orderedmap (-> (Map %k %v) (OrderedMap %k %v)))
 (defun (map->orderedmap m) (seq->orderedmap (map->seq m)))
 
@@ -234,7 +196,6 @@
 ;; The traits
 ;; ---------------------------------------------------------------------------
 
-;; A map's elements are its entries, in key order.
 (def/impl (Iterable (OrderedMap %k %v))
   (type %elem (Tuple %k %v))
   (type %cursor (OrderedMapCursor %k %v))
@@ -243,9 +204,6 @@
   (defun (iterable-current m c) (orderedmap-cursor-current c))
   (defun (iterable-next m c) c))
 
-;; Written here rather than imported: the .NET `ForEach` takes an `Action`,
-;; where a Bjolang `(-> %k %v void)` is a `Func<TK, TV, Unit>` — the unit is a
-;; value, and that is what makes a callback's type uniform whatever it answers.
 (: orderedmap-for-each (-> (-> %k %v void) (OrderedMap %k %v) void))
 (defun (orderedmap-for-each f m)
   (ignore (orderedmap-iter (fun (k v) (f k v) #t) m)))
@@ -255,22 +213,14 @@
   (defun (length m) (orderedmap-length m))
   (defun (empty? m) (orderedmap-empty? m)))
 
-;; A map's item is its entry, so the folder the trait hands down takes one
-;; argument where `orderedmap-fold`'s takes two. The pair is put back together
-;; here, which is the only place that has to know the difference.
 (def/impl (Foldable (OrderedMap %k %v))
   (type %item (Tuple %k %v))
   (defun (fold f acc col)
     (orderedmap-fold (fun (acc2 k v) (f acc2 (Tuple k v))) acc col)))
 
-;; The abstracted argument is `%v`, so the functor moves values and leaves keys
-;; alone — `orderedmap-map` will not serve, since it hands over the key as well
-;; and a functor's `(-> %a %b)` has room for one element type.
 (def/impl (Functor (OrderedMap %k %v))
   (defun (map g m) (orderedmap-map-values g m)))
 
-;; `(loop (:for kv m) (:acc out (ordered-mapping kv)))` — sorted by key,
-;; whatever order the entries arrive in.
 (type (: (OrderedMapping %k %v) (Union ordered-mapping)))
 
 (def/impl (Collector (OrderedMapping %k %v))
@@ -284,40 +234,22 @@
     acc)
   (defun (collector-finish c acc) (orderedmapbuilder->orderedmap acc)))
 
-;; Two ordered maps are equal when they hold the same entries.
-;;
-;; A paired walk rather than a lookup per key, and that is what the ordering
-;; buys: both trees walk in key order, so keys and values alike are compared
-;; through `Eq` and the tree's own `Comparer<TK>` never has to be trusted to
-;; agree with it. `(Map %k %v)` cannot do this — it has to ask the trie, which
-;; leaves its keys on .NET equality.
-;;
-;; The lists are the price. `OrderedMap.OrderedMap` is a C# class with no
-;; structural `Equals` of its own, so before this `=` on two of them was
-;; reference identity; a walk that allocates is a great deal better than an
-;; answer that is wrong.
+;; Equality for ordered maps.
 (def/impl (Eq (OrderedMap %k %v))
   (where (Eq %k) (Eq %v))
   (defun (= a b)
     (and (= (orderedmap-length a) (orderedmap-length b))
          (= (orderedmap->list a) (orderedmap->list b))))
-  ;; Order *does* matter here, and may: the walk is by key, so two equal maps
-  ;; produce the same sequence whatever order they were built in.
   (defun (eq-hash m)
     (orderedmap-fold (fun (h k v) (hash-combine h (hash-combine (eq-hash k) (eq-hash v))))
                      17
                      m)))
 
-;; One entry, as `key value`. A function of its own because a loop clause is a
-;; body of expressions and a `def` is a declaration, so the pair has to come
-;; apart somewhere that a binding may be introduced.
 (: entry->str (-> (Tuple %k %v) string) (where (->str %k) (->str %v)))
 (defun (entry->str entry)
   (def (k v) entry)
   (str (->str k) " " (->str v)))
 
-;; `#map(key value ...)`, in key order — a fact rather than an artefact here, so
-;; two equal maps always print the same.
 (: orderedmap->str (-> (OrderedMap %k %v) string) (where (->str %k) (->str %v)))
 (defun (orderedmap->str m)
   (let ((sb (stringbuilder-empty)))

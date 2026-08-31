@@ -1,26 +1,9 @@
-;; Ordering for the .NET types a program is most likely to sort.
-;;
-;; `Ord` is an ordinary trait, so implementing `System.IComparable` no longer
-;; means being ordered: a .NET type is ordered when someone writes the one-line
-;; implementation. These are the ones not worth writing twice.
-;;
-;; Opt-in rather than part of the prelude. Every name here is an `import/class`
-;; alias, and a type arrives with the module that declares it — so importing
-;; this puts `Guid` and `TimeOnly` into scope, which a program that never
-;; mentions them should not have to accept.
-;;
-;; What is exported is the seven type names, and nothing else. A constructor
-;; cannot be exported — it has no signature to export it by — so a program that
-;; wants one declares its own `import/class` for the same .NET type. That is
-;; not a second type as far as the implementation is concerned: an `Ord` for
-;; `System.DateTime` is found through whichever alias names it.
+;; Ordering for common .NET types.
 (export DateTime DateTimeOffset TimeSpan DateOnly TimeOnly Guid Version)
 
 (import (std prelude))
 
-;; No constructors and no members: this module is the trait and nothing else.
-;; Everything else about these types is the importing program's business, and it
-;; declares whichever members it uses against the same .NET type.
+;; Provides Ord trait implementations for common .NET types.
 (import/class
   (DateTime       (: System.DateTime))
   (DateTimeOffset (: System.DateTimeOffset))
@@ -30,10 +13,7 @@
   (Guid           (: System.Guid))
   (Version        (: System.Version)))
 
-;; Each is `CompareTo` on the type itself, which is what the primitives in
-;; `std/eq` do and what `Ord` promised while it *was* the interface: negative,
-;; zero or positive, and .NET's own answer rather than a second opinion about
-;; it.
+;; Implements Ord using CompareTo.
 (def/impl (Ord DateTime)
   (defun (compare a b) (.CompareTo a b)))
 
@@ -52,8 +32,6 @@
 (def/impl (Ord Guid)
   (defun (compare a b) (.CompareTo a b)))
 
-;; A reference type, and the only one here. `Version` compares its four
-;; components, which is the reason a program sorting version numbers wants
-;; .NET's answer rather than the one a string sort gives: 1.10 is above 1.9.
+;; Implements Ord for Version using CompareTo.
 (def/impl (Ord Version)
   (defun (compare a b) (.CompareTo a b)))

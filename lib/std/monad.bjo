@@ -1,18 +1,12 @@
 ;; std/monad.bjo
 ;;
-;; The `Monad` trait, its stock instances, and the `(do ...)` block, which is a
-;; macro here rather than syntax in the parser.
-;;
-;; `syntax-match` is what the macro is written in, since a macro cannot be used
-;; in its own module. The prelude is for `list-append`.
+;; Monad trait, stock instances, and (do ...) macro.
 (import (std prelude))
 (import (std syntax-match))
 
 (export pure bind)
 
-;; An inline-only trait: `Monad`'s implementor is written *applied*, which no C#
-;; interface can express. There is no interface, no dictionary and no dynamic
-;; dispatch — every use is resolved statically and spliced.
+;; Monad trait definition.
 (def/trait (Monad (%m %a))
   (: pure (-> %a (%m %a)))
   (: bind (-> (%m %a) (-> %a (%m %b)) (%m %b))))
@@ -29,7 +23,7 @@
       ((Some v) (k v))
       (None None))))
 
-;; The error short-circuits, carrying whatever it carries.
+;; Short-circuits on Err.
 (def/impl (Monad (Result %e %a))
   (defun (pure x) (Ok x))
   (defun (bind m k)
@@ -40,31 +34,13 @@
 ;; ---------------------------------------------------------------------------
 ;; The block
 ;; ---------------------------------------------------------------------------
-;;
-;;   (do (:bind x xs)                 ; x <- xs
-;;       (:match (Tuple k v) (entry)) ; the same, taken apart
-;;       (:let  y (+ x 1))            ; a pure binding, no monad involved
-;;       (:then (action))             ; >>
-;;       (side-effect)                ; a statement, run for its effect
-;;       (:return (* y 2)))           ; (pure (* y 2))
-;;
-;; `(seq ...)` was already taken by lazy sequences, so the form is spelled `do`.
-;;
-;; The last form may be *any* `m a` rather than only a `:return`, so that a
-;; monadic loop can put its recursive call in tail position.
-;;
-;; `bind` and `pure` are trait methods, and a trait method a template calls is
-;; resolved to its trait rather than looked up where the expansion lands. So a
-;; block runs over any `Monad` — dispatch is on the type of what is bound — and
-;; a call site that has a `bind` of its own does not intercept it.
+;; Macro for (do ...) blocks.
 (def/macro (do form inject compare)
   (syntax-match form
     ((_ step ...) (do-block step form))
     (bad (syntax-error bad "do takes a block of forms: (do (:bind x m) ... (:return e))"))))
 
-;; One transformer call builds the whole chain, rather than the macro expanding
-;; to a call to itself on the tail: a block of ten steps is then one expansion
-;; and one place that can say which of its steps was wrong.
+;; Builds the block chain.
 (: do-block (-> (List Syntax) Syntax Syntax))
 (defun (do-block steps whole)
   (match steps
@@ -78,8 +54,7 @@
     ((SSym _) #t)
     (_ #f)))
 
-;; Keyword-headed, so a misspelled clause is reported as one rather than read
-;; as a call to a keyword.
+;; Checks if form is keyword-headed.
 (: clause? (-> Syntax bool))
 (defun (clause? s)
   (match s
@@ -107,27 +82,21 @@
      (syntax-error step "A (do ...) block cannot end with (:let ...). Its last form is the block's value."))
     ((:then bad ...)
      (syntax-error step "A (do ...) block cannot end with (:then ...). Its last form is the block's value."))
-    ;; Any `m a` may be the last form; a keyword-headed one is a clause that
-    ;; did not read, and saying so beats letting it parse as something else.
+    ;; Reports keyword errors.
     (last (if (clause? last) (unknown-clause last) last))))
 
 ;; A step, and everything after it.
 (: do-step (-> Syntax Syntax Syntax))
 (defun (do-step step rest)
   (syntax-match step
-    ;; `:bind` takes an identifier, deliberately. A pattern would force the
-    ;; failure question — what `(:bind (Some x) e)` means when the match fails —
-    ;; which wants `MonadFail` rather than a match that can throw.
+    ;; :bind takes an identifier.
     ((:bind name expr)
      (if (identifier? name)
          #'(bind ,expr (fun (,name) ,rest))
          (syntax-error step "(:bind name expr) takes a plain identifier, not a pattern.")))
     ((:bind bad ...) (syntax-error step "(:bind name expr) takes an identifier and one expression."))
 
-    ;; `:bind` with a pattern, spelled `match` because a pattern that does not
-    ;; cover throws. `bound` is one name for the whole block — renaming is
-    ;; memoised per invocation — and each is read by its own `match` before the
-    ;; next shadows it.
+    ;; :match takes a pattern.
     ((:match pattern expr)
      #'(bind ,expr (fun (bound) (match bound (,pattern ,rest)))))
     ((:match bad ...) (syntax-error step "(:match pattern expr) takes one pattern and one expression."))
@@ -138,15 +107,12 @@
          (syntax-error step "(:let name expr) takes a plain identifier, not a pattern.")))
     ((:let bad ...) (syntax-error step "(:let name expr) takes an identifier and one expression."))
 
-    ;; `>>`, and named for what it is. Calling it `:do` would invite reading it
-    ;; as a variable-less `:bind`, which in a strict language it is not: on
-    ;; `List`, `>>` multiplies out the elements it discards.
+    ;; :then for variable-less bind.
     ((:then expr) #'(bind ,expr (fun (_) ,rest)))
     ((:then bad ...) (syntax-error step "(:then expr) takes one expression."))
 
     ((:return bad ...)
      (syntax-error step "(:return ...) is the last form of its (do ...) block, and this one is not."))
 
-    ;; A plain form in non-tail position is an ordinary statement, run for its
-    ;; effect. It is *not* a variable-less bind.
+    ;; Plain form statement.
     (other (if (clause? other) (unknown-clause other) #'(let ((_ ,other)) ,rest)))))

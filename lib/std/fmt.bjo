@@ -1,28 +1,7 @@
-;; std/fmt.bjo — formatting, in two layers.
-;;
-;; Layer 1 (`Disp`, `str`, `println`) is interpolation. No engine, no state,
-;; no column. It belongs in the prelude eventually; it is here so the whole
-;; thing reads in one file.
-;;
-;; Layer 2 (`Block`, `render`) is layout. Column-aware, closure-backed, open.
-;;
-;; The one rule that shapes every signature below: **content parameters are
-;; `(Vec Disp)` or `(Vec Block)`, never a bare element.** No union case carries
-;; a `Vec`, so nesting is free and no two cases can ever compete for a `[...]`.
-;;
-;; The combinators are SRFI 166's, and so are their names where the shapes
-;; agree. What is deliberately not here is the part of that SRFI which is
-;; Scheme rather than formatting: `written` and its neighbours want a datum
-;; writer, and `->str` is this language's answer to that; `fn`, `with!`,
-;; `forked` and `make-state-variable` are the environment monad's plumbing,
-;; and a `BRun` closing over `parameter-ref` is the same thing with none of it.
-;; SRFI's `port`, `row`, `col` and `output` state variables are the `Sink` and
-;; the threaded column.
+;; std/fmt.bjo — formatting. Layer 1: Interpolation. Layer 2: Layout.
 (import (std prelude))
 (export
-  ;; The types. All three are transparent: a literal `["x = " n]` elaborates
-  ;; into `Disp`'s and `Block`'s constructors in the module that writes it, so
-  ;; the cases have to be visible there.
+  ;; Exported types.
   Disp Sink Block
 
   ;; Layer 1 — interpolation
@@ -55,12 +34,7 @@
 ;; Layer 1 — interpolation
 ;; ===========================================================================
 ;;
-;; One case per literal shape the reader can produce. The heads are all
-;; distinct, so nothing needs `#:literal` and nothing is ambiguous.
-;;
-;; There is no case for a user's type and there never will be — that is what
-;; `->str` is for. `["cost: " (->str price)]` is the whole extensibility story:
-;; the open trait produces a `string`, and `string` is a case.
+;; Interpolation literal shapes.
 (type
   (: Disp
      (Union
@@ -79,8 +53,7 @@
     ((DChar c) (char->string c))
     ((DBool b) (if b "#t" "#f"))))
 
-;; In the prelude this replaces the `#:rest string` version and is simply
-;; `str`. Named apart here so both can be in scope while you try it.
+;; Formats to string.
 (: str* (-> (Vec Disp) string))
 (defun (str* ds)
   (let ((b (stringbuilder-empty)))
@@ -98,20 +71,10 @@
 ;; Layer 2 — layout
 ;; ===========================================================================
 
-;; Where characters go. An alias rather than a record: the only thing the
-;; engine needs from the destination is that it accepts strings, and a closure
-;; over a port or over a `StringBuilder` is both implementations.
+;; Output sink.
 (type (: Sink (-> string void)))
 
-;; A block, and the entirety of the engine's vocabulary.
-;;
-;; The three leaves exist so that `["x = " n #\!]` needs no wrapping. `BRun` is
-;; the escape hatch, and it is what every combinator in this file returns: a
-;; function from (sink, current column) to the column it left the cursor in.
-;;
-;; Threading one `int` rather than a state record is the whole simplification.
-;; Settings do not travel here — they are parameters, so `parameterize` carries
-;; them and restores them, including on the way out of an exception.
+;; Layout blocks. BRun runs combinators.
 (type
   (: Block
      (Union
@@ -120,7 +83,7 @@
       (BChar char)
       (BRun (-> Sink int int)))))
 
-;; Where the cursor ends up after `s` is written starting at `col`.
+;; Computes column position.
 (: column-after (-> int string int))
 (defun (column-after col s)
   (string-fold (fun (c ch) (if (char=? ch #\newline) 0 (+ c 1))) col s))
@@ -147,41 +110,12 @@
     (ignore (run-blocks #(stringbuilder-add-string! b &1) 0 bs))
     (stringbuilder->string b)))
 
-;; `render` to wherever the dynamic environment says, which is what `println*`
-;; already is for layer 1 and what layer 2 was missing: `render` names a port,
-;; `render->string` names none because it produces one, and the everyday case —
-;; put this on the output — had nothing.
-;;
-;; Not `(render bs #:port ...)`. A keyword default would evaluate per call and
-;; would work, but it still names a port *at the call site*, so redirecting the
-;; output of something that formats would mean touching every call or threading
-;; a port through everything in between. Reading the parameter here is what buys
-;; `parameterize` for free, and it is why `#:port` was dropped everywhere else.
-;;
-;; Read per call, and not into a `def`: a module-level
-;; `(def out (parameter-ref current-output-port))` captures the port the module
-;; was loaded with and ignores every `parameterize` after it.
+;; Renders to current output port.
 (: show (-> (Vec Block) void))
 (defun (show bs) (render (parameter-ref current-output-port) bs))
 
 
 ;; --- Settings --------------------------------------------------------------
-;;
-;; A user adds one of these without touching this file, which is the point of
-;; using parameters rather than a state record.
-;;
-;; `with-fmt` is SRFI 166's setter, and here it is one function rather than one per
-;; setting: `parameterize`'s binder is an expression, not a name, so the
-;; parameter itself can be an argument. A program's own setting is a `def` of a
-;; `make-parameter` and needs nothing from this file.
-;;
-;; **A setting is read when a block runs, not when it is built.** Every
-;; combinator below reads its parameters inside the `BRun`, and a combinator
-;; written elsewhere has to do the same. The reason is that `[...]` is an
-;; ordinary vec: its elements are evaluated before the `with` that encloses
-;; them ever runs, so a `(parameter-ref ...)` outside the closure reads the
-;; setting that was in force at the wrong moment — the one where the block was
-;; written down rather than the one where it is being printed.
 (: with-fmt (-> (Param %a) %a (Vec Block) Block))
 (defun (with-fmt p v bs)
   (BRun (fun (out col)
@@ -203,22 +137,11 @@
 (: current-ellipsis (Param string))
 (def current-ellipsis (make-cold-parameter ""))
 
-;; How wide a string is where it is going. `string-count` — one character, one
-;; column — is right for a file, and right for a terminal until the text holds
-;; an emoji, a combining mark or an ANSI escape.
-;;
-;; Everything that measures or cuts goes through this, one character at a time,
-;; so a program that knows better parameterizes it and the whole library
-;; follows. That is SRFI 166's `string-width`; what it does not need is that
-;; SRFI's second hook for taking substrings, because measuring per character is
-;; already enough to cut in the units it measures in.
+;; Calculates string width in columns.
 (: current-string-width (Param (-> string int)))
 (def current-string-width (make-cold-parameter #(string-count &1)))
 
 ;; --- Number settings -------------------------------------------------------
-;;
-;; `numeric`'s keyword arguments default to these, so a one-off is a keyword
-;; and a house style is a `with` around the whole report.
 
 ;; Digits after the decimal separator. Negative means as many as the number
 ;; needs, which is what `double->string` would have given.
@@ -241,24 +164,14 @@
 
 
 ;; --- Measuring -------------------------------------------------------------
-;;
-;; The string-level half of the combinators below. Each is the operation its
-;; past participle names — `pad/left` is what `padded/left` does to the text it
-;; captured — and every one of them counts in columns rather than characters,
-;; through `current-string-width`.
 
-;; How wide `s` is, by whatever `current-string-width` currently says. Exported
-;; because a combinator written elsewhere has to measure the same way the ones
-;; here do — a `captured` that reached for `string-count` instead would ignore
-;; the setting and misplace everything the moment one was in force.
+;; Returns width of string.
 (: width-of (-> string int))
 (defun (width-of s)
   (let ((measure (parameter-ref current-string-width)))
     (measure s)))
 
-;; Pad characters totalling at most `w` columns. Fewer, if the pad character is
-;; wider than one column and `w` is not a multiple of it; none at all if it
-;; measures as nothing, which would otherwise be a loop that never ends.
+;; Generates padding of specified width.
 (: padding (-> int string))
 (defun (padding w)
   (let* ((c (parameter-ref current-pad))
@@ -271,9 +184,7 @@
               (loop (- room cw)))))
         (stringbuilder->string b)))
 
-;; The longest prefix of `s` that fits in `w` columns, and the longest suffix.
-;; Both stop at a character boundary, and both answer `s` itself when it
-;; already fits.
+;; Gets prefix/suffix fitting w columns.
 (: prefix-of-width (-> string int string))
 (defun (prefix-of-width s w)
   (let loop ((c (string-cursor-start s)) (room w))
@@ -308,9 +219,7 @@
          (left (/ missing 2)))
         (string-append (padding left) (string-append s (padding (- missing left))))))
 
-;; Cutting. The ellipsis takes room from the content rather than being added to
-;; it, so the answer is never wider than `w` — and when `w` has no room even for
-;; the ellipsis, the ellipsis itself is what gets cut.
+;; Trims string to w columns.
 (: trim/left (-> int string string))
 (defun (trim/left w s)
   (if (<= (width-of s) w)
@@ -343,19 +252,12 @@
 (: nothing Block)
 (def nothing (BRun (fun (out col) col)))
 
-;; Many blocks as one. `[...]` is already concatenation wherever a `(Vec Block)`
-;; is expected; this is for the places that take a single one — `joined`'s
-;; element function above all.
+;; Combines multiple blocks.
 (: each (-> (Vec Block) Block))
 (defun (each bs)
   (BRun (fun (out col) (run-blocks out col bs))))
 
-;; Render `bs`, hand the text to `f`, and run the block `f` answers.
-;;
-;; The primitive everything that measures is written in — padding, trimming and
-;; the table layouts all have to know how wide something is before they can
-;; place it, and that means rendering it first. SRFI 166 calls it
-;; `call-with-output`, and it is the one place intermediate text is unavoidable.
+;; Renders blocks and applies f.
 (: captured (-> (-> string Block) (Vec Block) Block))
 (defun (captured f bs)
   (BRun (fun (out col) (run-block out col (f (render->string bs))))))
@@ -366,18 +268,13 @@
 (: nl Block)
 (def nl (BStr "\n"))
 
-;; A newline unless we are already at the start of a line. The one combinator
-;; that justifies threading the column at all.
+;; Outputs newline if not at start of line.
 (: fl Block)
 (def fl
   (BRun (fun (out col)
           (if (= col 0) col (run-block out col nl)))))
 
-;; Pad out to column `goal`. Nothing at all if the cursor is already there or
-;; past it: this never moves backwards and never opens a line.
-;;
-;; It fills with the *pad* character rather than a space, so the dot leaders of
-;; a table of contents are `(with-pad #\. [(space-to 40)])`.
+;; Pads to specified column.
 (: space-to (-> int Block))
 (defun (space-to goal)
   (BRun (fun (out col)
@@ -385,8 +282,7 @@
               col
               (run-block out col (BStr (padding (- goal col))))))))
 
-;; The next tab stop — the next multiple of `#:width`, eight unless said
-;; otherwise. Sitting on one already means the next one, so this always moves.
+;; Moves to next tab stop.
 (: tab-to (-> (#:width int) Block))
 (defun (tab-to #:width 8)
   (BRun (fun (out col)
@@ -395,12 +291,6 @@
 
 
 ;; --- Fitting to a width ----------------------------------------------------
-;;
-;; Three questions, each asked three ways. `padded/*` only ever grows, and
-;; leaves anything already wide enough alone; `trimmed/*` only ever shrinks;
-;; `fitted/*` is exactly `w` columns whichever way it had to go. The suffix
-;; names the end that gives: `padded/left` puts the padding on the left, and
-;; `trimmed/left` cuts from the left.
 
 (: padded/left (-> int (Vec Block) Block))
 (defun (padded/left w bs) (captured (fun (s) (BStr (pad/left w s))) bs))
@@ -434,9 +324,6 @@
 
 
 ;; --- Sequences -------------------------------------------------------------
-;;
-;; The separator is `(Vec Block)` like any other content, so it may be a
-;; newline, a padded rule, or anything else that runs.
 
 ;; Every element, with `sep` between them.
 (: joined (-> (-> %a Block) (List %a) (Vec Block) Block))
@@ -450,8 +337,7 @@
                       col
                       xs))))
 
-;; `sep` after each element, including the last. A terminator rather than a
-;; separator, which is what a list of statements or of lines wants.
+;; Appends separator after elements.
 (: joined/suffix (-> (-> %a Block) (List %a) (Vec Block) Block))
 (defun (joined/suffix f xs sep)
   (BRun (fun (out col)
@@ -459,10 +345,7 @@
                       col
                       xs))))
 
-;; The last element formatted by a function of its own. The separator is still
-;; written before it, so "a, b, and c" is
-;; `(joined/last f (fun (x) (each ["and " (f x)])) xs [", "])`, and a list of
-;; one is only ever the last element.
+;; Joins elements with custom last element formatter.
 (: joined/last (-> (-> %a Block) (-> %a Block) (List %a) (Vec Block) Block))
 (defun (joined/last f last-f xs sep)
   (BRun (fun (out col)
@@ -478,12 +361,6 @@
 
 
 ;; --- Numbers ---------------------------------------------------------------
-;;
-;; The digits are asked for under the invariant culture. Which character
-;; separates the decimals and which groups the thousands is this library's
-;; business — a setting a caller can see and change — and not the machine's
-;; locale, which would silently make the same program print `1,5` in one place
-;; and `1.5` in another.
 (import/extern
   (clr-invariant (: System.Globalization.CultureInfo.InvariantCulture #:get)))
 
@@ -504,17 +381,7 @@
               (loop p (+ i 1)))))
         (string-reverse (stringbuilder->string b)))))
 
-;; A number, with a fixed number of decimals, grouped digits and a forced sign.
-;; A one-off is a keyword and a house style is a `with`.
-;;
-;; Every keyword defaults to a value meaning "ask the parameter", and the
-;; asking is done inside the `BRun` — a default is evaluated when `numeric` is
-;; *called*, which is before any enclosing `with` has run, so reading the
-;; parameter there would answer the wrong question. None of the three sentinels
-;; can be meant: a negative precision or group size is what the parameters
-;; themselves default to, `#:comma 0` still says "no grouping" out loud, and
-;; nobody separates digits with a NUL. `#:signed` has no spare value, so it
-;; only ever turns the sign *on*; `with` is how it is turned off.
+;; Formats number blocks.
 ;;
 ;; It is `double` rather than anything wider: an `int` crosses with
 ;; `(cast double n)`, and a number being formatted is on its way to a string.
@@ -584,12 +451,6 @@
 
 
 ;; --- Paragraphs ------------------------------------------------------------
-;;
-;; Whitespace in, whitespace out: the text is taken apart into words and put
-;; back together to fit `current-width`, so the newlines and runs of spaces it
-;; arrived with are not preserved. That is what makes wrapping composable —
-;; the input may be any blocks at all, including ones that were themselves
-;; wrapped.
 
 ;; The runs of non-whitespace in `s`, in order.
 (: words-of (-> string (Vec string)))
@@ -605,10 +466,7 @@
               (loop (string-cursor-next s c) (if in? start c) #t))))
     (vecbuilder->vec out)))
 
-;; The words packed greedily into lines. The first line is given `first`
-;; columns, since the cursor may already be somewhere, and every later one
-;; `width`. A word wider than a whole line gets a line to itself rather than
-;; being cut: `trimmed/right` is how a program asks for cutting.
+;; Packs words into lines.
 (: packed (-> (Vec string) int int (List (List string))))
 (defun (packed ws first width)
   (let loop ((i 0) (line Nil) (used 0) (budget first) (lines Nil))
@@ -636,8 +494,7 @@
                         ws))
     (stringbuilder->string b)))
 
-;; The same, with the gaps widened until the line is exactly `budget` columns.
-;; The leftmost gaps take the remainder, which is where the eye expects it.
+;; Stretches spaced words to budget.
 (: stretched (-> (List string) int string))
 (defun (stretched ws budget)
   (let ((gaps (- (list-length ws) 1)))
@@ -686,11 +543,6 @@
 
 ;; --- Tables ----------------------------------------------------------------
 ;;
-;; Each column is rendered on its own and the results are laid out line by
-;; line, which is the only way to put text side by side when the pieces do not
-;; know about each other. Both begin on a fresh line and end every row with
-;; one, so a table is a block that always occupies whole lines.
-;;
 ;; They differ only in where the widths come from: `columnar` divides
 ;; `current-width` evenly and cuts whatever does not fit, `tabular` gives each
 ;; column the width its own content asks for and cuts nothing.
@@ -716,9 +568,7 @@
                                    (run-block out c (BStr (row-of cells widths sep cut? r)))
                                    nl))))))))
 
-;; One row: the `r`th line of every column, each shaped to its width. The last
-;; column is not padded — trailing spaces are invisible and would only end up
-;; in whatever the output is diffed against.
+;; Formats row string.
 (: row-of (-> (Vec (Vec string)) (Vec int) string bool int string))
 (defun (row-of cells widths sep cut? r)
   (let ((b (stringbuilder-empty))
@@ -742,9 +592,7 @@
 (defun (rendered-columns cols)
   (vec-map (fun (c) (lines-of (render->string c))) cols))
 
-;; Both are a `BRun` around the whole of the work, rendering included: the
-;; columns are measured against settings, and a setting is only known once the
-;; table is being printed.
+;; Renders columns.
 (: columnar (-> (Vec (Vec Block)) (#:sep string) Block))
 (defun (columnar cols #:sep " ")
   (BRun (fun (out col)
@@ -775,39 +623,4 @@
 ;; What it reads like
 ;; ===========================================================================
 ;;
-;;   (println* ["n = " n ", ok? " done?])
-;;
-;; The port is the one `println` writes to, and is passed rather than assumed:
-;;
-;;   (def out (parameter-ref current-output-port))
-;;
-;;   (render out ["Total: " (padded/left 8 [(->str total)]) nl])
-;;
-;;   (render out
-;;     [(joined (fun (p) (padded/left 10 [(name-of p)])) people [" | "]) nl])
-;;
-;;   (render out [(with-pad #\. ["Chapter 1" (space-to 20) (numeric page)]) nl])
-;;
-;;   (render out [(with-fmt current-width 60 [(justified [prose])]) nl])
-;;
-;;   (render out
-;;     [(tabular [[(joined name-of people [nl])]
-;;                [(joined (fun (p) (numeric/comma (salary-of p))) people [nl])]]
-;;               #:sep " | ")])
-;;
-;; A user's own combinator, which needs nothing from this file but `BRun`:
-;;
-;;   (: boxed (-> (Vec Block) Block))
-;;   (defun (boxed bs)
-;;     (BRun (fun (out col)
-;;             (run-blocks out col ["[" (render->string bs) "]"]))))
-;;
-;; A user's own *setting*, which needs `with` and nothing at all from here:
-;;
-;;   (def current-indent (make-parameter 0))
-;;
-;;   (: indented (-> (Vec Block) Block))
-;;   (defun (indented bs)
-;;     (BRun (fun (out col)
-;;             (run-blocks out col [(space-to (parameter-ref current-indent))
-;;                                  (each bs)]))))
+;; Examples and usage.

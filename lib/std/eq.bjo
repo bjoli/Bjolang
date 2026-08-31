@@ -1,9 +1,4 @@
-;; std/eq.bjo — `=`, and the hash that has to agree with it.
-;;
-;; The bottom of the library, below `std/maths` and `std/syntax-match` and so
-;; below the prelude, which re-exports what is here. It imports nothing: `=` is
-;; written in every module there is, including the two the prelude itself is
-;; built on, so the trait declaring it cannot sit above them.
+;; std/eq.bjo — equality and hashing.
 (export = eq-hash
         Ord compare less? greater? at-most? at-least?
         least greatest list-sort list-min list-max)
@@ -11,24 +6,7 @@
 ;; ---------------------------------------------------------------------------
 ;; Eq — the one equality
 ;; ---------------------------------------------------------------------------
-;;
-;; `=` is a trait method, so there is exactly one equality in the language and a
-;; program may define it for its own types. Every path that can ask whether two
-;; values are equal goes through here: `(= a b)` written directly, `(= a b)`
-;; inside a generic function via a dictionary, and `=` reached through a
-;; container's element comparison.
-;;
-;; `eq-hash` is in this trait rather than one of its own because it is derived
-;; from the same choice of fields `=` is. There is no supertrait mechanism to
-;; keep two traits in step, and an implementation that overrode `=` while
-;; inheriting a hash computed from different fields would break every hash-based
-;; container silently. The name is not `hash`, which is too common a word to
-;; reserve program-wide, and not `default-hash`, which stops being true the
-;; moment anyone writes one.
-;;
-;; No default bodies, deliberately. The only body a default could have is "ask
-;; .NET", which is wrong in exactly the case someone wrote an implementation
-;; for: their own type. Every implementation writes both methods.
+;; Trait for equality and hashing.
 (def/trait (Eq %a)
   (: = (-> %a %a bool))
   (: eq-hash (-> %a int)))
@@ -37,36 +15,11 @@
 ;; ---------------------------------------------------------------------------
 ;; Ord — the one ordering
 ;; ---------------------------------------------------------------------------
-;;
-;; One ordering, open the way `Eq` is: `compare` is an ordinary trait method, so
-;; a program can order its own types and everything below — `least`, `list-sort`,
-;; `list-min` — works at them without knowing they exist.
-;;
-;; It was `System.IComparable` as a `#:clr-constraint` for a while, which made
-;; membership .NET's answer and therefore closed: no type declared in Bjolang
-;; could ever be ordered, because nothing emits a .NET interface on a generated
-;; type. That is the wrong trade for the one ordering in the language. What the
-;; constraint bought was a `where` clause instead of a dictionary; what it cost
-;; was every record and every union.
-;;
-;; The primitives implement it by delegating to the interface anyway, so nothing
-;; is slower where the type is known: a resolved call is spliced back down to
-;; `a.CompareTo(b)`.
-;;
-;; `<` and friends are untouched and remain builtins. They are C# operators,
-;; which every numeric type has and `string` does not; `compare` is the one that
-;; works at a type variable, and the one everything below is written in terms
-;; of.
-;;
-;; No default body, for the reason `Eq` has none: the only body a default could
-;; have is "ask .NET", which is wrong in exactly the case someone wrote an
-;; implementation for.
+;; Trait for ordering.
 (def/trait (Ord %a)
   (: compare (-> %a %a int)))
 
-;; The predicates, in terms of the one method. Negative, zero and positive is
-;; what `CompareTo` promises — not -1, 0 and 1 — so these compare against zero
-;; rather than against a literal answer.
+;; Ord predicates.
 (: less? (-> %a %a bool) (where (Ord %a)))
 (defun (less? a b) (< (compare a b) 0))
 
@@ -79,12 +32,7 @@
 (: at-least? (-> %a %a bool) (where (Ord %a)))
 (defun (at-least? a b) (>= (compare a b) 0))
 
-;; Not `min`/`max`: those are `Num`'s, they are `System.Numerics` members, and
-;; they do not reach a string. These are the `Ord` ones and work at every type
-;; `compare` does.
-;;
-;; Ties go to the left argument, so `least` and `greatest` together partition a
-;; pair rather than both picking the same side of it.
+;; least and greatest (ties to left).
 (: least (-> %a %a %a) (where (Ord %a)))
 (defun (least a b) (if (at-most? a b) a b))
 
@@ -92,17 +40,7 @@
 (defun (greatest a b) (if (at-least? a b) a b))
 
 ;; --- Sorting ---------------------------------------------------------------
-;;
-;; A merge sort, which is what a singly linked list can do: no indexing, and
-;; the merge is the only step that looks at an element.
-;;
-;; Stable, and that is a promise rather than an accident of the code. `at-most?`
-;; rather than `less?` in the merge is what keeps it: on a tie the left run's
-;; element goes first, and the left run is the earlier half.
-;;
-;; The bodies use builtins only, for the reason the `Eq` container impls do:
-;; they are spliced into whichever module sorts a list, and a helper defined
-;; here would have to be in scope there.
+;; Merge sort. Stable. Uses builtins only.
 (: list-sort (-> (List %a) (List %a)) (where (Ord %a)))
 (defun (list-sort xs)
   (defun (merge as bs)
@@ -114,9 +52,7 @@
                 (Cons (list-head as) (merge (list-tail as) bs))
                 (Cons (list-head bs) (merge as (list-tail bs)))))))
 
-  ;; `(< n 1)` rather than `(= n 0)`: `=` is the trait method declared above,
-  ;; and its implementation for `int` is further down this same file. `<` is a
-  ;; builtin and needs nothing.
+  ;; Uses (< n 1) instead of (= n 0).
   (defun (take n ys)
     (if (< n 1)
         Nil
@@ -132,25 +68,13 @@
             (drop (- n 1) (list-tail ys)))))
 
   (def n (list-length xs))
-  ;; One element is sorted, and none is too. Splitting either would recur
-  ;; forever, a half of a one-element list being that list again.
+  ;; Base case.
   (if (< n 2)
       xs
       (merge (list-sort (take (/ n 2) xs))
              (list-sort (drop (/ n 2) xs)))))
 
-;; The smallest and largest of a list, seeded with the first element rather than
-;; with a bound: `IMinMaxValue` is a different interface, `string` is not in it,
-;; and a fold over a non-empty list needs no seed but its own head.
-;;
-;; An empty list has no answer, so these say so rather than inventing one.
-;; A left fold, private to this module.
-;;
-;; `list-foldl` is a prelude function now rather than a builtin: its callback is
-;; declared `-?->`, and a suspending copy of a procedure can only be generated
-;; from a body written in Bjolang. This module is compiled before the prelude
-;; exists, so it keeps a fold of its own — an ordinary `->` one, since nothing
-;; here suspends.
+;; Private left fold for list min/max.
 (: fold-left (-> (-> %b %a %b) %b (List %a) %b))
 (defun (fold-left f init xs)
   (let go ((rest xs) (acc init))
@@ -172,42 +96,14 @@
 
 
 ;; --- The blanket -----------------------------------------------------------
-;;
-;; What `=` means at a type with no implementation of its own: .NET's equality,
-;; which for a record, struct or union the compiler emitted *is* that type's own
-;; `Eq` implementation — because `Equals` and `GetHashCode` are emitted as calls
-;; to it. So this is "derive, applied automatically" rather than a second
-;; equality, and it routes to a hand-written implementation at any depth.
-;;
-;; That is the whole reason it comes last. Without materialization it would be
-;; the split: `(= p q)` written directly would find the user's implementation
-;; and `(= (Some p) (Some q))` would find .NET's.
-;;
-;; Only legal here, which the orphan rule enforces: a blanket applies at every
-;; type that has none of its own, so one declared elsewhere would change what
-;; `=` means for modules that never heard of it.
-;;
-;; `clr-equals` and not `clr-eq`: C# `==` does not compile at a type parameter.
-;;
-;; Note what this does not do. There is no way to opt *out* — `(= f g)` on two
-;; ports, or on two fibers, compiles and means reference identity. Two functions
-;; are the exception and only by accident: a `(-> %a %b)` has no head
-;; constructor, so resolution never reaches a blanket at all and the call is
-;; reported as a dictionary that cannot be built.
+;; Default to .NET equality.
 (def/impl (Eq %a)
   (defun (= a b) (clr-equals a b))
   (defun (eq-hash a) (clr-hash a)))
 
 
 ;; --- The primitives --------------------------------------------------------
-;;
-;; Written out rather than generated, because a macro cannot be used in the
-;; module that defines it and this is the module every other one imports.
-;;
-;; `clr-eq` is C# `==` and `clr-hash` is the comparer's hash. Both are private
-;; to this file — see `Naming.eqPrivateBindings` — so `(= 1 2)` compiles to
-;; `(1 == 2)` here without giving user code a way to write an implementation
-;; that calls itself.
+;; Eq for primitives.
 
 (def/impl (Eq int)
   (defun (= a b) (clr-eq a b))
@@ -237,14 +133,7 @@
   (defun (= a b) (clr-eq a b))
   (defun (eq-hash a) (clr-hash a)))
 
-;; `NaN` is the one place the two spellings of .NET equality disagree: C# `==`
-;; says `(= x x)` is false for it, `Equals` says true. This picks `Equals`,
-;; because every hash-based container assumes its keys are reflexive and a key
-;; that is not equal to itself can never be found again. IEEE's answer is still
-;; available — `(not (= x x))` is not it, but a program that wants IEEE
-;; comparison wants `<` and `>`, which are unaffected.
-;;
-;; `eq-hash` reads through the same comparer, so the two agree about `NaN`.
+;; Eq for double uses Equals (NaN == NaN).
 (def/impl (Eq double)
   (defun (= a b) (clr-equals a b))
   (defun (eq-hash a) (clr-hash a)))
@@ -253,7 +142,7 @@
   (defun (= a b) (clr-eq a b))
   (defun (eq-hash a) (clr-hash a)))
 
-;; C# `==` on a string is value equality, ordinal, not reference equality.
+;; Eq for string.
 (def/impl (Eq string)
   (defun (= a b) (clr-eq a b))
   (defun (eq-hash a) (clr-hash a)))
@@ -262,7 +151,7 @@
   (defun (= a b) (clr-eq a b))
   (defun (eq-hash a) (clr-hash a)))
 
-;; Keywords and symbols are interned, so identity *is* equality for them.
+;; Eq for Keyword and Symbol.
 (def/impl (Eq Keyword)
   (defun (= a b) (clr-eq a b))
   (defun (eq-hash a) (clr-hash a)))
@@ -275,27 +164,14 @@
   (defun (= a b) (clr-eq a b))
   (defun (eq-hash a) (clr-hash a)))
 
-;; There is one unit value, so there is one answer.
+;; Eq for void.
 (def/impl (Eq void)
   (defun (= a b) #t)
   (defun (eq-hash a) 0))
 
 
 ;; --- Ord for the primitives ------------------------------------------------
-;;
-;; Each delegates to the type's own `IComparable`, so a resolved call is spliced
-;; back down to `a.CompareTo(b)` and costs what it did when `Ord` *was* that
-;; interface. Only genuinely generic code pays a dictionary, which is the price
-;; of a program being able to order its own types at all.
-;;
-;; `.CompareTo` is an ordinary interop call and needs no import, which is what
-;; lets these live in the module that imports nothing.
-;;
-;; Not listed: `Keyword` and `Symbol`, which are interned and have no order
-;; anybody would agree on, and `void`, which has one value. A .NET type that is
-;; `IComparable` and not here — `System.DateTime`, `System.Guid` — is one line
-;; in the module that wants it sorted, which is new: it could not be written
-;; before at all.
+;; Delegates to IComparable.
 
 (def/impl (Ord int)    (defun (compare a b) (.CompareTo a b)))
 (def/impl (Ord long)   (defun (compare a b) (.CompareTo a b)))
@@ -305,35 +181,19 @@
 (def/impl (Ord ulong)  (defun (compare a b) (.CompareTo a b)))
 (def/impl (Ord ushort) (defun (compare a b) (.CompareTo a b)))
 
-;; `NaN` has no place in a total order and `CompareTo` picks one anyway: it
-;; sorts below every number, and equal to itself. That is what makes sorting a
-;; list of doubles terminate, and it is deliberately not what `<` says — see
-;; the note on `Eq double` above, which faces the same disagreement.
+;; Ord for double uses CompareTo.
 (def/impl (Ord double) (defun (compare a b) (.CompareTo a b)))
 
 (def/impl (Ord bool)   (defun (compare a b) (.CompareTo a b)))
 
-;; `String.CompareTo` is culture-sensitive, as it was when this was the
-;; interface. `string-compare-ordinal` is the one to reach for where the answer
-;; must not depend on where the program runs.
+;; Ord for string uses CompareTo.
 (def/impl (Ord string) (defun (compare a b) (.CompareTo a b)))
 
 (def/impl (Ord char)   (defun (compare a b) (.CompareTo a b)))
 
 
 ;; --- The containers --------------------------------------------------------
-;;
-;; Each of these compares elements through the `%a` dictionary rather than
-;; through .NET equality, and that is the point of writing them at all:
-;; `(= (Some p) (Some q))` has to reach the user's `Eq` implementation for `p`'s
-;; type. Routed through `Option.Equals` instead, .NET would pick
-;; `EqualityComparer<Point>.Default` — C#'s synthesized record equality — and
-;; the user's implementation would be discarded one level down while looking
-;; correct at the top.
-;;
-;; The bodies use builtins only. A helper defined in this module would have to
-;; be in scope wherever the body is spliced, and these are spliced into every
-;; module that compares a list.
+;; Container equality using element Eq. Uses builtins only.
 
 (def/impl (Eq (List %a))
   (where (Eq %a))
@@ -356,8 +216,7 @@
                (same-from (+ i 1)))))
     (and (= (vec-length xs) (vec-length ys))
          (same-from 0)))
-  ;; Indexed by hand, for the reason `fold-left` above exists: `vec-fold` is a
-  ;; prelude function now, and this module is compiled before the prelude.
+  ;; Manual indexing.
   (defun (eq-hash xs)
     (defun (hash-from i h)
       (if (= i (vec-length xs))
@@ -379,11 +238,7 @@
       ((Some x) (hash-combine 1 (eq-hash x)))
       (None 0))))
 
-;; Tuples, one implementation per arity.
-;;
-;; A tuple has no head constructor, so these are filed under a synthetic key —
-;; `Tuple2`, `Tuple3`, … — which is what lets resolution find them at all. See
-;; `TypedAST.tupleCtor`.
+;; Eq for Tuples.
 (def/impl (Eq (Tuple %a %b))
   (where (Eq %a) (Eq %b))
   (defun (= x y)

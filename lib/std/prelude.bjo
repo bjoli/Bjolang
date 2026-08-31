@@ -2,10 +2,7 @@
 ;; Standard library entry point
 ;; Macros defined here CANNOT be used in this file.
 (export
-  ;; Types. A type crosses a module boundary only when it is named here, so
-  ;; every type that appears in a signature below has to appear in this list
-  ;; too — including the `import/class` aliases, which are types like any
-  ;; other.
+  ;; Types.
   Map MapBuilder TransientMap MapCursor
   Range
   Listing Vecing Mapping Stringing Summing Counting Folding
@@ -17,13 +14,13 @@
   map
   ;; Iterable
   iterable-start iterable-done? iterable-current iterable-next
-  ;; Cursor — a position, where Iterable is a walk
+  ;; Cursor.
   cursor-start cursor-end cursor-end? cursor-ref cursor-next cursor-prev
   ;; Collector
   collector-init collector-step collector-finish
   ;; Collection
   length empty? ->seq
-  ;; Discard — how a program says "computed, and deliberately not wanted"
+  ;; Discard.
   ignore
   ;; Range
   range range-by
@@ -31,13 +28,10 @@
   print println ->str list->str
   list-append
 
-  ;; The list operations that are not builtins because having them here
-  ;; makes it easier to make them defbjouble
+  ;; List operations.
   list-map list-filter list-foldl list-foldr list-for-each
 
-  ;; The same, for vecs. These keep their C# bodies for the ordinary colour —
-  ;; see the `defbjouble`s below — but the name is a prelude binding either way,
-  ;; so it has to be exported like any other.
+  ;; Vec operations.
   vec-map vec-filter vec-fold vec-reduce
   vec-for-each vec-for-each/range vec-iter
 
@@ -51,13 +45,13 @@
   map-for-each map-iter map-any? map-find map-try-find
   ;; The cursor `Iterable` walks with
   map-cursor map-cursor-done? map-cursor-current
-  ;; Conversions. `list->map` is what `#map(...)` reads as.
+  ;; Conversions.
   list->map map->list vec->map map->vec seq->map map->seq
   map->str map-entry->str
-  ;; Builders — the same shape as ListBuilder
+  ;; Builders.
   mapbuilder-empty map->mapbuilder mapbuilder-add! mapbuilder-add-all!
   mapbuilder-length mapbuilder->map
-  ;; Transients — the map's interface, in place
+  ;; Transients.
   transientmap-empty map->transientmap transientmap->map
   transientmap-set! transientmap-set-all! transientmap-remove!
   transientmap-remove-all! transientmap-contains? transientmap-ref
@@ -71,20 +65,18 @@
   string-trim string-trim-start string-trim-end
   string-pad-left string-pad-right
   string-split string-join
-  ;; Characters — R6RS §11.11. The classification and case procedures
-  ;; (char-upcase, char-alphabetic?, digit-value, ...) are builtins and need no
-  ;; export; these are the ones written in Bjolang.
+  ;; Characters.
   char->integer integer->char
   char=? char<? char>? char<=? char>=?
   char-ci=? char-ci<? char-ci>? char-ci<=? char-ci>=?
-  ;; String cursors. The primitives are builtins; these are the derived ones.
+  ;; String cursors.
   string-cursor=? string-cursor<? string-cursor>? string-cursor<=? string-cursor>=?
   string-fold string-fold-right string-for-each string-index
   string->list list->string string->vec string-reverse
   ;; Conversions
   int->string long->string double->string byte->string number->string
   string->int string->double
-  ;; From `System.Math`; the rest of it is in `std/maths`.
+  ;; Math.
   sqrt
   ;; Files
   file-read-text file-write-text file-append-text file-exists? file-delete
@@ -96,7 +88,7 @@
   ;; The environment
   get-environment-variable set-environment-variable!
   current-directory set-current-directory!
-  ;; Ports — opening
+  ;; Open ports.
   open-input-file open-input-string open-output-file open-output-string
   ;; Ports — closing
   close-input-port close-output-port flush-port
@@ -116,10 +108,10 @@
            compare less? greater? at-most? at-least?
            least greatest list-sort list-min list-max)
 
-;; the foldable trait, and some of it's implementations
+;; Foldable implementations.
 (include "Foldable.protobjo")
 
-;; This is defined up here because some functions depend on it further down.
+;; List append.
 (: list-append (-> (List %a) (List %a) (List %a)))
 (defun (list-append xs ys)
   (list-foldr Cons ys xs))
@@ -158,27 +150,20 @@
 (def/impl (->str Char)
   (defun (->str c) (char->string c)))
 
-;; Container formats require loops to work, so they go further down
-;; after accumulation and iteration forms
+;; Container formats.
 
 
 ;; ---------------------------------------------------------------------------
 ;; Discard
 ;; ---------------------------------------------------------------------------
-;;
-;; `(ignore x)` is how a program says "I computed this and I do not want it".
-;; This discards the value, and silences the must-use error. 
-;;   
+;; Discard value.
 (def/trait (Discard %a)
   (: ignore (-> %a void)))
 
 (def/impl (Discard %a)
   (defun (ignore x) unit))
 
-;; Dropping a promise loses any exception inside it silently: nothing
-;; else is watching. ignore makes it a deliberate detach so that no errors stay
-;; quiet.
-;; 
+;; Detach promise.
 (def/impl (Discard (Promise %a))
   (defun (ignore p) (detach p)))
 
@@ -195,9 +180,7 @@
 ;; ---------------------------------------------------------------------------
 ;; Map — the unordered map
 ;; ---------------------------------------------------------------------------
-;;
-;; A `(Map %k %v)` is a CHAMP trie keyed by hash: lookup, insertion and removal
-;; are all effectively constant time.
+;; Hash map.
 (import/class
   ((Map %k %v)          (: Map.Map))
   ((MapBuilder %k %v)   (: Map.MapBuilder))
@@ -206,15 +189,13 @@
 
 (import/extern
   (map-empty      (: Map.MapModule.Empty       (-> (Map %k %v))))
-  ;; Throws for a key that is not there. `map-try-ref` is the total one, and
-  ;; `map-ref-or` the one with a default.
+  ;; Lookup.
   (map-ref        (: Map.MapModule.Ref         (-> (Map %k %v) %k %v)))
   (map-ref-or     (: Map.MapModule.RefOr       (-> (Map %k %v) %k %v %v)))
   (map-set        (: Map.MapModule.Set         (-> (Map %k %v) %k %v (Map %k %v))))
-  ;; The same, except that a key already there is an error rather than a
-  ;; replacement.
+  ;; Add.
   (map-add        (: Map.MapModule.Add         (-> (Map %k %v) %k %v (Map %k %v))))
-  ;; Through a transient, so the trie is copied once rather than once per entry.
+  ;; Set multiple.
   (map-set-all    (: Map.MapModule.SetRange    (-> (Map %k %v) (Seq (Tuple %k %v)) (Map %k %v))))
   (map-remove     (: Map.MapModule.Remove      (-> (Map %k %v) %k (Map %k %v))))
   (map-remove-all (: Map.MapModule.RemoveRange (-> (Map %k %v) (Seq %k) (Map %k %v))))
@@ -224,27 +205,21 @@
   (map-clear      (: Map.MapModule.Clear       (-> (Map %k %v) (Map %k %v))))
   (map-keys       (: Map.MapModule.Keys        (-> (Map %k %v) (Seq %k))))
   (map-values     (: Map.MapModule.Values      (-> (Map %k %v) (Seq %v))))
-  ;; The right-hand map wins where both have a key. Cheap where the two have a
-  ;; history in common: an untouched subtree is taken whole rather than walked.
+  ;; Merge.
   (map-merge      (: Map.MapModule.Merge       (-> (Map %k %v) (Map %k %v) (Map %k %v))))
-  ;; The same, with the collisions decided by a function of the key, the value
-  ;; already there and the one arriving.
+  ;; Merge with function.
   (map-merge-with (: Map.MapModule.MergeWith   (-> (-> %k %v %v %v) (Map %k %v) (Map %k %v) (Map %k %v))))
 
   (map-try-ref/pair (: Map.MapModule.TryGetValue (-> (Map %k %v) %k (Tuple bool %v))))
 
   ;; --- Walking ---
-  ;;
-  ;; Every callback takes the key and the value as *two* arguments, which is
-  ;; what a walk of the trie has to hand over anyway.
+  ;; Walk map.
   (map-map        (: Map.MapModule.Map       (-> (-> %k %v %w) (Map %k %v) (Map %k %w))))
-  ;; The functor's map: the value moves and the key rides along.
+  ;; Map values.
   (map-map-values (: Map.MapModule.MapValues (-> (-> %v %w) (Map %k %v) (Map %k %w))))
   (map-filter     (: Map.MapModule.Filter    (-> (-> %k %v bool) (Map %k %v) (Map %k %v))))
   (map-fold       (: Map.MapModule.Fold      (-> (-> %s %k %v %s) %s (Map %k %v) %s)))
-  ;; Walks until the predicate answers false, and reports whether it ran to the
-  ;; end — the early-exit walk, and the one to reach for when the answer is
-  ;; known before the entries run out.
+  ;; Walk until false.
   (map-iter       (: Map.MapModule.Iter      (-> (-> %k %v bool) (Map %k %v) bool)))
   (map-any?       (: Map.MapModule.Exists    (-> (-> %k %v bool) (Map %k %v) bool)))
   (map-try-find   (: Map.MapModule.TryFind   (-> (-> %k %v bool) (Map %k %v) (Tuple bool %k %v))))
@@ -252,30 +227,25 @@
   (seq->map (: Map.MapModule.FromEnumerable (-> (Seq (Tuple %k %v)) (Map %k %v))))
   (map->seq (: Map.MapModule.AsEnumerable   (-> (Map %k %v) (Seq (Tuple %k %v)))))
 
-  ;; The cursor `Iterable` walks with. `done?` is what advances it, which the
-  ;; protocol allows and which is what lets the walk allocate nothing per entry.
+  ;; Cursor.
   (map-cursor         (: Map.MapModule.Cursor        (-> (Map %k %v) (MapCursor %k %v))))
   (map-cursor-done?   (: Map.MapModule.CursorDone    (-> (MapCursor %k %v) bool)))
   (map-cursor-current (: Map.MapModule.CursorCurrent (-> (MapCursor %k %v) (Tuple %k %v))))
 
   ;; --- Builders ---
-  ;;
-  ;; Appends land in a flat buffer and are scattered into the trie by hash in one
-  ;; pass at the end.
+  ;; Build map.
   (mapbuilder-empty    (: Map.MapBuilderModule.Empty    (-> (MapBuilder %k %v))))
   (map->mapbuilder     (: Map.MapBuilderModule.FromMap  (-> (Map %k %v) (MapBuilder %k %v))))
   (mapbuilder-add!     (: Map.MapBuilderModule.Add      (-> (MapBuilder %k %v) %k %v void)))
   (mapbuilder-add-all! (: Map.MapBuilderModule.AddRange (-> (MapBuilder %k %v) (Seq (Tuple %k %v)) void)))
-  ;; Appends, not entries: a key appended twice is resolved when the map is
-  ;; built, last one winning.
+  ;; Length.
   (mapbuilder-length   (: Map.MapBuilderModule.Count    (-> (MapBuilder %k %v) int)))
   (mapbuilder->map     (: Map.MapBuilderModule.Build    (-> (MapBuilder %k %v) (Map %k %v))))
 
   ;; --- Transients ---
   (transientmap-empty       (: Map.TransientMapModule.Empty          (-> (TransientMap %k %v))))
   (map->transientmap        (: Map.TransientMapModule.FromPersistent (-> (Map %k %v) (TransientMap %k %v))))
-  ;; The map as it stands. The transient stays usable and disowns what it handed
-  ;; over, so a later write copies rather than corrupting the snapshot.
+  ;; Convert.
   (transientmap->map        (: Map.TransientMapModule.ToPersistent   (-> (TransientMap %k %v) (Map %k %v))))
   (transientmap-set!        (: Map.TransientMapModule.Set            (-> (TransientMap %k %v) %k %v void)))
   (transientmap-set-all!    (: Map.TransientMapModule.SetRange       (-> (TransientMap %k %v) (Seq (Tuple %k %v)) void)))
@@ -289,7 +259,7 @@
   (transientmap-filter!     (: Map.TransientMapModule.FilterInPlace  (-> (-> %k %v bool) (TransientMap %k %v) void)))
   (transientmap-try-ref/pair (: Map.TransientMapModule.TryGetValue   (-> (TransientMap %k %v) %k (Tuple bool %v)))))
 
-;; The value under `key`, or `None`.
+;; Lookup value.
 (: map-try-ref (-> (Map %k %v) %k (Option %v)))
 (defun (map-try-ref m key)
   (def (found value) (map-try-ref/pair m key))
@@ -304,8 +274,7 @@
 (: map-has-key? (-> (Map %k %v) %k bool))
 (defun (map-has-key? m key) (map-contains? m key))
 
-;; The first entry satisfying `pred`, as an `Option`. The entry is a pair here
-;; because it is a *value* being handed back, not an argument list.
+;; Find first.
 (: map-find (-> (-> %k %v bool) (Map %k %v) (Option (Tuple %k %v))))
 (defun (map-find pred m)
   (def (found k v) (map-try-find pred m))
@@ -316,7 +285,7 @@
 (defun (map-for-each f m)
   (ignore (map-iter (fun (k v) (f k v) #t) m)))
 
-;; to satisfy the interface, foldable on map has to take a Tuple
+;; Map foldable.
 (def/impl (Foldable (Map %k %v))
   (type %item (Tuple %k %v))
   (defun (fold f acc col)
@@ -333,21 +302,14 @@
                        ((Some w) (= v w))
                        (None #f)))
                    a)))
-  ;; Order-independent, because the trie's walk order is: xor commutes, so two
-  ;; equal maps built by different routes still hash alike. 
+  ;; Hash map.
   (defun (eq-hash m)
     (map-fold (fun (h k v) (bitwise-xor h (hash-combine (eq-hash k) (eq-hash v)))) 0 m)))
 
 ;; ---------------------------------------------------------------------------
 ;; Iterable
 ;; ---------------------------------------------------------------------------
-;; The protocol's contract:
-;;   1. `done?` is called exactly once per iteration. Nothing peeks and nothing
-;;      tests at both top and bottom, which is what lets `done?` be effectful.
-;;   2. `current` is called only when the preceding `done?` returned false.
-;;   3. The cursor is used linearly: never copied, stepped twice, or captured.
-;;   4. `start` is called once per entry to the level owning the cursor.
-;;   5. ->seq is just the lazy way of iterating through an iterable
+;; Iterable protocol.
 (def/trait (Iterable %s)
   (type %elem)
   (type %cursor)
@@ -369,10 +331,7 @@
   (defun (iterable-current s c) (list-head c))
   (defun (iterable-next s c) (list-tail c)))
 
-;; A Vec is a tree, so walking it by index pays O(log32 n) per element. Its
-;; native enumerator descends once and then walks leaves, so the cursor is one
-;; of those.
-;; We re-use the cursor the c# library provides.
+;; Vec cursor.
 (def/impl (Iterable (Vec %a))
   (type %elem %a)
   (type %cursor (VecCursor %a))
@@ -389,12 +348,7 @@
   (defun (iterable-current s index) (array-ref s index))
   (defun (iterable-next s index) (+ index 1)))
 
-;; A half-open range of ints. Its cursor is the number itself, so a loop over
-;; one is `c = lo`, `c < hi`, `c += by` — a hand-written `for`.
-;;
-;; `by` must be positive: coping with both directions means testing the sign
-;; every iteration, and counting down deserves its own sequence rather than a
-;; branch in the common path.
+;; Range of ints.
 (type (: Range (Struct (: lo int) (: hi int) (: by int))))
 
 (: range (-> int int Range))
@@ -413,7 +367,7 @@
   (defun (iterable-current s c) c)
   (defun (iterable-next s c) (+ c (record-ref s by))))
 
-;; A Map's elements are its pairs, in the trie's own order.
+;; Map elements.
 (def/impl (Iterable (Map %k %v))
   (type %elem (Tuple %k %v))
   (type %cursor (MapCursor %k %v))
@@ -422,9 +376,7 @@
   (defun (iterable-current s c) (map-cursor-current c))
   (defun (iterable-next s c) c))
 
-;; A string's elements are its *characters*, so a walk yields one `char` per
-;; codepoint and an astral character arrives whole rather than as two halves.
-;; 
+;; String characters.
 (def/impl (Iterable string)
   (type %elem char)
   (type %cursor StringCursor)
@@ -447,9 +399,7 @@
 ;; Cursor
 ;; ---------------------------------------------------------------------------
 
-;; A position, where `Iterable` is a walk. An `Iterable` cursor may be a live
-;; enumerator, so it is used linearly; a `Cursor` is a value, and may be held,
-;; compared, and stepped backwards.
+;; Cursor.
 (def/trait (Cursor %s)
   (type %elem)
   (type %cursor)
@@ -474,8 +424,7 @@
 ;; Collector
 ;; ---------------------------------------------------------------------------
 
-;; Also first-order with associated types, and it needs no bridge to a generic
-;; path: `init`/`step`/`finish` pass and return values with no cursor aliasing.
+;; Collector interface.
 (def/trait (Collector %c)
   (type %elem)
   (type %acc)
@@ -484,14 +433,11 @@
   (: collector-step (-> %c %acc %elem %acc))
   (: collector-finish (-> %c %acc %out)))
 
-;; The stock collectors. Each one's *constructor* is the name written in an
-;; `:acc` clause, which is what makes a new accumulator an ordinary impl rather
-;; than a change to the compiler. The type parameter on `Listing` and
-;; `Counting` is a phantom, pinning `%elem` and nothing else.
+;; Collectors.
 
 (type (: (Listing %a) (Union listing)))
 
-;; Uses listbuilder. About 2x faster
+;; Listing.
 (def/impl (Collector (Listing %a))
   (type %elem %a)
   (type %acc (ListBuilder %a))
@@ -500,8 +446,7 @@
   (defun (collector-step c acc x) (listbuilder-add! acc x) acc)
   (defun (collector-finish c acc) (listbuilder->list acc)))
 
-;; The same, into a Vec — what to reach for when the result is going to be
-;; indexed rather than walked.
+;; Vecing.
 (type (: (Vecing %a) (Union vecing)))
 
 (def/impl (Collector (Vecing %a))
@@ -512,12 +457,7 @@
   (defun (collector-step c acc x) (vecbuilder-add! acc x) acc)
   (defun (collector-finish c acc) (vecbuilder->vec acc)))
 
-;; Collects pairs into a Map. Its elements are `(Tuple key value)`, which is
-;; exactly what iterating a Map yields — so
-;; `(loop (:for kv m) (:acc out (mapping kv)))` copies one.
-;;
-;; `MapBuilder` appends into a flat buffer and sorts by hash once at the end,
-;; which is a good deal faster than inserting into the trie a key at a time.
+;; Mapping.
 (type (: (Mapping %k %v) (Union mapping)))
 
 (def/impl (Collector (Mapping %k %v))
@@ -531,8 +471,7 @@
     acc)
   (defun (collector-finish c acc) (mapbuilder->map acc)))
 
-;; Characters into a string, through one buffer. `string-append` in a loop
-;; rebuilds the whole string per element and is quadratic.
+;; Stringing.
 (type (: Stringing (Union stringing)))
 
 (def/impl (Collector Stringing)
@@ -563,9 +502,7 @@
   (defun (collector-step c acc x) (+ acc 1))
   (defun (collector-finish c acc) acc))
 
-;; `folding` is the primitive the others could all be written in terms of: the
-;; accumulator simply becomes the step expression's value. Its seed is a
-;; *construction* argument, so it is written `(folding seed expr)`.
+;; Folding.
 (type (: (Folding %a) (Union (folding %a))))
 
 (def/impl (Collector (Folding %a))
@@ -580,8 +517,7 @@
 ;; ---------------------------------------------------------------------------
 ;; Lists, where the callback may suspend
 ;; ---------------------------------------------------------------------------
-;; The -?-> arrow means the callback may suspend. bjolang compiles both a
-;; regular and a defbjo version of list-map. 
+;; List map.
 (: list-map (-> (-?-> %a %b) (List %a) (List %b)))
 (defun (list-map f xs)
   (let ((b (listbuilder-empty)))
@@ -603,9 +539,7 @@
               (listbuilder-add! b x))
             (go (list-tail rest)))))))
 
-;; The folds take the function first, then the identity, then the collection:
-;; the two parts that describe *how* to fold stay together at the call site
-;; instead of being split by the data.
+;; List foldl.
 (: list-foldl (-> (-?-> %b %a %b) %b (List %a) %b))
 (defun (list-foldl f init xs)
   (let go ((rest xs) (acc init))
@@ -613,9 +547,7 @@
         acc
         (go (list-tail rest) (f acc (list-head rest))))))
 
-;; Reversed first, so that this is a `while` as well. A right fold written the
-;; obvious recursive way is one stack frame per element, which is a limit on the
-;; list rather than on the machine.
+;; List foldr.
 (: list-foldr (-> (-?-> %a %b %b) %b (List %a) %b))
 (defun (list-foldr f init xs)
   (let go ((rest (list-reverse xs)) (acc init))
@@ -635,13 +567,7 @@
 ;; ---------------------------------------------------------------------------
 ;; Vecs, where the callback may suspend
 ;; ---------------------------------------------------------------------------
-;;
-;; `defbjouble` rather than the plain `defun` the list functions use, because a
-;; `(Vec %a)` is an RRB tree and the C# map shares every subtree it can. The
-;; ordinary colour keeps that; only the suspending copy is written here.
-;;
-;; `vec-any?`, `vec-find` and the rest are absent on purpose: their callbacks
-;; ask a question rather than do work, and a suspending one is a `vec-fold`.
+;; Vec functions.
 
 (import/extern
   (clr-vec-map            (: BjolangRuntime.RrbMap          (-> (-> %a %b) (Vec %a) (Vec %b))))
@@ -652,9 +578,7 @@
   (clr-vec-for-each/range (: BjolangRuntime.RrbForEachRange (-> (-> %a Unit) (Vec %a) int int Unit)))
   (clr-vec-iter           (: BjolangRuntime.RrbIter         (-> (-> %a bool) (Vec %a) bool))))
 
-;; A builder rather than `vec-add`, because nothing can observe the result until
-;; it is returned: persistence would buy a fresh path through the tree per
-;; element and protect nobody.
+;; Vec map.
 (: vec-map (-> (-?-> %a %b) (Vec %a) (Vec %b)))
 (defbjouble (vec-map f v)
   (#:sync (clr-vec-map f v))
@@ -689,9 +613,7 @@
           acc
           (go (+ i 1) (f acc (vec-ref v i)))))))
 
-;; No seed: the first element is the seed, so an empty vec has no answer and
-;; this throws where `vec-ref` does. Both halves agree on that, which is a
-;; promise made here rather than checked anywhere.
+;; Vec reduce.
 (: vec-reduce (-> (-?-> %a %a %a) (Vec %a) %a))
 (defbjouble (vec-reduce f v)
   (#:sync (clr-vec-reduce f v))
@@ -723,7 +645,7 @@
             (ignore (f (vec-ref v i)))
             (go (+ i 1) (- left 1)))))))
 
-;; Walks while the callback answers true, and answers whether it got to the end.
+;; Vec iter.
 (: vec-iter (-> (-?-> %a bool) (Vec %a) bool))
 (defbjouble (vec-iter f v)
   (#:sync (clr-vec-iter f v))
@@ -744,9 +666,7 @@
 (def/impl (Functor (Vec %a))
   (defun (map g v) (vec-map g v)))
 
-;; `(Map %k %v)`'s abstracted argument is `%v`, so the functor moves values and
-;; leaves keys alone. `map-map` will not serve: it hands over the key as well,
-;; and a functor's `(-> %a %b)` has room for one element type.
+;; Functor on Map.
 (def/impl (Functor (Map %k %v))
   (defun (map g m)
     (map-map-values g m)))
@@ -755,7 +675,7 @@
   (defun (map g o)
     (match o ((Some v) (Some (g v))) (None None))))
 
-;; `%e` is fixed by the impl, so the error rides along untouched.
+;; Result functor.
 (def/impl (Functor (Result %e %a))
   (defun (map g r)
     (match r ((Ok v) (Ok (g v))) ((Err e) (Err e)))))
@@ -765,9 +685,7 @@
 ;; ---------------------------------------------------------------------------
 ;; Conversions
 ;; ---------------------------------------------------------------------------
-;; the loop form is probably the fastest way to iterate over a list
-;; but this should be rewritten to use the iter versions over vec and
-;; map for maximum speed
+;; Conversions.
 
 (: list->map (-> (List (Tuple %k %v)) (Map %k %v)))
 (defun (list->map xs)
@@ -796,31 +714,21 @@
 ;; Maths
 ;; ---------------------------------------------------------------------------
 
-;; The rest of `System.Math` stays in `std/maths.bjo`; what is re-exported here
-;; is `Num`, general enough that a program should not have to ask for it.
+;; Math.
 
 (import (std maths))
 
 ;; Remember: exporting one trait function exposes ALL functions.
 (re-export abs sign min max clamp zero?)
 
-;; `sqrt` is imported here rather than re-exported from `std/maths`, where the
-;; rest of `System.Math` lives. It is an import alias, and `re-export` names
-;; something in scope as a *binding* — an alias is not one. Exporting it from
-;; the module that imports it is the same thing by a shorter route.
-;;
-;; `Math.Sqrt` is the one overload there is, so an integer argument widens to
-;; it: `(sqrt 9)` is 3.0, the same conversion C# would perform, emitted as one.
+;; Square root.
 (import/extern
   (sqrt (: System.Math.Sqrt)))
 
 ;; ---------------------------------------------------------------------------
 ;; Strings, conversions, files and paths
 ;; ---------------------------------------------------------------------------
-;; The wrapper is not ceremony: an `import/extern` alias is an
-;; overload set, which is not a value, so `(map int->string xs)` would not
-;; compile if the name were the import. The signature also pins the overload
-;; once here rather than at every call site.
+;; Wrappers.
 
 ;; --- Strings ---
 
@@ -832,25 +740,16 @@
 (: string-append (-> string string string))
 (defun (string-append a b) (clr-concat a b))
 
-;; Variadic concatenation, and what `#"a ${x} b"` expands to a call of.
+;; Variadic concatenation.
 (: str (-> #:rest string string))
 (defun (str #:rest parts) (clr-concat parts))
 
-;; `.Length` is a property, so there is no method to import — a one-line body
-;; reading the member is the whole of it.
-;;
-;; **This counts storage units, not characters.**
+;; String length in storage units.
 (: string-length (-> string int))
 (defun (string-length s) (.-Length s))
 
 ;; --- Searching and rewriting -----------------------------------------------
-;;
-;; Ordinal, explicitly: .NET's one-argument overloads compare by culture, which
-;; makes the answer depend on the machine. Fold the case first for an
-;; insensitive answer.
-;;
-;; None of the `char`-taking overloads is wrapped — a Bjolang `char` is a
-;; codepoint and a C# `char` a UTF-16 code unit. `(char->string c)` crosses.
+;; Ordinal comparison.
 
 (import/extern
   (clr-ordinal (: System.StringComparison.Ordinal #:get)))
@@ -864,15 +763,12 @@
 (: string-ends-with? (-> string string bool))
 (defun (string-ends-with? s suffix) (.EndsWith s suffix clr-ordinal))
 
-;; Every occurrence. Replacing with `""` deletes.
+;; String replace.
 (: string-replace (-> string string string string))
 (defun (string-replace s old new) (.Replace s old new clr-ordinal))
 
 ;; --- Case ------------------------------------------------------------------
-;;
-;; Invariant, for the reason `char-upcase` is, and character for character: ß
-;; upcases to itself rather than to SS. For normalising before a comparison,
-;; not for presenting text to a reader.
+;; Invariant case.
 (: string-upcase (-> string string))
 (defun (string-upcase s) (.ToUpperInvariant s))
 
@@ -880,9 +776,7 @@
 (defun (string-downcase s) (.ToLowerInvariant s))
 
 ;; --- Trimming and padding --------------------------------------------------
-;;
-;; Whitespace only, by `char-whitespace?`'s definition: a "trim these
-;; characters" form is `params char[]`, which is unreachable from here.
+;; Trim whitespace.
 (: string-trim (-> string string))
 (defun (string-trim s) (.Trim s))
 
@@ -892,12 +786,7 @@
 (: string-trim-end (-> string string))
 (defun (string-trim-end s) (.TrimEnd s))
 
-;; To `width` *characters* — `string-count`'s count, not `string-length`'s —
-;; with `#:with`, which defaults to a space. Never truncates.
-;;
-;; `.PadLeft` is not what these call: it counts storage units and its pad is a
-;; UTF-16 code unit, so neither an astral character in `s` nor an astral pad
-;; would come out at the width that was asked for.
+;; Pad width.
 (: string-pad-left (-> string int (#:with char) string))
 (defun (string-pad-left s width #:with #\space)
   (let ((b (stringbuilder-empty)))
@@ -912,8 +801,7 @@
     (string-pad-fill! b with (- width (string-count s)))
     (stringbuilder->string b)))
 
-;; `n` copies of `c`, and nothing at all when `n` is not positive — which is
-;; the "never truncates" half of the two above.
+;; Pad fill.
 (: string-pad-fill! (-> StringBuilder char int void))
 (defun (string-pad-fill! b c n)
   (let fill ((i 0))
@@ -923,13 +811,11 @@
 
 ;; --- Splitting and joining -------------------------------------------------
 
-;; Empty fields are kept, which is what makes splitting and joining inverses.
-;; Drop them with `(vec-filter #(not (string-empty? &1)) parts)`.
+;; Split keep empty.
 (import/extern
   (clr-keep-empty-fields (: System.StringSplitOptions.None #:get)))
 
-;; A `Vec` rather than the `(Array %a)` .NET answers with: an array is
-;; `Iterable` and nothing more, so it can be walked and not measured or mapped.
+;; String split.
 (: string-split (-> string string (Vec string)))
 (defun (string-split s sep)
   (loop (:for field (.Split s sep clr-keep-empty-fields))
@@ -945,10 +831,7 @@
     (stringbuilder->string b)))
 
 ;; --- Conversions ---
-;;
-;; `ToString` is an instance method on each of the numeric types, and interop
-;; resolves it against the argument's own type, so these are four bodies rather
-;; than one overload set.
+;; ToString wrappers.
 
 (: int->string (-> int string))
 (defun (int->string n) (.ToString n))
@@ -962,8 +845,7 @@
 (: byte->string (-> byte string))
 (defun (byte->string n) (.ToString n))
 
-;; `number->string` is declared over `int`, so it is the same operation as
-;; `int->string` and is kept as the name R7RS programs reach for.
+;; Number to string.
 (: number->string (-> int string))
 (defun (number->string n) (int->string n))
 
@@ -976,33 +858,14 @@
 ;; ---------------------------------------------------------------------------
 ;; Characters
 ;; ---------------------------------------------------------------------------
-;;
-;; R6RS §11.11, over Unicode scalar values rather than UTF-16 code units. Every
-;; predicate asks about a *codepoint*, so an astral character gets a real answer
-;; instead of whatever its leading surrogate would have said — which is the bug
-;; `char.IsLetter` on a C# char produces, silently, only for text outside the
-;; BMP, and therefore only in production.
-;;
-;; The classification and case procedures are builtins: interop cannot resolve a
-;; method on a `BjoChar`, which is not a type Bjolang can name. What is written
-;; here is the part that needs no help — the comparisons, which are the ordinary
-;; operators at `char`, and the case-insensitive family, which is a fold
-;; followed by one of them.
-;; 
-;; R6RS's spelling of the conversions. The same operations as `char->int` and
-;; `int->char`, kept under both names for the reason `number->string` is: a
-;; program ported from Scheme should not have to be rewritten to compile.
+;; Unicode characters.
 (: char->integer (-> char int))
 (defun (char->integer c) (char->int c))
 
 (: integer->char (-> int char))
 (defun (integer->char n) (int->char n))
 
-;; Ordering is by codepoint, and `<` at `char` *is* the C# operator on the
-;; underlying value — so these are aliases rather than implementations.
-;;
-;; They are binary, where R6RS's are n-ary. The chaining `(< a b c)` is done
-;; by the parser
+;; Character ordering.
 (: char=? (-> char char bool))
 (defun (char=? a b) (= a b))
 
@@ -1018,9 +881,7 @@
 (: char>=? (-> char char bool))
 (defun (char>=? a b) (>= a b))
 
-;; Case-insensitive comparison, by folding both sides first. `char-foldcase`
-;; rather than `char-downcase`: folding is the operation defined for comparing,
-;; and the two differ for exactly the characters that make it matter.
+;; Case-insensitive comparison.
 (: char-ci=? (-> char char bool))
 (defun (char-ci=? a b) (= (char-foldcase a) (char-foldcase b)))
 
@@ -1039,11 +900,7 @@
 ;; ---------------------------------------------------------------------------
 ;; String cursors
 ;; ---------------------------------------------------------------------------
-;;
-;; A cursor is a position in a string, and it is what replaces the `string-ref`
-;; this language deliberately does not have. In the future we might switch to utf8
-;; to gain memory efficiency and speed, but doing that automatically invalidates a
-;; string-ref api.
+;; String cursors.
 (: string-cursor=? (-> StringCursor StringCursor bool))
 (defun (string-cursor=? a b) (= a b))
 
@@ -1061,8 +918,7 @@
 
 ;; --- Traversal -------------------------------------------------------------
 
-;; Left fold: the folder takes the accumulator first, as everywhere else in this
-;; library. One pass, no allocation beyond whatever the folder does itself.
+;; String fold.
 (: string-fold (-> (-> %a char %a) %a string %a))
 (defun (string-fold f init s)
   (let loop ((c (string-cursor-start s)) (acc init))
@@ -1070,13 +926,7 @@
         acc
         (loop (string-cursor-next s c) (f acc (string-cursor-ref s c))))))
 
-;; Right fold, with the element first — the same argument order `list-foldr`
-;; takes, for the same reason.
-;;
-;; Walking backwards rather than recursing forwards: `string-cursor-prev`
-;; decodes one character backwards in constant time, so this stays a loop and
-;; costs no stack, where the natural recursive spelling would be O(n) frames
-;; deep in a string of n characters.
+;; String fold right.
 (: string-fold-right (-> (-> char %a %a) %a string %a))
 (defun (string-fold-right f init s)
   (let loop ((c (string-cursor-end s)) (acc init))
@@ -1092,7 +942,7 @@
       (f (string-cursor-ref s c))
       (loop (string-cursor-next s c)))))
 
-;; The first character satisfying `pred`, as a cursor — `None` if there is none.
+;; String index.
 (: string-index (-> (-> char bool) string (Option StringCursor)))
 (defun (string-index pred s)
   (let loop ((c (string-cursor-start s)))
@@ -1120,8 +970,7 @@
     (string-for-each #(vecbuilder-add! b &1) s)
     (vecbuilder->vec b)))
 
-;; Reversing by character, so a string ending in an astral character comes back
-;; with that character intact rather than with its two halves swapped.
+;; Reverse string.
 (: string-reverse (-> string string))
 (defun (string-reverse s)
   (let ((b (stringbuilder-empty)))
@@ -1132,62 +981,27 @@
           (loop p))))
     (stringbuilder->string b)))
 
-;; A string folds over its characters, so `fold` from `Foldable` and the
-;; `string-fold` above are the same operation under the trait.
+;; String foldable.
 (def/impl (Foldable string)
   (type %item char)
   (defun (fold f acc col)
     (string-fold f acc col)))
 
-;; --- Files ---
-;;
-;; Whole-file operations, for when the contents fit in memory. The ports below
-;; are where to go when they do not.
-;;
-;; None returns a `Result`: they throw as the .NET methods do, and a caller who
-;; wants a value wraps the call in `try`. The port openers take the other route
-;; and return a `Result` directly.
-
-;; The two that write are `#:blocking`: each waits on however much text it is
-;; given, and does it on the thread that called. That changes nothing about the
-;; emitted call — it is what lets the blocking lint say which bjoroutines end up
-;; holding a pool thread here.
-;;
-;; `ReadAllText` is *not* beside them, and its absence is the point:
-;; `file-read-text` is written over a port instead, so it has a suspending copy.
-;; The writers cannot follow yet — `open-output-file` truncates, so
-;; `file-append-text` has no opener to be written over — and until they can, the
-;; lint reporting them is a true report rather than a gap in it.
-;;
-;; `Exists` and `Delete` are not marked. They ask the filesystem about a name
-;; rather than waiting on contents, and marking every call that touches a disk
-;; would make the lint report everything and so report nothing.
+;; --- File operations.
 (import/extern
   (clr-write-all-text  (: System.IO.File.WriteAllText  #:blocking))
   (clr-append-all-text (: System.IO.File.AppendAllText #:blocking))
   (clr-file-exists     (: System.IO.File.Exists))
   (clr-file-delete     (: System.IO.File.Delete)))
 
-;; Opened, drained and closed, rather than `File.ReadAllText` — and the detour
-;; is what buys the colour. `read-all` is one of the leaf pairs, so this reaches
-;; a suspending body and is given a copy of its own: a bjoroutine reading a file
-;; awaits the read instead of holding the thread it runs on for the length of
-;; the file. The extra `BjoPort` is a buffer nobody reads through, on the one
-;; path that was already allocating the whole file.
-;;
-;; **The open still parks** — see `open-input-file` — so a bjoroutine calling
-;; this waits once, on the door rather than on the contents.
-;;
-;; Re-raising the `Err` is what keeps the promise above: a missing file throws
-;; here as it threw from `File.ReadAllText`, and with the same exception, since
-;; `StreamReader.` is what was going to raise it either way.
+;; Read all text.
 (: file-read-text (-> string string))
 (defun (file-read-text path)
   (match (open-input-file path)
     ((Ok opened) (with-open ((p opened)) (read-all p)))
     ((Err e) (raise e))))
 
-;; Truncates the file if it is already there.
+;; Write text.
 (: file-write-text (-> string string void))
 (defun (file-write-text path contents) (clr-write-all-text path contents))
 
@@ -1201,16 +1015,7 @@
 (defun (file-delete path) (clr-file-delete path))
 
 ;; --- Paths ---
-;;
-;; Textual operations on path strings: none of them touches the file system.
-;;
-;; The three that can come up empty answer `(Option string)`. .NET reports "no
-;; filename here" and "no extension" as `""`, and a root's directory as `null`,
-;; and neither is a path — an empty string used as one names the working
-;; directory, which is a different place from nowhere.
-;;
-;; `path-directory` is *not* here: it is the `null` case, and absorbing that
-;; needs the boundary code in the runtime.
+;; Path strings.
 
 (import/extern
   (clr-full-path      (: System.IO.Path.GetFullPath))
@@ -1221,30 +1026,23 @@
 (: path-absolute (-> string string))
 (defun (path-absolute path) (clr-full-path path))
 
-;; Variadic, and the array a `#:rest` parameter collects is handed straight to
-;; `Path.Combine(params string[])` — the same call C# would make.
+;; Path combine.
 (: path-combine (-> #:rest string string))
 (defun (path-combine #:rest parts) (clr-path-combine parts))
 
-;; `None` for a path that ends in a separator, which names a directory.
+;; Path filename.
 (: path-filename (-> string (Option string)))
 (defun (path-filename path)
   (let ((name (clr-file-name path)))
     (if (string-empty? name) None (Some name))))
 
-;; The extension including its dot. A name that is nothing but a dotted suffix
-;; — `.bashrc` — counts as one, as it does to .NET.
+;; File extension.
 (: path-file-extension (-> string (Option string)))
 (defun (path-file-extension path)
   (let ((ext (clr-file-extension path)))
     (if (string-empty? ext) None (Some ext))))
 
 ;; --- Directories ---
-;;
-;; They throw as the file operations above do; wrap a call in `try` for a
-;; `Result`. Listing is eager and gives whole paths — `EnumerateFiles` answers
-;; an `IEnumerable<string>`, which interop cannot equate with `(Seq string)`.
-;; There is no pattern argument: filter the `Vec`.
 
 (import/extern
   (clr-dir-exists  (: System.IO.Directory.Exists))
@@ -1256,21 +1054,18 @@
 (: directory-exists? (-> string bool))
 (defun (directory-exists? path) (clr-dir-exists path))
 
-;; Creates every missing directory along the path, and does nothing if it is
-;; already there — so it needs no guard, which would be a race anyway. The
-;; `DirectoryInfo` it answers is of no use here.
+;; Create directory.
 (: directory-create (-> string void))
 (defun (directory-create path) (ignore (clr-dir-create path)))
 
-;; An *empty* directory. Deleting a tree is spelled differently because it is
-;; not a mistake anything can undo.
+;; Delete directory.
 (: directory-delete (-> string void))
 (defun (directory-delete path) (clr-dir-delete path))
 
 (: directory-delete-tree (-> string void))
 (defun (directory-delete-tree path) (clr-dir-delete path #t))
 
-;; Directly in `path`, not in its subdirectories.
+;; Directory files.
 (: directory-files (-> string (Vec string)))
 (defun (directory-files path)
   (loop (:for file (clr-dir-files path))
@@ -1282,13 +1077,6 @@
         (:acc dirs (vecing dir))))
 
 ;; --- The environment ---
-;;
-;; A variable that is not set is `None` rather than the empty string .NET's
-;; `null` arrives as. It cannot tell "unset" from "set to nothing": the test
-;; available here is `IsNullOrEmpty`, there being no `null` to compare against.
-;;
-;; The working directory is a procedure rather than a value because it is
-;; process-wide mutable state.
 
 (import/extern
   (clr-get-env      (: System.Environment.GetEnvironmentVariable))
@@ -1304,8 +1092,7 @@
         None
         (Some value))))
 
-;; For this process and its children, not for the shell that started it.
-;; Setting a variable to the empty string removes it.
+;; Set environment variable.
 (: set-environment-variable! (-> string string void))
 (defun (set-environment-variable! name value) (clr-set-env name value))
 
@@ -1318,38 +1105,13 @@
 ;; ---------------------------------------------------------------------------
 ;; Ports
 ;; ---------------------------------------------------------------------------
-;;
-;; `ports-spec.md` carries the argument; these are the decisions it reached.
-;;
-;; - **A port is the .NET object.** `TextReader` already abstracts over file,
-;;   string and console, so it is imported *as* `TextInputPort`. `with-open`
-;;   then works unchanged, and `peek` needs no pushback buffer.
-;; - **Concrete readers are `cast` inside `open-*`.** HM has no subtyping, so a
-;;   `StreamReader` will not unify with `TextInputPort`; casting at the door is
-;;   what makes a file port and a string port one type to every caller.
-;; - **Input, output, text and binary are separate types.** Reading a byte from
-;;   a textual port is a type error here rather than R7RS's runtime surprise,
-;;   which is why `input-port?` and friends do not exist.
-;; - **Opening returns `Result`; operating throws.** A missing file is expected;
-;;   a device error mid-stream is not, and threading `Result` through every read
-;;   would poison the API for a case nobody handles.
-;; - **The base API fails, the `/opt` variants do not.** `read-line` throws at
-;;   end of input, guarded by `port-eof?`; `read-line/opt` is for when the check
-;;   and the read want to be one step.
-;;
-;; A port is as much a part of the language as `print` is, so the API a program
-;; opens, reads and writes with lives here. What stayed in `std/ports` is the
-;; part parameterised by a reader procedure — `port->list`, `port->vec`,
-;; `port->seq` and `file->seq` — which is a library, not a vocabulary.
 
 (import/class
   ;; The port types themselves: abstract, so no constructor.
   (TextReader (: System.IO.TextReader))
   (TextWriter (: System.IO.TextWriter))
 
-  ;; The concrete readers and writers, upcast into the above by `open-*`.
-  ;; Only the listed exceptions become values; anything else keeps unwinding,
-  ;; which is the point — an exception nobody named is a bug, not a result.
+  ;; Concrete readers.
   (StreamReader (: System.IO.StreamReader (-> string StreamReader)
                    #:exceptions (System.IO.FileNotFoundException
                                   System.IO.DirectoryNotFoundException
@@ -1358,101 +1120,56 @@
   (StreamWriter (: System.IO.StreamWriter (-> string StreamWriter)
                    #:exceptions (System.IO.DirectoryNotFoundException
                                   System.UnauthorizedAccessException)))
-  ;; Writes into a buffer of its own, so it takes nothing and cannot fail.
+  ;; StringWriter.
   (StringWriter (: System.IO.StringWriter (-> StringWriter)))
 
-  ;; The buffered pair, wrapped around a file's reader and writer by `open-*`.
-  ;;
-  ;; A `BjoPort` owns the characters it has read, which is what lets it answer
-  ;; `port-eof?` without a syscall — `Peek` is "read one and put it back", and
-  ;; the read is the part that waits. Owning the buffer is also what lets the
-  ;; port have suspending reads at all: `TextReader` has no async peek, and
-  ;; there is no adding one from outside.
-  ;;
-  ;; Both are ordinary `TextReader`/`TextWriter` subclasses, so nothing in the
-  ;; type surface below moves.
+  ;; Buffered pair.
   (BjoPort (: Bjolang.Runtime.BjoPort (-> TextReader BjoPort)))
   (BjoWriter (: Bjolang.Runtime.BjoWriter (-> TextWriter BjoWriter)))
 
   (Exception (: System.Exception)))
 
-;; The port types, under exported names: an `import/class` alias is
-;; module-local, so callers could not write the type. Spelled as the .NET name
-;; rather than the alias above, because an exported alias serializes to
-;; whatever it points at — pointing it at a module-local alias would export a
-;; name the caller cannot resolve either.
+;; Port types.
 (type
   (: TextInputPort System.IO.TextReader)
   (: TextOutputPort System.IO.TextWriter))
 
 ;; --- Opening ---
 
-;; Open a file for text input. `Err` carries the .NET exception, so an arm may
-;; tell one failure from another with `(:is System.IO.FileNotFoundException e)`.
-;;
-;; The reader is wrapped in a `BjoPort`, which is what gives a file port a
-;; buffer of its own and so an eof question that usually costs nothing.
-;;
-;; **The open itself still blocks.** `StreamReader.` opens synchronously and
-;; .NET has no async constructor — `FileOptions.Asynchronous` affects reads, not
-;; the open. So this is one call that parks wherever it is made; everything
-;; done to the port afterwards need not.
+;; Open input file.
 (: open-input-file (-> string (Result Exception TextInputPort)))
 (defun (open-input-file path)
   (match (StreamReader. path)
     ((Ok r) (Ok (cast TextInputPort (BjoPort. (cast TextInputPort r)))))
     ((Err e) (Err e))))
 
-;; A string as an input port. Cannot fail, so no `Result` — the asymmetry with
-;; `open-input-file` is the honest one.
-;;
-;; Deliberately *not* wrapped: the text is already in memory, so there is
-;; nothing for a buffer to save and nothing for a read to wait on. A string
-;; port takes the ordinary path and pays neither a copy nor an allocation for
-;; a suspension that could never happen.
+;; Open input string.
 (: open-input-string (-> string TextInputPort))
 (defun (open-input-string contents)
   (cast TextInputPort (StringReader. contents)))
 
-;; Open a file for text output, truncating it if it exists.
+;; Open output file.
 (: open-output-file (-> string (Result Exception TextOutputPort)))
 (defun (open-output-file path)
   (match (StreamWriter. path)
     ((Ok w) (Ok (cast TextOutputPort (BjoWriter. (cast TextOutputPort w)))))
     ((Err e) (Err e))))
 
-;; A port that collects what is written to it, to be asked for with
-;; `get-output-string`. The output counterpart of `open-input-string`, and it
-;; cannot fail for the same reason: there is nothing outside the process to go
-;; wrong with.
-;;
-;; It is a `TextOutputPort` like any other, which is the whole point — a
-;; procedure that writes to a port does not learn where the text is going.
-;;
-;; Unwrapped, for the reason `open-input-string` is: a buffer in front of a
-;; writer that is already a buffer buys nothing. It is also what
-;; `get-output-string` needs — it asks the port for the text it accumulated,
-;; and only a `StringWriter` has any.
+;; Open output string.
 (: open-output-string (-> TextOutputPort))
 (defun (open-output-string)
   (cast TextOutputPort (StringWriter.)))
 
 ;; --- Closing ---
 
-;; Rarely needed: `with-open` disposes a port however the body ends.
-;;
-;; Two functions rather than one `close-port`, because `.Dispose` needs a
-;; concrete receiver and HM has no bound for "any port". Typing it
-;; `System.IDisposable` only moves the cast to every call site.
+;; Close ports.
 (: close-input-port (-> TextInputPort void))
 (defun (close-input-port p) (.Dispose p))
 
 (: close-output-port (-> TextOutputPort void))
 (defun (close-output-port p) (.Dispose p))
 
-;; A leaf, and the only one on the writing side: a write goes into a buffer and
-;; is a memory copy whatever colour it is made in, so the syscall — and so the
-;; wait — is here.
+;; Flush.
 (import/extern
   (clr-flush       (: Bjolang.Runtime.BjoWriter.FlushPort      (-> TextOutputPort void) #:blocking))
   (clr-flush-await (: Bjolang.Runtime.BjoWriter.FlushPortAsync (-> TextOutputPort void) #:async)))
@@ -1465,26 +1182,6 @@
 ;; --- Input ---
 
 ;; --- The leaves ---
-;;
-;; These four are the *only* procedures here written twice, and the reason is
-;; specific to each: its two colours call different .NET methods, which is the
-;; one thing no inference derives. `TextReader` has `Peek` and has no async
-;; peek — that is not an oversight in .NET, because eof on a stream is a read —
-;; so the suspending answer is a different method on a different type.
-;;
-;; Everything above them is an ordinary `defun`, written once. `read-line/opt`,
-;; `port-fold`, `port->list` and the rest say nothing about colour and never
-;; will.
-;;
-;; **Both bodies of each pair agree on failure.** `read-line` throws at end of
-;; input in both; `port-eof?` answers `true` in both and never raises;
-;; `read-all` answers `""` in both. Nothing checks that — no compiler compares
-;; what two different .NET methods do when they fail — so it is a promise made
-;; here and kept.
-;;
-;; The sync halves are `#:blocking`: each waits on the thread it is called on,
-;; which is exactly true and is what lets the lint report a bjoroutine that
-;; reaches one through a `defun` that has no suspending copy yet.
 (import/extern
   (clr-eof        (: Bjolang.Runtime.BjoPort.PortEof            (-> TextInputPort bool)   #:blocking))
   (clr-eof-await  (: Bjolang.Runtime.BjoPort.PortEofAsync       (-> TextInputPort bool)   #:async))
@@ -1495,87 +1192,46 @@
   (clr-rest       (: Bjolang.Runtime.BjoPort.ReadRest           (-> TextInputPort string) #:blocking))
   (clr-rest-await (: Bjolang.Runtime.BjoPort.ReadRestAsync      (-> TextInputPort string) #:async)))
 
-;; Whether the port has no more input.
-;;
-;; Free whenever the port has anything buffered, which reading a line at a time
-;; is all but one call in a bufferful — that is what `BjoPort` is for.
+;; Port eof.
 (: port-eof? (-> TextInputPort bool))
 (defbjouble (port-eof? p)
   (#:sync (clr-eof p))
   (#:bjo  (clr-eof-await p)))
 
-;; The next line, without its newline. **Throws at end of input** — guard with
-;; `port-eof?`, or use `read-line/opt`. Both halves throw the same exception
-;; with the same message.
+;; Read line.
 (: read-line (-> TextInputPort string))
 (defbjouble (read-line p)
   (#:sync (clr-line p))
   (#:bjo  (clr-line-await p)))
 
-;; The next line, or `None` at end of input, for when the check and the read
-;; want to be one step.
+;; Read line optional.
 (: read-line/opt (-> TextInputPort (Option string)))
-;; Built on the leaves above rather than on the raw builtin, which is the shape
-;; the whole layering is meant to have: `read-line` and `port-eof?` are the two
-;; procedures that know about colour, and everything over them is written once.
+;; Read line opt body.
 (defun (read-line/opt p)
   (if (port-eof? p)
       None
       (Some (read-line p))))
 
-;; The next character. **Throws at end of input** — guard with `port-eof?`, or
-;; use `read-char/opt`.
-;;
-;; A whole character, not a UTF-16 code unit: one outside the BMP is stored as
-;; two units and comes back as one `char`, the same way walking a `string`
-;; yields it whole. So `(port->seq read-char p)` is a `(Seq char)` that agrees
-;; with `(read-all p)` walked as a string, which it could not if this handed
-;; out halves.
-;;
-;; There is no `peek-char`. A port gives one code unit of lookahead, one unit is
-;; not always a character, and a peek that could not promise the answer
-;; `read-char` is about to give would be worse than none. `port-eof?` is the
-;; question peeking is usually asked, and text that needs real lookahead wants
-;; `read-all` and a `StringCursor`.
-;; The surrogate arithmetic lives in the runtime and is shared by both halves,
-;; so the two colours cannot disagree about what a character is.
+;; Read character.
 (: read-char (-> TextInputPort char))
 (defbjouble (read-char p)
   (#:sync (clr-char p))
   (#:bjo  (clr-char-await p)))
 
-;; The next character, or `None` at end of input, for when the check and the
-;; read want to be one step.
+;; Read character optional.
 (: read-char/opt (-> TextInputPort (Option char)))
 (defun (read-char/opt p)
   (if (port-eof? p)
       None
       (Some (read-char p))))
 
-;; Everything remaining, as one string. Empty at end of input, which needs no
-;; `Option`: there is no difference between "no more input" and "the empty
-;; remainder" once the whole rest is what you asked for.
+;; Read all.
 (: read-all (-> TextInputPort string))
 (defbjouble (read-all p)
   (#:sync (clr-rest p))
   (#:bjo  (clr-rest-await p)))
 
-;; The reader is `-?->`: this takes one of either colour, and both copies of
-;; `port-fold` are generated from this one body. Declared rather than inferred,
-;; because that is the decision — left to inference, every higher-order function
-;; in the language would double for callbacks nobody will ever suspend.
-;;
-;; The list functions went the same way in the end — mapping a read over a list
-;; of ports turned out to be exactly the thing people wanted — but `vec-map` and
-;; `map-map` did not, and the argument above is why. Those are tree algorithms
-;; written to copy as little as possible, so buying a second colour would mean
-;; either rewriting them in Bjolang, which every ordinary call would pay for, or
-;; a second C# implementation of a tree copy, which is the kind of thing that
-;; drifts.
-;;
-;; The loop below is tail-recursive, which is worth keeping for the stack rather
-;; than for the colour: `LoopLowering` promotes it to a `while` in the enclosing
-;; method, and a fold over a long port is where the stack would otherwise go.
+;; Port fold.
 (: port-fold (-> (-?-> TextInputPort %a %a) %a TextInputPort %a))
 (defun (port-fold f init port)
   (let loop ((acc init))
@@ -1589,26 +1245,14 @@
 (: write-string (-> TextOutputPort string void))
 (defun (write-string p s) (.Write p s))
 
-;; One character. The counterpart of `read-char`, and a whole character for the
-;; same reason: one outside the BMP goes out as the two units it is made of
-;; rather than as a lone surrogate.
+;; Write char.
 (: write-char (-> TextOutputPort char void))
 (defun (write-char p c) (writer-write-char! p c))
 
 (: writeln (-> TextOutputPort string void))
 (defun (writeln p s) (.WriteLine p s))
 
-;; Everything written to a string port so far.
-;;
-;; The port stays open and keeps collecting, so this is a look rather than a
-;; close: asking twice with writes in between gives the second answer including
-;; the first.
-;;
-;; **Throws for a port that is not a string port.** That case cannot be a type
-;; error, because a file port and a string port are deliberately one type — so
-;; it is the one port operation where the wrong argument is only found at
-;; runtime. The alternative was letting .NET answer "System.IO.StreamWriter"
-;; and say nothing.
+;; Get output string.
 (: get-output-string (-> TextOutputPort string))
 (defun (get-output-string p) (writer->string p))
 
@@ -1617,11 +1261,7 @@
 ;; Collection
 ;; ---------------------------------------------------------------------------
 ;;
-;; What every collection can be *asked*: how many, whether any, and give me the
-;; elements. `Iterable` says how to walk one and `Foldable` how to consume one;
-;; this is the trait for the questions that need no walk to ask.
-;;
-;; I should get ->seq into the iterable trait with a simple default method there.
+;; Collection trait.
 (def/trait (Collection %a)
   (type %content)
   (: length (-> %a int))
@@ -1641,8 +1281,7 @@
   (defun (empty? vec)
     (vec-empty? vec)))
 
-;; A map's element is its `(Tuple %k %v)` pair, so `(->seq m)` is a sequence of
-;; pairs and `(length m)` counts entries, not keys and values separately.
+;; Map collection.
 (def/impl (Collection (Map %k %v))
   (type %content (Tuple %k %v))
   (defun (length m)
@@ -1650,10 +1289,7 @@
   (defun (empty? m)
     (map-empty? m)))
 
-;; The one member that holds no elements: a `Range` computes its answers from
-;; `lo`, `hi` and `by` rather than looking at anything. `by` is positive by
-;; construction, so the length is the ceiling of the span divided by the step,
-;; and a range whose `hi` has already been passed is empty rather than negative.
+;; Range collection.
 (def/impl (Collection Range)
   (type %content int)
   (defun (length r)
@@ -1666,10 +1302,7 @@
   (defun (empty? r)
     (>= (record-ref r lo) (record-ref r hi))))
 
-;; A string's content is its characters. `length` is `string-count` — the walk —
-;; rather than `string-length`, so that it agrees with the sequence `->seq`
-;; produces; `empty?` stays O(1), since a string with no storage has no
-;; characters in any encoding.
+;; String collection.
 (def/impl (Collection string)
   (type %content char)
   (defun (length s)
@@ -1677,15 +1310,7 @@
   (defun (empty? s)
     (string-empty? s)))
 
-;; `->seq` is the identity here, which is the point: generic code written
-;; against `Collection` accepts a sequence without a conversion.
-;;
-;; The other two are the honest ones rather than the cheap ones. `seq-length`
-;; walks and `seq-empty?` forces an element, and over a source that cannot be
-;; walked twice — a `port->seq` — asking either is asking for the data. That is
-;; a property of the source, not of `Seq`: the same questions over a
-;; `(list->seq xs)` are ordinary. Reach for `Iterable` when the walk itself is
-;; what you want, and `seq->vec` when you mean to ask more than once.
+;; Seq collection.
 (def/impl (Collection (Seq %a))
   (type %content %a)
   (defun (length s)
@@ -1698,26 +1323,12 @@
 ;; Control
 ;; ---------------------------------------------------------------------------
 ;;
-;; The macros the prelude publishes. They are here rather than in a library
-;; because they are control flow: `cond` is `if` at any number of arms, and the
-;; other three are what unwrapping an `Option` costs when unwrapping is the
-;; whole of what is happening.
-;;
-;; Written with `syntax-match`, which is imported for exactly that. A macro
-;; cannot be used in the module that defines it, so the pattern language has to
-;; come from somewhere else — and `std/syntax-match` is below this file
-;; precisely so that it can, importing nothing at all itself.
-;;
-;; None of them is in the `(export ...)` at the top of this file. A macro is
-;; published by being one, through the assembly's `BjolangMacros`, and it is not
-;; a binding anyone can call: there is nothing to export.
+;; Macros.
 (import (std syntax-match))
 
 ;; `(cond (test body ...) ... (else body ...))`
 ;;
-;; The final `else` is required rather than conventional: every arm answers a
-;; value of one type, so there has to be a last answer. `when` and `unless` are
-;; the one-armed forms, and neither needs one.
+;; Cond requires else.
 (def/macro (cond form inject compare)
   (syntax-match form
     ((_ clause ...) (cond-arms clause form))
@@ -1730,15 +1341,12 @@
       (syntax-error whole "cond needs a final (else ...) clause: every arm answers something, so there has to be a last answer."))
     ((Cons clause rest)
      (syntax-match clause
-       ;; `'else` matches that identifier and nothing else. Note what it is not:
-       ;; a check against whatever `else` happens to mean at the call site,
-       ;; which is not a question that can be asked at parse time.
+       ;; Else clause.
        (('else body ...) (one-form body clause))
        ((test body ...) #'(if ,test ,(one-form body clause) ,(cond-arms rest whole)))
        (bad (syntax-error bad "A cond clause is (test body ...), or (else body ...) for the last one."))))))
 
-;; Several forms as one. An `if` branch is an expression, where a `defun` body
-;; and a `match` arm are bodies, and `(let () ...)` is how one becomes the other.
+;; Several forms as one.
 (: one-form (-> (List Syntax) Syntax Syntax))
 (defun (one-form body whole)
   (match body
@@ -1748,10 +1356,7 @@
 
 ;; `(if-let ((name expr)) then else)`
 ;;
-;; `then` with `name` bound to what `expr` answered, if it answered anything,
-;; and `else` if it did not. The binding is shaped like a `let`'s and there is
-;; exactly one: a second would make this `and-let*`, which is a different macro
-;; with a different name.
+;; If let.
 (def/macro (if-let form inject compare)
   (syntax-match form
     ((_ (name value) then else)
@@ -1760,17 +1365,11 @@
 
 ;; `(when-let ((name expr)) body ...)`
 ;;
-;; The body with `name` bound, when there was something to bind.
-;;
-;; It expands to a `when` rather than to a `match` so that it *is* one: the form
-;; answers nothing, and the body's own value is thrown away rather than having
-;; to be unit. A `match` would have made the missing branch's `unit` something
-;; the body had to agree with, which is not what the one-armed form means
-;; anywhere else in the language.
+;; When let.
 (def/macro (when-let form inject compare)
   (syntax-match form
     ((_ (name value) first body ...)
-     ;; `value` is bound before it is asked about, so it is evaluated once.
+     ;; Evaluate value once.
      #'(let ((found ,value))
          (when (some? found)
            (let ((,name (option-ref found)))
@@ -1780,10 +1379,7 @@
 
 ;; `(some-> value step ...)` — `->`, stopping at the first `None`.
 ;;
-;; Each step answers an `(Option ...)` and is handed what the step before it
-;; unwrapped to, so the whole answers one and nothing after a `None` runs.
-;; Threading is `->`'s own, `&` and all, because each step is passed to it
-;; rather than reimplemented here.
+;; Threading option.
 (def/macro (some-> form inject compare)
   (syntax-match form
     ((_ value step ...) (some-steps value step))
@@ -1792,15 +1388,12 @@
 (: some-steps (-> Syntax (List Syntax) Syntax))
 (defun (some-steps value steps)
   (match steps
-    ;; Nothing could have failed, so nothing has.
+    ;; No steps.
     (Nil #'(Some ,value))
-    ;; The last step's answer is already the answer.
+    ;; Last step.
     ((Cons step Nil) #'(-> ,value ,step))
     ((Cons step rest)
-     ;; Every level binds `it`, and every level means its own: the step is
-     ;; spliced where the nearest one is in scope. They are one name because
-     ;; they are one idea, and the expander renames it apart from the call site
-     ;; either way.
+     ;; Step binding.
      #'(match (-> ,value ,step)
         (None None)
         ((Some it) ,(some-steps #'it rest))))))
@@ -1812,38 +1405,16 @@
 ;; `(with-cancel (cancel) body ...)` — a cancellation scope that ends when the
 ;; scope does.
 ;;
-;; `parameterize` restores the binding on the way out but never *fires* the
-;; token. 
-;;
-;;     (parameterize ((current-cancel tok))
-;;       (bjo (worker jobs)))        ;; promise dropped
-;;     (respond 200)                 ;; scope exits, worker runs on
-;;
-;; So: make the token here, install it, and fire it however the body leaves.
-;;
-;;   * normal exit  → `Scope-Ended`
-;;   * a failure    → `(Failed e)`, and the exception carries on out
-;;   * either way   → the binding is restored
-;;
-;; **What it does not do.** Firing returns immediately, so a cooperating child
-;; stops *soon*, not before the scope exits. A child midway through its cleanup
-;; can still be writing to a port this scope has closed; guaranteeing otherwise
-;; needs the children joined, which needs a nursery. This is the cheap half, and
-;; it is the half that stops the leak.
+;; Cancel scope behavior.
 (def/macro (with-cancel form inject compare)
   (syntax-match form
     ((_ (cancel) first body ...)
-     ;; `cancel` came from the input, so hygiene leaves it alone and the body
-     ;; sees it. Everything else here is the template's and is renamed apart,
-     ;; which is where a hand-written desugar would have had to gensym.
+     ;; Bind cancel.
      #'(let ()
          (def (,cancel scope-token) (make-cancel))
          (def saved (parameter-push! current-cancel scope-token))
          (try
-             ;; Catches everything, so the token fires for every failure rather
-             ;; than for a list somebody remembered to write. That costs the
-             ;; caller nothing because `raise` puts the exception straight back,
-             ;; with the stack trace it arrived with.
+             ;; Catch failures.
              (match (try (let () ,first ,@body) #:catch (System.Exception))
                ((Ok answer) (,cancel Scope-Ended) answer)
                ((Err failure) (,cancel (Failed failure)) (raise failure)))
@@ -1853,19 +1424,11 @@
 ;; `(with-deadline ms body ...)` — a `with-cancel` whose token also fires on its
 ;; own, after `ms`, with `Deadline`.
 ;;
-;; Costs nothing on top: the scope is the same scope, and the timer is one fiber
-;; that races the scope's own token, so finishing early takes the timer away
-;; again rather than leaving it parked until an instant nothing is waiting for.
-;;
-;; The canceller is not named because there is nobody to hand it to — a deadline
-;; is the whole reason this scope is cancellable. Write `with-cancel` and start
-;; your own timer if you want both.
+;; Deadline behavior.
 (def/macro (with-deadline form inject compare)
   (syntax-match form
     ((_ ms first body ...)
-     ;; `fire` is the template's on both sides, so it is one renamed name: the
-     ;; `with-cancel` this expands into binds it, and the watcher started inside
-     ;; that scope is what holds it.
+     ;; Timeout cancel.
      #'(with-cancel (fire)
         (deadline-watch! fire ,ms)
         ,first
@@ -1878,12 +1441,7 @@
 
 ;; `'(1 2 3)`, with every element formatted by its own `->str`.
 ;;
-;; The where clause is the whole content of the type: this formats a list of
-;; anything formattable, which — since `->str` has a blanket — is every list,
-;; but the *element's* implementation is what runs, chosen where the element
-;; type is known. Written as a function as well as an implementation so that it
-;; can be called at a known element type without going through dispatch, which
-;; is what the implementation below then does.
+;; Format list.
 (: list->str (-> (List %a) string) (where (->str %a)))
 (defun (list->str l)
   (if (list-empty? l)
@@ -1928,9 +1486,7 @@
   (def sp (open-output-string))
   (def out #(write-string sp &1))
   (out "(seq")
-  ;; One walk. The `empty?`-then-head-then-tail shape this replaces enumerated
-  ;; the sequence three times over before the loop even started, which for a
-  ;; `Seq` is three runs of whatever produces it.
+  ;; Walk sequence.
   (loop (:for item sq)
         (:do (out " ")
              (out (->str item))))
@@ -1942,17 +1498,13 @@
   (defun (->str sq)
     (seq->str sq)))
 
-;; One entry, as `key value`. A function of its own because a loop clause is a
-;; body of expressions and a `def` is a declaration, so the pair has to come
-;; apart somewhere that a binding may be introduced.
+;; Map entry to str.
 (: map-entry->str (-> (Tuple %k %v) string) (where (->str %k) (->str %v)))
 (defun (map-entry->str entry)
   (def (k v) entry)
   (str (->str k) " " (->str v)))
 
-;; `#map(key value ...)`, so the literal round-trips. The order is the trie's,
-;; which is stable for a given map and worth nothing beyond that — print an
-;; `(std orderedmap)` map when two equal maps have to print the same.
+;; Map to str.
 (: map->str (-> (Map %k %v) string) (where (->str %k) (->str %v)))
 (defun (map->str m)
   (let ((sb (stringbuilder-empty)))
@@ -1971,16 +1523,7 @@
 
 ;; Sequential binding
 ;;
-;; `let` and `parameterize` bind *simultaneously*: every value expression is
-;; evaluated where the form is written, and none of the new bindings is in
-;; scope, or installed, for any of them. That is the R7RS reading and it is what
-;; makes `(let ((a b) (b a)) ...)` a swap.
-;;
-;; These two are the sequential forms, for the case where a later value really
-;; is meant to see an earlier binding. Both are macros rather than special
-;; forms, and both are one line of work, because a *single* binding means the
-;; same thing under either reading — so a sequential group is nothing but a nest
-;; of singles, and there is nothing for the compiler to know about it.
+;; Sequential binding macros.
 
 ;; `(let* ((a 1) (b (+ a 1))) ...)` — each binding is in scope for the next.
 (def/macro (let* form compare inject)
@@ -1993,12 +1536,7 @@
      #'(let (,bind)
         (let* (,@binds) ,@body)))))
 
-;; `(parameterize* ((p 1) (q (parameter-ref p))) ...)` — each parameter is
-;; installed before the next value expression runs, so `q` here gets 1 rather
-;; than whatever `p` was outside.
-;;
-;; The unwinding is the same either way: each binding still gets its own
-;; `try/finally`, so an exception restores exactly the pushes that happened.
+;; parameterize* behavior.
 (def/macro (parameterize* form compare inject)
   (syntax-match form
     ((_ () body ...)
@@ -2012,31 +1550,17 @@
 ;; ---------------------------------------------------------------------------
 ;; type/derive
 ;; ---------------------------------------------------------------------------
-;;
-;; `(type/derive (Eq) (: Point (Record (: x int) (: y int))))` is the type
-;; declaration and the implementations its shape determines.
-;;
-;; Syntactic, and it has to be: where a declaration is read there is no registry
-;; to ask what a type's fields are, only the form that declares them. The
-;; declaration is passed through untouched and the implementation is written out
-;; of the same S-expression.
-;;
-;; The traits are a list: `(Eq)`, `(Ord)` or `(Eq Ord)`, each deriving its own
-;; methods from the one declaration.
 
 (: derive-sym (-> string Syntax))
 (defun (derive-sym name) (SSym (string->symbol name)))
 
-;; How the transformer refuses its input where a list of methods is wanted.
-;; `syntax-error` never returns; the `Nil` is what makes it type.
+;; Refuse invalid syntax.
 (: derive-fail (-> Syntax string (List Syntax)))
 (defun (derive-fail form message)
   (ignore (syntax-error form message))
   Nil)
 
-;; The type variables of a declaration's head: none for `Point`, one for
-;; `(Box %a)`. Each becomes a constraint, because comparing a `Box` is comparing
-;; whatever it holds.
+;; Head type variables.
 (: derive-head-vars (-> Syntax (List Syntax)))
 (defun (derive-head-vars head)
   (match head
@@ -2046,9 +1570,7 @@
        ((Cons _ vars) vars)))
     (_ Nil)))
 
-;; The type's own name: the head itself for `Point`, its first item for
-;; `(Box %a)`. Wanted only for a diagnostic — the name a type with no lawful
-;; hash reports itself under — so the bare spelling is the right one.
+;; Type name.
 (: derive-head-name (-> Syntax Syntax))
 (defun (derive-head-name head)
   (match head
@@ -2058,8 +1580,7 @@
        (Nil head)))
     (_ head)))
 
-;; A fold of `hash-combine` over the parts of a value, in order. Combination
-;; does not commute, so two fields cannot swap places unnoticed.
+;; Hash combine fold.
 (: derive-hash-fold (-> (List Syntax) Syntax Syntax))
 (defun (derive-hash-fold parts acc)
   (match parts
@@ -2068,10 +1589,7 @@
 
 ;; --- Records and structs ---
 
-;; A field is `(: name type)` or `(: name type #:mutable)`, so the marker is
-;; matched with an ellipsis rather than by a second arm: `#:mutable` is the only
-;; one the parser accepts, and it has already refused anything else by the time
-;; a declaration reaches here.
+;; Field names.
 (: derive-field-names (-> (List Syntax) (List Syntax)))
 (defun (derive-field-names fields)
   (list-map (fun (f)
@@ -2080,8 +1598,7 @@
                 (bad (syntax-error bad "a record field is written (: name type), optionally followed by #:mutable."))))
             fields))
 
-;; Whether any field carries a marker — which, `#:mutable` being the only one
-;; there is, means the record has a mutable field.
+;; Any mutable fields.
 (: derive-any-mutable? (-> (List Syntax) bool))
 (defun (derive-any-mutable? fields)
   (match fields
@@ -2093,16 +1610,7 @@
          #t
          (derive-any-mutable? rest)))))
 
-;; `=` is field-wise over every field, mutable ones included: comparing a record
-;; means comparing what it holds now, and that a later write can change the
-;; answer is what mutation *is*.
-;;
-;; `eq-hash` is the other half of the trait and has no honest answer. Hashing
-;; the mutable field breaks the law that a key's hash does not change; hashing
-;; only the immutable ones breaks the law that equal values hash alike. So a
-;; derived implementation refuses, naming the type. A hand-written one is still
-;; free to hash the stable fields and mean it — this is the default, not a
-;; property of the type.
+;; Eq record methods.
 (: derive-eq-record (-> Syntax (List Syntax) bool (List Syntax)))
 (defun (derive-eq-record head names mutable?)
   (def equals
@@ -2116,9 +1624,6 @@
   (Cons equals (Cons hashed Nil)))
 
 ;; --- Unions ---
-;;
-;; A case is `Name` or `(Name payload ...)`, and a `#:literal` marker is neither
-;; a payload nor a field.
 
 (: derive-case-name (-> Syntax Syntax))
 (defun (derive-case-name c)
@@ -2139,10 +1644,7 @@
        (Nil Nil)))
     (_ Nil)))
 
-;; The binders a case's payload is taken apart into. Built rather than written
-;; in a template, since how many there are is only known here — which also means
-;; they are not renamed. That is harmless: each is bound by the pattern it
-;; appears in and read only by that arm's body.
+;; Binders.
 (: derive-binders (-> string int int (List Syntax)))
 (defun (derive-binders side i n)
   (if (= i n)
@@ -2159,7 +1661,7 @@
        (Nil Nil)
        ((Cons r rrest) (Cons #'(= ,l ,r) (derive-eq-pairs lrest rrest)))))))
 
-;; Same case, compare the payloads positionally; any other case, unequal.
+;; Union arm eq.
 (: derive-eq-union-arm (-> Syntax Syntax))
 (defun (derive-eq-union-arm c)
   (def name (derive-case-name c))
@@ -2171,8 +1673,7 @@
        ((,name ,@rs) (and ,@(derive-eq-pairs ls rs)))
        (,(derive-sym "_") #f))))
 
-;; Seeded with the case's position, so that two cases carrying the same payload
-;; hash differently.
+;; Hash union arms.
 (: derive-hash-union-arms (-> (List Syntax) int (List Syntax)))
 (defun (derive-hash-union-arms cases index)
   (match cases
@@ -2194,15 +1695,8 @@
   (Cons equals (Cons hashed Nil)))
 
 ;; --- Ordering ---
-;;
-;; `compare` promises a sign rather than -1, 0 and 1, so a derived body hands
-;; back whatever the part that decided the answer said, unexamined.
 
-;; The comparisons of a value's parts, left to right, answering with the first
-;; that decides. A nest of `let` is what stopping early looks like without a
-;; special form for it: the tail is an arm of the `if`, so it is reached only
-;; where the head compared equal. The last part needs no test — there is nothing
-;; after it to prefer — so it is spliced in bare.
+;; Ord chain.
 (: derive-ord-chain (-> (List Syntax) int Syntax))
 (defun (derive-ord-chain parts i)
   (match parts
@@ -2214,11 +1708,7 @@
          #'(let ((,c ,p))
              (if (= ,c 0) ,(derive-ord-chain rest (+ i 1)) ,c))))))
 
-;; Lexicographic in declaration order, mutable fields included, for the reason
-;; `=` includes them: the order is over what the record holds now. Nothing here
-;; corresponds to `eq-hash`'s refusal, because ordering has no law saying an
-;; answer may not change — a sorted collection going stale under a write is the
-;; write's doing rather than the comparison's.
+;; Ord record.
 (: derive-ord-record (-> (List Syntax) (List Syntax)))
 (defun (derive-ord-record names)
   (Cons #'(defun (compare a b)
@@ -2227,16 +1717,14 @@
               0))
         Nil))
 
-;; A payload bound to nothing, for the arms that only ask which case they have.
+;; Wildcards.
 (: derive-wildcards (-> int (List Syntax)))
 (defun (derive-wildcards n)
   (if (= n 0)
       Nil
       (Cons (derive-sym "_") (derive-wildcards (- n 1)))))
 
-;; Which case a value is, as its position in the declaration — the order the
-;; hash already seeds itself with, so ordering and hashing read the union the
-;; same way.
+;; Index arms.
 (: derive-ord-index-arms (-> (List Syntax) int (List Syntax)))
 (defun (derive-ord-index-arms cases index)
   (match cases
@@ -2255,9 +1743,7 @@
        (Nil Nil)
        ((Cons r rrest) (Cons #'(compare ,l ,r) (derive-ord-pairs lrest rrest)))))))
 
-;; Same case, so the payloads decide it positionally. The inner wildcard cannot
-;; run — the indices were equal before this was reached — and is there because a
-;; match answers on every input.
+;; Ord union arm.
 (: derive-ord-union-arm (-> Syntax Syntax))
 (defun (derive-ord-union-arm c)
   (def name (derive-case-name c))
@@ -2269,9 +1755,7 @@
        ((,name ,@rs) ,(derive-ord-chain (derive-ord-pairs ls rs) 0))
        (,(derive-sym "_") 0))))
 
-;; Case first, payload second. Both indices are taken before either is used, so
-;; the cross-case answer is one comparison of ints rather than an arm for every
-;; pair of cases.
+;; Ord union.
 (: derive-ord-union (-> (List Syntax) (List Syntax)))
 (defun (derive-ord-union cases)
   (def ia (derive-sym "__derived-ia"))
@@ -2287,14 +1771,12 @@
 
 ;; --- Putting one implementation together ---
 
-;; What can be derived is a property of the declaration rather than of the
-;; trait, so the same refusal serves both of them.
+;; Shape error.
 (: derive-shape-error (-> Syntax (List Syntax)))
 (defun (derive-shape-error bad)
   (derive-fail bad "a type that derives has to be a Record, a Struct or a Union. An alias is a second spelling of a type rather than a type of its own — derive for the type it names."))
 
-;; A `Struct` never reaches `derive-eq-record` with a mutable field: the parser
-;; refuses the combination outright, so the flag it is handed is always false.
+;; Eq methods.
 (: derive-eq-methods (-> Syntax Syntax (List Syntax)))
 (defun (derive-eq-methods head shape)
   (syntax-match shape
@@ -2323,9 +1805,7 @@
           (derive-ord-methods shape)
           (derive-fail trait "the traits that can be derived are Eq and Ord."))))
 
-;; A type with parameters derives a *conditional* implementation: every
-;; parameter has to satisfy the same trait, because the fields hold values of
-;; those types and comparing one is what the body does.
+;; Derive conditional implementation.
 (: derive-impl (-> Syntax Syntax Syntax))
 (defun (derive-impl trait typedef)
   (syntax-match typedef

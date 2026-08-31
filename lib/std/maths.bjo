@@ -1,16 +1,6 @@
-;; std/maths.bjo — `System.Math`, in the two shapes it comes in.
-;;
-;; Most of it is one method over a double (`Sin`, `Log`, `Cbrt`), exported as
-;; the import itself; an int argument widens at the call as it would in C#.
-;;
-;; A handful are *overload sets*, one per numeric type with the type preserved:
-;; `(abs -5)` is an int, `(abs -2.5)` a double, and no single signature says
-;; that. Those are `Num` below, which is the .NET interface every numeric type
-;; already implements rather than a trait with implementations of its own —
-;; and which is also what lets them be named in generic code.
+;; std/maths.bjo — Math functions.
 
-;; `=` is a trait method, so even this module — below the prelude, importing
-;; nothing else — has to import the trait declaring it.
+;; Import Eq trait for `=`.
 (import (std eq))
 
 (export
@@ -29,25 +19,7 @@
 ;; Num
 ;; ---------------------------------------------------------------------------
 
-;; `Num` *is* `System.Numerics.INumber`, the interface every numeric type in
-;; .NET already implements. There is nothing to implement here and nothing to
-;; dispatch through: a `(where (Num %a))` becomes a C# `where` clause, and the
-;; runtime specializes the function per type it is used at.
-;;
-;; That is also what makes the members expressible at all. `System.Math.Abs` is
-;; an overload set, which is not a value and which no signature in this type
-;; system can name; `INumber<T>.Abs` is a single member, and naming it is what
-;; the `#:clr-member` bindings below do.
-;;
-;; Membership is now .NET's answer rather than a list kept here, which *widens*
-;; it: `byte`, `ushort`, `uint`, `ulong` and `short` are `Num` too. They were
-;; excluded because `Math.Abs` and `Math.Sign` have no overload for them —
-;; generic math does, so the reason is gone.
-;;
-;; `decimal` and `float` are in as soon as Bjolang can spell them, with nothing
-;; to add here.
-;;
-;; See `Docs/Numerics.org`.
+;; `Num` interface.
 (def/trait (Num %a)
   (#:clr-constraint (System.Numerics.INumber %a))
   (: abs   (-> %a %a)        #:clr-member Abs)
@@ -55,40 +27,21 @@
   (: min   (-> %a %a %a)     #:clr-member Min)
   (: max   (-> %a %a %a)     #:clr-member Max)
   (: clamp (-> %a %a %a %a)  #:clr-member Clamp)
-  ;; `IsZero` and the parity tests are *explicit* interface implementations on
-  ;; the primitives, so `int.IsZero(x)` does not compile. Every member is
-  ;; reached through a constrained type parameter for that reason, which makes
-  ;; the distinction invisible from here.
-  ;;
-  ;; `even?` at a double is now right — `(even? 2.0)` is true, where the
-  ;; hand-written implementation this replaces answered false for every double.
+  ;; Parity tests.
   (: zero? (-> %a bool)      #:clr-member IsZero)
   (: even? (-> %a bool)      #:clr-member IsEvenInteger)
   (: odd?  (-> %a bool)      #:clr-member IsOddInteger))
 
 
-;; Todo: `min`/`max` over a sequence. That is a function over a
-;; `Num`-constrained element type — `(: min-of (-> %s %a) (where (Num %a)))` —
-;; not a method here: a rest parameter is a calling convention, and a method's
-;; shape is fixed by the trait.
+;; Todo: `min`/`max` over a sequence.
 
 ;; ---------------------------------------------------------------------------
 ;; The double functions
 ;; ---------------------------------------------------------------------------
 
-;; One method each, so the import *is* the export: a wrapper would add nothing,
-;; and the importing module resolves against the same .NET metadata.
+;; Double functions.
 
-;; `sqrt` is not here and not in `Num`. It was declared `(-> %a double)`, and
-;; `INumber` has no `Sqrt` at all — that is `IRootFunctions`, whose `Sqrt`
-;; returns the implementor rather than a double. It is an ordinary import of
-;; `System.Math.Sqrt`, and it lives in the prelude rather than here because the
-;; prelude publishes it: a `re-export` names something in `env.Bindings`, and an
-;; import alias is not one.
-
-;; Exponential and logarithmic. `pow` is (base, exponent); `log` is the natural
-;; logarithm at one argument and log-to-base at two, which is the overload set
-;; `Math.Log` already is.
+;; Exponential and logarithmic.
 (import/extern
   (cbrt  (: System.Math.Cbrt))
   (exp   (: System.Math.Exp))
@@ -97,17 +50,14 @@
   (log2  (: System.Math.Log2))
   (log10 (: System.Math.Log10)))
 
-;; Rounding. Each has a decimal overload as well as a double one, so they stay
-;; imports rather than signatures — the argument type picks, and will pick
-;; decimal the day Bjolang can spell it.
+;; Rounding.
 (import/extern
   (floor    (: System.Math.Floor))
   (ceiling  (: System.Math.Ceiling))
   (truncate (: System.Math.Truncate))
   (round    (: System.Math.Round)))
 
-;; Trigonometric. `atan2` takes (y, x), in that order, and is the one to reach
-;; for when the quadrant matters.
+;; Trigonometric.
 (import/extern
   (sin   (: System.Math.Sin))
   (cos   (: System.Math.Cos))

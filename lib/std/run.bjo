@@ -1,71 +1,4 @@
-;; std/run.bjo — running programs, written as literals.
-;;
-;;   (run/string '(pipe (cat "hej.txt") (wc -l)))
-;;   (run/string '(into-file "count.txt" (pipe (cat "hej.txt") (wc -l))))
-;;
-;; A form is a list of words, and its *first* word says what it is. The whole
-;; thing is a quoted literal elaborated by the same machinery `(std fmt)` uses,
-;; which is what buys the shell-like reading without a macro.
-;;
-;; | `'(cat "hej.txt")`                    | run a program                     |
-;; | `'(sort)` or, in a pipe, `sort`       | one taking no arguments           |
-;; | `'(pipe (cat "a") (wc -l))`           | connect them                      |
-;; | `'(from-file "in.txt" (wc -l))`       | stdin from a file                 |
-;; | `'(into-file "out.txt" (ls))`         | stdout to a file, truncating      |
-;; | `'(append-to-file "log" (date))`      | stdout to a file, appending       |
-;; | `'(errors-into-file "e" (make))`      | stderr of everything inside       |
-;; | `'(errors-append-to-file "e" (make))` | the same, appending               |
-;;
-;; They nest: `'(into-file "out" (from-file "in" (pipe (tr "a" "b") sort)))`.
-;;
-;; A form is *one* thing to run. A list of stages is not a pipeline unless it
-;; says `pipe`: `'((cat "a") (wc -l))` is refused rather than guessed at, since
-;; it looks enough like `'(cat "a")` that guessing is how a form comes to mean
-;; something its writer did not say.
-;;
-;; **The tag is read at run time, not by the type checker.** A literal is
-;; elaborated by its *shape* — `Inference.fs:1271-1285` reduces it to its
-;; outermost constructor, and `TypedAST.fs:1002-1010` compares only that — so
-;; `(pipe a b)` and `(cat "x")` are one question to the elaborator, and nothing
-;; in a type can tell them apart. What the types do buy is that every leaf is a
-;; word, a nested form, a `,(cmd ...)` or a `,filter` and can be nothing else.
-;;
-;; The rest is bought back by parsing eagerly: `run` reads the whole tree and
-;; returns `Err` before it starts anything, so a malformed form is a message
-;; rather than half a pipeline.
-;;
-;; **A filter is a bjoroutine, and `run` spawns it.** Applying a `defbjo` is a
-;; yield point, so calling one here would run it to completion before the next
-;; stage started — which is not a pipeline, and would deadlock the moment a
-;; filter waited on input no upstream stage had been started to produce. `run`
-;; therefore never applies a filter directly: it `bjo`s it, which is colourless
-;; and so leaves `run` an ordinary function, and closes the filter's output when
-;; the promise lands.
-;;
-;; Standard error is inherited unless `errors-into-file` says otherwise, the way
-;; a shell's is.
-;;
-;; **Two faces, one implementation.** `waiting` is the only thing that knows
-;; what "finished" means; everything else is it seen from one side or the other.
-;;
-;; | from a plain function          | from a bjoroutine                     |
-;; |--------------------------------|---------------------------------------|
-;; | `run/string`, `run/strings`    | `(sync (running '(...)))`             |
-;; | `run/status`                   | `(sync (exited p))`                   |
-;; | `wait`, `wait/all`             | `run/channel` and a `choose` loop      |
-;;
-;; The left column blocks the thread it is called on, as `read-all` on a file
-;; port does, so an ordinary `defun` can shell out without its callers turning
-;; into bjoroutines to the top of the program. The right column suspends
-;; instead, and is what a fiber should use: blocking there would park a *pool*
-;; thread, which the fibers being waited for need in order to finish.
-;;
-;; The pumps between stages are fibers either way — `bjo` is colourless, and the
-;; scheduler runs them on the pool whether or not anything drives it — and the
-;; blocking face reaches them from outside through `sync/blocking`.
-;;
-;; A filter is a bjoroutine and may `sync`. That is a stage's own business and
-;; does not reach the caller.
+;; std/run.bjo — run external programs.
 (import (std prelude))
 (import (std syntax-match))
 (export
@@ -97,10 +30,7 @@
 (import/class
   (Process (: System.Diagnostics.Process))
   (ProcessStartInfo (: System.Diagnostics.ProcessStartInfo (-> ProcessStartInfo)))
-  ;; The concrete stream types `Process` answers with, and the one this module
-  ;; opens files with. Two arguments rather than prelude's one, because the
-  ;; `append` flag is the whole difference between `into-file` and
-  ;; `append-to-file`.
+  ;; Stream types for Process.
   (StreamReader (: System.IO.StreamReader))
   (StreamWriter (: System.IO.StreamWriter (-> string bool StreamWriter)
                    #:exceptions (System.IO.DirectoryNotFoundException
@@ -123,23 +53,16 @@
                                 (-> ProcessStartInfo bool void) #:set))
   (settings-use-shell!       (: System.Diagnostics.ProcessStartInfo.UseShellExecute
                                 (-> ProcessStartInfo bool void) #:set))
-  ;; `ArgumentList` is a `Collection<string>`, and a constructed generic is
-  ;; type-only across the boundary, so `Add` is reached through a helper. The
-  ;; alternative is `Arguments`, one string that .NET re-splits by rules this
-  ;; module would then have to generate.
+  ;; Add process arguments.
   (settings-argument  (: BjoProc.AddArgument
                          (-> ProcessStartInfo string ProcessStartInfo)))
 
-  ;; The static overload, not the instance one: `p.Start()` is not among the
-  ;; candidates the resolver offers, and this shape has no nullable return.
+  ;; Starts process.
   (process-start (: System.Diagnostics.Process.Start
                     (-> ProcessStartInfo Process)
                     #:exceptions (System.ComponentModel.Win32Exception
                                   System.InvalidOperationException)))
-  ;; The suspending one, because it is the primitive here: `wait` blocks on a
-  ;; spawned waiter rather than on a process, so a `defun` caller parks its own
-  ;; thread and nothing else. Called exactly once per child — see
-  ;; `awaiting-exit`, which is the only call site.
+  ;; Awaits process exit.
   (process-await (: System.Diagnostics.Process.WaitForExitAsync (-> Process void) #:async))
   (process-code  (: System.Diagnostics.Process.ExitCode (-> Process int) #:get))
   (process-stdin (: System.Diagnostics.Process.StandardInput (-> Process StreamWriter) #:get))
@@ -164,9 +87,7 @@
   ;; locale: on a Swedish one `(sleep 0.5)` would ask for `0,5`.
   (number->argument (: BjoProc.Argument (-> double string)))
 
-  ;; The pumps are the only `#:async` left, and they run inside spawned
-  ;; bjoroutines. Everything the caller touches waits the blocking way — see the
-  ;; note on colour above.
+  ;; Async pumps.
   (copy-stream  (: BjoProc.PumpAsync (-> TextInputPort TextOutputPort void) #:async))
   (copy-into    (: BjoProc.PumpIntoAsync (-> TextInputPort TextOutputPort void) #:async))
   (read-lines   (: BjoProc.ReadLinesAsync (-> TextInputPort (Array string)) #:async))
@@ -188,28 +109,10 @@
 ;; is selected by its type, and `Cmd` is the only case carrying a record.
 (type (: Cmd (Record (: program string) (: arguments (Vec string)))))
 
-;; A stage written in Bjolang: read `in` to its end, write to `out`, return.
-;; `run` closes `out` when it returns, so a filter must not close it itself.
-;;
-;; Spelled `-bjo->` because it is spawned rather than called, and the effect is
-;; part of the arrow — a `defun` here would be a stage that could not `sync`,
-;; which is most of the reason to write one in Bjolang at all. Selection by type
-;; compares the effect too (`TypedAST.fs:936-939`), so an ordinary function
-;; offered here is simply not this case.
+;; A filter stage.
 (type (: Filter (-bjo-> TextInputPort TextOutputPort Unit)))
 
-;; One union for everything a form can contain, because the tag is a word like
-;; any other and a form's elements are therefore not one kind of thing. The
-;; eight heads — `Symbol`, `string`, `int`, `double`, `Vec`, `Cmd`, `->` and
-;; `List` — are all distinct, so no case needs `#:literal`.
-;;
-;; `WInt` earns its place on `(head -n 20)` and `WDouble` on `(sleep 0.5)`;
-;; `WArgv` on splicing a computed `(Vec string)` into the middle of a command.
-;;
-;; What is *not* here is the whole of the static checking left: a character or
-;; anything else the reader can produce is refused, so the leaves of a form are
-;; type-checked even though its tags are not. See
-;; `TestFiles/errors/run_word_not_a_word.bjo`.
+;; Form elements.
 (type-rec
   (: Word (Union (WSym Symbol)
                  (WStr string)
@@ -231,9 +134,7 @@
 ;; What it parses to
 ;; ===========================================================================
 
-;; The tree `run` actually executes. Separating it from `Word` is what lets
-;; parsing be total: by the time anything is started, every tag has been
-;; recognised, every redirection has its file name and every stage is a stage.
+;; Parsed AST node.
 (type (: Redirection (Union RFrom RInto RAppend RErrInto RErrAppend)))
 
 (type-rec
@@ -277,22 +178,14 @@
       (Ok (NCmd (Cmd (program (vec-ref argv 0))
                      (arguments (vec-slice argv 1 (- (vec-length argv) 1))))))))
 
-;; A stage: something that can sit in a pipeline.
-;;
-;; A program taking no arguments is its own name and needs no parentheses, so
-;; `(pipe (grep "root") sort)` reads the way it is said. `(sort)` means the same
-;; thing.
+;; Parses a pipeline stage.
 (: parse-stage (-> Word (Result Exception Node)))
 (defun (parse-stage w)
   (match w
     ((WForm ws) (parse-form ws))
     ((WFilter f) (Ok (NFilter f)))
     ((WCmd c) (Ok (NCmd c)))
-    ;; A tag is refused here even though it would otherwise be a perfectly good
-    ;; program name: `(pipe (cat "x") into-file "out.txt")` is a forgotten pair
-    ;; of parentheses far more often than it is a program called `into-file`,
-    ;; and running one silently is the worse answer. `'("into-file")` still
-    ;; names the program, since a string head is never a tag.
+    ;; Checks for unquoted tags.
     ((WSym s)
      (let ((name (symbol->string s)))
        (if (tag? name)
@@ -326,9 +219,7 @@
           ((Err e) (Err e))
           ((Ok more) (Ok (Cons node more)))))))))
 
-;; `(into-file "out.txt" (ls))` — a file name and exactly one thing to run.
-;; Requiring the name to be a literal string rather than any word is what keeps
-;; `(into-file (ls))` from silently redirecting into a file called "ls".
+;; Parses redirection target.
 (: parse-redirect (-> Redirection string (List Word) (Result Exception Node)))
 (defun (parse-redirect how tag rest)
   (match rest
@@ -346,11 +237,7 @@
 (defun (tag-names)
   "pipe, from-file, into-file, append-to-file, errors-into-file, errors-append-to-file")
 
-;; A misspelled tag reads as a command of that name, and the first thing wrong
-;; with it is then a stage among its arguments — `(input-from-file "x" ,f)`
-;; complains about the filter, which is true and unhelpful. A stage only turns
-;; up among a command's words when a tag was meant or a `pipe` forgotten, so
-;; that is the moment to list them.
+;; Adds tag hint to error.
 (: with-tag-hint (-> (List Word) Exception Exception))
 (defun (with-tag-hint ws original)
   (match ws
@@ -392,12 +279,7 @@
              (str what
                   " is a whole stage on its own, so nothing may follow it here. To run several things in turn, name it: (pipe ...)"))))))
 
-;; The whole grammar. The first word decides.
-;;
-;; A form is one thing to run, and a list of stages is *not* a pipeline unless
-;; it says so. `'((cat "a") (wc -l))` looks enough like `'(cat "a")` that
-;; guessing between them is how a form comes to mean something its writer did
-;; not say, so it is refused and `pipe` is suggested.
+;; Parses full form grammar.
 (: parse-form (-> Form (Result Exception Node)))
 (defun (parse-form words)
   (match words
@@ -429,18 +311,7 @@
 ;; Running it
 ;; ===========================================================================
 
-;; A form that has been started.
-;;
-;; `input` and `output` are absent exactly when a redirection took that end:
-;; after `(into-file "out.txt" ...)` there is no output to read, because it is
-;; in the file.
-;;
-;; `waits` holds one promise per junction pump, per redirection pump and per
-;; filter, and a filter that raised is still in there — which is why `wait`
-;; answers with a `Result` rather than a bare exit code.
-;;
-;; `exits` holds one promise per child, and is the *only* place a child is
-;; waited for. See `awaiting-exit`.
+;; Started process state.
 (type
   (: Proc #:opaque
      (Record (: input (Option TextOutputPort))
@@ -460,18 +331,7 @@
              (: exits (Vec (Promise Unit)))
              (: waits (Vec (Promise Unit))))))
 
-;; A child is waited for once, here, and everyone else joins this promise.
-;;
-;; `Process.WaitForExitAsync` may not be called twice on the same process. It
-;; races its own one-shot `Exited` event: a second call that arrives while the
-;; first is completing registers a handler the event has already passed, then
-;; finds `HasExited` still false, and parks forever with the child long since
-;; gone. `exited` builds a waiter at every sync, and a `choose` loop over
-;; `(chan-recv items)` and `(exited p)` therefore calls it once per item — so
-;; this module hit that race whenever it read a form as a channel.
-;;
-;; A promise has neither problem: it is persistent, so every joiner is answered
-;; however late it arrives, and there are as many joiners as anyone likes.
+;; Waits for child exit once.
 (: awaiting-exit (-> Process Unit))
 (defbjo (awaiting-exit child)
   (process-await child)
@@ -502,9 +362,7 @@
                   (source (Some (cast TextInputPort (process-stdout child))))
                   (children [child])
                   (exits [(bjo (awaiting-exit child))])
-                  ;; `copy-into`, not `copy-stream`: every command under one
-                  ;; `errors-into-file` shares this writer, and the first to
-                  ;; finish must not close it.
+                  ;; Handle stderr copying.
                   (waits (match errors
                            ((Some w) [(bjo (pump-into (cast TextInputPort (process-stderr child)) w))])
                            (None (vec-empty))))))))))
@@ -522,10 +380,7 @@
              (exits (vec-empty))
              (waits [(bjo (close-after done (pipe-output out)))])))))
 
-;; Close first, raise second: whatever is downstream is waiting on end of
-;; stream, and leaving it waiting because a filter failed turns one visible
-;; error into a hung pipeline. The raise then travels to `wait` through this
-;; promise.
+;; Closes and raises errors.
 (: close-after (-> (Promise Unit) TextOutputPort Unit))
 (defbjo (close-after done out)
   (match (sync (promise-join done))
@@ -598,9 +453,7 @@
                        (vec-merge exits (record-ref w exits))
                        (vec-add (vec-merge waits (record-ref w waits)) link))))))))))))))
 
-;; A junction only exists if both ends do. `(pipe (into-file "x" (ls)) (wc -l))`
-;; asks for one where the upstream output is already in a file, and answering
-;; with an empty `wc` would be a silent lie.
+;; Creates stream junction.
 (: junction (-> (Option TextInputPort) (Option TextOutputPort) (Result Exception (Promise Unit))))
 (defun (junction upstream downstream)
   (match upstream
@@ -700,18 +553,7 @@
                   (waits (vec-add (record-ref w waits)
                                   (bjo (close-when-all-done (record-ref w waits) shared))))))))))
 
-;; Read the whole form, then start it.
-;;
-;; A `defun`, not a `defbjo`: starting a child does not suspend, and `bjo` is
-;; colourless, so the pumps can be spawned from here. The suspending part is
-;; waiting, which is `wait` and its neighbours.
-;;
-;; Nothing is started until the form has parsed, so a spelling mistake in a tag
-;; costs nothing and leaves nothing running.
-;;
-;; Both surviving ends belong to the caller: nothing here closes `proc-input`,
-;; and a form whose input is never closed is one whose first stage never sees
-;; end of file.
+;; Parses and runs form.
 (: run (-> Form (Result Exception Proc)))
 (defun (run form)
   (match (parse-form form)
@@ -740,10 +582,7 @@
 ;; Waiting, written once and seen from two sides
 ;; ---------------------------------------------------------------------------
 ;;
-;; `waiting` is the only place that knows what "finished" means. `wait` blocks
-;; on it, `exited` joins it as an event. Writing the blocking one directly and
-;; the event one on top would have been two implementations of the same
-;; ordering rules, and they would have drifted.
+;; Checks if process finished.
 
 (: join-all (-> (Vec (Promise Unit)) (Result Exception Unit)))
 (defbjo (join-all ps)
@@ -754,12 +593,7 @@
           ((Err e) (Err e))
           ((Ok u) (go (+ i 1)))))))
 
-;; Children first, then everything spawned around them: a pump between two
-;; stages cannot finish before the stage feeding it has.
-;;
-;; The children are joined rather than awaited, because this runs once per
-;; `wait` and once per `exited` — several times over for a `choose` loop — and
-;; a process may only be awaited once. `awaiting-exit` is where that happens.
+;; Awaits process completion.
 (: waiting (-> Proc (Result Exception int)))
 (defbjo (waiting p)
   (match (join-all (record-ref p exits))
@@ -782,21 +616,14 @@
        ((Err e) (Err e))
        ((Ok done) (Ok (vec-map (fun (c) (process-code c)) (record-ref p children))))))))
 
-;; A spawned bjoroutine's answer, from outside fiber-land. The two `Result`s are
-;; different failures — the outer one is the waiter itself dying, the inner one
-;; the pipeline's — and nothing a caller could do tells them apart, so they are
-;; flattened here rather than in every signature.
+;; Gets blocking result.
 (: blocking-result (-> (Promise (Result Exception %a)) (Result Exception %a)))
 (defun (blocking-result p)
   (match (sync/blocking (promise-join p))
     ((Err e) (Err e))
     ((Ok answer) answer)))
 
-;; The exit code of the last command started, which is what a shell reports, or
-;; `0` for a form made only of filters.
-;;
-;; Blocks the calling thread. Deadlocks if `proc-output` has not been drained —
-;; see `run/string`, which is this done correctly.
+;; Waits for last command exit.
 (: wait (-> Proc (Result Exception int)))
 (defun (wait p) (blocking-result (bjo (waiting p))))
 
@@ -805,14 +632,7 @@
 (: wait/all (-> Proc (Result Exception (Vec int))))
 (defun (wait/all p) (blocking-result (bjo (waiting/all p))))
 
-;; The same thing as an event, for a bjoroutine that wants to `choose` on it —
-;; against a `timeout`, against `cancelled`, against another form.
-;;
-;; Persistent, and deliberately so: the waiter is spawned here rather than at
-;; sync, and losing a `choose` does not withdraw it. The processes are already
-;; running and have no reason to die because you stopped listening. To stop
-;; them, say so — `kill` on the losing branch. For a form the caller *owns*
-;; rather than observes, `running` below is the one that cleans up after itself.
+;; Returns process exit event.
 (: exited (-> Proc (Event (Result Exception int))))
 (defun (exited p)
   (wrap (promise-join (bjo (waiting p)))
@@ -838,13 +658,7 @@
 ;; The whole thing at once
 ;; ===========================================================================
 ;;
-;; Each of these closes the input before reading the output, which is the order
-;; that matters: a first stage still waiting on stdin produces nothing to read,
-;; and reading first would wait for it.
-;;
-;; A form whose output went to a file has nothing left to answer with, so
-;; `run/string` gives `""` and `run/strings` gives no lines. That is what asking
-;; for both looks like; `run/status` is the one to use there.
+;; --- Process runners ---
 
 (: close-input (-> Proc void))
 (defun (close-input p)
@@ -888,8 +702,7 @@
       ((Err e) (Err e))
       ((Ok code) (Ok lines)))))
 
-;; For a form run to find out whether it succeeded. The output still has to be
-;; read — dropping it on the floor is a decision, not an omission.
+;; Runs for status code.
 (: run/status (-> Form (Result Exception int)))
 (defun (run/status form)
   (match (run form)
@@ -910,29 +723,10 @@
 ;; A form as a channel
 ;; ===========================================================================
 
-;; How a form's output becomes items. Given the output port and the channel to
-;; put things on, send as many as the output is worth and return.
-;;
-;; The caller's rather than the module's, because how a stream divides is not
-;; something this module can know: lines for `grep`, fixed-width records for
-;; `dd`, whole documents for something framed. `by-lines` below is the common
-;; one, and is only a `Reader` like any other.
-;;
-;; A `-bjo->` because sending on a channel is a rendezvous — a reader suspends
-;; until a consumer takes the item, which is where the backpressure comes from.
+;; Reader streams items to channel.
 (type (: (Reader %a) (-bjo-> TextInputPort (Chan %a) Unit)))
 
-;; Start a form and read its output onto a channel.
-;;
-;; The reader is spawned like a pump or a filter and its promise goes into the
-;; same `waits`, which is the point: `exited` then covers the reader too, so one
-;; event means *both* "no more items are coming" and "here is what happened",
-;; including a reader that raised. That is the shape the `choose` loop wants,
-;; and it is why this hands back the `Proc` rather than the `(Promise Unit)`
-;; that `async-seq->chan` pairs with its channel.
-;;
-;; `proc-input` and `kill` are unaffected. Nothing here closes the input — a
-;; form that reads stdin still needs the caller to say when it ends.
+;; Runs and streams to channel.
 (: run/channel (-> Form (Reader %a) (Result Exception (Tuple (Chan %a) Proc))))
 (defun (run/channel form read)
   (match (run form)
@@ -940,9 +734,7 @@
     ((Ok p)
      (let ((items (make-chan)))
        (match (proc-output p)
-         ;; An `into-file` took the output, so there is nothing to read and the
-         ;; channel would never see an item. Saying so beats handing back one
-         ;; that stays silent forever.
+         ;; Handles redirect output.
          (None (kill p)
                (Err (run-error
                      "this form sends its output to a file, so there is nothing left to read onto a channel")))
@@ -963,12 +755,7 @@
 ;; A form as one event
 ;; ===========================================================================
 
-;; Stop watching, one way or the other.
-;;
-;; The `choose` is not decoration. `Bjoml`'s own `Cancellable` carries the note
-;; that a fiber spawned only to await a nack parks forever whenever the branch
-;; *wins* — the nack of a winning branch never fires. Waiting on the nack and
-;; the work together is what makes this end either way.
+;; Stops on event.
 (: reap-on-loss (-> (Event Unit) Proc (Promise (Result Exception string)) Unit))
 (defbjo (reap-on-loss nack p done)
   (when (sync (choose (wrap nack (fun (u) #t))
@@ -976,23 +763,7 @@
     (kill p))
   unit)
 
-;; A whole form as a single event, for the caller who *owns* it rather than
-;; watches it: `(choose (running '(curl ...)) (timeout 5000))` starts nothing if
-;; the branch is never published, and kills what it started if the branch loses.
-;;
-;; The two halves of being a good CML citizen:
-;;
-;; - **`with-nack` runs its generator at `Publish`**, which is sync time, so the
-;;   processes start when the `choose` is *reached* rather than when the event
-;;   is built. An event held in a variable and never synced runs nothing.
-;; - **A losing branch is nacked**, and the reaper kills the form. Without it,
-;;   every `choose` that this branch lost would leave a pipeline running with
-;;   nobody to collect it.
-;;
-;; The cost is inherent to `choose` and worth stating: every published branch
-;; runs its generator, so racing two forms *starts* two forms and kills the
-;; loser. `exited` on an already-started form is the way to avoid that when the
-;; work is expensive.
+;; Wraps process in event.
 (: running (-> Form (Event (Result Exception string))))
 (defun (running form)
   (with-nack
@@ -1011,21 +782,7 @@
 ;; Scoped
 ;; ===========================================================================
 
-;; `(with-run (p '(pipe (cat "big") (grep "x"))) body ...)` — run a form for the
-;; length of a body and kill it on the way out, however the way out happens.
-;;
-;; A macro rather than a `call-with-run` taking a thunk, because the body has to
-;; be able to `sync`: a `fun` inside a bjoroutine is a C# member of its own, so
-;; `ColourCheck` seals it and no yield point may appear there. A macro splices
-;; the body into whatever colour it was written in.
-;;
-;; The failure to start is handed to the body as the `Result`, rather than
-;; raised, so that the shape matches every other entry point here.
-;;
-;; `kill` and not `wait` in the cleanup: killing is what makes a form stop, and
-;; waiting for it would park a thread in a `#:finally` — the one place a program
-;; is least able to afford it. The pumps end on their own once the streams they
-;; are copying close.
+;; Runs form scoped to body.
 (def/macro (with-run form inject compare)
   (syntax-match form
     ((_ (name spec) first body ...)

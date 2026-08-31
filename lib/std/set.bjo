@@ -1,30 +1,8 @@
 ;; std/set.bjo — the unordered set.
-;;
-;; A `(Set %a)` is a CHAMP trie of elements: the `Map` with the values left out.
-;; Membership, insertion and removal are all effectively constant time, two sets
-;; share every subtree they have in common, and a walk arrives in the trie's own
-;; order — which is to say, in no order a program should rely on. Reach for
-;; `(std orderedset)` when the order is part of the answer.
-;;
-;; Three interfaces, and they are deliberately the same interface three times:
-;;
-;;   * the **set** itself, where every write answers a new set;
-;;   * the **builder**, shaped exactly like `ListBuilder` — append, ask how many,
-;;     build once — and the fast way to make a set out of nothing;
-;;   * the **transient**, which is the set's own interface with the writes turned
-;;     inside out: the same names in the same argument order, mutating in place
-;;     and answering nothing. It is the fast way to make a set out of *another*
-;;     set, because it owns the nodes it has touched and `transientset->set`
-;;     hands the result back in O(1).
-;;
-;; Nothing here is a builtin. The operations are `Set.SetModule` and its two
-;; siblings, imported directly; what is written in Bjolang is the part that has
-;; no C# counterpart — an `Option` where the interface answers a pair, and the
-;; trait implementations.
+;; CHAMP trie of elements.
 
 (export
-  ;; The types. `Setting` is the collector, and its constructor is what an
-  ;; `:acc` clause writes.
+  ;; The types.
   Set SetBuilder TransientSet SetCursor Setting
 
   ;; Sets
@@ -45,8 +23,7 @@
 
 (import (std prelude))
 
-;; The types. Each is written applied, because a .NET generic type is a type
-;; *constructor*: `Set.Set` is not a type until it has its argument.
+;; The types.
 (import/class
   ((Set %a) (: Set.Set))
   ((SetBuilder %a) (: Set.SetBuilder))
@@ -56,10 +33,6 @@
 ;; ---------------------------------------------------------------------------
 ;; The set
 ;; ---------------------------------------------------------------------------
-;;
-;; A generic method's type arguments come from the signature, so every clause
-;; below carries one. That is not ceremony: it is the whole of what the compiler
-;; is told, and it is checked against the method's real shape at this line.
 
 (import/extern
   (set-empty      (: Set.SetModule.Empty          (-> (Set %a))))
@@ -71,33 +44,21 @@
   (set-length     (: Set.SetModule.Count          (-> (Set %a) int)))
   (set-empty?     (: Set.SetModule.IsEmpty        (-> (Set %a) bool)))
   (set-clear      (: Set.SetModule.Clear          (-> (Set %a) (Set %a))))
-  ;; The union. Cheap where the two sets have a history in common: an untouched
-  ;; subtree is taken whole rather than walked.
+  ;; The union.
   (set-union      (: Set.SetModule.Merge          (-> (Set %a) (Set %a) (Set %a))))
   (set-map        (: Set.SetModule.Map            (-> (-> %a %b) (Set %a) (Set %b))))
   (set-filter     (: Set.SetModule.Filter         (-> (-> %a bool) (Set %a) (Set %a))))
   (set-fold       (: Set.SetModule.Fold           (-> (-> %s %a %s) %s (Set %a) %s)))
-  ;; Walks until the predicate answers false, and reports whether it ran to the
-  ;; end — the early-exit walk, and the one to reach for when the answer is
-  ;; known before the elements run out.
   (set-iter       (: Set.SetModule.Iter           (-> (-> %a bool) (Set %a) bool)))
   (set-any?       (: Set.SetModule.Exists         (-> (-> %a bool) (Set %a) bool)))
   (set-try-find   (: Set.SetModule.TryFindKey     (-> (-> %a bool) (Set %a) (Tuple bool %a))))
   (seq->set       (: Set.SetModule.FromEnumerable (-> (Seq %a) (Set %a))))
   (set->seq       (: Set.SetModule.AsEnumerable   (-> (Set %a) (Seq %a))))
-  ;; The cursor `Iterable` walks with. `done?` is what advances it, which the
-  ;; protocol allows and which is what lets the walk allocate nothing per
-  ;; element.
   (set-cursor          (: Set.SetModule.Cursor        (-> (Set %a) (SetCursor %a))))
   (set-cursor-done?    (: Set.SetModule.CursorDone    (-> (SetCursor %a) bool)))
   (set-cursor-current  (: Set.SetModule.CursorCurrent (-> (SetCursor %a) %a))))
 
 ;; The first element satisfying `pred`, as an `Option`.
-;;
-;; The interface answers `(found, key)` because a C# static method has no
-;; `Option` to hand back — the type is Bjolang's. Turning the pair into one here
-;; is the whole of what this wrapper is for, and it is the shape a caller wants:
-;; "nothing matched" is a case to `match` on, not a flag to remember to read.
 (: set-find (-> (-> %a bool) (Set %a) (Option %a)))
 (defun (set-find pred s)
   (def (found key) (set-try-find pred s))
@@ -106,31 +67,19 @@
 ;; ---------------------------------------------------------------------------
 ;; Builders
 ;; ---------------------------------------------------------------------------
-;;
-;; `ListBuilder`'s interface, at a set: `empty`, `add!`, `add-all!`, `length`,
-;; and the conversion each way. Appends land in a flat buffer and are scattered
-;; into the trie by hash in one pass at the end, which beats inserting an
-;; element at a time by enough to be the default way to build one.
-;;
-;; The mutators answer nothing. A builder is a class that mutates in place and
-;; whose identity never changes, so handing the reference back buys nothing and
-;; would cost a discard at every call site.
+
 
 (import/extern
   (setbuilder-empty     (: Set.SetBuilderModule.Empty    (-> (SetBuilder %a))))
   (set->setbuilder      (: Set.SetBuilderModule.FromSet  (-> (Set %a) (SetBuilder %a))))
   (setbuilder-add!      (: Set.SetBuilderModule.Add      (-> (SetBuilder %a) %a void)))
   (setbuilder-add-all!  (: Set.SetBuilderModule.AddRange (-> (SetBuilder %a) (Seq %a) void)))
-  ;; How many elements have been *appended*. Duplicates are compacted when the
-  ;; set is built, so this is not the size of the set to come.
   (setbuilder-length    (: Set.SetBuilderModule.Count    (-> (SetBuilder %a) int)))
   (setbuilder->set      (: Set.SetBuilderModule.Build    (-> (SetBuilder %a) (Set %a))))
 
   ;; --- Transients ---
   (transientset-empty        (: Set.TransientSetModule.Empty          (-> (TransientSet %a))))
   (set->transientset         (: Set.TransientSetModule.FromPersistent (-> (Set %a) (TransientSet %a))))
-  ;; The set as it stands. The transient stays usable and disowns what it handed
-  ;; over, so a later edit copies rather than corrupting the snapshot.
   (transientset->set         (: Set.TransientSetModule.ToPersistent   (-> (TransientSet %a) (Set %a))))
   (transientset-add!         (: Set.TransientSetModule.Add            (-> (TransientSet %a) %a void)))
   (transientset-add-all!     (: Set.TransientSetModule.AddRange       (-> (TransientSet %a) (Seq %a) void)))
@@ -143,10 +92,7 @@
 ;; ---------------------------------------------------------------------------
 ;; Conversions
 ;; ---------------------------------------------------------------------------
-;;
-;; Through `(Seq %a)`, which every collection can produce and consume: a set is
-;; built from a walk of the source and nothing about the source's own shape
-;; matters. `seq->set` is the one that does the work.
+
 
 (: list->set (-> (List %a) (Set %a)))
 (defun (list->set xs) (seq->set (list->seq xs)))
@@ -164,10 +110,6 @@
 ;; The traits
 ;; ---------------------------------------------------------------------------
 
-;; The cursor is the trie's own enumerator in a heap cell, so a loop over a set
-;; allocates once and then nothing. `done?` advances it, which the protocol
-;; allows — it is called exactly once per iteration — and `next` is therefore
-;; the identity.
 (def/impl (Iterable (Set %a))
   (type %elem %a)
   (type %cursor (SetCursor %a))
@@ -176,10 +118,6 @@
   (defun (iterable-current s c) (set-cursor-current c))
   (defun (iterable-next s c) c))
 
-;; Written here rather than imported, and below `Iterable` because it is written
-;; in terms of it. The .NET `ForEach` takes an `Action<T>`, where a Bjolang
-;; `(-> %a void)` is a `Func<T, Unit>` — the unit is a value, and that is what
-;; makes a callback's type uniform whatever it answers.
 (: set-for-each (-> (-> %a void) (Set %a) void))
 (defun (set-for-each f s)
   (loop (:for x s) (:do (f x))))
@@ -193,14 +131,9 @@
   (type %item %a)
   (defun (fold f acc col) (set-fold f acc col)))
 
-;; The elements move and the shape stays, which is what a functor is. Note what
-;; it can do that a list's cannot: a mapping that collides merges, so
-;; `(map #(mod &1 2) s)` has at most two elements.
 (def/impl (Functor (Set %a))
   (defun (map g s) (set-map g s)))
 
-;; `(loop (:for x xs) (:acc s (setting x)))`. Through the builder, for the
-;; reason `listing` goes through a `ListBuilder`.
 (type (: (Setting %a) (Union setting)))
 
 (def/impl (Collector (Setting %a))
@@ -211,28 +144,15 @@
   (defun (collector-step c acc x) (setbuilder-add! acc x) acc)
   (defun (collector-finish c acc) (setbuilder->set acc)))
 
-;; Two sets are equal when they hold the same elements. Order does not come into
-;; it: the walk order is the trie's, and the trie's is the hashes'.
-;;
-;; Membership is the trie's own lookup, so element equality here is .NET's —
-;; which, for a record, struct or union with an `Eq` implementation, *is* that
-;; implementation. The same caveat as `Map`'s, and the same one place it does not
-;; hold: a generic type whose implementation was hand-written, which keeps C#'s
-;; synthesized equality.
+;; Equality for sets.
 (def/impl (Eq (Set %a))
   (where (Eq %a))
   (defun (= a b)
     (and (= (set-length a) (set-length b))
          (set-iter (fun (x) (set-contains? b x)) a)))
-  ;; Order-independent, because the walk order is: xor commutes, so two equal
-  ;; sets built by different routes hash alike. The fold is `Set<T>`'s own,
-  ;; operation and seed both, so `eq-hash` and `GetHashCode` answer the same
-  ;; number for one set rather than merely each agreeing with itself.
   (defun (eq-hash s)
     (set-fold (fun (h x) (bitwise-xor h (eq-hash x))) 0 s)))
 
-;; `#{1 2 3}`, with every element formatted by its own `->str`. The order is the
-;; trie's, which is stable for a given set and worth nothing beyond that.
 (: set->str (-> (Set %a) string) (where (->str %a)))
 (defun (set->str s)
   (let ((sb (stringbuilder-empty)))

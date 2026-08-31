@@ -1,26 +1,4 @@
 ;; std/ports.bjo — draining and streaming a textual port.
-;;
-;; The port vocabulary itself — `TextInputPort`, `TextOutputPort`, the `open-*`
-;; family, `read-line`, `read-all`, `port->lines`, `write-line` and the rest —
-;; is in `std/prelude`, which every program is linked against: opening a file
-;; and reading a line from it are as much the language as `print` is, and a
-;; header line is a poor price for them.
-;;
-;; What is left here is the part that takes the *reader procedure* as an
-;; argument, and so is a library rather than a vocabulary: a program that only
-;; wants lines never needs it, and one that reads records, headers or chunks
-;; asks for it by name.
-;;
-;; The reader is any `(-> TextInputPort %a)` — `read-line` and `read-all` are
-;; the stock two — and the element type follows it rather than being `string`
-;; by fiat.
-;;
-;; The two *draining* readers are declared `-?->`, so they take a reader of
-;; either colour and a bjoroutine draining a port suspends rather than parking.
-;; The two *streaming* ones cannot be, and the reason is worth stating: a
-;; sequence is emitted as a C# iterator, and an iterator may not await. Their
-;; readers stay `(-> ...)` because that is the truth about where the value ends
-;; up, not because the declaration was forgotten.
 
 (export
   ;; Draining
@@ -31,10 +9,7 @@
 
 (import (std prelude))
 
-;; `Exception` is only needed to spell `file->seq`'s `Result`. The alias is
-;; module-local wherever it is written, so importing the class again here is
-;; not a duplicate of the prelude's — it is the same name being made writable
-;; in a second module.
+;; Exception import.
 (import/class
   (Exception (: System.Exception)))
 
@@ -42,14 +17,10 @@
 ;; Draining
 ;; ---------------------------------------------------------------------------
 ;;
-;; Every remaining item, as a collection. `port->lines` in the prelude is the
-;; `read-line` case, done in the runtime; these are for every other reader.
-;;
+;; Drains items.
 
 
-;; The reader is `-?->`, so these drain at whichever colour it is given. A
-;; `loop` lowers to a `while` in the enclosing method, and in the generated copy
-;; that method is `async` — which is what lets `(reader p)` be awaited there.
+;; Drains a port.
 (: port->list (-> (-?-> TextInputPort %a) TextInputPort (List %a)))
 (defun (port->list reader p)
   (loop (:with i 1 1)
@@ -66,26 +37,7 @@
 ;; Streaming
 ;; ---------------------------------------------------------------------------
 
-;; The items, pulled one at a time — the form for input too large to hold.
-;;
-;; The port stays the caller's: neither opened nor closed here, valid only
-;; while the port is, and interleaving with any other read of the same port.
-;;
-;; **Good for one walk.** A second enumeration yields nothing.
-;;
-;; `:break` is checked before the yield, so the last line is produced and the
-;; end of input is not read past; the `:with` is just a counter.
-;;
-;; The reader stays `(-> ...)`: this body is a `seql`, which is a `seq`, which
-;; is a C# iterator — and `yield return` and `await` are mutually exclusive in
-;; one member. Declaring `-?->` here would promise a suspending copy that cannot
-;; be built, and the compiler would rightly refuse it. A stream of items read by
-;; suspending work is a channel rather than a sequence, and that is `port->chan`
-;; below — this one, with a rendezvous where the iterator is.
-;;
-;; So a bjoroutine calling this parks, and the blocking lint says so. That is
-;; not a defect being tolerated: it is the honest report that this shape of
-;; laziness is the one a C# iterator can express.
+;; Streams items from port as a Seq.
 (: port->seq (-> (-> TextInputPort %a) TextInputPort (Seq %a)))
 (defun (port->seq reader p)
   (seql (:with i 0 0)
@@ -96,87 +48,33 @@
 ;; Streaming that suspends
 ;; ---------------------------------------------------------------------------
 ;;
-;; The same shape as `port->seq` and the answer to what `port->seq` cannot do.
-;; A sequence is a C# iterator, so it may not await; a channel is a rendezvous,
-;; so it may. That is the whole difference, and it is why this exists rather
-;; than `port->seq` being made to suspend.
-;;
-;; What a channel buys beyond suspending is that it is a *CML event*. A sequence
-;; composes with nothing; a channel composes with `choose`, `timeout`,
-;; `with-nack` and the rest — so reading a port with a deadline, or racing two
-;; ports, is written here rather than arranged around the outside.
-;;
-;; The rendezvous is also the backpressure: a send waits until a receiver takes
-;; the item, so a slow consumer stops the reader instead of growing a buffer
-;; behind it.
+;; Streaming that suspends.
+;; Returns a channel and end-of-stream promise.
 
-;; A port, read on a fiber of its own, as a channel and the reader's promise.
-;;
-;; The promise is the end of the stream, because a `Chan` has no close. It
-;; carries the failure too: a read that throws resolves it as `Err`, and the
-;; consumer sees the exception rather than a stream that merely stopped. This is
-;; the pair `async-seq->chan` hands back, for the same reason and in the same
-;; shape.
-;;
-;; The reader is `-bjo->` and not `-?->`, which is the one declaration here
-;; worth arguing about. It is called on a *spawned fiber*, so an ordinary reader
-;; would park that fiber on every item — and `-?->` would let a caller in a
-;; `defun` choose exactly that, silently, since an unconstrained colour defaults
-;; to the one at the call site. A reader that runs on a fiber suspends; the
-;; arrow says so. `(port->chan read-line p)` is still what you write: a name
-;; with two copies has the suspending one here, because that is what this asks
-;; for.
-;;
-;; This function itself is an ordinary `defun`. Spawning is colourless, so a
-;; port stream can be started from `main`.
-;;
-;; The port stays the caller's: neither opened nor closed here.
+;; Reads port on a fiber into a channel.
 (: port->chan (-> (-bjo-> TextInputPort %a) TextInputPort (Tuple (Chan %a) (Promise int))))
 (defun (port->chan reader p)
   (let ((c (make-chan)))
     (Tuple c (bjo (port-fill c reader p)))))
 
-;; The reader loop, which is what the fiber runs. Private: the pair above is the
-;; interface, and a caller holding this would have a fiber's body without the
-;; channel it fills.
-;;
-;; Answers the number of items read, so a consumer that only wants the count can
-;; take it from the promise and ignore the channel.
+;; Reader loop run on fiber.
 (: port-fill (-bjo-> (Chan %a) (-bjo-> TextInputPort %a) TextInputPort int))
 (defbjo (port-fill c reader p)
   (let go ((n 0))
     (if (port-eof? p)
         n
         (let ()
-          ;; The send is the backpressure: this waits here until the consumer
-          ;; takes the item, so the port is read no faster than it is drained.
+          ;; Send item.
           (ignore (sync (chan-send c (reader p))))
           (go (+ n 1))))))
 
-;; The next item, or `None` when the reader has finished.
-;;
-;; The termination protocol in one place, because it is the part of a channel
-;; stream that is easy to get wrong: a `Chan` has no close, so "no more items"
-;; is the producer's promise resolving, and a consumer that only received would
-;; wait forever at the end.
-;;
-;; The race is safe rather than merely unlikely, and the rendezvous is why. A
-;; send completes only when a receiver has taken the item, so by the time the
-;; promise resolves every item has already been handed over and there is nothing
-;; left in flight for `choose` to miss.
-;;
-;; A failed read surfaces as `None` here and as `Err` on the promise, which the
-;; caller still holds. Ending and failing look alike to a loop and different to
-;; anyone who asks.
+;; Gets next item or None.
 (: chan-next (-bjo-> (Chan %a) (Promise int) (Option %a)))
 (defbjo (chan-next c done)
   (sync (choose (wrap (chan-recv c) (fun (x) (Some x)))
                 (wrap (promise-join done) (fun (r) None)))))
 
-;; The contents of a file, pulled through `reader` one item at a time and
-;; closed for you. It can be re-enumerated.
-;; Reach for `open-input-file` with `with-open` when the port is wanted for
-;; anything beyond its contents.
+;; Streams file contents as Seq.
 (: file->seq (-> (-> TextInputPort %a) string (Result Exception (Seq %a))))
 (defun (file->seq reader path)
   (match (open-input-file path)
