@@ -202,14 +202,15 @@
   (Deque (front xs) (back Nil) (size (list-length xs))))
 
 ;; Front to back. The rear half is reversed once rather than per element.
-(: deque-fold (-> (-> %b %a %b) %b (Deque %a) %b))
+(: deque-fold (-> (-?-> %b %a %b) %b (Deque %a) %b))
 (defun (deque-fold f init d)
   (list-foldl f (list-foldl f init (record-ref d front))
               (list-reverse (record-ref d back))))
 
-(: deque-for-each (-> (-> %a void) (Deque %a) void))
+(: deque-for-each (-> (-?-> %a void) (Deque %a) void))
 (defun (deque-for-each f d)
-  (deque-fold (fun (acc x) (ignore (f x)) acc) unit d))
+  (list-for-each f (record-ref d front))
+  (list-for-each f (list-reverse (record-ref d back))))
 
 ;; ---------------------------------------------------------------------------
 ;; Equality, and the hash there is not

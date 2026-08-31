@@ -865,16 +865,12 @@ let prelude : Env =
         "seq-head", {Scheme = Scheme(["a"], [], makeFunType [makeSeqType (TVar "a")] (TVar "a")); IsMutable = false }
         "seq-map", {Scheme = Scheme(["a"; "b"], [], makeFunType [makeFunType [TVar "a"] (TVar "b"); makeSeqType (TVar "a")] (makeSeqType (TVar "b"))); IsMutable = false }
         "seq-filter", {Scheme = Scheme(["a"], [], makeFunType [makeFunType [TVar "a"] boolType; makeSeqType (TVar "a")] (makeSeqType (TVar "a"))); IsMutable = false }
-        // Folds take the function first, then the identity, then the
-        // collection, as `list-foldl` and `vec-fold` do.
-        "seq-fold", {Scheme = Scheme(["a"; "b"], [], makeFunType [makeFunType [TVar "b"; TVar "a"] (TVar "b"); TVar "b"; makeSeqType (TVar "a")] (TVar "b")); IsMutable = false }
         // The generator maps a state to the next element and the state after
         // it, or to None to stop.
         "seq-unfold", {Scheme = Scheme(["a"; "s"], [], makeFunType [makeFunType [TVar "s"] (makeOptionType (TTuple [TVar "a"; TVar "s"])); TVar "s"] (makeSeqType (TVar "a"))); IsMutable = false }
         "seq-take", {Scheme = Scheme(["a"], [], makeFunType [makeSeqType (TVar "a"); intType] (makeSeqType (TVar "a"))); IsMutable = false }
         "seq-drop", {Scheme = Scheme(["a"], [], makeFunType [makeSeqType (TVar "a"); intType] (makeSeqType (TVar "a"))); IsMutable = false }
         "seq-append", {Scheme = Scheme(["a"], [], makeFunType [makeSeqType (TVar "a"); makeSeqType (TVar "a")] (makeSeqType (TVar "a"))); IsMutable = false }
-        "seq-for-each", {Scheme = Scheme(["a"], [], makeFunType [makeFunType [TVar "a"] unitType; makeSeqType (TVar "a")] unitType); IsMutable = false }
         // `seq-length` walks the sequence, and a walk of a `Seq` over an
         // effectful source is a *consumption*: asking a `port->seq` its length
         // reads the port to the end. The name matches the rest of the library

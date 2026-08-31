@@ -35,6 +35,9 @@
   vec-map vec-filter vec-fold vec-reduce
   vec-for-each vec-for-each/range vec-iter
 
+  ;; Seq operations.
+  seq-fold seq-for-each
+
   ;; Maps. 
   map-empty map-ref map-ref-or map-try-ref
   map-set map-add map-set-all map-remove map-remove-all
@@ -736,6 +739,32 @@
           (if (f (vec-ref v i))
               (go (+ i 1))
               #f)))))
+
+;; ---------------------------------------------------------------------------
+;; Seqs, where the callback may suspend
+;; ---------------------------------------------------------------------------
+;;
+;; The eager two. `seq-map`, `seq-filter` and `seq-unfold` are lazy and stay
+;; builtins: their callback runs when the walker pulls, which is somewhere
+;; else.
+
+(: seq-fold (-> (-?-> %b %a %b) %b (Seq %a) %b))
+(defun (seq-fold f init s)
+  (let ((c (seq-cursor s)))
+    (let go ((acc init))
+      (if (seq-cursor-done? c)
+          acc
+          (go (f acc (seq-cursor-current c)))))))
+
+(: seq-for-each (-> (-?-> %a Unit) (Seq %a) Unit))
+(defun (seq-for-each f s)
+  (let ((c (seq-cursor s)))
+    (let go ()
+      (if (seq-cursor-done? c)
+          unit
+          (let ()
+            (ignore (f (seq-cursor-current c)))
+            (go))))))
 
 (def/trait (Functor (%f %a))
   (: map (-> (-> %a %b) (%f %a)  (%f %b))))

@@ -881,12 +881,6 @@ public static partial class BjolangRuntime {
         foreach (var item in source) if (predicate(item)) yield return item;
     }
 
-    public static TState seqsubfold<T, TState>(Func<TState, T, TState> folder, TState initial, IEnumerable<T> source) {
-        var acc = initial;
-        foreach (var item in source) acc = folder(acc, item);
-        return acc;
-    }
-
     // The generator answers, for a given state, whether there is another
     // element and what the state after it is. `None` ends the sequence.
     public static IEnumerable<T> seqsubunfold<T, TState>(
@@ -925,11 +919,6 @@ public static partial class BjolangRuntime {
     public static IEnumerable<T> seqsubappend<T>(IEnumerable<T> first, IEnumerable<T> second) {
         foreach (var item in first) yield return item;
         foreach (var item in second) yield return item;
-    }
-
-    public static Unit seqsubforsubeach<T>(Func<T, Unit> action, IEnumerable<T> source) {
-        foreach (var item in source) action(item);
-        return unit;
     }
 
     public static int seqsublength<T>(IEnumerable<T> source) {
