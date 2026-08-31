@@ -804,6 +804,23 @@ and TLoopMember =
       /// observe the next iteration's values.
       Locals: string list
       RetType: HMType
+      /// The colour this member is emitted in, when the group is emitted as C#
+      /// local functions rather than as a `while`.
+      ///
+      /// A loop member is the one function-shaped thing with no arrow of its
+      /// own — its parameters are `Slots` and its result is `RetType`, and the
+      /// arrow it came from was dissolved when `LoopLowering` recognised the
+      /// recursion. So the colour is recorded here rather than read off a type,
+      /// which is the only thing that made this case cost more than a binding's.
+      ///
+      /// One colour per *group*, not per member: members of a group jump to one
+      /// another, so a suspending one makes suspenders of them all, and a merged
+      /// loop is a single C# method besides.
+      ///
+      /// Unread when the group is inlined. A `while` runs in the enclosing
+      /// member and takes its colour, which is the case this field does not
+      /// describe.
+      Effect: Effect
       Body: TypedExpr }
 
 and TMatchClause =

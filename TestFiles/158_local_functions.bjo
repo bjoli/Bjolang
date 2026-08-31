@@ -60,17 +60,16 @@
   (defun (outer-most y) (* (middle y) 2))
   (outer-most n))
 
-;; --- Recursion is not this ----------------------------------------------------
+;; --- Recursion ----------------------------------------------------------------
 ;;
-;; A recursive body-local function — self or mutual, tail or not — is not a
-;; binding at all by the time colour is decided. `LetRecify` and `LoopLowering`
-;; turn it into a `TLoop`, and a loop is either promoted to a `while` in the
-;; enclosing member, where a yield point was always legal, or left as a loop
-;; member emitted by a different pair of emitters entirely.
+;; A recursive body-local function is not a binding by the time colour is
+;; decided: `LetRecify` and `LoopLowering` turn it into a loop, which is either
+;; promoted to a `while` in the enclosing member or left as C# local functions
+;; of its own. Both may suspend now, so the distinction stopped being visible
+;; from the outside — which is the point, but it is worth pinning that all four
+;; shapes work, because they take four different routes to get here.
 ;;
-;; What decides is **tail position, not recursion**, and that is worth pinning
-;; because it is not what the shape of the source suggests. A tail-recursive
-;; one is jumped to, so it becomes a `while` and suspends:
+;; Tail-recursive, so promoted to a `while`:
 (: countdown (-> int int))
 (defbjo (countdown n)
   (defun (go i acc)
@@ -88,12 +87,31 @@
   (defun (odds i) (if (<= i 0) (fetch 21) (evens (- i 1))))
   (evens n))
 
-;; A call that is *not* a tail is refused, self or mutual — see
-;; `errors/suspend_in_recursive_local_function.bjo` and
-;; `errors/suspend_in_mutual_local_functions.bjo`. A loop member carries no
-;; arrow of its own for a colour to live in, which is exactly what made the
-;; binding case cheap, so it is a separate piece of work rather than a line of
-;; it.
+;; Not tail-recursive, so the group stays C# local functions — and those are
+;; emitted `async` too. `go` is the fold anyone writes by hand, with the
+;; recursive call inside a `+`.
+(: sum-fetched (-> int int))
+(defbjo (sum-fetched n)
+  (defun (go i)
+    (if (<= i 0)
+        0
+        (+ (fetch i) (go (- i 1)))))
+  (go n))
+
+;; The same, mutually recursive and not in tail position. Two names, one merged
+;; C# method with a state discriminant, and entry wrappers that await it.
+(: alternating (-> int int))
+(defbjo (alternating n)
+  (defun (evens i) (if (<= i 0) 0 (+ (fetch i) (odds (- i 1)))))
+  (defun (odds i) (if (<= i 0) 0 (evens (- i 1))))
+  (evens n))
+
+;; --- What is still refused ----------------------------------------------------
+;;
+;; A loop used as a *value* — see `errors/bjo_in_escaping_loop.bjo`. Passing it
+;; somewhere that wants an ordinary function is what fixes its type as one, and
+;; the loop is then emitted to match. That is not a limitation of loops but the
+;; ordinary higher-order rule: the parameter decides.
 
 ;; --- Reading a port from a local function -------------------------------------
 ;;
@@ -134,6 +152,8 @@
   (expect "one that suspends beside one that does not" (run-int (bjo (mixed 5))) 30)
   (expect "a chain of local functions" (run-int (bjo (chained 5))) 22)
   (expect "a tail-recursive one, which is a while" (run-int (bjo (countdown 3))) 12)
+  (expect "a non-tail-recursive one, which stays a local function" (run-int (bjo (sum-fetched 3))) 12)
+  (expect "a non-tail mutually recursive pair, which is a merged group" (run-int (bjo (alternating 4))) 12)
   ;; An odd argument is the one that lands on `odds`, which is where the yield
   ;; point is; an even one walks down to `(evens 0)` and answers 0 without ever
   ;; suspending. Both are the same `while`.

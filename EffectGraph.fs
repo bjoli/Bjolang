@@ -380,6 +380,57 @@ let private valueCopy (registry: TraitRegistry) (expr: TypedExpr) : TypedExpr op
 /// apply here: its parameter's own type is repainted, so calling that parameter
 /// is a yield point wherever it appears, `allowed` or not. That one is an error,
 /// because the arrow was written down and the author is owed an answer.
+/// Paints every reference to one of `names` with `colour`.
+///
+/// A loop member's callers read the colour off the arrow the *binding* had —
+/// `localFunShape`'s cell, which survives `LetRecify` and `LoopLowering`
+/// untouched because those restructure the tree and not the types. Binding it
+/// makes `callSuspends` answer at every call site at once, which is the same
+/// mechanism a body-local function uses and the reason neither needs a pass to
+/// go and find its callers.
+///
+/// Every occurrence is bound rather than the first one found. They do share a
+/// cell, so one would do; relying on that would make this correct for a reason
+/// that lives in three other files.
+/// Has some use of one of `names` already fixed it as an ordinary function?
+///
+/// A loop member handed to a parameter declared `->` had its arrow unified with
+/// that parameter's, so the cell is solved before anything here looks at it: the
+/// member *is* a `Func<A,B>` at that call site, whatever the emitter would
+/// prefer. Making the group async anyway would emit a `Fiber<T>`-returning local
+/// function and hand it to a `Func<A,B>` — a Roslyn error in a file nobody
+/// wrote.
+///
+/// A *call* does not pin, which is the distinction that makes this work: an
+/// application demands the arrow's own colour rather than spelling `->`, so
+/// only a value use constrains it. That is also why the group left refused here
+/// is exactly the one `InEscapingLoop`'s original sentence described — passed
+/// somewhere as a value — and why that sentence is finally true of everything
+/// it now reaches.
+let rec private pinnedOrdinary (names: Set<string>) (expr: TypedExpr) : bool =
+    let here =
+        match expr.Node with
+        | TIdent(n, _) when Set.contains n names ->
+            match expr.Type with
+            | TFun(_, _, eff) -> pruneEffect eff = ESync
+            | _ -> false
+        | _ -> false
+
+    here || (TypeVisitor.children expr |> List.exists (pinnedOrdinary names))
+
+let rec private bindCallsTo (names: Set<string>) (colour: Effect) (expr: TypedExpr) : unit =
+    (match expr.Node with
+     | TIdent(n, _) when Set.contains n names ->
+         match expr.Type with
+         | TFun(_, _, eff) ->
+             match pruneEffect eff with
+             | EMeta cell -> cell.EValue <- Some colour
+             | _ -> ()
+         | _ -> ()
+     | _ -> ())
+
+    TypeVisitor.children expr |> List.iter (bindCallsTo names colour)
+
 let rec private selectIn (registry: TraitRegistry) (allowed: bool) (expr: TypedExpr) : TypedExpr =
     let descend = selectIn registry allowed
     let sealed_ = selectIn registry false
@@ -431,8 +482,53 @@ let rec private selectIn (registry: TraitRegistry) (allowed: bool) (expr: TypedE
             { expr with Node = TLoop(members, None) }
         | Some body ->
             let inlined = LoopLowering.isInlinedLoop members body
-            let members = members |> List.map (fun m -> { m with Body = selectIn registry (allowed && inlined) m.Body })
-            { expr with Node = TLoop(members, Some(descend body)) }
+
+            if inlined then
+                // A `while` in the enclosing member, which is the member's own
+                // colour and nothing to decide.
+                let members = members |> List.map (fun m -> { m with Body = selectIn registry allowed m.Body })
+                { expr with Node = TLoop(members, Some(descend body)) }
+            else
+                // C# local functions, and so the same question a body-local
+                // `defun` asks — answered the same optimistic way. See
+                // `localFun`: the bodies are selected as though suspending were
+                // allowed and whether any of them reached a yield point is the
+                // answer.
+                //
+                // **One colour for the whole group.** Members jump to one
+                // another, so a suspending member makes suspenders of its
+                // siblings whether or not their own bodies await; and where the
+                // group has cross-member jumps it is emitted as a single merged
+                // method, which can only have one colour anyway.
+                let selected =
+                    members |> List.map (fun m -> { m with Body = selectIn registry allowed m.Body })
+
+                let body = descend body
+
+                let names = selected |> List.map (fun m -> m.LoopName) |> Set.ofList
+                let everywhere = body :: (selected |> List.map (fun m -> m.Body))
+
+                let colour =
+                    if
+                        allowed
+                        && selected |> List.exists (fun m -> TypeVisitor.reachesAwait m.Body)
+                        && not (everywhere |> List.exists (pinnedOrdinary names))
+                    then
+                        EAsync
+                    else
+                        ESync
+
+                // The emitters read the member; the call sites read the *type*
+                // of the name they call, which is the arrow the binding had
+                // before `LoopLowering` dissolved it. Both have to be told, and
+                // the cell is what tells the second: it is shared with every
+                // reference, so `callSuspends` answers at each call without
+                // anything walking out to find them.
+                if colour = EAsync then
+                    for e in everywhere do
+                        bindCallsTo names colour e
+
+                { expr with Node = TLoop(selected |> List.map (fun m -> { m with Effect = colour }), Some body) }
 
     | TLet(n, isFun, lf, value, body) ->
         let value = if isFun then localFun registry allowed value else descend value

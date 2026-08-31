@@ -161,32 +161,27 @@ let private explain (site: Site) : string =
               $"Make the enclosing definition a (defbjo ...). '%s{name}' needs no annotation of its own: a body-local function takes its colour from what its body reaches." ]
 
     | InEscapingLoop(name, escaped) ->
-        // Which name to blame. A single self-recursive member is blamed for
-        // itself; a mutually recursive group is blamed for whichever of its
-        // names is used in a way a jump cannot express, which is usually not
-        // the member the yield point happens to sit in.
-        let cause =
-            match escaped with
-            | [] ->
-                $"'%s{name}' is a loop that is not entered by a plain call to it, so there is nothing to jump *to* and it stays a C# local function."
-            | [ single ] when single = name ->
-                $"'%s{name}' is a loop, but it still mentions its own name — it is passed somewhere as a value, or called from somewhere that is not its own tail — so it has to be a real function for that name to refer to, and it stays a C# local function rather than becoming a while."
-            | [ single ] ->
-                $"'%s{name}' is one of a group of loops, and '%s{single}' is mentioned somewhere that is not a jump — passed as a value, or called from somewhere that is not a tail position. A name used that way needs a real function to refer to, so the whole group stays C# local functions."
-            | many ->
-                let named = many |> List.map (fun n -> $"'%s{n}'") |> String.concat " and "
-
-                $"'%s{name}' is one of a group of loops, and %s{named} are mentioned somewhere that is not a jump — passed as a value, or called from somewhere that is not a tail position. A name used that way needs a real function to refer to, so the whole group stays C# local functions."
-
-        // Two fixes, because one of them does not always apply: a non-tail call
-        // can be made tail, and a genuine value use cannot. Lifting works for
-        // both, at the price of passing what the loop captured.
+        // One reason left, now that a loop emitted as local functions may be
+        // async: the group is *used as a value*, and the use fixed its type as
+        // an ordinary function. Recursion no longer reaches here at all,
+        // whether tail or not.
+        //
+        // The blamed name is not always the member the yield point sits in — a
+        // mutually recursive group escapes through whichever of its names was
+        // passed somewhere — so `escapingNames` answers that rather than the
+        // message guessing.
         let blamed = if escaped.IsEmpty then [ name ] else escaped
         let subject = blamed |> List.map (fun n -> $"'%s{n}'") |> String.concat " and "
 
+        let cause =
+            if blamed = [ name ] then
+                $"'%s{name}' is a loop that is also used as a value — passed somewhere that wants an ordinary function. That use is what fixes its type as one that does not suspend, and the loop is emitted to match."
+            else
+                $"'%s{name}' is one of a group of loops, and %s{subject} is used as a value — passed somewhere that wants an ordinary function. Members of a group share one colour, so that use fixes the whole group as ordinary."
+
         lines
             [ cause
-              $"A loop that is only ever jumped to is emitted as a while in the enclosing bjoroutine, where a yield point is fine — so make every mention of %s{subject} a tail call, and none of them a value. Where the recursion cannot be made tail, lift it out to a top-level (defbjo ...) and call it, passing what it used to capture." ]
+              $"Call %s{subject} instead of passing it: a loop that is only called or jumped to takes the colour of the bjoroutine around it, and may then suspend. If it has to be a value, the parameter receiving it decides — an ordinary one means an ordinary function." ]
 
     | InLambda pin ->
         let where =
@@ -282,8 +277,24 @@ let rec private checkExpr (site: Site) (expr: TypedExpr) : unit =
             members
             let escaped = if inlined then [] else LoopLowering.escapingNames members body
 
-            members
-            |> List.iter (fun m -> checkExpr (if inlined then site else InEscapingLoop(m.LoopName, escaped)) m.Body)
+            // A group that stays C# local functions may still suspend — it is
+            // emitted `async` like any other local function, and `EffectGraph`
+            // has already decided that for the group. What is left to refuse is
+            // the group that could *not* be given the colour: one in an
+            // ordinary member, whose callers cannot await it.
+            // Three ways a member's body is checked in the enclosing site
+            // rather than blamed on the loop, and only the third is new:
+            // inlined, so it *is* the enclosing member; given the suspending
+            // colour, so it may await; or written somewhere that could not have
+            // awaited anyway, where the loop is not the reason and saying it
+            // was would send the reader to fix the wrong thing.
+            let memberSite (m: TLoopMember) =
+                if inlined || groundEffect m.Effect = EAsync || not (isAllowed site) then
+                    site
+                else
+                    InEscapingLoop(m.LoopName, escaped)
+
+            members |> List.iter (fun m -> checkExpr (memberSite m) m.Body)
 
             descend body
 

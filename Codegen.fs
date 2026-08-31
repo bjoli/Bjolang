@@ -3155,8 +3155,15 @@ and private generateSingleLoop
     // A local loop introduces no type parameters of its own; it inherits the
     // enclosing method's. That also makes polymorphic recursion unrepresentable
     // rather than something to detect and reject.
+    // The colour `EffectGraph` decided for the group. A loop member that stays a
+    // C# local function is a local function like any other, so it is emitted
+    // like one — `async` and a `Fiber<T>`, with its callers awaiting because the
+    // arrow they call through was painted at the same time.
+    let effect = groundEffect member_.Effect
+
     indent ctx
-    append ctx (typeToString member_.RetType)
+    if effect = EAsync then append ctx "async "
+    append ctx (returnTypeString effect member_.RetType)
     append ctx " "
     append ctx (sanitizeIdent member_.LoopName)
     append ctx "("
@@ -3173,7 +3180,11 @@ and private generateSingleLoop
         let inner =
             { c with
                 InSeq = false
-                ReturnsVoid = isVoidType member_.RetType
+                // A suspending one never returns void, for the reason a
+                // bjoroutine does not: `Fiber<Bjoml.Unit>` owes its builder a
+                // result, so the body has to produce a unit rather than fall
+                // off the end.
+                ReturnsVoid = isVoidType member_.RetType && effect <> EAsync
                 Loop = Some { Members = members; Merged = false; StateVar = ""; NestedSwitches = 0; IsInlineLoop = false; ExitLabel = ""; ExitLabelUsed = ref false } }
 
         if loops then
@@ -3195,23 +3206,33 @@ and private generateSingleLoop
 /// scope and require alpha-renaming all their locals to avoid collisions.
 and private generateMergedLoop (ctx: CodegenContext) (members: TLoopMember list) (called: Set<string>) : unit =
     let first = List.head members
-    let retStr = typeToString first.RetType
+    // One colour for the group, which a merged loop needs more than a split one
+    // does: this is a single C# method, so there is only one signature to put a
+    // colour on. `EffectGraph` decides it per group for exactly that reason.
+    let effect = groundEffect first.Effect
+    let asyncStr = if effect = EAsync then "async " else ""
+    let retStr = returnTypeString effect first.RetType
 
     // Only return types can disagree. Members cannot differ in type parameters:
     // a local binding is never generalized, so a loop introduces none of its own
     // (`TestFiles/probe/generic_local_rec.bjo`), and every member of a group
     // inherits the same enclosing method's set.
+    // Compared as payloads rather than as emitted return types, so that the
+    // message names what the reader wrote — `int` against `string`, not
+    // `Fiber<int>` against `Fiber<string>`, which would be a difference the
+    // source does not contain.
     for m in members do
-        if typeToString m.RetType <> retStr then
+        if typeToString m.RetType <> typeToString first.RetType then
             codegenError
                 m.Body.Range
-                $"'%s{first.LoopName}' and '%s{m.LoopName}' tail-call each other but return %s{retStr} and %s{typeToString m.RetType}; a merged loop has one return type, so split the group so that they do not tail-call each other"
+                $"'%s{first.LoopName}' and '%s{m.LoopName}' tail-call each other but return %s{typeToString first.RetType} and %s{typeToString m.RetType}; a merged loop has one return type, so split the group so that they do not tail-call each other"
 
     let groupName = freshName "__group"
     let stateVar = freshName "__state"
     let allSlots = members |> List.collect (fun m -> m.Slots)
 
     indent ctx
+    append ctx asyncStr
     append ctx retStr
     append ctx $" %s{groupName}(int %s{stateVar}"
     for (slotName, slotType) in allSlots do
@@ -3230,7 +3251,7 @@ and private generateMergedLoop (ctx: CodegenContext) (members: TLoopMember list)
                     let inner =
                         { cb with
                             InSeq = false
-                            ReturnsVoid = isVoidType member_.RetType
+                            ReturnsVoid = isVoidType member_.RetType && effect <> EAsync
                             Loop = Some { Members = members; Merged = true; StateVar = stateVar; NestedSwitches = 0; IsInlineLoop = false; ExitLabel = ""; ExitLabelUsed = ref false } }
 
                     emitIterationCopies inner member_
@@ -3251,6 +3272,7 @@ and private generateMergedLoop (ctx: CodegenContext) (members: TLoopMember list)
             let owned = member_.Slots |> List.map fst |> Set.ofList
 
             indent ctx
+            append ctx asyncStr
             append ctx retStr
             append ctx $" %s{sanitizeIdent member_.LoopName}("
             for j, (slotName, slotType) in List.indexed member_.Slots do
@@ -3258,7 +3280,11 @@ and private generateMergedLoop (ctx: CodegenContext) (members: TLoopMember list)
                 append ctx (typeToString slotType)
                 append ctx " "
                 append ctx (sanitizeIdent slotName)
-            append ctx $") => %s{groupName}(%d{i}"
+            // The wrapper awaits the group and hands the result back, so its own
+            // state machine is one `await` deep. An expression-bodied async
+            // local function is legal C#, so the shape does not change.
+            let awaitStr = if effect = EAsync then "await " else ""
+            append ctx $") => %s{awaitStr}%s{groupName}(%d{i}"
             for (slotName, _) in allSlots do
                 append ctx ", "
                 append ctx (if owned.Contains slotName then sanitizeIdent slotName else "default!")

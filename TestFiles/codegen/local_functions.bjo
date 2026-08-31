@@ -8,7 +8,7 @@
 ;;
 ;; Each `EXPECT-CS` line is an extended regex matched against one line.
 
-(export suspending ordinary both chained)
+(export suspending ordinary both chained not-tail merged)
 
 (import (std prelude))
 
@@ -80,3 +80,32 @@
   (defun (middle y) (+ (inner y) 1))
   (defun (outer-most y) (* (middle y) 2))
   (outer-most n))
+
+;; --- A loop that stays a local function --------------------------------------
+;;
+;; Not tail recursive, so `LoopLowering` leaves it a C# local function instead of
+;; promoting it to a `while`. It is emitted `async` like any other local
+;; function — which is the part that has to be seen here, since a `while` and an
+;; awaiting local function compute the same number.
+
+;; EXPECT-CS: async Bjoml.Fiber<int> go(__[0-9]+)?\(int
+;; EXPECT-CS: \(await go(__[0-9]+)?\(
+(: not-tail (-> int int))
+(defbjo (not-tail n)
+  (defun (go i) (if (<= i 0) 0 (+ (fetch i) (go (- i 1)))))
+  (go n))
+
+;; --- A mutually recursive pair, merged ---------------------------------------
+;;
+;; Two names that jump to each other become one C# method with a state
+;; discriminant, plus a thin entry wrapper per name. So there is one colour to
+;; place and one signature to place it on — and the wrappers await the group,
+;; which is what an expression-bodied async local function looks like.
+
+;; EXPECT-CS: async Bjoml.Fiber<int> __group__[0-9]+\(int
+;; EXPECT-CS: async Bjoml.Fiber<int> evens(__[0-9]+)?\(int [a-z_0-9]+\) => await __group
+(: merged (-> int int))
+(defbjo (merged n)
+  (defun (evens i) (if (<= i 0) 0 (+ (fetch i) (odds (- i 1)))))
+  (defun (odds i) (if (<= i 0) 0 (evens (- i 1))))
+  (evens n))

@@ -352,6 +352,11 @@ and private lowerLetRec
                       Slots = List.zip slots argTypes
                       Locals = lambdaArgs
                       RetType = retType
+                      // Ordinary until `EffectGraph` says otherwise. It decides
+                      // per group, having seen the bodies and knowing which C#
+                      // member the group lands in — neither of which is
+                      // available here.
+                      Effect = ESync
                       Body = lowerExpr loopTargets true lambdaBody })
                 names
                 slotNames
@@ -404,10 +409,14 @@ let private lowerFunctionBody
         { body with
             Node =
                 TLoop(
+                    // `TLoop(_, None)` *is* the function's body: a `while` in the
+                    // method itself, never a local function. So its colour is
+                    // the method's and this field is not read for it.
                     [ { LoopName = name
                         Slots = slots
                         Locals = locals
                         RetType = retType
+                        Effect = ESync
                         Body = renameExpr toLocals lowered } ],
                     None
                 ) }
