@@ -503,6 +503,12 @@ fi
 # line in it must appear in the compiler's output. Compiling successfully is half
 # the assertion: a warning is not an error, and one that became an error would
 # pass a test that only looked for the text.
+#
+# Each
+#
+#   ;; EXPECT-NO-WARNING: <substring>
+#
+# line must *not* appear. That is what pins where a lint stops.
 WARNING_DIR="TestFiles/warnings"
 warning_total=0
 warning_failed=0
@@ -539,8 +545,19 @@ if [ -d "$WARNING_DIR" ] && ls "$WARNING_DIR"/*.bjo >/dev/null 2>&1; then
             fi
         done < <(sed -n 's/^;;[[:space:]]*EXPECT-WARNING:[[:space:]]*//p' "$bjo_file")
 
+        local spurious=""
+        while IFS= read -r unwanted; do
+            [ -z "$unwanted" ] && continue
+            if printf '%s' "$output" | grep -qF -- "$unwanted"; then
+                spurious="$unwanted"
+                break
+            fi
+        done < <(sed -n 's/^;;[[:space:]]*EXPECT-NO-WARNING:[[:space:]]*//p' "$bjo_file")
+
         if [ -n "$missing" ]; then
             echo "FAIL|$warn_name|compiled, but said nothing about it. Expected to find: $missing" > "$result_file"
+        elif [ -n "$spurious" ]; then
+            echo "FAIL|$warn_name|warned where it should have kept quiet: $spurious" > "$result_file"
         else
             echo "PASS|$warn_name|" > "$result_file"
         fi

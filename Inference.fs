@@ -4490,12 +4490,16 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
         // parameter that is only stored, or passed straight on, gives the
         // second copy nothing to do. Either it should be written `->`, or the
         // body meant to use it and does not.
-        for (paramName, paramType) in mandatoryTypes do
-            match prune env.Registry paramType with
-            | TFun(_, _, EPoly) when not (isApplied paramName typedBody) ->
-                Diagnostics.warn
-                    $"'%s{name}' declares its parameter '%s{paramName}' as -?->, which says it will be given a function of either colour — but the body never calls it. Both copies of '%s{name}' would be identical. Write the parameter -> if it is an ordinary function, or call it if the body meant to.\n  at %s{Lexer.formatPos r}"
-            | _ -> ()
+        //
+        // Generated copies only. A `defbjouble`'s `#:sync` half has the same
+        // `EPoly` parameter and hands it on, and its twin is written by hand.
+        if Set.contains (Naming.suspendingCopy name) env.Registry.GeneratedCopies then
+            for (paramName, paramType) in mandatoryTypes do
+                match prune env.Registry paramType with
+                | TFun(_, _, EPoly) when not (isApplied paramName typedBody) ->
+                    Diagnostics.warn
+                        $"'%s{name}' declares its parameter '%s{paramName}' as -?->, which says it will be given a function of either colour — but the body never calls it. Both copies of '%s{name}' would be identical. Write the parameter -> if it is an ordinary function, or call it if the body meant to.\n  at %s{Lexer.formatPos r}"
+                | _ -> ()
 
         let decl = TDefun(name, vars, mandatoryTypes, typedKeywordArgs, restArgInfo, expectedRetType, effect, typedBody, r)
         finalEnv, Map.remove name sigs, [ decl ]

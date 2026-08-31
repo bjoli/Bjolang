@@ -21,18 +21,29 @@
   (+ x 1))
 
 ;; Not warned about: this one calls it, so the two copies genuinely differ.
+;; EXPECT-NO-WARNING: Both copies of 'applies' would be identical
 (: applies (-> (-?-> int int) int int))
 (defun (applies f x)
   (f x))
 
 ;; Not warned about either: an ordinary `->` parameter promises one colour, so
 ;; there is only ever one copy and nothing to compare.
+;; EXPECT-NO-WARNING: Both copies of 'plain' would be identical
 (: plain (-> (-> int int) int int))
 (defun (plain f x)
   (+ x 1))
 
+;; Nor this one. The `#:sync` half does not call `f` either, but its
+;; counterpart is written below rather than copied from it.
+;; EXPECT-NO-WARNING: Both copies of 'handed-on' would be identical
+(: handed-on (-> (-?-> int int) int int))
+(defbjouble (handed-on f x)
+  (#:sync (plain f x))
+  (#:bjo  (f x)))
+
 (defun (main args)
   (println (int->string (+ (ignores (fun (n) n) 1)
                            (+ (applies (fun (n) (* n 2)) 3)
-                              (plain (fun (n) n) 5)))))
+                              (+ (plain (fun (n) n) 5)
+                                 (handed-on (fun (n) n) 7))))))
   0)
