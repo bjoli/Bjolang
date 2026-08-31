@@ -46,10 +46,10 @@
   (set-clear      (: Set.SetModule.Clear          (-> (Set %a) (Set %a))))
   ;; The union.
   (set-union      (: Set.SetModule.Merge          (-> (Set %a) (Set %a) (Set %a))))
-  (set-map        (: Set.SetModule.Map            (-> (-> %a %b) (Set %a) (Set %b))))
-  (set-filter     (: Set.SetModule.Filter         (-> (-> %a bool) (Set %a) (Set %a))))
-  (set-fold       (: Set.SetModule.Fold           (-> (-> %s %a %s) %s (Set %a) %s)))
-  (set-iter       (: Set.SetModule.Iter           (-> (-> %a bool) (Set %a) bool)))
+  (clr-set-map    (: Set.SetModule.Map            (-> (-> %a %b) (Set %a) (Set %b))))
+  (clr-set-filter (: Set.SetModule.Filter         (-> (-> %a bool) (Set %a) (Set %a))))
+  (clr-set-fold   (: Set.SetModule.Fold           (-> (-> %s %a %s) %s (Set %a) %s)))
+  (clr-set-iter   (: Set.SetModule.Iter           (-> (-> %a bool) (Set %a) bool)))
   (set-any?       (: Set.SetModule.Exists         (-> (-> %a bool) (Set %a) bool)))
   (set-try-find   (: Set.SetModule.TryFindKey     (-> (-> %a bool) (Set %a) (Tuple bool %a))))
   (seq->set       (: Set.SetModule.FromEnumerable (-> (Seq %a) (Set %a))))
@@ -90,6 +90,59 @@
   (transientset-empty?       (: Set.TransientSetModule.IsEmpty        (-> (TransientSet %a) bool))))
 
 ;; ---------------------------------------------------------------------------
+;; Sets, where the callback may suspend
+;; ---------------------------------------------------------------------------
+
+(: set-map (-> (-?-> %a %b) (Set %a) (Set %b)))
+(defbjouble (set-map f s)
+  (#:sync (clr-set-map f s))
+  (#:bjo
+    (let ((b (setbuilder-empty))
+          (c (set-cursor s)))
+      (let go ()
+        (if (set-cursor-done? c)
+            (setbuilder->set b)
+            (let ()
+              (setbuilder-add! b (f (set-cursor-current c)))
+              (go)))))))
+
+(: set-filter (-> (-?-> %a bool) (Set %a) (Set %a)))
+(defbjouble (set-filter keep? s)
+  (#:sync (clr-set-filter keep? s))
+  (#:bjo
+    (let ((b (setbuilder-empty))
+          (c (set-cursor s)))
+      (let go ()
+        (if (set-cursor-done? c)
+            (setbuilder->set b)
+            (let ((x (set-cursor-current c)))
+              (when (keep? x)
+                (setbuilder-add! b x))
+              (go)))))))
+
+(: set-fold (-> (-?-> %s %a %s) %s (Set %a) %s))
+(defbjouble (set-fold f init s)
+  (#:sync (clr-set-fold f init s))
+  (#:bjo
+    (let ((c (set-cursor s)))
+      (let go ((acc init))
+        (if (set-cursor-done? c)
+            acc
+            (go (f acc (set-cursor-current c))))))))
+
+(: set-iter (-> (-?-> %a bool) (Set %a) bool))
+(defbjouble (set-iter f s)
+  (#:sync (clr-set-iter f s))
+  (#:bjo
+    (let ((c (set-cursor s)))
+      (let go ()
+        (if (set-cursor-done? c)
+            #t
+            (if (f (set-cursor-current c))
+                (go)
+                #f))))))
+
+;; ---------------------------------------------------------------------------
 ;; Conversions
 ;; ---------------------------------------------------------------------------
 
@@ -118,9 +171,15 @@
   (defun (iterable-current s c) (set-cursor-current c))
   (defun (iterable-next s c) c))
 
-(: set-for-each (-> (-> %a void) (Set %a) void))
+(: set-for-each (-> (-?-> %a void) (Set %a) void))
 (defun (set-for-each f s)
-  (loop (:for x s) (:do (f x))))
+  (let ((c (set-cursor s)))
+    (let go ()
+      (if (set-cursor-done? c)
+          unit
+          (let ()
+            (f (set-cursor-current c))
+            (go))))))
 
 (def/impl (Collection (Set %a))
   (type %content %a)

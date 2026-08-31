@@ -214,13 +214,13 @@
 
   ;; --- Walking ---
   ;; Walk map.
-  (map-map        (: Map.MapModule.Map       (-> (-> %k %v %w) (Map %k %v) (Map %k %w))))
+  (clr-map-map        (: Map.MapModule.Map       (-> (-> %k %v %w) (Map %k %v) (Map %k %w))))
   ;; Map values.
-  (map-map-values (: Map.MapModule.MapValues (-> (-> %v %w) (Map %k %v) (Map %k %w))))
-  (map-filter     (: Map.MapModule.Filter    (-> (-> %k %v bool) (Map %k %v) (Map %k %v))))
-  (map-fold       (: Map.MapModule.Fold      (-> (-> %s %k %v %s) %s (Map %k %v) %s)))
+  (clr-map-map-values (: Map.MapModule.MapValues (-> (-> %v %w) (Map %k %v) (Map %k %w))))
+  (clr-map-filter     (: Map.MapModule.Filter    (-> (-> %k %v bool) (Map %k %v) (Map %k %v))))
+  (clr-map-fold       (: Map.MapModule.Fold      (-> (-> %s %k %v %s) %s (Map %k %v) %s)))
   ;; Walk until false.
-  (map-iter       (: Map.MapModule.Iter      (-> (-> %k %v bool) (Map %k %v) bool)))
+  (clr-map-iter       (: Map.MapModule.Iter      (-> (-> %k %v bool) (Map %k %v) bool)))
   (map-any?       (: Map.MapModule.Exists    (-> (-> %k %v bool) (Map %k %v) bool)))
   (map-try-find   (: Map.MapModule.TryFind   (-> (-> %k %v bool) (Map %k %v) (Tuple bool %k %v))))
 
@@ -281,9 +281,89 @@
   (if found (Some (Tuple k v)) None))
 
 
-(: map-for-each (-> (-> %k %v void) (Map %k %v) void))
+;; ---------------------------------------------------------------------------
+;; Maps, where the callback may suspend
+;; ---------------------------------------------------------------------------
+
+(: map-map (-> (-?-> %k %v %w) (Map %k %v) (Map %k %w)))
+(defbjouble (map-map f m)
+  (#:sync (clr-map-map f m))
+  (#:bjo
+    (let ((b (mapbuilder-empty))
+          (c (map-cursor m)))
+      (let go ()
+        (if (map-cursor-done? c)
+            (mapbuilder->map b)
+            (let ()
+              (def (k v) (map-cursor-current c))
+              (mapbuilder-add! b k (f k v))
+              (go)))))))
+
+(: map-map-values (-> (-?-> %v %w) (Map %k %v) (Map %k %w)))
+(defbjouble (map-map-values f m)
+  (#:sync (clr-map-map-values f m))
+  (#:bjo
+    (let ((b (mapbuilder-empty))
+          (c (map-cursor m)))
+      (let go ()
+        (if (map-cursor-done? c)
+            (mapbuilder->map b)
+            (let ()
+              (def (k v) (map-cursor-current c))
+              (mapbuilder-add! b k (f v))
+              (go)))))))
+
+(: map-filter (-> (-?-> %k %v bool) (Map %k %v) (Map %k %v)))
+(defbjouble (map-filter keep? m)
+  (#:sync (clr-map-filter keep? m))
+  (#:bjo
+    (let ((b (mapbuilder-empty))
+          (c (map-cursor m)))
+      (let go ()
+        (if (map-cursor-done? c)
+            (mapbuilder->map b)
+            (let ()
+              (def (k v) (map-cursor-current c))
+              (when (keep? k v)
+                (mapbuilder-add! b k v))
+              (go)))))))
+
+(: map-fold (-> (-?-> %s %k %v %s) %s (Map %k %v) %s))
+(defbjouble (map-fold f init m)
+  (#:sync (clr-map-fold f init m))
+  (#:bjo
+    (let ((c (map-cursor m)))
+      (let go ((acc init))
+        (if (map-cursor-done? c)
+            acc
+            (let ()
+              (def (k v) (map-cursor-current c))
+              (go (f acc k v))))))))
+
+(: map-iter (-> (-?-> %k %v bool) (Map %k %v) bool))
+(defbjouble (map-iter f m)
+  (#:sync (clr-map-iter f m))
+  (#:bjo
+    (let ((c (map-cursor m)))
+      (let go ()
+        (if (map-cursor-done? c)
+            #t
+            (let ()
+              (def (k v) (map-cursor-current c))
+              (if (f k v)
+                  (go)
+                  #f)))))))
+
+(: map-for-each (-> (-?-> %k %v void) (Map %k %v) void))
 (defun (map-for-each f m)
-  (ignore (map-iter (fun (k v) (f k v) #t) m)))
+  (let ((c (map-cursor m)))
+    (let go ()
+      (if (map-cursor-done? c)
+          unit
+          (let ()
+            (def (k v) (map-cursor-current c))
+            (f k v)
+            (go))))))
 
 ;; Map foldable.
 (def/impl (Foldable (Map %k %v))

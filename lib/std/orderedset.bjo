@@ -77,10 +77,10 @@
   (orderedset-until (: OrderedSet.OrderedSetModule.Until (-> (OrderedSet %a) %a (Seq %a))))
 
   ;; --- Walking ---
-  (orderedset-map        (: OrderedSet.OrderedSetModule.Map        (-> (-> %a %b) (OrderedSet %a) (OrderedSet %b))))
-  (orderedset-filter     (: OrderedSet.OrderedSetModule.Filter     (-> (-> %a bool) (OrderedSet %a) (OrderedSet %a))))
-  (orderedset-fold       (: OrderedSet.OrderedSetModule.Fold       (-> (-> %s %a %s) %s (OrderedSet %a) %s)))
-  (orderedset-iter       (: OrderedSet.OrderedSetModule.Iter       (-> (-> %a bool) (OrderedSet %a) bool)))
+  (clr-orderedset-map    (: OrderedSet.OrderedSetModule.Map        (-> (-> %a %b) (OrderedSet %a) (OrderedSet %b))))
+  (clr-orderedset-filter (: OrderedSet.OrderedSetModule.Filter     (-> (-> %a bool) (OrderedSet %a) (OrderedSet %a))))
+  (clr-orderedset-fold   (: OrderedSet.OrderedSetModule.Fold       (-> (-> %s %a %s) %s (OrderedSet %a) %s)))
+  (clr-orderedset-iter   (: OrderedSet.OrderedSetModule.Iter       (-> (-> %a bool) (OrderedSet %a) bool)))
   (orderedset-any?       (: OrderedSet.OrderedSetModule.Exists     (-> (-> %a bool) (OrderedSet %a) bool)))
   (orderedset-try-find   (: OrderedSet.OrderedSetModule.TryFindKey (-> (-> %a bool) (OrderedSet %a) (Tuple bool %a))))
 
@@ -159,6 +159,59 @@
 ;; Conversions
 ;; ---------------------------------------------------------------------------
 
+;; ---------------------------------------------------------------------------
+;; Ordered sets, where the callback may suspend
+;; ---------------------------------------------------------------------------
+
+(: orderedset-map (-> (-?-> %a %b) (OrderedSet %a) (OrderedSet %b)))
+(defbjouble (orderedset-map f s)
+  (#:sync (clr-orderedset-map f s))
+  (#:bjo
+    (let ((b (orderedsetbuilder-empty))
+          (c (orderedset-cursor s)))
+      (let go ()
+        (if (orderedset-cursor-done? c)
+            (orderedsetbuilder->orderedset b)
+            (let ()
+              (orderedsetbuilder-add! b (f (orderedset-cursor-current c)))
+              (go)))))))
+
+(: orderedset-filter (-> (-?-> %a bool) (OrderedSet %a) (OrderedSet %a)))
+(defbjouble (orderedset-filter keep? s)
+  (#:sync (clr-orderedset-filter keep? s))
+  (#:bjo
+    (let ((b (orderedsetbuilder-empty))
+          (c (orderedset-cursor s)))
+      (let go ()
+        (if (orderedset-cursor-done? c)
+            (orderedsetbuilder->orderedset b)
+            (let ((x (orderedset-cursor-current c)))
+              (when (keep? x)
+                (orderedsetbuilder-add! b x))
+              (go)))))))
+
+(: orderedset-fold (-> (-?-> %s %a %s) %s (OrderedSet %a) %s))
+(defbjouble (orderedset-fold f init s)
+  (#:sync (clr-orderedset-fold f init s))
+  (#:bjo
+    (let ((c (orderedset-cursor s)))
+      (let go ((acc init))
+        (if (orderedset-cursor-done? c)
+            acc
+            (go (f acc (orderedset-cursor-current c))))))))
+
+(: orderedset-iter (-> (-?-> %a bool) (OrderedSet %a) bool))
+(defbjouble (orderedset-iter f s)
+  (#:sync (clr-orderedset-iter f s))
+  (#:bjo
+    (let ((c (orderedset-cursor s)))
+      (let go ()
+        (if (orderedset-cursor-done? c)
+            #t
+            (if (f (orderedset-cursor-current c))
+                (go)
+                #f))))))
+
 (: list->orderedset (-> (List %a) (OrderedSet %a)))
 (defun (list->orderedset xs) (seq->orderedset (list->seq xs)))
 
@@ -183,9 +236,15 @@
   (defun (iterable-current s c) (orderedset-cursor-current c))
   (defun (iterable-next s c) c))
 
-(: orderedset-for-each (-> (-> %a void) (OrderedSet %a) void))
+(: orderedset-for-each (-> (-?-> %a void) (OrderedSet %a) void))
 (defun (orderedset-for-each f s)
-  (loop (:for x s) (:do (f x))))
+  (let ((c (orderedset-cursor s)))
+    (let go ()
+      (if (orderedset-cursor-done? c)
+          unit
+          (let ()
+            (f (orderedset-cursor-current c))
+            (go))))))
 
 (def/impl (Collection (OrderedSet %a))
   (type %content %a)

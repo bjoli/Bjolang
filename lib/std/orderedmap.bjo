@@ -82,12 +82,12 @@
 
   ;; --- Walking ---
   ;;
-  (orderedmap-map        (: OrderedMap.OrderedMapModule.Map       (-> (-> %k %v %w) (OrderedMap %k %v) (OrderedMap %k %w))))
+  (clr-orderedmap-map        (: OrderedMap.OrderedMapModule.Map       (-> (-> %k %v %w) (OrderedMap %k %v) (OrderedMap %k %w))))
   ;; Map values.
-  (orderedmap-map-values (: OrderedMap.OrderedMapModule.MapValues (-> (-> %v %w) (OrderedMap %k %v) (OrderedMap %k %w))))
-  (orderedmap-filter     (: OrderedMap.OrderedMapModule.Filter    (-> (-> %k %v bool) (OrderedMap %k %v) (OrderedMap %k %v))))
-  (orderedmap-fold       (: OrderedMap.OrderedMapModule.Fold      (-> (-> %s %k %v %s) %s (OrderedMap %k %v) %s)))
-  (orderedmap-iter       (: OrderedMap.OrderedMapModule.Iter      (-> (-> %k %v bool) (OrderedMap %k %v) bool)))
+  (clr-orderedmap-map-values (: OrderedMap.OrderedMapModule.MapValues (-> (-> %v %w) (OrderedMap %k %v) (OrderedMap %k %w))))
+  (clr-orderedmap-filter     (: OrderedMap.OrderedMapModule.Filter    (-> (-> %k %v bool) (OrderedMap %k %v) (OrderedMap %k %v))))
+  (clr-orderedmap-fold       (: OrderedMap.OrderedMapModule.Fold      (-> (-> %s %k %v %s) %s (OrderedMap %k %v) %s)))
+  (clr-orderedmap-iter       (: OrderedMap.OrderedMapModule.Iter      (-> (-> %k %v bool) (OrderedMap %k %v) bool)))
   (orderedmap-any?       (: OrderedMap.OrderedMapModule.Exists    (-> (-> %k %v bool) (OrderedMap %k %v) bool)))
   (orderedmap-try-find   (: OrderedMap.OrderedMapModule.TryFind   (-> (-> %k %v bool) (OrderedMap %k %v) (Tuple bool %k %v))))
 
@@ -170,6 +170,79 @@
   (if found (Some value) None))
 
 ;; ---------------------------------------------------------------------------
+;; Ordered maps, where the callback may suspend
+;; ---------------------------------------------------------------------------
+
+(: orderedmap-map (-> (-?-> %k %v %w) (OrderedMap %k %v) (OrderedMap %k %w)))
+(defbjouble (orderedmap-map f m)
+  (#:sync (clr-orderedmap-map f m))
+  (#:bjo
+    (let ((b (orderedmapbuilder-empty))
+          (c (orderedmap-cursor m)))
+      (let go ()
+        (if (orderedmap-cursor-done? c)
+            (orderedmapbuilder->orderedmap b)
+            (let ()
+              (def (k v) (orderedmap-cursor-current c))
+              (orderedmapbuilder-add! b k (f k v))
+              (go)))))))
+
+(: orderedmap-map-values (-> (-?-> %v %w) (OrderedMap %k %v) (OrderedMap %k %w)))
+(defbjouble (orderedmap-map-values f m)
+  (#:sync (clr-orderedmap-map-values f m))
+  (#:bjo
+    (let ((b (orderedmapbuilder-empty))
+          (c (orderedmap-cursor m)))
+      (let go ()
+        (if (orderedmap-cursor-done? c)
+            (orderedmapbuilder->orderedmap b)
+            (let ()
+              (def (k v) (orderedmap-cursor-current c))
+              (orderedmapbuilder-add! b k (f v))
+              (go)))))))
+
+(: orderedmap-filter (-> (-?-> %k %v bool) (OrderedMap %k %v) (OrderedMap %k %v)))
+(defbjouble (orderedmap-filter keep? m)
+  (#:sync (clr-orderedmap-filter keep? m))
+  (#:bjo
+    (let ((b (orderedmapbuilder-empty))
+          (c (orderedmap-cursor m)))
+      (let go ()
+        (if (orderedmap-cursor-done? c)
+            (orderedmapbuilder->orderedmap b)
+            (let ()
+              (def (k v) (orderedmap-cursor-current c))
+              (when (keep? k v)
+                (orderedmapbuilder-add! b k v))
+              (go)))))))
+
+(: orderedmap-fold (-> (-?-> %s %k %v %s) %s (OrderedMap %k %v) %s))
+(defbjouble (orderedmap-fold f init m)
+  (#:sync (clr-orderedmap-fold f init m))
+  (#:bjo
+    (let ((c (orderedmap-cursor m)))
+      (let go ((acc init))
+        (if (orderedmap-cursor-done? c)
+            acc
+            (let ()
+              (def (k v) (orderedmap-cursor-current c))
+              (go (f acc k v))))))))
+
+(: orderedmap-iter (-> (-?-> %k %v bool) (OrderedMap %k %v) bool))
+(defbjouble (orderedmap-iter f m)
+  (#:sync (clr-orderedmap-iter f m))
+  (#:bjo
+    (let ((c (orderedmap-cursor m)))
+      (let go ()
+        (if (orderedmap-cursor-done? c)
+            #t
+            (let ()
+              (def (k v) (orderedmap-cursor-current c))
+              (if (f k v)
+                  (go)
+                  #f)))))))
+
+;; ---------------------------------------------------------------------------
 ;; Conversions
 ;; ---------------------------------------------------------------------------
 
@@ -204,9 +277,16 @@
   (defun (iterable-current m c) (orderedmap-cursor-current c))
   (defun (iterable-next m c) c))
 
-(: orderedmap-for-each (-> (-> %k %v void) (OrderedMap %k %v) void))
+(: orderedmap-for-each (-> (-?-> %k %v void) (OrderedMap %k %v) void))
 (defun (orderedmap-for-each f m)
-  (ignore (orderedmap-iter (fun (k v) (f k v) #t) m)))
+  (let ((c (orderedmap-cursor m)))
+    (let go ()
+      (if (orderedmap-cursor-done? c)
+          unit
+          (let ()
+            (def (k v) (orderedmap-cursor-current c))
+            (f k v)
+            (go))))))
 
 (def/impl (Collection (OrderedMap %k %v))
   (type %content (Tuple %k %v))

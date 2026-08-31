@@ -1,0 +1,246 @@
+;; Map and set walks whose callback may suspend.
+;;
+;; `defbjouble` per walk, as in `162_vec_callbacks.bjo`. A Vec is walked by
+;; index; these have none, so the suspending half holds the collection's own
+;; cursor across the yield point.
+;;
+;; The ordered two are checked by the order they produce, which sums and
+;; lengths cannot see. The hashed two have no order, so sums and lengths it is.
+
+(import (std prelude))
+(import (std set))
+(import (std orderedmap))
+(import (std orderedset))
+(import (std simpletest))
+
+;; The yield point: `read-line` from a bjoroutine.
+(: slow-double (-bjo-> int int))
+(defbjo (slow-double n)
+  (ignore (read-line (open-input-string "tick\n")))
+  (* n 2))
+
+(: slow-big? (-bjo-> int bool))
+(defbjo (slow-big? n)
+  (ignore (read-line (open-input-string "tick\n")))
+  (> n 2))
+
+(: run-int (-> (Promise int) int))
+(defun (run-int p)
+  (match (sync/blocking (promise-join p)) ((Ok n) n) ((Err e) -1)))
+
+(: run-str (-> (Promise string) string))
+(defun (run-str p)
+  (match (sync/blocking (promise-join p)) ((Ok s) s) ((Err e) "raised")))
+
+;; ---------------------------------------------------------------------------
+;; Map
+;; ---------------------------------------------------------------------------
+
+(: pairs (-> (Map int int)))
+(defun (pairs)
+  (map-set (map-set (map-set (map-empty) 1 1) 2 2) 3 3))
+
+(: sum-values (-> (Map int int) int))
+(defun (sum-values m)
+  (map-fold (fun (acc k v) (+ acc v)) 0 m))
+
+(: map-mapped (-bjo-> int))
+(defbjo (map-mapped)
+  (sum-values (map-map (bjoroutine (k v) (slow-double v)) (pairs))))
+
+(: map-valued (-bjo-> int))
+(defbjo (map-valued)
+  (sum-values (map-map-values (bjoroutine (v) (slow-double v)) (pairs))))
+
+(: map-kept (-bjo-> int))
+(defbjo (map-kept)
+  (map-length (map-filter (bjoroutine (k v) (slow-big? v)) (pairs))))
+
+(: map-folded (-bjo-> int))
+(defbjo (map-folded)
+  (map-fold (bjoroutine (acc k v) (+ acc (slow-double v))) 0 (pairs)))
+
+;; `iter` stops at the first false. Observable, unlike the rest.
+(def/mutable steps 0)
+
+(: map-stopped (-bjo-> int))
+(defbjo (map-stopped)
+  (set! steps 0)
+  (ignore (map-iter (bjoroutine (k v)
+                      (set! steps (+ steps 1))
+                      (ignore (slow-double v))
+                      #f)
+                    (pairs)))
+  steps)
+
+(def/mutable seen 0)
+
+(: map-each (-bjo-> int))
+(defbjo (map-each)
+  (set! seen 0)
+  (map-for-each (bjoroutine (k v) (set! seen (+ seen (slow-double v)))) (pairs))
+  seen)
+
+;; ---------------------------------------------------------------------------
+;; Set
+;; ---------------------------------------------------------------------------
+
+(: numbers (-> (Set int)))
+(defun (numbers)
+  (list->set (list 1 2 3)))
+
+(: sum-set (-> (Set int) int))
+(defun (sum-set s)
+  (set-fold (fun (acc x) (+ acc x)) 0 s))
+
+(: set-mapped (-bjo-> int))
+(defbjo (set-mapped)
+  (sum-set (set-map (bjoroutine (x) (slow-double x)) (numbers))))
+
+(: set-kept (-bjo-> int))
+(defbjo (set-kept)
+  (set-length (set-filter (bjoroutine (x) (slow-big? x)) (numbers))))
+
+(: set-folded (-bjo-> int))
+(defbjo (set-folded)
+  (set-fold (bjoroutine (acc x) (+ acc (slow-double x))) 0 (numbers)))
+
+(: set-stopped (-bjo-> int))
+(defbjo (set-stopped)
+  (set! steps 0)
+  (ignore (set-iter (bjoroutine (x)
+                      (set! steps (+ steps 1))
+                      (ignore (slow-double x))
+                      #f)
+                    (numbers)))
+  steps)
+
+(: set-each (-bjo-> int))
+(defbjo (set-each)
+  (set! seen 0)
+  (set-for-each (bjoroutine (x) (set! seen (+ seen (slow-double x)))) (numbers))
+  seen)
+
+;; ---------------------------------------------------------------------------
+;; OrderedMap and OrderedSet
+;; ---------------------------------------------------------------------------
+;;
+;; Built out of order, so the order claims are about the collection.
+
+(: ordered-pairs (-> (OrderedMap int int)))
+(defun (ordered-pairs)
+  (list->orderedmap (list (Tuple 3 3) (Tuple 1 1) (Tuple 2 2))))
+
+(: ordered-numbers (-> (OrderedSet int)))
+(defun (ordered-numbers)
+  (list->orderedset (list 3 1 2)))
+
+(: joined-map (-> (OrderedMap int int) string))
+(defun (joined-map m)
+  (orderedmap-fold (fun (acc k v) (str acc (int->string v))) "" m))
+
+(: joined-set (-> (OrderedSet int) string))
+(defun (joined-set s)
+  (orderedset-fold (fun (acc x) (str acc (int->string x))) "" s))
+
+(: orderedmap-mapped (-bjo-> string))
+(defbjo (orderedmap-mapped)
+  (joined-map (orderedmap-map (bjoroutine (k v) (slow-double v)) (ordered-pairs))))
+
+(: orderedmap-valued (-bjo-> string))
+(defbjo (orderedmap-valued)
+  (joined-map (orderedmap-map-values (bjoroutine (v) (slow-double v)) (ordered-pairs))))
+
+(: orderedmap-kept (-bjo-> string))
+(defbjo (orderedmap-kept)
+  (joined-map (orderedmap-filter (bjoroutine (k v) (slow-big? v)) (ordered-pairs))))
+
+(: orderedmap-folded (-bjo-> string))
+(defbjo (orderedmap-folded)
+  (orderedmap-fold (bjoroutine (acc k v) (str acc (int->string (slow-double v))))
+                   ""
+                   (ordered-pairs)))
+
+(: orderedmap-stopped (-bjo-> int))
+(defbjo (orderedmap-stopped)
+  (set! steps 0)
+  (ignore (orderedmap-iter (bjoroutine (k v)
+                             (set! steps (+ steps 1))
+                             (slow-big? v))
+                           (ordered-pairs)))
+  steps)
+
+(def/mutable trail "")
+
+(: orderedmap-each (-bjo-> string))
+(defbjo (orderedmap-each)
+  (set! trail "")
+  (orderedmap-for-each (bjoroutine (k v) (set! trail (str trail (int->string (slow-double v)))))
+                       (ordered-pairs))
+  trail)
+
+(: orderedset-mapped (-bjo-> string))
+(defbjo (orderedset-mapped)
+  (joined-set (orderedset-map (bjoroutine (x) (slow-double x)) (ordered-numbers))))
+
+(: orderedset-kept (-bjo-> string))
+(defbjo (orderedset-kept)
+  (joined-set (orderedset-filter (bjoroutine (x) (slow-big? x)) (ordered-numbers))))
+
+(: orderedset-folded (-bjo-> string))
+(defbjo (orderedset-folded)
+  (orderedset-fold (bjoroutine (acc x) (str acc (int->string (slow-double x))))
+                   ""
+                   (ordered-numbers)))
+
+(: orderedset-stopped (-bjo-> int))
+(defbjo (orderedset-stopped)
+  (set! steps 0)
+  (ignore (orderedset-iter (bjoroutine (x)
+                             (set! steps (+ steps 1))
+                             (slow-big? x))
+                           (ordered-numbers)))
+  steps)
+
+(: orderedset-each (-bjo-> string))
+(defbjo (orderedset-each)
+  (set! trail "")
+  (orderedset-for-each (bjoroutine (x) (set! trail (str trail (int->string (slow-double x)))))
+                       (ordered-numbers))
+  trail)
+
+(defun (main)
+  (expect "map-map suspending" (run-int (bjo (map-mapped))) 12)
+  (expect "map-map-values suspending" (run-int (bjo (map-valued))) 12)
+  (expect "map-filter suspending" (run-int (bjo (map-kept))) 1)
+  (expect "map-fold suspending" (run-int (bjo (map-folded))) 12)
+  (expect "map-iter stops early, suspending" (run-int (bjo (map-stopped))) 1)
+  (expect "map-for-each suspending" (run-int (bjo (map-each))) 12)
+
+  (expect "set-map suspending" (run-int (bjo (set-mapped))) 12)
+  (expect "set-filter suspending" (run-int (bjo (set-kept))) 1)
+  (expect "set-fold suspending" (run-int (bjo (set-folded))) 12)
+  (expect "set-iter stops early, suspending" (run-int (bjo (set-stopped))) 1)
+  (expect "set-for-each suspending" (run-int (bjo (set-each))) 12)
+
+  (expect "orderedmap-map keeps its order" (run-str (bjo (orderedmap-mapped))) "246")
+  (expect "orderedmap-map-values keeps its order" (run-str (bjo (orderedmap-valued))) "246")
+  (expect "orderedmap-filter keeps its order" (run-str (bjo (orderedmap-kept))) "3")
+  (expect "orderedmap-fold keeps its order" (run-str (bjo (orderedmap-folded))) "246")
+  (expect "orderedmap-iter stops at the first small one" (run-int (bjo (orderedmap-stopped))) 1)
+  (expect "orderedmap-for-each keeps its order" (run-str (bjo (orderedmap-each))) "246")
+
+  (expect "orderedset-map keeps its order" (run-str (bjo (orderedset-mapped))) "246")
+  (expect "orderedset-filter keeps its order" (run-str (bjo (orderedset-kept))) "3")
+  (expect "orderedset-fold keeps its order" (run-str (bjo (orderedset-folded))) "246")
+  (expect "orderedset-iter stops at the first small one" (run-int (bjo (orderedset-stopped))) 1)
+  (expect "orderedset-for-each keeps its order" (run-str (bjo (orderedset-each))) "246")
+
+  ;; The ordinary colour still reaches the C# bodies. `118`, `119`, `120` and
+  ;; `043` cover it in depth.
+  (expect "map-map, ordinarily" (sum-values (map-map (fun (k v) (* v 2)) (pairs))) 12)
+  (expect "set-filter, ordinarily" (set-length (set-filter (fun (x) (> x 2)) (numbers))) 1)
+  (expect "orderedmap-fold, ordinarily" (joined-map (ordered-pairs)) "123")
+  (expect "orderedset-map, ordinarily"
+          (joined-set (orderedset-map (fun (x) (* x 2)) (ordered-numbers))) "246")
+  0)
