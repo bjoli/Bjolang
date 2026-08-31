@@ -188,19 +188,6 @@ type private Ctx =
       /// the *current path* fall back to a call.
       Active: Set<string> }
 
-/// The colour the trait declared for this method.
-///
-/// One claim covering every implementation, so there is nothing per-impl to
-/// consult — which is what makes it readable here, before the implementor is
-/// necessarily known.
-let private methodEffect (env: Env) (tref: TraitRef) : Effect =
-    match Map.tryFind tref.Trait env.Registry.Traits with
-    | Some info ->
-        match Map.tryFind tref.Method info.Signatures with
-        | Some(TFun(_, _, eff)) -> eff
-        | _ -> ESync
-    | None -> ESync
-
 /// The call that stands in for an inlined body: the impl's own method, named
 /// directly. Emitted whenever inlining would recur, whenever the occurrence
 /// check refuses, and whenever no template was registered at all.
@@ -223,15 +210,15 @@ let private landingPad (env: Env) (tref: TraitRef) (ctor: string) (tyArgs: HMTyp
         { expr with Node = TTraitCall(tref, args, kwArgs) }
     else
 
+    // The method's own arrow, as instantiation left it. The pad names the
+    // impl's method, which was emitted at the colour the trait declared, so an
+    // `->` here would leave the call unawaited against an `async` member — and
+    // the parameters carry the cell a `-?->` was instantiated to, which is what
+    // `EffectGraph` reads to choose between this pad and the twin's.
     let calleeType =
-        TFun(
-            (args |> List.map (fun a -> a.Type)) @ (kwArgs |> List.map (fun (_, e) -> e.Type)),
-            expr.Type,
-            // The pad names the impl's own method, which was emitted at the
-            // colour the trait declared. An `->` here would leave the call
-            // unawaited against an `async` member.
-            methodEffect env tref
-        )
+        match tref.MethodType with
+        | TFun(paramTypes, _, eff) -> TFun(paramTypes, expr.Type, eff)
+        | other -> other
 
     let callee =
         { Type = calleeType
@@ -281,12 +268,22 @@ let rec private inlineExpr (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
             // The saving given up is negligible against what is left: an await
             // is a state-machine transition, and no call it replaces is cheaper
             // than that.
+            //
+            // A `-?->` method is spliced or not by the same rule, one step
+            // later: the *callback* it was handed decides. Ordinary, nothing
+            // suspends and the body is pasted as it always was. Suspending, the
+            // splice would leave a yield point behind in a body written in
+            // another file — `(map slow xs)` inside a `(seq ...)` reported
+            // `list-map` at `prelude.dll:1`, naming a call the reader never
+            // wrote — so it becomes the twin's landing pad instead, and the
+            // refusal lands on the line that asked for it.
             match template with
             | Some tpl when
                 not (Set.contains key ctx.Active)
                 && tpl.Params.Length = args.Length
                 && kwArgs.IsEmpty
-                && methodEffect ctx.Env tref <> EAsync
+                && not (callSuspends tref.MethodType)
+                && not (wantsSuspendingCopy tref.MethodType)
                 ->
                 spliceTemplate ctx tref ctor tyArgs tpl args expr
             | _ -> landingPad ctx.Env tref ctor tyArgs args kwArgs expr

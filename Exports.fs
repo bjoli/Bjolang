@@ -385,16 +385,24 @@ let metadata
                             [ for i in 0 .. info.HoleArity - 1 -> $"'h%d{i}" ] |> String.concat " "
                         $"(%s{quoted info.ImplementorVar} %s{holeArgs})"
 
+                // The twin of a `-?->` method is left out. It is derived from
+                // the `-?->` wherever the trait is read, so publishing it would
+                // be the same claim written twice — and an inline trait's twin
+                // cannot be spelled at all: its own arrow is `-bjo->`, which
+                // `resolveTemplate` refuses for a method someone wrote.
+                let published (methods: Map<string, 'a>) =
+                    methods
+                    |> Map.toList
+                    |> List.filter (fun (mName, _) -> not (Naming.isSuspendingCopy mName))
+
                 let methodStrs =
                     match info.Kind with
                     | TypedAST.InlineTrait ->
-                        info.Templates
-                        |> Map.toList
+                        published info.Templates
                         |> List.map (fun (mName, tpl) ->
                             $"(: %s{mName} %s{Codegen.serializeTplType info.ImplementorVar tpl})")
                     | TypedAST.InterfaceTrait ->
-                        info.Signatures
-                        |> Map.toList
+                        published info.Signatures
                         |> List.map (fun (mName, mType) ->
                             // A method of a CLR-constraint trait is nothing but
                             // the member it names, so the binding has to travel

@@ -9,12 +9,16 @@
 ;; Monad trait definition.
 (def/trait (Monad (%m %a))
   (: pure (-> %a (%m %a)))
-  (: bind (-> (%m %a) (-> %a (%m %b)) (%m %b))))
+  (: bind (-> (%m %a) (-?-> %a (%m %b)) (%m %b))))
 
+;; `k` is handed to `list-map` rather than called inside a lambda. A lambda's
+;; text is fixed and its colour is not — `(fun ...)` is wrong in the suspending
+;; copy and `(bjoroutine ...)` in the ordinary one — so a callback written here
+;; could only ever be one of them.
 (def/impl (Monad (List %a))
   (defun (pure x) (Cons x Nil))
   (defun (bind m k)
-    (list-foldr (fun (x acc) (list-append (k x) acc)) Nil m)))
+    (list-foldr list-append Nil (list-map k m))))
 
 (def/impl (Monad (Option %a))
   (defun (pure x) (Some x))

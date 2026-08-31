@@ -1528,11 +1528,11 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
                 indent c
                 appendLine c (okOf tmp))
 
-    | TInterfaceCall (iType, mName, eff, dict, args) ->
+    | TInterfaceCall (iType, mName, methodType, dict, args) ->
         // Parenthesised for the same reason a bjoroutine call is: `await` binds
         // looser than member access, so a bare one regroups whatever the value
         // is then used in.
-        let suspends = groundEffect eff = EAsync
+        let suspends = callSuspends methodType
         if suspends then append ctx "(await "
 
         let emitters = prepareOperands ctx (dict :: args)

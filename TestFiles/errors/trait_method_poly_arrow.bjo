@@ -1,23 +1,19 @@
-;; A -?-> parameter on a trait method.
+;; A trait method that says both things about its colour.
 ;;
-;; The method's *own* arrow may now be -bjo->, and this is the line where that
-;; stops. The difference is between having a colour and having a choice of one.
-;; `-bjo->` is a single claim that every implementation keeps, and an emitted
-;; interface can say it, because a method slot has a return type and that return
-;; type can be a fiber. `-?->` asks instead for two copies of every
-;; implementation and two slots to dispatch between — and the pass that makes
-;; copies only ever sees a top-level definition, so an impl would quietly get
-;; one and the arrow would be decoration.
+;; `-?->` on a parameter already says calling the method suspends exactly when
+;; the callback does, and the twin derived from it is the half that suspends.
+;; `-bjo->` on the method's own arrow says every implementation suspends
+;; whatever it is handed. Together they leave the callback nothing to decide.
 
-;; EXPECT-ERROR: declares 'apply-it' with a -?-> parameter, and a trait method's parameter cannot take either colour
-;; EXPECT-ERROR: It is the *parameter* that has no second copy to choose between
+;; EXPECT-ERROR: declares 'apply-it' -bjo-> and gives it a -?-> parameter
+;; EXPECT-ERROR: Write the method's own arrow ->
 
 (import (std prelude))
 
 (def/trait (Mapper %a)
-  (: apply-it (-> %a (-?-> int int) int)))
+  (: apply-it (-bjo-> %a (-?-> int int) int)))
 
 (def/impl (Mapper int)
-  (defun (apply-it x f) (f x)))
+  (defbjo (apply-it x f) (f x)))
 
 (defun (main args) 0)

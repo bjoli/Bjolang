@@ -308,24 +308,6 @@ let private takesDictionaries (env: Env) (scope: Scope) (name: string) (tArgs: H
 
 module DictionaryLowering =
 
-    /// The colour the trait declared for this method.
-    ///
-    /// Read once, here, and carried on the node from then on. Every dispatch
-    /// shape wants the same answer — the interface call, the landing pad, and
-    /// the C# emitted for each — and a trait's colour is one claim covering
-    /// every implementation, so there is nothing per-impl to look up.
-    ///
-    /// `ESync` for a trait nothing registered, which is the ordinary case for a
-    /// `.NET`-interface trait and for anything the registry did not reach: an
-    /// unrecorded colour is no colour.
-    let methodEffect (env: Env) (tref: TraitRef) : Effect =
-        match Map.tryFind tref.Trait env.Registry.Traits with
-        | Some info ->
-            match Map.tryFind tref.Method info.Signatures with
-            | Some(TFun(_, _, eff)) -> eff
-            | _ -> ESync
-        | None -> ESync
-
     let rec lowerExpr (env: Env) (scope: Scope) (expr: TypedExpr) : TypedExpr =
         let recurse e = lowerExpr env scope e
 
@@ -386,7 +368,7 @@ module DictionaryLowering =
                             expr.Range
                             $"to call '%s{tref.Method}'"
 
-                    TInterfaceCall(dict.Type, tref.Method, methodEffect env tref, dict, loweredArgs)
+                    TInterfaceCall(dict.Type, tref.Method, tref.MethodType, dict, loweredArgs)
 
                 | Some(ctor, tyArgs) ->
                     // Static dispatch: the landing pad, named directly.
@@ -395,17 +377,17 @@ module DictionaryLowering =
                         | Some info -> info.Kind
                         | None -> InterfaceTrait
 
+                    // The method's own arrow, as instantiation left it. The pad
+                    // names the impl's method, which was emitted at the trait's
+                    // colour, so an `->` here would leave the call unawaited
+                    // against an `async` member — and the parameters carry the
+                    // cell a `-?->` was instantiated to, which is what
+                    // `EffectGraph` reads to choose between this pad and the
+                    // twin's.
                     let calleeType =
-                        TFun(
-                            (loweredArgs |> List.map (fun a -> a.Type))
-                            @ (loweredKwArgs |> List.map (fun (_, e) -> e.Type)),
-                            expr.Type,
-                            // The landing pad is the impl's own method, and it
-                            // was emitted at the trait's colour. Spelling this
-                            // arrow `->` would leave the call unawaited against
-                            // an `async` member.
-                            methodEffect env tref
-                        )
+                        match tref.MethodType with
+                        | TFun(paramTypes, _, eff) -> TFun(paramTypes, expr.Type, eff)
+                        | other -> other
 
                     let callee =
                         { Type = calleeType
@@ -430,7 +412,7 @@ module DictionaryLowering =
                     let dictIdent =
                         buildEvidence env scope tref.Trait hole expr.Range "for trait dispatch"
 
-                    TInterfaceCall(dictIdent.Type, tref.Method, methodEffect env tref, dictIdent, loweredArgs)
+                    TInterfaceCall(dictIdent.Type, tref.Method, tref.MethodType, dictIdent, loweredArgs)
 
             { expr with Node = node }
 

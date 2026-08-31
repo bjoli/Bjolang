@@ -1,0 +1,80 @@
+;; What a trait method with a `-?->` parameter compiles to.
+;;
+;; Two slots on the interface and two methods on every implementation. They have
+;; to be two rather than one generic slot because the callback's C# types are
+;; unrelated — `Func<A,B>` against `Func<A,Fiber<B>>` — and so are the returns,
+;; `T` against `Fiber<T>`.
+;;
+;; The choice is made by the argument, not by where the call is written, which
+;; is what a `-?->` means everywhere else too. What a trait adds is that the
+;; choice has to survive dispatch, so it is made twice over: by naming the slot
+;; at a dictionary call, and by naming the landing pad at a resolved one.
+
+(export over each here plainly)
+
+(import (std prelude))
+
+(def/trait (Over (%f %a))
+  (: over (-> (%f %a) (-?-> %a %a) (%f %a))))
+
+;; --- Both halves of the implementation ---------------------------------------
+;;
+;; A `def/impl` writes one body. The twin is that same body checked again
+;; against the repainted signature, which is what a top-level `-?->` does too.
+;; EXPECT-CS: public static SchemeList\.SchemeList<T_[a-z0-9_]+> over<T_[a-z0-9_]+>\(SchemeList\.SchemeList<T_[a-z0-9_]+> xs, Func<T_[a-z0-9_]+, T_[a-z0-9_]+> f\)
+;; EXPECT-CS: public static async Bjoml\.Fiber<SchemeList\.SchemeList<T_[a-z0-9_]+>> over__bjo<T_[a-z0-9_]+>
+(def/impl (Over (List %a))
+  (defun (over xs f) (list-map f xs)))
+
+(: slow (-bjo-> int int))
+(defbjo (slow n)
+  (ignore (read-line (open-input-string "tick\n")))
+  (* n 2))
+
+;; --- A suspending callback lands on the twin's pad ----------------------------
+;;
+;; `Over` is an inline trait, so the pad is a static method on the impl's class.
+;; The body is *not* spliced, and the reason is the diagnostic rather than the
+;; code: spliced, a yield point in the wrong place is reported against the impl's
+;; line in whatever file it was written in.
+;; EXPECT-CS: await Over_List\.over__bjo\(xs, \(\(Func<int, Bjoml\.Fiber<int>>\)
+(: here (-bjo-> (List int) (List int)))
+(defbjo (here xs) (over xs slow))
+
+;; --- An ordinary one is spliced, as it always was ------------------------------
+;; EXPECT-CS: return prelude_Module\.listsubmap\(\(n\) =>
+(: plainly (-> (List int) (List int)))
+(defun (plainly xs) (over xs (fun (n) (* n 2))))
+
+;; ---------------------------------------------------------------------------
+;; Through a dictionary
+;; ---------------------------------------------------------------------------
+;;
+;; An interface trait, so the two halves are two slots and a call with no known
+;; implementation picks between them there.
+
+(def/trait (Each %c)
+  (type %elem)
+  (: each (-> %c (-?-> %elem string) string)))
+
+;; --- Two slots on the interface ----------------------------------------------
+;; EXPECT-CS: public interface Each<T_c, T_elem> \{
+;; EXPECT-CS: string each\(T_c arg0, Func<T_elem, string> arg1\);
+;; EXPECT-CS: Bjoml\.Fiber<string> each__bjo\(T_c arg0, Func<T_elem, Bjoml\.Fiber<string>> arg1\);
+(def/impl (Each (List %a))
+  (type %elem %a)
+  (defun (each xs f) (list-foldl string-append "" (list-map f xs))))
+
+;; --- The dispatched call is awaited, on the twin's slot -----------------------
+;;
+;; The receiver is a type variable, so which implementation answers is not known
+;; here. Which *slot* is, and that is why the twin belongs on the interface
+;; rather than being left to each implementation.
+;; EXPECT-CS: await _dict_Each_c\.each__bjo\(c,
+(: suspending (-bjo-> %c (-bjo-> (assoc Each elem %c) string) string) (where (Each %c)))
+(defbjo (suspending c f) (each c f))
+
+;; --- And the ordinary slot for an ordinary callback ---------------------------
+;; EXPECT-CS: return _dict_Each_c\.each\(c,
+(: ordinary (-> %c (-> (assoc Each elem %c) string) string) (where (Each %c)))
+(defun (ordinary c f) (each c f))

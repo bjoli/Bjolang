@@ -3,28 +3,27 @@
 ;; `:bind` desugars to a call to `bind` with the rest of the block as an
 ;; ordinary lambda, and whether that lambda survives depends on the monad.
 ;;
-;; `Option`'s `bind` mentions its continuation once, so trait inlining
-;; substitutes it and beta reduction leaves straight-line code — which is why
-;; the same shape is *allowed* in `074_bjoroutine.bjo`. `List`'s `bind` calls its
-;; continuation once per element, the occurrence check refuses to substitute a
-;; term used more than once, and the lambda is still there when the colour check
-;; runs. A suspension inside it has nowhere to live.
+;; `Option`'s `bind` applies its continuation, so trait inlining substitutes it
+;; and beta reduction leaves straight-line code — which is why the same shape is
+;; *allowed* in `074_bjoroutine.bjo`. `List`'s hands it to `list-map`, which
+;; takes a function rather than calling one, so there is nothing to reduce and
+;; the lambda is still there when the colour check runs. A suspension inside it
+;; has nowhere to live.
 ;;
 ;; The design's §8.5 asks for a message naming the monad and saying why. It
-;; names `list-foldr` and the arrow its callback is declared with, which is one
+;; names `list-map` and the arrow its callback is declared with, which is one
 ;; step short: that is the function `bind` desugared *into*, not the `List`
 ;; whose instance chose it. Naming the monad means carrying provenance through
 ;; trait inlining.
 ;;
-;; What changed when `list-foldr` gained a `-?->` callback is which half is at
-;; fault. The parameter is no longer the obstacle — it takes either colour — so
-;; the lambda is, and the message says so. That fix is one word for anyone who
-;; wrote the lambda, which is why it is offered plainly; this fixture is the
-;; case where nobody did, and the second sentence is there for it.
+;; The parameter is not the obstacle — it takes either colour — so the lambda
+;; is, and the message says so. That fix is one word for anyone who wrote the
+;; lambda, which is why it is offered plainly; this fixture is the case where
+;; nobody did, and the second sentence is there for it.
 
 ;; EXPECT-ERROR: calling 'fetch' is a yield point
 ;; EXPECT-ERROR: yield point is not allowed here
-;; EXPECT-ERROR: passed to 'list-foldr', whose parameter is declared -?-> and so takes either colour
+;; EXPECT-ERROR: passed to 'list-map', whose parameter is declared -?-> and so takes either colour
 ;; EXPECT-ERROR: Where the lambda is not one you wrote, whatever built it decides
 
 (import (std prelude))

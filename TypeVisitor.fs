@@ -87,7 +87,7 @@ let mapChildren (f: TypedExpr -> TypedExpr) (expr: TypedExpr) : TypedExpr =
         | TYield value -> TYield(f value)
         | TYieldFrom source -> TYieldFrom(f source)
         | TMatch(target, clauses) -> TMatch(f target, List.map mapClause clauses)
-        | TInterfaceCall(iType, mName, eff, dict, args) -> TInterfaceCall(iType, mName, eff, f dict, List.map f args)
+        | TInterfaceCall(iType, mName, mType, dict, args) -> TInterfaceCall(iType, mName, mType, f dict, List.map f args)
         | TTraitCall(tref, args, kwArgs) ->
             TTraitCall(tref, List.map f args, kwArgs |> List.map (fun (n, e) -> n, f e))
         | TThrow e -> TThrow(f e)
@@ -245,7 +245,7 @@ let rec reachesAwait (expr: TypedExpr) : bool =
     | TApply(target, _, _) when callSuspends target.Type -> true
     // A dispatched trait method whose trait declared `-bjo->`. The colour is on
     // the node rather than on an arrow, so the case above cannot see it.
-    | TInterfaceCall(_, _, eff, _, _) when groundEffect eff = EAsync -> true
+    | TInterfaceCall(_, _, methodType, _, _) when callSuspends methodType -> true
     | _ -> children expr |> List.exists reachesAwait
 
 /// Deep pre-order fold over every expression contained in `decl`.

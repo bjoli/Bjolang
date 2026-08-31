@@ -3,6 +3,35 @@
 
 What each change guarantees, and what it leaves open.
 
+* A trait method takes a callback of either colour
+
+~-?->~ on a trait method's parameter. ~Functor.map~ and ~Monad.bind~ declare one,
+so ~(map f xs)~ written generically suspends when ~f~ does:
+
+#+BEGIN_SRC scheme
+(defbjo (lines ports)
+  (map (bjoroutine (p) (read-line p)) ports))
+#+END_SRC
+
+The trait derives a second method from the arrow, every implementation gets a
+second body from the one it was written with, and the call site picks by the
+callback it was handed. For an interface trait the two are two slots, so a
+receiver that is still a type variable picks at the dictionary; for an inline
+trait they are two static methods on the impl's class.
+
+Before, every concrete name reached its suspending copy and the trait was where
+it stopped: ~list-map~ took a colour and ~map~ could not.
+
+What it leaves open: a ~(do ...)~ block still cannot suspend. ~:bind~ desugars to
+~bind~ with the rest of the block as an ordinary ~(fun ...)~, and a lambda's text
+is fixed while its colour is not — which is the same limit that keeps a callback
+out of an implementation's body. ~Monad~'s ~List~ instance hands its continuation
+to ~list-map~ rather than calling it inside a fold's lambda, for that reason.
+
+Refused: a method that is both ~-bjo->~ and ~-?->~, since the two leave the
+callback nothing to decide, and a ~-?->~ on a trait standing for a .NET
+interface, which has one member per method and no second one to derive into.
+
 * ~case~ dispatches on a jump table
 
 ~(case key ((datum ...) body ...) ... (else body ...))~. A clause's data become

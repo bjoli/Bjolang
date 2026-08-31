@@ -253,25 +253,6 @@ let blockingDefinitions (registry: TraitRegistry) (decls: TDecl list) : Set<stri
 // Call-site selection
 // ---------------------------------------------------------------------------
 
-/// Was this call's `-?->` parameter instantiated at the suspending colour?
-///
-/// `EMeta` is the whole test, and it is exact: `freshEffect` is called in one
-/// place, `instantiate`'s `EPoly` case, so a cell in a parameter's arrow *is* an
-/// `-?->` instantiated at this call. A parameter declared `-bjo->` arrives as a
-/// plain `EAsync` and must not be mistaken for one — it was never polymorphic
-/// and has no second copy to choose.
-///
-/// One cell is shared by every `-?->` in a signature, so any one occurrence
-/// answers for all of them and `exists` is not an approximation.
-let private wantsSuspendingCopy (t: HMType) =
-    match t with
-    | TFun(paramTypes, _, _) ->
-        paramTypes
-        |> List.exists (function
-            | TFun(_, _, (EMeta _ as eff)) -> pruneEffect eff = EAsync
-            | _ -> false)
-    | _ -> false
-
 /// Effect defaulting: an effect cell nothing has constrained becomes the colour
 /// of the member it is written in.
 ///
@@ -541,6 +522,21 @@ let rec private selectIn (registry: TraitRegistry) (allowed: bool) (expr: TypedE
                 n, isFun, lf, (if isFun then localFun registry allowed value else descend value))
 
         { expr with Node = TLetRec(bindings, descend body) }
+
+    // A method reached through a dictionary, where no implementation is known.
+    // The twin is a slot of its own on the interface, so what is chosen is the
+    // method *name* — where an ordinary call chooses the callee's.
+    | TInterfaceCall(dictType, method, methodType, dict, args) ->
+        ground allowed methodType
+
+        let method, methodType =
+            if wantsSuspendingCopy methodType then
+                Naming.suspendingCopy method, recolour EAsync methodType
+            else
+                method, methodType
+
+        { expr with
+            Node = TInterfaceCall(dictType, method, methodType, descend dict, args |> List.map descend) }
 
     | TApply(target, args, kwArgs) ->
         // The callee's own type, defaulted before it is read: the cell an

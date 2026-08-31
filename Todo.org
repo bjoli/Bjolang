@@ -164,17 +164,8 @@ or a script of its own.
 
 * Colourless concurrency
 
-Layers 0–4 all ship. Four things left; only the first blocks anything.
-
-** Shape C — ~-?->~ on a trait method's parameter
-
-~Functor.map~ and ~Foldable.fold~ cannot take a colour, so ~(map f xs)~ written
-generically stays ordinary even where ~list-map~ suspends. Every concrete name
-reaches the suspending copy; the trait is where it stops.
-
-Costs two copies of every implementation and two interface slots to dispatch
-between. Shape A — a method declared ~-bjo->~ — is built and is the machinery to
-extend.
+Layers 0–4 ship, and so does trait colour in both shapes. Four things left,
+none of which blocks anything.
 
 ** A generated copy that never suspends is still emitted
 
@@ -201,8 +192,32 @@ and a copy that changes its return type is two functions, not monomorphisation.
 
 If a suspending sequence is ever wanted it is a separate form producing a
 separate type, with an ~AsyncIterable~ trait to consume it. Expressible now that
-a trait method may declare ~-bjo->~; not worth it at two ~seql~ producers in the
+a trait method may carry a colour; not worth it at two ~seql~ producers in the
 whole library.
+
+** A ~(do ...)~ block cannot suspend
+
+~:bind~ desugars to ~bind~ with the rest of the block as ~(fun ...)~, and a
+lambda's text is fixed while its colour is not. ~(bind m (bjoroutine (x) ...))~
+written by hand does suspend; the macro cannot know which was wanted.
+
+A second definer — ~:bind/bjo~, or a keyword the whole ~do~ reads — would settle
+it. Nothing has needed one yet.
+
+* An impl at a concrete instantiation cannot be dispatched to
+
+~(def/impl (Over (List int)) ...)~ emits ~Over_List~, a non-generic class,
+because the impl's fixed prefix is ~int~ and has no type variable in it. A
+dictionary built for it is still spelled ~Over_List<int>.Instance~, and Roslyn
+answers ~CS0308: the non-generic type 'Over_List' cannot be used with type
+arguments~ about a file nobody wrote.
+
+Only the *dispatched* path. A resolved call is inlined or lands on the pad, and
+both are fine; ~(def/impl (Over (List %a)) ...)~ is fine too, which is why this
+has not been hit — an impl at one instantiation of a generic type is an unusual
+thing to write.
+
+Reproduces with a plain ~->~ method, so it has nothing to do with colour.
 
 * Macros and trait methods
 

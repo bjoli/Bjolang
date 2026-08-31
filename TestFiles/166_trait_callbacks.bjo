@@ -1,0 +1,163 @@
+;; A trait method whose callback may be either colour.
+;;
+;; The trait derives a second method from the `-?->`, every implementation gets
+;; a second body, and the call site picks by the callback it was handed. Which
+;; is the same bargain a top-level `-?->` makes; what a trait adds is that the
+;; choice has to survive dispatch, so the twin is a slot of its own.
+;;
+;; `Functor.map` is the reason it exists. Written generically, `(map f xs)` used
+;; to stay ordinary wherever it appeared, because the trait was where the colour
+;; stopped.
+
+(import (std prelude))
+(import (std monad))
+(import (std simpletest))
+
+;; The yield point: `read-line` from a bjoroutine.
+(: slow-double (-bjo-> int int))
+(defbjo (slow-double n)
+  (ignore (read-line (open-input-string "tick\n")))
+  (* n 2))
+
+(: run-int (-> (Promise int) int))
+(defun (run-int p)
+  (match (sync/blocking (promise-join p)) ((Ok n) n) ((Err e) -1)))
+
+(: run-str (-> (Promise string) string))
+(defun (run-str p)
+  (match (sync/blocking (promise-join p)) ((Ok s) s) ((Err e) "raised")))
+
+(: total (-> (List int) int))
+(defun (total xs)
+  (loop (:for x xs) (:acc s (summing x))))
+
+;; ---------------------------------------------------------------------------
+;; Functor
+;; ---------------------------------------------------------------------------
+
+(: mapped-list (-bjo-> int))
+(defbjo (mapped-list)
+  (total (map slow-double (list 1 2 3))))
+
+(: mapped-vec (-bjo-> int))
+(defbjo (mapped-vec)
+  (vec-fold (fun (acc x) (+ acc x)) 0 (map slow-double [1 2 3])))
+
+(: mapped-option (-bjo-> int))
+(defbjo (mapped-option)
+  (match (map slow-double (Some 5)) ((Some n) n) (None 0)))
+
+;; The ordinary copy is still there, in the same file, over the same trait.
+(: mapped-plainly (-> int))
+(defun (mapped-plainly)
+  (total (map (fun (n) (* n 2)) (list 1 2 3))))
+
+;; ---------------------------------------------------------------------------
+;; Through a lambda the caller wrote
+;; ---------------------------------------------------------------------------
+;; A `(bjoroutine ...)` is what makes the arrow suspending; a `(fun ...)` in the
+;; same position leaves it ordinary.
+
+(: mapped-by-hand (-bjo-> int))
+(defbjo (mapped-by-hand)
+  (total (map (bjoroutine (n) (+ (slow-double n) 1)) (list 1 2 3))))
+
+;; ---------------------------------------------------------------------------
+;; Monad
+;; ---------------------------------------------------------------------------
+
+(: bound-option (-bjo-> int))
+(defbjo (bound-option)
+  (match (bind (Some 4) (bjoroutine (n) (Some (slow-double n))))
+    ((Some n) n)
+    (None 0)))
+
+(: bound-list (-bjo-> int))
+(defbjo (bound-list)
+  (total (bind (list 1 2 3) (bjoroutine (n) (Cons (slow-double n) Nil)))))
+
+;; ---------------------------------------------------------------------------
+;; A trait of this file's own, dispatched rather than resolved
+;; ---------------------------------------------------------------------------
+;; `Over` takes a plain implementor, so it is an interface trait: two slots, and
+;; a receiver that is still a type variable picks between them at the dictionary.
+
+(def/trait (Over %c)
+  (type %elem)
+  (: over (-> %c (-?-> %elem string) string)))
+
+;; Handed on rather than called in a lambda: a lambda written here would have
+;; one colour and the two copies need different ones.
+(def/impl (Over (List %a))
+  (type %elem %a)
+  (defun (over xs f)
+    (list-foldl string-append "" (list-map f xs))))
+
+(def/impl (Over (Vec %a))
+  (type %elem %a)
+  (defun (over v f)
+    (vec-fold string-append "" (vec-map f v))))
+
+;; No implementation is known here, so the call goes through the dictionary.
+(: dispatched (-bjo-> %c (-bjo-> (assoc Over elem %c) string) string) (where (Over %c)))
+(defbjo (dispatched c f) (over c f))
+
+(: dispatched-plainly (-> %c (-> (assoc Over elem %c) string) string) (where (Over %c)))
+(defun (dispatched-plainly c f) (over c f))
+
+(: shown (-bjo-> int string))
+(defbjo (shown n) (int->string (slow-double n)))
+
+;; Annotated, because the element type has to be known before an implementation
+;; can be: `(assoc Over elem %c)` is read out of the implementor, not into it.
+(: three (-> (List int)))
+(defun (three) (list 1 2 3))
+
+(: three-vec (-> (Vec int)))
+(defun (three-vec) [1 2 3])
+
+;; The implementor is known here, so the call lands on the implementation.
+(: resolved (-bjo-> string))
+(defbjo (resolved) (over (three) shown))
+
+;; ---------------------------------------------------------------------------
+;; A method that recurses
+;; ---------------------------------------------------------------------------
+;; The self-call cannot be spliced into itself, so it becomes the landing pad —
+;; and the landing pad has to pick the twin as well.
+
+(def/trait (Walk (%f %a))
+  (: walk (-> (%f %a) (-?-> %a %a) (%f %a))))
+
+(def/impl (Walk (List %a))
+  (defun (walk xs f)
+    (match xs
+      (Nil Nil)
+      ((Cons h t) (Cons (f h) (walk t f))))))
+
+(: walked (-bjo-> int))
+(defbjo (walked) (total (walk (three) slow-double)))
+
+(: walked-plainly (-> int))
+(defun (walked-plainly) (total (walk (three) (fun (n) (* n 2)))))
+
+(defun (main)
+  (expect "map over a list, suspending" (run-int (bjo (mapped-list))) 12)
+  (expect "map over a vec, suspending" (run-int (bjo (mapped-vec))) 12)
+  (expect "map over an option, suspending" (run-int (bjo (mapped-option))) 10)
+  (expect "map with a bjoroutine written by hand" (run-int (bjo (mapped-by-hand))) 15)
+  (expect "the ordinary copy is still there" (mapped-plainly) 12)
+  (expect "map, ordinarily, at the top level" (total (map (fun (n) (+ n 1)) (list 1 2 3))) 9)
+
+  (expect "bind over an option, suspending" (run-int (bjo (bound-option))) 8)
+  (expect "bind over a list, suspending" (run-int (bjo (bound-list))) 12)
+  (expect "bind, ordinarily" (total (bind (list 1 2) (fun (n) (Cons n (Cons n Nil))))) 6)
+
+  (expect "dispatched, suspending" (run-str (bjo (dispatched (three) shown))) "246")
+  (expect "dispatched over a vec" (run-str (bjo (dispatched (three-vec) shown))) "246")
+  (expect "dispatched, ordinarily" (dispatched-plainly (three) int->string) "123")
+  (expect "resolved, suspending" (run-str (bjo (resolved))) "246")
+
+  (expect "a recursive method, suspending" (run-int (bjo (walked))) 12)
+  (expect "a recursive method, ordinarily" (walked-plainly) 12)
+  0)

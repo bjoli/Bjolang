@@ -671,6 +671,16 @@ let rec resolveTemplate (registry: TraitRegistry) (holeVar: string) (ftype: FTyp
     | TApp("->", args, _) ->
         let resolved = args |> List.map go
         TplFun(List.take (resolved.Length - 1) resolved, List.last resolved, ESync)
+    // A callback the method takes at either colour. Only a parameter reaches
+    // here — `parseType` refuses `-?->` anywhere else — and the twin derived
+    // from it is where the suspending one is answered.
+    | TApp("-?->", args, _) ->
+        let resolved = args |> List.map go
+        TplFun(List.take (resolved.Length - 1) resolved, List.last resolved, EPoly)
+    // The derived twin's own parameters, read back from metadata.
+    | TApp("-bjo->", args, _) ->
+        let resolved = args |> List.map go
+        TplFun(List.take (resolved.Length - 1) resolved, List.last resolved, EAsync)
     | TArrow(mandatory, keywords, restOpt, ret, colour, r) ->
         // An *inline* trait, specifically. An interface trait's method may be
         // declared `-bjo->`: it has a dictionary, so the colour has an emitted
@@ -711,6 +721,22 @@ let instantiateTemplateFresh (tpl: TplType) : HMType * (HMType * HMType list) li
     let varMap = System.Collections.Generic.Dictionary<string, HMType>()
     let holes = ResizeArray<HMType * HMType list>()
 
+    // One cell for every `EPoly` in the template, as `instantiate` makes one
+    // for every `EPoly` in a scheme. An `EPoly` left standing reaches `unify`,
+    // which refuses it: it is a quantified variable and this is what removes it.
+    let mutable polyCell: Effect option = None
+
+    let effectFor eff =
+        match eff with
+        | EPoly ->
+            match polyCell with
+            | Some cell -> cell
+            | None ->
+                let cell = freshEffect ()
+                polyCell <- Some cell
+                cell
+        | other -> other
+
     let rec go t =
         match t with
         | TplVar n ->
@@ -721,7 +747,7 @@ let instantiateTemplateFresh (tpl: TplType) : HMType * (HMType * HMType list) li
                 varMap[n] <- m
                 m
         | TplCon(n, args) -> TCon(n, List.map go args)
-        | TplFun(args, ret, eff) -> TFun(List.map go args, go ret, eff)
+        | TplFun(args, ret, eff) -> TFun(List.map go args, go ret, effectFor eff)
         | TplTuple ts -> TTuple(List.map go ts)
         | TplHole args ->
             let argTypes = List.map go args
@@ -1067,15 +1093,20 @@ let private traitCallType (env: Env) (traitName: string) (methodName: string) (r
             let vars =
                 implVar :: (freeTVars env.Registry withAssoc |> List.distinct |> List.filter ((<>) implVar))
 
-            let subst = vars |> List.map (fun v -> v, freshMeta ()) |> Map.ofList
+            // Through `instantiate` rather than a substitution of its own, so
+            // that a `-?->` parameter becomes the one shared cell here as it
+            // does at every other use site. Left `EPoly` it reaches `unify`,
+            // which refuses it: instantiation is what removes it.
+            let instantiated, fresh, _ = instantiate env.Registry (Scheme(vars, [], withAssoc))
 
             // An implementor of arity zero is the hole, applied to nothing.
-            substTypeVars subst withAssoc, [ subst[implVar], [] ]
+            instantiated, [ List.head fresh, [] ]
 
     let tref =
         { Trait = traitName
           Method = methodName
           Holes = holeArgs |> List.map fst
+          MethodType = methodType
           Resolved = None }
 
     pushWanted
@@ -1692,7 +1723,7 @@ let private yieldPointsOfDecl (decl: TDecl) : string list =
             // A dispatched trait method the trait declared `-bjo->`. Counted so
             // that a `defbjouble` whose suspending half reaches one is a pair of
             // colours rather than two spellings of the same body.
-            | TInterfaceCall(_, mName, eff, _, _) when pruneEffect eff = EAsync -> found.Add mName
+            | TInterfaceCall(_, mName, methodType, _, _) when callSuspends methodType -> found.Add mName
             | _ -> ())
         ()
     |> ignore
@@ -5217,31 +5248,27 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                   Args = args
                   Members = members })
 
-        // `-?->` on a trait method's parameter is refused. The method's *own*
-        // arrow may carry a colour, and is checked against each impl's definer
-        // in `DImpl`.
-        //
-        // The asymmetry is the difference between having a colour and having a
-        // *choice* of colour. `-bjo->` is one claim, made once, which every
-        // implementation then keeps — and the emitted interface can say it,
-        // because a method slot has a return type and that return type can be a
-        // `Fiber<T>`. `-?->` instead asks for two copies of every
-        // implementation and two slots to dispatch between, and the pass that
-        // makes copies only ever sees a top-level definition. Accepting it gave
-        // one ordinary copy and an arrow that meant nothing.
         for (name, fType) in signatures do
-            let poly =
-                match fType with
-                | TArrow(mandatory, keywords, restOpt, _, _, _) ->
-                    mandatory @ (keywords |> List.map snd) @ (restOpt |> Option.toList)
-                    |> List.exists (function
-                        | TApp("-?->", _, _) -> true
-                        | _ -> false)
-                | _ -> false
+            match fType with
+            | TArrow(mandatory, keywords, restOpt, _, colour, ar) when
+                mandatory @ (keywords |> List.map snd) @ (restOpt |> Option.toList)
+                |> List.exists (function
+                    | TApp("-?->", _, _) -> true
+                    | _ -> false)
+                ->
+                // A method declared `-?->` at a parameter may not also declare
+                // a colour of its own. The twin derived below is what answers
+                // the suspending case, and it is derived rather than written.
+                if colour = Suspending then
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos ar}: trait '%s{traitName}' declares '%s{name}' -bjo-> and gives it a -?-> parameter. A -?-> already says calling it suspends whenever the callback does, so the two together leave the callback no say. Write the method's own arrow ->."
 
-            if poly then
-                failwithf
-                    $"Type Error at %s{Lexer.formatPos r}: trait '%s{traitName}' declares '%s{name}' with a -?-> parameter, and a trait method's parameter cannot take either colour. A -?-> asks for two copies of the definition, and the pass that generates them only sees top-level definitions — an impl would silently get one, so the arrow would mean nothing.\n  The method's own arrow may be -bjo->, which every implementation of it then has to be. It is the *parameter* that has no second copy to choose between."
+                // A trait standing for a .NET interface has one member per
+                // method and no second one to derive a twin into.
+                if clrConstraint.IsSome then
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos ar}: trait '%s{traitName}' stands for a .NET interface, so '%s{name}' is the member it names and there is no second member for a -?-> to be answered by. Declare the parameter ->."
+            | _ -> ()
 
         let hmSignatures =
             match kind with
@@ -5258,6 +5285,38 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                 signatures
                 |> List.map (fun (name, fType) -> name, resolveTemplate env.Registry implementorVar fType)
                 |> Map.ofList
+
+        // A method taking a callback of either colour gets a second one,
+        // `name__bjo`, taking the suspending callback and suspending with it.
+        //
+        // Derived rather than declared, and merged into the same map, so that
+        // everything downstream finds two methods where the author wrote one:
+        // the interface gets both slots, `DImpl` checks both bodies against
+        // them, and `EffectGraph` picks between them with the name rewriting it
+        // already does for a top-level `-?->`.
+        //
+        // Not published. `Exports` leaves a twin out and an importing module
+        // derives its own from the `-?->` it reads back, so the rule lives in
+        // one place and metadata never says the same thing twice.
+        let hmSignatures =
+            hmSignatures
+            |> Map.fold
+                (fun acc name t ->
+                    if declaresPolyParam t then
+                        Map.add (Naming.suspendingCopy name) (suspendingTwin t) acc
+                    else
+                        acc)
+                hmSignatures
+
+        let templates =
+            templates
+            |> Map.fold
+                (fun acc name tpl ->
+                    if templateDeclaresPolyParam tpl then
+                        Map.add (Naming.suspendingCopy name) (suspendingTwinTemplate tpl) acc
+                    else
+                        acc)
+                templates
 
         if kind = InlineTrait && not assocTypes.IsEmpty then
             failwithf
@@ -5306,7 +5365,12 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
 
         // Whatever the kind, the method names are recorded so that `infer` can
         // recognize them in application position without searching every trait.
-        let methodNames = signatures |> List.map fst
+        // Read off the maps rather than the source, so a derived twin is a
+        // method like any other.
+        let methodNames =
+            match kind with
+            | InterfaceTrait -> hmSignatures |> Map.toList |> List.map fst
+            | InlineTrait -> templates |> Map.toList |> List.map fst
 
         // A method name identifies its trait, and that is the *only* thing that
         // can: nothing at a call site says which trait `pure` came from. Two
@@ -5504,6 +5568,51 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
 
         let methods = methods @ inheritedMethods
 
+        /// Does the trait declare this method with a callback of either colour?
+        let takesEitherColour (name: string) =
+            match traitInfo.Kind with
+            | InlineTrait ->
+                Map.tryFind name traitInfo.Templates
+                |> Option.map templateDeclaresPolyParam
+                |> Option.defaultValue false
+            | InterfaceTrait ->
+                Map.tryFind name traitInfo.Signatures
+                |> Option.map declaresPolyParam
+                |> Option.defaultValue false
+
+        // The second body, from the same source, for the twin the trait
+        // derived. Generated here and checked below like any other method, for
+        // the reason `expandPolymorphicDefuns` gives at the top level: the
+        // parameter's colour is in every type on every node, so re-checking one
+        // source against a repainted signature cannot miss an occurrence and a
+        // substitution afterwards could.
+        //
+        // A default body is copied too — it arrived above as an ordinary method
+        // and is one from here on.
+        let methods =
+            methods
+            @ (methods
+               |> List.choose (function
+                   | DDefun(name, args, body, _, mr) when takesEitherColour name ->
+                       Some(DDefun(Naming.suspendingCopy name, args, body, Suspending, mr))
+                   | _ -> None))
+
+        // Which of them the author did not write, so that a diagnostic about
+        // one says so rather than pointing at a line where, as written, there
+        // is nothing wrong.
+        let env =
+            { env with
+                Registry =
+                    { env.Registry with
+                        GeneratedCopies =
+                            methods
+                            |> List.fold
+                                (fun acc m ->
+                                    match m with
+                                    | DDefun(name, _, _, _, _) when Naming.isSuspendingCopy name -> Set.add name acc
+                                    | _ -> acc)
+                                env.Registry.GeneratedCopies } }
+
         let implTarget = implTargetOf traitName traitInfo targetType implConstraints r
         let regEnv = addImplementation traitName typeKey targetType implTarget hmAssocBindingsMap env
 
@@ -5548,6 +5657,12 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                             | None ->
                                 failwithf
                                     $"Method '%s{name}' is not a member of trait '%s{traitName}' at %s{Lexer.formatPos methodRange}"
+
+                    // A body is one colour or the other, never both, so the
+                    // `-?->` a *caller* reads is fixed here. This is the
+                    // ordinary half; the twin's was fixed suspending when the
+                    // trait derived it, and has no `EPoly` left to fix.
+                    let expectedSignature = ordinaryHalf expectedSignature
 
                     // After substituting the implementor var and associated types,
                     // the signature may still contain TVars from two sources:

@@ -31,13 +31,18 @@
 ///
 /// # Why running late is safe
 ///
-/// Nothing between type checking and here can *introduce* a yield point.
-/// `TraitInline` splices impl bodies, but a trait method cannot be a bjoroutine
-/// — the parser refuses the definer and `resolveTemplate` refuses the arrow —
-/// so no spliced body contains one. This is the opposite of the argument for
-/// running must-use checking *before* `TraitInline` (§8.3): that check would
-/// see the same body once per call site, whereas this one cannot see a body it
-/// did not already see.
+/// Nothing between type checking and here can *move* a yield point.
+///
+/// `EffectGraph.selectDoubles` introduces them — that is what it is for — but
+/// only by rewriting a call in place, so the line that answers for one is the
+/// line it was written on. `TraitInline` could move one, by splicing a body
+/// from another file over the call that named it, and declines for exactly that
+/// reason: a method that suspends, or one whose `-?->` was handed a suspending
+/// callback, becomes a landing pad instead.
+///
+/// This is the opposite of the argument for running must-use checking *before*
+/// `TraitInline` (§8.3): that check would see the same body once per call site,
+/// whereas this one cannot see a body it did not already see.
 ///
 /// # Why the message names one construct
 ///
@@ -363,8 +368,8 @@ let rec private checkExpr (site: Site) (expr: TypedExpr) : unit =
     // The trait's colour and not the implementation's, which is the point of
     // the restriction: this call has to know whether it awaits before it knows
     // which implementation answers it.
-    | TInterfaceCall(_, mName, eff, dict, args) ->
-        if pruneEffect eff = EAsync && not (isAllowed site) then
+    | TInterfaceCall(_, mName, methodType, dict, args) ->
+        if suspends methodType && not (isAllowed site) then
             refuse
                 site
                 expr.Range

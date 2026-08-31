@@ -172,6 +172,63 @@ let callSuspends (t: HMType) : bool =
     | TFun(_, _, eff) -> pruneEffect eff = EAsync
     | _ -> false
 
+/// Does this signature accept a callback of either colour?
+///
+/// Parameters only. `-?->` is refused everywhere else, so there is no deeper
+/// occurrence to look for.
+let declaresPolyParam (t: HMType) : bool =
+    match t with
+    | TFun(args, _, _) ->
+        args
+        |> List.exists (function
+            | TFun(_, _, EPoly) -> true
+            | _ -> false)
+    | _ -> false
+
+/// Was this call's `-?->` parameter instantiated at the suspending colour?
+///
+/// `EMeta` is the whole test, and it is exact: a declared parameter's arrow
+/// gets a cell in two places, `instantiate`'s `EPoly` case and the template
+/// instantiator's, so a cell in one *is* an `-?->` instantiated at this call. A
+/// parameter declared `-bjo->` arrives as a plain `EAsync` and must not be
+/// mistaken for one — it was never polymorphic and has no second copy to
+/// choose.
+///
+/// One cell is shared by every `-?->` in a signature, so any one occurrence
+/// answers for all of them and `exists` is not an approximation.
+let wantsSuspendingCopy (t: HMType) : bool =
+    match t with
+    | TFun(paramTypes, _, _) ->
+        paramTypes
+        |> List.exists (function
+            | TFun(_, _, (EMeta _ as eff)) -> pruneEffect eff = EAsync
+            | _ -> false)
+    | _ -> false
+
+let private fixPoly (eff: Effect) (p: HMType) =
+    match p with
+    | TFun(args, ret, EPoly) -> TFun(args, ret, eff)
+    | other -> other
+
+/// The suspending twin of a method that takes a callback of either colour: the
+/// callback fixed suspending, and the method's own arrow with it.
+///
+/// `Inference.suspendingSignature` is the same repainting one step earlier, on
+/// the written `FType`. Both exist because a trait method has no `FType` left
+/// by the time its twin is derived — the signature was resolved when the trait
+/// was checked — and because there the outer arrow is the definer's to set.
+let suspendingTwin (t: HMType) : HMType =
+    match t with
+    | TFun(args, ret, _) -> TFun(List.map (fixPoly EAsync) args, ret, EAsync)
+    | other -> other
+
+/// The half that takes the plain callback. Its own arrow is whatever the trait
+/// declared: a `-bjo->` method may still be handed an ordinary function.
+let ordinaryHalf (t: HMType) : HMType =
+    match t with
+    | TFun(args, ret, own) -> TFun(List.map (fixPoly ESync) args, ret, own)
+    | other -> other
+
 let arrowHead (eff: Effect) : string =
     match pruneEffect eff with
     | ESync -> "->"
@@ -711,20 +768,26 @@ and TExprNode =
     /// Produce every element of another sequence in turn. Always void.
     | TYieldFrom of TypedExpr
     | TMatch of TypedExpr * TMatchClause list
-    /// A dispatched trait method: the dictionary's type, the method, the colour
-    /// the *trait* declared for it, the dictionary, and the arguments.
+    /// A dispatched trait method: the dictionary's type, the method, the
+    /// method's type *at this call*, the dictionary, and the arguments.
     ///
-    /// The colour rides on the node rather than being looked up again, for the
-    /// reason `TForeignStaticCall` carries `Await`: by the time `ColourCheck`
-    /// and `Codegen` ask whether this call is a yield point, the trait registry
-    /// that knew is several passes behind, and the type recorded here names the
-    /// emitted *interface*, which an import alias may have renamed.
+    /// The callee's type rides on the node rather than being looked up again,
+    /// for the reason `TForeignStaticCall` carries `Await`: by the time
+    /// `ColourCheck` and `Codegen` ask whether this call is a yield point, the
+    /// trait registry that knew is several passes behind, and the dictionary
+    /// type recorded here names the emitted *interface*, which an import alias
+    /// may have renamed.
+    ///
+    /// The whole type and not just the colour, because a `-?->` parameter is
+    /// answered by a cell in one of the *arguments* of that arrow rather than
+    /// by its head. It is the same thing `TApply` reads off its target, and
+    /// this is the one call shape with no target to read it off.
     ///
     /// It is the trait's colour and not the implementation's on purpose. A
     /// dispatched call has to decide whether to await before it knows which
     /// implementation it reached, which is the whole reason a trait's methods
     /// carry one colour between them.
-    | TInterfaceCall of HMType * string * Effect * TypedExpr * TypedExpr list
+    | TInterfaceCall of HMType * string * HMType * TypedExpr * TypedExpr list
     /// A call to a trait method, with the trait recorded rather than guessed.
     ///
     /// Every downstream pass reads `TraitRef.Resolved` and none of them
@@ -859,6 +922,14 @@ and TraitRef =
     { Trait: string
       Method: string
       Holes: HMType list
+      /// The method's type at this call, as instantiation left it.
+      ///
+      /// What a `-?->` parameter was instantiated to lives here and nowhere
+      /// else. Unification binds the cell in *this* type; the argument that
+      /// bound it kept its own arrow, so a callee type rebuilt out of the
+      /// arguments cannot tell a parameter the trait let choose from one it
+      /// declared `-bjo->`.
+      MethodType: HMType
       mutable Resolved: (string * HMType list) option }
 
 /// How a trait is compiled.
@@ -1690,6 +1761,27 @@ let instantiateTemplate (target: ImplTarget) (tpl: TplType) : HMType =
         | TplHole args -> TCon(target.Ctor, target.FixedPrefix @ List.map go args)
 
     go tpl
+
+/// `declaresPolyParam` for an inline trait's template.
+let templateDeclaresPolyParam (tpl: TplType) : bool =
+    match tpl with
+    | TplFun(args, _, _) ->
+        args
+        |> List.exists (function
+            | TplFun(_, _, EPoly) -> true
+            | _ -> false)
+    | _ -> false
+
+/// `suspendingTwin` for an inline trait's template.
+let suspendingTwinTemplate (tpl: TplType) : TplType =
+    let param (p: TplType) =
+        match p with
+        | TplFun(args, ret, EPoly) -> TplFun(args, ret, EAsync)
+        | other -> other
+
+    match tpl with
+    | TplFun(args, ret, _) -> TplFun(List.map param args, ret, EAsync)
+    | other -> other
 
 /// Every type variable a template mentions, in order of first appearance.
 let templateVarsOf (tpl: TplType) : string list =
