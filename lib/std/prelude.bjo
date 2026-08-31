@@ -844,7 +844,10 @@
 (import/extern
   (clr-concat        (: System.String.Concat))
   (clr-parse-int     (: System.Int32.Parse))
-  (clr-parse-double  (: System.Double.Parse)))
+  ;; Invariant. `System.Double.Parse` reads the ambient culture, so "1.5"
+  ;; throws where the decimal separator is a comma.
+  (clr-parse-double  (: Bjolang.Runtime.BjoNum.ParseDouble))
+  (clr-double-string (: Bjolang.Runtime.BjoNum.DoubleToString)))
 
 (: string-append (-> string string string))
 (defun (string-append a b) (clr-concat a b))
@@ -948,8 +951,9 @@
 (: long->string (-> long string))
 (defun (long->string n) (.ToString n))
 
+;; Invariant, so that it round-trips through `string->double`.
 (: double->string (-> double string))
-(defun (double->string n) (.ToString n))
+(defun (double->string n) (clr-double-string n))
 
 (: byte->string (-> byte string))
 (defun (byte->string n) (.ToString n))

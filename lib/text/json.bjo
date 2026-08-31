@@ -9,11 +9,13 @@
 
 (import (std prelude))
 
-;; Culture-free. System.Double.Parse reads the current culture, so "1.5" throws
-;; where the decimal separator is a comma.
+;; Both culture-free, and `ToInt64` overflows rather than saturating: a number
+;; too wide for a long has to be caught and read again as a double. Called
+;; here rather than through the prelude's `string->double`, which is the same
+;; function under three more frames.
 (import/extern
   (clr-to-long   (: System.Xml.XmlConvert.ToInt64))
-  (clr-to-double (: System.Xml.XmlConvert.ToDouble)))
+  (clr-to-double (: Bjolang.Runtime.BjoNum.ParseDouble)))
 
 ;; One UTF-16 unit, or -1 at the end. `read-char/opt` is this with an eof test
 ;; in front and an `(Option char)` around the answer — a call and an allocation
