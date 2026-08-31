@@ -83,6 +83,18 @@ type private Pin =
     | Unpinned
     /// An argument to a Bjolang function whose parameter is declared `->`.
     | ByParameter of callee: string * declared: HMType
+    /// An argument to a function whose parameter is declared `-?->`, which
+    /// would have taken either colour — the lambda simply did not ask for the
+    /// suspending one.
+    ///
+    /// Told apart from the case above by the *unpruned* effect: a `-?->` is
+    /// instantiated to a cell, and by here the cell is solved, so both print
+    /// `->`. The cell is still there, which is the same test `EffectGraph` uses
+    /// to recognise a `-?->` at a call.
+    ///
+    /// Worth its own case because it is the only one whose fix is a single word
+    /// at the site the reader is already looking at.
+    | ByPolyParameter of callee: string
 
 /// Which construct between the yield point and the enclosing bjoroutine became
 /// a C# member of its own — which is the whole of why an `await` cannot be
@@ -190,6 +202,8 @@ let private explain (site: Site) : string =
                 "It is inside an ordinary (fun ...), which is emitted as a delegate of its own, and a delegate that is not async cannot await."
             | ByParameter(callee, declared) ->
                 $"It is inside an ordinary (fun ...) passed to '%s{callee}', whose parameter is declared %s{DotNetInterop.showType declared} — an arrow that does not say it may suspend. So '%s{callee}' is emitted once, for the ordinary case, and the lambda handed to it has to match."
+            | ByPolyParameter callee ->
+                $"It is inside an ordinary (fun ...) passed to '%s{callee}', whose parameter is declared -?-> and so takes either colour. The lambda is what settled it: a (fun ...) is an ordinary arrow, so the ordinary copy of '%s{callee}' was chosen."
 
         let loop =
             "Write the loop instead: a (loop ...) lowers to a while in the enclosing bjoroutine, so a yield point inside one is still inside the bjoroutine."
@@ -200,6 +214,14 @@ let private explain (site: Site) : string =
                 [ where
                   loop
                   $"Declaring the parameter %s{asPolyArrow declared} is the eventual answer, but the suspending copy is not generated yet." ]
+        // The only fix in this whole family that is one word at the point the
+        // reader is looking at. It goes first, and the loop is not offered:
+        // rewriting a callback as a loop when the callback was always allowed
+        // to suspend would be advice against the grain of the thing.
+        | ByPolyParameter callee ->
+            lines
+                [ where
+                  $"Write (bjoroutine (x) ...) rather than (fun (x) ...), and the call means the suspending copy of '%s{callee}'. Where the lambda is not one you wrote, whatever built it decides instead — a (do ...) block builds an ordinary one." ]
         | Unpinned -> lines [ where; loop ]
 
 /// One verdict, one reason, one answer.
@@ -372,8 +394,12 @@ let rec private checkExpr (site: Site) (expr: TypedExpr) : unit =
                 match paramTypes[i] with
                 // Only a parameter genuinely declared `->` is described as one.
                 // An instantiated `-?->` arrives as a bound cell, and calling
-                // that "declared ->" would be a lie about the source.
+                // that "declared ->" would be a lie about the source — so it
+                // gets its own pin, and a different answer: that parameter
+                // would have taken a suspending lambda, and the fix is to write
+                // one.
                 | TFun(_, _, ESync) -> ByParameter(callee, paramTypes[i])
+                | TFun(_, _, (EMeta _ as eff)) when pruneEffect eff = ESync -> ByPolyParameter callee
                 | _ -> Unpinned
             | _ -> Unpinned
 

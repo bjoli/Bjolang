@@ -736,14 +736,20 @@ let prelude : Env =
         "list-length", {Scheme = Scheme(["a"], [], makeFunType [makeListType (TVar "a")] intType); IsMutable = false }
         "list-reverse", {Scheme = Scheme(["a"], [], makeFunType [makeListType (TVar "a")] (makeListType (TVar "a"))); IsMutable = false }
 
-        "list-map", {Scheme = Scheme(["a"; "b"], [], makeFunType [makeFunType [TVar "a"] (TVar "b"); makeListType (TVar "a")] (makeListType (TVar "b"))); IsMutable = false }
-        "list-filter", {Scheme = Scheme(["a"], [], makeFunType [makeFunType [TVar "a"] boolType; makeListType (TVar "a")] (makeListType (TVar "a"))); IsMutable = false }
-        // Folds take the function first, then the identity, then the
-        // collection: the two parts that describe *how* to fold stay together
-        // at the call site instead of being split by the data.
-        "list-foldl", {Scheme = Scheme(["a"; "b"], [], makeFunType [makeFunType [TVar "b"; TVar "a"] (TVar "b"); TVar "b"; makeListType (TVar "a")] (TVar "b")); IsMutable = false }
-        "list-foldr", {Scheme = Scheme(["a"; "b"], [], makeFunType [makeFunType [TVar "a"; TVar "b"] (TVar "b"); TVar "b"; makeListType (TVar "a")] (TVar "b")); IsMutable = false }
-        "list-for-each", {Scheme = Scheme(["a"], [], makeFunType [makeFunType [TVar "a"] unitType; makeListType (TVar "a")] unitType); IsMutable = false }
+        // `list-map`, `list-filter`, `list-foldl`, `list-foldr` and
+        // `list-for-each` are *not* here. They take a procedure, and a
+        // parameter declared `-?->` is what gets a suspending copy generated —
+        // which the compiler can only do from a body it can see. So they are in
+        // `prelude.bjo`, written in Bjolang.
+        //
+        // They cannot be in both places. A builtin is emitted as a static on
+        // `BjolangRuntime` and a prelude function as a static on
+        // `prelude_Module`, both in scope at a call site, and C# reports the
+        // pair as an ambiguous call — so the two modules that sit *below* the
+        // prelude walk their lists by hand instead.
+        //
+        // Everything left in this section takes no procedure, so there is
+        // nothing about it a colour could describe.
         "list-ref", {Scheme = Scheme(["a"], [], makeFunType [makeListType (TVar "a"); intType] (TVar "a")); IsMutable = false }
         // No `list-count`. It was the same O(n) walk as `list-length` under a
         // second name, inherited from `SchemeList.Count` being a C# alias for

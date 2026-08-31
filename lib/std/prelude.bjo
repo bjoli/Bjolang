@@ -32,6 +32,12 @@
   print println ->str list->str
   list-append
 
+  ;; The list operations that take a procedure. Builtins until their callbacks
+  ;; were declared `-?->`, which needs a Bjolang body for the second copy to be
+  ;; generated from — so they are ordinary bindings now and have to be named
+  ;; here. The rest of the list surface takes no procedure and stays builtin.
+  list-map list-filter list-foldl list-foldr list-for-each
+
   ;; Maps. These were compiler builtins and so appeared in no export list; they
   ;; are ordinary bindings now, and every one of them has to be named here.
   map-empty map-ref map-ref-or map-try-ref
@@ -616,6 +622,72 @@
   (defun (collector-step c acc x) x)
   (defun (collector-finish c acc) acc))
 
+
+;; ---------------------------------------------------------------------------
+;; Lists, where the callback may suspend
+;; ---------------------------------------------------------------------------
+;;
+;; `cons`, `list-head`, `list-tail`, `list-reverse` and the rest stay builtins:
+;; none of them takes a procedure, so there is nothing about them a colour could
+;; describe. The four that do take one are written here instead, and the `-?->`
+;; is the whole reason. A declared `-?->` is what makes the compiler generate a
+;; second copy taking a suspending callback, and it can only generate one from a
+;; body it can see — a builtin's body is C#, so it has none to copy.
+;;
+;; So `(list-map (bjoroutine (p) (read-line p)) ports)` works, and
+;; `(list-map string-length names)` is unchanged. Which copy a call means is
+;; decided by the callback it is handed, not by where the call is written.
+;;
+;; Each is a tail-recursive `let`, which `LoopLowering` turns into a `while` in
+;; the enclosing method. That is for the stack rather than for the colour — a
+;; non-tail local function may suspend now too — and a fold over a long list is
+;; exactly where the stack would have run out.
+
+;; Built backwards and reversed once at the end. A `(List %a)` is a cons list,
+;; so appending in order would be quadratic; this is two linear passes.
+(: list-map (-> (-?-> %a %b) (List %a) (List %b)))
+(defun (list-map f xs)
+  (let go ((rest xs) (acc (list-empty)))
+    (if (list-empty? rest)
+        (list-reverse acc)
+        (go (list-tail rest) (cons (f (list-head rest)) acc)))))
+
+(: list-filter (-> (-?-> %a bool) (List %a) (List %a)))
+(defun (list-filter keep? xs)
+  (let go ((rest xs) (acc (list-empty)))
+    (if (list-empty? rest)
+        (list-reverse acc)
+        (let ((x (list-head rest)))
+          (go (list-tail rest) (if (keep? x) (cons x acc) acc))))))
+
+;; The folds take the function first, then the identity, then the collection:
+;; the two parts that describe *how* to fold stay together at the call site
+;; instead of being split by the data.
+(: list-foldl (-> (-?-> %b %a %b) %b (List %a) %b))
+(defun (list-foldl f init xs)
+  (let go ((rest xs) (acc init))
+    (if (list-empty? rest)
+        acc
+        (go (list-tail rest) (f acc (list-head rest))))))
+
+;; Reversed first, so that this is a `while` as well. A right fold written the
+;; obvious recursive way is one stack frame per element, which is a limit on the
+;; list rather than on the machine.
+(: list-foldr (-> (-?-> %a %b %b) %b (List %a) %b))
+(defun (list-foldr f init xs)
+  (let go ((rest (list-reverse xs)) (acc init))
+    (if (list-empty? rest)
+        acc
+        (go (list-tail rest) (f (list-head rest) acc)))))
+
+(: list-for-each (-> (-?-> %a Unit) (List %a) Unit))
+(defun (list-for-each f xs)
+  (let go ((rest xs))
+    (if (list-empty? rest)
+        unit
+        (let ()
+          (ignore (f (list-head rest)))
+          (go (list-tail rest))))))
 
 (def/trait (Functor (%f %a))
   (: map (-> (-> %a %b) (%f %a)  (%f %b))))
@@ -1447,16 +1519,17 @@
 ;; because that is the decision — left to inference, every higher-order function
 ;; in the language would double for callbacks nobody will ever suspend.
 ;;
-;; The collection functions are deliberately *not* converted, and the reason is
-;; the same one. Nothing about `list-map` suggests IO, so declaring it `-?->`
-;; would double its emitted size to buy a copy no program asks for. This one is
-;; the port surface, where the whole question came from and where a suspending
-;; reader is the ordinary case.
+;; The list functions went the same way in the end — mapping a read over a list
+;; of ports turned out to be exactly the thing people wanted — but `vec-map` and
+;; `map-map` did not, and the argument above is why. Those are tree algorithms
+;; written to copy as little as possible, so buying a second colour would mean
+;; either rewriting them in Bjolang, which every ordinary call would pay for, or
+;; a second C# implementation of a tree copy, which is the kind of thing that
+;; drifts.
 ;;
-;; The loop below has to stay tail-recursive. `LoopLowering` promotes it to a
-;; `while` in the enclosing method, and in the generated copy that method is
-;; `async` — which is what lets `(f port acc)` be awaited there. A loop that
-;; escaped would stay a C# local function and the copy could not be built.
+;; The loop below is tail-recursive, which is worth keeping for the stack rather
+;; than for the colour: `LoopLowering` promotes it to a `while` in the enclosing
+;; method, and a fold over a long port is where the stack would otherwise go.
 (: port-fold (-> (-?-> TextInputPort %a %a) %a TextInputPort %a))
 (defun (port-fold f init port)
   (let loop ((acc init))

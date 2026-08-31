@@ -1001,23 +1001,16 @@ public static partial class BjolangRuntime {
 
 
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static SchemeList.SchemeList<U> listsubmap<T, U>(Func<T, U> selector, SchemeList.SchemeList<T> list) => SchemeList.SchemeList.Map(list, selector);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static SchemeList.SchemeList<T> listsubfilter<T>(Func<T, bool> predicate, SchemeList.SchemeList<T> list) => SchemeList.SchemeList.Filter(list, predicate);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static TState listsubfoldl<T, TState>(Func<TState, T, TState> folder, TState initial, SchemeList.SchemeList<T> list) => SchemeList.SchemeList.Fold(list, initial, folder);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static TState listsubfoldr<T, TState>(Func<T, TState, TState> folder, TState initial, SchemeList.SchemeList<T> list) => SchemeList.SchemeList.FoldRight(list, initial, folder);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Unit listsubforsubeach<T>(Func<T, Unit> action, SchemeList.SchemeList<T> list) {
-        SchemeList.SchemeList.ForEach(list, x => action(x));
-        return unit;
-    }
+    // `list-map`, `list-filter`, `list-foldl`, `list-foldr` and `list-for-each`
+    // were here. They take a procedure, and a procedure parameter declared
+    // `-?->` gets a second copy of the function generated for a suspending
+    // callback — which the compiler can only do from a body written in Bjolang.
+    // So they are in `prelude.bjo` now, and had to leave here rather than stay
+    // as unused overloads: both would be in scope at a call site and C# reports
+    // the pair as an ambiguous call.
+    //
+    // `SchemeList.Map`, `Filter`, `Fold`, `FoldRight` and `ForEach` are still
+    // there and still used by the collection traits.
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static T listsubref<T>(SchemeList.SchemeList<T> list, int index) => SchemeList.SchemeList.Item(list, index);

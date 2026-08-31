@@ -144,17 +144,31 @@
 ;; and a fold over a non-empty list needs no seed but its own head.
 ;;
 ;; An empty list has no answer, so these say so rather than inventing one.
+;; A left fold, private to this module.
+;;
+;; `list-foldl` is a prelude function now rather than a builtin: its callback is
+;; declared `-?->`, and a suspending copy of a procedure can only be generated
+;; from a body written in Bjolang. This module is compiled before the prelude
+;; exists, so it keeps a fold of its own — an ordinary `->` one, since nothing
+;; here suspends.
+(: fold-left (-> (-> %b %a %b) %b (List %a) %b))
+(defun (fold-left f init xs)
+  (let go ((rest xs) (acc init))
+    (if (list-empty? rest)
+        acc
+        (go (list-tail rest) (f acc (list-head rest))))))
+
 (: list-min (-> (List %a) (Option %a)) (where (Ord %a)))
 (defun (list-min xs)
   (if (list-empty? xs)
       None
-      (Some (list-foldl least (list-head xs) (list-tail xs)))))
+      (Some (fold-left least (list-head xs) (list-tail xs)))))
 
 (: list-max (-> (List %a) (Option %a)) (where (Ord %a)))
 (defun (list-max xs)
   (if (list-empty? xs)
       None
-      (Some (list-foldl greatest (list-head xs) (list-tail xs)))))
+      (Some (fold-left greatest (list-head xs) (list-tail xs)))))
 
 
 ;; --- The blanket -----------------------------------------------------------
@@ -330,7 +344,7 @@
              (and (= (list-head xs) (list-head ys))
                   (= (list-tail xs) (list-tail ys))))))
   (defun (eq-hash xs)
-    (list-foldl (fun (h x) (hash-combine h (eq-hash x))) 17 xs)))
+    (fold-left (fun (h x) (hash-combine h (eq-hash x))) 17 xs)))
 
 (def/impl (Eq (Vec %a))
   (where (Eq %a))

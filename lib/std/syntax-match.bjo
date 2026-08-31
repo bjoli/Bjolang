@@ -108,9 +108,28 @@
     ((Cons item Nil) (Some item))
     ((Cons _ rest) (last-of rest))))
 
+;; A right fold, private to this module.
+;;
+;; The list functions that take a procedure moved into the prelude when their
+;; callbacks were declared `-?->`, since a suspending copy can only be generated
+;; from a Bjolang body — and this module is compiled before the prelude exists.
+;; Nothing here suspends, so the callback is a plain `->`.
+;;
+;; Reversed and folded left, so it is a `while` rather than one stack frame per
+;; element.
+(: fold-right (-> (-> %a %b %b) %b (List %a) %b))
+(defun (fold-right f init xs)
+  (let go ((rest (list-reverse xs)) (acc init))
+    (if (list-empty? rest)
+        acc
+        (go (list-tail rest) (f (list-head rest) acc)))))
+
 (: count-ellipses (-> (List Syntax) int))
 (defun (count-ellipses items)
-  (list-foldl (fun (n item) (if (ellipsis? item) (+ n 1) n)) 0 items))
+  (let go ((rest items) (n 0))
+    (if (list-empty? rest)
+        n
+        (go (list-tail rest) (if (ellipsis? (list-head rest)) (+ n 1) n)))))
 
 ;; The pattern a trailing `...` repeats, if the form has one.
 ;;
@@ -151,7 +170,7 @@
   (match p
     ((SSym _) (if (wildcard? p) Nil (list p)))
     ((SList items)
-     (list-foldr (fun (item found) (syntax-splice (pattern-vars item) found)) Nil items))
+     (fold-right (fun (item found) (syntax-splice (pattern-vars item) found)) Nil items))
     (_ Nil)))
 
 (: bound-already? (-> Syntax (List Syntax) bool))
@@ -178,7 +197,7 @@
 ;; form, which is not what anyone means by it.
 (: checked-vars (-> Syntax (List Syntax)))
 (defun (checked-vars p)
-  (list-foldr
+  (fold-right
     (fun (var seen)
       (if (uppercase-name? var)
           (Cons (syntax-error var "A pattern variable is lowercase; write 'name to match that identifier itself.") seen)
@@ -364,7 +383,7 @@
 ;; by shape.
 (: binds (-> Syntax (List Syntax)))
 (defun (binds p)
-  (list-foldr
+  (fold-right
     (fun (var bindings)
       (match (value-of p var "")
         (None bindings)
@@ -413,7 +432,11 @@
 (: arms (-> (List Syntax) (List Syntax)))
 (defun (arms clauses)
   (syntax-splice
-    (list-map (fun (clause) (compile-clause clause)) clauses)
+    ;; Built backwards from the reversed input, so it comes out in order.
+    (let go ((rest (list-reverse clauses)) (acc Nil))
+      (if (list-empty? rest)
+          acc
+          (go (list-tail rest) (cons (compile-clause (list-head rest)) acc))))
     (if (covered? clauses)
         Nil
         ;; Reported against the form that did not match, which is the one thing
