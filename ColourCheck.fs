@@ -471,5 +471,44 @@ let private checkDecl (registry: TraitRegistry) (decl: TDecl) : unit =
         e)
     |> ignore
 
+/// A `defbjo` with no yield point in it, that nothing else asked to be one.
+///
+/// `defbjo` emits an `async` method returning a `Fiber<T>`, and every call site
+/// awaits it. A body that never suspends pays for the state machine, the
+/// allocation and the await, and buys nothing.
+///
+/// Three things make it silent, and each is a different way of saying the
+/// colour was not this body's own idea:
+///
+/// - **The signature says `-bjo->`.** Then `defbjo` is the only definer allowed,
+///   and recommending `defun` would be advice the next pass rejects.
+///   `(: broken Filter)` over a `-bjo->` alias is the case that matters, and
+///   the reason this reads a set built during inference rather than the
+///   effect on the node: by here the two are spelled the same.
+/// - **A `-?->` parameter.** Its twin is the definition that awaits; this half
+///   exists to take the ordinary callback and is not supposed to suspend.
+/// - **It is a generated copy.** Same body at the other colour, and one that
+///   reaches no yield point is what the blocking lint reports.
+///
+/// A warning and not an error, because none of this is wrong — it costs
+/// emitted size and a little time, and the author may have reasons.
+///
+/// `TImpl` is not entered. A trait method's colour is the trait's, so an
+/// implementation that happens not to suspend has no say in the matter.
+let rec private checkSuspends (registry: TraitRegistry) (decl: TDecl) : unit =
+    match decl with
+    | TModule(_, inner, _) -> inner |> List.iter (checkSuspends registry)
+    | TDefun(name, _, _, _, _, _, EAsync, body, r) when
+        not (Set.contains name registry.ColourDeclared)
+        && not (Set.contains name registry.GeneratedCopies)
+        && not (Set.contains (Naming.suspendingCopy name) registry.GeneratedCopies)
+        && not (Naming.isSuspendingCopy name)
+        && not (TypeVisitor.reachesAwait body)
+        ->
+        Diagnostics.warn
+            $"'%s{name}' is defined with defbjo, but nothing in its body suspends. It is emitted as an async method and awaited at every call site, for a yield point that is not there. Define it with defun — an ordinary function is accepted where a bjoroutine is demanded — or write its signature -bjo-> if calling it is meant to be a yield point whatever the body does.\n  at %s{Lexer.formatPos r}"
+    | _ -> ()
+
 let run (registry: TraitRegistry) (decls: TDecl list) : unit =
     decls |> List.iter (checkDecl registry)
+    decls |> List.iter (checkSuspends registry)

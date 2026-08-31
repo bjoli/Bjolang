@@ -1,0 +1,60 @@
+;; A `defbjo` with no yield point in it.
+;;
+;; It is emitted as an async method returning a `Fiber<T>`, and every call site
+;; awaits it. A body that never suspends pays for the state machine, the
+;; allocation and the await, and buys nothing.
+;;
+;; A warning and not an error, because none of it is wrong. What decides is
+;; whether anything *but the definer* asked for the colour — and the three
+;; things that do are below.
+
+(import (std prelude))
+
+;; EXPECT-WARNING: 'idle' is defined with defbjo, but nothing in its body suspends
+;; EXPECT-WARNING: for a yield point that is not there
+;; EXPECT-WARNING: write its signature -bjo->
+
+(: idle (-> int int))
+(defbjo (idle x) (* x 2))
+
+;; --- Said in the signature --------------------------------------------------
+;;
+;; `defbjo` is then the only definer allowed, so recommending `defun` would be
+;; advice the next pass rejects.
+
+;; EXPECT-NO-WARNING: 'declared' is defined with defbjo
+(: declared (-bjo-> int int))
+(defbjo (declared x) (* x 2))
+
+;; The same through an alias, which is how `run`'s `Filter` is written. This is
+;; the case that makes the check read a set built during inference: by the time
+;; it runs, a declared colour and a definer's colour are spelled the same.
+(type (: Handler (-bjo-> int int)))
+
+;; EXPECT-NO-WARNING: 'aliased' is defined with defbjo
+(: aliased Handler)
+(defbjo (aliased x) (* x 3))
+
+;; --- Said by a -?-> parameter -----------------------------------------------
+;;
+;; The twin is the copy that awaits. This half exists to take the ordinary
+;; callback, and is not supposed to suspend.
+
+;; EXPECT-NO-WARNING: 'twice' is defined with defbjo
+(: twice (-> (-?-> int int) int int))
+(defbjo (twice f x) (f (f x)))
+
+;; --- Said by the body -------------------------------------------------------
+
+;; EXPECT-NO-WARNING: 'reads' is defined with defbjo
+(: reads (-> TextInputPort string))
+(defbjo (reads p) (read-line p))
+
+(defun (main args)
+  ;; Called so that nothing above is dead code.
+  (ignore (bjo (idle 1)))
+  (ignore (bjo (declared 2)))
+  (ignore (bjo (aliased 3)))
+  (ignore (bjo (twice (fun (n) (+ n 1)) 4)))
+  (ignore (bjo (reads (open-input-string "line\n"))))
+  0)

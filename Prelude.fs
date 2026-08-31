@@ -281,7 +281,8 @@ let emptyRegistry : TraitRegistry =
       BlockingNames = blockingBuiltins
       DoubleDefs = Map.empty
       GeneratedCopies = Set.empty
-      InferredCopies = Set.empty }
+      InferredCopies = Set.empty
+      ColourDeclared = Set.empty }
 
 let prelude : Env =
     { Bindings = Map.ofList [

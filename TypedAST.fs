@@ -1276,7 +1276,16 @@ type TraitRegistry =
       /// idea, so one that cannot be coloured is dropped, and the call keeps the
       /// ordinary copy and the parking warning it already had. Erroring there
       /// would be blaming the author for a decision they did not make.
-      InferredCopies: Set<string> }
+      InferredCopies: Set<string>
+
+      /// Definitions whose *signature* is written `-bjo->`, so `defbjo` was not
+      /// a choice their author made.
+      ///
+      /// `(: broken Filter)` over a `Filter` that is a `-bjo->` alias must be
+      /// defined with `defbjo` — a `defun` there is an error. Anything asking
+      /// "did this need to suspend?" has to leave those alone, or it recommends
+      /// a rewrite the next pass rejects.
+      ColourDeclared: Set<string> }
 
     member this.IsTraitDefinedLocally(name) = Set.contains name this.LocalTraits
     member this.IsTypeDefinedLocally(name) = Set.contains name this.LocalTypes

@@ -36,21 +36,26 @@
 ;; The signature is an ordinary arrow
 ;; ---------------------------------------------------------------------------
 
-;; `(-> int int)`, the same as any function of that shape. An arrow says what a
-;; function takes and returns; the definer says whether calling it suspends.
-;; The two are only joined up by the compiler.
-(: double (-> int int))
+;; `-bjo->` because nothing in the body suspends. A `defbjo` that never reaches
+;; a yield point is warned about unless the signature asks for the colour, and
+;; here the colour is the whole point of the definition.
+(: double (-bjo-> int int))
 (defbjo (double x) (* x 2))
 
+;; And here is the ordinary arrow: `(-> int int)`, the same as any function of
+;; that shape. An arrow says what a function takes and returns; the definer says
+;; whether calling it suspends. The two are only joined up by the compiler.
+;;
 ;; A bjoroutine calling a bjoroutine. Both of these compile to `await`.
 (: quadruple (-> int int))
 (defbjo (quadruple x) (double (double x)))
 
-;; And one calling an ordinary function, which does not.
+;; And one calling an ordinary function, which does not — so this one declares
+;; the colour too.
 (: shout (-> string string))
 (defun (shout s) (string-append s "!"))
 
-(: greet (-> string string))
+(: greet (-bjo-> string string))
 (defbjo (greet who) (shout (string-append "hello " who)))
 
 ;; ---------------------------------------------------------------------------
@@ -78,7 +83,7 @@
 
 ;; `Fiber<void>` is not a type, so this is `Fiber<Bjoml.Unit>` — the second
 ;; reason unit had to become a real value before any of this could work.
-(: bump (-> int void))
+(: bump (-bjo-> int void))
 (defbjo (bump n) (set! counter (+ counter n)))
 
 (: bump-twice (-> int void))

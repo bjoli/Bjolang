@@ -4251,6 +4251,20 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                 $"Type Error at %s{Lexer.formatPos sr}: the signature of '%s{name}' is written -bjo->, which says calling it is a yield point, but it is defined with defun. Define it with defbjo, or write the signature with ->."
         | _ -> ()
 
+        // Whether the signature itself demanded the colour, alias and all.
+        // Read from the *resolved* type rather than the annotation, which is
+        // what makes `(: broken Filter)` answer the same as a written `-bjo->`.
+        //
+        // `main` is the exception, and has to be: it is the one definition
+        // allowed no signature, and the one it is given is manufactured from
+        // the definer — so reading it back would be asking the definition
+        // about itself.
+        let colourDeclared =
+            name <> "main"
+            && (match sigOpt with
+                | Some(TFun(_, _, declared), _, _) -> groundEffect declared = EAsync
+                | _ -> false)
+
         let sigHMType = sigOpt |> Option.map (fun (t, _, _) -> recolour effect t)
 
         // Extract explicit trait constraints from the signature
@@ -4509,6 +4523,15 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                   IsMutable = false }
                 env
         let finalEnv = { finalEnv with FunMetas = Map.add name funMeta finalEnv.FunMetas }
+
+        let finalEnv =
+            if colourDeclared then
+                { finalEnv with
+                    Registry =
+                        { finalEnv.Registry with
+                            ColourDeclared = Set.add name finalEnv.Registry.ColourDeclared } }
+            else
+                finalEnv
 
         let restArgInfo =
             match restArgName, restArgType with
