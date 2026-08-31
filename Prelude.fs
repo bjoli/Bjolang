@@ -712,6 +712,11 @@ let prelude : Env =
         "stringbuilder-empty", {Scheme = Scheme([], [], makeFunType [] stringBuilderType); IsMutable = false }
         "stringbuilder-add!", {Scheme = Scheme([], [], makeFunType [stringBuilderType; charType] unitType); IsMutable = false }
         "stringbuilder-add-string!", {Scheme = Scheme([], [], makeFunType [stringBuilderType; stringType] unitType); IsMutable = false }
+        // Empties one for reuse. The identity is unchanged, as `add!` leaves it.
+        "stringbuilder-clear!", {Scheme = Scheme([], [], makeFunType [stringBuilderType] unitType); IsMutable = false }
+        // One UTF-16 unit rather than a scalar, for a reader that holds codes.
+        // The caller owns what `add!` would have checked.
+        "stringbuilder-add-code!", {Scheme = Scheme([], [], makeFunType [stringBuilderType; intType] unitType); IsMutable = false }
         "stringbuilder-length", {Scheme = Scheme([], [], makeFunType [stringBuilderType] intType); IsMutable = false }
         "stringbuilder->string", {Scheme = Scheme([], [], makeFunType [stringBuilderType] stringType); IsMutable = false }
 

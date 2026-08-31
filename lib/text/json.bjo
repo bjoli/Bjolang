@@ -15,6 +15,18 @@
   (clr-to-long   (: System.Xml.XmlConvert.ToInt64))
   (clr-to-double (: System.Xml.XmlConvert.ToDouble)))
 
+;; One UTF-16 unit, or -1 at the end. `read-char/opt` is this with an eof test
+;; in front and an `(Option char)` around the answer — a call and an allocation
+;; per character of the document, which at this size is most of the work.
+(import/extern
+  (clr-unit       (: Bjolang.Runtime.BjoPort.ReadUnit      (-> TextInputPort int) #:blocking))
+  (clr-unit-await (: Bjolang.Runtime.BjoPort.ReadUnitAsync (-> TextInputPort int) #:async)))
+
+(: read-unit (-> TextInputPort int))
+(defbjouble (read-unit p)
+  (#:sync (clr-unit p))
+  (#:bjo  (clr-unit-await p)))
+
 (type
   (: Json (Union
            JsonNull
@@ -35,9 +47,6 @@
 ;; One character of lookahead, held as a code so that the end of the port is a
 ;; value rather than a second field.
 
-(: unfilled int)
-(def unfilled -2)
-
 (: spent int)
 (def spent -1)
 
@@ -45,58 +54,90 @@
   (: Reader (Record (: port TextInputPort)
                     (: held int #:mutable)
                     (: row int #:mutable)
-                    (: col int #:mutable))))
+                    (: col int #:mutable)
+                    ;; One buffer for every string and every number in the
+                    ;; document. A fresh builder and its first chunk cost more
+                    ;; than parsing the number they are built for.
+                    ;;
+                    ;; Shared because the two never overlap: a string is
+                    ;; finished into a `string` before whatever follows it is
+                    ;; read, and a number holds nothing while it is scanned.
+                    ;; Anything that learns to nest them needs its own.
+                    (: scratch StringBuilder))))
 
 (: reader (-> TextInputPort Reader))
 (defun (reader port)
-  (Reader (port port) (held unfilled) (row 1) (col 1)))
+  (Reader (port port)
+          (held (read-unit port))
+          (row 1)
+          (col 1)
+          (scratch (stringbuilder-empty))))
 
-;; `port-eof?` and `read-char` rather than `read-char/opt`, which is the two of
-;; them with an `(Option char)` around the answer — one allocation per character
-;; of the document.
+;; The buffer, emptied and ready.
+(: buffer (-> Reader StringBuilder))
+(defun (buffer rd)
+  (let ((sb (record-ref rd scratch)))
+    (stringbuilder-clear! sb)
+    sb))
+
+;; `held` is the character the reader is looking at, always — filled by `reader`
+;; and replaced by `advance!`. So this is one field read, with no test and
+;; nothing written.
+;;
+;; It used to be filled on demand, which put a branch and a possible write in
+;; front of every look. Looks outnumber advances: what kind of value this is,
+;; whether the number has another digit, whether the array wants a comma — all
+;; read the same character without consuming it.
 (: held-code (-> Reader int))
 (defun (held-code rd)
-  (let ((h (record-ref rd held)))
-    (if (= h unfilled)
-        (let ((p (record-ref rd port)))
-          (if (port-eof? p)
-              (let ()
-                (record-set! rd (held spent))
-                spent)
-              (let ((n (char->integer (read-char p))))
-                (record-set! rd (held n))
-                n)))
-        h)))
+  (record-ref rd held))
 
 (: at-end? (-> Reader bool))
 (defun (at-end? rd)
-  (= (held-code rd) spent))
+  (= (record-ref rd held) spent))
 
-;; #\nul past the end, which is never a character a document may hold unescaped.
+;; Every character this is asked to compare is one of JSON's own, and those are
+;; all ASCII. Anything else — the end of the port, half a surrogate pair, a
+;; letter from a language — answers #\nul, which matches nothing and falls to
+;; whichever refusal was going to name it. `found` reads the code rather than
+;; this, so the message still says what was there.
+;;
+;; Guarding on the range rather than on the surrogates is what keeps
+;; `integer->char` from being handed something that is not a scalar at all.
 (: peek (-> Reader char))
 (defun (peek rd)
   (let ((c (held-code rd)))
-    (if (= c spent) #\nul (integer->char c))))
+    (if (< c 128) (integer->char c) #\nul)))
 
+;; Counts the character being left behind, then reads the next. The end is
+;; sticky: -1 stays put, so a look after it asks the port nothing.
 (: advance! (-> Reader void))
 (defun (advance! rd)
-  (let ((c (held-code rd)))
+  (let ((c (record-ref rd held)))
     (cond
       ((= c spent) unit)
       ;; A line ends at the newline whether or not a return came before it.
       ((= c 10)
-       (record-set! rd (held unfilled) (row (+ (record-ref rd row) 1)) (col 1)))
+       (record-set! rd
+                    (held (read-unit (record-ref rd port)))
+                    (row (+ (record-ref rd row) 1))
+                    (col 1)))
       (else
-       (record-set! rd (held unfilled) (col (+ (record-ref rd col) 1)))))))
+       (record-set! rd
+                    (held (read-unit (record-ref rd port)))
+                    (col (+ (record-ref rd col) 1)))))))
 
 (: skip-space! (-> Reader void))
+;; Codes for the same reason `take-digits!` uses them: once per character of
+;; whitespace, and a document that is laid out to be read is mostly whitespace.
 (defun (skip-space! rd)
   (let go ()
-    (if (at-end? rd)
-        unit
-        (case (peek rd)
-          ((#\space #\tab #\newline #\return) (advance! rd) (go))
-          (else unit)))))
+    (let ((c (held-code rd)))
+      (if (or (= c 32) (= c 10) (= c 9) (= c 13))
+          (let ()
+            (advance! rd)
+            (go))
+          unit))))
 
 ;; ---------------------------------------------------------------------------
 ;; Refusals
@@ -111,9 +152,12 @@
 
 (: found (-> Reader string))
 (defun (found rd)
-  (if (at-end? rd)
-      "the document ended"
-      (str "'" (list->string (list (peek rd))) "'")))
+  (let ((c (held-code rd)))
+    (cond
+      ((= c spent) "the document ended")
+      ;; Half a pair is not a character, so there is nothing to quote.
+      ((or (high-surrogate? c) (low-surrogate? c)) (str "the code unit " (int->string c)))
+      (else (str "'" (list->string (list (integer->char c))) "'")))))
 
 (: too-deep (-> Reader string string))
 (defun (too-deep rd what)
@@ -145,6 +189,11 @@
 (: low-surrogate? (-> int bool))
 (defun (low-surrogate? n) (and (>= n 56320) (<= n 57343)))
 
+;; The scalar a surrogate pair stands for.
+(: scalar-of (-> int int int))
+(defun (scalar-of hi lo)
+  (+ 65536 (* (- hi 55296) 1024) (- lo 56320)))
+
 (: read-hex4 (-> Reader (Result string int)))
 (defun (read-hex4 rd)
   (let go ((n 0) (left 4))
@@ -175,10 +224,7 @@
             ((Err e) (Err e))
             ((Ok lo)
              (if (low-surrogate? lo)
-                 (Ok (list->string
-                      (list (integer->char (+ 65536
-                                              (* (- hi 55296) 1024)
-                                              (- lo 56320))))))
+                 (Ok (list->string (list (integer->char (scalar-of hi lo)))))
                  (Err (at rd incomplete)))))))))))
 
 (: read-unicode (-> Reader (Result string string)))
@@ -209,29 +255,45 @@
          (Err (at rd (str "\\" (list->string (list (peek rd))) " is not an escape")))))))
 
 ;; The opening quote is the caller's to have seen.
+;;
+;; Codes rather than characters, because this is the one place a unit that is
+;; not a scalar can arrive: a character above the basic plane is two of them.
 (: read-text (-> Reader (Result string string)))
 (defun (read-text rd)
   (advance! rd)
-  (def sb (stringbuilder-empty))
+  (def sb (buffer rd))
   (let go ()
-    (if (at-end? rd)
-        (Err (at rd "the document ended inside a string"))
-        (let ((c (peek rd)))
-          (cond
-           ((char=? c #\") (advance! rd) (Ok (stringbuilder->string sb)))
-           ((char=? c #\\)
-            (advance! rd)
-            (match (read-escape rd)
-              ((Err e) (Err e))
-              ((Ok piece)
-               (stringbuilder-add-string! sb piece)
-               (go))))
-           ((< (char->integer c) 32)
-            (Err (at rd "a control character in a string has to be written as an escape")))
-           (else
-            (stringbuilder-add! sb c)
-            (advance! rd)
-            (go)))))))
+    (let ((c (held-code rd)))
+      (cond
+       ((= c spent) (Err (at rd "the document ended inside a string")))
+       ((= c 34) (advance! rd) (Ok (stringbuilder->string sb)))
+       ((= c 92)
+        (advance! rd)
+        (match (read-escape rd)
+          ((Err e) (Err e))
+          ((Ok piece)
+           (stringbuilder-add-string! sb piece)
+           (go))))
+       ((< c 32)
+        (Err (at rd "a control character in a string has to be written as an escape")))
+       ;; Both units, as they came. A string is UTF-16 and this is already it;
+       ;; the pair is still checked, because half of one cannot be encoded.
+       ((high-surrogate? c)
+        (advance! rd)
+        (let ((lo (held-code rd)))
+          (if (low-surrogate? lo)
+              (let ()
+                (advance! rd)
+                (stringbuilder-add-code! sb c)
+                (stringbuilder-add-code! sb lo)
+                (go))
+              (Err (at rd "a high surrogate has to be followed by its low surrogate")))))
+       ((low-surrogate? c)
+        (Err (at rd "a low surrogate with no high surrogate before it")))
+       (else
+        (stringbuilder-add-code! sb c)
+        (advance! rd)
+        (go))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Numbers
@@ -242,14 +304,19 @@
 
 ;; How many were taken.
 (: take-digits! (-> Reader StringBuilder int))
+;; The innermost loop in the reader, so it is written on codes: `peek` builds a
+;; character to compare and then a second one to append, and `at-end?` reads the
+;; held code a third time. A number of seventeen digits paid for all of that
+;; seventeen times over.
 (defun (take-digits! rd sb)
   (let go ((n 0))
-    (if (and (not (at-end? rd)) (digit? (peek rd)))
-        (let ()
-          (stringbuilder-add! sb (peek rd))
-          (advance! rd)
-          (go (+ n 1)))
-        n)))
+    (let ((c (held-code rd)))
+      (if (and (>= c 48) (<= c 57))
+          (let ()
+            (stringbuilder-add-code! sb c)
+            (advance! rd)
+            (go (+ n 1)))
+          n))))
 
 ;; Answers whether what was scanned has to be read as a double.
 (: scan-exponent (-> Reader StringBuilder (Result string bool)))
@@ -302,7 +369,7 @@
 
 (: read-number (-> Reader (Result string Json)))
 (defun (read-number rd)
-  (let ((sb (stringbuilder-empty)))
+  (let ((sb (buffer rd)))
     (match (scan-number rd sb)
       ((Err e) (Err e))
       ((Ok fractional?)
@@ -430,7 +497,7 @@
     ;; A byte-order mark ahead of the value is skipped, and does
     ;; not count as a column. Opening a file strips it; a string that was
     ;; decoded elsewhere still carries it.
-    (when (and (not (at-end? rd)) (= (char->integer (peek rd)) 65279))
+    (when (= (held-code rd) 65279)
       (advance! rd)
       (record-set! rd (col 1)))
     (match (read-value rd 1)

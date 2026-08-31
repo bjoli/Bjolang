@@ -403,6 +403,30 @@ public static partial class BjolangRuntime {
         return unit;
     }
 
+    // Empties one for reuse, keeping the buffer it has already grown. A reader
+    // that builds many short strings pays for a fresh builder and its first
+    // chunk every time otherwise, which measures as more than the parse it
+    // feeds.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Unit stringbuildersubclear_BANG(StringBuilder b) {
+        b.Clear();
+        return unit;
+    }
+
+    // One UTF-16 unit, for a caller that already has the number.
+    //
+    // `add!` takes a scalar, so a reader holding units has to validate a
+    // `BjoChar` — and a pair it just put together is split straight back into
+    // the two units it came from. Both ends of that are skipped here.
+    //
+    // The caller owns the invariant `add!` would have enforced: half a pair
+    // written on its own is a string that cannot be encoded.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Unit stringbuildersubaddsubcode_BANG(StringBuilder b, int code) {
+        b.Append((char)code);
+        return unit;
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int stringbuildersublength(StringBuilder b) => b.Length;
 
