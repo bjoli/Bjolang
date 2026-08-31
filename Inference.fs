@@ -1591,17 +1591,49 @@ let private resolveAsyncExtern
 /// is a bjoroutine, and unification will pin it as an ordinary arrow. That is
 /// the right default, because the only way to *become* a bjoroutine is to be
 /// written as one.
-/// Does this body ever *call* `name`?
+/// Does this body do anything with `name` that its colour changes?
 ///
-/// Applied position specifically, not merely mentioned: what a `-?->` parameter
-/// buys is a second body in which the call awaits, so a parameter that is
-/// stored or handed on rather than called makes the two bodies identical.
-let private isApplied (name: string) (body: TypedExpr) : bool =
+/// Two things qualify. Calling it, where one copy awaits and the other does
+/// not. Handing it to a parameter that is itself `-?->`, where the callee's
+/// own two copies are selected by what it is given — which is how a wrapper
+/// like `deque-fold` is written, and looks from here like merely storing it.
+///
+/// The callee's *declared* parameters, from the scheme rather than from the
+/// node: `instantiate` freshens `EPoly` away, and in the ordinary copy the
+/// fresh cell is then pinned `ESync` by the argument.
+let private usesColour (env: Env) (name: string) (body: TypedExpr) : bool =
+    let declaredParams (callee: TypedExpr) =
+        match callee.Node with
+        | TIdent(n, _) ->
+            match Map.tryFind n env.Bindings with
+            | Some b ->
+                let (Scheme(_, _, t)) = b.Scheme
+
+                match t with
+                | TFun(args, _, _) -> args
+                | _ -> []
+            | None -> []
+        | _ -> []
+
+    let handedToPoly (callee: TypedExpr) (args: TypedExpr list) =
+        let declared = declaredParams callee
+
+        args
+        |> List.indexed
+        |> List.exists (fun (i, a) ->
+            match a.Node with
+            | TIdent(n, _) when n = name ->
+                match List.tryItem i declared with
+                | Some(TFun(_, _, EPoly)) -> true
+                | _ -> false
+            | _ -> false)
+
     TypeVisitor.foldExpr
         (fun found e ->
             found
             || (match e.Node with
-                | TApply({ Node = TIdent(n, _) }, _, _) -> n = name
+                | TApply({ Node = TIdent(n, _) }, _, _) when n = name -> true
+                | TApply(callee, args, _) -> handedToPoly callee args
                 | _ -> false))
         false
         body
@@ -4483,22 +4515,22 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
             | Some rn, Some rt -> Some(rn, rt)
             | _ -> None
 
-        // A `-?->` parameter the body never calls.
+        // A `-?->` parameter whose colour the body never uses.
         //
         // The two copies would come out byte-identical. What makes them differ
         // is the *call* — one emits `f(x)`, the other `await f(x)` — so a
-        // parameter that is only stored, or passed straight on, gives the
-        // second copy nothing to do. Either it should be written `->`, or the
-        // body meant to use it and does not.
+        // parameter that is only stored gives the second copy nothing to do.
+        // Either it should be written `->`, or the body meant to use it and
+        // does not.
         //
         // Generated copies only. A `defbjouble`'s `#:sync` half has the same
         // `EPoly` parameter and hands it on, and its twin is written by hand.
         if Set.contains (Naming.suspendingCopy name) env.Registry.GeneratedCopies then
             for (paramName, paramType) in mandatoryTypes do
                 match prune env.Registry paramType with
-                | TFun(_, _, EPoly) when not (isApplied paramName typedBody) ->
+                | TFun(_, _, EPoly) when not (usesColour env paramName typedBody) ->
                     Diagnostics.warn
-                        $"'%s{name}' declares its parameter '%s{paramName}' as -?->, which says it will be given a function of either colour — but the body never calls it. Both copies of '%s{name}' would be identical. Write the parameter -> if it is an ordinary function, or call it if the body meant to.\n  at %s{Lexer.formatPos r}"
+                        $"'%s{name}' declares its parameter '%s{paramName}' as -?->, which says it will be given a function of either colour — but the body neither calls it nor hands it to another -?->. Both copies of '%s{name}' would be identical. Write the parameter -> if it is an ordinary function, or use it if the body meant to.\n  at %s{Lexer.formatPos r}"
                 | _ -> ()
 
         let decl = TDefun(name, vars, mandatoryTypes, typedKeywordArgs, restArgInfo, expectedRetType, effect, typedBody, r)

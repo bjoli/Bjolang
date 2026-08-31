@@ -13,7 +13,7 @@
 (import (std prelude))
 
 ;; EXPECT-WARNING: declares its parameter 'f' as -?->
-;; EXPECT-WARNING: but the body never calls it
+;; EXPECT-WARNING: neither calls it nor hands it to another -?->
 ;; EXPECT-WARNING: Both copies of 'ignores' would be identical
 
 (: ignores (-> (-?-> int int) int int))
@@ -25,6 +25,13 @@
 (: applies (-> (-?-> int int) int int))
 (defun (applies f x)
   (f x))
+
+;; Nor this one. Handing it to another `-?->` picks that callee's suspending
+;; copy, which is a difference as much as an await is.
+;; EXPECT-NO-WARNING: Both copies of 'wraps' would be identical
+(: wraps (-> (-?-> int int) (List int) (List int)))
+(defun (wraps f xs)
+  (list-map f xs))
 
 ;; Not warned about either: an ordinary `->` parameter promises one colour, so
 ;; there is only ever one copy and nothing to compare.
@@ -45,5 +52,6 @@
   (println (int->string (+ (ignores (fun (n) n) 1)
                            (+ (applies (fun (n) (* n 2)) 3)
                               (+ (plain (fun (n) n) 5)
-                                 (handed-on (fun (n) n) 7))))))
+                                 (+ (handed-on (fun (n) n) 7)
+                                    (list-length (wraps (fun (n) n) (list 1 2)))))))))
   0)
