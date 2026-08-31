@@ -1,0 +1,43 @@
+;; A module-level mutable, seen by both copies of a procedure.
+;;
+;; The one hazard monomorphisation could have had that nothing would catch. A
+;; procedure that touches module state is given a suspending copy like any
+;; other, and if the copy got state of its own the two would drift: an ordinary
+;; call and a call from a bjoroutine would increment different counters, both
+;; would answer plausibly, and nothing in the program or its output would say
+;; which one you were reading.
+;;
+;; It does not happen, because a copy is a second *body* and not a second
+;; module: the field is emitted once by the declaration, and both bodies name
+;; it. That is worth a test precisely because it is a property of something
+;; nobody wrote — no code says "share the field", it is shared by there being
+;; only one declaration of it.
+;;
+;; Pinned here rather than behaviourally because the failure would be silent in
+;; exactly the way behaviour cannot see: two fields, each internally consistent.
+;; `160_state_sharing.bjo` runs it; this counts the field.
+
+(export bump reading)
+
+(import (std prelude))
+
+(def/mutable seen 0)
+
+;; Reaches `read-line`, which is a `defbjouble`, so this gets a suspending copy
+;; — and the copy touches `seen` as well.
+(: bump (-> TextInputPort int))
+(defun (bump p)
+  (set! seen (+ seen 1))
+  (ignore (read-line p))
+  seen)
+
+(: reading (-> TextInputPort int))
+(defbjo (reading p) (bump p))
+
+;; One declaration, one field. `^` and `$` anchor it so that a second
+;; declaration under a mangled name could not satisfy this by accident.
+;; EXPECT-CS: ^\s*public static int seen;$
+
+;; And two bodies, both naming it.
+;; EXPECT-CS: ^\s*public static int bump\(System.IO.TextReader p\)
+;; EXPECT-CS: ^\s*public static async Bjoml.Fiber<int> bump__bjo\(System.IO.TextReader p\)

@@ -1,0 +1,41 @@
+;; Both copies of a procedure see the same module state.
+;;
+;; `codegen/state_is_singular.bjo` counts the emitted field; this one watches the
+;; number go up. Neither test alone is the assertion: two fields would give two
+;; internally consistent counters, so the behaviour has to be checked against a
+;; total that only one field can produce.
+;;
+;; `bump` reaches `read-line`, a `defbjouble`, so it is given a suspending copy.
+;; Called four times — twice through the ordinary body, twice through the copy —
+;; and the four have to be 1, 2, 3, 4 in whatever order they run. The interleave
+;; is deliberate: an ordinary call between two suspending ones would be the one
+;; arrangement a per-copy counter could not fake.
+
+(import (std prelude))
+(import (std simpletest))
+
+(def/mutable seen 0)
+
+(: bump (-> TextInputPort int))
+(defun (bump p)
+  (set! seen (+ seen 1))
+  (ignore (read-line p))
+  seen)
+
+(: reading (-> TextInputPort int))
+(defbjo (reading p) (bump p))
+
+(: run-int (-> (Promise int) int))
+(defun (run-int p)
+  (match (sync/blocking (promise-join p))
+    ((Ok n) n)
+    ((Err e) -1)))
+
+(defun (main)
+  (def p (open-input-string "a\nb\nc\nd\n"))
+
+  (expect "the ordinary body counts first" (bump p) 1)
+  (expect "the copy carries on from it" (run-int (bjo (reading p))) 2)
+  (expect "and the ordinary body carries on from the copy" (bump p) 3)
+  (expect "and back again" (run-int (bjo (reading p))) 4)
+  0)
