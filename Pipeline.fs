@@ -631,11 +631,11 @@ let private registerMacros
                     failwithf
                         $"'%s{entry.Name}' is declared a macro by %s{asm.GetName().Name}, but the class '%s{className}' holding it is not in that assembly."
 
-                let method = clrType.GetMethod(Naming.clrMemberName entry.Name)
+                let method = clrType.GetMethod(Prelude.moduleClrMemberName entry.Name)
 
                 if isNull method then
                     failwithf
-                        $"'%s{entry.Name}' is declared a macro by %s{asm.GetName().Name}, but '%s{className}' has no method '%s{Naming.clrMemberName entry.Name}'."
+                        $"'%s{entry.Name}' is declared a macro by %s{asm.GetName().Name}, but '%s{className}' has no method '%s{Prelude.moduleClrMemberName entry.Name}'."
 
                 Macro.register
                     { Name = visibleName

@@ -968,3 +968,36 @@ let prelude : Env =
           ("choose", { MandatoryCount = 0; KeywordParams = []; RestParam = Some (TCon("Event", [ TVar "a" ])) })
       ]
       CurrentModule = "" }
+
+/// Namnen som redan är bundna av `using static BjolangRuntime`.
+let builtinNames: Set<string> =
+    prelude.Bindings |> Map.toSeq |> Seq.map fst |> Set.ofSeq
+
+/// C#-namnet en modulnivåbindning emitteras under.
+///
+/// En bindning som heter samma sak som en builtin får ett härlett namn.
+/// Annars ger `using static BjolangRuntime` och `using static <modul>_Module`
+/// två medlemmar med samma namn, och C# löser ett naket anrop till ingen av
+/// dem — även i en modul som bara ville ha builtinen och aldrig importerade
+/// skuggan. Den skuggande modulen kan vara nådd bara transitivt.
+///
+/// Prefixet sätts på före saneringen, av samma skäl som `keywordParamName`:
+/// en bindning som heter som ett C#-nyckelord saneras till `@base`, och
+/// `skugga__@base` är ingen identifierare alls.
+///
+/// Härlett, inte publicerat: metadatan bär bjolangnamnet, och varje läsare
+/// räknar fram samma sträng igen — som `Naming.suspendingCopy`.
+let moduleMemberName (name: string) : string =
+    if Set.contains name builtinNames then
+        Naming.sanitizeIdent ("shadowed__" + name)
+    else
+        Naming.sanitizeIdent name
+
+/// Samma namn, som reflektion frågar efter det.
+///
+/// `@` är hur C#-källkod stavar en identifierare som krockar med ett nyckelord,
+/// och ingen del av namnet: `public static Syntax @do(...)` är en metod som
+/// heter `do`. Det som når in i en byggd assembly på namn — makrotabellen,
+/// REPL:en som läser tillbaka ett värde — frågar efter den stavningen.
+let moduleClrMemberName (name: string) : string =
+    (moduleMemberName name).TrimStart '@'

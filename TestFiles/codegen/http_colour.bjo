@@ -1,0 +1,54 @@
+;; `(std http)` is colourless, and this is what that means in the emitted C#.
+;;
+;; `fetch`, `response-port` and `response-text` are all leaves with two halves:
+;; waiting for an event is `sync` on a fiber and `sync/blocking` on a thread,
+;; and reading a body is `ReadAsStreamAsync` or `ReadAsStream`. Nothing derives
+;; either pairing, so each is a `defbjouble` — and everything written on top of
+;; them, including `fetch-body` below, is emitted twice for free.
+;;
+;; No behavioural test can see this. A suspending copy that reached the
+;; blocking half would return the same bytes and pass every assertion in
+;; `172_http.bjo`, while parking a pool thread for the length of an HTTP
+;; request — which is the difference between a client that scales and one that
+;; does not.
+
+;; A plain `defun` over the http API is emitted twice, whether or not this file
+;; has a bjoroutine that calls it.
+;; EXPECT-CS: public static string fetchsubbody\(
+;; EXPECT-CS: public static async .*fetchsubbody__bjo\(
+
+;; The suspending copy awaits all the way down: the request, the body's stream
+;; and the read.
+;; EXPECT-CS: await fetch__bjo\(
+;; EXPECT-CS: await .*responsesubtext__bjo\(
+;; EXPECT-CS: await .*responsesubport__bjo\(
+
+;; The blocking copy calls the blocking halves of the same names.
+;; EXPECT-CS: switch \(fetch\(get\(url\)\)\)
+;; EXPECT-CS: responsesubtext\(r\)
+
+;; And nothing anywhere waits on a task by hand, which is what any of these
+;; would decay into if a pair were ever collapsed to one method.
+;; EXPECT-NO-CS: \.Result
+;; EXPECT-NO-CS: GetAwaiter\(\)\.GetResult\(\)
+
+(import (std prelude))
+(import (std http))
+
+;; Written once. No colour is named anywhere in it.
+(: fetch-body (-> string string))
+(defun (fetch-body url)
+  (match (fetch (get url))
+    ((Ok r) (let ((text (response-text r))) (response-close r) text))
+    ((Err e) "failed")))
+
+(: first-line (-> string string))
+(defun (first-line url)
+  (match (fetch (get url))
+    ((Ok r) (let ((line (read-line (response-port r)))) (response-close r) line))
+    ((Err e) "failed")))
+
+;; The caller that forces the suspending copies into existence.
+(: from-a-fiber (-bjo-> string string))
+(defbjo (from-a-fiber url)
+  (str (fetch-body url) (first-line url)))

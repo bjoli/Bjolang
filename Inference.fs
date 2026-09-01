@@ -6497,11 +6497,32 @@ let private checkModuleValuesAreConcrete (registry: TraitRegistry) (decls: TDecl
 /// A `def/impl`'s methods are not reached: they sit inside `TImpl`, and this
 /// descends through `TModule` and nothing else.
 let private warnAboutShadowedMethods (registry: TraitRegistry) (decls: TDecl list) : unit =
+    // Bara en exporterad skugga når andra moduler. En privat gäller den här
+    // filen, och att säga något annat skickar läsaren att leta på fel ställe.
+    let exported =
+        let names = System.Collections.Generic.HashSet<string>()
+
+        let rec scan (ds: TDecl list) =
+            for d in ds do
+                match d with
+                | TModule(_, inner, _) -> scan inner
+                | TExport(ns, _) -> for n in ns do names.Add n |> ignore
+                | _ -> ()
+
+        scan decls
+        names
+
     let check (form: string) (name: string) (r: Range) =
         match Map.tryFind name registry.TraitMethods with
         | Some traitName ->
+            let reach =
+                if exported.Contains name then
+                    ", and so does one in any module that imports it"
+                else
+                    ". It is not exported, so no other module is affected"
+
             Diagnostics.warn
-                $"'%s{name}' is a method of the trait '%s{traitName}', and this %s{form} binds over it at %s{Lexer.formatPos r}. A call to '%s{name}' written in this module reaches the definition rather than dispatching, and so does one in any module that imports it. To implement the method for a type of your own, write (def/impl (%s{traitName} YourType) (defun (%s{name} ...) ...))."
+                $"'%s{name}' is a method of the trait '%s{traitName}', and this %s{form} binds over it at %s{Lexer.formatPos r}. A call to '%s{name}' written in this module reaches the definition rather than dispatching%s{reach}. To implement the method for a type of your own, write (def/impl (%s{traitName} YourType) (defun (%s{name} ...) ...))."
         | None -> ()
 
     let rec go (ds: TDecl list) =

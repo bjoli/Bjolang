@@ -1886,9 +1886,18 @@ and private generateGuarded
 /// Fully qualifies a module-level binding.
 and private qualifiedName (ctx: CodegenContext) (name: string) =
     match Map.tryFind name ctx.GlobalBindings with
+    // Ingen klass att namnge: det här *är* builtinen, och den heter sitt namn.
     | Some("", member') -> sanitizeIdent (Naming.emittedTypeName member')
-    | Some(modName, member') -> $"%s{moduleClassName modName}.%s{sanitizeIdent (Naming.emittedTypeName member')}"
-    | None -> sanitizeIdent (Naming.emittedTypeName name)
+    | Some(modName, member') ->
+        $"%s{moduleClassName modName}.%s{Prelude.moduleMemberName (Naming.emittedTypeName member')}"
+    | None ->
+        // En inlinead kropp stavar en modulbindning `Klass::namn`, och ledet
+        // efter `::` är en medlem som kan bära ett härlett namn.
+        match name.LastIndexOf "::" with
+        | i when i > 0 && isModuleQualified name ->
+            let cls = sanitizeIdent (name.Substring(0, i))
+            $"%s{cls}.%s{Prelude.moduleMemberName (name.Substring(i + 2))}"
+        | _ -> sanitizeIdent (Naming.emittedTypeName name)
 
 /// Evaluates a statement-shaped node into a temporary in the enclosing statement
 /// position and yields the temporary's name.
@@ -3682,7 +3691,12 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
         let constraintClause =
             Map.tryFind name ctx.ClrConstraints |> Option.defaultValue ""
 
-        generateMethod ctx "public static " genericParams constraintClause name args kwArgs restArg retType effect body KeywordParameters
+        // Namnet medlemmen emitteras under. En bindning som skuggar en builtin
+        // får ett härlett namn; `sanitizeIdent` i `generateMethod` lämnar det
+        // som det är.
+        let emittedName = Prelude.moduleMemberName name
+
+        generateMethod ctx "public static " genericParams constraintClause emittedName args kwArgs restArg retType effect body KeywordParameters
 
         // The keyword-free entry, as a C# overload of the same name. Emitted
         // only where it can win anything — a function all of whose defaults are
@@ -3694,7 +3708,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
         // whole of `generateMethod`'s async, iterator and generic handling
         // repeated around a return type it no longer shares.
         if needsKeywordFreeEntry kwArgs then
-            generateMethod ctx "public static " genericParams constraintClause name args kwArgs restArg retType effect body KeywordDefaultsOnly
+            generateMethod ctx "public static " genericParams constraintClause emittedName args kwArgs restArg retType effect body KeywordDefaultsOnly
 
     | TType (defs, _) 
     | TTypeRec (defs, _) ->
@@ -4190,14 +4204,14 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                 match d with
                 | Choice1Of3(defName, _, defType) ->
                     indent ctx
-                    appendLine ctx $"public static readonly %s{typeToString defType} %s{sanitizeIdent defName};"
+                    appendLine ctx $"public static readonly %s{typeToString defType} %s{Prelude.moduleMemberName defName};"
                 | Choice2Of3(defName, _, defType) ->
                     indent ctx
-                    appendLine ctx $"public static %s{typeToString defType} %s{sanitizeIdent defName};"
+                    appendLine ctx $"public static %s{typeToString defType} %s{Prelude.moduleMemberName defName};"
                 | Choice3Of3(names, _, tupleType) ->
                     for name, elemType in List.zip names (tupleElemTypes tupleType) do
                         indent ctx
-                        appendLine ctx $"public static readonly %s{typeToString elemType} %s{sanitizeIdent name};"
+                        appendLine ctx $"public static readonly %s{typeToString elemType} %s{Prelude.moduleMemberName name};"
 
             for d in innerDecls do
                 match d with
@@ -4215,14 +4229,14 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                         match d with
                         | Choice1Of3(defName, defValue, _)
                         | Choice2Of3(defName, defValue, _) ->
-                            generateBlock c (Assign(sanitizeIdent defName)) defValue
+                            generateBlock c (Assign(Prelude.moduleMemberName defName)) defValue
                         | Choice3Of3(names, defValue, _) ->
                             let tmp = freshName "__tuple"
                             generateBindingValue c (DeclareAndAssign(typeToString defValue.Type, tmp)) defValue
 
                             for i, name in List.indexed names do
                                 indent c
-                                appendLine c $"%s{sanitizeIdent name} = %s{tmp}.Item%d{i + 1};")
+                                appendLine c $"%s{Prelude.moduleMemberName name} = %s{tmp}.Item%d{i + 1};")
 
                 indent ctx
                 appendLine ctx "}"
@@ -4268,8 +4282,7 @@ let builtinUnionCases: Map<string, UnionCaseInfo> =
 /// which. Read off `Prelude` rather than listed here: the builtins are what
 /// that environment *is*, and a second copy would go stale the first time one
 /// was added.
-let private builtinBindings: Set<string> =
-    Prelude.prelude.Bindings |> Map.toSeq |> Seq.map fst |> Set.ofSeq
+let private builtinBindings: Set<string> = Prelude.builtinNames
 
 /// The C# `where` clauses a function's CLR constraints amount to.
 ///

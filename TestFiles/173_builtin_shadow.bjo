@@ -1,0 +1,30 @@
+;; En modul får ha en privat bindning som heter som en builtin.
+;;
+;; Den emitteras under ett härlett namn, så `using static BjolangRuntime` och
+;; `using static <modul>_Module` aldrig ger två medlemmar med samma namn. Förr
+;; blev varje naket anrop i varje importör CS0121 — även här, som bara vill ha
+;; builtinen och aldrig importerar skuggan.
+;;
+;; Skuggan nås dessutom bara transitivt: `inc/builtin_shadow_mid.bjo` importerar
+;; den, och länklistan ger `using static` även för moduler som aldrig
+;; importerades direkt.
+;;
+;; Att en *exporterad* skugga vinner hos importören är en annan fråga, och den
+;; står i `137_builtin_names.bjo`.
+(import (std simpletest))
+(import "inc/builtin_shadow_mid.bjo")
+(import (std prelude))
+
+(: no-strings (List string))
+(def no-strings Nil)
+
+(defun (main)
+  ;; Builtinen, här.
+  (expect "the builtin answers for an empty list" (list-empty? no-strings) #t)
+  (expect "and for a non-empty one" (list-empty? (list "a")) #f)
+
+  ;; Skuggan, i modulen som skrev den: den säger #f om en tom lista.
+  (expect "the shadow is live where it was written" (relayed no-strings) #f)
+
+  (println "173 ok")
+  0)

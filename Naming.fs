@@ -19,15 +19,6 @@ let sanitizeIdent (s: string) =
     | "abstract" | "base" | "checked" | "const" | "delegate" | "enum" | "event" | "explicit" | "extern" | "fixed" | "implicit" | "interface" | "namespace" | "operator" | "override" | "sealed" | "stackalloc" | "this" | "unchecked" | "unsafe" | "using" | "virtual" | "volatile" -> "@" + s
     | _ -> s
 
-/// The name a binding carries in *metadata*, which is what reflection asks for.
-///
-/// `@` is how C# source spells an identifier that collides with a keyword, and
-/// it is not part of the name: `public static Syntax @do(...)` is a method
-/// called `do`. Anything reaching into a compiled assembly by name — the macro
-/// table, the REPL reading a value back — has to ask for that one, which is the
-/// generated spelling with the escape taken off again.
-let clrMemberName (name: string) = (sanitizeIdent name).TrimStart '@'
-
 /// The C# parameter a keyword argument arrives in.
 ///
 /// Keyword arguments are passed as C# *named* arguments, so this name is the
