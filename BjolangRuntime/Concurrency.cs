@@ -613,17 +613,40 @@ public static partial class BjolangRuntime {
     /// `TaskCanceledException`: the reason exists only on the Bjolang side of
     /// the bridge, and a caller that wants it reads `cancel-reason` off its own
     /// token rather than off the exception.
+    ///
+    /// Off the environment rather than through `parameter-ref`: the same three
+    /// cases without its slot switch and cast back from `object`. Null there
+    /// means nothing bound one, which is the root scope — so is `RootCancel`,
+    /// for a program that bound `(current-cancel)` to its own default.
     public static CancellationToken AmbientCancellation() {
-        var token = parametersubref(currentsubcancel);
+        var token = Dyn.Current.Cancel;
 
-        if (ReferenceEquals(token, RootCancel)) return CancellationToken.None;
+        if (token is null || ReferenceEquals(token, RootCancel)) return CancellationToken.None;
         if (token.IsCompleted) return new CancellationToken(true);
 
         return AmbientBridge(token).Token;
     }
 
+    // The ambient token does not change inside a scope, so one entry catches
+    // every call a loop makes and the table is probed once per scope instead of
+    // once per call. It pins one token and one source per thread, which is the
+    // one place the weak keying above does not hold.
+    [ThreadStatic] private static Promise<CancelReason>? LastToken;
+    [ThreadStatic] private static CancellationTokenSource? LastBridge;
+
     /// The source mirroring one token, created once.
-    private static CancellationTokenSource AmbientBridge(Promise<CancelReason> token) =>
+    private static CancellationTokenSource AmbientBridge(Promise<CancelReason> token) {
+        if (ReferenceEquals(token, LastToken)) return LastBridge!;
+
+        var cts = Bridge(token);
+
+        // Key published last, so a pair is never half written.
+        LastBridge = cts;
+        LastToken = token;
+        return cts;
+    }
+
+    private static CancellationTokenSource Bridge(Promise<CancelReason> token) =>
         CancelBridges.GetValue(token, static t => {
             var cts = new CancellationTokenSource();
 
