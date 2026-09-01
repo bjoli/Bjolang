@@ -419,17 +419,29 @@
 ;; Values
 ;; ---------------------------------------------------------------------------
 
+;; One `true` is every `true`: the three are read and never written, so a
+;; shared value cannot be told from a fresh one.
+(: json-true Json)
+(def json-true (JsonBool #t))
+
+(: json-false Json)
+(def json-false (JsonBool #f))
+
+(: json-null Json)
+(def json-null JsonNull)
+
+;; Walked with a cursor, so the word is read where it already is. `string->list`
+;; built the same four cons cells for every `true` in the document.
 (: read-word (-> Reader string Json (Result string Json)))
 (defun (read-word rd word value)
-  (let go ((left (string->list word)))
-    (match left
-      (Nil (Ok value))
-      ((Cons c rest)
-       (if (or (at-end? rd) (not (char=? (peek rd) c)))
-           (Err (at rd (str "'" word "' is spelled out to here, and then there is " (found rd))))
-           (let ()
-             (advance! rd)
-             (go rest)))))))
+  (let go ((k (string-cursor-start word)))
+    (if (string-cursor-end? word k)
+        (Ok value)
+        (if (or (at-end? rd) (not (char=? (peek rd) (string-cursor-ref word k))))
+            (Err (at rd (str "'" word "' is spelled out to here, and then there is " (found rd))))
+            (let ()
+              (advance! rd)
+              (go (string-cursor-next word k)))))))
 
 (: read-array (-> Reader int (Result string Json)))
 (defun (read-array rd depth)
@@ -465,10 +477,10 @@
    (else 
     (advance! rd)
     (skip-space! rd)
-    (def b (mapbuilder-empty))
+    (def b (transientmap-empty))
     (cond
      ((at-end? rd) (Err (at rd "the document ended inside an object")))
-     ((char=? (peek rd) #\}) (advance! rd) (Ok (JsonObj (mapbuilder->map b))))
+     ((char=? (peek rd) #\}) (advance! rd) (Ok (JsonObj (transientmap->map b))))
      (else
       (let go ()
         (skip-space! rd)
@@ -490,14 +502,14 @@
                (match (read-value rd (+ depth 1))
                  ((Err e) (Err e))
                  ((Ok v)
-                  (mapbuilder-add! b key v)
+                  (transientmap-set! b key v)
                   (skip-space! rd)
                   (cond
                    ((at-end? rd) (Err (at rd "the document ended inside an object")))
                    ((char=? (peek rd) #\,) (advance! rd) (go))
                        ((char=? (peek rd) #\})
                         (advance! rd)
-                        (Ok (JsonObj (mapbuilder->map b))))
+                        (Ok (JsonObj (transientmap->map b))))
                        (else
                         (Err (at rd (str "an object wants ',' or '}' here, and this is "
                                          (found rd))))))))))))))))))))
@@ -513,9 +525,9 @@
         ((#\") (match (read-text rd)
                  ((Err e) (Err e))
                  ((Ok s) (Ok (JsonStr s)))))
-        ((#\t) (read-word rd "true" (JsonBool #t)))
-        ((#\f) (read-word rd "false" (JsonBool #f)))
-        ((#\n) (read-word rd "null" JsonNull))
+        ((#\t) (read-word rd "true" json-true))
+        ((#\f) (read-word rd "false" json-false))
+        ((#\n) (read-word rd "null" json-null))
         ((#\- #\0 #\1 #\2 #\3 #\4 #\5 #\6 #\7 #\8 #\9) (read-number rd))
         (else (Err (at rd (str (found rd) " does not begin a value")))))))
 
