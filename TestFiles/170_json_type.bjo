@@ -1,0 +1,153 @@
+;; `def/json-type`: a record declaration that also writes its own JSON codecs.
+;;
+;; The distinction the markers exist for is nullable against optional. A value
+;; that may be `null` is a property of its type — `(Option %a)` has an instance
+;; and it works in a field, an array element or a map value alike. A key that
+;; may be *absent* is a property of the field, because absent is not a JSON
+;; value and no instance could describe it. So one is a type and the other is a
+;; marker, and `#:optional` is exactly `#:default None`.
+
+(import (std prelude))
+(import (std simpletest))
+(import (text json))
+(import (text json-codec))
+
+(def/json-type
+  (: Point (Record (: x int)
+                   (: label string #:json "the-label")
+                   (: note (Option string) #:optional)
+                   (: nick (Option string))
+                   (: tags (Vec string) #:default (vec-empty)))))
+
+;; A field whose type is another record. The macro knows nothing about `Point`;
+;; the nesting is instance resolution's to do.
+(def/json-type
+  (: Line (Record (: from Point)
+                  (: to Point)
+                  (: width double #:default 1.0))))
+
+;; A parameterised head, which needs the `(where (json-> %a))` the macro writes.
+(def/json-type
+  (: (Box %a) (Record (: item %a)
+                      (: tag string #:default "none"))))
+
+(: read-point (-> string (Result string Point)))
+(defun (read-point text)
+  (match (parse-json text)
+    ((Err e) (Err e))
+    ((Ok j) (json->Point j))))
+
+(: read-line/json (-> string (Result string Line)))
+(defun (read-line/json text)
+  (match (parse-json text)
+    ((Err e) (Err e))
+    ((Ok j) (json->Line j))))
+
+;; The field, or a word saying which way it failed.
+(: note-of (-> (Result string Point) string))
+(defun (note-of r)
+  (match r
+    ((Err e) (str "err:" e))
+    ((Ok p) (match (record-ref p note) ((Some s) s) (None "<none>")))))
+
+(: nick-of (-> (Result string Point) string))
+(defun (nick-of r)
+  (match r
+    ((Err e) (str "err:" e))
+    ((Ok p) (match (record-ref p nick) ((Some s) s) (None "<none>")))))
+
+(: err-of (-> (Result string Point) string))
+(defun (err-of r)
+  (match r
+    ((Err e) e)
+    ((Ok p) "no error")))
+
+(: tags-of (-> (Result string Point) int))
+(defun (tags-of r)
+  (match r
+    ((Err e) -1)
+    ((Ok p) (vec-length (record-ref p tags)))))
+
+(defun (main)
+  ;; --- a whole object -------------------------------------------------------
+  (def full (read-point "{\"x\":1,\"the-label\":\"a\",\"note\":\"n\",\"nick\":\"k\",\"tags\":[\"p\",\"q\"]}"))
+  (expect "every field present" (note-of full) "n")
+  (expect "a renamed key is read under its json name" (nick-of full) "k")
+  (expect "a vec field" (tags-of full) 2)
+
+  ;; --- optional: the key may be absent --------------------------------------
+  (expect "an optional field may be absent"
+          (note-of (read-point "{\"x\":1,\"the-label\":\"a\",\"nick\":null}")) "<none>")
+  (expect "and null reaches the same default"
+          (note-of (read-point "{\"x\":1,\"the-label\":\"a\",\"note\":null,\"nick\":null}")) "<none>")
+
+  ;; --- nullable: the key must be there, the value may be null ---------------
+  (expect "a nullable field reads null as None"
+          (nick-of (read-point "{\"x\":1,\"the-label\":\"a\",\"nick\":null}")) "<none>")
+  (expect "but a nullable field may not be absent"
+          (err-of (read-point "{\"x\":1,\"the-label\":\"a\"}"))
+          "Point: the object has no \"nick\" field")
+
+  ;; --- default --------------------------------------------------------------
+  (expect "a defaulted field may be absent"
+          (tags-of (read-point "{\"x\":1,\"the-label\":\"a\",\"nick\":null}")) 0)
+
+  ;; --- refusals -------------------------------------------------------------
+  (expect "a required field that is absent names itself"
+          (err-of (read-point "{\"x\":1,\"nick\":null}"))
+          "Point: the object has no \"the-label\" field")
+  (expect "a field of the wrong type names itself"
+          (err-of (read-point "{\"x\":\"six\",\"the-label\":\"a\",\"nick\":null}"))
+          "Point.x: expected an integer")
+  (expect "a required field may not be null"
+          (err-of (read-point "{\"x\":1,\"the-label\":null,\"nick\":null}"))
+          "Point.the-label: expected a string")
+  (expect "something that is not an object" (err-of (read-point "[1,2]"))
+          "Point: expected an object")
+
+  ;; --- nesting --------------------------------------------------------------
+  (def line (read-line/json
+             (str "{\"from\":{\"x\":1,\"the-label\":\"a\",\"nick\":null},"
+                  " \"to\":{\"x\":2,\"the-label\":\"b\",\"nick\":null}}")))
+  (expect "a record field is read through its own instance"
+          (match line ((Err e) -1) ((Ok l) (record-ref (record-ref l from) x))) 1)
+  (expect "a defaulted double"
+          (match line ((Err e) "err") ((Ok l) (double->string (record-ref l width)))) "1")
+  (expect "a failure two levels down names both"
+          (match (read-line/json "{\"from\":{\"x\":1,\"nick\":null},\"to\":{\"x\":2,\"the-label\":\"b\",\"nick\":null}}")
+            ((Err e) e)
+            ((Ok l) "no error"))
+          "Line.from: Point: the object has no \"the-label\" field")
+
+  ;; --- writing --------------------------------------------------------------
+  ;; An optional None is left out; a nullable None is written as null. That is
+  ;; the whole difference, and it is visible only here.
+  (def encoded (match (read-point "{\"x\":8,\"the-label\":\"g\",\"nick\":null}")
+                 ((Err e) JsonNull)
+                 ((Ok p) (Point->json p))))
+  (expect "an optional None is not written at all"
+          (match encoded ((JsonObj m) (if (map-contains? m "note") "present" "absent")) (_ "not an object"))
+          "absent")
+  (expect "a nullable None is written as null"
+          (match encoded ((JsonObj m) (if (map-contains? m "nick") "present" "absent")) (_ "not an object"))
+          "present")
+  (expect "the renamed key is written under its json name"
+          (match encoded ((JsonObj m) (if (map-contains? m "the-label") "present" "absent")) (_ "not an object"))
+          "present")
+
+  ;; --- round trip -----------------------------------------------------------
+  (expect "a value survives encoding and reading back"
+          (note-of (match (read-point "{\"x\":7,\"the-label\":\"e\",\"note\":\"n\",\"nick\":null,\"tags\":[\"z\"]}")
+                     ((Err e) (Err e))
+                     ((Ok p) (json->Point (Point->json p)))))
+          "n")
+
+  ;; --- a parameterised record ----------------------------------------------
+  (expect "a generic record decodes at its instance"
+          (match (match (parse-json "{\"item\":5}") ((Err e) (Err e)) ((Ok j) (json->Box j)))
+            ((Err e) (str "err:" e))
+            ((Ok b) (str (int->string (record-ref b item)) "/" (record-ref b tag))))
+          "5/none")
+
+  (println "170 ok")
+  0)

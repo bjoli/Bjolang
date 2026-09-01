@@ -1,0 +1,384 @@
+;; text/json-codec.bjo — records to JSON and back.
+;;
+;; Two traits and a macro that writes the instances for a record.
+;;
+;; Nullable types are Options, keys that may be absent just specify a default
+;; value
+
+(export
+  ;; The traits
+  ->json json->
+  ;; What generated field code calls. Exported because a macro template's names
+  ;; resolve against this module's exports.
+  json-object json-field json-field/default
+  ;; The generator
+  def/json-type)
+
+(import (std prelude))
+(import (std syntax-match))
+(import (text json))
+
+;; ---------------------------------------------------------------------------
+;; The traits
+;; ---------------------------------------------------------------------------
+
+(def/trait (->json %a)
+  (: ->json (-> %a Json)))
+
+
+(def/trait (json-> %a)
+  (: json-> (-> Json (Result string %a))))
+
+;; ---------------------------------------------------------------------------
+;; Scalars
+;; ---------------------------------------------------------------------------
+
+(def/impl (->json Json)   (defun (->json j) j))
+(def/impl (->json long)   (defun (->json n) (JsonInt n)))
+(def/impl (->json int)    (defun (->json n) (JsonInt (cast System.Int64 n))))
+(def/impl (->json double) (defun (->json n) (JsonFloat n)))
+(def/impl (->json bool)   (defun (->json b) (JsonBool b)))
+(def/impl (->json string) (defun (->json s) (JsonStr s)))
+
+(def/impl (json-> Json)
+  (defun (json-> j) (Ok j)))
+
+(def/impl (json-> long)
+  (defun (json-> j)
+    (match j
+      ((JsonInt n) (Ok n))
+      (_ (Err "expected an integer")))))
+
+(def/impl (json-> int)
+  (defun (json-> j)
+    (match j
+      ((JsonInt n) (Ok (cast System.Int32 n)))
+      (_ (Err "expected an integer")))))
+
+
+(def/impl (json-> double)
+  (defun (json-> j)
+    (match j
+      ((JsonFloat d) (Ok d))
+      ;; an int is a valid double.
+      ((JsonInt n) (Ok (cast System.Double n)))
+      (_ (Err "expected a number")))))
+
+(def/impl (json-> bool)
+  (defun (json-> j)
+    (match j
+      ((JsonBool b) (Ok b))
+      (_ (Err "expected a boolean")))))
+
+(def/impl (json-> string)
+  (defun (json-> j)
+    (match j
+      ((JsonStr s) (Ok s))
+      (_ (Err "expected a string")))))
+
+;; ---------------------------------------------------------------------------
+;; Nullability
+;; ---------------------------------------------------------------------------
+
+(def/impl (->json (Option %a))
+  (where (->json %a))
+  (defun (->json o)
+    (match o
+      ((Some x) (->json x))
+      (None JsonNull))))
+
+(def/impl (json-> (Option %a))
+  (where (json-> %a))
+  (defun (json-> j)
+    (match j
+      (JsonNull (Ok None))
+      (_ (match (json-> j)
+           ((Err e) (Err e))
+           ((Ok v) (Ok (Some v))))))))
+
+(def/impl (->json (Vec %a))
+  (where (->json %a))
+  (defun (->json v)
+    (JsonArr (vec-map (fun (x) (->json x)) v))))
+
+(def/impl (json-> (Vec %a))
+  (where (json-> %a))
+  (defun (json-> j)
+    (match j
+      ((JsonArr items)
+       (vec-fold (fun (acc el)
+                   (match acc
+                     ((Err e) (Err e))
+                     ((Ok b)
+                      (match (json-> el)
+                        ((Err e) (Err e))
+                        ((Ok v) (Ok (vec-add b v)))))))
+                 (Ok (vec-empty))
+                 items))
+      (_ (Err "expected an array")))))
+
+;; A JSON object with values all of one type.
+(def/impl (->json (Map string %a))
+  (where (->json %a))
+  (defun (->json m)
+    (JsonObj (map-map-values (fun (v) (->json v)) m))))
+
+(def/impl (json-> (Map string %a))
+  (where (json-> %a))
+  (defun (json-> j)
+    (match j
+      ((JsonObj m)
+       (map-fold (fun (acc k v)
+                   (match acc
+                     ((Err e) (Err e))
+                     ((Ok b)
+                      (match (json-> v)
+                        ((Err e) (Err (str "\"" k "\": " e)))
+                        ((Ok d) (Ok (map-set b k d)))))))
+                 (Ok (map-empty))
+                 m))
+      (_ (Err "expected an object")))))
+
+;; ---------------------------------------------------------------------------
+;; What generated field code calls
+;; ---------------------------------------------------------------------------
+
+(: json-object (-> string Json (Result string (Map string Json))))
+(defun (json-object owner j)
+  (match j
+    ((JsonObj m) (Ok m))
+    (_ (Err (str owner ": expected an object")))))
+
+;; The owner and key are prefixed onto whatever the value's own decoder said,
+;; so a wrong type reads "Point.x: expected an integer" rather than naming
+;; neither. Paths down the tree are not provided
+(: json-field (-> string (Map string Json) string (Result string %a)) (where (json-> %a)))
+(defun (json-field owner m key)
+  (match (map-try-ref m key)
+    (None (Err (str owner ": the object has no \"" key "\" field")))
+    ((Some j)
+     (match (json-> j)
+       ((Err e) (Err (str owner "." key ": " e)))
+       ((Ok v) (Ok v))))))
+
+;; Absent and null ar the same in the sense that a nullable has the default value None
+(: json-field/default (-> string (Map string Json) string %a (Result string %a)) (where (json-> %a)))
+(defun (json-field/default owner m key fallback)
+  (match (map-try-ref m key)
+    (None (Ok fallback))
+    ((Some JsonNull) (Ok fallback))
+    ((Some j)
+     (match (json-> j)
+       ((Err e) (Err (str owner "." key ": " e)))
+       ((Ok v) (Ok v))))))
+
+;; ---------------------------------------------------------------------------
+;; The generator
+;; ---------------------------------------------------------------------------
+;; This is a runtime macro. Field types are never inspected: what a field encodes as is
+;; settled later by instance resolution, and only the markers are read here.
+
+(: jt-sym (-> string Syntax))
+(defun (jt-sym name) (SSym (string->symbol name)))
+
+(: jt-str (-> Syntax Syntax))
+(defun (jt-str s) (SStr (syntax->string s)))
+
+;; `(Box %a)` names the type `Box`; a bare `Point` names itself.
+(: jt-head-name (-> Syntax Syntax))
+(defun (jt-head-name head)
+  (match head
+    ((SList parts) (list-head parts))
+    (_ head)))
+
+(: jt-head-vars (-> Syntax (List Syntax)))
+(defun (jt-head-vars head)
+  (match head
+    ((SList parts) (list-tail parts))
+    (_ Nil)))
+
+
+(: jt-where-enc (-> (-> Symbol Syntax) Syntax (List Syntax)))
+(defun (jt-where-enc inject head)
+  (let ((vars (jt-head-vars head)))
+    (if (list-empty? vars)
+        Nil
+        (list #'(,(inject 'where)
+                 ,@(list-map (fun (v) #'(,(inject (string->symbol "->json")) ,v)) vars))))))
+
+(: jt-where-dec (-> (-> Symbol Syntax) Syntax (List Syntax)))
+(defun (jt-where-dec inject head)
+  (let ((vars (jt-head-vars head)))
+    (if (list-empty? vars)
+        Nil
+        (list #'(,(inject 'where)
+                 ,@(list-map (fun (v) #'(,(inject (string->symbol "json->")) ,v)) vars))))))
+
+;; --- fields ----------------------------------------------------------------
+
+(: jt-marker=? (-> Syntax string bool))
+(defun (jt-marker=? m name) (= (syntax->string m) name))
+
+;; The JSON key: `#:json "name"` means it uses the "name" as the key for the field
+;; instead of the defined name
+(: jt-key (-> Syntax (List Syntax) Syntax))
+(defun (jt-key name markers)
+  (let go ((ms markers))
+    (if (list-empty? ms)
+        (jt-str name)
+        (if (jt-marker=? (list-head ms) "#:json")
+            (list-head (list-tail ms))
+            (go (list-tail ms))))))
+
+;; The fallback expression, or None if the field is required. `#:optional` is
+;; `#:default None`.
+(: jt-fallback (-> (List Syntax) (Option Syntax)))
+(defun (jt-fallback markers)
+  (let go ((ms markers))
+    (if (list-empty? ms)
+        None
+        (let ((m (list-head ms)))
+          (cond
+            ((jt-marker=? m "#:optional") (Some (jt-sym "None")))
+            ((jt-marker=? m "#:default") (Some (list-head (list-tail ms))))
+            (else (go (list-tail ms))))))))
+
+;; strip json markers (default, json, optional)
+(: jt-keep (-> (List Syntax) (List Syntax)))
+(defun (jt-keep markers)
+  (let go ((ms markers))
+    (if (list-empty? ms)
+        Nil
+        (let ((m (list-head ms)))
+          (cond
+            ((jt-marker=? m "#:default") (go (list-tail (list-tail ms))))
+            ((jt-marker=? m "#:json") (go (list-tail (list-tail ms))))
+            ((jt-marker=? m "#:optional") (go (list-tail ms)))
+            (else (Cons m (go (list-tail ms)))))))))
+
+(: jt-shape string)
+(def jt-shape
+  "a field is written (: name type), then any of #:mutable, #:optional, #:default <expr>, #:json \"key\".")
+
+;; `syntax-error` has the type Syntax, so this is how we work around it.
+(: jt-fail-list (-> Syntax string (List Syntax)))
+(defun (jt-fail-list form message)
+  (ignore (syntax-error form message))
+  Nil)
+
+(: jt-field-name (-> Syntax Syntax))
+(defun (jt-field-name f)
+  (syntax-match f
+    ((_ name _ marker ...) name)
+    (bad (syntax-error bad jt-shape))))
+
+(: jt-field-markers (-> Syntax (List Syntax)))
+(defun (jt-field-markers f)
+  (syntax-match f
+    ((_ _ _ marker ...) marker)
+    (bad (jt-fail-list bad jt-shape))))
+
+(: jt-strip (-> Syntax Syntax))
+(defun (jt-strip f)
+  (syntax-match f
+    ((colon name ty marker ...) #'(,colon ,name ,ty ,@(jt-keep marker)))
+    (bad (syntax-error bad jt-shape))))
+
+;; --- encode ----------------------------------------------------------------
+
+;; An optional field is dropped when it is None; everything else is written.
+(: jt-put (-> Syntax Syntax Syntax))
+(defun (jt-put buf f)
+  (let ((name (jt-field-name f))
+        (markers (jt-field-markers f)))
+    (let ((write #'(transientmap-set! ,buf ,(jt-key name markers) (->json (record-ref v ,name)))))
+      (if (jt-optional? markers)
+          #'(when (some? (record-ref v ,name)) ,write)
+          write))))
+
+(: jt-optional? (-> (List Syntax) bool))
+(defun (jt-optional? markers)
+  (let go ((ms markers))
+    (if (list-empty? ms)
+        #f
+        (if (jt-marker=? (list-head ms) "#:optional")
+            #t
+            (go (list-tail ms))))))
+
+(: jt-encode (-> (List Syntax) Syntax))
+(defun (jt-encode fields)
+  (let ((buf (jt-sym "__jt-buf")))
+    #'(let ((,buf (transientmap-empty)))
+        ,@(list-map (fun (f) (jt-put buf f)) fields)
+        (JsonObj (transientmap->map ,buf)))))
+
+;; --- decode ----------------------------------------------------------------
+
+;; One `match` per field wrapping the next, with the constructor innermost.
+;; Verbose. Macrology.
+(: jt-chain (-> Syntax Syntax (List Syntax) int Syntax Syntax))
+(defun (jt-chain owner m fields i ctor)
+  (if (list-empty? fields)
+      ctor
+      (let ((f (list-head fields)))
+        (let ((v (jt-sym (str "__jt-v" (int->string i))))
+              (e (jt-sym (str "__jt-e" (int->string i))))
+              (name (jt-field-name f)))
+          (let ((markers (jt-field-markers f)))
+            (let ((get (match (jt-fallback markers)
+                         (None #'(json-field ,owner ,m ,(jt-key name markers)))
+                         ((Some d) #'(json-field/default ,owner ,m ,(jt-key name markers) ,d)))))
+              #'(match ,get
+                  ((Err ,e) (Err ,e))
+                  ((Ok ,v) ,(jt-chain owner m (list-tail fields) (+ i 1) ctor)))))))))
+
+(: jt-ctor (-> Syntax (List Syntax) Syntax))
+(defun (jt-ctor head fields)
+  #'(Ok (,(jt-head-name head)
+         ,@(let go ((fs fields) (i 0))
+             (if (list-empty? fs)
+                 Nil
+                 (Cons #'(,(jt-field-name (list-head fs)) ,(jt-sym (str "__jt-v" (int->string i))))
+                       (go (list-tail fs) (+ i 1))))))))
+
+(: jt-decode (-> Syntax (List Syntax) Syntax))
+(defun (jt-decode head fields)
+  (let ((owner (jt-str (jt-head-name head)))
+        (m (jt-sym "__jt-m"))
+        (e (jt-sym "__jt-e")))
+    #'(match (json-object ,owner j)
+        ((Err ,e) (Err ,e))
+        ((Ok ,m) ,(jt-chain owner m fields 0 (jt-ctor head fields))))))
+
+;; --- the form ---------------------------------------------------------------
+
+(: jt-expand (-> (-> Symbol Syntax) Syntax Syntax (List Syntax) Syntax))
+(defun (jt-expand inject colon head fields)
+  (let ((name (syntax->string (jt-head-name head))))
+    (let ((enc (inject (string->symbol (str name "->json"))))
+          (dec (inject (string->symbol (str "json->" name)))))
+      #'(begin
+          (type (,colon ,head (Record ,@(list-map jt-strip fields))))
+
+          (def/impl (->json ,head)
+            ,@(jt-where-enc inject head)
+            (defun (->json v) ,(jt-encode fields)))
+
+          (def/impl (json-> ,head)
+            ,@(jt-where-dec inject head)
+            (defun (json-> j) ,(jt-decode head fields)))
+
+          ;; The named pair. `json->` alone would be ambiguous at a call site;
+          ;; this signature is what fixes the instance, once per type.
+          (: ,enc (-> ,head Json) ,@(jt-where-enc inject head))
+          (defun (,enc v) (->json v))
+          (: ,dec (-> Json (Result string ,head)) ,@(jt-where-dec inject head))
+          (defun (,dec j) (json-> j))))))
+
+(def/macro (def/json-type form inject compare)
+  (syntax-match form
+    ((_ typedef)
+     (syntax-match typedef
+       ((colon head ('Record field ...)) (jt-expand inject colon head field))
+       (bad (syntax-error bad "def/json-type takes a record: (def/json-type (: Name (Record (: field type) ...)))"))))
+    (bad (syntax-error bad "def/json-type takes exactly one record declaration."))))
