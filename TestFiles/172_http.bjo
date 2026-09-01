@@ -1,0 +1,242 @@
+;; `(std http)` against a server on the loopback, both ends written here.
+;;
+;; The server is an `HttpListener` driven by a bjoroutine, which is worth as
+;; much as the client half: it is the same interop surface — properties, a
+;; stream, an `#:async` call — seen from the other side.
+;;
+;; `main` is a plain `defun` on purpose. `fetch` is a `defbjouble`, so the very
+;; same call is a parked thread here and a suspended fiber inside `fetch-lines`
+;; below — the two colours of this module are exercised through one name.
+
+(import (std prelude))
+(import (std ports))
+(import (std simpletest))
+(import (std http))
+
+(import/class
+  (Listener       (: System.Net.HttpListener (-> Listener)))
+  (Prefixes       (: System.Net.HttpListenerPrefixCollection))
+  (Context        (: System.Net.HttpListenerContext))
+  (ServerRequest  (: System.Net.HttpListenerRequest))
+  (ServerResponse (: System.Net.HttpListenerResponse))
+  (NameValues     (: System.Collections.Specialized.NameValueCollection))
+  (Stream         (: System.IO.Stream))
+  (Writer         (: System.IO.StreamWriter (-> Stream Writer)))
+  (Reader         (: System.IO.StreamReader (-> Stream Reader)))
+  (Object         (: System.Object)))
+
+(import/extern
+  (listener-prefixes (: System.Net.HttpListener.Prefixes (-> Listener Prefixes) #:get))
+  (prefix-add!       (: System.Net.HttpListenerPrefixCollection.Add (-> Prefixes string void)))
+  (prefix-clear!     (: System.Net.HttpListenerPrefixCollection.Clear (-> Prefixes void)))
+  (listener-start    (: System.Net.HttpListener.Start (-> Listener void)
+                        #:exceptions (System.Net.HttpListenerException)))
+  (listener-close    (: System.Net.HttpListener.Close (-> Listener void)))
+  ;; No CancellationToken overload exists, so say so.
+  (next-context      (: System.Net.HttpListener.GetContextAsync (-> Listener Context)
+                        #:async #:uncancellable))
+  (context-request   (: System.Net.HttpListenerContext.Request (-> Context ServerRequest) #:get))
+  (context-response  (: System.Net.HttpListenerContext.Response (-> Context ServerResponse) #:get))
+  (request-path      (: System.Net.HttpListenerRequest.RawUrl (-> ServerRequest string) #:get))
+  (request-verb      (: System.Net.HttpListenerRequest.HttpMethod (-> ServerRequest string) #:get))
+  (request-stream    (: System.Net.HttpListenerRequest.InputStream (-> ServerRequest Stream) #:get))
+  (request-headers   (: System.Net.HttpListenerRequest.Headers (-> ServerRequest NameValues) #:get))
+  (name-value        (: System.Collections.Specialized.NameValueCollection.Get
+                        (-> NameValues string string)))
+  (reply-status!     (: System.Net.HttpListenerResponse.StatusCode (-> ServerResponse int void) #:set))
+  (reply-header!     (: System.Net.HttpListenerResponse.AddHeader (-> ServerResponse string string void)))
+  (reply-stream      (: System.Net.HttpListenerResponse.OutputStream (-> ServerResponse Stream) #:get))
+  (reply-done!       (: System.Net.HttpListenerResponse.Close (-> ServerResponse void)))
+  (sleep             (: System.Threading.Tasks.Task.Delay (-> int void) #:async)))
+
+;; The server side has nulls too: a header that was not sent.
+(: header-or-empty (-> ServerRequest string string))
+(defun (header-or-empty req name)
+  (match (cast Object (name-value (request-headers req) name))
+    ((:is System.String value) value)
+    (_ "")))
+
+(: request-body (-> ServerRequest string))
+(defun (request-body req)
+  (read-all (cast TextInputPort (Reader. (request-stream req)))))
+
+
+;; ---------------------------------------------------------------------------
+;; The server
+;; ---------------------------------------------------------------------------
+
+;; Writing to a client that has gone away raises, which is exactly what the
+;; cancellation test makes happen — so the write is guarded and the loop
+;; carries on rather than taking the rest of the suite down with it.
+(: respond! (-> ServerResponse int string void))
+(defun (respond! resp code body)
+  (match (try (let ()
+                (reply-status! resp code)
+                (reply-header! resp "X-Fruit" "banana")
+                (reply-header! resp "Content-Type" "text/plain; charset=utf-8")
+                (let ((out (Writer. (reply-stream resp))))
+                  (.Write out body)
+                  (.Flush out)
+                  (.Dispose out))
+                (reply-done! resp))
+              #:catch (System.Exception))
+    ((Ok written) unit)
+    ((Err e) unit)))
+
+(: serve (-bjo-> Listener int void))
+(defbjo (serve listener remaining)
+  (when (> remaining 0)
+    (let* ((ctx (next-context listener))
+           (req (context-request ctx))
+           (resp (context-response ctx))
+           (path (request-path req))
+           (verb (request-verb req)))
+      (cond
+        ((string-starts-with? path "/hello") (respond! resp 200 "hello, bjolang"))
+        ((string-starts-with? path "/missing") (respond! resp 404 "no such fruit"))
+        ((string-starts-with? path "/query") (respond! resp 200 path))
+        ((string-starts-with? path "/lines") (respond! resp 200 "one\ntwo\nthree"))
+        ((string-starts-with? path "/echo")
+         (respond! resp 200 (str verb " " (request-body req)
+                                 " basket=" (header-or-empty req "X-Basket")
+                                 " type=" (header-or-empty req "Content-Type"))))
+        ;; Long enough that the client's 300ms branch always wins.
+        ((string-starts-with? path "/slow")
+         (sleep 4000)
+         (respond! resp 200 "eventually"))
+        (else (respond! resp 500 "unknown path")))
+      (serve listener (- remaining 1)))))
+
+;; A free port, found by asking. Nothing else in the suite listens, but a
+;; developer's machine might.
+(: listen-on (-> Listener int int (Option int)))
+(defun (listen-on listener port tries)
+  (if (= tries 0)
+      None
+      (let ()
+        (prefix-clear! (listener-prefixes listener))
+        (prefix-add! (listener-prefixes listener) (str "http://127.0.0.1:" (int->string port) "/"))
+        (match (listener-start listener)
+          ((Ok listening) (Some port))
+          ((Err e) (listen-on listener (+ port 1) (- tries 1)))))))
+
+
+;; ---------------------------------------------------------------------------
+;; The suspending half
+;; ---------------------------------------------------------------------------
+
+;; A body read as lines, from a fiber. Nothing here names a colour: `fetch` and
+;; `read-line` both pick their awaiting copy because this is a `defbjo`, and
+;; the source is the same as the blocking calls in `main`.
+(: fetch-lines (-bjo-> string (Vec string)))
+(defbjo (fetch-lines url)
+  (match (fetch (get url))
+    ((Err e) (vec-empty))
+    ((Ok r)
+     (let ((lines (port->vec read-line (response-port r))))
+       (response-close r)
+       lines))))
+
+(type (: Race (Union (Answered (Result Exception Response)) TimedOut)))
+
+;; A request as a losing branch. The timeout wins, the request is withdrawn,
+;; and its token is cancelled — the server is left writing into a socket that
+;; nobody is reading, which `respond!` above survives.
+(: race-slow (-bjo-> string string))
+(defbjo (race-slow url)
+  (match (sync (choose (wrap (fetching (get url)) (fun (answer) (Answered answer)))
+                       (wrap (timeout 300) (fun (fired) TimedOut))))
+    ((Answered outcome)
+     (match outcome
+       ((Ok r) (let () (response-close r) "answered"))
+       ((Err e) "failed")))
+    (TimedOut "timed out")))
+
+
+(defun (main args)
+  (def listener (Listener.))
+
+  (match (listen-on listener 8497 20)
+    (None (fail "no free port to listen on") 1)
+    ((Some port)
+     ;; Eight requests reach the server below. The fiber is detached: nothing
+     ;; joins it, and `Discard`'s impl for a promise is what says so.
+     (ignore (bjo (serve listener 8)))
+
+     (let ((base (str "http://127.0.0.1:" (int->string port))))
+
+       ;; --- A GET, from an ordinary function ------------------------------
+       (match (fetch (get (str base "/hello")))
+         ((Err e) (fail "a plain GET failed"))
+         ((Ok r)
+          (expect "a GET comes back 200" (response-status r) 200)
+          (expect "and is ok" (response-ok? r) #t)
+          (expect "and carries its body" (response-text r) "hello, bjolang")
+          (match (response-header r "X-Fruit")
+            ((Some fruit) (expect "a header, looked up case-insensitively" fruit "banana"))
+            (None (fail "no X-Fruit header came back")))
+          (response-close r)))
+
+       ;; --- A 404 is a value ------------------------------------------------
+       ;;
+       ;; `EnsureSuccessStatusCode` is not imported anywhere in `std/http`, and
+       ;; this is the test that says so: a 404 is an `Ok` holding a 404.
+       (match (fetch (get (str base "/missing")))
+         ((Err e) (fail "a 404 arrived as an Err"))
+         ((Ok r)
+          (expect "404 is a value, not a failure" (response-status r) 404)
+          (expect "and is not ok" (response-ok? r) #f)
+          ;; The `Discard` impl closes it. Dropping it without a word would be
+          ;; a compile error.
+          (ignore r)))
+
+       ;; --- Query parameters are escaped ------------------------------------
+       (match (fetch (get (str base "/query") #:query [("q" . "banana split") ("n" . "2")]))
+         ((Err e) (fail "a query GET failed"))
+         ((Ok r)
+          (expect "query parameters are escaped and joined"
+                  (response-text r) "/query?q=banana%20split&n=2")
+          (response-close r)))
+
+       ;; --- A POST, with a body and a header on each end ---------------------
+       ;;
+       ;; `X-Basket` belongs on the request and `Content-Type` on the content,
+       ;; and the caller writes both in the same vector.
+       (match (fetch (post (str base "/echo") (Text "bananas")
+                           #:headers [("X-Basket" . "full")]))
+         ((Err e) (fail "a POST failed"))
+         ((Ok r)
+          (expect "a body and both kinds of header arrive"
+                  (response-text r)
+                  "POST bananas basket=full type=text/plain; charset=utf-8")
+          (response-close r)))
+
+       ;; --- The body as a port, from a bjoroutine ---------------------------
+       (match (sync/blocking (promise-join (bjo (fetch-lines (str base "/lines")))))
+         ((Err e) (fail "the streaming fiber failed"))
+         ((Ok lines)
+          (expect "the body reads as lines through std/ports"
+                  (string-join lines "|") "one|two|three")))
+
+       ;; --- with-response ---------------------------------------------------
+       (with-response (r (fetch (get (str base "/hello"))))
+         (match r
+           ((Err e) (fail "with-response could not fetch"))
+           ((Ok got) (expect "with-response hands the body its response"
+                             (response-status got) 200))))
+
+       ;; --- A url that is not http ------------------------------------------
+       ;;
+       ;; Refused before anything is sent, which is why it does not count
+       ;; against the server's eight.
+       (match (fetch (get "ftp://example.com/fruit"))
+         ((Ok r) (fail "an ftp url was accepted") (ignore r))
+         ((Err e) (expect-true "a non-http url is refused as a value" #t)))
+
+       ;; --- Losing a choose --------------------------------------------------
+       (expect "a request that loses a choose leaves the timeout to win"
+               (sync/blocking (promise-join (bjo (race-slow (str base "/slow")))))
+               (Ok "timed out"))
+
+       (listener-close listener)
+       0))))

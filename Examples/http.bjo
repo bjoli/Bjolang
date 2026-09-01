@@ -1,0 +1,85 @@
+;; Fetching a list of urls at the same time.
+(import (std http))
+(import (std stopwatch))
+(import (std fmt))
+
+;; 
+(type (: Fetched (Record (: url string) (: status int) (: bytes int))))
+
+;; This defines both a sync and an async copy. Every function that touches bjolang IO
+;; gets this. This fetches one url. If it is called from a sync context, it is blocking
+;; if it is called from a bjoroutine, it is async and suspends.
+(: fetch-one (-> string Fetched))
+(defun (fetch-one url)
+  (match (fetch (get url))
+    ((Err e) (Fetched (url url) (status 0) (bytes 0)))
+    ((Ok r)
+     (let ((body (response-text r)))
+       (response-close r)
+       (Fetched (url url) (status (response-status r)) (bytes (string-length body)))))))
+
+;; One after another.
+(: one-at-a-time (-> (Vec string) (Vec Fetched)))
+(defun (one-at-a-time urls)
+  (loop (:for url urls)
+        (:acc out (vecing (fetch-one url)))))
+
+;; All at once. `bjo` starts a fiber and returns — so by
+;; the time this map is done every request is already on the wire.
+(: start-all (-> (Vec string) (Vec (Promise Fetched))))
+(defun (start-all urls)
+  (vec-map (fun (url) (bjo (fetch-one url))) urls))
+
+;; Collecting *does* suspend. promise-join can only be called in a bjoroutine.
+(: collect (-bjo-> (Vec (Promise Fetched)) (Vec Fetched)))
+(defbjo (collect promises)
+  (loop (:for p promises)
+        (:acc out (vecing (match (sync (promise-join p))
+                            ((Ok f) f)
+                            ((Err e) (Fetched (url "a fiber died") (status 0) (bytes 0))))))))
+
+(: report (-> Fetched void))
+(defun (report f)
+  (let ((url (record-ref f url))
+        (status (record-ref f status))
+        (bytes (record-ref f bytes)))
+    (show [(padded/right 44 [url]) (padded/left 5 [status]) (padded/left 10 [bytes]) nl])))
+
+(: timed (-> Stopwatch string void))
+(defun (timed sw label)
+  (println (str "  " label " " (long->string (stopwatch-ms sw)) "ms"))
+  (println ""))
+
+(: default-urls (Vec string))
+(def default-urls
+  ["https://example.com"
+   "https://www.google.com"
+   "https://www.facebook.com"
+   "https://www.twitter.com"
+   "https://www.rfc-editor.org/rfc/rfc8259.txt"
+   "https://www.iana.org/help/example-domains"
+   "https://httpbin.org/delay/1"])
+
+(defbjo (main args)
+  (def urls (if (= (length args) 0)
+                default-urls
+                (loop (:for a args) (:acc v (vecing a)))))
+
+  (println "one at a time")
+  (def sequential (stopwatch))
+  (stopwatch-start! sequential)
+  (def slowly (one-at-a-time urls))
+  (stopwatch-stop! sequential)
+  (vec-for-each report slowly)
+  (timed sequential "total")
+
+  (println "all at once")
+  (def concurrent (stopwatch))
+  (stopwatch-start! concurrent)
+  ;; The two lines that matter: start everything, then collect.
+  (def started (start-all urls))
+  (def quickly (collect started))
+  (stopwatch-stop! concurrent)
+  (vec-for-each report quickly)
+  (timed concurrent "total")
+  0)

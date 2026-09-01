@@ -35,6 +35,10 @@ echo "Building standard library..."
 # own, and the default load context serves whichever identity loaded first.
 # Rebuild the compiler after the runtime, then run this.
 ./bjor --lib lib/std/run.bjo
+# `http` imports `prelude` and `syntax-match`, the latter for `with-response`.
+# It binds nothing out of the runtime assembly — it is System.Net.Http all the
+# way down — so unlike `run` it does not care when the runtime was last built.
+./bjor --lib lib/std/http.bjo
 # `simpletest` likewise. It is what the suite's assertions are written in, so
 # it is built with the library rather than beside the tests: a test file is an
 # ordinary program, and this is an ordinary module it imports.

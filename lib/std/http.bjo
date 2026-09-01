@@ -1,0 +1,480 @@
+;; std/http.bjo — HTTP requests.
+;;
+;; A wrapper over System.Net.Http
+;; 
+;; Two things are deliberately not what .NET does. A status code is a value,
+;; never an exception — `EnsureSuccessStatusCode` is not imported and 404 is
+;; not a failure. And `HttpClient.Timeout` is switched off, because a deadline
+;; belongs to the CML system bjolang uses.
+
+(export
+  ;; The types
+  Method Body Custom Pair Request Response Client
+
+  ;; Writing a request
+  request get post
+
+  ;; Sending one
+  fetch fetching
+
+  ;; Reading the answer
+  response-status response-ok? response-reason
+  response-header response-headers
+  response-text response-port response-close
+
+  ;; Scoped
+  with-response
+
+  ;; The client
+  make-client current-http-client)
+
+(import (std prelude))
+(import (std syntax-match))
+
+
+;; ===========================================================================
+;; Interop
+;; ===========================================================================
+
+(import/class
+  (SocketsHandler (: System.Net.Http.SocketsHttpHandler (-> SocketsHandler)))
+  (MessageHandler (: System.Net.Http.HttpMessageHandler))
+  (Client         (: System.Net.Http.HttpClient (-> MessageHandler Client)))
+  (Verb           (: System.Net.Http.HttpMethod (-> string Verb)))
+  (Message        (: System.Net.Http.HttpRequestMessage (-> Verb Url Message)))
+  (Reply          (: System.Net.Http.HttpResponseMessage))
+  (Content        (: System.Net.Http.HttpContent))
+  (StringContent  (: System.Net.Http.StringContent (-> string Encoding StringContent)))
+  (Headers        (: System.Net.Http.Headers.HttpHeaders))
+  (RequestHeaders (: System.Net.Http.Headers.HttpRequestHeaders))
+  (ReplyHeaders   (: System.Net.Http.Headers.HttpResponseHeaders))
+  (ContentHeaders (: System.Net.Http.Headers.HttpContentHeaders))
+  (Completion     (: System.Net.Http.HttpCompletionOption))
+  (StatusCode     (: System.Net.HttpStatusCode))
+  (Decompression  (: System.Net.DecompressionMethods))
+  (Encoding       (: System.Text.Encoding))
+  (Span           (: System.TimeSpan))
+  (Stream         (: System.IO.Stream))
+  (Reader         (: System.IO.StreamReader (-> Stream Encoding Reader)))
+  (Buffered       (: Bjolang.Runtime.BjoPort (-> TextInputPort Buffered)))
+  (Url            (: System.Uri (-> string Url) #:exceptions (System.UriFormatException)))
+  (Failure        (: System.Net.Http.HttpRequestException (-> string Failure)))
+  (Object         (: System.Object))
+  ;; How .NET hands over a header collection: one name, several values.
+  ((Pairing %k %v) (: System.Collections.Generic.KeyValuePair)))
+
+(import/extern
+  ;; Enum values and other statics.
+  (headers-read   (: System.Net.Http.HttpCompletionOption.ResponseHeadersRead #:get))
+  (decompress-all (: System.Net.DecompressionMethods.All #:get))
+  (no-timeout     (: System.Threading.Timeout.InfiniteTimeSpan #:get))
+  (utf8           (: System.Text.Encoding.UTF8 #:get))
+  (seconds        (: System.TimeSpan.FromSeconds (-> double Span)))
+  (escape         (: System.Uri.EscapeDataString (-> string string)))
+  (encoding-named (: System.Text.Encoding.GetEncoding (-> string Encoding)
+                     #:exceptions (System.ArgumentException)))
+
+  ;; The client and the handler under it.
+  (handler-lifetime!   (: System.Net.Http.SocketsHttpHandler.PooledConnectionLifetime
+                          (-> SocketsHandler Span void) #:set))
+  (handler-decompress! (: System.Net.Http.SocketsHttpHandler.AutomaticDecompression
+                          (-> SocketsHandler Decompression void) #:set))
+  (handler-redirects!  (: System.Net.Http.SocketsHttpHandler.AllowAutoRedirect
+                          (-> SocketsHandler bool void) #:set))
+  (client-timeout!     (: System.Net.Http.HttpClient.Timeout (-> Client Span void) #:set))
+
+  ;; The call. Declared with two arguments after the receiver, so the overload
+  ;; taking a third — the CancellationToken — is the one selected, and the
+  ;; ambient token is filled in at the call site.
+  (send (: System.Net.Http.HttpClient.SendAsync (-> Client Message Completion Reply) #:async))
+
+  ;; Building a request.
+  (url-scheme       (: System.Uri.Scheme (-> Url string) #:get))
+  (message-headers  (: System.Net.Http.HttpRequestMessage.Headers (-> Message RequestHeaders) #:get))
+  (message-content! (: System.Net.Http.HttpRequestMessage.Content (-> Message Content void) #:set))
+  (content-headers  (: System.Net.Http.HttpContent.Headers (-> Content ContentHeaders) #:get))
+  (header-add!      (: System.Net.Http.Headers.HttpHeaders.TryAddWithoutValidation
+                       (-> Headers string string bool)))
+  (header-remove!   (: System.Net.Http.Headers.HttpHeaders.Remove (-> Headers string bool)))
+
+  ;; Reading a reply.
+  (reply-status   (: System.Net.Http.HttpResponseMessage.StatusCode (-> Reply StatusCode) #:get))
+  (reply-reason   (: System.Net.Http.HttpResponseMessage.ReasonPhrase (-> Reply string) #:get))
+  (reply-headers  (: System.Net.Http.HttpResponseMessage.Headers (-> Reply ReplyHeaders) #:get))
+  (reply-content  (: System.Net.Http.HttpResponseMessage.Content (-> Reply Content) #:get))
+
+  ;; The body, both ways. A `defbjouble` pair: the synchronous one parks a
+  ;; thread, which is right for a plain `defun`, and the other suspends.
+  (clr-stream       (: System.Net.Http.HttpContent.ReadAsStream (-> Content Stream)))
+  (clr-stream-await (: System.Net.Http.HttpContent.ReadAsStreamAsync (-> Content Stream) #:async)))
+
+;; Nothing in the language builds an `Exception`, and every rejection below is
+;; this module's own rather than .NET's.
+(: http-error (-> string Exception))
+(defun (http-error message)
+  (cast Exception (Failure. message)))
+
+;; .NET says null where it has nothing: a reason phrase over HTTP/2, a header
+;; that is not there. C#'s `is` answers false for null, so a type test is a
+;; null check that needs no null.
+(: text-or-empty (-> string string))
+(defun (text-or-empty s)
+  (match (cast Object s)
+    ((:is System.String text) text)
+    (_ "")))
+
+
+;; ===========================================================================
+;; The client
+;; ===========================================================================
+
+;; One handler, one client, and a connection that does not live forever: a
+;; pooled connection outlives DNS, so a client that never recycles keeps
+;; talking to an address that stopped being right.
+(: make-client (-> (#:connection-seconds double) (#:redirects bool) Client))
+(defun (make-client #:connection-seconds 120.0 #:redirects #t)
+  (let ((handler (SocketsHandler.)))
+    (handler-lifetime! handler (seconds connection-seconds))
+    (handler-decompress! handler decompress-all)
+    (handler-redirects! handler redirects)
+    (let ((client (Client. (cast MessageHandler handler))))
+      ;; Off, on purpose. It applies to every call made through the client,
+      ;; cannot be varied per request, and arrives as a cancellation that
+      ;; cannot be told from a real one. Race a `(timeout ms)` instead.
+      (client-timeout! client no-timeout)
+      client)))
+
+;; Parameterize another one in for a proxy, a test double or a second set of
+;; connection settings.
+(: current-http-client (Param Client))
+(def current-http-client (make-parameter (make-client)))
+
+
+;; ===========================================================================
+;; What you write
+;; ===========================================================================
+
+;; A name and a value: a header, a query parameter or a form field. Written
+;; `("Accept" . "application/json")`.
+(type (: Pair (Alias (Tuple string string))))
+
+(type (: Method (Enum GET POST PUT PATCH DELETE HEAD)))
+
+;; A body .NET has no name for: your own content type, your own text.
+(type (: Custom (Record (: content-type string) (: text string))))
+
+(type (: Body (Union Empty
+                     (Text string)
+                     ;; Already serialized: there is no JSON writer to call yet,
+                     ;; and inventing one here would be the wrong module. Named
+                     ;; `JsonText` rather than `Json` because `(text json)`
+                     (JsonText string)
+                     (Form (Vec Pair))
+                     (Other Custom))))
+
+(type (: Request (Record (: method Method)
+                         (: url string)
+                         (: query (Vec Pair))
+                         (: headers (Vec Pair))
+                         (: body Body))))
+
+(: request (-> Method string (#:query (Vec Pair)) (#:headers (Vec Pair)) (#:body Body) Request))
+(defun (request method url #:query (vec-empty) #:headers (vec-empty) #:body Empty)
+  (Request (method method) (url url) (query query) (headers headers) (body body)))
+
+(: get (-> string (#:query (Vec Pair)) (#:headers (Vec Pair)) Request))
+(defun (get url #:query (vec-empty) #:headers (vec-empty))
+  (request GET url #:query query #:headers headers))
+
+(: post (-> string Body (#:query (Vec Pair)) (#:headers (Vec Pair)) Request))
+(defun (post url body #:query (vec-empty) #:headers (vec-empty))
+  (request POST url #:query query #:headers headers #:body body))
+
+(: method-name (-> Method string))
+(defun (method-name m)
+  (match m
+    (GET "GET")
+    (POST "POST")
+    (PUT "PUT")
+    (PATCH "PATCH")
+    (DELETE "DELETE")
+    (HEAD "HEAD")))
+
+
+;; ===========================================================================
+;; Turning one into an HttpRequestMessage
+;; ===========================================================================
+
+(: encode-pair (-> Pair string))
+(defun (encode-pair pair)
+  (match pair
+    ((Tuple name value) (str (escape name) "=" (escape value)))))
+
+(: encode-pairs (-> (Vec Pair) string))
+(defun (encode-pairs pairs)
+  (string-join (vec-map encode-pair pairs) "&"))
+
+(: full-url (-> Request string))
+(defun (full-url req)
+  (let ((base (record-ref req url))
+        (query (record-ref req query)))
+    (if (empty? query)
+        base
+        ;; A url may already carry a query, in which case ours is more of it.
+        (str base (if (string-contains? base "?") "&" "?") (encode-pairs query)))))
+
+;; Attaches a body. Helper function for the header functions below
+(: attach-body! (-> Message Body (Option Content)))
+(defun (attach-body! message body)
+  (match body
+    (Empty None)
+    ((Text text) (Some (attach! message text "text/plain; charset=utf-8")))
+    ((JsonText text) (Some (attach! message text "application/json; charset=utf-8")))
+    ((Form fields) (Some (attach! message (encode-pairs fields)
+                                  "application/x-www-form-urlencoded")))
+    ((Other custom) (Some (attach! message
+                                   (record-ref custom text)
+                                   (record-ref custom content-type))))))
+
+(: attach! (-> Message string string Content))
+(defun (attach! message text content-type)
+  (let ((content (cast Content (StringContent. text utf8))))
+    (message-content! message content)
+    ;; StringContent has already put `text/plain` there.
+    (ignore (header-remove! (cast Headers (content-headers content)) "Content-Type"))
+    (ignore (header-add! (cast Headers (content-headers content)) "Content-Type" content-type))
+    content))
+
+;; Which end of the request a header belongs on is .NET's business, not the
+;; caller's: `Accept` goes on the request and `Content-Type` on the content.
+;; `TryAddWithoutValidation` returning false is how it says "the other one".
+(: add-header! (-> Message (Option Content) Pair (Result Exception Unit)))
+(defun (add-header! message content pair)
+  (match pair
+    ((Tuple name value)
+     (if (header-add! (cast Headers (message-headers message)) name value)
+         (Ok unit)
+         (match content
+           (None (Err (http-error
+                       (str "'" name "' is a header about a body, and this request has none"))))
+           ((Some body)
+            ;; Remove first, or the content type set above is sent twice.
+            (ignore (header-remove! (cast Headers (content-headers body)) name))
+            (if (header-add! (cast Headers (content-headers body)) name value)
+                (Ok unit)
+                (Err (http-error (str "not a usable header name: " name))))))))))
+
+(: add-headers! (-> Message (Option Content) (Vec Pair) (Result Exception Unit)))
+(defun (add-headers! message content headers)
+  (loop (:for pair headers)
+        (:acc outcome (folding (Ok unit)
+                               (match outcome
+                                 ((Err e) (Err e))
+                                 ((Ok done) (add-header! message content pair)))))))
+
+(: web-url? (-> Url bool))
+(defun (web-url? url)
+  (let ((scheme (url-scheme url)))
+    (or (= scheme "http") (= scheme "https"))))
+
+(: message-of (-> Request (Result Exception Message)))
+(defun (message-of req)
+  (match (Url. (full-url req))
+    ((Err e) (Err (http-error (str "not a url: " (record-ref req url)))))
+    ((Ok url)
+     ;; `new Uri` is happy with `file:///etc/passwd`, which is not something an
+     ;; HTTP library should be sending anywhere.
+     (if (not (web-url? url))
+         (Err (http-error (str "not an http or https url: " (record-ref req url))))
+         (let* ((message (Message. (Verb. (method-name (record-ref req method))) url))
+                (content (attach-body! message (record-ref req body))))
+           (match (add-headers! message content (record-ref req headers))
+             ((Err e) (Err e))
+             ((Ok added) (Ok message))))))))
+
+
+;; ===========================================================================
+;; The answer
+;; ===========================================================================
+
+;; Opaque: the CLR reply inside owns a live connection, and handing it out
+;; would make closing it somebody else's problem by accident.
+(type
+  (: Response #:opaque
+     (Record (: status int)
+             (: reason string)
+             (: headers (Map string string))
+             (: raw Reply))))
+
+(: join-values (-> (Seq string) string))
+(defun (join-values values)
+  (string-join (loop (:for value values) (:acc all (vecing value))) ", "))
+
+;; Makes both headers and into  lower-cased, folded with ", ". Header names are
+;; case-insensitive on the wire 
+;;
+;; Set-Cookie is the exception the RFC makes and this does not: folded cookies
+;; cannot be taken apart again. When something here reads cookies it needs a
+;; call of its own.
+(: collect-headers (-> (Seq (Pairing string (Seq string))) (Map string string) (Map string string)))
+(defun (collect-headers headers into)
+  (loop (:for header headers)
+        (:acc all (folding into
+                           (map-set all
+                                    (string-downcase (.-Key header))
+                                    (join-values (.-Value header)))))))
+
+(: response-of (-> Reply Response))
+(defun (response-of raw)
+  (Response (status (cast int (reply-status raw)))
+            (reason (text-or-empty (reply-reason raw)))
+            (headers (collect-headers
+                      (cast (Seq (Pairing string (Seq string))) (content-headers (reply-content raw)))
+                      (collect-headers
+                       (cast (Seq (Pairing string (Seq string))) (reply-headers raw))
+                       (map-empty))))
+            (raw raw)))
+
+(: response-status (-> Response int))
+(defun (response-status r) (record-ref r status))
+
+;; 2xx. Nothing here throws on a 404: which codes are failures is the caller's
+;; business, and plenty of them are not.
+(: response-ok? (-> Response bool))
+(defun (response-ok? r)
+  (let ((code (record-ref r status)))
+    (and (>= code 200) (< code 300))))
+
+;; Empty over HTTP/2, which has no reason phrase. Do not parse it.
+(: response-reason (-> Response string))
+(defun (response-reason r) (record-ref r reason))
+
+(: response-headers (-> Response (Map string string)))
+(defun (response-headers r) (record-ref r headers))
+
+;; The name is lower-cased for you, so "Content-Type" and "content-type"
+;; find the same header.
+(: response-header (-> Response string (Option string)))
+(defun (response-header r name)
+  (map-try-ref (record-ref r headers) (string-downcase name)))
+
+
+;; ===========================================================================
+;; The body
+;; ===========================================================================
+
+(: body-stream (-> Content Stream))
+(defbjouble (body-stream content)
+  (#:sync (clr-stream content))
+  (#:bjo  (clr-stream-await content)))
+
+;; What the server said the body was encoded as. UTF-8 when it said nothing,
+;; when it said something we do not have, or when it said something silly:
+;; being wrong about the encoding beats refusing to read the body.
+(: charset-of (-> Response Encoding))
+(defun (charset-of r)
+  (match (response-header r "content-type")
+    (None utf8)
+    ((Some content-type)
+     (match (charset-name content-type)
+       (None utf8)
+       ((Some name)
+        (match (encoding-named name)
+          ((Ok found) found)
+          ((Err e) utf8)))))))
+
+(: charset-name (-> string (Option string)))
+(defun (charset-name content-type)
+  (loop (:for part (string-split content-type ";"))
+        (:acc found (folding None
+                             (let ((trimmed (string-trim part)))
+                               (if (string-starts-with? (string-downcase trimmed) "charset=")
+                                   (Some (strip-quotes (string-trim (substring-after trimmed "="))))
+                                   found))))))
+
+(: substring-after (-> string string string))
+(defun (substring-after s sep)
+  (let ((parts (string-split s sep)))
+    (if (< (length parts) 2)
+        ""
+        (vec-ref parts 1))))
+
+;; charset="utf-8" is as legal as charset=utf-8, and an encoding name has
+;; no quotes of its own to protect.
+(: strip-quotes (-> string string))
+(defun (strip-quotes s)
+  (string-replace s "\"" ""))
+
+;; The body as a port, so that `read-line`, `port->seq`, `port->chan` and
+;; `read-json` all work on it. Reading suspends inside a bjoroutine and blocks
+;; outside one, exactly as reading a file does.
+(: response-port (-> Response TextInputPort))
+(defun (response-port r)
+  (let ((body (reply-content (record-ref r raw))))
+    (cast TextInputPort
+          (Buffered. (cast TextInputPort (Reader. (body-stream body) (charset-of r)))))))
+
+(: response-text (-> Response string))
+(defun (response-text r)
+  (read-all (response-port r)))
+
+;; A response holds a connection until it is closed. `ignore` does this, so a
+;; response dropped in statement position releases it rather than leaking it.
+(: response-close (-> Response void))
+(defun (response-close r)
+  (.Dispose (record-ref r raw)))
+
+(def/impl (Discard Response)
+  (defun (ignore r) (response-close r)))
+
+
+;; ===========================================================================
+;; Sending one
+;; ===========================================================================
+
+;; The request as an event: nothing is sent until the branch is reached, and a
+;; branch that loses cancels the request it started.
+;;
+;; `guard` is not decoration. An `HttpRequestMessage` may be sent once, and an
+;; event may be synced any number of times — every retry, every losing branch
+;; that is tried again. Building the message inside the generator is what makes
+;; the second sync work.
+(: fetching (-> Request (Event (Result Exception Response))))
+(defun (fetching req)
+  (guard
+   (fun ()
+     (match (message-of req)
+       ((Err e) (always (Err e)))
+       ((Ok message)
+        (wrap (task->event (send (parameter-ref current-http-client) message headers-read))
+              (fun (outcome)
+                (match outcome
+                  ((Ok raw) (Ok (response-of raw)))
+                  ((Err e) (Err e))))))))))
+
+;; Send it and wait for the answer, in whichever colour the caller is.
+(: fetch (-> Request (Result Exception Response)))
+(defbjouble (fetch req)
+  (#:sync (sync/blocking (fetching req)))
+  (#:bjo  (sync (fetching req))))
+
+
+;; ===========================================================================
+;; Scoped
+;; ===========================================================================
+
+;; `(with-response (r (fetch (get url))) body ...)` — closes the response on
+;; the way out, however the body leaves.
+(def/macro (with-response form inject compare)
+  (syntax-match form
+    ((_ (name spec) first body ...)
+     #'(let ()
+         (def answer ,spec)
+         (try
+           (let ((,name answer))
+             ,first
+             ,@body)
+           #:finally (match answer
+                       ((Ok got) (response-close got))
+                       ((Err failed) unit)))))
+    (bad (syntax-error bad "with-response names a response and takes a body: (with-response (r (fetch (get url))) body ...)"))))

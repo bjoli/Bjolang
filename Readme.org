@@ -67,7 +67,6 @@ And when the waiting has to happen in a plain ~defun~ after all -- a ~main~ that
   0)
 #+end_src
 
-It is the mirror of ~blocking~, which carries a thread-parking call *into* fiber-land; this carries an event *out*. Do not use it from inside a bjoroutine: it would park a pool thread, which is what the events being waited for need in order to fire. Inside a bjoroutine the answer is ~sync~, which is the whole reason there are two.
 
 
 *** Calling .NET async without ever meeting a Task
@@ -455,12 +454,11 @@ The same machinery gives (std run) its shell notation, have a look at [[file:Exa
 * Things to fix/TODO
 
 ** major problems
-module naming is based on filename so (import (std list)) and (import "imports/list.bjo") imports the same module name. 
 
 Trait resolution is based on the head, so a trait on (List int) overwrites the same trait on (List string) if defined after.
 
 ** Problems
-only reading functions can suspend, so writing to a network port may park the thread of a bjoroutine.
+only reading functions can suspend, so writing to a network port may park the thread of a bjoroutine. This is almost a major problem.
 
 pattern matching has no exhaustiveness checking.
 
@@ -525,7 +523,10 @@ data structures:
 - heap with transients
 - mutable collections, defer to the BCL. 
 
-network io by wrapping c# async in events for the cml goodness.
+network io by wrapping c# async in events for the cml goodness. (std http) is
+the first of it: requests as values, a response body as a port, and `fetching`
+as an event that cancels what it started when its branch loses. Written without
+a line of c# — see Docs/std/http.org. Sockets and websockets are still open.
 
 ** Performance things
 Hoist literals. Not just literal lists and vecs, but also symbols and keywords. They have a decently high init cost, since they do a parallel map lookup.

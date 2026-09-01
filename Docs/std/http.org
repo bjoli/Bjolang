@@ -1,0 +1,214 @@
+* std/http — HTTP requests
+
+#+BEGIN_SRC scheme
+(import (std http))
+
+(defun (main args)
+  (match (fetch (get "https://example.com/fruit"))
+    ((Err e) 1)
+    ((Ok r)
+     (println (response-status r))
+     (println (response-text r))
+     (response-close r)
+     0)))
+#+END_SRC
+
+A request is a value you build and then send. Sending it three ways — blocking,
+suspending, or as an event — is the only thing that differs between the entry
+points below.
+
+There is no C# in this module: ~System.Net.Http~ is reached with ~import/extern~
+and the ~#:async~ machinery, and the response body is an ordinary
+~TextInputPort~.
+
+** Types
+
+- ~Pair~ : ~(Tuple string string)~. A header, a query parameter or a form
+  field. Written ~("Accept" . "application/json")~.
+- ~Method~ : ~GET~, ~POST~, ~PUT~, ~PATCH~, ~DELETE~, ~HEAD~.
+- ~Body~ : ~Empty~, ~(Text string)~, ~(JsonText string)~, ~(Form (Vec Pair))~ or
+  ~(Other Custom)~. ~JsonText~ takes text that is *already* serialized, and is
+  spelled that way because ~(text json)~ has a type called ~Json~.
+- ~Custom~ : ~(Record (: content-type string) (: text string))~. A body with a
+  content type of your own.
+- ~Request~ : ~(Record (: method Method) (: url string) (: query (Vec Pair))
+  (: headers (Vec Pair)) (: body Body))~.
+- ~Response~ : opaque. The accessors below are the whole of it.
+- ~Client~ : ~System.Net.Http.HttpClient~.
+
+** Writing a request
+
+- ~(request method url #:query [] #:headers [] #:body Empty)~ : ~Request~.
+- ~(get url #:query [] #:headers [])~ : ~Request~.
+- ~(post url body #:query [] #:headers [])~ : ~Request~.
+
+Query parameters are percent-encoded and appended; a url that already has a
+query gets ~&~ rather than ~?~.
+
+#+BEGIN_SRC scheme
+(get "https://example.com/search"
+     #:query   [("q" . "banana split") ("limit" . "10")]
+     #:headers [("Accept" . "application/json")])
+
+(post "https://example.com/basket"
+      (JsonText "{\"fruit\":\"banana\"}")
+      #:headers [("Authorization" . "Bearer hunter2")])
+
+(post "https://example.com/login" (Form [("user" . "bjoli") ("pass" . "banan")]))
+
+(request PUT "https://example.com/note" #:body (Other (Custom (content-type "text/csv")
+                                                              (text "a,b\n1,2"))))
+#+END_SRC
+
+A header goes on the request or on the body depending on which it is —
+~Accept~ on the one, ~Content-Type~ on the other — and both are written in the
+same vector. Naming a body header on a request with no body is an ~Err~.
+
+** Sending one
+
+- ~(fetch req)~ : ~(Result Exception Response)~. Send it and wait. Colourless:
+  inside a bjoroutine it suspends and the thread goes back to the pool, outside
+  one it parks the calling thread. There is no second name, and a function that
+  calls it needs no colour of its own.
+- ~(fetching req)~ : ~(Event (Result Exception Response))~. Sends nothing until
+  the branch is reached, and cancels the request if the branch loses. This is
+  what to reach for when the request has to be a branch of a ~choose~.
+
+Failure is a value in both. A status code is *not* a failure: 404 is an ~Ok~
+holding a 404.
+
+The ambient cancellation token reaches .NET by itself, so ~with-cancel~ and
+~with-deadline~ stop a request in flight without anything being passed along.
+
+** Reading the answer
+
+- ~(response-status r)~ : ~int~.
+- ~(response-ok? r)~ : ~bool~. 2xx.
+- ~(response-reason r)~ : ~string~. Empty over HTTP/2, which has no reason
+  phrase. Do not parse it.
+- ~(response-header r name)~ : ~(Option string)~. The name is case-insensitive.
+- ~(response-headers r)~ : ~(Map string string)~. Lower-cased names; repeated
+  headers folded with ~", "~.
+- ~(response-text r)~ : ~string~. The whole body.
+- ~(response-port r)~ : ~TextInputPort~. The body as a port. Once per response.
+- ~(response-close r)~ : releases the connection. ~(ignore r)~ does the same.
+
+~response-text~ and ~response-port~ are colourless: reading suspends inside a
+bjoroutine and blocks outside one, exactly as reading a file does.
+
+** Scoped
+
+- ~(with-response (name form) body ...)~ : binds ~name~ to the
+  ~(Result Exception Response)~ that ~form~ produces and closes it on the way
+  out, however the body leaves.
+
+** The client
+
+- ~(make-client #:connection-seconds 120.0 #:redirects #t)~ : ~Client~.
+- ~current-http-client~ : ~(Param Client)~. The one every send uses.
+
+#+BEGIN_SRC scheme
+(parameterize ((current-http-client (make-client #:redirects #f)))
+  (fetch (get "https://example.com/redirects-somewhere")))
+#+END_SRC
+
+** Examples
+
+Streaming a body, a line at a time, without holding it in memory. Nothing here
+names a colour: ~fetch~, ~port-eof?~ and ~read-line~ all suspend because this
+is a ~defbjo~, and the same source blocks in a ~defun~.
+
+#+BEGIN_SRC scheme
+(defbjo (count-lines url)
+  (match (fetch (get url))
+    ((Err e) 0)
+    ((Ok r)
+     (let ((port (response-port r)))
+       (let count ((n 0))
+         (if (port-eof? port)
+             (let () (response-close r) n)
+             (let () (ignore (read-line port)) (count (+ n 1)))))))))
+#+END_SRC
+
+Do not reach for ~port->seq~ here: a ~seq~ body cannot hold an await, so its
+reads park the fiber's thread and the compiler says so. ~port->vec~,
+~port->chan~ and a loop like the one above are the suspending ways to drain a
+port.
+
+A deadline over a whole request, including the body:
+
+#+BEGIN_SRC scheme
+(defun (main args)
+  (with-deadline 5000
+    (match (fetch (get "https://example.com/slow"))
+      ((Ok r) (println (response-text r)) (response-close r) 0)
+      ((Err e) (println "gave up") 1))))
+#+END_SRC
+
+Two mirrors, whichever answers first. The loser's request is cancelled, not
+merely ignored:
+
+#+BEGIN_SRC scheme
+(type (: Answer (Union (Got (Result Exception Response)) TimedOut)))
+
+(defbjo (from-a-mirror)
+  (match (sync (choose (wrap (fetching (get "https://eu.example.com/fruit")) (fun (a) (Got a)))
+                       (wrap (fetching (get "https://us.example.com/fruit")) (fun (a) (Got a)))
+                       (wrap (timeout 2000) (fun (fired) TimedOut))))
+    ((Got (Ok r))  (let ((body (response-text r))) (response-close r) body))
+    ((Got (Err e)) "failed")
+    (TimedOut      "no mirror answered")))
+#+END_SRC
+
+Retrying. ~fetching~ builds a fresh request at every sync, so a retry loop is
+just a loop:
+
+#+BEGIN_SRC scheme
+(defbjo (with-retries req tries)
+  (match (sync (fetching req))
+    ((Ok r) (Ok r))
+    ((Err e) (if (= tries 0)
+                 (Err e)
+                 (let () (sync (timeout 250)) (with-retries req (- tries 1)))))))
+#+END_SRC
+
+JSON, which is two modules rather than one — this one has no serializer and
+does not pretend to:
+
+#+BEGIN_SRC scheme
+(import (text json))
+
+(defbjo (fetch-json url)
+  (match (fetch (get url #:headers [("Accept" . "application/json")]))
+    ((Err e) (Err "the request failed"))
+    ((Ok r)
+     (let ((parsed (read-json (response-port r))))
+       (response-close r)
+       parsed))))
+#+END_SRC
+
+** What to watch out for
+
+- *Close the response, or leak the connection.* It is read as headers only, so
+  it owns a live socket until closed. ~ignore~ closes it, ~with-response~
+  closes it, and dropping it silently is a compile error.
+- *~response-port~ once.* A second call hands out a second reader over a stream
+  the first one is already draining.
+- *A status is not an error.* Nothing here throws on 4xx or 5xx. Check
+  ~response-ok?~ yourself.
+- *Timeouts are yours.* ~HttpClient.Timeout~ is switched off, because it cannot
+  be varied per request and arrives as a cancellation that cannot be told from
+  a real one. Race a ~(timeout ms)~ branch, or use ~with-deadline~.
+- *A request that has to be losable is ~fetching~, not ~fetch~.* ~fetch~ waits
+  for one thing; only an event can be a branch of a ~choose~.
+- *A branch that loses after the headers have arrived leaks that response.* The
+  window is small — losing cancels the token — but the value is dropped where
+  nothing can close it. Do not race a request you cannot afford to lose twice.
+- *Repeated headers are folded with ~", "~.* Which is wrong for ~Set-Cookie~
+  alone, and nothing here reads cookies yet.
+- *UTF-8 is assumed* when the server names no charset, names one that is not
+  installed, or names nonsense.
+- *Bodies are text.* There is no bytes story yet, so an image or a zip has no
+  type to arrive as.
+ or a zip has no
+  type to arrive as.
