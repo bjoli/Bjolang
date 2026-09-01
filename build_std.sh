@@ -56,4 +56,8 @@ echo "Building standard library..."
 # `text/json` imports `prelude` and nothing else.
 ./bjor --lib lib/text/json.bjo
 
+# After `json`, whose `Json` type it names, and after `syntax-match`, which its
+# transformer is written in.
+./bjor --lib lib/text/json-codec.bjo
+
 echo "Standard library built successfully!"
