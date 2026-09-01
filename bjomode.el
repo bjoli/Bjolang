@@ -59,12 +59,17 @@
   '(;; Body only.
     (seq . 0) (letrec . 0) (export . 0) (re-export . 0)
     (import . 0) (import/extern . 0) (import/class . 0)
-    (type . 0) (type-rec . 0) (bjo . 0)
+    (type . 0) (type-rec . 0) (bjo . 0) (begin . 0)
+    ;; Makron biblioteket skriver, som är former för den som skriver bjolang.
+    (cond . 0) (time-it . 0)
     ;; One distinguished form, then the body.
-    (defun . 1) (defbjo . 1) (def . 1) (def/mutable . 1)
+    (defun . 1) (defbjo . 1) (defbjouble . 1) (def . 1) (def/mutable . 1)
     (def/trait . 1) (def/impl . 1) (def/impl/extern . 1) (def/macro . 1)
-    (when . 1) (unless . 1) (match . 1) (try . 1)
-    (with-open . 1) (parameterize . 1) (fun . 1) (record . 1)
+    (type/derive . 1)
+    (when . 1) (unless . 1) (match . 1) (case . 1) (try . 1)
+    (with-open . 1) (parameterize . 1) (parameterize* . 1) (fun . 1)
+    (let* . 1) (syntax-match . 1) (when-let . 1) (if-let . 1)
+    (with-cancel . 1) (with-deadline . 1) (with-response . 1) (with-run . 1)
     ;; The name and the collector, then the body.
     (let/mono . 2)
     ;; Both arms four spaces in, which is what the third distinguished form
@@ -91,18 +96,40 @@ else aligns under its first argument."
   (let ((normal-indent (current-column)))
     (goto-char (1+ (elt state 1)))
     (parse-partial-sexp (point) calculate-lisp-indent-last-sexp 0 t)
-    (if (and (elt state 2)
-             (not (looking-at "\\sw\\|\\s_")))
-        ;; The head is not a symbol — a list, as in ((f x) y) — so there is no
-        ;; rule to look up and the arguments line up under the first one.
-        (progn
-          (unless (> (save-excursion (forward-line 1) (point))
-                     calculate-lisp-indent-last-sexp)
-            (goto-char calculate-lisp-indent-last-sexp)
-            (beginning-of-line)
-            (parse-partial-sexp (point) calculate-lisp-indent-last-sexp 0 t))
-          (backward-prefix-chars)
-          (current-column))
+    (cond
+     ;; En gren med ett nyckelord som huvud har bara kropp, och den dras in två
+     ;; steg. `(#:sync ...)' och `(#:bjo ...)' i en `defbjouble' är formen.
+     ;;
+     ;; `#' är prefixsyntax, så punkten står på `:' här och `:' är en del av en
+     ;; symbol — utan steget bakåt läses grenen som om `:bjo' vore dess huvud.
+     ((and (elt state 2)
+           (save-excursion (backward-prefix-chars) (looking-at "#:")))
+      (lisp-indent-specform 0 state indent-point normal-indent))
+
+     ;; The head is not a symbol — a list, as in ((f x) y) — so there is no
+     ;; rule to look up and the arguments line up under the first one.
+     ;;
+     ;; Det är formen varje `match'- och `case'-gren har: `((Cons h t) ...)'
+     ;; och `((1 2) ...)' har en lista som huvud, och en gren med flera satser
+     ;; radar upp dem under den första. Står ingenting efter huvudet på dess
+     ;; rad finns inget att rada upp under, och då gäller huvudet.
+     ((and (elt state 2)
+           (not (looking-at "\\sw\\|\\s_")))
+      (backward-prefix-chars)
+      (let ((head-column (current-column))
+            (head-line (line-number-at-pos)))
+        (condition-case nil
+            (progn
+              (forward-sexp 1)
+              (skip-chars-forward " \t")
+              (if (and (= head-line (line-number-at-pos))
+                       (not (eolp))
+                       (not (looking-at ";")))
+                  (current-column)
+                head-column))
+          (scan-error head-column))))
+
+     (t
       (let* ((function (buffer-substring (point)
                                          (progn (forward-sexp 1) (point))))
              (method (get (intern-soft function) 'bjo-indent-function)))
@@ -115,30 +142,48 @@ else aligns under its first argument."
          ((integerp method)
           (lisp-indent-specform method state indent-point normal-indent))
          (method
-          (funcall method state indent-point normal-indent)))))))
+          (funcall method state indent-point normal-indent))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Font lock
 
 (defconst bjo-special-forms
-  '("if" "when" "unless" "match" "let" "let/mono" "letrec" "loop" "seq" "seql"
-    "do" "try" "with-open" "parameterize" "fun" "and" "or" "not" "set!"
-    "cast" "record" "record-ref" "record-set!" "yield" "yield-from"
+  '("if" "when" "unless" "match" "case" "else" "let" "let*" "let/mono" "letrec"
+    "loop" "seq" "seql" "do" "begin" "try" "with-open" "fun"
+    "parameterize" "parameterize*"
+    "and" "or" "not" "set!" "cast"
+    ;; Makron biblioteket skriver. En som skriver bjolang ser ingen skillnad
+    ;; mot det parsern kan, så de står här.
+    "cond" "when-let" "if-let" "some->" "time-it" "syntax-match"
+    "with-cancel" "with-deadline" "with-response" "with-run" "def/json-type"
+    ;; `record' och `struct' står inte här: konstruktion namnger sin typ, så
+    ;; `(Point (x 1) (y 2))', och de nakna formerna avvisas av parsern.
+    ;; `struct*' är accepterade synonymer för `record*'.
+    "record-ref" "record-set" "record-set!"
+    "struct-ref" "struct-set" "struct-set!"
+    "yield" "yield-from" "syntax-quote"
     "bjo" "bjoroutine" "spawn-evt" "task->event"
     "import" "import/extern" "import/class" "export" "re-export" "include"
-    "type" "type-rec")
+    "type" "type-rec" "type/derive"
+    ;; Importmodifierare. De står bara inuti en `import', men de är former
+    ;; kompilatorn ger en egen betydelse.
+    "only" "except" "rename"
+    "prefix" "prefix-types" "prefix-defs" "postfix" "postfix-defs")
   "Forms the compiler gives a meaning of their own.")
 
 (defvar bjo-font-lock-keywords
   `(;; (defun (name args) ...) — the name is inside the parameter list.
     ;; `def/macro' is written the same way and names a function too, even though
     ;; the compiler is the only thing that ever calls it.
-    ("(\\(defun\\|defbjo\\|def/macro\\)\\_>\\s-*(\\s-*\\([^ \t\n()]+\\)"
+    ;; `defbjouble' names one too, and writes two bodies under it:
+    ;; (defbjouble (name args) (#:sync ...) (#:bjo ...)).
+    ("(\\(defun\\|defbjouble\\|defbjo\\|def/macro\\)\\_>\\s-*(\\s-*\\([^ \t\n()]+\\)"
      (1 font-lock-keyword-face)
      (2 font-lock-function-name-face))
 
-    ;; (def/trait (Name %a) ...), (def/impl (Trait Type) ...)
-    ("(\\(def/\\(?:trait\\|impl\\(?:/extern\\)?\\)\\)\\s-*(\\s-*\\([^ \t\n()]+\\)"
+    ;; (def/trait (Name %a) ...), (def/impl (Trait Type) ...),
+    ;; (type/derive (Eq) ...) — nästa symbol namnger ett trait eller en typ.
+    ("(\\(def/\\(?:trait\\|impl\\(?:/extern\\)?\\)\\|type/derive\\)\\s-*(\\s-*\\([^ \t\n()]+\\)"
      (1 font-lock-keyword-face)
      (2 font-lock-type-face))
 
@@ -157,8 +202,12 @@ else aligns under its first argument."
     (,(concat "(\\s-*" (regexp-opt bjo-special-forms t) "\\_>")
      1 font-lock-keyword-face)
 
-    ;; Arrows, in signatures.
-    ("\\_<-\\(?:bjo\\)?->\\_>" . font-lock-keyword-face)
+    ;; Arrows, in signatures. `-bjo->' är en bjoroutine, `-?->' en parameter
+    ;; som tar en funktion av endera färgen.
+    ("\\_<-\\(?:bjo\\|\\?\\)?->\\_>" . font-lock-keyword-face)
+
+    ;; `=>', som ger en loop sitt resultat.
+    ("\\_<=>\\_>" . font-lock-keyword-face)
 
     ;; Booleans and character literals.
     ("#[tf]\\_>" . font-lock-constant-face)

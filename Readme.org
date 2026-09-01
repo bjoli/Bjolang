@@ -3,7 +3,7 @@
 I think we have all had the thought: all programming languages suck in at least one way. Not all of us think it is a big deal, but some of us feel the urge to try our wings at designing a language. This is my 95% vibe coded try. Not really meant for real use, but to see if my thoughts made any sense.
 
 * Elevator pitch
-Bjolang is a scheme-inspired language with local HM type inference that bjompiles to constipated c#. It has traits instead of classes, meaning you don't ever have to think about two-way interop. The default bjollections are immutable. A fast RRB tree (Vec), a very fast CHAMP (hash table), a bjordered map (b-tree),  a linked list (List) and both bjordered and unbjordered sets. There are more datastructures coming (deque, queue).
+Bjolang is a scheme-inspired language with local HM type inference that bjompiles to constipated c#. It has traits instead of classes, meaning you don't ever have to think about two-way interop. The default bjollections are immutable. A fast RRB tree (Vec), a very fast CHAMP (hash table), a bjordered map (b-tree),  a linked list (List) and both bjordered and unbjordered sets.
 
 It also fakes Brand/higher kinded types by inlining traits when the trait is known at compile time, giving us among other things, a Monad trait. It is eager and non-curried, but has a bjombda shorthand.
 
@@ -17,7 +17,7 @@ The things I am most smug about, in descending order of smugness.
 
 Bjolang has ConcurrentML. And by that I mean: WOOP WOOP WAKE UP, BJOLANG HAS CONCURRENTML. No async. No Task. No go channels or goroutines. We have bjo channels and bjoroutines. And not only that, it competes with go on allocations and speed, while being actually expressive. 
 
-It is fully cooperative, and yields control when calling other bjoroutines or when syncing on channels. 
+It is fully cooperative, and yields control when calling other bjoroutines or when syncing on channels. Any function that calls down to a "leaf" IO function gets one synchronous and one asynchronous version, so that any function that does IO can suspend.
 
 
 #+begin_src scheme
@@ -163,8 +163,6 @@ Basic syntax
 
 
 * Planned features
-
-Evaluate whether monomorphizing oven asyncness is a good idea so that any function can run either async or sync.
 
 Get an async io library based on c# async, wrapped in cml clothes, just to get started. 
 
@@ -454,19 +452,16 @@ The same machinery gives (std run) its shell notation, have a look at [[file:Exa
 * Things to fix/TODO
 
 ** major problems
-
-Trait resolution is based on the head, so a trait on (List int) overwrites the same trait on (List string) if defined after.
+write* functions do not suspend in bjoroutines. 
 
 ** Problems
-only reading functions can suspend, so writing to a network port may park the thread of a bjoroutine. This is almost a major problem.
-
 pattern matching has no exhaustiveness checking.
+
+macros are always exported, invisibly.
 
 pattern matching has no extensibility
 
 mutual recursion doesn't do any dictionary passing, so it is monomorphic once entered. This is pretty minor, tbh.
-
-shadowing trait methods and builtins doesn't work, and produces very unhelpful error messages.
 
 defining how to pattern match a new data structure is impossible. 
 
@@ -479,10 +474,6 @@ Check how locales work so that we don't get bitten. Like (std run) and how it tr
 ** Minor problems
 
 '(1 2 3) and (list 1 2 3) produces different code.
-
-vecbuilder should be transientvec
-
-[1 2 3 4] should codegen an array that is put directly into the tail, or split and inserted in chunks of 32. This needs changes to RrbList.
 
 fix tail recursion and parameterization: Since tail calls have no code in the recursive function running after it, we can restore the parameters outside the recursion. is this doable ?
 
@@ -511,9 +502,6 @@ output LINE-directives a little bit better than I do now
 abandon c# strings, despite giving us a nice regex engine because utf16.
 
 ** Things for the stdlib
-
-a json library. Preferrably written in bjolang since that makes serialization a lot easier.
-
 regexps, preferably with irregex syntax. 
 
 non-c# strings. for the love of god.
@@ -539,3 +527,4 @@ let bound lambdas that are only ever called should be a static local
 
 Unboxing small unions, say if someone call map-try-ref in a tight loop.
 
+the build in json module goes a pretty roundabout way wrt serializing.
