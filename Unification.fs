@@ -282,9 +282,10 @@ let rec private awaitsImplementor (registry: TraitRegistry) (t: HMType) : bool =
 
 /// Two arrows meet only at the same effect.
 ///
-/// There is no subsumption here and there deliberately will not be one: a
-/// bjoroutine is not a drop-in for an ordinary function, because the C# it
-/// compiles to returns `Fiber<T>` rather than `T`. Letting one flow into a
+/// The type checker strictly prevents passing a bjoroutine (coroutine) into a
+/// parameter that expects a regular function. We enforce this because they
+/// compile to fundamentally different things in C#: a bjoroutine returns a
+/// `Fiber<T>`, whereas a regular function returns `T`. Letting one flow into a
 /// position expecting the other is the higher-order restriction, and it is
 /// what monomorphisation exists to lift — by emitting a second body, not by
 /// making one body serve both.
@@ -451,8 +452,9 @@ let freeTVars (registry: TraitRegistry) (t: HMType) : string list =
 /// constraint over it could mean. Such a binding stays monomorphic instead, and
 /// its use site pins the constructor.
 ///
-/// This is deliberately *not* applied to interface traits: quantifying one of
-/// those and passing a dictionary is exactly how they are supposed to work.
+/// We skip this specific optimization (monomorphization) for standard .NET interfaces.
+/// .NET is already designed to handle generic interfaces via virtual dispatch, so there's
+/// no need for us to unroll them like we do with Bjolang traits.
 ///
 /// A hook rather than a parameter, because `generalize` is called from a dozen
 /// places that have no business knowing a constraint queue exists.

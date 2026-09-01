@@ -1090,9 +1090,9 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list * Set<strin
                     // A transitive dependency is *linked*, not *imported*. Its
                     // assembly has to be referenced, because that is where the
                     // code of anything re-exported through this DLL actually
-                    // lives — but its exports are deliberately not parsed into
-                    // the module graph. Only what this DLL exports or
-                    // re-exports becomes visible to whoever imports it.
+                    // lives. However, we intentionally hide its internal
+                    // dependencies from the current module's scope. This ensures
+                    // that you can only see the things the DLL explicitly chose to export.
                     for depPath in meta.Deps do
                         if depPath <> "" && File.Exists depPath then
                             dllDeps.Add(depPath) |> ignore

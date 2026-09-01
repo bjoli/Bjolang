@@ -684,9 +684,9 @@ let private compileDependencyOutOfProcess (bjoPath: string) : string =
 /// however much was built before it, which is what a timestamp-based staleness
 /// cache is worth anything on top of.
 ///
-/// The dependency's narration is suppressed rather than captured. Out of
-/// process it was captured and thrown away on success, so this is the same
-/// output; a failure still reports through `Diagnostics`, naming the
+/// When a dependency builds successfully, we intentionally hide its build logs
+/// to keep the console clean. If it fails, we still print the error messages
+/// so you can debug it (via `Diagnostics`), naming the
 /// dependency's own file and lines.
 ///
 /// The C# backend is not changed by any of this. A dependency emits the way

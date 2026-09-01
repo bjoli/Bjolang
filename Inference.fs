@@ -4954,7 +4954,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                        && not spec.Uncancellable
                        && not (DotNetInterop.hasTokenOverload (not isInstance) clrType memberName None) then
                         failwithf
-                            $"Type Error at %s{where}: '%s{clrType.FullName}.%s{memberName}' has no overload taking a System.Threading.CancellationToken, so the ambient cancellation token cannot be threaded into it.\n  Write #:uncancellable here to say so. That is deliberately not the default: a call that cannot be cancelled keeps running after the scope that wanted it has given up, and the place to notice is the import rather than the choose that leaks."
+                            $"Type Error at %s{where}: '%s{clrType.FullName}.%s{memberName}' has no overload taking a System.Threading.CancellationToken, so the ambient cancellation token cannot be threaded into it.\n  Write #:uncancellable here to explicitly allow this. By default, we require all imported .NET async methods to accept a CancellationToken. If a method doesn't support cancellation, it will keep running in the background even if Bjolang has aborted the operation (e.g. if a choose block timed out). Marking it with #:uncancellable makes it obvious to developers where a background resource leak might come from."
 
                     // §7.5's lint. A synchronous method with an `…Async` sibling
                     // is almost always the wrong one to have imported: the
@@ -5701,11 +5701,11 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
                     // definer's colour before anything is unified, so a
                     // disagreement is erased rather than reported.
                     //
-                    // Uniform across implementations, deliberately: the colour
-                    // is part of what the *trait* promises, because a call
-                    // dispatched through a dictionary has to know whether it is
-                    // a yield point before it knows which implementation it
-                    // reached.
+                    // All implementations of a trait must agree on whether a method
+                    // is synchronous or asynchronous. We enforce this because, at
+                    // runtime, dynamic dispatch needs to know whether to await the
+                    // method call before it even figures out which specific class's
+                    // method it's calling.
                     (match instantiatedSig with
                      | TFun(_, _, declared) when declared <> colourEffect colour ->
                          match declared with

@@ -1080,7 +1080,7 @@ let private rejectSyncOverAsync (where: string) (t: Type) (name: string) : unit 
         | "Result"
         | "GetAwaiter" ->
             failwithf
-                $"Type Error at %s{where}: '%s{name}' on a task blocks the thread it is called on, and inside a bjoroutine that is a thread-pool thread — which deadlocks or starves the pool depending on the host.\n  There is no sync-over-async in Bjolang, deliberately. Import the method with #:async instead: the call then *is* the result, suspension is invisible at the call site, and the pool thread goes back to the pool while the task is in flight (§7.2).\n  For genuinely synchronous work that has to block something, `(blocking (fun () ...))` moves it to a thread the pool can grow to replace."
+                $"Type Error at %s{where}: '%s{name}' on a task blocks the thread it is called on, and inside a bjoroutine that is a thread-pool thread — which deadlocks or starves the pool depending on the host.\n  Bjolang does not support calling asynchronous .NET methods synchronously (sync-over-async). Instead, you must import the method using the #:async flag. When you do this, Bjolang handles the async state machine under the hood. To the caller, it looks like a normal synchronous function, but behind the scenes, the thread is correctly freed back to the thread pool while waiting (§7.2).\n  For genuinely synchronous work that has to block something, `(blocking (fun () ...))` moves it to a thread the pool can grow to replace."
         | _ -> ()
 
 /// Resolves `(.Name target args...)` when instance, or a static method named by

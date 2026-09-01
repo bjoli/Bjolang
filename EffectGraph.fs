@@ -12,10 +12,8 @@
 /// - **Edges** are calls: if A calls B then `effect(B) ≤ effect(A)`.
 /// - **Solve** by propagating forward to a fixpoint.
 ///
-/// The constraint is `≤` and deliberately not equality. Equality would be
-/// wrong in a way that matters later: if `map`'s body contained a yield point,
-/// unifying its effect with its callback's would force every caller of `map` to
-/// supply a suspending callback.
+/// We use a subset operator (`≤`) instead of strict equality here because effects (like async suspension) can grow.
+/// If we forced them to be exactly equal, any function calling an async function would incorrectly force all of its own arguments to be async too.
 ///
 /// The lattice has two points, so a round that changes nothing is the fixpoint
 /// and no SCC decomposition is needed to get there — a cycle contributes only

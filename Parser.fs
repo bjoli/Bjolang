@@ -4122,9 +4122,10 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         // separate `ELetRec`s, and the first would fail with "Unbound
         // variable" naming the second — on a program that looks obviously fine.
         //
-        // An *empty* one is deliberately not here: it is a statement, so it
-        // does end the group, exactly as any other expression between two
-        // definitions does.
+        // We don't need a special case to handle empty blocks here. The parser
+        // naturally treats an empty block as a basic statement. Just like any
+        // normal expression, hitting a statement signals the end of the current
+        // block of definitions.
         | SList(SAtom { Token = Symbol "begin" } :: (_ :: _ as inner), _) :: rest ->
             collectDefs acc (inner @ rest)
 

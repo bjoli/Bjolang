@@ -5,8 +5,9 @@ open Bjolang.TypedAST
 
 /// Capture-avoiding renaming, over both the untyped and the typed AST.
 ///
-/// This is deliberately *not* a CS0136 patch. It is the substrate three
-/// different things need:
+/// This pass isn't just a hack to work around C#'s shadowing rules. We rename all
+/// variables to be unique because the parser, inliner, and macro expansion systems
+/// fundamentally rely on variables having globally unique names:
 ///
 ///   * `freshen`, over untyped `Expr` — implemented in `Parser`'s "Scope"
 ///     section and re-exported here, see below — is the inliner's splice

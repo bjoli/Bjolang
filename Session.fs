@@ -26,12 +26,13 @@
 ///   * `Inference.wantedQueue` and `Inference.openLiterals`. Both empty after a
 ///     compilation that succeeded, and neither after one that threw.
 ///
-/// **Per process** — deliberately not touched:
+/// **Per process** — intentionally not cleared between runs:
 ///
-///   * `Pipeline.assemblyPaths` and `resolverInstalled`. The CLR's assembly
-///     resolution is process-wide, and so is the loaded set: an assembly cannot
-///     be unloaded from the default context, so forgetting where it came from
-///     would only break the next lookup.
+///   * `Pipeline.assemblyPaths` and `resolverInstalled`. The .NET runtime
+///     loads assemblies globally for the entire process and doesn't allow
+///     unloading them. If we cleared our internal cache of where those
+///     assemblies live on disk, subsequent compiler lookups in the same
+///     process would fail.
 ///   * `Pipeline.compileLibrary`. A backend hook, set once by `Program`.
 ///   * `Pipeline.walking`, the staleness walk's memo. Empty except during a
 ///     walk, and emptied by the one that started it, so there is nothing here

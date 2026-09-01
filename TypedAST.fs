@@ -383,9 +383,9 @@ module NumericLiteral =
 
     /// The type this spelling fixes, or `None` when it fixes none.
     ///
-    /// `None` is the bare integer — `1`, `0x20` — and it is deliberately not
-    /// `int`: a literal that says nothing about its type is what lets a generic
-    /// numeric function be written at all. See `Inference.numericLiteralType`.
+    /// Integer literals like `1` aren't strictly typed as `int` right away. We leave
+    /// their type ambiguous (`None`) so that they can automatically adapt when passed
+    /// to functions expecting `byte`, `long`, or `double`. See `Inference.numericLiteralType`.
     let spelledType (text: string) : HMType option =
         // A decimal point or an exponent is a real number however it ends,
         // and it is asked first so that `0.5s` is a malformed double rather

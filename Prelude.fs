@@ -524,10 +524,11 @@ let prelude : Env =
         /// no-op, so the *first* reason is the one the token carries.
         "make-cancel", {Scheme = Scheme([], [], makeFunType [] (TTuple [makeFunType [cancelReasonType] unitType; cancelTokenType])); IsMutable = false }
 
-        /// Persistent, and deliberately: cancellation is a fact, so every
-        /// listener must see it and a listener that arrives late must still see
-        /// it. The cost is §9's limitation 10 — a cancelled scope is finished,
-        /// and resuming needs a fresh token rather than a reset.
+        /// Cancellation states are permanent. We do this so that if a task is
+        /// cancelled, any new listener that attaches to it immediately knows it
+        /// was cancelled, rather than waiting forever for an event that has
+        /// already ended. The cost is §9's limitation 10 — a cancelled scope
+        /// is finished, and resuming needs a fresh token rather than a reset.
         "cancelled", {Scheme = Scheme([], [], makeFunType [cancelTokenType] (makeEventType cancelReasonType)); IsMutable = false }
 
         /// The poll, for the compute loop that has no `sync` to hang a `choose`

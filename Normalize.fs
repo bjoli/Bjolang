@@ -26,10 +26,12 @@ open Bjolang.Parser
 /// must not depend on whether an optimization ran, so any rewrite that would
 /// change generalization does not belong in this pass.
 ///
-/// What this forecloses: constant folding, dead-binding elimination and
-/// eta-reduction are all deliberately absent. The first two would need to know
-/// which calls are pure, and this pass runs before type checking, so it cannot
-/// ask. A general inliner needs the same information plus a cost model, and
+/// Because this normalization pass runs *before* the type checker, we don't
+/// have enough type information to know if a function call is pure (side-effect
+/// free). Without knowing if a function is pure, it is unsafe to perform
+/// standard compiler optimizations like constant folding, dead-code elimination,
+/// or eta-reduction at this stage, so they are not implemented here.
+/// A general inliner needs the same information plus a cost model, and
 /// would break the guarantee above by having to decline.
 
 // ---------------------------------------------------------------------------
