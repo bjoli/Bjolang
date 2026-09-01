@@ -4315,7 +4315,13 @@ let private clrConstraintClauses (env: Env) : Map<string, string> =
         if clauses.IsEmpty then None else Some(name, String.concat "" clauses))
     |> Map.ofSeq
 
-let generateProgram (env: Env) (metadata: ModuleMetadata.Metadata) (linkedDlls: string list) (decls: TDecl list) : string =
+let generateProgram
+    (env: Env)
+    (metadata: ModuleMetadata.Metadata)
+    (linkedDlls: string list)
+    (mainModulePath: string)
+    (decls: TDecl list)
+    : string =
     let registry = env.Registry
 
     let unionCases =
@@ -4422,29 +4428,26 @@ let generateProgram (env: Env) (metadata: ModuleMetadata.Metadata) (linkedDlls: 
     // Emit 'using static' for all modules to allow unqualified access. A module
     // reached both directly and through another module's import would otherwise
     // be named twice, which C# warns about.
-    let moduleUsings =
-        [ for decl in decls do
-            match decl with
-            | TModule (name, innerDecls, _) ->
-                yield moduleClassName name
-                for inner in innerDecls do
-                    match inner with
-                    | TImport (specs, _) ->
-                        for spec in specs do
-                            match spec.Path with
-                            | RelativePath p -> yield moduleClassName p
-                            | ModulePath parts ->
-                                yield moduleClassName (List.last parts)
-                    | _ -> ()
-            | _ -> ()
+    //
+    // Varje modul namnges ur sin upplösta sökväg. Importformen duger inte:
+    // `(std list)` och `"imports/list.bjo"` stavar samma klassnamn och skiljs
+    // åt först av katalogen. Länklistan täcker även moduler som bara nås
+    // transitivt — ett namn som exporteras vidare genom en dll kompileras som
+    // en okvalificerad referens, så klassen som definierar det måste vara i
+    // scope fast modulen aldrig importerades.
+    let modulePaths =
+        (mainModulePath :: linkedDlls) |> List.map IO.Path.GetFullPath |> List.distinct
 
-          // Every linked assembly, including ones reached only transitively.
-          // A name re-exported through one DLL is compiled as an unqualified
-          // reference, so the class that actually defines it has to be in
-          // scope even though its module was never imported.
-          for dllPath in linkedDlls do
-              yield moduleClassName dllPath ]
+    // Namnrymden för typerna, `using static` för medlemmarna.
+    let namespaceUsings = modulePaths |> List.map Naming.moduleNamespace |> List.distinct
+
+    let moduleUsings =
+        modulePaths
+        |> List.map (fun path -> $"%s{Naming.moduleNamespace path}.%s{moduleClassName path}")
         |> List.distinct
+
+    for ns in namespaceUsings do
+        appendLine ctx $"using %s{ns};"
 
     for className in moduleUsings do
         appendLine ctx $"using static %s{className};"
@@ -4471,9 +4474,15 @@ let generateProgram (env: Env) (metadata: ModuleMetadata.Metadata) (linkedDlls: 
 
     
     appendLine ctx ""
-    // Only generate code for the main module (the last one)
+    // Only generate code for the main module (the last one).
+    //
+    // Modulens kod ligger i en namnrymd som följer katalogen. Klass- och
+    // typnamn är oförändrade och står kvar bara inuti den, så två moduler med
+    // samma filnamn blir olika C#-typer.
     if not decls.IsEmpty then
         let mainModule = List.last decls
-        generateDecl ctx mainModule
-    
+        appendLine ctx $"namespace %s{Naming.moduleNamespace mainModulePath} {{"
+        withIndent ctx (fun ctx -> generateDecl ctx mainModule)
+        appendLine ctx "}"
+
     ctx.Builder.ToString()

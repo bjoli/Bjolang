@@ -518,11 +518,13 @@ let private applyDefRenaming (renaming: Map<string, string list>) (decls: Decl l
 // Making a macro module's dependencies loadable
 // ---------------------------------------------------------------------------
 
-/// Every Bjolang assembly this compilation knows a path for, by simple name.
+/// Every Bjolang assembly this compilation knows a path for, by assembly name.
 let private assemblyPaths = System.Collections.Generic.Dictionary<string, string>()
 
+/// Nyckeln är modulens assemblynamn, inte filnamnet: två `set.dll` i olika
+/// kataloger är två poster.
 let private noteAssemblyPath (path: string) =
-    let name = Path.GetFileNameWithoutExtension path
+    let name = Naming.assemblyName path
 
     if not (assemblyPaths.ContainsKey name) then
         assemblyPaths[name] <- path
@@ -542,9 +544,11 @@ let mutable private resolverInstalled = false
 ///
 /// A compiled program installs the same resolver for the same reason
 /// (`Program.fs`): a Bjolang assembly does not sit next to whatever is running
-/// it. Resolution is by simple name, because that is all the CLR asks with, so
-/// two modules of one name in different directories answer with whichever was
-/// loaded first — the same collision that makes both of them `string_Module`.
+/// it.
+///
+/// Uppslaget sker på assemblynamn, som är det enda CLR frågar med. En modul
+/// bär sin katalog i sitt namn, så två `set.dll` svarar var för sig. Namn som
+/// inte är en moduls — körtidens assemblies — söks i `Paths.runtimeDir`.
 let private installAssemblyResolver () =
     if not resolverInstalled then
         resolverInstalled <- true
@@ -616,7 +620,11 @@ let private registerMacros
             match Map.tryFind entry.Name renaming with
             | None -> ()
             | Some visibleName ->
-                let className = Naming.moduleClassName entry.ModuleName
+                // Namnrymden ur assemblyns egen sökväg: modulklassen ligger i
+                // den dll metadatan lästes ur.
+                let className =
+                    $"%s{Naming.moduleNamespace asm.Location}.%s{Naming.moduleClassName entry.ModuleName}"
+
                 let clrType = asm.GetType className
 
                 if isNull clrType then

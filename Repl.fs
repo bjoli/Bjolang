@@ -441,7 +441,8 @@ let private producesAValue (env: TypedAST.Env) =
 /// entry.
 let private readBinding (dllPath: string) (moduleName: string) (memberName: string) : obj =
     let assembly = AssemblyLoadContext.Default.LoadFromAssemblyPath dllPath
-    let className = Naming.moduleClassName moduleName
+    // Namnrymden ur dll:ens katalog, klassen ur modulnamnet.
+    let className = $"%s{Naming.moduleNamespace dllPath}.%s{Naming.moduleClassName moduleName}"
     let clrType = assembly.GetType className
 
     if isNull clrType then
@@ -458,7 +459,7 @@ let private readBinding (dllPath: string) (moduleName: string) (memberName: stri
 let private force (dllPath: string) (moduleName: string) : unit =
     let assembly = AssemblyLoadContext.Default.LoadFromAssemblyPath dllPath
 
-    match assembly.GetType(Naming.moduleClassName moduleName) with
+    match assembly.GetType($"%s{Naming.moduleNamespace dllPath}.%s{Naming.moduleClassName moduleName}") with
     | null -> ()
     | clrType -> Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor clrType.TypeHandle
 

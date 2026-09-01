@@ -95,6 +95,89 @@ let moduleNameOfPath (path: string) : string =
 let moduleClassName (moduleName: string) =
     sanitizeIdent (moduleNameOfPath moduleName) + "_Module"
 
+/// Roten alla modulnamnrymder hänger under.
+///
+/// Varje barn slutar med en hash, så inget barn kan heta `Bjoml`, `Set` eller
+/// `Collections` — namn som annars hade skuggat körtidens egna namnrymder för
+/// koden inuti.
+[<Literal>]
+let moduleNamespaceRoot = "BjoMod"
+
+/// Fyra byte av SHA-256, som hex.
+let private shortHash (text: string) : string =
+    use sha = Security.Cryptography.SHA256.Create()
+
+    Text.Encoding.UTF8.GetBytes text
+    |> sha.ComputeHash
+    |> Array.take 4
+    |> Array.map (fun b -> b.ToString "x2")
+    |> String.concat ""
+
+let private identSegment (s: string) =
+    sanitizeIdent (s.Replace(".", "_").Replace("-", "_"))
+
+/// Namnrymden en moduls klass och typer emitteras i.
+///
+/// Härledd ur *katalogen*, inte ur filen. En modul och dess `.dll` ligger i
+/// samma katalog, så importören får samma svar ur `.dll`-sökvägen som modulen
+/// själv fick ur sin `.bjo`.
+///
+/// Två filer i samma katalog delar namnrymd och kan inte krocka: de har olika
+/// filnamn, alltså olika klassnamn.
+///
+/// En biblioteksmodul namnges efter sin plats *under `lib`* — `lib/std` blir
+/// `std` — och inte efter var installationen råkar ligga. Det är vad som gör
+/// `BJOLANG_LIB` möjligt: två kopior av biblioteket är samma namn, alltså
+/// utbytbara. Allt annat får en hash av den absoluta katalogen, som är det
+/// enda som skiljer två `set.bjo` åt.
+///
+/// Kräver en sökväg. Ett modulnamn har ingen katalog och ger fel svar.
+let moduleNamespace (path: string) : string =
+    let full = IO.Path.GetFullPath path
+
+    let dir =
+        match IO.Path.GetDirectoryName full with
+        | null | "" -> IO.Path.GetPathRoot full
+        | d -> d
+
+    let lib = Paths.libDir.TrimEnd IO.Path.DirectorySeparatorChar
+
+    let underLib =
+        dir = lib
+        || dir.StartsWith(lib + string IO.Path.DirectorySeparatorChar, StringComparison.Ordinal)
+
+    if underLib then
+        let relative = dir.Substring(lib.Length).Trim IO.Path.DirectorySeparatorChar
+
+        let segments =
+            if relative = "" then
+                [ "lib" ]
+            else
+                relative.Split IO.Path.DirectorySeparatorChar
+                |> Array.map identSegment
+                |> List.ofArray
+
+        $"""%s{moduleNamespaceRoot}.%s{String.concat "." segments}"""
+    else
+        let leaf =
+            match IO.Path.GetFileName dir with
+            | null | "" -> "root"
+            | l -> identSegment l
+
+        $"%s{moduleNamespaceRoot}.%s{leaf}_%s{shortHash dir}"
+
+/// Modulens klass, fullt kvalificerad. Kräver en sökväg.
+let qualifiedModuleClassName (path: string) =
+    $"%s{moduleNamespace path}.%s{moduleClassName path}"
+
+/// Assemblynamnet en modulbiblioteksfil kompileras under.
+///
+/// Filen heter fortfarande `set.dll`. Det här är identiteten *inuti* den, och
+/// den är vad CLR slår upp på — så två `set.dll` i olika kataloger måste stava
+/// namnet olika för att båda ska kunna länkas in i samma program.
+let assemblyName (path: string) : string =
+    $"%s{moduleNamespace path}.%s{moduleNameOfPath path}"
+
 /// The reference an inlined body uses for a free name that belongs to a module.
 ///
 /// A spliced body may land next to a local of the same name, so a bare

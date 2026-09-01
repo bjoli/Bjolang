@@ -63,7 +63,7 @@ let generateSource
         { Exports.metadata env typedAst declaredMacros inputFilePath isLibrary with
             Deps = if isLibrary then dllDeps |> List.map Path.GetFullPath else [] }
 
-    Timing.phase "codegen" (fun () -> Codegen.generateProgram env metadata dllDeps typedAst)
+    Timing.phase "codegen" (fun () -> Codegen.generateProgram env metadata dllDeps inputFilePath typedAst)
 
 /// Compiles `inputFilePath`. Answers a process exit code.
 let compile (options: Options) (inputFilePath: string) : int =
@@ -123,7 +123,7 @@ let compile (options: Options) (inputFilePath: string) : int =
                     | _ -> false
                 | None -> false
 
-            let mainModuleClass = Codegen.moduleClassName inputFilePath
+            let mainModuleClass = Naming.qualifiedModuleClassName inputFilePath
 
             // Everything this program links against, where it really lives.
             // Nothing is ever copied next to the output: an assembly has one
@@ -143,21 +143,43 @@ let compile (options: Options) (inputFilePath: string) : int =
                 |> List.map Path.GetDirectoryName
                 |> List.distinct
 
+            // En modul slås upp på sitt assemblynamn och laddas från den fil
+            // den byggdes till. Filnamnet duger inte: två moduler kan heta
+            // `set.dll`, och namnet är det enda CLR frågar med.
+            let moduleAssemblyPairs =
+                dllDeps
+                |> List.filter File.Exists
+                |> List.map Path.GetFullPath
+                |> List.distinct
+                |> List.map (fun path -> Naming.assemblyName path, path)
+
             let resolverCode =
-                if isLibrary || probeDirs.IsEmpty then ""
+                if isLibrary || (probeDirs.IsEmpty && moduleAssemblyPairs.IsEmpty) then ""
                 else
-                    let dirLiterals =
-                        probeDirs
-                        |> List.map (fun d -> "@\"" + d.Replace("\"", "\"\"") + "\"")
+                    let literals items =
+                        items
+                        |> List.map (fun (s: string) -> "@\"" + s.Replace("\"", "\"\"") + "\"")
                         |> String.concat ", "
 
+                    let dirLiterals = literals probeDirs
+                    let nameLiterals = literals (moduleAssemblyPairs |> List.map fst)
+                    let pathLiterals = literals (moduleAssemblyPairs |> List.map snd)
+                    let rootPrefix = Naming.moduleNamespaceRoot + "."
+
                     "    private static readonly string[] BjolangProbeDirs = new string[] { " + dirLiterals + " };\n" +
+                    "    private static readonly string[] BjolangModuleNames = new string[] { " + nameLiterals + " };\n" +
+                    "    private static readonly string[] BjolangModulePaths = new string[] { " + pathLiterals + " };\n" +
                     "    private static void InstallAssemblyResolver() {\n" +
                     "        System.Runtime.Loader.AssemblyLoadContext.Default.Resolving += (context, name) => {\n" +
                     "            var libOverride = System.Environment.GetEnvironmentVariable(\"BJOLANG_LIB\");\n" +
-                    "            if (!string.IsNullOrEmpty(libOverride)) {\n" +
-                    "                var overridden = System.IO.Path.Combine(libOverride, \"std\", name.Name + \".dll\");\n" +
+                    "            if (!string.IsNullOrEmpty(libOverride) && name.Name != null && name.Name.StartsWith(\"" + rootPrefix + "\")) {\n" +
+                    "                var relative = name.Name.Substring(" + string rootPrefix.Length + ").Replace('.', System.IO.Path.DirectorySeparatorChar) + \".dll\";\n" +
+                    "                var overridden = System.IO.Path.Combine(libOverride, relative);\n" +
                     "                if (System.IO.File.Exists(overridden)) return context.LoadFromAssemblyPath(overridden);\n" +
+                    "            }\n" +
+                    "            for (int i = 0; i < BjolangModuleNames.Length; i++) {\n" +
+                    "                if (BjolangModuleNames[i] == name.Name && System.IO.File.Exists(BjolangModulePaths[i]))\n" +
+                    "                    return context.LoadFromAssemblyPath(BjolangModulePaths[i]);\n" +
                     "            }\n" +
                     "            foreach (var dir in BjolangProbeDirs) {\n" +
                     "                var candidate = System.IO.Path.Combine(dir, name.Name + \".dll\");\n" +
@@ -227,10 +249,19 @@ let compile (options: Options) (inputFilePath: string) : int =
             // be spelled here as well, which is how a newly added one — Bjoml —
             // could be on the resolver's probe path and still not be referenced
             // at compile time.
+            // En modul refereras vid sitt assemblynamn, körtidens vid sitt
+            // filnamn. Två `set.dll` blir två poster i stället för en dubblett.
+            let moduleAssemblyNames =
+                moduleAssemblyPairs |> List.map (fun (name, path) -> path, name) |> Map.ofList
+
             let dllReferences =
                 linkedAssemblies
                 |> List.map (fun dllPath ->
-                    let name = Path.GetFileNameWithoutExtension(dllPath)
+                    let name =
+                        match Map.tryFind dllPath moduleAssemblyNames with
+                        | Some name -> name
+                        | None -> Path.GetFileNameWithoutExtension dllPath
+
                     $"    <Reference Include=\"{name}\">\n      <HintPath>{dllPath}</HintPath>\n      <Private>false</Private>\n    </Reference>")
                 |> String.concat "\n"
                 
@@ -251,7 +282,15 @@ let compile (options: Options) (inputFilePath: string) : int =
                 File.WriteAllText("out.cs", fullCode)
             
             let outDir = Path.GetFullPath(if System.String.IsNullOrWhiteSpace(Path.GetDirectoryName(outputFilePath)) then "." else Path.GetDirectoryName(outputFilePath))
-            let assemblyName = Path.GetFileNameWithoutExtension(outputFilePath)
+
+            // Ett bibliotek importeras och behöver ett namn som är unikt över
+            // kataloger. En exe är slutet på kedjan — inget refererar den — och
+            // behåller filnamnet, som värdfilerna bredvid den namnger.
+            let assemblyName =
+                if isLibrary then
+                    Naming.assemblyName outputFilePath
+                else
+                    Path.GetFileNameWithoutExtension outputFilePath
             
             Diagnostics.progress "Invoking C# Compiler..."
 
@@ -302,7 +341,7 @@ let compile (options: Options) (inputFilePath: string) : int =
                         let targetPath = Path.GetFullPath(outputFilePath)
 
                         let emitOptions: CSharpEmit.Options =
-                            { AssemblyName = Path.GetFileNameWithoutExtension(outputFilePath)
+                            { AssemblyName = assemblyName
                               Target = if isLibrary then CSharpEmit.Library else CSharpEmit.Executable
                               Optimize = not options.Debug
                               EmitPdb = true
@@ -392,6 +431,15 @@ let compile (options: Options) (inputFilePath: string) : int =
                                 
                             let csFile = Path.Combine(tmpDir, "Program.cs")
                             let targetPath = Path.GetFullPath(outputFilePath)
+
+                            // csc namnger assemblyn efter utfilen. Ett bibliotek
+                            // byggs därför under sitt assemblynamn och flyttas
+                            // på plats efteråt.
+                            let cscOutPath =
+                                if isLibrary then
+                                    Path.Combine(tmpDir, assemblyName + ".dll")
+                                else
+                                    targetPath
                             // Optimization is not free to leave off: without
                             // `-optimize+` Roslyn marks the assembly as
                             // debuggable, which tells the JIT to leave it
@@ -455,7 +503,7 @@ let compile (options: Options) (inputFilePath: string) : int =
                             let pathMap =
                                 $"-pathmap:\"{tmpDir}{Path.DirectorySeparatorChar}={CSharpEmit.generatedSourceRoot}\""
 
-                            let cscArgs = $"exec \"{cscDll}\" -noconfig -nullable:enable -deterministic {pathMap} {shared} {codeGenArgs} -target:{target} -out:\"{targetPath}\" \"{csFile}\" {userRefs} {bclRefs}"
+                            let cscArgs = $"exec \"{cscDll}\" -noconfig -nullable:enable -deterministic {pathMap} {shared} {codeGenArgs} -target:{target} -out:\"{cscOutPath}\" \"{csFile}\" {userRefs} {bclRefs}"
 
                             let exitCode, stdout, stderr =
                                 Timing.phase "csc" (fun () -> runProcess "dotnet" cscArgs [])
@@ -481,6 +529,16 @@ let compile (options: Options) (inputFilePath: string) : int =
                                 if not (System.String.IsNullOrWhiteSpace stderr) then printfn "%s" (stderr.TrimEnd())
 
                             if exitCode = 0 then
+                                // Både dll och pdb flyttas: pdb:n namnges också
+                                // efter utfilen och hittas annars inte bredvid
+                                // modulen.
+                                if cscOutPath <> targetPath then
+                                    File.Copy(cscOutPath, targetPath, true)
+                                    let builtPdb = Path.ChangeExtension(cscOutPath, ".pdb")
+
+                                    if File.Exists builtPdb then
+                                        File.Copy(builtPdb, Path.ChangeExtension(targetPath, ".pdb"), true)
+
                                 // Both configurations emit symbols now, so the
                                 // pdb is kept: it is what carries the `#line`
                                 // mapping into a stack trace, and without it a
