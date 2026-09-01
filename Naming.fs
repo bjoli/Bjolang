@@ -66,32 +66,31 @@ let suspendingCopy (name: string) = name + "__bjo"
 /// definition from a written one.
 let isSuspendingCopy (name: string) = name.EndsWith "__bjo"
 
-/// Roten alla modulnamnrymder hänger under.
+/// The root namespace that all module namespaces fall under.
 ///
-/// Varje barn slutar med en hash, så inget barn kan heta `Bjoml`, `Set` eller
-/// `Collections` — namn som annars hade skuggat körtidens egna namnrymder för
-/// koden inuti.
+/// Every child ends with a hash, ensuring no child can be named `Bjoml`, `Set`,
+/// or `Collections` — names that would otherwise shadow the runtime's own
+/// namespaces for the code inside.
 [<Literal>]
 let moduleNamespaceRoot = "BjoMod"
 
-/// Är namnet en modulnyckel — eller en typnyckel en modul äger?
+/// Whether the name is a module key — or a type key owned by a module.
 ///
-/// Skiljer dem från namn som bara råkar innehålla punkter, som
-/// `System.IO.TextReader`. Roten är vad som gör frågan avgörbar.
+/// This distinguishes them from names that just happen to contain dots, like
+/// `System.IO.TextReader`. The root prefix makes this decidable.
 let isModuleKey (name: string) =
     name.StartsWith(moduleNamespaceRoot + ".", StringComparison.Ordinal)
 
-/// Namnrymden i en nyckel: allt utom sista ledet.
+/// The namespace portion of a key: everything except the last segment.
 let namespaceOfKey (key: string) =
     match key.LastIndexOf '.' with
     | i when i > 0 -> key.Substring(0, i)
     | _ -> ""
 
-/// Namnet en nyckel emitteras under: sista ledet.
+/// The name a key is emitted under: the last segment.
 ///
-/// En deklaration står redan i sin namnrymd och skriver bara ledet; en nästlad
-/// unionsgren har aldrig något kvalificerat namn alls. Namn som inte är
-/// nycklar lämnas orörda.
+/// A declaration is already in its namespace and only writes the final segment; a nested
+/// union branch never has a qualified name at all. Names that are not keys are left untouched.
 let emittedTypeName (name: string) =
     if isModuleKey name then name.Substring(name.LastIndexOf '.' + 1) else name
 
@@ -102,7 +101,7 @@ let emittedTypeName (name: string) =
 /// — the import graph, the metadata a `.dll` publishes, the macro table — has
 /// to arrive at the same answer, so there is one spelling of the rule.
 ///
-/// Tar en modulnyckel lika gärna: det platta namnet är nyckelns sista led.
+/// Also accepts a module key: the flat name is the key's last segment.
 let moduleNameOfPath (path: string) : string =
     if isModuleKey path then
         emittedTypeName path
@@ -120,7 +119,7 @@ let moduleNameOfPath (path: string) : string =
 let moduleClassName (moduleName: string) =
     sanitizeIdent (moduleNameOfPath moduleName) + "_Module"
 
-/// Fyra byte av SHA-256, som hex.
+/// Four bytes of a SHA-256 hash, as hex.
 let private shortHash (text: string) : string =
     use sha = Security.Cryptography.SHA256.Create()
 
@@ -133,22 +132,21 @@ let private shortHash (text: string) : string =
 let private identSegment (s: string) =
     sanitizeIdent (s.Replace(".", "_").Replace("-", "_"))
 
-/// Namnrymden en moduls klass och typer emitteras i.
+/// The namespace where a module's class and types are emitted.
 ///
-/// Härledd ur *katalogen*, inte ur filen. En modul och dess `.dll` ligger i
-/// samma katalog, så importören får samma svar ur `.dll`-sökvägen som modulen
-/// själv fick ur sin `.bjo`.
+/// Derived from the directory, not the file. A module and its `.dll` live in the same
+/// directory, so an importer gets the same namespace from the `.dll` path as the module
+/// itself got from its `.bjo` path.
 ///
-/// Två filer i samma katalog delar namnrymd och kan inte krocka: de har olika
-/// filnamn, alltså olika klassnamn.
+/// Two files in the same directory share a namespace but cannot collide because they
+/// have different filenames, hence different class names.
 ///
-/// En biblioteksmodul namnges efter sin plats *under `lib`* — `lib/std` blir
-/// `std` — och inte efter var installationen råkar ligga. Det är vad som gör
-/// `BJOLANG_LIB` möjligt: två kopior av biblioteket är samma namn, alltså
-/// utbytbara. Allt annat får en hash av den absoluta katalogen, som är det
-/// enda som skiljer två `set.bjo` åt.
+/// A library module is named after its location under `lib` (e.g. `lib/std` becomes `std`),
+/// regardless of where the installation happens to be. This makes `BJOLANG_LIB` possible:
+/// two copies of the library resolve to the same name and are interchangeable. Everything
+/// else gets a hash of its absolute directory, which is what distinguishes two `set.bjo` files.
 ///
-/// Kräver en sökväg. Ett modulnamn har ingen katalog och ger fel svar.
+/// Requires a file path. A bare module name has no directory and will yield the wrong answer.
 let moduleNamespace (path: string) : string =
     let full = IO.Path.GetFullPath path
 
@@ -183,27 +181,28 @@ let moduleNamespace (path: string) : string =
 
         $"%s{moduleNamespaceRoot}.%s{leaf}_%s{shortHash dir}"
 
-/// Modulens identitet: namnrymden och det platta namnet, som en sträng.
+/// The module's identity: the namespace and the flat name, as a single string.
 ///
-/// Nyckeln allt modulägt filas under — typer, konstruktorer, bindningar,
-/// metadata — så två `set.bjo` i olika kataloger är två moduler hela vägen
-/// igenom och inte bara i den emitterade C#:en.
+/// This is the key that everything owned by the module is filed under — types,
+/// constructors, bindings, metadata. This ensures two `set.bjo` files in different
+/// directories are treated as two distinct modules throughout the entire compilation,
+/// not just in the emitted C#.
 ///
-/// Idempotent: en nyckel in ger samma nyckel ut.
+/// Idempotent: passing a key in returns the same key.
 let moduleKeyOfPath (path: string) : string =
     if isModuleKey path then
         path
     else
         $"%s{moduleNamespace path}.%s{moduleNameOfPath path}"
 
-/// Assemblynamnet är modulens identitet.
+/// The assembly name is the module's identity.
 ///
-/// Filen heter fortfarande `set.dll`. Det här är namnet *inuti* den, och det
-/// är vad CLR slår upp på — så två `set.dll` i olika kataloger måste stava
-/// namnet olika för att båda ska kunna länkas in i samma program.
+/// The file is still named `set.dll`. This is the internal name used by the CLR for
+/// lookups. Therefore, two `set.dll` files in different directories must spell this
+/// name differently so both can be linked into the same program.
 let assemblyName = moduleKeyOfPath
 
-/// Modulens klass, fullt kvalificerad. Tar en sökväg eller en nyckel.
+/// The fully qualified class name for the module. Accepts a path or a key.
 let qualifiedModuleClassName (path: string) =
     let key = moduleKeyOfPath path
     $"%s{namespaceOfKey key}.%s{moduleClassName key}"
@@ -267,10 +266,10 @@ let eqModuleName = "eq"
 /// which is what a `.dll`'s own type declarations read back look like: the
 /// prefix being tested for is one this function just built, so nothing here
 /// has to guess where a key divides.
-/// Prefixet den här modulens typer bär.
+/// The prefix carried by types in this module.
 ///
-/// Namnrymden är med, så nyckeln är det fullt kvalificerade C#-namnet och två
-/// moduler med samma filnamn filar sina typer var för sig.
+/// The namespace is included, so the key is the fully qualified C# name. This ensures
+/// two modules with the same filename file their types separately.
 let private typePrefix (moduleKey: string) =
     let flat = sanitizeIdent (moduleNameOfPath moduleKey) + "__"
 
@@ -307,7 +306,7 @@ let bareTypeName (moduleName: string) (key: string) : string =
 /// which costs a reader a moment and costs a program nothing, since no
 /// resolution goes through here.
 let typeKeyParts (name: string) : (string * string) option =
-    // Namnrymden av först: en läsare vill se `thing/Thing`, inte hashen.
+    // Strip the namespace first: the reader wants to see `thing/Thing`, not the hash.
     let bare = emittedTypeName name
 
     match bare.IndexOf "__" with
@@ -326,11 +325,11 @@ let showTypeName (name: string) : string =
     | Some(moduleName, typeName) -> moduleName + "/" + typeName
     | None -> name
 
-/// Samma namn, med katalogen modulen ligger i framför.
+/// The same name, prefixed by the module's directory.
 ///
-/// Två moduler med samma filnamn stavas lika, och ett fel som säger att
-/// `thing/Thing` inte är `thing/Thing` hjälper ingen. Bara för det fallet:
-/// katalogtaggen är brus när namnet redan skiljer.
+/// Two modules with the same filename will spell their types identically, and an
+/// error stating that `thing/Thing` is not `thing/Thing` is unhelpful. This is used
+/// specifically for that case, since the directory tag is just noise when names differ.
 let showQualifiedTypeName (name: string) : string =
     if not (isModuleKey name) then
         showTypeName name

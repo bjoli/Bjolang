@@ -143,9 +143,9 @@ let compile (options: Options) (inputFilePath: string) : int =
                 |> List.map Path.GetDirectoryName
                 |> List.distinct
 
-            // En modul slås upp på sitt assemblynamn och laddas från den fil
-            // den byggdes till. Filnamnet duger inte: två moduler kan heta
-            // `set.dll`, och namnet är det enda CLR frågar med.
+            // A module is looked up by its assembly name and loaded from the
+            // file it was built to. The filename is not enough: two modules
+            // can be named `set.dll`, and the name is the only thing the CLR asks for.
             let moduleAssemblyPairs =
                 dllDeps
                 |> List.filter File.Exists
@@ -250,7 +250,7 @@ let compile (options: Options) (inputFilePath: string) : int =
             // could be on the resolver's probe path and still not be referenced
             // at compile time.
             // En modul refereras vid sitt assemblynamn, körtidens vid sitt
-            // filnamn. Två `set.dll` blir två poster i stället för en dubblett.
+            // filename. Two `set.dll` files become two distinct entries instead of a duplicate.
             let moduleAssemblyNames =
                 moduleAssemblyPairs |> List.map (fun (name, path) -> path, name) |> Map.ofList
 
@@ -283,9 +283,9 @@ let compile (options: Options) (inputFilePath: string) : int =
             
             let outDir = Path.GetFullPath(if System.String.IsNullOrWhiteSpace(Path.GetDirectoryName(outputFilePath)) then "." else Path.GetDirectoryName(outputFilePath))
 
-            // Ett bibliotek importeras och behöver ett namn som är unikt över
-            // kataloger. En exe är slutet på kedjan — inget refererar den — och
-            // behåller filnamnet, som värdfilerna bredvid den namnger.
+            // A library is imported and needs a name that is unique across
+            // directories. An executable is the end of the chain — nothing refers to it —
+            // and it keeps the filename, which the host files next to it expect.
             let assemblyName =
                 if isLibrary then
                     Naming.assemblyName outputFilePath
@@ -433,8 +433,8 @@ let compile (options: Options) (inputFilePath: string) : int =
                             let targetPath = Path.GetFullPath(outputFilePath)
 
                             // csc namnger assemblyn efter utfilen. Ett bibliotek
-                            // byggs därför under sitt assemblynamn och flyttas
-                            // på plats efteråt.
+                            // is therefore built under its assembly name and moved
+                            // into place afterwards.
                             let cscOutPath =
                                 if isLibrary then
                                     Path.Combine(tmpDir, assemblyName + ".dll")
@@ -529,8 +529,8 @@ let compile (options: Options) (inputFilePath: string) : int =
                                 if not (System.String.IsNullOrWhiteSpace stderr) then printfn "%s" (stderr.TrimEnd())
 
                             if exitCode = 0 then
-                                // Både dll och pdb flyttas: pdb:n namnges också
-                                // efter utfilen och hittas annars inte bredvid
+                                // Both the dll and pdb are moved: the pdb is also
+                                // named after the output file and wouldn't be found otherwise.
                                 // modulen.
                                 if cscOutPath <> targetPath then
                                     File.Copy(cscOutPath, targetPath, true)

@@ -4042,10 +4042,6 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
         withCollectors
 
 /// The argument list of a `defun`, top-level or body-local.
-///
-/// One grammar for both. A local `defun` used to have an older, narrower one of
-/// its own, which accepted `(: name type)` and then discarded the type and
-/// refused keyword and rest arguments outright.
 and parseDefunArgs (args: SExpr list) : DefunArg list =
     match args with
     | [] -> []

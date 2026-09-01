@@ -44,12 +44,6 @@
 ///     `Macro`, installed idempotently; it is the tables behind them that are
 ///     scoped.
 ///   * `Unification.heldMetaIds` and `heldLocalMetaIds`, likewise.
-///
-/// `Program.fs` used to name a "`Codegen` shadowed-builtin set" among the
-/// reasons a sub-compilation had to be a subprocess. There is no such thing:
-/// `Codegen`'s per-compilation data — `GlobalBindings`, `UnionCases`, the
-/// registry — is built inside `generateProgram` and threaded through `ctx`. The
-/// comment was stale and is gone.
 module Bjolang.Session
 
 type Scope =

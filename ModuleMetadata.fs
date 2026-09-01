@@ -43,11 +43,12 @@ open System.Text
 /// port surface lives behind one. `DoubleDefs` names the exports written with
 /// `defbjouble`; without it an importer sees only the ordinary copy and a
 /// bjoroutine calling one parks where it should suspend.
-/// 7: en modul heter sin namnrymd och sitt namn — `BjoMod.std.set` — i stället
-/// för bara filnamnet. Typnycklar, `Origin`, `InlineTemplateEntry.Ctor` och
-/// `OriginModule` samt `MacroEntry.ModuleName` bär den identiteten. En assembly
-/// byggd före detta namnger sina typer utan namnrymd, och de matchar då inget
-/// hos importören — och två moduler med samma filnamn stavar sina typer lika.
+/// 7: A module is named by its namespace and its name (e.g. `BjoMod.std.set`)
+/// rather than just its filename. Type keys, `Origin`, `InlineTemplateEntry.Ctor`,
+/// `OriginModule`, and `MacroEntry.ModuleName` all carry this identity. An assembly
+/// built prior to this names its types without a namespace, so they would fail to
+/// match at the importer side — and two modules with the same filename would spell
+/// their types identically.
 let currentVersion = 7
 
 /// An exported binding: enough to bind its name and give it a type.

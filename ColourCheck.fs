@@ -52,10 +52,8 @@
 /// objected. So the traversal carries *which* construct sealed it rather than a
 /// boolean, and the message names that one and prescribes the fix for that one.
 ///
-/// The pass has always known this exactly — the seal is set at the construct
-/// that causes it — and used to throw the knowledge away, emitting a paragraph
-/// listing all six for the reader to narrow down by hand. Listing every reason
-/// is a worse message than any single one of them.
+/// This targeted approach is important because listing every possible reason
+/// for a failure is a worse message than diagnosing the single correct one.
 module Bjolang.ColourCheck
 
 open Bjolang.Lexer

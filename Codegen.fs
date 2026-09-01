@@ -69,8 +69,8 @@ type CodegenContext = {
     /// Keyed by name, as `GlobalBindings` is, because that is the only handle a
     /// `TDefun` offers: which constraints a function carries lives on its
     /// `Scheme` in the environment, and a `CodegenContext` holds the registry
-    /// but not the bindings. Rendered rather than resolved here so that the one
-    /// place that knows how to spell a type is the one that spells it.
+    /// but not the bindings. We format the type string directly here, because
+    /// keeping type-spelling logic centralized makes it easier to maintain.
     ClrConstraints: Map<string, string>
     /// Does the enclosing C# method return `void`?
     ///
@@ -261,9 +261,9 @@ let private conBaseName (name: string) =
 
 /// Namnet en typ *deklareras* under.
 ///
-/// Nyckeln är fullt kvalificerad, vilket är precis vad en referens ska vara.
-/// En deklaration står redan i sin namnrymd, och en nästlad unionsgren har
-/// aldrig något kvalificerat namn alls — båda skriver sista ledet.
+/// The key is fully qualified, which is exactly what a reference needs to be.
+/// A declaration is already in its namespace, and a nested union branch never
+/// has a qualified name at all — both simply write the final segment.
 let private declaredTypeName (key: string) =
     sanitizeIdent (Naming.emittedTypeName key)
 
@@ -399,9 +399,9 @@ let private unitValue = "default(Bjoml.Unit)"
 /// The C# element type of a single-argument container type such as the runtime
 /// `SchemeList<T>` or `Vec<T>`.
 ///
-/// Falls back to `object` when the type did not resolve to a one-argument
-/// constructor, which keeps the emitted C# well-formed rather than propagating
-/// an inference failure into codegen.
+/// If the type checker couldn't figure out the exact type, we just emit it as
+/// a C# `object`. This prevents the compiler from crashing during the code
+/// generation phase due to an unresolved type.
 let private elementTypeString (t: HMType) =
     match t with
     | TCon (_, [ elemT ]) -> typeToString elemT
@@ -489,9 +489,9 @@ let rec serializeHMType (t: HMType) : string =
 /// A trait signature that mentions the implementor applied.
 ///
 /// The hole is written as the implementor variable in applied position —
-/// `('m 'a)` — which is the one thing `parseType` accepts only for a quoted
-/// head, and therefore the one thing that reads back as a hole rather than as a
-/// constructor named `m`.
+/// `('m 'a)`. We format it this way because `parseType` specifically recognizes
+/// this syntax as a macro hole. If we didn't do this, it would just parse it
+/// as a normal type constructor named `m`.
 let rec serializeTplType (implementorVar: string) (t: TplType) : string =
     let go = serializeTplType implementorVar
 
@@ -626,10 +626,10 @@ let rec serializeExpr (e: Parser.Expr) : string =
             | Some t -> list [ "cast"; serializeFType t; valueStr ]
             | None -> valueStr
 
-        // One binding per `let`, which is now load-bearing rather than merely
-        // tidy: a `let` binds simultaneously, so a group of them would be read
-        // back with a different scope than the nest it was written from. A
-        // single binding means the same thing under either reading.
+        // We emit exactly one binding per `let`. This isn't just for neatness:
+        // if we grouped multiple bindings into a single `let`, the variables
+        // would shadow each other incorrectly when parsed back, because a single
+        // `let` evaluates all its bindings simultaneously.
         list [ "let"; list [ list [ n; annotated ] ]; serializeExpr body ]
 
     | Parser.ELetRec(bindings, body, _) ->
@@ -1174,8 +1174,10 @@ let private infixOperators =
 
 /// Does C# widen this type to `int` before applying an operator to it?
 ///
-/// A solved metavariable is followed rather than pruned: `prune` wants a trait
-/// registry, which nothing at emission time has, and the answer is the same.
+/// If we encounter a solved type variable, we just follow its pointer directly
+/// instead of calling `prune`. `prune` requires a trait registry (which we
+/// don't have during code generation), and simply following the pointer gives
+/// us the correct answer anyway.
 let rec private promotesToInt (t: HMType) =
     match t with
     | TCon((TypeConstants.ByteName | TypeConstants.Int16Name | TypeConstants.UInt16Name), []) -> true
@@ -1340,9 +1342,9 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
                 | _ ->
                     append ctx $"({typeStr})new {typeStr}.{declaredTypeName name}()"
             else
-                // A nullary case, which is a *value* rather than a call — so
-                // `generateApply` never sees it and this is the only place its
-                // type can be pinned.
+                // Enum cases with no arguments (like `None` or `True`) are treated as constant values,
+                // not function calls. Therefore, we have to enforce their types right here, because
+                // they bypass the normal function application logic (`generateApply`).
                 append ctx $"({typeStr})new {typeStr}.{declaredTypeName name}()"
         | None ->
             let targetName = qualifiedName ctx name
@@ -1886,13 +1888,13 @@ and private generateGuarded
 /// Fully qualifies a module-level binding.
 and private qualifiedName (ctx: CodegenContext) (name: string) =
     match Map.tryFind name ctx.GlobalBindings with
-    // Ingen klass att namnge: det här *är* builtinen, och den heter sitt namn.
+    // No class to name: this *is* the builtin, and it goes by its own name.
     | Some("", member') -> sanitizeIdent (Naming.emittedTypeName member')
     | Some(modName, member') ->
         $"%s{moduleClassName modName}.%s{Prelude.moduleMemberName (Naming.emittedTypeName member')}"
     | None ->
-        // En inlinead kropp stavar en modulbindning `Klass::namn`, och ledet
-        // efter `::` är en medlem som kan bära ett härlett namn.
+        // An inlined body spells a module binding as `Class::name`, and the
+        // segment after `::` is a member that might carry a derived name.
         match name.LastIndexOf "::" with
         | i when i > 0 && isModuleQualified name ->
             let cls = sanitizeIdent (name.Substring(0, i))
@@ -3691,17 +3693,16 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
         let constraintClause =
             Map.tryFind name ctx.ClrConstraints |> Option.defaultValue ""
 
-        // Namnet medlemmen emitteras under. En bindning som skuggar en builtin
-        // får ett härlett namn; `sanitizeIdent` i `generateMethod` lämnar det
-        // som det är.
+        // The name the member is emitted under. A binding that shadows a builtin
+        // gets a derived name; `sanitizeIdent` in `generateMethod` will leave it
+        // as is.
         let emittedName = Prelude.moduleMemberName name
 
         generateMethod ctx "public static " genericParams constraintClause emittedName args kwArgs restArg retType effect body KeywordParameters
 
         // The keyword-free entry, as a C# overload of the same name. Emitted
-        // only where it can win anything — a function all of whose defaults are
-        // constants already carries them in its signature — because it is a
-        // second copy of the body and not merely a second signature.
+        // only where it can win anything: keywords that are constants and value types are
+        // emitted as regular c# methods with named parameters. 
         //
         // The body is emitted rather than called: a wrapper would have to hand
         // the resolved values to a third method, and that method would need the
@@ -3790,9 +3791,10 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                     // time the field is written. Throwing needs no dictionary,
                     // so it reaches where materialization cannot.
                     //
-                    // `Equals` is deliberately left alone. C#'s synthesized one
-                    // compares every instance field, which is exactly what `=`
-                    // on a mutable record means, so the two already agree.
+                    // We don't override `Equals` here. C# automatically generates
+                    // an `Equals` method that compares every instance field. That's
+                    // exactly the behavior we want for a mutable record, so we just
+                    // let C# do its thing.
                     let hashed =
                         if members |> List.exists (fun m -> m.Contains "GetHashCode") then
                             []
@@ -4382,13 +4384,10 @@ let generateProgram
                     | TDefMutable (n, _, _, _) -> [ (n, (modName, n)) ]
                     | TDefTuple (names, _, _, _) -> names |> List.map (fun n -> (n, (modName, n)))
                     | TDefun (n, _, _, _, _, _, _, _, _) -> [ (n, (modName, n)) ]
-                    // An import named after a builtin. Both spellings reach the
-                    // call site through a `using static` — the builtin's from
-                    // `BjolangRuntime`, this one's from the class that defines
-                    // it — and C# resolves a name two static imports provide to
-                    // neither, so `(list-length list)` on an imported `list`
-                    // used to be a CS0411 in generated code. A bare identifier
-                    // cannot say which is meant; the class name can.
+                    // When an import shares a name with a builtin, both spellings
+                    // reach the call site through a `using static`. Because C# cannot
+                    // resolve ambiguous static imports, we must explicitly qualify
+                    // the method with its class name to prevent a CS0411 compiler error.
                     //
                     // Unconditionally, rather than only where the name also
                     // moved: the branch below reads "differs from what a bare
@@ -4450,16 +4449,13 @@ let generateProgram
     // reached both directly and through another module's import would otherwise
     // be named twice, which C# warns about.
     //
-    // Varje modul namnges ur sin upplösta sökväg. Importformen duger inte:
-    // `(std list)` och `"imports/list.bjo"` stavar samma klassnamn och skiljs
-    // åt först av katalogen. Länklistan täcker även moduler som bara nås
-    // transitivt — ett namn som exporteras vidare genom en dll kompileras som
-    // en okvalificerad referens, så klassen som definierar det måste vara i
-    // scope fast modulen aldrig importerades.
+    // Each module is named by it's search path, so that "mydit/foo.bjo" and (std foo) don't collide
+    // This is also checked transitively: a module that is loaded and have things re-exported is also
+    // protected.
     let modulePaths =
         (mainModulePath :: linkedDlls) |> List.map IO.Path.GetFullPath |> List.distinct
 
-    // Namnrymden för typerna, `using static` för medlemmarna.
+    // The namespace is used for types, `using static` for members.
     let namespaceUsings = modulePaths |> List.map Naming.moduleNamespace |> List.distinct
 
     let moduleUsings =
@@ -4473,14 +4469,7 @@ let generateProgram
     for className in moduleUsings do
         appendLine ctx $"using static %s{className};"
         
-    // Backslashes are doubled *first*. Escaping only the quotes turned a `\"`
-    // already inside the metadata — which an inline template body carries as
-    // soon as it mentions a string literal — into `\\"`, closing the C# literal
-    // early and producing source that does not parse.
-    //
-    // A carriage return is escaped rather than dropped. Dropping one changed
-    // the length of a string the metadata format counts characters of, so a
-    // body containing `\r` made every value after it read at the wrong offset.
+    // Backslashes are doubled *first* to avoid double escapes.
     let escapeAttribute (s: string) =
         s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r")
 
@@ -4496,10 +4485,7 @@ let generateProgram
     
     appendLine ctx ""
     // Only generate code for the main module (the last one).
-    //
-    // Modulens kod ligger i en namnrymd som följer katalogen. Klass- och
-    // typnamn är oförändrade och står kvar bara inuti den, så två moduler med
-    // samma filnamn blir olika C#-typer.
+    // The modules are namespaced according to folder. Classes and types are not renamed
     if not decls.IsEmpty then
         let mainModule = List.last decls
         appendLine ctx $"namespace %s{Naming.moduleNamespace mainModulePath} {{"

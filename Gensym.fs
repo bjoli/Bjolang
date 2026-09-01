@@ -2,12 +2,10 @@ module Bjolang.Gensym
 
 /// The compiler's *single* source of invented names.
 ///
-/// Three independent counters used to exist — one in `Codegen`, one in
-/// `LoopLowering`, one in `Unification` — and each was safe only as long as
-/// nothing else invented a name in the same shape. The inliner breaks that
-/// assumption on purpose: it splices a body that already contains
-/// `LoopLowering`'s names into a function that `Codegen` will later hoist
-/// temporaries into. One counter is the only way to keep those apart.
+/// A single, global counter is necessary because the inliner splices bodies
+/// that already contain `LoopLowering` names into functions where `Codegen`
+/// will later hoist temporaries. A shared counter guarantees these names
+/// remain distinct across passes.
 let private counter = ref 0
 
 /// `prefix__N`, with `N` unique across the whole compilation.
