@@ -1,0 +1,75 @@
+;; `reader-read-char!`, the blocking char read.
+;;
+;; A Bjolang char is a Unicode scalar and a port deals in UTF-16 code units, so
+;; a character above the BMP arrives as two reads. What is pinned here is that
+;; it comes back as one character, and that each of the three ways the text can
+;; be broken is refused by name rather than handing out half of one.
+
+(import (std prelude))
+(import (std simpletest))
+
+;; The only way to put a code unit into a string without it being checked for
+;; being a scalar first, which is what makes a lone surrogate reachable at all.
+(: units (-> (List int) string))
+(defun (units codes)
+  (let ((sb (stringbuilder-empty)))
+    (loop (:for c codes) (:do (stringbuilder-add-code! sb c)))
+    (stringbuilder->string sb)))
+
+(: first-char (-> string string))
+(defun (first-char s)
+  (match (try (reader-read-char! (open-input-string s)) #:catch (System.Exception))
+    ((Ok c) (str "read " (int->string (char->integer c))))
+    ((Err e) (.-Message e))))
+
+;; U+1F600, the pair 0xD83D 0xDE00.
+(: emoji string)
+(def emoji (list->string (list (integer->char 128512))))
+
+(defun (main)
+  ;; --- what it reads -------------------------------------------------------
+  (expect "an ASCII character" (first-char "abc") "read 97")
+  ;; The lexer has no \u escape, so é is spelled by its codepoint.
+  (expect "a BMP character above ASCII"
+          (first-char (list->string (list (integer->char 233) #\x)))
+          "read 233")
+  ;; Two code units in, one scalar out.
+  (expect "an astral character is one char" (first-char emoji) "read 128512")
+  (expect "and the pair is spelled as two units" (string-length emoji) 2)
+
+  ;; --- what it refuses -----------------------------------------------------
+  (expect "the empty port"
+          (first-char "")
+          "read-char: the port is at end of input. Guard with (port-eof? p), or use read-char/opt.")
+
+  ;; A low surrogate with nothing before it. Refused without reading a second
+  ;; unit, so the character after it is still there for the next read.
+  (expect "a lone low surrogate"
+          (first-char (units (list 56320 65)))
+          "read-char: the port holds an unpaired low surrogate, which is not a character.")
+
+  ;; A high surrogate with the wrong thing after it.
+  (expect "a high surrogate followed by a letter"
+          (first-char (units (list 55296 65)))
+          "read-char: the port holds a high surrogate with no low surrogate after it, which is not a character.")
+
+  ;; A high surrogate with nothing after it at all.
+  (expect "a high surrogate at the end of the port"
+          (first-char (units (list 55296)))
+          "read-char: the port holds a high surrogate with no low surrogate after it, which is not a character.")
+
+  ;; --- the port is left where it should be ---------------------------------
+  ;; A lone low surrogate costs one unit, so 'A' is the next character.
+  (let ((p (open-input-string (units (list 56320 65)))))
+    (match (try (reader-read-char! p) #:catch (System.Exception))
+      ((Ok _) (fail "a lone low surrogate was accepted"))
+      ((Err _)
+       (expect "only the surrogate was consumed"
+               (int->string (char->integer (reader-read-char! p)))
+               "65"))))
+
+  ;; The colour-aware `read-char` is the same reader underneath.
+  (expect "read-char agrees on an astral character"
+          (int->string (char->integer (read-char (open-input-string emoji))))
+          "128512")
+  0)

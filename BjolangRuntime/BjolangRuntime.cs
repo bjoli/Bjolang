@@ -75,10 +75,9 @@ public static partial class BjolangRuntime {
     //
     // A Bjolang `char` is a Unicode scalar and `TextReader.Read` answers a
     // UTF-16 code unit, so this is not a cast: a character outside the BMP
-    // arrives as two units and has to be put back together here. Otherwise
-    // `read-char` would be the one traversal in the language that hands out
-    // half a character, which is exactly what walking a `string` goes to the
-    // trouble of not doing.
+    // arrives as two units and has to be put back together. `BjoPort` does
+    // that, and both colours of `read-char` go through it, so the blocking
+    // builtin asks it the same question rather than answering it again.
     //
     // That is also why there is no `peek-char`. `Peek` gives one unit of
     // lookahead, one is not always a character, and a peek that could not
@@ -87,30 +86,9 @@ public static partial class BjolangRuntime {
     // .NET object. `port-eof?` answers the question peeking is usually asked
     // for, and a parser that needs more wants the whole text and a
     // `StringCursor`.
-    public static Bjolang.Runtime.BjoChar readersubreadsubchar_BANG(System.IO.TextReader reader) {
-        var first = reader.Read();
-        if (first < 0)
-            throw new System.IO.EndOfStreamException(
-                "read-char: the port is at end of input. Guard with (port-eof? p), or use read-char/opt.");
-
-        var unit = (char)first;
-        if (!char.IsSurrogate(unit)) return new Bjolang.Runtime.BjoChar((uint)first);
-
-        // A low surrogate first, or a high one with nothing after it, is text
-        // that was already broken before it got here. Saying so beats
-        // `BjoChar`'s constructor reporting an out-of-range codepoint, which
-        // names neither the port nor the read.
-        if (!char.IsHighSurrogate(unit))
-            throw new InvalidOperationException(
-                "read-char: the port holds an unpaired low surrogate, which is not a character.");
-
-        var second = reader.Read();
-        if (second < 0 || !char.IsLowSurrogate((char)second))
-            throw new InvalidOperationException(
-                "read-char: the port holds a high surrogate with no low surrogate after it, which is not a character.");
-
-        return new Bjolang.Runtime.BjoChar((uint)char.ConvertToUtf32(unit, (char)second));
-    }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Bjolang.Runtime.BjoChar readersubreadsubchar_BANG(System.IO.TextReader reader) =>
+        Bjolang.Runtime.BjoPort.ReadCharOrThrow(reader);
 
     // The counterpart, and not a `Write((char)c)` for the same reason: an
     // astral character is two UTF-16 units and both have to go out.
