@@ -1293,8 +1293,7 @@
   (#:bjo  (clr-flush-await p)))
 
 ;; --- Input ---
-
-;; --- The leaves ---
+;; These are the leaves of our IO. The bottom calls, so to say.
 (import/extern
   (clr-eof        (: Bjolang.Runtime.BjoPort.PortEof            (-> TextInputPort bool)   #:blocking))
   (clr-eof-await  (: Bjolang.Runtime.BjoPort.PortEofAsync       (-> TextInputPort bool)   #:async))
@@ -1311,34 +1310,30 @@
   (#:sync (clr-eof p))
   (#:bjo  (clr-eof-await p)))
 
-;; Read line.
 (: read-line (-> TextInputPort string))
 (defbjouble (read-line p)
   (#:sync (clr-line p))
   (#:bjo  (clr-line-await p)))
 
-;; Read line optional.
 (: read-line/opt (-> TextInputPort (Option string)))
-;; Read line opt body.
 (defun (read-line/opt p)
   (if (port-eof? p)
       None
       (Some (read-line p))))
 
-;; Read character.
 (: read-char (-> TextInputPort char))
 (defbjouble (read-char p)
   (#:sync (clr-char p))
   (#:bjo  (clr-char-await p)))
 
-;; Read character optional.
+;; If successful, returns Some(char). 
 (: read-char/opt (-> TextInputPort (Option char)))
 (defun (read-char/opt p)
   (if (port-eof? p)
       None
       (Some (read-char p))))
 
-;; Read all.
+;; Drains a port
 (: read-all (-> TextInputPort string))
 (defbjouble (read-all p)
   (#:sync (clr-rest p))
@@ -1365,7 +1360,7 @@
 (: writeln (-> TextOutputPort string void))
 (defun (writeln p s) (.WriteLine p s))
 
-;; Get output string.
+;; Gets the accumulated string in the textoutputport
 (: get-output-string (-> TextOutputPort string))
 (defun (get-output-string p) (writer->string p))
 
@@ -1469,16 +1464,15 @@
 
 ;; `(if-let ((name expr)) then else)`
 ;;
-;; If let.
+;; binds name to whatever is in ,value if it is some, otherwise run the None branch.
 (def/macro (if-let form inject compare)
   (syntax-match form
     ((_ (name value) then else)
      #'(match ,value ((Some ,name) ,then) (None ,else)))
     (bad (syntax-error bad "if-let takes one binding, a then and an else: (if-let (name expr) then else)"))))
 
-;; `(when-let ((name expr)) body ...)`
-;;
-;; When let.
+;; `(when-let (name expr) body ...)`
+;; tests an option result. if it is some, unwraps it and bind the result to name
 (def/macro (when-let form inject compare)
   (syntax-match form
     ((_ (name value) first body ...)

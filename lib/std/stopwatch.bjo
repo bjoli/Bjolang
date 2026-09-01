@@ -4,7 +4,7 @@
 (import/class
   (Stopwatch (: System.Diagnostics.Stopwatch)))
 
-(export stopwatch stopwatch-start! stopwatch-stop! stopwatch-ms time-it)
+(export Stopwatch stopwatch stopwatch-start! stopwatch-stop! stopwatch-ms stopwatch-ticks time-it )
 
 (: stopwatch (-> Stopwatch))
 (defun (stopwatch) (Stopwatch.))
@@ -21,16 +21,24 @@
 (defun (stopwatch-ms sw)
   (.-ElapsedMilliseconds sw))
 
+(: stopwatch-ticks (-> Stopwatch long))
+(defun (stopwatch-ticks sw)
+  (.-ElapsedTicks sw))
+
 
 ;; (time-it body ...) — prints elapsed time. Drops body's value.
 (def/macro (time-it form inject compare)
   (syntax-match form
-    ((_ first body ...)
+    ((_ #:times n first body ...)
      #'(let ()
          (def sw (stopwatch))
-         (stopwatch-start! sw)
-         ,first
-         ,@body
-         (stopwatch-stop! sw)
-         (println (str "Elapsed ms: " (->str (stopwatch-ms sw))))))
+         (let lp ((n ,n))
+           (when (> n 0)
+             (stopwatch-start! sw)
+             ,first
+             ,@body
+             (stopwatch-stop! sw)
+             (lp (- n 1))))
+         (println (str "Mean of "  (->str ,n) " runs: " (->str (/ (stopwatch-ms sw) ,n)) "ms"))))
+    ((_ first body ...) #'(time-it #:times 1 ,first ,@body)) 
     (bad (syntax-error bad "time-it takes a body: (time-it expr ...)"))))
