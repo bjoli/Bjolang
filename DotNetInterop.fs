@@ -547,6 +547,36 @@ let isUnresolved (t: HMType) : bool =
 let showTypesTogether (ts: HMType list) : string list =
     let names = System.Collections.Generic.Dictionary<int, string>()
 
+    // Nycklar som stavas lika men är olika typer — två moduler med samma
+    // filnamn. Bara de skrivs ut med katalogen framför.
+    let ambiguous =
+        let keys = System.Collections.Generic.HashSet<string>()
+
+        let rec collect t =
+            match pruneLocal t with
+            | TCon(name, args) ->
+                keys.Add name |> ignore
+                List.iter collect args
+            | TFun(args, ret, _) -> List.iter collect (ret :: args)
+            | TTuple items -> List.iter collect items
+            | TAssoc(_, _, impl) -> collect impl
+            | _ -> ()
+
+        ts |> List.iter collect
+
+        keys
+        |> Seq.filter Naming.isModuleKey
+        |> Seq.groupBy Naming.showTypeName
+        |> Seq.filter (fun (_, group) -> Seq.length group > 1)
+        |> Seq.collect snd
+        |> Set.ofSeq
+
+    let showName (name: string) =
+        if Set.contains name ambiguous then
+            Naming.showQualifiedTypeName name
+        else
+            Naming.showTypeName name
+
     let nameOf (id: int) =
         match names.TryGetValue id with
         | true, n -> n
@@ -581,9 +611,9 @@ let showTypesTogether (ts: HMType list) : string list =
             // A declared type is keyed by the module that declared it, and the
             // reader is shown both halves: `Banana` alone is no answer when
             // the other side of the mismatch is somebody else's `Banana`.
-            | other -> Naming.showTypeName other
+            | other -> showName other
         | TCon(name, args) ->
-            "(" + Naming.showTypeName name + " " + String.Join(" ", args |> List.map go) + ")"
+            "(" + showName name + " " + String.Join(" ", args |> List.map go) + ")"
         | TFun(args, ret, eff) -> "(" + arrowHead eff + " " + String.Join(" ", (args @ [ ret ]) |> List.map go) + ")"
         | TTuple items -> "(Tuple " + String.Join(" ", items |> List.map go) + ")"
         | TVar n -> "%" + n.TrimStart('\'')

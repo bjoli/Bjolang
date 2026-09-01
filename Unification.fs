@@ -51,15 +51,19 @@ let lookup (env: Env) (name: string) : Binding =
     match Map.tryFind name env.Bindings with
     | Some scheme -> scheme
     | None ->
+        // Namnet som det skrevs. En nyckel bär sin namnrymd, och den är inget
+        // en läsare har skrivit eller kan rätta.
+        let shown = Naming.emittedTypeName name
+
         if Set.contains name env.Registry.OpaqueTypes then
             failwithf
-                $"Unbound variable: %s{name}. %s{Naming.showTypeName name} is exported #:opaque, so its fields did not cross the module boundary and it cannot be constructed here. The module that declares it exports the functions that build one."
+                $"Unbound variable: %s{shown}. %s{Naming.showTypeName name} is exported #:opaque, so its fields did not cross the module boundary and it cannot be constructed here. The module that declares it exports the functions that build one."
         else
             match Map.tryFind name env.Registry.HiddenMembers with
             | Some typeKey ->
                 failwithf
-                    $"Unbound variable: %s{name}. It belongs to %s{Naming.showTypeName typeKey}, which is exported #:opaque: the type's name crosses the module boundary and its representation does not, so a value of it can be held and passed on but not built here."
-            | None -> failwithf $"Unbound variable: %s{name}"
+                    $"Unbound variable: %s{shown}. It belongs to %s{Naming.showTypeName typeKey}, which is exported #:opaque: the type's name crosses the module boundary and its representation does not, so a value of it can be held and passed on but not built here."
+            | None -> failwithf $"Unbound variable: %s{shown}"
 
 /// Introduce `name`, shadowing whatever it named before.
 ///
@@ -399,10 +403,18 @@ let rec unify (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
             // module in front of it, which is a lot to expect a reader to spot
             // — and the thing they have to know is not that the spellings
             // differ but that the types do.
-            | TCon(n1, _), TCon(n2, _) ->
+            | TCon(n1, _), TCon(n2, _) when n1 <> n2 ->
                 match Naming.typeKeyParts n1, Naming.typeKeyParts n2 with
-                | Some(m1, bare1), Some(m2, bare2) when bare1 = bare2 && m1 <> m2 ->
-                    $"\n  Both are called %s{bare1}, and a type belongs to the module that declared it: %s{m1} and %s{m2} each declared one. Import a module with (prefix-types ...) to give its types a spelling of their own."
+                | Some(m1, bare1), Some(m2, bare2) when bare1 = bare2 ->
+                    // Samma modulnamn också: två filer som heter lika. Då är
+                    // katalogen det enda som skiljer dem.
+                    let where1, where2 =
+                        if m1 = m2 then
+                            Naming.showQualifiedTypeName n1, Naming.showQualifiedTypeName n2
+                        else
+                            m1, m2
+
+                    $"\n  Both are called %s{bare1}, and a type belongs to the module that declared it: %s{where1} and %s{where2} each declared one. Import a module with (prefix-types ...) to give its types a spelling of their own."
                 | _ -> ""
             | _ -> ""
 

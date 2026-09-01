@@ -75,14 +75,48 @@ let suspendingCopy (name: string) = name + "__bjo"
 /// definition from a written one.
 let isSuspendingCopy (name: string) = name.EndsWith "__bjo"
 
+/// Roten alla modulnamnrymder hänger under.
+///
+/// Varje barn slutar med en hash, så inget barn kan heta `Bjoml`, `Set` eller
+/// `Collections` — namn som annars hade skuggat körtidens egna namnrymder för
+/// koden inuti.
+[<Literal>]
+let moduleNamespaceRoot = "BjoMod"
+
+/// Är namnet en modulnyckel — eller en typnyckel en modul äger?
+///
+/// Skiljer dem från namn som bara råkar innehålla punkter, som
+/// `System.IO.TextReader`. Roten är vad som gör frågan avgörbar.
+let isModuleKey (name: string) =
+    name.StartsWith(moduleNamespaceRoot + ".", StringComparison.Ordinal)
+
+/// Namnrymden i en nyckel: allt utom sista ledet.
+let namespaceOfKey (key: string) =
+    match key.LastIndexOf '.' with
+    | i when i > 0 -> key.Substring(0, i)
+    | _ -> ""
+
+/// Namnet en nyckel emitteras under: sista ledet.
+///
+/// En deklaration står redan i sin namnrymd och skriver bara ledet; en nästlad
+/// unionsgren har aldrig något kvalificerat namn alls. Namn som inte är
+/// nycklar lämnas orörda.
+let emittedTypeName (name: string) =
+    if isModuleKey name then name.Substring(name.LastIndexOf '.' + 1) else name
+
 /// The module a source or assembly path is known by.
 ///
 /// A module is named after its file, with the two characters that separate a
 /// C# identifier folded away. Everything that has to name another file's module
 /// — the import graph, the metadata a `.dll` publishes, the macro table — has
 /// to arrive at the same answer, so there is one spelling of the rule.
+///
+/// Tar en modulnyckel lika gärna: det platta namnet är nyckelns sista led.
 let moduleNameOfPath (path: string) : string =
-    IO.Path.GetFileNameWithoutExtension(path).Replace(".", "_").Replace("-", "_")
+    if isModuleKey path then
+        emittedTypeName path
+    else
+        IO.Path.GetFileNameWithoutExtension(path).Replace(".", "_").Replace("-", "_")
 
 /// The C# class a module's declarations are emitted into.
 ///
@@ -94,14 +128,6 @@ let moduleNameOfPath (path: string) : string =
 /// the generated entry point.
 let moduleClassName (moduleName: string) =
     sanitizeIdent (moduleNameOfPath moduleName) + "_Module"
-
-/// Roten alla modulnamnrymder hänger under.
-///
-/// Varje barn slutar med en hash, så inget barn kan heta `Bjoml`, `Set` eller
-/// `Collections` — namn som annars hade skuggat körtidens egna namnrymder för
-/// koden inuti.
-[<Literal>]
-let moduleNamespaceRoot = "BjoMod"
 
 /// Fyra byte av SHA-256, som hex.
 let private shortHash (text: string) : string =
@@ -166,17 +192,30 @@ let moduleNamespace (path: string) : string =
 
         $"%s{moduleNamespaceRoot}.%s{leaf}_%s{shortHash dir}"
 
-/// Modulens klass, fullt kvalificerad. Kräver en sökväg.
-let qualifiedModuleClassName (path: string) =
-    $"%s{moduleNamespace path}.%s{moduleClassName path}"
-
-/// Assemblynamnet en modulbiblioteksfil kompileras under.
+/// Modulens identitet: namnrymden och det platta namnet, som en sträng.
 ///
-/// Filen heter fortfarande `set.dll`. Det här är identiteten *inuti* den, och
-/// den är vad CLR slår upp på — så två `set.dll` i olika kataloger måste stava
+/// Nyckeln allt modulägt filas under — typer, konstruktorer, bindningar,
+/// metadata — så två `set.bjo` i olika kataloger är två moduler hela vägen
+/// igenom och inte bara i den emitterade C#:en.
+///
+/// Idempotent: en nyckel in ger samma nyckel ut.
+let moduleKeyOfPath (path: string) : string =
+    if isModuleKey path then
+        path
+    else
+        $"%s{moduleNamespace path}.%s{moduleNameOfPath path}"
+
+/// Assemblynamnet är modulens identitet.
+///
+/// Filen heter fortfarande `set.dll`. Det här är namnet *inuti* den, och det
+/// är vad CLR slår upp på — så två `set.dll` i olika kataloger måste stava
 /// namnet olika för att båda ska kunna länkas in i samma program.
-let assemblyName (path: string) : string =
-    $"%s{moduleNamespace path}.%s{moduleNameOfPath path}"
+let assemblyName = moduleKeyOfPath
+
+/// Modulens klass, fullt kvalificerad. Tar en sökväg eller en nyckel.
+let qualifiedModuleClassName (path: string) =
+    let key = moduleKeyOfPath path
+    $"%s{namespaceOfKey key}.%s{moduleClassName key}"
 
 /// The reference an inlined body uses for a free name that belongs to a module.
 ///
@@ -237,11 +276,23 @@ let eqModuleName = "eq"
 /// which is what a `.dll`'s own type declarations read back look like: the
 /// prefix being tested for is one this function just built, so nothing here
 /// has to guess where a key divides.
-let typeKey (moduleName: string) (typeName: string) : string =
-    if moduleName = "" then
+/// Prefixet den här modulens typer bär.
+///
+/// Namnrymden är med, så nyckeln är det fullt kvalificerade C#-namnet och två
+/// moduler med samma filnamn filar sina typer var för sig.
+let private typePrefix (moduleKey: string) =
+    let flat = sanitizeIdent (moduleNameOfPath moduleKey) + "__"
+
+    if isModuleKey moduleKey then
+        namespaceOfKey moduleKey + "." + flat
+    else
+        flat
+
+let typeKey (moduleKey: string) (typeName: string) : string =
+    if moduleKey = "" then
         typeName
     else
-        let prefix = sanitizeIdent (moduleNameOfPath moduleName) + "__"
+        let prefix = typePrefix moduleKey
         if typeName.StartsWith prefix then typeName else prefix + typeName
 
 /// The name source wrote, given a key and the module that declared it.
@@ -254,7 +305,7 @@ let bareTypeName (moduleName: string) (key: string) : string =
     if moduleName = "" then
         key
     else
-        let prefix = sanitizeIdent (moduleNameOfPath moduleName) + "__"
+        let prefix = typePrefix moduleName
         if key.StartsWith prefix then key.Substring(prefix.Length) else key
 
 /// The module and the name a key is made of, for a name that looks like one.
@@ -265,8 +316,11 @@ let bareTypeName (moduleName: string) (key: string) : string =
 /// which costs a reader a moment and costs a program nothing, since no
 /// resolution goes through here.
 let typeKeyParts (name: string) : (string * string) option =
-    match name.IndexOf "__" with
-    | i when i > 0 && i + 2 < name.Length -> Some(name.Substring(0, i), name.Substring(i + 2))
+    // Namnrymden av först: en läsare vill se `thing/Thing`, inte hashen.
+    let bare = emittedTypeName name
+
+    match bare.IndexOf "__" with
+    | i when i > 0 && i + 2 < bare.Length -> Some(bare.Substring(0, i), bare.Substring(i + 2))
     | _ -> None
 
 /// How a type or constructor name reads in a diagnostic.
@@ -280,6 +334,20 @@ let showTypeName (name: string) : string =
     match typeKeyParts name with
     | Some(moduleName, typeName) -> moduleName + "/" + typeName
     | None -> name
+
+/// Samma namn, med katalogen modulen ligger i framför.
+///
+/// Två moduler med samma filnamn stavas lika, och ett fel som säger att
+/// `thing/Thing` inte är `thing/Thing` hjälper ingen. Bara för det fallet:
+/// katalogtaggen är brus när namnet redan skiljer.
+let showQualifiedTypeName (name: string) : string =
+    if not (isModuleKey name) then
+        showTypeName name
+    else
+        let ns = namespaceOfKey name
+        let tag = ns.Substring(min ns.Length (moduleNamespaceRoot.Length + 1))
+
+        if tag = "" then showTypeName name else tag + "/" + showTypeName name
 
 /// The C# spelling of a Bjolang type parameter.
 let typeParamName (name: string) = "T_" + name.TrimStart('\'')

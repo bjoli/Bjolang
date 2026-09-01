@@ -1983,7 +1983,8 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     // `Naming.eqPrivateBindings` for why they are shut away at all.
     | EIdent(name, r) when
         Set.contains name Naming.eqPrivateBindings
-        && env.CurrentModule <> Naming.eqModuleName
+        // Det platta namnet: `CurrentModule` är en nyckel med namnrymd.
+        && Naming.moduleNameOfPath env.CurrentModule <> Naming.eqModuleName
         ->
         failwithf
             $"Type Error at %s{Lexer.formatPos r}: '%s{name}' is private to std/eq. It is .NET's equality, and a type's own `Eq` implementation is what .NET equality is made *of* — writing one in terms of the other is a loop. Compare the fields instead, or derive."
@@ -5121,7 +5122,7 @@ let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string 
         match Map.tryFind name env.Registry.TraitMethods with
         | Some traitName when Set.contains name env.TraitMethodNames ->
             Diagnostics.warn
-                $"'%s{name}' is imported from '%s{origin.OriginModule}' and is a method of the trait '%s{traitName}', so the import binds over it. A call to '%s{name}' in this module reaches the imported binding rather than dispatching. Import that module with (except ... %s{name}) or (rename ... (%s{name} another-name)) if that is not what you meant."
+                $"'%s{name}' is imported from '%s{Naming.moduleNameOfPath origin.OriginModule}' and is a method of the trait '%s{traitName}', so the import binds over it. A call to '%s{name}' in this module reaches the imported binding rather than dispatching. Import that module with (except ... %s{name}) or (rename ... (%s{name} another-name)) if that is not what you meant."
         | _ -> ()
 
         // Through `addBinding`, because an import is a binder like any other.

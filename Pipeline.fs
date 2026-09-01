@@ -620,10 +620,10 @@ let private registerMacros
             match Map.tryFind entry.Name renaming with
             | None -> ()
             | Some visibleName ->
-                // Namnrymden ur assemblyns egen sökväg: modulklassen ligger i
-                // den dll metadatan lästes ur.
+                // Modulnyckeln bär sin namnrymd, så klassen går att stava ur
+                // den ensam.
                 let className =
-                    $"%s{Naming.moduleNamespace asm.Location}.%s{Naming.moduleClassName entry.ModuleName}"
+                    $"%s{Naming.namespaceOfKey entry.ModuleName}.%s{Naming.moduleClassName entry.ModuleName}"
 
                 let clrType = asm.GetType className
 
@@ -1140,7 +1140,7 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list * Set<strin
                     // modifier's spellings use, and the reason a plain import
                     // goes on meaning what it meant.
                     let typeSpellingDecls =
-                        let bare = Naming.bareTypeName (Naming.moduleNameOfPath absPath)
+                        let bare = Naming.bareTypeName (Naming.moduleKeyOfPath absPath)
 
                         let spellingOf (kind: AliasKind) (r: Lexer.Range) (keyed: string) =
                             let name = bare keyed
@@ -1330,7 +1330,7 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list * Set<strin
             // `.dll` has none to load: its transitive deps are link-only and
             // never enter the module graph.
 
-            let moduleName = Naming.moduleNameOfPath absPath
+            let moduleName = Naming.moduleKeyOfPath absPath
             resolvedModules.[absPath] <- {
                 FilePath = absPath
                 ModuleName = moduleName
@@ -1423,7 +1423,7 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list * Set<strin
 
         if origins.Length > 1 && group |> Seq.exists (fun (_, _, _, renamed, _) -> renamed) then
             let (_, _, _, _, r) = group |> Seq.find (fun (_, _, _, renamed, _) -> renamed)
-            let describe (m: string, n: string) = $"'%s{n}' from %s{m}"
+            let describe (m: string, n: string) = $"'%s{n}' from %s{Naming.moduleNameOfPath m}"
             let both = origins |> List.map describe |> String.concat " and "
 
             failwithf

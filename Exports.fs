@@ -91,7 +91,7 @@ let metadata
     // type it never imported is that the signatures mentioning it resolve, and
     // a key resolves to itself.
     let ownModuleDecls =
-        let ownName = Naming.moduleNameOfPath inputFilePath
+        let ownName = Naming.moduleKeyOfPath inputFilePath
 
         typedAst
         |> List.collect (function
@@ -101,7 +101,7 @@ let metadata
     /// A declaration's key back to the name source wrote, which is the name an
     /// `(export ...)` list holds: `registerTypeDefs` re-keyed every declaration
     /// in this module before it reached here.
-    let bare = Naming.bareTypeName (Naming.moduleNameOfPath inputFilePath)
+    let bare = Naming.bareTypeName (Naming.moduleKeyOfPath inputFilePath)
 
     /// Every type this module declares, exported or not, under its source name.
     /// The gate below needs the whole set to tell "not exported" from "not
@@ -570,11 +570,11 @@ let metadata
                     // while the module was still being checked.
                     let originModule =
                         if alias.OriginModule = "" then
-                            Naming.moduleNameOfPath inputFilePath
+                            Naming.moduleKeyOfPath inputFilePath
                         else
                             alias.OriginModule
 
-                    if originModule = Naming.moduleNameOfPath inputFilePath && alias.OriginalName = name then
+                    if originModule = Naming.moduleKeyOfPath inputFilePath && alias.OriginalName = name then
                         None
                     else
                         Some(originModule, alias.OriginalName)
@@ -753,7 +753,7 @@ let metadata
             let withheld =
                 Set.difference ownTypeNames exportedTypeNames
                 |> Set.toList
-                |> List.map (fun n -> Naming.typeKey inputFilePath n, n)
+                |> List.map (fun n -> Naming.typeKey (Naming.moduleKeyOfPath inputFilePath) n, n)
 
             if not withheld.IsEmpty then
                 let isDelimiter (c: char) =
@@ -842,7 +842,7 @@ let metadata
             // spell `Module_Module::helper` for a template that names
             // one of this module's own bindings — and `Naming` already
             // derives the second from the first.
-            let moduleName = Naming.moduleNameOfPath inputFilePath
+            let moduleName = Naming.moduleKeyOfPath inputFilePath
 
             declaredMacros
             |> List.map (fun name ->

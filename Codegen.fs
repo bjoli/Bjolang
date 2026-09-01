@@ -259,6 +259,14 @@ let private conBaseName (name: string) =
     let mapped = mapPrimitiveType name
     if mapped = name then sanitizeIdent name else mapped
 
+/// Namnet en typ *deklareras* under.
+///
+/// Nyckeln är fullt kvalificerad, vilket är precis vad en referens ska vara.
+/// En deklaration står redan i sin namnrymd, och en nästlad unionsgren har
+/// aldrig något kvalificerat namn alls — båda skriver sista ledet.
+let private declaredTypeName (key: string) =
+    sanitizeIdent (Naming.emittedTypeName key)
+
 let rec typeToString (hm: HMType) : string =
     match hm with
     | TCon ("Array", [elemType]) ->
@@ -1081,8 +1089,8 @@ let rec generatePattern (ctx: CodegenContext) (pat: TypedPattern) : unit =
                 $"SchemeList.Nil<%s{elemTypeStr}>"
             | _ ->
                 match Map.tryFind name ctx.UnionCases with
-                | Some info -> $"{getUnionTypeString pat.Type info.ParentTypeName}.{sanitizeIdent name}"
-                | None -> $"{typeToString pat.Type}.{sanitizeIdent name}"
+                | Some info -> $"{getUnionTypeString pat.Type info.ParentTypeName}.{declaredTypeName name}"
+                | None -> $"{typeToString pat.Type}.{declaredTypeName name}"
         append ctx caseTypeStr
         // A positional record with an empty parameter list gets no Deconstruct
         // method, so nullary cases must be emitted as a bare type pattern.
@@ -1328,14 +1336,14 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
                     // Cast for the same reason as in `generateApply`: the case
                     // class is not the type Bjolang says this has, and a lambda
                     // is exactly where C# infers rather than being told.
-                    append ctx $"({argsStr}) => ({typeStr})new {typeStr}.{sanitizeIdent name}({argsStr})"
+                    append ctx $"({argsStr}) => ({typeStr})new {typeStr}.{declaredTypeName name}({argsStr})"
                 | _ ->
-                    append ctx $"({typeStr})new {typeStr}.{sanitizeIdent name}()"
+                    append ctx $"({typeStr})new {typeStr}.{declaredTypeName name}()"
             else
                 // A nullary case, which is a *value* rather than a call — so
                 // `generateApply` never sees it and this is the only place its
                 // type can be pinned.
-                append ctx $"({typeStr})new {typeStr}.{sanitizeIdent name}()"
+                append ctx $"({typeStr})new {typeStr}.{declaredTypeName name}()"
         | None ->
             let targetName = qualifiedName ctx name
             match expr.Type with
@@ -1878,9 +1886,9 @@ and private generateGuarded
 /// Fully qualifies a module-level binding.
 and private qualifiedName (ctx: CodegenContext) (name: string) =
     match Map.tryFind name ctx.GlobalBindings with
-    | Some("", member') -> sanitizeIdent member'
-    | Some(modName, member') -> $"%s{moduleClassName modName}.%s{sanitizeIdent member'}"
-    | None -> sanitizeIdent name
+    | Some("", member') -> sanitizeIdent (Naming.emittedTypeName member')
+    | Some(modName, member') -> $"%s{moduleClassName modName}.%s{sanitizeIdent (Naming.emittedTypeName member')}"
+    | None -> sanitizeIdent (Naming.emittedTypeName name)
 
 /// Evaluates a statement-shaped node into a temporary in the enclosing statement
 /// position and yields the temporary's name.
@@ -1960,7 +1968,7 @@ and private generateApply
         // then could not convert the resulting `SchemeList<Msg.Job>`, because
         // C#'s generics are invariant. `(wrap ev (fun (j) (Job j)))` is the
         // same shape, and it is the idiomatic way to write a `choose` branch.
-        append ctx $"({typeStr})new {typeStr}.{sanitizeIdent name}("
+        append ctx $"({typeStr})new {typeStr}.{declaredTypeName name}("
         for i, emit in List.indexed (prepareOperands ctx args) do
             if i > 0 then append ctx ", "
             emit ctx
@@ -3705,7 +3713,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
 
             match td.Kind with
             | Record(fields, isStruct) ->
-                let selfType = sanitizeIdent td.Name
+                let selfType = declaredTypeName td.Name
                 let fieldType (f: Parser.RecordField) =
                     typeToString (Inference.resolveTypeAnnotation ctx.Registry f.Type)
 
@@ -3795,10 +3803,10 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                     appendTypeBody ctx members
             | Union cases ->
                 indent ctx
-                appendLine ctx $"public abstract record %s{sanitizeIdent td.Name}%s{tyArgsStr} {{"
+                appendLine ctx $"public abstract record %s{declaredTypeName td.Name}%s{tyArgsStr} {{"
                 withIndent ctx (fun ctx ->
                     indent ctx
-                    appendLine ctx $"private %s{sanitizeIdent td.Name}() {{}}"
+                    appendLine ctx $"private %s{declaredTypeName td.Name}() {{}}"
 
                     // Into every case class, and not onto the abstract base: a
                     // derived record synthesizes its own `Equals`, which
@@ -3810,16 +3818,16 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                         indent ctx
                         match c with
                         | SimpleCase (n, _) ->
-                            append ctx $"public sealed record %s{sanitizeIdent n}() : %s{sanitizeIdent td.Name}%s{tyArgsStr}"
-                            appendTypeBody ctx (materialized (sanitizeIdent n) SealedCase)
+                            append ctx $"public sealed record %s{declaredTypeName n}() : %s{declaredTypeName td.Name}%s{tyArgsStr}"
+                            appendTypeBody ctx (materialized (declaredTypeName n) SealedCase)
                         | DataCase (n, ftypes, _, _) ->
-                            append ctx $"public sealed record %s{sanitizeIdent n}("
+                            append ctx $"public sealed record %s{declaredTypeName n}("
                             for i, ft in List.indexed ftypes do
                                 if i > 0 then append ctx ", "
                                 append ctx (typeToString (Inference.resolveTypeAnnotation ctx.Registry ft))
                                 append ctx $" Item%d{i+1}"
-                            append ctx $") : %s{sanitizeIdent td.Name}%s{tyArgsStr}"
-                            appendTypeBody ctx (materialized (sanitizeIdent n) SealedCase)
+                            append ctx $") : %s{declaredTypeName td.Name}%s{tyArgsStr}"
+                            appendTypeBody ctx (materialized (declaredTypeName n) SealedCase)
                 )
                 indent ctx
                 appendLine ctx "}"
@@ -4157,16 +4165,16 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                                 match c with
                                 | SimpleCase (n, _) ->
                                     indent ctx
-                                    appendLine ctx $"public static %s{sanitizeIdent td.Name}%s{tyArgsStr} %s{sanitizeIdent n}%s{tyArgsStr}() => new %s{sanitizeIdent td.Name}%s{tyArgsStr}.%s{sanitizeIdent n}();"
+                                    appendLine ctx $"public static %s{declaredTypeName td.Name}%s{tyArgsStr} %s{declaredTypeName n}%s{tyArgsStr}() => new %s{declaredTypeName td.Name}%s{tyArgsStr}.%s{declaredTypeName n}();"
                                 | DataCase (n, ftypes, _, _) ->
                                     indent ctx
-                                    append ctx $"public static %s{sanitizeIdent td.Name}%s{tyArgsStr} %s{sanitizeIdent n}%s{tyArgsStr}("
+                                    append ctx $"public static %s{declaredTypeName td.Name}%s{tyArgsStr} %s{declaredTypeName n}%s{tyArgsStr}("
                                     for i, ft in List.indexed ftypes do
                                         if i > 0 then append ctx ", "
                                         append ctx (typeToString (Inference.resolveTypeAnnotation ctx.Registry ft))
                                         append ctx $" arg{i}"
                                     let argsListStr = String.concat ", " [for i in 0 .. ftypes.Length - 1 -> $"arg{i}"]
-                                    appendLine ctx $") => new %s{sanitizeIdent td.Name}%s{tyArgsStr}.%s{sanitizeIdent n}(%s{argsListStr});"
+                                    appendLine ctx $") => new %s{declaredTypeName td.Name}%s{tyArgsStr}.%s{declaredTypeName n}(%s{argsListStr});"
                         | _ -> ()
                 | _ -> ()
 

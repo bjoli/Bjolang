@@ -1640,6 +1640,10 @@ let addInlineTemplate
 let implClassName (traitName: string) (targetTypeName: string) =
     let flattened =
         if targetTypeName = BlanketCtor then "Blanket"
+        // En modultypnyckel är kvalificerad. Klassen ligger redan i modulens
+        // namnrymd, så den namnges efter sista ledet — en `.NET`-typ som
+        // `System.IO.TextReader` har ingen namnrymd att stå i och plattas.
+        elif Naming.isModuleKey targetTypeName then Naming.emittedTypeName targetTypeName
         else targetTypeName.Replace(".", "_")
 
     $"%s{traitName}_%s{flattened}"
