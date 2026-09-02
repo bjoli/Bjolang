@@ -1983,7 +1983,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     // `Naming.eqPrivateBindings` for why they are shut away at all.
     | EIdent(name, r) when
         Set.contains name Naming.eqPrivateBindings
-        // The flat name: `CurrentModule` is a namespace-qualified key.
+        // Extract the simple module name from the fully-qualified `CurrentModule` key.
         && Naming.moduleNameOfPath env.CurrentModule <> Naming.eqModuleName
         ->
         failwithf
@@ -6497,8 +6497,7 @@ let private checkModuleValuesAreConcrete (registry: TraitRegistry) (decls: TDecl
 /// A `def/impl`'s methods are not reached: they sit inside `TImpl`, and this
 /// descends through `TModule` and nothing else.
 let private warnAboutShadowedMethods (registry: TraitRegistry) (decls: TDecl list) : unit =
-    // Only an exported shadow reaches other modules. A private one only affects this
-    // file, and reporting otherwise would send the reader looking in the wrong place.
+    // Only warn the user if they are shadowing a method and *exporting* it. Shadowing a method privately is fine, and warning about it would be unhelpful.
     let exported =
         let names = System.Collections.Generic.HashSet<string>()
 

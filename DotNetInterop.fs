@@ -547,8 +547,7 @@ let isUnresolved (t: HMType) : bool =
 let showTypesTogether (ts: HMType list) : string list =
     let names = System.Collections.Generic.Dictionary<int, string>()
 
-    // Keys that are spelled the same but refer to different types — two modules
-    // with the same filename. Only these are printed with their directory prefix.
+    // Find all type names that are defined in multiple modules. We will prefix these specific types with their directory name in error messages so the user can tell them apart.
     let ambiguous =
         let keys = System.Collections.Generic.HashSet<string>()
 

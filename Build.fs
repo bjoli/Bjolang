@@ -143,9 +143,9 @@ let compile (options: Options) (inputFilePath: string) : int =
                 |> List.map Path.GetDirectoryName
                 |> List.distinct
 
-            // A module is looked up by its assembly name and loaded from the
-            // file it was built to. The filename is not enough: two modules
-            // can be named `set.dll`, and the name is the only thing the CLR asks for.
+            // Map the dependencies by their internal assembly name rather than their filename,
+            // because the .NET runtime loads assemblies by their internal name. This prevents conflicts
+            // if multiple dependencies happen to output a file named `set.dll`.
             let moduleAssemblyPairs =
                 dllDeps
                 |> List.filter File.Exists
@@ -250,7 +250,7 @@ let compile (options: Options) (inputFilePath: string) : int =
             // could be on the resolver's probe path and still not be referenced
             // at compile time.
             // En modul refereras vid sitt assemblynamn, körtidens vid sitt
-            // filename. Two `set.dll` files become two distinct entries instead of a duplicate.
+            // Map dependencies by their file paths so that multiple files with the same name (like `utils.dll` from different directories) aren't accidentally merged into a single entry.
             let moduleAssemblyNames =
                 moduleAssemblyPairs |> List.map (fun (name, path) -> path, name) |> Map.ofList
 
@@ -283,9 +283,8 @@ let compile (options: Options) (inputFilePath: string) : int =
             
             let outDir = Path.GetFullPath(if System.String.IsNullOrWhiteSpace(Path.GetDirectoryName(outputFilePath)) then "." else Path.GetDirectoryName(outputFilePath))
 
-            // A library is imported and needs a name that is unique across
-            // directories. An executable is the end of the chain — nothing refers to it —
-            // and it keeps the filename, which the host files next to it expect.
+            // If we are building a library, we use the hashed module key as the assembly name to guarantee it's globally unique.
+            // If we are building an executable, we just use the filename since no other project will import it.
             let assemblyName =
                 if isLibrary then
                     Naming.assemblyName outputFilePath
@@ -433,8 +432,7 @@ let compile (options: Options) (inputFilePath: string) : int =
                             let targetPath = Path.GetFullPath(outputFilePath)
 
                             // csc namnger assemblyn efter utfilen. Ett bibliotek
-                            // is therefore built under its assembly name and moved
-                            // into place afterwards.
+                            // Because `csc.exe` forces the output filename to match the assembly name, we compile the library into a temporary folder using its unique assembly name, and then copy it to the final destination.
                             let cscOutPath =
                                 if isLibrary then
                                     Path.Combine(tmpDir, assemblyName + ".dll")
@@ -529,8 +527,7 @@ let compile (options: Options) (inputFilePath: string) : int =
                                 if not (System.String.IsNullOrWhiteSpace stderr) then printfn "%s" (stderr.TrimEnd())
 
                             if exitCode = 0 then
-                                // Both the dll and pdb are moved: the pdb is also
-                                // named after the output file and wouldn't be found otherwise.
+                                // Copy both the `.dll` and the `.pdb` (debug symbols) to the final output directory.
                                 // modulen.
                                 if cscOutPath <> targetPath then
                                     File.Copy(cscOutPath, targetPath, true)

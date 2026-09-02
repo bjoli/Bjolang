@@ -66,31 +66,26 @@ let suspendingCopy (name: string) = name + "__bjo"
 /// definition from a written one.
 let isSuspendingCopy (name: string) = name.EndsWith "__bjo"
 
-/// The root namespace that all module namespaces fall under.
-///
-/// Every child ends with a hash, ensuring no child can be named `Bjoml`, `Set`,
-/// or `Collections` — names that would otherwise shadow the runtime's own
-/// namespaces for the code inside.
+/// This is the base namespace for all compiled modules (e.g., `BjoMod`).
+/// We append a hash to all child namespaces so that a user module named `Set`
+/// compiles to `BjoMod.Set_1234abcd` instead of `BjoMod.Set`. This prevents
+/// user modules from accidentally colliding with built-in .NET namespaces.
 [<Literal>]
 let moduleNamespaceRoot = "BjoMod"
 
-/// Whether the name is a module key — or a type key owned by a module.
-///
-/// This distinguishes them from names that just happen to contain dots, like
-/// `System.IO.TextReader`. The root prefix makes this decidable.
+/// Checks if a string is one of our internal module keys (which start with `BjoMod.`).
+/// We use this to distinguish our own module identifiers from standard .NET fully-qualified names.
 let isModuleKey (name: string) =
     name.StartsWith(moduleNamespaceRoot + ".", StringComparison.Ordinal)
 
-/// The namespace portion of a key: everything except the last segment.
+/// Extracts the namespace from a module key by stripping off the final name segment (e.g., given `BjoMod.foo.bar`, returns `BjoMod.foo`).
 let namespaceOfKey (key: string) =
     match key.LastIndexOf '.' with
     | i when i > 0 -> key.Substring(0, i)
     | _ -> ""
 
-/// The name a key is emitted under: the last segment.
-///
-/// A declaration is already in its namespace and only writes the final segment; a nested
-/// union branch never has a qualified name at all. Names that are not keys are left untouched.
+/// Extracts the final segment of a module key (e.g., given `BjoMod.foo.bar`, returns `bar`).
+/// We use this to get the bare name of a type or module when emitting C# code, since the C# code will already be inside the correct `namespace` block.
 let emittedTypeName (name: string) =
     if isModuleKey name then name.Substring(name.LastIndexOf '.' + 1) else name
 
@@ -101,7 +96,7 @@ let emittedTypeName (name: string) =
 /// — the import graph, the metadata a `.dll` publishes, the macro table — has
 /// to arrive at the same answer, so there is one spelling of the rule.
 ///
-/// Also accepts a module key: the flat name is the key's last segment.
+/// Gets the base name of a module from its file path (e.g., `/path/to/my-module.bjo` becomes `my_module`). If passed an already-formatted module key, it just extracts the final segment.
 let moduleNameOfPath (path: string) : string =
     if isModuleKey path then
         emittedTypeName path
@@ -119,7 +114,7 @@ let moduleNameOfPath (path: string) : string =
 let moduleClassName (moduleName: string) =
     sanitizeIdent (moduleNameOfPath moduleName) + "_Module"
 
-/// Four bytes of a SHA-256 hash, as hex.
+/// Generates a short, 8-character hex string from a SHA-256 hash. Used to create unique suffixes for namespaces.
 let private shortHash (text: string) : string =
     use sha = Security.Cryptography.SHA256.Create()
 
@@ -132,21 +127,14 @@ let private shortHash (text: string) : string =
 let private identSegment (s: string) =
     sanitizeIdent (s.Replace(".", "_").Replace("-", "_"))
 
-/// The namespace where a module's class and types are emitted.
+/// Determines the C# namespace for a module based on its directory path.
 ///
-/// Derived from the directory, not the file. A module and its `.dll` live in the same
-/// directory, so an importer gets the same namespace from the `.dll` path as the module
-/// itself got from its `.bjo` path.
+/// All files in the same directory share a namespace. If the module is part of the standard
+/// library (under `lib/`), its namespace is based on its relative path to allow different
+/// installations to share the same identity. For all other files, we hash the absolute
+/// directory path to ensure uniqueness.
 ///
-/// Two files in the same directory share a namespace but cannot collide because they
-/// have different filenames, hence different class names.
-///
-/// A library module is named after its location under `lib` (e.g. `lib/std` becomes `std`),
-/// regardless of where the installation happens to be. This makes `BJOLANG_LIB` possible:
-/// two copies of the library resolve to the same name and are interchangeable. Everything
-/// else gets a hash of its absolute directory, which is what distinguishes two `set.bjo` files.
-///
-/// Requires a file path. A bare module name has no directory and will yield the wrong answer.
+/// Note: This function requires an absolute file path, not just a module name.
 let moduleNamespace (path: string) : string =
     let full = IO.Path.GetFullPath path
 
@@ -181,28 +169,21 @@ let moduleNamespace (path: string) : string =
 
         $"%s{moduleNamespaceRoot}.%s{leaf}_%s{shortHash dir}"
 
-/// The module's identity: the namespace and the flat name, as a single string.
-///
-/// This is the key that everything owned by the module is filed under — types,
-/// constructors, bindings, metadata. This ensures two `set.bjo` files in different
-/// directories are treated as two distinct modules throughout the entire compilation,
-/// not just in the emitted C#.
-///
-/// Idempotent: passing a key in returns the same key.
+/// Generates the unique internal identifier for a module, combining its namespace and filename.
+/// This key is used everywhere in the compiler to track the module's types, constructors,
+/// and metadata, ensuring that two files named `utils.bjo` in different directories are treated as completely separate modules.
 let moduleKeyOfPath (path: string) : string =
     if isModuleKey path then
         path
     else
         $"%s{moduleNamespace path}.%s{moduleNameOfPath path}"
 
-/// The assembly name is the module's identity.
-///
-/// The file is still named `set.dll`. This is the internal name used by the CLR for
-/// lookups. Therefore, two `set.dll` files in different directories must spell this
-/// name differently so both can be linked into the same program.
+/// The internal name given to the compiled `.dll` assembly.
+/// We use the full module key so that if a project has multiple files named `utils.bjo`
+/// in different folders, they compile into `.dll`s with distinct internal assembly names and don't conflict when loaded by the .NET runtime.
 let assemblyName = moduleKeyOfPath
 
-/// The fully qualified class name for the module. Accepts a path or a key.
+/// Generates the fully qualified C# class name that will hold the module's top-level functions.
 let qualifiedModuleClassName (path: string) =
     let key = moduleKeyOfPath path
     $"%s{namespaceOfKey key}.%s{moduleClassName key}"
@@ -266,10 +247,8 @@ let eqModuleName = "eq"
 /// which is what a `.dll`'s own type declarations read back look like: the
 /// prefix being tested for is one this function just built, so nothing here
 /// has to guess where a key divides.
-/// The prefix carried by types in this module.
-///
-/// The namespace is included, so the key is the fully qualified C# name. This ensures
-/// two modules with the same filename file their types separately.
+/// Generates the fully qualified C# prefix for types defined in this module.
+/// This prefix is added to internal type names to prevent collisions between types with the same name in different files.
 let private typePrefix (moduleKey: string) =
     let flat = sanitizeIdent (moduleNameOfPath moduleKey) + "__"
 
@@ -306,7 +285,7 @@ let bareTypeName (moduleName: string) (key: string) : string =
 /// which costs a reader a moment and costs a program nothing, since no
 /// resolution goes through here.
 let typeKeyParts (name: string) : (string * string) option =
-    // Strip the namespace first: the reader wants to see `thing/Thing`, not the hash.
+    // Remove the namespace hash so that error messages show a clean name like `module/Type` instead of `module_1234abcd/Type`.
     let bare = emittedTypeName name
 
     match bare.IndexOf "__" with
@@ -325,11 +304,7 @@ let showTypeName (name: string) : string =
     | Some(moduleName, typeName) -> moduleName + "/" + typeName
     | None -> name
 
-/// The same name, prefixed by the module's directory.
-///
-/// Two modules with the same filename will spell their types identically, and an
-/// error stating that `thing/Thing` is not `thing/Thing` is unhelpful. This is used
-/// specifically for that case, since the directory tag is just noise when names differ.
+/// Formats a type name for error messages, including the directory name only if it's necessary to distinguish it from another type with the same name. This prevents confusing errors like 'Expected Type but got Type'.
 let showQualifiedTypeName (name: string) : string =
     if not (isModuleKey name) then
         showTypeName name

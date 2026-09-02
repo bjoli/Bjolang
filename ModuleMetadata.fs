@@ -43,12 +43,7 @@ open System.Text
 /// port surface lives behind one. `DoubleDefs` names the exports written with
 /// `defbjouble`; without it an importer sees only the ordinary copy and a
 /// bjoroutine calling one parks where it should suspend.
-/// 7: A module is named by its namespace and its name (e.g. `BjoMod.std.set`)
-/// rather than just its filename. Type keys, `Origin`, `InlineTemplateEntry.Ctor`,
-/// `OriginModule`, and `MacroEntry.ModuleName` all carry this identity. An assembly
-/// built prior to this names its types without a namespace, so they would fail to
-/// match at the importer side — and two modules with the same filename would spell
-/// their types identically.
+/// Version 7 metadata format: We now use fully namespace-qualified names (e.g. `BjoMod.std.set`) instead of just filenames to identify modules. This prevents collisions when a project imports two files that share the same name (like `utils.bjo`) from different directories.
 let currentVersion = 7
 
 /// An exported binding: enough to bind its name and give it a type.

@@ -261,9 +261,8 @@ let private conBaseName (name: string) =
 
 /// Namnet en typ *deklareras* under.
 ///
-/// The key is fully qualified, which is exactly what a reference needs to be.
-/// A declaration is already in its namespace, and a nested union branch never
-/// has a qualified name at all — both simply write the final segment.
+/// Returns the bare name of a type for use in its declaration.
+/// We don't need the full namespace here because the C# code will already be inside the correct `namespace` block.
 let private declaredTypeName (key: string) =
     sanitizeIdent (Naming.emittedTypeName key)
 
@@ -1888,13 +1887,12 @@ and private generateGuarded
 /// Fully qualifies a module-level binding.
 and private qualifiedName (ctx: CodegenContext) (name: string) =
     match Map.tryFind name ctx.GlobalBindings with
-    // No class to name: this *is* the builtin, and it goes by its own name.
+    // If the binding is a standard built-in (from `BjolangRuntime`), we emit its name directly without any class qualification.
     | Some("", member') -> sanitizeIdent (Naming.emittedTypeName member')
     | Some(modName, member') ->
         $"%s{moduleClassName modName}.%s{Prelude.moduleMemberName (Naming.emittedTypeName member')}"
     | None ->
-        // An inlined body spells a module binding as `Class::name`, and the
-        // segment after `::` is a member that might carry a derived name.
+        // Handle inline macro expansions: if the name is formatted as `Class::name`, we split it and qualify the method call with the class name.
         match name.LastIndexOf "::" with
         | i when i > 0 && isModuleQualified name ->
             let cls = sanitizeIdent (name.Substring(0, i))
@@ -3693,9 +3691,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
         let constraintClause =
             Map.tryFind name ctx.ClrConstraints |> Option.defaultValue ""
 
-        // The name the member is emitted under. A binding that shadows a builtin
-        // gets a derived name; `sanitizeIdent` in `generateMethod` will leave it
-        // as is.
+        // Determine the C# method name for this binding. If the user defined a variable that shadows a built-in function, this assigns it a unique name so it doesn't cause a C# naming collision.
         let emittedName = Prelude.moduleMemberName name
 
         generateMethod ctx "public static " genericParams constraintClause emittedName args kwArgs restArg retType effect body KeywordParameters
@@ -4455,7 +4451,7 @@ let generateProgram
     let modulePaths =
         (mainModulePath :: linkedDlls) |> List.map IO.Path.GetFullPath |> List.distinct
 
-    // The namespace is used for types, `using static` for members.
+    // Import the namespaces for the dependencies so we can access their types, and statically import their module classes so we can directly call their functions.
     let namespaceUsings = modulePaths |> List.map Naming.moduleNamespace |> List.distinct
 
     let moduleUsings =
