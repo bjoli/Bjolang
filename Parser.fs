@@ -462,6 +462,19 @@ type Decl =
     // DImplExtern (TraitName, TargetType, AssociatedTypeBindings, Constraints, Range)
     | DImplExtern of string * FType * (string * FType) list * (string * string) list * Range
 
+/// Gets the source code location (Range) of a declaration.
+///
+/// This provides a fallback location for error reporting, ensuring that any
+/// error during declaration processing can point to the declaration itself.
+let declRange (decl: Decl) : Range =
+    match decl with
+    | DDef(_, _, r) | DDefun(_, _, _, _, r) | DDefDouble(_, _, _, _, r) | DDefTuple(_, _, r) | DDefMutable(_, _, r)
+    | DSignature(_, _, _, r) | DType(_, r) | DTypeRec(_, r) | DTrait(_, _, _, _, _, _, _, r) | DImpl(_, _, _, _, _, r)
+    | DImplExtern(_, _, _, _, r) | DInlineImpl(_, _, _, _, _, _, _, r)
+    | DModule(_, _, r) | DImport(_, r) | DAlias(_, _, r) | DExport(_, r) | DReExport(_, r)
+    | DExtern(_, _, _, _, r) | DImportAlias(_, _, _, r)
+    | DImportExtern(_, r) | DImportClass(_, r) | DMacro(_, r) -> r
+
 // ---------------------------------------------------------------------------
 // Macro expansion
 // ---------------------------------------------------------------------------

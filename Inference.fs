@@ -558,7 +558,8 @@ let rec resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType 
 
         match Map.tryFind name registry.Aliases with
             | Some (args, t) when args.Length = 0 -> t
-            | Some (args, _) -> failwithf $"Type alias {name} expects {args.Length} arguments, but got 0"
+            | Some (args, _) ->
+                failwithf $"Type alias {Naming.showTypeName name} expects {args.Length} arguments, but got 0"
             | None ->
                 match Map.tryFind name typeNameMap with
                 | Some t -> t
@@ -633,7 +634,10 @@ let rec resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType 
         match Map.tryFind name registry.Aliases with
         | Some (typeParams, t) ->
             if typeParams.Length <> resolvedArgs.Length then
-                failwithf $"Type alias {name} expects {typeParams.Length} arguments, but got {resolvedArgs.Length}"
+                // Use showTypeName to format the internal name (e.g. BjoMod.std.prelude__Map)
+                // back into the user-facing name (e.g. Map).
+                failwithf
+                    $"Type alias {Naming.showTypeName name} expects {typeParams.Length} arguments, but got {resolvedArgs.Length}"
             let normalizeParam (p: string) = if p.StartsWith("'") then p else "'" + p
             let subst = List.zip (typeParams |> List.map normalizeParam) resolvedArgs |> Map.ofList
             substTypeVars subst t
@@ -4113,7 +4117,20 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
 
     { env with Registry = finalRegistry; Bindings = finalBindings }, List.ofSeq keyedDefs
 
+/// Checks a single declaration and ensures any errors raised during type checking
+/// have a source location attached.
+/// 
+/// This acts as a fallback for errors that occur outside of expression inference 
+/// (such as parsing signatures or checking trait implementations). If an error 
+/// doesn't already have a specific source location (`needsLocation`), we attach 
+/// the location of the entire declaration to provide context to the user.
 let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string * string) list>) (decl: Decl) : Env * Map<string, HMType * FType option * (string * string) list> * TDecl list =
+    try
+        checkDeclNode env sigs decl
+    with ex when Diagnostics.needsLocation ex ->
+        raise (Diagnostics.withLocation (declRange decl) ex)
+
+and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * (string * string) list>) (decl: Decl) : Env * Map<string, HMType * FType option * (string * string) list> * TDecl list =
     // What module level looks like from inside this declaration: the imports,
     // the prelude and whatever this module has defined so far. Nothing a body
     // binds gets in, because every binder inside one goes through `addBinding`,
@@ -6235,18 +6252,30 @@ and private checkDeclGroup
             $"Type Error at %s{Lexer.formatPos r}: '%s{name}' has more than one type signature. A (: %s{name} ...) and a `defun` that writes its own types both declare one, so write whichever of the two you meant and not both."
     | _ -> ()
 
+    /// Resolves a type signature and attaches the given source location `r` to any errors.
+    ///
+    /// We resolve signatures before checking declarations so they can refer to each other
+    /// in any order. Because this happens at the module level, errors would default to 
+    /// reporting the entire file's location. This helper ensures errors in the signature 
+    /// point specifically to the signature's location.
+    let resolveSigAt (r: Range) (ftype: FType) =
+        try
+            resolveTypeAnnotation sigRegistry ftype
+        with ex when Diagnostics.needsLocation ex ->
+            raise (Diagnostics.withLocation r ex)
+
     let explicitSigs =
         decls
         |> List.collect (function
-            | DSignature(name, ftype, constraints, _) -> 
-                [name, (resolveTypeAnnotation sigRegistry ftype, Some ftype, constraints)]
+            | DSignature(name, ftype, constraints, r) ->
+                [name, (resolveSigAt r ftype, Some ftype, constraints)]
             // An inline trait's signatures are not `HMType`s and never can be:
             // they mention the constructor variable applied. They are read as
             // templates by `DTrait` instead, and there is nothing to inject here.
-            | DTrait(_, _, holeArity, _, signatures, _, _, _) when holeArity = 0 ->
+            | DTrait(_, _, holeArity, _, signatures, _, _, r) when holeArity = 0 ->
                 signatures
                 |> List.map (fun (name, ftype) ->
-                    name, (resolveTypeAnnotation sigRegistry ftype, Some ftype, []))
+                    name, (resolveSigAt r ftype, Some ftype, []))
             | _ -> [])
         |> Map.ofList
 

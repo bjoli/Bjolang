@@ -34,8 +34,21 @@ type LoopScope = {
     ExitLabelUsed: bool ref
 }
 
+/// Stores the `#line` directive to be emitted before the next line of C# code.
+///
+/// Directives are buffered here rather than written immediately. This prevents 
+/// emitting redundant directives when multiple syntax nodes ask for one before
+/// any actual code is generated. It also allows us to determine the correct 
+/// indentation offset when the line is finally emitted.
+///
+/// This state is mutable and shared by reference so it persists across 
+/// nested `CodegenContext` records (e.g. during `withIndent`).
+type LineState = { mutable Pending: Lexer.Range option }
+
 type CodegenContext = {
     Builder: StringBuilder
+    /// The directive owed to the next line written to `Builder`.
+    Line: LineState
     IndentLevel: int
     UnionCases: Map<string, UnionCaseInfo>
     /// Visible name -> the module class holding it and the member it is
@@ -90,33 +103,81 @@ let inline append (ctx: CodegenContext) (s: string) =
 let inline appendLine (ctx: CodegenContext) (s: string) =
     ctx.Builder.AppendLine(s) |> ignore
 
-let inline indent (ctx: CodegenContext) =
+/// Checks if the file in the given range is an actual source file on disk.
+///
+/// This prevents generating `#line` directives for virtual files (like `<repl>`) 
+/// or dependency assemblies (`.dll`), which would confuse debuggers by mapping 
+/// source lines to binary files. We check the file extension rather than disk 
+/// existence to tolerate files moving after a build.
+let private isBjoSource (file: string) =
+    not (String.IsNullOrEmpty file)
+    && (file.EndsWith(".bjo", StringComparison.OrdinalIgnoreCase)
+        || file.EndsWith(".protobjo", StringComparison.OrdinalIgnoreCase))
+
+/// Checks if a source range is valid for a `#line` span directive.
+///
+/// Synthesized ranges (created by the compiler rather than the lexer) might 
+/// contain invalid line/column data. This validation prevents us from 
+/// generating malformed directives that would cause C# compilation errors.
+let private hasUsableSpan (r: Lexer.Range) =
+    r.Start.Line >= 1
+    && r.End.Line >= r.Start.Line
+    && (r.End.Line > r.Start.Line || r.End.Column >= r.Start.Column)
+
+/// Flushes any pending `#line` directive before emitting the next line of code.
+///
+/// We pass `indentWidth` so that the directive's column mapping correctly accounts 
+/// for the generated line's indentation.
+/// Note: Our `Range` columns are 0-based, but C# directives require 1-based columns.
+/// Although we emit a full span, only the starting position actually matters for 
+/// breakpoints and stack traces in the resulting PDB.
+let private flushLine (ctx: CodegenContext) (indentWidth: int) =
+    match ctx.Line.Pending with
+    | None -> ()
+    | Some r ->
+        ctx.Line.Pending <- None
+
+        if not (isBjoSource r.File) then
+            // Not skipped: skipping would leave the *previous* directive in
+            // force, which numbers this line as a continuation of source it has
+            // nothing to do with. Saying there is no source is the true answer,
+            // and it also keeps a debugger from stepping into a prelude body
+            // the user never wrote.
+            ctx.Builder.AppendLine("#line hidden") |> ignore
+        else
+            let path = r.File.Replace("\\", "\\\\").Replace("\"", "\\\"")
+
+            if hasUsableSpan r then
+                ctx.Builder.AppendLine(
+                    $"#line ({r.Start.Line}, {r.Start.Column + 1}) - ({r.End.Line}, {r.End.Column + 1}) {indentWidth} \"{path}\""
+                )
+                |> ignore
+            else
+                ctx.Builder.AppendLine($"#line {r.Start.Line} \"{path}\"") |> ignore
+
+// Not `inline`: it flushes a pending directive, which is real work and reaches
+// module-private helpers.
+let indent (ctx: CodegenContext) =
+    flushLine ctx (ctx.IndentLevel * 4)
     ctx.Builder.Append(String(' ', ctx.IndentLevel * 4)) |> ignore
 
 let withIndent (ctx: CodegenContext) (f: CodegenContext -> unit) =
     f { ctx with IndentLevel = ctx.IndentLevel + 1 }
 
-/// `#line`, mapping the C# that follows back to the Bjolang that produced it.
+/// Requests a `#line` directive to map the next generated statement to its source.
 ///
-/// Emitted per statement rather than per method: a directive holds until the
-/// next one, so one per method would map the twentieth generated line of a body
-/// to the twentieth line of the source function — usually past the end of it.
-///
-/// A range with no file is skipped rather than guessed at. Nothing in the
-/// compiler builds one today, but a wrong `#line` is worse than none: it sends
-/// a reader to a line that has nothing to do with the error.
+/// We request this per statement to ensure fine-grained debugger mapping. 
+/// The request is buffered in `LineState` rather than written immediately.
 let lineDirective (ctx: CodegenContext) (r: Lexer.Range) =
-    if not (String.IsNullOrEmpty r.File) then
-        let path = r.File.Replace("\\", "\\\\").Replace("\"", "\\\"")
-        ctx.Builder.AppendLine($"#line {r.Start.Line} \"{path}\"") |> ignore
+    ctx.Line.Pending <- Some r
 
-/// Ends the reach of the preceding `#line`.
+/// Ends the current `#line` mapping by emitting `#line hidden`.
 ///
-/// A directive holds until the next one, so generated scaffolding that follows
-/// a method — the entry point, a trait singleton — would otherwise be numbered
-/// as a continuation of whatever source that method came from, and report lines
-/// past the end of the file. Scaffolding has no source, and this says so.
+/// This ensures that compiler-generated boilerplate (e.g., scaffolding, entry points) 
+/// is not incorrectly mapped to the preceding user source code. It also clears 
+/// any pending directive requests to prevent them from being applied incorrectly.
 let hiddenDirective (ctx: CodegenContext) =
+    ctx.Line.Pending <- None
     ctx.Builder.AppendLine("#line hidden") |> ignore
 
 /// A user-facing code generation failure. A loud error at compile time beats
@@ -1906,6 +1967,13 @@ and private hoistToTemp (ctx: CodegenContext) (prelude: ResizeArray<string>) (ex
     let scratch = StringBuilder()
     let inner = { ctx with Builder = scratch; Prelude = None }
 
+    // Hoisted statements are generated before their enclosing statement, but 
+    // evaluated in the opposite order. To prevent them from corrupting the 
+    // source mapping, we temporarily clear the pending directive while generating 
+    // hoisted code, then restore it afterward.
+    let pendingHere = ctx.Line.Pending
+    ctx.Line.Pending <- None
+
     if isVoidType expr.Type then
         // Whatever follows in the enclosing expression still has to run, so this
         // is an intermediate statement rather than a block's last word.
@@ -1916,6 +1984,7 @@ and private hoistToTemp (ctx: CodegenContext) (prelude: ResizeArray<string>) (ex
     // Anything the node hoisted in turn is already inside `scratch`, ahead of the
     // node's own statements, so appending as one unit preserves the order.
     prelude.Add(scratch.ToString())
+    ctx.Line.Pending <- pendingHere
     tmp
 
 /// Emits the operands of a single construct, preserving left-to-right evaluation.
@@ -3521,8 +3590,13 @@ and private generateLocalFunction
 ///
 /// `ctx` must already carry the type parameters that are in scope: a module
 /// function's are its own, an `impl` method's belong to the enclosing class.
+///
+/// We explicitly map the method signature line (`source`). 
+/// If C# compilation fails on a parameter or return type, this ensures the 
+/// error points to the user's Bjolang source rather than the generated C# file.
 let private generateMethod
     (ctx: CodegenContext)
+    (source: Lexer.Range)
     (modifier: string)
     (genericParams: string)
     (constraintClause: string)
@@ -3536,6 +3610,7 @@ let private generateMethod
     (entry: KeywordEntry)
     : unit =
 
+    lineDirective ctx source
     indent ctx
     append ctx modifier
     // `async` goes between the accessibility modifiers and the return type, so
@@ -3676,7 +3751,7 @@ let private appendTypeBody (ctx: CodegenContext) (members: string list) : unit =
 
 let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
     match decl with
-    | TDefun (name, tyArgs, args, kwArgs, restArg, retType, effect, body, _) ->
+    | TDefun (name, tyArgs, args, kwArgs, restArg, retType, effect, body, r) ->
         let ctx = { ctx with TypeParams = tyArgs |> List.map typeParamKey |> Set.ofList }
 
         let genericParams =
@@ -3694,22 +3769,25 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
         // Determine the C# method name for this binding. If the user defined a variable that shadows a built-in function, this assigns it a unique name so it doesn't cause a C# naming collision.
         let emittedName = Prelude.moduleMemberName name
 
-        generateMethod ctx "public static " genericParams constraintClause emittedName args kwArgs restArg retType effect body KeywordParameters
+        generateMethod ctx r "public static " genericParams constraintClause emittedName args kwArgs restArg retType effect body KeywordParameters
 
         // The keyword-free entry, as a C# overload of the same name. Emitted
         // only where it can win anything: keywords that are constants and value types are
         // emitted as regular c# methods with named parameters. 
         //
-        // The body is emitted rather than called: a wrapper would have to hand
-        // the resolved values to a third method, and that method would need the
-        // whole of `generateMethod`'s async, iterator and generic handling
-        // repeated around a return type it no longer shares.
+        // We emit the body inline rather than calling a helper method to avoid 
+        // duplicating `generateMethod`'s logic for async, iterators, and generics.
         if needsKeywordFreeEntry kwArgs then
-            generateMethod ctx "public static " genericParams constraintClause emittedName args kwArgs restArg retType effect body KeywordDefaultsOnly
+            generateMethod ctx r "public static " genericParams constraintClause emittedName args kwArgs restArg retType effect body KeywordDefaultsOnly
 
     | TType (defs, _) 
     | TTypeRec (defs, _) ->
         for td in defs do
+            // The declaration line, for the reason a method's signature is
+            // mapped: a field whose type C# rejects is a diagnostic against it,
+            // and unmapped it is reported against the generated file.
+            lineDirective ctx td.Range
+
             let tyArgsStr = 
                 if td.TypeArgs.IsEmpty then "" 
                 else "<" + (td.TypeArgs |> List.map typeParamName |> String.concat ", ") + ">"
@@ -3849,6 +3927,11 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
             // already holds the emitted class. Emitting one here would be a
             // second type of the same name.
             | Opaque _ -> ()
+
+        // Whatever is emitted next is scaffolding until it says otherwise, as
+        // after a method. An `Alias` and an `Opaque` emit nothing at all, so
+        // this is also what drops the request they never took up.
+        hiddenDirective ctx
 
     // An inline trait emits nothing at all. There is no valid C# interface for
     // `Monad<M>`: the parameter would have to be a type constructor.
@@ -4107,7 +4190,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
 
             for m in methods do
                 match m with
-                | TDefun (n, tyArgs, args, kwArgs, restArg, retType, effect, body, _) ->
+                | TDefun (n, tyArgs, args, kwArgs, restArg, retType, effect, body, mr) ->
                     // Whatever is left over after the class's own parameters is
                     // a method-level generic and must be emitted as one. This is
                     // exactly the restriction inline traits lift: `bind`'s `'b`
@@ -4124,7 +4207,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                     // No twin for a trait-`impl` method: a keyword parameter on
                     // one is rejected before it reaches here, and an overload
                     // would in any case have no interface declaration to match.
-                    generateMethod methodCtx modifier methodTyArgsStr "" n args kwArgs restArg retType effect body KeywordParameters
+                    generateMethod methodCtx mr modifier methodTyArgsStr "" n args kwArgs restArg retType effect body KeywordParameters
                 | _ -> ()
         )
         indent ctx
@@ -4427,6 +4510,7 @@ let generateProgram
 
     let ctx =
         { Builder = StringBuilder()
+          Line = { Pending = None }
           IndentLevel = 0
           UnionCases = unionCases
           GlobalBindings = globalBindings

@@ -972,15 +972,7 @@ let wrapInModule (moduleName: string) (filePath: string) (decls: Decl list) : De
         | [] -> { Start = { Line = 1; Column = 1 }; End = { Line = 1; Column = 1 }; File = filePath }
         | first :: _ ->
             let last = List.last decls
-            let getRange d = 
-                match d with
-                | DDef(_, _, r) | DDefun(_, _, _, _, r) | DDefDouble(_, _, _, _, r) | DDefTuple(_, _, r) | DDefMutable(_, _, r)
-                | DSignature(_, _, _, r) | DType(_, r) | DTypeRec(_, r) | DTrait(_, _, _, _, _, _, _, r) | DImpl(_, _, _, _, _, r)
-                | DImplExtern(_, _, _, _, r) | DInlineImpl(_, _, _, _, _, _, _, r)
-                | DModule(_, _, r) | DImport(_, r) | DAlias(_, _, r) | DExport(_, r) | DReExport(_, r)
-                | DExtern(_, _, _, _, r) | DImportAlias(_, _, _, r)
-                | DImportExtern(_, r) | DImportClass(_, r) | DMacro(_, r) -> r
-            unionLexerRanges (getRange first) (getRange last)
+            unionLexerRanges (Parser.declRange first) (Parser.declRange last)
     
     [ DModule(moduleName, decls, r) ]
 
