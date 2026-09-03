@@ -214,6 +214,8 @@ The accumulator behind the ~Stringing~ collector, and the same shape as the vect
 
 Use one — or a ~(:acc out (stringing c))~ clause — rather than ~string-append~ in a loop: appending rebuilds the whole string per element and is quadratic.
 
+Use a builder to construct strings instead of writing to ~(open-output-string)~. Since writing to a port carries an async effect (colour), using a string port would incorrectly force the formatting function to become asynchronous. A builder has no effect, ensuring the operation remains pure and synchronous. See "A string is built with a builder, not with a port" in =Docs/Syntax.org=.
+
 ** Conversions
 The numeric ones are =(std prelude)=; the keyword and symbol ones are builtin, since ~Keyword~, ~Symbol~ and ~char~ are not .NET types Bjolang can name.
 - ~(byte->string b)~
@@ -269,7 +271,7 @@ A variable that is not set is ~None~ rather than the empty string .NET's ~null~ 
 ** Ports =(std prelude)=
 Opening a file returns a ~Result~ because a missing file is expected; opening a string cannot fail and returns the port itself. A file port and a string port are the *same type*, so a procedure that reads or writes never learns where the text comes from or goes.
 
-- ~(open-output-string)~ : A port that collects what is written to it.
+- ~(open-output-string)~ : A port that collects what is written to it. Use this for capturing output in memory (e.g., redirecting ~current-output-port~ in a test harness). To build a regular string, use a ~StringBuilder~ instead, because writing to ports carries an async effect (colour).
 - ~(get-output-string port)~ : Everything written to a string port so far. The
   port stays open and keeps collecting, so asking twice with writes in between
   includes the earlier text. *Throws* for a port that is not a string port —

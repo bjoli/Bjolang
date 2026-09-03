@@ -322,6 +322,16 @@ That is what makes an ordinary call chain suspend at any depth: a loop over a
 port is written once, and a bjoroutine calling it four levels up gets the
 suspending copy the whole way.
 
+**** A string is built with a builder, not with a port
+Writing to a port carries an effect (colour). Since ~TextOutputPort~ applies to both 
+file ports and string ports indiscriminately, any function that formats into a 
+string port using ~write-string~ will incorrectly inherit an async effect, causing 
+its callers to also become async.
+
+To keep string formatting pure and synchronous, build strings using a ~StringBuilder~ 
+instead (via ~stringbuilder-add-string!~ and ~(stringbuilder->string sb)~). This is how 
+~list->str~, ~vec->str~, ~map->str~ and ~fmt~'s ~render->string~ are implemented.
+
 **** What is not yet there
 A call the generated copy cannot be reached from still parks — inside a
 ~(seq ...)~, inside an ordinary ~(fun ...)~, or through a function value, since

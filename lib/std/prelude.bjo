@@ -1355,6 +1355,11 @@
 ;; It is crucial to have asynchronous variants for writes. Even though writes 
 ;; are buffered, a write that fills the buffer will trigger a drain (syscall).
 ;; The async variant ensures this drain suspends rather than blocking a thread.
+;;
+;; Note that output functions carry a colour (effect). Because `write-string` 
+;; has an async twin, any function that uses it will also become async. For this 
+;; reason, string building operations like `vec->str` use a `StringBuilder` 
+;; instead of a string port to ensure string formatting remains pure and synchronous.
 (import/extern
   (clr-write         (: Bjolang.Runtime.BjoWriter.WritePort          (-> TextOutputPort string void) #:blocking))
   (clr-write-await   (: Bjolang.Runtime.BjoWriter.WritePortAsync     (-> TextOutputPort string void) #:async))
