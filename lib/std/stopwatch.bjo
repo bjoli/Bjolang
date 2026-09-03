@@ -4,7 +4,9 @@
 (import/class
   (Stopwatch (: System.Diagnostics.Stopwatch)))
 
-(export Stopwatch stopwatch stopwatch-start! stopwatch-stop! stopwatch-ms stopwatch-ticks time-it )
+(import/extern (get-memory-usage (: System.GC.GetAllocatedBytesForCurrentThread)))
+
+(export Stopwatch stopwatch stopwatch-start! stopwatch-stop! stopwatch-ms stopwatch-ticks time-it get-memory-usage )
 
 (: stopwatch (-> Stopwatch))
 (defun (stopwatch) (Stopwatch.))
@@ -26,19 +28,29 @@
   (.-ElapsedTicks sw))
 
 
-;; (time-it body ...) — prints elapsed time. Drops body's value.
+;; (time-it body ...) — prints elapsed time and allocated memory.
+;; Drops body's value.
+;; Runs a warmup that redirects the output to a different output port.
 (def/macro (time-it form inject compare)
   (syntax-match form
     ((_ #:times n first body ...)
-     #'(let ()
+     #'(let ((ignored-port (open-output-string)))
+         (ignore (parameterize ((current-output-port ignored-port))
+                   ,first
+                   ,@body
+                   (get-output-string ignored-port)))
          (def sw (stopwatch))
+         (def/mutable bytes-used 0L)
          (let lp ((n ,n))
            (when (> n 0)
+             (def before (get-memory-usage))
              (stopwatch-start! sw)
              ,first
              ,@body
              (stopwatch-stop! sw)
+             (set! bytes-used (+ bytes-used (- (get-memory-usage) before )))
              (lp (- n 1))))
-         (println (str "Mean of "  (->str ,n) " runs: " (->str (/ (stopwatch-ms sw) ,n)) "ms"))))
+         (println (str "Mean of "  (->str ,n) " runs: " (->str (/ (stopwatch-ms sw) ,n)) "ms. "
+                       (->str (/ bytes-used ,n)) "B allocated per run."))))
     ((_ first body ...) #'(time-it #:times 1 ,first ,@body)) 
     (bad (syntax-error bad "time-it takes a body: (time-it expr ...)"))))
