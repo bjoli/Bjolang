@@ -169,9 +169,9 @@ All four use the invariant culture, because R6RS specifies the locale-independen
 ~char-numeric?~ is the Nd/Nl/No categories, not Nd alone, so it answers true for ½ and Ⅶ.
 
 ** String Cursors
-A cursor is a position in a string: a struct holding an offset into that string's storage, pointing at the first unit of a character. It is what replaces the ~string-ref~ that deliberately does not exist — the same traversal that would be quadratic by index is linear by cursor, and a cursor costs an int.
+A cursor represents a position within a string. It replaces traditional index-based access (like ~string-ref~) to ensure $O(1)$ linear traversals without the overhead of computing variable-length character offsets. A cursor is lightweight and costs as much as an ~int~.
 
-*A cursor is opaque.* There is no ~string-cursor->index~, no ~index->string-cursor~, and no way to build one except from a string. That is the point of the type rather than an omission: because no program can read the number, the offset is free to count UTF-16 code units today and UTF-8 bytes after a change of storage, and no Bjolang source has to change. A cursor is only ever produced by ~string-cursor-start~ or ~string-cursor-end~ and only ever moved by ~string-cursor-next~ or ~string-cursor-prev~, so every cursor that exists sits on a character boundary by construction.
+*A cursor is opaque.* There are no conversion functions between cursors and indices. This opacity decouples the API from the underlying string encoding (e.g., UTF-16 vs. UTF-8). A cursor is created via ~string-cursor-start~ or ~string-cursor-end~ and moved via ~string-cursor-next~ or ~string-cursor-prev~, guaranteeing it always rests on a valid character boundary.
 
 Every operation takes the string *and* the cursor, because the cursor carries no reference to it — the same bargain ~Iterable~ strikes by passing ~s~ and ~c~ to each method. Comparing cursors from two different strings is meaningless and unchecked, exactly as it is for two ints indexing different arrays.
 
@@ -274,11 +274,9 @@ Opening a file returns a ~Result~ because a missing file is expected; opening a 
 - ~(open-output-string)~ : A port that collects what is written to it. Use this for capturing output in memory (e.g., redirecting ~current-output-port~ in a test harness). To build a regular string, use a ~StringBuilder~ instead, because writing to ports carries an async effect (colour).
 - ~(get-output-string port)~ : Everything written to a string port so far. The
   port stays open and keeps collecting, so asking twice with writes in between
-  includes the earlier text. *Throws* for a port that is not a string port —
-  the one port operation whose wrong argument is not a type error, since a file
-  port and a string port are deliberately one type.
+  includes the earlier text. *Throws* if called on a non-string port.
 
-Textual ports, in the R7RS shape. A port *is* the .NET object: ~TextInputPort~ is ~System.IO.TextReader~ and ~TextOutputPort~ is ~System.IO.TextWriter~, so a file port and a string port are the same type to every caller and ~with-open~ disposes either. Opening returns a ~Result~ because a missing file is expected; operating throws, because a device error mid-stream is not.
+Textual ports follow the R7RS shape. Ports directly wrap .NET streams (~TextInputPort~ is ~System.IO.TextReader~ and ~TextOutputPort~ is ~System.IO.TextWriter~). Consequently, file ports and string ports share the same type, allowing functions like ~with-open~ to dispose of either uniformly. Opening returns a ~Result~ to handle missing files, while operating throws exceptions for mid-stream device errors.
 
 Only the *reader-parameterised* drains — ~port->list~, ~port->vec~, ~port->seq~ and ~file->seq~ — are in ~(std ports)~ and have to be imported. Opening, reading, writing and closing are here, since a program that reads a file should not need a header line to do it.
 
@@ -304,12 +302,7 @@ together and ~write-char~ takes it apart. This is the promise walking a ~string~
 already makes, and it is what lets ~(port->seq read-char p)~ and ~(read-all p)~
 walked as a string agree about what the characters are.
 
-There is no ~peek-char~. A port offers one code unit of lookahead, one unit is
-not always a character, and a peek that could not promise the answer ~read-char~
-is about to give would be worse than none — buying it needs a pushback buffer,
-and a port is deliberately the bare .NET object. ~port-eof?~ is the question
-peeking is usually asked; text that needs real lookahead wants ~read-all~ and a
-~StringCursor~.
+There is no ~peek-char~. Because ports are bare .NET objects without pushback buffers, they cannot safely peek ahead by a full variable-length Unicode character. Use ~port-eof?~ to check for the end of a stream, and ~read-all~ with a ~StringCursor~ when significant lookahead is required.
 
 Note that ~write-line~ is a prelude binding, and an ordinary binding wins over an ~import/extern~ alias of the same name — so a module that wants ~System.Console.WriteLine~ should alias it as something else, ~console-write-line~ say.
 
@@ -483,8 +476,7 @@ Three libraries rather than builtins, and imported by name:
 (import (std orderedmap))   ;; (OrderedMap %k %v)
 #+END_SRC
 
-Each collection has *three* interfaces, and deliberately the same interface
-three times over:
+Each collection provides three identical interfaces for different usage patterns:
 
 - the collection itself, where every write answers a new one;
 - a **builder**, shaped exactly like ~ListBuilder~ — ~empty~, ~add!~,
@@ -676,10 +668,7 @@ variable — no function generic in its monad — and whether a block is a loop
 depends on the instance: ~bind~ mentioning its continuation once means the
 lambda is substituted away, and mentioning it twice means it survives.
 
-There is deliberately no instance for ~Promise~ or ~Event~. Concurrency here is
-direct-style — a call to a ~defbjo~ is the yield point — and a suspension inside
-~bind~'s continuation is a lambda that cannot suspend. ~bjo~, ~sync~ and
-~with-cancel~ are the sequencing for those.
+Promises and Events do not implement ~Monad~ because concurrency uses direct-style yielding. A call to a ~defbjo~ is the yield point, and suspending inside ~bind~'s continuation would result in a lambda that cannot suspend. Use ~bjo~, ~sync~, and ~with-cancel~ for asynchronous sequencing.
 
 ** Walking a collection
 The protocol ~(loop ...)~ is built on, and the one ~Iterable~ declares. It is
@@ -693,10 +682,7 @@ The sequence is passed to every method, so a cursor need carry nothing — a
 - ~(iterable-current s c)~ : The element at the cursor.
 - ~(iterable-next s c)~ : The cursor after this one.
 
-The names are deliberately long. They are methods the compiler calls on your
-behalf rather than ones you write, they live here in the prelude where an import
-cannot rename them, and ~next~, ~start~ and ~current~ are words a program wants
-for itself.
+These methods use long names to prevent collisions with common user variables (like ~next~, ~start~, and ~current~). They are intended to be called by the compiler rather than directly in user code.
 
 ** Traits
 - ~->str~ : Trait for string representation with method ~(->str x)~. Implemented for ~string~, ~int~, ~double~, ~byte~, ~long~, ~char~, ~Keyword~ and ~Symbol~. A ~char~ prints as itself, not as ~#\a~: ~->str~ is what ~display~ and ~print~ are built on, and those write text rather than a reread-able datum.

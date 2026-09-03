@@ -198,12 +198,9 @@ A spelling that a modifier or an alias *invents* may not be one that something
 else already produces. Two renames landing on one name, or two modules prefixed
 into the same spelling, is a compile error naming both sources.
 
-This is deliberately narrower than "no two imports may offer one name". A name
-that arrives *unchanged* from two modules is the older rule, unchanged: the
-later import wins, silently, and a name defined in the importing module wins
-over both. Making that an error would reject programs that have always
-compiled — the standard library itself relies on it. So the boundary is: what
-you asked for by hand is checked, what falls out of import order is not.
+Unlike un-modified imports where the later import silently wins, modified imports 
+and aliases are strictly checked. An error is raised if two manual renames or 
+prefixes produce the same spelling, as this indicates an ambiguous manual request.
 
 *** Importing one module twice
 
@@ -309,8 +306,8 @@ Every exported *binding* must have an explicit signature in the same module:
 (export println)
 #+END_SRC
 
-This is deliberate. An exported type is part of a compiled DLL's metadata, so it
-has to be written down rather than inferred.
+Exported types must be explicitly signatured because they become part of the 
+compiled DLL's metadata.
 
 The rule is about names this module *defines*. A name that already carries a
 signature from elsewhere is exempt: an ~(:alias ...)~, a name a ~rename~ at the
@@ -452,16 +449,13 @@ type implements the trait and what its associated types are — the methods are
 already compiled into the assembly that declared it. It exists for metadata;
 there is no reason to write one by hand.
 
-Note what a trait method's *signature* alone cannot say. ~fold~'s element type
-is the associated type ~%item~, which has no meaning without the trait, so a
-trait method is published by its ~def/trait~ and deliberately left out of the
-~(: name type)~ list — an entry there would shadow the real binding with a
-weaker one. An associated type appearing anywhere else in an exported signature
-is written ~(assoc Foldable item 'col)~.
+Trait methods are published via their ~def/trait~ rather than a standard 
+~(: name type)~ signature. This is required because associated types (like ~%item~) 
+cannot be resolved by the importer without the trait context. An associated type 
+appearing anywhere else in an exported signature is written ~(assoc Foldable item 'col)~.
 
-Both halves are needed by an importer. Without the trait, ~%item~ cannot be
-resolved to the caller's element type; without the implementations, a call has
-nothing to dispatch to.
+An importer requires both halves: the trait to resolve associated types, and the 
+implementations to dispatch calls.
 
 ** Exporting a foreign import
 
@@ -532,14 +526,7 @@ Note the asymmetry that follows: at the C# level a ~using static~ is emitted for
 every linked assembly, so all of their static classes are technically in scope.
 Visibility is enforced by the Bjolang type checker, not by C#.
 
-#+BEGIN_QUOTE
-Historical note: this used to work the other way round. Importing a DLL pulled
-in the exports of everything it transitively depended on, which is why
-~(import (std prelude))~ gave you ~print~ and ~println~ even though
-~prelude.bjo~ re-exported nothing at all and ~prelude.dll~ carried no export
-metadata. The names were arriving from ~core~ directly; ~prelude~ was a
-dependency bundle rather than a module with a surface.
-#+END_QUOTE
+
 
 ** ~include~
 
@@ -621,13 +608,11 @@ attribute, ~BjolangMacros~:
 (macro "or-else" "macros")
 #+END_SRC
 
-The name, and the module that defines it. It is deliberately *not* an entry in
-~BjolangExports~: those are signatures, for names an importer may call, and a
-macro is not one. It is also read at a different time — before the importing
-module is parsed, because the expander has to know a name is a macro at the
-moment the parser meets it in head position. That is why dependency discovery
-reads ~(import ...)~ off the S-expressions rather than off the parsed
-declarations: reading needs no macros, parsing does.
+The name, and the module that defines it. Macro metadata is published in 
+~BjolangMacros~ rather than ~BjolangExports~ because it must be read *before* 
+the importing module is parsed. The expander needs to know a name is a macro 
+the moment the parser encounters it. Dependency discovery therefore reads 
+~(import ...)~ from the raw S-expressions.
 
 Every macro is published. There is no ~(export ...)~ for them, because a macro
 that no other module can reach is unusable — it cannot be used in the module
@@ -668,10 +653,9 @@ So a module publishes only the types it declares *and exports*. A dependency's
 arrive through the dependency, or not at all — and a signature that mentions one
 still resolves, because the name in it says where the type lives.
 
-An ~#:opaque~ export is the same mechanism used deliberately. Its declaration is
-published as a head with no body, so the name resolves and nothing is registered
-that could take a value apart — which is what a link-only dependency's type has
-always been, except that here the module meant it.
+An ~#:opaque~ export publishes the type name without its representation, acting 
+similarly to a link-only dependency. The name resolves in the importing module, 
+but nothing is registered that could take the value apart.
 
 Rebuilding after a version bump is ~./build_std.sh~ for the standard library,
 and a rebuild of anything else compiled against it. A library that still has

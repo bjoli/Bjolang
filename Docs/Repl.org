@@ -24,8 +24,8 @@ bjo> (double 21)
 
 An entry is compiled by the same ~Pipeline.runFullFrontendPipeline~ a build
 runs, emitted by the same ~Codegen~, and published by the same
-~Exports.metadata~. There is no second account of what Bjolang means anywhere
-in ~Repl.fs~, and so nothing that can drift from the compiler.
+~Exports.metadata~. The REPL uses the standard compiler pipeline to ensure 
+semantics match batch compilation perfectly.
 
 What ~Repl.fs~ decides is a driver's business only: what source an entry
 becomes, which earlier entries it links, and how a value is shown.
@@ -116,16 +116,14 @@ file mean:
   double
   #+end_src
 
-- *An unsignatured ~def~ is compiled twice*: once to find out what it is, then
-  again with the inferred type written in. The export rule is deliberate — a
-  module's published surface is what its author committed to rather than
-  whatever was inferred — and at a prompt there is no author. Writing the
-  inferred type back means the entry means what the same lines with that
-  annotation would.
+- *An unsignatured ~def~ is compiled twice*: once to infer its type, and then 
+  again with the inferred type explicitly annotated. This is necessary because 
+  exported bindings require explicit signatures. Since the REPL automatically 
+  exports entries, the two-pass compilation ensures the entry behaves identically 
+  to a hand-annotated definition in a file.
 
-  This is the only case that costs a second frontend pass, and it costs one
-  only for definition entries that need it. Expression entries stay
-  single-pass.
+  This is the only case that incurs a second frontend pass; expression entries 
+  remain single-pass.
 
 * How a value is shown
 
@@ -238,14 +236,12 @@ file the entry is written to, so the REPL makes it absolute before writing.
 
 ~Session.replEntry~ resets everything a compilation owns — the macro table and
 its local and expansion sets, ~Parser~'s introduced names, ~Unification~'s
-metavariable counter, ~Inference~'s wanted queue — and deliberately does *not*
-reset ~Gensym~'s counter.
+metavariable counter, ~Inference~'s wanted queue — except for ~Gensym~'s counter.
 
-The counter is the one field a REPL wants the opposite of a batch build's
-behaviour for. Each entry is emitted as its own assembly; entry 4 and entry 9
-both starting from zero means both emit a member called ~tmp__12~, and since
-entry 9's assembly references entry 4's the two are in scope together and which
-one a name binds to stops being decidable.
+The `Gensym` counter is not reset between REPL entries to prevent name collisions. 
+Because each entry is emitted as its own assembly (and later entries reference 
+earlier ones), resetting the counter could result in multiple entries defining the 
+same generated name (e.g., `tmp__12`), leading to resolution ambiguity.
 
 Determinism is not lost by that. A REPL entry produces an assembly nothing keeps
 and no staleness check ever looks at. See ~Session.fs~ for the same state seen

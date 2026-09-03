@@ -108,11 +108,9 @@ Diagnostic and escape-hatch settings, all off by default.
 | ~BJOLANG_OUT_OF_PROCESS_DEPS=1~ | Build each imported module in a compiler process of its own |
 | ~BJOLANG_REPL_DIR=<dir>~        | Keep a REPL session's generated sources there             |
 
-~BJOLANG_OUT_OF_PROCESS_DEPS~ is the one to reach for when a build fails only in
-company: imported modules are normally compiled in this process, and anything
-the compiler holds at module level that is not in ~Session~ would leak between
-them. If setting it fixes a build, that is what happened. ~Session.fs~ says what
-is scoped per compilation and what is deliberately global.
+~BJOLANG_OUT_OF_PROCESS_DEPS~ resolves issues where builds fail only when modules 
+are compiled together. It isolates module-level state by compiling imported modules 
+in separate processes, preventing state leakage between them.
 
 ~BJOLANG_NO_CSC_SERVER~ is for a VBCSCompiler server that has gone wrong, which
 is a failure with no good diagnostic. A build takes several times longer
@@ -167,10 +165,8 @@ today, and the entry point drives the fiber to completion on the process's own
 thread; nothing else about its type changes.
 
 The generated ~Main~ conses the process arguments into a ~(List string)~ and
-calls ~main~ with it. There is one such call and no case analysis: a ~main~ of
-an unexpected shape used to be handed a literal ~0~, which was invisible for a
-program that ignored its parameter and a C# error in generated code for one
-that did not.
+calls ~main~ with it. This implies that the ~main~ function must strictly adhere 
+to the expected signature; unexpected shapes will fail to compile.
 
 ** Runtime assemblies
 
