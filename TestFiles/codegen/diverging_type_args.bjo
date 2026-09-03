@@ -1,0 +1,79 @@
+;; A type argument no parameter mentions has to be written out.
+;;
+;; C# infers a method's type arguments from the arguments at the call site. A
+;; function that promises to return whatever the position it stands in wants —
+;; `raise`, and anything built on it — has a type parameter that appears only in
+;; the *return*, and there is nothing for C# to infer it from. Left implicit the
+;; call is CS0411, "the type arguments ... cannot be inferred from the usage",
+;; which surfaces as a C# error against a program that type-checked.
+;;
+;; The rule was in a comment above the emitting code and *enumerated* in the
+;; code — `make-array`, `makesubarray`, `raise`, being the three anyone had hit.
+;; So a `panic!` written in Bjolang type-checked and then failed to compile.
+;; `ReturnOnlyGenerics` asks the question of the callee's scheme instead, which
+;; is why `raise` below needs no mention anywhere in the compiler.
+;;
+;; Each `EXPECT-CS` line is an extended regex matched against one line.
+(import (std prelude))
+(import/class (Failure (: System.Exception (-> string Failure))))
+
+;; The `%a` is pinned by the unreachable `raise`, and appears in no parameter.
+(: bail (-> string %a))
+(defun (bail msg)
+  (raise (Failure. msg)))
+
+;; Written out, and instantiated at the type the arm needs. Without the type
+;; argument this line is CS0411.
+;;
+;; EXPECT-CS: bail<int>\("no"\)
+(: pick-int (-> (Result Exception int) int))
+(defun (pick-int op)
+  (match op
+    ((Err e) (bail "no"))
+    ((Ok b) b)))
+
+;; The same function at a different instantiation, which is the point of
+;; carrying the argument rather than picking one.
+;;
+;; EXPECT-CS: bail<string>\("no"\)
+(: pick-string (-> (Result Exception string) string))
+(defun (pick-string op)
+  (match op
+    ((Err e) (bail "no"))
+    ((Ok b) b)))
+
+;; A keyword argument does not stop C# reading a type argument — `f<T>(a,
+;; __kw_b: c)` is an ordinary call — and a diverging function may take one.
+;; The guard that skipped every call with keywords used to block this even for
+;; the names on the old list.
+;;
+;; EXPECT-CS: bailsubwith<int>\("no", __kw_code: 7\)
+(: bail-with (-> string (#:code int) %a))
+(defun (bail-with msg #:code 1)
+  (println (->str code))
+  (raise (Failure. msg)))
+
+(: pick-kw (-> (Result Exception int) int))
+(defun (pick-kw op)
+  (match op
+    ((Err e) (bail-with "no" #:code 7))
+    ((Ok b) b)))
+
+;; And an ordinary generic is left alone: `%a` is mentioned by a parameter, so
+;; C# infers it and writing it out would be noise.
+;;
+;; Anchored to the `Module.` a call site carries, because the *declaration* is
+;; `T_a samesubagain<T_a>(T_a x)` and matching that would pass whatever the call
+;; site did.
+;;
+;; EXPECT-CS: _Module\.samesubagain\(3\)
+;; EXPECT-NO-CS: _Module\.samesubagain<
+(: same-again (-> %a %a))
+(defun (same-again x) x)
+
+(defun (main args)
+  (println (->str (pick-int (Ok 1))))
+  (println (pick-string (Ok "a")))
+  (println (->str (pick-kw (Ok 2))))
+  (println (->str (same-again 3)))
+  0)

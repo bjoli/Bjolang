@@ -1,0 +1,150 @@
+;; Writing is a leaf with two colours, the way reading is.
+;;
+;; A write that fits in the port's buffer touches no handle, and that is what
+;; made a suspending write look unnecessary — `BjoWriter`'s own comment used to
+;; say so. It is not quite true: `Append` drains when the buffer fills, and that
+;; drain is the same syscall `flush-port` makes. Before `write-string` had a
+;; `#:bjo` body, a bjoroutine writing more than a bufferful blocked the thread
+;; it ran on, because every `WriteAsync` override called its synchronous twin
+;; and returned `Task.CompletedTask`.
+;;
+;; So the cases that matter are the ones that cross a buffer boundary, and the
+;; thing to check is that both colours put out the *same bytes in the same
+;; order*. A `defbjouble` the two halves of which disagree is a shared name that
+;; lies, and nothing but a test can catch it.
+(import (std prelude))
+(import (std simpletest))
+
+;; The two-argument constructor, so a test can put the boundary where it wants.
+;; `open-output-file` uses the one-argument form and gets 4096 characters, at
+;; which size nothing below would drain at all — and a drain is the whole
+;; subject.
+(import/class
+  (Writer (: Bjolang.Runtime.BjoWriter (-> TextOutputPort int Writer))))
+
+;; A buffered port over a string port. What was written is read back from the
+;; port *underneath*, because a `BjoWriter` is not a `StringWriter` and only the
+;; one underneath has accumulated anything — and only after a flush.
+(: sized (-> TextOutputPort int TextOutputPort))
+(defun (sized inner n)
+  (cast TextOutputPort (Writer. inner n)))
+
+(: repeat-string (-> string int string))
+(defun (repeat-string s n)
+  (let loop ((i 0) (acc ""))
+    (if (>= i n) acc (loop (+ i 1) (string-append acc s)))))
+
+;; ---------------------------------------------------------------------------
+;; The same writes, once per colour
+;; ---------------------------------------------------------------------------
+;;
+;; Written out twice by hand on purpose. Every other test may let the compiler
+;; pick a colour; this one is about whether the two bodies of three
+;; `defbjouble`s agree, so both have to be named explicitly.
+
+(: writes-sync (-> TextOutputPort string int))
+(defun (writes-sync p text)
+  (write-string p text)
+  (write-char p (int->char 128512))
+  (write-string p "|")
+  (writeln p "end")
+  (flush-port p)
+  0)
+
+(: writes-bjo (-> TextOutputPort string int))
+(defbjo (writes-bjo p text)
+  (write-string p text)
+  (write-char p (int->char 128512))
+  (write-string p "|")
+  (writeln p "end")
+  (flush-port p)
+  0)
+
+(: run-int (-> (Promise int) int))
+(defun (run-int p)
+  (match (sync/blocking (promise-join p))
+    ((Ok n) n)
+    ((Err e) -1)))
+
+(: collect-sync (-> string int string))
+(defun (collect-sync text n)
+  (def inner (open-output-string))
+  (ignore (writes-sync (sized inner n) text))
+  (get-output-string inner))
+
+(: collect-bjo (-> string int string))
+(defun (collect-bjo text n)
+  (def inner (open-output-string))
+  (if (= (run-int (bjo (writes-bjo (sized inner n) text))) 0)
+      (get-output-string inner)
+      "FAILURE: the suspending writer raised"))
+
+(defun (main)
+  ;; --- The two colours agree ------------------------------------------------
+  ;;
+  ;; Buffer of 4 over text far longer than that, so a drain falls between
+  ;; almost every pair of writes. The astral character is there because it is
+  ;; two UTF-16 units: the suspending half encodes it before its first await,
+  ;; and a half that got that wrong would put out a lone surrogate.
+  (expect "sync and suspending writes agree, tiny buffer"
+          (collect-bjo "hello world" 4)
+          (collect-sync "hello world" 4))
+
+  ;; The same text with no drain at all, which is the path that always worked.
+  (expect "sync and suspending writes agree, buffer larger than the text"
+          (collect-bjo "hello world" 4096)
+          (collect-sync "hello world" 4096))
+
+  ;; A single write far longer than the buffer: one call, many drains, all of
+  ;; them inside the suspending body.
+  (def long (repeat-string "0123456789" 300))
+  (expect "a single write spanning many drains"
+          (collect-bjo long 64)
+          (collect-sync long 64))
+
+  ;; --- The text is actually right ------------------------------------------
+  ;;
+  ;; Agreeing with each other is not enough: two halves that both drop the
+  ;; astral character would agree. So the short case is spelled out.
+  (def one (collect-bjo "ab" 4))
+  (def grin (char->string (int->char 128512)))
+  (expect-true "the suspending write starts with the text"
+               (string-starts-with? one "ab"))
+  (expect-true "and carries the astral character whole"
+               (string-contains? one grin))
+  (expect-true "and ends with the line that followed it"
+               (string-contains? one "|end"))
+
+  ;; --- Order across a drain -------------------------------------------------
+  ;;
+  ;; The hazard a buffered writer has that a reader does not: text that reaches
+  ;; the inner writer ahead of what is still held arrives out of order. A
+  ;; boundary of 3 puts a drain inside every one of these.
+  (def inner (open-output-string))
+  (def p (sized inner 3))
+  (ignore (run-int (bjo (writes-bjo p "one"))))
+  (write-string p "two")
+  (flush-port p)
+  (expect-true "a suspending write leaves the port usable by an ordinary one"
+               (string-starts-with? (get-output-string inner) "one"))
+  (expect-true "and what the ordinary one wrote came after it"
+               (string-ends-with? (get-output-string inner) "two"))
+
+  ;; --- A real file, both ways ----------------------------------------------
+  ;;
+  ;; `open-output-file` hands back a `BjoWriter`, so the suspending path is the
+  ;; one that runs here, over a handle with a genuine syscall behind it.
+  (def path "174_port_write_colour.tmp")
+  (match (open-output-file path)
+    ((Ok w) (ignore (run-int (bjo (writes-bjo (cast TextOutputPort w) "to a file")))))
+    ((Err e) (println "FAILURE: could not open the file for writing")))
+
+  (match (open-input-file path)
+    ((Ok r) (with-open ((in r))
+              (expect "a suspending write reached the file"
+                      (read-line in)
+                      (str "to a file" (char->string (int->char 128512)) "|end"))))
+    ((Err e) (println "FAILURE: could not reopen the file")))
+
+  (file-delete path)
+  0)

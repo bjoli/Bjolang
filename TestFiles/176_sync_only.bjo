@@ -1,0 +1,48 @@
+;; `#:sync` changes what is emitted, not what happens.
+;;
+;; Which is why the mechanism is pinned in `codegen/sync_only.bjo` — a program
+;; behaves identically whether or not the suspending copy exists, so nothing
+;; running could tell. What is pinned *here* is the part that would be a real
+;; loss if it broke: a `#:sync` procedure stays callable from both colours, and
+;; gives the same answer in each.
+;;
+;; The double reached here is `vec-fold` rather than a write, deliberately.
+;; `vec-fold` suspends without parking, so this file exercises the marker with
+;; no blocking lint firing over it; that the lint *does* still fire for one that
+;; parks is `warnings/sync_only_still_parks.bjo`.
+(import (std prelude))
+(import (std simpletest))
+
+;; Reaches `vec-fold`, a `defbjouble`, so without the marker this would be
+;; copied — and `via-total` with it, for mentioning it.
+(: total #:sync (-> (Vec int) int))
+(defun (total v)
+  (vec-fold (fun (acc x) (+ acc x)) 0 v))
+
+(: via-total (-> (Vec int) int))
+(defun (via-total v)
+  (+ (total v) 1))
+
+(: bjo-total (-bjo-> (Vec int) int))
+(defbjo (bjo-total v)
+  (via-total v))
+
+(: run-int (-> (Promise int) int))
+(defun (run-int p)
+  (match (sync/blocking (promise-join p))
+    ((Ok n) n)
+    ((Err e) -1)))
+
+(defun (main)
+  (def v [1 2 3 4])
+
+  (expect "a #:sync procedure works in an ordinary body"
+          (via-total v)
+          11)
+
+  ;; The promise the marker makes: a bjoroutine may still call it. It runs the
+  ;; one body there is, on the fiber, and answers the same.
+  (expect "and in a suspending one, running the one body it has"
+          (run-int (bjo (bjo-total v)))
+          11)
+  0)

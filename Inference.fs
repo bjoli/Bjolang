@@ -4836,7 +4836,11 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
     // A macro is checked as the `defun` it also produced. This carries no body
     // and contributes nothing to the program's runtime shape, so it stops here;
     // what an importing compilation reads is the assembly's macro list.
-    | DMacro _ -> env, sigs, []
+    // Neither survives type checking. A macro is already an ordinary `defun`
+    // beside this, and `#:sync` is read off the declaration list by
+    // `checkDeclGroup` before any body is looked at.
+    | DMacro _
+    | DSyncOnly _ -> env, sigs, []
     | DExport(names, r) -> env, sigs, [ TExport(names, r) ]
 
     // `(import/class (Alias (: Clr.Class type #:exceptions (E ...))) ...)`
@@ -6065,6 +6069,37 @@ and private checkDeclGroup
                 | _ -> None)
             |> Map.ofList
 
+        /// The names their signature marked `#:sync`.
+        ///
+        /// `#:sync` cannot be applied to definitions that explicitly declare their 
+        /// own color (e.g., `defbjo` or `defbjouble`), as it would create 
+        /// conflicting constraints regarding the generation of a second body.
+        let syncOnly =
+            let marked =
+                decls
+                |> List.choose (function
+                    | DSyncOnly(name, r) -> Some(name, r)
+                    | _ -> None)
+
+            for (name, r) in marked do
+                let definer =
+                    decls
+                    |> List.tryPick (function
+                        | DDefun(n, _, _, Suspending, _) when n = name -> Some "defbjo"
+                        | DDefDouble(n, _, _, _, _) when n = name -> Some "defbjouble"
+                        | _ -> None)
+
+                match definer with
+                | Some "defbjouble" ->
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos r}: '%s{name}' is written #:sync, but it is a defbjouble — it has a #:bjo body, written by hand. #:sync says there is to be no second body; delete one of the two."
+                | Some d ->
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos r}: '%s{name}' is written #:sync, but it is defined with %s{d}, which is the suspending colour. #:sync suppresses the copy an ordinary defun would be given; a bjoroutine has no copy to suppress."
+                | None -> ()
+
+            marked |> List.map fst |> Set.ofList
+
         /// Candidates: an ordinary top-level `defun` with a signature, that is
         /// not itself a generated copy and does not already have one.
         ///
@@ -6074,12 +6109,17 @@ and private checkDeclGroup
         /// Its copy is therefore always dead code, and it is loud dead code —
         /// the blocking lint has a node for it, so a `main` reaching anything
         /// that parks reports a body nobody wrote and nobody can reach.
+        ///
+        /// A `#:sync` function is excluded from candidate generation entirely. 
+        /// By never entering `reaching`, the async color is prevented from 
+        /// propagating up its call graph.
         let candidates =
             decls
             |> List.choose (function
                 | DDefun(name, args, body, Ordinary, r) when
                     not (Naming.isSuspendingCopy name)
                     && name <> "main"
+                    && not (Set.contains name syncOnly)
                     && Map.containsKey name signatures
                     && not (Map.containsKey (Naming.suspendingCopy name) signatures)
                     ->
@@ -6564,6 +6604,43 @@ let private warnAboutShadowedMethods (registry: TraitRegistry) (decls: TDecl lis
 
     go decls
 
+/// Every binding whose scheme quantifies a type variable that no *parameter*
+/// mentions. See `TraitRegistry.ReturnOnlyGenerics` for what reads it.
+///
+/// A variable is compared with its quote stripped, because the two spellings
+/// are both in use: `Prelude` writes `Scheme(["a"], …, TVar "a")` and a
+/// signature's `%a` arrives as `'a`.
+let private returnOnlyGenerics (env: Env) : Set<string> =
+    let bare (v: string) = v.TrimStart '\''
+
+    let rec typeVars (t: HMType) : Set<string> =
+        match t with
+        | TVar name -> Set.singleton (bare name)
+        | TFun(args, ret, _) -> Set.unionMany (typeVars ret :: List.map typeVars args)
+        | TCon(_, args)
+        | TTuple args -> args |> List.fold (fun acc a -> Set.union acc (typeVars a)) Set.empty
+        | TMeta m ->
+            match m.Value with
+            | Some inner -> typeVars inner
+            | None -> Set.empty
+        | TAssoc(_, _, implementor) -> typeVars implementor
+
+    env.Bindings
+    |> Map.toSeq
+    |> Seq.choose (fun (name, binding) ->
+        let (Scheme(vars, _, scheme)) = binding.Scheme
+
+        match Unification.prune env.Registry scheme with
+        | TFun(args, _, _) ->
+            let inferable = args |> List.fold (fun acc a -> Set.union acc (typeVars a)) Set.empty
+
+            if vars |> List.exists (fun v -> not (Set.contains (bare v) inferable)) then
+                Some name
+            else
+                None
+        | _ -> None)
+    |> Set.ofSeq
+
 let checkProgram (initialEnv: Env) (program: Decl list) : Env * TDecl list =
     let finalEnv, _, typedDecls = checkDeclGroup initialEnv Map.empty program
     // Anything raised outside a declaration that generalizes still has to be
@@ -6571,4 +6648,11 @@ let checkProgram (initialEnv: Env) (program: Decl list) : Env * TDecl list =
     solvePending finalEnv
     checkModuleValuesAreConcrete finalEnv.Registry typedDecls
     warnAboutShadowedMethods finalEnv.Registry typedDecls
+
+    // After everything, because it reads the bindings as they finally are: a
+    // definition's scheme is not settled until its group has generalized.
+    let finalEnv =
+        { finalEnv with
+            Registry = { finalEnv.Registry with ReturnOnlyGenerics = returnOnlyGenerics finalEnv } }
+
     finalEnv, typedDecls

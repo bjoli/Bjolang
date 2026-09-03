@@ -279,6 +279,7 @@ let rec normalizeDecl (decl: Decl) : Decl =
     | DImportExtern _
     | DImportClass _
     | DMacro _
+    | DSyncOnly _
     | DImplExtern _ -> decl
 
 and normalizeModule (decls: Decl list) : Decl list = List.map normalizeDecl decls

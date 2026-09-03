@@ -3,7 +3,6 @@
 (import (std stopwatch))
 (import (std fmt))
 
-;; 
 (type (: Fetched (Record (: url string) (: status int) (: bytes int))))
 
 ;; This defines both a sync and an async copy. Every function that touches bjolang IO
@@ -17,18 +16,6 @@
      (let ((body (response-text r)))
        (response-close r)
        (Fetched (url url) (status (response-status r)) (bytes (string-length body)))))))
-
-;; One after another.
-(: one-at-a-time (-> (Vec string) (Vec Fetched)))
-(defun (one-at-a-time urls)
-  (loop (:for url urls)
-        (:acc out (vecing (fetch-one url)))))
-
-;; All at once. `bjo` starts a fiber and returns — so by
-;; the time this map is done every request is already on the wire.
-(: start-all (-> (Vec string) (Vec (Promise Fetched))))
-(defun (start-all urls)
-  (vec-map (fun (url) (bjo (fetch-one url))) urls))
 
 ;; Collecting *does* suspend. promise-join can only be called in a bjoroutine.
 (: collect (-bjo-> (Vec (Promise Fetched)) (Vec Fetched)))
@@ -47,11 +34,11 @@
 
 (: timed (-> Stopwatch string void))
 (defun (timed sw label)
-  (println (str "  " label " " (long->string (stopwatch-ms sw)) "ms"))
+  (show ["  " label " " (long->string (stopwatch-ms sw)) "ms"])
   (println ""))
 
 (: default-urls (Vec string))
-(def default-urls
+(def urls
   ["https://example.com"
    "https://www.google.com"
    "https://www.facebook.com"
@@ -60,15 +47,17 @@
    "https://www.iana.org/help/example-domains"
    "https://httpbin.org/delay/1"])
 
-(defbjo (main args)
-  (def urls (if (= (length args) 0)
-                default-urls
-                (loop (:for a args) (:acc v (vecing a)))))
+(: promise-join/sync (-> (Promise %a) %a))
+(defun (promise-join/sync p)
+  (match (sync/blocking (promise-join p))
+    ((Err r) (raise r))
+    ((Ok v) v)))
 
+(defun (main args)
   (println "one at a time")
   (def sequential (stopwatch))
   (stopwatch-start! sequential)
-  (def slowly (one-at-a-time urls))
+  (def slowly (vec-map (fun (url) (fetch-one url)) urls))
   (stopwatch-stop! sequential)
   (vec-for-each report slowly)
   (timed sequential "total")
@@ -77,8 +66,8 @@
   (def concurrent (stopwatch))
   (stopwatch-start! concurrent)
   ;; The two lines that matter: start everything, then collect.
-  (def started (start-all urls))
-  (def quickly (collect started))
+  (def started (vec-map (fun (x) (bjo (fetch-one x))) urls))
+  (def quickly (promise-join/sync (bjo (collect started))))
   (stopwatch-stop! concurrent)
   (vec-for-each report quickly)
   (timed concurrent "total")

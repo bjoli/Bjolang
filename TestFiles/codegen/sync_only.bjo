@@ -1,0 +1,62 @@
+;; `#:sync` — this definition gets no suspending copy.
+;;
+;; A `defun` that reaches a `defbjouble` is copied at the other colour with
+;; nothing written down. That is right when the copy can suspend, and wrong when
+;; it cannot: `fmt`'s `show` writes through a `Sink` stored in a `Block`, and a
+;; stored function's colour is its type — so no `-?->` may go there and the copy
+;; could only ever park. The compiler emitted it anyway and then warned, and the
+;; only way to act on the warning was to restructure code that was fine.
+;;
+;; The marker sits where `#:opaque` sits on a type, straight after the name,
+;; because it marks the declaration rather than any part of the shape.
+;;
+;; This is a *codegen* test because that is the only place the difference shows.
+;; `#:sync` changes which methods are emitted and nothing else — a program
+;; behaves identically either way, so no amount of running one could tell.
+;;
+;; Each `EXPECT-CS` line is an extended regex matched against one line, and each
+;; `EXPECT-NO-CS` line must match nothing.
+(import (std prelude))
+
+;; --- The seal ----------------------------------------------------------------
+;;
+;; `emit` reaches `write-string`, a `defbjouble`, so without the marker it would
+;; be copied.
+;;
+;; EXPECT-CS: Bjoml.Unit emit\(System.IO.TextWriter p, string s\)
+;; EXPECT-NO-CS: emit__bjo
+(: emit #:sync (-> TextOutputPort string void))
+(defun (emit p s)
+  (write-string p s))
+
+;; --- And the cascade ---------------------------------------------------------
+;;
+;; `via-emit` would be copied for mentioning `emit` alone. A name that never
+;; becomes a candidate is not a hit for anything that mentions it either, so
+;; marking one function seals every function whose only route to a `defbjouble`
+;; runs through it. That is what stops one unavoidable leaf colouring a whole
+;; call graph.
+;;
+;; EXPECT-NO-CS: viasubemit__bjo
+(: via-emit (-> string string))
+(defun (via-emit s)
+  (def sp (open-output-string))
+  (emit sp s)
+  (get-output-string sp))
+
+;; --- The control -------------------------------------------------------------
+;;
+;; The same shape without the marker, so a regression that suppressed *every*
+;; copy would fail here rather than pass quietly.
+;;
+;; EXPECT-CS: emitsubcopied__bjo
+(: emit-copied (-> TextOutputPort string void))
+(defun (emit-copied p s)
+  (write-string p s))
+
+(defun (main args)
+  (println (via-emit "x"))
+  (def sp (open-output-string))
+  (emit-copied sp "y")
+  (println (get-output-string sp))
+  0)

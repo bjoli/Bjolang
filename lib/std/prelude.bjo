@@ -98,8 +98,15 @@
   ;; Ports — input
   port-eof? read-line read-line/opt read-char read-char/opt read-all port-fold
   ;; Ports — output
-  write-string write-char writeln get-output-string)
+  write-string write-char writeln get-output-string
 
+  promise-join/sync)
+
+(: promise-join/sync (-> (Promise %a) %a))
+(defun (promise-join/sync p)
+  (match (sync/blocking (promise-join p))
+    ((Err e) (raise e))
+    ((Ok v) v)))
 
 (import/extern
   (clr-tostring (: System.Convert.ToString)))

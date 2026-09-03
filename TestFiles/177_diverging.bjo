@@ -1,0 +1,85 @@
+;; A call that never returns, in every position one can stand in.
+;;
+;; `raise` has always had a fresh type variable in return position — that is
+;; what lets it sit in a `match` arm whose siblings produce a value — but the
+;; property was the builtin's rather than the language's. A function written in
+;; Bjolang with the same shape type-checked and then failed in C#, and could not
+;; be used as a statement without `(ignore ...)` around something that never
+;; produces a value to ignore.
+;;
+;; Both of those came from the same question being answered by a list of names
+;; instead of by asking: does this callee have a type parameter that none of its
+;; parameters mention? `Codegen` needs it to know when to write the type
+;; argument out, and `MustUse` needs it to know there is no value here. The
+;; shapes emitted are pinned in `codegen/diverging_type_args.bjo`; what is
+;; pinned here is that programs using them run.
+(import (std prelude))
+(import (std simpletest))
+
+(import/class (Failure (: System.Exception (-> string Failure))))
+
+;; The `%a` appears in no parameter, so nothing at a call site can infer it.
+(: bail (-> string %a))
+(defun (bail msg)
+  (raise (Failure. msg)))
+
+(: bail-with (-> string (#:code int) %a))
+(defun (bail-with msg #:code 1)
+  (raise (Failure. (str msg ":" (->str code)))))
+
+;; --- Value position ----------------------------------------------------------
+
+(: pick (-> (Result Exception int) int))
+(defun (pick op)
+  (match op
+    ((Err e) (bail "no"))
+    ((Ok b) b)))
+
+(: pick-kw (-> (Result Exception int) int))
+(defun (pick-kw op)
+  (match op
+    ((Err e) (bail-with "no" #:code 7))
+    ((Ok b) b)))
+
+;; --- Statement position ------------------------------------------------------
+;;
+;; No `(ignore ...)`. There is nothing to ignore: the call does not return.
+
+(: guard (-> bool int))
+(defun (guard ok)
+  (when (not ok)
+    (bail "guard failed"))
+  1)
+
+;; The same for `raise` itself, which needed the ceremony until now.
+(: reraise (-> bool int))
+(defun (reraise ok)
+  (when (not ok)
+    (raise (Failure. "boom")))
+  2)
+
+(: message-of (-> (-> int) string))
+(defun (message-of thunk)
+  (match (try (thunk) #:catch (System.Exception))
+    ((Ok _) "returned")
+    ((Err e) (.-Message e))))
+
+(defun (main)
+  ;; The arm that returns a value still does.
+  (expect "an arm beside a diverging one is unaffected" (pick (Ok 7)) 7)
+  (expect "and with a keyword argument" (pick-kw (Ok 8)) 8)
+
+  ;; The diverging arm really diverges, at the instantiation the arm needed.
+  (expect "the diverging arm throws rather than returning"
+          (message-of (fun () (pick (Err (Failure. "x")))))
+          "no")
+  (expect "carrying its keyword argument"
+          (message-of (fun () (pick-kw (Err (Failure. "x")))))
+          "no:7")
+
+  ;; Statement position, both ways round.
+  (expect "a diverging statement is skipped when its guard is false" (guard #t) 1)
+  (expect "and taken when it is true" (message-of (fun () (guard #f))) "guard failed")
+  (expect "raise as a statement, skipped" (reraise #t) 2)
+  (expect "raise as a statement, taken" (message-of (fun () (reraise #f))) "boom")
+  0)

@@ -1,0 +1,37 @@
+;; The dependency half of `175_inlined_double.bjo`.
+;;
+;; Three things have to be true of it, and all three are load-bearing:
+;;
+;;   1. It declares the trait itself. Inline templates are published only for
+;;      traits the publishing module *declares*, so implementing someone else's
+;;      trait — `->str`, say — publishes no template and the call goes out
+;;      through a dictionary instead, which is not the path under test.
+;;   2. The method's body calls an ordinary function of this module rather than
+;;      doing the work itself, so that the spliced body names something that
+;;      has to be resolved back here.
+;;   3. That function reaches a `defbjouble` — `write-string` — so it is given a
+;;      suspending copy, and a caller in the other colour has two to choose
+;;      between.
+(import (std prelude))
+
+(export Render render Boxed make-boxed boxed->s)
+
+(def/trait (Render %c)
+  (: render (-> %c string)))
+
+(type (: Boxed (Struct (: n int))))
+
+(: make-boxed (-> int Boxed))
+(defun (make-boxed n) (Boxed (n n)))
+
+;; Writes to a port, so this gets a suspending copy. A string port is the wrong
+;; way to build a string — see the colour rules in `Docs/Syntax.org` — and it is
+;; used here precisely because it is what drags the colour in.
+(: boxed->s (-> Boxed string))
+(defun (boxed->s b)
+  (def sp (open-output-string))
+  (write-string sp (int->string (record-ref b n)))
+  (get-output-string sp))
+
+(def/impl (Render Boxed)
+  (defun (render b) (boxed->s b)))

@@ -2210,14 +2210,13 @@ and private generateApply
             else
                 append ctx (qualifiedName ctx name)
                 // A call with arguments normally lets C# infer its type
-                // arguments from them. The exceptions are the ones whose type
-                // argument appears only in the *return* type, which C# cannot
-                // infer from anything: a nullary call, `make-array`, and
-                // `raise`, which claims to return whatever the position it
-                // stands in wants and in fact returns nothing at all.
+                // arguments from them. The exception is when a type argument
+                // is only mentioned in the return type, which C# cannot infer.
+                // Such calls (tracked in `ReturnOnlyGenerics`) must explicitly
+                // emit their type arguments.
                 //
-                // A lambda argument is a fourth: an anonymous function whose
-                // parameters have no written types contributes nothing to
+                // A lambda argument is the other case: an anonymous function
+                // whose parameters have no written types contributes nothing to
                 // inference, so a call whose arguments are *all* lambdas is as
                 // blind as one with no arguments at all. That is what
                 // `(make-parameter (fun (s) ...))` is.
@@ -2225,9 +2224,17 @@ and private generateApply
                     not args.IsEmpty
                     && args |> List.forall (fun a -> match a.Node with TLambda _ -> true | _ -> false)
 
+                let uninferable =
+                    Set.contains (Naming.writtenName name) ctx.Registry.ReturnOnlyGenerics
+
+                // Keyword arguments do not stop C# reading type arguments —
+                // `f<int>(a, __kw_b: c)` is an ordinary call — and a diverging
+                // function may perfectly well take one, which `(panic! "..."
+                // #:exit-code 404)` does. They are only excluded from the two
+                // *guesses* above, where the arguments are what is being
+                // reasoned about.
                 if not tArgs.IsEmpty
-                   && (args.IsEmpty || onlyLambdas || name = "make-array" || name = "makesubarray" || name = "raise")
-                   && kwArgs.IsEmpty then
+                   && (uninferable || ((args.IsEmpty || onlyLambdas) && kwArgs.IsEmpty)) then
                     let tyArgsStr = tArgs |> List.map typeToString |> String.concat ", "
                     append ctx $"<%s{tyArgsStr}>"
         | TLambda _ ->

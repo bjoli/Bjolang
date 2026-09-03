@@ -282,7 +282,8 @@ let emptyRegistry : TraitRegistry =
       DoubleDefs = Map.empty
       GeneratedCopies = Set.empty
       InferredCopies = Set.empty
-      ColourDeclared = Set.empty }
+      ColourDeclared = Set.empty
+      ReturnOnlyGenerics = Set.empty }
 
 let prelude : Env =
     { Bindings = Map.ofList [

@@ -449,6 +449,16 @@ type Decl =
     /// the assembly's metadata, which is what an importing compilation reads.
     | DMacro of string * Range
 
+    /// Records that a name is to be given no suspending copy: `(: name #:sync (-> ...))`.
+    ///
+    /// `#:sync` prevents the generation of an async counterpart for a function.
+    /// This is used when an async copy would be forced to park (e.g., when 
+    /// synchronous callbacks are stored in data structures).
+    ///
+    /// Like `DMacro`, it is carried as its own declaration since it provides
+    /// metadata about a name. It does not survive type checking.
+    | DSyncOnly of string * Range
+
     // DImpl (TraitName, TargetType, AssociatedTypeBindings, Constraints, Methods, Range)
     //
     // The constraints are the impl's `(where (Trait %v) ...)`, spelled exactly
@@ -473,7 +483,7 @@ let declRange (decl: Decl) : Range =
     | DImplExtern(_, _, _, _, r) | DInlineImpl(_, _, _, _, _, _, _, r)
     | DModule(_, _, r) | DImport(_, r) | DAlias(_, _, r) | DExport(_, r) | DReExport(_, r)
     | DExtern(_, _, _, _, r) | DImportAlias(_, _, _, r)
-    | DImportExtern(_, r) | DImportClass(_, r) | DMacro(_, r) -> r
+    | DImportExtern(_, r) | DImportClass(_, r) | DMacro(_, r) | DSyncOnly(_, r) -> r
 
 // ---------------------------------------------------------------------------
 // Macro expansion
@@ -4611,6 +4621,7 @@ let rec boundNames (decls: Decl list) : Set<string> =
         | DExport _
         | DReExport _
         | DMacro _
+        | DSyncOnly _
         | DImplExtern _
         | DInlineImpl _ -> []
 
@@ -4659,6 +4670,7 @@ let rec mapDeclExprs (f: Expr -> Expr) (d: Decl) : Decl =
     | DImportExtern _
     | DImportClass _
     | DMacro _
+    | DSyncOnly _
     | DImplExtern _ -> d
 
 /// Literal `(begin ...)` forms flattened out of a list of declaration forms.
@@ -4699,6 +4711,7 @@ let declKindName (d: Decl) : string =
     | DImportClass _ -> "a class import"
     | DInlineImpl _ -> "an inline method body"
     | DMacro _ -> "a macro"
+    | DSyncOnly _ -> "a #:sync marker"
     | DImpl _ -> "an implementation"
     | DImplExtern _ -> "an imported implementation"
 
@@ -5237,6 +5250,20 @@ and tryParseDeclGroup (s: SExpr) : Decl list option =
     match stripHeadMark s with
     | SList(SAtom { Token = Symbol(("defun" | "defbjo") as definer) } :: SList(SAtom { Token = Symbol name } :: args, _) :: rest, _) ->
         Some(parseDefunDecl definer name args rest (getRange s))
+
+    // `(: name #:sync ...)`, in the slot `#:opaque` uses on a type: a marker on
+    // the declaration rather than any part of the shape.
+    //
+    // The rest is handed back to `tryParseDecl` with the marker taken out, so
+    // every signature form there is — with a `(where ...)` and without — keeps
+    // working here without being spelled a second time.
+    | SList(SAtom { Token = Colon } as colon :: (SAtom { Token = Symbol name } as named) :: SAtom { Token = Keyword "sync" } :: rest, r) ->
+        match tryParseDecl (SList(colon :: named :: rest, r)) with
+        | Some signature -> Some [ signature; DSyncOnly(name, r) ]
+        | None ->
+            failwithf
+                $"Invalid signature for '%s{name}' at %s{Lexer.formatPos r}. #:sync goes straight after the name, as in (: %s{name} #:sync (-> ...))."
+
     | _ -> tryParseDecl s |> Option.map List.singleton
 
 /// The declarations one top-level form expands to.

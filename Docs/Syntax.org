@@ -322,6 +322,33 @@ That is what makes an ordinary call chain suspend at any depth: a loop over a
 port is written once, and a bjoroutine calling it four levels up gets the
 suspending copy the whole way.
 
+**** ~#:sync~ — no copy for this one
+The `#:sync` marker prevents the compiler from generating an async copy for a function. This is necessary when a function's design inherently precludes yielding (such as when its internal callbacks are strictly typed as synchronous), and an async copy would only result in a parking violation. 
+
+~#:sync~ is written after the name:
+
+#+BEGIN_SRC scheme
+(: show #:sync (-> (Vec Block) void))
+(defun (show bs) (render (parameter-ref current-output-port) bs))
+#+END_SRC
+
+It seals the *call graph above it*, not only the definition: a name that never
+becomes a candidate for a copy is not a reason for its callers to be copied
+either. One marker on ~show~ is why nothing in ~Examples/~ is copied for
+printing.
+
+It suppresses a copy and nothing else. A bjoroutine may still call a ~#:sync~
+procedure — it runs the one body there is, on the fiber — and the blocking lint
+still reports that, because that is the warning worth keeping. What goes away is
+the report about a generated body nobody wrote.
+
+Refused on a ~defbjo~ and on a ~defbjouble~, which declare the opposite.
+
+The three in the standard library are each unavoidable rather than a
+preference, and each has the other colour available another way: ~show~ and
+~render~ have ~render->string~, and ~port->seq~ has the channel form beside it.
+That is the shape to copy — mark it ~#:sync~, and say what to use instead.
+
 **** A string is built with a builder, not with a port
 Writing to a port carries an effect (colour). Since ~TextOutputPort~ applies to both 
 file ports and string ports indiscriminately, any function that formats into a 
@@ -1125,6 +1152,35 @@ Its return type is a fresh variable because it never returns, which is what lets
 it stand in a ~match~ arm whose siblings produce a value. It takes a
 ~System.Exception~, so a caught error can always be re-raised; raising a freshly
 constructed one of a narrower type needs that type widened first.
+
+*** Writing your own
+This diverging signature shape is not restricted to built-ins. A signature whose return type is a variable no *parameter* mentions is inherently recognized as diverging, and can be applied to custom functions:
+
+#+BEGIN_SRC scheme
+(: panic! (-> string (#:exit-code int) %a))
+(defun (panic! msg #:exit-code 1)
+  (println (str "panic: " msg))
+  (clr-exit exit-code)
+  (raise (Failure. msg)))          ;; unreachable; it is what supplies the %a
+
+(match op
+  ((Err e) (panic! "oh no!" #:exit-code 404))
+  ((Ok b) b))
+#+END_SRC
+
+Two things follow from the signature alone, with no list of blessed names
+anywhere. The type argument is written out at the call site, because C# infers a
+method's type arguments from its arguments and there is nothing here to infer
+this one from. And the call may stand in *statement* position without ~ignore~
+— there is no value to discard, which is also why ~(when bad (raise e))~ needs
+no ceremony.
+
+A function that promises a type its arguments never mention has no way to build
+one, so it can only throw, exit, or loop forever. That is the whole content of
+the rule: it is read off the signature rather than declared.
+
+Nothing changes for an ordinary generic. ~(: same-again (-> %a %a))~ has its
+~%a~ in a parameter, so C# infers it and the call site stays bare.
 
 ** Traits and Implementations
 Bjolang supports generic traits and implementations. A trait is parameterised by

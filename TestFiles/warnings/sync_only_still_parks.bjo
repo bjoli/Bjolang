@@ -1,0 +1,33 @@
+;; `#:sync` suppresses a copy, not a diagnostic.
+;;
+;; The marker says there is to be no suspending body. It does not say the
+;; procedure is cheap, and it does not make a fiber that calls it give its
+;; thread back — so the blocking lint has to keep reporting it, or `#:sync`
+;; would be a way to silence the one warning that matters.
+;;
+;; What changes is *which* warning. Before the marker, the copy existed and was
+;; reported as "the suspending copy of it ... still parks", which named a body
+;; nobody wrote and suggested restructuring. Now there is no copy, and what is
+;; reported is the plain thing: this bjoroutine parks, here, on this path.
+;;
+;; EXPECT-WARNING: 'writer' is a bjoroutine
+;; EXPECT-WARNING: writer -> emit -> write-string
+;; EXPECT-WARNING: parks the thread it runs on
+;;
+;; And the message about a generated copy must *not* appear, since there is none.
+;;
+;; EXPECT-NO-WARNING: the suspending copy of it
+(import (std prelude))
+
+(: emit #:sync (-> TextOutputPort string void))
+(defun (emit p s)
+  (write-string p s))
+
+(: writer (-bjo-> TextOutputPort string void))
+(defbjo (writer p s)
+  (emit p s))
+
+(defun (main args)
+  (def sp (open-output-string))
+  (println (str "built " (get-output-string sp)))
+  0)

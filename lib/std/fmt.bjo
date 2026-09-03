@@ -100,7 +100,11 @@
 (defun (run-blocks out col bs)
   (fold (fun (c b) (run-block out c b)) col bs))
 
-(: render (-> TextOutputPort (Vec Block) void))
+;; `#:sync`, and it cannot be otherwise: the sink is stored in a `Block`'s
+;; `BRun` case, and a stored function's colour is its type — so no `-?->` can
+;; go there and no suspending copy of this could ever await. Rendering from a
+;; fiber is `render->string` plus a write you make yourself.
+(: render #:sync (-> TextOutputPort (Vec Block) void))
 (defun (render port bs)
   (ignore (run-blocks #(write-string port &1) 0 bs)))
 
@@ -110,8 +114,10 @@
     (ignore (run-blocks #(stringbuilder-add-string! b &1) 0 bs))
     (stringbuilder->string b)))
 
-;; Renders to current output port.
-(: show (-> (Vec Block) void))
+;; Renders to current output port. `#:sync` for `render`'s reason, and stated
+;; here too rather than left to follow from it: this is the exported one, and
+;; what it promises a caller should be readable at it.
+(: show #:sync (-> (Vec Block) void))
 (defun (show bs) (render (parameter-ref current-output-port) bs))
 
 

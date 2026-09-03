@@ -1359,7 +1359,18 @@ type TraitRegistry =
       /// defined with `defbjo` — a `defun` there is an error. Anything asking
       /// "did this need to suspend?" has to leave those alone, or it recommends
       /// a rewrite the next pass rejects.
-      ColourDeclared: Set<string> }
+      ColourDeclared: Set<string>
+
+      /// Bindings with a type parameter that none of their parameters mention.
+      ///
+      /// These bindings represent functions that diverge (never return), as they
+      /// have no way to produce a value for a type parameter they do not take 
+      /// as an argument. 
+      /// 
+      /// Tracks these functions because C# cannot infer such parameters, requiring
+      /// `Codegen` to explicitly emit type arguments. Additionally, `MustUse` uses 
+      /// this to skip discard checks since divergent functions yield no value.
+      ReturnOnlyGenerics: Set<string> }
 
     member this.IsTraitDefinedLocally(name) = Set.contains name this.LocalTraits
     member this.IsTypeDefinedLocally(name) = Set.contains name this.LocalTypes

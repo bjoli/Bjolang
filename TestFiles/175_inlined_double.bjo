@@ -1,0 +1,55 @@
+;; Choosing the suspending copy of a function named by an *inlined* body.
+;;
+;; `selectDoubles` picks the copy by looking the callee's name up in
+;; `DoubleDefs`, which is keyed by what the programmer wrote. A body spliced in
+;; from a dependency's trait template does not name its callees that way: it
+;; qualifies them with their home module's class, `175_lib_Module::boxed->s`,
+;; because that is where they have to be resolved back to.
+;;
+;; Looked up as spelled, that missed, and nothing was substituted — while the
+;; effect on the call had already been ground to `EAsync`, correctly, since
+;; `boxed->s` does reach a `defbjouble`. The two disagreed and the emitted C#
+;; awaited a `string`:
+;;
+;;   return (await lib_Module.boxedsubgts(b));   // 'string' has no GetAwaiter
+;;
+;; which is a compiler bug presenting as a C# error in a file the reader never
+;; wrote. Nothing in the standard library reached the shape until writing
+;; acquired a colour, which is why it went unnoticed.
+;;
+;; Both spellings matter and are checked below: the suspending call must get the
+;; twin, and the ordinary one must still get the ordinary copy.
+(import (std prelude))
+(import (std simpletest))
+(import "175_lib.bjo")
+
+;; The whole point: `render` is inlined here, so what is left is a call to
+;; `175_lib`'s `boxed->s` under its qualified name, in a suspending body.
+(: rendered (-bjo-> Boxed string))
+(defbjo (rendered b)
+  (render b))
+
+(: run-str (-> (Promise string) string))
+(defun (run-str p)
+  (match (sync/blocking (promise-join p))
+    ((Ok s) s)
+    ((Err e) "raised")))
+
+(defun (main)
+  (expect "an inlined body's call to a defbjouble-reaching function suspends"
+          (run-str (bjo (rendered (make-boxed 42))))
+          "42")
+
+  ;; The same call in an ordinary body, which must not be rewritten: a `defun`
+  ;; keeps the ordinary copy however deep the call is.
+  (expect "and the ordinary colour still gets the ordinary copy"
+          (render (make-boxed 7))
+          "7")
+
+  ;; Called directly rather than through the trait, so nothing is inlined and
+  ;; the name arrives unqualified. This path always worked; it is here so that a
+  ;; regression in the qualified one cannot hide behind it.
+  (expect "an unqualified call to the same function still works"
+          (run-str (bjo (rendered (make-boxed 1))))
+          "1")
+  0)

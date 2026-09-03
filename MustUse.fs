@@ -60,10 +60,23 @@ let private mustBeHandled (registry: TraitRegistry) (t: HMType) =
 
 let private describe = DotNetInterop.showType
 
+/// Checks if this call diverges (never returns).
+///
+/// Calls to functions tracked in `ReturnOnlyGenerics` produce no value, so 
+/// they do not require `ignore` handling. Only explicit calls are checked; 
+/// dropping the function value itself is still considered discarding a value.
+let private neverReturns (registry: TraitRegistry) (expr: TypedExpr) =
+    match expr.Node with
+    | TApply({ Node = TIdent(name, _) }, _, _) ->
+        Set.contains (Naming.writtenName name) registry.ReturnOnlyGenerics
+    | _ -> false
+
 /// `what` names the shape that is doing the discarding, so that the message can
 /// say where the value went rather than only that it went.
 let private checkDiscard (registry: TraitRegistry) (what: string) (expr: TypedExpr) : unit =
-    if mustBeHandled registry expr.Type then
+    if neverReturns registry expr then
+        ()
+    elif mustBeHandled registry expr.Type then
         failwithf
             $"Type Error at %s{formatPos expr.Range}: this value has type %s{describe expr.Type}, which may not be discarded — not even with `ignore`.\n  %s{what}\n  A discarded error is the bug the type exists to prevent, and there is no sensible default for one. Handle it with `match`, or take the value out with `unwrap`."
     elif not (carriesNothing registry expr.Type) then
