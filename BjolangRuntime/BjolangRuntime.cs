@@ -828,6 +828,16 @@ public static partial class BjolangRuntime {
         return default!;   // unreachable: Throw() does not return
     }
 
+    public static T Panic<T>(string message, int exitCode) {
+        var err = parametersubref(currentsuberrorsubport);
+        err.WriteLine(message);
+        // `Environment.Exit` runs no finalizers, and a redirected error port
+        // may be buffered.
+        err.Flush();
+        Environment.Exit(exitCode);
+        return default!;   // unreachable: Exit does not return
+    }
+
     /// Why a scope was cancelled, and Bjolang's `CancelReason`. The payload of
     /// every cancellation token: a token used to say only *that* you had been
     /// cancelled.

@@ -58,6 +58,24 @@
     (raise (Failure. "boom")))
   2)
 
+;; --- The prelude's own ---------------------------------------------------------
+;;
+;; `panic!` exits the process, so nothing here calls it — what is checked is
+;; that it type-checks in both positions, which is the whole of what its
+;; signature promises.
+
+(: pick-or-panic (-> (Result Exception int) int))
+(defun (pick-or-panic op)
+  (match op
+    ((Err e) (panic! "unreachable in this test" #:exit-code 3))
+    ((Ok b) b)))
+
+(: panic-as-statement (-> bool int))
+(defun (panic-as-statement ok)
+  (when (not ok)
+    (panic! "unreachable in this test"))
+  3)
+
 (: message-of (-> (-> int) string))
 (defun (message-of thunk)
   (match (try (thunk) #:catch (System.Exception))
@@ -82,4 +100,8 @@
   (expect "and taken when it is true" (message-of (fun () (guard #f))) "guard failed")
   (expect "raise as a statement, skipped" (reraise #t) 2)
   (expect "raise as a statement, taken" (message-of (fun () (reraise #f))) "boom")
+
+  ;; The prelude's `panic!`, on the paths that do not reach it.
+  (expect "panic! in an arm beside a live one" (pick-or-panic (Ok 9)) 9)
+  (expect "panic! as a statement, not taken" (panic-as-statement #t) 3)
   0)
