@@ -270,18 +270,9 @@ let keywordParamName = Naming.keywordParamName
 let restParamName = Naming.restParamName
 
 /// Does this `::` name qualify a binding to the module class that defines it,
-/// rather than name a method of a trait implementation?
-///
-/// The two shapes are spelled the same because they mean the same thing to
-/// `sanitizeIdent` — reach into that class — but they disagree about what the
-/// identifier's type arguments are for. A trait landing pad's belong to the
-/// *class*, `Foldable_List<int>.Instance.fold`; a qualified binding's belong to
-/// the *function*, and C# infers those from the arguments as it would for any
-/// other call.
-let private isModuleQualified (name: string) =
-    match name.LastIndexOf "::" with
-    | -1 -> false
-    | i -> name.Substring(0, i).EndsWith "_Module"
+/// rather than name a method of a trait implementation? See `Naming`, which
+/// owns the test because the passes that strip the qualifier need it too.
+let private isModuleQualified (name: string) = Naming.isModuleQualified name
 
 /// The C# class a module's declarations are emitted into.
 ///

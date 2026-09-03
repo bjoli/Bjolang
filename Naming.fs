@@ -66,6 +66,45 @@ let suspendingCopy (name: string) = name + "__bjo"
 /// definition from a written one.
 let isSuspendingCopy (name: string) = name.EndsWith "__bjo"
 
+/// Splits a name qualified by a module class (e.g. `prelude_Module::vec->str`) 
+/// into its qualifier and base name. Returns `None` if it carries no such qualifier.
+///
+/// Stripping the qualifier is necessary because registries (like `DoubleDefs`) are keyed 
+/// by the unqualified written names, but inlined trait bodies refer to their callees 
+/// using qualified names.
+/// We specifically check for the `_Module` suffix to distinguish module qualifiers 
+/// from trait landing pads (e.g. `Foldable_List::fold`).
+let splitModuleQualified (name: string) : (string * string) option =
+    match name.LastIndexOf "::" with
+    | -1 -> None
+    | i ->
+        let qualifier = name.Substring(0, i)
+
+        if qualifier.EndsWith "_Module" then
+            Some(qualifier, name.Substring(i + 2))
+        else
+            None
+
+/// Determines if a `::` name qualifies a module binding rather than a trait 
+/// implementation method. This distinction is important because their type arguments 
+/// map differently in the emitted C# code.
+let isModuleQualified (name: string) = (splitModuleQualified name).IsSome
+
+/// The name as written, with any module-class qualifier taken off. What a
+/// registry keyed by written names has to be asked with.
+let writtenName (name: string) =
+    match splitModuleQualified name with
+    | Some(_, bare) -> bare
+    | None -> name
+
+/// Puts `name`'s module qualifier, if it had one, onto `replacement`.
+/// This ensures we don't accidentally drop the qualifier after looking up 
+/// an unqualified name in a registry.
+let requalifyLike (name: string) (replacement: string) =
+    match splitModuleQualified name with
+    | Some(qualifier, _) -> qualifier + "::" + replacement
+    | None -> replacement
+
 /// This is the base namespace for all compiled modules (e.g., `BjoMod`).
 /// We append a hash to all child namespaces so that a user module named `Set`
 /// compiles to `BjoMod.Set_1234abcd` instead of `BjoMod.Set`. This prevents

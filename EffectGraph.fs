@@ -63,11 +63,17 @@ let private isLambda (e: TypedExpr) =
 
 /// Whether calling this name parks the thread.
 ///
-/// The origin is tried as well as the visible name, because a dependency
-/// publishes what it called the definition and an importer may have renamed it.
-/// Without this, `(import (std prelude) #:prefix io/)` would turn the whole port
-/// surface back into names the lint has never heard of.
+/// The origin is checked alongside the visible name to correctly handle 
+/// renamed imports (e.g., `(import (std prelude) #:prefix io/)`).
+///
+/// We strip module-class qualifiers first (e.g., `theirModule_Module::f` -> `f`) 
+/// because inlined trait bodies use qualified names for their callees, but the 
+/// blocking registry is keyed by written names.
+/// Note: Call edges in `scanBody` are deliberately NOT normalized this way, 
+/// to avoid accidentally linking to local definitions of the same name.
 let private isBlocking (registry: TraitRegistry) (name: string) =
+    let name = Naming.writtenName name
+
     Set.contains name registry.BlockingNames
     || (match Map.tryFind name registry.ImportAliases with
         | Some alias -> Set.contains alias.OriginalName registry.BlockingNames
@@ -305,11 +311,14 @@ let rec private ground (allowed: bool) (t: HMType) : unit =
 let private valueCopy (registry: TraitRegistry) (expr: TypedExpr) : TypedExpr option =
     match expr.Node, expr.Type with
     | TIdent(name, tyArgs), TFun(_, _, eff) when pruneEffect eff = EAsync ->
-        match Map.tryFind name registry.DoubleDefs with
+        // We look up using the unqualified name (because `DoubleDefs` is keyed by 
+        // written names), but we preserve the qualifier when recreating the identifier 
+        // to handle inlined trait bodies.
+        match Map.tryFind (Naming.writtenName name) registry.DoubleDefs with
         | Some bjoName ->
             Some
                 { expr with
-                    Node = TIdent(bjoName, tyArgs)
+                    Node = TIdent(Naming.requalifyLike name bjoName, tyArgs)
                     Type = recolour EAsync expr.Type }
         | None -> None
     | _ -> None
@@ -561,13 +570,16 @@ let rec private selectIn (registry: TraitRegistry) (allowed: bool) (expr: TypedE
                 { target with
                     Node = TIdent(Naming.suspendingCopy name, tyArgs)
                     Type = recolour EAsync target.Type }
+            // Look up using the unqualified written name, but preserve any module qualifiers 
+            // the call site used. This ensures inlined trait bodies resolve correctly 
+            // and get properly mapped to their async counterparts when their effect is `EAsync`.
             | TIdent(name, tyArgs) when allowed ->
-                match Map.tryFind name registry.DoubleDefs with
+                match Map.tryFind (Naming.writtenName name) registry.DoubleDefs with
                 // The copy's type is the declared one repainted, which is
                 // exactly what `checkDecl` gave the definition itself.
                 | Some bjoName ->
                     { target with
-                        Node = TIdent(bjoName, tyArgs)
+                        Node = TIdent(Naming.requalifyLike name bjoName, tyArgs)
                         Type = recolour EAsync target.Type }
                 | None -> descend target
             | _ -> descend target
