@@ -1350,15 +1350,34 @@
 
 ;; --- Output ---
 
+;; Output bindings with synchronous and asynchronous (bjoroutine) pairs.
+;; 
+;; It is crucial to have asynchronous variants for writes. Even though writes 
+;; are buffered, a write that fills the buffer will trigger a drain (syscall).
+;; The async variant ensures this drain suspends rather than blocking a thread.
+(import/extern
+  (clr-write         (: Bjolang.Runtime.BjoWriter.WritePort          (-> TextOutputPort string void) #:blocking))
+  (clr-write-await   (: Bjolang.Runtime.BjoWriter.WritePortAsync     (-> TextOutputPort string void) #:async))
+  (clr-writec        (: Bjolang.Runtime.BjoWriter.WriteCharPort      (-> TextOutputPort char void)   #:blocking))
+  (clr-writec-await  (: Bjolang.Runtime.BjoWriter.WriteCharPortAsync (-> TextOutputPort char void)   #:async))
+  (clr-writeln       (: Bjolang.Runtime.BjoWriter.WriteLinePort      (-> TextOutputPort string void) #:blocking))
+  (clr-writeln-await (: Bjolang.Runtime.BjoWriter.WriteLinePortAsync (-> TextOutputPort string void) #:async)))
+
 (: write-string (-> TextOutputPort string void))
-(defun (write-string p s) (.Write p s))
+(defbjouble (write-string p s)
+  (#:sync (clr-write p s))
+  (#:bjo  (clr-write-await p s)))
 
 ;; Write char.
 (: write-char (-> TextOutputPort char void))
-(defun (write-char p c) (writer-write-char! p c))
+(defbjouble (write-char p c)
+  (#:sync (clr-writec p c))
+  (#:bjo  (clr-writec-await p c)))
 
 (: writeln (-> TextOutputPort string void))
-(defun (writeln p s) (.WriteLine p s))
+(defbjouble (writeln p s)
+  (#:sync (clr-writeln p s))
+  (#:bjo  (clr-writeln-await p s)))
 
 ;; Gets the accumulated string in the textoutputport
 (: get-output-string (-> TextOutputPort string))
@@ -1567,20 +1586,24 @@
   (defun (->str l)
     (list->str l)))
 
+;; We use a `StringBuilder` directly rather than a string port for string formatting.
+;;
+;; Formatting should be a pure operation. Using a port would incorrectly inherit
+;; the port's effect (colour), causing string building to become asynchronous 
+;; inside bjoroutines. `StringBuilder` is also more efficient here.
 (: vec->str (-> (Vec %a) string) (where (->str %a)))
 (defun (vec->str v)
-  (def sp (open-output-string))
-  (def out #(write-string sp &1))
-  (out "[")
-  (when (not (empty? v))
-    (out (->str (vec-ref v 0)))
-    (loop (:with i 0 (+ i 1))
-          (:for elem v)
-          (:when (> i 0))
-          (:do (out " ")
-               (out (->str elem)))))
-  (out "]")
-  (get-output-string sp))
+  (let ((sb (stringbuilder-empty)))
+    (stringbuilder-add-string! sb "[")
+    (when (not (empty? v))
+      (stringbuilder-add-string! sb (->str (vec-ref v 0)))
+      (loop (:with i 0 (+ i 1))
+            (:for elem v)
+            (:when (> i 0))
+            (:do (stringbuilder-add-string! sb " ")
+                 (stringbuilder-add-string! sb (->str elem)))))
+    (stringbuilder-add-string! sb "]")
+    (stringbuilder->string sb)))
 
 (def/impl (->str (Vec %a))
   (where (->str %a))
@@ -1588,17 +1611,18 @@
     (vec->str v)))
 
 
+;; We use a `StringBuilder` directly rather than a string port to keep 
+;; formatting pure and synchronous.
 (: seq->str (-> (Seq %a) string) (where (->str %a)))
 (defun (seq->str sq)
-  (def sp (open-output-string))
-  (def out #(write-string sp &1))
-  (out "(seq")
-  ;; Walk sequence.
-  (loop (:for item sq)
-        (:do (out " ")
-             (out (->str item))))
-  (out ")")
-  (get-output-string sp))
+  (let ((sb (stringbuilder-empty)))
+    (stringbuilder-add-string! sb "(seq")
+    ;; Walk sequence.
+    (loop (:for item sq)
+          (:do (stringbuilder-add-string! sb " ")
+               (stringbuilder-add-string! sb (->str item))))
+    (stringbuilder-add-string! sb ")")
+    (stringbuilder->string sb)))
 
 (def/impl (->str (Seq %a))
   (where (->str %a))

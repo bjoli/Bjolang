@@ -525,12 +525,13 @@ public sealed class BjoPort : TextReader {
     }
 }
 
-/// The symmetric type, and half the difficulty: a writer has no eof problem.
+/// A buffered text writer.
 ///
-/// What it buys is a flush that suspends and a write that does not. Text goes
-/// into memory and stays there, so `write-string` is a copy whatever colour it
-/// is called in, and only `flush-port` — where the syscall actually is — has a
-/// suspending twin worth having.
+/// Most writes do no I/O and simply copy text into the buffer. However, a write
+/// that fills the buffer will drain it immediately, performing an actual syscall.
+/// Because of this, writes must have asynchronous counterparts (suspending twins)
+/// just like flushes do, ensuring that draining a full buffer inside a bjoroutine
+/// suspends rather than blocking a thread pool thread.
 public sealed class BjoWriter : TextWriter {
     private const int DefaultBufferSize = 4096;
 
@@ -594,6 +595,44 @@ public sealed class BjoWriter : TextWriter {
         await inner.WriteAsync(buf.AsMemory(0, n), cancel).ConfigureAwait(false);
     }
 
+    /// Asynchronously appends text to the buffer, draining it if it fills.
+    ///
+    /// If the text fits in the buffer, this finishes synchronously without awaiting.
+    /// If the buffer fills, it drains asynchronously without holding the thread.
+    /// We use `ReadOnlyMemory` instead of `ReadOnlySpan` because `Span` cannot be 
+    /// held across an `await` boundary.
+    private async ValueTask AppendAsync(ReadOnlyMemory<char> text, CancellationToken cancel) {
+        ThrowIfDisposed();
+
+        while (!text.IsEmpty) {
+            if (len == buf.Length) await DrainAsync(cancel).ConfigureAwait(false);
+
+            int n = Math.Min(text.Length, buf.Length - len);
+            text.Span[..n].CopyTo(buf.AsSpan(len));
+            len += n;
+            text = text[n..];
+        }
+    }
+
+    /// Asynchronous counterpart for `write-string` and `write-char`.
+    ///
+    /// Returns `ValueTask` to avoid allocations in the common case where 
+    /// the text fits in the buffer and the write completes synchronously.
+    public ValueTask WriteValueAsync(ReadOnlyMemory<char> text, CancellationToken cancel = default) =>
+        AppendAsync(text, cancel);
+
+    public ValueTask WriteValueAsync(string? value, CancellationToken cancel = default) =>
+        value is null ? default : AppendAsync(value.AsMemory(), cancel);
+
+    /// Writes text followed by a newline into the buffer.
+    ///
+    /// Both the text and newline are buffered sequentially to prevent other 
+    /// concurrent writes from interleaving between them.
+    public async ValueTask WriteLineValueAsync(string? value, CancellationToken cancel = default) {
+        if (value is not null) await AppendAsync(value.AsMemory(), cancel).ConfigureAwait(false);
+        await AppendAsync(CoreNewLine.AsMemory(), cancel).ConfigureAwait(false);
+    }
+
     public override void Write(char value) {
         ThrowIfDisposed();
         if (len == buf.Length) DrainSync();
@@ -611,48 +650,35 @@ public sealed class BjoWriter : TextWriter {
 
     public override void Write(ReadOnlySpan<char> buffer) => Append(buffer);
 
-    public override Task WriteAsync(char value) {
-        Write(value);
-        return Task.CompletedTask;
-    }
+    // We explicitly route these async overrides through `AppendAsync` instead 
+    // of calling their synchronous counterparts to ensure that buffer-full 
+    // situations suspend asynchronously rather than blocking the thread.
 
-    public override Task WriteAsync(string? value) {
-        Write(value);
-        return Task.CompletedTask;
-    }
+    public override Task WriteAsync(char value) =>
+        AppendAsync(new[] { value }.AsMemory(), default).AsTask();
+
+    public override Task WriteAsync(string? value) => WriteValueAsync(value).AsTask();
 
     public override Task WriteAsync(char[] buffer, int index, int count) {
-        Write(buffer, index, count);
-        return Task.CompletedTask;
+        ArgumentNullException.ThrowIfNull(buffer);
+        return AppendAsync(buffer.AsMemory(index, count), default).AsTask();
     }
 
-    public override Task WriteAsync(ReadOnlyMemory<char> buffer, CancellationToken cancel = default) {
-        cancel.ThrowIfCancellationRequested();
-        Append(buffer.Span);
-        return Task.CompletedTask;
-    }
+    public override Task WriteAsync(ReadOnlyMemory<char> buffer, CancellationToken cancel = default) =>
+        AppendAsync(buffer, cancel).AsTask();
 
-    public override Task WriteLineAsync(char value) {
-        WriteLine(value);
-        return Task.CompletedTask;
-    }
+    public override Task WriteLineAsync(char value) =>
+        WriteLineValueAsync(value.ToString()).AsTask();
 
-    public override Task WriteLineAsync(string? value) {
-        WriteLine(value);
-        return Task.CompletedTask;
-    }
+    public override Task WriteLineAsync(string? value) => WriteLineValueAsync(value).AsTask();
 
     public override Task WriteLineAsync(char[] buffer, int index, int count) {
-        WriteLine(buffer, index, count);
-        return Task.CompletedTask;
+        ArgumentNullException.ThrowIfNull(buffer);
+        return WriteLineValueAsync(new string(buffer, index, count)).AsTask();
     }
 
-    public override Task WriteLineAsync(ReadOnlyMemory<char> buffer, CancellationToken cancel = default) {
-        cancel.ThrowIfCancellationRequested();
-        Append(buffer.Span);
-        Append(CoreNewLine);
-        return Task.CompletedTask;
-    }
+    public override Task WriteLineAsync(ReadOnlyMemory<char> buffer, CancellationToken cancel = default) =>
+        WriteLineValueAsync(buffer.ToString(), cancel).AsTask();
 
     public override void Flush() {
         ThrowIfDisposed();
@@ -717,6 +743,65 @@ public sealed class BjoWriter : TextWriter {
     public static async ValueTask<Unit> FlushPortAsync(TextWriter writer, CancellationToken cancel = default) {
         if (writer is BjoWriter w) await w.FlushValueAsync(cancel).ConfigureAwait(false);
         else await writer.FlushAsync(cancel).ConfigureAwait(false);
+        return default;
+    }
+
+    // Output endpoints for `defbjouble`, providing both synchronous and 
+    // asynchronous variants.
+    //
+    // These methods check if the given `TextWriter` is specifically a `BjoWriter`
+    // to utilize its optimized buffering paths. Other writers (like `StringWriter` 
+    // or standard .NET `TextWriter`s) fall back to their default `TextWriter` implementations.
+
+    public static Unit WritePort(TextWriter writer, string value) {
+        writer.Write(value);
+        return default;
+    }
+
+    public static async ValueTask<Unit> WritePortAsync(
+        TextWriter writer,
+        string value,
+        CancellationToken cancel = default) {
+        if (writer is BjoWriter w) await w.WriteValueAsync(value, cancel).ConfigureAwait(false);
+        else await writer.WriteAsync(value.AsMemory(), cancel).ConfigureAwait(false);
+        return default;
+    }
+
+    public static Unit WriteLinePort(TextWriter writer, string value) {
+        writer.WriteLine(value);
+        return default;
+    }
+
+    public static async ValueTask<Unit> WriteLinePortAsync(
+        TextWriter writer,
+        string value,
+        CancellationToken cancel = default) {
+        if (writer is BjoWriter w) await w.WriteLineValueAsync(value, cancel).ConfigureAwait(false);
+        else await writer.WriteLineAsync(value.AsMemory(), cancel).ConfigureAwait(false);
+        return default;
+    }
+
+    /// Writes a single Bjolang character to the port.
+    /// 
+    /// Note: This calls `BjoChar.WriteTo` instead of `Write((char)c)` because 
+    /// a Unicode scalar above the Basic Multilingual Plane requires writing 
+    /// two UTF-16 code units.
+    public static Unit WriteCharPort(TextWriter writer, BjoChar c) {
+        c.WriteTo(writer);
+        return default;
+    }
+
+    public static async ValueTask<Unit> WriteCharPortAsync(
+        TextWriter writer,
+        BjoChar c,
+        CancellationToken cancel = default) {
+        // We encode to a memory-backed array before the first await because 
+        // `EncodeUtf16` requires a `Span`, which cannot be held across awaits.
+        var units = new char[2];
+        var text = units.AsMemory(0, c.EncodeUtf16(units));
+
+        if (writer is BjoWriter w) await w.WriteValueAsync(text, cancel).ConfigureAwait(false);
+        else await writer.WriteAsync(text, cancel).ConfigureAwait(false);
         return default;
     }
 }
