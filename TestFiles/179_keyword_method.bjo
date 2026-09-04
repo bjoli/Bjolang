@@ -1,0 +1,47 @@
+;; A method whose name is a C# keyword, called across a module boundary.
+;;
+;; `ref` is the case — `Refable`'s method, and the one a stopwatch is read with
+;; — but nothing about it is special: `sanitizeIdent` escapes a reserved word to
+;; `@ref` so that C# reads it as an identifier at all.
+;;
+;; It escaped the *declaration* and not the *call*. A call to an imported impl
+;; is emitted from a path, `Refable_Dial.Instance::ref`, and the escape was
+;; applied to the whole string rather than to its segments — which matches none
+;; of the reserved words the moment a dot is in it. The result was `.ref(...)`
+;; against a method declared `@ref`: C# read `ref d` as a by-reference local,
+;; and the errors landed in generated code, naming neither trait nor method.
+;;
+;; Three things had to line up, which is why it sat here unnoticed:
+;;
+;;   - the method's name is a reserved word, so the two sides must agree on an
+;;     escape rather than on nothing;
+;;   - the implementor is *not* generic, since the generic branch splits on
+;;     `::` and sanitizes the halves separately and was always right;
+;;   - the impl is in *another module*, since one written here is inlined at the
+;;     call and never goes through a member access at all.
+;;
+;; The standard library's own `Refable` impls are generic — `Vec`, `Map`,
+;; `Array` — so the suite exercised only the branch that worked. `(std
+;; stopwatch)` implements it for `System.Diagnostics.Stopwatch`, which is where
+;; this actually turned up: `(ref sw 'ms)` at the REPL.
+
+(import (std prelude))
+(import (std simpletest))
+(import "inc/keyword_method.bjo")
+
+(defun (main args)
+  (def d (dial 21))
+
+  (expect "a keyword-named method, called across a dll" (ref d 'setting) 21)
+  (expect "and again, so it is the call and not the value" (ref d 'doubled) 42)
+
+  ;; `try-ref` is the trait's default. It calls `ref` from inside prelude rather
+  ;; than from here, so it is a second emission site for the same name.
+  (expect "the trait default reaches it too" (try-ref d 'setting) (Some 21))
+
+  ;; The generic implementors, which went through the other branch and were
+  ;; always fine. Here so that a fix cannot quietly break them.
+  (expect "ref on a vec" (ref [10 20 30] 1) 20)
+  (expect "ref on a map" (ref (list->map (list (Tuple "a" 1))) "a") 1)
+  (expect "ref on a string" (ref "abc" (string-cursor-start "abc")) #\a)
+  0)

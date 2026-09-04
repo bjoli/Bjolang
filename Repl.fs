@@ -612,8 +612,10 @@ let private evaluate (state: State) (text: string) : State =
                         unwrap e.InnerException
                     | _ -> e
 
-                let ex = unwrap ex
-                printfn $"%s{ex.GetType().Name}: %s{Diagnostics.humanize ex.Message}"
+                match unwrap ex with
+                // Special treatments for panicexceptions. They should not kill the repl.
+                | :? BjolangRuntime.PanicException as panic -> printfn $"panic: %s{panic.Message}"
+                | ex -> printfn $"%s{ex.GetType().Name}: %s{Diagnostics.humanize ex.Message}"
 
             warnAboutShadowing state defined
 
@@ -701,6 +703,12 @@ let run () : int =
 
     let keep = Environment.GetEnvironmentVariable "BJOLANG_REPL_DIR" |> String.IsNullOrEmpty |> not
     Directory.CreateDirectory directory |> ignore
+
+    // Every entry runs with `currently-in-repl` bound, which is what makes
+    // `panic!` raise instead of calling `Environment.Exit`.
+    //
+    // Pushed once and never restored. 
+    BjolangRuntime.parametersubpush_BANG(BjolangRuntime.currentlysubinsubrepl, true) |> ignore
 
     printfn "Bjolang REPL. :help for commands, Ctrl-D to leave."
 

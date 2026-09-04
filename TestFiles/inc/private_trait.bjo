@@ -1,0 +1,24 @@
+;; A module with a trait of its own that it does not export, implemented for a
+;; type it does not export either.
+;;
+;; Neither name is reachable from an importer, so neither crosses — and the
+;; implementation between them is a record with no reader. It used to be
+;; published anyway, on the strength of being this module's own, and the export
+;; leak check then failed the build over the private type named in it: an error
+;; about the export list, raised for a thing that was never going to be
+;; exported. `178_private_trait.bjo` imports this, and building it is the test.
+(export tally)
+
+;; Private: named in no `(export ...)`.
+(type (: Counter (Struct (: n int))))
+
+(def/trait (Countable %a)
+  (: count-of (-> %a int)))
+
+(impl (Countable Counter)
+  (defun (count-of c) (struct-ref c n)))
+
+;; The one thing that does cross, and it names neither.
+(: tally (-> (List int) int))
+(defun (tally xs)
+  (count-of (Counter (n (list-foldl + 0 xs)))))

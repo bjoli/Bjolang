@@ -1,0 +1,23 @@
+;; A module whose *implementation* names a type it does not export.
+;;
+;; The other half of the private-trait rule. `Peek` is exported, by way of its
+;; method, so the impl really does cross and really is unresolvable at the far
+;; end — the associated type it binds is a name an importer cannot look up.
+;; That is the case the leak check exists for, and it has to keep firing now
+;; that an impl of an *unexported* trait is no longer published at all.
+;;
+;; Built on demand by `errors/impl_type_not_exported.bjo`, and here rather than
+;; in `inc/` for the reason `leaky.bjo` is: the fixture builder compiles that
+;; directory, and this is meant not to compile.
+(export Shown peek)
+
+(type (: Hidden (Struct (: n int))))
+(type (: Shown (Struct (: n int))))
+
+(def/trait (Peek %a)
+  (type %out)
+  (: peek (-> %a %out)))
+
+(impl (Peek Shown)
+  (type %out Hidden)
+  (defun (peek s) (Hidden (n (struct-ref s n)))))

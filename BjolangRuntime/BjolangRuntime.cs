@@ -828,7 +828,25 @@ public static partial class BjolangRuntime {
         return default!;   // unreachable: Throw() does not return
     }
 
+    /// What a panic is at a prompt: an exception, and nothing else.
+    ///
+    /// A panic means the program cannot go on.
+    /// Its own type so that the REPL can tell a panic from an ordinary failure
+    /// and say so. 
+    public sealed class PanicException : Exception {
+        public PanicException(string message) : base(message) { }
+    }
+
+    /// Whether we are running inside a REPL. Bound once by the REPL itself, and
+    /// false everywhere else. Cold, because rarely used.
+    public static readonly Param<bool> currentlysubinsubrepl =
+        new(-1, ParamIds.NextCold(), false);
+
     public static T Panic<T>(string message, int exitCode) {
+        // If we are in a repl, we raise. 
+        if (parametersubref(currentlysubinsubrepl))
+            throw new PanicException(message);
+
         var err = parametersubref(currentsuberrorsubport);
         err.WriteLine(message);
         // `Environment.Exit` runs no finalizers, and a redirected error port

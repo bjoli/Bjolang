@@ -1,0 +1,23 @@
+;; An `(else ...)` after both `#t` and `#f`.
+;;
+;; The other half of the rule in `case_no_else.bjo`: the arms cover the key
+;; exactly once. `#t` and `#f` are the whole of `bool`, so an else after them
+;; can never run — and requiring one here would contradict the rule that refuses
+;; a duplicate datum and a clause after `else`, both for being unreachable.
+;;
+;; Refused here rather than left to C#, which reports it as CS8510 against a
+;; line of generated code that nobody wrote and that names no part of this file.
+
+;; EXPECT-ERROR: Invalid case
+;; EXPECT-ERROR: already list both #t and #f
+;; EXPECT-ERROR: can never run
+
+(import (std prelude))
+
+(: shout (-> bool string))
+(defun (shout b)
+  (string-append (case b (#t "yes") (#f "no") (else "?")) "!"))
+
+(defun (main args)
+  (println (shout #t))
+  0)

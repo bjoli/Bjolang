@@ -3,6 +3,36 @@
 
 What each change guarantees, and what it leaves open.
 
+* A panic ends the entry at a prompt, not the session
+
+~panic!~ still writes to the error port and calls ~Environment.Exit~ in a built
+program: a panic says the program cannot go on, and a program that cannot go on
+should stop. A session is not a program, so at a prompt it raises instead, and
+what it raises is caught where every other entry failure is caught:
+
+#+BEGIN_SRC text
+bjo> (g -1)
+panic: negative
+bjo> (+ kept 1)
+42
+#+END_SRC
+
+The switch is a parameter, ~currently-in-repl~, false everywhere except inside a
+REPL, which binds it once for the session. A *cold* parameter: it is read on one
+path and bound at most once in the life of a process, which is not what the 31
+ids that stay cheap under load are for.
+
+What it raises is ~PanicException~, a type of the runtime's own, deriving
+straight from ~Exception~ so that nothing catching a BCL type catches it by
+accident. It carries the message and not the exit code — a code is what a
+process leaves for whoever started it, and nobody started an entry.
+
+What it leaves open: a panic raised on a fiber, which the promise machinery
+still converts into an ~(Err e)~ value like any other failure. Rethrowing it
+where the conversion happens is not safe — that code runs inside the sync
+callback, where a throw lands in a channel's matching loop rather than on the
+fiber that synced.
+
 * ~case~ takes a lone datum, and requires an ~else~
 
 #+BEGIN_SRC scheme

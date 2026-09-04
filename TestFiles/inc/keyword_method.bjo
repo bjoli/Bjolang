@@ -1,0 +1,24 @@
+;; A trait method whose name is a C# keyword, implemented for a non-generic
+;; type, in a module of its own.
+;;
+;; All three conditions matter, which is why nothing caught this before.
+;; `179_keyword_method.bjo` is the other side of it and says why.
+(export Dial dial)
+
+(import (std prelude))
+
+(type (: Dial (Struct (: setting int))))
+
+(: dial (-> int Dial))
+(defun (dial n) (Dial (setting n)))
+
+;; `ref` needs `@ref` to be a C# identifier at all. The declaration escaped it;
+;; the call site — emitted in whatever module calls it — did not.
+(impl (Refable Dial)
+  (type %index Symbol)
+  (type %out int)
+  (defun (ref d sym)
+    (case sym
+      ('setting (struct-ref d setting))
+      ('doubled (* 2 (struct-ref d setting)))
+      (else 0))))

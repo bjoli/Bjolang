@@ -579,6 +579,10 @@ let prelude : Env =
         "current-input-port", {Scheme = Scheme([], [], makeParamType textInputPortType); IsMutable = false }
         "current-error-port", {Scheme = Scheme([], [], makeParamType textOutputPortType); IsMutable = false }
 
+        /// True while a REPL is running the code, and false in a built program.
+        /// Used in the repl.
+        "currently-in-repl", {Scheme = Scheme([], [], makeParamType boolType); IsMutable = false }
+
         /// The timer `with-deadline` desugars to. Not surface API: it fires a
         /// token whose thunk the desugar has just made, and called by hand it
         /// would be a fiber nobody owns racing a scope nobody established.

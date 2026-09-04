@@ -1,0 +1,30 @@
+;; A `case` with no `(else ...)`.
+;;
+;; A clause's data are literals, so the arms name a handful of values and say
+;; nothing about the rest. Without a fallback the key falls out of the `match`
+;; the form becomes, and the program dies at runtime naming neither the value
+;; nor the form it fell out of.
+;;
+;; This is not hypothetical: `(std stopwatch)` shipped a `(ref sw 'ms)` whose
+;; `case` had no else, and `(ref sw 'seconds)` reported a bare
+;; `TargetInvocationException` at the REPL — no symbol, no stopwatch, nothing to
+;; go on.
+;;
+;; The one exception is a type whose values can all be listed, which is `bool`
+;; and nothing else. See `case_else_after_bool.bjo` for the other half.
+
+;; EXPECT-ERROR: Invalid case
+;; EXPECT-ERROR: has no (else ...)
+;; EXPECT-ERROR: Only bool can be covered by listing values
+
+(import (std prelude))
+
+(: unit-of (-> Symbol int))
+(defun (unit-of s)
+  (case s
+    ('ms 1)
+    ('ticks 2)))
+
+(defun (main args)
+  (println (int->string (unit-of 'ms)))
+  0)
