@@ -568,7 +568,7 @@ let headName (sym: string) =
 ///
 /// Used wherever a form's head selects a form rather than naming a value:
 /// `tryParseDecl`, `parseDeclForms`, `flattenBegins`, a type definition's
-/// `Record`/`Union` tag, and the clauses of a `def/trait` or `def/impl`.
+/// `Record`/`Union` tag, and the clauses of a `def/trait` or `impl`.
 let stripHeadMark (s: SExpr) : SExpr =
     match s with
     | SList(SAtom({ Token = Symbol sym } as head) :: rest, lr) when sym <> headName sym ->
@@ -576,14 +576,14 @@ let stripHeadMark (s: SExpr) : SExpr =
     | _ -> s
 
 /// A symbol whose mark has been stripped, for the positions that name something
-/// dispatched on rather than bound — a trait in a `def/impl`, say, which has to
+/// dispatched on rather than bound — a trait in an `impl`, say, which has to
 /// match what the `def/trait` declared.
 let (|StrippedSymbol|_|) (s: SExpr) =
     match s with
     | SAtom { Token = Symbol sym } -> Some(headName sym)
     | _ -> None
 
-/// The same, at the name of a method inside a `def/trait` or `def/impl` body.
+/// The same, at the name of a method inside a `def/trait` or `impl` body.
 ///
 /// `(defun (= a b) ...)` in a template has `=` renamed like everything else it
 /// constructs, and the completeness check compares it against the trait's
@@ -4676,7 +4676,7 @@ let rec mapDeclExprs (f: Expr -> Expr) (d: Decl) : Decl =
 /// Literal `(begin ...)` forms flattened out of a list of declaration forms.
 ///
 /// For the two places that read a body of declarations with their own loop
-/// rather than through `parseDeclForms` — `def/trait` and `def/impl` — so that
+/// rather than through `parseDeclForms` — `def/trait` and `impl` — so that
 /// a splice means the same thing inside one of those as it does at the top
 /// level. Recursive, so nesting flattens; a `begin` a template wrote is
 /// unmarked on the way past, as everywhere else a head is dispatched on.
@@ -5117,13 +5117,13 @@ let rec tryParseDecl (s: SExpr) : Decl option =
 
         Some(DTrait(traitName, implementorVar, holeArity, List.rev assocTypes, List.rev signatures, List.rev defaults, clrSpec, r))
 
-    // Parse: (def/impl (TraitName (Vec 'a)) (type 'item 'a) (defun (get v i) ...))
+    // Parse: (impl (TraitName (Vec 'a)) (type 'item 'a) (defun (get v i) ...))
     //
     // The trait name is stripped of a rename, as every dispatched-on head is: a
-    // template that writes `(def/impl (Eq ,name) ...)` — which is what a
+    // template that writes `(impl (Eq ,name) ...)` — which is what a
     // `derive` macro does — constructs the trait name and so has it renamed,
     // and a trait is not a binding for the mark to be resolving.
-    | SList (SAtom { Token = Symbol "def/impl" } ::
+    | SList (SAtom { Token = Symbol "impl" } ::
              SList (StrippedSymbol traitName :: targetTypeExpr :: [], _) ::
              body, r) ->
 
@@ -5156,7 +5156,7 @@ let rec tryParseDecl (s: SExpr) : Decl option =
                         constraints <- (cTrait, varName) :: constraints
                     | _ ->
                         failwithf
-                            $"Syntax error in def/impl for '%s{traitName}' at %s{Lexer.formatPos wr}: a where clause holds (TraitName %%var) constraints, and the variable must be one the impl's own target names."
+                            $"Syntax error in impl for '%s{traitName}' at %s{Lexer.formatPos wr}: a where clause holds (TraitName %%var) constraints, and the variable must be one the impl's own target names."
 
             // Match: (defun ...)
             | SList (SAtom { Token = Symbol "defun" } :: _, _) as defunExpr ->
@@ -5178,20 +5178,20 @@ let rec tryParseDecl (s: SExpr) : Decl option =
                     | DDefun _ -> methods <- d :: methods
                     | other ->
                         failwithf
-                            $"Syntax error in def/impl for '%s{traitName}' at %s{Lexer.formatPos mr}: the macro '%s{h}' produced %s{declKindName other}, and an implementation holds methods."
+                            $"Syntax error in impl for '%s{traitName}' at %s{Lexer.formatPos mr}: the macro '%s{h}' produced %s{declKindName other}, and an implementation holds methods."
 
             | _ ->
                 failwithf
-                    $"Syntax error in def/impl for '%s{traitName}' at %s{Lexer.formatPos (getRange item)}: Expected (type ...), (where ...), (defun ...), a (begin ...) of those, or a macro producing methods."
+                    $"Syntax error in impl for '%s{traitName}' at %s{Lexer.formatPos (getRange item)}: Expected (type ...), (where ...), (defun ...), a (begin ...) of those, or a macro producing methods."
 
         Some(DImpl(traitName, targetType, List.rev assocBindings, List.rev constraints, List.rev methods, r))
 
-    // Parse: (def/impl/extern (Foldable (Vec 'a)) (type 'item 'a))
+    // Parse: (impl/extern (Foldable (Vec 'a)) (type 'item 'a))
     //
-    // The bodyless counterpart of `def/impl`, emitted into a library's export
+    // The bodyless counterpart of `impl`, emitted into a library's export
     // metadata so that whoever imports it can resolve the trait's associated
     // types and dispatch to the impl class compiled into that assembly.
-    | SList (SAtom { Token = Symbol "def/impl/extern" } ::
+    | SList (SAtom { Token = Symbol "impl/extern" } ::
              SList (SAtom { Token = Symbol traitName } :: targetTypeExpr :: [], _) ::
              body, r) ->
 
@@ -5201,7 +5201,7 @@ let rec tryParseDecl (s: SExpr) : Decl option =
                 | SList (SAtom { Token = Symbol "type" } :: SAtom { Token = QuotedSymbol assocName } :: boundTypeExpr :: [], _) ->
                     Some(assocName, parseType boundTypeExpr)
                 | SList (SAtom { Token = Symbol "where" } :: _, _) -> None
-                | _ -> failwithf $"Syntax error in def/impl/extern for '%s{traitName}': Expected (type ...) or (where ...).")
+                | _ -> failwithf $"Syntax error in impl/extern for '%s{traitName}': Expected (type ...) or (where ...).")
 
         // A conditional impl's `(where ...)` has to cross the module boundary
         // with it: the importing side is where the dictionary for

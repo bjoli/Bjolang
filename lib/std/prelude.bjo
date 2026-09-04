@@ -61,6 +61,14 @@
   transientmap-ref-or transientmap-try-ref transientmap-length
   transientmap-empty? transientmap-filter!
 
+  ;; Box
+  Box
+  make-box box-ref box-set!
+
+  ;; Refable, Derefable
+  ref try-ref
+  deref try-deref
+
   ;; Strings
   str string-append string-length
   string-contains? string-starts-with? string-ends-with? string-replace
@@ -109,11 +117,6 @@
 (defun (panic! msg #:exit-code 1)
   (clr-panic msg exit-code))
 
-(: promise-join/sync (-> (Promise %a) %a))
-(defun (promise-join/sync p)
-  (match (sync/blocking (promise-join p))
-    ((Err e) (raise e))
-    ((Ok v) v)))
 
 (import/extern
   (clr-tostring (: System.Convert.ToString)))
@@ -137,34 +140,34 @@
 (def/trait (->str %a)
   (: ->str (-> %a string)))
 
-(def/impl (->str %a)
+(impl (->str %a)
   (defun (->str u)
     (clr-tostring (cast System.Object u))))
 
 ;; Implementations for standard scalars
-(def/impl (->str string)
+(impl (->str string)
   (defun (->str s) s))
 
-(def/impl (->str int)
+(impl (->str int)
   (defun (->str n) (int->string n)))
 
-(def/impl (->str double)
+(impl (->str double)
   (defun (->str n) (double->string n)))
 
-(def/impl (->str byte)
+(impl (->str byte)
   (defun (->str n) (byte->string n)))
 
-(def/impl (->str long)
+(impl (->str long)
   (defun (->str n) (long->string n)))
 
-(def/impl (->str Keyword)
+(impl (->str Keyword)
   (defun (->str k) (keyword->string k)))
 
-(def/impl (->str Symbol)
+(impl (->str Symbol)
   (defun (->str s) (symbol->string s)))
 
 
-(def/impl (->str Char)
+(impl (->str Char)
   (defun (->str c) (char->string c)))
 
 ;; Container formats.
@@ -177,11 +180,11 @@
 (def/trait (Discard %a)
   (: ignore (-> %a void)))
 
-(def/impl (Discard %a)
+(impl (Discard %a)
   (defun (ignore x) unit))
 
 ;; Detach promise.
-(def/impl (Discard (Promise %a))
+(impl (Discard (Promise %a))
   (defun (ignore p) (detach p)))
 
 ;; Generic display functions utilizing the ->str trait
@@ -383,14 +386,14 @@
             (go))))))
 
 ;; Map foldable.
-(def/impl (Foldable (Map %k %v))
+(impl (Foldable (Map %k %v))
   (type %item (Tuple %k %v))
   (defun (fold f acc col)
     (map-fold (fun (acc2 k v) (f acc2 (Tuple k v))) acc col)))
 
 ;; Two maps are equal when they hold the same entries.
 
-(def/impl (Eq (Map %k %v))
+(impl (Eq (Map %k %v))
   (where (Eq %k) (Eq %v))
   (defun (= a b)
     (and (= (map-length a) (map-length b))
@@ -420,7 +423,7 @@
     (seql (:for e s)
           (:yield e))))
 
-(def/impl (Iterable (List %a))
+(impl (Iterable (List %a))
   (type %elem %a)
   (type %cursor (List %a))
   (defun (iterable-start s) s)
@@ -429,7 +432,7 @@
   (defun (iterable-next s c) (list-tail c)))
 
 ;; Vec cursor.
-(def/impl (Iterable (Vec %a))
+(impl (Iterable (Vec %a))
   (type %elem %a)
   (type %cursor (VecCursor %a))
   (defun (iterable-start s) (vec-cursor s))
@@ -437,7 +440,7 @@
   (defun (iterable-current s c) (vec-cursor-current c))
   (defun (iterable-next s c) c))
 
-(def/impl (Iterable (Array %a))
+(impl (Iterable (Array %a))
   (type %elem %a)
   (type %cursor int)
   (defun (iterable-start s) 0)
@@ -456,7 +459,7 @@
 (defun (range-by lo hi by)
   (Range (lo lo) (hi hi) (by by)))
 
-(def/impl (Iterable Range)
+(impl (Iterable Range)
   (type %elem int)
   (type %cursor int)
   (defun (iterable-start s) (record-ref s lo))
@@ -465,7 +468,7 @@
   (defun (iterable-next s c) (+ c (record-ref s by))))
 
 ;; Map elements.
-(def/impl (Iterable (Map %k %v))
+(impl (Iterable (Map %k %v))
   (type %elem (Tuple %k %v))
   (type %cursor (MapCursor %k %v))
   (defun (iterable-start s) (map-cursor s))
@@ -474,7 +477,7 @@
   (defun (iterable-next s c) c))
 
 ;; String characters.
-(def/impl (Iterable string)
+(impl (Iterable string)
   (type %elem char)
   (type %cursor StringCursor)
   (defun (iterable-start s) (string-cursor-start s))
@@ -484,7 +487,7 @@
 
 
 
-(def/impl (Iterable (Seq %a))
+(impl (Iterable (Seq %a))
   (type %elem %a)
   (type %cursor (SeqCursor %a))
   (defun (iterable-start s) (seq-cursor s))
@@ -507,7 +510,7 @@
   (: cursor-next (-> %s %cursor %cursor))
   (: cursor-prev (-> %s %cursor %cursor)))
 
-(def/impl (Cursor string)
+(impl (Cursor string)
   (type %elem char)
   (type %cursor StringCursor)
   (defun (cursor-start s) (string-cursor-start s))
@@ -535,7 +538,7 @@
 (type (: (Listing %a) (Union listing)))
 
 ;; Listing.
-(def/impl (Collector (Listing %a))
+(impl (Collector (Listing %a))
   (type %elem %a)
   (type %acc (ListBuilder %a))
   (type %out (List %a))
@@ -546,7 +549,7 @@
 ;; Vecing.
 (type (: (Vecing %a) (Union vecing)))
 
-(def/impl (Collector (Vecing %a))
+(impl (Collector (Vecing %a))
   (type %elem %a)
   (type %acc (VecBuilder %a))
   (type %out (Vec %a))
@@ -557,7 +560,7 @@
 ;; Mapping.
 (type (: (Mapping %k %v) (Union mapping)))
 
-(def/impl (Collector (Mapping %k %v))
+(impl (Collector (Mapping %k %v))
   (type %elem (Tuple %k %v))
   (type %acc (MapBuilder %k %v))
   (type %out (Map %k %v))
@@ -571,7 +574,7 @@
 ;; Stringing.
 (type (: Stringing (Union stringing)))
 
-(def/impl (Collector Stringing)
+(impl (Collector Stringing)
   (type %elem char)
   (type %acc StringBuilder)
   (type %out string)
@@ -581,7 +584,7 @@
 
 (type (: Summing (Union summing)))
 
-(def/impl (Collector Summing)
+(impl (Collector Summing)
   (type %elem int)
   (type %acc int)
   (type %out int)
@@ -591,7 +594,7 @@
 
 (type (: (Counting %a) (Union counting)))
 
-(def/impl (Collector (Counting %a))
+(impl (Collector (Counting %a))
   (type %elem %a)
   (type %acc int)
   (type %out int)
@@ -602,7 +605,7 @@
 ;; Folding.
 (type (: (Folding %a) (Union (folding %a))))
 
-(def/impl (Collector (Folding %a))
+(impl (Collector (Folding %a))
   (type %elem %a)
   (type %acc %a)
   (type %out %a)
@@ -783,23 +786,23 @@
 (def/trait (Functor (%f %a))
   (: map (-> (-?-> %a %b) (%f %a)  (%f %b))))
 
-(def/impl (Functor (List %a))
+(impl (Functor (List %a))
   (defun (map g xs) (list-map g xs))) 
 
-(def/impl (Functor (Vec %a))
+(impl (Functor (Vec %a))
   (defun (map g v) (vec-map g v)))
 
 ;; Functor on Map.
-(def/impl (Functor (Map %k %v))
+(impl (Functor (Map %k %v))
   (defun (map g m)
     (map-map-values g m)))
 
-(def/impl (Functor (Option %a))
+(impl (Functor (Option %a))
   (defun (map g o)
     (match o ((Some v) (Some (g v))) (None None))))
 
 ;; Result functor.
-(def/impl (Functor (Result %e %a))
+(impl (Functor (Result %e %a))
   (defun (map g r)
     (match r ((Ok v) (Ok (g v))) ((Err e) (Err e)))))
 
@@ -830,7 +833,91 @@
         (:acc v (vecing kvp))))
 
 
+;; --------------------------------------------------------------------------
+;; Boxes - a 1-width array
+;; --------------------------------------------------------------------------
 
+(type (: (Box %a) #:opaque (Struct (: field (Array %a)))))
+(impl (->str (Box %a))
+  (where (->str %a))
+  (defun (->str box)
+    (str "(Box " (->str (box-ref box)) ")")))
+(: make-box (-> %a (Box %a)))
+(defun (make-box elem)
+  (def arr (make-array 1))
+  (array-set! arr 0 elem)
+  (Box (field arr)))
+
+(: box-ref (-> (Box %a) %a))
+(defun (box-ref b)
+  (-> (struct-ref b field)
+      (array-ref & 0)))
+
+(: box-set! (-> (Box %a) %a Unit))
+(defun (box-set! box val)
+  (def arr (struct-ref box field))
+  (array-set! arr 0 val))
+
+
+
+;; --------------------------------------------------------------------------
+;; Refable and Derefable trait - a "generic" ref function
+;; --------------------------------------------------------------------------
+(def/trait (Refable %c)
+  (type %index)
+  (type %out)
+  (: ref (-> %c %index %out))
+  (: try-ref (-> %c %index (Option %out)))
+
+  ;; For things like arrays, a ref with index out of bounds should fail
+  ;; regardless of Option, so this is here to not have to write those impls
+  (defun (try-ref coll i)
+    (Some (ref coll i))))
+
+(impl (Refable (Array %i))
+  (type %index int)
+  (type %out %i)
+  (defun (ref arr i)
+    (array-ref arr i)))
+
+(impl (Refable (Vec %i))
+  (type %index int)
+  (type %out %i)
+  (defun (ref vec i)
+    (vec-ref vec i)))
+
+(impl (Refable (Map %k %v))
+  (type %index %k)
+  (type %out %v)
+  (defun (ref map k)
+    (map-ref map k))
+  (defun (try-ref map k)
+    (map-try-ref map k)))
+
+(impl (Refable string)
+  (type %index StringCursor)
+  (type %out char)
+  (defun (ref str cur)
+    (string-cursor-ref str cur))
+  (defun (try-ref str cur)
+    (if (string-cursor-end? str cur)
+        None
+        (Some (string-cursor-ref str cur)))))
+
+
+(def/trait (Derefable %a)
+  (type %out)
+  (: deref (-> %a %out))
+  (: try-deref (-> %a (Option %out)))
+  (defun (try-deref p) (Some (deref p))))
+
+(impl (Derefable (Param %b))
+  (type %out %b)
+  (defun (deref p) (parameter-ref p)))
+
+(impl (Derefable (Box %b))
+  (type %out %b)
+  (defun (deref b) (box-ref b)))
 
 
 ;; ---------------------------------------------------------------------------
@@ -1109,7 +1196,7 @@
     (stringbuilder->string b)))
 
 ;; String foldable.
-(def/impl (Foldable string)
+(impl (Foldable string)
   (type %item char)
   (defun (fold f acc col)
     (string-fold f acc col)))
@@ -1413,14 +1500,14 @@
   (: length (-> %a int))
   (: empty? (-> %a bool)))
 
-(def/impl (Collection (List %a))
+(impl (Collection (List %a))
   (type %content %a)
   (defun (length lst)
     (list-length lst))
   (defun (empty? lst)
     (list-empty? lst)))
 
-(def/impl (Collection (Vec %a))
+(impl (Collection (Vec %a))
   (type %content %a)
   (defun (length vec)
     (vec-length vec))
@@ -1428,7 +1515,7 @@
     (vec-empty? vec)))
 
 ;; Map collection.
-(def/impl (Collection (Map %k %v))
+(impl (Collection (Map %k %v))
   (type %content (Tuple %k %v))
   (defun (length m)
     (map-length m))
@@ -1436,7 +1523,7 @@
     (map-empty? m)))
 
 ;; Range collection.
-(def/impl (Collection Range)
+(impl (Collection Range)
   (type %content int)
   (defun (length r)
     (def lo (record-ref r lo))
@@ -1449,7 +1536,7 @@
     (>= (record-ref r lo) (record-ref r hi))))
 
 ;; String collection.
-(def/impl (Collection string)
+(impl (Collection string)
   (type %content char)
   (defun (length s)
     (string-count s))
@@ -1457,7 +1544,7 @@
     (string-empty? s)))
 
 ;; Seq collection.
-(def/impl (Collection (Seq %a))
+(impl (Collection (Seq %a))
   (type %content %a)
   (defun (length s)
     (seq-length s))
@@ -1600,7 +1687,7 @@
         (stringbuilder-add-string! sb ")")
         (stringbuilder->string sb))))
 
-(def/impl (->str (List %a))
+(impl (->str (List %a))
   (where (->str %a))
   (defun (->str l)
     (list->str l)))
@@ -1624,7 +1711,7 @@
     (stringbuilder-add-string! sb "]")
     (stringbuilder->string sb)))
 
-(def/impl (->str (Vec %a))
+(impl (->str (Vec %a))
   (where (->str %a))
   (defun (->str v)
     (vec->str v)))
@@ -1643,7 +1730,7 @@
     (stringbuilder-add-string! sb ")")
     (stringbuilder->string sb)))
 
-(def/impl (->str (Seq %a))
+(impl (->str (Seq %a))
   (where (->str %a))
   (defun (->str sq)
     (seq->str sq)))
@@ -1666,7 +1753,7 @@
     (stringbuilder-add-string! sb ")")
     (stringbuilder->string sb)))
 
-(def/impl (->str (Map %k %v))
+(impl (->str (Map %k %v))
   (where (->str %k) (->str %v))
   (defun (->str m)
     (map->str m)))
@@ -1960,7 +2047,7 @@
 (defun (derive-impl trait typedef)
   (syntax-match typedef
     ((_ head shape)
-     #'(def/impl (,trait ,head)
+     #'(impl (,trait ,head)
          (where ,@(list-map (fun (v) #'(,trait ,v)) (derive-head-vars head)))
          ,@(derive-methods trait head shape)))
     (bad (syntax-error bad "a type declaration is written (: Name (Record ...))."))))
@@ -1979,5 +2066,14 @@
      #'(begin
          (type ,@typedef)
          ,@(derive-impls trait typedef)))
-    (bad (syntax-error bad "type/derive takes a list of traits and one or more type declarations, as in (type/derive (Eq) (: Point (Record (: x int)))).")))
+    (bad (syntax-error bad "type/derive takes a list of traits and one or more type declarations, as in (type/derive (Eq) (: Point (Record (: x int))))."))))
 
+;; -------------------------------------------------------------
+;; Extra thingies for cml
+;;
+
+(: promise-join/sync (-> (Promise %a) %a))
+(defun (promise-join/sync p)
+  (match (sync/blocking (promise-join p))
+    ((Err e) (raise e))
+    ((Ok v) v)))

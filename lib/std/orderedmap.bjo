@@ -269,7 +269,7 @@
 ;; The traits
 ;; ---------------------------------------------------------------------------
 
-(def/impl (Iterable (OrderedMap %k %v))
+(impl (Iterable (OrderedMap %k %v))
   (type %elem (Tuple %k %v))
   (type %cursor (OrderedMapCursor %k %v))
   (defun (iterable-start m) (orderedmap-cursor m))
@@ -288,22 +288,22 @@
             (f k v)
             (go))))))
 
-(def/impl (Collection (OrderedMap %k %v))
+(impl (Collection (OrderedMap %k %v))
   (type %content (Tuple %k %v))
   (defun (length m) (orderedmap-length m))
   (defun (empty? m) (orderedmap-empty? m)))
 
-(def/impl (Foldable (OrderedMap %k %v))
+(impl (Foldable (OrderedMap %k %v))
   (type %item (Tuple %k %v))
   (defun (fold f acc col)
     (orderedmap-fold (fun (acc2 k v) (f acc2 (Tuple k v))) acc col)))
 
-(def/impl (Functor (OrderedMap %k %v))
+(impl (Functor (OrderedMap %k %v))
   (defun (map g m) (orderedmap-map-values g m)))
 
 (type (: (OrderedMapping %k %v) (Union ordered-mapping)))
 
-(def/impl (Collector (OrderedMapping %k %v))
+(impl (Collector (OrderedMapping %k %v))
   (type %elem (Tuple %k %v))
   (type %acc (OrderedMapBuilder %k %v))
   (type %out (OrderedMap %k %v))
@@ -315,7 +315,7 @@
   (defun (collector-finish c acc) (orderedmapbuilder->orderedmap acc)))
 
 ;; Equality for ordered maps.
-(def/impl (Eq (OrderedMap %k %v))
+(impl (Eq (OrderedMap %k %v))
   (where (Eq %k) (Eq %v))
   (defun (= a b)
     (and (= (orderedmap-length a) (orderedmap-length b))
@@ -341,7 +341,7 @@
     (stringbuilder-add-string! sb ")")
     (stringbuilder->string sb)))
 
-(def/impl (->str (OrderedMap %k %v))
+(impl (->str (OrderedMap %k %v))
   (where (->str %k) (->str %v))
   (defun (->str m)
     (orderedmap->str m)))

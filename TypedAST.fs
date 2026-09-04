@@ -984,14 +984,14 @@ type TraitConstraint =
 /// arguments; everything before them is fixed by the impl and becomes an
 /// impl-level type variable.
 ///
-///     (def/impl (Monad (List %a))      ...)   Ctor = "List",   FixedPrefix = []
-///     (def/impl (Monad (Result %e %a)) ...)   Ctor = "Result", FixedPrefix = ['e]
+///     (impl (Monad (List %a))      ...)   Ctor = "List",   FixedPrefix = []
+///     (impl (Monad (Result %e %a)) ...)   Ctor = "Result", FixedPrefix = ['e]
 type ImplTarget =
     { Ctor: string
       FixedPrefix: HMType list
       HoleArity: int
       /// What the impl demands of its own type variables — the `(where ...)` of
-      /// a conditional impl. `(def/impl (->str (List %a)) (where (->str %a)))`
+      /// a conditional impl. `(impl (->str (List %a)) (where (->str %a)))`
       /// records `->str` at `'a`.
       ///
       /// Every target here is a bare `TVar` naming one of `FixedPrefix`'s
@@ -1001,7 +1001,7 @@ type ImplTarget =
       Constraints: TraitConstraint list }
 
 /// The constructor key a **blanket** impl is filed under — one written at a bare
-/// type variable, `(def/impl (Discard %a) ...)`, which applies at any type with
+/// type variable, `(impl (Discard %a) ...)`, which applies at any type with
 /// no impl of its own.
 ///
 /// `*` is deliberately not a legal constructor name, so this cannot collide with
@@ -1140,7 +1140,7 @@ type TraitInfo =
       Templates: Map<string, TplType>
       /// Default method bodies, by method name, as written in the `def/trait`.
       ///
-      /// Untyped `DDefun`s, and deliberately never checked here. `def/impl`
+      /// Untyped `DDefun`s, and deliberately never checked here. `impl`
       /// splices one in for a method the impl leaves out, and the ordinary
       /// definition-site check then runs it against *that* impl's instantiation
       /// of the signature. So a single default body may mean a different thing
@@ -1150,7 +1150,7 @@ type TraitInfo =
       /// The .NET interface this trait stands for, if it stands for one.
       ///
       /// `Some` makes the trait a closed world: there is nothing to implement,
-      /// so `def/impl` is refused, no interface is emitted, and a constraint on
+      /// so `impl` is refused, no interface is emitted, and a constraint on
       /// it costs no parameter.
       ClrConstraint: ClrConstraintInfo option }
 
@@ -1582,7 +1582,7 @@ type Env =
       /// one.
       ///
       /// A `defun` binds its own name so that its body can recurse, and inside
-      /// a `def/impl` that binding would otherwise read as shadowing the very
+      /// an `impl` that binding would otherwise read as shadowing the very
       /// method being implemented. It is not: `(defun (= xs ys) ... (= (list-head
       /// xs) (list-head ys)))` compares the *elements*, and has to dispatch.
       ImplMethod: string option

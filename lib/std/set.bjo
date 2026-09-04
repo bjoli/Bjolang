@@ -162,8 +162,17 @@
 ;; ---------------------------------------------------------------------------
 ;; The traits
 ;; ---------------------------------------------------------------------------
-
-(def/impl (Iterable (Set %a))
+(impl (Refable (Set %a))
+  (type %index %a)
+  (type %out bool)
+  (defun (ref set key)
+    (set-contains? set key)))
+(impl (Refable (TransientSet %a))
+  (type %index %a)
+  (type %out bool)
+  (defun (ref set key)
+    (transientset-contains? set key)))
+(impl (Iterable (Set %a))
   (type %elem %a)
   (type %cursor (SetCursor %a))
   (defun (iterable-start s) (set-cursor s))
@@ -181,21 +190,21 @@
             (f (set-cursor-current c))
             (go))))))
 
-(def/impl (Collection (Set %a))
+(impl (Collection (Set %a))
   (type %content %a)
   (defun (length s) (set-length s))
   (defun (empty? s) (set-empty? s)))
 
-(def/impl (Foldable (Set %a))
+(impl (Foldable (Set %a))
   (type %item %a)
   (defun (fold f acc col) (set-fold f acc col)))
 
-(def/impl (Functor (Set %a))
+(impl (Functor (Set %a))
   (defun (map g s) (set-map g s)))
 
 (type (: (Setting %a) (Union setting)))
 
-(def/impl (Collector (Setting %a))
+(impl (Collector (Setting %a))
   (type %elem %a)
   (type %acc (SetBuilder %a))
   (type %out (Set %a))
@@ -204,7 +213,7 @@
   (defun (collector-finish c acc) (setbuilder->set acc)))
 
 ;; Equality for sets.
-(def/impl (Eq (Set %a))
+(impl (Eq (Set %a))
   (where (Eq %a))
   (defun (= a b)
     (and (= (set-length a) (set-length b))
@@ -223,7 +232,7 @@
     (stringbuilder-add-string! sb "}")
     (stringbuilder->string sb)))
 
-(def/impl (->str (Set %a))
+(impl (->str (Set %a))
   (where (->str %a))
   (defun (->str s)
     (set->str s)))

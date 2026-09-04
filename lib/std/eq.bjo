@@ -97,7 +97,7 @@
 
 ;; --- The blanket -----------------------------------------------------------
 ;; Default to .NET equality.
-(def/impl (Eq %a)
+(impl (Eq %a)
   (defun (= a b) (clr-equals a b))
   (defun (eq-hash a) (clr-hash a)))
 
@@ -105,67 +105,67 @@
 ;; --- The primitives --------------------------------------------------------
 ;; Eq for primitives.
 
-(def/impl (Eq int)
+(impl (Eq int)
   (defun (= a b) (clr-eq a b))
   (defun (eq-hash a) (clr-hash a)))
 
-(def/impl (Eq long)
+(impl (Eq long)
   (defun (= a b) (clr-eq a b))
   (defun (eq-hash a) (clr-hash a)))
 
-(def/impl (Eq short)
+(impl (Eq short)
   (defun (= a b) (clr-eq a b))
   (defun (eq-hash a) (clr-hash a)))
 
-(def/impl (Eq byte)
+(impl (Eq byte)
   (defun (= a b) (clr-eq a b))
   (defun (eq-hash a) (clr-hash a)))
 
-(def/impl (Eq uint)
+(impl (Eq uint)
   (defun (= a b) (clr-eq a b))
   (defun (eq-hash a) (clr-hash a)))
 
-(def/impl (Eq ulong)
+(impl (Eq ulong)
   (defun (= a b) (clr-eq a b))
   (defun (eq-hash a) (clr-hash a)))
 
-(def/impl (Eq ushort)
+(impl (Eq ushort)
   (defun (= a b) (clr-eq a b))
   (defun (eq-hash a) (clr-hash a)))
 
 ;; Eq for double uses Equals (NaN == NaN).
-(def/impl (Eq double)
+(impl (Eq double)
   (defun (= a b) (clr-equals a b))
   (defun (eq-hash a) (clr-hash a)))
 
-(def/impl (Eq bool)
+(impl (Eq bool)
   (defun (= a b) (clr-eq a b))
   (defun (eq-hash a) (clr-hash a)))
 
 ;; Eq for string.
-(def/impl (Eq string)
+(impl (Eq string)
   (defun (= a b) (clr-eq a b))
   (defun (eq-hash a) (clr-hash a)))
 
-(def/impl (Eq char)
+(impl (Eq char)
   (defun (= a b) (clr-eq a b))
   (defun (eq-hash a) (clr-hash a)))
 
 ;; Eq for Keyword and Symbol.
-(def/impl (Eq Keyword)
+(impl (Eq Keyword)
   (defun (= a b) (clr-eq a b))
   (defun (eq-hash a) (clr-hash a)))
 
-(def/impl (Eq Symbol)
+(impl (Eq Symbol)
   (defun (= a b) (clr-eq a b))
   (defun (eq-hash a) (clr-hash a)))
 
-(def/impl (Eq StringCursor)
+(impl (Eq StringCursor)
   (defun (= a b) (clr-eq a b))
   (defun (eq-hash a) (clr-hash a)))
 
 ;; Eq for void.
-(def/impl (Eq void)
+(impl (Eq void)
   (defun (= a b) #t)
   (defun (eq-hash a) 0))
 
@@ -173,29 +173,29 @@
 ;; --- Ord for the primitives ------------------------------------------------
 ;; Delegates to IComparable.
 
-(def/impl (Ord int)    (defun (compare a b) (.CompareTo a b)))
-(def/impl (Ord long)   (defun (compare a b) (.CompareTo a b)))
-(def/impl (Ord short)  (defun (compare a b) (.CompareTo a b)))
-(def/impl (Ord byte)   (defun (compare a b) (.CompareTo a b)))
-(def/impl (Ord uint)   (defun (compare a b) (.CompareTo a b)))
-(def/impl (Ord ulong)  (defun (compare a b) (.CompareTo a b)))
-(def/impl (Ord ushort) (defun (compare a b) (.CompareTo a b)))
+(impl (Ord int)    (defun (compare a b) (.CompareTo a b)))
+(impl (Ord long)   (defun (compare a b) (.CompareTo a b)))
+(impl (Ord short)  (defun (compare a b) (.CompareTo a b)))
+(impl (Ord byte)   (defun (compare a b) (.CompareTo a b)))
+(impl (Ord uint)   (defun (compare a b) (.CompareTo a b)))
+(impl (Ord ulong)  (defun (compare a b) (.CompareTo a b)))
+(impl (Ord ushort) (defun (compare a b) (.CompareTo a b)))
 
 ;; Ord for double uses CompareTo.
-(def/impl (Ord double) (defun (compare a b) (.CompareTo a b)))
+(impl (Ord double) (defun (compare a b) (.CompareTo a b)))
 
-(def/impl (Ord bool)   (defun (compare a b) (.CompareTo a b)))
+(impl (Ord bool)   (defun (compare a b) (.CompareTo a b)))
 
 ;; Ord for string uses CompareTo.
-(def/impl (Ord string) (defun (compare a b) (.CompareTo a b)))
+(impl (Ord string) (defun (compare a b) (.CompareTo a b)))
 
-(def/impl (Ord char)   (defun (compare a b) (.CompareTo a b)))
+(impl (Ord char)   (defun (compare a b) (.CompareTo a b)))
 
 
 ;; --- The containers --------------------------------------------------------
 ;; Container equality using element Eq. Uses builtins only.
 
-(def/impl (Eq (List %a))
+(impl (Eq (List %a))
   (where (Eq %a))
   (defun (= xs ys)
     (if (list-empty? xs)
@@ -206,7 +206,7 @@
   (defun (eq-hash xs)
     (fold-left (fun (h x) (hash-combine h (eq-hash x))) 17 xs)))
 
-(def/impl (Eq (Vec %a))
+(impl (Eq (Vec %a))
   (where (Eq %a))
   (defun (= xs ys)
     (defun (same-from i)
@@ -224,7 +224,7 @@
           (hash-from (+ i 1) (hash-combine h (eq-hash (vec-ref xs i))))))
     (hash-from 0 17)))
 
-(def/impl (Eq (Option %a))
+(impl (Eq (Option %a))
   (where (Eq %a))
   (defun (= a b)
     (match a
@@ -239,7 +239,7 @@
       (None 0))))
 
 ;; Eq for Tuples.
-(def/impl (Eq (Tuple %a %b))
+(impl (Eq (Tuple %a %b))
   (where (Eq %a) (Eq %b))
   (defun (= x y)
     (def (a1 b1) x)
@@ -249,7 +249,7 @@
     (def (a b) x)
     (hash-combine (eq-hash a) (eq-hash b))))
 
-(def/impl (Eq (Tuple %a %b %c))
+(impl (Eq (Tuple %a %b %c))
   (where (Eq %a) (Eq %b) (Eq %c))
   (defun (= x y)
     (def (a1 b1 c1) x)
@@ -259,7 +259,7 @@
     (def (a b c) x)
     (hash-combine (hash-combine (eq-hash a) (eq-hash b)) (eq-hash c))))
 
-(def/impl (Eq (Tuple %a %b %c %d))
+(impl (Eq (Tuple %a %b %c %d))
   (where (Eq %a) (Eq %b) (Eq %c) (Eq %d))
   (defun (= x y)
     (def (a1 b1 c1 d1) x)
@@ -270,7 +270,7 @@
     (hash-combine (hash-combine (eq-hash a) (eq-hash b))
                   (hash-combine (eq-hash c) (eq-hash d)))))
 
-(def/impl (Eq (Result %e %a))
+(impl (Eq (Result %e %a))
   (where (Eq %e) (Eq %a))
   (defun (= a b)
     (match a

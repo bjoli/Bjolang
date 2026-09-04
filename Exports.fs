@@ -158,6 +158,20 @@ let metadata
         typesToExport |> List.map (fun ((td: Parser.TypeDef), _) -> bare td.Name) |> Set.ofList
 
     
+    /// The traits declared *in this module*, exported or not.
+    ///
+    /// The gate on publishing implementations needs the whole set to tell "a
+    /// trait of mine that stayed behind" from "a trait I imported": the first
+    /// is unreachable from an importing module and the second is the very case
+    /// that makes publishing an impl necessary. The registry cannot answer it,
+    /// since it holds every trait in scope, a dependency's included.
+    let ownTraitNames =
+        ownModuleDecls
+        |> TypedAST.collectDecls (function
+            | TypedAST.TTrait(traitName, _, _, _, _, _, _) -> [ traitName ]
+            | _ -> [])
+        |> Set.ofList
+
     /// The implementations written *in this module*, keyed as the registry keys
     /// them.
     ///
@@ -425,7 +439,7 @@ let metadata
                 // A body that will not serialize is left out rather than
                 // mangled. The consequence is only that an importer has
                 // to write that method itself, and it is told so at its
-                // own `def/impl`.
+                // own `impl`.
                 let defaultStrs =
                     info.Defaults
                     |> Map.toList
@@ -499,7 +513,7 @@ let metadata
                         " (where " + parts + ")"
                     | _ -> ""
 
-                $"(def/impl/extern (%s{traitName} %s{Codegen.serializeHMType targetType}) %s{assocStrs}%s{whereStr})"
+                $"(impl/extern (%s{traitName} %s{Codegen.serializeHMType targetType}) %s{assocStrs}%s{whereStr})"
 
             let serializeSignature (name: string) (t: TypedAST.HMType) = signatureText env name t
 
@@ -717,7 +731,7 @@ let metadata
             // one back needs the trait already registered.
             //
             // Two kinds are published. One is an impl of a trait this
-            // module declares, which travels with it. The other is an
+            // module publishes, which travels with it. The other is an
             // impl *this module wrote* for a trait it imported —
             // `(std set)` implementing `Collection` for a `Set` — which
             // has no other way to reach an importer, and without which a
@@ -726,13 +740,25 @@ let metadata
             // the second from being a hazard: only the module owning the
             // trait or the type may write one, so there is no second
             // claimant for the importer to have to choose between.
-            let implDecls =
+            //
+            // A trait this module declares and does not export is neither.
+            // An importer cannot name it, so it cannot call a method of it
+            // and nothing can dispatch to the impl: publishing one writes a
+            // record with no reader. It used to be published anyway, on the
+            // strength of being ours, and then the leak check below would
+            // fail the build over a private type named in it — an error
+            // about the export list, raised for a thing that was never
+            // going to be exported.
+            let implEntries =
                 env.Registry.Implementations
                 |> Map.toList
-                |> List.filter (fun (key, _) ->
-                    Map.containsKey (fst key) exportedTraits || Set.contains key ownImplKeys)
+                |> List.filter (fun ((traitName, _) as key, _) ->
+                    Map.containsKey traitName exportedTraits
+                    || (Set.contains key ownImplKeys && not (Set.contains traitName ownTraitNames)))
                 |> List.map (fun ((traitName, typeKey), (targetType, assocMap)) ->
-                    serializeImpl traitName typeKey targetType assocMap)
+                    (traitName, typeKey), serializeImpl traitName typeKey targetType assocMap)
+
+            let implDecls = implEntries |> List.map snd
 
             // Nothing published may name a type of this module's that stayed
             // behind. Without this a private type escapes as an unresolvable
@@ -794,8 +820,8 @@ let metadata
                 for text in traitDecls do
                     check "an exported trait" text
 
-                for text in implDecls do
-                    check "a published implementation" text
+                for (traitName, typeKey), text in implEntries do
+                    check $"the implementation of '%s{traitName}' for '%s{bare typeKey}'" text
 
             typeDecls, externDecls, traitDecls, implDecls, defs
         else [], [], [], [], []

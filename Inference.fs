@@ -1020,7 +1020,7 @@ let implTargetOf
           HoleArity = info.HoleArity
           Constraints = constraints }
 
-    // A blanket: `(def/impl (Discard %a) ...)`, which applies wherever the exact
+    // A blanket: `(impl (Discard %a) ...)`, which applies wherever the exact
     // head has no impl of its own. The implementor is the class's one type
     // parameter, so the prefix is the variable itself.
     //
@@ -4438,7 +4438,7 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
             let bound =
                 // Implementing a method is not shadowing it. `addBinding` drops
                 // the name from `TraitMethodNames`, which is right for a program
-                // that binds over a method and wrong for the `def/impl` that
+                // that binds over a method and wrong for the `impl` that
                 // supplies one: the body of `(defun (= xs ys) ...)` for lists
                 // compares the elements, and that call has to dispatch.
                 if bound.ImplMethod = Some name then
@@ -5518,11 +5518,11 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
 
         // A trait that stands for a .NET interface has no implementations to
         // write: whether a type satisfies it is decided by the runtime, and a
-        // `def/impl` would be a second answer to a question already answered.
+        // `impl` would be a second answer to a question already answered.
         match traitInfo.ClrConstraint with
         | Some clr ->
             failwithf
-                $"Type Error at %s{Lexer.formatPos r}: '%s{traitName}' stands for the .NET interface '%s{clr.InterfaceName}', so it has no implementations to write — a type satisfies it by implementing the interface, which '%s{Naming.showTypeName typeKey}' either does or does not. Remove the def/impl."
+                $"Type Error at %s{Lexer.formatPos r}: '%s{traitName}' stands for the .NET interface '%s{clr.InterfaceName}', so it has no implementations to write — a type satisfies it by implementing the interface, which '%s{Naming.showTypeName typeKey}' either does or does not. Remove the impl."
         | None -> ()
 
         // The `(where ...)`, checked against what the impl can actually hold.
@@ -5783,7 +5783,7 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
 
                     tDecl
 
-                | _ -> failwithf $"Only 'defun' declarations are allowed inside 'def/impl' at %s{Lexer.formatPos r}")
+                | _ -> failwithf $"Only 'defun' declarations are allowed inside 'impl' at %s{Lexer.formatPos r}")
 
         // Ensure all required methods from the trait are implemented
         let requiredMethods =
@@ -6552,7 +6552,7 @@ let private checkModuleValuesAreConcrete (registry: TraitRegistry) (decls: TDecl
 ///
 /// Legal, and since a method name became an ordinary binding it is also silent:
 /// the definition wins for the whole module and nothing says so. What it almost
-/// always means is `def/impl` — somebody writing `(defun (= a b) ...)` is
+/// always means is `impl` — somebody writing `(defun (= a b) ...)` is
 /// implementing equality rather than defining a function called `=`. The case
 /// that prompted this was `sign`, a `Num` method by `#:clr-member`: a program's
 /// own `(defun (sign n) ...)` used to be silently dead, and its call sites
@@ -6563,7 +6563,7 @@ let private checkModuleValuesAreConcrete (registry: TraitRegistry) (decls: TDecl
 /// about one would be noise. A module-level binding is visible from everywhere
 /// in the file, which is what makes it worth a word.
 ///
-/// A `def/impl`'s methods are not reached: they sit inside `TImpl`, and this
+/// A `impl`'s methods are not reached: they sit inside `TImpl`, and this
 /// descends through `TModule` and nothing else.
 let private warnAboutShadowedMethods (registry: TraitRegistry) (decls: TDecl list) : unit =
     // Only warn the user if they are shadowing a method and *exporting* it. Shadowing a method privately is fine, and warning about it would be unhelpful.
@@ -6590,7 +6590,7 @@ let private warnAboutShadowedMethods (registry: TraitRegistry) (decls: TDecl lis
                     ". It is not exported, so no other module is affected"
 
             Diagnostics.warn
-                $"'%s{name}' is a method of the trait '%s{traitName}', and this %s{form} binds over it at %s{Lexer.formatPos r}. A call to '%s{name}' written in this module reaches the definition rather than dispatching%s{reach}. To implement the method for a type of your own, write (def/impl (%s{traitName} YourType) (defun (%s{name} ...) ...))."
+                $"'%s{name}' is a method of the trait '%s{traitName}', and this %s{form} binds over it at %s{Lexer.formatPos r}. A call to '%s{name}' written in this module reaches the definition rather than dispatching%s{reach}. To implement the method for a type of your own, write (impl (%s{traitName} YourType) (defun (%s{name} ...) ...))."
         | None -> ()
 
     let rec go (ds: TDecl list) =

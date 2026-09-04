@@ -131,7 +131,7 @@ let resolveType (context: string) (fullName: string) : Type =
 //
 // A trait may declare that it *is* a .NET interface, and is then discharged by
 // asking whether the implementor implements it rather than by finding a
-// `def/impl`. See `Docs/Numerics.org`.
+// `impl`. See `Docs/Numerics.org`.
 
 /// The interface a name and an arity denote, as a generic *definition*.
 ///

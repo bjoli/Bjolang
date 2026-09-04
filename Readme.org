@@ -121,7 +121,7 @@ Every non-~void~ (or non-unit) value in statement position must be used. If not 
   (ignore (bjo (work 21))))     ;; Promise's impl detaches the fiber
 
 ;; Receipt has its own impl, so the discard site actually runs code
-(def/impl (Discard Receipt)
+(impl (Discard Receipt)
   (defun (ignore r) (set! receipts-filed (+ receipts-filed 1))))
 
 ;; and Result is in the no-discard set, so this is a compile error:
@@ -174,7 +174,7 @@ Bjolang has traits. Traits can be regular traits, which means they are usable on
 (def/trait (Printable %i)
   (: ->str (-> %i string)))
 
-(def/impl (Printable int)
+(impl (Printable int)
   (defun (->str i) (int->string i)))
 
 ;; More complex traits also work:
@@ -190,7 +190,7 @@ Bjolang has traits. Traits can be regular traits, which means they are usable on
   (: fold (-> (-> %acc %item %acc) %acc %col %acc)))
 
 ;; Implement the trait for a List with a generic in it
-(def/impl (Foldable (List %a))
+(impl (Foldable (List %a))
   ;; the associated type %item is the same as the %a in the list
   (type %item %a)
   (defun (fold f acc col)
@@ -205,10 +205,10 @@ Bjolang has traits. Traits can be regular traits, which means they are usable on
 (def/trait (Functor (%f %a))
   (: fmap (-> (-> %a %b) (%f %a)  (%f %b))))
 
-(def/impl (Functor (List %a))
+(impl (Functor (List %a))
   (defun (fmap g xs) (list-map g xs))) 
 
-(def/impl (Functor (Option %a))
+(impl (Functor (Option %a))
   (defun (fmap g o)
     (match o ((Some v) (Some (g v))) (None None))))
 
@@ -217,7 +217,7 @@ Bjolang has traits. Traits can be regular traits, which means they are usable on
 ;; to the reader — it is a dictionary the implementation carries, so
 ;; the element's own impl is what runs, chosen where the element type
 ;; is known rather than baked in at %a.
-(def/impl (Printable (List %a))
+(impl (Printable (List %a))
   (where (Printable %a))
   (defun (->str xs) (list->str xs)))
 

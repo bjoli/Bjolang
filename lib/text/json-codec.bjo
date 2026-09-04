@@ -33,30 +33,30 @@
 ;; Scalars
 ;; ---------------------------------------------------------------------------
 
-(def/impl (->json Json)   (defun (->json j) j))
-(def/impl (->json long)   (defun (->json n) (JsonInt n)))
-(def/impl (->json int)    (defun (->json n) (JsonInt (cast System.Int64 n))))
-(def/impl (->json double) (defun (->json n) (JsonFloat n)))
-(def/impl (->json bool)   (defun (->json b) (JsonBool b)))
-(def/impl (->json string) (defun (->json s) (JsonStr s)))
+(impl (->json Json)   (defun (->json j) j))
+(impl (->json long)   (defun (->json n) (JsonInt n)))
+(impl (->json int)    (defun (->json n) (JsonInt (cast System.Int64 n))))
+(impl (->json double) (defun (->json n) (JsonFloat n)))
+(impl (->json bool)   (defun (->json b) (JsonBool b)))
+(impl (->json string) (defun (->json s) (JsonStr s)))
 
-(def/impl (json-> Json)
+(impl (json-> Json)
   (defun (json-> j) (Ok j)))
 
-(def/impl (json-> long)
+(impl (json-> long)
   (defun (json-> j)
     (match j
       ((JsonInt n) (Ok n))
       (_ (Err "expected an integer")))))
 
-(def/impl (json-> int)
+(impl (json-> int)
   (defun (json-> j)
     (match j
       ((JsonInt n) (Ok (cast System.Int32 n)))
       (_ (Err "expected an integer")))))
 
 
-(def/impl (json-> double)
+(impl (json-> double)
   (defun (json-> j)
     (match j
       ((JsonFloat d) (Ok d))
@@ -64,13 +64,13 @@
       ((JsonInt n) (Ok (cast System.Double n)))
       (_ (Err "expected a number")))))
 
-(def/impl (json-> bool)
+(impl (json-> bool)
   (defun (json-> j)
     (match j
       ((JsonBool b) (Ok b))
       (_ (Err "expected a boolean")))))
 
-(def/impl (json-> string)
+(impl (json-> string)
   (defun (json-> j)
     (match j
       ((JsonStr s) (Ok s))
@@ -80,14 +80,14 @@
 ;; Nullability
 ;; ---------------------------------------------------------------------------
 
-(def/impl (->json (Option %a))
+(impl (->json (Option %a))
   (where (->json %a))
   (defun (->json o)
     (match o
       ((Some x) (->json x))
       (None JsonNull))))
 
-(def/impl (json-> (Option %a))
+(impl (json-> (Option %a))
   (where (json-> %a))
   (defun (json-> j)
     (match j
@@ -96,12 +96,12 @@
            ((Err e) (Err e))
            ((Ok v) (Ok (Some v))))))))
 
-(def/impl (->json (Vec %a))
+(impl (->json (Vec %a))
   (where (->json %a))
   (defun (->json v)
     (JsonArr (vec-map (fun (x) (->json x)) v))))
 
-(def/impl (json-> (Vec %a))
+(impl (json-> (Vec %a))
   (where (json-> %a))
   (defun (json-> j)
     (match j
@@ -118,12 +118,12 @@
       (_ (Err "expected an array")))))
 
 ;; A JSON object with values all of one type.
-(def/impl (->json (Map string %a))
+(impl (->json (Map string %a))
   (where (->json %a))
   (defun (->json m)
     (JsonObj (map-map-values (fun (v) (->json v)) m))))
 
-(def/impl (json-> (Map string %a))
+(impl (json-> (Map string %a))
   (where (json-> %a))
   (defun (json-> j)
     (match j
@@ -360,11 +360,11 @@
       #'(begin
           (type (,colon ,head (Record ,@(list-map jt-strip fields))))
 
-          (def/impl (->json ,head)
+          (impl (->json ,head)
             ,@(jt-where-enc inject head)
             (defun (->json v) ,(jt-encode fields)))
 
-          (def/impl (json-> ,head)
+          (impl (json-> ,head)
             ,@(jt-where-dec inject head)
             (defun (json-> j) ,(jt-decode head fields)))
 

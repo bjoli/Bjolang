@@ -69,7 +69,7 @@ Two consequences worth knowing. Nothing can opt *out*: ~(= p q)~ on two ports, o
 Writing one by hand is ordinary, and is how a type says its equality is not its fields:
 
 #+BEGIN_SRC scheme
-(def/impl (Eq Point)
+(impl (Eq Point)
   (defun (= a b) (and (= (record-ref a x) (record-ref b x))
                       (= (record-ref a y) (record-ref b y))))
   (defun (eq-hash p) (hash-combine (eq-hash (record-ref p x))
@@ -86,7 +86,7 @@ Writing that out per field is what ~type/derive~ is for. It is a macro in ~(std 
 
 - a record or struct compares its fields in declaration order
 - a union compares the case first: different cases are unequal, the same case compares its payload positionally
-- a type with parameters derives a *conditional* implementation, ~(def/impl (Eq (Box %a)) (where (Eq %a)) ...)~
+- a type with parameters derives a *conditional* implementation, ~(impl (Eq (Box %a)) (where (Eq %a)) ...)~
 - the traits are a list: ~(Eq)~, ~(Ord)~ or ~(Eq Ord)~, each deriving its own methods from the one declaration
 
 ~Ord~ reads the same declaration the same way round, and answers with a sign rather than with a ~bool~: a record or struct compares its fields in declaration order and stops at the first that decides, a union compares the case index before the payload. The case order is the declaration order the hash already seeds itself with, so ordering and hashing agree about what a union's cases are without either being told.
@@ -688,7 +688,7 @@ These methods use long names to prevent collisions with common user variables (l
 - ~->str~ : Trait for string representation with method ~(->str x)~. Implemented for ~string~, ~int~, ~double~, ~byte~, ~long~, ~char~, ~Keyword~ and ~Symbol~. A ~char~ prints as itself, not as ~#\a~: ~->str~ is what ~display~ and ~print~ are built on, and those write text rather than a reread-able datum.
 
   A list prints as ~'(1 2 3)~, through a *conditional* implementation:
-  ~(def/impl (->str (List %a)) (where (->str %a)) ...)~. The where clause is
+  ~(impl (->str (List %a)) (where (->str %a)) ...)~. The where clause is
   what makes each element print through its own implementation rather than
   through the blanket, and it is why ~->str~ over a list of a type you have
   implemented ~->str~ for prints your version.

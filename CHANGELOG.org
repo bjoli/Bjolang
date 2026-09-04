@@ -3,6 +3,34 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~def/impl~ is spelled ~impl~
+
+#+BEGIN_SRC scheme
+(impl (->str Money)
+  (defun (->str m) (str (int->string (record-ref m kr)) " kr")))
+#+END_SRC
+
+The ~def/~ prefix is for the forms that *define* something — ~def~, ~defun~,
+~def/mutable~, ~def/macro~ — and an implementation defines nothing. Every name in
+one is already there before it is read: the trait, the method names under it,
+and the type. It says only that the three meet. The methods are still written
+with ~defun~, which is where the defining happens.
+
+The bodyless form a library's metadata carries follows it: ~def/impl/extern~ is
+now ~impl/extern~. Nothing has to be done about existing ~.dll~ files, since a
+module's source closure counts the compiler, so every library rebuilds itself
+against the new spelling on the first build after this.
+
+A hard rename, with no alias: ~(def/impl ...)~ is refused as an unknown
+declaration.
+
+Untouched, and not as a compromise: ~def/trait~. A trait *is* defined. It
+introduces the trait's own name and a method name for every signature under it,
+and afterwards those names dispatch where before they meant nothing — which is
+exactly what an implementation never does. The prefix was wrong on ~def/impl~
+and is right on ~def/trait~, so the two spellings differing is the rule being
+applied rather than a tidy-up left half done.
+
 * A trait method takes a callback of either colour
 
 ~-?->~ on a trait method's parameter. ~Functor.map~ and ~Monad.bind~ declare one,

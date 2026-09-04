@@ -163,7 +163,7 @@ let private providedNames (decl: Parser.Decl) : string list =
 /// An impl is not a name. Nothing a later entry writes mentions it, so nothing
 /// would pull it in — and a trait method call would then dispatch as though the
 /// impl had never been written. So an entry that declares one is linked
-/// unconditionally, which is what makes `(def/impl ...)` at the prompt affect
+/// unconditionally, which is what makes `(impl ...)` at the prompt affect
 /// the entries after it.
 ///
 /// The entries *before* it are a different matter and cannot be helped:
@@ -293,7 +293,7 @@ let private absolutizeImports (text: string) (forms: SExpr list) : string =
 ///
 /// `Exports.metadata` writes a module's traits and impls only when the module
 /// has a surface to write them onto — an export or a type. An entry that is
-/// nothing but `(def/impl ...)` has neither, so its impl never crossed and a
+/// nothing but `(impl ...)` has neither, so its impl never crossed and a
 /// later entry dispatched as though it had not been written. One exported
 /// binding is enough to open the metadata block; nothing reads it.
 let private anchorName = "__bjo_anchor"

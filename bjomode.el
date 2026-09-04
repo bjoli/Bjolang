@@ -64,7 +64,7 @@
     (cond . 0) (time-it . 0)
     ;; One distinguished form, then the body.
     (defun . 1) (defbjo . 1) (defbjouble . 1) (def . 1) (def/mutable . 1)
-    (def/trait . 1) (def/impl . 1) (def/impl/extern . 1) (def/macro . 1)
+    (def/trait . 1) (impl . 1) (impl/extern . 1) (def/macro . 1)
     (type/derive . 1)
     (when . 1) (unless . 1) (match . 1) (case . 1) (try . 1)
     (with-open . 1) (parameterize . 1) (parameterize* . 1) (fun . 1)
@@ -181,9 +181,9 @@ else aligns under its first argument."
      (1 font-lock-keyword-face)
      (2 font-lock-function-name-face))
 
-    ;; (def/trait (Name %a) ...), (def/impl (Trait Type) ...),
+    ;; (def/trait (Name %a) ...), (impl (Trait Type) ...),
     ;; (type/derive (Eq) ...) — nästa symbol namnger ett trait eller en typ.
-    ("(\\(def/\\(?:trait\\|impl\\(?:/extern\\)?\\)\\|type/derive\\)\\s-*(\\s-*\\([^ \t\n()]+\\)"
+    ("(\\(def/trait\\|impl\\(?:/extern\\)?\\|type/derive\\)\\s-*(\\s-*\\([^ \t\n()]+\\)"
      (1 font-lock-keyword-face)
      (2 font-lock-type-face))
 

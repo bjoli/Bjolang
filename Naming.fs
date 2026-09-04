@@ -2,14 +2,16 @@ module Bjolang.Naming
 
 open System
 
-/// How a Bjolang name is spelled in C#.
+/// Whether a name has to be written `@name` to be an identifier in C# at all.
 ///
-/// Deliberately **not** injective: `a-b` and `asubb` both come out as `asubb`.
-/// Anything that invents a binder therefore has to distinguish it by something
-/// other than its base name — which is what `Gensym`'s `__N` suffix is for.
-let sanitizeIdent (s: string) =
-    let s = s.Replace("::", ".").Replace("-", "sub").Replace("?", "_QMARK").Replace("!", "_BANG").Replace("+", "add").Replace("*", "mul").Replace("/", "div").Replace("<", "lt").Replace(">", "gt").Replace("=", "eq").Replace("'", "").Replace("&", "arg_")
-    let s = if s.Length > 0 && Char.IsDigit(s[0]) then "_" + s else s
+/// Applied to one *segment* of a name rather than to the whole of it. A name
+/// arriving here may be a path — `Refable_Stopwatch.Instance.ref`, or a module
+/// class and a member — and C# reads every segment of one as an identifier, so
+/// a member called `ref` needs the escape exactly as much as a bare `ref` does.
+/// Checking the whole string instead matches none of the cases below the moment
+/// a dot appears, which is how `(ref sw 'ms)` came to emit `.Instance.ref(...)`
+/// against a method declared `@ref`.
+let private escapeReserved (s: string) =
     match s with
     | "class" | "struct" | "public" | "private" | "protected" | "internal" | "static" | "readonly" | "var" | "ref" | "out" | "in" | "params" | "new" | "return" | "if" | "else" | "while" | "for" | "foreach" | "do" | "switch" | "case" | "default" | "break" | "continue" | "goto" | "try" | "catch" | "finally" | "throw" | "lock" | "typeof" | "sizeof" | "is" | "as" | "true" | "false" | "null" | "void" | "object" | "string" | "int" | "bool"
     // The rest of the built-in type names. A Bjolang `double` or `long` is a
@@ -18,6 +20,27 @@ let sanitizeIdent (s: string) =
     | "double" | "float" | "decimal" | "char" | "byte" | "sbyte" | "short" | "ushort" | "uint" | "long" | "ulong" | "nint" | "nuint"
     | "abstract" | "base" | "checked" | "const" | "delegate" | "enum" | "event" | "explicit" | "extern" | "fixed" | "implicit" | "interface" | "namespace" | "operator" | "override" | "sealed" | "stackalloc" | "this" | "unchecked" | "unsafe" | "using" | "virtual" | "volatile" -> "@" + s
     | _ -> s
+
+/// How a Bjolang name is spelled in C#.
+///
+/// Deliberately **not** injective: `a-b` and `asubb` both come out as `asubb`.
+/// Anything that invents a binder therefore has to distinguish it by something
+/// other than its base name — which is what `Gensym`'s `__N` suffix is for.
+///
+/// The name may be a path, and `::` is normalized to `.` here, so the escaping
+/// and the leading-digit fix are applied to each segment: both are about what
+/// makes an *identifier*, and a path is a sequence of them.
+let sanitizeIdent (s: string) =
+    let s = s.Replace("::", ".").Replace("-", "sub").Replace("?", "_QMARK").Replace("!", "_BANG").Replace("+", "add").Replace("*", "mul").Replace("/", "div").Replace("<", "lt").Replace(">", "gt").Replace("=", "eq").Replace("'", "").Replace("&", "arg_")
+
+    let segment (part: string) =
+        let part = if part.Length > 0 && Char.IsDigit(part[0]) then "_" + part else part
+        escapeReserved part
+
+    if s.Contains "." then
+        s.Split('.') |> Array.map segment |> String.concat "."
+    else
+        segment s
 
 /// The C# parameter a keyword argument arrives in.
 ///

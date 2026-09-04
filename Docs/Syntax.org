@@ -66,7 +66,7 @@ escape. Everything else escapes as it does in an ordinary string, and a
 Each hole is wrapped in ~->str~, so a value formats here exactly as it does
 under ~println~, and a type of your own says how by implementing the trait:
 #+BEGIN_SRC scheme
-(def/impl (->str Money)
+(impl (->str Money)
   (defun (->str m) (match m ((Kr n) (string-append (int->string n) " kr")))))
 
 #"you owe ${(Kr 42)}"                  ;; "you owe 42 kr"
@@ -763,7 +763,7 @@ what state follows it — or ~None~ to stop:
 #+END_SRC
 
 The error comes first because that is the argument implementations abstract
-over the *last*: ~(def/impl (Monad (Result %e %a)) ...)~ fixes ~%e~ and lets
+over the *last*: ~(impl (Monad (Result %e %a)) ...)~ fixes ~%e~ and lets
 ~%a~ move.
 
 A module that declares a ~Result~ of its own gets that one instead, everywhere
@@ -1191,7 +1191,7 @@ type, declared with ~(type %name)~ and pinned down by each implementation.
   (type %item)
   (: fold (-> (-> %acc %item %acc) %acc %col %acc)))
 
-(def/impl (Foldable (List %a))
+(impl (Foldable (List %a))
   (type %item %a)
   (defun (fold f acc col)
     (list-foldl f acc col)))
@@ -1211,7 +1211,7 @@ implementation that does write one overrides it.
   (: label (-> %a string))
   (defun (label x) (string-append "<" (string-append (tag x) ">"))))
 
-(def/impl (Tagged int)
+(impl (Tagged int)
   (defun (tag x) "int"))          ;; label is inherited
 #+END_SRC
 
@@ -1232,8 +1232,8 @@ written as a trait default it is resolved once per implementation instead:
   (: size (-> %a %a))
   (defun (size x) (clr-abs x)))
 
-(def/impl (Magnitude int))        ;; Math.Abs(int)
-(def/impl (Magnitude double))     ;; Math.Abs(double)
+(impl (Magnitude int))        ;; Math.Abs(int)
+(impl (Magnitude double))     ;; Math.Abs(double)
 #+END_SRC
 
 Where the overload set belongs to a .NET *interface* rather than to a static
@@ -1256,7 +1256,7 @@ become what the library's method meant.
 A default that will not serialize — one using a form the metadata writer cannot
 reproduce — is simply not published. The consequence is that an importing
 module has to write that method itself, and it is told so at its own
-~def/impl~.
+~impl~.
 
 *** Blanket implementations
 An implementation may name a bare type variable instead of a constructor. It
@@ -1265,10 +1265,10 @@ then applies at every type that has no implementation of its own.
 (def/trait (Describe %a)
   (: describe (-> %a string)))
 
-(def/impl (Describe %a)               ;; the blanket
+(impl (Describe %a)               ;; the blanket
   (defun (describe x) "any"))
 
-(def/impl (Describe int)              ;; beats it at int
+(impl (Describe int)              ;; beats it at int
   (defun (describe x) (int->string x)))
 #+END_SRC
 
@@ -1310,7 +1310,7 @@ Two restrictions follow, and both are checked:
 An implementation may hold only *where its own type arguments do*, by naming
 what it needs in a ~where~ clause — the same clause a signature takes.
 #+BEGIN_SRC scheme
-(def/impl (->str (List %a))
+(impl (->str (List %a))
   (where (->str %a))
   (defun (->str xs) (list->str xs)))
 #+END_SRC
@@ -1510,7 +1510,7 @@ That is what ~derive~ writes, not a property of the type. An implementation
 written by hand may hash only the fields that do not move and mean it:
 
 #+BEGIN_SRC scheme
-(def/impl (Eq Counter)
+(impl (Eq Counter)
   (defun (= a b) (= (record-ref a label) (record-ref b label)))
   (defun (eq-hash c) (eq-hash (record-ref c label))))
 #+END_SRC
@@ -1566,16 +1566,16 @@ was true — a parameter called ~compare~ was accepted, ignored and dead, and th
 program's own calls to it failed on arity against a line the programmer had
 written correctly.
 
-*Implementing a method is not shadowing it.* A ~def/impl~ supplies the method,
+*Implementing a method is not shadowing it.* A ~impl~ supplies the method,
 and a body inside one that calls its own name dispatches:
 #+BEGIN_SRC scheme
-(def/impl (Eq (List %a))
+(impl (Eq (List %a))
   (where (Eq %a))
   (defun (= xs ys) ... (= (list-head xs) (list-head ys))))   ;; the elements'
 #+END_SRC
 
 *Two shadows are worth a word, and get one.* A top-level definition over a
-method name warns and suggests ~def/impl~, which is what someone writing
+method name warns and suggests ~impl~, which is what someone writing
 ~(defun (= a b) ...)~ almost always meant. So does an *import* that lands on
 one: the nearest binding wins, so a module you did not write can decide that
 ~sign~ here means its function, and ~(except ...)~ or ~(rename ...)~ is the
@@ -1606,7 +1606,7 @@ the interface.
 #+END_SRC
 
 ~#:clr-member~ names the member a method stands for; whether it is static or an
-instance member is read from the metadata rather than written. ~def/impl~ for
+instance member is read from the metadata rather than written. ~impl~ for
 such a trait is an error, since a type either implements the interface or does
 not.
 
@@ -1635,11 +1635,11 @@ An implementation abstracts over the *trailing* arguments of its target. The
 rest are fixed by the implementation and become type parameters of the class it
 compiles to:
 #+BEGIN_SRC scheme
-(def/impl (Monad (List %a))                 ; nothing fixed
+(impl (Monad (List %a))                 ; nothing fixed
   (defun (pure x) (Cons x Nil))
   (defun (bind m k) (list-foldr (fun (x acc) (list-append (k x) acc)) Nil m)))
 
-(def/impl (Monad (Result %e %a))            ; %e fixed by the implementation
+(impl (Monad (Result %e %a))            ; %e fixed by the implementation
   (defun (pure x) (Ok x))
   (defun (bind m k) (match m ((Ok v) (k v)) ((Err e) (Err e)))))
 #+END_SRC
