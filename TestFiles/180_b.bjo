@@ -1,0 +1,25 @@
+;; Mellanmodulen: den skriver `(dyn ...)` i signaturer den exporterar, så
+;; typerna måste serialiseras som ytform och läsas tillbaka av `parseType` i den
+;; modul som importerar dem.
+;;
+;; Ingen impl av `Shape` för dyn-typen publiceras härifrån eller därifrån: den
+;; härleds ur traiten där traiten registreras, och det gäller lika på båda
+;; sidor om en modulgräns.
+(export describe pack-shape measured)
+
+(import (std prelude))
+(import "180_a.bjo")
+
+(: describe (-> (dyn Shape) string))
+(defun (describe s)
+  (label "area=" s))
+
+;; Villkoret anländer som en ordboksparameter och skickas vidare in i lådans
+;; `Make`.
+(: pack-shape (-> %a (dyn Shape)) (where (Shape %a)))
+(defun (pack-shape x)
+  (dyn Shape x))
+
+(: measured (-> (dyn Sized #:unit string) string))
+(defun (measured s)
+  (measure s))

@@ -1,0 +1,41 @@
+;; Traiterna som `180_b.bjo` skriver `(dyn ...)` över och `180_dyn.bjo` packar
+;; värden i. De ligger i en modul för sig därför att det är det som gör
+;; rundturen genom metadata till ett prov: ingenting här kan läsas av de andra
+;; två utan att ha passerat en `.dll`.
+(export Shape area label Sized measure Square square-side)
+
+(import (std prelude))
+
+;; `label` har mottagaren som *andra* parameter. Dyn-gränssnittet tar bort den
+;; där den står, och de två vidarebefordrande metoderna sätter tillbaka den på
+;; samma plats — vilket är det enda som gör att argumentordningen överlever.
+(def/trait (Shape %a)
+  (: area (-> %a int))
+  (: label (-> string %a string)))
+
+;; En trait med en associerad typ, så att `(dyn Sized #:unit string)` finns att
+;; skriva i en exporterad signatur.
+(def/trait (Sized %a)
+  (type %unit)
+  (: measure (-> %a %unit)))
+
+(type (: Square (Struct (: side int))))
+
+(: square-side (-> Square int))
+(defun (square-side s) (struct-ref s side))
+
+(impl (Shape int)
+  (defun (area n) n)
+  (defun (label prefix n) (string-append prefix (int->string n))))
+
+(impl (Shape Square)
+  (defun (area s) (* (square-side s) (square-side s)))
+  (defun (label prefix s) (string-append prefix (int->string (area s)))))
+
+(impl (Sized int)
+  (type %unit string)
+  (defun (measure n) (int->string n)))
+
+(impl (Sized Square)
+  (type %unit string)
+  (defun (measure s) (string-append "sq" (int->string (square-side s)))))

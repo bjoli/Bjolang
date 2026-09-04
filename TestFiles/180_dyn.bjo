@@ -1,0 +1,145 @@
+;; Trait-objekt: `(dyn Trait)`, en typ som håller vilket värde som helst som
+;; implementerar traiten, med den konkreta typen dold.
+;;
+;; Två saker hänger ihop här och är värda att skilja på. Packningen är alltid
+;; utskriven — `(dyn ->str 42)` — och det finns ingen inbäddning som sker av sig
+;; själv, så en lådtyp som möter ett värde är ett vanligt typfel. Anropet är
+;; däremot inte något nytt alls: ett metodanrop på ett lådlagt värde är ett
+;; vanligt trait-anrop som löses genom registret till den implementation traiten
+;; automatiskt får för sin egen dyn-typ. Det är det som gör att `(println d)`
+;; och `(where (->str %a))` fungerar oförändrat.
+
+(import (std prelude))
+(import (std simpletest))
+;; Traiterna först och mellanmodulen sedan: `180_b`s exporterade signaturer
+;; nämner `(dyn Shape)`, och en trait måste vara registrerad innan en signatur
+;; som skriver den kan läsas.
+(import "180_a.bjo")
+(import "180_b.bjo")
+
+;; --- 1. En funktion som tar vad som helst med en `->str` --------------------
+
+(type (: Coin (Struct (: ore int))))
+
+(impl (->str Coin)
+  (defun (->str c) (string-append (int->string (struct-ref c ore)) " öre")))
+
+(: render-str (-> (dyn ->str) string))
+(defun (render-str d)
+  (->str d))
+
+;; --- 5, 7. En trait med en associerad typ, och en mottagare som inte är
+;; första parametern -----------------------------------------------------------
+
+(: total (-> (dyn Foldable #:item int) int))
+(defun (total d)
+  (fold + 0 d))
+
+;; En vikning som struntar i elementet: den associerade typen är fastnålad ändå.
+(: how-many (-> (dyn Foldable #:item int) int))
+(defun (how-many d)
+  (fold (fun (n _) (+ n 1)) 0 d))
+
+;; --- 6. En metod som suspenderar --------------------------------------------
+
+(def/trait (Fetch %a)
+  (: fetch (-bjo-> %a string)))
+
+(impl (Fetch int)
+  (defbjo (fetch x) (int->string x)))
+
+(impl (Fetch string)
+  (defbjo (fetch x) (string-append "s:" x)))
+
+(: fetch-boxed (-bjo-> (dyn Fetch) string))
+(defbjo (fetch-boxed d)
+  (fetch d))
+
+(: run-bjo (-> (Promise string) string))
+(defun (run-bjo p)
+  (match (sync/blocking (promise-join p))
+    ((Ok s) s)
+    ((Err e) "err")))
+
+;; --- 8. En generisk funktion som packar sina element ------------------------
+;;
+;; `(->str %a)` finns här bara som en ordboksparameter, och den är vad som går
+;; in i lådan.
+(: pack-all (-> (List %a) (List (dyn ->str))) (where (->str %a)))
+(defun (pack-all xs)
+  (map (fun (x) (dyn ->str x)) xs))
+
+;; --- 10. Två associerade typer ----------------------------------------------
+;;
+;; Ordningen är den deklarerade, och det är den ordning C#-klassernas
+;; typargument står i.
+(def/trait (Tagging %c)
+  (type %in)
+  (type %out)
+  (: tag (-> %c %in %out)))
+
+(type (: Doubler (Union doubler)))
+(type (: Namer (Union namer)))
+
+(impl (Tagging Doubler)
+  (type %in int)
+  (type %out int)
+  (defun (tag c n) (* 2 n)))
+
+(impl (Tagging Namer)
+  (type %in int)
+  (type %out string)
+  (defun (tag c n) (string-append "#" (int->string n))))
+
+(: apply-tag (-> (dyn Tagging #:in int #:out string) int string))
+(defun (apply-tag t n)
+  (tag t n))
+
+(defun (main args)
+  ;; --- 1 --------------------------------------------------------------------
+  (expect "an int" (render-str (dyn ->str 42)) "42")
+  (expect "a string" (render-str (dyn ->str "hi")) "hi")
+  (expect "a record with its own impl" (render-str (dyn ->str (Coin (ore 7)))) "7 öre")
+
+  ;; --- 2. En lista som blandar tre typer, och en dispatch genom
+  ;; den automatiska implementationen ------------------------------------------
+  ;; Anropet står i en lambda och inte som `(map ->str mixed)`: en trait-metod
+  ;; går ännu inte att skicka som ett värde, med eller utan lådor.
+  (def mixed (list (dyn ->str 1) (dyn ->str "two") (dyn ->str (Coin (ore 3)))))
+  (expect "three types in one list"
+          (map (fun (d) (->str d)) mixed)
+          (list "1" "two" "3 öre"))
+
+  ;; --- 3. Ett lådlagt värde in i en `(where (->str %a))`-funktion -------------
+  (println (dyn ->str 7))
+
+  ;; --- 4. Bevis för en villkorad impl, byggt med `Make` inuti lådan ----------
+  (expect "a conditional impl" (render-str (dyn ->str (list 1 2))) "'(1 2)")
+
+  ;; --- 5, 7 ------------------------------------------------------------------
+  (def folded (list (dyn Foldable [1 2 3]) (dyn Foldable (list 10 20))))
+  (expect "a vec and a list, folded" (map total folded) (list 6 30))
+  (expect "a fold that ignores the item" (map how-many folded) (list 3 2))
+
+  ;; --- 6 ---------------------------------------------------------------------
+  (expect "a boxed suspending method" (run-bjo (bjo (fetch-boxed (dyn Fetch 42)))) "42")
+  (expect "and at another type" (run-bjo (bjo (fetch-boxed (dyn Fetch "x")))) "s:x")
+
+  ;; --- 8 ---------------------------------------------------------------------
+  (expect "packed through a dictionary parameter"
+          (map render-str (pack-all (list 1 2)))
+          (list "1" "2"))
+  (expect "the same function at another type"
+          (map render-str (pack-all (list "a" "b")))
+          (list "a" "b"))
+
+  ;; --- 9. Över modulgränsen ---------------------------------------------------
+  (expect "a dyn in an imported signature" (describe (dyn Shape 5)) "area=5")
+  (expect "and at the imported record" (describe (dyn Shape (Square (side 3)))) "area=9")
+  (expect "packed by the imported function" (describe (pack-shape 4)) "area=4")
+  (expect "an imported associated type" (measured (dyn Sized (Square (side 2)))) "sq2")
+
+  ;; --- 10 ---------------------------------------------------------------------
+  (expect "two associated types" (apply-tag (dyn Tagging namer) 8) "#8")
+
+  0)
