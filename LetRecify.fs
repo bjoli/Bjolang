@@ -106,6 +106,7 @@ let rec letrecifyExpr (expr: Expr) : Expr =
     | EVec(exprs, r) -> EVec(List.map letrecifyExpr exprs, r)
     | EApp(target, args, r) -> EApp(letrecifyExpr target, List.map letrecifyExpr args, r)
     | ECast(t, e, r) -> ECast(t, letrecifyExpr e, r)
+    | EDynPack(traitName, e, r) -> EDynPack(traitName, letrecifyExpr e, r)
 
     | ELet(name, isFun, args, typeAnn, value, body, r) -> ELet(name, isFun, args, typeAnn, letrecifyExpr value, letrecifyExpr body, r)
 

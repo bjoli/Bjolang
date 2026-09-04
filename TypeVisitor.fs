@@ -90,6 +90,7 @@ let mapChildren (f: TypedExpr -> TypedExpr) (expr: TypedExpr) : TypedExpr =
         | TInterfaceCall(iType, mName, mType, dict, args) -> TInterfaceCall(iType, mName, mType, f dict, List.map f args)
         | TTraitCall(tref, args, kwArgs) ->
             TTraitCall(tref, List.map f args, kwArgs |> List.map (fun (n, e) -> n, f e))
+        | TDynPack(traitName, hole, value) -> TDynPack(traitName, hole, f value)
         | TThrow e -> TThrow(f e)
         | TIsInst(tgt, t) -> TIsInst(f tgt, t)
         | TIsInstCase(tgt, t, caseName) -> TIsInstCase(f tgt, t, caseName)

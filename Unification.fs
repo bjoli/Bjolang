@@ -344,6 +344,28 @@ let unifyEffect (e1: Effect) (e2: Effect) =
     // cannot run a state machine to completion, and no wrapper can invent that.
     | EAsync, ESync -> ()
 
+/// Diagnostic hint appended when a raw value is unified against a trait box.
+///
+/// Packing is always explicit (values are never boxed automatically), so the
+/// missing step is an explicit `(dyn Trait <expr>)` packing expression in user
+/// code.
+let dynPackHintFor (t: HMType) : string =
+    match t with
+    | TCon(name, _) when Naming.isDynType name ->
+        let traitName = (Naming.dynTraitOf name).Value
+
+        $"\n  A (dyn %s{traitName} ...) holds a value with its type hidden, and nothing is packed into one by itself: write (dyn %s{traitName} <expr>) to pack the value."
+    | _ -> ""
+
+/// Same hint check for a pair of types: returns a hint if exactly one of the
+/// types is a dyn box. If both are dyn boxes, the mismatch is between boxes
+/// rather than missing packing.
+let dynPackHint (t1: HMType) (t2: HMType) : string =
+    match dynPackHintFor t1, dynPackHintFor t2 with
+    | "", hint
+    | hint, "" -> hint
+    | _ -> ""
+
 let rec unify (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
     let t1, t2 = prune registry t1, prune registry t2
 
@@ -366,6 +388,24 @@ let rec unify (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
     // not. The conversion it licenses happens once, in `emitTerminal`.
     | TCon(TypeConstants.VoidName, []), TCon(TypeConstants.UnitName, [])
     | TCon(TypeConstants.UnitName, []), TCon(TypeConstants.VoidName, []) -> ()
+    // Arguments of a `dyn` type constructor are its pinned associated types.
+    // Unifying two `dyn` types compares their associated types positionally.
+    // Decorates any unification error with the specific associated type keyword
+    // (`#:<name>`) so the error message clearly identifies which parameter failed.
+    | TCon(name1, args1), TCon(name2, args2) when
+        name1 = name2 && args1.Length = args2.Length && Naming.isDynType name1
+        ->
+        List.iteri2
+            (fun i a b ->
+                try
+                    unify registry a b
+                with ex ->
+                    let assocName = Naming.dynAssocNamesOf name1 |> List.item i
+
+                    failwithf
+                        $"%s{ex.Message}\n  They are what #:%s{assocName} is pinned to on either side of a (dyn %s{(Naming.dynTraitOf name1).Value} ...). The value's own implementation decides it, and the annotation has to agree.")
+            args1
+            args2
     | TCon(name1, args1), TCon(name2, args2) when name1 = name2 && args1.Length = args2.Length ->
         List.iter2 (unify registry) args1 args2
     | TFun(args1, ret1, eff1), TFun(args2, ret2, eff2) when args1.Length = args2.Length ->
@@ -419,7 +459,8 @@ let rec unify (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
                 | _ -> ""
             | _ -> ""
 
-        failwithf $"Type error: these types do not match.\n  %s{shown[0]}\n  %s{shown[1]}%s{note}"
+        failwithf
+            $"Type error: these types do not match.\n  %s{shown[0]}\n  %s{shown[1]}%s{note}%s{dynPackHint t1 t2}"
 
 /// `prune` is deep and leaves no bound metavariable behind, so pruning once at
 /// the top is what makes the survivors exactly the free ones.

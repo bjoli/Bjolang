@@ -155,6 +155,14 @@ and Expr =
     | ETuple of Expr list * Range
     | EApp of Expr * Expr list * Range
     | ECast of FType * Expr * Range
+    /// `(dyn ->str 42)` — packs a value into a trait box, erasing its concrete
+    /// type. Trait name is required and packing is always explicit: no implicit
+    /// boxing occurs.
+    ///
+    /// Associated types are NOT specified here; they are inferred from the
+    /// implementation selected by the value. If the receiving annotation pins
+    /// them differently, a standard type error occurs.
+    | EDynPack of string * Expr * Range
     // ELet (name, isFun, args, typeAnn, value, restOfScope, range)
     //
     // `args` is empty unless `isFun`, in which case the binding is a local
@@ -728,6 +736,34 @@ let stripTypeMark (s: SExpr) : SExpr =
         SList(SAtom { head with Token = Symbol(headName sym) } :: args, lr)
     | _ -> s
 
+/// `(dyn ->str)`, `(dyn Foldable #:item int)` — a trait object type.
+///
+/// `dyn` is a keyword only in type positions. A standalone trait name in a
+/// signature still represents an unboxed unknown `TCon`.
+///
+/// Each associated type is pinned by name as `TName "#:item"` before its type.
+///
+/// `parseInner` is passed in because dynamic types are parsed in both standalone
+/// type positions and function arrow parameter lists.
+let parseDynType (parseInner: SExpr -> FType) (traitExpr: SExpr) (assocItems: SExpr list) (r: Range) : FType =
+    let traitName =
+        match stripTypeMark traitExpr with
+        | SAtom { Token = Symbol name } -> name
+        | _ ->
+            failwithf
+                $"Syntax error at %s{Lexer.formatPos r}: (dyn ...) names a trait, as in (dyn ->str) or (dyn Foldable #:item int)."
+
+    let rec assocs items =
+        match items with
+        | [] -> []
+        | SAtom { Token = Keyword assocName } :: typeExpr :: rest ->
+            TName("#:" + assocName, r) :: parseInner typeExpr :: assocs rest
+        | _ ->
+            failwithf
+                $"Syntax error at %s{Lexer.formatPos r}: every associated type of '%s{traitName}' is pinned by name in a dyn type, as in (dyn %s{traitName} #:item int)."
+
+    TApp("dyn", TName(traitName, r) :: assocs assocItems, r)
+
 let parseArrowType (colour: Colour) (items: SExpr list) (r: Range) : FType =
     if items.IsEmpty then failwithf $"Arrow type must have at least a return type at %s{Lexer.formatPos r}"
     let returnTypeExpr = List.last items
@@ -739,6 +775,10 @@ let parseArrowType (colour: Colour) (items: SExpr list) (r: Range) : FType =
         | SAtom { Token = QuotedSymbol sym } -> TName("'" + sym, r)
         | SAtom { Token = Symbol sym }
         | SAtom { Token = TypeVar sym } -> TName(sym, r)
+        // A trait object type as a function parameter. Retains keyword arguments
+        // so arrow type parsing does not misinterpret them as parameter names.
+        | SList(SAtom { Token = Symbol "dyn" } :: traitExpr :: assocItems, _) ->
+            parseDynType parseArrowTypeInner traitExpr assocItems r
         | SList(SAtom { Token = Symbol name } :: typeArgs, _) -> TApp(name, List.map parseArrowTypeInner typeArgs, r)
         // A type variable in *applied* position: `(%m %a)`. Only an inline
         // trait's constructor variable can be written this way, and the leading
@@ -795,6 +835,8 @@ let rec parseType (s: SExpr) : FType =
     | SList(SAtom { Token = Symbol "-?->" } :: _, _) ->
         failwithf
             $"Syntax error at %s{Lexer.formatPos r}: -?-> says that a *parameter* may be given a function of either colour, and this arrow is not a parameter.\n  As the type of a definition it would say nothing: a defun is already colour-polymorphic, and a copy of it is made for each colour actually used. If what you need is two different *bodies* rather than two copies of one — because the two halves call different .NET methods — that is defbjouble.\n  As a record field, a let annotation or a return type it would need an effect variable with a name of its own, which does not exist yet."
+    | SList(SAtom { Token = Symbol "dyn" } :: traitExpr :: assocItems, _) ->
+        parseDynType parseType traitExpr assocItems r
     | SList(SAtom { Token = Symbol name } :: typeArgs, _) -> TApp(name, List.map parseType typeArgs, r)
     // `(%m %a)` — a type variable applied to arguments. See `parseArrowTypeInner`.
     | SList(SAtom { Token = QuotedSymbol sym } :: typeArgs, _) ->
@@ -1371,6 +1413,7 @@ let exprRange (e: Expr) : Range =
     | ETuple(_, r)
     | EApp(_, _, r)
     | ECast(_, _, r)
+    | EDynPack(_, _, r)
     | ELet(_, _, _, _, _, _, r)
     | ELetMono(_, _, _, r)
     | ELetRec(_, _, r)
@@ -1446,7 +1489,8 @@ let freeNamesWith (reference: string -> Range -> bool -> unit) (guarded: bool) (
         | EApp(target, args, _) ->
             sub target
             List.iter sub args
-        | ECast(_, v, _) -> sub v
+        | ECast(_, v, _)
+        | EDynPack(_, v, _) -> sub v
 
         | ELet(n, isFun, args, _, value, body, _) ->
             go (guarded || isFun) (if isFun then Set.union bound (Set.ofList (allArgNames args)) else bound) value
@@ -1530,6 +1574,7 @@ let exprChildren (e: Expr) : Expr list =
     | EKeyword _
     | EIdent _ -> []
     | ECast(_, x, _)
+    | EDynPack(_, x, _)
     | EGetField(x, _, _)
     | ESeq(x, _)
     | EBjo(x, _)
@@ -1687,6 +1732,8 @@ let private renameWith
             EApp(EResolved(subst[n], ir), List.map sub args, r)
         | EApp(target, args, r) -> EApp(sub target, List.map sub args, r)
         | ECast(t, v, r) -> ECast(t, sub v, r)
+        // Trait name is a selector, not a binding, so it is not renamed.
+        | EDynPack(traitName, v, r) -> EDynPack(traitName, sub v, r)
 
         | ELet(n, isFun, args, ann, value, body, r) ->
             // A function-shaped `let` is never self-recursive: `LetRecify` emits
@@ -2126,6 +2173,16 @@ let rec parseExpr (s: SExpr) : Expr =
                 | [ typeSExpr; valSExpr ] ->
                     ECast(parseType typeSExpr, parseExpr valSExpr, r)
                 | _ -> failwithf $"Invalid cast syntax at %s{Lexer.formatPos r}. Expected: (cast <type> <expr>)"
+            // `(dyn ->str 42)` — value packed into a trait box.
+            //
+            // Trait name is stripped of macro marks just as `impl` strips theirs.
+            // Associated types are never written here (inferred from value).
+            | "dyn" ->
+                match args with
+                | [ StrippedSymbol traitName; valExpr ] -> EDynPack(traitName, parseExpr valExpr, r)
+                | _ ->
+                    failwithf
+                        $"Invalid dyn syntax at %s{Lexer.formatPos r}. Expected: (dyn <TraitName> <expr>)"
             // `(begin ...)` where a *value* is wanted, which `parseBody` did
             // not consume because it is not in body position: a nested body,
             // opening a scope of its own.

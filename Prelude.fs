@@ -123,6 +123,12 @@ let textOutputPortType = TCon("System.IO.TextWriter", [])
 let syntaxType = TCon("Syntax", [])
 
 
+/// Computes dyn-safety verdict from trait definition itself, matching `DTrait`
+/// calculation so bootstrap trait infos agree with source definitions.
+let private withDynSafety (traitName: string) (info: TraitInfo) : TraitInfo =
+    { info with
+        DynSafe = dynSafety traitName info.ImplementorVar info.Kind info.ClrConstraint info.Signatures }
+
 /// `Num`, before any source has declared it.
 ///
 /// Seeded rather than declared, for the reason `NoDiscard`'s `Result` is: the
@@ -137,18 +143,21 @@ let syntaxType = TCon("Syntax", [])
 /// interface, so which of the two a module sees changes nothing about what its
 /// arithmetic compiles to.
 let private bootstrapNum : TraitInfo =
-    { ImplementorVar = "a"
-      AssociatedTypes = []
-      Signatures = Map.empty
-      Kind = InterfaceTrait
-      HoleArity = 0
-      Templates = Map.empty
-      Defaults = Map.empty
-      ClrConstraint =
-        Some
-            { InterfaceName = "System.Numerics.INumber"
-              Args = [ TVar "'a" ]
-              Members = Map.empty } }
+    withDynSafety
+        "Num"
+        { ImplementorVar = "a"
+          AssociatedTypes = []
+          Signatures = Map.empty
+          Kind = InterfaceTrait
+          HoleArity = 0
+          Templates = Map.empty
+          Defaults = Map.empty
+          ClrConstraint =
+            Some
+                { InterfaceName = "System.Numerics.INumber"
+                  Args = [ TVar "'a" ]
+                  Members = Map.empty }
+          DynSafe = Ok() }
 
 /// `Ordered`, which is what `<` asks of its operands.
 ///
@@ -161,14 +170,16 @@ let private bootstrapNum : TraitInfo =
 ///
 /// Every numeric type has it: `INumber` extends `IComparisonOperators`.
 let private bootstrapOrdered : TraitInfo =
-    { bootstrapNum with
-        ClrConstraint =
-            Some
-                { InterfaceName = "System.Numerics.IComparisonOperators"
-                  // The result is `bool` and not the implementor, which is why
-                  // the arguments are written out rather than assumed.
-                  Args = [ TVar "'a"; TVar "'a"; TypeConstants.boolType ]
-                  Members = Map.empty } }
+    withDynSafety
+        "Ordered"
+        { bootstrapNum with
+            ClrConstraint =
+                Some
+                    { InterfaceName = "System.Numerics.IComparisonOperators"
+                      // The result is `bool` and not the implementor, which is why
+                      // the arguments are written out rather than assumed.
+                      Args = [ TVar "'a"; TVar "'a"; TypeConstants.boolType ]
+                      Members = Map.empty } }
 
 /// `Integral`, which is what the bitwise and shift builtins ask for.
 ///
@@ -177,12 +188,14 @@ let private bootstrapOrdered : TraitInfo =
 /// no longer has to. It covers the shifts too, `IBinaryInteger` extending
 /// `IShiftOperators`.
 let private bootstrapIntegral : TraitInfo =
-    { bootstrapNum with
-        ClrConstraint =
-            Some
-                { InterfaceName = "System.Numerics.IBinaryInteger"
-                  Args = [ TVar "'a" ]
-                  Members = Map.empty } }
+    withDynSafety
+        "Integral"
+        { bootstrapNum with
+            ClrConstraint =
+                Some
+                    { InterfaceName = "System.Numerics.IBinaryInteger"
+                      Args = [ TVar "'a" ]
+                      Members = Map.empty } }
 
 /// What the arithmetic and comparison builtins ask of their operand type.
 ///

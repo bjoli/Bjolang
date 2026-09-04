@@ -416,6 +416,35 @@ module DictionaryLowering =
 
             { expr with Node = node }
 
+        // `(dyn ->str 42)`: lower to the box factory call, passing dictionary
+        // evidence first and value second.
+        //
+        // Uses the same call shape as a conditional impl's `Make`, so `Codegen`
+        // needs no special expression node (`::` handles injecting class type
+        // arguments). `buildEvidence` provides the correct dictionary in every
+        // context (singleton `Instance`, nested `Make` calls, `_dict_` parameter,
+        // or `this` inside an impl).
+        | TDynPack(traitName, hole, value) ->
+            let implType = prune env.Registry hole
+
+            let assocTypes =
+                match prune env.Registry expr.Type with
+                | TCon(_, args) -> args
+                | _ -> []
+
+            let dict =
+                buildEvidence env scope traitName implType expr.Range "to pack it as a dyn"
+
+            let lowered = recurse value
+
+            let callee =
+                { Type = tfun [ dict.Type; lowered.Type ] expr.Type
+                  Range = expr.Range
+                  Node = TIdent(Naming.dynBoxFactoryName traitName, implType :: assocTypes) }
+                : TypedExpr
+
+            { expr with Node = TApply(callee, [ dict; lowered ], []) }
+
         | TApply(target, args, kwArgs) ->
             // The callee may carry trait constraints that require us to pass
             // dictionaries explicitly.

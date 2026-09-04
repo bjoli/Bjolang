@@ -796,6 +796,13 @@ and TExprNode =
     /// method — which stops being hypothetical the moment `Monad.pure` and an
     /// `Applicative.pure` coexist.
     | TTraitCall of TraitRef * TypedExpr list * (string * TypedExpr) list
+    /// `(dyn ->str 42)` — a value packed into a trait box: trait name, hole
+    /// representing the erased implementor type, and the packed expression.
+    ///
+    /// The hole is a metavariable shared with the packed expression so that
+    /// whatever binds the expression's type binds the implementation
+    /// dictionary. Replaced during `Lowering` with a `Make` call.
+    | TDynPack of string * HMType * TypedExpr
     | TThrow of TypedExpr
     // Lowered
     | TIsInst of TypedExpr * HMType
@@ -1152,7 +1159,13 @@ type TraitInfo =
       /// `Some` makes the trait a closed world: there is nothing to implement,
       /// so `impl` is refused, no interface is emitted, and a constraint on
       /// it costs no parameter.
-      ClrConstraint: ClrConstraintInfo option }
+      ClrConstraint: ClrConstraintInfo option
+
+      /// Dynamic safety (boxability) verdict for `(dyn Trait ...)`.
+      ///
+      /// Derived directly from signatures and never serialized. Evaluated on
+      /// trait creation and import.
+      DynSafe: Result<unit, string> }
 
 /// A declared union payload with the union's type arguments put in.
 ///
@@ -1651,6 +1664,17 @@ let addInlineTemplate
 let implClassName (traitName: string) (targetTypeName: string) =
     let flattened =
         if targetTypeName = BlanketCtor then "Blanket"
+        // A `dyn` type key contains spaces. For the trait's own auto-impl, the
+        // class name suffix is `DynImpl`. An impl of a *different* trait for the
+        // same `dyn` type includes the hidden trait name to prevent class name
+        // collisions.
+        elif Naming.isDynType targetTypeName then
+            let hidden = (Naming.dynTraitOf targetTypeName).Value
+
+            if hidden = traitName || Naming.sanitizeIdent hidden = traitName then
+                "DynImpl"
+            else
+                $"Dyn_%s{Naming.sanitizeIdent hidden}_Impl"
         // En modultypnyckel är kvalificerad. Klassen ligger redan i modulens
         // namnrymd, så den namnges efter sista ledet — en `.NET`-typ som
         // `System.IO.TextReader` har ingen namnrymd att stå i och plattas.
@@ -1797,6 +1821,71 @@ let suspendingTwinTemplate (tpl: TplType) : TplType =
     match tpl with
     | TplFun(args, ret, _) -> TplFun(List.map param args, ret, EAsync)
     | other -> other
+
+/// Evaluates whether `(dyn Trait ...)` is valid for a trait, returning `Ok()`
+/// or `Error` with a human-readable explanation of why it cannot be boxed.
+///
+/// Derived from method signatures: a box erases the concrete type, so every
+/// boxable method must mention the implementor variable exactly once, as a
+/// direct parameter. Methods like `Eq`'s `(-> %a %a bool)` could receive two
+/// boxes erasing different types, and `(-> %a %a)` would need to return the
+/// erased type.
+///
+/// Associated types are statically pinned by type annotations and may appear
+/// anywhere.
+let dynSafety
+    (traitName: string)
+    (implementorVar: string)
+    (kind: TraitKind)
+    (clr: ClrConstraintInfo option)
+    (signatures: Map<string, HMType>)
+    : Result<unit, string> =
+
+    let implVar = TVar("'" + implementorVar)
+
+    let mentions (t: HMType) =
+        t |> foldType (fun leaf -> if leaf = implVar then [ () ] else []) |> List.length
+
+    match kind, clr with
+    | InlineTrait, _ ->
+        Error
+            $"'%s{traitName}' applies its implementor, so it has no interface and no dictionary — there is nothing for a box to hold or to dispatch through."
+    | _, Some c ->
+        Error
+            $"'%s{traitName}' stands for the .NET interface '%s{c.InterfaceName}', so there is nothing to box: that interface is already the erased type. Write (cast %s{c.InterfaceName} x) to erase a .NET type."
+    | InterfaceTrait, None ->
+
+    let written = "%" + implementorVar
+
+    let offending =
+        signatures
+        |> Map.toList
+        // Derived color twins match the shape of the original method, so filter
+        // them out to report errors against the user-written signature.
+        |> List.filter (fun (name, _) -> not (Naming.isSuspendingCopy name))
+        |> List.tryPick (fun (name, t) ->
+            match t with
+            | TFun(args, _, _) ->
+                let total = mentions t
+                let receivers = args |> List.filter ((=) implVar) |> List.length
+
+                if total = 1 && receivers = 1 then None
+                elif total = 0 then
+                    Some
+                        $"'%s{name}' never mentions %s{written}, so it has no receiver to dispatch on and a boxed value could not answer it"
+                elif receivers = 0 then
+                    Some
+                        $"'%s{name}' mentions %s{written} only inside another type or in its result, and a box hands back no concrete type to put there"
+                else
+                    Some
+                        $"'%s{name}' mentions %s{written} %d{total} times, and one box says nothing about another: two of them could hide two different types"
+            | _ -> Some $"'%s{name}' is not a function, so it has no parameter for the receiver")
+
+    match offending with
+    | Some why ->
+        Error
+            $"'%s{traitName}' cannot be boxed: %s{why}. A boxable method mentions the implementor exactly once, as one of its own parameters — which is why (-> %s{written} %s{written} bool) and (-> %s{written} %s{written}) are not."
+    | None -> Ok()
 
 /// Every type variable a template mentions, in order of first appearance.
 let templateVarsOf (tpl: TplType) : string list =

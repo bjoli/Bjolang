@@ -376,6 +376,56 @@ let showQualifiedTypeName (name: string) : string =
 
         if tag = "" then showTypeName name else tag + "/" + showTypeName name
 
+// ---------------------------------------------------------------------------
+// Trait Objects
+// ---------------------------------------------------------------------------
+
+/// The constructor key a trait object type — `(dyn ->str)` — carries as its
+/// `TCon` name.
+///
+/// Spaces in the string are intentional: no user-defined type or .NET type can
+/// contain spaces, guaranteeing that a `dyn` type key never conflicts with
+/// declared types in `Implementations`, `ImplTargets`, or `Records`.
+///
+/// Associated type names are embedded in the key following the trait name in
+/// declaration order, matching the positional `TCon` arguments. This allows
+/// `Codegen.serializeHMType` and `DotNetInterop.showType` to format surface
+/// syntax such as `(dyn Foldable #:item int)` without requiring access to a
+/// trait registry.
+let dynTypeName (traitName: string) (assocNames: string list) =
+    String.concat " " ("dyn" :: traitName :: assocNames)
+
+let isDynType (name: string) = name.StartsWith("dyn ", StringComparison.Ordinal)
+
+/// The trait whose implementation a dynamic type erases.
+let dynTraitOf (name: string) : string option =
+    if isDynType name then
+        Some(name.Split(' ')[1])
+    else
+        None
+
+/// Names of associated types in declaration order, aligned with `TCon` argument
+/// indices.
+let dynAssocNamesOf (name: string) : string list =
+    if isDynType name then
+        name.Split(' ') |> Array.toList |> List.skip 2
+    else
+        []
+
+/// Interface exposed by a dynamic box: trait methods with receiver parameter
+/// omitted. This is the C# interface type emitted for `TCon(dynTypeName ...)`.
+let dynInterfaceName (traitName: string) = traitName + "_Dyn"
+
+/// Class name for the box holding the value and its dictionary.
+let dynBoxName (traitName: string) = traitName + "_DynBox"
+
+/// Static factory method name for the box. `::` signals `Codegen` to emit
+/// class type arguments before the dot, matching conditional impl `Make` calls.
+let dynBoxFactoryName (traitName: string) = dynBoxName traitName + "::Make"
+
+/// Class name for the auto-generated trait implementation on the dyn type itself.
+let dynImplName (traitName: string) = traitName + "_DynImpl"
+
 /// The C# spelling of a Bjolang type parameter.
 let typeParamName (name: string) = "T_" + name.TrimStart('\'')
 

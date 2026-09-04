@@ -1651,6 +1651,137 @@ Every implementation method is also emitted as an ordinary method, whatever the
 kind of trait. That is what a recursive method inlines *into*: a resolved call is
 spliced once, and the edge that would close the cycle calls the method instead.
 
+*** Trait Objects — ~(dyn Trait)~
+
+~(dyn Trait)~ is a type that holds any value implementing ~Trait~, with its concrete type erased. This allows a function to accept "anything that implements ~->str~", and allows a list to store values of heterogeneous types:
+
+#+BEGIN_SRC scheme
+(: render-str (-> (dyn ->str) string))
+(defun (render-str d)
+  (->str d))
+
+;; A custom type can be placed in the list on the same terms as int and string:
+;; it has an implementation.
+(type (: Coin (Struct (: ore int))))
+
+(impl (->str Coin)
+  (defun (->str c) #"${(struct-ref c ore)} öre"))
+
+(def mixed (list (dyn ->str 1)
+                  (dyn ->str "two")
+                  (dyn ->str (Coin (ore 3)))))
+#+END_SRC
+
+A generic ~(where (->str %a))~ function and a box serve different purposes. A generic function receives a *dictionary per call site* and is compiled separately for each type it is instantiated with; a box carries its dictionary along with its value, allowing values of three different concrete types to reside in the same list. The cost is an allocation per packing operation and an interface dispatch per method call.
+
+**** The Type
+
+The trait's associated types are pinned in the type at their declared names:
+
+#+BEGIN_SRC scheme
+(dyn ->str)                                        ; no associated types
+(dyn Foldable #:item int)                          ; one, pinned
+(dyn Collector #:elem int #:acc int #:out string)  ; all three
+#+END_SRC
+
+Every associated type must be specified. The box erases the underlying concrete type that would otherwise answer them, so an unpinned associated type would have no concrete definition at all. Any missing, unknown, or duplicated associated type annotations are reported at the type site, listing the trait's expected associated type names. Leaving them open is therefore not supported.
+
+~dyn~ is a keyword only in type positions. A standalone trait name in a signature still retains its original meaning: an unknown type.
+
+This relies on every ~impl~ binding every associated type declared by the trait. An ~impl~ that omits an associated type is rejected immediately at declaration time.
+
+**** Explicit Packing
+
+#+BEGIN_SRC scheme
+(dyn ->str 42)            ; : (dyn ->str)
+(dyn Foldable [1 2 3])    ; : (dyn Foldable #:item int)
+#+END_SRC
+
+The form takes the trait name and an expression, and nothing more. Associated types are never written here; they are inferred from the implementation selected by the value. If the type annotation pins them to a different type, a standard unification error is reported.
+
+Values are never implicitly boxed. Passing a raw string where a box is expected—such as ~(render-str "hej")~—results in a standard type mismatch (~string~ vs ~(dyn ->str)~). The diagnostic explicitly hints at how to pack the value:
+
+#+BEGIN_SRC text
+Type error: these types do not match.
+  (dyn ->str)
+  string
+  A (dyn ->str ...) holds a value with its type hidden, and nothing is packed
+  into one by itself: write (dyn ->str <expr>) to pack the value.
+#+END_SRC
+
+The rationale for requiring explicit packing is that implicit boxing introduces implicit allocations and type erasure, neither of which would be visible in code or function signatures.
+
+**** Dispatch via Existing Trait Call Machinery
+
+A method call on a boxed value is a *standard* trait call. The compiler automatically synthesizes an implementation of the trait for its own dynamic type (~dyn~ type), registered alongside all other implementations. This mechanism allows the rest of the compiler to handle boxed trait invocation without special-casing boxes at call sites:
+
+#+BEGIN_SRC scheme
+(->str d)                       ; resolves to the dyn-type implementation
+(println d)                     ; an unchanged (where (->str %a)) function
+(map (fun (x) (->str x)) xs)    ; over a (List (dyn ->str))
+#+END_SRC
+
+This auto-generated implementation is not exported in module metadata. It is derived entirely from the trait signature, so importing modules re-derive it automatically.
+
+**** Code Generation
+
+Three classes are generated alongside the normal interface, specifically for boxable traits. The receiver parameter is removed from the dynamic interface signature *at its exact parameter index* (e.g. in ~fold~, where it is the third argument) and re-inserted in place by the forwarding methods:
+
+#+BEGIN_SRC csharp
+public interface Foldable<T_col, T_item> {
+    T_acc fold<T_acc>(Func<T_acc, T_item, T_acc> arg0, T_acc arg1, T_col arg2);
+}
+public interface Foldable_Dyn<T_item> {
+    T_acc fold<T_acc>(Func<T_acc, T_item, T_acc> arg0, T_acc arg1);
+}
+public sealed class Foldable_DynBox<T_col, T_item> : Foldable_Dyn<T_item> {
+    private readonly T_col value;
+    private readonly Foldable<T_col, T_item> dict;
+    private Foldable_DynBox(T_col v, Foldable<T_col, T_item> d) { value = v; dict = d; }
+    public static Foldable_Dyn<T_item> Make(Foldable<T_col, T_item> d, T_col v) => new Foldable_DynBox<T_col, T_item>(v, d);
+    public T_acc fold<T_acc>(Func<T_acc, T_item, T_acc> arg0, T_acc arg1) => dict.fold<T_acc>(arg0, arg1, value);
+}
+public sealed class Foldable_DynImpl<T_item> : Foldable<Foldable_Dyn<T_item>, T_item> {
+    public static readonly Foldable_DynImpl<T_item> Instance = new();
+    public T_acc fold<T_acc>(Func<T_acc, T_item, T_acc> arg0, T_acc arg1, Foldable_Dyn<T_item> arg2) => arg2.fold<T_acc>(arg0, arg1);
+}
+#+END_SRC
+
+The ~value~ field is private: unboxing a trait object back into its concrete type is not supported.
+
+A method that is generic in its own right (such as ~fold~'s ~%acc~) remains a generic C# method. Because C# supports generic interface methods, there is no vtable restriction like in Rust. Method attributes and colors are preserved: a ~-bjo->~ method returns a ~Fiber<T>~ in all three generated classes, and a ~-?->~ parameter generates a color twin across all three classes.
+
+The dictionary evidence passed into ~Make~ is constructed identically to any other trait dispatch site: via a singleton instance, a chain of ~Make~ calls for conditional impls, ~this~ within an impl, or a dictionary parameter. The latter allows generic functions to box their own elements:
+
+#+BEGIN_SRC scheme
+(: pack-all (-> (List %a) (List (dyn ->str))) (where (->str %a)))
+(defun (pack-all xs)
+  (map (fun (x) (dyn ->str x)) xs))
+#+END_SRC
+
+**** Boxability Rules
+
+Three conditions determine whether a trait can be boxed. These rules apply to the trait definition itself, so any invalid ~(dyn ...)~ usage is reported with the trait name, offending method, and rule violated:
+
+1. *It must not apply its implementor type variable.* Inline traits have no C# interface or dictionary, so there is no target to erase or dispatch through.
+2. *It must not wrap a raw .NET interface constraint.* A .NET interface is already erased; use ~(cast <Interface> x)~ instead.
+3. *Every method must mention the implementor variable exactly once, as a direct parameter.* It cannot be nested inside another type, inside a function parameter, in the return type, or in a keyword/rest parameter.
+
+The third requirement prevents traits like ~Eq~ from being boxed:
+
+#+BEGIN_SRC text
+'Eq' cannot be boxed: '=' mentions %a 2 times, and one box says nothing about
+another: two of them could hide two different types. A boxable method mentions
+the implementor exactly once, as one of its own parameters — which is why
+(-> %a %a bool) and (-> %a %a) are not.
+#+END_SRC
+
+Two boxed values carry no static relation to each other: they could contain two different underlying types, leaving ~=~ with no common concrete type to execute. Likewise, ~(-> %a %a)~ would attempt to return the erased underlying type, and a method omitting the implementor entirely (~(-> int %a)~) has no receiver to dispatch on. Associated types may appear anywhere, as they are statically pinned by the annotation.
+
+**** Non-Features & Design Non-Goals
+
+Intentionally omitted and not planned: no implicit boxing, no unpinned associated types, no downcasting back to concrete types, and no multi-trait composite boxes.
+
 ** Macros
 A macro is a function the compiler runs while parsing. It takes the form that
 was written and returns the form to read instead.

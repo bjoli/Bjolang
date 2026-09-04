@@ -588,6 +588,16 @@ let showTypesTogether (ts: HMType list) : string list =
     let rec go (t: HMType) : string =
         match pruneLocal t with
         | TCon("Array", [ e ]) -> $"(Array %s{go e})"
+        // A trait object type is printed back as originally written, e.g.
+        // `(dyn Foldable #:item int)`. Matched before the cases below because a
+        // trait without associated types has an empty argument list and would
+        // otherwise be formatted as its internal name.
+        | TCon(name, args) when Naming.isDynType name ->
+            let assocs =
+                List.zip (Naming.dynAssocNamesOf name) args
+                |> List.collect (fun (assocName, t) -> [ "#:" + assocName; go t ])
+
+            "(" + String.Join(" ", "dyn" :: (Naming.dynTraitOf name).Value :: assocs) + ")"
         // Spelled as a signature spells it, which is not always the name the
         // constructor carries: `char` is `TCon("Char")` and `void` is
         // `TCon("Unit")`.

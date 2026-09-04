@@ -752,6 +752,11 @@ let metadata
             let implEntries =
                 env.Registry.Implementations
                 |> Map.toList
+                // Auto-generated trait implementations for dynamic types (`DynImpl`)
+                // are omitted from exported metadata. They are derived directly
+                // from the trait definition, and importing modules re-register
+                // them automatically when reading back the trait.
+                |> List.filter (fun ((_, typeKey), _) -> not (Naming.isDynType typeKey))
                 |> List.filter (fun ((traitName, _) as key, _) ->
                     Map.containsKey traitName exportedTraits
                     || (Set.contains key ownImplKeys && not (Set.contains traitName ownTraitNames)))

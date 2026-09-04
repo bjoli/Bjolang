@@ -308,6 +308,13 @@ let typeParamKey = Naming.typeParamKey
 /// `main__Result` and the runtime type it shadows arrives as `Result`. They are
 /// two names because they are two types.
 let private conBaseName (name: string) =
+    // A trait object type emits the erased interface exposed by the box, e.g.
+    // `ToStr_Dyn`. Because a dynamic type name contains spaces, it cannot be
+    // sanitized directly as an identifier; it is reconstructed from the trait instead.
+    if Naming.isDynType name then
+        sanitizeIdent (Naming.dynInterfaceName (Naming.dynTraitOf name).Value)
+    else
+
     let mapped = mapPrimitiveType name
     if mapped = name then sanitizeIdent name else mapped
 
@@ -511,6 +518,15 @@ let private shortPrimitiveName (name: string) : string =
 
 let rec serializeHMType (t: HMType) : string =
     match t with
+    // A trait object type is serialized as written in source syntax, e.g.
+    // `(dyn Foldable #:item int)`, so `parseType` can read it back. The
+    // internal name contains spaces and is not valid surface syntax.
+    | TCon (name, args) when Naming.isDynType name ->
+        let assocs =
+            List.zip (Naming.dynAssocNamesOf name) args
+            |> List.collect (fun (assocName, t) -> [ "#:" + assocName; serializeHMType t ])
+
+        "(" + String.concat " " ("dyn" :: (Naming.dynTraitOf name).Value :: assocs) + ")"
     | TCon (name, args) ->
         let baseName = shortPrimitiveName name
         if args.IsEmpty then baseName
@@ -661,6 +677,7 @@ let rec serializeExpr (e: Parser.Expr) : string =
     | Parser.ETuple(items, _) -> list ("Tuple" :: List.map serializeExpr items)
     | Parser.EApp(target, args, _) -> list (serializeExpr target :: List.map serializeExpr args)
     | Parser.ECast(t, v, _) -> list [ "cast"; serializeFType t; serializeExpr v ]
+    | Parser.EDynPack(traitName, v, _) -> list [ "dyn"; traitName; serializeExpr v ]
 
     // Round-trips as its own form: re-importing it as a plain `let` would put
     // the generalization back, which is the whole thing it exists to prevent.
@@ -1792,6 +1809,13 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
         codegenError
             expr.Range
             $"internal error: call to '{tref.Trait}.{tref.Method}' was never resolved to an implementation"
+
+    // And likewise dynamic packing: `Lowering` converts every packing expression
+    // into a call to the box's `Make`, which is a standard application.
+    | TDynPack (traitName, _, _) ->
+        codegenError
+            expr.Range
+            $"internal error: a (dyn {traitName} ...) reached emission without being lowered to its box"
 
     | TThrow _
     | TLet _
@@ -3747,6 +3771,180 @@ let private appendTypeBody (ctx: CodegenContext) (members: string list) : unit =
         indent ctx
         appendLine ctx "}"
 
+/// Emits the C# interface, box class, and auto-generated implementation that
+/// make `(dyn Trait ...)` a usable dynamic type.
+///
+/// Emitted directly from `TTrait` rather than a standalone `TImpl`: it exists
+/// purely because the trait exists, so importing modules re-derive it rather
+/// than importing it from metadata. Nothing here depends on which impls happen
+/// to be in scope.
+///
+/// The receiver parameter is removed from the dynamic interface signature at
+/// its exact parameter index (e.g. in `fold`, where it is the third argument)
+/// and restored in place by forwarding methods. `TypedAST.dynSafety` guarantees
+/// that the implementor appears exactly once as a direct parameter.
+let private generateDynTrio
+    (ctx: CodegenContext)
+    (traitName: string)
+    (implementorVar: string)
+    (assocTypes: string list)
+    (signatures: Map<string, HMType>)
+    : unit =
+
+    let implVar = "'" + implementorVar
+    let iface = sanitizeIdent traitName
+    let dynIface = sanitizeIdent (Naming.dynInterfaceName traitName)
+    let box = sanitizeIdent (Naming.dynBoxName traitName)
+    let dynImpl = sanitizeIdent (Naming.dynImplName traitName)
+
+    /// `<A, B>`, or empty string if empty (since `<>` is invalid C# syntax for type parameters).
+    let angled (vars: string list) =
+        if vars.IsEmpty then ""
+        else "<" + String.concat ", " vars + ">"
+
+    let assocParams = assocTypes |> List.map (fun a -> typeParamName ("'" + a))
+    let implParam = typeParamName implVar
+
+    // `Foldable<T_col, T_item>` — the dictionary the box dispatches through;
+    // the trait applied to the implementor and every associated type in
+    // declaration order.
+    let dictType = iface + angled (implParam :: assocParams)
+    let dynType = dynIface + angled assocParams
+
+    // Class type parameters are in scope for each method body, just like for a
+    // normal impl. The indented context is passed through so members stay inside
+    // the class.
+    let classCtx (c: CodegenContext) (vars: string list) =
+        { c with TypeParams = vars |> List.map typeParamKey |> Set.ofList }
+
+    let classTyVarNames = implVar :: (assocTypes |> List.map (fun a -> "'" + a))
+
+    /// Deconstructs a trait method into the information needed across the three dynamic classes.
+    let methods =
+        signatures
+        |> Map.toList
+        |> List.choose (fun (mName, mType) ->
+            match mType with
+            | TFun(args, ret, eff) ->
+                let receiver = args |> List.findIndex ((=) (TVar implVar))
+
+                // Method-level generic variables (e.g. `fold`'s `%acc`). C# allows
+                // generic interface methods, so unlike Rust, no vtable restriction
+                // is needed here.
+                let methodVars =
+                    collectTypeVars mType
+                    |> List.distinct
+                    |> List.filter (fun v -> not (List.contains v classTyVarNames))
+
+                Some(mName, args, ret, eff, receiver, methodVars)
+            | _ -> None)
+
+    /// Parameters remaining after removing the receiver parameter, in original order.
+    let withoutReceiver (args: HMType list) (receiver: int) =
+        args |> List.indexed |> List.filter (fun (i, _) -> i <> receiver)
+
+    let signature (mName: string) (ret: HMType) (eff: Effect) (methodVars: string list) (parameters: (int * HMType) list) =
+        let ps =
+            parameters
+            |> List.map (fun (i, t) -> $"%s{typeToString t} arg%d{i}")
+            |> String.concat ", "
+
+        $"%s{returnTypeString eff ret} %s{sanitizeIdent mName}%s{angled (methodVars |> List.map typeParamName)}(%s{ps})"
+
+    /// Forwarding call signature, re-inserting the receiver argument at its original index.
+    let forward (target: string) (mName: string) (methodVars: string list) (args: HMType list) (receiver: int) (receiverArg: string) =
+        let arguments =
+            args
+            |> List.mapi (fun i _ -> if i = receiver then receiverArg else $"arg%d{i}")
+            |> String.concat ", "
+
+        // Explicit type arguments. C# usually infers them, but not when a
+        // variable appears only in the return type; explicitly emitting them
+        // is simpler than detecting inference edge cases.
+        $"%s{target}.%s{sanitizeIdent mName}%s{angled (methodVars |> List.map typeParamName)}(%s{arguments})"
+
+    // --- Interface exposed by a dynamic box ---------------------------------
+    indent ctx
+    appendLine ctx $"public interface %s{dynIface}%s{angled assocParams} {{"
+
+    withIndent ctx (fun c ->
+        let c = classCtx c (assocTypes |> List.map (fun a -> "'" + a))
+
+        for (mName, args, ret, eff, receiver, methodVars) in methods do
+            indent c
+            appendLine c $"%s{signature mName ret eff methodVars (withoutReceiver args receiver)};")
+
+    indent ctx
+    appendLine ctx "}"
+
+    // --- Dynamic box implementation ----------------------------------------
+    indent ctx
+    appendLine ctx $"public sealed class %s{box}%s{angled (implParam :: assocParams)} : %s{dynType} {{"
+
+    withIndent ctx (fun c ->
+        let c = classCtx c classTyVarNames
+
+        indent c
+        appendLine c $"private readonly %s{implParam} value;"
+        indent c
+        appendLine c $"private readonly %s{dictType} dict;"
+        indent c
+        appendLine c $"private %s{box}(%s{implParam} v, %s{dictType} d) {{ value = v; dict = d; }}"
+
+        // Dictionary first, value second, so `Make` signatures match
+        // conditional impl `Make` factory signatures.
+        //
+        // A static `Make` method is used instead of direct instantiation: the
+        // return type is the erased interface.
+        indent c
+        appendLine c
+            $"public static %s{dynType} Make(%s{dictType} d, %s{implParam} v) => new %s{box}%s{angled (implParam :: assocParams)}(v, d);"
+
+        for (mName, args, ret, eff, receiver, methodVars) in methods do
+            let head = signature mName ret eff methodVars (withoutReceiver args receiver)
+            let body = forward "dict" mName methodVars args receiver "value"
+            indent c
+            appendLine c $"public %s{head} => %s{body};")
+
+    indent ctx
+    appendLine ctx "}"
+
+    // --- Auto-implementation of the trait for the dyn type itself -----------
+    //
+    // The trait applied to the dyn type and its pinned associated types, e.g.:
+    // `Foldable<Foldable_Dyn<T_item>, T_item>`.
+    let dynImplBase = String.concat ", " (dynType :: assocParams)
+
+    indent ctx
+    appendLine ctx $"public sealed class %s{dynImpl}%s{angled assocParams} : %s{iface}<%s{dynImplBase}> {{"
+
+    withIndent ctx (fun c ->
+        let c = classCtx c (assocTypes |> List.map (fun a -> "'" + a))
+
+        indent c
+        appendLine c $"public static readonly %s{dynImpl}%s{angled assocParams} Instance = new();"
+
+        for (mName, args, ret, eff, receiver, methodVars) in methods do
+            // The receiver stays in its original parameter position as the
+            // dyn-type; invocation forwards to it.
+            let parameters =
+                args
+                |> List.indexed
+                |> List.map (fun (i, t) -> if i = receiver then i, TCon(Naming.dynTypeName traitName assocTypes, assocTypes |> List.map (fun a -> TVar("'" + a))) else i, t)
+
+            let dropped = parameters |> List.filter (fun (i, _) -> i <> receiver)
+
+            let arguments =
+                dropped |> List.map (fun (i, _) -> $"arg%d{i}") |> String.concat ", "
+
+            indent c
+
+            appendLine c
+                $"public %s{signature mName ret eff methodVars parameters} => arg%d{receiver}.%s{sanitizeIdent mName}%s{angled (methodVars |> List.map typeParamName)}(%s{arguments});")
+
+    indent ctx
+    appendLine ctx "}"
+
 let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
     match decl with
     | TDefun (name, tyArgs, args, kwArgs, restArg, retType, effect, body, r) ->
@@ -4071,6 +4269,13 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
         )
         indent ctx
         appendLine ctx "}"
+
+        // Emit the dynamic trait class trio immediately following the interface.
+        // Generated only if the trait is dyn-safe (boxable), as determined by
+        // its signature inspection.
+        match Map.tryFind name ctx.Registry.Traits with
+        | Some info when info.DynSafe = Ok() -> generateDynTrio ctx name targetVar assocTypes signatures
+        | _ -> ()
 
     | TImpl (traitName, kind, holeArity, targetType, assocMap, dictFields, methods, _) ->
         // A blanket impl's target is a bare type variable, which becomes the
