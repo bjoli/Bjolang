@@ -600,12 +600,20 @@ let private evaluate (state: State) (text: string) : State =
                 | Definitions _ -> force dllPath moduleName
                 | Malformed _ -> ()
             with
-            | :? TypeInitializationException as ex when not (isNull ex.InnerException) ->
-                // The entry's own exception. The initializer frame the CLR
-                // wraps it in describes how a `def` is emitted, which is
-                // nothing the person at the prompt asked about.
-                printfn $"%s{ex.InnerException.GetType().Name}: %s{ex.InnerException.Message}"
-            | ex -> printfn $"%s{ex.GetType().Name}: %s{Diagnostics.humanize ex.Message}"
+            | ex ->
+               // Unwrap the exceptions so we can see what is wrong in the repl. 
+               // TODO: when I have fixed the compiler crashing and burning with exceptions
+               // this is not needed
+                let rec unwrap (e: exn) =
+                    match e with
+                    | :? Reflection.TargetInvocationException when not (isNull e.InnerException) ->
+                        unwrap e.InnerException
+                    | :? TypeInitializationException when not (isNull e.InnerException) ->
+                        unwrap e.InnerException
+                    | _ -> e
+
+                let ex = unwrap ex
+                printfn $"%s{ex.GetType().Name}: %s{Diagnostics.humanize ex.Message}"
 
             warnAboutShadowing state defined
 

@@ -8,6 +8,16 @@
 ;; What is checked here is the answers. `codegen/case_labels.bjo` checks the
 ;; labels, because a `case` that compiled to a chain of comparisons would give
 ;; every answer below correctly.
+;;
+;; Two spellings for a clause, and a fallback that is not optional:
+;;
+;;   ((datum ...) body ...)   a group of data
+;;   (datum body ...)         a group of one, without the bracket
+;;   (else body ...)          the rest, and every case needs one — except over
+;;                            `bool`, where listing #t and #f is the whole type
+;;                            and an else could never run. Both halves are
+;;                            error tests: `errors/case_no_else.bjo` and
+;;                            `errors/case_else_after_bool.bjo`.
 
 (import (std prelude))
 (import (std simpletest))
@@ -38,13 +48,32 @@
     (else 0)))
 
 ;; `#t` and `#f` exhaust `bool`, and C# knows it — a fallback arm after both is
-;; an error in the generated code, so there must not be one. No `else` here on
-;; purpose.
+;; an error in the generated code, so there must not be one. (bool only)
+;; `errors/case_else_after_bool.bjo`.
 (: describe (-> bool string))
 (defun (describe b)
   (case b
     ((#t) "yes")
     ((#f) "no")))
+
+;; --- A group of one needs no brackets ---------------------------------------
+;; `('ms body)` rather than `(('ms) body)`. A clause groups data and a group of
+;; one is still a group, so the bracket was never carrying information.
+(: unit-of (-> Symbol int))
+(defun (unit-of s)
+  (case s
+    ('ms 1)
+    ('ticks 2)
+    ;; The two spellings mix inside one form.
+    (('s 'sec) 3)
+    (else 0)))
+
+(: digit-name (-> int string))
+(defun (digit-name n)
+  (case n
+    (1 "one")
+    (2 "two")
+    (else "many")))
 
 ;; Keywords and quoted symbols are literals too. Neither is a constant in C#, so
 ;; neither gets a jump table — they are here because `case` should not be a form
@@ -134,6 +163,13 @@
 
   (expect "a symbol" (shape 'round) "curved")
   (expect "a symbol reaching else" (shape 'blob) "unknown")
+
+  (expect "a single datum without its list" (unit-of 'ms) 1)
+  (expect "a second one" (unit-of 'ticks) 2)
+  (expect "a group beside single data" (unit-of 'sec) 3)
+  (expect "else still catches the rest" (unit-of 'furlong) 0)
+  (expect "a single int datum" (digit-name 2) "two")
+  (expect "past the single data" (digit-name 9) "many")
 
   (set! tally 0)
   (count 2)

@@ -3,6 +3,43 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~case~ takes a lone datum, and requires an ~else~
+
+#+BEGIN_SRC scheme
+(case sym
+  ('ticks (stopwatch-ticks sw))
+  ('ms    (stopwatch-ms sw))
+  ('s     (/ (stopwatch-ms sw) 1000L))
+  (else   (raise (cast Exception (ArgumentException. "not a unit")))))
+#+END_SRC
+
+A clause groups data, and a group of one is now written without the bracket
+around it: ~('ms body)~ rather than ~(('ms) body)~. Unambiguous because a datum
+is an atom — a clause whose head is a list is a group, one whose head is not is
+the datum itself — and the two spellings mix inside one form. ~else~ is still
+read as itself rather than as a symbol datum, being matched before either.
+
+The fallback is no longer optional. A clause's data are literals, so the arms
+name a handful of values and say nothing about the rest: without an ~else~ the
+key fell out of the ~match~ the form becomes, and the program died at runtime
+naming neither the value nor the form it fell out of. ~(std stopwatch)~ shipped
+exactly that — ~(ref sw 'seconds)~ answered with a bare
+~TargetInvocationException~ — and now answers with the symbol and the three that
+would have worked.
+
+Refused, and this is the same rule rather than an exception to it: an ~else~
+after both ~#t~ and ~#f~. Those are the whole of ~bool~, so the arm can never
+run, and the language already refuses a duplicate datum and a clause after
+~else~ on exactly that ground. Nothing else in the language can be exhausted by
+listing values, so ~bool~ is the only key that may leave the ~else~ out. C#
+reported this one as CS8510 against generated code before.
+
+Alongside it, the REPL unwraps what it catches. An entry is invoked by
+reflection, so anything raised arrived inside a ~TargetInvocationException~
+whose message is that a target threw; only the ~TypeInitializationException~
+around a ~def~ was being unwrapped. A raise from an ordinary call — the common
+case — printed the wrapper and nothing of itself.
+
 * ~def/impl~ is spelled ~impl~
 
 #+BEGIN_SRC scheme

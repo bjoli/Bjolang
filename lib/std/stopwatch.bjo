@@ -2,7 +2,8 @@
 (import (std syntax-match))
 
 (import/class
-  (Stopwatch (: System.Diagnostics.Stopwatch)))
+  (Stopwatch (: System.Diagnostics.Stopwatch))
+  (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
 
 (import/extern (get-memory-usage (: System.GC.GetAllocatedBytesForCurrentThread)))
 
@@ -27,14 +28,21 @@
 (defun (stopwatch-ticks sw)
   (.-ElapsedTicks sw))
 
+;; `(ref sw 'ms)` — the elapsed time under the name of a unit.
 (impl (Refable Stopwatch)
   (type %index Symbol)
   (type %out long)
   (defun (ref sw sym)
     (case sym
-      (('ticks) (stopwatch-ticks sw))
-      (('ms) (stopwatch-ms sw))
-      (('s) (/ (stopwatch-ms sw) 1000L)))))
+      ('ticks (stopwatch-ticks sw))
+      ('ms (stopwatch-ms sw))
+      ('s (/ (stopwatch-ms sw) 1000L))
+      (else
+        (raise
+          (cast Exception
+                (ArgumentException.
+                  (str "A stopwatch is read with 'ticks, 'ms or 's, and this was '"
+                       (->str sym) "."))))))))
 
 
 ;; (time-it body ...) — prints elapsed time and allocated memory.

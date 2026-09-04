@@ -2582,9 +2582,33 @@ let rec parseExpr (s: SExpr) : Expr =
 
                                 (pat, None, body bodyExprs)
 
+                            // One datum, without the list around it:
+                            // `('ms body ...)`. A clause groups data, and a
+                            // group of one needs no bracket to say so.
+                            | SList((SAtom _ as datum) :: bodyExprs, _) ->
+                                let pat = datumPattern datum
+                                noteDatum pat
+                                (pat, None, body bodyExprs)
+
                             | _ ->
                                 failwithf
-                                    $"Invalid case clause at %s{Lexer.formatPos cr}: a clause is ((datum ...) body ...), or (else body ...) for the last one.")
+                                    $"Invalid case clause at %s{Lexer.formatPos cr}: a clause is (datum body ...) or ((datum ...) body ...) for several, or (else body ...) for the last one.")
+
+                    // Bools cannot have an else clause. C# rejects it.
+                    let hasElse =
+                        match List.tryLast clauses with
+                        | Some(SList(SAtom { Token = Symbol "else" } :: _, _)) -> true
+                        | _ -> false
+
+                    let exhausted = seen.ContainsKey "bool:true" && seen.ContainsKey "bool:false"
+
+                    if hasElse && exhausted then
+                        failwithf
+                            $"Invalid case at %s{Lexer.formatPos r}: the clauses already list both #t and #f, which is the whole of bool, so this (else ...) can never run. Remove it."
+
+                    if not hasElse && not exhausted then
+                        failwithf
+                            $"Invalid case at %s{Lexer.formatPos r}: this case has no (else ...), and its data are literals — so a key that is none of them reaches no arm at all, and the program fails at runtime naming neither the key nor this form. Add (else ...) for the rest. Only bool can be covered by listing values instead, since #t and #f are the whole of it."
 
                     EMatch(parseExpr keyExpr, parsedClauses, r)
                 | [ _ ] ->
