@@ -18,6 +18,8 @@
 ///     because something else was built first is a cache that starts missing.
 ///   * `Unification.nextMetaId`. Ids are compared only within one inference
 ///     run, and one of them can reach a diagnostic.
+///   * `Unification.currentLevel`. A compilation starts at the top level, and
+///     one that threw halfway through a binding left it raised.
 ///   * `Macro.table`, `Macro.localMacros`, `Macro.expansions`. Which macros
 ///     exist is decided by *this* module's imports under *this* module's
 ///     modifiers. A leaked entry does not raise an error; it makes a form read
@@ -49,6 +51,10 @@ module Bjolang.Session
 type Scope =
     { Gensym: int
       MetaCounter: int
+      /// `Unification`s nivåräknare. En sub-kompilering börjar på toppnivå, och
+      /// en som avbröts av ett typfel lämnar räknaren uppe — den yttre
+      /// kompileringen ska hitta tillbaka till sin egen nivå oavsett vilket.
+      Level: int
       Macros: Macro.State
       Introduced: Set<string> }
 
@@ -56,18 +62,21 @@ type Scope =
 let fresh: Scope =
     { Gensym = 0
       MetaCounter = 0
+      Level = 0
       Macros = Macro.emptyState
       Introduced = Set.empty }
 
 let capture () : Scope =
     { Gensym = Gensym.snapshot ()
       MetaCounter = Unification.snapshotMetaCounter ()
+      Level = Unification.snapshotLevel ()
       Macros = Macro.snapshot ()
       Introduced = Parser.snapshotIntroduced () }
 
 let restore (scope: Scope) : unit =
     Gensym.restore scope.Gensym
     Unification.restoreMetaCounter scope.MetaCounter
+    Unification.restoreLevel scope.Level
     Macro.restore scope.Macros
     Parser.restoreIntroduced scope.Introduced
     // Not part of the scope value: the queue is either empty or garbage, and

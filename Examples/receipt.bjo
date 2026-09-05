@@ -56,12 +56,7 @@
 ;; A line with something against each margin. The right-hand side is rendered
 ;; and measured first — `captured` — and the left takes exactly what is left
 ;; over, cut with an ellipsis if it wants more. `fitted/right` is pad *or*
-;; trim, so the line is `paper` columns wide either way, which is the whole
-;; reason a column of amounts lines up.
-;;
-;; Not `columnar`: that divides the width evenly between its columns and puts
-;; each one's text at the left of its cell, which is right for a table and
-;; wrong for two things at opposite edges of the paper.
+;; trim.
 (: spread (-> (Vec Block) (Vec Block) Block))
 (defun (spread left right)
   (captured (fun (s)
@@ -69,13 +64,12 @@
             right))
 
 ;; A labelled amount. The money is padded to a fixed column, so every amount
-;; starts where the one above it did however many digits it has.
+;; ends where the one above it did however many digits it has.
 (: labelled (-> (Vec Block) double Block))
 (defun (labelled label x)
   (spread label [(money x)]))
 
-;; Under the name, and only when there is something to say: one of something
-;; needs no arithmetic shown. `nothing` is what the other arm answers.
+;; If more than one is bought, print a qty X price line under.
 (: detail (-> Line Block))
 (defun (detail l)
   (if (= (qty-of l) 1.0)
@@ -91,22 +85,18 @@
   (each [(labelled [(what-of l)] (amount-of l)) (detail l)]))
 
 ;; The total, with dot leaders running right up to the digits.
-;;
-;; Which column those digits start in depends on how many of them there are, so
-;; the number is rendered first and then measured: that is what `captured` is
-;; for. `space-to` fills what is left with the pad character, and `with-pad`
-;; makes it a dot.
 (: total-line (-> double Block))
 (defun (total-line x)
   (captured (fun (s)
               (each ["TOTAL"
+                     ;; pads so that s can be printed right justified.
                      (with-pad #\. [(space-to (- paper (width-of s)))])
                      (BStr s)
                      nl]))
             [(numeric x #:precision 2 #:comma 3)]))
 
 ;; The tax summary. Three columns, each as wide as its own content: that is
-;; `tabular`, and it is the one place a receipt is a table rather than a line.
+;; `tabular`. 
 (: vat-summary (-> double double Block))
 (defun (vat-summary net vat)
   (tabular [["Rate" nl "12 %"]
@@ -120,9 +110,7 @@
   (each [(spread ["Fruktgatan 12"] ["2026-08-21 14:32"])
          (spread ["211 41 Malmo"] ["Receipt 1042"])]))
 
-;; Filled to the paper's width and flush against both edges, the last line
-;; excepted. The text is one long string; where the lines break is `justified`'s
-;; business, not the author's.
+;; justifies the footer so that it fits the paper
 (: footer Block)
 (def footer
   (with-fmt current-width paper

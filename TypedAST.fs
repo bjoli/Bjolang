@@ -5,9 +5,19 @@ open Bjolang.Parser
 
 
 // --- MUTABLE HM TYPES (For Inference) ---
+/// En metavariabel med sin `let`-nivå — Rémys rank-teknik.
+///
+/// `Level` är hur djupt inkapslad i `let`-bindningar cellen skapades. En
+/// bindning som generaliseras på nivå L får kvantifiera exakt de celler vars
+/// nivå är större än L: de kan inte nås från omgivningen, eftersom allt i
+/// omgivningen skapades på nivå L eller lägre. Unifieringen håller det sant
+/// genom att sänka nivån på allt som binds in i en cell med lägre nivå.
+///
+/// `Level` ingår varken i likhet eller ordning: den är föränderlig och säger
+/// inget om vilken cell det är.
 [<CustomEquality; CustomComparison>]
 type MetaVar = 
-    { Id: int; mutable Value: HMType option }
+    { Id: int; mutable Value: HMType option; mutable Level: int }
     
     override this.Equals(obj) =
         match obj with

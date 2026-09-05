@@ -7,11 +7,7 @@
 - Booleans: ~#t~, ~#f~
 - Characters: ~#\a~, ~#\newline~
 
-A boolean is a literal and not a name. There is no ~true~ to bind, so nothing
-can be written that changes what ~#t~ means — including ~and~, ~or~, ~not~ and a
-chained comparison, all of which are written in terms of the literals. ~true~
-and ~false~ are ordinary identifiers now, free for a program to use; in a quoted
-list they are symbols, which is how ~'(true)~ names the program of that name.
+A boolean is a literal and not a name. ~true~ and ~false~ are ordinary identifiers, free for a program to use; in a quoted list they are symbols, which is how ~'(true)~ names the program of that name.
 
 *** Which number a number is
 
@@ -22,19 +18,16 @@ A number written with a suffix is that type and nothing else:
 | ~21us~ | ~ushort~ | ~21UL~ | ~ulong~ |
 | ~21d~  | ~double~ |        |         |
 
-A decimal point or an exponent makes it a ~double~ — ~2.5~, ~1e10~ — whatever
-else it looks like. ~0x2A~ and ~0b101010~ are 42.
+A decimal point or an exponent makes it a ~double~ (~2.5~, ~1e10~). ~0x2A~ and ~0b101010~ are 42.
 
-Written *without* one, a number says nothing about its type and takes whatever
-surrounds it, which is what lets a numeric function be written once and used at
-every type:
+Written *without* one, a number says nothing about its type and takes whatever surrounds it:
 
 #+BEGIN_SRC scheme
 (: low-bit (-> %a %a))
 (defun (low-bit x) (bitwise-and x 1))   ;; works at int, long, uint, ulong...
 #+END_SRC
 
-Where nothing says, it is an ~int~. See ~Numerics.org~ for the rest of it.
+Where nothing says, it is an ~int~. See ~Numerics.org~.
 
 *** String interpolation
 A string written ~#"..."~ may contain ~${expression}~ holes.
@@ -44,27 +37,19 @@ A string written ~#"..."~ may contain ~${expression}~ holes.
 ;; => "x is 5 and times two is 10"
 #+END_SRC
 
-It is a *reader* macro and nothing more: the tokenizer expands the form above
-into ~(str "x is " (->str x) " and times two is " (->str (* x 2)))~ and hands
-that to the parser. So there is no new token, no new node and no new type rule,
-and a ~#"..."~ works unchanged wherever a call would — inside a quasiquote, a
-macro template, or another ~#"..."~.
+It is a *reader* macro. A ~#"..."~ works unchanged wherever a call would — inside a quasiquote, a macro template, or another ~#"..."~.
 
-A hole is read by the whole reader, so it holds an arbitrary expression,
-nesting and all:
+A hole holds an arbitrary expression, nesting and all:
 #+BEGIN_SRC scheme
 #"got ${(let ((y 7)) (* y y))}"        ;; "got 49"
 #"outer ${#"inner ${(+ x 1)}"} end"    ;; "outer inner 6 end"
 #"brace: ${(string-append "}" "!")}"   ;; "brace: }!"
 #+END_SRC
 
-~\$~ writes a dollar that opens nothing; a ~$~ not followed by ~{~ needs no
-escape. Everything else escapes as it does in an ordinary string, and a
-~#"..."~ may span lines.
+~\$~ writes a dollar that opens nothing; a ~$~ not followed by ~{~ needs no escape. Everything else escapes as it does in an ordinary string, and a ~#"..."~ may span lines.
 
 **** The conversion is ~->str~, and it is per hole
-Each hole is wrapped in ~->str~, so a value formats here exactly as it does
-under ~println~, and a type of your own says how by implementing the trait:
+Each hole is wrapped in ~->str~. A type of your own says how by implementing the trait:
 #+BEGIN_SRC scheme
 (impl (->str Money)
   (defun (->str m) (match m ((Kr n) (string-append (int->string n) " kr")))))
@@ -72,24 +57,14 @@ under ~println~, and a type of your own says how by implementing the trait:
 #"you owe ${(Kr 42)}"                  ;; "you owe 42 kr"
 #+END_SRC
 
-The conversion is at each hole rather than inside ~str~ because it has to be: a
-~#:rest~ parameter has one element type, so nothing variadic in this language
-can take a mixture. ~str~ is therefore ~(-> #:rest string string)~ — an
-ordinary exported function, callable by hand — and the whole form costs one
-array and one ~String.Concat~ however many holes it has.
-
 *** Quoted lists, and the constructors they elaborate into
-~'(...)~ is data. A symbol inside one is a ~Symbol~ value rather than a
-reference, ~,x~ splices the value of an expression, and ~[...]~ is a vec:
+~'(...)~ is data. A symbol inside one is a ~Symbol~ value rather than a reference, ~,x~ splices the value of an expression, and ~[...]~ is a vec:
 #+BEGIN_SRC scheme
 '(a b c)          ;; (List Symbol) — three symbols
 '(,x ,y)          ;; (List int)    — when x, y : int
 #+END_SRC
 
-A list is homogeneous, so ~'(pipe (ls "-l"))~ — a symbol beside a list of a
-symbol and a string — has no element type of its own. What it has is a *shape*,
-and where a union is expected each piece is elaborated into the case that can
-hold it:
+A list is homogeneous. Where a union is expected each piece is elaborated in direct contexts into the case that can hold it:
 #+BEGIN_SRC scheme
 (type-rec
   (: ProcItem (Union (ProcSym Symbol)
@@ -107,24 +82,15 @@ hold it:
                  (ProcFn  my-rot-13)))
 #+END_SRC
 
-Nesting is not a special case — a chosen case's payload is pushed back into the
-literal it came from, so any depth works, as do two unions that refer to each
-other. A literal is matched by the *head* of a case's payload: ~(...)~ wants a
-~List~, ~[...]~ a ~Vec~, and a string, symbol or number the type it already has.
-An unquoted ~,value~ has no shape and is selected by its type, which is why
-~,my-rot-13~ finds ~ProcFn~.
+Nesting works at any depth. A literal is matched by the *head* of a case's payload: ~(...)~ wants a ~List~, ~[...]~ a ~Vec~, and a string, symbol or number the type it already has. An unquoted ~,value~ has no shape and is selected by its type.
 
-The expected type is what makes any of this possible, and it comes from an
-annotated binding, a ~def~'s signature, or the parameter the literal is passed
-to. A *generic* parameter provides none — ~(list-map run/lines (list '(pipe
-(ls))))~ is an error saying so — and the fix is to name the type first:
+A generic parameter provides no expected type. Name the type first:
 #+BEGIN_SRC scheme
 (def (: procs (List ProcList)) (list '(pipe (ls))))
 #+END_SRC
 
 **** ~#:literal~ — which case a literal means
-Only the payload's head is compared, never its arguments, so two cases carrying
-a list are one question a literal cannot answer. Marking one settles it:
+Only the payload's head is compared. Marking one settles ambiguity:
 #+BEGIN_SRC scheme
 (type-rec
   (: Item (Union (Sym Symbol)
@@ -132,10 +98,6 @@ a list are one question a literal cannot answer. Marking one settles it:
                  (Sub (List Item) #:literal)   ;; nested (...) means this
                  (Args (List string)))))       ;; written out by hand
 #+END_SRC
-
-Without the marker every nested literal at ~Item~ is reported as ambiguous.
-The marker travels with the type into a compiled module's metadata, so a union
-that is unambiguous where it is declared stays unambiguous where it is imported.
 
 ** Identifiers
 Identifiers may contain most characters except ~_~, and may not start with a digit. 
@@ -173,18 +135,10 @@ Type annotations for top-level definitions use ~:~.
 (defun (add x y) (+ x y))
 #+END_SRC
 
-A top-level ~defun~ must have a signature — ~main~ is the only exception — so
-that a module's published surface is something its author wrote rather than
-something that happened to be inferred.
+A top-level ~defun~ must have a signature — ~main~ is the only exception.
 
 *** Colour: ~defbjo~, ~defbjouble~ and ~-?->~
-A procedure that may suspend is defined with ~defbjo~ rather than ~defun~, and
-calling it is a yield point. Everything else about it is the same, including the
-signature — an arrow says what a function takes and returns, and the definer
-says how it is called.
-
-Almost nothing else in a program mentions colour. It is written in exactly three
-places, all of them declarations.
+A procedure that may suspend is defined with ~defbjo~ rather than ~defun~, and calling it is a yield point. Everything else about it is the same.
 
 **** ~defbjo~ — this body suspends
 #+BEGIN_SRC scheme
@@ -193,10 +147,7 @@ places, all of them declarations.
 #+END_SRC
 
 **** ~defbjouble~ — two bodies, because there are two .NET methods
-One name, one signature, and a body per colour. This is the *only* place two
-bodies are written by hand, and the reason is specific to a leaf: its two halves
-call different .NET methods, which is the one thing no inference derives.
-
+One name, one signature, and a body per colour. Used only for leaves where the two halves call different .NET methods.
 #+BEGIN_SRC scheme
 (: read-line (-> TextInputPort string))
 (defbjouble (read-line p)
@@ -204,94 +155,35 @@ call different .NET methods, which is the one thing no inference derives.
   (#:bjo  (clr-read-line-await p)))
 #+END_SRC
 
-Callers never write a suffix, in either context. ~(read-line p)~ in a ~defun~ is
-the ~#:sync~ body; the same characters in a ~defbjo~ are the ~#:bjo~ one,
-awaited. The suspending copy has no Bjolang name and is never written by hand.
-
-Both bodies are checked against the one signature, recoloured for each half, so
-neither may disagree with the declaration — arity and type drift is most of what
-rots between two hand-written bodies. What is *not* checked is that they agree
-about failure: if one returns ~None~ at end of input and the other throws, the
-shared name is a lie, and only the docstring can say so.
-
-*Leaves only*, and mechanically: the ~#:bjo~ body must contain a yield point the
-~#:sync~ body does not. Two bodies differing only in which ordinary functions
-they call are a ~defun~, and writing them out by hand is two things that will
-drift apart for nothing.
+Callers never write a suffix. The ~#:bjo~ body must contain a yield point the ~#:sync~ body does not. 
 
 **** ~-?->~ — this parameter may be either colour
-An arrow in *parameter* position may be written ~-?->~, meaning the procedure
-accepts a callback of either colour.
-
+An arrow in *parameter* position may be written ~-?->~, meaning the procedure accepts a callback of either colour.
 #+BEGIN_SRC scheme
 (: port-fold (-> (-?-> TextInputPort %a %a) %a TextInputPort %a))
 #+END_SRC
 
-It is one anonymous effect variable per signature, shared by every occurrence in
-it — so a signature has exactly two instantiations however many function
-parameters it has, and the mixed case is written by leaving the ordinary ones
-~->~:
-
+The mixed case is written by leaving ordinary ones ~->~:
 #+BEGIN_SRC scheme
 (: index-by (-> (-> %a %k) (-?-> TextInputPort %a) TextInputPort (Map %k %a)))
 #+END_SRC
 
-~-?->~ is refused everywhere it would mean nothing, and each case says which:
-
-- *As a definition's own arrow.* A ~defun~ is already colour-polymorphic; the
-  message points at ~defbjouble~, since someone writing this usually wants two
-  *bodies* rather than two copies of one.
-- *As a return type or a record field.* A function value's colour is the type it
-  is stored as, and that is permanent rather than pending — a ~(Vec (-> A B))~
-  cannot hold a mix either.
-- *On a parameter the body never calls*, which is a warning: the two copies
-  would be identical, so either the parameter is an ordinary ~->~ or the body
-  forgot to use it.
-
-A plain ~->~ in parameter position keeps meaning exactly what it always meant,
-so no existing signature changes meaning and converting one is opt-in.
+~-?->~ is refused:
+- As a definition's own arrow (use ~defbjouble~).
+- As a return type or a record field.
+- On a parameter the body never calls.
 
 **** Where a yield point may go
-A yield point — a call to a ~defbjo~, to ~sync~, or to an ~#:async~ import — may
-appear only in the body of the bjoroutine it is written in, and not inside
-anything that becomes a C# member of its own. Six things do:
-
-- the enclosing ~defun~, which is an ordinary method
-- a module-level ~def~, whose initializer runs in the static constructor
-- an ordinary ~(fun ...)~, which is a delegate
-- a ~(seq ...)~ body — and so a ~(seql ...)~ — which is an iterator
-- a body-local ~(defun ...)~, which is a C# local function
-- a loop used as a value, which stays a local function rather than becoming a
-  ~while~
-
-From inside the program these look identical: a call that would be fine one line
-out is refused here. So the rejection names whichever of the six it was, and
-gives the fix for that one.
-
-#+BEGIN_EXAMPLE
-Type Error at outer.bjo:6: calling 'fetch' is a yield point, and a yield point
-is not allowed here.
-  It is inside 'helper', a body-local function, which is emitted as a C# local
-  function — and a local function inside an async method is not itself async.
-  Inline 'helper' into the bjoroutine's body, or lift it out to a top-level
-  (defbjo ...) and call it.
-#+END_EXAMPLE
-
-Where the constraint is a parameter, it names the callee and the arrow that
-parameter is declared with, because that declaration is the thing that would
-have to change. It offers ~-?->~ as the eventual answer rather than as the fix,
-which is the truth: writing it is accepted, and instantiating it at the
-suspending colour is refused until copies are generated.
-
-A loop that only ever jumps to itself becomes a ~while~ in the enclosing method,
-where a yield point is perfectly legal. That is what makes "write the loop
-instead" a real answer to the higher-order restriction rather than a deflection.
+A yield point may appear only in the body of the bjoroutine it is written in, and not inside anything that becomes a C# member of its own:
+- the enclosing ~defun~
+- a module-level ~def~
+- an ordinary ~(fun ...)~
+- a ~(seq ...)~ body (and ~(seql ...)~)
+- a body-local ~(defun ...)~
+- a loop used as a value
 
 **** Both copies are generated
-A signature declaring ~-?->~ gets two emitted bodies: the ordinary one and a
-suspending one, made from the same source. Which a call means is decided by
-*what the argument is*, not by where the call is written —
-
+A signature declaring ~-?->~ gets two emitted bodies. Which a call means is decided by *what the argument is*:
 #+BEGIN_SRC scheme
 (: apply-twice (-> (-?-> int int) int int))
 (defun (apply-twice f x) (f (f x)))
@@ -300,90 +192,31 @@ suspending one, made from the same source. Which a call means is decided by
 (apply-twice (bjoroutine (x) (+ x 1)) 3)   ; the suspending one, awaited
 #+END_SRC
 
-— because the two take ~Func<A,B>~ and ~Func<A,Fiber<B>>~, which are unrelated
-C# types, so exactly one of them fits. Passing an ordinary lambda from inside a
-bjoroutine still calls the ordinary copy.
-
-The copy is generated before the body is checked, from the same source against a
-repainted signature, so it cannot drift from the original. It crosses a module
-boundary on the strength of the published signature alone: ~-?->~ is part of the
-type, and the copy's name is derived from the written one on both sides.
-
-Asking for the suspending copy somewhere it cannot be awaited is an ordinary
-colour error, and names the written procedure rather than the generated one.
-
 **** A copy nobody declares
-A ~defun~ whose call graph reaches a ~defbjouble~ gets a second body too, with
-nothing written down. ~-?->~ is declared because it changes what a procedure
-*accepts*; this changes only which of two bodies runs, so there is nothing for
-an author to say.
-
-That is what makes an ordinary call chain suspend at any depth: a loop over a
-port is written once, and a bjoroutine calling it four levels up gets the
-suspending copy the whole way.
+A ~defun~ whose call graph reaches a ~defbjouble~ gets a second body too, with nothing written down.
 
 **** ~#:sync~ — no copy for this one
-The `#:sync` marker prevents the compiler from generating an async copy for a function. This is necessary when a function's design inherently precludes yielding (such as when its internal callbacks are strictly typed as synchronous), and an async copy would only result in a parking violation. 
-
-~#:sync~ is written after the name:
-
+The `#:sync` marker prevents the compiler from generating an async copy for a function.
 #+BEGIN_SRC scheme
 (: show #:sync (-> (Vec Block) void))
 (defun (show bs) (render (parameter-ref current-output-port) bs))
 #+END_SRC
-
-It seals the *call graph above it*, not only the definition: a name that never
-becomes a candidate for a copy is not a reason for its callers to be copied
-either. One marker on ~show~ is why nothing in ~Examples/~ is copied for
-printing.
-
-It suppresses a copy and nothing else. A bjoroutine may still call a ~#:sync~
-procedure — it runs the one body there is, on the fiber — and the blocking lint
-still reports that, because that is the warning worth keeping. What goes away is
-the report about a generated body nobody wrote.
-
-Refused on a ~defbjo~ and on a ~defbjouble~, which declare the opposite.
-
-The three in the standard library are each unavoidable rather than a
-preference, and each has the other colour available another way: ~show~ and
-~render~ have ~render->string~, and ~port->seq~ has the channel form beside it.
-That is the shape to copy — mark it ~#:sync~, and say what to use instead.
+It seals the *call graph above it*. It suppresses a copy and nothing else. Refused on a ~defbjo~ and on a ~defbjouble~.
 
 **** A string is built with a builder, not with a port
-Writing to a port carries an effect (colour). Since ~TextOutputPort~ applies to both 
-file ports and string ports indiscriminately, any function that formats into a 
-string port using ~write-string~ will incorrectly inherit an async effect, causing 
-its callers to also become async.
-
-To keep string formatting pure and synchronous, build strings using a ~StringBuilder~ 
-instead (via ~stringbuilder-add-string!~ and ~(stringbuilder->string sb)~). This is how 
-~list->str~, ~vec->str~, ~map->str~ and ~fmt~'s ~render->string~ are implemented.
+To keep string formatting pure and synchronous, build strings using a ~StringBuilder~ instead of formatting into a string port using ~write-string~ (via ~stringbuilder-add-string!~ and ~(stringbuilder->string sb)~). 
 
 **** What is not yet there
-A call the generated copy cannot be reached from still parks — inside a
-~(seq ...)~, inside an ordinary ~(fun ...)~, or through a function value, since
-none of those may await. The copy is still emitted and simply awaits nothing
-there; the blocking lint reports it by name and by path.
+A call the generated copy cannot be reached from still parks. Trait methods carry no colour at all. ~seql~ has no suspending form either.
 
-Trait methods carry no colour at all: the definers are refused in a trait
-default and in an ~impl~, so a trait method can be neither a bjoroutine nor a
-leaf. ~seql~ has no suspending form either, because that needs an async iterator
-and none is emitted.
-
-*** Writing the types at the definition
-The same signature may be written *on* the ~defun~ instead: a type at each
-parameter, and one after the argument list.
+*** Inline Signatures
+A signature may be written inline on the ~defun~:
 #+BEGIN_SRC scheme
 (defun (add (: x int) (: y int)) : int
   (+ x y))
 #+END_SRC
-These two spellings are one thing. The parser turns the second into the first,
-so the arity check, the export rule and the metadata a ~.dll~ publishes all see
-a signature and cannot tell which was written. Pick whichever reads better; a
-long argument list usually wants the separate form, and a short function at a
-REPL prompt usually wants this one.
 
-Any type goes at a parameter, including a type variable and a function type:
+Parameters can take any type, including type variables and function types:
 #+BEGIN_SRC scheme
 (defun (twice-over (: x %a)) : (List %a)
   (list x x))
@@ -392,22 +225,13 @@ Any type goes at a parameter, including a type variable and a function type:
   (f (g x)))
 #+END_SRC
 
-Three things it cannot say, each of which keeps the separate form:
+Constraints require using a **separate signature**:
+1. **Keyword or rest parameters**: The syntax does not support inline types for them.
+2. **Trait constraints**: There is no room for a ~(where ...)~ clause inline.
+3. **Partial typing**: Writing a return type while leaving a parameter untyped is an error. 
 
-- *A keyword or rest parameter's type.* The argument grammar gives a keyword
-  parameter a default expression and a rest parameter a bare name, so there is
-  nowhere to write one.
-- *A trait constraint.* There is no room for a ~(where ...)~ clause, so a
-  constrained generic declares itself separately.
-- *Nothing at all.* Writing a return type with a parameter left untyped is an
-  error rather than half a signature. All or nothing.
-
-Writing both spellings for one function is also an error: they declare the same
-thing, so doing it twice is a mistake rather than a refinement.
-
-A parameter type written *without* a return type is still checked — it just does
-not declare anything, so the ~(: name ...)~ is still required and the annotation
-has to agree with it:
+Providing both an inline and separate signature is an error.
+An inline parameter type *without* a return type does not declare the signature. A separate ~(: name ...)~ is required, and they must agree:
 #+BEGIN_SRC scheme
 (: triple (-> int int))
 (defun (triple (: n int))        ;; agrees; a different type here is an error
@@ -415,30 +239,17 @@ has to agree with it:
 #+END_SRC
 
 *** What generalizes
-A binding is generalized only when its value is a *syntactic value* — a literal,
-a lambda, a variable, or a tuple/list/vec/record built entirely out of those. An
-application is not one, however innocent it looks, because an application is the
-shape that can allocate a mutable cell:
+A binding is generalized only when its value is a *syntactic value* (literal, lambda, variable, tuple/list/vec/record of those). An application is not generalized:
 #+BEGIN_SRC scheme
 (def cell (make-array 1))      ;; NOT ∀a. (Array a) — it is one array
 (array-set! cell 0 42)         ;;   'a := int
 (array-ref cell 0)             ;;   ...and it stays int
 #+END_SRC
-Were that generalized, each use would instantiate a fresh variable and the same
-array could be written at one type and read at another. This is ML's value
-restriction, and it applies equally to a top-level ~def~ and to one inside a
-function.
 
-Separately, a module-level *value* compiles to a static field, and a static field
-cannot be generic — there is no class for the type parameter to belong to. So
-~(def bleh '())~ is refused even though it is perfectly sound: pin it with a
-signature, or make it a function, whose type parameters do have somewhere to
-live. A ~defun~ is unaffected; a polymorphic top-level function becomes a generic
-method, which C# is happy with.
+A module-level *value* compiles to a static field, which cannot be generic. ~(def bleh '())~ is refused; pin it with a signature or make it a function.
 
 *** What generalizes *locally*
-A local ~defun~ becomes a C# local function, which may declare type parameters
-of its own, so it is generalized like a top-level one:
+A local ~defun~ becomes a C# local function, so it is generalized like a top-level one:
 #+BEGIN_SRC scheme
 (defun (main)
   (defun (fst t) (match t ((Tuple x y) x)))
@@ -446,31 +257,13 @@ of its own, so it is generalized like a top-level one:
   (println (int->string (fst (Tuple 2 "b")))))
 #+END_SRC
 
-Two kinds of local binding stay monomorphic, and the reason is C# rather than
-soundness:
-
-- Anything that is not function-shaped — a ~let~-bound lambda, a ~let~-bound
-  ~Nil~ — is emitted as an ordinary local variable. Neither a delegate nor a
-  ~SchemeList<T>~ local can be generic; there is nowhere to declare the type
-  parameter.
-- A local function whose body dispatches on a trait, at a type variable of its
-  own. A top-level function discharges such a constraint with a dictionary
-  parameter that ~Lowering~ injects; a C# local function is given no dictionary
-  by any pass.
-
-In both cases the use site pins the type, and a trait call then resolves to a
-direct static call — often better code than a dictionary would have been. Using
-such a binding at two *different* types is a type error; lift it to the top
-level, where both mechanisms exist in full.
-
-A local helper that uses the *enclosing* function's constrained type variable is
-unaffected: that constraint belongs to the enclosing function and becomes its
-dictionary parameter, exactly as before.
+Two kinds of local binding stay monomorphic:
+- Anything that is not function-shaped (a ~let~-bound lambda, a ~let~-bound ~Nil~).
+- A local function whose body dispatches on a trait, at a type variable of its own.
+In both cases the use site pins the type.
 
 *** A local ~defun~ takes the same arguments as a top-level one
-Keyword parameters with defaults, a ~#:rest~ parameter, a type written at a
-parameter, and a return type after the argument list — one grammar, wherever the
-~defun~ is written:
+Keyword parameters with defaults, a ~#:rest~ parameter, a type written at a parameter, and a return type after the argument list — one grammar:
 #+BEGIN_SRC scheme
 (defun (main)
   (defun (greet name #:greeting "hello")
@@ -486,27 +279,12 @@ parameter, and a return type after the argument list — one grammar, wherever t
   (println (greet "world" #:greeting "hi"))) ;; hi, world
 #+END_SRC
 
-The one thing a local ~defun~ cannot have is a *separate* signature, because
-there is nowhere to put one. Its parameter types therefore come from the
-annotations written at the parameters and from use — which is why an annotation
-there is worth writing, and is checked. A top-level ~defun~ written the same way
-means the same thing, and is where that grammar came from.
-
-A *local* member with a keyword or rest parameter is not promoted to a loop. A
-jump is positional, and a keyword argument is exactly what is not; such a
-function stays a C# local function, where the parameter list *is* the calling
-convention. Deep tail recursion through one therefore wants a plain positional
-local ~defun~ — or a ~loop~.
-
-A top-level ~defun~ is a different matter: it is promoted whether or not it has
-keyword parameters, because it is a loop of its own rather than a member of a
-group. Its keywords become slots like any other parameter, and a jump that omits
-one refills it from the default. Deep tail recursion through a top-level keyword
-function is a ~while~ loop and runs at any depth.
+A local ~defun~ cannot have a *separate* signature. 
+Local functions with keyword or rest parameters are not eligible for tail-call loop promotion. Deep tail recursion requires a plain positional local ~defun~ or an explicit ~loop~.
+A top-level ~defun~ is promoted whether or not it has keyword parameters.
 
 *** Mutable bindings
-~def/mutable~ declares a binding ~set!~ may write, at module level or inside a
-function.
+~def/mutable~ declares a binding ~set!~ may write, at module level or inside a function.
 #+BEGIN_SRC scheme
 (: reads int)
 (def/mutable reads 0)
@@ -517,20 +295,8 @@ function.
   reads)
 #+END_SRC
 
-A mutable binding is **not generalized**. A cell that can be assigned has to have
-a settled type: were it polymorphic, every use would instantiate a fresh variable
-and a ~set!~ at one type would typecheck against a read at another. So
-~(def/mutable pending Nil)~ has whatever element type its uses pin it to, and
-means one thing throughout — the same rule ML calls the value restriction, here
-applied on the ground that mutability rather than syntax is what makes it
-necessary.
-
-A module-level one compiles to a static field of the module's class, assigned by
-a generated static constructor. Module values are initialized **in declaration
-order**, so an initializer may read a binding declared above it and gets the
-assigned value rather than a default. It is a single field, so a module's state
-is shared with everything that imports it rather than copied per importer.
-
+A mutable binding is **not generalized**.
+A module-level one compiles to a static field initialized **in declaration order**.
 ** ~apply~ — spreading a collection into a rest parameter
 ~apply~ calls a function whose last parameter is ~#:rest~, taking the rest
 elements from a collection instead of writing them out:
@@ -540,52 +306,19 @@ elements from a collection instead of writing them out:
 (apply write-line out parts)   ;; out -> Stream, parts -> the rest parameter
 #+END_SRC
 
-The **last** argument is always the collection. That is a syntactic rule rather
-than an inferred one: which argument gets spread has to be legible from the call
-site alone, and a type-directed choice would change under a signature the reader
-cannot see. Everything before it fills a fixed parameter, one for one. Keyword
-arguments are passed through untouched and are not counted as fixed arguments.
+The **last** argument is always the collection. Keyword arguments are passed through untouched and are not counted as fixed arguments.
 
-The collection may be an ~Array~, a ~Vec~ or a ~List~. Those are the three that
-can become a rest array without a run-time length check: each knows its own
-length and can be walked once. A ~Seq~ cannot, because producing the array would
-run it.
-
-A literal collection is not built at all — ~(apply join (list "a" "b"))~ and
-~(join "a" "b")~ compile to the same call.
+The collection may be an ~Array~, a ~Vec~ or a ~List~. A ~Seq~ cannot be used.
 
 *** ~apply~ is a form, and its function must be named
-~apply~ has no type and no value form. The arity it checks, the parameters it
-fills and whether the call suspends are all read off the callee, and a bare
-~apply~ has no callee to read them from.
+The callee has to be written as a *name*. 
 
-The callee has to be written as a *name*. A ~#:rest~ parameter is not part of a
-function's type: ~(-> Stream #:rest string void)~ flattens to an ordinary
-~(Array string)~ parameter, and rest-ness is recorded separately, against the
-name. So a parameter, a lambda or any other computed callee carries nothing that
-separates a variadic function from one that genuinely takes an array — and
-spreading into the second is exactly the run-time arity failure this form exists
-to rule out. Deferring does not help: even once such a callee's type is known,
-the arrow still does not say which parameter was written ~#:rest~.
+Every shape that cannot be checked is a compile error. A callee with no rest parameter, too few or too many arguments before the collection, an unsupported collection, and ~apply~ outside call position are all refused.
 
-Every shape that cannot be checked here is a compile error, so no ~apply~ fails
-at run time. A callee with no rest parameter, too few or too many arguments
-before the collection, an unsupported collection, and ~apply~ outside call
-position are all refused.
-
-The effect is the callee's own, copied rather than chosen: applying a
-bjoroutine is a yield point exactly where calling it directly would be, which is
-why there is one ~apply~ rather than an ~apply~ and an ~apply/bjo~.
+Applying a bjoroutine is a yield point exactly where calling it directly would be.
 
 *** A rest parameter is read-only
-Treat the array a ~#:rest~ parameter arrives in as read-only. With an ~Array~
-collection it is passed straight through — no copy — so the callee's rest
-parameter *is* the caller's array, and writing to it through ~array-set!~ is
-visible to the caller. A direct call ~(f 1 2 3)~ builds a fresh array instead,
-so the two spellings differ precisely in what a mutation does.
-
-This is a convention, not something the compiler checks: there is no read-only
-qualifier on a type to hang it from. Copy the array first if you need to mutate.
+Treat the array a ~#:rest~ parameter arrives in as read-only. With an ~Array~ collection it is passed straight through (no copy), so mutations (e.g., ~array-set!~) are visible to the caller. Copy the array first if you need to mutate.
 
 ** Control Flow
 Standard ~if~ expressions:
@@ -595,8 +328,7 @@ Standard ~if~ expressions:
     "positive")
 #+END_SRC
 
-~when~ and ~unless~ are one-armed conditionals, and take a body of any number of
-forms:
+~when~ and ~unless~ are one-armed conditionals, taking a body of any number of forms:
 #+BEGIN_SRC scheme
 (when (> x 100)
   (displayln "large")
@@ -606,10 +338,7 @@ forms:
   (process xs))
 #+END_SRC
 
-They are *statements*, not expressions: the body runs for its effect, whatever
-it evaluates to is discarded, and the form itself has type ~void~. With no
-second arm there is nothing for the body's type to agree with, so this is the
-only consistent reading — use ~if~ when you want a value.
+They are *statements* (type ~void~). The body runs for its effect and its value is discarded. Use ~if~ when you want a value.
 
 ** Local Bindings
 Use ~let~ to bind local variables.
@@ -619,36 +348,23 @@ Use ~let~ to bind local variables.
   (+ x y))
 #+END_SRC
 
-The bindings are *simultaneous*, as in R7RS: every value expression is evaluated
-where the form is written, with none of the group's own names in scope. So an
-init that mentions a name the group also binds reads the *outer* one, and a
-group can swap.
+The bindings are *simultaneous*. An initialization that mentions a name the group also binds reads the *outer* one.
 #+BEGIN_SRC scheme
 (let ((a 1) (b 2))
   (let ((a b) (b a))
     (Tuple a b)))            ;; (2, 1)
 #+END_SRC
+Value expressions run left to right. Binding the same name twice in one ~let~ is an error.
 
-The value expressions still run left to right, in the order written.
-
-Binding the same name twice in one ~let~ is an error: neither binding is in
-scope for the other's value, so there is nothing for the second to shadow.
-
-~let*~, from the prelude, is the sequential form — each binding is in scope for
-the ones after it, which is what you want when a value is built from the one
-before.
+~let*~ binds sequentially, so each binding is in scope for the ones after it:
 #+BEGIN_SRC scheme
 (let* ((a 1)
        (b (+ a 1)))
   (Tuple a b))               ;; (1, 2)
 #+END_SRC
 
-~with-open~ and a ~loop~'s clauses are sequential too, and deliberately: a later
-resource is normally built from an earlier one, and disposal is registered per
-binding so that a constructor that throws cannot leak what is already open.
-
 ** Loops
-A ~let~ with a name binds a procedure to call for the next iteration:
+A ~let~ with a name binds a procedure to call for the next iteration. A call to that name in tail position compiles to a jump, running in constant stack space.
 #+BEGIN_SRC scheme
 (let loop ((a 0))
   (when (< a 3)
@@ -656,12 +372,8 @@ A ~let~ with a name binds a procedure to call for the next iteration:
     (loop (+ a 1))))
 #+END_SRC
 
-A call to that name in tail position compiles to a jump rather than a call, so
-a named ~let~ runs in constant stack space however long it iterates.
-
 ** Sequences
-~seq~ builds a lazy sequence of type ~(Seq %a)~. Its body is not run where it is
-written: it runs a ~yield~ at a time, as the sequence is consumed.
+~seq~ builds a lazy sequence of type ~(Seq %a)~. Its body evaluates lazily as the sequence is consumed.
 #+BEGIN_SRC scheme
 (: countdown (-> int (Seq int)))
 (defun (countdown n)
@@ -673,8 +385,7 @@ written: it runs a ~yield~ at a time, as the sequence is consumed.
     (yield 0)))
 #+END_SRC
 
-~yield-from~ hands over every element of another sequence in turn, so sequences
-compose without either one being built in full:
+~yield-from~ yields every element of another sequence in turn:
 #+BEGIN_SRC scheme
 (seq
   (yield 100)
@@ -682,8 +393,7 @@ compose without either one being built in full:
   (yield 200))
 #+END_SRC
 
-Because nothing is computed until it is asked for, a sequence may be endless.
-Only the elements actually taken are ever produced:
+Sequences only produce elements when asked, allowing endless sequences:
 #+BEGIN_SRC scheme
 (defun (naturals)
   (seq (let loop ((i 0)) (yield i) (loop (+ i 1)))))
@@ -691,18 +401,13 @@ Only the elements actually taken are ever produced:
 (seq-take (naturals) 5)   ;; 0 1 2 3 4
 #+END_SRC
 
-A ~seq~ is an ordinary expression — it can be bound, passed and returned — and
-enumerating it twice runs its body twice, from the start.
+Enumerating a sequence twice runs its body twice from the start.
 
 *** Where yield may appear
-A ~yield~ belongs to the body of its own ~seq~. It may sit inside ~if~, ~when~,
-~match~ or a named ~let~ there, but not inside a ~fun~, and not inside a local
-~defun~ that is called from more than one place: those become functions of their
-own, and a function cannot yield on behalf of its caller. Both are rejected at
-compile time.
+A ~yield~ belongs to its enclosing ~seq~. It may sit inside ~if~, ~when~, ~match~ or a named ~let~ there, but not inside a ~fun~ or a local ~defun~ called from multiple places.
 
 *** Library
-Operations that return a sequence are themselves lazy.
+Operations that return a sequence are lazy.
 | ~(seq-map f s)~           | each element through ~f~                      |
 | ~(seq-filter pred s)~     | the elements satisfying ~pred~                |
 | ~(seq-fold f init s)~     | left fold; consumes the sequence              |
@@ -713,20 +418,14 @@ Operations that return a sequence are themselves lazy.
 | ~(seq-append a b)~        | ~a~ then ~b~                                  |
 | ~(seq-range start stop)~  | ~start~ inclusive to ~stop~ exclusive         |
 | ~(seq-for-each action s)~ | run ~action~ on each element                  |
-| ~(seq-length s)~           | number of elements; walks, so consumes an effectful source |
+| ~(seq-length s)~          | number of elements; consumes an effectful source |
 | ~(seq-empty)~, ~(seq-empty? s)~ | the empty sequence, and the test        |
 
-~list->seq~, ~seq->list~, ~vec->seq~ and ~seq->vec~ convert to and from the
-eager collections; the ~seq->~ direction is where laziness ends.
+~list->seq~, ~seq->list~, ~vec->seq~ and ~seq->vec~ convert between lazy and eager collections.
 
-There is no ~seq-tail~. A ~Seq~ hands out enumerators and nothing else, so it
-has no tail to return: the closest thing is the source minus a prefix, which is
-~(seq-drop s 1)~ and costs a walk rather than a step. To go through a sequence
-element by element, use ~loop~ — its cursor holds the enumerator, so the walk
-pulls each element exactly once.
+There is no ~seq-tail~. Use ~loop~ to iterate through elements.
 
-~seq-unfold~ asks its generator, for a given state, what the next element is and
-what state follows it — or ~None~ to stop:
+~seq-unfold~ generates elements from state, yielding ~None~ to stop:
 #+BEGIN_SRC scheme
 (: step (-> int (Option (Tuple int int))))
 (defun (step s)
@@ -738,8 +437,7 @@ what state follows it — or ~None~ to stop:
 #+END_SRC
 
 ** Options
-~(Option %a)~ is a value that may be absent. It is built with ~Some~ and
-~None~, and taken apart by pattern matching:
+~(Option %a)~ represents an optional value. Built with ~Some~ and ~None~, taken apart via ~match~:
 #+BEGIN_SRC scheme
 (: halve (-> int (Option int)))
 (defun (halve n)
@@ -749,33 +447,18 @@ what state follows it — or ~None~ to stop:
   ((Some v) v)
   (None -1))
 #+END_SRC
-
-~some?~ and ~none?~ test it, ~option-ref~ extracts the value and errors on
-~None~, and ~(option-ref-or opt fallback)~ supplies a default instead.
+Helper functions: ~some?~, ~none?~, ~option-ref~, and ~(option-ref-or opt fallback)~.
 
 ** Results
-~(Result %e %a)~ is either a value or an error. It is built with ~Ok~ and
-~Err~, and taken apart by ordinary pattern matching:
+~(Result %e %a)~ represents a value or an error. Built with ~Ok~ and ~Err~, taken apart via ~match~:
 #+BEGIN_SRC scheme
 (match (parse-config path)
   ((Ok cfg) (use cfg))
   ((Err e)  (report e)))
 #+END_SRC
 
-The error comes first because that is the argument implementations abstract
-over the *last*: ~(impl (Monad (Result %e %a)) ...)~ fixes ~%e~ and lets
-~%a~ move.
-
-A module that declares a ~Result~ of its own gets that one instead, everywhere
-— the built-in is shadowed by any type of the same name, and so are ~Option~,
-~List~ and the rest.
-
 ** Foreign .NET interop
-.NET methods, classes and constructors are imported directly. Everything is
-resolved at compile time by reflecting on the real assemblies: the overload a
-call means is chosen from the Bjolang types of its arguments, and a wrong
-argument is a Bjolang type error at a Bjolang source position rather than a C#
-error in generated code. There is no late binding, and no ~dynamic~.
+.NET methods, classes, and constructors are imported directly. Overloads are selected at compile time based on Bjolang arguments.
 
 *** ~import/extern~ — methods
 #+BEGIN_SRC scheme
@@ -788,17 +471,8 @@ error in generated code. There is no late binding, and no ~dynamic~.
 (write-line "hello")
 #+END_SRC
 
-The name before the colon is what Bjolang calls it; the fully qualified target
-follows. The signature is optional — it is *checked* against the overload
-selected by reflection rather than used in place of it — but it is required to
-use the import as a value, since a .NET method group is not one and a first-class
-use has to be eta-expanded into a lambda.
-
 **** Instance members
-The target may name an *instance* member, and then the receiver is the alias's
-first argument. Which it is comes from the metadata rather than from the clause:
-a name denotes a static member of that type or an instance one, so there is
-nothing to write and nothing to get wrong.
+For instance members, the receiver is the alias's first argument.
 #+BEGIN_SRC scheme
 (import/extern
   (str-trim  (: System.String.Trim (-> string string)))
@@ -807,11 +481,7 @@ nothing to write and nothing to get wrong.
 
 (str-trim "  hi  ")                    ;; "  hi  ".Trim()
 #+END_SRC
-
-That is worth having for one reason above the others: ~(.Method x ...)~ has
-nowhere to put a keyword. An instance method imported this way takes every one
-of them, and an ~#:async~ one is a yield point exactly as a static one is —
-ambient token, ~ConfigureAwait(false)~ and all:
+Instance members imported this way accept keywords (like ~#:async~) and ~#:exceptions~ clauses.
 #+BEGIN_SRC scheme
 (import/extern
   (sem-wait (: System.Threading.SemaphoreSlim.WaitAsync
@@ -822,45 +492,13 @@ ambient token, ~ConfigureAwait(false)~ and all:
 (defbjo (first-line r) (read-line r))  ;; await r.ReadLineAsync(token)
 #+END_SRC
 
-An instance call that arrives through a clause may also be decorated with
-~#:exceptions~, which is the one thing ~(.Method x ...)~ can never be given: the
-clause is a place to say what the call may raise, and a bare member access is
-not.
-
 **** ~#:blocking~ — this call parks the thread
-A call that waits on the thread it is made on, rather than suspending the fiber.
-Nothing is emitted differently; it is a claim the blocking lint reads.
-
+Declares that a call blocks the thread instead of suspending the fiber.
 #+BEGIN_SRC scheme
 (import/extern
   (read-text (: System.IO.File.ReadAllText (-> string string) #:blocking)))
 #+END_SRC
-
-A bjoroutine that reaches one of these does not hand its thread back to the
-scheduler — it holds a pool thread for the duration, and every other fiber has
-one fewer to run on. That is legal, occasionally deliberate, and otherwise
-invisible: nothing goes wrong until the pool is empty. So the compiler reports
-it, naming the path:
-
-#+BEGIN_EXAMPLE
-Warning: 'serve' is a bjoroutine, and calling 'read-text' at app.bjo:14 parks the
-thread it runs on.
-  serve -> load -> read-text
-#+END_EXAMPLE
-
-Declared rather than guessed, because only the importer knows: a .NET method's
-signature says nothing about whether it waits. The fact crosses a module
-boundary, so a library marking its own imports makes the lint work for everyone
-who calls it.
-
-~#:blocking~ and ~#:async~ are opposites and cannot both be written: an
-~#:async~ call compiles to an await and hands its thread back, and a
-~#:blocking~ one holds it. Neither belongs on ~import/class~ — constructing is
-not the part that waits — nor on an accessor, which is not a call.
-
-The fix, where there is one, is ~blocking~: it moves the work to a pool thread
-the runtime can grow to replace, and the fiber suspends on the *result*.
-
+Reported as a lint warning in a bjoroutine. The fix is to wrap it with ~blocking~:
 #+BEGIN_SRC scheme
 (defbjo (serve path)
   (match (sync (blocking (fun () (read-text path))))
@@ -868,12 +506,8 @@ the runtime can grow to replace, and the fiber suspends on the *result*.
     ((Err e) (report e))))
 #+END_SRC
 
-A lambda handed to ~blocking~ or ~spawn-thunk~ is not walked into, so the shape
-above is never itself reported.
-
 **** ~#:get~ and ~#:set~ — properties and fields
-~#:get~ names a property or field to read, and ~#:set~ one to write. One clause
-per accessor, under its own name.
+~#:get~ reads a property/field, ~#:set~ writes it.
 #+BEGIN_SRC scheme
 (import/extern
   (sb-length  (: System.Text.StringBuilder.Length (-> StringBuilder int) #:get))
@@ -885,49 +519,8 @@ per accessor, under its own name.
 int-max                                ;; System.Int32.MaxValue
 #+END_SRC
 
-A property has no overloads, so the signature buys less here than it does on a
-method and is not needed to use the alias as a value — the member alone says what
-its type is.
-
-Two clauses rather than one naming both accessors, because one clause binds one
-name: deriving the second would mean inventing a spelling nobody wrote, and
-letting one name mean both would mean choosing between them by arity. It is also
-what lets a module import only the read of a property it has no business
-writing. A member that cannot be written is refused at the ~#:set~ clause — a
-missing setter, a ~readonly~ or ~const~ field, an ~init~ accessor — rather than
-where somebody first tries.
-
-A ~#:set~ alias yields void, exactly as ~set!~ does, and a *static* ~#:get~ is
-not a call at all: with no receiver to apply it to, the alias names the value,
-the way ~FileMode.Open~ does.
-
 **** Which overload a call means
-Candidates are ranked by how well each argument fits, and the best-fitting one
-wins: an exact match beats a numeric widening, which beats a reference upcast,
-which beats a box. So ~(.Write w 42)~ is ~Write(int)~ rather than ~Write(long)~
-or ~Write(object)~, all three of which would take an int.
-
-An argument that fits only by conversion is *converted*, and the conversion is
-emitted — ~(sin 1)~ compiles to ~Math.Sin((double)(1))~. It is written out
-rather than left to the C# that reads the generated code, because that code
-names the method and its arguments and so resolves the overload a second time:
-the cast is what keeps the second answer equal to the first, which is the one
-the call was typed against.
-
-An argument whose type is *not yet known* is treated the other way round. It
-does not disqualify a candidate, but it ranks below every real fit, so anything
-that genuinely matches wins; and the parameter type of whatever was selected is
-then unified into it. This is what makes reflection able to *settle* a type
-rather than only check one:
-
-#+BEGIN_SRC scheme
-;; `n` is an int, because `Max(int, int)` is what `0` selected.
-(def at-least-zero (fun (n) (clr-max n 0)))
-#+END_SRC
-
-An argument that fits no candidate at all is an error naming the candidates,
-and an argument fitting two of them equally well is an ambiguity — both at the
-Bjolang source position of the call.
+Overload resolution picks the best fit (exact match > numeric widening > reference upcast > box). Arguments fit via conversion or by context if type is unknown. Ambiguities or no matches result in compile errors.
 
 *** ~import/class~ — classes and constructors
 #+BEGIN_SRC scheme
@@ -936,11 +529,7 @@ Bjolang source position of the call.
   (StringBuilder (: System.Text.StringBuilder (-> StringBuilder)))
   (FileMode      (: System.IO.FileMode)))
 #+END_SRC
-
-The alias is registered both as a *type*, so an ordinary signature may say
-~(-> StreamWriter void)~, and as a *constructor*, written with a trailing
-period. A type with no constructor is worth importing anyway: it is what makes
-~FileMode.Open~ a name.
+Registers the alias as both a type and a constructor.
 
 *** Constructor and member syntax
 #+BEGIN_SRC scheme
@@ -961,40 +550,16 @@ A call with ~#:exceptions~ returns ~(Result System.Exception %a)~. Listed types 
   ((Ok fs) (read-from fs))
   ((Err e) (default-config)))
 #+END_SRC
-
-Anything not named keeps propagating. That asymmetry is the point: an exception
-nobody listed is a bug, not a result, and swallowing it would hide the bug. The
-emitted ~catch~ carries an exception filter naming exactly the declared types,
-and the arguments are evaluated before the guarded region, so a failure while
-working out an argument is never mistaken for a failure of the call.
-
-A wrapped call that returns ~void~ yields ~(Result System.Exception ())~ —
-C# has no ~Result<E, void>~, and ~()~ is what Bjolang means by a call performed
-for its effect.
-
-~#:exceptions~ decorates a single call, and it is sugar: ~try~ below is the
-general form, and the one to reach for whenever more than one call is involved.
-It describes the *constructor* on ~import/class~, which is the one signature
-that form declares. Instance methods are never decorated this way — nothing has
-said what they may raise, so guard them with ~try~.
+Unlisted exceptions propagate. This only decorates constructors on ~import/class~; for instance methods, use ~try~.
 
 *** Generic types and generic methods
-A .NET generic type is a type *constructor*, so its alias is written applied:
-
+Generic types are applied aliases:
 #+BEGIN_SRC scheme
 (import/class
   ((Set %a)        (: Set.Set))
   ((SetBuilder %a) (: Set.SetBuilder)))
 #+END_SRC
-
-~(Set int)~ is then an ordinary type, and ~Set~ written bare is an arity error
-like any other. The arity in the clause is checked against the type's own, and a
-generic type imported without one — or an ordinary class imported with one — is
-reported at the clause.
-
-A generic *method* takes its type arguments from the signature the import
-declares, which is therefore required rather than optional:
-
+Generic methods require signatures to resolve type parameters:
 #+BEGIN_SRC scheme
 (import/extern
   (set-empty (: Set.SetModule.Empty  (-> (Set %a))))
@@ -1002,28 +567,7 @@ declares, which is therefore required rather than optional:
   (set-fold  (: Set.SetModule.Fold   (-> (-> %s %a %s) %s (Set %a) %s))))
 #+END_SRC
 
-The signature is matched against the method's own shape once, at the clause, and
-that match is what solves the method's type parameters: ~T~ is ~%a~ here, and
-~TState~ is ~%s~. A signature that does not fit is an error naming both shapes,
-so a mistake lands where it was written rather than at the first call.
-
-Every call site is then an ordinary polymorphic call — the signature is
-instantiated, the arguments unify with it — and the solved type arguments are
-*written out* in the generated C#, never left to its own inference. That is the
-same discipline the rest of interop follows, and it is what makes a call C#
-could not infer at all work: ~(set-empty)~ takes its element type from the
-context, and the context is Bjolang's.
-
-The rule for which resolution a name gets belongs to the .NET method group
-rather than to anything written in the clause: a member whose overloads are
-*all* generic definitions is resolved from the signature, and a member with even
-one ordinary overload keeps being resolved per call site from its argument
-types.
-
 **** What crosses, and how
-Parameter and return types are read structurally, so the language's own types
-meet .NET's without a wrapper:
-
 | .NET                 | Bjolang            |
 |----------------------+--------------------|
 | ~Func<A, B>~         | ~(-> %a %b)~       |
@@ -1032,31 +576,13 @@ meet .NET's without a wrapper:
 | ~T[]~                | ~(Array %a)~       |
 | ~void~               | ~void~             |
 | a method's own ~T~   | a type variable    |
-
-A trailing optional parameter may be left out of the signature, exactly as C#
-leaves one out at a call site — which is how a factory taking an
-~IComparer<T>? = null~ is imported without one.
-
-Two things deliberately do not cross. ~Action<T>~ is not ~(-> %a void)~: a
-Bjolang callback answering nothing answers the *unit*, which is a value, so it
-is a ~Func<T, Unit>~ and no ~Action~ will take it — write the loop in Bjolang
-instead. And an ~out~ parameter has no spelling at all, so a partial answer
-should be a ~(found, value)~ tuple, which ~match~ takes apart.
-
-~#:async~ and ~#:cancellable~ are not supported on a generic method: the
-signature is where its type arguments come from, and it has no room to say what
-an unwrapped task or a threaded token does to them.
+~Action<T>~ and ~out~ parameters do not cross directly. Use callbacks returning ~unit~ or tuples.
 
 *** Limits
-Destructuring a .NET class with a constructor pattern is not supported, and a
-generic class is imported as a type only — reach its constructor through a
-static factory imported with ~import/extern~. Both are reported as errors rather
-than mis-compiled.
+Destructuring .NET classes with constructor patterns and generic class imports (except as types) are not supported.
 
 ** ~try~ — failures as values
-~try~ guards an arbitrary expression. ~#:catch~ turns the listed exception
-types, and only those, into an ~Err~; ~#:finally~ runs cleanup however the body
-leaves. Both clauses are optional and at least one is required.
+~try~ guards expressions. ~#:catch~ turns listed exceptions into ~Err~. ~#:finally~ runs cleanup.
 #+BEGIN_SRC scheme
 (try (.ReadToEnd r)
   #:catch (System.IO.IOException System.UnauthorizedAccessException))
@@ -1067,18 +593,8 @@ leaves. Both clauses are optional and at least one is required.
 ;; => whatever (render page) gives; nothing is caught
 #+END_SRC
 
-A guarded body has type ~(Result System.Exception %a)~, or ~(Result
-System.Exception ())~ when the body is void. It is matched with the ordinary
-~Ok~ and ~Err~ patterns — there are no special rules for it.
-
-The body is not restricted to interop. ~(try (/ x y) #:catch
-(System.DivideByZeroException))~ is a perfectly good use, and so is guarding a
-whole call tree of ordinary Bjolang.
-
 *** Guard the region, not the call
-This is the reason ~try~ exists alongside ~#:exceptions~. Decorating each call
-gives a ~Result~ per call, which then have to be unwrapped and threaded before
-anything has happened; one ~try~ around the whole region gives one:
+Use ~try~ around multiple operations to return one unified ~Result~:
 #+BEGIN_SRC scheme
 (: slurp (-> string (Result System.Exception string)))
 (defun (slurp path)
@@ -1087,29 +603,16 @@ anything has happened; one ~try~ around the whole region gives one:
     #:catch (System.IO.FileNotFoundException)))
 #+END_SRC
 
-The constructor, the read and the dispose are all inside the guard, so a
-failure anywhere in the region is one ~Err~.
-
 *** ~with-open~
-~(with-open ((name expression) ...) body...)~ binds each resource and calls
-~.Dispose~ on it as the body leaves, however it leaves.
+Disposes resources automatically:
 #+BEGIN_SRC scheme
 (with-open ((w (StreamWriter. path)))
   (.Write w "hello"))
 #+END_SRC
-
-Each binding gets its own ~try~/~finally~ rather than one around all of them,
-so a later constructor that throws still leaves the earlier resources disposed.
-
-Use it with constructors that are *not* declared with ~#:exceptions~: such a
-constructor yields a ~Result~ rather than the object, and there is nothing to
-dispose. Put the ~try~ around the ~with-open~ instead, as ~slurp~ does above —
-which is the better shape anyway.
+Each binding has its own ~try~/~finally~.
 
 *** ~:is~ — telling failures apart
-A guarded body says *that* something failed, not *which* thing. ~(:is Type)~ is
-a pattern that matches on the .NET type, and ~(:is Type binder)~ binds the
-value at that narrowed type:
+Narrows the type inside a ~match~:
 #+BEGIN_SRC scheme
 (match (try (file-read-text path)
          #:catch (System.IO.FileNotFoundException System.IO.DirectoryNotFoundException))
@@ -1119,22 +622,8 @@ value at that narrowed type:
   ((Err e) (unknown e)))
 #+END_SRC
 
-Arms are tried in order, so a specific exception type has to precede a more
-general one. The binder is narrowed, which is the point: ~.-FileName~ belongs
-to ~FileNotFoundException~ and not to ~System.Exception~, and reading it is
-only well-typed because the pattern established the type.
-
-It is not limited to exceptions — it is a type test on any .NET value, so a
-~System.Object~ can be taken apart the same way. A tested type unrelated to the
-value's type is rejected at the pattern (*"...is not a..., so this test can
-never succeed"*) rather than left to C#, and it does not apply to Bjolang's own
-unions, which have their own constructors to match on.
-
 *** ~raise~ — the way back out
-~(raise e)~ throws, keeping the stack trace the exception already has. It is the
-counterpart of ~try~, which turns the failures it names into values: this is how
-a handler that has decided it cannot deal with what it caught puts it back.
-
+Rethrows an exception:
 #+BEGIN_SRC scheme
 (match (try (file-read-text path) #:catch (System.IO.IOException))
   ((Ok text) text)
@@ -1142,14 +631,8 @@ a handler that has decided it cannot deal with what it caught puts it back.
   ((Err e) (raise e)))            ;; not ours; someone else's problem
 #+END_SRC
 
-Its return type is a fresh variable because it never returns, which is what lets
-it stand in a ~match~ arm whose siblings produce a value. It takes a
-~System.Exception~, so a caught error can always be re-raised; raising a freshly
-constructed one of a narrower type needs that type widened first.
-
 *** Writing your own
-This diverging signature shape is not restricted to built-ins. A signature whose return type is a variable no *parameter* mentions is inherently recognized as diverging, and can be applied to custom functions:
-
+A function signature with a return variable no parameter mentions is recognized as diverging (throws, exits, loops):
 #+BEGIN_SRC scheme
 (: panic! (-> string (#:exit-code int) %a))
 (defun (panic! msg #:exit-code 1)
@@ -1161,25 +644,9 @@ This diverging signature shape is not restricted to built-ins. A signature whose
   ((Err e) (panic! "oh no!" #:exit-code 404))
   ((Ok b) b))
 #+END_SRC
-
-Two things follow from the signature alone, with no list of blessed names
-anywhere. The type argument is written out at the call site, because C# infers a
-method's type arguments from its arguments and there is nothing here to infer
-this one from. And the call may stand in *statement* position without ~ignore~
-— there is no value to discard, which is also why ~(when bad (raise e))~ needs
-no ceremony.
-
-A function that promises a type its arguments never mention has no way to build
-one, so it can only throw, exit, or loop forever. That is the whole content of
-the rule: it is read off the signature rather than declared.
-
-Nothing changes for an ordinary generic. ~(: same-again (-> %a %a))~ has its
-~%a~ in a parameter, so C# infers it and the call site stays bare.
-
 ** Traits and Implementations
-Bjolang supports generic traits and implementations. A trait is parameterised by
-exactly *one* implementor variable; every other type it needs is an associated
-type, declared with ~(type %name)~ and pinned down by each implementation.
+Bjolang supports generic traits and implementations. A trait is parameterised by exactly *one* implementor variable. Other required types are associated types, declared with ~(type %name)~ and pinned by each implementation.
+
 #+BEGIN_SRC scheme
 (def/trait (Foldable %col)
   (type %item)
@@ -1191,14 +658,9 @@ type, declared with ~(type %name)~ and pinned down by each implementation.
     (list-foldl f acc col)))
 #+END_SRC
 
-An associated type is what lets ~fold~ speak about the element type of a
-collection it has not been told the element type of: ~%item~ is whatever the
-implementation for ~(List %a)~ says it is.
-
 *** Default method bodies
-A ~def/trait~ may carry a ~defun~ for a method it declares. That body stands in
-for the method in any implementation that does not write one, and an
-implementation that does write one overrides it.
+A ~def/trait~ may provide a ~defun~ as a default body for a method it declares. An implementation can override it by providing its own ~defun~.
+
 #+BEGIN_SRC scheme
 (def/trait (Tagged %a)
   (: tag (-> %a string))
@@ -1209,16 +671,9 @@ implementation that does write one overrides it.
   (defun (tag x) "int"))          ;; label is inherited
 #+END_SRC
 
-A default is spliced into each implementation and checked *there*, against that
-implementation's instantiation of the signature — never once, generically,
-against the trait. So one default body may compile to something different at
-each implementor, and it may name any other method of its own trait, resolved at
-the implementor like everything else in the body.
+Defaults are spliced and checked at the implementation site against its instantiation of the signature. 
+They can be used to bind overloaded .NET methods resolved per implementation:
 
-That is what makes a default the way to bind an overloaded .NET method. An
-~import/extern~ names a whole overload set and picks a member of it from the
-argument types at each call, so it has no single type and cannot be exported;
-written as a trait default it is resolved once per implementation instead:
 #+BEGIN_SRC scheme
 (import/extern (clr-abs (: System.Math.Abs)))
 
@@ -1230,31 +685,11 @@ written as a trait default it is resolved once per implementation instead:
 (impl (Magnitude double))     ;; Math.Abs(double)
 #+END_SRC
 
-Where the overload set belongs to a .NET *interface* rather than to a static
-class, there is a shorter way that needs no implementations at all — see
-~#:clr-constraint~ below. The library's own ~Num~ is written that way.
-
-A defaulted method is not a second kind of method: by the time anything else
-looks at the implementation, it is a method that implementation wrote. It gets
-the same landing pad, the same inline template and the same dispatch, and costs
-exactly what writing it out would have.
-
-Defaults travel with the trait, so a module that imports one may implement it
-and inherit them. A default naming an ~import/extern~ alias travels too: the
-import itself is published alongside the trait, under a mangled name, and the
-body is rewritten to use it. That is deliberate rather than incidental — a
-default is re-checked wherever it is spliced, so publishing the alias under its
-own name would let a definition of that name in the *importing* module silently
-become what the library's method meant.
-
-A default that will not serialize — one using a form the metadata writer cannot
-reproduce — is simply not published. The consequence is that an importing
-module has to write that method itself, and it is told so at its own
-~impl~.
+Defaults are exported with the trait. If a default cannot be serialized, it is not published and importing modules must provide their own implementation, which is enforced at their ~impl~.
 
 *** Blanket implementations
-An implementation may name a bare type variable instead of a constructor. It
-then applies at every type that has no implementation of its own.
+An implementation may apply to all types lacking a specific implementation by naming a bare type variable:
+
 #+BEGIN_SRC scheme
 (def/trait (Describe %a)
   (: describe (-> %a string)))
@@ -1266,17 +701,8 @@ then applies at every type that has no implementation of its own.
   (defun (describe x) (int->string x)))
 #+END_SRC
 
-Resolution is two levels and no more: the exact head constructor, then the
-blanket. There is no "more specific than" ordering to reason about, because a
-candidate either matches the head or is the blanket — which is most of why this
-is cheap. A trait has at most one blanket.
+Resolution strictly tries the exact head constructor first, then the blanket.
 
-A blanket may differ from a specific implementation in *behaviour*, not merely
-in speed, and this is sound because **a blanket is only ever selected at a
-ground constructor.** Inside a generic function the implementor is a type
-variable, nothing is resolved, and the call goes out through a dictionary
-parameter — so the choice is made at the concrete instantiation site, where the
-type is known:
 #+BEGIN_SRC scheme
 (: describe-via-dict (-> %a string) (where (Describe %a)))
 (defun (describe-via-dict x) (describe x))
@@ -1285,85 +711,38 @@ type is known:
 (describe-via-dict 2.5)   ;; "any" — the blanket
 #+END_SRC
 
-This is what a language that monomorphises cannot promise: there, a general
-implementation can be baked into generic code and diverge from what a concrete
-call site would have picked. Dictionary passing cannot do that.
-
-Two restrictions follow, and both are checked:
-
-- **Only the module declaring the trait may write its blanket.** A blanket
-  applies everywhere, so one declared elsewhere would change what the trait
-  means for modules that never imported it. This is the orphan rule's stricter
-  half; a constructor-headed implementation still has the usual second escape
-  hatch of owning the type.
-- **A trait that abstracts over a constructor cannot have one.** An inline trait
-  such as ~(def/trait (Monad (%m %a)) ...)~ is implemented at ~(F %a)~ — a
-  constructor applied — and a blanket has no constructor to apply.
+Restrictions:
+- **Only the module declaring the trait may write its blanket.**
+- **A trait that abstracts over a constructor cannot have a blanket.**
 
 *** Conditional implementations
-An implementation may hold only *where its own type arguments do*, by naming
-what it needs in a ~where~ clause — the same clause a signature takes.
+An implementation may restrict applicability using a ~where~ clause naming constraints on its type arguments:
+
 #+BEGIN_SRC scheme
 (impl (->str (List %a))
   (where (->str %a))
   (defun (->str xs) (list->str xs)))
 #+END_SRC
 
-The clause is not a note to the reader. Each constraint becomes a dictionary
-the implementation *carries*, so ~->str~ over ~(List int)~ is built out of the
-~int~ implementation and it is that one which formats each element. Without the
-clause the body could not call ~->str~ at ~%a~ at all, and it is told so:
+Constraints dictate what dictionary dependencies the implementation requires:
 
-#+BEGIN_SRC text
-'->str' uses '->str' at '%a', which this implementation does not require.
-Add (where (->str %a)) to the implementation, and every use of it will have
-to supply one.
-#+END_SRC
-
-The last sentence is the point. A conditional implementation *extends* the
-guarantee above rather than weakening it: the element's implementation is still
-chosen where the element type is ground, whether that happens at the call
-itself or in a caller that passed a dictionary down. Nothing is decided at ~%a~,
-which is exactly why the blanket cannot silently swallow a type that has an
-implementation of its own.
-
-Written out, the three places evidence comes from:
 #+BEGIN_SRC scheme
 (->str (list 1 2))          ;; built here: List over int
 
-(: show (-> %a string))     ;; no clause written, one inferred:
+(: show (-> %a string))     
 (defun (show x) (->str x))  ;; %a needs (->str %a), from the caller
 
-(show (list 1 2))           ;; and supplied here, as List over int
+(show (list 1 2))           ;; supplied here, as List over int
 #+END_SRC
 
-Three restrictions, all checked:
-
-- **A blanket may not be conditional.** Its target *is* the implementor, so the
-  constraint would be discharged at the very type it is proving — evidence with
-  no bottom. A conditional implementation is written at a constructor, where
-  each demand lands on a strictly smaller type and the recursion ends.
-- **A constraint may only name the implementation's own type variables.** They
-  are what the class is generic over; anything else is a dictionary no caller
-  could supply.
-- **The constrained trait may not have associated types, and may not be
-  inline-only.** An inline trait has no dictionary to carry at all; an
-  associated type would have to become a further parameter of the
-  implementation, which is not built. Constrain a function instead, where the
-  association becomes an ordinary type parameter.
+Restrictions:
+- **A blanket may not be conditional.**
+- **A constraint may only name the implementation's own type variables.**
+- **The constrained trait may not have associated types, and may not be inline-only.**
 
 *** ~void~ is the unit type
+~void~ in a signature is a *value* type (also spelled ~Unit~ or ~System.Void~). It is backed by a one-field struct.
 
-~void~ in a signature is a *value* type, and ~Unit~ and ~System.Void~ are
-accepted as spellings of the same thing. It is backed by a one-field struct, so
-a function returning it returns something, and that something can be bound,
-stored in a collection, and compared.
-
-The reason is generic instantiation. A ~(-> %a %b)~ becomes ~Func<T_a, T_b>~ in
-the generated C#, and the delegate type is emitted before any call site is
-known. C#'s ~void~ is not a type: ~Action<T>~ exists, but nothing at that point
-can choose between ~Action~ and ~Func~ from a type variable that has not been
-instantiated yet. So this compiles, and could not otherwise:
 #+BEGIN_SRC scheme
 (: apply-twice (-> (-> %a %b) %a %b))
 (defun (apply-twice f x) (f x) (f x))
@@ -1372,57 +751,27 @@ instantiated yet. So this compiles, and could not otherwise:
 (apply-twice int->string 7)   ;; %b = string
 #+END_SRC
 
-C#'s ~void~ still exists, and is now the only thing that is void: an expression
-yielding no value at all. It is reachable only from a .NET method reflected as
-~System.Void~ and from the statement-shaped forms, and no signature can name it.
-Where the two meet, the boundary rule applies — the call is run as a statement
-and the unit is produced by the caller:
+When interfacing with true C# ~void~ methods, the call executes as a statement and yields the unit:
+
 #+BEGIN_SRC scheme
 (: close-input-port (-> TextInputPort void))
 (defun (close-input-port p) (.Dispose p))   ;; p.Dispose(); return default;
 #+END_SRC
 
-The type is ~Bjoml.Unit~, from the concurrency runtime, rather than one of the
-core runtime's own. A bjoroutine with no useful result is a ~Promise<Unit>~, and
-a second unit type would need converting at exactly that boundary.
-
 *** ~#:opaque~ — a type whose representation stays home
-A marker on the *declaration*, written between the head and the shape, where a
-field's ~#:mutable~ and a case's ~#:literal~ sit:
+The ~#:opaque~ marker prevents the type's constructors and representation from being exported:
 
 #+BEGIN_SRC scheme
 (export Handle)
 (type (: (Handle %a) #:opaque (Union (Live %a int) Closed)))
 #+END_SRC
 
-Inside this module nothing changes: the cases are constructors, the patterns
-match, and ~#:opaque~ is a fact about the module boundary rather than about the
-type. What crosses that boundary is the name and its arity, so an importer may
-write ~(Handle string)~ in a signature, hold one and pass it back — and may not
-name ~Live~ or ~Closed~. For a ~Record~ it is the fields that stay behind, and
-with them the constructor, since a record is built by its own name.
-
-Trait implementations still travel and still dispatch, which is what makes an
-opaque type worth having: the module can say what ~->str~ or ~=~ mean for it
-without saying what it is.
-
-~#:opaque~ on an alias is refused — an alias is expanded wherever it is named,
-so there is nothing to hold back. It is also independent of ~(export ...)~: the
-marker says how much of the type crosses, the export list says whether it
-crosses at all. See [[file:MODULES.org::*Exporting a type][MODULES.org]].
+Importers can use the type name in signatures but cannot construct or pattern-match its cases/fields directly. Trait implementations on opaque types are still exported and functional.
 
 *** Records and structs
-~(: Name (Record (: field type) ...))~ defines a record whose fields are
-immutable unless one says otherwise, and ~(: Name (Struct ...))~ the same thing
-as a *value* type — a C# ~record struct~
-rather than a ~record~. Both compare by value, so the choice is about
-representation: a struct lives in its enclosing local or field rather than
-behind a reference, which is what a small, hot, non-recursive type wants, while
-a large one is copied where a record would have passed a reference. A struct may
-not contain itself.
+~(: Name (Record (: field type) ...))~ defines a record. ~(: Name (Struct ...))~ defines a struct value type. Both compare by value. Structs cannot contain themselves.
 
-**A record is constructed by naming its type.** The type name is the
-constructor, and each argument is one of its fields:
+Records and structs are constructed by naming their type:
 
 #+BEGIN_SRC scheme
 (type (: Car (Record (: brand string) (: year int))))
@@ -1430,24 +779,10 @@ constructor, and each argument is one of its fields:
 (def c (Car (brand "banana") (year 3000)))
 #+END_SRC
 
-Every field has to be given, no field twice, and the order is free — the fields
-are named, so declaration order is the compiler's business rather than yours.
-There is no anonymous ~(record ...)~ form: nothing is ever inferred from *which
-fields you happened to mention*, so two types may share a field name without
-one of them becoming unreachable.
-
-~(record-ref target field)~ and ~(record-set target (field value) ...)~ read and
-update. These resolve against the *target's own type* wherever it is known,
-which is everywhere the value was constructed, annotated, or given by a
-signature. Only where the target is still an unresolved type variable — the body
-of an un-annotated local lambda, say — do they fall back to looking the field
-name up, and that fallback is an error if more than one type declares the name.
-
-The ~struct*~ *expression* forms — ~(struct-ref ...)~, ~(struct-set ...)~ —
-remain plain synonyms of the ~record*~ forms and work on either kind.
+Read and update using ~(record-ref target field)~ and ~(record-set target (field value) ...)~. These resolve against the target's exact type, falling back to field name lookup only if the type is unresolved. ~struct-ref~ and ~struct-set~ are synonyms.
 
 **** Mutable fields
-A field marked ~#:mutable~ may be written in place, by ~record-set!~:
+A field marked ~#:mutable~ can be mutated in place using ~record-set!~:
 
 #+BEGIN_SRC scheme
 (type (: Counter (Record (: label string)
@@ -1458,50 +793,17 @@ A field marked ~#:mutable~ may be written in place, by ~record-set!~:
 (record-set! c (label "taps") (count 2))        ;; refused: label is not mutable
 #+END_SRC
 
-The marker changes nothing about construction — every field is still given, and
-still by name — only that this one may be written again. ~record-set!~ takes a
-*name*, not an expression, as ~record-set~ does; it writes one or more fields;
-and it yields void, as every other write in the language does.
+Values are evaluated left to right before writing.
 
-**All values are evaluated, left to right, before any of them is written.** So a
-value expression that reads the record sees the state before the form, whichever
-field it reads, rather than a state half way through it. This is why several
-fields in one ~record-set!~ is worth having over several ~record-set!~s.
-
-~record-set~ is unaffected and still copies. The copy takes the mutable fields
-as they stand, and writing one afterwards does not reach the other.
-
-Four rules keep this from spreading further than it should.
-
-- **A ~Struct~ may not have a mutable field.** A struct is a value type, copied
-  on assignment and on every parameter pass, and one held inside a ~List~ or a
-  ~Map~ cannot be addressed at all: the write would land on the copy and be
-  lost. There is no ~struct-set!~.
-- **A union case may not have one either.** A case payload is positional and
-  unnamed, so there is nothing for a write to name. A case that needs mutable
-  state carries a ~Record~ that has it.
-- **Only the declaring module may write.** A module that means its state to be
-  written from outside exports functions that write it, exactly as one with a
-  ~def/mutable~ does. Reading and constructing are unrestricted — unless the
-  type is ~#:opaque~, which is how a module extends the same rule to both.
-- **Constructing one is not a syntactic value.** A record with a mutable field
-  is a cell, so a module-level ~def~ of one is not generalized — the same
-  restriction ~(make-array 1)~ is under, and for the same reason.
+Rules:
+- **A ~Struct~ may not have a mutable field.**
+- **A union case may not have a mutable field.**
+- **Only the declaring module may write using ~record-set!~.**
+- **Constructing a record with a mutable field is not a syntactic value.**
 
 ***** Equality, and the hash there is not
-~=~ on a record with a mutable field is structural over what the fields hold
-*now*. Two records equal at one moment may be unequal at the next; that is what
-mutation means and it is not a defect.
-
-~eq-hash~ **throws**, and so does anything that asks .NET for the hash — putting
-one in a ~Map~ or a ~Set~ raises rather than returning. There is no honest
-number: hashing the mutable field breaks the rule that a key's hash does not
-change, and hashing only the immutable ones breaks the rule that equal values
-hash alike. Failing loudly is the alternative to a ~Map~ that quietly loses the
-entry the next time the field is written.
-
-That is what ~derive~ writes, not a property of the type. An implementation
-written by hand may hash only the fields that do not move and mean it:
+~=~ checks structural equality on current field values. 
+Calling ~eq-hash~ on a type with a mutable field **throws**. Implement custom hashing if needed:
 
 #+BEGIN_SRC scheme
 (impl (Eq Counter)
@@ -1509,89 +811,46 @@ written by hand may hash only the fields that do not move and mean it:
   (defun (eq-hash c) (eq-hash (record-ref c label))))
 #+END_SRC
 
-One restriction has no way around it: a *generic* record with a mutable field
-can never have a working hash, even a hand-written one. The members that would
-carry it are emitted into the type, and for a generic type there is nothing
-inside it that could build the dictionary a conditional implementation needs.
+Generic records with mutable fields cannot have working hashes.
 
 ***** Concurrency
-Nothing is done for you. Fibers run in parallel on the .NET thread pool, no
-synchronization is emitted for a mutable field any more than for a
-~def/mutable~, and a mutable record shared between fibers races. Everything else
-in the language is persistent and may be shared freely; this is the one thing
-that may not.
-
-A trait written this way compiles to a C# interface, with each implementation a
-sealed class holding a singleton ~Instance~. A call whose receiver type is known
-is spliced straight into the call site; a call on a type variable is dispatched
-through a dictionary parameter the compiler adds to the enclosing function.
+Mutable records shared between fibers race. No automatic synchronization is provided.
 
 *** A constrained function is a value
-A ~(where ...)~ on an ordinary trait is passed as a dictionary — an extra,
-leading parameter on the emitted method. That is an implementation detail, and
-it stays one: a constrained function mentioned without being called is expanded
-into a lambda of its own arity, so it is the function its type says it is.
+A constrained function is an ordinary value. Evaluating it yields a lambda of its arity:
+
 #+BEGIN_SRC scheme
 (list-foldl least (list-head xs) (list-tail xs))    ;; least is (-> %a %a %a)
 (defun (chooser smallest?) (if smallest? least greatest))
 #+END_SRC
 
-What the constraint costs is that it has to be discharged somewhere, and a
-mention gives less to go on than a call does. Binding one to a name needs an
-annotation, for the reason ~(list-empty)~ does — there is no argument to read
-the type off:
+Binding one to a name requires an explicit annotation:
+
 #+BEGIN_SRC scheme
 (def (: f (-> int int int)) least)
 #+END_SRC
 
 *** A method's name is an ordinary binding
-A trait method is dispatched by name, and that name is a binding like any other.
-Every binder shadows one — a parameter, a ~let~, a lambda parameter, a
-definition — and inside the shadow the name means what the binder says:
+Trait methods are dispatched by name, functioning like standard bindings that can shadow and be shadowed.
+
 #+BEGIN_SRC scheme
 (defun (pick less? a b) (if (less? a b) a b))   ;; a parameter called less?
 (let ((->str (fun (n) "hidden"))) (->str 5))    ;; "hidden"
 #+END_SRC
 
-Call position and value position agree, which is the whole of the rule: ~(m a
-b)~ and ~(def f m) (f a b)~ mean the same thing three lines apart. Dispatch used
-to happen on the name before the environment was consulted at all, so neither
-was true — a parameter called ~compare~ was accepted, ignored and dead, and the
-program's own calls to it failed on arity against a line the programmer had
-written correctly.
+An ~impl~ body that calls its own method dispatches to it:
 
-*Implementing a method is not shadowing it.* A ~impl~ supplies the method,
-and a body inside one that calls its own name dispatches:
 #+BEGIN_SRC scheme
 (impl (Eq (List %a))
   (where (Eq %a))
   (defun (= xs ys) ... (= (list-head xs) (list-head ys))))   ;; the elements'
 #+END_SRC
 
-*Two shadows are worth a word, and get one.* A top-level definition over a
-method name warns and suggests ~impl~, which is what someone writing
-~(defun (= a b) ...)~ almost always meant. So does an *import* that lands on
-one: the nearest binding wins, so a module you did not write can decide that
-~sign~ here means its function, and ~(except ...)~ or ~(rename ...)~ is the
-answer. A local shadow is silent — it is a decision in a scope its reader can
-see the whole of.
-
-*A union case constructor follows the same rule.* ~listing~, ~counting~,
-~folding~ and their siblings are ordinary names that happen to construct
-something, and a binder binds over one.
-
-*What the compiler writes is unaffected.* A ~loop~ calls ~iterable-next~, a
-comprehension constructs a ~folding~, an interpolated string calls ~->str~, a
-derived ~Eq~ calls ~=~, and a macro template's method call means the trait it
-belonged to where the template was written. None of those is a lookup in your
-scope, so none of them can be captured — see ~Docs/MACROS.org~ for the macro
-half.
+Top-level definitions and imports shadowing a method warn and suggest using ~impl~, ~except~, or ~rename~.
 
 *** ~#:clr-constraint~ — a trait that *is* a .NET interface
-A trait may name a .NET interface instead of declaring implementations. It then
-has none, and no dictionary: a ~(where ...)~ on it becomes a C# ~where~ clause,
-and it is discharged by asking the runtime whether the implementor implements
-the interface.
+A trait may map to a .NET interface instead of providing implementations:
+
 #+BEGIN_SRC scheme
 (def/trait (Float %a)
   (#:clr-constraint (System.Numerics.IFloatingPointIeee754 %a))
@@ -1599,35 +858,20 @@ the interface.
   (: finite? (-> %a bool) #:clr-member IsFinite))
 #+END_SRC
 
-~#:clr-member~ names the member a method stands for; whether it is static or an
-instance member is read from the metadata rather than written. ~impl~ for
-such a trait is an error, since a type either implements the interface or does
-not.
-
-This is how the library's ~Num~, ~Ordered~ and ~Integral~ are written, and it is
-what licenses ~+~ and ~<~ at a type variable. It is a *closed* world — no type
-declared in Bjolang can ever satisfy one — which is why ~Eq~ and ~Ord~ are
-ordinary traits instead. ~Numerics.org~ has the rest.
+~impl~ on these traits is prohibited. Validation relies on standard .NET interface checking.
 
 *** Inline traits
-A trait may instead apply its implementor to arguments:
+A trait can be applied over type constructors:
+
 #+BEGIN_SRC scheme
 (def/trait (Monad (%m %a))
   (: pure (-> %a (%m %a)))
   (: bind (-> (%m %a) (-> %a (%m %b)) (%m %b))))
 #+END_SRC
 
-~%m~ here is a *type constructor*, not a type, and no C# interface can abstract
-over one — which is why ~Monad~ cannot be written with the form above. A trait
-declared this way is **inline-only**: it has no interface, no singleton and no
-dictionary, and every call to one of its methods is resolved statically and
-spliced. In exchange, a method may be generic in its own right — ~bind~'s ~%b~
-belongs to the method, not to the trait — and it may not be used at a type that
-is still a variable.
+These are **inline-only** and have no C# interface representation. Method resolution is strictly static.
+Implementations abstract over trailing arguments:
 
-An implementation abstracts over the *trailing* arguments of its target. The
-rest are fixed by the implementation and become type parameters of the class it
-compiles to:
 #+BEGIN_SRC scheme
 (impl (Monad (List %a))                 ; nothing fixed
   (defun (pure x) (Cons x Nil))
@@ -1638,24 +882,14 @@ compiles to:
   (defun (bind m k) (match m ((Ok v) (k v)) ((Err e) (Err e)))))
 #+END_SRC
 
-A constructor whose abstracted argument is not the last one needs a newtype that
-flips them; the compiler says so rather than guessing.
-
-Every implementation method is also emitted as an ordinary method, whatever the
-kind of trait. That is what a recursive method inlines *into*: a resolved call is
-spliced once, and the edge that would close the cycle calls the method instead.
-
 *** Trait Objects — ~(dyn Trait)~
-
-~(dyn Trait)~ is a type that holds any value implementing ~Trait~, with its concrete type erased. This allows a function to accept "anything that implements ~->str~", and allows a list to store values of heterogeneous types:
+~(dyn Trait)~ holds any value implementing ~Trait~, enabling heterogeneous collections:
 
 #+BEGIN_SRC scheme
 (: render-str (-> (dyn ->str) string))
 (defun (render-str d)
   (->str d))
 
-;; A custom type can be placed in the list on the same terms as int and string:
-;; it has an implementation.
 (type (: Coin (Struct (: ore int))))
 
 (impl (->str Coin)
@@ -1666,11 +900,8 @@ spliced once, and the edge that would close the cycle calls the method instead.
                   (dyn ->str (Coin (ore 3)))))
 #+END_SRC
 
-A generic ~(where (->str %a))~ function and a box serve different purposes. A generic function receives a *dictionary per call site* and is compiled separately for each type it is instantiated with; a box carries its dictionary along with its value, allowing values of three different concrete types to reside in the same list. The cost is an allocation per packing operation and an interface dispatch per method call.
-
 **** The Type
-
-The trait's associated types are pinned in the type at their declared names:
+Associated types are pinned by name:
 
 #+BEGIN_SRC scheme
 (dyn ->str)                                        ; no associated types
@@ -1678,36 +909,18 @@ The trait's associated types are pinned in the type at their declared names:
 (dyn Collector #:elem int #:acc int #:out string)  ; all three
 #+END_SRC
 
-Every associated type must be specified. The box erases the underlying concrete type that would otherwise answer them, so an unpinned associated type would have no concrete definition at all. Any missing, unknown, or duplicated associated type annotations are reported at the type site, listing the trait's expected associated type names. Leaving them open is therefore not supported.
-
-~dyn~ is a keyword only in type positions. A standalone trait name in a signature still retains its original meaning: an unknown type.
-
-This relies on every ~impl~ binding every associated type declared by the trait. An ~impl~ that omits an associated type is rejected immediately at declaration time.
+Every associated type must be explicitly specified; omitting them is a compile error.
 
 **** Explicit Packing
+Boxing is strictly explicit using ~(dyn Trait expr)~. Implicit boxing is not supported.
 
 #+BEGIN_SRC scheme
 (dyn ->str 42)            ; : (dyn ->str)
 (dyn Foldable [1 2 3])    ; : (dyn Foldable #:item int)
 #+END_SRC
 
-The form takes the trait name and an expression, and nothing more. Associated types are never written here; they are inferred from the implementation selected by the value. If the type annotation pins them to a different type, a standard unification error is reported.
-
-Values are never implicitly boxed. Passing a raw string where a box is expected—such as ~(render-str "hej")~—results in a standard type mismatch (~string~ vs ~(dyn ->str)~). The diagnostic explicitly hints at how to pack the value:
-
-#+BEGIN_SRC text
-Type error: these types do not match.
-  (dyn ->str)
-  string
-  A (dyn ->str ...) holds a value with its type hidden, and nothing is packed
-  into one by itself: write (dyn ->str <expr>) to pack the value.
-#+END_SRC
-
-The rationale for requiring explicit packing is that implicit boxing introduces implicit allocations and type erasure, neither of which would be visible in code or function signatures.
-
 **** Dispatch via Existing Trait Call Machinery
-
-A method call on a boxed value is a *standard* trait call. The compiler automatically synthesizes an implementation of the trait for its own dynamic type (~dyn~ type), registered alongside all other implementations. This mechanism allows the rest of the compiler to handle boxed trait invocation without special-casing boxes at call sites:
+Method calls on dynamic types act as normal trait calls leveraging an automatically synthesized internal implementation.
 
 #+BEGIN_SRC scheme
 (->str d)                       ; resolves to the dyn-type implementation
@@ -1715,11 +928,8 @@ A method call on a boxed value is a *standard* trait call. The compiler automati
 (map (fun (x) (->str x)) xs)    ; over a (List (dyn ->str))
 #+END_SRC
 
-This auto-generated implementation is not exported in module metadata. It is derived entirely from the trait signature, so importing modules re-derive it automatically.
-
 **** Code Generation
-
-Three classes are generated alongside the normal interface, specifically for boxable traits. The receiver parameter is removed from the dynamic interface signature *at its exact parameter index* (e.g. in ~fold~, where it is the third argument) and re-inserted in place by the forwarding methods:
+Code generation builds generic box wrappers and delegates automatically:
 
 #+BEGIN_SRC csharp
 public interface Foldable<T_col, T_item> {
@@ -1741,11 +951,7 @@ public sealed class Foldable_DynImpl<T_item> : Foldable<Foldable_Dyn<T_item>, T_
 }
 #+END_SRC
 
-The ~value~ field is private: unboxing a trait object back into its concrete type is not supported.
-
-A method that is generic in its own right (such as ~fold~'s ~%acc~) remains a generic C# method. Because C# supports generic interface methods, there is no vtable restriction like in Rust. Method attributes and colors are preserved: a ~-bjo->~ method returns a ~Fiber<T>~ in all three generated classes, and a ~-?->~ parameter generates a color twin across all three classes.
-
-The dictionary evidence passed into ~Make~ is constructed identically to any other trait dispatch site: via a singleton instance, a chain of ~Make~ calls for conditional impls, ~this~ within an impl, or a dictionary parameter. The latter allows generic functions to box their own elements:
+Dictionaries can be synthesized locally or fetched from constraints dynamically:
 
 #+BEGIN_SRC scheme
 (: pack-all (-> (List %a) (List (dyn ->str))) (where (->str %a)))
@@ -1754,35 +960,17 @@ The dictionary evidence passed into ~Make~ is constructed identically to any oth
 #+END_SRC
 
 **** Boxability Rules
-
-Three conditions determine whether a trait can be boxed. These rules apply to the trait definition itself, so any invalid ~(dyn ...)~ usage is reported with the trait name, offending method, and rule violated:
-
-1. *It must not apply its implementor type variable.* Inline traits have no C# interface or dictionary, so there is no target to erase or dispatch through.
-2. *It must not wrap a raw .NET interface constraint.* A .NET interface is already erased; use ~(cast <Interface> x)~ instead.
-3. *Every method must mention the implementor variable exactly once, as a direct parameter.* It cannot be nested inside another type, inside a function parameter, in the return type, or in a keyword/rest parameter.
-
-The third requirement prevents traits like ~Eq~ from being boxed:
-
-#+BEGIN_SRC text
-'Eq' cannot be boxed: '=' mentions %a 2 times, and one box says nothing about
-another: two of them could hide two different types. A boxable method mentions
-the implementor exactly once, as one of its own parameters — which is why
-(-> %a %a bool) and (-> %a %a) are not.
-#+END_SRC
-
-Two boxed values carry no static relation to each other: they could contain two different underlying types, leaving ~=~ with no common concrete type to execute. Likewise, ~(-> %a %a)~ would attempt to return the erased underlying type, and a method omitting the implementor entirely (~(-> int %a)~) has no receiver to dispatch on. Associated types may appear anywhere, as they are statically pinned by the annotation.
+1. *It must not apply its implementor type variable.*
+2. *It must not wrap a raw .NET interface constraint.*
+3. *Every method must mention the implementor variable exactly once, as a direct parameter.*
 
 **** Non-Features & Design Non-Goals
-
-Intentionally omitted and not planned: no implicit boxing, no unpinned associated types, no downcasting back to concrete types, and no multi-trait composite boxes.
-
+No implicit boxing, no unpinned associated types, no downcasting back to concrete types, and no multi-trait composite boxes.
 ** Macros
-A macro is a function the compiler runs while parsing. It takes the form that
-was written and returns the form to read instead.
+A macro is a function the compiler runs while parsing. It takes the form written and returns the form to evaluate.
 
 #+BEGIN_SRC scheme
-;; in a module of its own, because a transformer is compiled code and has to
-;; exist before it can run
+;; Macros must be defined in their own module (as transformers run during compilation).
 (def/macro (or-else form inject compare)
   (match form
     ((SList (Cons _ (Cons a (Cons b Nil))))
@@ -1790,61 +978,36 @@ was written and returns the form to read instead.
     (_ (syntax-error form "or-else takes two arguments"))))
 #+END_SRC
 
-~#'form~ is syntax-quote and builds a ~Syntax~ value; ~,x~ splices one and
-~,@xs~ splices a ~(List Syntax)~. It is spelled differently from ~'(...)~
-because a list literal is homogeneous and a template is not.
+- `#'form`: syntax-quote; builds a `Syntax` value.
+- `,x`: splices a single syntax node.
+- `,@xs`: splices a list of syntax nodes, `(List Syntax)`.
 
-Hygiene is implicit renaming: everything the transformer constructs is renamed
-apart from the call site, everything it took from the input is left as written.
-So the ~tmp~ above cannot capture a ~tmp~ the caller wrote, and a template may
-use ~let~, ~if~ and ~->~ unchanged.
-
-See ~Docs/MACROS.org~.
+**Hygiene**: Implicit renaming ensures transformers do not accidentally capture or shadow variables from the call site. Core forms like `let`, `if`, and `->` remain safely usable in templates.
+See `Docs/MACROS.org` for more details.
 
 ** Monadic blocks
-~(do ...)~ expands to ~bind~ and ~pure~. It is spelled ~do~ rather than ~seq~,
-which lazy sequences already own.
+`(do ...)` expands to monadic `bind` and `pure` operations. Import `(std monad)` to use it.
 
-It is *not* syntax. ~Monad~, its implementations for ~List~, ~Option~ and
-~Result~, and the ~do~ macro are all ~(std monad)~, which a file that writes a
-block imports:
 #+BEGIN_SRC scheme
 (import (std monad))
 
 (do (:bind x xs)              ; x <- xs
-    (:match (Tuple a b) (m))  ; the same, taken apart
-    (:let  y (+ x 1))         ; ordinary binding, no monad involved
-    (:then (action))          ; >>, run for its effect
-    (:return (* y 2)))        ; sugar for (pure (* y 2))
+    (:match (Tuple a b) (m))  ; destructure an infallible pattern
+    (:let  y (+ x 1))         ; standard let-binding (non-monadic)
+    (:then (action))          ; sequence operations (>>), discarding the result
+    (:return (* y 2)))        ; equivalent to (pure (* y 2))
 #+END_SRC
 
-The macro's templates write ~bind~ and ~pure~, which are trait methods, so they
-resolve to ~Monad~ and dispatch on the type of what is bound: a block runs over
-any ~Monad~, including one ~(std monad)~ has never heard of. A ~bind~ of your own
-at the call site does not intercept it — that is hygiene, and the rule is in
-~Docs/MACROS.org~.
-
-Five things are worth knowing:
-
-- The last form may be *any* ~m a~, not only a ~:return~. Otherwise a monadic
-  loop could not be written at all, because the recursive call has to *be* the
-  result rather than be wrapped in a ~pure~.
-- ~:then~ is ~>>~, and is named for that rather than for being a ~:bind~ without
-  a variable. In a strict language those are different: on ~List~, ~>>~
-  multiplies out the elements it discards.
-- ~:bind~ takes a plain identifier. A pattern would raise the question of what
-  happens when the match fails, which wants a ~MonadFail~ rather than a match
-  that can throw.
-- ~:match~ is that question answered by name: it binds a pattern, and a pattern
-  that does not cover throws, as one does anywhere else in the language. What it
-  is for is the pattern that cannot fail — a ~Tuple~, a record, a union of one
-  case.
-- A bare form in non-tail position is an ordinary statement, run for its effect.
+**Rules**:
+- The last form must evaluate to a monadic value (e.g., `m a`), and does not strictly have to be a `:return`. This allows writing recursive monadic loops.
+- `:then` behaves like `>>`.
+- `:bind` strictly requires a plain identifier.
+- `:match` is used for infallible pattern matching (e.g., tuples, records). If the pattern fails, it throws.
+- Non-tail bare forms execute for their side effects as ordinary statements.
 
 ** Loops
-~(loop ...)~ is a left fold with early exit that always delivers a result. Its
-clause list is flat — there is no body position — and sequences and accumulators
-are extended by writing trait implementations rather than by adding syntax.
+`(loop ...)` is a left fold with early exit guarantees. The loop evaluates a flat sequence of clauses.
+
 #+BEGIN_SRC scheme
 (loop (:for x xs)
       (:let y (expensive x))
@@ -1853,116 +1016,56 @@ are extended by writing trait implementations rather than by adding syntax.
       => out)
 #+END_SRC
 
-| Clause                          | Meaning                                            |
+| Clause                          | Action                                             |
 |---------------------------------+----------------------------------------------------|
-| ~(:for pat seq)~                | bind ~pat~ to successive elements of ~seq~         |
-| ~(:with pat start update end)~  | a loop variable carrying its own state; ~update~ and ~end~ optional |
-| ~(:let pat expr)~               | per-iteration binding, in clause order             |
-| ~(:do expr ...)~                | run for effect, value discarded                    |
-| ~(:when cond)~                  | skip the rest of this iteration unless ~cond~      |
-| ~(:acc name (coll ...) #:when c)~ | declare an accumulator; ~#:when~ gates the step  |
-| ~(:break cond)~                 | end the whole loop, before the rest of the iteration |
-| ~(:final cond)~                 | end it *after* the current iteration completes     |
-| ~(:until-cancelled [tok])~      | end the loop when a cancellation token has fired   |
-| ~(:end-subloop-if cond)~        | abandon this level, resume the enclosing one       |
-| ~(:subloop)~                    | nothing; it exists only to open a new level        |
-| ~(:yield expr)~                 | ~(seql ...)~ only: produce an element               |
+| `(:for pat seq)`                | Binds `pat` to successive elements of `seq`.       |
+| `(:with pat start update end)`  | Maintains state across iterations.                 |
+| `(:let pat expr)`               | Per-iteration local binding.                       |
+| `(:do expr ...)`                | Executes for side-effects, discarding result.      |
+| `(:when cond)`                  | Skips the rest of the current iteration unless `cond` holds. |
+| `(:acc name (coll ...) #:when c)`| Accumulates values into `coll`; optionally gated by `#:when`. |
+| `(:break cond)`                 | Immediately aborts the entire loop.                |
+| `(:final cond)`                 | Aborts the loop *after* the current iteration completes. |
+| `(:until-cancelled [tok])`      | Ends loop upon a cancellation token firing.        |
+| `(:end-subloop-if cond)`        | Exits the current loop level and resumes the enclosing one. |
+| `(:subloop)`                    | Explicitly opens a new loop level.                 |
+| `(:yield expr)`                 | Used in `(seql ...)` to produce an element.        |
 
-Each carries its own condition rather than being guarded by a preceding
-~:when~ — clauses do not compose, so there is no bare ~(:break)~ to be reached
-conditionally. ~:final~ is not a mechanism of its own: it is a ~:break~ on a
-hidden accumulator holding the previous iteration's verdict, which is what makes
-it one iteration later than a ~:break~ on the same predicate.
-
-**** ~:until-cancelled~
-For the compute loop with no ~sync~ to hang an ~until-cancelled~ event on. Both
-forms are ~:break~ underneath, so the exit happens where the clause is written:
+**** `:until-cancelled`
+Monitors a cancellation token and exits via a `break`.
 
 #+BEGIN_SRC scheme
 (loop (:for job jobs)
-      (:until-cancelled)          ;; the ambient token
+      (:until-cancelled)          ;; monitors the ambient token
       (:do (handle job)))
 
 (loop (:for job jobs)
-      (:until-cancelled tok)      ;; explicit, and the only way to watch a token
-      (:do (handle job)))         ;; that is not the ambient one
+      (:until-cancelled tok)      ;; monitors an explicit token
+      (:do (handle job)))
 #+END_SRC
 
-The zero-arity form is two clauses: a ~(:with ...)~ reading ~current-cancel~,
-hoisted to loop *entry* wherever the clause was written, and a ~:break~ left
-exactly where it was. The hoist is the point — reading ~current-cancel~ means
-reaching for the fiber's whole dynamic environment, and in an arithmetic loop
-that costs more than the work it guards. Loop entry rather than function entry
-because a loop inside a ~parameterize~ in the same function would otherwise read
-what was ambient *outside* it, which is usually the root token.
-
-The limitation this locks in: *the ambient token cannot change under a running
-loop*. True today, since a fiber's dynamic environment is written only by
-lexically scoped push/restore on that same fiber. Both forms check once per
-iteration; a single ten-second iteration still takes ten seconds.
+Note: `(:until-cancelled)` checks the token once per iteration. The ambient token must remain constant while the loop runs.
 
 *** Comprehensions
-~{collector expr clause...}~ is a ~loop~ with its accumulator implied. It is one
-rewrite and nothing else:
+`{collector expr clause...}` provides syntactic sugar for an anonymous accumulator loop.
+
 #+BEGIN_SRC scheme
 {listing (* a a) (:for a (range 0 100))}
-;; is exactly
+;; is identical to:
 (loop (:for a (range 0 100))
       (:acc g (listing (* a a)))
       => g)
 #+END_SRC
 
-The clauses are the loop's own, parenthesized, in order, and untouched — so
-~:when~, ~:break~, ~:let~, ~:with~, ~:final~ and ~:subloop~ all work and all
-mean what they mean in a ~loop~. There is no second dialect of clause.
-#+BEGIN_SRC scheme
-{vecing a (:for a (range 0 20)) (:when (= 0 (% a 2)))}
-{summing (* a b) (:for a (range 1 4)) (:subloop) (:for b (range 1 4))}
-{stringing (char-upcase c) (:for c "hello")}
-#+END_SRC
-
-Between the accumulator form and the first clause there may be a *loose*
-~:when~, written without parentheses. It gates the accumulation — it becomes the
-~#:when~ on the generated ~:acc~ — where a parenthesized ~(:when ...)~ among the
-clauses is the loop's own and skips the rest of the iteration.
-#+BEGIN_SRC scheme
-{listing a :when (even? a) (:for a xs)}
-;; is exactly
-(loop (:for a xs) (:acc g (listing a) #:when (even? a)) => g)
-#+END_SRC
-
-The two are different things, so they are written in different places. Side by
-side among the clauses they would differ by a pair of parentheses and nothing
-else, so a loose ~:when~ there is an error — and it is the only keyword that may
-be loose anywhere.
-
-The accumulator's name is *invented*, which is what makes a comprehension an
-expression: there is exactly one result, and nothing to name it. A ~(:acc ...)~
-of your own inside the braces is an error, and so is a ~=>~ — both say "I want
-more than one result", which is what ~loop~ is for.
-
-A collector that takes a construction argument carries it in the head: whatever
-stands before the first clause is the accumulator form, verbatim, so nothing has
-to know how many arguments a collector takes.
-#+BEGIN_SRC scheme
-{folding 0 a (:for a xs)}     ;; => (:acc g (folding 0 a))
-#+END_SRC
-
-~seqing~ is the lazy one. It is not a ~Collector~ — it yields — so it becomes a
-~seql~ rather than a fold, and the sequence is produced on demand:
-#+BEGIN_SRC scheme
-{seqing (* a a) (:for a (range 0 1000000))}
-;; is exactly
-(seql (:for a (range 0 1000000)) (:yield (* a a)))
-#+END_SRC
-
-Since a comprehension is an ordinary expression, one nests inside another
-without ceremony — the invented names cannot collide.
+**Rules**:
+- All `loop` clauses (`:when`, `:break`, `:let`, `:with`, etc.) are supported inside comprehensions.
+- A loose `:when` (without parentheses) may appear immediately before the first clause to gate the accumulator step: `{listing a :when (even? a) (:for a xs)}`.
+- `{seqing ...}` acts lazily and generates a `seql` instead of a fold.
+- Do not use explicit `(:acc ...)` or `=>` inside a comprehension.
 
 *** Named loops
-A name before the clauses hands the continue edge to the loop's *final* ~:do~.
-Tail calling the name is the jump; completing without one leaves the loop —
-through the finish block, like every other exit.
+A named loop binds a continue target to its final `:do` block, allowing manual iteration control or overrides.
+
 #+BEGIN_SRC scheme
 (loop lp (:for x xs)
          (:acc total (summing x))
@@ -1970,26 +1073,16 @@ through the finish block, like every other exit.
          => total)
 #+END_SRC
 
-~(lp)~ advances everything; ~(lp #:name expr)~ overrides one slot and advances
-the rest. The slots that can be overridden are the ones the loop *carries*: its
-accumulators and its ~:with~ variables. A ~:for~ variable cannot be, because it
-is derived from its cursor rather than carried — so "iterate, but sometimes jump
-ahead" is written as a ~:with~, and the compiler's error says as much. The name
-is a jump, not a value: using it anywhere but tail position in that final ~:do~
-is an error rather than a closure.
+**Rules**:
+- Invoke `(lp)` to advance normally.
+- Invoke `(lp #:slot val)` to overwrite accumulator or `:with` values.
+- You cannot override `:for` cursors via named loop arguments.
+- Tail calls to the loop name are required; returning without calling it proceeds to the finish block.
 
-Consecutive ~:for~ clauses advance in *lockstep* and are tested in clause order:
-when the first of them is done the level is over, and no later ~iterable-done?~
-runs. A
-~:for~ pattern only destructures and must always match — it is not a filter.
+*** `:with` — state carried across iterations
+Behaves similarly to `:for`, but provides its own sequence of state updates.
 
-*** ~:with~ — state carried across iterations
-A ~:with~ *is* a ~:for~ in every structural respect — levels, lockstep,
-termination — except that where a ~:for~ draws its element from a cursor, a
-~:with~ supplies its own. It is the general case of a sequence whose state is the
-value.
 #+BEGIN_SRC scheme
-;; the first n fibonacci numbers
 (loop (:with a 0 b)
       (:with b 1 (+ a b))
       (:for i (range 0 n))
@@ -1997,74 +1090,16 @@ value.
       => out)
 #+END_SRC
 
-~start~ is evaluated once per **entry to the level that owns the clause**;
-~update~ gives the value for the following iteration; ~end~ ends the level when
-it holds. Both ~update~ and ~end~ are optional: ~(:with k expr)~ is a
-loop-invariant binding, and a ~:with~ written without an ~end~ never terminates
-the level on its own — the same as a ~:for~ over an infinite sequence, so the
-loop then needs a bounded lockstep partner, a ~:break~ or a ~:final~.
+**Rules**:
+- Syntax: `(:with pat start [update] [end])`.
+- `start`: Evaluates once upon level entry.
+- `update`: Evaluates per iteration to step the value. Updates occur concurrently (a variable's update sees the *old* values of other variables in that step).
+- `end`: Terminating condition.
+- A `:with` inside a subloop completely restarts upon subloop reentry.
 
-A level's termination tests are its ~:for~ clauses' ~iterable-done?~ and its
-~:with~ clauses' ~end~, **interleaved in source order** and short-circuiting. The
-order is observable: ~iterable-done?~ may be effectful, so a ~:with~ whose ~end~
-holds leaves a
-later ~:for~'s cursor un-advanced. ~end~ is tested at the top of the iteration,
-so it sees its own variable and every other ~:with~ at this level or an enclosing
-one — but *not* this level's ~:for~ elements, which are bound only once the test
-has passed.
+*** `seql` — a loop that yields
+`(seql ...)` lazily computes a `Seq` instead of eagerly accumulating a value.
 
-**Updates within a level are simultaneous.** Every one of them is computed before
-any slot is written, which is why the fibonacci above is correct as written. For
-the sequential reading, name the new value with a ~:let~:
-#+BEGIN_SRC scheme
-;; b's update sees the OLD a, because everything does — fibonacci
-(:with a 0 b)
-(:with b 1 (+ a b))
-
-;; b's update sees the NEW a, because the :let named it — doubling
-(:with a 0 a-next)
-(:with b 1 (+ a-next b))
-(:for i (range 0 n))
-(:let a-next b)
-#+END_SRC
-
-Note the contrast with ~:acc~, whose steps are *sequential* — each ~:acc~ clause
-rebinds its own name at its own position, so a later step sees the earlier one's
-new value. The two differ on purpose: an accumulator is a fold over the
-iteration, a ~:with~ is state carried across iterations.
-
-Which edges update it:
-
-| Edge                                  | the level's ~:with~ clauses |
-|---------------------------------------+-----------------------------|
-| iteration completes                   | updated                     |
-| ~:when~ false, the iteration skipped  | updated — a skipped iteration still advances the level, exactly as its cursors do |
-| entering a subloop                    | the *inner* level's take their ~start~ |
-| inner level exhausted, ~:end-subloop-if~ | the *parent's* are updated, with the parent's cursors |
-| ~:break~ / ~:final~                   | nothing is updated; the loop leaves through the finish block |
-
-The third row is the one to remember: **a ~:with~ inside a subloop is reset on
-every entry to that subloop**, because ~start~ is per entry to the owning level —
-the same rule as ~iterable-start~ on a cursor. This is the opposite of an
-accumulator
-declared beside it, which is hoisted and persists across outer iterations.
-
-A ~:with~ is a loop variable, so it is **not in scope in the finish block**: that
-block is reached from every exit, including one taken from a level where an inner
-~:with~ does not exist. To carry one out, accumulate it — ~(:acc last (folding 0
-a))~ — and name the accumulator in the ~=>~.
-
-*** ~seql~ — a loop that yields
-~(seql ...)~ takes the same clauses and produces a lazy ~Seq~ instead of a value.
-It is a rewrite and nothing more:
-#+BEGIN_SRC scheme
-(seql clauses...)        ;; → (seq (loop clauses'...))
-(seql clauses... => e)   ;; → (seq (loop clauses'...) (yield e))
-(:yield e)               ;; → (:do (yield e))
-#+END_SRC
-so every level, cursor, ~:when~, ~:break~, ~:final~ and ~:with~ behaves exactly
-as it does in a ~loop~. Because the body only runs as the sequence is pulled
-from, a ~:with~ with no ~end~ is useful rather than a hang:
 #+BEGIN_SRC scheme
 (: fibs (-> (Seq int)))
 (defun (fibs)
@@ -2075,104 +1110,27 @@ from, a ~:with~ with no ~end~ is useful rather than a hang:
 (seq-take (fibs) 10)   ;; 0 1 1 2 3 5 8 13 21 34
 #+END_SRC
 
-~:acc~ is refused: a ~seql~ hands its elements out one at a time and has no
-result to accumulate into. ~=>~ is accepted and becomes one last ~yield~ after
-the loop — with no accumulators there is nothing in it that the loop could have
-bound, so running it there and running it in the loop's finish block mean the
-same thing.
-
-Levels work too. A nested loop is emitted as one merged ~while~/~switch~ *inline*
-in the sequence's own iterator method rather than as a local function, so a
-~yield~ from an inner level is ordinary C# like any other:
-#+BEGIN_SRC scheme
-(seql (:for x (range 0 3))
-      (:subloop)
-      (:for y (range 0 2))
-      (:yield (+ (* x 10) y)))   ;; 0 1 10 11 20 21
-#+END_SRC
-which means a ~:break~ from an inner level really does leave the whole sequence,
-and ~:end-subloop-if~ really does resume the outer level. Splicing an inner
-sequence with ~(yield-from ...)~ remains available and is what you want when the
-inner one is a function of its own — but it is no longer the only way to nest,
-and it costs an iterator per outer iteration where a ~:subloop~ costs nothing.
+**Rules**:
+- Emits a sequence using `(:yield expr)`.
+- Rejects `(:acc ...)` as there is no single value to aggregate.
+- Supports `=> e`, evaluating as one final `yield` after the loop.
+- Seamlessly handles subloops (`(:subloop)`); `(:break)` works naturally and jumps out of the sequence entirely.
 
 *** Levels
-Levels are implicit: *an iterating clause — a ~:for~ or a ~:with~ — preceded by
-anything other than another iterating clause opens a new one*, and every other
-clause belongs to the level that was current at its own position. So clause order
-alone decides nesting, with no marker at the nesting site.
+Loop levels implicitly structure iteration blocks. A new level opens when an iterating clause (`:for` or `:with`) follows a non-iterating clause.
+
 #+BEGIN_SRC scheme
-;; lockstep — pairs up, ends with the shorter
+;; Lockstep iteration:
 (loop (:for k keys) (:for v vals) (:acc out (listing (Tuple k v))))
 
-;; also lockstep: a :with iterates, so it does not break adjacency. ONE level,
-;; three clauses in step, ending with the shortest
-(loop (:for x xs) (:with a 0 (+ a 1)) (:for y ys) ...)
-
-;; nested — a cartesian product
+;; Nested iteration:
 (loop (:for x xs) (:subloop) (:for y ys) (:acc out (listing (Tuple x y))))
-
-;; also nested: a :let breaks adjacency just as well, and is the usual
-;; reason to — the inner sequence names the outer variable
-(loop (:for x xs) (:let n (size x)) (:for y (children x)) ...)
 #+END_SRC
 
-~(:subloop)~ emits nothing whatsoever. Its only role is to *not* be an iterating
-clause, so that the next one starts a level.
-
-Two consequences worth knowing. An ~:acc~ written above an inner ~:for~ belongs
-to the outer level and so steps once per *outer* iteration. And an accumulator
-declared inside a subloop persists across outer iterations — accumulators are
-hoisted, and nothing resets one on re-entry. A ~:with~ declared beside it does
-the opposite and restarts on every entry, so per-entry state is what a ~:with~ is
-for and state outliving the subloop is what the accumulator is for.
-
-~:when~ and ~:end-subloop-if~ are different jumps: ~:when~ skips one iteration of
-the level it appears in, while ~:end-subloop-if~ ends that level and resumes the
-enclosing one. At the outermost level there is nothing to resume, and rather than
-silently coinciding with ~:when~ it is an error.
-
-Every level compiles to a member of one flat group, so entering a subloop,
-returning from an exhausted one, and leaving the whole loop from any depth are
-all jumps within a single ~while~/~switch~ — no control flag is threaded, and an
-inner sequence is evaluated at the jump that enters its level rather than being
-hoisted.
-
-Every exit runs the finish block. ~=> expr~ sees each accumulator by name, bound
-to its *finished* value; with no ~=>~ the result is the single accumulator, or a
-tuple of them in declaration order, or ~void~ if there are none.
-
-In a collector form the **last positional argument is the per-iteration step
-expression** and everything before it constructs the collector: ~(listing y)~
-accumulates ~y~, and ~(folding 0 e)~ seeds with ~0~ and accumulates ~e~. Inside
-the loop an accumulator's name reads the value as of that point, which is what
-lets ~folding~ refer to what it has so far.
-
-The stock collectors are ~listing~, ~vecing~, ~mapping~, ~summing~, ~counting~
-and ~folding~; the stock sequences are ~List~, ~Vec~, ~Map~ and ~Range~.
-
-~(range lo hi)~ counts ~lo~ up to but not including ~hi~, and ~(range-by lo hi
-by)~ steps by ~by~, which must be positive. A range's cursor is the number
-itself, so a loop over one compiles to ~c = lo~, ~c < hi~, ~c += by~ with the
-bounds read straight out of the value. A new one of
-either is an ordinary implementation of ~Iterable~ or ~Collector~ in the
-prelude — the compiler knows only the clause keywords.
-
-Iterating a ~Map~ yields its pairs, so ~(loop (:for (Tuple k v) m) ...)~
-destructures them, and ~mapping~ takes such a pair whole. ~Vec~ and ~Map~ are
-walked with their own native enumerators rather than by index, and ~listing~,
-~vecing~ and ~mapping~ accumulate into the collections' builders — mutable
-accumulation, which is safe because a loop slot is used linearly and there is no
-way to resume a loop and meet the same accumulator twice.
-
-A loop compiles to a plain ~while~ with the whole cursor and collector protocol
-inlined away, and a compiler pass fails the build if one ever does not: leaving
-real calls behind would still be correct, but would allocate per iteration and
-overflow the stack on a long sequence rather than answer.
-
-Because ~bind~'s continuation is substituted rather than bound to a local, a
-recursive ~(do ...)~ block whose tail call is its last form compiles to a real
-loop. An implementation that mentions its continuation more than once cannot get
-that — substituting it would duplicate the whole rest of the block — so it is
-bound to a local instead, and the compiler warns that loops written through that
-monad will grow the stack.
+**Rules**:
+- `:subloop` explicitly forces a level transition.
+- Accumulators defined in outer levels persist across subloop iterations.
+- `:when` skips the current iteration of its level.
+- `:end-subloop-if` terminates the inner level and resumes the outer level.
+- At the outermost level, `:end-subloop-if` results in a compilation error.
+- The `range`, `range-by`, `listing`, `vecing`, `mapping`, `summing`, `counting`, and `folding` iterators/collectors are natively supported standard implementations.

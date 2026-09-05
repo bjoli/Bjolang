@@ -3244,33 +3244,42 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
           Node = TLet(name, false, noParams, typedVal, typedBody) }
 
     | ELet(name, isFun, args, typeAnn, value, body, r) ->
-        // For a function-shaped binding `typeAnn` is the *return* type, and is
-        // already accounted for by the shape; for a value binding it is the
-        // binding's own type.
-        let shape = if isFun then Some(localFunShape env args typeAnn) else None
+        let inferBinding () =
+            // For a function-shaped binding `typeAnn` is the *return* type, and is
+            // already accounted for by the shape; for a value binding it is the
+            // binding's own type.
+            let shape = if isFun then Some(localFunShape env args typeAnn) else None
 
-        let valType, typedVal, localFun =
-            match shape with
-            | Some s ->
-                let lambda, lf = inferLocalFunBody env s args r value
-                s.FunType, lambda, lf
-            | None ->
-                // When the binding has a type annotation, resolve it first and
-                // pass it down as the expected type.  For list / vec literals
-                // this enables per-element constructor injection before any
-                // element-level unification can fail.
-                let t, typed =
+            let valType, typedVal, localFun =
+                match shape with
+                | Some s ->
+                    let lambda, lf = inferLocalFunBody env s args r value
+                    s.FunType, lambda, lf
+                | None ->
+                    // When the binding has a type annotation, resolve it first and
+                    // pass it down as the expected type.  For list / vec literals
+                    // this enables per-element constructor injection before any
+                    // element-level unification can fail.
+                    let t, typed =
+                        match typeAnn with
+                        | Some tAnn ->
+                            let expectedType = resolveTypeAnnotation env.Registry tAnn
+                            inferChecked expectedType env value
+                        | None -> infer env value
+
                     match typeAnn with
-                    | Some tAnn ->
-                        let expectedType = resolveTypeAnnotation env.Registry tAnn
-                        inferChecked expectedType env value
-                    | None -> infer env value
+                    | Some tAnn -> unify env.Registry t (resolveTypeAnnotation env.Registry tAnn)
+                    | None -> ()
 
-                match typeAnn with
-                | Some tAnn -> unify env.Registry t (resolveTypeAnnotation env.Registry tAnn)
-                | None -> ()
+                    t, typed, noParams
 
-                t, typed, noParams
+            shape, valType, typedVal, localFun
+
+        // En nivå in bara för den bindning som faktiskt generaliseras. Ett
+        // värde binds monomorft, och dess celler hör hemma i den omgivande
+        // nivån — höjde vi den här skulle nästa syskonbindning kvantifiera dem.
+        let shape, valType, typedVal, localFun =
+            if isFun then atLevel inferBinding else inferBinding ()
 
         // Only a *function*-shaped local binding is generalized.
         //
@@ -3374,6 +3383,11 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
                 unify env.Registry valType expectedType
                 name, isFun, localFun, typedVal)
 
+        // Ingen egen nivå för gruppen, till skillnad från `ELet`. Varje medlem
+        // är bunden monomorft i `recEnv` medan kropparna kontrolleras, så
+        // cellerna tillhör den omgivande nivån och `generalizeLocal` nedan
+        // kvantifierar inget utöver vad annoteringarna redan namngav. En
+        // rekursiv lokal funktion är monomorf; se `057_local_generalization`.
         let finalEnv =
             List.zip bindings bindingMetas
             |> List.fold
@@ -4331,19 +4345,27 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
         // annotated branch of `let` does the same.
         let declaredType = Map.tryFind name sigs |> Option.map (fun (t, _, _) -> t)
 
+        // En nivå in, så att cellerna som föds här är synligt djupare än allt
+        // som redan står i omgivningen — importer, prelude och modulens
+        // tidigare deklarationer. `solvePending` ligger innanför: de celler den
+        // skapar hör till det här högerledet, och skapade på yttre nivå hade de
+        // dragit ner resten med sig.
         let exprType, typedExpr =
-            match declaredType with
-            | Some sigType -> inferChecked sigType env expr
-            | None -> infer env expr
+            atLevel (fun () ->
+                let exprType, typedExpr =
+                    match declaredType with
+                    | Some sigType -> inferChecked sigType env expr
+                    | None -> infer env expr
 
-        match declaredType with
-        | Some sigType -> unify env.Registry exprType sigType
-        | None -> ()
+                match declaredType with
+                | Some sigType -> unify env.Registry exprType sigType
+                | None -> ()
 
-        // Trait obligations are discharged before generalization: a scheme must
-        // not be built over a constructor that resolution would still have
-        // pinned down.
-        solvePending env
+                // Trait obligations are discharged before generalization: a scheme must
+                // not be built over a constructor that resolution would still have
+                // pinned down.
+                solvePending env
+                exprType, typedExpr)
 
         // The same value restriction `let` applies. It was missing here, so a
         // module-level `(def c (make-array 1))` was generalized over the element
@@ -4357,6 +4379,9 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
                     if isSyntacticValue env.Registry typedExpr then
                         generalize env exprType
                     else
+                        // Monomorf, men inferrad en nivå in — cellerna måste
+                        // ner igen innan de blir en del av omgivningen.
+                        demote env.Registry exprType
                         Scheme([], [], exprType)
                   IsMutable = false }
                 env
@@ -4530,6 +4555,15 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
                     { TraitName = originalName env.Registry traitName; TargetType = TVar varName })
             | None -> []
 
+        // Härifrån och fram till `exitLevel` nedan är vi en nivå in: parametrar
+        // utan signatur, returtypen och allt kroppen skapar föds djupare än
+        // omgivningen, och är därmed det `generalize` får kvantifiera.
+        //
+        // `atLevel` går inte att använda — blocket är hundratals rader långt
+        // och lämnar ifrån sig ett dussin namn. Ett kastat typfel lämnar
+        // räknaren uppe, och `Session.restore` är den som tar ner den.
+        enterLevel ()
+
         // Match defun args with the signature types
         let mandatoryArgNames = mandatoryNames defunArgs
         let keywordArgDefs =
@@ -4695,6 +4729,8 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
 
         solvePending env
 
+        exitLevel ()
+
         let scheme = generalize env funType
         let (Scheme(vars, _, schemeType)) = scheme
 
@@ -4815,10 +4851,15 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
         finalEnv, Map.remove name sigs, [ decl ]
 
     | DDefTuple(names, expr, r) ->
-        let exprType, typedExpr = infer env expr
-        let elementMetas = names |> List.map (fun _ -> freshMeta ())
-        unify env.Registry exprType (TTuple elementMetas)
-        solvePending env
+        // Samma nivåhöjning som `DDef`, och av samma skäl: varje komponent
+        // generaliseras för sig nedan.
+        let exprType, typedExpr, elementMetas =
+            atLevel (fun () ->
+                let exprType, typedExpr = infer env expr
+                let elementMetas = names |> List.map (fun _ -> freshMeta ())
+                unify env.Registry exprType (TTuple elementMetas)
+                solvePending env
+                exprType, typedExpr, elementMetas)
 
         let newEnv =
             List.zip names elementMetas
@@ -5891,10 +5932,14 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
                         | InlineTrait -> implTarget.FixedPrefix |> List.collect typeVarsOf |> Set.ofList
                         | InterfaceTrait -> freeTVars regEnv.Registry targetType |> Set.ofList
                     let remainingVars = freeTVars regEnv.Registry expectedSignature |> List.distinct
+                    //
+                    // `freshMetaInner`: `checkDecl` nedan generaliserar på den
+                    // här nivån, så metodens egna variabler måste ligga en
+                    // nivå in för att komma med i schemat igen.
                     let freshSubst =
                         remainingVars
                         |> List.filter (fun v -> not (Set.contains v classLevelVars))
-                        |> List.map (fun v -> v, freshMeta())
+                        |> List.map (fun v -> v, freshMetaInner ())
                         |> Map.ofList
                     let instantiatedSig = substTypeVars freshSubst expectedSignature
 

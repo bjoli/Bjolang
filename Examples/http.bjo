@@ -7,7 +7,8 @@
 
 ;; This defines both a sync and an async copy. Every function that touches bjolang IO
 ;; gets this. This fetches one url. If it is called from a sync context, it is blocking
-;; if it is called from a bjoroutine, it is async and suspends.
+;; if it is called from a bjoroutine, it is async, meaning it suspends if there is no
+;; data to be read.
 (: fetch-one (-> string Fetched))
 (defun (fetch-one url)
   (match (fetch (get url))
@@ -17,7 +18,7 @@
        (response-close r)
        (Fetched (url url) (status (response-status r)) (bytes (string-length body)))))))
 
-;; Collecting *does* suspend. promise-join can only be called in a bjoroutine.
+;; promise/join needs to be in a bjoroutine, because a join may wait (and suspend).
 (: collect (-bjo-> (Vec (Promise Fetched)) (Vec Fetched)))
 (defbjo (collect promises)
   (loop (:for p promises)
@@ -37,18 +38,16 @@
   (show ["  " label " " (long->string (stopwatch-ms sw)) "ms"])
   (println ""))
 
-(: default-urls (Vec string))
-(def urls
-  ["https://example.com"
-   "https://www.google.com"
-   "https://www.facebook.com"
-   "https://www.twitter.com"
-   "https://www.rfc-editor.org/rfc/rfc8259.txt"
-   "https://www.iana.org/help/example-domains"
-   "https://httpbin.org/delay/1"])
-
 
 (defun (main args)
+  (def urls
+    ["https://example.com"
+     "https://www.google.com"
+     "https://www.facebook.com"
+     "https://www.twitter.com"
+     "https://www.rfc-editor.org/rfc/rfc8259.txt"
+     "https://www.iana.org/help/example-domains"
+     "https://httpbin.org/delay/1"])
   (println "one at a time")
   (def sequential (stopwatch))
   (stopwatch-start! sequential)
