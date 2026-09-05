@@ -13,6 +13,14 @@
   (defun (fold f acc col)
     (vec-fold f acc col)))
 
+;; Egen liten kontroll. Modulen importerar ingenting med flit, så den kan inte
+;; använda `expect` ur (std simpletest); den skriver "ok:"/"FAILURE:" själv.
+(: check (-> string bool void))
+(defun (check label ok)
+  (if ok
+      (displayln (string-append "ok: " label))
+      (displayln (string-append "FAILURE: " label))))
+
 (defun (main)
   (def lst (Cons 1 (Cons 2 Nil)))
   (def v [1 2 3])
@@ -28,5 +36,10 @@
 
   ;; Foldable_Vec<int>.Instance.fold(...)
   (def from-vec (fold + 0 v))
+
+  ;; Vad de två foldarna faktiskt räknar ut, inte bara att de kompilerar.
+  (check "the List impl folds 1 + 2" (= from-list 3))
+  (check "the Vec impl folds 1 + 2 + 3" (= from-vec 6))
+  (check "the string is still the one that was bound" (= s "test"))
 
   (- (+ from-list from-vec) 9))

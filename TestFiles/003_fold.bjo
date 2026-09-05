@@ -1,4 +1,5 @@
 (import (std prelude))
+(import (std simpletest))
 (: foldl (-> (-> %a %b %b) %b (List %a) %b))
 (defun (foldl f init lst)
   (if (list-empty? lst)
@@ -7,5 +8,8 @@
 
 (defun (main argv)
   (def lst (Cons 1 (Cons 2 (Cons 3 Nil))))
-  (displayln (int->string (foldl (fun (x acc) (+ acc x)) 0 lst)))
+  (expect "a hand-written tail-recursive foldl" (foldl (fun (x acc) (+ acc x)) 0 lst) 6)
+  ;; Ordningen syns bara på en operation som inte är kommutativ.
+  (expect "and it folds from the left" (foldl (fun (x acc) (- x acc)) 0 lst) 2)
+  (expect "over the empty list it is the seed" (foldl (fun (x acc) (+ acc x)) 99 Nil) 99)
   0)

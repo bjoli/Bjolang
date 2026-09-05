@@ -1,3 +1,6 @@
+(import (std prelude))
+(import (std simpletest))
+
 ;; A `Struct` compiles to a value type and a `Record` to a reference type; both
 ;; are constructed by naming the type.
 (type
@@ -20,26 +23,26 @@
 
   ;; Fields may be written in any order: the constructor names them.
   (def s2 (Size (h 40) (w 30)))
-  (displayln (int->string (record-ref s2 w)))
-  (displayln (int->string (record-ref s2 h)))
+  (expect "fields out of order, w" (record-ref s2 w) 30)
+  (expect "fields out of order, h" (record-ref s2 h) 40)
 
   ;; field access
-  (displayln (int->string (struct-ref p x)))
-  (displayln (int->string (record-ref s w)))
+  (expect "struct field access" (struct-ref p x) 1)
+  (expect "record field access" (record-ref s w) 30)
 
   ;; functional update returning a new value, then immediately projected
-  (displayln (int->string (record-ref (record-set s (h 99)) h)))
-  (displayln (int->string (record-ref (record-set s (h 99)) w)))
+  (expect "record-set replaces h" (record-ref (record-set s (h 99)) h) 99)
+  (expect "record-set carries w over" (record-ref (record-set s (h 99)) w) 30)
 
   ;; update through a function
-  (displayln (int->string (struct-ref (shift-x p 5) x)))
-  (displayln (int->string (struct-ref (shift-x p 5) y)))
+  (expect "update through a function" (struct-ref (shift-x p 5) x) 6)
+  (expect "update through a function leaves y" (struct-ref (shift-x p 5) y) 2)
 
   ;; update of a module-level binding
-  (displayln (int->string (struct-ref (struct-set origin (x 42)) x)))
-  (displayln (int->string (struct-ref origin x)))
+  (expect "update of a module-level binding" (struct-ref (struct-set origin (x 42)) x) 42)
+  (expect "the module-level binding itself is untouched" (struct-ref origin x) 0)
 
   ;; multi-field update
-  (displayln (int->string (struct-ref (struct-set p (x 7) (y 8)) x)))
-  (displayln (int->string (struct-ref (struct-set p (x 7) (y 8)) y)))
+  (expect "multi-field update, x" (struct-ref (struct-set p (x 7) (y 8)) x) 7)
+  (expect "multi-field update, y" (struct-ref (struct-set p (x 7) (y 8)) y) 8)
   0)

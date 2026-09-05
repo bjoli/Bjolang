@@ -1,5 +1,6 @@
 
 (import (std prelude))
+(import (std simpletest))
 
 (: id (-> %a %a))
 (defun (id x) x)
@@ -18,6 +19,11 @@
     (let ((mapper (make-mapper id)))
      (mapper lst)))
   (def h (my-mapper my-list))
-  (displayln "h generated!")
-  (displayln (list-head h))
+  ;; Stängningen som `make-mapper` gav tillbaka ska mappa varje element,
+  ;; i ordning, och `id` ska lämna dem orörda.
+  (expect "the head of the mapped list" (list-head h) "hej")
+  (expect "every element, in order"
+          (list-foldl (fun (acc s) (string-append acc s)) "" h)
+          "hejdå")
+  (expect "the mapper preserves the length" (length h) 2)
   0)

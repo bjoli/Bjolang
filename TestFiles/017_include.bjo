@@ -2,12 +2,19 @@
 ;; included definitions land in *this* module, so unlike a source-level import
 ;; there is no second module for the code generator to drop.
 (include "inc/greeting.bjo")
+(import (std simpletest))
 
 (defun (main args)
   ;; `describe` prints and hands its argument back, so the value here is
   ;; genuinely not wanted — and under §8.2 that has to be said out loud.
   ;; `ignore` comes from the `(std prelude)` import inside the *included* file,
   ;; which is a dependency of this module rather than of a second one.
-  (ignore (describe 3))
-  (println (square 5))
+  ;; Utskriften fångas på en strängport så att den går att jämföra.
+  (def out (open-output-string))
+  (parameterize ((current-output-port out))
+    (ignore (describe 3)))
+  (expect "describe prints the square and the cube of 3"
+          (get-output-string out)
+          "9\n27\n")
+  (expect "square from the nested include" (square 5) 25)
   0)

@@ -1,4 +1,5 @@
 (import (std prelude))
+(import (std simpletest))
 
 ;; Regression test: a local binding that shadows an enclosing loop's name and is
 ;; called in tail position.
@@ -27,6 +28,9 @@
         (loop (- i 1) (+ acc 1)))))
 
 (defun (main args)
-  (println (shadowed 21))
-  (println (counted 1000000))
+  ;; Den skuggande bindningen fördubblar en gång; den yttre loopen körs inte om.
+  (expect "the shadowing local is called, not the named let" (shadowed 21) 42)
+  ;; Ett varv per steg, och tillräckligt många för att en riktig rekursion
+  ;; skulle spräcka stacken.
+  (expect "the unshadowed named let still becomes a jump" (counted 1000000) 1000000)
   0)

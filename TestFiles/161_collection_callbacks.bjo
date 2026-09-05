@@ -1,0 +1,549 @@
+;; Samlingarnas walks med suspenderande callback — sammanslagen fixtur.
+;;
+;; Slår ihop `161_list_callbacks.bjo`, `162_vec_callbacks.bjo`,
+;; `163_map_and_set_callbacks.bjo` och `164_seq_and_deque_callbacks.bjo`.
+;; Kommentarerna nedan står kvar ordagrant, så de gamla filnamnen nämns
+;; fortfarande i dem; varje avsnitt motsvarar en av de fyra filerna.
+;;
+;; Namn som krockade har fått prefix: `list-first-lines`/`vec-first-lines`,
+;; `list-total-length`/`vec-total-length`, och Seq/Deque-cellen heter
+;; `seq-seen` (Map/Set behöll `seen`).
+
+(import (std prelude))
+(import (std mutable deque))
+(import (std set))
+(import (std orderedmap))
+(import (std orderedset))
+(import (std simpletest))
+
+;; --- delade hjälpare, identiska i de fyra ursprungsfilerna --------------------
+
+(: run-int (-> (Promise int) int))
+(defun (run-int p)
+  (match (sync/blocking (promise-join p)) ((Ok n) n) ((Err e) -1)))
+
+(: run-str (-> (Promise string) string))
+(defun (run-str p)
+  (match (sync/blocking (promise-join p)) ((Ok s) s) ((Err e) "raised")))
+
+;; The yield point: `read-line` from a bjoroutine.
+(: slow-double (-bjo-> int int))
+(defbjo (slow-double n)
+  (ignore (read-line (open-input-string "tick\n")))
+  (* n 2))
+
+;; =============================================================================
+;; List
+;; =============================================================================
+;;
+;; List functions whose callback may suspend.
+;;
+;; `(list-map (bjoroutine (p) (read-line p)) ports)` was a type error until the
+;; five list functions that take a procedure moved out of the compiler's builtin
+;; table and into the prelude, written in Bjolang. The move is the whole fix: a
+;; parameter declared `-?->` gets a second copy of the function generated for a
+;; suspending callback, and the compiler can only copy a body it can see. A
+;; builtin's body is C#.
+;;
+;; What is *not* here is `vec-map` and `map-map`. Those are tree algorithms —
+;; an RRB list and a CHAMP trie — written in C# to copy as little as possible,
+;; and rewriting them in Bjolang to gain a colour would pay for it on every
+;; ordinary call. They keep their `->` callbacks, and the error a bjoroutine
+;; gets there says what to do instead.
+
+(: run-list (-> (Promise (List string)) (List string)))
+(defun (run-list p)
+  (match (sync/blocking (promise-join p))
+    ((Ok xs) xs)
+    ((Err e) (list "raised"))))
+
+(: two-ports (-> (List TextInputPort)))
+(defun (two-ports)
+  (list (open-input-string "one\ntwo\n") (open-input-string "three\n")))
+
+;; --- map ---------------------------------------------------------------------
+
+(: list-first-lines (-bjo-> (List TextInputPort) (List string)))
+(defbjo (list-first-lines ps)
+  (list-map (bjoroutine (p) (read-line p)) ps))
+
+;; --- filter ------------------------------------------------------------------
+;;
+;; The predicate suspends, and the elements it keeps are the ports that had
+;; something on their first line.
+
+(: non-empty-first (-bjo-> (List TextInputPort) int))
+(defbjo (non-empty-first ps)
+  (list-length
+    (list-filter (bjoroutine (p) (not (string-empty? (read-line p)))) ps)))
+
+;; --- the folds ---------------------------------------------------------------
+
+(: list-total-length (-bjo-> (List TextInputPort) int))
+(defbjo (list-total-length ps)
+  (list-foldl (bjoroutine (acc p) (+ acc (string-length (read-line p)))) 0 ps))
+
+(: joined (-bjo-> (List TextInputPort) string))
+(defbjo (joined ps)
+  (list-foldr (bjoroutine (p acc) (string-append (read-line p) acc)) "" ps))
+
+;; A right fold runs its steps back to front, so the reads happen in the
+;; opposite order to the list — which is worth having on the page, since it is
+;; the one place the colour makes the order visible.
+(: joined-check (-> string))
+(defun (joined-check)
+  (run-str (bjo (joined (two-ports)))))
+
+;; --- and the ordinary colour is untouched ------------------------------------
+;;
+;; The same five names, called with ordinary callbacks from ordinary functions.
+;; Which copy a call means is decided by the callback it is handed, so these
+;; reach the body that was always there.
+
+(: lengths (-> (List string) (List int)))
+(defun (lengths names) (list-map string-length names))
+
+(: longer-than (-> int (List string) (List string)))
+(defun (longer-than n names)
+  (list-filter (fun (s) (> (string-length s) n)) names))
+
+(: sum-lengths (-> (List string) int))
+(defun (sum-lengths names)
+  (list-foldl (fun (acc s) (+ acc (string-length s))) 0 names))
+
+(: concat (-> (List string) string))
+(defun (concat names)
+  (list-foldr (fun (s acc) (string-append s acc)) "" names))
+
+(: test-list (-> void))
+(defun (test-list)
+  ;; --- suspending callbacks --------------------------------------------------
+  (expect "list-map with a suspending callback"
+          (run-list (bjo (list-first-lines (two-ports))))
+          (list "one" "three"))
+  (expect "list-filter with a suspending predicate"
+          (run-int (bjo (non-empty-first (two-ports))))
+          2)
+  (expect "foldl with a suspending step"
+          (run-int (bjo (list-total-length (two-ports))))
+          8)
+  (expect "foldr with a suspending step"
+          (joined-check)
+          "onethree")
+
+  ;; --- ordinary callbacks ----------------------------------------------------
+  (expect "list-map, ordinarily" (lengths (list "ab" "cde")) (list 2 3))
+  (expect "list-filter, ordinarily" (longer-than 2 (list "ab" "cde")) (list "cde"))
+  (expect "foldl, ordinarily" (sum-lengths (list "ab" "cde")) 5)
+  (expect "foldr, ordinarily" (concat (list "ab" "cde")) "abcde"))
+
+;; =============================================================================
+;; Vec
+;; =============================================================================
+;;
+;; Vec functions whose callback may suspend, without giving up the tree.
+;;
+;; The list functions in `161_list_callbacks.bjo` moved into the prelude whole,
+;; because a cons list has no algorithm worth keeping. A `(Vec %a)` is an RRB
+;; tree: mapping one copies the spine and shares every subtree it can, and
+;; rewriting that in Bjolang would make every ordinary call pay for a colour it
+;; never uses.
+;;
+;; So these are `defbjouble`s — two bodies, one signature. The ordinary half is
+;; still the C# call it always was; the suspending half is an indexed walk
+;; written by hand. It is the first use of `defbjouble` that is not a leaf: the
+;; second body exists because the first cannot be awaited, rather than because
+;; the two colours call different .NET methods.
+;;
+;; `vec-any?`, `vec-find` and the rest are deliberately not converted. Their
+;; callbacks ask a question rather than do work, and a suspending one of those
+;; is a `vec-fold` away — so a second body would buy something already
+;; expressible. `vec-filter` is here because it is the one predicate that is
+;; not: filtering with a fold needs an intermediate structure.
+
+(: ports (-> (Vec TextInputPort)))
+(defun (ports)
+  (vec-add (vec-add (vec-empty) (open-input-string "one\n"))
+           (open-input-string "three\n")))
+
+;; --- suspending callbacks -----------------------------------------------------
+
+(: vec-first-lines (-bjo-> (Vec TextInputPort) string))
+(defbjo (vec-first-lines ps)
+  (->str (vec-map (bjoroutine (p) (read-line p)) ps)))
+
+(: loud-count (-bjo-> (Vec TextInputPort) int))
+(defbjo (loud-count ps)
+  (vec-length (vec-filter (bjoroutine (p) (not (string-empty? (read-line p)))) ps)))
+
+(: vec-total-length (-bjo-> (Vec TextInputPort) int))
+(defbjo (vec-total-length ps)
+  (vec-fold (bjoroutine (acc p) (+ acc (string-length (read-line p)))) 0 ps))
+
+;; `iter` stops early, so the second port is never read — which is the whole
+;; point of it, and the one place a suspending walk can be *observed* to stop
+;; rather than merely produce the right answer. "one" is three characters, so
+;; the predicate is false at the first element and the walk ends there.
+(def/mutable reads 0)
+
+(: read-until-short (-bjo-> (Vec TextInputPort) int))
+(defbjo (read-until-short ps)
+  (set! reads 0)
+  (ignore (vec-iter (bjoroutine (p)
+                      (let ((l (read-line p)))
+                        (set! reads (+ reads 1))
+                        (> (string-length l) 4)))
+                    ps))
+  reads)
+
+;; --- and the ordinary colour is untouched -------------------------------------
+;;
+;; These reach the C# bodies, which is what the arrangement is for.
+
+(: doubled (-> (Vec int) (Vec int)))
+(defun (doubled v) (vec-map (fun (x) (* x 2)) v))
+
+(: evens (-> (Vec int) (Vec int)))
+(defun (evens v) (vec-filter (fun (x) (> x 1)) v))
+
+(: summed (-> (Vec int) int))
+(defun (summed v) (vec-fold (fun (a x) (+ a x)) 0 v))
+
+(: nums (-> (Vec int)))
+(defun (nums)
+  (vec-add (vec-add (vec-add (vec-empty) 1) 2) 3))
+
+(: test-vec (-> void))
+(defun (test-vec)
+  (expect "vec-map with a suspending callback"
+          (run-str (bjo (vec-first-lines (ports)))) "[one three]")
+  (expect "vec-filter with a suspending predicate"
+          (run-int (bjo (loud-count (ports)))) 2)
+  (expect "fold with a suspending step"
+          (run-int (bjo (vec-total-length (ports)))) 8)
+  (expect "iter stops early, suspending"
+          (run-int (bjo (read-until-short (ports)))) 1)
+
+  (expect "vec-map, ordinarily" (->str (doubled (nums))) "[2 4 6]")
+  (expect "vec-filter, ordinarily" (->str (evens (nums))) "[2 3]")
+  (expect "fold, ordinarily" (summed (nums)) 6))
+
+;; =============================================================================
+;; Map and set
+;; =============================================================================
+;;
+;; Map and set walks whose callback may suspend.
+;;
+;; `defbjouble` per walk, as in `162_vec_callbacks.bjo`. A Vec is walked by
+;; index; these have none, so the suspending half holds the collection's own
+;; cursor across the yield point.
+;;
+;; The ordered two are checked by the order they produce, which sums and
+;; lengths cannot see. The hashed two have no order, so sums and lengths it is.
+
+(: slow-big? (-bjo-> int bool))
+(defbjo (slow-big? n)
+  (ignore (read-line (open-input-string "tick\n")))
+  (> n 2))
+
+;; ---------------------------------------------------------------------------
+;; Map
+;; ---------------------------------------------------------------------------
+
+(: pairs (-> (Map int int)))
+(defun (pairs)
+  (map-set (map-set (map-set (map-empty) 1 1) 2 2) 3 3))
+
+(: sum-values (-> (Map int int) int))
+(defun (sum-values m)
+  (map-fold (fun (acc k v) (+ acc v)) 0 m))
+
+(: map-mapped (-bjo-> int))
+(defbjo (map-mapped)
+  (sum-values (map-map (bjoroutine (k v) (slow-double v)) (pairs))))
+
+(: map-valued (-bjo-> int))
+(defbjo (map-valued)
+  (sum-values (map-map-values (bjoroutine (v) (slow-double v)) (pairs))))
+
+(: map-kept (-bjo-> int))
+(defbjo (map-kept)
+  (map-length (map-filter (bjoroutine (k v) (slow-big? v)) (pairs))))
+
+(: map-folded (-bjo-> int))
+(defbjo (map-folded)
+  (map-fold (bjoroutine (acc k v) (+ acc (slow-double v))) 0 (pairs)))
+
+;; `iter` stops at the first false. Observable, unlike the rest.
+(def/mutable steps 0)
+
+(: map-stopped (-bjo-> int))
+(defbjo (map-stopped)
+  (set! steps 0)
+  (ignore (map-iter (bjoroutine (k v)
+                      (set! steps (+ steps 1))
+                      (ignore (slow-double v))
+                      #f)
+                    (pairs)))
+  steps)
+
+(def/mutable seen 0)
+
+(: map-each (-bjo-> int))
+(defbjo (map-each)
+  (set! seen 0)
+  (map-for-each (bjoroutine (k v) (set! seen (+ seen (slow-double v)))) (pairs))
+  seen)
+
+;; ---------------------------------------------------------------------------
+;; Set
+;; ---------------------------------------------------------------------------
+
+(: numbers (-> (Set int)))
+(defun (numbers)
+  (list->set (list 1 2 3)))
+
+(: sum-set (-> (Set int) int))
+(defun (sum-set s)
+  (set-fold (fun (acc x) (+ acc x)) 0 s))
+
+(: set-mapped (-bjo-> int))
+(defbjo (set-mapped)
+  (sum-set (set-map (bjoroutine (x) (slow-double x)) (numbers))))
+
+(: set-kept (-bjo-> int))
+(defbjo (set-kept)
+  (set-length (set-filter (bjoroutine (x) (slow-big? x)) (numbers))))
+
+(: set-folded (-bjo-> int))
+(defbjo (set-folded)
+  (set-fold (bjoroutine (acc x) (+ acc (slow-double x))) 0 (numbers)))
+
+(: set-stopped (-bjo-> int))
+(defbjo (set-stopped)
+  (set! steps 0)
+  (ignore (set-iter (bjoroutine (x)
+                      (set! steps (+ steps 1))
+                      (ignore (slow-double x))
+                      #f)
+                    (numbers)))
+  steps)
+
+(: set-each (-bjo-> int))
+(defbjo (set-each)
+  (set! seen 0)
+  (set-for-each (bjoroutine (x) (set! seen (+ seen (slow-double x)))) (numbers))
+  seen)
+
+;; ---------------------------------------------------------------------------
+;; OrderedMap and OrderedSet
+;; ---------------------------------------------------------------------------
+;;
+;; Built out of order, so the order claims are about the collection.
+
+(: ordered-pairs (-> (OrderedMap int int)))
+(defun (ordered-pairs)
+  (list->orderedmap (list (Tuple 3 3) (Tuple 1 1) (Tuple 2 2))))
+
+(: ordered-numbers (-> (OrderedSet int)))
+(defun (ordered-numbers)
+  (list->orderedset (list 3 1 2)))
+
+(: joined-map (-> (OrderedMap int int) string))
+(defun (joined-map m)
+  (orderedmap-fold (fun (acc k v) (str acc (int->string v))) "" m))
+
+(: joined-set (-> (OrderedSet int) string))
+(defun (joined-set s)
+  (orderedset-fold (fun (acc x) (str acc (int->string x))) "" s))
+
+(: orderedmap-mapped (-bjo-> string))
+(defbjo (orderedmap-mapped)
+  (joined-map (orderedmap-map (bjoroutine (k v) (slow-double v)) (ordered-pairs))))
+
+(: orderedmap-valued (-bjo-> string))
+(defbjo (orderedmap-valued)
+  (joined-map (orderedmap-map-values (bjoroutine (v) (slow-double v)) (ordered-pairs))))
+
+(: orderedmap-kept (-bjo-> string))
+(defbjo (orderedmap-kept)
+  (joined-map (orderedmap-filter (bjoroutine (k v) (slow-big? v)) (ordered-pairs))))
+
+(: orderedmap-folded (-bjo-> string))
+(defbjo (orderedmap-folded)
+  (orderedmap-fold (bjoroutine (acc k v) (str acc (int->string (slow-double v))))
+                   ""
+                   (ordered-pairs)))
+
+(: orderedmap-stopped (-bjo-> int))
+(defbjo (orderedmap-stopped)
+  (set! steps 0)
+  (ignore (orderedmap-iter (bjoroutine (k v)
+                             (set! steps (+ steps 1))
+                             (slow-big? v))
+                           (ordered-pairs)))
+  steps)
+
+(def/mutable trail "")
+
+(: orderedmap-each (-bjo-> string))
+(defbjo (orderedmap-each)
+  (set! trail "")
+  (orderedmap-for-each (bjoroutine (k v) (set! trail (str trail (int->string (slow-double v)))))
+                       (ordered-pairs))
+  trail)
+
+(: orderedset-mapped (-bjo-> string))
+(defbjo (orderedset-mapped)
+  (joined-set (orderedset-map (bjoroutine (x) (slow-double x)) (ordered-numbers))))
+
+(: orderedset-kept (-bjo-> string))
+(defbjo (orderedset-kept)
+  (joined-set (orderedset-filter (bjoroutine (x) (slow-big? x)) (ordered-numbers))))
+
+(: orderedset-folded (-bjo-> string))
+(defbjo (orderedset-folded)
+  (orderedset-fold (bjoroutine (acc x) (str acc (int->string (slow-double x))))
+                   ""
+                   (ordered-numbers)))
+
+(: orderedset-stopped (-bjo-> int))
+(defbjo (orderedset-stopped)
+  (set! steps 0)
+  (ignore (orderedset-iter (bjoroutine (x)
+                             (set! steps (+ steps 1))
+                             (slow-big? x))
+                           (ordered-numbers)))
+  steps)
+
+(: orderedset-each (-bjo-> string))
+(defbjo (orderedset-each)
+  (set! trail "")
+  (orderedset-for-each (bjoroutine (x) (set! trail (str trail (int->string (slow-double x)))))
+                       (ordered-numbers))
+  trail)
+
+(: test-map-and-set (-> void))
+(defun (test-map-and-set)
+  (expect "map-map suspending" (run-int (bjo (map-mapped))) 12)
+  (expect "map-map-values suspending" (run-int (bjo (map-valued))) 12)
+  (expect "map-filter suspending" (run-int (bjo (map-kept))) 1)
+  (expect "map-fold suspending" (run-int (bjo (map-folded))) 12)
+  (expect "map-iter stops early, suspending" (run-int (bjo (map-stopped))) 1)
+  (expect "map-for-each suspending" (run-int (bjo (map-each))) 12)
+
+  (expect "set-map suspending" (run-int (bjo (set-mapped))) 12)
+  (expect "set-filter suspending" (run-int (bjo (set-kept))) 1)
+  (expect "set-fold suspending" (run-int (bjo (set-folded))) 12)
+  (expect "set-iter stops early, suspending" (run-int (bjo (set-stopped))) 1)
+  (expect "set-for-each suspending" (run-int (bjo (set-each))) 12)
+
+  (expect "orderedmap-map keeps its order" (run-str (bjo (orderedmap-mapped))) "246")
+  (expect "orderedmap-map-values keeps its order" (run-str (bjo (orderedmap-valued))) "246")
+  (expect "orderedmap-filter keeps its order" (run-str (bjo (orderedmap-kept))) "3")
+  (expect "orderedmap-fold keeps its order" (run-str (bjo (orderedmap-folded))) "246")
+  (expect "orderedmap-iter stops at the first small one" (run-int (bjo (orderedmap-stopped))) 1)
+  (expect "orderedmap-for-each keeps its order" (run-str (bjo (orderedmap-each))) "246")
+
+  (expect "orderedset-map keeps its order" (run-str (bjo (orderedset-mapped))) "246")
+  (expect "orderedset-filter keeps its order" (run-str (bjo (orderedset-kept))) "3")
+  (expect "orderedset-fold keeps its order" (run-str (bjo (orderedset-folded))) "246")
+  (expect "orderedset-iter stops at the first small one" (run-int (bjo (orderedset-stopped))) 1)
+  (expect "orderedset-for-each keeps its order" (run-str (bjo (orderedset-each))) "246")
+
+  ;; The ordinary colour still reaches the C# bodies. `118`, `119`, `120` and
+  ;; `043` cover it in depth.
+  (expect "map-map, ordinarily" (sum-values (map-map (fun (k v) (* v 2)) (pairs))) 12)
+  (expect "set-filter, ordinarily" (set-length (set-filter (fun (x) (> x 2)) (numbers))) 1)
+  (expect "orderedmap-fold, ordinarily" (joined-map (ordered-pairs)) "123")
+  (expect "orderedset-map, ordinarily"
+          (joined-set (orderedset-map (fun (x) (* x 2)) (ordered-numbers))) "246"))
+
+;; =============================================================================
+;; Seq and deque
+;; =============================================================================
+;;
+;; The eager Seq walks, and the deque's.
+;;
+;; `seq-fold` and `seq-for-each` were builtins. They are prelude functions now,
+;; over `seq-cursor`, which is what lets their callback suspend. `seq-map`,
+;; `seq-filter` and `seq-unfold` stay builtins: they are lazy, so the callback
+;; runs when the walker pulls rather than here.
+;;
+;; `deque-fold` and `deque-for-each` needed no body of their own — they hand
+;; the callback to `list-foldl` and `list-for-each`, which picks those
+;; functions' suspending copies.
+
+;; ---------------------------------------------------------------------------
+;; Seq
+;; ---------------------------------------------------------------------------
+
+(: seq-folded (-bjo-> int))
+(defbjo (seq-folded)
+  (seq-fold (bjoroutine (acc x) (+ acc (slow-double x))) 0 (seq-range 1 4)))
+
+(def/mutable seq-seen 0)
+
+(: seq-each (-bjo-> int))
+(defbjo (seq-each)
+  (set! seq-seen 0)
+  (ignore (seq-for-each (bjoroutine (x) (set! seq-seen (+ seq-seen (slow-double x))))
+                        (seq-range 1 4)))
+  seq-seen)
+
+;; The lazy half still produces ordinarily while the eager half suspends.
+(: over-lazy (-bjo-> int))
+(defbjo (over-lazy)
+  (seq-fold (bjoroutine (acc x) (+ acc (slow-double x)))
+            0
+            (seq-filter (fun (x) (> x 1)) (seq-map (fun (x) (+ x 1)) (seq-range 0 3)))))
+
+;; ---------------------------------------------------------------------------
+;; Deque
+;; ---------------------------------------------------------------------------
+
+(: three (-> (Deque int)))
+(defun (three)
+  (list->deque (list 1 2 3)))
+
+(: deque-folded (-bjo-> int))
+(defbjo (deque-folded)
+  (deque-fold (bjoroutine (acc x) (+ acc (slow-double x))) 0 (three)))
+
+(: deque-each (-bjo-> int))
+(defbjo (deque-each)
+  (set! seq-seen 0)
+  (deque-for-each (bjoroutine (x) (set! seq-seen (+ seq-seen (slow-double x)))) (three))
+  seq-seen)
+
+;; Both halves occupied, so the walk crosses the reversed rear list.
+(: split (-> (Deque int)))
+(defun (split)
+  (let ((d (list->deque (list 2 3))))
+    (deque-push-front! d 1)
+    (deque-push-back! d 4)
+    d))
+
+(: deque-split-folded (-bjo-> string))
+(defbjo (deque-split-folded)
+  (deque-fold (bjoroutine (acc x) (str acc (int->string (slow-double x)))) "" (split)))
+
+(: test-seq-and-deque (-> void))
+(defun (test-seq-and-deque)
+  (expect "seq-fold suspending" (run-int (bjo (seq-folded))) 12)
+  (expect "seq-for-each suspending" (run-int (bjo (seq-each))) 12)
+  (expect "a suspending fold over a lazy seq" (run-int (bjo (over-lazy))) 10)
+
+  (expect "deque-fold suspending" (run-int (bjo (deque-folded))) 12)
+  (expect "deque-for-each suspending" (run-int (bjo (deque-each))) 12)
+  (expect "deque-fold keeps front to back" (run-str (bjo (deque-split-folded))) "2468")
+
+  (expect "seq-fold, ordinarily" (seq-fold (fun (a x) (+ a x)) 0 (seq-range 1 4)) 6)
+  (expect "deque-fold, ordinarily" (deque-fold (fun (a x) (+ a x)) 0 (three)) 6))
+
+(defun (main)
+  (test-list)
+  (test-vec)
+  (test-map-and-set)
+  (test-seq-and-deque)
+  0)

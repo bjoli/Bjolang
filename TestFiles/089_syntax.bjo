@@ -1,0 +1,239 @@
+;; Sammanslagen av 089_syntax_values.bjo, 090_syntax_quote.bjo och
+;; 093_syntax_match.bjo. Ingen av dem expanderar ett makro — därav 091/094 hålls
+;; utanför.
+;;
+;; Några etiketter krockade mellan filerna och har därför fått prefix:
+;; `template-` för mallarna och `match-` för syntax-match.
+
+(import (std syntax-match))
+(import (std simpletest))
+
+;; ---------------------------------------------------------------------------
+;; Syntax som värde (089_syntax_values)
+;; ---------------------------------------------------------------------------
+
+;; `Syntax` is a builtin union, backed by `Bjolang.Runtime.Syntax`. It is what a
+;; macro transformer takes and returns, but it is an ordinary value type: it can
+;; be built and matched with nothing macro-related in sight, which is what this
+;; file checks.
+;;
+;; The cases are SSym, SDatum, SInt, SStr, SChar, SKey and SList. `SSym` is an
+;; identifier and `SDatum` is a quoted symbol written as data; they carry the
+;; same payload and differ only in whether hygiene renames them.
+
+(: describe (-> Syntax string))
+(defun (describe s)
+  (match s
+    ((SSym name) (string-append "sym:" (symbol->string name)))
+    ((SDatum name) (string-append "datum:" (symbol->string name)))
+    ((SInt text) (string-append "int:" text))
+    ((SStr text) (string-append "str:" text))
+    ((SChar c) (string-append "char:" (char->string c)))
+    ((SKey k) (string-append "key:" (keyword->string k)))
+    ((SList items) (string-append "list:" (int->string (length items))))))
+
+;; The payload of SList is a real (List Syntax), so ordinary list functions work
+;; on it — which is what makes plain `match` usable for macro bodies before
+;; there is a `syntax-match`.
+(: leaves (-> Syntax int))
+(defun (leaves s)
+  (match s
+    ((SList items) (fold (fun (acc item) (+ acc (leaves item))) 0 items))
+    (_ 1)))
+
+(: test-values (-> void))
+(defun (test-values)
+  (def one (SInt "1"))
+  (def x (SSym 'x))
+  (def form (SList (list (SSym 'add) x one)))
+
+  (expect "sym" (describe x) "sym:x")
+  (expect "datum" (describe (SDatum 'x)) "datum:x")
+  (expect "int" (describe one) "int:1")
+  (expect "str" (describe (SStr "hi")) "str:hi")
+  (expect "char" (describe (SChar #\q)) "char:q")
+  (expect "key" (describe (SKey #:when)) "key:when")
+  (expect "list" (describe form) "list:3")
+
+  ;; A nested form, counted through the list payload.
+  (def nested (SList (list (SSym 'f) form (SList (list (SSym 'g))))))
+  (expect "leaves" (leaves nested) 5)
+
+  ;; `syntax->string` renders back to something that reads as source. This is
+  ;; what a macro's error message quotes.
+  (expect "render" (syntax->string form) "(add x 1)")
+  (expect "render-nested" (syntax->string nested) "(f (add x 1) (g))")
+  (expect "render-datum" (syntax->string (SDatum 'quoted)) "'quoted")
+  (expect "render-str" (syntax->string (SStr "hi")) "\"hi\"")
+  (expect "render-key" (syntax->string (SKey #:when)) "#:when")
+
+  ;; A value built here has no range: only the expander fills those in, from the
+  ;; call site of the macro that produced the node.
+  (expect "no-file" (syntax-file form) "<unknown>")
+  (expect "no-line" (syntax-line form) 0))
+
+;; ---------------------------------------------------------------------------
+;; Syntaxcitat (090_syntax_quote)
+;; ---------------------------------------------------------------------------
+
+;; `#'form` is syntax-quote: it builds the `Syntax` value that describes `form`.
+;;
+;; It is spelled differently from `'(...)` because the two build different
+;; things. `'(a b)` is a list literal and is homogeneous — every element shares
+;; a type — while a template is heterogeneous by nature, so everything inside
+;; `#'` becomes a `Syntax` and the whole thing types as one.
+;;
+;;   ,x   splices a Syntax value
+;;   ,@xs splices a (List Syntax)
+;;   'foo inside a template is a datum, not an identifier: it is never renamed.
+
+(: render (-> string Syntax string void))
+(defun (render what s want) (expect what (syntax->string s) want))
+
+(: test-quote (-> void))
+(defun (test-quote)
+  ;; A bare identifier. This is the shape `inject` and `compare` are given.
+  (render "ident" #'foo "foo")
+
+  ;; A form. Nothing here is evaluated — `if` and `a` are identifiers in the
+  ;; template, not references to anything in scope.
+  (render "form" #'(if a b) "(if a b)")
+  (render "nested" #'(let ((x 1)) x) "(let ((x 1)) x)")
+
+  ;; Literals keep their kind.
+  (render "literals" #'(1 "s" #\c #:k) "(1 \"s\" #\\c #:k)")
+  (render "float" #'(1.5) "(1.5)")
+
+  ;; A quoted symbol inside a template is a datum. Note this is why `''foo` is
+  ;; never needed to write one.
+  (render "template-datum" #'(f 'lit) "(f 'lit)")
+
+  ;; Unquote splices a computed Syntax.
+  (def y (SSym 'y))
+  (render "unquote" #'(f ,y) "(f y)")
+  (render "unquote-twice" #'(f ,y ,y) "(f y y)")
+  (render "unquote-nested" #'(f (g ,y) h) "(f (g y) h)")
+
+  ;; Unquote-splicing contributes a whole list where its siblings contribute one
+  ;; element each.
+  (def args2 (list (SSym 'p) (SSym 'q)))
+  (render "splice" #'(f ,@args2) "(f p q)")
+  (render "splice-middle" #'(f ,@args2 g) "(f p q g)")
+  (render "splice-after" #'(f g ,@args2) "(f g p q)")
+  (render "splice-both" #'(f ,@args2 ,y ,@args2) "(f p q y p q)")
+  (render "splice-empty" #'(f ,@(list) g) "(f g)")
+
+  ;; An empty form, and a form that is only a splice.
+  (render "template-empty" #'() "()")
+  (render "only-splice" #'(,@args2) "(p q)")
+
+  ;; A template is an ordinary value: it can be built in a helper and returned.
+  (render "computed" (SList (list (SSym 'wrap) #'(inner 1))) "(wrap (inner 1))"))
+
+;; ---------------------------------------------------------------------------
+;; syntax-match (093_syntax_match)
+;; ---------------------------------------------------------------------------
+
+;; `syntax-match` is `match` with a pattern language for forms. It is a macro
+;; like any other — `TestFiles/094_macro_syntax_match.bjo` uses it where it is
+;; meant to be used, inside a transformer — so nothing here involves a macro of
+;; its own. A `Syntax` is an ordinary value, and this file matches ones written
+;; with `#'`.
+;;
+;; Every clause becomes one arm of one `match`, which is what makes a failed
+;; test fall through to the next clause exactly as a shape that does not match
+;; would.
+
+(: rendered (-> (List Syntax) string))
+(defun (rendered items)
+  (fold (fun (acc item) (string-append acc (syntax->string item))) "" items))
+
+;; The pattern kinds, in one function. Clause order decides: `(f x)` is two
+;; items and `(f x ...)` is one or more, so the narrower one is written first.
+(: shape (-> Syntax string))
+(defun (shape s)
+  (syntax-match s
+    ;; A quoted name matches that identifier, and nothing else.
+    (('else x) (string-append "else:" (syntax->string x)))
+    ;; A literal matches itself.
+    (17 "seventeen")
+    ("hi" "greeting")
+    (#\q "letter")
+    (#:when "keyword")
+    ;; A form of exactly two, then of one or more.
+    ((f x) (string-append "pair:" (rendered (list f x))))
+    ((f x ...) (string-append "rest:" (int->string (length x))))
+    ;; An empty form is a shape like any other.
+    (() "nothing")
+    ;; A bare variable matches whatever is left. Because it cannot fail, no
+    ;; fallthrough arm is added — which is why this function may answer a
+    ;; `string` rather than being pinned to `Syntax` by an unreachable
+    ;; `syntax-error`.
+    (other (string-append "atom:" (syntax->string other)))))
+
+;; An ellipsis over a compound: every remaining item has to match `(name value)`,
+;; and each of that pattern's variables collects what it matched.
+(: binding-list (-> Syntax string))
+(defun (binding-list s)
+  (syntax-match s
+    ((_ ((name value) ...) body ...)
+     (string-append (rendered name)
+                    (string-append "=" (string-append (rendered value)
+                                                      (string-append "/" (rendered body))))))
+    (_ "no")))
+
+;; Two ellipses deep. `arg` is bound once per argument of each call, so it is a
+;; list of lists, and `head` is a list.
+(: calls (-> Syntax string))
+(defun (calls s)
+  (syntax-match s
+    ((_ (head arg ...) ...)
+     (string-append (rendered head)
+                    (string-append ":" (int->string (fold (fun (n args) (+ n (length args))) 0 arg)))))
+    (_ "no")))
+
+;; A clause body may be several forms, and the pattern's variables are in scope
+;; throughout.
+(: several (-> Syntax int))
+(defun (several s)
+  (syntax-match s
+    ((_ items ...)
+     (def n (length items))
+     (+ n n))
+    (_ 0)))
+
+(: test-match (-> void))
+(defun (test-match)
+  (expect "literal-ident" (shape #'(else 1)) "else:1")
+  (expect "not-that-ident" (shape #'(other 1)) "pair:other1")
+  (expect "match-int" (shape #'17) "seventeen")
+  (expect "other-int" (shape #'18) "atom:18")
+  (expect "string" (shape #'"hi") "greeting")
+  (expect "match-char" (shape #'#\q) "letter")
+  (expect "keyword" (shape #'#:when) "keyword")
+  (expect "pair" (shape #'(f x)) "pair:fx")
+  (expect "rest" (shape #'(f x y z)) "rest:3")
+  (expect "one" (shape #'(f)) "rest:0")
+  (expect "empty" (shape #'()) "nothing")
+  (expect "atom" (shape #'lonely) "atom:lonely")
+
+  ;; A quoted name in the input matches a quoted name in the pattern: an
+  ;; identifier and a datum are the same name reached two ways.
+  (expect "match-datum" (shape #'('else 2)) "else:2")
+
+  (expect "bindings" (binding-list #'(let ((a 1) (b 2)) (+ a b) a)) "ab=12/(+ a b)a")
+  (expect "no-bindings" (binding-list #'(let () x)) "=/x")
+  ;; `(a)` is not `(name value)`, so the whole clause fails and the next one
+  ;; answers — a check that fails falls through like a shape that does not fit.
+  (expect "not-bindings" (binding-list #'(let (a) x)) "no")
+
+  (expect "nested-ellipsis" (calls #'(m (f 1 2) (g) (h 3))) "fgh:3")
+  (expect "nested-empty" (calls #'(m)) ":0")
+
+  (expect "several-bodies" (several #'(f a b)) 4))
+
+(defun (main args)
+  (test-values)
+  (test-quote)
+  (test-match)
+  0)

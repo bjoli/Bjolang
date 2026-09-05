@@ -1,9 +1,20 @@
 (import (std prelude))
+(import (std simpletest))
 
+;; `println` och `print` namnger ingen port, utan skriver dit den dynamiska
+;; omgivningen pekar. Det gör att det de faktiskt sänder ut går att fånga och
+;; jämföra — annars är det bara en utskrift ingen läser.
 (defun (main args)
-  (println 42)
-  (println "hello")
-  (println 3.14d)
-  (print "no newline: ")
-  (println 100)
+  (def out (open-output-string))
+
+  (parameterize ((current-output-port out))
+    (println 42)
+    (println "hello")
+    (println 3.14d)
+    (print "no newline: ")
+    (println 100))
+
+  (expect "println at int, string and double, and print without a newline"
+          (get-output-string out)
+          "42\nhello\n3.14\nno newline: 100\n")
   0)

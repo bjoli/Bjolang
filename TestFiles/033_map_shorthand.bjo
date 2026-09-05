@@ -1,41 +1,40 @@
 (import (std prelude))
+(import (std simpletest))
 
 (defun (main)
   ;; 1. Empty map shorthand
   (def m0 #map())
-  (println (if (map-empty? m0) "m0 empty: yes" "m0 empty: no"))
-  (println (map-length m0))
+  (expect "#map() is empty" (map-empty? m0) #t)
+  (expect "and has no entries" (map-length m0) 0)
 
   ;; 2. Evaluated map with (key value) pairs
   (def m1 #map(("a" 10) ("b" (+ 10 10))))
-  (println (map-length m1))
-  (println (map-ref m1 "a"))
-  (println (map-ref m1 "b"))
+  (expect "a literal with two pairs has two entries" (map-length m1) 2)
+  (expect "a literal value arrives as written" (map-ref m1 "a") 10)
+  (expect "a literal value is evaluated, not quoted" (map-ref m1 "b") 20)
 
   ;; 3. Evaluated map with variables
   (def key "dynKey")
   (def val 99)
   (def m2 #map((key val) ("fixed" 123)))
-  (println (map-length m2))
-  (println (map-ref m2 "dynKey"))
-  (println (map-ref m2 "fixed"))
+  (expect "a literal with a variable pair has two entries" (map-length m2) 2)
+  (expect "the key position is evaluated" (map-ref m2 "dynKey") 99)
+  (expect "next to a constant pair" (map-ref m2 "fixed") 123)
 
   ;; 4. Different pair styles: brackets [k v] and dotted (k . v)
   (def m3 #map([ "x" 100 ] [ "y" 200 ]))
-  (println (map-length m3))
-  (println (map-ref m3 "x"))
-  (println (map-ref m3 "y"))
+  (expect "bracket pairs give two entries" (map-length m3) 2)
+  (expect "first bracket pair" (map-ref m3 "x") 100)
+  (expect "second bracket pair" (map-ref m3 "y") 200)
 
   (def m4 #map(( "alpha" . 1 ) ( "beta" . 2 )))
-  (println (map-length m4))
-  (println (map-ref m4 "alpha"))
-  (println (map-ref m4 "beta"))
+  (expect "dotted pairs give two entries" (map-length m4) 2)
+  (expect "first dotted pair" (map-ref m4 "alpha") 1)
+  (expect "second dotted pair" (map-ref m4 "beta") 2)
 
   ;; 5. Outer brackets #map[...]
   (def m5 #map[("one" 1) ("two" 2)])
-  (println (map-length m5))
-  (println (map-ref m5 "one"))
-  (println (map-ref m5 "two"))
-
-  (println "Map shorthand tests passed!")
+  (expect "outer brackets give two entries" (map-length m5) 2)
+  (expect "first entry through outer brackets" (map-ref m5 "one") 1)
+  (expect "second entry through outer brackets" (map-ref m5 "two") 2)
   0)

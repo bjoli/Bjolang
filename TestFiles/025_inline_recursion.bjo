@@ -4,6 +4,7 @@
 ;; spliced body falls back to the impl's landing pad, which is emitted for every
 ;; impl method whether or not anything is proven to need it.
 (import (std prelude))
+(import (std simpletest))
 
 ;; ---------------------------------------------------------------------------
 ;; Self-recursion
@@ -66,10 +67,15 @@
   (count l))
 
 (defun (main)
-  (println (string-append "[ " (show (Cons 1 (Cons 2 (Cons 3 Nil))))))
-  (println (if (my-even? 10) "10 even" "10 odd"))
-  (println (if (my-odd? 7) "7 odd" "7 even"))
-  (println (if (my-even? 0) "0 even" "0 odd"))
-  (println (shadowed 3))
-  (println (twelve 1 "b" #t 4 5 6 7 8 9 10 11 [1 2 3 4 5]))
+  (expect "the recursive edge still renders every element"
+          (string-append "[ " (show (Cons 1 (Cons 2 (Cons 3 Nil)))))
+          "[ 1 2 3 ]")
+  (expect-true "10 is even" (my-even? 10))
+  (expect-true "7 is odd" (my-odd? 7))
+  (expect-true "0 is even" (my-even? 0))
+  ;; Innersta x är 7*10, och det yttre x är fortfarande 7.
+  (expect "each shadowing let keeps its own binding" (shadowed 3) 77)
+  (expect "the dictionary lands on the twelfth variable"
+          (twelve 1 "b" #t 4 5 6 7 8 9 10 11 [1 2 3 4 5])
+          5)
   0)

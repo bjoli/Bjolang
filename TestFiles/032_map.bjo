@@ -1,55 +1,62 @@
 (import (std prelude))
+(import (std simpletest))
 
 (defun (main)
   ;; 1. Basic map operations
   (def m (map-empty))
-  (println (if (map-empty? m) "empty: yes" "empty: no"))
-  (println (map-length m))
+  (expect "a fresh map is empty" (map-empty? m) #t)
+  (expect "and has no entries" (map-length m) 0)
 
   (def m1 (map-set m "a" 10))
   (def m2 (map-set (map-set m "a" 10) "b" 20))
-  (println (if (map-empty? m1) "m1 empty: yes" "m1 empty: no"))
-  (println (map-length m1))
-  (println (map-length m2))
-  (println (map-ref m2 "a"))
-  (println (map-ref m2 "b"))
-  (println (map-ref-or m2 "c" 999))
-  (println (if (map-contains? m2 "a") "has a: yes" "has a: no"))
-  (println (if (map-has-key? m2 "z") "has z: yes" "has z: no"))
+  (expect "a map with an entry is not empty" (map-empty? m1) #f)
+  (expect "map-set adds one entry" (map-length m1) 1)
+  ;; m är oförändrad: map-set returnerar en ny map.
+  (expect "map-set leaves the original alone" (map-length m) 0)
+  (expect "two map-sets add two entries" (map-length m2) 2)
+  (expect "map-ref finds the first key" (map-ref m2 "a") 10)
+  (expect "map-ref finds the second key" (map-ref m2 "b") 20)
+  (expect "map-ref-or falls back on a missing key" (map-ref-or m2 "c" 999) 999)
+  (expect "map-ref-or prefers a present key" (map-ref-or m2 "a" 999) 10)
+  (expect "map-contains? finds a present key" (map-contains? m2 "a") #t)
+  (expect "map-has-key? refuses an absent key" (map-has-key? m2 "z") #f)
 
   (def m3 (map-remove m2 "a"))
-  (println (map-length m3))
-  (println (if (map-contains? m3 "a") "has a: yes" "has a: no"))
+  (expect "map-remove drops one entry" (map-length m3) 1)
+  (expect "and the removed key is gone" (map-contains? m3 "a") #f)
 
   ;; 2. Merge and higher order functions
   (def ma (map-set (map-set (map-empty) "x" 1) "y" 2))
   (def mb (map-set (map-set (map-empty) "y" 20) "z" 30))
   (def merged (map-merge ma mb))
-  (println (map-length merged))
-  (println (map-ref merged "y"))
-  (println (map-ref merged "z"))
+  (expect "a merge unions the keys" (map-length merged) 3)
+  (expect "the right hand side wins a collision" (map-ref merged "y") 20)
+  (expect "and its own keys come along" (map-ref merged "z") 30)
 
   ;; A Map callback takes the key and the value as two arguments. The resolver
   ;; of a merge sees the key and the two values that collided under it, so it
   ;; takes three.
   (def merged-with (map-merge-with (fun (_ v1 v2) (+ v1 v2)) ma mb))
-  (println (map-ref merged-with "y"))
+  (expect "a resolver sees both collided values" (map-ref merged-with "y") 22)
+  (expect "and is not called for a key that did not collide"
+          (map-ref merged-with "x") 1)
 
   (def doubled (map-map (fun (_ v) (* v 2)) ma))
-  (println (map-ref doubled "x"))
-  (println (map-ref doubled "y"))
+  (expect "map-map rewrites the first value" (map-ref doubled "x") 2)
+  (expect "map-map rewrites the second value" (map-ref doubled "y") 4)
 
   (def filtered (map-filter (fun (_ v) (> v 1)) ma))
-  (println (map-length filtered))
-  (println (map-ref filtered "y"))
+  (expect "map-filter keeps only the passing entry" (map-length filtered) 1)
+  (expect "and that entry is the one that passed" (map-ref filtered "y") 2)
 
   ;; Keys only move through map-map-values' sibling: the value mapper leaves
   ;; them alone and changes the value type.
   (def shown (map-map-values int->string ma))
-  (println (map-ref shown "x"))
+  (expect "map-map-values changes the value type" (map-ref shown "x") "1")
+  (expect "and keeps the keys" (map-ref shown "y") "2")
 
   (def direct (map-fold (fun (acc _ v) (+ acc v)) 0 ma))
-  (println direct)
+  (expect "map-fold reaches every value" direct 3)
 
   ;; The same fold reached through the Foldable trait. This is the one place the
   ;; pair survives: `%item` is one thing, so the folder takes one argument.
@@ -57,17 +64,15 @@
                    (def (_ . v) kv)
                    (+ acc v))
               0 ma))
-  (println sum)
+  (expect "the Foldable fold agrees with map-fold" sum 3)
 
   ;; 3. Conversions
   (def l (Cons (Tuple "k1" 100) (Cons (Tuple "k2" 200) Nil)))
   (def mfromlist (list->map l))
-  (println (map-length mfromlist))
-  (println (map-ref mfromlist "k1"))
-  (println (map-ref mfromlist "k2"))
+  (expect "list->map takes one entry per pair" (map-length mfromlist) 2)
+  (expect "list->map keeps the first pair" (map-ref mfromlist "k1") 100)
+  (expect "list->map keeps the second pair" (map-ref mfromlist "k2") 200)
 
   (def l2 (map->list mfromlist))
-  (println (list-length l2))
-
-  (println "Map tests passed!")
+  (expect "map->list gives one pair per entry" (list-length l2) 2)
   0)

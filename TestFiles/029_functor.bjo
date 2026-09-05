@@ -1,4 +1,5 @@
 (import (std prelude))
+(import (std simpletest))
 
 ;; Functor is the same shape as bind: the hole occurs twice, at two different
 ;; arguments.
@@ -22,9 +23,29 @@
 (defun (show-list xs)
   (list-foldl (fun (acc x) (string-append acc (string-append " " x))) "" xs))
 
+;; Samma rendering för en lista som inte bytt elementtyp.
+(: show-ints (-> (List int) string))
+(defun (show-ints xs)
+  (list-foldl (fun (acc x) (string-append acc (string-append " " (int->string x)))) "" xs))
+
 (defun (main)
   ;; Changes the element type: List int -> List string
-  (println (show-list (fmap (Cons 1 (Cons 2 Nil)) int->string)))
-  (println (match (fmap (Some 21) (fun (n) (* n 2))) ((Some v) (int->string v)) (None "none")))
-  (println (match (fmap (MkPair 3 4) int->string) ((MkPair a b) (string-append a b))))
+  (expect "fmap over a List, int -> string"
+          (show-list (fmap (Cons 1 (Cons 2 Nil)) int->string))
+          " 1 2")
+  (expect "fmap over an Option keeps the Some"
+          (match (fmap (Some 21) (fun (n) (* n 2))) ((Some v) (int->string v)) (None "none"))
+          "42")
+  (expect "fmap over this file's own Pair hits both fields"
+          (match (fmap (MkPair 3 4) int->string) ((MkPair a b) (string-append a b)))
+          "34")
+
+  ;; A *local* helper with no signature. Its parameter type is a metavariable
+  ;; when its body is checked, and the trait obligation is deferred — so the
+  ;; question is whether the use site below gets to pin it first.
+  (defun (bump fa) (fmap fa (fun (n) (+ n 1))))
+
+  (expect "the use site pins the helper to List int"
+          (show-ints (bump (Cons 1 (Cons 2 Nil))))
+          " 2 3")
   0)

@@ -205,13 +205,13 @@ let moduleNamespace (path: string) : string =
         | null | "" -> IO.Path.GetPathRoot full
         | d -> d
 
-    let lib = Paths.libDir.TrimEnd IO.Path.DirectorySeparatorChar
+    let rec libRootOf (d: string) =
+        if String.IsNullOrEmpty d then None
+        elif IO.Path.GetFileName d = "lib" && IO.Directory.Exists(IO.Path.Combine(d, "std")) then Some d
+        else libRootOf (IO.Path.GetDirectoryName d)
 
-    let underLib =
-        dir = lib
-        || dir.StartsWith(lib + string IO.Path.DirectorySeparatorChar, StringComparison.Ordinal)
-
-    if underLib then
+    match libRootOf dir with
+    | Some lib ->
         let relative = dir.Substring(lib.Length).Trim IO.Path.DirectorySeparatorChar
 
         let segments =
@@ -223,7 +223,7 @@ let moduleNamespace (path: string) : string =
                 |> List.ofArray
 
         $"""%s{moduleNamespaceRoot}.%s{String.concat "." segments}"""
-    else
+    | None ->
         let leaf =
             match IO.Path.GetFileName dir with
             | null | "" -> "root"

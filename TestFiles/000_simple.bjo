@@ -1,5 +1,6 @@
 
 (import (std prelude))
+(import (std simpletest))
 
 (: match-list (-> (List string) string))
 (defun (match-list l)
@@ -9,14 +10,16 @@
 
 (defun (main args)
   (def alst (Cons "hej" Nil))
-  (displayln (match-list alst))
+  (expect "match reaches the Cons arm" (match-list alst) "hej")
+  (expect "and the Nil arm" (match-list Nil) "empty")
 
-  ;; Using named let
-  (let loop ((x 10))
-    (if (= x 0)
-        (displayln "done!")
-        (let ()
-          (displayln "looping...")
-          (loop (- x 1)))))
+  ;; Namngiven let. Varven räknas i stället för att skrivas ut, så att antalet
+  ;; är något som går att underkänna.
+  (def laps
+    (let loop ((x 10) (n 0))
+      (if (= x 0)
+          n
+          (loop (- x 1) (+ n 1)))))
 
+  (expect "a named let runs once per step" laps 10)
   0)

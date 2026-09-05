@@ -1,5 +1,8 @@
 ;; Vec patterns: bracket form [a b c ...] and (Vec a b c ...), with rest args.
 
+(import (std prelude))
+(import (std simpletest))
+
 ;; Fixed-length bracket patterns, including the empty vec.
 (: describe (-> (Vec int) string))
 (defun (describe v)
@@ -39,14 +42,14 @@
     (_ 0)))
 
 (defun (main args)
-  (displayln (describe []))
-  (displayln (describe [7]))
-  (displayln (describe [7 8]))
-  (displayln (describe [7 8 9]))
-  (displayln (int->string (sum-rest [1 2 3 4])))
-  (displayln (starts-zero []))
-  (displayln (starts-zero [0 9]))
-  (displayln (starts-zero [5 9]))
-  (displayln (int->string (rest-count [1 2 3 4 5])))
-  (displayln (int->string (nested [[3 4] [5 6]])))
+  (expect "empty bracket pattern" (describe []) "empty")
+  (expect "one-element bracket pattern" (describe [7]) "one")
+  (expect "two-element bracket pattern" (describe [7 8]) "two")
+  (expect "longer vec falls to the catch-all" (describe [7 8 9]) "many")
+  (expect "rest arg consumed recursively" (sum-rest [1 2 3 4]) 10)
+  (expect "no leading element to be zero" (starts-zero []) "empty")
+  (expect "literal element in a vec pattern" (starts-zero [0 9]) "starts-with-zero")
+  (expect "literal element that does not match" (starts-zero [5 9]) "nonempty")
+  (expect "rest arg is a Vec of the remaining elements" (rest-count [1 2 3 4 5]) 3)
+  (expect "nested vec pattern" (nested [[3 4] [5 6]]) 7)
   0)

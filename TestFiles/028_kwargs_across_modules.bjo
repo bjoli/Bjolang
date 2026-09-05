@@ -4,6 +4,7 @@
 ;; the mismatch between the name a call site wrote and the name the parameter was
 ;; declared under never had a chance to show up.
 (import (std prelude))
+(import (std simpletest))
 (import "inc/kwlib.bjo")
 
 (: local-scale (-> int (#:by int) int))
@@ -12,11 +13,11 @@
 
 (defun (main)
   ;; Defaults only.
-  (println (scale 5))
+  (expect "imported defaults: 5*2+0" (scale 5) 10)
   ;; One keyword, then the other, then both — and out of declaration order.
-  (println (scale 5 #:by 10))
-  (println (scale 5 #:offset 1))
-  (println (scale 5 #:offset 1 #:by 10))
-  (println (local-scale 7))
-  (println (local-scale 7 #:by 100))
+  (expect "#:by across a module boundary: 5*10+0" (scale 5 #:by 10) 50)
+  (expect "#:offset across a module boundary: 5*2+1" (scale 5 #:offset 1) 11)
+  (expect "both keywords, out of declaration order: 5*10+1" (scale 5 #:offset 1 #:by 10) 51)
+  (expect "a local keyword default: 7*3" (local-scale 7) 21)
+  (expect "a local keyword passed: 7*100" (local-scale 7 #:by 100) 700)
   0)

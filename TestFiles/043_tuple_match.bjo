@@ -1,4 +1,5 @@
 (import (std prelude))
+(import (std simpletest))
 
 (def (top-a . top-b) (10 . 20))
 
@@ -49,50 +50,53 @@
 
 (defun (main args)
   ;; Top level def with dotted pair
-  (println top-a)
-  (println top-b)
+  (expect "top-level dotted def, car" top-a 10)
+  (expect "top-level dotted def, cdr" top-b 20)
 
   ;; Match with dotted pair
-  (println (test-match-dot (5 . 7)))
+  (expect "match with dotted pair" (test-match-dot (5 . 7)) 12)
 
   ;; Match with (Tuple a b)
-  (println (test-match-tuple (Tuple 3 4)))
+  (expect "match with (Tuple a b)" (test-match-tuple (Tuple 3 4)) 12)
 
   ;; Match literals / guards / fallthrough
-  (println (test-match-literal (1 . "one")))
-  (println (test-match-literal (2 . "two")))
-  (println (test-match-literal (3 . "three")))
+  (expect "both components literal" (test-match-literal (1 . "one")) "matched literal 1")
+  (expect "literal car, bound cdr" (test-match-literal (2 . "two")) "matched 2 and two")
+  (expect "fallthrough to the wildcard pair" (test-match-literal (3 . "three")) "other")
 
   ;; Match nested tuples
-  (println (test-match-nested (10 . (20 . 30))))
+  (expect "nested dotted pattern" (test-match-nested (10 . (20 . 30))) 60)
 
   ;; Exhaustive tuple matches, in argument position so they really are C#
   ;; switch *expressions* — the shape that rejects an unreachable arm.
-  (println (match (pair) ((Tuple a b) (+ a b))))
-  (println (match (pair) ((Tuple a _) a)))
-  (println (match (Tuple 1 (Tuple 2 3)) ((Tuple a (Tuple b c)) (+ a (+ b c)))))
+  (expect "irrefutable tuple arm, both bound" (match (pair) ((Tuple a b) (+ a b))) 7)
+  (expect "irrefutable tuple arm with a wildcard" (match (pair) ((Tuple a _) a)) 3)
+  (expect "nested Tuple pattern"
+          (match (Tuple 1 (Tuple 2 3)) ((Tuple a (Tuple b c)) (+ a (+ b c))))
+          6)
   ;; The clause after an irrefutable one is dead and is dropped.
-  (println (match (pair) ((Tuple a b) (+ a b)) (_ 999)))
-  (println (exhaustive-with-statements))
-  (println (guarded-tuple))
+  (expect "the dead clause is never taken" (match (pair) ((Tuple a b) (+ a b)) (_ 999)) 7)
+  (expect "tuple match as a switch statement" (exhaustive-with-statements) 10)
+  ;; Vakten faller (3 > 10 är falskt), så andra armen ger (- 4 3).
+  (expect "a guard makes the second tuple arm live" (guarded-tuple) 1)
 
   ;; Local def with dotted pair
   (def (local-x . local-y) (50 . 60))
-  (println (+ local-x local-y))
+  (expect "local dotted def" (+ local-x local-y) 110)
 
   ;; Let with dotted pair
   (def result-let
     (let (((lx . ly) (100 . 200)))
       (+ lx ly)))
-  (println result-let)
+  (expect "let with a dotted pattern" result-let 300)
 
   ;; Backwards compatibility with (a b)
   (def (compat-a compat-b) (7 . 8))
-  (println (+ compat-a compat-b))
+  (expect "the (a b) spelling still destructures a dotted pair" (+ compat-a compat-b) 15)
 
   (def result-compat-let
     (let (((cl-a cl-b) (Tuple 30 40)))
       (+ cl-a cl-b)))
-  (println result-compat-let)
+  (expect "the (a b) spelling in a let" result-compat-let 70)
 
   0)

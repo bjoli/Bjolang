@@ -1,3 +1,109 @@
+;; Sammanslagen fixtur: 067_char.bjo, 084_string_cursor.bjo och 111_strings.bjo.
+;; Ett ämne i tre avsnitt: teckenliteraler, R6RS-teckenprocedurer med
+;; strängmarkörer, och preludens omslag runt .NET-strängar.
+;; Hänvisningen till `067_char.bjo` i det andra avsnittets rubrik avser numera
+;; det första avsnittet i den här filen.
+
+(import (std prelude))
+(import (std simpletest))
+
+;; ===========================================================================
+;; Avsnitt 1 — tecken (från 067_char.bjo)
+;; ===========================================================================
+
+;; Characters: `#\a` literals, `char` in signatures, pattern matching, and the
+;; conversions.
+;;
+;; A Bjolang `char` is a Unicode *scalar value* backed by `Bjolang.Runtime.BjoChar`,
+;; not a C# `char`. A C# char is a 16-bit UTF-16 code unit and cannot hold an
+;; astral codepoint on its own, so an emoji written literally in source arrives
+;; as a surrogate pair and has to be recombined by the lexer into one codepoint.
+;;
+;; There is deliberately no `string-ref` or other index-based accessor. Indexing
+;; a UTF-16 string by codepoint is O(n), so a loop that looks linear is
+;; quadratic. String traversal belongs to a cursor.
+
+;; `char` is an ordinary type name, usable in a signature.
+(: vowel? (-> char bool))
+(defun (vowel? c)
+  (match c
+    (#\a #t)
+    (#\e #t)
+    (#\i #t)
+    (#\o #t)
+    (#\u #t)
+    (_ #f)))
+
+;; Named characters and punctuation match like any other literal.
+(: describe (-> char string))
+(defun (describe c)
+  (match c
+    (#\space "space")
+    (#\newline "newline")
+    (#\tab "tab")
+    (#\( "open paren")
+    (#\; "semicolon")
+    (_ "other")))
+
+(: test-chars (-> void))
+(defun (test-chars)
+  ;; Literals and codepoints.
+  (expect "plain literal" (char->int #\a) 97)
+  (expect "uppercase" (char->int #\A) 65)
+  (expect "digit char" (char->int #\7) 55)
+
+  ;; Named characters.
+  (expect "space" (char->int #\space) 32)
+  (expect "newline" (char->int #\newline) 10)
+  (expect "tab" (char->int #\tab) 9)
+  (expect "null" (char->int #\null) 0)
+  (expect "delete" (char->int #\delete) 127)
+
+  ;; Hex escapes, lower and upper case digits.
+  (expect "hex 41" (char->int #\x41) 65)
+  (expect "hex ff" (char->int #\xff) 255)
+
+  ;; A character that is not a symbol character still lexes.
+  (expect "open paren" (char->int #\() 40)
+  (expect "semicolon" (char->int #\;) 59)
+  (expect "quote char" (char->int #\') 39)
+
+  ;; Astral plane: one codepoint, spelled with a surrogate pair in the source.
+  (expect "emoji literal" (char->int #\😀) 128512)
+  (expect "emoji hex" (char->int #\x1F600) 128512)
+
+  ;; Equality. `=` is `Eq`'s implementation for `char`, which is C# `==` and
+  ;; which a record struct provides; `eq?` dispatches on IsValueType and so
+  ;; compares by value here too.
+  (expect "= same" (if (= #\a #\a) "yes" "no") "yes")
+  (expect "= different" (if (= #\a #\b) "yes" "no") "no")
+  (expect "eq? same" (if (eq? #\z #\z) "yes" "no") "yes")
+  (expect "eq? different" (if (eq? #\z #\y) "yes" "no") "no")
+  (expect "= astral" (if (= #\😀 #\x1F600) "yes" "no") "yes")
+
+  ;; Round-tripping through int, including above the BMP.
+  (expect "int round trip" (char->int (int->char 65)) 65)
+  (expect "astral round trip" (char->int (int->char 128512)) 128512)
+
+  ;; char->string, where the astral case is the one that catches a 16-bit
+  ;; assumption: it must produce a two-code-unit string, not a broken half.
+  (expect "char->string ascii" (char->string #\a) "a")
+  (expect "char->string length" (string-length (char->string #\a)) 1)
+  (expect "char->string astral length"
+          (string-length (char->string #\😀)) 2)
+
+  ;; Pattern matching.
+  (expect "vowel yes" (if (vowel? #\e) "yes" "no") "yes")
+  (expect "vowel no" (if (vowel? #\q) "yes" "no") "no")
+  (expect "describe space" (describe #\space) "space")
+  (expect "describe newline" (describe #\newline) "newline")
+  (expect "describe paren" (describe #\() "open paren")
+  (expect "describe other" (describe #\Z) "other"))
+
+;; ===========================================================================
+;; Avsnitt 2 — teckenprocedurer och markörer (från 084_string_cursor.bjo)
+;; ===========================================================================
+
 ;; R6RS character procedures, and string cursors.
 ;;
 ;; The cursor is the answer to the question `067_char.bjo` left open: there is no
@@ -12,8 +118,6 @@
 ;; test below that distinguishes `string-length` from `string-count`, or that
 ;; reverses a string, is checking that nothing is counting or cutting in the
 ;; wrong currency.
-(import (std prelude))
-(import (std simpletest))
 
 (: expect-int (-> string int int void))
 (defun (expect-int label actual wanted)
@@ -50,7 +154,8 @@
         n
         (loop (string-cursor-prev s c) (+ n 1)))))
 
-(defun (main)
+(: test-string-cursors (-> void))
+(defun (test-string-cursors)
   ;; ---- R6RS comparisons ---------------------------------------------------
   (expect-bool "char=? same" (char=? #\a #\a) #t)
   (expect-bool "char=? different" (char=? #\a #\b) #f)
@@ -241,6 +346,107 @@
 
   ;; ---- ->str --------------------------------------------------------------
   (expect "->str of a char" (->str #\a) "a")
-  (expect "->str of an astral char" (->str #\😀) "😀")
+  (expect "->str of an astral char" (->str #\😀) "😀"))
 
+;; ===========================================================================
+;; Avsnitt 3 — strängbiblioteket (från 111_strings.bjo)
+;; ===========================================================================
+
+;; The string operations the prelude wraps around .NET: searching, case,
+;; trimming, padding, splitting and joining.
+;;
+;; What is being asserted beyond "the call works" is that every comparison is
+;; ordinal and every case mapping invariant, so the answers below are the same
+;; on every machine, and that `string-split` and `string-join` are inverses.
+
+(: expect-false (-> string bool void))
+(defun (expect-false label actual)
+  (expect label actual #f))
+
+(: test-strings (-> void))
+(defun (test-strings)
+  ;; --- Searching -----------------------------------------------------------
+  (expect-true  "contains" (string-contains? "hello world" "o w"))
+  (expect-false "and does not" (string-contains? "hello world" "ow"))
+  (expect-true  "the empty needle is everywhere" (string-contains? "hello" ""))
+  (expect-true  "starts with" (string-starts-with? "hello" "hell"))
+  (expect-false "and does not" (string-starts-with? "hello" "Hell"))
+  (expect-true  "ends with" (string-ends-with? "hello" "llo"))
+  (expect-false "and does not" (string-ends-with? "hello" "LLO"))
+
+  ;; Ordinal, not cultural. The first literal below holds a bare "e" followed
+  ;; by a combining acute accent; the needle is a precomposed "é". They are the
+  ;; same text to a collator and two different strings to storage, and it is
+  ;; storage that answers here — on every machine, in every locale.
+  (expect-false "comparison is ordinal" (string-contains? "éclair" "é"))
+
+  ;; --- Rewriting -----------------------------------------------------------
+  (expect "replace" (string-replace "a-b-c" "-" "+") "a+b+c")
+  (expect "replace with nothing deletes" (string-replace "a-b-c" "-" "") "abc")
+  (expect "and a needle that is not there changes nothing"
+          (string-replace "abc" "-" "+") "abc")
+
+  ;; --- Case ----------------------------------------------------------------
+  ;; ß upcases to itself rather than to SS: the invariant mapping is
+  ;; character-for-character, and the expansion is a locale's rule, not
+  ;; Unicode's simple one.
+  (expect "upcase" (string-upcase "Straße road") "STRAßE ROAD")
+  (expect "downcase" (string-downcase "LOUD Noise") "loud noise")
+
+  ;; --- Trimming and padding ------------------------------------------------
+  (expect "trim" (string-trim "  padded\t\n") "padded")
+  (expect "trim-start" (string-trim-start "  padded  ") "padded  ")
+  (expect "trim-end" (string-trim-end "  padded  ") "  padded")
+  (expect "pad-left" (string-pad-left "7" 3) "  7")
+  (expect "pad-right" (string-pad-right "7" 3) "7  ")
+  (expect "padding never truncates" (string-pad-left "wide" 2) "wide")
+  (expect "and a pad of one's own" (string-pad-left "7" 3 #:with #\0) "007")
+  (expect "on the right too" (string-pad-right "7" 3 #:with #\.) "7..")
+
+  ;; Width is in characters, so a pad outside the BMP is one of them and a
+  ;; string containing one is as wide as it looks.
+  (expect "an astral pad is one character"
+          (string-pad-left "a" 3 #:with #\😀) "😀😀a")
+  (expect "and an astral character is one character wide"
+          (string-pad-left "😀" 3) "  😀")
+
+  ;; --- Splitting and joining -----------------------------------------------
+  (def fields (string-split "a,b,c" ","))
+  (expect "split" (length fields) 3)
+  (expect "and its fields" (vec-ref fields 1) "b")
+
+  ;; Empty fields are kept, which is what makes the two inverses.
+  (def sparse (string-split "a,,b" ","))
+  (expect "an empty field is a field" (length sparse) 3)
+  (expect "join undoes split" (string-join sparse ",") "a,,b")
+
+  (expect "a separator that is not there splits into one field"
+          (int->string (length (string-split "abc" ","))) "1")
+  (expect "a multi-character separator"
+          (string-join (string-split "a::b::c" "::") "/") "a/b/c")
+  (expect "joining nothing is nothing"
+          (string-join (vec-empty) ",") "")
+
+  ;; Splitting is by storage, joining by nothing at all, so text outside the
+  ;; BMP survives both.
+  (expect "and an astral character is not cut in half"
+          (int->string (length (string-split "a😀b" "😀"))) "2")
+
+  ;; --- Composition ---------------------------------------------------------
+  ;;
+  ;; The wrappers are ordinary functions, so they compose with `->` and with
+  ;; the collection operations like anything else.
+  (expect "a pipeline"
+          (-> "  Alpha, Beta ,Gamma  "
+              (string-trim)
+              (string-split & ",")
+              (vec-map string-trim &)
+              (vec-map string-downcase &)
+              (string-join & "|"))
+          "alpha|beta|gamma"))
+
+(defun (main)
+  (test-chars)
+  (test-string-cursors)
+  (test-strings)
   0)

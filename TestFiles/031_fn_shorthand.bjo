@@ -1,22 +1,28 @@
 (import (std prelude))
+(import (std simpletest))
 
 (defun (main args)
   ;; 1. Multi-argument shorthand
   (def add-fn #(+ (+ &1 &2) 5))
   (def res1 (add-fn 10 20))
-  (println res1)
+  (expect "two positional holes: (10+20)+5" res1 35)
 
   ;; 2. Shorthand passed directly to higher-order function
   (def nums '(1 2 3))
   (def doubled (list-map #(* &1 2) nums))
-  (println (list-head doubled))
+  (expect "a shorthand as a higher-order argument" (list-head doubled) 2)
 
   ;; 3. Direct application with out-of-order arguments
   (def res2 (#(- &2 &1) 10 30))
-  (println res2)
+  (expect "holes used out of order: 30-10" res2 20)
 
   ;; 4. Nullary shorthand
+  ;; `greet` skriver, så utskriften fångas på en strängport för att kunna
+  ;; jämföras.
+  (def out (open-output-string))
   (def greet #(println "nullary shorthand works"))
-  (greet)
+  (parameterize ((current-output-port out))
+    (greet))
+  (expect "a nullary shorthand" (get-output-string out) "nullary shorthand works\n")
 
   0)

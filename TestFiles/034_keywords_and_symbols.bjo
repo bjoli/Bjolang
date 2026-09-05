@@ -1,5 +1,6 @@
 ;; Test for first-class Keywords and Symbols with runtime interning
 (import (std prelude))
+(import (std simpletest))
 
 (: match-kw (-> Keyword int))
 (defun (match-kw k)
@@ -19,57 +20,47 @@
 
 (defun (main)
   ;; 1. Keyword reference equality and syntax equivalence (:kw vs #:kw)
-  (if (eq? :foo #:foo)
-      (println "keyword eq pass")
-      (println "keyword eq fail"))
+  (expect-true "the two keyword syntaxes intern to one value" (eq? :foo #:foo))
 
-  (if (not (eq? :foo :bar))
-      (println "keyword neq pass")
-      (println "keyword neq fail"))
+  (expect-true "different keywords are different values" (not (eq? :foo :bar)))
 
   ;; 2. Symbol reference equality
-  (if (eq? 'test 'test)
-      (println "symbol eq pass")
-      (println "symbol eq fail"))
+  (expect-true "a symbol interns to one value" (eq? 'test 'test))
 
-  (if (not (eq? 'alpha 'beta))
-      (println "symbol neq pass")
-      (println "symbol neq fail"))
+  (expect-true "different symbols are different values" (not (eq? 'alpha 'beta)))
 
   ;; 3. Conversions
-  (println (keyword->string :hello))
-  (println (symbol->string 'world))
-  (if (eq? (string->keyword "dynamic") :dynamic)
-      (println "string->keyword pass")
-      (println "string->keyword fail"))
-  (if (eq? (string->symbol "sym-dyn") 'sym-dyn)
-      (println "string->symbol pass")
-      (println "string->symbol fail"))
+  (expect "keyword->string drops the colon" (keyword->string :hello) "hello")
+  (expect "symbol->string drops the quote" (symbol->string 'world) "world")
+  (expect-true "string->keyword reaches the literal's value"
+               (eq? (string->keyword "dynamic") :dynamic))
+  (expect-true "string->symbol reaches the literal's value"
+               (eq? (string->symbol "sym-dyn") 'sym-dyn))
 
   ;; 4. Predicates
-  (if (keyword? :foo) (println "keyword? pass") (println "keyword? fail"))
-  (if (not (keyword? "foo")) (println "not keyword? pass") (println "not keyword? fail"))
-  (if (symbol? 'foo) (println "symbol? pass") (println "symbol? fail"))
-  (if (not (symbol? 42)) (println "not symbol? pass") (println "not symbol? fail"))
+  (expect-true "keyword? on a keyword" (keyword? :foo))
+  (expect-true "keyword? on a string" (not (keyword? "foo")))
+  (expect-true "symbol? on a symbol" (symbol? 'foo))
+  (expect-true "symbol? on an int" (not (symbol? 42)))
 
   ;; 5. Pattern matching
-  (println (int->string (match-kw :apple)))
-  (println (int->string (match-kw :banana)))
-  (println (int->string (match-kw :cherry)))
-  (println (int->string (match-kw :other)))
+  (expect "a keyword pattern reaches the first arm" (match-kw :apple) 1)
+  (expect "a keyword pattern reaches the second arm" (match-kw :banana) 2)
+  (expect "a keyword pattern reaches the third arm" (match-kw :cherry) 3)
+  (expect "an unlisted keyword falls through" (match-kw :other) 0)
 
-  (println (match-sym 'alpha))
-  (println (match-sym 'beta))
-  (println (match-sym 'gamma))
-  (println (match-sym 'delta))
+  (expect "a symbol pattern reaches the first arm" (match-sym 'alpha) "first")
+  (expect "a symbol pattern reaches the second arm" (match-sym 'beta) "second")
+  (expect "a symbol pattern reaches the third arm" (match-sym 'gamma) "third")
+  (expect "an unlisted symbol falls through" (match-sym 'delta) "unknown")
 
   ;; 6. ->str trait
-  (println :trait-keyword)
-  (println 'trait-symbol)
+  (expect "->str on a keyword" (->str :trait-keyword) "trait-keyword")
+  (expect "->str on a symbol" (->str 'trait-symbol) "trait-symbol")
 
   ;; 7. Map usage
   (let ((m (map-set (map-set (map-empty) :first 10) :second 20)))
-    (println (int->string (map-ref m :first)))
-    (println (int->string (map-ref m :second))))
+    (expect "a keyword key finds its value" (map-ref m :first) 10)
+    (expect "and a second keyword key its own" (map-ref m :second) 20))
 
   0)

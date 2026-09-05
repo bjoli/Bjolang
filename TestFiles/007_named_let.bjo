@@ -1,12 +1,25 @@
 (import (std prelude))
+(import (std simpletest))
 (defun (main args)
+  ;; Ett litet varv först: 10! är ett svar som bara stämmer om varje steg
+  ;; multiplicerade. 100-miljonersvarvet nedan går till noll så fort tillräckligt
+  ;; många jämna faktorer samlats, och skulle se likadant ut om loopen räknade fel.
+  (def (: small uint)
+    (let loop ((count 10u) (acc 1u))
+      (if (= count (cast uint 0))
+          acc
+          (loop (- count (cast uint 1)) (* acc count)))))
+
+  (expect "a named let over uint" (cast int small) 3628800)
+
   (def (: result uint) 
     (let loop ((count 100000000u) (acc 1u))
       (if (= count (cast uint 0))
           acc
           (loop (- count (cast uint 1)) (* acc count)))))
-    
-  (println (cast int result))
-  0)
 
+  ;; 100 000 000 varv: bara en riktig svansanropssänkning tar sig igenom utan
+  ;; att spränga stacken. Produkten wrappar till noll i uint.
+  (expect "100 000 000 iterations, wrapped to zero" (cast int result) 0)
+  0)
 

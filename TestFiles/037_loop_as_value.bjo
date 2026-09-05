@@ -91,6 +91,38 @@
     ((Ok v) (expect label v wanted))
     ((Err e) (println (string-append "FAILURE: " (string-append label e))))))
 
+;; --- Sammanslaget från 026_monad_loop.bjo -----------------------------------
+;;
+;; A monadic recursive function over `Result`, which must compile to a loop.
+;;
+;; This is the load-bearing case for argument binding. `bind`'s continuation is
+;; a lambda used once, so it is *substituted* rather than let-bound; the
+;; resulting direct application beta-reduces; and the recursive call ends up
+;; back in tail position where `LoopLowering` can see it. Let-binding it instead
+;; would leave `(k x)` against a variable, beta would never fire, and this would
+;; grow the stack one frame per step.
+
+(: step2 (-> int (Result string int)))
+(defun (step2 n)
+  (if (> n 1000000) (Err "overflow") (Ok n)))
+
+;; The tail call *is* the block's last form. Wrapping it in a `:return` would
+;; make it `(pure (sum-to ...))`, which is a different program.
+(: walk (-> int int (Result string int)))
+(defun (walk n acc)
+  (if (< n 0)
+      (Err "negative")
+      (do (:bind x (step2 n))
+          (if (= x 0)
+              (pure acc)
+              (walk (- x 1) (+ acc 1))))))
+
+(: render (-> (Result string int) string))
+(defun (render r)
+  (match r
+    ((Ok v) (string-append "ok " (int->string v)))
+    ((Err e) (string-append "err " e))))
+
 (defun (main)
   (expect "sum-to" (sum-to 5) 21)          ;; (0+1+2+3+4)*2 + 1
   (expect "unwrapped" (unwrapped 5) 6)
@@ -98,4 +130,11 @@
   (expect-result "fold-m" (fold-m (build 5)) 20)
   (expect-result "map-m" (map-m (build 5)) 5)
   (expect-result "map-m/deep" (map-m (build 200000)) 200000)
+
+  (expect "ten steps end at the accumulator" (render (walk 10 0)) "ok 10")
+  (expect "a negative n fails before the bind" (render (walk -1 0)) "err negative")
+  (expect "step2 rejects a too-large n" (render (step2 2000000)) "err overflow")
+  ;; Deep enough that a recursion which was not turned into a loop would
+  ;; overflow the stack rather than answer.
+  (expect "200000 steps answer instead of overflowing" (render (walk 200000 0)) "ok 200000")
   0)

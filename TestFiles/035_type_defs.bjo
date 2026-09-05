@@ -1,4 +1,5 @@
 (import (std prelude))
+(import (std simpletest))
 
 (type
   (: Color (Enum Red Green Blue))
@@ -41,11 +42,15 @@
 (defun (main)
   (def banana (Fruit (Peel? #t) (Colour Green)))
   (def uid "user_123")
-  (println (color->str (record-ref banana Colour)))
-  (println uid)
-  (println (opt->str MyNone))
-  (println (opt->str (MySome 42)))
-  (println (opt->str (list-head (wrap-all (list 7 8)))))
-  (println (opt->str (list-head (blank-all (list 7 8)))))
+  ;; Color saknar Eq och ->str, så varje påstående går via color->str/opt->str.
+  (expect "an enum field survives the record" (color->str (record-ref banana Colour)) "green")
+  (expect "and so does a bool field" (record-ref banana Peel?) #t)
+  (expect "a named string type holds a string" uid "user_123")
+  (expect "a nullary union case" (opt->str MyNone) "none")
+  (expect "a data union case carries its value" (opt->str (MySome 42)) "42")
+  (expect "a data case built inside a lambda"
+          (opt->str (list-head (wrap-all (list 7 8)))) "7")
+  (expect "a nullary case used as a bare value in a lambda"
+          (opt->str (list-head (blank-all (list 7 8)))) "none")
   0)
 

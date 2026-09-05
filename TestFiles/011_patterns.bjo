@@ -1,4 +1,5 @@
 (import (std prelude))
+(import (std simpletest))
 
 ;; Tail-recursive match: must compile to a switch STATEMENT with `continue`.
 (: sum-len (-> (List int) int int))
@@ -32,13 +33,13 @@
 
 (defun (main args)
   (def xs (Cons 1 (Cons 2 (Cons 3 Nil))))
-  (displayln (int->string (sum-len xs 0)))
-  (displayln (describe xs))
-  (displayln (describe Nil))
-  (displayln (classify 0))
-  (displayln (classify 1))
-  (displayln (classify 7))
-  (displayln (classify (- 0 5)))
-  (displayln (int->string (second xs)))
-  (displayln (int->string (second Nil)))
+  (expect "tail-recursive match visits every element" (sum-len xs 0) 6)
+  (expect "match in argument position, Cons arm" (describe xs) "1")
+  (expect "match in argument position, Nil arm" (describe Nil) "0")
+  (expect "literal pattern 0" (classify 0) "zero")
+  (expect "literal pattern 1" (classify 1) "one")
+  (expect "catch-all binding, positive" (classify 7) "many")
+  (expect "catch-all binding, negative" (classify (- 0 5)) "negative")
+  (expect "nested constructor pattern binds the second element" (second xs) 2)
+  (expect "nested constructor pattern falls through on Nil" (second Nil) -1)
   0)

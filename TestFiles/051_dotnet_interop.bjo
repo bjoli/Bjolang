@@ -1,0 +1,372 @@
+;; Sammanslagen .NET-interop-fixtur. Här bor det som förut låg i 051 statiska
+;; externs, 052 klasser och IO, 053 överlagringar, 054 checked exceptions,
+;; 055 try/catch och 056 typmönster. De sex delade nästan alla sina
+;; `import/class`- och `import/extern`-rader, så de deklareras en gång här uppe
+;; och varje fixturs `main` har blivit en egen `test-*`.
+(import (std prelude))
+(import (std simpletest))
+
+(import/class
+  (StreamWriter (: System.IO.StreamWriter (-> string StreamWriter)))
+  (StreamReader (: System.IO.StreamReader (-> string StreamReader)))
+  (StringBuilder (: System.Text.StringBuilder (-> StringBuilder)))
+  (FileStream (: System.IO.FileStream (-> string FileMode FileStream)
+                 #:exceptions (System.IO.FileNotFoundException System.IO.DirectoryNotFoundException)))
+  ;; An enum has no constructor, but importing it makes `FileMode.Open` a name.
+  (FileMode (: System.IO.FileMode)))
+
+(import/extern
+  ;; `console-write-line` rather than `write-line`: the prelude binds the latter
+  ;; as the port operation, and an ordinary binding wins over an extern alias —
+  ;; the extern registry is one flat namespace, so the rule has to run that way.
+  (console-write-line (: System.Console.WriteLine (-> string void)))
+  (concat2 (: System.String.Concat (-> string string string)))
+  (is-empty? (: System.String.IsNullOrEmpty (-> string bool)))
+  ;; The same name at three different argument types, imported three times.
+  ;; Each clause pins its own overload with a signature.
+  (abs-int (: System.Math.Abs (-> int int)))
+  (abs-double (: System.Math.Abs (-> double double)))
+  (abs-long (: System.Math.Abs (-> long long)))
+  (max-int (: System.Math.Max (-> int int int)))
+  (read-all-text (: System.IO.File.ReadAllText (-> string string)))
+  ;; Samma metod en gång till, men vaktad: `#:exceptions` ger den returtypen
+  ;; `Result` i stället för `string`, så den behöver ett eget namn.
+  (read-all-text-guarded (: System.IO.File.ReadAllText (-> string string)
+                            #:exceptions (System.IO.FileNotFoundException)))
+  (write-all-text (: System.IO.File.WriteAllText (-> string string void)
+                     #:exceptions (System.IO.IOException)))
+  (file-delete! (: System.IO.File.Delete (-> string void)))
+  (file-exists? (: System.IO.File.Exists (-> string bool))))
+
+;; ---------------------------------------------------------------------------
+;; Foreign .NET interop: static methods imported with `import/extern`.
+;;
+;; Each clause names a fully qualified static method and binds it as an ordinary
+;; Bjolang function. The signature is optional — it is checked against the
+;; overload reflection selects, rather than used instead of it — but writing one
+;; is what lets the name be used as a *value*, since a .NET method group is not
+;; one.
+;; ---------------------------------------------------------------------------
+
+(: test-static (-> void))
+(defun (test-static)
+  ;; Ett statiskt void-anrop, och den enda raden i filen som inte är ett
+  ;; påstående: System.Console.WriteLine skriver förbi current-output-port, så
+  ;; den går inte att fånga på en strängport. Vad den visar är att en
+  ;; void-returnerande statisk extern kompilerar och körs — inte vad den skrev.
+  (console-write-line "Hello from static extern!")
+
+  (expect "Concat" (concat2 "foreign " "functions") "foreign functions")
+  (expect "Math.Abs" (abs-int -7) 7)
+
+  (if (is-empty? "") (println "ok: IsNullOrEmpty") (println "FAILURE: IsNullOrEmpty"))
+
+  ;; The overload is chosen from the argument types: `Math.Max` has eight of
+  ;; them, and two ints select the `int` one rather than the `long` or `double`.
+  (expect "Math.Max" (max-int 3 9) 9)
+
+  ;; A first-class use. There is no .NET value to refer to, so this is the
+  ;; eta-expansion the declared signature makes possible.
+  (def magnitude abs-int)
+  (expect "extern as a value" (magnitude -12) 12))
+
+;; ---------------------------------------------------------------------------
+;; Foreign .NET interop: classes, constructors, instance methods and properties.
+;;
+;; `import/class` registers the alias both as a type — so a signature may say
+;; `StreamWriter` — and as a constructor, written `StreamWriter.` in the Lisp
+;; tradition. Instance members are reached with `(.Method target args...)` and
+;; `(.-Property target)`.
+;; ---------------------------------------------------------------------------
+
+;; The alias is a type, so it may be written in an ordinary signature.
+(: write-greeting (-> StreamWriter void))
+(defun (write-greeting w)
+  (.Write w "Bjolang interop")
+  (.Flush w))
+
+;; Two spellings of one type, met above the definitions that carry them.
+;;
+;; `fill-builder` names the alias, `builder-text` names the .NET class it stands
+;; for, and `describe-builder` compiles only if those are the same type *here* —
+;; which is above both.
+;;
+;; Signatures are resolved in one pass before any declaration is checked, and
+;; that pass folded in `type` declarations but not `import/class` — so the alias
+;; was read as a type constructor of its own name. Each definition was then
+;; checked further down against its annotation resolved again in place, where
+;; the import had landed, so every definition agreed with itself and disagreed
+;; with whatever was written above it. That is why this needs a forward
+;; reference to show at all, and why it showed as a type refusing to unify with
+;; the same type spelled the other way.
+(: describe-builder (-> string string))
+(defun (describe-builder s)
+  (builder-text (fill-builder s)))
+
+(: fill-builder (-> string StringBuilder))
+(defun (fill-builder s)
+  (let ((sb (StringBuilder.)))
+    (ignore (.Append sb s))
+    sb))
+
+(: builder-text (-> System.Text.StringBuilder string))
+(defun (builder-text b) (.ToString b))
+
+(: test-class-io (-> void))
+(defun (test-class-io)
+  (def path "51_dotnet_class_io.tmp")
+
+  (def w (StreamWriter. path))
+  (write-greeting w)
+  (.Dispose w)
+
+  (expect "round trip through StreamWriter" (read-all-text path) "Bjolang interop")
+  (file-delete! path)
+
+  ;; A constructor taking no arguments, then a chain of instance calls. Every
+  ;; one of these is a distinct overload chosen from its argument's type.
+  (def sb (StringBuilder.))
+  ;; `Append` returns the builder so that calls can be chained; nothing here
+  ;; wants the chain, and §8.2 says a dropped value has to say so.
+  (ignore (.Append sb "a"))
+  (ignore (.Append sb "b"))
+  (ignore (.Append sb "c"))
+  (expect "StringBuilder" (.ToString sb) "abc")
+
+  ;; The alias read from a signature above the definition that declares it.
+  (expect "a forward reference through an imported class" (describe-builder "xyz") "xyz")
+
+  ;; A property read, and a method on the result of another method.
+  (expect "property read" (.-Length sb) 3)
+  (expect "instance method on a string" (.Substring "abcdef" 2 3) "cde"))
+
+;; ---------------------------------------------------------------------------
+;; Foreign .NET interop: overload resolution.
+;;
+;; `StringBuilder.Append` has around twenty overloads. Which one a call means is
+;; decided at compile time, from the Bjolang types of its arguments, against the
+;; real metadata — so `(.Append sb 42)` and `(.Append sb "42")` are two
+;; different methods and neither is a guess.
+;; ---------------------------------------------------------------------------
+
+(: test-overloads (-> void))
+(defun (test-overloads)
+  ;; An exact match always beats a widening: `Append(int)` rather than
+  ;; `Append(long)` or `Append(double)`, even though both would accept an int.
+  (def si (StringBuilder.))
+  (ignore (.Append si 42))
+  (expect "Append(int)" (.ToString si) "42")
+
+  (def ss (StringBuilder.))
+  (ignore (.Append ss "42"))
+  (expect "Append(string)" (.ToString ss) "42")
+
+  (def sb (StringBuilder.))
+  (ignore (.Append sb #t))
+  (expect "Append(bool)" (.ToString sb) "True")
+
+  ;; A widening is used when no exact match exists: there is no
+  ;; `Append(byte-as-int)`, so this reaches `Append(int)`.
+  (def sd (StringBuilder.))
+  (ignore (.Append sd 2.5))
+  (expect "Append(double)" (.ToString sd) "2.5")
+
+  ;; Mixed overloads on a static method, told apart by their declared types.
+  (expect "Math.Abs(int)" (abs-int -3) 3)
+  (expect "Math.Abs(long)" (long->string (abs-long -3000000000L)) "3000000000")
+  (expect "Math.Abs(double)" (double->string (abs-double -2.5)) "2.5")
+
+  ;; Two arguments, two different overloads of the same instance method.
+  (def sr (StringBuilder.))
+  (ignore (.Append sr "xy"))
+  (ignore (.Insert sr 0 "ab"))
+  (expect "Insert(int, string)" (.ToString sr) "abxy"))
+
+;; ---------------------------------------------------------------------------
+;; Foreign .NET interop: checked exceptions as `Result`.
+;;
+;; A `#:exceptions` clause names the failures that become values. Those — and
+;; only those — are caught and returned as `(Err e)`; anything else keeps
+;; unwinding, because an exception nobody named is a bug rather than a result.
+;;
+;; The wrapped call has type `(Result System.Exception %a)`, matched with the
+;; ordinary `Ok`/`Err` patterns. There are no special compiler rules for it.
+;; ---------------------------------------------------------------------------
+
+;; A constructor that is declared to fail returns a Result, so opening a file
+;; is an ordinary two-armed match rather than a thing that might not return.
+(: try-open (-> string string))
+(defun (try-open path)
+  (match (FileStream. path FileMode.Open)
+    ((Ok fs) (let ()
+               (.Dispose fs)
+               "opened"))
+    ((Err e) "missing")))
+
+(: try-read (-> string string))
+(defun (try-read path)
+  (match (read-all-text-guarded path)
+    ((Ok text) text)
+    ((Err e) "missing")))
+
+(: test-exceptions (-> void))
+(defun (test-exceptions)
+  (def path "54_dotnet_exceptions.tmp")
+
+  ;; A wrapped call whose return type is void still produces a Result — of the
+  ;; unit value, since C# has no `Result<E, void>`.
+  (match (write-all-text path "guarded")
+    ((Ok _) (println "ok: wrote the file"))
+    ((Err e) (println "FAILURE: could not write the file")))
+
+  (expect "constructor succeeds" (try-open path) "opened")
+  (expect "extern succeeds" (try-read path) "guarded")
+
+  (file-delete! path)
+
+  ;; The declared failure, as a value rather than as a crash.
+  (expect "constructor fails" (try-open "nonexistent.file") "missing")
+  (expect "extern fails" (try-read "nonexistent.file") "missing"))
+
+;; ---------------------------------------------------------------------------
+;; `try` — the general form of "these failures are values".
+;;
+;; `#:exceptions` on an import decorates one call. `try` guards an arbitrary
+;; expression, which is what stdlib code actually needs: one guard around
+;; open-then-read-then-close, rather than three Results to unwrap before
+;; anything has happened.
+;;
+;; `#:finally` runs however the body leaves — normally, caught, or still on its
+;; way out — and `with-open` is that plus `.Dispose`.
+;; ---------------------------------------------------------------------------
+
+;; One guard around the whole region, not around each call.
+(: slurp (-> string (Result System.Exception string)))
+(defun (slurp path)
+  (try (with-open ((r (StreamReader. path)))
+         (.ReadToEnd r))
+    #:catch (System.IO.FileNotFoundException System.IO.DirectoryNotFoundException)))
+
+;; The shape a stdlib wrapper wants: no exceptions in the surface API at all.
+(: read-or (-> string string string))
+(defun (read-or path fallback)
+  (match (slurp path)
+    ((Ok text) text)
+    ((Err e) fallback)))
+
+(: test-try-catch (-> void))
+(defun (test-try-catch)
+  (def path "55_try_catch.tmp")
+
+  (with-open ((w (StreamWriter. path)))
+    (.Write w "slurped"))
+
+  (expect "with-open wrote and disposed" (read-or path "missing") "slurped")
+  (expect "guarded region recovers" (read-or "nonexistent.file" "missing") "missing")
+
+  ;; A guarded region of ordinary Bjolang, with no interop in it at all.
+  ;; The denominator is computed so that C# cannot fold it: dividing by a
+  ;; *literal* zero is a compile-time error over there, not an exception.
+  (def zero (string-length ""))
+  (match (try (/ 10 zero) #:catch (System.DivideByZeroException))
+    ((Ok v) (println "FAILURE: division by zero did not throw"))
+    ((Err e) (println "ok: caught a Bjolang expression")))
+
+  (match (try (+ 20 22) #:catch (System.DivideByZeroException))
+    ((Ok v) (expect "unguarded path still returns" v 42))
+    ((Err e) (println "FAILURE: caught something that did not throw")))
+
+  ;; `#:finally` runs on the way out, including out of a failure.
+  (def sb (StringBuilder.))
+  (match (try (.Substring "abc" 99)
+           #:catch (System.ArgumentOutOfRangeException)
+           ;; A #:finally runs for its effect, so its value is dropped by
+           ;; construction and §8.2 wants that said.
+           #:finally (ignore (.Append sb "cleaned")))
+    ((Ok v) (println "FAILURE: Substring out of range did not throw"))
+    ((Err e) (println "ok: caught with a finally attached")))
+  (expect "finally ran" (.ToString sb) "cleaned")
+
+  ;; A void body gives a Result of the unit value.
+  (match (try (.Write (StreamWriter. path) "x") #:catch (System.IO.IOException))
+    ((Ok _) (println "ok: void body wraps to unit"))
+    ((Err e) (println "FAILURE: writing should have succeeded")))
+
+  (file-delete! path)
+  (if (file-exists? path)
+      (println "FAILURE: the temp file was not deleted")
+      (println "ok: cleaned up")))
+
+;; ---------------------------------------------------------------------------
+;; `(:is Type binder)` — a .NET type test in pattern position.
+;;
+;; A guarded call gives back `(Result System.Exception %a)`, which says a
+;; failure happened but not which one. `:is` is how an `Err` arm tells them
+;; apart, binding the value at the *narrowed* type so the arm can use members
+;; the scrutinee's static type does not have.
+;; ---------------------------------------------------------------------------
+
+;; One guard, several failures, told apart by type. The arms are tried in
+;; order, so the specific type has to precede the general one.
+(: classify (-> string string))
+(defun (classify path)
+  (match (try (file-read-text path)
+           #:catch (System.IO.FileNotFoundException
+                    System.IO.DirectoryNotFoundException
+                    System.ArgumentException))
+    ((Ok text) "read")
+    ((Err (:is System.IO.FileNotFoundException)) "no such file")
+    ((Err (:is System.IO.DirectoryNotFoundException)) "no such directory")
+    ((Err e) "other")))
+
+;; The binder is narrowed: `.-FileName` belongs to FileNotFoundException, not
+;; to System.Exception, so this only compiles because the pattern narrowed it.
+(: missing-file-name (-> string string))
+(defun (missing-file-name path)
+  (match (try (file-read-text path) #:catch (System.IO.FileNotFoundException))
+    ((Ok text) "")
+    ((Err (:is System.IO.FileNotFoundException e)) (.-FileName e))))
+
+;; A type test on an ordinary .NET value, with no exceptions involved: the
+;; scrutinee is `object`, and each arm narrows it.
+(: describe (-> System.Object string))
+(defun (describe o)
+  (match o
+    ((:is System.String s) (string-append "string of length " (int->string (.-Length s))))
+    ((:is System.Text.StringBuilder b) (string-append "builder saying " (.ToString b)))
+    (_ "something else")))
+
+(: test-type-patterns (-> void))
+(defun (test-type-patterns)
+  (def path "56_type_patterns.tmp")
+  (file-write-text path "here")
+
+  (expect "success" (classify path) "read")
+  (expect "missing file" (classify "definitely-not-here.txt") "no such file")
+  (expect "missing directory" (classify "no/such/dir/file.txt") "no such directory")
+  (expect "unrelated failure" (classify "") "other")
+
+  ;; `.-FileName` belongs to FileNotFoundException rather than to
+  ;; System.Exception, so reading it at all is the thing being tested. .NET
+  ;; resolves it to a full path, so only the tail is compared.
+  (if (.EndsWith (missing-file-name "definitely-not-here.txt") "definitely-not-here.txt")
+      (println "ok: narrowed binder")
+      (println "FAILURE: narrowed binder did not name the missing file"))
+
+  (expect "object is a string" (describe (cast System.Object "abcd")) "string of length 4")
+
+  (def sb (StringBuilder.))
+  (ignore (.Append sb "hi"))
+  (expect "object is a builder" (describe (cast System.Object sb)) "builder saying hi")
+  (expect "object is neither" (describe (cast System.Object 7)) "something else")
+
+  (file-delete! path))
+
+(defun (main)
+  (test-static)
+  (test-class-io)
+  (test-overloads)
+  (test-exceptions)
+  (test-try-catch)
+  (test-type-patterns)
+  0)

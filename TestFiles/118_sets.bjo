@@ -1,0 +1,377 @@
+;; Sammanslagning av 118_set.bjo och 119_orderedset.bjo.
+;; Etiketter som krockade har fått prefixet "set: " respektive "ordered: ".
+
+;; `(std set)`: the unordered set, its builder and its transient.
+;;
+;; Everything here reaches the collection through `import/extern` clauses in the
+;; library — there is no builtin in the path — so what is being tested is as
+;; much the generic interop as the data structure: a .NET generic type named by
+;; `import/class`, generic static methods resolved from their declared
+;; signatures, and the type arguments written out at every call.
+
+;; `(std orderedset)`: the sorted set, its builder and its transient.
+;;
+;; What is tested beyond `(std set)`'s ground is the *order*: a walk arrives
+;; sorted, and the navigation — min, max, successor, predecessor and the three
+;; range walks — answers questions a hash trie cannot answer at all.
+
+(import (std prelude))
+(import (std set))
+(import (std orderedset))
+(import (std simpletest))
+
+(: expect-bool (-> string bool bool void))
+(defun (expect-bool label actual wanted)
+  (if (= actual wanted)
+      (println (str "ok: " label))
+      (println (str "FAILURE: " label))))
+
+(: expect-str (-> string string string void))
+(defun (expect-str label actual wanted)
+  (if (string=? actual wanted)
+      (println (str "ok: " label))
+      (println (str "FAILURE: " label " gave " actual " but wanted " wanted))))
+
+(: string=? (-> string string bool))
+(defun (string=? a b) (= a b))
+
+;; ===========================================================================
+;; (std set)
+;; ===========================================================================
+
+;; The type is the library's, written in a signature here — which is what an
+;; exported `import/class` alias buys.
+(: set-numbers (-> (Set int)))
+(defun (set-numbers)
+  (set-add (set-add (set-add (set-empty) 1) 2) 3))
+
+;; --- The set ---------------------------------------------------------------
+
+(: test-set-core (-> void))
+(defun (test-set-core)
+  (def s (set-numbers))
+  (expect "set: length" (set-length s) 3)
+  (expect-bool "set: contains a member" (set-contains? s 2) #t)
+  (expect-bool "set: contains a stranger" (set-contains? s 9) #f)
+  (expect-bool "empty? of a set with elements" (set-empty? s) #f)
+  (expect-bool "set: empty? of the empty set" (set-empty? (set-clear s)) #t)
+
+  ;; Adding an element twice is adding it once: that is what makes it a set.
+  (expect "set: add is idempotent" (set-length (set-add s 1)) 3)
+  (expect "set: remove" (set-length (set-remove s 1)) 2)
+  (expect "set: remove of a stranger" (set-length (set-remove s 9)) 3)
+
+  (expect "set: add-all" (set-length (set-add-all s (list->seq (list 3 4 5)))) 5)
+  (expect "set: remove-all" (set-length (set-remove-all s (list->seq (list 1 2)))) 1)
+
+  (def other (set-add (set-add (set-empty) 3) 4))
+  (expect "set: union" (set-length (set-union s other)) 4)
+
+  (expect "set: filter" (set-length (set-filter #(> &1 1) s)) 2)
+  (expect "set: fold" (set-fold + 0 s) 6)
+  ;; A mapping that collides merges, which a list's map cannot do.
+  (expect "set: map" (set-length (set-map #(% &1 2) s)) 2)
+  (expect-bool "set: any?" (set-any? #(= &1 3) s) #t)
+  (expect-bool "any? with no hit" (set-any? #(= &1 30) s) #f)
+  ;; `iter` reports whether the walk ran to the end, so a predicate that fails
+  ;; somewhere answers false.
+  (expect-bool "iter runs out" (set-iter #(< &1 10) s) #t)
+  (expect-bool "set: iter stops early" (set-iter #(< &1 3) s) #f)
+
+  (match (set-find #(> &1 2) s)
+    ((Some found) (expect "find" found 3))
+    (None (println "FAILURE: find found nothing")))
+
+  (match (set-find #(> &1 20) s)
+    ((Some _) (println "FAILURE: find found something"))
+    (None (println "ok: find comes up empty")))
+
+  (def b (vecbuilder-empty))
+  (set-for-each #(vecbuilder-add! b &1) s)
+  (expect "for-each" (vec-fold + 0 (vecbuilder->vec b)) 6))
+
+;; --- Conversions and traits ------------------------------------------------
+
+(: test-set-traits (-> void))
+(defun (test-set-traits)
+  (def s (set-numbers))
+  (expect "set: Collection length" (length s) 3)
+  (expect-bool "set: Collection empty?" (empty? s) #f)
+  (expect "Collection ->seq" (seq-length (->seq s)) 3)
+  (expect "set: Foldable fold" (fold + 0 s) 6)
+  (expect "set: Functor map" (set-length (map #(* &1 10) s)) 3)
+
+  ;; Iterable, through an ordinary loop.
+  (expect "loop over a set" (loop (:for x s) (:acc total (summing x))) 6)
+
+  ;; And as an accumulator, through the builder.
+  (def evens (loop (:for x (range 0 10)) (:when (= 0 (% x 2))) (:acc s (setting x))))
+  (expect "setting collector" (set-length evens) 5)
+  (expect-bool "setting collector holds 8" (set-contains? evens 8) #t)
+
+  (expect "list->set" (set-length (list->set (list 1 1 2))) 2)
+  (expect "set->list" (list-length (set->list s)) 3)
+  (expect "vec->set" (set-length (vec->set [1 2 2 3])) 3)
+  (expect "set->vec" (vec-length (set->vec s)) 3)
+  (expect "seq->set" (set-length (seq->set (list->seq (list 5 5)))) 1)
+
+  ;; The string of a one-element set is pinned; a larger one is in trie order,
+  ;; which is stable but not worth writing down.
+  (expect-str "->str" (->str (set-add (set-empty) 7)) "#{7}"))
+
+;; --- The builder -----------------------------------------------------------
+
+(: test-set-builder (-> void))
+(defun (test-set-builder)
+  (def b (setbuilder-empty))
+  (setbuilder-add! b 1)
+  (setbuilder-add! b 2)
+  (setbuilder-add! b 1)
+  ;; The builder counts *appends*: duplicates are compacted when the set is
+  ;; built, which is the whole reason it is faster than adding one at a time.
+  (expect "set: builder length counts appends" (setbuilder-length b) 3)
+  (expect "builder->set compacts" (set-length (setbuilder->set b)) 2)
+
+  (def c (setbuilder-empty))
+  (setbuilder-add-all! c (list->seq (list 1 2 3)))
+  (expect "builder add-all" (set-length (setbuilder->set c)) 3)
+
+  (def d (set->setbuilder (set-numbers)))
+  (setbuilder-add! d 4)
+  (expect "set->setbuilder" (set-length (setbuilder->set d)) 4))
+
+;; --- The transient ---------------------------------------------------------
+
+(: test-set-transient (-> void))
+(defun (test-set-transient)
+  (def t (transientset-empty))
+  (expect-bool "set: transient starts empty" (transientset-empty? t) #t)
+  (transientset-add! t 1)
+  (transientset-add! t 2)
+  (transientset-add! t 1)
+  ;; The persistent interface, in place: `add!` of a member already there is the
+  ;; same no-op `set-add` is.
+  (expect "set: transient length" (transientset-length t) 2)
+  (expect-bool "set: transient contains?" (transientset-contains? t 2) #t)
+  (transientset-remove! t 1)
+  (expect "set: transient remove!" (transientset-length t) 1)
+
+  (transientset-add-all! t (list->seq (list 7 8 9)))
+  (expect "set: transient add-all!" (transientset-length t) 4)
+  (transientset-remove-all! t (list->seq (list 7 8)))
+  (expect "set: transient remove-all!" (transientset-length t) 2)
+
+  ;; The snapshot is taken in O(1), and the transient goes on being usable —
+  ;; what it hands over it disowns, so the next edit copies instead.
+  (def snapshot (transientset->set t))
+  (transientset-add! t 100)
+  (expect "set: the snapshot did not move" (set-length snapshot) 2)
+  (expect "set: the transient did" (transientset-length t) 3)
+
+  (def from-set (set->transientset (set-numbers)))
+  (transientset-add! from-set 4)
+  (expect "set->transientset" (transientset-length from-set) 4)
+  (expect "set: and the set it came from is untouched" (set-length (set-numbers)) 3))
+
+;; A set of something other than an int, to pin that the type arguments are
+;; solved per call site rather than once.
+(: test-set-strings (-> void))
+(defun (test-set-strings)
+  (def s (set-add (set-add (set-empty) "a") "b"))
+  (expect "a set of strings" (set-length s) 2)
+  (expect-bool "and it can be asked about" (set-contains? s "b") #t))
+
+;; ===========================================================================
+;; (std orderedset)
+;; ===========================================================================
+
+;; Deliberately built out of order, so that every "in order" claim below is
+;; about the set rather than about how it was made.
+(: oset-numbers (-> (OrderedSet int)))
+(defun (oset-numbers)
+  (seq->orderedset (list->seq (list 5 1 9 3 7))))
+
+(: test-oset-core (-> void))
+(defun (test-oset-core)
+  (def s (oset-numbers))
+  (expect "ordered: length" (orderedset-length s) 5)
+  (expect-bool "ordered: contains a member" (orderedset-contains? s 3) #t)
+  (expect-bool "ordered: contains a stranger" (orderedset-contains? s 4) #f)
+  (expect-bool "ordered: empty? of the empty set" (orderedset-empty? (orderedset-clear s)) #t)
+
+  (expect "ordered: add is idempotent" (orderedset-length (orderedset-add s 5)) 5)
+  (expect "add" (orderedset-length (orderedset-add s 6)) 6)
+  (expect "ordered: remove" (orderedset-length (orderedset-remove s 5)) 4)
+  (expect "ordered: remove of a stranger" (orderedset-length (orderedset-remove s 4)) 5)
+  (expect "ordered: add-all" (orderedset-length (orderedset-add-all s (list->seq (list 2 4)))) 7)
+  (expect "ordered: remove-all" (orderedset-length (orderedset-remove-all s (list->seq (list 1 9)))) 3)
+
+  (expect "ordered: filter" (orderedset-length (orderedset-filter #(> &1 4) s)) 3)
+  (expect "ordered: fold" (orderedset-fold + 0 s) 25)
+  (expect "ordered: map" (orderedset-length (orderedset-map #(* &1 2) s)) 5)
+  (expect-bool "ordered: any?" (orderedset-any? #(= &1 7) s) #t)
+  (expect-bool "ordered: iter stops early" (orderedset-iter #(< &1 5) s) #f)
+
+  (match (orderedset-find #(> &1 4) s)
+    ;; In order, so the *first* match is the smallest — which is the whole
+    ;; difference from a hashed set, where "first" means nothing.
+    ((Some found) (expect "find takes the smallest match" found 5))
+    (None (println "FAILURE: find found nothing"))))
+
+(: test-oset-algebra (-> void))
+(defun (test-oset-algebra)
+  (def a (seq->orderedset (list->seq (list 1 2 3 4))))
+  (def b (seq->orderedset (list->seq (list 3 4 5 6))))
+  (expect "ordered: union" (orderedset-length (orderedset-union a b)) 6)
+  (expect "intersection" (orderedset-length (orderedset-intersection a b)) 2)
+  (expect "difference" (orderedset-length (orderedset-difference a b)) 2)
+  (expect "symmetric difference" (orderedset-length (orderedset-symmetric-difference a b)) 4)
+  (expect-str "intersection is sorted" (->str (orderedset-intersection a b)) "#{3 4}"))
+
+(: test-oset-order (-> void))
+(defun (test-oset-order)
+  (def s (oset-numbers))
+  (expect-str "a walk arrives sorted" (->str s) "#{1 3 5 7 9}")
+
+  (match (orderedset-min s)
+    ((Some m) (expect "min" m 1))
+    (None (println "FAILURE: min of a set with elements")))
+
+  (match (orderedset-max s)
+    ((Some m) (expect "max" m 9))
+    (None (println "FAILURE: max of a set with elements")))
+
+  (match (orderedset-min (orderedset-clear s))
+    ((Some _) (println "FAILURE: min of the empty set"))
+    (None (println "ok: the empty set has no min")))
+
+  ;; The key need not be a member, which is what makes these useful for
+  ;; searching rather than only for stepping.
+  (match (orderedset-successor s 5)
+    ((Some n) (expect "successor of a member" n 7))
+    (None (println "FAILURE: successor")))
+
+  (match (orderedset-successor s 4)
+    ((Some n) (expect "successor of a non-member" n 5))
+    (None (println "FAILURE: successor of a non-member")))
+
+  (match (orderedset-successor s 9)
+    ((Some _) (println "FAILURE: successor of the largest"))
+    (None (println "ok: the largest has no successor")))
+
+  (match (orderedset-predecessor s 5)
+    ((Some p) (expect "predecessor" p 3))
+    (None (println "FAILURE: predecessor")))
+
+  (match (orderedset-predecessor s 1)
+    ((Some _) (println "FAILURE: predecessor of the smallest"))
+    (None (println "ok: the smallest has no predecessor")))
+
+  ;; The three range walks. Inclusive at both ends, and lazy.
+  (expect "range" (seq-length (orderedset-range s 3 7)) 3)
+  (expect "range that catches nothing" (seq-length (orderedset-range s 4 4)) 0)
+  (expect "from" (seq-length (orderedset-from s 5)) 3)
+  (expect "until" (seq-length (orderedset-until s 5)) 3)
+  (expect "the range's own sum" (seq-fold + 0 (orderedset-range s 3 7)) 15))
+
+(: test-oset-traits (-> void))
+(defun (test-oset-traits)
+  (def s (oset-numbers))
+  (expect "ordered: Collection length" (length s) 5)
+  (expect-bool "ordered: Collection empty?" (empty? s) #f)
+  (expect "ordered: Foldable fold" (fold + 0 s) 25)
+  (expect "ordered: Functor map" (orderedset-length (map #(* &1 3) s)) 5)
+  (expect "loop over an ordered set" (loop (:for x s) (:acc total (summing x))) 25)
+
+  ;; Iterable walks in order, so the first element a loop sees is the smallest.
+  (def first-seen (loop (:for x s) (:acc got (folding 0 x)) (:break (> x 0))))
+  (expect "the walk starts at the smallest" first-seen 1)
+
+  (def evens (loop (:for x (range 0 10)) (:when (= 0 (% x 2))) (:acc s (ordered-setting x))))
+  (expect-str "ordered-setting collector" (->str evens) "#{0 2 4 6 8}")
+
+  (expect "list->orderedset" (orderedset-length (list->orderedset (list 3 1 3))) 2)
+  (expect "orderedset->list" (list-length (orderedset->list s)) 5)
+  (expect "vec->orderedset" (orderedset-length (vec->orderedset [2 1 2])) 2)
+  (expect "orderedset->vec" (vec-length (orderedset->vec s)) 5)
+  (expect "orderedset->seq" (seq-length (orderedset->seq s)) 5))
+
+(: test-oset-builder (-> void))
+(defun (test-oset-builder)
+  (def b (orderedsetbuilder-empty))
+  (orderedsetbuilder-add! b 3)
+  (orderedsetbuilder-add! b 1)
+  (orderedsetbuilder-add! b 3)
+  (expect "ordered: builder length counts appends" (orderedsetbuilder-length b) 3)
+  (expect-str "builder->orderedset sorts and compacts"
+              (->str (orderedsetbuilder->orderedset b))
+              "#{1 3}")
+
+  (def c (orderedsetbuilder-empty))
+  (orderedsetbuilder-add-all! c (list->seq (list 9 2 5)))
+  (expect-str "builder add-all!" (->str (orderedsetbuilder->orderedset c)) "#{2 5 9}")
+
+  (def d (orderedset->orderedsetbuilder (oset-numbers)))
+  (orderedsetbuilder-add! d 4)
+  (expect "orderedset->orderedsetbuilder" (orderedset-length (orderedsetbuilder->orderedset d)) 6))
+
+(: test-oset-transient (-> void))
+(defun (test-oset-transient)
+  (def t (transientorderedset-empty))
+  (expect-bool "ordered: transient starts empty" (transientorderedset-empty? t) #t)
+  (transientorderedset-add! t 5)
+  (transientorderedset-add! t 1)
+  (transientorderedset-add! t 5)
+  (expect "ordered: transient length" (transientorderedset-length t) 2)
+  (expect-bool "ordered: transient contains?" (transientorderedset-contains? t 5) #t)
+
+  ;; Reading is the persistent interface unchanged, navigation included.
+  (match (transientorderedset-min t)
+    ((Some m) (expect "transient min" m 1))
+    (None (println "FAILURE: transient min")))
+
+  (transientorderedset-add-all! t (list->seq (list 2 3 4)))
+  (expect "ordered: transient add-all!" (transientorderedset-length t) 5)
+  (transientorderedset-remove! t 1)
+  (expect "ordered: transient remove!" (transientorderedset-length t) 4)
+  (transientorderedset-remove-all! t (list->seq (list 2 3)))
+  (expect "ordered: transient remove-all!" (transientorderedset-length t) 2)
+
+  ;; The transient's answer to `filter`, which cannot be "a new set" here.
+  (transientorderedset-filter! #(> &1 4) t)
+  (expect "transient filter!" (transientorderedset-length t) 1)
+
+  (def snapshot (transientorderedset->orderedset t))
+  (transientorderedset-add! t 100)
+  (expect "ordered: the snapshot did not move" (orderedset-length snapshot) 1)
+  (expect "ordered: the transient did" (transientorderedset-length t) 2)
+
+  (def from-set (orderedset->transientorderedset (oset-numbers)))
+  (transientorderedset-add! from-set 4)
+  (expect "orderedset->transientorderedset" (transientorderedset-length from-set) 6)
+  (expect "ordered: and the set it came from is untouched" (orderedset-length (oset-numbers)) 5))
+
+;; Strings order lexicographically, which is `Comparer<string>.Default` — the
+;; point being that the ordering is the element type's rather than the set's.
+(: test-oset-strings (-> void))
+(defun (test-oset-strings)
+  (def s (seq->orderedset (list->seq (list "pear" "apple" "fig"))))
+  (expect-str "a set of strings, in order" (->str s) "#{apple fig pear}")
+  (match (orderedset-min s)
+    ((Some m) (expect-str "min of strings" m "apple"))
+    (None (println "FAILURE: min of strings"))))
+
+(defun (main args)
+  (test-set-core)
+  (test-set-traits)
+  (test-set-builder)
+  (test-set-transient)
+  (test-set-strings)
+  (test-oset-core)
+  (test-oset-algebra)
+  (test-oset-order)
+  (test-oset-traits)
+  (test-oset-builder)
+  (test-oset-transient)
+  (test-oset-strings)
+  0)

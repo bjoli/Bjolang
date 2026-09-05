@@ -1,3 +1,10 @@
+;; Sammanslagen av 039_loop.bjo och 040_loop_control.bjo. Båda handlar om samma
+;; ennivåers `(loop ...)`; 041_loop_levels.bjo ligger kvar för sig.
+;;
+;; `show` och `build` fanns i båda filerna och finns nu i ett exemplar.
+;; De tre `println` som skrev ut ett räknat värde har blivit riktiga `expect`
+;; med samma literala värde som de tidigare skrev ut.
+
 ;; The general `(loop ...)` form: one level, lockstep sequences, accumulators.
 ;;
 ;; A loop is a left fold with early exit that always delivers a result: every
@@ -120,10 +127,98 @@
 
   side)
 
+;; Leaving a `(loop ...)` early, and taking over its continue edge.
+;;
+;; Every exit routes through the same finish block — exhaustion, `:break`, and a
+;; named loop's final `:do` declining to iterate. Nothing bypasses it, which is
+;; why an accumulator always arrives *finished*.
+
+;; ---------------------------------------------------------------------------
+;; :break and :final
+;; ---------------------------------------------------------------------------
+
+;; `:break` ends the loop before the rest of the iteration runs, so the element
+;; that triggered it is not accumulated.
+(: until-big (-> (List int) (List int)))
+(defun (until-big xs)
+  (loop (:for x xs)
+        (:break (> x 3))
+        (:acc out (listing x))))
+
+;; `:final` is the same predicate one iteration later: it reads an accumulator
+;; slot holding the *previous* iteration's verdict, so the triggering element is
+;; accumulated and then the loop stops.
+(: through-big (-> (List int) (List int)))
+(defun (through-big xs)
+  (loop (:for x xs)
+        (:final (> x 3))
+        (:acc out (listing x))))
+
+;; `:final`'s accumulator is a gensym, so an author's accumulator called `tmp`
+;; is not captured by it — and does not appear in the result either.
+(: summed-until (-> (List int) int))
+(defun (summed-until xs)
+  (loop (:for x xs)
+        (:final (> x 2))
+        (:acc tmp (summing x))
+        => tmp))
+
+;; A `:break` below an `:acc` accumulates the triggering element first: clause
+;; order decides, as everywhere else.
+(: including-trigger (-> (List int) (List int)))
+(defun (including-trigger xs)
+  (loop (:for x xs)
+        (:acc out (listing x))
+        (:break (> x 3))))
+
+;; The hidden accumulator does not show up in an auto-generated result, which is
+;; still a bare single accumulator rather than a tuple.
+(: still-single (-> (List int) int))
+(defun (still-single xs)
+  (loop (:for x xs)
+        (:final (> x 100))
+        (:acc n (counting x))))
+
+;; ---------------------------------------------------------------------------
+;; Named loops
+;; ---------------------------------------------------------------------------
+
+;; The final `:do` owns the continue edge: tail calling `lp` is the jump, and
+;; completing without one leaves the loop.
+;;
+;; `listing` finishes by reversing, so a result in the right order is the
+;; evidence that this exit ran the finish block rather than handing back the raw
+;; accumulator.
+(: while-even (-> (List int) (List int)))
+(defun (while-even xs)
+  (loop lp (:for x xs)
+           (:acc out (listing x))
+           (:do (if (= 0 (% x 2)) (lp) (display "")))
+           => out))
+
+;; `(lp #:name expr)` overrides one slot and advances the rest. The argument
+;; vector is completed at desugar time, since a jump carries one argument per
+;; slot.
+(: tenfold-after-two (-> (List int) int))
+(defun (tenfold-after-two xs)
+  (loop lp (:for x xs)
+           (:acc total (summing x))
+           (:do (if (> x 2) (lp #:total (* total 10)) (lp)))
+           => total))
+
+;; A named loop that always iterates behaves exactly like an unnamed one.
+(: plain-named (-> (List int) int))
+(defun (plain-named xs)
+  (loop lp (:for x xs)
+           (:acc n (counting x))
+           (:do (lp))
+           => n))
+
 ;; ---------------------------------------------------------------------------
 ;; A loop as a value, iterating deeply
 ;; ---------------------------------------------------------------------------
 
+;; Gemensam för `deep` och `deep-named`; de två filerna hade samma `build`.
 (: build (-> int (List int)))
 (defun (build n)
   (let lp ((i 0) (acc Nil))
@@ -136,13 +231,22 @@
   (+ 1 (loop (:for x (build n))
              (:acc c (counting x)))))
 
+;; Still a jump, so still able to run deeply.
+(: deep-named (-> int int))
+(defun (deep-named n)
+  (loop lp (:for x (build n))
+           (:acc c (counting x))
+           (:do (lp))
+           => c))
+
 ;; ---------------------------------------------------------------------------
 
 (: show (-> (List int) string))
 (defun (show xs)
   (list-foldl (fun (acc x) (string-append acc (string-append " " (int->string x)))) "" xs))
 
-(defun (main)
+(: test-loop (-> void))
+(defun (test-loop)
   (def xs (Cons 1 (Cons 2 (Cons 3 (Cons 4 Nil)))))
 
   (expect "collect" (list-length (collect xs)) 4)
@@ -153,7 +257,10 @@
   (expect "lockstep-length" (list-length (zipped [10 20 30 40] (Cons 1 (Cons 2 Nil)))) 2)
   (expect "lockstep-value" (list-head (zipped [10 20 30 40] (Cons 1 (Cons 2 Nil)))) 11)
 
-  (println (list-foldl string-append "" (seconds (Cons (Tuple 1 "a") (Cons (Tuple 2 "b") Nil)))))
+  ;; Var en `println`; nu fastspikad mot samma värde.
+  (expect "seconds"
+          (list-foldl string-append "" (seconds (Cons (Tuple 1 "a") (Cons (Tuple 2 "b") Nil))))
+          "ab")
 
   (expect "sequence-evaluated-once" (seq-evals xs) 1)
 
@@ -166,7 +273,10 @@
   (def (yes no) (partition xs))
   (expect "partition-yes" (list-length yes) 2)
   (expect "partition-no" (list-length no) 2)
-  (println (string-append (show yes) (string-append " /" (show no))))
+  ;; Var en `println`; nu fastspikad mot samma värde.
+  (expect "partition-values"
+          (string-append (show yes) (string-append " /" (show no)))
+          " 2 4 / 1 3")
 
   (expect "largest" (largest (Cons 3 (Cons 9 (Cons 4 Nil)))) 9)
   (expect "largest-empty" (largest Nil) 0)
@@ -177,5 +287,38 @@
 
   (expect "effect-only" (add-all xs) 10)
 
-  (expect "deep" (deep 200000) 200001)
+  (expect "deep" (deep 200000) 200001))
+
+(: test-loop-control (-> void))
+(defun (test-loop-control)
+  (def xs (Cons 1 (Cons 2 (Cons 3 (Cons 4 (Cons 5 Nil))))))
+
+  ;; break stops before accumulating 4; final stops after.
+  (expect "break-length" (list-length (until-big xs)) 3)
+  (expect "final-length" (list-length (through-big xs)) 4)
+  ;; Var en `println`; nu fastspikad mot samma värde.
+  (expect "break-final-values"
+          (string-append (show (until-big xs)) (string-append " /" (show (through-big xs))))
+          " 1 2 3 / 1 2 3 4")
+
+  (expect "final-no-capture" (summed-until xs) 6)
+  (expect "break-below-acc" (list-length (including-trigger xs)) 4)
+  (expect "hidden-not-in-result" (still-single xs) 5)
+
+  ;; 1 is odd, so the first iteration accumulates it and then declines to go on.
+  (expect "named-exit-length" (list-length (while-even xs)) 1)
+  (expect "named-exit-finished" (list-head (while-even xs)) 1)
+
+  ;; A longer run, to show the finish block really reversed: 2 4 6 then 7 stops.
+  (def evens (Cons 2 (Cons 4 (Cons 6 (Cons 7 Nil)))))
+  (expect "named-order" (list-head (while-even evens)) 2)
+  (expect "named-order-length" (list-length (while-even evens)) 4)
+
+  (expect "override" (tenfold-after-two xs) 6450)
+  (expect "plain-named" (plain-named xs) 5)
+  (expect "deep-named" (deep-named 200000) 200000))
+
+(defun (main)
+  (test-loop)
+  (test-loop-control)
   0)

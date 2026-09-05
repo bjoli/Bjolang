@@ -3,6 +3,7 @@
 ;; `Foldable`, its `List`/`Vec` implementations and the `fold` method all reach
 ;; this file through `prelude.dll`'s export metadata: nothing here declares them.
 (import (std prelude))
+(import (std simpletest))
 
 ;; Generic over the collection: `fold` is dispatched through a dictionary, and
 ;; the element type `%item` arrives as a synthesized type parameter.
@@ -23,13 +24,13 @@
 
 (defun (main args)
     ;; Concrete receivers devirtualize to the impl class in prelude.dll.
-    (println (fold + 0 [1 2 3 4]))
-    (println (fold + 0 (Cons 1 (Cons 2 Nil))))
+    (expect "fold sums a Vec" (fold + 0 [1 2 3 4]) 10)
+    (expect "fold sums a List" (fold + 0 (Cons 1 (Cons 2 Nil))) 3)
 
     ;; Generic receivers, at three different element types.
-    (println (count [1 2 3 4]))
-    (println (count (Cons 1 (Cons 2 Nil))))
-    (println (count ["a" "b" "c"]))
-    (println (twice [1 2]))
-    (println (quadruple [1 2 3]))
+    (expect "count over a Vec of int" (count [1 2 3 4]) 4)
+    (expect "count over a List of int" (count (Cons 1 (Cons 2 Nil))) 2)
+    (expect "count over a Vec of string" (count ["a" "b" "c"]) 3)
+    (expect "twice forwards its dictionary" (twice [1 2]) 4)
+    (expect "quadruple inherits the constraint" (quadruple [1 2 3]) 12)
     0)

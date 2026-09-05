@@ -1,4 +1,5 @@
 (import (std prelude))
+(import (std simpletest))
 ;; The trait, its `List` and `Option` instances and the `(do ...)` block that
 ;; reads as calls to them all come from here.
 (import (std monad))
@@ -78,17 +79,20 @@
     (None "none")))
 
 (defun (main)
-  (println (show-list (pairs)))
-  (println (show-option (calc 12)))
-  (println (show-option (calc 0)))
-  (println (show-option (calc 3)))
-  (println (show-list (countdown 4)))
+  ;; Typerna saknar `Eq`/`->str`, så varje värde jämförs genom filens egna
+  ;; visare.
+  (expect "the List instance takes every pair" (show-list (pairs)) " 11 21 12 22")
+  (expect "the Option instance: 6*2 + 12/3" (show-option (calc 12)) "16")
+  (expect "the Option instance at zero" (show-option (calc 0)) "0")
+  (expect "the Option instance with truncating division" (show-option (calc 3)) "2")
+  (expect "a block whose last form is its own recursive call"
+          (show-list (countdown 4)) " 0")
   ;; `pure` mentions its constructor only in its result, so nothing about the
   ;; call itself says which instance it is. The annotation on `one` does.
   (def (: one (List int)) (pure 1))
-  (println (show-list one))
+  (expect "pure at List, picked by the annotation" (show-list one) " 1")
 
-  (println (show-result (area "3,4")))
-  (println (show-result (area "3,-4")))
-  (println (show-result (area "3")))
+  (expect "the Result instance, :match on a Tuple" (show-result (area "3,4")) "12")
+  (expect "an Err from a later bind short-circuits" (show-result (area "3,-4")) "negative")
+  (expect "an Err from the very first :match" (show-result (area "3")) "not a pair: 3")
   0)

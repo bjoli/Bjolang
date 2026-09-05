@@ -1,13 +1,24 @@
+(import (std prelude))
+(import (std simpletest))
+
 (defun (main)
   (let ((b1 (listbuilder-empty)))
     (listbuilder-add! b1 1)
     (listbuilder-add! b1 2)
     (listbuilder-add-range! b1 (list->seq (Cons 3 (Cons 4 (Cons 5 Nil)))))
     (let ((l1 (listbuilder->list b1)))
-      (list-for-each (fun (x) (displayln (int->string x))) l1)
-      (displayln (int->string (listbuilder-length (list->builder l1))))
+      ;; list->str renderar hela listan, så ordningen påstås i ett svep i
+      ;; stället för ett element per rad.
+      (expect "add! and add-range! append in order" (list->str l1) "'(1 2 3 4 5)")
+      (expect "one element per add" (list-length l1) 5)
+      (expect "list->builder round-trips the length"
+              (listbuilder-length (list->builder l1)) 5)
       (let ((b2 (list->builder l1)))
         (listbuilder-add! b2 6)
         (let ((l2 (listbuilder->list b2)))
-          (list-for-each (fun (x) (displayln (int->string x))) l2)))))
+          (expect "adding to a refilled builder appends at the end"
+                  (list->str l2) "'(1 2 3 4 5 6)")
+          (expect "and grows it by one" (list-length l2) 6)
+          ;; Byggaren äger sin lista: l1 ska inte ha växt med.
+          (expect "the source list is untouched" (list->str l1) "'(1 2 3 4 5)")))))
   0)

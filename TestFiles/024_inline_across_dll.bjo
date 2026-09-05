@@ -4,6 +4,7 @@
 ;; spliced body has to name a module that this file never mentions. And it is
 ;; spliced next to a local called `decorate` that means something else entirely.
 (import (std prelude))
+(import (std simpletest))
 ;; For `(do ...)` alone: the block below runs over `boxed`'s `Monad`, which the
 ;; macro's templates leave to mean whatever `bind` and `pure` mean here.
 (import (std monad))
@@ -13,15 +14,19 @@
 (defun (shout s) (string-append s "!"))
 
 (defun (main)
-  (println (render (MkBox "hello")))
+  (expect "an inlined impl body reaching a third module" (render (MkBox "hello")) "<hello>")
 
   ;; A local of the same name as the helper the spliced body reaches for.
   (let ((decorate "not-a-function"))
-    (println (string-append decorate " "))
-    (println (render (MkBox (shout "still works")))))
+    (expect "the local decorate is a string here" (string-append decorate " ") "not-a-function ")
+    (expect "the spliced body is unshadowed by it"
+            (render (MkBox (shout "still works")))
+            "<still works!>"))
 
   ;; An inline trait, its implementation and a `(do ...)` block over it, all
   ;; reaching this file through compiled metadata.
-  (println (render (do (:bind s (MkBox "boxed"))
-                       (:return (shout s)))))
+  (expect "a do block over an inline trait from a dll"
+          (render (do (:bind s (MkBox "boxed"))
+                      (:return (shout s))))
+          "<boxed!>")
   0)
