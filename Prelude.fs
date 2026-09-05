@@ -988,35 +988,35 @@ let prelude : Env =
       ]
       CurrentModule = "" }
 
-/// Namnen som redan är bundna av `using static BjolangRuntime`.
+/// The names already bound by `using static BjolangRuntime`.
 let builtinNames: Set<string> =
     prelude.Bindings |> Map.toSeq |> Seq.map fst |> Set.ofSeq
 
-/// C#-namnet en modulnivåbindning emitteras under.
+/// The C# name under which a module-level binding is emitted.
 ///
-/// En bindning som heter samma sak som en builtin får ett härlett namn.
-/// Annars ger `using static BjolangRuntime` och `using static <modul>_Module`
-/// två medlemmar med samma namn, och C# löser ett naket anrop till ingen av
-/// dem — även i en modul som bara ville ha builtinen och aldrig importerade
-/// skuggan. Den skuggande modulen kan vara nådd bara transitivt.
+/// A binding named the same as a builtin gets a derived name.
+/// Otherwise `using static BjolangRuntime` and `using static <module>_Module`
+/// provide two members with the same name, and C# resolves a bare call to neither of
+/// them — even in a module that only wanted the builtin and never imported
+/// the shadow. The shadowing module could just be reached transitively.
 ///
-/// Prefixet sätts på före saneringen, av samma skäl som `keywordParamName`:
-/// en bindning som heter som ett C#-nyckelord saneras till `@base`, och
-/// `skugga__@base` är ingen identifierare alls.
+/// The prefix is prepended before sanitization, for the same reason as `keywordParamName`:
+/// a binding named like a C# keyword is sanitized to `@base`, and
+/// `shadow__@base` is not an identifier at all.
 ///
-/// Härlett, inte publicerat: metadatan bär bjolangnamnet, och varje läsare
-/// räknar fram samma sträng igen — som `Naming.suspendingCopy`.
+/// Derived, not published: the metadata carries the bjolang name, and each reader
+/// calculates the same string again — like `Naming.suspendingCopy`.
 let moduleMemberName (name: string) : string =
     if Set.contains name builtinNames then
         Naming.sanitizeIdent ("shadowed__" + name)
     else
         Naming.sanitizeIdent name
 
-/// Samma namn, som reflektion frågar efter det.
+/// The same name, as reflection asks for it.
 ///
-/// `@` är hur C#-källkod stavar en identifierare som krockar med ett nyckelord,
-/// och ingen del av namnet: `public static Syntax @do(...)` är en metod som
-/// heter `do`. Det som når in i en byggd assembly på namn — makrotabellen,
-/// REPL:en som läser tillbaka ett värde — frågar efter den stavningen.
+/// `@` is how C# source code spells an identifier that collides with a keyword,
+/// and is not part of the name: `public static Syntax @do(...)` is a method
+/// named `do`. Anything reaching into a built assembly by name — the macro table,
+/// the REPL reading back a value — asks for that spelling.
 let moduleClrMemberName (name: string) : string =
     (moduleMemberName name).TrimStart '@'

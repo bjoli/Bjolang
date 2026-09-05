@@ -99,3 +99,39 @@ module Diagnostics =
             printfn ""
             printfn "This is a bug in the compiler, not in the program above. Trace:"
             printfn $"%s{ex.StackTrace}"
+
+    /// Kör `f` med allt den skriver till konsolen uppsamlat, och lämnar
+    /// tillbaka både resultatet och texten.
+    ///
+    /// Hela `Console` växlas om, inte bara den här modulens utskrifter. En
+    /// kompilering rapporterar från ett dussin moduler med rakt `printfn` —
+    /// `Pipeline` säger vilket beroende den bygger, `Build` skickar vidare vad
+    /// C#-kompilatorn sade — och en batch måste kunna svara på vilken indatafil
+    /// som sade vad. Att fånga vid källan skulle betyda ett anrop att ändra på
+    /// varje ställe som skriver, och nästa tillagda `printfn` skulle tyst falla
+    /// utanför.
+    ///
+    /// Priset är att `Console.SetOut` gäller hela processen: det här duger för
+    /// en batch som kompilerar en fil i taget, och för ingenting som kompilerar
+    /// två samtidigt.
+    ///
+    /// stdout och stderr går till samma buffert, så att en varning hamnar där
+    /// den skrevs i förhållande till resten. Den som läser texten letar efter
+    /// en sträng i den, inte efter vilken ström den kom på.
+    let captured (f: unit -> 'a) : 'a * string =
+        let buffer = System.Text.StringBuilder()
+        use writer = new System.IO.StringWriter(buffer)
+        let previousOut = System.Console.Out
+        let previousError = System.Console.Error
+
+        System.Console.SetOut writer
+        System.Console.SetError writer
+
+        try
+            // Texten läses innanför `try`, eftersom en `f` som kastar har hunnit
+            // skriva det som förklarar varför.
+            let result = f ()
+            result, buffer.ToString()
+        finally
+            System.Console.SetOut previousOut
+            System.Console.SetError previousError

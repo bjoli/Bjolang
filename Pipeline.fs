@@ -782,6 +782,49 @@ let private withImplicitPrelude (absPath: string) (forms: SExpr list) : SExpr li
         let sym name = SAtom { Token = Lexer.Symbol name; Range = r }
         SList([ sym "import"; SList([ sym "std"; sym "prelude" ], r) ], r) :: forms
 
+/// Det föråldringskollen behöver veta om en `.bjo`, utan att tolka den.
+type private SourceFacts =
+    { /// Filen själv och allt den drar in med `include`, transitivt.
+      Sources: Set<string>
+      /// Importerna, med den underförstådda preluden inräknad.
+      Imports: (ImportSpec * Lexer.Range) list }
+
+/// Vad varje `.bjo` sade om sig själv, och vid vilken tidsstämpel.
+///
+/// Kollen läser och lexar hela källfilen bara för att få fram två saker som
+/// båda är rena funktioner av filens innehåll. Det gjordes om från grunden för
+/// varje modul som nådde filen, i varje bygge: i en batch över testsviten lexas
+/// `prelude.bjo` omkring tvåhundra gånger och svarar likadant varje gång. Mätt
+/// var det en tredjedel av batchens tid.
+///
+/// Tidsstämpeln sitter i nyckeln, som i `dllCache`, så att en fil som skrivs om
+/// mitt i en process läses om. Jämförelserna av tidsstämplar cachas *inte* —
+/// det är bara läsningen som sparas, och en `.dll` som byggs om under tiden
+/// märks som förut.
+///
+/// En inkluderad fil som ändras kan inte ge fel svar, trots att stängningen
+/// beräknades tidigare. Det enda sättet att sakna en fil i stängningen är att
+/// filen som inkluderar den har ändrats — och den filen ligger själv i
+/// stängningen och stäms av mot `.dll`:ens tidsstämpel, så modulen döms som
+/// föråldrad och byggs om, varvid stängningen räknas om.
+let private sourceFacts = System.Collections.Generic.Dictionary<string * int64, SourceFacts>()
+
+let private factsOf (bjoPath: string) : SourceFacts =
+    let key = bjoPath, File.GetLastWriteTimeUtc(bjoPath).Ticks
+
+    match sourceFacts.TryGetValue key with
+    | true, hit -> hit
+    | _ ->
+        let forms, _ = Lexer.tokenize bjoPath (File.ReadAllText bjoPath) |> read
+        let _, sources = expandIncludes [ bjoPath ] bjoPath forms
+
+        let facts =
+            { Sources = sources
+              Imports = importsOf (withImplicitPrelude bjoPath forms) }
+
+        sourceFacts[key] <- facts
+        facts
+
 /// The `.dll` for an imported `.bjo`, built if there is not a current one.
 ///
 /// `(import "x.bjo")` means a compiled unit, always. Merging the source into
@@ -810,7 +853,13 @@ let private withImplicitPrelude (absPath: string) (forms: SExpr list) : SExpr li
 /// this transitive: resolving builds the dependency if it is itself behind, so
 /// by the time its timestamp is compared it is current, and a change anywhere
 /// in the graph reaches everything above it one edge at a time.
-let rec private ensureLibrary (bjoPath: string) : string =
+///
+/// Public because a batch wants exactly this question asked about files that
+/// nobody imports. `--if-stale` builds a set of libraries by asking
+/// about each one, and gets the ordering and skipping for free: one that
+/// is already current is not recompiled, and one that is a dependency of
+/// another in the set is built when reached rather than when it appears in the list.
+let rec ensureLibrary (bjoPath: string) : string =
     let dllPath = Path.ChangeExtension(bjoPath, ".dll")
 
     // Reached from itself, or reached twice: the answer is the one this walk
@@ -832,15 +881,14 @@ let rec private ensureLibrary (bjoPath: string) : string =
         let upToDate =
             File.Exists dllPath
             && (let built = File.GetLastWriteTimeUtc dllPath
-                let forms, _ = Lexer.tokenize bjoPath (File.ReadAllText bjoPath) |> read
-                let _, sources = expandIncludes [ bjoPath ] bjoPath forms
+                let facts = factsOf bjoPath
 
                 compilerBuilt <= built
-                && sources |> Set.forall (fun src -> File.GetLastWriteTimeUtc src <= built)
+                && facts.Sources |> Set.forall (fun src -> File.GetLastWriteTimeUtc src <= built)
                 // The implicit prelude edge counts as much as a written one:
                 // a module that never names the prelude is still compiled
                 // against its metadata.
-                && (importsOf (withImplicitPrelude bjoPath forms)
+                && (facts.Imports
                     |> List.forall (fun (spec, _) ->
                         match resolveDependency bjoPath spec with
                         | Some dep -> File.GetLastWriteTimeUtc dep <= built

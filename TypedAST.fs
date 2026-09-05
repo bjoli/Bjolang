@@ -5,16 +5,16 @@ open Bjolang.Parser
 
 
 // --- MUTABLE HM TYPES (For Inference) ---
-/// En metavariabel med sin `let`-nivå — Rémys rank-teknik.
+/// A metavariable with its `let`-level — Rémy's rank technique.
 ///
-/// `Level` är hur djupt inkapslad i `let`-bindningar cellen skapades. En
-/// bindning som generaliseras på nivå L får kvantifiera exakt de celler vars
-/// nivå är större än L: de kan inte nås från omgivningen, eftersom allt i
-/// omgivningen skapades på nivå L eller lägre. Unifieringen håller det sant
-/// genom att sänka nivån på allt som binds in i en cell med lägre nivå.
+/// `Level` is how deeply nested in `let`-bindings the cell was created. A
+/// binding generalized at level L gets to quantify exactly those cells whose
+/// level is strictly greater than L: they cannot be reached from the environment, since everything in
+/// the environment was created at level L or lower. Unification keeps this true
+/// by lowering the level of everything that is bound into a cell with a lower level.
 ///
-/// `Level` ingår varken i likhet eller ordning: den är föränderlig och säger
-/// inget om vilken cell det är.
+/// `Level` is not part of equality or ordering: it is mutable and says
+/// nothing about which cell it is.
 [<CustomEquality; CustomComparison>]
 type MetaVar = 
     { Id: int; mutable Value: HMType option; mutable Level: int }
@@ -1685,9 +1685,9 @@ let implClassName (traitName: string) (targetTypeName: string) =
                 "DynImpl"
             else
                 $"Dyn_%s{Naming.sanitizeIdent hidden}_Impl"
-        // En modultypnyckel är kvalificerad. Klassen ligger redan i modulens
-        // namnrymd, så den namnges efter sista ledet — en `.NET`-typ som
-        // `System.IO.TextReader` har ingen namnrymd att stå i och plattas.
+        // A module type key is qualified. The class is already in the module's
+        // namespace, so it is named after the last part — a `.NET` type like
+        // `System.IO.TextReader` has no namespace to be in and is flattened.
         elif Naming.isModuleKey targetTypeName then Naming.emittedTypeName targetTypeName
         else targetTypeName.Replace(".", "_")
 

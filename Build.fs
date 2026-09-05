@@ -12,7 +12,26 @@ open Bjolang
 open System.IO
 
 /// What a compilation is told, once the command line has been read.
-type Options = { IsLibrary: bool; Debug: bool }
+type Options =
+    { IsLibrary: bool
+      Debug: bool
+      /// Vart `-d` lägger den genererade C#-koden. AST-dumpen hamnar bredvid.
+      ///
+      /// `None` ger `out.cs` och `ast_dump.txt` i arbetskatalogen, vilket är
+      /// vad en enstaka kompilering alltid har gjort. En batch måste säga
+      /// något: två filer i samma process skriver annars över varandras dump,
+      /// och den som läser den får svar om fel fil.
+      EmitCs: string option }
+
+/// Vad `-d` skriver till när ingen har sagt något annat.
+let private defaultCsDump = "out.cs"
+let private defaultAstDump = "ast_dump.txt"
+
+/// De två filerna `-d` skriver, givet vart C#-koden ska.
+let private dumpPaths (emitCs: string option) : string * string =
+    match emitCs with
+    | None -> defaultCsDump, defaultAstDump
+    | Some path -> path, Path.ChangeExtension(path, ".ast.txt")
 
 
 /// Runs `fileName args` to completion, with `env` added to its environment,
@@ -99,9 +118,11 @@ let compile (options: Options) (inputFilePath: string) : int =
             
             let csCode =
                 generateSource env typedAst dllDeps declaredMacros inputFilePath isLibrary
-            
+
+            let csDumpPath, astDumpPath = dumpPaths options.EmitCs
+
             if options.Debug then
-                File.WriteAllText("ast_dump.txt", sprintf "%A" typedAst)
+                File.WriteAllText(astDumpPath, sprintf "%A" typedAst)
             
             /// Does the entry point have to drive a fiber to call `main`?
             ///
@@ -279,7 +300,7 @@ let compile (options: Options) (inputFilePath: string) : int =
             File.WriteAllText(Path.Combine(tmpDir, "Project.csproj"), csprojContent)
             File.WriteAllText(Path.Combine(tmpDir, "Program.cs"), fullCode)
             if options.Debug then
-                File.WriteAllText("out.cs", fullCode)
+                File.WriteAllText(csDumpPath, fullCode)
             
             let outDir = Path.GetFullPath(if System.String.IsNullOrWhiteSpace(Path.GetDirectoryName(outputFilePath)) then "." else Path.GetDirectoryName(outputFilePath))
 
@@ -703,7 +724,7 @@ let private compileDependencyInProcess (bjoPath: string) : string =
     let exitCode =
         try
             Timing.phase "dependency build (in process)" (fun () ->
-                Session.isolated (fun () -> compile { IsLibrary = true; Debug = false } bjoPath))
+                Session.isolated (fun () -> compile { IsLibrary = true; Debug = false; EmitCs = None } bjoPath))
         finally
             Diagnostics.verbose <- narrating
             inFlight.RemoveAt(inFlight.Count - 1)
@@ -726,3 +747,177 @@ let installDependencyBackend () =
         match System.Environment.GetEnvironmentVariable "BJOLANG_OUT_OF_PROCESS_DEPS" with
         | null | "" | "0" -> compileDependencyInProcess
         | _ -> compileDependencyOutOfProcess
+
+// ---------------------------------------------------------------------------
+// Många rotfiler i en process
+// ---------------------------------------------------------------------------
+
+/// Vad en av batchens indatafiler blev.
+type BatchResult =
+    { /// Absolut sökväg. Den som beställde batchen skrev kanske något annat —
+      /// en relativ sökväg, en med `..` i — och ska ändå kunna para ihop svaret
+      /// med sin fråga.
+      File: string
+      /// Utgångskoden filen skulle ha gett som ensam kompilering.
+      Status: int
+      /// Den byggda `.exe`:n eller `.dll`:en, eller tomt om ingen blev till.
+      Artifact: string
+      /// Allt filen skrev, stdout och stderr sammanslagna. Det här är vad ett
+      /// testfall som förväntar sig ett visst felmeddelande läser.
+      Output: string }
+
+/// En sträng som JSON.
+///
+/// Handskrivet snarare än `System.Text.Json`, eftersom det enda som ska ut är
+/// fyra fält och det enda som är svårt är citeringen. Icke-ASCII lämnas som det
+/// är: rapporten skrivs och läses som UTF-8.
+let private jsonString (s: string) : string =
+    let sb = System.Text.StringBuilder()
+    sb.Append '"' |> ignore
+
+    for c in s do
+        match c with
+        | '"' -> sb.Append "\\\"" |> ignore
+        | '\\' -> sb.Append "\\\\" |> ignore
+        | '\n' -> sb.Append "\\n" |> ignore
+        | '\r' -> sb.Append "\\r" |> ignore
+        | '\t' -> sb.Append "\\t" |> ignore
+        | c when c < ' ' -> sb.AppendFormat("\\u{0:x4}", int c) |> ignore
+        | c -> sb.Append c |> ignore
+
+    sb.Append '"' |> ignore
+    sb.ToString()
+
+/// En JSON-rad per fil, i den ordning de kompilerades.
+///
+/// Rader snarare än en array, så att en läsare kan ta emot det som blev klart
+/// av en batch som dog på mitten. Den som beställde vet vilka filer den bad om
+/// och kan bygga om de som saknas var för sig.
+let private writeReport (path: string) (results: BatchResult list) : unit =
+    let line (r: BatchResult) =
+        "{\"file\":" + jsonString r.File
+        + ",\"status\":" + string r.Status
+        + ",\"artifact\":" + jsonString r.Artifact
+        + ",\"output\":" + jsonString r.Output
+        + "}"
+
+    let text = (results |> List.map line |> String.concat "\n") + "\n"
+
+    if path = "-" then
+        System.Console.Out.Write text
+    else
+        File.WriteAllText(path, text)
+
+/// Hur många filer en batch måste ha för att det ska löna sig att emitta
+/// in-process istället för att lämna över till `csc`.
+///
+/// Uppmätt på den här kompilatorn: Roslyns föruppvärmning kostar omkring 810 ms
+/// och den första emitten väntar in ~354 ms av den, plus ~215 ms för sig själv.
+/// Varje emit därefter kostar ~15 ms. `csc -shared` kostar ~80 ms varje gång,
+/// hur många de än är. Jämnt skägg strax under tio filer, och en batch under
+/// den gränsen förlorar på att gå in-process.
+let private inProcessThreshold = 10
+
+/// Vad kompileringen av `inputFilePath` lämnade efter sig.
+///
+/// En rotfil blir antingen det ena eller det andra: utan `main` byggs den som
+/// bibliotek. `.exe` frågas ändå om först, så att en `.dll` som ligger kvar
+/// sedan tidigare inte svarar i ett programs ställe.
+let private artifactOf (inputFilePath: string) : string =
+    let candidates =
+        [ Path.ChangeExtension(inputFilePath, ".exe")
+          Path.ChangeExtension(inputFilePath, ".dll") ]
+
+    match candidates |> List.tryFind File.Exists with
+    | Some path -> Path.GetFullPath path
+    | None -> ""
+
+/// Kompilerar många rotfiler i en och samma process.
+///
+/// Vad det sparar är inte kodgenereringen utan allt runt omkring den. Mätt på
+/// den här kompilatorn kostar en kall process omkring 490 ms innan den har
+/// gjort något alls — värdstart, JIT av hela frontenden, reflektionen över
+/// körtidens assemblies — och varje modul därefter omkring 70 ms. En svit som
+/// startar en kompilator per fil betalar det första talet per fil.
+///
+/// Varje fil körs i `Session.isolated`, av samma skäl som ett beroende gör det:
+/// den ska kompilera som om den vore det första processen såg. Det är den enda
+/// anledningen till att det här får finnas — utan `Session` vore en batch bara
+/// ett sätt att låta fil 3 ärva fil 2:s makrotabell.
+///
+/// Vad som *inte* nollställs mellan filerna är det `Session` avsiktligt lämnar
+/// utanför: laddade assemblies och `DotNetInterop`s typcache. En fil som drar
+/// in en `.NET`-assembly gör den därför synlig för resten av batchen. Det är
+/// samma sak som redan gäller mellan en modul och dess beroenden, men här kan
+/// den nå filer som inte har med varandra att göra.
+let batch (options: Options) (ifStale: bool) (files: string list) : BatchResult list =
+    // Roslyn in-process, men bara om det finns nog med filer att dela
+    // uppstarten på. `CSharpEmit.preferInProcess` varnar för att blanda
+    // backendar inom ett bygge — här blandas ingenting, valet görs före första
+    // filen och gäller hela batchen.
+    if files.Length >= inProcessThreshold then
+        CSharpEmit.preferInProcess ()
+
+    // En gång för hela batchen. `compile` gör om det per fil, men anropet är
+    // idempotent och det som kostar är första varvet.
+    Timing.phase "load runtime assemblies" (fun () ->
+        for assemblyPath in Paths.runtimeAssemblies do
+            if File.Exists assemblyPath then
+                DotNetInterop.registerAssemblyFile assemblyPath)
+
+    files
+    |> List.map (fun file ->
+        let fullPath = Path.GetFullPath file
+
+        // `-d` skriver dumparna bredvid indatafilen istället för i
+        // arbetskatalogen. Annars skriver batchens filer över varandras, och
+        // den som läser `out.cs` får svar om den sist kompilerade.
+        let fileOptions =
+            if options.Debug && options.EmitCs.IsNone then
+                { options with EmitCs = Some(Path.ChangeExtension(fullPath, ".out.cs")) }
+            else
+                options
+
+        let compileOne () =
+            try
+                if ifStale then
+                    // Frågan är "finns en aktuell `.dll`", inte "kompilera".
+                    // Den som redan är aktuell rör vi inte, och den som är ett
+                    // beroende till en senare fil i listan byggs här och är
+                    // aktuell när turen kommer till den.
+                    Pipeline.ensureLibrary fullPath |> ignore
+                    0
+                else
+                    compile fileOptions fullPath
+            with ex ->
+                // `compile` fångar sitt eget, men `ensureLibrary` kastar. En
+                // fil som inte gick att bygga är ett svar om den filen, inte
+                // slutet på batchen.
+                Diagnostics.reportFailure ex
+                1
+
+        let status, output = Diagnostics.captured (fun () -> Session.isolated compileOne)
+
+        { File = fullPath
+          Status = status
+          Artifact = artifactOf fullPath
+          Output = output })
+
+/// Kör en batch, skriver rapporten och svarar med processens utgångskod.
+///
+/// Utgångskoden säger bara om allt gick igenom. Vilken fil som inte gjorde det,
+/// och vad den sade, står i rapporten — en batch av feltester förväntar sig att
+/// koden är skild från noll och bryr sig inte om den.
+let runBatch (options: Options) (ifStale: bool) (reportPath: string option) (files: string list) : int =
+    let results = batch options ifStale files
+
+    match reportPath with
+    | Some path -> writeReport path results
+    | None -> ()
+
+    let failed = results |> List.filter (fun r -> r.Status <> 0)
+
+    // Till stderr, så att `--report -` kan lägga beslag på stdout.
+    eprintfn "Batch: %d files, %d failed." results.Length failed.Length
+
+    if failed.IsEmpty then 0 else 1

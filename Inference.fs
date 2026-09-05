@@ -3275,9 +3275,9 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
 
             shape, valType, typedVal, localFun
 
-        // En nivå in bara för den bindning som faktiskt generaliseras. Ett
-        // värde binds monomorft, och dess celler hör hemma i den omgivande
-        // nivån — höjde vi den här skulle nästa syskonbindning kvantifiera dem.
+        // One level in just for the binding that is actually generalized. A
+        // value is bound monomorphically, and its cells belong in the enclosing
+        // level — if we raised it here the next sibling binding would quantify them.
         let shape, valType, typedVal, localFun =
             if isFun then atLevel inferBinding else inferBinding ()
 
@@ -3383,11 +3383,11 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
                 unify env.Registry valType expectedType
                 name, isFun, localFun, typedVal)
 
-        // Ingen egen nivå för gruppen, till skillnad från `ELet`. Varje medlem
-        // är bunden monomorft i `recEnv` medan kropparna kontrolleras, så
-        // cellerna tillhör den omgivande nivån och `generalizeLocal` nedan
-        // kvantifierar inget utöver vad annoteringarna redan namngav. En
-        // rekursiv lokal funktion är monomorf; se `057_local_generalization`.
+        // No own level for the group, unlike `ELet`. Each member
+        // is bound monomorphically in `recEnv` while the bodies are checked, so
+        // the cells belong to the enclosing level and `generalizeLocal` below
+        // quantifies nothing beyond what the annotations already named. A
+        // recursive local function is monomorphic; see `057_local_generalization`.
         let finalEnv =
             List.zip bindings bindingMetas
             |> List.fold
@@ -4345,11 +4345,11 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
         // annotated branch of `let` does the same.
         let declaredType = Map.tryFind name sigs |> Option.map (fun (t, _, _) -> t)
 
-        // En nivå in, så att cellerna som föds här är synligt djupare än allt
-        // som redan står i omgivningen — importer, prelude och modulens
-        // tidigare deklarationer. `solvePending` ligger innanför: de celler den
-        // skapar hör till det här högerledet, och skapade på yttre nivå hade de
-        // dragit ner resten med sig.
+        // One level in, so that the cells born here are visibly deeper than everything
+        // already in the environment — imports, prelude and the module's
+        // previous declarations. `solvePending` lies inside: the cells it
+        // creates belong to this right-hand side, and created at the outer level they
+        // would have dragged the rest down with them.
         let exprType, typedExpr =
             atLevel (fun () ->
                 let exprType, typedExpr =
@@ -4379,8 +4379,8 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
                     if isSyntacticValue env.Registry typedExpr then
                         generalize env exprType
                     else
-                        // Monomorf, men inferrad en nivå in — cellerna måste
-                        // ner igen innan de blir en del av omgivningen.
+                        // Monomorphic, but inferred one level in — the cells must
+                        // go down again before they become part of the environment.
                         demote env.Registry exprType
                         Scheme([], [], exprType)
                   IsMutable = false }
@@ -4555,13 +4555,13 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
                     { TraitName = originalName env.Registry traitName; TargetType = TVar varName })
             | None -> []
 
-        // Härifrån och fram till `exitLevel` nedan är vi en nivå in: parametrar
-        // utan signatur, returtypen och allt kroppen skapar föds djupare än
-        // omgivningen, och är därmed det `generalize` får kvantifiera.
+        // From here up to `exitLevel` below we are one level in: parameters
+        // without a signature, the return type and everything the body creates are born deeper than
+        // the environment, and are thus what `generalize` gets to quantify.
         //
-        // `atLevel` går inte att använda — blocket är hundratals rader långt
-        // och lämnar ifrån sig ett dussin namn. Ett kastat typfel lämnar
-        // räknaren uppe, och `Session.restore` är den som tar ner den.
+        // `atLevel` cannot be used — the block is hundreds of lines long
+        // and yields a dozen names. A thrown type error leaves
+        // the counter elevated, and `Session.restore` is the one that takes it down.
         enterLevel ()
 
         // Match defun args with the signature types
@@ -4851,8 +4851,8 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
         finalEnv, Map.remove name sigs, [ decl ]
 
     | DDefTuple(names, expr, r) ->
-        // Samma nivåhöjning som `DDef`, och av samma skäl: varje komponent
-        // generaliseras för sig nedan.
+        // The same level elevation as `DDef`, and for the same reason: each component
+        // is generalized individually below.
         let exprType, typedExpr, elementMetas =
             atLevel (fun () ->
                 let exprType, typedExpr = infer env expr
@@ -5933,9 +5933,9 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
                         | InterfaceTrait -> freeTVars regEnv.Registry targetType |> Set.ofList
                     let remainingVars = freeTVars regEnv.Registry expectedSignature |> List.distinct
                     //
-                    // `freshMetaInner`: `checkDecl` nedan generaliserar på den
-                    // här nivån, så metodens egna variabler måste ligga en
-                    // nivå in för att komma med i schemat igen.
+                    // `freshMetaInner`: `checkDecl` below generalizes at this
+                    // level, so the method's own variables must lie one
+                    // level in to be included in the scheme again.
                     let freshSubst =
                         remainingVars
                         |> List.filter (fun v -> not (Set.contains v classLevelVars))

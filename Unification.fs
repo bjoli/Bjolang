@@ -5,11 +5,11 @@ open Bjolang.TypedAST
 // --- UNIFICATION ENGINE ---
 let mutable nextMetaId = 0
 
-/// Hur många generaliserande bindningar som står öppna just nu.
+/// How many generalizing bindings are currently open.
 ///
-/// Noll är toppnivån. `enterLevel` höjer den innan högerledet i en bindning som
-/// ska generaliseras infereras, så att varje cell som skapas där föds med en
-/// nivå som är högre än omgivningens.
+/// Zero is the top level. `enterLevel` raises it before the right-hand side of a binding that
+/// is to be generalized is inferred, so that every cell created there is born with a
+/// level that is higher than the environment's.
 let mutable private currentLevel = 0
 
 let freshMeta () = 
@@ -17,17 +17,17 @@ let freshMeta () =
     nextMetaId <- nextMetaId + 1
     TMeta { Id = id; Value = None; Level = currentLevel }
 
-/// Nivån just nu. Läses av `generalizeWith` och av `demote`.
+/// The level right now. Read by `generalizeWith` and by `demote`.
 let level () : int = currentLevel
 
 let enterLevel () : unit = currentLevel <- currentLevel + 1
 let exitLevel () : unit = currentLevel <- currentLevel - 1
 
-/// Kör `f` en nivå in, och tar sig tillbaka även om `f` kastar.
+/// Runs `f` one level in, and finds its way back even if `f` throws.
 ///
-/// Ett typfel avbryter hela kompileringen, men en REPL-session och en
-/// beroendekompilering fortsätter i samma process — och en nivå som blivit
-/// kvar uppe gör att nästa deklaration generaliserar för lite.
+/// A type error aborts the entire compilation, but a REPL session and a
+/// dependency compilation continue in the same process — and a level left
+/// elevated causes the next declaration to generalize too little.
 let atLevel (f: unit -> 'a) : 'a =
     enterLevel ()
 
@@ -36,13 +36,13 @@ let atLevel (f: unit -> 'a) : 'a =
     finally
         exitLevel ()
 
-/// En cell som hör hemma en nivå in.
+/// A cell that belongs one level in.
 ///
-/// För en signatur som ställs i ordning *utanför* den deklaration som ska
-/// generalisera den. En `impl`-metods egna typvariabler — `fold`s `%acc` —
-/// instantieras innan `checkDecl` går in en nivå, och en cell född här ute
-/// ligger på generaliseringens egen nivå och blir aldrig kvantifierad: metoden
-/// tappar då en typparameter som gränssnittet kräver av den.
+/// For a signature prepared *outside* the declaration that is to
+/// generalize it. An `impl` method's own type variables — `fold`'s `%acc` —
+/// are instantiated before `checkDecl` goes in one level, and a cell born out here
+/// sits at generalization's own level and is never quantified: the method
+/// would then drop a type parameter that the interface demands of it.
 let freshMetaInner () : HMType = atLevel freshMeta
 
 let mutable private nextEffectId = 0
@@ -72,11 +72,11 @@ let restoreMetaCounter (n: int) : unit =
     nextMetaId <- n
     nextEffectId <- n
 
-/// Nivåräknaren, bracketerad för sig.
+/// The level counter, bracketed on its own.
 ///
-/// Ett beroende som byggs i samma process gör det mitt i den yttre
-/// kompileringen. Sub-kompileringen börjar på noll och den yttre ska hitta
-/// tillbaka till sin egen nivå.
+/// A dependency built in the same process does so in the middle of the outer
+/// compilation. The sub-compilation starts at zero and the outer one must find
+/// its way back to its own level.
 let snapshotLevel () : int = currentLevel
 
 let restoreLevel (n: int) : unit = currentLevel <- n
@@ -96,8 +96,8 @@ let lookup (env: Env) (name: string) : Binding =
     match Map.tryFind name env.Bindings with
     | Some scheme -> scheme
     | None ->
-        // Namnet som det skrevs. En nyckel bär sin namnrymd, och den är inget
-        // en läsare har skrivit eller kan rätta.
+        // The name as it was written. A key carries its namespace, and that is nothing
+        // a reader has written or can correct.
         let shown = Naming.emittedTypeName name
 
         if Set.contains name env.Registry.OpaqueTypes then
@@ -290,18 +290,18 @@ let instantiate
 
     instantiatedType, boundFreshTypes, instantiatedConstraints
 
-/// Occurs-kontrollen och nivåsänkningen i samma vandring.
+/// The occurs check and level lowering in the same traversal.
 ///
-/// De vill se exakt samma noder, och `bindMeta` är den varmaste vägen genom
-/// unifieringen — två vandringar över samma typ vore en för mycket.
+/// They want to see exactly the same nodes, and `bindMeta` is the hottest path through
+/// unification — two traversals over the same type would be one too many.
 ///
-/// Sänkningen är vad som håller nivåerna sanna: efter `m.Value <- Some t` är
-/// varje cell i `t` nåbar överallt där `m` är nåbar, så ingen av dem får längre
-/// påstå sig vara mer inkapslad än `m`. Utan detta skulle en bindning på yttre
-/// nivå kunna generalisera en cell som en inre bindning delar med den.
+/// The lowering is what keeps the levels true: after `m.Value <- Some t` every
+/// cell in `t` is reachable wherever `m` is reachable, so none of them can any longer
+/// claim to be more nested than `m`. Without this, a binding at an outer
+/// level could generalize a cell that an inner binding shares with it.
 ///
-/// Ingen kortslutning: `List.exists` hade hoppat över resten av argumenten så
-/// fort träffen hittats, och de cellerna hade blivit kvar på fel nivå.
+/// No short-circuiting: `List.exists` would have skipped the rest of the arguments as
+/// soon as a match was found, and those cells would have been left at the wrong level.
 let rec private occursAndLower (registry: TraitRegistry) (m: MetaVar) (t: HMType) : bool =
     let anyOf (ts: HMType list) =
         ts |> List.fold (fun found node -> occursAndLower registry m node || found) false
@@ -534,12 +534,12 @@ let freeVars (registry: TraitRegistry) (t: HMType) : MetaVar list =
         | TMeta m -> [ m ]
         | _ -> [])
 
-/// Sänker varje obunden cell i `t` till den aktuella nivån.
+/// Lowers every unbound cell in `t` to the current level.
 ///
-/// För en bindning som *inte* generaliseras. Dess högerled inferras en nivå in
-/// ändå — om den ska generaliseras avgörs ibland först efteråt — och cellerna
-/// som blir kvar hamnar då i omgivningen med en nivå som påstår att de är
-/// oåtkomliga därifrån. Nästa syskonbindning hade kvantifierat dem.
+/// For a binding that is *not* generalized. Its right-hand side is inferred one level in
+/// anyway — whether it should be generalized is sometimes decided only afterwards — and the cells
+/// that remain then end up in the environment with a level that claims they are
+/// unreachable from there. The next sibling binding would have quantified them.
 let demote (registry: TraitRegistry) (t: HMType) : unit =
     for m in freeVars registry t do
         if m.Level > currentLevel then
@@ -585,18 +585,18 @@ let mutable heldMetaIds: unit -> Set<int> = fun () -> Set.empty
 /// is the only thing the binding can honestly be.
 let mutable heldLocalMetaIds: unit -> Set<int> = fun () -> Set.empty
 
-/// Kvantifierar de celler i `t` som ligger djupare än den nivå bindningen
-/// hamnar på.
+/// Quantifies the cells in `t` that lie deeper than the level the binding
+/// ends up at.
 ///
-/// Nivåjämförelsen ersätter en genomgång av hela omgivningen. De två svarar
-/// lika: en cell som är nåbar från omgivningen har vid något tillfälle bundits
-/// in i något som lever där, och `occursAndLower` sänkte den då till den
-/// omgivningens nivå. Det som är kvar över `currentLevel` kan ingen annan se.
+/// The level comparison replaces a traversal of the entire environment. The two answer
+/// the same: a cell that is reachable from the environment has at some point been bound
+/// into something that lives there, and `occursAndLower` lowered it then to that
+/// environment's level. What remains above `currentLevel` no one else can see.
 ///
-/// Skillnaden är kostnaden. Den gamla varianten vandrade varje typ i varje
-/// binding — prelude och alla importer inräknade — en gång per bindning som
-/// generaliserades, alltså O(omgivningen) per bindning och kvadratiskt över en
-/// modul. Det här rör bara `t`.
+/// The difference is the cost. The old variant traversed every type in every
+/// binding — prelude and all imports included — once per binding that
+/// was generalized, meaning O(environment) per binding and quadratic over a
+/// module. This only touches `t`.
 let private generalizeWith (held: Set<int>) (env: Env) (t: HMType) : Scheme =
     let tFv = freeVars env.Registry t |> List.distinct
 

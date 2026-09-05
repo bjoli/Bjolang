@@ -39,6 +39,12 @@
 ///   * `Pipeline.walking`, the staleness walk's memo. Empty except during a
 ///     walk, and emptied by the one that started it, so there is nothing here
 ///     for a compilation to inherit.
+///   * `Pipeline.sourceFacts`, what each `.bjo` says about its inclusions and
+///     imports. The key carries the file's timestamp, so an entry can only answer for
+///     the text it was read from. Unlike a `.dll`'s declarations
+///     it contains no invented names — what is saved is a set of paths
+///     and a list of import specs — so nothing here can make a compilation's
+///     output dependent on what was built before it.
 ///   * `DotNetInterop.typeCache` and `extraAssemblies`. Reflection over what
 ///     the process has loaded, which is the same answer for every compilation
 ///     in it.
@@ -51,9 +57,9 @@ module Bjolang.Session
 type Scope =
     { Gensym: int
       MetaCounter: int
-      /// `Unification`s nivåräknare. En sub-kompilering börjar på toppnivå, och
-      /// en som avbröts av ett typfel lämnar räknaren uppe — den yttre
-      /// kompileringen ska hitta tillbaka till sin egen nivå oavsett vilket.
+      /// `Unification`'s level counter. A sub-compilation starts at the top level, and
+      /// one aborted by a type error leaves the counter elevated — the outer
+      /// compilation must find its way back to its own level regardless.
       Level: int
       Macros: Macro.State
       Introduced: Set<string> }
