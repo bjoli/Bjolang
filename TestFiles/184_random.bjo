@@ -94,6 +94,34 @@
                         ((Err e) -1))
                       acc))))))
 
+;; ---------------------------------------------------------------------------
+;; One source, many fibers
+;; ---------------------------------------------------------------------------
+;;
+;; A source of the caller's own does name a generator, and every operation on
+;; one takes its lock. What that has to buy is that no draw is lost, doubled or
+;; torn however the threads interleave — so the values *collectively* drawn by
+;; every fiber are the stream's first n, in some order.
+;;
+;; The sum is what pins it: a torn draw is a value the stream never held, and a
+;; lost or repeated one changes the total. The order is deliberately not pinned,
+;; because the lock does not promise one — that is the difference between safe
+;; and reproducible, and it is why a run that must replay splits instead.
+
+(: draw-batch (-> RandomSource int int))
+(defun (draw-batch src n)
+  (let go ((i 0) (acc 0))
+    (if (= i n)
+        acc
+        (go (+ i 1) (+ acc (random-int 0 1000000 #:rng src))))))
+
+(: spawn-batches (-> RandomSource int int (List (Promise int))))
+(defun (spawn-batches src fibers n)
+  (let go ((i 0) (acc Nil))
+    (if (= i fibers)
+        acc
+        (go (+ i 1) (Cons (bjo (draw-batch src n)) acc)))))
+
 ;; An ordinary `defun`: `bjo` is colourless, and the fibers below are joined
 ;; with `promise-join/sync`.
 (defun (main)
@@ -294,5 +322,16 @@
   (def results (promise-join/sync (bjo (join-all (spawn-draws 8)))))
   (expect "every fiber answered" (list-length results) 8)
   (expect-true "and each drew inside its range" (all? #(in-range? 0 99 &1) results))
+
+  ;; --- one seeded source, shared by eight fibers ---------------------------
+  ;;
+  ;; Every draw goes through one generator's lock. 8 x 200 draws taken in
+  ;; parallel have to total what 1600 taken in a row from the same seed do: any
+  ;; draw the lock failed to cover is a value that is not in the stream.
+  (def shared (make-random/seed64 1234UL))
+  (def totals (promise-join/sync (bjo (join-all (spawn-batches shared 8 200)))))
+  (def in-parallel (list-foldl + 0 totals))
+  (def in-sequence (draw-batch (make-random/seed64 1234UL) 1600))
+  (expect "a shared source loses no draw" in-parallel in-sequence)
 
   0)

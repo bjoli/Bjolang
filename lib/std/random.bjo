@@ -1,9 +1,10 @@
 ;; std/random.bjo — random numbers.
 ;;
 ;; The default source is ChaCha20 seeded with 256 bits from the OS CSPRNG, one
-;; generator per thread, drawn from without a lock. Every function here takes
-;; `#:rng`, defaulting to `(parameter-ref current-random)`, so a program that
-;; wants a different source binds the parameter and changes no call site.
+;; generator per thread, drawn from without a lock. A source of your own is
+;; locked instead. Every function here takes `#:rng`, defaulting to
+;; `(parameter-ref current-random)`, so a program that wants a different source
+;; binds the parameter and changes no call site.
 ;;
 ;; By default, a thread get's it's own generator, so that reading from the
 ;; RandomSource is unconstrained and not risky. 
@@ -14,11 +15,17 @@
 ;; thread than it suspended on, so a source read out of the parameter before a
 ;; suspension would otherwise go on drawing from the old thread's generator
 ;; while another fiber ran on that thread and drew from it too. There is nothing
-;; to race on, because the value that crosses the suspension names nothing.
+;; to race on, because the value that crosses the suspension names nothing —
+;; and nothing to lock, because no two threads can reach one generator.
 ;;
-;; A source from `make-random` and its neighbours does name a generator, and a
-;; generator is not thread-safe. Two fibers sharing one race, and nothing here
-;; can detect it — `random-split` is how a fiber gets its own.
+;; A source from `make-random` and its neighbours does name a generator, and two
+;; fibers may hold it at once, so every operation on one takes its lock. The
+;; lock is per *operation*: a shuffle is a contiguous slice of the stream rather
+;; than one interleaved with another fiber's.
+;;
+;; **Locked is not reproducible.** Sharing a seeded source between fibers is
+;; safe, but which fiber gets which value of the stream is the scheduler's
+;; business. A run that has to replay wants `random-split` per fiber.
 ;;
 ;; **Seeded means reproducible, not unguessable.** `make-random` takes 256 bits
 ;; from the OS. `make-random/seed64` and `make-random/seed256` take what they
@@ -171,7 +178,10 @@
 ;; replays.
 ;;
 ;; One generator for the whole extent. Spawning a fiber here is apeshit bad
-;; since fibers should NOT share state.
+;; since fibers should NOT share state. It is at least safe — the source is
+;; locked — but the order the fibers draw in is the scheduler's, so the run
+;; stops replaying, which is the only reason to have seeded it. A fiber wants
+;; `(random-split ...)` or a seed of its own.
 (def/macro (with-random-seed form inject compare)
   (syntax-match form
     ((_ seed first body ...)

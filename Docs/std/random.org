@@ -9,8 +9,9 @@
 #+END_SRC
 
 ChaCha20, seeded with 256 bits from the OS CSPRNG, one generator per thread.
-Nothing locks and nothing is shared, so drawing from two threads at once costs
-what drawing from one costs.
+The default path locks nothing and shares nothing, so drawing from two threads
+at once costs what drawing from one costs. A source you make yourself is locked
+instead, once per operation.
 
 Every function takes ~#:rng~, defaulting to ~(parameter-ref current-random)~.
 
@@ -63,21 +64,30 @@ already inside. The ambient source has no state to race on.
 
 ** What to watch out for
 
-- *A bound source is one generator, and a generator is not thread-safe.* This is
-  the hazard the whole module is shaped around, and the one place it is left
-  open:
+- *A bound source is safe to share, and still does not replay.*
 
   #+BEGIN_SRC scheme
   (parameterize ((current-random (make-random/seed64 42UL)))
-    (bjo (worker))     ;; these two share one generator,
-    (bjo (worker)))    ;; and nothing will tell you
+    (bjo (worker))     ;; these two share one generator, under its lock:
+    (bjo (worker)))    ;; safe, but the order they draw in is the scheduler's
   #+END_SRC
 
-  The default source is safe here because it names no generator. A source you
-  made is not. Give each fiber ~(random-split (parameter-ref current-random))~,
-  or seed each one separately. Nothing in the compiler or the runtime detects
-  the race — the symptom is two fibers drawing the same numbers, or a generator
-  whose state is quietly wrong.
+  Every operation on a source you made takes that source's lock, so no draw is
+  lost, doubled or torn however the fibers interleave. What the lock cannot give
+  is the thing the seed was for: the stream is one deterministic sequence, but
+  which fiber gets which value of it is not. Give each fiber
+  ~(random-split (parameter-ref current-random))~, or a seed of its own, and the
+  run replays.
+
+  The default source needs neither, being one generator per thread and reached
+  by no other.
+
+- *The lock is per operation, not per draw.* ~shuffle-array!~ and
+  ~random-bytes!~ are many draws, and take it once — so a shuffle is the
+  permutation the stream describes rather than one interleaved with another
+  fiber's. It also means an operation on a shared source holds it for as long as
+  the operation takes: shuffling a million-element array under a source two
+  fibers are drawing from will make them wait.
 
 - *Binding a seeded source makes everything under it predictable*, including
   code you did not have in mind when you wrote the ~parameterize~. A session

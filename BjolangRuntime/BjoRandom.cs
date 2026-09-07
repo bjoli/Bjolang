@@ -5,33 +5,43 @@ using Randbjom;
 namespace Bjolang.Runtime;
 
 /// <summary>
-/// A source of random numbers: either a generator of its own, or the ambient
-/// one, which is the calling thread's.
+/// A source of random numbers: either the ambient one, which is the calling
+/// thread's, or a generator of the caller's own, which is locked.
 /// </summary>
 ///
 /// <remarks>
 /// <para>
 /// <c>ChaChaRng</c> is mutable and not thread-safe, and a fiber may resume on a
-/// different thread than the one it suspended on. In plain english: A fiber
-/// that suspends after storing the random source can read from the random source
-/// of another thread. Don't. Just don't. This also applies to
-/// (parameterize ((current-random ...)) spawn bjoroutines here)
+/// different thread than the one it suspended on. The two kinds of source
+/// answer that differently, and neither leaves a race for the caller to avoid.
 /// </para>
 /// <para>
-/// <see cref="Ambient"/> The ambient generator. Which one it means is decided by
-/// <see cref="Get"/>, at the draw, so the value that crosses the suspension is
-/// stateless and the generator that answers is always the running thread's.
-/// This is what <c>current-random</c> holds, and why the default draw needs no
-/// lock.
+/// <see cref="Ambient"/> names no generator. Which one it means is decided at
+/// the draw, so the value that crosses a suspension is stateless and the
+/// generator that answers is always the running thread's — no two threads can
+/// reach one generator, and nothing locks. This is what <c>current-random</c>
+/// holds, so the default path costs a null test and a thread-static load.
 /// </para>
 /// <para>
-/// A source made by one of the constructors below does name a generator, and
-/// two fibers sharing one race. <c>random-split</c> is the way to hand a fiber
-/// its own.
+/// A source from one of the constructors *does* name a generator, and two
+/// fibers may hold it at once. Every operation on one takes its lock. What that
+/// buys is safety and not reproducibility: the stream stays a single
+/// deterministic sequence, but which fiber gets which value of it is the
+/// scheduler's business. A run that has to replay wants a
+/// <see cref="RandomModule.Split"/> per fiber.
+/// </para>
+/// <para>
+/// The lock is taken once per *operation* rather than once per draw, so a
+/// shuffle or a byte fill is a contiguous slice of the stream rather than one
+/// interleaved with another fiber's. That is also why the generator is reached
+/// only through <see cref="Borrow"/> and never handed out: a draw written
+/// outside the lease is a draw outside the lock, and the guarantee above holds
+/// only while every one of them is inside it.
 /// </para>
 /// </remarks>
 public sealed class RandomSource {
-    /// Null means the calling thread's generator.
+    /// Null means the calling thread's generator, and is the whole of the
+    /// distinction: null takes the lock-free path, non-null takes its own lock.
     private readonly ChaChaRng? _own;
 
     private RandomSource(ChaChaRng? own) { _own = own; }
@@ -50,18 +60,52 @@ public sealed class RandomSource {
         get => _threadRng ??= new ChaChaRng();
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal ChaChaRng Get() => _own ?? ThreadRng;
-
     internal static RandomSource Own(ChaChaRng rng) => new(rng);
+
+    /// The generator to draw from, held for the length of one operation.
+    ///
+    /// A `ref struct` rather than a callback, because a callback taking the
+    /// operation's arguments captures them: `r.Draw(g => g.Range(lo, hi))`
+    /// allocates a closure per draw, which costs more than the lock it was
+    /// there to take. This allocates nothing and inlines away on the ambient
+    /// path.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal Lease Borrow() => new(this);
+
+    internal ref struct Lease {
+        /// The generator to use. The thread's, or the source's own.
+        public readonly ChaChaRng Rng;
+
+        /// What to release, and null when nothing was taken.
+        private readonly ChaChaRng? _held;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal Lease(RandomSource source) {
+            var own = source._own;
+
+            if (own is null) {
+                Rng = ThreadRng;
+                _held = null;
+            } else {
+                System.Threading.Monitor.Enter(own);
+                Rng = own;
+                _held = own;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void Dispose() {
+            if (_held is not null) System.Threading.Monitor.Exit(_held);
+        }
+    }
 
     public override string ToString() => "#<random-source>";
 }
 
 /// <summary>
-/// What <c>(std random)</c> binds. Every draw resolves its source first, so a
-/// call on the ambient source reads the thread-static field and one on an
-/// explicit source does not.
+/// What <c>(std random)</c> binds. Every entry goes through
+/// <see cref="RandomSource.Draw"/>, which is what decides between the
+/// thread's generator and a locked one.
 /// </summary>
 public static class RandomModule {
     public static RandomSource Ambient() => RandomSource.Ambient;
@@ -92,20 +136,62 @@ public static class RandomModule {
 
     /// Consumes the source's state to produce an independent generator. On the
     /// ambient source this draws from the calling thread's.
-    public static RandomSource Split(RandomSource r) =>
-        RandomSource.Own(r.Get().Split());
+    ///
+    /// A draw like any other, so splitting a shared source is safe from two
+    /// fibers at once and hands each a stream nothing else will produce.
+    public static RandomSource Split(RandomSource r) {
+        using var g = r.Borrow();
+        return RandomSource.Own(g.Rng.Split());
+    }
 
-    public static int Range(RandomSource r, int lo, int hi) => r.Get().Range(lo, hi);
-    public static double Double(RandomSource r) => r.Get().NextF64();
-    public static uint U32(RandomSource r) => r.Get().NextU32();
-    public static ulong U64(RandomSource r) => r.Get().NextU64();
-    public static bool Bool(RandomSource r) => r.Get().NextBool();
-    public static bool Chance(RandomSource r, double p) => r.Get().Chance(p);
-    public static void Fill(RandomSource r, byte[] bytes) => r.Get().FillBytes(bytes);
-    public static void Shuffle<T>(RandomSource r, T[] array) => r.Get().Shuffle(array);
+    public static int Range(RandomSource r, int lo, int hi) {
+        using var g = r.Borrow();
+        return g.Rng.Range(lo, hi);
+    }
+
+    public static double Double(RandomSource r) {
+        using var g = r.Borrow();
+        return g.Rng.NextF64();
+    }
+
+    public static uint U32(RandomSource r) {
+        using var g = r.Borrow();
+        return g.Rng.NextU32();
+    }
+
+    public static ulong U64(RandomSource r) {
+        using var g = r.Borrow();
+        return g.Rng.NextU64();
+    }
+
+    public static bool Bool(RandomSource r) {
+        using var g = r.Borrow();
+        return g.Rng.NextBool();
+    }
+
+    public static bool Chance(RandomSource r, double p) {
+        using var g = r.Borrow();
+        return g.Rng.Chance(p);
+    }
+
+    // The three below are many draws each and hold the lease across all of
+    // them: an interleaved shuffle is well defined, but it is not the
+    // permutation the stream describes.
+    public static void Fill(RandomSource r, byte[] bytes) {
+        using var g = r.Borrow();
+        g.Rng.FillBytes(bytes);
+    }
+
+    public static void Shuffle<T>(RandomSource r, T[] array) {
+        using var g = r.Borrow();
+        g.Rng.Shuffle(array);
+    }
 
     /// The generator's own alphabet, `[A-Za-z0-9-_]`. A string over an
     /// alphabet of the caller's own is built in `(std random)` instead:
     /// Bjolang's `char` is `BjoChar` and does not cross as `char[]`.
-    public static string Str(RandomSource r, int length) => r.Get().RandomString(length);
+    public static string Str(RandomSource r, int length) {
+        using var g = r.Borrow();
+        return g.Rng.RandomString(length);
+    }
 }
