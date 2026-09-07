@@ -11,6 +11,18 @@ let unionLexerRanges (r1: Lexer.Range) (r2: Lexer.Range) : Lexer.Range =
     // The opening one wins: it is where the form the caller is describing began.
     { Start = r1.Start; End = r2.End; File = r1.File }
 
+/// `&` as a spelling of `&1` inside `#(...)`.
+/// 
+/// A nested `#(...)` needs no exception. The reader has already turned it into
+/// a `fun` of its own, with its own `&` rewritten, before this runs — which is
+/// also what keeps `&` inside a `#(...)` inside a `->` the lambda's rather
+/// than the thread's.
+let rec expandBareArg (expr: SExpr) : SExpr =
+    match expr with
+    | SAtom({ Token = Lexer.Symbol "&" } as atom) -> SAtom { atom with Token = Lexer.Symbol "&1" }
+    | SList(items, r) -> SList(List.map expandBareArg items, r)
+    | other -> other
+
 let rec collectPositionalArgs (expr: SExpr) : Set<int> =
     match expr with
     | SAtom { Token = Lexer.Symbol sym } when sym.Length > 1 && sym.StartsWith("&") ->
@@ -131,8 +143,12 @@ let rec read (tokens: LexedToken list) : SExpr list * LexedToken list =
             loop (node :: acc) afterList
 
         // Function shorthand: #(+ &1 &2 5) → (fun (&1 &2) (+ &1 &2 5))
+        //
+        // `&` is `&1`, for the one-argument case that has no number to tell
+        // apart: #(+ & 5).
         | { Token = Hash; Range = hr } :: { Token = LParen; Range = r } :: rest ->
-            let bodySList, afterList = readForm true r hr id rest
+            let rawBody, afterList = readForm true r hr id rest
+            let bodySList = expandBareArg rawBody
             let argIndices = collectPositionalArgs bodySList
             let maxArg = if Set.isEmpty argIndices then 0 else Set.maxElement argIndices
             let paramNames = [ for i in 1 .. maxArg -> $"&{i}" ]

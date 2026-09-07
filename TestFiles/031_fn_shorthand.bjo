@@ -16,7 +16,25 @@
   (def res2 (#(- &2 &1) 10 30))
   (expect "holes used out of order: 30-10" res2 20)
 
-  ;; 4. Nullary shorthand
+  ;; 4. `&` is `&1`, for the one-hole case that has no number to tell apart
+  (def add5 #(+ & 5))
+  (expect "a bare & is the first hole" (add5 10) 15)
+  (expect "the same as a shorthand written with &1" (add5 10) (#(+ &1 5) 10))
+  (expect "twice in one body" (#(* & &) 7) 49)
+  (expect "and with &1 beside it" (#(+ & &1) 4) 8)
+
+  ;; Mixed with a numbered hole, which is what says how many parameters there
+  ;; are: `&` is the first, whatever else is written.
+  (expect "mixed with a later hole" (#(- &2 &) 10 30) 20)
+  (expect "as an argument to a higher-order function"
+          (list-head (list-map #(* & 3) '(5 6)))
+          15)
+
+  ;; A nested shorthand has holes of its own: the reader has already made the
+  ;; inner one a function before the outer one looks for its parameters.
+  (expect "a nested shorthand" (list-head (#(list-map #(+ & 1) &) '(1 2))) 2)
+
+  ;; 5. Nullary shorthand
   ;; `greet` skriver, så utskriften fångas på en strängport för att kunna
   ;; jämföras.
   (def out (open-output-string))
