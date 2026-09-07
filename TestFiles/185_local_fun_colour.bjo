@@ -1,0 +1,69 @@
+;; The colour of a body-local function, inside a bjoroutine.
+;;
+;; A local function has no signature, so its colour is inferred from what its
+;; body reaches — and it is `EffectGraph` that decides, after `LoopLowering` has
+;; turned a self-recursive one into a loop group. Two places then have to agree:
+;; the emitter, which reads the group's decided colour, and every call site,
+;; which reads the arrow of the name it calls.
+;;
+;; They are told through one shared effect cell, and `ground` writes to that
+;; cell too — with the *enclosing* member's colour, before the decision is made.
+;; So a group that turns out ordinary inside a suspending member has to be told
+;; again afterwards, or its callers await a member emitted without `async` and
+;; the generated C# does not compile:
+;;
+;;   error CS1061: 'int' does not contain a definition for 'GetAwaiter'
+;;
+;; Everything here is written inside `defbjo main` for that reason: in an
+;; ordinary member the grounded guess is already the right answer, and none of
+;; this can be observed.
+(import (std prelude))
+(import (std simpletest))
+
+(: fetch (-bjo-> int int))
+(defbjo (fetch x) (* x 2))
+
+(defbjo (main)
+  ;; --- an ordinary local function in a suspending member -------------------
+  ;;
+  ;; Recursive, called from outside itself, and never awaits. All three are
+  ;; needed: a non-recursive one is written before the walk that grounds it, a
+  ;; self-call is a jump and emits no await, and one that awaits agrees anyway.
+  (defun (count-to i)
+    (if (= i 3) i (count-to (+ i 1))))
+  (expect "an ordinary local function, called from a bjoroutine" (count-to 0) 3)
+
+  ;; Called twice, so a second reference has to read the same answer.
+  (expect "and again" (count-to 2) 3)
+
+  ;; --- one that suspends ---------------------------------------------------
+  ;;
+  ;; The other direction, which was never broken and must stay that way: the
+  ;; body reaches a yield point, so the group is emitted `async` and the call
+  ;; sites await it.
+  (defun (sum-fetched i acc)
+    (if (= i 3) acc (sum-fetched (+ i 1) (+ acc (fetch i)))))
+  (expect "a suspending local function" (sum-fetched 0 0) 6)
+
+  ;; --- mutual recursion ----------------------------------------------------
+  ;;
+  ;; One group, two members, and the same single colour for both.
+  (defun (even-ish? n) (if (= n 0) #t (odd-ish? (- n 1))))
+  (defun (odd-ish? n) (if (= n 0) #f (even-ish? (- n 1))))
+  (expect "mutually recursive, ordinary" (even-ish? 4) #t)
+  (expect "and its neighbour" (odd-ish? 4) #f)
+
+  ;; --- through a trait method that is written this way ---------------------
+  ;;
+  ;; `Eq (Vec %a)` walks with a local recursive `same-from`, and is inlined into
+  ;; whatever compares two vecs — so this is the shape above, arriving without
+  ;; anyone writing a local function at all.
+  (expect "vec equality inside a bjoroutine" (string->vec "ab") (string->vec "ab"))
+  (expect-true "and inequality" (not (= (string->vec "ab") (string->vec "ba"))))
+
+  ;; The impl's other half is written the same way, with a local recursive
+  ;; `hash-from`.
+  (expect-true "eq-hash of a vec, inside a bjoroutine"
+               (= (eq-hash (string->vec "ab")) (eq-hash (string->vec "ab"))))
+
+  0)

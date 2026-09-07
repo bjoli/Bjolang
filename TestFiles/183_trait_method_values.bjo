@@ -1,0 +1,66 @@
+;; A trait method used as a value.
+;;
+;; C# has no method group to hand over: an interface trait's method is a slot on
+;; an interface, and an inline trait's is not emitted as a function at all. So a
+;; bare method name becomes the lambda it stands for, and the call inside that
+;; lambda dispatches like any other — which is the same rewrite `087` describes
+;; for operators, except that the name has to be looked up in the registry
+;; before anything knows it is a method.
+;;
+;; The obligation the lambda raises is discharged where the lambda is used, so
+;; one bare name serves every type its trait is implemented at.
+
+(import (std prelude))
+(import (std monad))
+(import (std simpletest))
+
+(: nums (-> (List int)))
+(defun (nums) (list 1 2 3 4))
+
+;; Takes the method as an argument, so nothing here knows which one it got.
+(: applied (-> (-> int bool) int bool))
+(defun (applied f x) (f x))
+
+;; `bind` is a method of the inline-only trait `Monad`. The parameter type pins
+;; the implementor, which is what an inline trait needs.
+(: apply-bind (-> (-> (Option int) (-> int (Option int)) (Option int)) (Option int)))
+(defun (apply-bind f)
+  (f (Some 20) (fun (n) (Some (+ n 1)))))
+
+(defun (main)
+  ;; --- a #:clr-member method, which is emitted as a direct CLR call ---------
+  (expect "even? as a value" (fold + 0 (filter even? (nums))) 6)
+  (expect "odd? as a value" (fold + 0 (filter odd? (nums))) 4)
+  (expect "abs as a value" (fold + 0 (list-map abs (list -1 2 -3))) 6)
+  (expect-true "zero? as a value" (any? zero? (list 3 0 5)))
+
+  ;; --- an ordinary interface-trait method ----------------------------------
+  (expect "->str as a value" (list->str (list-map ->str (nums))) "'(1 2 3 4)")
+  ;; The same bare name at a second element type, so the obligation really is
+  ;; discharged per use rather than once.
+  (expect "->str as a value at another type"
+          (list->str (list-map ->str (list "a" "b")))
+          "'(a b)")
+
+  ;; --- an inline-only trait's method ---------------------------------------
+  (expect "bind as a value"
+          (match (apply-bind bind) ((Some v) v) (None -1))
+          21)
+
+  ;; --- handed to a function that names only an arrow ------------------------
+  (expect-true "passed to a generic higher-order function" (applied even? 4))
+  (expect-true "and at the odd one" (not (applied odd? 4)))
+
+  ;; --- the applied form is unchanged ---------------------------------------
+  (expect-true "applied directly" (even? 4))
+  (expect "applied inside a lambda"
+          (fold + 0 (filter (fun (x) (even? x)) (nums)))
+          6)
+
+  ;; --- a binding over the name still wins ----------------------------------
+  (let ((even? (fun (x) #f)))
+    (expect-true "a local binding over the name wins" (not (even? 4))))
+
+  ;; --- at a second implementor ---------------------------------------------
+  (expect "even? as a value over a Range" (fold + 0 (filter even? (range 0 10))) 20)
+  0)

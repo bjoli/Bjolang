@@ -1,0 +1,298 @@
+;; Random numbers: the ambient source, `#:rng`, and the seeded constructors.
+;;
+;; The module's whole shape follows from one fact: a `ChaChaRng` is mutable and
+;; not thread-safe, and a fiber may resume on a thread it did not start on. So
+;; `current-random` does not hold a generator. It holds the *ambient* source,
+;; which names the calling thread's generator and decides which one that is at
+;; the draw — and a value with no state in it is safe to carry across a
+;; suspension, which is what the last section here pins.
+;;
+;; Everything else is the ordinary keyword-argument story: `#:rng` defaults to
+;; `(parameter-ref current-random)`, so binding the parameter redirects every
+;; call that did not name a source, and naming one overrides the binding.
+(import (std prelude))
+(import (std random))
+(import (std set))
+(import (std simpletest))
+
+;; ---------------------------------------------------------------------------
+;; Helpers
+;; ---------------------------------------------------------------------------
+
+;; `n` draws from `r`, in order. Wide enough that two different generators
+;; agreeing on all of them is not a thing that happens.
+(: draws (-> RandomSource int (List int)))
+(defun (draws r n)
+  (let go ((i 0) (acc Nil))
+    (if (= i n)
+        (list-reverse acc)
+        (go (+ i 1) (Cons (random-int 0 1000000 #:rng r) acc)))))
+
+;; The same, from whatever `current-random` says.
+(: ambient-draws (-> int (List int)))
+(defun (ambient-draws n)
+  (let go ((i 0) (acc Nil))
+    (if (= i n)
+        (list-reverse acc)
+        (go (+ i 1) (Cons (random-int 0 1000000) acc)))))
+
+(: in-range? (-> int int int bool))
+(defun (in-range? lo hi x) (and (>= x lo) (<= x hi)))
+
+(: nonzero-count (-> (Array byte) int))
+(defun (nonzero-count a)
+  (let go ((i 0) (n 0))
+    (if (= i (array-length a))
+        n
+        (go (+ i 1) (if (= (array-ref a i) 0uy) n (+ n 1))))))
+
+(: iota-array (-> int (Array int)))
+(defun (iota-array n)
+  (let ((a (make-array n)))
+    (let go ((i 0))
+      (if (= i n)
+          a
+          (let () (array-set! a i i) (go (+ i 1)))))))
+
+;; ---------------------------------------------------------------------------
+;; A suspension between reading the source and drawing from it
+;; ---------------------------------------------------------------------------
+;;
+;; The case the ambient source exists for. `src` is read on one thread and drawn
+;; from after a suspension that may have moved this fiber to another; because it
+;; is the ambient source it names no generator, so the draw goes to whichever
+;; thread is running now and no two fibers can be inside one generator at once.
+
+(: slow-sum (-> int int))
+(defun (slow-sum n)
+  (let go ((i 0) (acc 0))
+    (if (> i n) acc (go (+ i 1) (+ acc i)))))
+
+(: draw-across-suspension (-bjo-> int))
+(defbjo (draw-across-suspension)
+  (def src (parameter-ref current-random))
+  (def warmed (match (sync (promise-join (bjo (slow-sum 2000))))
+                ((Ok v) v)
+                ((Err e) -1)))
+  (if (< warmed 0) -1 (random-int 0 99 #:rng src)))
+
+(: spawn-draws (-> int (List (Promise int))))
+(defun (spawn-draws n)
+  (let go ((i 0) (acc Nil))
+    (if (= i n)
+        acc
+        (go (+ i 1) (Cons (bjo (draw-across-suspension)) acc)))))
+
+(: join-all (-bjo-> (List (Promise int)) (List int)))
+(defbjo (join-all ps)
+  (let go ((rest ps) (acc Nil))
+    (match rest
+      ((Nil) acc)
+      ((Cons p more)
+       (go more (Cons (match (sync (promise-join p))
+                        ((Ok v) v)
+                        ((Err e) -1))
+                      acc))))))
+
+;; An ordinary `defun`: `bjo` is colourless, and the fibers below are joined
+;; with `promise-join/sync`.
+(defun (main)
+  ;; --- The seeded constructors replay --------------------------------------
+  (expect "the same seed64 gives the same sequence"
+          (draws (make-random/seed64 42UL) 8)
+          (draws (make-random/seed64 42UL) 8))
+
+  (expect-true "a different seed64 gives a different one"
+               (not (= (draws (make-random/seed64 42UL) 8)
+                       (draws (make-random/seed64 43UL) 8))))
+
+  (expect "the same seed256 gives the same sequence"
+          (draws (make-random/seed256 1UL 2UL 3UL 4UL) 8)
+          (draws (make-random/seed256 1UL 2UL 3UL 4UL) 8))
+
+  ;; One word apart is a different key, which is the whole point of taking four
+  ;; of them rather than stretching one.
+  (expect-true "seed256 differs in its last word"
+               (not (= (draws (make-random/seed256 1UL 2UL 3UL 4UL) 8)
+                       (draws (make-random/seed256 1UL 2UL 3UL 5UL) 8))))
+
+  ;; The narrow constructor stretches its seed through SplitMix64, so it does
+  ;; not land on the key the wide one spells out.
+  (expect-true "seed64 is not seed256 zero-padded"
+               (not (= (draws (make-random/seed64 42UL) 8)
+                       (draws (make-random/seed256 42UL 0UL 0UL 0UL) 8))))
+
+  ;; Two sources from OS entropy. This is the one assertion here that is
+  ;; probabilistic, and it is 256 bits' worth.
+  (expect-true "make-random does not repeat itself"
+               (not (= (draws (make-random) 8) (draws (make-random) 8))))
+
+  ;; --- Splitting ------------------------------------------------------------
+  ;;
+  ;; A split consumes the parent's state, so the child is not the parent's
+  ;; continuation — and the whole thing is still deterministic, which is what
+  ;; makes it usable for handing a fiber a stream of its own from a seeded run.
+  (def parent (make-random/seed64 7UL))
+  (def child (random-split parent))
+  (expect-true "a split child is not its parent's continuation"
+               (not (= (draws child 8) (draws parent 8))))
+
+  (def parent2 (make-random/seed64 7UL))
+  (expect "splitting the same state gives the same child"
+          (draws (random-split parent2) 8)
+          (draws (random-split (make-random/seed64 7UL)) 8))
+
+  ;; --- The parameter, and #:rng --------------------------------------------
+  ;;
+  ;; No call site below names a source, and all of them change where they draw
+  ;; from. This is the thing an `#:rng` argument alone could not buy.
+  (expect "parameterize redirects an unqualified draw"
+          (parameterize ((current-random (make-random/seed64 99UL)))
+            (ambient-draws 8))
+          (draws (make-random/seed64 99UL) 8))
+
+  ;; ...and `#:rng` beats the binding when it is given.
+  (expect "a supplied #:rng wins over the parameter"
+          (parameterize ((current-random (make-random/seed64 99UL)))
+            (draws (make-random/seed64 1UL) 8))
+          (draws (make-random/seed64 1UL) 8))
+
+  ;; --- with-random-seed -----------------------------------------------------
+  (expect "with-random-seed replays"
+          (with-random-seed 5UL (ambient-draws 8))
+          (with-random-seed 5UL (ambient-draws 8)))
+
+  (expect "with-random-seed is that parameterize"
+          (with-random-seed 5UL (ambient-draws 8))
+          (draws (make-random/seed64 5UL) 8))
+
+  ;; Nested, which is where a restore that did not happen would show: the outer
+  ;; draws either side of the inner form have to be the outer generator's first
+  ;; and second, exactly as if the inner form were not there.
+  (expect "an inner seed does not disturb the outer one"
+          (with-random-seed 11UL
+            (def a (ambient-draws 1))
+            (ignore (with-random-seed 22UL (ambient-draws 4)))
+            (def b (ambient-draws 1))
+            (list-append a b))
+          (draws (make-random/seed64 11UL) 2))
+
+  ;; --- Bounds ---------------------------------------------------------------
+  ;;
+  ;; Inclusive at both ends, and Lemire's method rather than a modulo, so the
+  ;; ends are as likely as the middle.
+  (def bounded (let go ((i 0) (acc Nil))
+                 (if (= i 1000)
+                     acc
+                     (go (+ i 1) (Cons (random-int 3 7) acc)))))
+  (expect-true "every draw is inside its range" (all? #(in-range? 3 7 &1) bounded))
+  (expect-true "both ends are reached"
+               (and (any? #(= &1 3) bounded) (any? #(= &1 7) bounded)))
+
+  (expect "a range of one is that one" (random-int 4 4) 4)
+
+  (expect-true "a double lands in [0, 1)"
+               (let go ((i 0) (ok #t))
+                 (if (= i 100)
+                     ok
+                     (let ((d (random-double)))
+                       (go (+ i 1) (and ok (>= d 0.0) (< d 1.0)))))))
+
+  (expect "an impossible chance costs no draw" (random-chance? 0.0) #f)
+  (expect "and a certain one is certain" (random-chance? 1.0) #t)
+
+  ;; Both values turn up. Seeded, so this either always passes or always fails.
+  (def flips (with-random-seed 3UL
+               (let go ((i 0) (acc Nil))
+                 (if (= i 200) acc (go (+ i 1) (Cons (random-bool) acc))))))
+  (expect-true "a coin lands both ways"
+               (and (any? #(= &1 #t) flips) (any? #(= &1 #f) flips)))
+
+  ;; --- Bytes ----------------------------------------------------------------
+  (def bytes (make-array 32))
+  (random-bytes! bytes #:rng (make-random/seed64 8UL))
+  (def bytes2 (make-array 32))
+  (random-bytes! bytes2 #:rng (make-random/seed64 8UL))
+  (expect "a filled array replays" (array->vec bytes) (array->vec bytes2))
+  (expect-true "and it is not left zeroed" (> (nonzero-count bytes) 25))
+
+  ;; --- Shuffling ------------------------------------------------------------
+  ;;
+  ;; `shuffle-array!` writes the array it was given.
+  (def deck (iota-array 10))
+  (shuffle-array! deck #:rng (make-random/seed64 4UL))
+  (expect "a shuffled array keeps every element"
+          (set-length (vec->set (array->vec deck)))
+          10)
+  (expect-true "and its elements moved"
+               (not (= (array->vec deck) (array->vec (iota-array 10)))))
+
+  (def deck2 (iota-array 10))
+  (shuffle-array! deck2 #:rng (make-random/seed64 4UL))
+  (expect "the same seed shuffles the same way" (array->vec deck) (array->vec deck2))
+
+  ;; `shuffle-vec` answers a new vec and leaves its argument alone, which is the
+  ;; whole difference between the two.
+  (def ordered (array->vec (iota-array 10)))
+  (def mixed (shuffle-vec ordered #:rng (make-random/seed64 4UL)))
+  (expect "a shuffled vec keeps every element" (set-length (vec->set mixed)) 10)
+  (expect-true "and its elements moved" (not (= mixed ordered)))
+  (expect "the original vec is untouched" ordered (array->vec (iota-array 10)))
+
+  (expect "a vec shuffle replays"
+          (shuffle-vec ordered #:rng (make-random/seed64 4UL))
+          (shuffle-vec ordered #:rng (make-random/seed64 4UL)))
+
+  ;; Both shuffles are the same permutation of the same elements under the same
+  ;; seed: one generator, one Fisher-Yates.
+  (expect "array and vec shuffle alike" mixed (array->vec deck))
+
+  ;; Nothing to shuffle, and nothing to copy: the vec comes back as it was.
+  (def single (array->vec (iota-array 1)))
+  (expect "a one-element vec is its own shuffle" (shuffle-vec single) single)
+  (expect "an empty vec too" (shuffle-vec (array->vec (iota-array 0))) (array->vec (iota-array 0)))
+
+  ;; --- Strings and elements -------------------------------------------------
+  (expect "a random string has the length asked for" (string-length (random-string 16)) 16)
+  (expect "a random string replays"
+          (random-string 16 #:rng (make-random/seed64 6UL))
+          (random-string 16 #:rng (make-random/seed64 6UL)))
+
+  (def alphabet (string->vec "ab"))
+  (def word (random-string/chars 40 alphabet))
+  (expect "a string over an alphabet has the right length" (string-length word) 40)
+  (expect-true "and uses only that alphabet"
+               (all? #(or (char=? &1 #\a) (char=? &1 #\b)) (string->list word)))
+
+  (expect-true "random-ref answers with an element"
+               (let go ((i 0) (ok #t))
+                 (if (= i 100)
+                     ok
+                     (go (+ i 1)
+                         (and ok (in-range? 0 4 (random-ref (array->vec (iota-array 5)))))))))
+
+  ;; Asking for an element of nothing. Caught here rather than let through to
+  ;; the generator, which raises for its own reasons and in its own language.
+  (def empty-vec (array->vec (iota-array 0)))
+  (expect "an empty vec is an error"
+          (match (try (random-ref empty-vec) #:catch (System.ArgumentException))
+            ((Ok x) "answered")
+            ((Err e) "raised"))
+          "raised")
+
+  (expect "an empty alphabet is an error"
+          (match (try (random-string/chars 4 (string->vec "")) #:catch (System.ArgumentException))
+            ((Ok s) "answered")
+            ((Err e) "raised"))
+          "raised")
+
+  ;; --- The ambient source, across fibers and across a suspension ------------
+  ;;
+  ;; Eight fibers, each reading the source before suspending and drawing after.
+  ;; A `-1` is a fiber that died; anything outside the range is a generator two
+  ;; fibers were inside at once.
+  (def results (promise-join/sync (bjo (join-all (spawn-draws 8)))))
+  (expect "every fiber answered" (list-length results) 8)
+  (expect-true "and each drew inside its range" (all? #(in-range? 0 99 &1) results))
+
+  0)

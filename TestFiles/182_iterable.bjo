@@ -1,0 +1,124 @@
+;; The higher-order methods of `Iterable`, at several implementors.
+;;
+;; `enumerate` and `flat-map` return sequences, so their defaults are `seql`s
+;; and their callbacks are ordinary. `any?`, `all?`, `find` and `for-each`
+;; return a value, so their defaults are loops and their callbacks are `-?->`:
+;; each is checked here at both colours.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: nums (-> (List int)))
+(defun (nums) (list 1 2 3 4 5))
+
+(: pair-fst (-> (Tuple int int) int))
+(defun (pair-fst t) (def (a _) t) a)
+
+(: pair-snd (-> (Tuple int int) int))
+(defun (pair-snd t) (def (_ b) t) b)
+
+;; The yield point the suspending copies are exercised with.
+(: slow-double (-bjo-> int int))
+(defbjo (slow-double n)
+  (ignore (read-line (open-input-string "tick\n")))
+  (* n 2))
+
+(: run-int (-> (Promise int) int))
+(defun (run-int p)
+  (match (sync/blocking (promise-join p)) ((Ok n) n) ((Err _) -1)))
+
+(: run-bool (-> (Promise bool) bool))
+(defun (run-bool p)
+  (match (sync/blocking (promise-join p)) ((Ok b) b) ((Err _) #f)))
+
+;; Suspending callbacks, one per loop-shaped method.
+(: any-suspending (-bjo-> bool))
+(defbjo (any-suspending)
+  (any? (bjoroutine (x) (> (slow-double x) 8)) (nums)))
+
+(: all-suspending (-bjo-> bool))
+(defbjo (all-suspending)
+  (all? (bjoroutine (x) (> (slow-double x) 0)) (nums)))
+
+(: find-suspending (-bjo-> int))
+(defbjo (find-suspending)
+  (match (find (bjoroutine (x) (> (slow-double x) 6)) (nums))
+    ((Some v) v)
+    (None -1)))
+
+(: for-each-suspending (-bjo-> int))
+(defbjo (for-each-suspending)
+  (def/mutable total 0)
+  (for-each (bjoroutine (x) (set! total (+ total (slow-double x)))) (nums))
+  total)
+
+(defun (main)
+  ;; --- any? / all? -------------------------------------------------------
+  (expect-true "any? finds one" (any? #(> &1 4) (nums)))
+  (expect-true "any? with no match" (not (any? #(> &1 9) (nums))))
+  (expect-true "any? over an empty list" (not (any? #(> &1 0) (list))))
+  (expect-true "all? holds" (all? #(> &1 0) (nums)))
+  (expect-true "all? fails on one" (not (all? #(> &1 3) (nums))))
+  (expect-true "all? over an empty list" (all? #(> &1 0) (list)))
+
+  ;; The predicate stops at the first answer rather than walking the rest.
+  (def/mutable calls 0)
+  (ignore (any? (fun (x) (set! calls (+ calls 1)) (= x 2)) (nums)))
+  (expect "any? stops at the first hit" calls 2)
+  (set! calls 0)
+  (ignore (all? (fun (x) (set! calls (+ calls 1)) (< x 3)) (nums)))
+  (expect "all? stops at the first miss" calls 3)
+
+  ;; --- find --------------------------------------------------------------
+  (expect "find returns the element"
+          (match (find #(> &1 3) (nums)) ((Some v) v) (None -1))
+          4)
+  (expect-true "find with no match"
+               (match (find #(> &1 9) (nums)) ((Some _) #f) (None #t)))
+
+  ;; --- for-each ----------------------------------------------------------
+  (def/mutable seen 0)
+  (for-each (fun (x) (set! seen (+ seen x))) (nums))
+  (expect "for-each visits every element" seen 15)
+
+  ;; --- enumerate ---------------------------------------------------------
+  ;; Indices 0..4 against values 1..5, so the products sum to 40.
+  (expect "enumerate pairs an index with each element"
+          (loop (:for p (enumerate (nums)))
+                (:acc s (summing (* (pair-fst p) (pair-snd p))))
+                => s)
+          40)
+  (expect "enumerate starts at zero"
+          (loop (:for p (enumerate (nums))) (:acc s (summing (pair-fst p))) => s)
+          10)
+
+  ;; --- flat-map ----------------------------------------------------------
+  (expect "flat-map concatenates"
+          (fold + 0 (flat-map #(->seq (list &1 &1)) (nums)))
+          30)
+  (expect "flat-map with an empty result drops the element"
+          (fold + 0 (flat-map #(->seq (if (= &1 3) (list) (list &1))) (nums)))
+          12)
+  ;; Chained with the lazy pair, so all three stages walk once.
+  (expect "flat-map into filter"
+          (fold + 0 (filter #(> &1 2) (flat-map #(->seq (list &1 &1)) (nums))))
+          24)
+
+  ;; --- at other implementors ---------------------------------------------
+  (expect-true "any? over a Vec" (any? #(= &1 3) [1 2 3]))
+  (expect-true "all? over a Range" (all? #(< &1 10) (range 0 10)))
+  (expect "for-each over a Range"
+          (let ((b (make-box 0)))
+            (for-each (fun (x) (box-set! b (+ (box-ref b) x))) (range 0 5))
+            (box-ref b))
+          10)
+  (expect "enumerate over a string"
+          (loop (:for p (enumerate "abc")) (:acc n (counting p)) => n)
+          3)
+
+  ;; --- the suspending copies ---------------------------------------------
+  (expect-true "any?, suspending" (run-bool (bjo (any-suspending))))
+  (expect-true "all?, suspending" (run-bool (bjo (all-suspending))))
+  (expect "find, suspending" (run-int (bjo (find-suspending))) 4)
+  (expect "for-each, suspending" (run-int (bjo (for-each-suspending))) 30)
+  0)

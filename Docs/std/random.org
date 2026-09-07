@@ -1,0 +1,102 @@
+* std/random — random numbers
+
+#+BEGIN_SRC scheme
+(import (std random))
+
+(random-int 1 6)                          ;; the calling thread's generator
+(random-int 1 6 #:rng my-source)          ;; one of your own
+(with-random-seed 42UL (deal-a-hand))     ;; a run that replays
+#+END_SRC
+
+ChaCha20, seeded with 256 bits from the OS CSPRNG, one generator per thread.
+Nothing locks and nothing is shared, so drawing from two threads at once costs
+what drawing from one costs.
+
+Every function takes ~#:rng~, defaulting to ~(parameter-ref current-random)~.
+
+** The ambient source
+
+~current-random~ is a ~(Param RandomSource)~, and its value holds *no
+generator*. It names the calling thread's, and decides which one that is at the
+draw.
+
+That is what makes the default safe on a bjoroutine. A fiber may resume on a
+thread it did not suspend on, so a source read before a suspension and drawn
+from after it would otherwise be reaching into a generator another fiber is
+already inside. The ambient source has no state to race on.
+
+** Drawing
+
+- ~(random-int lo hi)~ : ~int~, *inclusive at both ends*. Lemire's method, so no
+  modulo bias.
+- ~(random-double)~ : ~double~ in ~[0, 1)~, 53 bits.
+- ~(random-u32)~, ~(random-u64)~ : the raw words.
+- ~(random-bool)~ : one bit, taken 64 at a time.
+- ~(random-chance? p)~ : true with probability ~p~. Outside ~[0, 1]~ it is the
+  nearer end and costs no draw.
+- ~(random-bytes! bytes)~ : fills an ~(Array byte)~ in place. Whole blocks go
+  straight into it, so this is how to ask for many bytes at once.
+- ~(shuffle-array! a)~ : Fisher-Yates, in place. Answers nothing.
+- ~(shuffle-vec v)~ : answers a new ~Vec~ and leaves ~v~ alone.
+- ~(random-ref v)~ : an element of a ~(Vec %a)~. Raises on an empty one.
+- ~(random-string n)~ : ~n~ characters of ~[A-Za-z0-9-_]~.
+- ~(random-string/chars n alphabet)~ : the same over a ~(Vec char)~ of your own.
+  Raises on an empty alphabet.
+
+** Making a source
+
+- ~(make-random)~ : 256 bits from the OS. Unpredictable, and the one to reach
+  for.
+- ~(make-random/seed64 s)~ : reproducible. The 64 bits are stretched to the
+  256-bit key by SplitMix64, so only 2^64 of the generators are reachable.
+- ~(make-random/seed256 a b c d)~ : reproducible, at the full key width. Four
+  words, so there is no malformed seed.
+- ~(random-split r)~ : an independent generator, drawn from ~r~. On the ambient
+  source it draws from the calling thread's. This is how a fiber gets one of its
+  own.
+
+** Binding one
+
+- ~current-random~ : the parameter. ~parameterize~ it and every call that did not
+  name a source follows.
+- ~(with-random-seed 42UL body ...)~ : that ~parameterize~, with a
+  ~make-random/seed64~ in it.
+
+** What to watch out for
+
+- *A bound source is one generator, and a generator is not thread-safe.* This is
+  the hazard the whole module is shaped around, and the one place it is left
+  open:
+
+  #+BEGIN_SRC scheme
+  (parameterize ((current-random (make-random/seed64 42UL)))
+    (bjo (worker))     ;; these two share one generator,
+    (bjo (worker)))    ;; and nothing will tell you
+  #+END_SRC
+
+  The default source is safe here because it names no generator. A source you
+  made is not. Give each fiber ~(random-split (parameter-ref current-random))~,
+  or seed each one separately. Nothing in the compiler or the runtime detects
+  the race — the symptom is two fibers drawing the same numbers, or a generator
+  whose state is quietly wrong.
+
+- *Binding a seeded source makes everything under it predictable*, including
+  code you did not have in mind when you wrote the ~parameterize~. A session
+  token minted inside the extent of a ~with-random-seed~ is guessable. Keep the
+  extent to the thing being replayed.
+
+- *Seeded means reproducible, not unguessable.* ~make-random/seed64~ and
+  ~make-random/seed256~ take what they are given. Use ~make-random~, or the
+  default, for anything anyone else must not predict.
+
+- *~random-int~ includes ~hi~.* ~(random-int 0 (vec-length v))~ is off the end;
+  ~(random-int 0 (- (vec-length v) 1))~ is the index you meant, and
+  ~random-ref~ is the one to use anyway.
+
+- *~random-ref~ is ~Vec~-only.* Indexing a value generic over ~Collection~ and
+  ~Refable~ would need ~Refable~'s ~%index~ pinned to ~int~, which a ~where~
+  clause cannot say.
+
+- *The two shuffles differ in what they answer*, not only in what they touch:
+  ~shuffle-array!~ writes the array it was given, ~shuffle-vec~ hands back a new
+  vec because a ~Vec~ cannot be written.

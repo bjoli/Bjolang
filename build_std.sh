@@ -44,6 +44,13 @@ echo "Building standard library..."
 # ordinary program, and this is an ordinary module it imports.
 ./bjor --lib lib/std/simpletest.bjo
 
+# `random` imports `prelude`, and `syntax-match` for `with-random-seed`. Like
+# `run` it binds names out of the runtime assembly — `RandomSource` and the
+# module beside it — so a change to `BjolangRuntime/BjoRandom.cs` has to reach
+# the compiler before this line. Rebuild the compiler after the runtime, then
+# run this.
+./bjor --lib lib/std/random.bjo
+
 # The collections. Each imports `prelude` and nothing else, and each is
 # independent of the other two, so the order between them does not matter.
 ./bjor --lib lib/std/set.bjo

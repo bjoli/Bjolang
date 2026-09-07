@@ -1,0 +1,181 @@
+;; std/random.bjo — random numbers.
+;;
+;; The default source is ChaCha20 seeded with 256 bits from the OS CSPRNG, one
+;; generator per thread, drawn from without a lock. Every function here takes
+;; `#:rng`, defaulting to `(parameter-ref current-random)`, so a program that
+;; wants a different source binds the parameter and changes no call site.
+;;
+;; By default, a thread get's it's own generator, so that reading from the
+;; RandomSource is unconstrained and not risky. 
+;;
+;; **`current-random` holds no generator.** Its value is the *ambient* source,
+;; which resolves to the calling thread's generator at each draw. That is what
+;; makes the default safe on a bjoroutine: a fiber may resume on a different
+;; thread than it suspended on, so a source read out of the parameter before a
+;; suspension would otherwise go on drawing from the old thread's generator
+;; while another fiber ran on that thread and drew from it too. There is nothing
+;; to race on, because the value that crosses the suspension names nothing.
+;;
+;; A source from `make-random` and its neighbours does name a generator, and a
+;; generator is not thread-safe. Two fibers sharing one race, and nothing here
+;; can detect it — `random-split` is how a fiber gets its own.
+;;
+;; **Seeded means reproducible, not unguessable.** `make-random` takes 256 bits
+;; from the OS. `make-random/seed64` and `make-random/seed256` take what they
+;; are given, and are for replaying a run. If you seed make-random with 256 random
+;; bits yourself, it is safe.
+
+(export
+  RandomSource
+  current-random
+  ;; Making one
+  make-random make-random/seed64 make-random/seed256 random-split
+  ;; Drawing
+  random-int random-double random-u32 random-u64
+  random-bool random-chance?
+  random-bytes! shuffle-array! shuffle-vec random-ref
+  random-string random-string/chars
+  ;; Binding one
+  with-random-seed)
+
+(import (std prelude))
+(import (std syntax-match))
+
+(import/class
+  (RandomSource      (: Bjolang.Runtime.RandomSource))
+  (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
+
+(import/extern
+  (ambient-random     (: Bjolang.Runtime.RandomModule.Ambient     (-> RandomSource)))
+  (make-random        (: Bjolang.Runtime.RandomModule.Fresh       (-> RandomSource)))
+  (make-random/seed64 (: Bjolang.Runtime.RandomModule.FromSeed64  (-> ulong RandomSource)))
+  (make-random/seed256
+    (: Bjolang.Runtime.RandomModule.FromSeed256 (-> ulong ulong ulong ulong RandomSource)))
+  (random-split       (: Bjolang.Runtime.RandomModule.Split       (-> RandomSource RandomSource)))
+
+  (clr-random-range   (: Bjolang.Runtime.RandomModule.Range   (-> RandomSource int int int)))
+  (clr-random-double  (: Bjolang.Runtime.RandomModule.Double  (-> RandomSource double)))
+  (clr-random-u32     (: Bjolang.Runtime.RandomModule.U32     (-> RandomSource uint)))
+  (clr-random-u64     (: Bjolang.Runtime.RandomModule.U64     (-> RandomSource ulong)))
+  (clr-random-bool    (: Bjolang.Runtime.RandomModule.Bool    (-> RandomSource bool)))
+  (clr-random-chance  (: Bjolang.Runtime.RandomModule.Chance  (-> RandomSource double bool)))
+  (clr-random-fill    (: Bjolang.Runtime.RandomModule.Fill    (-> RandomSource (Array byte) void)))
+  (clr-random-shuffle (: Bjolang.Runtime.RandomModule.Shuffle (-> RandomSource (Array %a) void)))
+  (clr-random-string  (: Bjolang.Runtime.RandomModule.Str     (-> RandomSource int string))))
+
+;; `make-parameter`. Takes a hot spot. 
+(: current-random (Param RandomSource))
+(def current-random (make-parameter (ambient-random)))
+
+;; ---------------------------------------------------------------------------
+;; Drawing
+;; ---------------------------------------------------------------------------
+
+;; Inclusive at both ends. Lemire's method, so no modulo bias.
+(: random-int (-> int int (#:rng RandomSource) int))
+(defun (random-int lo hi #:rng (parameter-ref current-random))
+  (clr-random-range rng lo hi))
+
+;; [0, 1], with 53 bits of randomness.
+(: random-double (-> (#:rng RandomSource) double))
+(defun (random-double #:rng (parameter-ref current-random))
+  (clr-random-double rng))
+
+(: random-u32 (-> (#:rng RandomSource) uint))
+(defun (random-u32 #:rng (parameter-ref current-random))
+  (clr-random-u32 rng))
+
+(: random-u64 (-> (#:rng RandomSource) ulong))
+(defun (random-u64 #:rng (parameter-ref current-random))
+  (clr-random-u64 rng))
+
+;; One bit per call, taken 64 at a time.
+(: random-bool (-> (#:rng RandomSource) bool))
+(defun (random-bool #:rng (parameter-ref current-random))
+  (clr-random-bool rng))
+
+;; True with probability `p`. Outside [0, 1] it is the nearer of the two, and
+;; costs no draw.
+(: random-chance? (-> double (#:rng RandomSource) bool))
+(defun (random-chance? p #:rng (parameter-ref current-random))
+  (clr-random-chance rng p))
+
+;; Fills the array in place. Whole blocks go straight into it, so this is the
+;; way to ask for many bytes at once.
+(: random-bytes! (-> (Array byte) (#:rng RandomSource) void))
+(defun (random-bytes! bytes #:rng (parameter-ref current-random))
+  (clr-random-fill rng bytes))
+
+;; Fisher-Yates, in place. Answers nothing: the array it was given is the
+;; shuffled one.
+(: shuffle-array! (-> (Array %a) (#:rng RandomSource) void))
+(defun (shuffle-array! a #:rng (parameter-ref current-random))
+  (clr-random-shuffle rng a))
+
+;; A `Vec` is persistent, so this answers a new one and leaves `v` alone.
+;;
+;; Walks the vec, and places it's elements into an array of the
+;; same size randomly. 
+(: shuffle-vec (-> (Vec %a) (#:rng RandomSource) (Vec %a)))
+(defun (shuffle-vec v #:rng (parameter-ref current-random))
+  (if (< (vec-length v) 2)
+      v
+      (let ((a (make-array (vec-length v))))
+        (loop (:with i 0 (+ i 1))
+              (:for x v)
+              (:do (array-set! a i x)))
+        (clr-random-shuffle rng a)
+        (array->vec a))))
+
+;; A string over `[A-Za-z0-9-_]`.
+;; this is the dumb version.
+(: random-string (-> int (#:rng RandomSource) string))
+(defun (random-string length #:rng (parameter-ref current-random))
+  (clr-random-string rng length))
+
+;; ---------------------------------------------------------------------------
+;; Over a collection
+;; ---------------------------------------------------------------------------
+;;
+;; Written here rather than in the shim: each is an index and a draw, and
+;; Bjolang's `char` is a `BjoChar`, which does not cross as a `char[]`.
+
+;; An element of `v`. Randomly picked.
+;; This could be a trait function, but currently we cannot constrain
+;; Refable to integer keys.
+(: random-ref (-> (Vec %a) (#:rng RandomSource) %a))
+(defun (random-ref v #:rng (parameter-ref current-random))
+  (when (= (vec-length v) 0)
+    (raise (cast Exception (ArgumentException. "random-ref was given an empty vec."))))
+  (vec-ref v (clr-random-range rng 0 (- (vec-length v) 1))))
+
+;; A string over an alphabet of the caller's own.
+(: random-string/chars (-> int (Vec char) (#:rng RandomSource) string))
+(defun (random-string/chars length alphabet #:rng (parameter-ref current-random))
+  (when (= (vec-length alphabet) 0)
+    (raise (cast Exception (ArgumentException. "random-string/chars was given an empty alphabet."))))
+  (let ((sb (stringbuilder-empty))
+        (top (- (vec-length alphabet) 1)))
+    (let go ((i 0))
+      (if (= i length)
+          (stringbuilder->string sb)
+          (let ()
+            (stringbuilder-add! sb (vec-ref alphabet (clr-random-range rng 0 top)))
+            (go (+ i 1)))))))
+
+;; ---------------------------------------------------------------------------
+;; Binding a source
+;; ---------------------------------------------------------------------------
+
+;; `(with-random-seed 42UL body ...)` — the extent draws from a generator that
+;; replays.
+;;
+;; One generator for the whole extent. Spawning a fiber here is apeshit bad
+;; since fibers should NOT share state.
+(def/macro (with-random-seed form inject compare)
+  (syntax-match form
+    ((_ seed first body ...)
+     #'(parameterize ((current-random (make-random/seed64 ,seed)))
+         ,first
+         ,@body))
+    (bad (syntax-error bad "with-random-seed takes a seed and a body: (with-random-seed 42UL body ...)"))))

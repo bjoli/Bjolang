@@ -406,15 +406,38 @@ let rec private pinnedOrdinary (names: Set<string>) (expr: TypedExpr) : bool =
 
     here || (TypeVisitor.children expr |> List.exists (pinnedOrdinary names))
 
+/// The cell an arrow's colour is stored in, at the end of whatever chain of
+/// solved cells leads to it.
+///
+/// `pruneEffect` answers with the *colour* and so cannot be used to write one:
+/// it compresses a solved chain to its value, leaving no cell to assign. This
+/// keeps the cell, which is what every reference sharing the arrow reads
+/// through.
+let rec private colourCell (eff: Effect) : EffectCell option =
+    match eff with
+    | EMeta cell ->
+        match cell.EValue with
+        | Some(EMeta _ as inner) -> colourCell inner
+        | _ -> Some cell
+    | _ -> None
+
+/// Writes `colour` onto an arrow, over whatever is already there.
+///
+/// Overwriting, unlike `ground`. A colour this pass has *decided* is not a
+/// default and does not defer to one: the member is emitted at it, so every
+/// reference has to read it back. What is being overwritten is grounding's
+/// guess, made before the decision existed.
+let private setColour (colour: Effect) (t: HMType) : unit =
+    match t with
+    | TFun(_, _, eff) ->
+        match colourCell eff with
+        | Some cell -> cell.EValue <- Some colour
+        | None -> ()
+    | _ -> ()
+
 let rec private bindCallsTo (names: Set<string>) (colour: Effect) (expr: TypedExpr) : unit =
     (match expr.Node with
-     | TIdent(n, _) when Set.contains n names ->
-         match expr.Type with
-         | TFun(_, _, eff) ->
-             match pruneEffect eff with
-             | EMeta cell -> cell.EValue <- Some colour
-             | _ -> ()
-         | _ -> ()
+     | TIdent(n, _) when Set.contains n names -> setColour colour expr.Type
      | _ -> ())
 
     TypeVisitor.children expr |> List.iter (bindCallsTo names colour)
@@ -512,9 +535,14 @@ let rec private selectIn (registry: TraitRegistry) (allowed: bool) (expr: TypedE
                 // the cell is what tells the second: it is shared with every
                 // reference, so `callSuspends` answers at each call without
                 // anything walking out to find them.
-                if colour = EAsync then
-                    for e in everywhere do
-                        bindCallsTo names colour e
+                //
+                // Both colours, and not only `EAsync`. `descend body` above has
+                // already grounded the loop name wherever it is called from,
+                // and grounding answers with the *enclosing* member's colour —
+                // so inside a bjoroutine an ordinary group is left with callers
+                // awaiting a member emitted without `async`.
+                for e in everywhere do
+                    bindCallsTo names colour e
 
                 { expr with Node = TLoop(selected |> List.map (fun m -> { m with Effect = colour }), Some body) }
 
@@ -632,12 +660,10 @@ and private localFun (registry: TraitRegistry) (allowed: bool) (value: TypedExpr
         let colour =
             if TypeVisitor.reachesAwait selected then EAsync else ESync
 
-        (match value.Type with
-         | TFun(_, _, eff) ->
-             match pruneEffect eff with
-             | EMeta cell -> cell.EValue <- Some colour
-             | _ -> ()
-         | _ -> ())
+        // Over whatever is there, for the reason the loop group's write-back
+        // is: a reference walked before this decision was grounded to the
+        // enclosing member's colour, and this is the answer it should have got.
+        setColour colour value.Type
 
         // Grounded in the colour just decided rather than the enclosing one:
         // whatever is still open in this arrow belongs to *this* member, and it
