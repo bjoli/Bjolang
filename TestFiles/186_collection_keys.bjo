@@ -1,0 +1,147 @@
+;; Collections as keys.
+;;
+;; A `Map` and a `Set` file a key under `EqualityComparer<T>.Default`, which is
+;; .NET's equality and not the `Eq` impl in `std/eq`. For the four collection
+;; types those two have to say the same thing, or a key never finds its own
+;; entry — and it fails *silently*, as a lookup that misses rather than as
+;; anything anyone could catch.
+;;
+;; `Map`, `Set` and `List` carry structural equality of their own. `Vec` did
+;; not, so a vec key was compared by reference: `(map-ref-or m (string->vec
+;; "ab") 0)` answered the default however the map was built.
+;;
+;; What this pins is that the two definitions agree. It does not pin that they
+;; *must* — a hand-written `Eq` that departs from .NET's is still ignored here,
+;; which is the general fix written up in Todo.org.
+(import (std prelude))
+(import (std set))
+(import (std orderedset))
+(import (std orderedmap))
+(import (std simpletest))
+
+;; Built twice from the same elements, so nothing is shared and only a
+;; structural answer can find it.
+(: word (-> (Vec char)))
+(defun (word) (string->vec "key"))
+
+(: pair (-> (List int)))
+(defun (pair) (Cons 1 (Cons 2 Nil)))
+
+(: trio (-> (Set int)))
+(defun (trio) (set-add (set-add (set-empty) 1) 2))
+
+(: entry (-> (Map string int)))
+(defun (entry) (map-set (map-empty) "a" 1))
+
+;; The ordered pair. Built in the *other* order on purpose: a tree enumerates by
+;; its comparator and not by insertion, so two sets holding the same elements
+;; walk identically however they were filled — which is what lets equality be a
+;; paired walk and the hash be order-sensitive.
+(: sorted (-> (OrderedSet int)))
+(defun (sorted) (orderedset-add (orderedset-add (orderedset-empty) 2) 1))
+
+(: sorted-other-way (-> (OrderedSet int)))
+(defun (sorted-other-way) (orderedset-add (orderedset-add (orderedset-empty) 1) 2))
+
+(: ordered-entry (-> (OrderedMap string int)))
+(defun (ordered-entry)
+  (orderedmap-set (orderedmap-set (orderedmap-empty) "b" 2) "a" 1))
+
+(: ordered-entry-other-way (-> (OrderedMap string int)))
+(defun (ordered-entry-other-way)
+  (orderedmap-set (orderedmap-set (orderedmap-empty) "a" 1) "b" 2))
+
+(defun (main)
+  ;; --- as map keys ---------------------------------------------------------
+  (expect "a vec key" (map-ref-or (map-set (map-empty) (word) 7) (word) 0) 7)
+  (expect "a list key" (map-ref-or (map-set (map-empty) (pair) 7) (pair) 0) 7)
+  (expect "a set key" (map-ref-or (map-set (map-empty) (trio) 7) (trio) 0) 7)
+  (expect "a map key" (map-ref-or (map-set (map-empty) (entry) 7) (entry) 0) 7)
+
+  ;; A key that differs is still a miss, which is the half a broken hash can
+  ;; also get wrong — by colliding everything into one bucket and finding it.
+  (expect "a different vec key misses"
+          (map-ref-or (map-set (map-empty) (word) 7) (string->vec "other") 0)
+          0)
+
+  ;; Two equal keys are one entry, not two.
+  (expect "an equal key overwrites"
+          (map-length (map-set (map-set (map-empty) (word) 1) (word) 2))
+          1)
+  (expect "and the second value won"
+          (map-ref-or (map-set (map-set (map-empty) (word) 1) (word) 2) (word) 0)
+          2)
+
+  ;; --- the ordered pair, as map keys ---------------------------------------
+  ;;
+  ;; These carry a comparator rather than a hash, so what a hashed collection
+  ;; asks them is `GetHashCode`, which their ordering has nothing to say about.
+  ;; Both instances below are built by inserting in opposite orders, so a
+  ;; hash that followed insertion rather than the comparator would miss.
+  (expect "an orderedset key"
+          (map-ref-or (map-set (map-empty) (sorted) 7) (sorted-other-way) 0)
+          7)
+  (expect "an orderedmap key"
+          (map-ref-or (map-set (map-empty) (ordered-entry) 7) (ordered-entry-other-way) 0)
+          7)
+
+  (expect-true "an orderedset in a set"
+               (set-contains? (set-add (set-empty) (sorted)) (sorted-other-way)))
+
+  ;; Insertion order is not part of the value, so these are one entry.
+  (expect "insertion order is not identity"
+          (map-length (map-set (map-set (map-empty) (sorted) 1) (sorted-other-way) 2))
+          1)
+
+  ;; And a genuinely different one still misses.
+  (expect "a different orderedset key misses"
+          (map-ref-or (map-set (map-empty) (sorted) 7)
+                      (orderedset-add (orderedset-empty) 99)
+                      0)
+          0)
+
+  (expect-true "equal ordered sets are =" (= (sorted) (sorted-other-way)))
+  (expect "equal ordered sets hash alike" (eq-hash (sorted)) (eq-hash (sorted-other-way)))
+  (expect-true "equal ordered maps are =" (= (ordered-entry) (ordered-entry-other-way)))
+  (expect "equal ordered maps hash alike"
+          (eq-hash (ordered-entry)) (eq-hash (ordered-entry-other-way)))
+
+  ;; A map differing only in a value is not equal, which the paired walk has to
+  ;; notice on the value and not only on the key.
+  (expect-true "ordered maps differing in a value are not ="
+               (not (= (ordered-entry)
+                       (orderedmap-set (orderedmap-set (orderedmap-empty) "a" 1) "b" 99))))
+
+  ;; --- as set members ------------------------------------------------------
+  (expect-true "a vec in a set" (set-contains? (set-add (set-empty) (word)) (word)))
+  (expect "an equal vec is not a second member"
+          (set-length (set-add (set-add (set-empty) (word)) (word)))
+          1)
+
+  ;; --- equality and hashing agree ------------------------------------------
+  ;;
+  ;; The invariant a map depends on: equal keys hash alike. `eq-hash` is
+  ;; Bjolang's own, and need not equal .NET's — but it must answer the same for
+  ;; two values `=` says are equal, or a `Map` keyed on a record holding a vec
+  ;; would go wrong in the same silent way.
+  (expect-true "equal vecs are =" (= (word) (word)))
+  (expect "equal vecs hash alike" (eq-hash (word)) (eq-hash (word)))
+  (expect-true "unequal vecs are not =" (not (= (word) (string->vec "other"))))
+
+  ;; --- removing the last key -----------------------------------------------
+  ;;
+  ;; A map that empties keeps the comparer it was built with. It used to answer
+  ;; with the shared `Empty`, which carries the default one — so the map was
+  ;; usable again afterwards but no longer meant what it did before.
+  (def emptied (map-remove (map-set (map-empty) (word) 7) (word)))
+  (expect "emptied" (map-length emptied) 0)
+  (expect "and usable again" (map-ref-or (map-set emptied (word) 9) (word) 0) 9)
+
+  (def cleared (map-clear (map-set (map-empty) (word) 7)))
+  (expect "cleared and usable again" (map-ref-or (map-set cleared (word) 9) (word) 0) 9)
+
+  (def unset (set-remove (set-add (set-empty) (word)) (word)))
+  (expect-true "a set survives being emptied"
+               (set-contains? (set-add unset (word)) (word)))
+
+  0)
