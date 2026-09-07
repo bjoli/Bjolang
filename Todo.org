@@ -300,3 +300,63 @@ registry is known — which is where the expression side resolves and would make
 the two agree. Or refuse a lowercase nullary case at the ~type~ declaration,
 which is smaller and would cost the prelude nothing: its lowercase cases all
 carry payloads.
+
+* Equality and hashing
+
+A ~Map~ and a ~Set~ file a key under ~EqualityComparer<T>.Default~ — .NET's
+equality — and not under the ~Eq~ impl in ~std/eq~. The two agree today, and
+nothing makes them.
+
+What was found: ~RrbList~ had no ~Equals~ or ~GetHashCode~ of its own, so a
+~Vec~ key was compared by reference and never found its own entry. It has them
+now, and ~Map~, ~Set~ and ~SchemeList~ already did. Separately, ~Map.Clear~,
+~Set.Clear~ and both ~Remove~ methods answered with the shared ~Empty~
+singleton, which carries the *default* comparer — so a collection built with one
+of its own silently reverted to .NET equality the moment it was emptied.
+~TestFiles/186_collection_keys.bjo~ pins both.
+
+** A hand-written ~Eq~ is still not what a ~Map~ keys on
+
+The gap the above only papers over. An ~Eq~ impl that departs from .NET's — a
+case-insensitive string, a record compared on one field, anything a user writes
+over a foreign type — is ignored by every hashed collection, and the symptom is
+a lookup that misses rather than anything that can be caught.
+
+The pieces are all in place. The CHAMP is comparer-parameterised end to end:
+~TrieOps~ takes an ~IEqualityComparer<TK>~, ~Map<TK,TV>~ stores one and
+propagates it through every operation, and ~MapModule.Empty~ already accepts
+one. And a ~where (Eq %a)~ compiles to an ordinary interface dictionary:
+
+#+BEGIN_SRC csharp
+public static bool same_QMARK<T_a>(Eq<T_a> _dict_Eq_a, T_a a, T_a b) { ... }
+// call site: same_QMARK(Eq_System_Int32.Instance, 1, 1)
+#+END_SRC
+
+~Eq<T>~ is a public generic interface with a singleton per implementor, which is
+nearly an ~IEqualityComparer<T>~ already. Emitting it as one — with default
+interface methods forwarding ~Equals~ and ~GetHashCode~ to ~eq~ and ~eqsubhash~
+— makes the dictionary itself the comparer: no wrapper, no allocation, no
+delegates, one interface call per probe.
+
+The half that is missing is that Bjolang cannot *name* the evidence in scope, so
+~map-empty~ has nothing to pass. Either an intrinsic that reads the dictionary
+~Lowering~ already threads, or these few constructors become compiler-known.
+Only the constructors need it — ~map-empty~, ~mapbuilder-empty~,
+~transientmap-empty~, ~seq->map~ and their ~Set~ counterparts — because the
+comparer is stored; ~map-set~ and ~map-ref~ keep their signatures. Those
+constructors gain ~(where (Eq %k))~, which is the honest cost: it makes "this
+key type has Bjolang equality" a checked fact rather than an assumption.
+
+Keep ~null~ meaning "use ~EqualityComparer<T>.Default~", and pass it when the
+key's ~Eq~ is the CLR-derived one. Otherwise every ~int~-keyed map loses the
+devirtualisation the JIT gives the default comparer, which is a real cost on the
+structure whose whole point is speed. With the dictionary as the comparer that
+is one check at construction.
+
+The same is true of ~Ord~ and the ordered collections, and worse in one respect:
+~orderedmap-empty~ is a bare extern, ~OrderedMap~ keys on ~Comparer<T>.Default~,
+and a Bjolang ~Ord~ impl is ignored the same way — which is why ~std/clr-ord~
+has to exist at all.
+
+Doing it for one trait and not the other is not worth it: both are one
+mechanism, ~evidence-as-comparer~, applied twice.
