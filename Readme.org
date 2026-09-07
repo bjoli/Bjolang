@@ -168,81 +168,6 @@ Array literals
 Since it compiles to c# it needs an entry point. That is the (defun (main args) ...) function. 
 
 * Further code
-*** Traits
-Bjolang has traits. Traits can be regular traits, which means they are usable on concrete types (fast calls) or in dynamic contexts (as fast as C# Interfaces). There are also inlinable traits. These are traits that only work when the type is known at compile time, and are inlined at the call site. This is because c# cannot represent something like the Monad trait interfaces. Inlining solves this. These traits are painfully monomorphic.
-
-#+begin_src scheme
-;; The simplest kind of trait is something like a trait that
-;; turns any thing into a string:
-(def/trait (Printable %i)
-  (: ->str (-> %i string)))
-
-(impl (Printable int)
-  (defun (->str i) (int->string i)))
-
-;; More complex traits also work:
-(def/trait (Foldable %col)
-  ;; associated type
-  (type %item)
-  ;; fold is a function that takes:
-  ;; 1. a function that takes an accumulator type, an item type and
-  ;;    returns an item type.
-  ;; 2. an accumulator type
-  ;; 3. a collection type
-  ;; 4. and returns an accumulator type.
-  (: fold (-> (-> %acc %item %acc) %acc %col %acc)))
-
-;; Implement the trait for a List with a generic in it
-(impl (Foldable (List %a))
-  ;; the associated type %item is the same as the %a in the list
-  (type %item %a)
-  (defun (fold f acc col)
-    (list-foldl f acc col)))
-
-;; fold is now a function that works on a list and any other data
-;; type for which Foldable is defined.
-(fold #(+ % 1) 0 '(1 2 3 4))
-
-;; This is a "fake hkt" trait: it only works when types are
-;; know at compile time and in monomorphic functions.
-(def/trait (Functor (%f %a))
-  (: fmap (-> (-> %a %b) (%f %a)  (%f %b))))
-
-(impl (Functor (List %a))
-  (defun (fmap g xs) (list-map g xs))) 
-
-(impl (Functor (Option %a))
-  (defun (fmap g o)
-    (match o ((Some v) (Some (g v))) (None None))))
-
-;; An implementation may also hold only *conditionally*: a list is
-;; printable where its elements are. The where clause is not a note
-;; to the reader — it is a dictionary the implementation carries, so
-;; the element's own impl is what runs, chosen where the element type
-;; is known rather than baked in at %a.
-(impl (Printable (List %a))
-  (where (Printable %a))
-  (defun (->str xs) (list->str xs)))
-
-(defun (main args)
-  (def a-list '(1 2 3 4))
-  (def an-option (Option 5))
-  ;; these both work
-  (def b (fmap #(+ &1 1) a-list))
-  (def c (fmap #(+ &1 1) an-option))
-
-  (defun (bump bomp)
-    (fmap (fun (arg) (+ arg 1)) bomp))
-
-  ;; Works, BUT locks bump into the type (List int)
-  (def d (bump a-list))
-  ;; Which means this fails because any function written against
-  ;; an "inline" trait is going to be monomorphic. 
-  (def e (bump an-option))
-  0)
-
-#+end_src
-
 
 *** Do notation
 Look Ma, a Monad! 
@@ -510,6 +435,12 @@ network io by wrapping c# async in events for the cml goodness. (std http) is he
 
 ** Performance things
 Hoist literals. Not just literal lists and vecs, but also symbols and keywords. They have a decently high init cost, since they do a parallel map lookup.
+
+Seq Fusion (done woop woop)
+
+Turn let-bound functions that are only  ever in function position as functions rather than delegates/Func.
+
+Some simple inlining.
 
 Hoist the threadlocal loads of several parameter-ref in synchronous functions. Say I do 5 (parameter-ref ) in a body, since there is no parameter-set! we can hoist the environment so that we do not pay the [ThreadLocal] read cost.
 

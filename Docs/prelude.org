@@ -7,7 +7,7 @@ Nothing here has to be imported. ~(std prelude)~ is linked into every module the
 The prelude is nevertheless made of two halves, and it is worth knowing which is which when reading the sources:
 
 - The *builtin* environment (~Prelude.fs~, backed by ~BjolangRuntime~) holds what currently isn't written in bjolang.
-- ~lib/std/prelude.bjo~ is an ordinary Bjolang module. It holds everything that *is* just a .NET call — the string, conversion, file, path, directory, environment and port operations below — plus the traits (~->str~, ~Iterable~, ~Collector~, ~Functor~, ~Num~) and ~print~/~println~.
+- ~lib/std/prelude.bjo~ is an ordinary Bjolang module. It holds everything that *is* just a .NET call — the string, conversion, file, path, directory, environment and port operations below — plus the traits (~->str~, ~Iterable~, ~Collector~, ~Num~) and ~print~/~println~.
 
 Sections below are marked =(std prelude)= where they live in the second.
 
@@ -385,7 +385,7 @@ operations are ~import/extern~ bindings on ~Map.MapModule~, both living in
 exactly as it always was. They are in the prelude rather than a =(std map)= of
 their own because ~#map(...)~ reads as a call to ~list->map~, which has to be in
 scope wherever the literal is written, and because the prelude implements
-~Iterable~, ~Foldable~, ~Collection~, ~Functor~ and ~Collector~ for ~Map~ — a
+~Iterable~, ~Collection~ and ~Collector~ for ~Map~ — a
 separate module would have to import the prelude for those while the prelude
 imported it back.
 
@@ -438,7 +438,7 @@ costs no allocation.
 - ~(map-fold f init map)~ : Folds over the map; ~f~ receives ~(acc key value)~.
 - ~(map-filter f map)~ : Returns a new map containing only entries where ~(f key value)~ is true.
 - ~(map-map f map)~ : Returns a new map whose values are ~(f key value)~. The key is what the result is filed under, so the mapper cannot move it.
-- ~(map-map-values f map)~ : Returns a new map with each value replaced by ~(f value)~, keys untouched. This is the one ~Functor~ uses: its ~(-> %a %b)~ has room for a single element type, and for ~(Map %k %v)~ that is ~%v~.
+- ~(map-map-values f map)~ : Returns a new map with each value replaced by ~(f value)~, keys untouched.
 - ~(map->str map)~ : ~#map(key value ...)~, so the literal round-trips. Also the ~->str~ implementation, so ~(println m)~ prints it.
 - ~(list->map lst)~ : Constructs a map from a list of ~(key . val)~ pairs/tuples.
 - ~(map->list map)~ : Converts the map to a list of pairs/tuples.
@@ -493,7 +493,7 @@ elements' natural order, by ~Comparer<T>.Default~.
 ~(OrderedMap %k %v)~'s api is the prelude's ~map-*~ under an
 ~orderedmap-~ prefix.
 
-All three implement ~Iterable~, ~Collection~, ~Foldable~, ~Functor~ and ~->str~,
+All three implement ~Iterable~, ~Collection~ and ~->str~,
 and each publishes a collector — ~setting~, ~ordered-setting~,
 ~ordered-mapping~ — so a loop can accumulate into one:
 
@@ -715,11 +715,6 @@ These methods use long names to prevent collisions with common user variables (l
   walks *and* consumes an effectful source, and a ~string~ walks because its
   ~%content~ is ~char~ and so ~length~ must be ~string-count~ rather than
   ~string-length~.
-- ~Functor~ : ~(map f x)~, where ~f~ receives one element and returns its
-  replacement. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Option %a)~,
-  ~(Result %e %a)~ and ~(Map %k %v)~. The abstracted argument is the last one,
-  so mapping a ~(Map %k %v)~ moves the *values* and leaves the keys alone, and
-  mapping a ~(Result %e %a)~ leaves the error alone.
 - ~Monad~ : ~(pure x)~ and ~(bind m k)~ — in ~(std monad)~ rather than here.
   See the section above.
 - ~Collector~ : ~(collector-init c)~, ~(collector-step c acc x)~ and

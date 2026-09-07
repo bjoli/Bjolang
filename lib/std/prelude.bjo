@@ -10,7 +10,8 @@
 
   ;; Iterable
   iterable-start iterable-done? iterable-current iterable-next
-  fold map filter take drop
+  fold map filter take drop take-while drop-while
+  enumerate flat-map any? all? find for-each
   ;; Cursor.
   cursor-start cursor-end cursor-end? cursor-ref cursor-next cursor-prev
   ;; Collector
@@ -516,6 +517,15 @@
   (: drop (-> int %s (Seq %elem)))
   (: take-while (-> (-> %elem bool) %s (Seq %elem)))
   (: drop-while (-> (-> %elem bool) %s (Seq %elem)))
+  (: enumerate (-> %s (Seq (Tuple int %elem))))
+  (: flat-map (-> (-> %elem (Seq %b)) %s (Seq %b)))
+  ;; The methods below return a value rather than a sequence, so their defaults
+  ;; are ordinary loops instead of `seql`s. A `seql` becomes a C# iterator,
+  ;; which cannot await, so only these can take a callback of either colour.
+  (: any? (-> (-?-> %elem bool) %s bool))
+  (: all? (-> (-?-> %elem bool) %s bool))
+  (: find (-> (-?-> %elem bool) %s (Option %elem)))
+  (: for-each (-> (-?-> %elem void) %s void))
 
   (defun (->seq s)
     (seql (:for e s)
@@ -550,11 +560,54 @@
   (defun (drop-while f s)
     (def/mutable yield? #f)
     (seql (:for elem s)
-          (:do (when (and (not yield?) (f elem))
+          (:do (when (and (not yield?) (not (f elem)))
                  (set! yield? #t)))
           (:when yield?)
           (:yield elem)))
+
+  (defun (enumerate s)
+    (seql (:with i 0 (+ i 1))
+          (:for e s)
+          (:yield (Tuple i e))))
+
+  (defun (flat-map f s)
+    (seql (:for e s)
+          (:subloop)
+          (:for x (f e))
+          (:yield x)))
+
+  ;; `folding` keeps the last stepped value, so the accumulator holds the
+  ;; current element's answer and `:break` stops on it.
+  (defun (any? f s)
+    (loop (:for e s)
+          (:acc found (folding #f (f e)))
+          (:break found)))
+
+  (defun (all? f s)
+    (loop (:for e s)
+          (:acc ok (folding #t (f e)))
+          (:break (not ok))))
+
+  (defun (find f s)
+    (loop (:for e s)
+          (:acc got (folding None (if (f e) (Some e) None)))
+          (:break (match got ((Some _) #t) (None #f)))))
+
+  (defun (for-each f s)
+    (loop (:for e s)
+          (:do (ignore (f e)))))
 )
+
+;; Declared before the other implementations because the inherited
+;; `flat-map` default walks the `(Seq %b)` its callback returns, and an
+;; implementation is only in scope for the ones checked after it.
+(impl (Iterable (Seq %a))
+  (type %elem %a)
+  (type %cursor (SeqCursor %a))
+  (defun (iterable-start s) (seq-cursor s))
+  (defun (iterable-done? s c) (seq-cursor-done? c))
+  (defun (iterable-current s c) (seq-cursor-current c))
+  (defun (iterable-next s c) c))
 
 (impl (Iterable (List %a))
   (type %elem %a)
@@ -620,13 +673,6 @@
 
 
 
-(impl (Iterable (Seq %a))
-  (type %elem %a)
-  (type %cursor (SeqCursor %a))
-  (defun (iterable-start s) (seq-cursor s))
-  (defun (iterable-done? s c) (seq-cursor-done? c))
-  (defun (iterable-current s c) (seq-cursor-current c))
-  (defun (iterable-next s c) c))
 
 ;; ---------------------------------------------------------------------------
 ;; Cursor
