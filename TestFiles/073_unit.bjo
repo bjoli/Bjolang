@@ -99,12 +99,13 @@
   ;; delegate shape really is serving both.
   (expect "and at %b = string" (apply-twice int->string 7) "7")
 
-  ;; `map` is `(-> (-> %a %b) (%f %a) (%f %b))`. At `%b = Unit` it builds a list
-  ;; of units — which is only expressible because unit is a value.
+  ;; `Iterable`'s `map` is `(-> (-> %elem %b) %s (Seq %b))`. At `%b = Unit` it
+  ;; yields units — which is only expressible because unit is a value. The seq
+  ;; is lazy, so it has to be walked before the callback's tally is read.
   (set! counter 0)
   (def units (map bump (list 1 2 3 4)))
-  (expect "Functor at Unit runs every element" counter 10)
-  (expect "and gives back a list of units" (list-length units) 4)
+  (expect "and gives back a seq of units" (seq-length units) 4)
+  (expect "Iterable map at Unit ran every element" counter 10)
 
   ;; Units compare equal, which falls out of the struct rather than being a
   ;; special case anywhere.

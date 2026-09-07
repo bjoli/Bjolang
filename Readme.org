@@ -19,55 +19,58 @@ Bjolang has ConcurrentML. And by that I mean: WOOP WOOP WAKE UP, BJOLANG HAS CON
 
 It is fully cooperative, and yields control when calling other bjoroutines or when syncing on channels. Any function that calls down to a "leaf" IO function gets one synchronous and one asynchronous version, so that any function that does IO can suspend.
 
+Here is an example of a program that runs a command line pipeline with the bjoroutine my-rot13 as one part of the pipeline. The bjoroutine runs in a background thread, and in the event that the (cat ...) or (grep ...) would not write/read input it would suspend and wait for IO.
 
 #+begin_src scheme
-;; A suspending function. defbjo defines a bjoroutine
-(: producer (-> (Chan int) int void))
-(defbjo (producer ch n)
-  (let lp ((i 0))
-    (if (= i n)
-        (sync (chan-send ch -1))
-        (let ((sent (sync (chan-send ch i))))
-          (lp (+ i 1))))))
+(import (std run))
 
-;; A select-style worker. `chan-recv` returns an event -- it does not
-;; suspend -- which is why two of them can be built and handed to `choose`
-;; before either has happened.
-(type (: WorkerMsg (Union (Job int) Quit)))
-(: worker (-> (Chan int) (Chan bool) (Chan int) void))
-(defbjo (worker jobs cancel results)
-  (let lp ((total 0))
-    (match (sync (choose (wrap (chan-recv jobs)   (fun (j) (Job j)))
-                         (wrap (chan-recv cancel) (fun (c) Quit))))
-      ((Job j) (lp (+ total j)))
-      (Quit    (sync (chan-send results total))))))
+;; Encryption and decryption are the same. It is the beauty of
+;; rot-13. Or as, we say:
+;; guvf shapgvba vf GUR OBZO!
+(: rot13-char (-> Char Char))
+(defun (rot13-char ch)
+  (defun (char+int ch i)
+    (-> (char->integer ch)
+        (+ & i)
+        integer->char))
+  (cond
+   ((<= #\a (char-downcase ch) #\m)
+    (char+int ch 13))
+   ((<= #\n (char-downcase ch) #\z)
+    (char+int ch -13))
+   (else ch)))
 
-;; A timeout is just another branch. `guard` rebuilds the event at each
-;; sync, so the deadline is not stale after the first iteration.
-(sync (choose (wrap (chan-recv ready)  (fun (v) (Job v)))
-              (wrap (timeout 30000)    (fun (u) Quit))))
+;; A Filter is defined in (std run) as (-bjo-> TextReader TextWriter unit)
+(: my-rot13 Filter)
+(defbjo (my-rot13 in out)
+  (let lp ()
+    (cond
+     ((port-eof? in) unit)
+     (else
+      (write-char out (rot13-char (read-char in)))
+      (lp)))))
 
-;; `always` and `never` are the unit and zero.
-(sync (choose (never) (always 5))) ;; => 5
-#+end_src
 
-And when the waiting has to happen in a plain ~defun~ after all -- a ~main~ that is not a bjoroutine, or a library that cannot dictate what colour its callers are -- ~sync/blocking~ is the door out. It takes any event and parks the calling thread instead of suspending a fiber, so channels, promises and timeouts are all reachable from ordinary code:
-
-#+begin_src scheme
 (defun (main args)
-  (def ch (make-chan))
-  (ignore (bjo (chatter ch)))
-  ;; Building an event is pure, so everything still composes before it
-  ;; gets here -- which matters, because nothing withdraws a
-  ;; sync/blocking once it has parked.
-  (match (sync/blocking (choose (wrap (chan-recv ch) (fun (v) (Got v)))
-                                (wrap (timeout 1000) (fun (u) TimedOut))))
-    ((Got v)  (println v))
-    (TimedOut (println "nothing came")))
+  ;; run/string returns a Result of (Ok a-string)
+  (match (run/string '(pipe (cat "Examples/run_with_bjoroutine.bjo")
+                            ,my-rot13
+                            (grep "-i" "bomb")))
+    ((Err e) (println "Command failed with ${e}"))
+    ;; An empty result. 
+    ((Ok "")
+     (println "Everything is safe"))
+    ((Ok r)
+     (println "DANGER!")
+     (println r)))
   0)
+
 #+end_src
 
+This program (found in Examples/run_with_bjoroutine.bjo) reads itself and runs each char through my-rot13. It "decrypts" the source comment ";; guvf shapgvba vf GUR OBZO!" and prints
 
+DANGER!
+this function is THE BOMB!
 
 *** Calling .NET async without ever meeting a Task
 
@@ -408,7 +411,7 @@ Lists, quasiquoted lists and vectors do not need constructors in some circumstan
             BJOLI'S GROCERY             
 
 Fruktgatan 12           2026-08-21 14:32
-211 44 Malmo                Receipt 1042
+211 44 Malmö                Receipt 1042
 ========================================
 Bananas, organic                   30.88
   1.24 x 24.90
@@ -478,11 +481,11 @@ The current parameter implementation is very practical, but perhaps limiting. Th
 
 
 ** features to add in no particular order
-Syntactic folding, because #:rest arrays means an allocation. Maybe (:and char<? #\a #\b #\c) = (and (char<? #\a #\b) (char<? #\b #\c)) or perhaps reader macros #foldl(compose fun1 fun2 fun3) => (compose (compose fun1 fun2) fun3).  #and(my= 1 2 3 4) (and (= 1 2) (= 2 3) (= 3 4)) (but with letbound terms).
+Syntactic folding, because #:rest arrays means an allocation. As reader macros #fl(compose fun1 fun2 fun3) => (compose (compose fun1 fun2) fun3).  #ch(my= 1 2 3 4) (and (= 1 2) (= 2 3) (= 3 4)) (but with letbound terms) plus an inline phase for variables bound to constants or expressions. The macros should be fold left #fl, fold-right #fr and and-chain #ch. That means I will also remove the special treatment the maths operators get, so that (+ 50 10 5) must be written #fl(+ 50 10 5).
 
 add #:align to columnar and tabular in (std fmt)
 
-#['array 'literal]
+#["array" "literal"]
 
 regular expressions that are compatible with our char type and string cursors
 
@@ -497,8 +500,6 @@ output LINE-directives a little bit better than I do now
 abandon c# strings, despite giving us a nice regex engine because utf16. (deferred out of necessity. This has too much of a cost.)
 
 ** Things for the stdlib
-regexps, preferably with irregex syntax.
-
 
 data structures:
 - deque, perhaps by adding a prefix to the vec

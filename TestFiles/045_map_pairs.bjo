@@ -77,32 +77,18 @@
   (map-for-each (fun (_ v) (set! seen (+ seen v))) m)
   (expect-true "for-each" (= seen 6))
 
-  ;; Functor is the exception: its (-> %a %b) has room for one element type and
-  ;; that is the value, so map-map-values is what it needs. Keys ride along.
+  ;; map-map-values hands over the value alone, and the keys ride along.
   (def doubled (map-map-values (fun (v) (* v 2)) m))
   (expect-true "map-map-values" (= (map-ref doubled "b") 4))
 
-  ;; Through the trait, changing the value type as it goes.
-  (def shown (map (fun (v) (int->string v)) m))
-  (expect-true "Functor via trait" (= (map-ref shown "c") "3"))
+  ;; `Iterable`'s `map` is the other camp: `%elem` is one thing, so the callback
+  ;; takes the entry whole, and what comes back is a Seq rather than a Map.
+  (def shown (map (fun (kv) (str (tuple-key kv) (int->string (tuple-value kv)))) m))
+  (expect-true "Iterable map takes the entry" (= (seq-length shown) 3))
 
-  ;; Functor still works for the other instances.
-  (expect-true "Functor on Option"
-          (match (map (fun (n) (* n 2)) (Some 21))
-            ((Some v) (= v 42))
-            (None #f)))
-
-  ;; On Result the error is fixed by the impl and rides along.
-  (def (: ok (Result string int)) (Ok 21))
-  (def (: bad (Result string int)) (Err "nope"))
-  (expect-true "Functor on Ok"
-          (match (map (fun (n) (* n 2)) ok)
-            ((Ok v) (= v 42))
-            ((Err _) #f)))
-  (expect-true "Functor on Err"
-          (match (map (fun (n) (* n 2)) bad)
-            ((Ok _) #f)
-            ((Err e) (= e "nope"))))
+  ;; `filter` reads the same one element.
+  (expect-true "Iterable filter takes the entry"
+          (= (seq-length (filter (fun (kv) (> (tuple-value kv) 1)) m)) 2))
 
   ;; A loop over a Map walks its entries, so `kv` is a pair here too.
   (def/mutable looped 0)

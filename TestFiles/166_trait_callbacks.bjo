@@ -5,9 +5,9 @@
 ;; is the same bargain a top-level `-?->` makes; what a trait adds is that the
 ;; choice has to survive dispatch, so the twin is a slot of its own.
 ;;
-;; `Functor.map` is the reason it exists. Written generically, `(map f xs)` used
-;; to stay ordinary wherever it appeared, because the trait was where the colour
-;; stopped.
+;; The prelude's `Iterable.map` cannot be the example: its default is a `seql`,
+;; which is emitted as a C# iterator, and an iterator cannot await. So the
+;; `Functor` below is this file's own.
 
 (import (std prelude))
 (import (std monad))
@@ -34,23 +34,39 @@
 ;; ---------------------------------------------------------------------------
 ;; Functor
 ;; ---------------------------------------------------------------------------
+;; The hole occurs twice, at two different arguments, and the callback is the
+;; `-?->`. `list-map` and `vec-map` take either colour themselves, so each impl
+;; hands the callback straight on.
+
+(def/trait (Functor (%f %a))
+  (: fmap (-> (-?-> %a %b) (%f %a) (%f %b))))
+
+(impl (Functor (List %a))
+  (defun (fmap g xs) (list-map g xs)))
+
+(impl (Functor (Vec %a))
+  (defun (fmap g v) (vec-map g v)))
+
+(impl (Functor (Option %a))
+  (defun (fmap g o)
+    (match o ((Some v) (Some (g v))) (None None))))
 
 (: mapped-list (-bjo-> int))
 (defbjo (mapped-list)
-  (total (map slow-double (list 1 2 3))))
+  (total (fmap slow-double (list 1 2 3))))
 
 (: mapped-vec (-bjo-> int))
 (defbjo (mapped-vec)
-  (vec-fold (fun (acc x) (+ acc x)) 0 (map slow-double [1 2 3])))
+  (vec-fold (fun (acc x) (+ acc x)) 0 (fmap slow-double [1 2 3])))
 
 (: mapped-option (-bjo-> int))
 (defbjo (mapped-option)
-  (match (map slow-double (Some 5)) ((Some n) n) (None 0)))
+  (match (fmap slow-double (Some 5)) ((Some n) n) (None 0)))
 
 ;; The ordinary copy is still there, in the same file, over the same trait.
 (: mapped-plainly (-> int))
 (defun (mapped-plainly)
-  (total (map (fun (n) (* n 2)) (list 1 2 3))))
+  (total (fmap (fun (n) (* n 2)) (list 1 2 3))))
 
 ;; ---------------------------------------------------------------------------
 ;; Through a lambda the caller wrote
@@ -60,7 +76,7 @@
 
 (: mapped-by-hand (-bjo-> int))
 (defbjo (mapped-by-hand)
-  (total (map (bjoroutine (n) (+ (slow-double n) 1)) (list 1 2 3))))
+  (total (fmap (bjoroutine (n) (+ (slow-double n) 1)) (list 1 2 3))))
 
 ;; ---------------------------------------------------------------------------
 ;; Monad
@@ -147,7 +163,7 @@
   (expect "map over an option, suspending" (run-int (bjo (mapped-option))) 10)
   (expect "map with a bjoroutine written by hand" (run-int (bjo (mapped-by-hand))) 15)
   (expect "the ordinary copy is still there" (mapped-plainly) 12)
-  (expect "map, ordinarily, at the top level" (total (map (fun (n) (+ n 1)) (list 1 2 3))) 9)
+  (expect "map, ordinarily, at the top level" (total (fmap (fun (n) (+ n 1)) (list 1 2 3))) 9)
 
   (expect "bind over an option, suspending" (run-int (bjo (bound-option))) 8)
   (expect "bind over a list, suspending" (run-int (bjo (bound-list))) 12)

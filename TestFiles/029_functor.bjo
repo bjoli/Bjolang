@@ -13,6 +13,12 @@
   (defun (fmap o g)
     (match o ((Some v) (Some (g v))) (None None))))
 
+;; The hole is the last parameter, so `%f` is `(Result %e)` and the error type
+;; rides along fixed.
+(impl (Functor (Result %e %a))
+  (defun (fmap r g)
+    (match r ((Ok v) (Ok (g v))) ((Err e) (Err e)))))
+
 (type (: (Pair %a) (Union (MkPair %a %a))))
 
 (impl (Functor (Pair %a))
@@ -36,6 +42,15 @@
   (expect "fmap over an Option keeps the Some"
           (match (fmap (Some 21) (fun (n) (* n 2))) ((Some v) (int->string v)) (None "none"))
           "42")
+  (def (: ok (Result string int)) (Ok 21))
+  (def (: bad (Result string int)) (Err "nope"))
+  (expect "fmap over an Ok"
+          (match (fmap ok (fun (n) (* n 2))) ((Ok v) (int->string v)) ((Err _) "err"))
+          "42")
+  (expect "fmap over an Err carries the error across"
+          (match (fmap bad (fun (n) (* n 2))) ((Ok _) "ok") ((Err e) e))
+          "nope")
+
   (expect "fmap over this file's own Pair hits both fields"
           (match (fmap (MkPair 3 4) int->string) ((MkPair a b) (string-append a b)))
           "34")

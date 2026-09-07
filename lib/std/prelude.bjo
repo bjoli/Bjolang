@@ -10,10 +10,9 @@
 
   ;; Foldable
   fold
-  ;; Functor
-  map
   ;; Iterable
   iterable-start iterable-done? iterable-current iterable-next
+  map filter
   ;; Cursor.
   cursor-start cursor-end cursor-end? cursor-ref cursor-next cursor-prev
   ;; Collector
@@ -419,10 +418,19 @@
   (: iterable-done? (-> %s %cursor bool))
   (: iterable-current (-> %s %cursor %elem))
   (: iterable-next (-> %s %cursor %cursor))
-  (: ->seq (-> %s (Seq %elem)))
+  (: ->seq  (-> %s (Seq %elem)))
+  (: map    (-> (-> %elem %b) %s (Seq %b)))
+  (: filter (-> (-> %elem bool) %s (Seq %elem)))
 
   (defun (->seq s)
     (seql (:for e s)
+          (:yield e)))
+  (defun (map f s)
+    (seql (:for e s)
+          (:yield (f e))))
+  (defun (filter f s)
+    (seql (:for e s)
+          (:when (f e))
           (:yield e))))
 
 (impl (Iterable (List %a))
@@ -784,30 +792,6 @@
           (let ()
             (ignore (f (seq-cursor-current c)))
             (go))))))
-
-(def/trait (Functor (%f %a))
-  (: map (-> (-?-> %a %b) (%f %a)  (%f %b))))
-
-(impl (Functor (List %a))
-  (defun (map g xs) (list-map g xs))) 
-
-(impl (Functor (Vec %a))
-  (defun (map g v) (vec-map g v)))
-
-;; Functor on Map.
-(impl (Functor (Map %k %v))
-  (defun (map g m)
-    (map-map-values g m)))
-
-(impl (Functor (Option %a))
-  (defun (map g o)
-    (match o ((Some v) (Some (g v))) (None None))))
-
-;; Result functor.
-(impl (Functor (Result %e %a))
-  (defun (map g r)
-    (match r ((Ok v) (Ok (g v))) ((Err e) (Err e)))))
-
 
 
 ;; ---------------------------------------------------------------------------

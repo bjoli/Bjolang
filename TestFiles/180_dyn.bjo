@@ -67,7 +67,7 @@
 ;; in i lådan.
 (: pack-all (-> (List %a) (List (dyn ->str))) (where (->str %a)))
 (defun (pack-all xs)
-  (map (fun (x) (dyn ->str x)) xs))
+  (list-map (fun (x) (dyn ->str x)) xs))
 
 ;; --- 10. Två associerade typer ----------------------------------------------
 ;;
@@ -103,11 +103,11 @@
 
   ;; --- 2. En lista som blandar tre typer, och en dispatch genom
   ;; den automatiska implementationen ------------------------------------------
-  ;; Anropet står i en lambda och inte som `(map ->str mixed)`: en trait-metod
+  ;; Anropet står i en lambda och inte som `(list-map ->str mixed)`: en trait-metod
   ;; går ännu inte att skicka som ett värde, med eller utan lådor.
   (def mixed (list (dyn ->str 1) (dyn ->str "two") (dyn ->str (Coin (ore 3)))))
   (expect "three types in one list"
-          (map (fun (d) (->str d)) mixed)
+          (list-map (fun (d) (->str d)) mixed)
           (list "1" "two" "3 öre"))
 
   ;; --- 3. Ett lådlagt värde in i en `(where (->str %a))`-funktion -------------
@@ -118,8 +118,8 @@
 
   ;; --- 5, 7 ------------------------------------------------------------------
   (def folded (list (dyn Foldable [1 2 3]) (dyn Foldable (list 10 20))))
-  (expect "a vec and a list, folded" (map total folded) (list 6 30))
-  (expect "a fold that ignores the item" (map how-many folded) (list 3 2))
+  (expect "a vec and a list, folded" (list-map total folded) (list 6 30))
+  (expect "a fold that ignores the item" (list-map how-many folded) (list 3 2))
 
   ;; --- 6 ---------------------------------------------------------------------
   (expect "a boxed suspending method" (run-bjo (bjo (fetch-boxed (dyn Fetch 42)))) "42")
@@ -127,10 +127,10 @@
 
   ;; --- 8 ---------------------------------------------------------------------
   (expect "packed through a dictionary parameter"
-          (map render-str (pack-all (list 1 2)))
+          (list-map render-str (pack-all (list 1 2)))
           (list "1" "2"))
   (expect "the same function at another type"
-          (map render-str (pack-all (list "a" "b")))
+          (list-map render-str (pack-all (list "a" "b")))
           (list "a" "b"))
 
   ;; --- 9. Över modulgränsen ---------------------------------------------------

@@ -156,10 +156,15 @@
   (expect-true "Foldable-generic count at other types" (= (count-via-foldable n) 1))
   (expect-true "unconstrained generic" (= (key-count m) 2))
 
-  ;; Collection and Functor, the other two implementations.
+  ;; Collection and Iterable, the other two implementations.
   (expect-true "map: Collection length" (= (length m) 2))
   (expect-true "map: Collection empty?" (not (empty? m)))
-  (expect-true "Functor moves values" (= (map-ref (map (fun (v) (* v 10)) m) "b") 20)))
+  ;; `map-map-values` moves values and leaves keys alone.
+  (expect-true "map-map-values" (= (map-ref (map-map-values (fun (v) (* v 10)) m) "b") 20))
+  ;; `Iterable`'s `%elem` for a Map is the entry, so the callback takes a pair
+  ;; and the result is a Seq rather than a Map.
+  (expect-true "Iterable map over entries"
+               (= (seq-fold + 0 (map (fun (kv) (* 10 (entry-value kv))) m)) 30)))
 
 ;; ---------------------------------------------------------------------------
 ;; 5. Printing
@@ -353,8 +358,10 @@
   (expect-bool "ordered: Collection empty?" (empty? m) #f)
   (expect "Collection ->seq" (seq-length (->seq m)) 3)
   (expect "Foldable fold" (fold #(+ &1 (entry-value &2)) 0 m) 6)
-  ;; The functor moves values and leaves keys alone.
-  (expect "Functor map" (orderedmap-ref (map #(* &1 2) m) "pear") 6)
+  ;; `orderedmap-map-values` moves values and leaves keys alone.
+  (expect "map-values" (orderedmap-ref (orderedmap-map-values #(* &1 2) m) "pear") 6)
+  ;; `Iterable`'s `%elem` is the entry, so this one takes a pair and gives a Seq.
+  (expect "Iterable map over entries" (seq-fold + 0 (map #(* 2 (entry-value &1)) m)) 12)
 
   ;; Iterable: an entry at a time, in key order.
   (expect "loop over an ordered map"
