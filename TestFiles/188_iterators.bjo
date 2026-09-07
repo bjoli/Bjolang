@@ -1,0 +1,146 @@
+;; The iterators that walk something other than the whole of a collection.
+;;
+;; `(:for x xs)` walks all of `xs` forwards. These say part of it, or backwards,
+;; or the tails rather than the elements, or a count with no collection under
+;; it at all — and each is an ordinary `Iterable`, so everything the trait
+;; derives (`fold`, `map`, `enumerate`, `any?` …) comes with it.
+;;
+;; `#:from` is inclusive and `#:to` exclusive, as `range` has them, and the two
+;; reverse forms take the *same* slice and walk it the other way.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: digits (-> (Array int)))
+(defun (digits) #[0 1 2 3 4 5 6 7 8 9])
+
+;; Long enough to leave the tail and cross leaf boundaries, which is the walk
+;; the vec enumerators exist for: a `vec-ref` per element would descend the
+;; tree every time.
+(: many (-> (Vec int)))
+(defun (many) {vecing i (:for i (range 0 100))})
+
+;; Named, because an empty literal written in place has no element type and
+;; nothing in an empty walk gives it one.
+(: no-vec (-> (Vec int)))
+(defun (no-vec) [])
+
+(: no-array (-> (Array int)))
+(defun (no-array) #[])
+
+(defun (main)
+  ;; --- in-array ------------------------------------------------------------
+  (expect "a slice" {listing x (:for x (in-array (digits) #:from 2 #:to 5))} '(2 3 4))
+  (expect "the whole array by default" {summing x (:for x (in-array (digits)))} 45)
+  (expect "#:from alone runs to the end" {listing x (:for x (in-array (digits) #:from 8))} '(8 9))
+  (expect "#:to alone starts at zero" {listing x (:for x (in-array (digits) #:to 3))} '(0 1 2))
+  (expect "an empty slice" {listing x (:for x (in-array (digits) #:from 4 #:to 4))} '())
+  (expect "one element" {listing x (:for x (in-array (digits) #:from 4 #:to 5))} '(4))
+  (expect "an empty array" {listing x (:for x (in-array (no-array)))} '())
+
+  ;; --- in-reverse-array ----------------------------------------------------
+  ;;
+  ;; The same slice, walked the other way.
+  (expect "backwards" {listing x (:for x (in-reverse-array (digits) #:from 2 #:to 5))} '(4 3 2))
+  (expect "the whole array backwards"
+          {listing x (:for x (in-reverse-array #[1 2 3]))}
+          '(3 2 1))
+  (expect "an empty slice backwards"
+          {listing x (:for x (in-reverse-array (digits) #:from 4 #:to 4))}
+          '())
+  (expect "an empty array backwards" {listing x (:for x (in-reverse-array (no-array)))} '())
+
+  ;; --- in-vec --------------------------------------------------------------
+  (expect "a vec slice" {listing x (:for x (in-vec [0 1 2 3 4] #:from 1 #:to 3))} '(1 2))
+  (expect "the whole vec by default" {summing x (:for x (in-vec [1 2 3]))} 6)
+  (expect "an empty vec slice" {listing x (:for x (in-vec [1 2 3] #:from 2 #:to 2))} '())
+  (expect "an empty vec" {listing x (:for x (in-vec (no-vec)))} '())
+
+  ;; Past the tail, where the enumerator walks the tree.
+  (expect "a slice out in the tree" {summing x (:for x (in-vec (many) #:from 40 #:to 45))} 210)
+  (expect "and it is the same as the elements say"
+          {listing x (:for x (in-vec (many) #:from 40 #:to 45))}
+          '(40 41 42 43 44))
+  (expect "the whole of a long vec" {summing x (:for x (in-vec (many)))} 4950)
+
+  ;; --- in-reverse-vec ------------------------------------------------------
+  (expect "a vec slice backwards"
+          {listing x (:for x (in-reverse-vec [0 1 2 3 4] #:from 1 #:to 3))}
+          '(2 1))
+  (expect "the whole vec backwards" {listing x (:for x (in-reverse-vec [1 2 3]))} '(3 2 1))
+  (expect "an empty vec slice backwards"
+          {listing x (:for x (in-reverse-vec [1 2 3] #:from 2 #:to 2))}
+          '())
+  (expect "an empty vec backwards" {listing x (:for x (in-reverse-vec (no-vec)))} '())
+  (expect "a long vec backwards, in the tree"
+          {listing x (:for x (in-reverse-vec (many) #:from 40 #:to 45))}
+          '(44 43 42 41 40))
+  (expect "and all of it" {summing x (:for x (in-reverse-vec (many)))} 4950)
+
+  ;; --- over-list -----------------------------------------------------------
+  ;;
+  ;; The cons cell rather than what is in it, which is what a walk that has to
+  ;; look at the rest of the list needs.
+  (expect "the tails" {listing (list-length t) (:for t (over-list '(1 2 3)))} '(3 2 1))
+  (expect "each one starts where it should"
+          {listing (list-head t) (:for t (over-list '(1 2 3)))}
+          '(1 2 3))
+  (expect "it stops before Nil" {counting t (:for t (over-list '(1 2 3)))} 3)
+  (expect "an empty list yields nothing" {counting t (:for t (over-list '()))} 0)
+
+  ;; --- up-from and down-from -----------------------------------------------
+  (expect "up to a stop" {listing i (:for i (up-from 2 #:to 6))} '(2 3 4 5))
+  (expect "by twos" {listing i (:for i (up-from 0 #:to 7 #:by 2))} '(0 2 4 6))
+  (expect "a stop it never lands on" {listing i (:for i (up-from 0 #:to 5 #:by 2))} '(0 2 4))
+  (expect "an empty count" {listing i (:for i (up-from 5 #:to 5))} '())
+  ;; `down-from`'s stop is inclusive, where `up-from`'s is not: counting down
+  ;; to zero says zero.
+  (expect "down to a stop" {listing i (:for i (down-from 5 #:to 1))} '(5 4 3 2 1))
+  (expect "down to zero" {listing i (:for i (down-from 3 #:to 0))} '(3 2 1 0))
+  (expect "down by twos" {listing i (:for i (down-from 6 #:to 0 #:by 2))} '(6 4 2 0))
+  (expect "a stop it steps over" {listing i (:for i (down-from 5 #:to 0 #:by 2))} '(5 3 1))
+  (expect "one element" {listing i (:for i (down-from 5 #:to 5))} '(5))
+  (expect "a stop above the start" {listing i (:for i (down-from 5 #:to 6))} '())
+  (expect "down past zero" {listing i (:for i (down-from 1 #:to -2))} '(1 0 -1 -2))
+
+  ;; Without a stop the walk never ends on its own, so something else ends it.
+  (expect "an eternal count, cut by :break"
+          (loop (:for i (up-from 10))
+                (:acc got (listing i))
+                (:break (= i 13))
+                => got)
+          '(10 11 12 13))
+  (expect "and downwards"
+          (loop (:for i (down-from 3))
+                (:acc got (listing i))
+                (:break (= i 1))
+                => got)
+          '(3 2 1))
+
+  ;; --- in-port -------------------------------------------------------------
+  (let ((p (open-input-string "one\ntwo\nthree")))
+    (expect "the lines of a port" {listing l (:for l (in-port p read-line/opt))} '("one" "two" "three")))
+
+  (let ((p (open-input-string "abc")))
+    (expect "or its characters" {listing c (:for c (in-port p read-char/opt))} '(#\a #\b #\c)))
+
+  (let ((p (open-input-string "")))
+    (expect "an empty port" {counting l (:for l (in-port p read-line/opt))} 0))
+
+  ;; --- they are Iterable, so the trait's own methods apply -----------------
+  (expect "fold over a slice" (fold + 0 (in-array (digits) #:from 7)) 24)
+  (expect "enumerate one" {listing t (:for t (enumerate (in-array (digits) #:from 8)))}
+          (list (Tuple 0 8) (Tuple 1 9)))
+  (expect-true "any? over a count" (any? (fun (i) (= i 4)) (up-from 0 #:to 10)))
+  (expect "->seq and back" (seq->list (->seq (in-reverse-array #[1 2 3]))) '(3 2 1))
+
+  ;; --- nested and mixed ----------------------------------------------------
+  (expect "a subloop over two of them"
+          (loop (:for i (up-from 0 #:to 3))
+                (:subloop)
+                (:for x (in-array #[10 20]))
+                (:acc out (summing (+ i x)))
+                => out)
+          96)
+
+  0)

@@ -1,0 +1,225 @@
+;; std/iterators.protobjo — iterating something other than the whole of a
+;; collection.
+;;
+;; Included by `prelude.bjo` rather than imported: these are `Iterable`
+;; implementations, and an implementation belongs to the module that declares
+;; the trait — a module of its own would have to import the prelude that is
+;; still being compiled. `include` splices the forms in, so what follows is
+;; part of the prelude and is exported from its export list.
+;;
+;; The prelude keeps the implementations for the collections themselves —
+;; `List`, `Vec`, `Array`, `Map`, `Seq`, `string`, `Range`. This file is what
+;; you reach for when the whole of one, front to back, is not the walk you
+;; meant.
+;;
+;; `(:for x xs)` walks all of `xs` from the front. These say something else:
+;; part of it, or backwards, or the tails rather than the elements, or a count
+;; that is not backed by a collection at all.
+;;
+;; Each is a small struct carrying what the walk needs, plus an `Iterable`
+;; implementation. The struct is a *value*, so a loop allocates nothing for one
+;; — it lands in the loop's prologue, and the walk it describes compiles to the
+;; same code the equivalent hand-written loop does.
+;;
+;; `#:from` is inclusive and `#:to` exclusive, as `range` has them. The two
+;; reverse forms take the *same* slice and walk it the other way, so
+;; `(in-reverse-array a #:from 2 #:to 5)` is elements 4, 3, 2.
+;;
+;; The include sits after the ports, because `in-port` names `TextInputPort`.
+
+;; What a bad slice says. One check per walk rather than one per element, and
+;; it names the bounds that were asked for, which an IndexOutOfRangeException
+;; from somewhere inside the loop cannot.
+(: check-slice (-> string int int int void))
+(defun (check-slice who from to len)
+  (when (or (< from 0) (> to len) (> from to))
+    (panic! #"${who}: #:from ${from} #:to ${to} is not a slice of a collection of length ${len}.")))
+
+;; --- Arrays ---
+;;
+;; An `int` cursor and `array-ref`, which is `arr[i]`.
+
+(type (: (ArraySlice %a) (Struct (: items (Array %a)) (: from int) (: to int))))
+(type (: (ReverseArraySlice %a) (Struct (: items (Array %a)) (: from int) (: to int))))
+
+(: in-array (-> (Array %a) (#:from int) (#:to int) (ArraySlice %a)))
+(defun (in-array arr #:from 0 #:to (array-length arr))
+  (check-slice "in-array" from to (array-length arr))
+  (ArraySlice (items arr) (from from) (to to)))
+
+(: in-reverse-array (-> (Array %a) (#:from int) (#:to int) (ReverseArraySlice %a)))
+(defun (in-reverse-array arr #:from 0 #:to (array-length arr))
+  (check-slice "in-reverse-array" from to (array-length arr))
+  (ReverseArraySlice (items arr) (from from) (to to)))
+
+(impl (Iterable (ArraySlice %a))
+  (type %elem %a)
+  (type %cursor int)
+  (defun (iterable-start s) (record-ref s from))
+  (defun (iterable-done? s c) (>= c (record-ref s to)))
+  (defun (iterable-current s c) (array-ref (record-ref s items) c))
+  (defun (iterable-next s c) (+ c 1)))
+
+(impl (Iterable (ReverseArraySlice %a))
+  (type %elem %a)
+  (type %cursor int)
+  (defun (iterable-start s) (- (record-ref s to) 1))
+  (defun (iterable-done? s c) (< c (record-ref s from)))
+  (defun (iterable-current s c) (array-ref (record-ref s items) c))
+  (defun (iterable-next s c) (- c 1)))
+
+;; --- Vecs ---
+;;
+;; Not an index cursor: a `Vec` is a tree, so `vec-ref` per element descends it
+;; every time. Its enumerators walk leaf arrays instead, and know both
+;; directions and a range, so a slice costs what the whole of it costs.
+
+(import/class
+  ((VecWalkCursor %a) (: Bjolang.Runtime.VecWalkCursor))
+  ((VecBackCursor %a) (: Bjolang.Runtime.VecBackCursor)))
+
+(import/extern
+  (vec-walk-cursor         (: Bjolang.Runtime.VecWalk.Forward         (-> (Vec %a) int int (VecWalkCursor %a))))
+  (vec-walk-cursor-done?   (: Bjolang.Runtime.VecWalk.ForwardDone     (-> (VecWalkCursor %a) bool)))
+  (vec-walk-cursor-current (: Bjolang.Runtime.VecWalk.ForwardCurrent  (-> (VecWalkCursor %a) %a)))
+  (vec-back-cursor         (: Bjolang.Runtime.VecWalk.Backward        (-> (Vec %a) int int (VecBackCursor %a))))
+  (vec-back-cursor-done?   (: Bjolang.Runtime.VecWalk.BackwardDone    (-> (VecBackCursor %a) bool)))
+  (vec-back-cursor-current (: Bjolang.Runtime.VecWalk.BackwardCurrent (-> (VecBackCursor %a) %a))))
+
+(type (: (VecSlice %a) (Struct (: items (Vec %a)) (: from int) (: count int))))
+(type (: (ReverseVecSlice %a) (Struct (: items (Vec %a)) (: last int) (: count int))))
+
+(: in-vec (-> (Vec %a) (#:from int) (#:to int) (VecSlice %a)))
+(defun (in-vec v #:from 0 #:to (vec-length v))
+  (check-slice "in-vec" from to (vec-length v))
+  (VecSlice (items v) (from from) (count (- to from))))
+
+;; `last` is the first element walked, and is -1 for an empty slice — the one
+;; index that is not in the vec and that the backward enumerator accepts.
+(: in-reverse-vec (-> (Vec %a) (#:from int) (#:to int) (ReverseVecSlice %a)))
+(defun (in-reverse-vec v #:from 0 #:to (vec-length v))
+  (check-slice "in-reverse-vec" from to (vec-length v))
+  (ReverseVecSlice (items v) (last (- to 1)) (count (- to from))))
+
+(impl (Iterable (VecSlice %a))
+  (type %elem %a)
+  (type %cursor (VecWalkCursor %a))
+  (defun (iterable-start s) (vec-walk-cursor (record-ref s items) (record-ref s from) (record-ref s count)))
+  (defun (iterable-done? s c) (vec-walk-cursor-done? c))
+  (defun (iterable-current s c) (vec-walk-cursor-current c))
+  (defun (iterable-next s c) c))
+
+(impl (Iterable (ReverseVecSlice %a))
+  (type %elem %a)
+  (type %cursor (VecBackCursor %a))
+  (defun (iterable-start s) (vec-back-cursor (record-ref s items) (record-ref s last) (record-ref s count)))
+  (defun (iterable-done? s c) (vec-back-cursor-done? c))
+  (defun (iterable-current s c) (vec-back-cursor-current c))
+  (defun (iterable-next s c) c))
+
+;; --- List tails ---
+;;
+;; `(over-list '(1 2 3))` yields `'(1 2 3)`, `'(2 3)`, `'(3)` — the cons cell
+;; itself rather than what is in it, which is what a walk that has to look at
+;; the rest of the list needs. It stops before `Nil`: every element yielded is
+;; a list with a head.
+
+(type (: (ListTails %a) (Struct (: rest (List %a)))))
+
+(: over-list (-> (List %a) (ListTails %a)))
+(defun (over-list xs)
+  (ListTails (rest xs)))
+
+(impl (Iterable (ListTails %a))
+  (type %elem (List %a))
+  (type %cursor (List %a))
+  (defun (iterable-start s) (record-ref s rest))
+  (defun (iterable-done? s c) (list-empty? c))
+  (defun (iterable-current s c) c)
+  (defun (iterable-next s c) (list-tail c)))
+
+;; --- Ports ---
+;;
+;; `(:for line (in-port p read-line/opt))` — a port, read until it is out.
+;;
+;; The reader says what an element is and when there are no more: `None` ends
+;; the walk. `read-line/opt` and `read-char/opt` are the two the prelude has;
+;; one of your own is any `(-> TextInputPort (Option %a))`.
+;;
+;; It reads one ahead, because `done?` has to know before `current` is asked —
+;; so a loop left by `:break` has consumed the element it did not look at. The
+;; same is true of every cursor here that wraps an enumerator.
+;;
+;; And it *blocks*: `Iterable`'s methods are synchronous, so the reader's sync
+;; copy is what runs, even inside a bjoroutine. A port that should suspend
+;; wants `port->seq` and the `Seq` iterators, or `port-fold`, whose callback
+;; carries either colour.
+
+(type (: (PortReads %a) (Struct (: port TextInputPort) (: read (-> TextInputPort (Option %a))))))
+
+(: in-port (-> TextInputPort (-> TextInputPort (Option %a)) (PortReads %a)))
+(defun (in-port port read)
+  (PortReads (port port) (read read)))
+
+(impl (Iterable (PortReads %a))
+  (type %elem %a)
+  (type %cursor (Option %a))
+  (defun (iterable-start s) ((record-ref s read) (record-ref s port)))
+  (defun (iterable-done? s c) (none? c))
+  (defun (iterable-current s c) (option-ref c))
+  (defun (iterable-next s c) ((record-ref s read) (record-ref s port))))
+
+;; --- Counting ---
+;;
+;; `range` written the way a loop reads: a start, and a stop that may be left
+;; out. Without `#:to` the walk never ends on its own, which is what `:break`,
+;; `:final` and `:until-cancelled` are for.
+;;
+;; `#:by` is a distance and is positive in both: `down-from` subtracts it. Zero
+;; would be a walk that never moves, so it is refused rather than hung on.
+;;
+;; `up-from`'s `#:to` is exclusive and `down-from`'s is *inclusive*, which is
+;; not symmetry but is what each is written for: `(up-from 0 #:to n)` is the
+;; indices of something of length `n`, and `(down-from n #:to 0)` counts down
+;; to zero and says zero. Both spell the bound they stop at.
+
+;; The ends of `int`, which is what a walk with no `#:to` runs to. A default is
+;; evaluated where the call is written, so these are exported for the same
+;; reason `current-random` is.
+(import/extern
+  (int-max (: System.Int32.MaxValue #:get))
+  (int-min (: System.Int32.MinValue #:get)))
+
+(type (: UpFrom (Struct (: from int) (: to int) (: by int))))
+(type (: DownFrom (Struct (: from int) (: to int) (: by int))))
+
+(: check-step (-> string int void))
+(defun (check-step who by)
+  (when (<= by 0)
+    (panic! #"${who}: #:by is ${by}, and a step of zero or less is a walk that never gets anywhere. It is a distance; down-from subtracts it.")))
+
+(: up-from (-> int (#:to int) (#:by int) UpFrom))
+(defun (up-from from #:to int-max #:by 1)
+  (check-step "up-from" by)
+  (UpFrom (from from) (to to) (by by)))
+
+(: down-from (-> int (#:to int) (#:by int) DownFrom))
+(defun (down-from from #:to int-min #:by 1)
+  (check-step "down-from" by)
+  (DownFrom (from from) (to to) (by by)))
+
+(impl (Iterable UpFrom)
+  (type %elem int)
+  (type %cursor int)
+  (defun (iterable-start s) (record-ref s from))
+  (defun (iterable-done? s c) (>= c (record-ref s to)))
+  (defun (iterable-current s c) c)
+  (defun (iterable-next s c) (+ c (record-ref s by))))
+
+(impl (Iterable DownFrom)
+  (type %elem int)
+  (type %cursor int)
+  (defun (iterable-start s) (record-ref s from))
+  (defun (iterable-done? s c) (< c (record-ref s to)))
+  (defun (iterable-current s c) c)
+  (defun (iterable-next s c) (- c (record-ref s by))))

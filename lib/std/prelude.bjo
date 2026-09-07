@@ -5,6 +5,8 @@
   ;; Types.
   Map MapBuilder TransientMap MapCursor
   Range
+  ArraySlice ReverseArraySlice VecSlice ReverseVecSlice
+  VecWalkCursor VecBackCursor ListTails PortReads UpFrom DownFrom
   Listing Vecing Mapping Stringing Summing Counting Folding
   TextInputPort TextOutputPort Exception
 
@@ -22,6 +24,14 @@
   ignore
   ;; Range
   range range-by
+  ;; Iterating part of a collection, or backwards, or without one.
+  ;; Written in iterators.protobjo, which this file includes.
+  in-array in-reverse-array in-vec in-reverse-vec
+  over-list in-port up-from down-from
+  int-max int-min
+  ;; The cursors those walk with, named because an inlined impl body reaches them
+  vec-walk-cursor vec-walk-cursor-done? vec-walk-cursor-current
+  vec-back-cursor vec-back-cursor-done? vec-back-cursor-current
 
   print println ->str list->str
   list-append
@@ -670,8 +680,6 @@
   (defun (iterable-done? s c) (string-cursor-end? s c))
   (defun (iterable-current s c) (string-cursor-ref s c))
   (defun (iterable-next s c) (string-cursor-next s c)))
-
-
 
 
 ;; ---------------------------------------------------------------------------
@@ -1504,7 +1512,6 @@
         acc
         (loop (f port acc)))))
 
-
 ;; --- Output ---
 
 ;; Output bindings with synchronous and asynchronous (bjoroutine) pairs.
@@ -1544,6 +1551,21 @@
 ;; Gets the accumulated string in the textoutputport
 (: get-output-string (-> TextOutputPort string))
 (defun (get-output-string p) (writer->string p))
+
+
+;; ---------------------------------------------------------------------------
+;; Iterating something other than the whole of a collection
+;; ---------------------------------------------------------------------------
+;;
+;; `in-array`, `in-vec` and their reverses, `over-list`, `in-port`, `up-from`
+;; and `down-from`. Included rather than imported: they are `Iterable`
+;; implementations, and an implementation belongs with the trait — a module of
+;; its own would have to import the prelude it is part of. What is above stays
+;; here: the walk of a whole collection is what the collection itself is for.
+;;
+;; Here rather than beside those implementations because `in-port` names
+;; `TextInputPort`, which the section above introduces.
+(include "iterators.protobjo")
 
 
 ;; ---------------------------------------------------------------------------
@@ -1791,7 +1813,7 @@
           (:when (> i 0))
           (:do (strit " ")
                (strit (->str elem)))))
-  (strit sb "]")
+  (strit "]")
   (stringbuilder->string sb))
 
 (impl (->str (Array %a))

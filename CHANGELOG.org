@@ -3,6 +3,54 @@
 
 What each change guarantees, and what it leaves open.
 
+* Iterators for part of a collection, backwards, and for a bare count
+
+~(:for x xs)~ walks all of ~xs~ forwards. Nine names now say something else:
+
+#+BEGIN_SRC scheme
+{summing x (:for x (in-array row #:from 2 #:to 20))}
+{listing x (:for x (in-reverse-vec v))}
+(loop (:for i (up-from 0)) (:for line (in-port p read-line/opt)) ...)
+(loop (:for tail (over-list xs)) ...)             ;; '(1 2 3), '(2 3), '(3)
+#+END_SRC
+
+~in-array~, ~in-reverse-array~, ~in-vec~, ~in-reverse-vec~, ~over-list~,
+~in-port~, ~up-from~, ~down-from~ — and ~int-max~/~int-min~, which is what a
+walk with no ~#:to~ runs to. ~#:from~ is inclusive and ~#:to~ exclusive, as
+~range~ has them, and a reverse form takes the *same* slice as the forward one
+and walks it the other way.
+
+~down-from~ is the one exception, and deliberately: its ~#:to~ is inclusive, so
+~(down-from n #:to 0)~ counts down to zero and says zero. Each spells the bound
+it stops at, which is what either is written for.
+
+They live in ~lib/std/iterators.protobjo~, which the prelude ~include~s after
+its port section — an implementation belongs with the trait, so a module of its
+own would have to import the prelude it is part of. The prelude keeps the
+implementations for the collections themselves.
+
+Each is a struct plus an ~Iterable~ implementation, so a loop allocates nothing
+for one — it lands in the prologue, and what the loop compiles to is what the
+hand-written one compiles to. That is also why they are ordinary iterables:
+~fold~, ~map~, ~enumerate~, ~any?~ and the rest come with them.
+
+A vec slice walks by ~RrbList~'s own range and reverse *enumerators* rather
+than by ~vec-ref~ per index, which would descend the tree for every element.
+Two bugs in the reverse one were in the way, both reachable only through the
+range overloads nothing had used: its hot path stopped at the leaf's start
+rather than at the range's, so a walk ending inside a leaf yielded elements
+outside the range; and a walk that left the tail for the tree advanced a stack
+that had never been built, because "am I in the tree" was asked as "are there
+items", and a tail is items.
+
+A slice that is not one is a panic naming the bounds, raised once where the
+walk is built rather than as an index failure inside the loop.
+
+What it leaves open: ~in-port~ blocks. ~Iterable~'s methods are synchronous, so
+the reader's sync copy is what runs even inside a bjoroutine, and a port that
+should suspend still wants ~port->seq~ or ~port-fold~. And there is no
+~in-string~: a string is walked by cursors, which is a different protocol.
+
 * ~#[1 2 3]~ — an array literal
 
 ~[...]~ builds a ~Vec~ and ~#[...]~ a .NET array: mutable, of a fixed length,

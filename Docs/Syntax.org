@@ -1168,3 +1168,40 @@ Loop levels implicitly structure iteration blocks. A new level opens when an ite
 - `:end-subloop-if` terminates the inner level and resumes the outer level.
 - At the outermost level, `:end-subloop-if` results in a compilation error.
 - The `range`, `range-by`, `listing`, `vecing`, `mapping`, `summing`, `counting`, and `folding` iterators/collectors are natively supported standard implementations.
+
+*** Iterators — walking something other than the whole of a collection
+`(:for x xs)` walks all of `xs` from the front. These say something else: part of it, backwards, the tails rather than the elements, or a count with no collection under it at all.
+
+| `(range lo hi)`, `(range-by lo hi by)` | ints, `lo` inclusive to `hi` exclusive                |
+| `(up-from n #:to t #:by b)`            | counts up from `n`, stopping *before* `t`            |
+| `(down-from n #:to t #:by b)`          | counts down from `n`, stopping *at* `t`              |
+| `(in-array a #:from f #:to t)`         | part of an array                                     |
+| `(in-reverse-array a #:from f #:to t)` | the same slice, walked backwards                     |
+| `(in-vec v #:from f #:to t)`           | part of a vec                                        |
+| `(in-reverse-vec v #:from f #:to t)`   | the same slice, walked backwards                     |
+| `(over-list xs)`                       | the tails: `'(1 2 3)`, `'(2 3)`, `'(3)`              |
+| `(in-port p read)`                     | what `read` answers, until it answers `None`         |
+
+#+BEGIN_SRC scheme
+{summing x (:for x (in-array row #:from 2 #:to 20))}   ;; indices 2..19
+{listing x (:for x (in-reverse-vec v))}                ;; the vec, last first
+
+(loop (:for i (up-from 0))                             ;; no #:to: :break ends it
+      (:for line (in-port p read-line/opt))
+      (:do (println (Tuple i line))))
+
+;; The cons cell rather than what is in it, for a walk that has to see the rest.
+(loop (:for tail (over-list xs))
+      (:when (> (list-length tail) 1))
+      (:acc pairs (listing (Tuple (list-head tail) (list-head (list-tail tail))))))
+#+END_SRC
+
+**Rules**:
+- `#:from` is inclusive and `#:to` exclusive, as `range` has them. Both default to the whole collection.
+- A reverse form takes the *same* slice as the forward one and walks it the other way: `(in-reverse-array a #:from 2 #:to 5)` is elements 4, 3, 2.
+- A slice that is not one — a negative `#:from`, a `#:to` past the end, a `#:from` above the `#:to` — is a panic naming the bounds, raised once when the walk is built rather than as an index failure somewhere inside the loop. A `#:by` of zero or less is refused for the same reason.
+- `up-from`'s `#:to` is exclusive and `down-from`'s is inclusive: `(up-from 0 #:to n)` is the indices of something of length `n`, and `(down-from n #:to 0)` counts down to zero and says zero. `#:by` is a distance in both, and `down-from` subtracts it; zero or less is refused.
+- `up-from` and `down-from` without a `#:to` never end on their own. `:break`, `:final` and `:until-cancelled` are what ends them.
+- Each of these is a value, not an allocation: the walk lands in the loop's prologue and compiles to the same code the hand-written loop does. A vec slice walks by the vec's own enumerator, so an element costs an array read rather than a descent of the tree.
+- They are ordinary `Iterable`s, so `fold`, `map`, `filter`, `enumerate`, `any?`, `find` and the rest apply to them: `(fold + 0 (in-array a #:from 7))`.
+- `in-port` reads one element ahead, because `done?` has to know before `current` is asked — so a loop left by `:break` has consumed the element it did not look at. It also *blocks*: `Iterable`'s methods are synchronous, so the reader's sync copy is what runs even inside a bjoroutine. A port that should suspend wants `port->seq`, or `port-fold`, whose callback carries either colour.
