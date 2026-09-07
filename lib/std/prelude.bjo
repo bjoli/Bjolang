@@ -1563,6 +1563,13 @@
   (defun (empty? lst)
     (list-empty? lst)))
 
+(impl (Collection (Array %a))
+      (type %content %a)
+      (defun (length arr)
+        (array-length arr))
+      (defun (empty? arr)
+        (= 0 (array-length arr))))
+
 (impl (Collection (Vec %a))
   (type %content %a)
   (defun (length vec)
@@ -1771,6 +1778,26 @@
   (where (->str %a))
   (defun (->str v)
     (vec->str v)))
+
+(: array->str (-> (Array %a) string) (where (->str %a)))
+(defun (array->str a)
+  (def sb (stringbuilder-empty))
+  (def strit #(stringbuilder-add-string! sb &1))
+  (strit "#[")
+  (when (not (empty? a))
+    (strit (->str (array-ref a 0)))
+    (loop (:with i 0 (+ i 1))
+          (:for elem a)
+          (:when (> i 0))
+          (:do (strit " ")
+               (strit (->str elem)))))
+  (strit sb "]")
+  (stringbuilder->string sb))
+
+(impl (->str (Array %a))
+  (where (->str %a))
+  (defun (->str arr)
+    (array->str arr)))
 
 
 ;; We use a `StringBuilder` directly rather than a string port to keep 

@@ -3,6 +3,37 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~#[1 2 3]~ — an array literal
+
+~[...]~ builds a ~Vec~ and ~#[...]~ a .NET array: mutable, of a fixed length,
+and exactly what ~make-array~ allocates.
+
+#+BEGIN_SRC scheme
+(def ys #[1 2 3])
+(array-set! ys 0 42)
+(array-length ys)              ;; 3
+#+END_SRC
+
+It is a reader rewrite to ~(array-literal ...)~, the way ~[...]~ is one to
+~(vec-literal ...)~, and it lands on the node a call already packs its rest
+arguments into — so the emitted C# is the array initializer and nothing else.
+A literal that needs a statement to build an element hoists it ahead, as an
+argument to any other call does.
+
+Everything a vec literal takes part in, an array literal takes part in: it is
+elaborated into the union case whose payload is an ~(Array %a)~, it spreads
+through ~apply~ — into a rest parameter, which *is* an array, without a copy —
+and it is a pattern as well, with ~...~ for the rest. The rest of an array
+pattern is an array of its own, a slice being a copy.
+
+It is not a syntactic value, for the reason ~make-array~ is not: it allocates a
+cell. So a module-level ~(def ys #[])~ is one array, and the first write decides
+what it holds.
+
+What it leaves open: nothing says the length at the type level, so ~#[1 2 3]~
+and ~(make-array 3)~ are the same type and an out-of-range index is still a
+runtime failure.
+
 * A panic ends the entry at a prompt, not the session
 
 ~panic!~ still writes to the error port and calls ~Environment.Exit~ in a built

@@ -513,6 +513,32 @@ let rec checkPattern (env: Env) (expectedType: HMType) (pat: Pattern) : TypedPat
           Range = r
           Node = TPVec(typedItems, typedTail) },
         currentEnv
+    | PArray(items, tailOpt, r) ->
+        let elemType = freshMeta ()
+        let arrayType = TCon("Array", [ elemType ])
+        unify env.Registry expectedType arrayType
+        let mutable currentEnv = Map.empty
+
+        let typedItems =
+            items
+            |> List.map (fun p ->
+                let tp, env = checkPattern env elemType p
+                currentEnv <- Map.fold (fun acc k v -> Map.add k v acc) currentEnv env
+                tp)
+
+        // The remaining elements, copied out into an array of their own — a
+        // slice of an array is an array, and a new one.
+        let typedTail =
+            tailOpt
+            |> Option.map (fun p ->
+                let tp, env = checkPattern env arrayType p
+                currentEnv <- Map.fold (fun acc k v -> Map.add k v acc) currentEnv env
+                tp)
+
+        { Type = arrayType
+          Range = r
+          Node = TPArray(typedItems, typedTail) },
+        currentEnv
     | PTuple(items, r) ->
         let elemTypes = items |> List.map (fun _ -> freshMeta ())
         let tupleType = TTuple elemTypes
@@ -1913,6 +1939,7 @@ let private literalPayloadHeads (expr: Expr) : string list option =
     match expr with
     | EList _ -> Some [ "List" ]
     | EVec _ -> Some [ "Vec" ]
+    | EArray _ -> Some [ "Array" ]
     | EString _ -> Some [ TypeConstants.StringName ]
     | EQuotedSymbol _ -> Some [ TypeConstants.SymbolName ]
     // A numeric literal's own type rather than "int or double": `1` and `1.0`
@@ -1929,6 +1956,7 @@ let private literalShapeName (expr: Expr) : string =
     match expr with
     | EList _ -> "list"
     | EVec _ -> "vec"
+    | EArray _ -> "array"
     | EString _ -> "string"
     | EQuotedSymbol _ -> "symbol"
     | EInt _ -> "number"
@@ -1968,7 +1996,8 @@ let private hasNestedSequenceLiteral (elements: Expr list) : bool =
     elements
     |> List.exists (function
         | EList _
-        | EVec _ -> true
+        | EVec _
+        | EArray _ -> true
         | _ -> false)
 
 /// Join one element of a literal to the element type its siblings share.
@@ -3022,6 +3051,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
             match collExpr with
             | EList(items, _) -> Some items
             | EVec(items, _) -> Some items
+            | EArray(items, _) -> Some items
             | _ -> None
 
         let restElem, restNode =
@@ -3166,7 +3196,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
             | arg :: rest ->
                 let argType, typedArg =
                     match arg, expectedParam (List.length positional) with
-                    | (EList _ | EVec _), Some paramTy -> inferChecked paramTy env arg
+                    | (EList _ | EVec _ | EArray _), Some paramTy -> inferChecked paramTy env arg
                     | _ -> infer env arg
 
                 splitArgs ((argType, typedArg) :: positional) keywords rest
@@ -3625,6 +3655,23 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         { Type = vecType
           Range = r
           Node = TVecMake typedExprs }
+
+    | EArray(exprs, r) ->
+        let elementType = freshMeta ()
+
+        let typedExprs =
+            exprs
+            |> List.map (fun e ->
+                let t, te = infer env e
+                joinLiteralElement env r "array" exprs elementType t
+                te)
+
+        let arrayType = TCon("Array", [ elementType ])
+
+        arrayType,
+        { Type = arrayType
+          Range = r
+          Node = TArrayMake typedExprs }
 
     | ETryFinally(body, cleanup, r) ->
         let bodyType, tBody = infer env body
@@ -4097,6 +4144,10 @@ and private inferChecked (expected: HMType) (env: Env) (expr: Expr) : HMType * T
         let typedExprs = exprs |> List.map (inferAndMaybeInject elemTy env)
         TCon("Vec", [ elemTy ]),
         { Type = TCon("Vec", [ elemTy ]); Range = r; Node = TVecMake typedExprs }
+    | EArray(exprs, r), TCon("Array", [ elemTy ]) ->
+        let typedExprs = exprs |> List.map (inferAndMaybeInject elemTy env)
+        TCon("Array", [ elemTy ]),
+        { Type = TCon("Array", [ elemTy ]); Range = r; Node = TArrayMake typedExprs }
     | _ ->
         infer env expr
 

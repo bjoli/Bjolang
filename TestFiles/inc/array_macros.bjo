@@ -1,0 +1,21 @@
+;; Array literals in a macro template.
+;;
+;; `#[...]` is a reader rewrite, so a template holds `(array-literal ...)` — an
+;; ordinary list, hygiene-renamed like any other. What this pins is that the
+;; head survives that renaming: were it treated as a name the expansion would
+;; land as a call to something nobody wrote.
+
+(import (std syntax-match))
+
+;; `(three a b c)` — the three values, in an array.
+(def/macro (three form inject compare)
+  (syntax-match form
+    ((_ a b c) #'#[,a ,b ,c])
+    (bad (syntax-error bad "three takes three arguments."))))
+
+;; The other direction: an array literal in the *pattern*, matched against the
+;; call as written.
+(def/macro (first-of form inject compare)
+  (syntax-match form
+    ((_ #[a b]) a)
+    (bad (syntax-error bad "first-of takes an array literal of two elements: (first-of #[a b])."))))

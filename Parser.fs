@@ -116,6 +116,7 @@ type Pattern =
     | PQuotedSymbol of string * Range
     | PList of Pattern list * Pattern option * Range // (items, optional tail, range)
     | PVec of Pattern list * Pattern option * Range // (items, optional tail, range)
+    | PArray of Pattern list * Pattern option * Range // (items, optional tail, range)
     | PTuple of Pattern list * Range
     | PConstruct of string * Pattern list * Range
     /// `(:is System.IO.IOException e)` — matches when the value is of that .NET type, binding it there at the narrowed type.
@@ -198,6 +199,9 @@ and Expr =
     | EGetField of Expr * string * Range
     | EList of Expr list * Range
     | EVec of Expr list * Range
+    /// `#[1 2 3]` — a .NET array, mutable and of a fixed length. The literal
+    /// spelling of what `make-array` allocates.
+    | EArray of Expr list * Range
     | EMatch of Expr * (Pattern * Expr option * Expr) list * Range
     | ETryFinally of Expr * Expr * Range
     /// `(try body... #:catch (E1 E2 ...))`: run the body, and catch specific .NET exception types.
@@ -676,6 +680,12 @@ let rec parsePattern (s: SExpr) : Pattern =
     | SList(SAtom { Token = Symbol("Vec" | "vec-literal") } :: args, _) ->
         let elements, tail = parseSpreadArgs r args
         PVec(elements, tail, r)
+
+    // `(Array a b c ...)` and the literal form `#[a b c ...]`, which the reader
+    // rewrites to `(array-literal a b c ...)`.
+    | SList(SAtom { Token = Symbol("Array" | "array-literal") } :: args, _) ->
+        let elements, tail = parseSpreadArgs r args
+        PArray(elements, tail, r)
 
     // `(Tuple a b ...)` and dotted pairs `(a . b ...)` which the reader rewrites to `(Tuple a b ...)`
     | SList(SAtom { Token = Symbol "Tuple" } :: args, _) ->
@@ -1366,6 +1376,10 @@ let desugarQuotedList (parseExprFn: SExpr -> Expr) (items: SExpr list) (r: Range
         // `vec-literal` — a form no program wrote.
         | SList(SAtom { Token = Symbol "vec-literal" } :: vecItems, vr) ->
             EVec(List.map quoteItem vecItems, vr)
+        // `#[a b]`, likewise rewritten by the reader, and quoted as the array
+        // it was written as.
+        | SList(SAtom { Token = Symbol "array-literal" } :: arrayItems, ar) ->
+            EArray(List.map quoteItem arrayItems, ar)
         // `{...}`, likewise rewritten by the reader. A comprehension is a loop,
         // not data, so there is nothing to quote it as. The reserved head wins
         // over the symbol of the same name, which is the price of catching it.
@@ -1428,6 +1442,7 @@ let exprRange (e: Expr) : Range =
     | EGetField(_, _, r)
     | EList(_, r)
     | EVec(_, r)
+    | EArray(_, r)
     | EMatch(_, _, r)
     | ETryFinally(_, _, r)
     | ETryCatch(_, _, r)
@@ -1450,7 +1465,8 @@ let rec patternBinders (pat: Pattern) : string list =
     | PIdent(n, _) -> [ n ]
     | PTypeTest(_, binder, _) -> Option.toList binder
     | PList(items, tailOpt, _)
-    | PVec(items, tailOpt, _) ->
+    | PVec(items, tailOpt, _)
+    | PArray(items, tailOpt, _) ->
         (items |> List.collect patternBinders)
         @ (tailOpt |> Option.map patternBinders |> Option.defaultValue [])
     | PTuple(items, _) -> items |> List.collect patternBinders
@@ -1485,7 +1501,8 @@ let freeNamesWith (reference: string -> Range -> bool -> unit) (guarded: bool) (
         | EIdent(n, r) -> refer n r
         | ETuple(items, _)
         | EList(items, _)
-        | EVec(items, _) -> List.iter sub items
+        | EVec(items, _)
+        | EArray(items, _) -> List.iter sub items
         | EApp(target, args, _) ->
             sub target
             List.iter sub args
@@ -1584,7 +1601,8 @@ let exprChildren (e: Expr) : Expr list =
     | ESet(_, x, _) -> [ x ]
     | ETuple(xs, _)
     | EList(xs, _)
-    | EVec(xs, _) -> xs
+    | EVec(xs, _)
+    | EArray(xs, _) -> xs
     | EApp(f, args, _) -> f :: args
     | ELet(_, _, _, _, v, b, _) -> [ v; b ]
     | ELetMono(_, v, b, _) -> [ v; b ]
@@ -1640,6 +1658,8 @@ let rec private renamePattern (subst: Map<string, string>) (pat: Pattern) : Patt
         PList(List.map (renamePattern subst) items, Option.map (renamePattern subst) tailOpt, r)
     | PVec(items, tailOpt, r) ->
         PVec(List.map (renamePattern subst) items, Option.map (renamePattern subst) tailOpt, r)
+    | PArray(items, tailOpt, r) ->
+        PArray(List.map (renamePattern subst) items, Option.map (renamePattern subst) tailOpt, r)
     | PTuple(items, r) -> PTuple(List.map (renamePattern subst) items, r)
     | PConstruct(n, args, r) -> PConstruct(n, List.map (renamePattern subst) args, r)
     | PTypeTest(t, binder, r) ->
@@ -1784,6 +1804,7 @@ let private renameWith
         | EGetField(target, f, r) -> EGetField(sub target, f, r)
         | EList(items, r) -> EList(List.map sub items, r)
         | EVec(items, r) -> EVec(List.map sub items, r)
+        | EArray(items, r) -> EArray(List.map sub items, r)
 
         | EMatch(target, clauses, r) ->
             EMatch(
@@ -2988,6 +3009,9 @@ let rec parseExpr (s: SExpr) : Expr =
 
             // Vec literal: [1 2 3] → EVec
             | "vec-literal" -> EVec(processArgs args, listRange)
+
+            // Array literal: #[1 2 3] → EArray
+            | "array-literal" -> EArray(processArgs args, listRange)
 
             // List special form: (list 1 2 3) → EList, same as [1 2 3] for vecs.
             // `list` used as a bare value (not in call position) remains an

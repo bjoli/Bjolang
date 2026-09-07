@@ -131,6 +131,7 @@ let rec private rewriteExpr (expr: Expr) : Expr =
     | ETuple(exprs, r) -> ETuple(List.map rewriteExpr exprs, r)
     | EList(exprs, r) -> EList(List.map rewriteExpr exprs, r)
     | EVec(exprs, r) -> EVec(List.map rewriteExpr exprs, r)
+    | EArray(exprs, r) -> EArray(List.map rewriteExpr exprs, r)
     | ECast(t, e, r) -> ECast(t, rewriteExpr e, r)
     | EDynPack(traitName, e, r) -> EDynPack(traitName, rewriteExpr e, r)
 

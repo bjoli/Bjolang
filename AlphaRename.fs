@@ -78,7 +78,8 @@ let rec private typedPatternBinders (pat: TypedPattern) : string list =
     | TPIdent n -> [ n ]
     | TPTypeTest(_, binder) -> Option.toList binder
     | TPList(items, tailOpt)
-    | TPVec(items, tailOpt) ->
+    | TPVec(items, tailOpt)
+    | TPArray(items, tailOpt) ->
         (items |> List.collect typedPatternBinders)
         @ (tailOpt |> Option.map typedPatternBinders |> Option.defaultValue [])
     | TPTuple items -> items |> List.collect typedPatternBinders
@@ -243,6 +244,7 @@ let rec private renameCore
                                 TPApp(sub e, goPat inner')
                             | TPList(items, tailOpt) -> TPList(List.map goPat items, Option.map goPat tailOpt)
                             | TPVec(items, tailOpt) -> TPVec(List.map goPat items, Option.map goPat tailOpt)
+                            | TPArray(items, tailOpt) -> TPArray(List.map goPat items, Option.map goPat tailOpt)
                             | TPTuple items -> TPTuple(List.map goPat items)
                             | TPConstruct(n, args) -> TPConstruct(n, List.map goPat args)
                             | leaf -> leaf

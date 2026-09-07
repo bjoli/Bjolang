@@ -111,7 +111,8 @@ let rec read (tokens: LexedToken list) : SExpr list * LexedToken list =
 
         SList(finalNodes, listRange), afterList
 
-    /// Prepends a reserved head — `vec-literal`, `comprehension` — to a body.
+    /// Prepends a reserved head — `vec-literal`, `array-literal`,
+    /// `comprehension` — to a body.
     let headed (name: string) (r: Lexer.Range) (innerNodes: SExpr list) =
         SAtom { Token = Lexer.Symbol name; Range = r } :: innerNodes
 
@@ -139,6 +140,14 @@ let rec read (tokens: LexedToken list) : SExpr list * LexedToken list =
             let paramList = SList(paramNames |> List.map (fun p -> SAtom { Token = Lexer.Symbol p; Range = hr }), hr)
             let lambdaSExpr = SList([ funToken; paramList; bodySList ], getRange bodySList)
             loop (lambdaSExpr :: acc) afterList
+
+        // Array literal: #[items...] → (array-literal items...)
+        //
+        // The range starts at the `#`, so a diagnostic underlines the literal
+        // and not the bracket half of it.
+        | { Token = Hash; Range = hr } :: { Token = LBracket; Range = r } :: rest ->
+            let node, afterList = readForm false r hr (headed "array-literal" hr) rest
+            loop (node :: acc) afterList
 
         // Map shorthand: #map((k1 v1) (k2 v2) ...) or #map[(k1 v1) (k2 v2) ...]
         | { Token = Lexer.Symbol "#map"; Range = hr } :: { Token = LParen; Range = r } :: rest

@@ -697,6 +697,7 @@ and TPatternNode =
     | TPIdent of string
     | TPList of TypedPattern list * TypedPattern option
     | TPVec of TypedPattern list * TypedPattern option
+    | TPArray of TypedPattern list * TypedPattern option
     | TPTuple of TypedPattern list
     | TPConstruct of string * TypedPattern list
     /// `(:is Clr.Type binder)`. The string is the fully qualified .NET type
@@ -821,8 +822,9 @@ and TExprNode =
     | TCaseCast of TypedExpr * HMType * string
     | TGetField of TypedExpr * string
     | TTypeEq of TypedExpr * TypedExpr
-    /// A `params`-style array. Produced by `LoopLowering` when a `TRecur`
-    /// argument vector has to re-pack a rest parameter.
+    /// An array, from its elements: what `#[1 2 3]` is, and the `params`-style
+    /// array a call packs a rest argument into. Also produced by `LoopLowering`
+    /// when a `TRecur` argument vector has to re-pack a rest parameter.
     | TArrayMake of TypedExpr list
     /// A group of loops produced by `LoopLowering`. Every member is a single
     /// strongly-connected component's worth of tail recursion.

@@ -28,6 +28,7 @@ let mapPatternChildrenWith (f: TypedExpr -> TypedExpr) (fp: TypedPattern -> Type
         | TPIdent _ as leaf -> leaf
         | TPList(items, tailOpt) -> TPList(List.map fp items, Option.map fp tailOpt)
         | TPVec(items, tailOpt) -> TPVec(List.map fp items, Option.map fp tailOpt)
+        | TPArray(items, tailOpt) -> TPArray(List.map fp items, Option.map fp tailOpt)
         | TPTuple items -> TPTuple(List.map fp items)
         | TPConstruct(name, args) -> TPConstruct(name, List.map fp args)
         | TPTypeTest _ as leaf -> leaf

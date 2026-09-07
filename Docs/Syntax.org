@@ -6,6 +6,8 @@
 - Interpolated strings: ~#"x is ${x}"~
 - Booleans: ~#t~, ~#f~
 - Characters: ~#\a~, ~#\newline~
+- Vecs: ~[1 2 3]~
+- Arrays: ~#[1 2 3]~
 
 A boolean is a literal and not a name. ~true~ and ~false~ are ordinary identifiers, free for a program to use; in a quoted list they are symbols, which is how ~'(true)~ names the program of that name.
 
@@ -57,6 +59,36 @@ Each hole is wrapped in ~->str~. A type of your own says how by implementing the
 #"you owe ${(Kr 42)}"                  ;; "you owe 42 kr"
 #+END_SRC
 
+*** ~[...]~ and ~#[...]~ — a vec and an array
+~[1 2 3]~ is a ~Vec~: immutable, and grown by making another one. ~#[1 2 3]~ is a .NET array: mutable, of a fixed length, and exactly what ~(make-array 3)~ allocates.
+#+BEGIN_SRC scheme
+(def xs [1 2 3])               ;; (Vec int)
+(vec-ref xs 0)                 ;; 1
+
+(def ys #[1 2 3])              ;; (Array int)
+(array-set! ys 0 42)           ;; arrays are written in place
+(array-ref ys 0)               ;; 42
+(array-length ys)              ;; 3
+#+END_SRC
+
+An array literal is an *expression*, not a constant: each evaluation allocates an array of its own. Its elements are arbitrary expressions and share one type, which the elements decide unless something around them says otherwise:
+#+BEGIN_SRC scheme
+(: names (Array string))
+(def names #[])                ;; empty, so the annotation is what says
+
+(defun (pair a b) #[a b])      ;; a fresh two-element array per call
+#+END_SRC
+
+Both spellings are patterns as well, with ~...~ for the rest:
+#+BEGIN_SRC scheme
+(match row
+  (#[] "empty")
+  (#[x] "one")
+  (#[first rest ...] (int->string (array-length rest))))
+#+END_SRC
+
+The rest of an array pattern is an array of its own — a slice is a copy — where the rest of a vec pattern is a ~Vec~ sharing structure with the one it came from.
+
 *** Quoted lists, and the constructors they elaborate into
 ~'(...)~ is data. A symbol inside one is a ~Symbol~ value rather than a reference, ~,x~ splices the value of an expression, and ~[...]~ is a vec:
 #+BEGIN_SRC scheme
@@ -82,7 +114,7 @@ A list is homogeneous. Where a union is expected each piece is elaborated in dir
                  (ProcFn  my-rot-13)))
 #+END_SRC
 
-Nesting works at any depth. A literal is matched by the *head* of a case's payload: ~(...)~ wants a ~List~, ~[...]~ a ~Vec~, and a string, symbol or number the type it already has. An unquoted ~,value~ has no shape and is selected by its type.
+Nesting works at any depth. A literal is matched by the *head* of a case's payload: ~(...)~ wants a ~List~, ~[...]~ a ~Vec~, ~#[...]~ an ~Array~, and a string, symbol or number the type it already has. An unquoted ~,value~ has no shape and is selected by its type.
 
 A generic parameter provides no expected type. Name the type first:
 #+BEGIN_SRC scheme
@@ -245,6 +277,8 @@ A binding is generalized only when its value is a *syntactic value* (literal, la
 (array-set! cell 0 42)         ;;   'a := int
 (array-ref cell 0)             ;;   ...and it stays int
 #+END_SRC
+
+An array literal is not a syntactic value either, for the same reason ~make-array~ is not: it allocates a cell. ~(def ys #[])~ is one array, and the first write decides what it holds.
 
 A module-level *value* compiles to a static field, which cannot be generic. ~(def bleh '())~ is refused; pin it with a signature or make it a function.
 

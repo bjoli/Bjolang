@@ -1,0 +1,138 @@
+;; `#[1 2 3]` — an array literal.
+;;
+;; The array is .NET's: mutable, of a fixed length, and the thing `make-array`
+;; allocates. So a literal is not a constant — every evaluation allocates one —
+;; and it is not a value in the sense the value restriction means, which is why
+;; a module-level `(def a #[...])` is monomorphic.
+;;
+;; `[...]` builds a `Vec` and `#[...]` an array, which is the whole of the
+;; difference in spelling.
+
+(import (std prelude))
+(import (std simpletest))
+(import "inc/array_macros.bjo")
+
+(def counters #[0 0 0])
+
+;; Nothing in the literal says what an empty one holds, so the annotation does.
+(: empty-names (Array string))
+(def empty-names #[])
+
+(: sum (-> (Array int) int))
+(defun (sum arr)
+  (let loop ((i 0) (acc 0))
+    (if (= i (array-length arr))
+        acc
+        (loop (+ i 1) (+ acc (array-ref arr i))))))
+
+(: total (-> #:rest int int))
+(defun (total #:rest xs) (sum xs))
+
+(: fresh (-> (Array int)))
+(defun (fresh) #[0 0])
+
+;; A union with an array payload, to pin that a literal is elaborated by its
+;; shape the way a list or a vec literal is.
+(type (: Row (Union (RCount int) (RCells (Array int)))))
+
+(: width (-> Row int))
+(defun (width row)
+  (match row
+    ((RCount n) n)
+    ((RCells cells) (array-length cells))))
+
+(defun (main)
+  ;; --- what it builds ------------------------------------------------------
+  (expect "length" (array-length #[1 2 3 4 5]) 5)
+  (expect "the first element" (array-ref #[1 2 3] 0) 1)
+  (expect "the last" (array-ref #[1 2 3] 2) 3)
+  (expect "strings" (array-ref #["a" "b"] 1) "b")
+  (expect "chars" (array-ref #[#\a #\b] 0) #\a)
+  (expect "elements are expressions" (array-ref #[(+ 1 1) (* 3 3)] 1) 9)
+  (expect "one element" (array-length #[42]) 1)
+
+  ;; --- it is an array ------------------------------------------------------
+  ;;
+  ;; Mutable, unlike the `Vec` that `[...]` builds.
+  (array-set! counters 1 7)
+  (expect "a literal is mutable" (array-ref counters 1) 7)
+
+  ;; And allocated where it is written, so two evaluations are two arrays.
+  (let ((mine (fresh)))
+    (array-set! mine 0 9)
+    (expect "each evaluation allocates" (array-ref (fresh) 0) 0)
+    (expect "and the other one kept the write" (array-ref mine 0) 9))
+
+  (expect "an empty literal takes its element type from the annotation"
+          (array-length empty-names)
+          0)
+
+  ;; --- nesting -------------------------------------------------------------
+  (expect "an array of arrays" (array-length (array-ref #[#[1 2] #[3 4 5]] 1)) 3)
+  (expect "inside a vec literal" (array-ref (vec-ref [#[1 2]] 0) 1) 2)
+
+  ;; --- as data -------------------------------------------------------------
+  (expect "to a vec" (array->vec #[1 2 3]) [1 2 3])
+  (expect "a slice of one" (subarray->vec #[1 2 3 4] 1 2) [2 3])
+  (expect "read back" (sum #[1 2 3 4]) 10)
+
+  ;; --- printed back --------------------------------------------------------
+  ;;
+  ;; `->str` of an array is the literal that would build it again.
+  (expect "printed as it is written" (->str #[1 2 3]) "#[1 2 3]")
+  (expect "an empty one" (->str empty-names) "#[]")
+
+  ;; --- spread into a rest parameter ----------------------------------------
+  ;;
+  ;; A rest parameter *is* an array, so this is the case `apply` passes through
+  ;; untouched rather than converting.
+  (expect "apply over an array literal" (apply total #[4 5 6]) 15)
+  (expect "and over an empty one" (apply total #[]) 0)
+  (expect "written directly" (total 4 5 6) 15)
+
+  ;; --- where a union is expected -------------------------------------------
+  (expect "a literal as a union payload" (width (RCells #[1 2 3])) 3)
+  (expect "the other case" (width (RCount 9)) 9)
+
+  ;; --- as a pattern --------------------------------------------------------
+  (expect "an array pattern"
+          (match #[1 2 3]
+            (#[1 x y] (+ x y))
+            (_ 0))
+          5)
+  (expect "the spelled-out head"
+          (match #[4 5]
+            ((Array a b) (+ a b))
+            (_ 0))
+          9)
+  (expect "an empty array pattern"
+          (match empty-names
+            (#[] 1)
+            (_ 0))
+          1)
+  (expect "which a filled one does not match"
+          (match #["a"]
+            (#[] 1)
+            (_ 0))
+          0)
+  (expect "a length that does not match"
+          (match #[1 2 3]
+            (#[x y] x)
+            (_ 0))
+          0)
+  (expect "a rest pattern binds an array of what is left"
+          (match #[1 2 3 4]
+            (#[1 rest ...] (array-length rest))
+            (_ 0))
+          3)
+  (expect "and its elements"
+          (match #[1 2 3 4]
+            (#[1 rest ...] (sum rest))
+            (_ 0))
+          9)
+
+  ;; --- from a macro --------------------------------------------------------
+  (expect "a template that writes an array literal" (sum (three 1 2 3)) 6)
+  (expect "and one that matches on one" (first-of #[11 22]) 11)
+
+  0)

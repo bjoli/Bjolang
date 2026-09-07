@@ -621,6 +621,7 @@ let rec serializePattern (p: Parser.Pattern) : string =
         "(" + String.concat " " (n :: List.map serializePattern args) + ")"
     | Parser.PList(items, tailOpt, _) -> serializeSeqPattern "List" items tailOpt
     | Parser.PVec(items, tailOpt, _) -> serializeSeqPattern "Vec" items tailOpt
+    | Parser.PArray(items, tailOpt, _) -> serializeSeqPattern "Array" items tailOpt
     | Parser.PTuple(items, _) -> "(" + String.concat " " ("Tuple" :: List.map serializePattern items) + ")"
     | Parser.PTypeTest(t, binder, _) ->
         "(:is " + String.concat " " (t :: Option.toList binder) + ")"
@@ -727,6 +728,7 @@ let rec serializeExpr (e: Parser.Expr) : string =
         list ("record-set!" :: n :: (fields |> List.map (fun (k, v) -> list [ k; serializeExpr v ])))
     | Parser.EGetField(target, f, _) -> list [ "record-ref"; serializeExpr target; f ]
     | Parser.EVec(items, _) -> "[" + String.concat " " (List.map serializeExpr items) + "]"
+    | Parser.EArray(items, _) -> "#[" + String.concat " " (List.map serializeExpr items) + "]"
 
     | Parser.EMatch(target, clauses, _) ->
         let clauseStrs =
@@ -1186,10 +1188,12 @@ let rec generatePattern (ctx: CodegenContext) (pat: TypedPattern) : unit =
                 desugar rest
                 append ctx ")"
         desugar items
-    | TPVec (items, tailOpt) ->
-        // Vec is backed by Collections.RrbList<T>, which is countable, indexable
-        // and sliceable, so C# list patterns apply directly. A rest pattern
-        // becomes a slice pattern, whose value Slice() hands back as an RrbList<T>.
+    // Both are countable, indexable and sliceable, so C# list patterns apply
+    // directly. A rest pattern becomes a slice pattern: `Slice()` hands one
+    // back as an `RrbList<T>` for a Vec, and the compiler calls
+    // `RuntimeHelpers.GetSubArray` for an array.
+    | TPVec (items, tailOpt)
+    | TPArray (items, tailOpt) ->
         append ctx "["
         for i, item in List.indexed items do
             if i > 0 then append ctx ", "
@@ -1744,6 +1748,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
                 append ctx ")"
         emitCons emitters
 
+    // `#[1 2 3]`, and the rest array a call packs its trailing arguments into.
     | TArrayMake items ->
         let elementTypeStr =
             match expr.Type with

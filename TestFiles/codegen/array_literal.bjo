@@ -1,0 +1,44 @@
+;; An array literal is the C# array initializer, and nothing around it.
+;;
+;; `#[1 2 3]` reaches the emitter as the node a call already packs its rest
+;; arguments into, so there is one shape for both and no allocation the
+;; program did not write. What a behavioural test cannot see is a literal that
+;; still *works* while going the long way round — through a builder, or a local
+;; the elements are written into one at a time — which is why the assertions
+;; here are on the emitted C#.
+(import (std prelude))
+
+;; EXPECT-CS: return new int\[\] \{ 1, 2, 3 \};
+(: three (-> (Array int)))
+(defun (three) #[1 2 3])
+
+;; The element type comes from the signature, an empty literal having nothing
+;; to say about it.
+;; EXPECT-CS: return new string\[\] \{  \};
+(: none (-> (Array string)))
+(defun (none) #[])
+
+;; An element needing statements of its own is hoisted ahead of the literal,
+;; exactly as an argument to any other call is: C# has no way to write a `let`
+;; inside an array initializer.
+;; EXPECT-CS: return new int\[\] \{ __hoist__[0-9]+, [0-9]+ \};
+(: hoisting (-> (Array int)))
+(defun (hoisting) #[(let ((t 5)) (* t 2)) 7])
+
+;; An array pattern is a C# list pattern, which is what makes the length test
+;; and the element tests one construct rather than a chain of `&&`.
+;; EXPECT-CS: case \[1, var x, var y\]:
+(: matching (-> (Array int) int))
+(defun (matching row)
+  (match row
+    (#[1 x y] (+ x y))
+    (_ 0)))
+
+;; And a rest pattern is a slice pattern. The array it binds is a copy, made by
+;; `RuntimeHelpers.GetSubArray` — the call C# emits for `row[1..]`.
+;; EXPECT-CS: case \[1, .. var rest\]:
+(: rest-of (-> (Array int) int))
+(defun (rest-of row)
+  (match row
+    (#[1 rest ...] (array-length rest))
+    (_ 0)))

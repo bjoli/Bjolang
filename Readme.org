@@ -53,11 +53,14 @@ Here is an example of a program that runs a command line pipeline with the bjoro
 
 (defun (main args)
   ;; run/string returns a Result of (Ok a-string)
+  ;; the list is a small DSL, where symbols, strings and functions
+  ;; are wrapped so that we don't need to do the f# dance of
+  ;; (ProcSym 'pipe) ((ProcSym 'cat) (ProcString ...)...)
   (match (run/string '(pipe (cat "Examples/run_with_bjoroutine.bjo")
                             ,my-rot13
                             (grep "-i" "bomb")))
     ((Err e) (println "Command failed with ${e}"))
-    ;; An empty result. 
+    ;; An empty result, we didn't find any bombs.
     ((Ok "")
      (println "Everything is safe"))
     ((Ok r)
@@ -71,25 +74,6 @@ This program (found in Examples/run_with_bjoroutine.bjo) reads itself and runs e
 
 DANGER!
 this function is THE BOMB!
-
-*** Calling .NET async without ever meeting a Task
-
-~Task~ is not a Bjolang type. You define #:async on import and use them as CML functions.
-
-#+begin_src scheme
-(import/extern
-  (pause (: System.Threading.Tasks.Task.Delay (-> int void) #:async))
-  ;; no CancellationToken overload exists? say so.
-  (raw-pause (: System.Threading.Tasks.Task.Delay (-> int void)
-                #:async #:uncancellable))
-  ;; failures as values instead of as stack unwinding
-  (fetch (: System.IO.File.ReadAllTextAsync (-> string string)
-            #:async #:exceptions (System.IO.IOException))))
-
-;; a .NET async call as a losable branch
-(sync (choose (wrap (task->event (fetch "/etc/hostname")) (fun (s) (Job 1)))
-              (wrap (pause 30000)                       (fun (u) Quit))))
-#+end_src
 
 *** Macros
 Bjolang supports hygienic macros based on implicit-renaming. Together with syntax-match, thing brings about 90% of what syntax-case brings: An anaphoric if could look like this, for example:
@@ -153,19 +137,6 @@ Every non-~void~ (or non-unit) value in statement position must be used. If not 
 * Examples
 
 Have a look inte the Examples directory. Or at the code in [[file:lib/text/json.bjo][the json module]]. It is a decently fast json reader, that reaches a between 150 and 380MB/s on jsonbench. 
-
-* Planned features
-
-Get an async io library based on c# async, wrapped in cml clothes, just to get started. 
-
-Pattern matching in function arguments. (defun (abc (Tuple fst snd)) ...)
-
-Array literals
-
-* Limitations
-
-** Entry point
-Since it compiles to c# it needs an entry point. That is the (defun (main args) ...) function. 
 
 * Further code
 
@@ -398,7 +369,7 @@ If a user has a dir called lib/std it is mistaken as the stdlib :/
 
 fix tail recursion and parameterization: Since tail calls have no code in the recursive function running after it, we can restore the parameters outside the recursion. is this doable ?
 
-The current parameter implementation is very practical, but perhaps limiting. There are 3 "super fast" parameter slots (current input and output port and current-cancel). Then there are 31 fast slots that get the fast path when parameterizing, and the rest are "cold paths" which has at least one extra indirection. Should I change this? maybe an array of arrays giving us 1024 fast parameters and let the rest in the cold path? 1024 parameters should be enough for anyone. 
+The current parameter implementation is very practical, but perhaps limiting. There are 3 "super fast" parameter slots (current input and output port and current-cancel). Then there are 31 fast slots that get the fast path when parameterizing, and the rest are "cold paths" which has at least one extra indirection. Should I change this? maybe an array of arrays(32x32) giving us 1024 fast parameters and let the rest in the cold path? 1024 parameters should be enough for anyone. 
 
 `port->lines` does not exist. The real thing is `reader->vec`, a builtin, `(-> TextReader (Vec string))`. RENAME
 
@@ -410,7 +381,6 @@ Syntactic folding, because #:rest arrays means an allocation. As reader macros #
 
 add #:align to columnar and tabular in (std fmt)
 
-#["array" "literal"]
 
 regular expressions that are compatible with our char type and string cursors
 
