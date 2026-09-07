@@ -8,11 +8,9 @@
   Listing Vecing Mapping Stringing Summing Counting Folding
   TextInputPort TextOutputPort Exception
 
-  ;; Foldable
-  fold
   ;; Iterable
   iterable-start iterable-done? iterable-current iterable-next
-  map filter
+  fold map filter take drop
   ;; Cursor.
   cursor-start cursor-end cursor-end? cursor-ref cursor-next cursor-prev
   ;; Collector
@@ -128,9 +126,6 @@
            compare less? greater? at-most? at-least?
            least greatest list-sort list-min list-max)
 
-
-;; Foldable implementations.
-(include "Foldable.protobjo")
 
 ;; List append.
 (: list-append (-> (List %a) (List %a) (List %a)))
@@ -386,12 +381,6 @@
             (f k v)
             (go))))))
 
-;; Map foldable.
-(impl (Foldable (Map %k %v))
-  (type %item (Tuple %k %v))
-  (defun (fold f acc col)
-    (map-fold (fun (acc2 k v) (f acc2 (Tuple k v))) acc col)))
-
 ;; Two maps are equal when they hold the same entries.
 
 (impl (Eq (Map %k %v))
@@ -407,6 +396,105 @@
   (defun (eq-hash m)
     (map-fold (fun (h k v) (bitwise-xor h (hash-combine (eq-hash k) (eq-hash v)))) 0 m)))
 
+
+
+
+;; ---------------------------------------------------------------------------
+;; Collector
+;; ---------------------------------------------------------------------------
+
+;; Collector interface.
+(def/trait (Collector %c)
+  (type %elem)
+  (type %acc)
+  (type %out)
+  (: collector-init (-> %c %acc))
+  (: collector-step (-> %c %acc %elem %acc))
+  (: collector-finish (-> %c %acc %out)))
+
+;; Collectors.
+
+(type (: (Listing %a) (Union listing)))
+
+;; Listing.
+(impl (Collector (Listing %a))
+  (type %elem %a)
+  (type %acc (ListBuilder %a))
+  (type %out (List %a))
+  (defun (collector-init c) (listbuilder-empty))
+  (defun (collector-step c acc x) (listbuilder-add! acc x) acc)
+  (defun (collector-finish c acc) (listbuilder->list acc)))
+
+;; Vecing.
+(type (: (Vecing %a) (Union vecing)))
+
+(impl (Collector (Vecing %a))
+  (type %elem %a)
+  (type %acc (VecBuilder %a))
+  (type %out (Vec %a))
+  (defun (collector-init c) (vecbuilder-empty))
+  (defun (collector-step c acc x) (vecbuilder-add! acc x) acc)
+  (defun (collector-finish c acc) (vecbuilder->vec acc)))
+
+;; Mapping.
+(type (: (Mapping %k %v) (Union mapping)))
+
+(impl (Collector (Mapping %k %v))
+  (type %elem (Tuple %k %v))
+  (type %acc (MapBuilder %k %v))
+  (type %out (Map %k %v))
+  (defun (collector-init c) (mapbuilder-empty))
+  (defun (collector-step c acc kv)
+    (def (k v) kv)
+    (mapbuilder-add! acc k v)
+    acc)
+  (defun (collector-finish c acc) (mapbuilder->map acc)))
+
+;; Stringing.
+(type (: Stringing (Union stringing)))
+
+(impl (Collector Stringing)
+  (type %elem char)
+  (type %acc StringBuilder)
+  (type %out string)
+  (defun (collector-init c) (stringbuilder-empty))
+  (defun (collector-step c acc x) (stringbuilder-add! acc x) acc)
+  (defun (collector-finish c acc) (stringbuilder->string acc)))
+
+(type (: Summing (Union summing)))
+
+(impl (Collector Summing)
+  (type %elem int)
+  (type %acc int)
+  (type %out int)
+  (defun (collector-init c) 0)
+  (defun (collector-step c acc x) (+ acc x))
+  (defun (collector-finish c acc) acc))
+
+(type (: (Counting %a) (Union counting)))
+
+(impl (Collector (Counting %a))
+  (type %elem %a)
+  (type %acc int)
+  (type %out int)
+  (defun (collector-init c) 0)
+  (defun (collector-step c acc x) (+ acc 1))
+  (defun (collector-finish c acc) acc))
+
+;; Folding.
+(type (: (Folding %a) (Union (folding %a))))
+
+(impl (Collector (Folding %a))
+  (type %elem %a)
+  (type %acc %a)
+  (type %out %a)
+  (defun (collector-init c) (match c ((folding s) s)))
+  (defun (collector-step c acc x) x)
+  (defun (collector-finish c acc) acc))
+
+
+
+
 ;; ---------------------------------------------------------------------------
 ;; Iterable
 ;; ---------------------------------------------------------------------------
@@ -421,18 +509,20 @@
   (: iterable-current (-> %s %cursor %elem))
   (: iterable-next (-> %s %cursor %cursor))
   (: ->seq  (-> %s (Seq %elem)))
-  (: fold (-> (-> %acc %elem %acc) %acc %coll %acc))
+  (: fold (-> (-> %acc %elem %acc) %acc %s %acc))
   (: map    (-> (-> %elem %b) %s (Seq %b)))
   (: filter (-> (-> %elem bool) %s (Seq %elem)))
-  (:take (-> int (Seq %elem) (Seq %elem)))
-  (:drop (-> int (Seq %elem) (Seq %elem)))
+  (: take (-> int %s (Seq %elem)))
+  (: drop (-> int %s (Seq %elem)))
+  (: take-while (-> (-> %elem bool) %s (Seq %elem)))
+  (: drop-while (-> (-> %elem bool) %s (Seq %elem)))
 
   (defun (->seq s)
     (seql (:for e s)
           (:yield e)))
   (defun (fold f acc coll)
     (loop (:for elem coll)
-          (:acc res (folding acc (f elem res)))))
+          (:acc res (folding acc (f res elem)))))
   (defun (map f s)
     (seql (:for e s)
           (:yield (f e))))
@@ -441,15 +531,30 @@
           (:when (f e))
           (:yield e)))
   (defun (take n s)
-    (seql (:for i (range 0 n))
+    (seql (:with i 0 (+ i 1))
           (:for elem s)
+          (:break (= n i))
           (:yield elem)))
   ;; this is of course not efficient, but hey. 
   (defun (drop n s)
-    (seql (:with i 0 (+ i 1))
+    (seql (:with i 1 (+ i 1))
           (:for elem s)
-          (:when (i > n))
-          (:yield elem))))
+          (:when (> i n))
+          (:yield elem)))
+  (defun (take-while f s)
+    (seql (:for elem s)
+          (:break (not (f elem)))
+          (:yield elem)))
+
+  ;; This can also be rewritten
+  (defun (drop-while f s)
+    (def/mutable yield? #f)
+    (seql (:for elem s)
+          (:do (when (and (not yield?) (f elem))
+                 (set! yield? #t)))
+          (:when yield?)
+          (:yield elem)))
+)
 
 (impl (Iterable (List %a))
   (type %elem %a)
@@ -547,99 +652,6 @@
   (defun (cursor-ref s c) (string-cursor-ref s c))
   (defun (cursor-next s c) (string-cursor-next s c))
   (defun (cursor-prev s c) (string-cursor-prev s c)))
-
-;; ---------------------------------------------------------------------------
-;; Collector
-;; ---------------------------------------------------------------------------
-
-;; Collector interface.
-(def/trait (Collector %c)
-  (type %elem)
-  (type %acc)
-  (type %out)
-  (: collector-init (-> %c %acc))
-  (: collector-step (-> %c %acc %elem %acc))
-  (: collector-finish (-> %c %acc %out)))
-
-;; Collectors.
-
-(type (: (Listing %a) (Union listing)))
-
-;; Listing.
-(impl (Collector (Listing %a))
-  (type %elem %a)
-  (type %acc (ListBuilder %a))
-  (type %out (List %a))
-  (defun (collector-init c) (listbuilder-empty))
-  (defun (collector-step c acc x) (listbuilder-add! acc x) acc)
-  (defun (collector-finish c acc) (listbuilder->list acc)))
-
-;; Vecing.
-(type (: (Vecing %a) (Union vecing)))
-
-(impl (Collector (Vecing %a))
-  (type %elem %a)
-  (type %acc (VecBuilder %a))
-  (type %out (Vec %a))
-  (defun (collector-init c) (vecbuilder-empty))
-  (defun (collector-step c acc x) (vecbuilder-add! acc x) acc)
-  (defun (collector-finish c acc) (vecbuilder->vec acc)))
-
-;; Mapping.
-(type (: (Mapping %k %v) (Union mapping)))
-
-(impl (Collector (Mapping %k %v))
-  (type %elem (Tuple %k %v))
-  (type %acc (MapBuilder %k %v))
-  (type %out (Map %k %v))
-  (defun (collector-init c) (mapbuilder-empty))
-  (defun (collector-step c acc kv)
-    (def (k v) kv)
-    (mapbuilder-add! acc k v)
-    acc)
-  (defun (collector-finish c acc) (mapbuilder->map acc)))
-
-;; Stringing.
-(type (: Stringing (Union stringing)))
-
-(impl (Collector Stringing)
-  (type %elem char)
-  (type %acc StringBuilder)
-  (type %out string)
-  (defun (collector-init c) (stringbuilder-empty))
-  (defun (collector-step c acc x) (stringbuilder-add! acc x) acc)
-  (defun (collector-finish c acc) (stringbuilder->string acc)))
-
-(type (: Summing (Union summing)))
-
-(impl (Collector Summing)
-  (type %elem int)
-  (type %acc int)
-  (type %out int)
-  (defun (collector-init c) 0)
-  (defun (collector-step c acc x) (+ acc x))
-  (defun (collector-finish c acc) acc))
-
-(type (: (Counting %a) (Union counting)))
-
-(impl (Collector (Counting %a))
-  (type %elem %a)
-  (type %acc int)
-  (type %out int)
-  (defun (collector-init c) 0)
-  (defun (collector-step c acc x) (+ acc 1))
-  (defun (collector-finish c acc) acc))
-
-;; Folding.
-(type (: (Folding %a) (Union (folding %a))))
-
-(impl (Collector (Folding %a))
-  (type %elem %a)
-  (type %acc %a)
-  (type %out %a)
-  (defun (collector-init c) (match c ((folding s) s)))
-  (defun (collector-step c acc x) x)
-  (defun (collector-finish c acc) acc))
 
 
 ;; ---------------------------------------------------------------------------
@@ -1199,12 +1211,6 @@
           (loop p))))
     (stringbuilder->string b)))
 
-;; String foldable.
-(impl (Foldable string)
-  (type %item char)
-  (defun (fold f acc col)
-    (string-fold f acc col)))
-
 ;; --- File operations.
 (import/extern
   (clr-write-all-text  (: System.IO.File.WriteAllText  #:blocking))
@@ -1737,7 +1743,7 @@
 (impl (->str (Seq %a))
   (where (->str %a))
   (defun (->str sq)
-    (seq->str sq)))
+    "(Seq ...)"))
 
 ;; Map entry to str.
 (: map-entry->str (-> (Tuple %k %v) string) (where (->str %k) (->str %v)))

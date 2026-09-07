@@ -123,11 +123,10 @@
 (defun (describe m)
   (str "<" (int->string (map-length m)) ": " (map->str m) ">"))
 
-;; The same map, reached through `Foldable` rather than through `Map`'s own
-;; operations — so the dictionary has to project `%item` to `(Tuple %k %v)`.
-;; Nothing implements `Foldable` for `Set`, so this path is unique to Map here.
-(: count-via-foldable (-> (Map %k %v) int))
-(defun (count-via-foldable m)
+;; The same map, reached through `Iterable` rather than through `Map`'s own
+;; operations — so the dictionary has to project `%elem` to `(Tuple %k %v)`.
+(: count-via-iterable (-> (Map %k %v) int))
+(defun (count-via-iterable m)
   (fold (fun (acc _) (+ acc 1)) 0 m))
 
 ;; A generic function taking a Map and nothing else. Under `-nullable:enable`
@@ -152,8 +151,8 @@
   ;; Two entries, so the trie's order decides which way round it comes out.
   (expect-true "the same at two entries" (= (string-length (describe m)) 18))
 
-  (expect-true "Foldable-generic count" (= (count-via-foldable m) 2))
-  (expect-true "Foldable-generic count at other types" (= (count-via-foldable n) 1))
+  (expect-true "Iterable-generic count" (= (count-via-iterable m) 2))
+  (expect-true "Iterable-generic count at other types" (= (count-via-iterable n) 1))
   (expect-true "unconstrained generic" (= (key-count m) 2))
 
   ;; Collection and Iterable, the other two implementations.
@@ -357,7 +356,7 @@
   (expect "ordered: Collection length" (length m) 3)
   (expect-bool "ordered: Collection empty?" (empty? m) #f)
   (expect "Collection ->seq" (seq-length (->seq m)) 3)
-  (expect "Foldable fold" (fold #(+ &1 (entry-value &2)) 0 m) 6)
+  (expect "Iterable fold" (fold #(+ &1 (entry-value &2)) 0 m) 6)
   ;; `orderedmap-map-values` moves values and leaves keys alone.
   (expect "map-values" (orderedmap-ref (orderedmap-map-values #(* &1 2) m) "pear") 6)
   ;; `Iterable`'s `%elem` is the entry, so this one takes a pair and gives a Seq.

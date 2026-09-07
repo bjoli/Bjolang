@@ -31,14 +31,30 @@
 ;; --- 5, 7. En trait med en associerad typ, och en mottagare som inte är
 ;; första parametern -----------------------------------------------------------
 
+;; Egen trait: en dyn nålar fast varje associerad typ, och prelude-`Iterable`
+;; har `#:cursor` också — den skiljer sig mellan de två lådorna nedan. Metoden
+;; heter `fold-col` eftersom ett metodnamn pekar ut sin trait och `Iterable`
+;; redan tagit `fold`.
+(def/trait (Foldable %col)
+  (type %item)
+  (: fold-col (-> (-> %acc %item %acc) %acc %col %acc)))
+
+(impl (Foldable (List %a))
+  (type %item %a)
+  (defun (fold-col f acc col) (list-foldl f acc col)))
+
+(impl (Foldable (Vec %a))
+  (type %item %a)
+  (defun (fold-col f acc col) (vec-fold f acc col)))
+
 (: total (-> (dyn Foldable #:item int) int))
 (defun (total d)
-  (fold + 0 d))
+  (fold-col + 0 d))
 
 ;; En vikning som struntar i elementet: den associerade typen är fastnålad ändå.
 (: how-many (-> (dyn Foldable #:item int) int))
 (defun (how-many d)
-  (fold (fun (n _) (+ n 1)) 0 d))
+  (fold-col (fun (n _) (+ n 1)) 0 d))
 
 ;; --- 6. En metod som suspenderar --------------------------------------------
 

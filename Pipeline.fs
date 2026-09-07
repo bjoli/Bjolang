@@ -1621,10 +1621,17 @@ let runFullFrontendPipeline (mainFilePath: string) =
         // index into its enclosing loop and cannot be spliced elsewhere.
         let inlinedAst = Timing.phase "trait inline" (fun () -> TraitInline.run env typedAst)
 
-        Diagnostics.progress "=== Step 5: Dictionary Lowering ==="
-        let loweredAst = Timing.phase "dictionary lowering" (fun () -> Lowering.lowerProgram env inlinedAst)
+        Diagnostics.progress "=== Step 5: Seq Fusion ==="
+        // After inlining, which is what puts a `seql` default where the loop
+        // that walks it can see it, and before both lowerings: the producer's
+        // group is still a letrec of tail calls here, so `LoopLowering` takes
+        // the fused loop for an ordinary one and emits it inline.
+        let fusedAst = Timing.phase "seq fusion" (fun () -> SeqFusion.run inlinedAst)
 
-        Diagnostics.progress "=== Step 6: Loop Lowering ==="
+        Diagnostics.progress "=== Step 6: Dictionary Lowering ==="
+        let loweredAst = Timing.phase "dictionary lowering" (fun () -> Lowering.lowerProgram env fusedAst)
+
+        Diagnostics.progress "=== Step 7: Loop Lowering ==="
         let loopLoweredAst = Timing.phase "loop lowering" (fun () -> LoopLowering.lowerProgram loweredAst)
 
         // A `(loop ...)` is a loop by construction, but promotion is a silent

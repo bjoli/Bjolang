@@ -1,0 +1,89 @@
+;; seq_fusion_test.bjo — loops over seq literals, fused and not.
+;;
+;; Run it twice — once as is, once with BJOLANG_NO_FUSION=1 — and diff the
+;; output: it must be identical, including the order of the p/c lines in the
+;; interleaving case. With -d, the fused cases leave no `SeqCursor` in out.cs
+;; for their loops; BJOLANG_FUSION_TRACE=1 lists which loops fused.
+
+(import (std prelude))
+(import (std simpletest))
+
+(def xs (list 1 2 3 4 5 6))
+
+(defun (main)
+  ;; 1. Two literals deep into a fold. Fuses twice, inside out:
+  ;;    0 4 16 36 64 -> 120.
+  (expect "literal chain"
+          (loop (:for e (seql (:for x (seql (:for y (range 0 10))
+                                            (:when (even? y))
+                                            (:yield y)))
+                              (:yield (* x x))))
+                (:acc s (summing e))
+                => s)
+          120)
+
+  ;; 2. Effects interleave exactly as when pulled through a cursor:
+  ;;    p0 c0 p1 p2 c2 p3 p4 c4 — the producer prints every y, the consumer
+  ;;    only the ones that got through.
+  (println "interleaving:")
+  (loop (:for e (seql (:for y (range 0 5))
+                      (:do (println #"p${y}"))
+                      (:when (even? y))
+                      (:yield y)))
+        (:do (println #"c${e}")))
+
+  ;; 3. The trait path: `->seq`'s default is a `seql`, spliced by
+  ;;    `TraitInline`. With a variable the literal lands bare; with a
+  ;;    constructor argument it lands one `let` deep and is peeled.
+  (expect "->seq of a variable"
+          (loop (:for e (->seq xs)) (:acc s (summing e)) => s)
+          21)
+  (expect "->seq of a constructor"
+          (loop (:for e (->seq (list 1 2 3))) (:acc s (summing e)) => s)
+          6)
+
+  ;; 4. A `:when` in the consumer, and two accumulators.
+  (expect "when and two accs"
+          (loop (:for e (seql (:for x (range 1 8)) (:yield (* x 10))))
+                (:when (> e 30))
+                (:acc s (summing e))
+                (:acc n (counting e))
+                => (Tuple s n))
+          (Tuple 220 4))
+
+  ;; 5. A tuple pattern on the element.
+  (expect "tuple element"
+          (loop (:for (Tuple i sq) (seql (:for i (range 0 4)) (:yield (Tuple i (* i i)))))
+                (:acc s (summing (+ i sq)))
+                => s)
+          20)
+
+  ;; 6. A two-level producer: its yield sits in the inner level, which is
+  ;;    fine; only the consumer has to be single-level.
+  (expect "two-level producer"
+          (loop (:for p (seql (:for a (range 0 4))
+                              (:subloop)
+                              (:for b (range 0 a))
+                              (:yield (Tuple a b))))
+                (:acc n (counting p))
+                => n)
+          6)
+
+  ;; 7. Refused, and still right: a `:break` in the consumer keeps the cursor.
+  (expect "break keeps the cursor"
+          (loop (:for e (seql (:for x (range 0 100)) (:yield x)))
+                (:break (> e 3))
+                (:acc s (summing e))
+                => s)
+          6)
+
+  ;; 8. A `seql` consumer: the fused result is itself a literal the next
+  ;;    loop fuses with. Three stages, one loop.
+  (expect "seql consumer"
+          (loop (:for e (seql (:for x (seql (:for y (range 0 6)) (:yield (+ y 1))))
+                              (:when (odd? x))
+                              (:yield (* x x))))
+                (:acc s (summing e))
+                => s)
+          35)
+  0)

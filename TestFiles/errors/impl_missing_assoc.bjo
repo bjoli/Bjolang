@@ -1,19 +1,22 @@
 ;; En impl som inte binder en av traitens associerade typer.
 ;;
 ;; Förut överlevde den hit och föll först vid första projektionen, med "Missing
-;; implementation of Foldable for (Vec int)" — ett meddelande om en
+;; implementation of Iterable for (Vec int)" — ett meddelande om en
 ;; implementation som står tio rader längre upp. Frågan ställs där svaret
 ;; skrivs.
 ;;
-;; EXPECT-ERROR: does not bind its associated type %item
-;; EXPECT-ERROR: Write (type %item <type>) in it
+;; EXPECT-ERROR: does not bind its associated type %elem
+;; EXPECT-ERROR: Write (type %elem <type>) in it
 
 (import (std prelude))
 
 (type (: (Pair %a) (Struct (: fst %a) (: snd %a))))
 
-(impl (Foldable (Pair %a))
-  (defun (fold f acc p)
-    (f (f acc (struct-ref p fst)) (struct-ref p snd))))
+(impl (Iterable (Pair %a))
+  (type %cursor int)
+  (defun (iterable-start p) 0)
+  (defun (iterable-done? p c) (>= c 2))
+  (defun (iterable-current p c) (struct-ref p fst))
+  (defun (iterable-next p c) (+ c 1)))
 
 (defun (main args) 0)
