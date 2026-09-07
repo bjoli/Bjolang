@@ -90,6 +90,9 @@ open Bjolang.TypedAST
 // Small helpers
 // ---------------------------------------------------------------------------
 
+let private trace =
+    not (isNull (System.Environment.GetEnvironmentVariable "BJOLANG_FUSION_TRACE"))
+
 /// How many yields a producer may have. See above.
 let private maxYieldSites = 4
 
@@ -102,7 +105,15 @@ let private boolT = TypeConstants.boolType
 
 let private at r (t: HMType) (node: TExprNode) : TypedExpr = { Type = t; Range = r; Node = node }
 
-let private baseIs (prefix: string) (name: string) = Gensym.baseName name = prefix
+/// Strips every `__N` suffix from a name. `Gensym.baseName` strips only the
+/// last one, which is not enough here: a body spliced by `TraitInline` is
+/// freshened a second time, so a `seql` default compiled to `loopseq__1`
+/// arrives as `loopseq__1__8`, and one strip leaves `loopseq__1`.
+let rec private rootName (name: string) =
+    let stripped = Gensym.baseName name
+    if stripped = name then name else rootName stripped
+
+let private baseIs (prefix: string) (name: string) = rootName name = prefix
 
 /// How many times `name` is referenced. The same count `TraitInline` keeps,
 /// kept private there and repeated here rather than exported for one caller.
@@ -346,14 +357,40 @@ type private Producer =
       /// around a new group, without the finish binding.
       Rebuild: TypedExpr -> TypedExpr }
 
+/// A `seql`'s finish member. It has no accumulators and no `=>`, so it takes
+/// nothing and its body is the empty `(when #f ())` — which is also what an
+/// earlier fusion's consumer left, when that consumer was a `seql`. Anything
+/// else does work of its own at the end of the sequence, and is not this shape.
+let private isTrivialExit (name: string) (fn: LocalFun) (v: TypedExpr) =
+    baseIs "loopexit" name
+    && fn.Params.IsEmpty
+    && (match v.Node with
+        | TLambda([], { Node = TWhen({ Node = TBool false }, _, false) }) -> true
+        | _ -> false)
+
 let private recognizeProducer (body: TypedExpr) : Producer option =
     let rec walk (e: TypedExpr) (exitFound: string option) (wrap: TypedExpr -> TypedExpr) =
         match e.Node with
-        | TLetRec(bindings, entry) when exitFound.IsSome ->
-            let names = bindings |> List.map (fun (n, _, _, _) -> n)
+        | TLetRec(bindings, entry) ->
+            // The finish member sits in one of two places. A body compiled
+            // here has it as a `let` in front of the group; a body read back
+            // from a module's inline template has it as a binding of the group
+            // itself. Both are accepted. The group handed to `fuse` keeps only
+            // the levels either way, so that its check for leftover references
+            // to the finish means what it says.
+            let levels, exits =
+                bindings |> List.partition (fun (n, _, _, _) -> not (baseIs "loopexit" n))
+
+            let exitName =
+                match exitFound, exits with
+                | Some n, [] -> Some n
+                | None, [ (n, _, fn, v) ] when isTrivialExit n fn v -> Some n
+                | _ -> None
+
+            let names = levels |> List.map (fun (n, _, _, _) -> n)
 
             let allMembers =
-                bindings
+                levels
                 |> List.forall (fun (n, isFun, _, (v: TypedExpr)) ->
                     isFun
                     && baseIs "looplevel" n
@@ -366,28 +403,17 @@ let private recognizeProducer (body: TypedExpr) : Producer option =
                 | TApply({ Node = TIdent(n, _) }, _, []) -> List.contains n names
                 | _ -> false
 
-            if allMembers && enteredByCall then
+            match exitName with
+            | Some exit when allMembers && enteredByCall ->
                 Some
                     { Members = names
-                      ExitName = exitFound.Value
-                      Group = e
+                      ExitName = exit
+                      Group = { e with Node = TLetRec(levels, entry) }
                       Rebuild = wrap }
-            else
-                None
+            | _ -> None
 
-        // The finish member. A `seql` has no accumulators and no `=>`, so its
-        // finish takes nothing and is the empty `(when #f ())` — which is
-        // also what an earlier fusion's consumer left, when that consumer was
-        // a `seql`. Anything else does work of its own at the end of the
-        // sequence, and is not this shape.
         | TLet(n, true, fn, v, inner) when baseIs "loopexit" n && exitFound.IsNone ->
-            let trivial =
-                fn.Params.IsEmpty
-                && (match v.Node with
-                    | TLambda([], { Node = TWhen({ Node = TBool false }, _, false) }) -> true
-                    | _ -> false)
-
-            if trivial then walk inner (Some n) wrap else None
+            if isTrivialExit n fn v then walk inner (Some n) wrap else None
 
         | TLet(n, false, fn, v, inner) ->
             walk inner exitFound (fun g -> wrap { e with Type = g.Type; Node = TLet(n, false, fn, v, g) })
@@ -582,9 +608,6 @@ let private fuse (c: Consumer) (producerBody: TypedExpr) : TypedExpr option =
 // ---------------------------------------------------------------------------
 
 let private fusedCount = ref 0
-
-let private trace =
-    not (isNull (System.Environment.GetEnvironmentVariable "BJOLANG_FUSION_TRACE"))
 
 /// `Some fused` when `expr` is the prologue of a loop whose source is a seq
 /// literal and the loop fuses.

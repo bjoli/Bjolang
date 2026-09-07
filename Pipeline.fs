@@ -1622,10 +1622,10 @@ let runFullFrontendPipeline (mainFilePath: string) =
         let inlinedAst = Timing.phase "trait inline" (fun () -> TraitInline.run env typedAst)
 
         Diagnostics.progress "=== Step 5: Seq Fusion ==="
-        // After inlining, which is what puts a `seql` default where the loop
-        // that walks it can see it, and before both lowerings: the producer's
-        // group is still a letrec of tail calls here, so `LoopLowering` takes
-        // the fused loop for an ordinary one and emits it inline.
+        // Runs after trait inlining because that is what puts a `seql` default
+        // where the loop walking it can be fused with it, and before both
+        // lowerings because a fused loop is still a letrec of tail calls,
+        // which is what `LoopLowering` needs in order to emit it inline.
         let fusedAst = Timing.phase "seq fusion" (fun () -> SeqFusion.run inlinedAst)
 
         Diagnostics.progress "=== Step 6: Dictionary Lowering ==="
