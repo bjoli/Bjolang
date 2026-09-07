@@ -1189,6 +1189,29 @@ let checkAssocBindings (traitName: string) (info: TraitInfo) (bound: string list
             failwithf
                 $"Type Error at %s{Lexer.formatPos r}: this implementation of '%s{traitName}' does not bind its associated type %%%s{assocName}. Write (type %%%s{assocName} <type>) in it — %s{listed}."
 
+/// How many parameters a trait method declares, or `None` when it declares
+/// something that is not an arrow.
+///
+/// Read out of the trait rather than out of a binding, because an inline
+/// trait's methods are not bound at all. Only the count is taken, so no
+/// instantiation happens and nothing is unified.
+let private traitMethodArity (env: Env) (methodName: string) : int option =
+    match Map.tryFind methodName env.Registry.TraitMethods with
+    | None -> None
+    | Some traitName ->
+        match Map.tryFind traitName env.Registry.Traits with
+        | None -> None
+        | Some info ->
+            match info.Kind with
+            | InlineTrait ->
+                match Map.tryFind methodName info.Templates with
+                | Some(TplFun(args, _, _)) -> Some args.Length
+                | _ -> None
+            | InterfaceTrait ->
+                match Map.tryFind methodName info.Signatures with
+                | Some(TFun(args, _, _)) -> Some args.Length
+                | _ -> None
+
 /// Instantiates a trait method at a call site and records the obligation.
 let private traitCallType (env: Env) (traitName: string) (methodName: string) (r: Range) : HMType * TraitRef =
     let info = Map.find traitName env.Registry.Traits
@@ -2119,6 +2142,32 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         ->
         failwithf
             $"Type Error at %s{Lexer.formatPos r}: '%s{name}' is private to std/eq. It is .NET's equality, and a type's own `Eq` implementation is what .NET equality is made *of* — writing one in terms of the other is a loop. Compare the fields instead, or derive."
+
+    // A trait method written where a value is wanted, rewritten into the lambda
+    // it stands for: `even?` becomes `(fun (x) (even? x))`.
+    //
+    // C# has no method group to hand over — an interface trait's method is a
+    // slot on an interface and an inline trait's is not emitted at all — so a
+    // bare reference used to reach `Codegen` as a name with nothing behind it.
+    // The call inside the lambda is in call position like any other, so it
+    // dispatches normally and the obligation it raises is discharged at
+    // whatever type the lambda is used at.
+    //
+    // This is the rewrite the parser makes for operators, made here because
+    // only the registry knows which names are methods. `TraitMethodNames`
+    // leaves out a name that something has bound over, so a local of the same
+    // name still wins; and the head of an application never arrives here,
+    // because `EApp` matches its own callee first.
+    | EIdent(name, r) when
+        Set.contains name env.TraitMethodNames
+        && (match traitMethodArity env name with
+            | Some n -> n > 0
+            | None -> false)
+        ->
+        let arity = Option.defaultValue 0 (traitMethodArity env name)
+        let ps = List.init arity (fun _ -> Gensym.fresh "eta")
+
+        infer env (EFun(ps, EApp(EIdent(name, r), ps |> List.map (fun p -> EIdent(p, r)), r), Ordinary, r))
 
     // An inline trait's methods are never bound as values: there is no single
     // scheme they could be bound under, which is the whole reason the trait is
