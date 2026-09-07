@@ -410,7 +410,9 @@
 ;; ---------------------------------------------------------------------------
 ;; Iterable
 ;; ---------------------------------------------------------------------------
-;; Iterable protocol.
+;; Iterable protocol. What the compiler does, is that it fuses
+;; subsequent seql, so doing (-> an-iterable map map map filter map take) should fuse
+;; to only ONE IEnumerable, meaning only one of the shitty awful state machines.
 (def/trait (Iterable %s)
   (type %elem)
   (type %cursor)
@@ -419,19 +421,35 @@
   (: iterable-current (-> %s %cursor %elem))
   (: iterable-next (-> %s %cursor %cursor))
   (: ->seq  (-> %s (Seq %elem)))
+  (: fold (-> (-> %acc %elem %acc) %acc %coll %acc))
   (: map    (-> (-> %elem %b) %s (Seq %b)))
   (: filter (-> (-> %elem bool) %s (Seq %elem)))
+  (:take (-> int (Seq %elem) (Seq %elem)))
+  (:drop (-> int (Seq %elem) (Seq %elem)))
 
   (defun (->seq s)
     (seql (:for e s)
           (:yield e)))
+  (defun (fold f acc coll)
+    (loop (:for elem coll)
+          (:acc res (folding acc (f elem res)))))
   (defun (map f s)
     (seql (:for e s)
           (:yield (f e))))
   (defun (filter f s)
     (seql (:for e s)
           (:when (f e))
-          (:yield e))))
+          (:yield e)))
+  (defun (take n s)
+    (seql (:for i (range 0 n))
+          (:for elem s)
+          (:yield elem)))
+  ;; this is of course not efficient, but hey. 
+  (defun (drop n s)
+    (seql (:with i 0 (+ i 1))
+          (:for elem s)
+          (:when (i > n))
+          (:yield elem))))
 
 (impl (Iterable (List %a))
   (type %elem %a)
