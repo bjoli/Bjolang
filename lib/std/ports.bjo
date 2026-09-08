@@ -2,9 +2,9 @@
 
 (export
   ;; Draining
-  port->list port->vec
+  port->list port->vec port->lines
   ;; Streaming
-  port->seq file->seq
+  port->seq file->seq 
   port->chan chan-next)
 
 (import (std prelude))
@@ -27,11 +27,17 @@
         (:break (port-eof? p))
         (:acc lst (listing (reader p)))))
 
+
+
 (: port->vec (-> (-?-> TextInputPort %a) TextInputPort (Vec %a)))
 (defun (port->vec reader p)
   (loop (:with i 1 1)
         (:break (port-eof? p))
         (:acc vec (vecing (reader p)))))
+
+(: port->lines (-> TextInputPort (Vec string)))
+(defun (port->lines port)
+  (port->vec read-line port))
 
 ;; ---------------------------------------------------------------------------
 ;; Streaming

@@ -1,0 +1,90 @@
+;; A lambda argument gets its parameter types from the callee before its body
+;; is inferred.
+;;
+;; Every call below reads a field off the lambda's parameter, and `url` and
+;; `size` each belong to two records — so the field access is ambiguous unless
+;; the collection argument has already said which record the lambda receives.
+
+(import (std prelude))
+(import (std simpletest))
+
+(type (: Fetched (Record (: url string) (: size int))))
+(type (: Request (Record (: url string) (: size bool))))
+
+(: fetched (-> (Vec Fetched)))
+(defun (fetched)
+  [(Fetched (url "a") (size 1))
+   (Fetched (url "bb") (size 2))
+   (Fetched (url "ccc") (size 3))])
+
+(: requests (-> (List Request)))
+(defun (requests)
+  (list (Request (url "one") (size #t))
+        (Request (url "two") (size #f))))
+
+;; --- The lambda first, the collection after ---------------------------------
+
+(: mapped (-> (Vec string)))
+(defun (mapped) (vec-map (fun (r) (record-ref r url)) (fetched)))
+
+(: filtered (-> (Vec Fetched)))
+(defun (filtered) (vec-filter (fun (r) (> (record-ref r size) 1)) (fetched)))
+
+(: folded (-> int))
+(defun (folded) (vec-fold (fun (acc r) (+ acc (record-ref r size))) 0 (fetched)))
+
+(: listed (-> (List string)))
+(defun (listed) (list-map (fun (r) (record-ref r url)) (requests)))
+
+;; --- The lambda last ---------------------------------------------------------
+
+(: shown-with (-> Fetched (-> Fetched string) string))
+(defun (shown-with f show) (show f))
+
+;; --- A parameter that is a bare type variable --------------------------------
+;;
+;; `%a` expects nothing in particular, so nothing is pushed into the argument
+;; filling it and a named function goes in as it always did.
+
+(: applied (-> (-?-> %a %b) %a %b))
+(defun (applied f x) (f x))
+
+(: thrice (-> int int))
+(defun (thrice n) (* n 3))
+
+;; --- Argument evaluation order -----------------------------------------------
+;;
+;; Type checking visits the lambda last; the emitted call still evaluates left
+;; to right.
+
+(: noting (-> (Box string) string int int))
+(defun (noting log tag n)
+  (box-set! log (str (box-ref log) tag))
+  n)
+
+(: around (-> int (-> int int) int int))
+(defun (around a f b) (+ (f a) b))
+
+(defun (main)
+  (expect "vec-map over a record" (mapped) ["a" "bb" "ccc"])
+  (expect "vec-filter over a record" (vec-length (filtered)) 2)
+  (expect "vec-fold over a record" (folded) 6)
+  (expect "list-map over a record" (listed) '("one" "two"))
+
+  (expect "vec-for-each over a record"
+          (let ((seen (make-box "")))
+            (vec-for-each (fun (r) (box-set! seen (str (box-ref seen) (record-ref r url)))) (fetched))
+            (box-ref seen))
+          "abbccc")
+
+  (expect "the lambda is not the first argument"
+          (shown-with (Fetched (url "z") (size 9)) (fun (r) (record-ref r url)))
+          "z")
+
+  (expect "a bare type variable parameter, named function" (applied thrice 5) 15)
+  (expect "a bare type variable parameter, lambda" (applied (fun (n) (+ n 1)) 5) 6)
+
+  (let ((log (make-box "")))
+    (expect "the call still runs" (around (noting log "1" 10) (fun (x) x) (noting log "2" 20)) 30)
+    (expect "arguments evaluate left to right" (box-ref log) "12"))
+  0)

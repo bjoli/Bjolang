@@ -33,6 +33,18 @@ module Bjolang.EffectGraph
 open Bjolang.Lexer
 open Bjolang.TypedAST
 
+/// What a lambda's colour had to do with the parking, which decides what the
+/// fix is. A lambda takes its colour from the keyword it was written with, so
+/// where one of these applies the repair is that keyword and nothing else.
+type Culprit =
+    /// No lambda in the way: `(sync (blocking ...))` is the answer.
+    | NoLambda
+    /// The leaf is called *inside* an ordinary lambda written as an argument.
+    | InsideOne
+    /// The leaf *is* the call an ordinary lambda was handed to, and the
+    /// argument is what selected the parking copy of it.
+    | HandedOne
+
 /// Why a definition parks: the name whose call does it, and how it is reached.
 type Witness =
     { /// The leaf itself — a blocking builtin, a `#:blocking` import, or an
@@ -43,12 +55,15 @@ type Witness =
       /// From the definition being reported down to the leaf, in written
       /// names. A path naming something the programmer cannot find in a source
       /// file is worse than no path at all.
-      Path: string list }
+      Path: string list
+
+      /// Whether an ordinary lambda's keyword is what chose the parking copy.
+      Culprit: Culprit }
 
 /// What one body does, as far as this analysis cares: the leaves it calls
 /// itself, and the definitions it calls that might reach one.
 type private Scan =
-    { Leaves: (string * Range) list
+    { Leaves: (string * Range * Culprit) list
       Calls: (string * Range) list }
 
 type private Node =
@@ -59,6 +74,13 @@ type private Node =
 let private isLambda (e: TypedExpr) =
     match e.Node with
     | TLambda _ -> true
+    | _ -> false
+
+/// An ordinary lambda — one whose colour declined the suspending copy of
+/// whatever it calls.
+let private isSyncLambda (e: TypedExpr) =
+    match e.Node, e.Type with
+    | TLambda _, TFun(_, _, eff) -> pruneEffect eff = ESync
     | _ -> false
 
 /// Whether calling this name parks the thread.
@@ -80,10 +102,17 @@ let private isBlocking (registry: TraitRegistry) (name: string) =
         | None -> false)
 
 let private scanBody (registry: TraitRegistry) (body: TypedExpr) : Scan =
-    let leaves = ResizeArray<string * Range>()
+    let leaves = ResizeArray<string * Range * Culprit>()
     let calls = ResizeArray<string * Range>()
 
-    let rec walk (expr: TypedExpr) =
+    /// `inLambda` is whether the nearest enclosing lambda is an ordinary one
+    /// written as a call argument. Only that shape is tracked: a `let`-bound
+    /// lambda and a body-local function have their colour decided by
+    /// `localFun` rather than by a keyword, so telling their author to write
+    /// one would be advice they cannot take.
+    let rec walk (inLambda: bool) (expr: TypedExpr) =
+        let walk' = walk inLambda
+
         match expr.Node with
         | TApply(target, args, kwArgs) ->
             let named =
@@ -91,8 +120,21 @@ let private scanBody (registry: TraitRegistry) (body: TypedExpr) : Scan =
                 | TIdent(name, _) -> Some name
                 | _ -> None
 
+            // Either the lambda is around the call, or it is an argument *to*
+            // it and picked which copy of it runs. Both are the same mistake
+            // seen from either side, and the same one keyword repairs them.
+            let culprit =
+                if inLambda then InsideOne
+                elif
+                    args |> List.exists isSyncLambda
+                    || kwArgs |> List.exists (snd >> isSyncLambda)
+                then
+                    HandedOne
+                else
+                    NoLambda
+
             match named with
-            | Some name when isBlocking registry name -> leaves.Add(name, expr.Range)
+            | Some name when isBlocking registry name -> leaves.Add(name, expr.Range, culprit)
             | Some name -> calls.Add(name, expr.Range)
             // A call through a value — a parameter, a field — names nothing
             // this graph has a node for. Layer 4's monomorphisation is what
@@ -122,7 +164,9 @@ let private scanBody (registry: TraitRegistry) (body: TypedExpr) : Scan =
                 match List.tryItem i paramTypes, a.Node with
                 | Some wanted, TIdent(liftedName, _) when TypeVisitor.liftsToSuspending wanted a.Type ->
                     if isBlocking registry liftedName then
-                        leaves.Add(liftedName, a.Range)
+                        // A lifted *name*, not a lambda, so no keyword to
+                        // change.
+                        leaves.Add(liftedName, a.Range, NoLambda)
                     else
                         calls.Add(liftedName, a.Range)
                 | _ -> ())
@@ -137,26 +181,34 @@ let private scanBody (registry: TraitRegistry) (body: TypedExpr) : Scan =
                 | Some name -> Set.contains name Prelude.elsewhereBuiltins
                 | None -> false
 
-            walk target
+            walk' target
 
+            // An argument that is an ordinary lambda seals everything inside
+            // it; one that is a bjoroutine unseals it again, since it can await
+            // and so is not what declined a suspending copy.
             for a in args do
-                if not (elsewhere && isLambda a) then walk a
+                if not (elsewhere && isLambda a) then
+                    walk (if isLambda a then isSyncLambda a else inLambda) a
 
             for (_, v) in kwArgs do
-                walk v
+                walk (if isLambda v then isSyncLambda v else inLambda) v
 
         // A foreign call carries the claim on its own metadata rather than in
         // the registry, for the reason `ColourCheck` reads `Await` there: by
         // the time this runs, the import table that knew is several passes
         // behind.
         | TForeignStaticCall(clrType, methodName, args, Some meta) when meta.Blocking ->
-            leaves.Add($"%s{clrType}.%s{methodName}", expr.Range)
-            args |> List.iter walk
+            leaves.Add($"%s{clrType}.%s{methodName}", expr.Range, (if inLambda then InsideOne else NoLambda))
+            args |> List.iter walk'
 
         | TDotMethodCall(receiver, methodName, args, Some meta) when meta.Blocking ->
-            leaves.Add($"%s{meta.DeclaringType}.%s{methodName}", expr.Range)
-            walk receiver
-            args |> List.iter walk
+            leaves.Add(
+                $"%s{meta.DeclaringType}.%s{methodName}",
+                expr.Range,
+                (if inLambda then InsideOne else NoLambda)
+            )
+            walk' receiver
+            args |> List.iter walk'
 
         // A dispatched trait method is deliberately not an edge, for the same
         // reason `TImpl` is not entered: one node per method name would merge
@@ -165,12 +217,12 @@ let private scanBody (registry: TraitRegistry) (body: TypedExpr) : Scan =
         // there, and the lint under-reports — which is the right way for a lint
         // to be wrong.
         | TInterfaceCall(_, _, _, dict, args) ->
-            walk dict
-            args |> List.iter walk
+            walk' dict
+            args |> List.iter walk'
 
-        | _ -> TypeVisitor.children expr |> List.iter walk
+        | _ -> TypeVisitor.children expr |> List.iter walk'
 
-    walk body
+    walk false body
 
     { Leaves = List.ofSeq leaves
       Calls = List.ofSeq calls }
@@ -211,12 +263,13 @@ let private analyse (registry: TraitRegistry) (decls: TDecl list) : Node list * 
         nodes
         |> List.choose (fun n ->
             match n.Scan.Leaves with
-            | (leaf, where) :: _ ->
+            | (leaf, where, culprit) :: _ ->
                 Some(
                     n.Name,
                     { Leaf = leaf
                       Where = where
-                      Path = [ n.Name; leaf ] }
+                      Path = [ n.Name; leaf ]
+                      Culprit = culprit }
                 )
             | [] -> None)
         |> Map.ofList
@@ -723,9 +776,41 @@ let lint (registry: TraitRegistry) (decls: TDecl list) : unit =
                 let path = String.concat " -> " w.Path
                 let parks = "A parked thread is one the scheduler cannot hand to another fiber: nothing else runs on it until the call returns."
 
+                // A lambda around the call is only the culprit when the leaf has
+                // a suspending copy for its keyword to have declined. Where
+                // there is none — an ordinary blocking builtin — repainting the
+                // lambda moves nothing off the thread, and the advice would be
+                // a detour ending where it started.
+                //
+                // Not asked of a leaf the lambda was *handed* to, because there
+                // is nothing here to ask: that copy is generated in the module
+                // that declared the `-?->`, and `GeneratedCopies` holds only
+                // this module's. The advice names the condition instead —
+                // "wherever the parameter it fills is declared -?->" — which
+                // the reader can see and the type checker enforces, so
+                // following it where it does not apply costs a rejected
+                // compile rather than a wrong program.
+                let hasTwin = Map.containsKey (Naming.writtenName w.Leaf) registry.DoubleDefs
+
+                let whyTheLambda =
+                    "A lambda's colour is the keyword it was written with, never the colour of the body around it, so an ordinary one selects the parking copy of everything it reaches."
+
+                let lambdaFix =
+                    match w.Culprit with
+                    | InsideOne when hasTwin ->
+                        Some
+                            $" The call is inside an ordinary (fun ...) written as an argument. %s{whyTheLambda} Writing (bjoroutine ...) there selects the suspending copy of '%s{w.Leaf}' instead, wherever the parameter it fills is declared -?->."
+                    | HandedOne ->
+                        Some
+                            $" The call is given an ordinary (fun ...) as an argument, and that is what selected this copy of '%s{w.Leaf}'. %s{whyTheLambda} Writing (bjoroutine ...) there selects the suspending copy instead, wherever the parameter it fills is declared -?->."
+                    | InsideOne
+                    | NoLambda -> None
+
                 let message =
                     if Set.contains n.Name registry.GeneratedCopies then
                         $"'%s{n.Name}' is not a bjoroutine, but the suspending copy of it that a bjoroutine's call reaches still parks the thread it runs on: calling '%s{w.Leaf}' at %s{formatPos w.Where} does.\n  %s{path}\n  %s{parks} The copy is this same body, and nothing along that path could be given its suspending form here — either a callee has none, or the call sits somewhere an await is illegal, such as a (seq ...) body. Move the call out of whatever sealed it, or write the suspending version by hand with (defbjo ...)."
+                    elif lambdaFix.IsSome then
+                        $"'%s{n.Name}' is a bjoroutine, and calling '%s{w.Leaf}' at %s{formatPos w.Where} parks the thread it runs on.\n  %s{path}\n  %s{parks}%s{lambdaFix.Value}\n  Failing that, move the wait off the fiber with (sync (blocking (fun () ...)))."
                     else
                         $"'%s{n.Name}' is a bjoroutine, and calling '%s{w.Leaf}' at %s{formatPos w.Where} parks the thread it runs on.\n  %s{path}\n  %s{parks} Move the wait off the fiber with (sync (blocking (fun () ...))), or use an operation that suspends rather than waits."
 

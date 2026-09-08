@@ -3,6 +3,51 @@
 
 What each change guarantees, and what it leaves open.
 
+* The parking warning says when the fix is a keyword
+
+The lint that reports a bjoroutine reaching a call which parks its thread used
+to prescribe one repair: ~(sync (blocking (fun () ...)))~. That is the wrong
+advice when the parking was chosen by a lambda, which is a common way to arrive
+here — a lambda takes its colour from ~fun~ or ~bjoroutine~ and never from the
+body around it, so an ordinary one selects the parking copy of everything it
+reaches.
+
+Two shapes now get told so: a parking call *inside* an ordinary lambda written
+as an argument, and one that *is* what such a lambda was handed to. Both are one
+keyword away from suspending, and the message says which keyword and where.
+
+The first is asked for a suspending copy before the advice is offered, since
+without one the keyword changes nothing. The second cannot be — that copy is
+generated in the module declaring the ~-?->~ and is not published — so the
+message names the condition instead, and following it where it does not hold
+costs a rejected compile rather than a wrong program.
+
+* ~:when-let~ and ~:break-let~ in a loop
+
+#+BEGIN_SRC scheme
+(loop (:for x xs)
+      (:when-let (Some h) (halve x))      ;; no match: next iteration
+      (:acc out (vecing h)))
+
+(loop (:for n (up-from 0))
+      (:break-let (Some job) (next-job q)) ;; no match: leave the loop
+      (:do (handle job)))
+#+END_SRC
+
+A ~:let~ destructures and its pattern must always match, because a pattern that
+could fail has nowhere to send the failure. These are the two versions that say
+where it goes, and together they replace the three-clause spelling of a filter:
+a ~:let~, a ~:break~ or ~#:when~ on a predicate, and a second ~:let~ to unwrap.
+
+The pattern is what selects, so neither clause is about ~Option~ in particular —
+a ~Result~, or a union of the program's own, works the same way, and no
+per-type unwrapper is needed. Both are ordinary clauses, so comprehensions and
+~seql~ take them.
+
+Two clauses rather than one with a modifier, because neither edge is the
+default. A ~chan-recv~ that answers ~None~ answers it forever, so a skip where a
+break was meant is a loop that spins rather than one that stops.
+
 * ~try->~ and ~result-map~
 
 #+BEGIN_SRC scheme

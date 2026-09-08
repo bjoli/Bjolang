@@ -1950,6 +1950,17 @@ type private LoopClause =
     /// folded constant.
     | LWith of SExpr * SExpr * SExpr option * SExpr option * Range
     | LLet of SExpr * SExpr * Range
+    /// `(:when-let pat expr)` and `(:break-let pat expr)`. A `:let` whose
+    /// pattern is allowed to fail, and which says where the failure goes: the
+    /// next iteration of this level, or the finish block.
+    ///
+    /// The two edges are separate clauses rather than one with a modifier
+    /// because neither is the default. A `chan-recv` that answers `None`
+    /// answers it forever, so a skip where a break was meant is a loop that
+    /// spins rather than one that stops.
+    ///
+    /// `true` is the breaking one.
+    | LRefutableLet of SExpr * SExpr * bool * Range
     | LDo of SExpr list * Range
     | LWhen of SExpr * Range
     | LSubloop of Range
@@ -2000,6 +2011,7 @@ let private loopClauseRange (c: LoopClause) : Range =
     | LFor(_, _, r)
     | LWith(_, _, _, _, r)
     | LLet(_, _, r)
+    | LRefutableLet(_, _, _, r)
     | LDo(_, r)
     | LWhen(_, r)
     | LSubloop r
@@ -3100,6 +3112,16 @@ and private parseLoopClause (s: SExpr) : LoopClause =
         | [ pat; value ] -> LLet(pat, value, r)
         | _ -> failwithf $"Invalid (:let ...) at %s{Lexer.formatPos r}. Expected: (:let pattern expr)"
 
+    | SList(SAtom { Token = Keyword "when-let" } :: rest, r) ->
+        match rest with
+        | [ pat; value ] -> LRefutableLet(pat, value, false, r)
+        | _ -> failwithf $"Invalid (:when-let ...) at %s{Lexer.formatPos r}. Expected: (:when-let pattern expr)"
+
+    | SList(SAtom { Token = Keyword "break-let" } :: rest, r) ->
+        match rest with
+        | [ pat; value ] -> LRefutableLet(pat, value, true, r)
+        | _ -> failwithf $"Invalid (:break-let ...) at %s{Lexer.formatPos r}. Expected: (:break-let pattern expr)"
+
     | SList(SAtom { Token = Keyword "do" } :: rest, r) ->
         if rest.IsEmpty then
             failwithf $"Invalid (:do ...) at %s{Lexer.formatPos r}. Expected: (:do expr ...)"
@@ -3564,6 +3586,13 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
                 | _ -> None)
         | _ -> []
 
+    /// The names a `:when-let` or `:break-let` pattern binds.
+    ///
+    /// Read through the pattern parser rather than off the s-expression:
+    /// these patterns destructure constructors, and `patternNames` above only
+    /// knows the two shapes an irrefutable clause is allowed to use.
+    let refutableNames (pat: SExpr) = parsePattern pat |> patternBinders
+
     /// The slot a `:with` carries its value in.
     ///
     /// A plain identifier names its own slot. That is not only an economy: a
@@ -3631,6 +3660,7 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
                 |> List.collect (function
                     | LFor(p, _, _) -> patternNames p
                     | LLet(p, _, _) -> patternNames p
+                    | LRefutableLet(p, _, _, _) -> refutableNames p
                     | _ -> [])
 
             {| Index = i
@@ -3941,6 +3971,22 @@ and desugarLoop (allForms: SExpr list) (r: Range) : Expr =
 
         | LLet(pat, value, cr) :: tl ->
             bindLoopPattern pat (parseExpr value) (buildClauses level tl accsLeft) cr
+
+        // The `:let` whose pattern may fail. `bindLoopPattern` refuses one of
+        // these because it has nowhere to send the failure; the second arm is
+        // that somewhere.
+        //
+        // Clauses above it have already run, so an accumulator stepped before
+        // this one keeps what it was given — the same as `:when` and `:break`.
+        | LRefutableLet(pat, value, stops, cr) :: tl ->
+            let missed = if stops then finishBlock cr else advanceLevel level cr
+
+            EMatch(
+                parseExpr value,
+                [ parsePattern pat, None, buildClauses level tl accsLeft
+                  PWildcard cr, None, missed ],
+                cr
+            )
 
         // In a named loop the *final* `:do` owns the continue edge: if it tail
         // calls the loop, that is the jump, and if it completes without one the

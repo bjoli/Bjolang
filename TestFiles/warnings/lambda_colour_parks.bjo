@@ -1,0 +1,43 @@
+;; A parking call whose cause is a lambda's keyword.
+;;
+;; A lambda takes its colour from `fun` or `bjoroutine` and never from the body
+;; around it, so an ordinary one written inside a bjoroutine selects the parking
+;; copy of everything it reaches. The call still runs and still answers; what it
+;; does not do is release the thread, and nothing on the page says so.
+;;
+;; The fix is the keyword, not `(sync (blocking ...))` — so the lint says which
+;; one. Two shapes get that advice, and the third does not:
+;;
+;;   inside   the parking call is *within* the lambda
+;;   handed   the parking call *is* what the lambda was given to, and the
+;;            argument is what chose this copy of it
+;;   neither  no lambda in the way, or a leaf with no suspending copy for a
+;;            keyword to have declined — `(sync (blocking ...))` as before
+
+(import (std prelude))
+(import (std ports))
+
+;; EXPECT-WARNING: The call is inside an ordinary (fun ...) written as an argument
+;; EXPECT-WARNING: Writing (bjoroutine ...) there selects the suspending copy of 'read-all'
+(: inside (-bjo-> (Vec TextInputPort) (Vec string)))
+(defbjo (inside ps)
+  (vec-map (fun (q) (read-all q)) ps))
+
+;; EXPECT-WARNING: The call is given an ordinary (fun ...) as an argument
+;; EXPECT-WARNING: that is what selected this copy of 'port->vec'
+(: handed (-bjo-> TextInputPort (Vec string)))
+(defbjo (handed p)
+  (port->vec (fun (q) (read-line q)) p))
+
+;; `file-read-lines/seq` has no suspending copy, so the keyword would change
+;; nothing and the advice stays what it was.
+;; EXPECT-WARNING: calling 'file-read-lines/seq'
+;; EXPECT-WARNING: Move the wait off the fiber with (sync (blocking (fun () ...)))
+(: plain (-bjo-> string int))
+(defbjo (plain path)
+  (seq-fold (fun (n s) (+ n 1)) 0 (file-read-lines/seq path)))
+
+(defun (main args)
+  ;; Called so that none of the above is dead code.
+  (ignore (promise-join/sync (bjo (plain "nothing.txt"))))
+  0)

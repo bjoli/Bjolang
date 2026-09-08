@@ -1054,7 +1054,9 @@ See `Docs/MACROS.org` for more details.
 |---------------------------------+----------------------------------------------------|
 | `(:for pat seq)`                | Binds `pat` to successive elements of `seq`.       |
 | `(:with pat start update end)`  | Maintains state across iterations.                 |
-| `(:let pat expr)`               | Per-iteration local binding.                       |
+| `(:let pat expr)`               | Per-iteration local binding. The pattern must always match. |
+| `(:when-let pat expr)`          | The same, for a pattern that may fail: skips the rest of the iteration when it does not match. |
+| `(:break-let pat expr)`         | The same, but a pattern that does not match ends the loop. |
 | `(:do expr ...)`                | Executes for side-effects, discarding result.      |
 | `(:when cond)`                  | Skips the rest of the current iteration unless `cond` holds. |
 | `(:acc name (coll ...) #:when c)`| Accumulates values into `coll`; optionally gated by `#:when`. |
@@ -1064,6 +1066,30 @@ See `Docs/MACROS.org` for more details.
 | `(:end-subloop-if cond)`        | Exits the current loop level and resumes the enclosing one. |
 | `(:subloop)`                    | Explicitly opens a new loop level.                 |
 | `(:yield expr)`                 | Used in `(seql ...)` to produce an element.        |
+
+**** `:when-let` and `:break-let`
+A `:let` binds by destructuring and its pattern must always match, because a
+pattern that could fail has nowhere to send the failure. These two are the
+versions that say where it goes.
+
+#+BEGIN_SRC scheme
+(loop (:for x xs)
+      (:when-let (Some h) (halve x))     ;; no match: next iteration
+      (:acc out (vecing h)))
+
+(loop (:for n (up-from 0))
+      (:break-let (Some job) (next-job q)) ;; no match: leave the loop
+      (:do (handle job)))
+#+END_SRC
+
+The pattern is what says which constructor, so neither clause is about `Option`
+in particular: a `Result`, or a union of the program's own, works the same way.
+A clause above one of these has already run, so an accumulator stepped before it
+keeps what it was given — as with `:when` and `:break`.
+
+Two clauses rather than one with a modifier, because neither edge is the
+default. A `chan-recv` that answers `None` answers it forever, so a skip where a
+break was meant is a loop that spins rather than one that stops.
 
 **** `:until-cancelled`
 Monitors a cancellation token and exits via a `break`.

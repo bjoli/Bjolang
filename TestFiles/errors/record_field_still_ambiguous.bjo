@@ -1,0 +1,18 @@
+;; A field read off a lambda parameter that nothing pins.
+;;
+;; A call site pins its parameters from the arguments that are not lambdas
+;; before the lambdas are inferred — but here the only other argument is an
+;; empty vec, whose element type is a variable, so there is still nothing that
+;; says which record `r` is.
+
+;; EXPECT-ERROR: 'url' is a field of
+;; EXPECT-ERROR: the type of the value here is not known yet
+
+(import (std prelude))
+
+(type (: Fetched (Record (: url string) (: size int))))
+(type (: Request (Record (: url string) (: verb string))))
+
+(defun (main args)
+  (vec-for-each (fun (r) (println (record-ref r url))) (vec-empty))
+  0)
