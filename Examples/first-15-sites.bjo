@@ -1,0 +1,100 @@
+;; first-15.bjo — fetch 50 urls, 8 at a time, stop after 15 have landed.
+;;
+;; Shape: one feeder fiber, a fixed crew of 8 worker fibers, one collector
+;; (the calling fiber). All three sit inside a single `with-cancel` scope, so
+;; "stop" is one call and every in-flight request hears it.
+
+(import (std prelude))
+(import (std http))
+
+;; What a worker hands back. 
+(type (: Fetched (Record (: url string)
+                         (: outcome (Result Exception string)))))
+
+
+;; ---------------------------------------------------------------------------
+;; One request
+;; ---------------------------------------------------------------------------
+;; fetch-text, fetches the text at url
+(: fetch-text (-bjo-> string (Result Exception string)))
+(defbjo (fetch-text url)
+  (with-response (r (fetch (get url)))
+    (result-map (bjoroutine (response) (read-all (response-port response))) r)))
+
+
+;; ---------------------------------------------------------------------------
+;; The crew
+;; ---------------------------------------------------------------------------
+;; Take a url, fetch it, hand the answer on, repeat.
+;; if fetch-text is an error, go on to next address.
+(: worker (-bjo-> (Chan string) (Chan Fetched) Unit))
+(defbjo (worker jobs answers)
+  (loop (:for n (up-from 0))
+        (:break-let (Some url) (sync (until-cancelled (chan-recv jobs))))
+        (:let answer (Fetched (url url) (outcome (fetch-text url))))
+        (:break-let (Some sent) (sync (until-cancelled (chan-send answers answer))))))
+
+;; hires workers.
+(: hire (-> (Chan string) (Chan Fetched) int (Vec (Promise Unit))))
+(defun (hire jobs answers n)
+  (loop (:for i (range 0 n))
+        (:acc acc (vecing (bjo (worker jobs answers))))))
+
+;; Push every url at the crew. The channel is a rendezvous, so this parks on
+;; send number 9 until a worker frees up
+(: feeder (-bjo-> (Chan string) (Vec string) Unit))
+(defbjo (feeder jobs urls)
+  (loop (:for url urls)
+        (:break-let (Some sent) (sync (until-cancelled (chan-send jobs url))))))
+
+;; Wait for the fibers to actually finish, after cancelling them.
+;; without this the scope returns while eight sockets are
+;; still tearing down.
+(: reap (-bjo-> (Vec (Promise Unit)) Unit))
+(defbjo (reap crew)
+  (loop (:for p crew)
+        (:do (ignore (sync (promise-join p))))))
+
+
+;; ---------------------------------------------------------------------------
+;; The whole thing
+;; ---------------------------------------------------------------------------
+;; takes the list of urls, how many are wanted, and how many workers we should
+;; have. 
+(: fetch-first (-bjo-> (Vec string) int int (Vec Fetched)))
+(defbjo (fetch-first urls wanted crew-size)
+  (with-cancel (cancel)
+    (def jobs (make-chan))
+    (def answers (make-chan))
+    ;; spawns crew-size amount of workers and gives them
+    ;; the channels above. 
+    (def crew (hire jobs answers crew-size))
+    ;; (bjo ...) here spins off feeder so that it runs in the background.
+    ;; otherwise it would run "synchronously" in this fiber, and would suspend
+    ;; on the first sync. We wouldn't get far. We save this so that we can wait
+    ;; it to be done later.
+    (def feed (bjo (feeder jobs urls)))
+
+    (def kept
+      (loop (:for seen (range 0 (vec-length urls)))
+            (:let r (sync (chan-recv answers)))
+            (:when-let (Ok text) (record-ref r outcome))
+            (:acc got (vecing r))
+            (:break (= (vecbuilder-length got) wanted))))
+
+    ;; Cancel and wait on everyone to properly cancel.
+    (cancel (Requested "got the 15 we came for"))
+    ;; The above cancel also cancels "feed". We wait for it to cancel
+    ;; because we are diligent programmers.
+    (ignore (sync (promise-join feed)))
+    ;; wait for the crew to cancel all their ongoing requests or
+    ;; channel rendevouz.
+    (reap crew)
+    ;; kept is a vec of all the fetched websites.
+    kept))
+
+(defun (main args)
+  ;; start the workers and wait for the results
+  (def kept (promise-join/sync (bjo (fetch-first args 15 8))))
+  (vec-for-each #(println (record-ref &1 url)) kept)
+  0)
