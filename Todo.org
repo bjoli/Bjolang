@@ -133,6 +133,75 @@ type 'T_a'~. The other routes are already closed by rules that predate this:
 The message is the gap, not the rejection — there is nothing a C# type parameter
 could mean here. It is the same wall generic arithmetic hits everywhere else.
 
+* Monomorphisation of constrained generics
+
+~Monomorphise~ copies a constrained function at each ground instantiation the
+module calls it with, and the copy takes no dictionary. What it does not do,
+written as what was deferred rather than as what was found.
+
+** Only definitions in the module being compiled are copied
+
+The copy is generated as source and re-checked, so the pass needs the body. A
+module compiled to a ~.dll~ publishes a signature and not a body, so every call
+into ~std/prelude~ and ~std/eq~ still passes a dictionary — which is most calls
+in most programs. ~(pick 3 5)~ written here is specialised; ~(least 3 5)~ is not.
+
+Closing it means publishing bodies for constrained ~defun~s the way
+~InlineTemplateEntry~ already publishes them for inline-trait methods, and
+emitting the copy in the *caller's* module. The mechanism exists; what it costs
+is metadata size, a format version, and ~bjor~'s staleness check mattering more
+than it does now.
+
+** Depth is one, and the sweep does not iterate
+
+Demand is collected once, over the written program, and never over the copies.
+So a copy's own calls to other constrained functions still dispatch:
+~sum-sizes__at_int~ has no dictionary, and the ~size-of~ in it is inlined, but a
+call it makes to another ~(where ...)~ function is unchanged.
+
+Raising the depth is iterating the sweep, with the copies from round /n/ as the
+input to round /n+1/. It is left at one because a worklist's failure mode is a
+copy count nobody predicted, and one round is where the loop bodies are.
+
+** Every type argument has to be ground
+
+A call at ~(-> %a int)~ where ~%a~ is still open is passed over, and so is one
+where only the *constrained* variables are ground. The copy therefore has no
+type parameters at all, which is what lets a call site drop its type arguments
+without agreeing with ~generalize~ about the order it put them in. Keeping the
+unconstrained ones would give fewer, more general copies and needs that
+agreement.
+
+A type argument that is a function type is declined outright: it has no short
+spelling for a copy's name, and ~Eq~ and ~Ord~ have no implementation at one.
+
+** Suspending functions are not copied at all
+
+A ~-?->~ signature and a ~defun~ that reaches a ~defbjouble~ both already have a
+second body, and it is generated inside ~checkDeclGroup~ — so it is not among
+the untyped declarations this pass reads, and it could not copy both halves even
+if it wanted to. Copying only the ordinary half would leave ~selectDoubles~
+looking up a mangled name in ~DoubleDefs~ and finding nothing, which is not a
+wrong answer but is a fiber that blocks where it used to park.
+
+~Naming.specializedCopy~ puts its infix ahead of the colour suffix so that
+~f__at_int__bjo~ is what the twin would be called, which is the half of the fix
+that is already in place.
+
+** Mutual recursion is declined
+
+Specialising one member of a cycle leaves it calling the generic other, which is
+the ~CS7036~ recorded above under "Mutual recursion does not forward
+dictionaries". Specialising the whole group together would *fix* that bug at
+every ground instantiation, which is the reason to do it and the reason it is a
+separate change.
+
+** A mention that is not a call is passed over
+
+~Lowering~ eta-expands one back into call position and supplies its dictionary
+there, so it is correct as it stands. Specialising it would remove the
+eta-expansion as well as the dictionary, and it is a rewrite at a different node.
+
 * Constraints and numerics
 
 Found while opening ~Ord~ up and making the numeric constraints explicit. All of

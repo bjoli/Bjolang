@@ -1,0 +1,89 @@
+;; What a specialised constrained generic compiles to.
+;;
+;; No behavioural test can see this: the dictionary and the copy produce the
+;; same answer, and the difference is only that one dispatches. What is pinned
+;; here is that the copy takes no dictionary parameter and that its trait calls
+;; are gone — inlined, because the copy is checked before `TraitInline` runs and
+;; so arrives at it with its implementor concrete.
+
+(import (std prelude))
+
+(def/trait (Sized %a)
+  (: size-of (-> %a int)))
+
+(impl (Sized int)
+  (defun (size-of x) x))
+
+(impl (Sized string)
+  (defun (size-of x) (string-length x)))
+
+;; The written function keeps its dictionary. Somebody may still call it at a
+;; type nothing in this module names.
+;; EXPECT-CS: public static int total<T_a>\(Sized<T_a> _dict_Sized_a, T_a a, T_a b\)
+;; EXPECT-CS: return \(_dict_Sized_a\.sizesubof\(a\) \+ _dict_Sized_a\.sizesubof\(b\)\);
+(: total (-> %a %a int) (where (Sized %a)))
+(defun (total a b) (+ (size-of a) (size-of b)))
+
+;; The copy: no leading dictionary, and both `size-of` calls spliced away. This
+;; second half is the reason the pass runs where it does — after it, the calls
+;; would have been devirtualised and nothing more.
+;; EXPECT-CS: public static int total__at_int\(int a, int b\) \{
+;; EXPECT-CS: return \(a \+ b\);
+(: total-int (-> int))
+(defun (total-int) (total 3 5))
+
+;; One copy per instantiation, and the second one proves the first was chosen
+;; by the type rather than by being the only one there is.
+;; EXPECT-CS: public static int total__at_string\(string a, string b\) \{
+(: total-str (-> int))
+(defun (total-str) (total "ab" "cde"))
+
+;; Two calls at one type share a copy: this one reaches the same name, and
+;; `total__at_int` is asserted above to be emitted once.
+;; EXPECT-CS: \.total__at_int\(1, 2\)
+(: total-int-again (-> int))
+(defun (total-int-again) (total 1 2))
+
+;; A call site whose type arguments are not ground keeps its dictionary: there
+;; is nothing to make a copy at. This is also what depth one looks like from the
+;; outside — `total-thrice` is generic, so it is never copied, and the call to
+;; `total` inside it dispatches.
+;; EXPECT-CS: public static int totalsubthrice<T_a>\(Sized<T_a> _dict_Sized_a, T_a x\)
+;; EXPECT-CS: mono.*\.total\(_dict_Sized_a, x, x\)
+(: total-thrice (-> %a int) (where (Sized %a)))
+(defun (total-thrice x) (+ (total x x) (size-of x)))
+
+;; A recursive constrained function. The copy's self-call has to reach the copy
+;; and not the original — otherwise the first iteration is specialised and every
+;; one after it dispatches. It reaching itself is what lets `LoopLowering` see a
+;; tail-recursive group at all, so the `while` below is the assertion.
+;; EXPECT-CS: public static int sumsubsizes__at_int\(SchemeList.SchemeList<int> xs, int acc\) \{
+;; EXPECT-CS: while \(true\) \{
+(: sum-sizes (-> (List %a) int int) (where (Sized %a)))
+(defun (sum-sizes xs acc)
+  (if (list-empty? xs)
+      acc
+      (sum-sizes (list-tail xs) (+ acc (size-of (list-head xs))))))
+
+(: sum-ints (-> int))
+(defun (sum-ints) (sum-sizes (list 1 2 3) 0))
+
+;; A CLR constraint is a `where` clause rather than a parameter, so there is no
+;; dictionary to remove and no copy is made. The call keeps its type argument.
+;; EXPECT-NO-CS: twice__at_
+(def/trait (Num %a)
+  (#:clr-constraint (System.Numerics.INumber %a)))
+
+(: twice (-> %a %a) (where (Num %a)))
+(defun (twice n) (+ n n))
+
+(: twice-int (-> int))
+(defun (twice-int) (twice 21))
+
+(defun (main)
+  (println (int->string (total-int)))
+  (println (int->string (total-str)))
+  (println (int->string (total-int-again)))
+  (println (int->string (sum-ints)))
+  (println (int->string (twice-int)))
+  0)

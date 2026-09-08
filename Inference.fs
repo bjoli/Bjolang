@@ -7106,6 +7106,24 @@ let private returnOnlyGenerics (env: Env) : Set<string> =
         | _ -> None)
     |> Set.ofSeq
 
+/// Checks declarations that were generated *after* `checkProgram` returned.
+///
+/// `Monomorphise` builds a specialised copy of a constrained function as source
+/// and hands it back here to be checked, because a copy made by substituting
+/// into the checked tree would have to rewrite every `HMType` on every node and
+/// re-decide `TraitRef.Resolved` at every trait call. Re-checking source cannot
+/// miss one, which is the same argument `expandPolymorphicDefuns` makes.
+///
+/// The whole-program checks `checkProgram` runs afterwards are deliberately not
+/// repeated. `checkModuleValuesAreConcrete` and `warnAboutShadowedMethods` are
+/// about what was written, and a generated copy would report the same thing
+/// twice under a name nobody wrote; `ReturnOnlyGenerics` is already settled for
+/// every name a copy could mention.
+let checkAddendum (initialEnv: Env) (decls: Decl list) : Env * TDecl list =
+    let env, _, typedDecls = checkDeclGroup initialEnv Map.empty decls
+    solvePending env
+    env, typedDecls
+
 let checkProgram (initialEnv: Env) (program: Decl list) : Env * TDecl list =
     let finalEnv, _, typedDecls = checkDeclGroup initialEnv Map.empty program
     // Anything raised outside a declaration that generalizes still has to be

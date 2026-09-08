@@ -34,6 +34,16 @@ module Diagnostics =
     let private generatedCopy =
         Regex(@"(?<=[A-Za-z0-9_?!*/<>=+'&.-])__bjo\b", RegexOptions.Compiled)
 
+    /// The infix `Naming.specializedCopy` adds to a monomorphised copy, and
+    /// everything after it — the type arguments it was made at.
+    ///
+    /// Stripped for the reason `__bjo` is: `same?__at_int` is a real method and
+    /// a stack trace naming it is useful, but it appears in no source file, so
+    /// a compiler error naming it sends the reader looking for something that
+    /// is not there.
+    let private specializedCopy =
+        Regex(@"(?<=[A-Za-z0-9_?!*/<>=+'&.-])__at_[A-Za-z0-9_]+", RegexOptions.Compiled)
+
     /// The qualifier on a landing pad — the impl's own method, named directly
     /// instead of dispatched: `Fetcher_System_Int32.Instance::fetch`.
     ///
@@ -66,7 +76,10 @@ module Diagnostics =
     /// compiler error naming it is not, because it appears in no source file
     /// and the reader has no way to find it.
     let humanize (message: string) =
-        landingPad.Replace(generatedCopy.Replace(invented.Replace(message, ""), ""), "")
+        landingPad.Replace(
+            generatedCopy.Replace(specializedCopy.Replace(invented.Replace(message, ""), ""), ""),
+            ""
+        )
 
     /// Whether the compiler narrates what it is doing.
     ///

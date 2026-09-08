@@ -1639,6 +1639,18 @@ let runFullFrontendPipeline (mainFilePath: string) =
         // errors depending on inliner luck. See the module docstring and §8.3.
         MustUse.run env.Registry typedAst
 
+        Diagnostics.progress "=== Step 3.5: Monomorphisation ==="
+        // Before trait inlining, and for the sake of it: a copy checked at a
+        // concrete type has its trait calls resolved, so the inliner splices
+        // them where the generic original would have dispatched through a
+        // dictionary. After `MustUse`, so that a copy is not reported on twice
+        // under a name nobody wrote.
+        //
+        // It takes the untyped declarations as well as the checked ones,
+        // because the copy is generated as source. See the module docstring.
+        let env, typedAst =
+            Timing.phase "monomorphise" (fun () -> Monomorphise.run env letrecifiedDecls typedAst)
+
         Diagnostics.progress "=== Step 4: Trait Inlining ==="
         // Before dictionary lowering, so that the dictionary pass sees the
         // inlined result and handles any interface-trait dispatch inside it with

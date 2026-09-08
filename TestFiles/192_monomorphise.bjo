@@ -1,0 +1,112 @@
+;; Monomorphisation of constrained generics: a call at a ground instantiation
+;; goes to a copy of the function checked at those types, with the dictionary
+;; gone and its trait calls resolved.
+;;
+;; Nothing here can tell by its answer that a copy was made — that is what
+;; `codegen/monomorphise.bjo` is for. What this asks is whether the copies are
+;; *right*, and the way to ask is to run every one of them at more than one
+;; type: a copy handed the wrong evidence is invisible at `int` alone, which is
+;; the same reason `142_constrained_values.bjo` runs everything twice.
+
+(import (std prelude))
+(import (std simpletest))
+
+(def/trait (Sized %a)
+  (: size-of (-> %a int)))
+
+(impl (Sized int)
+  (defun (size-of x) x))
+
+(impl (Sized string)
+  (defun (size-of x) (string-length x)))
+
+(impl (Sized bool)
+  (defun (size-of x) (if x 1 0)))
+
+;; A conditional impl, so a copy has to build evidence rather than name a
+;; singleton: `(List int)` needs `Sized_List::Make(Sized_Int::Instance)`.
+(impl (Sized (List %a)) (where (Sized %a))
+  (defun (size-of xs) (list-foldl (fun (acc x) (+ acc (size-of x))) 0 xs)))
+
+;; --- The plain case ---------------------------------------------------------
+
+(: total (-> %a %a int) (where (Sized %a)))
+(defun (total a b) (+ (size-of a) (size-of b)))
+
+;; --- Recursion --------------------------------------------------------------
+;;
+;; A copy's self-call has to reach the copy. Reaching the original instead is
+;; not a wrong answer, so the assertion below cannot see it; what it pins is
+;; that the copy still terminates and still sums, at both types.
+
+(: sum-sizes (-> (List %a) int int) (where (Sized %a)))
+(defun (sum-sizes xs acc)
+  (if (list-empty? xs)
+      acc
+      (sum-sizes (list-tail xs) (+ acc (size-of (list-head xs))))))
+
+;; --- Two constraints, so the evidence has an order to get wrong -------------
+
+(: same-size? (-> %a %b bool) (where (Sized %a) (Sized %b)))
+(defun (same-size? a b) (= (size-of a) (size-of b)))
+
+;; --- A type argument that is not the constrained one ------------------------
+;;
+;; `%b` carries no constraint and is substituted anyway: a copy has no type
+;; parameters at all, which is what lets a call site drop its type arguments.
+
+(: tagged-size (-> %a %b int) (where (Sized %a)))
+(defun (tagged-size x _tag) (size-of x))
+
+;; --- A call that must NOT be specialised ------------------------------------
+;;
+;; Nothing here is ground, so this keeps its dictionary and the `total` inside
+;; it dispatches. It is also what depth one leaves behind: called at `int`
+;; below, `outer` is copied, but the `total` inside the copy is not.
+
+(: outer (-> %a int) (where (Sized %a)))
+(defun (outer x) (+ (total x x) (size-of x)))
+
+;; --- A CLR constraint has no dictionary to remove ---------------------------
+
+(def/trait (Num %a)
+  (#:clr-constraint (System.Numerics.INumber %a)))
+
+(: twice (-> %a %a) (where (Num %a)))
+(defun (twice n) (+ n n))
+
+(defun (main)
+  ;; --- one function, four instantiations ------------------------------------
+  (expect "at int" (total 3 5) 8)
+  (expect "at string" (total "ab" "cde") 5)
+  (expect "at bool" (total #t #f) 1)
+  ;; (1 + 2) + (3): the conditional impl's body is spliced into the copy, and
+  ;; the `size-of` inside it resolves to `int`'s.
+  (expect "through a conditional impl"
+          (total (list 1 2) (list 3))
+          6)
+
+  ;; --- the recursive one, at three types ------------------------------------
+  (expect "recursing at int" (sum-sizes (list 1 2 3) 0) 6)
+  (expect "recursing at string" (sum-sizes (list "a" "bcd") 0) 4)
+  (expect "recursing at a nested list"
+          (sum-sizes (list (list 1 2) (list 3)) 0)
+          6)
+
+  ;; --- two constraints, and the two halves at different types ---------------
+  (expect "two constraints, same type" (same-size? 3 3) #t)
+  (expect "two constraints, two types" (same-size? 2 "ab") #t)
+  (expect "and disagreeing" (same-size? 2 "abc") #f)
+
+  ;; --- an unconstrained type argument ---------------------------------------
+  (expect "unconstrained second argument" (tagged-size "abcd" 0) 4)
+  (expect "the same, at other types" (tagged-size 7 "tag") 7)
+
+  ;; --- the generic caller, which keeps its dictionary -----------------------
+  (expect "a generic caller at int" (outer 4) 12)
+  (expect "a generic caller at string" (outer "abc") 9)
+
+  ;; --- a CLR constraint is left alone ---------------------------------------
+  (expect "a clr constraint at int" (twice 21) 42)
+  (expect "a clr constraint at a double" (double->string (twice 1.5)) "3")
+  0)

@@ -89,6 +89,16 @@ let suspendingCopy (name: string) = name + "__bjo"
 /// definition from a written one.
 let isSuspendingCopy (name: string) = name.EndsWith "__bjo"
 
+/// The copy of a constrained function that `Monomorphise` made for one
+/// instantiation, `key` being a spelling of the type arguments it was made at.
+///
+/// The infix goes ahead of any colour suffix, so that `suspendingCopy` applied
+/// to a specialised name gives that copy's twin: `f__at_int__bjo` rather than
+/// `f__bjo__at_int`. Only the first spelling leaves `isSuspendingCopy` — and
+/// with it every `DoubleDefs` lookup that goes through `writtenName` — still
+/// answering correctly about a specialised name.
+let specializedCopy (name: string) (key: string) = name + "__at_" + key
+
 /// Splits a name qualified by a module class (e.g. `prelude_Module::vec->str`) 
 /// into its qualifier and base name. Returns `None` if it carries no such qualifier.
 ///
