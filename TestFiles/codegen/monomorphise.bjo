@@ -77,19 +77,20 @@
 ;; emitted into *this* module's class rather than the library's.
 ;; EXPECT-CS: public static int least__at_int\(int a, int b\) \{
 ;;
-;; And the copy's body still means what it meant where it was written: the
-;; helper it calls is spelled with the module that defines it, not left bare to
-;; bind against whatever this module happens to call `at-most?`.
-;; EXPECT-CS: eq_Module\.atsubmost_QMARK\(Ord_System_Int32\.Instance, a, b\)
+;; The chain, and the whole of what the fixpoint buys. `least` calls `at-most?`,
+;; which is itself `(where (Ord %a))` and whose body is `(<= (compare a b) 0)`.
+;; The second round copies *that* at int, which resolves `compare` to the `Ord`
+;; implementation for int, which `TraitInline` then splices. Three frames become
+;; one comparison.
+;; EXPECT-CS: \.atsubmost_QMARK__at_int\(a, b\)
+;; EXPECT-CS: public static bool atsubmost_QMARK__at_int\(int a, int b\) \{
+;; EXPECT-CS: return \(a\.CompareTo\(b\) <= 0\);
+;;
+;; And nothing is left dispatching: the dictionary-taking `at-most?` in the
+;; library is no longer what this reaches.
+;; EXPECT-NO-CS: eq_Module\.atsubmost_QMARK\(Ord_System_Int32
 (: least-int (-> int))
 (defun (least-int) (least 3 5))
-
-;; Depth is one, and this is what that looks like from the outside: the copy
-;; above calls `at-most?`, which is itself a constrained generic, and that call
-;; still passes evidence. It is the concrete singleton rather than a dictionary
-;; parameter, which is already better than the generic original — but it is a
-;; call, and a second round of this pass is what would remove it.
-;; EXPECT-NO-CS: atsubmost_QMARK__at_int
 
 ;; A CLR constraint is a `where` clause rather than a parameter, so there is no
 ;; dictionary to remove and no copy is made. The call keeps its type argument.

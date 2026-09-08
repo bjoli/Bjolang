@@ -143,32 +143,37 @@ against implementations the library never saw.
 
 What it does not do, written as what was deferred rather than as what was found.
 
-** Depth is one, and the sweep does not iterate
+** The budget, and what stops the sweep
 
-Demand is collected once, over the written program, and never over the copies.
-So a copy's own calls to other constrained functions still dispatch.
+The sweep runs to a fixpoint rather than to a depth: each round collects demand
+over the copies the round before it made, and it stops when a round asks for
+nothing new. There is no depth number, and deliberately — the number that would
+have worked when this was written is 3, which is only where the standard
+library's chains happen to run out.
 
-This is now the largest thing left, and publishing bodies is what made it so.
-~(least 3 5)~ gives
+Termination is by the key, not by a counter. A copy is keyed by its name and its
+ground type arguments, so demanding one that exists is a lookup; new keys can
+only run out. What would break that is *polymorphic recursion* — ~f~ at ~T~
+calling ~f~ at ~(List T)~, which is why C++ and Rust need a depth cap — and
+Bjolang cannot express it: a recursive occurrence is bound monomorphically, the
+same fact ~Lowering.Scope.SelfCall~ relies on, and a mutually recursive group is
+not a candidate at all.
 
-#+BEGIN_SRC csharp
-public static int least__at_int(int a, int b) {
-    if (eq_Module.atsubmost_QMARK(Ord_System_Int32.Instance, a, b)) return a;
-    else return b;
-}
-#+END_SRC
+What bounds it instead is a code-size budget, in typed AST nodes: the module's
+own size or ~budgetFloor~, whichever is larger. When it is spent the pass warns,
+names the function it stopped at, and leaves the remaining calls dispatching —
+always correct, and the same fallback a body that will not re-check takes.
 
-The dictionary parameter is gone and the evidence is a singleton of exactly
-known type, which is already better than the generic original. But ~at-most?~ is
-itself ~(where (Ord %a))~, its body is ~(<= (compare a b) 0)~, and that body is
-published too — so a second round would copy it at ~int~, resolve ~compare~ to
-~Ord_System_Int32~, and ~TraitInline~ would splice it to ~a.CompareTo(b) <= 0~.
-Three of the four frames in that call would disappear.
+The floor is measured rather than chosen, and the measurement is worth keeping
+because it is what makes the fixpoint safe rather than merely terminating. The
+standard library has 22 constrained generics and its call graph among them has
+**out-degree at most one** — 15 call no other constrained generic and 7 call
+exactly one. So copies grow by addition: 1.41 per call site on average, 3 in the
+worst case, and depth 8 costs exactly what depth 3 costs. The largest demand
+anywhere in the fixtures is ~139_ord.bjo~ at 722 nodes.
 
-Raising the depth is iterating the sweep, with the copies from round /n/ as the
-input to round /n+1/. What it needs before it is worth doing is a budget: one
-round is bounded by what the program writes, and the second is bounded by what
-the standard library writes.
+A graph that branched would grow by multiplication, and then the floor is what
+would matter. Nothing here branches yet.
 
 ** Every type argument has to be ground
 

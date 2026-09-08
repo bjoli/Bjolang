@@ -29,11 +29,10 @@ open Bjolang.Unification
 /// caller is checked against the caller's registry, so it resolves against
 /// implementations the defining module never saw.
 ///
-/// Depth is one, and structurally so: the sweep runs once over the written
-/// program and never over what it generates, so a call inside a copy still
-/// passes evidence. It is a concrete singleton rather than a dictionary
-/// parameter, which is what the copy bought; removing the call as well means
-/// iterating the sweep, which is deliberately not what this does yet.
+/// The sweep runs to a fixpoint: a copy's own calls to constrained generics are
+/// collected like any others, so a chain is specialised all the way down.
+/// `(least 3 5)` was three calls through two dictionaries and is one
+/// `CompareTo`. See `run` for why that terminates and what bounds it.
 
 // ---------------------------------------------------------------------------
 // Naming a copy after the types it was made at
@@ -430,13 +429,25 @@ let private demandOf (env: Env) (cands: Map<string, Candidate>) (name: string) (
         let pruned = prune env.Registry t
         List.isEmpty (freeVars env.Registry pruned) && List.isEmpty (freeTVars env.Registry pruned)
 
-    // Unqualified only: a qualified name is another module's function, and this
-    // pass has no body for one.
-    if Naming.writtenName name <> name || not (Map.containsKey name cands) then
-        None
-    else
+    // A qualified name is one a *copy* is calling: `applyQualification` rewrote
+    // the free names of an imported body to say where they came from, so this
+    // is what the second and later rounds see. The qualifier is checked against
+    // the candidate's own origin rather than dropped, so that a local function
+    // of the same name is not copied in its place.
+    let bare = Naming.writtenName name
 
-    match Map.tryFind name env.Bindings with
+    let named (cand: Candidate) =
+        name = bare
+        || (match cand.Origin with
+            | Some origin -> Naming.qualifiedBinding origin bare = name
+            | None -> false)
+
+    match Map.tryFind bare cands with
+    | None -> None
+    | Some cand when not (named cand) -> None
+    | Some _ ->
+
+    match Map.tryFind bare env.Bindings with
     | Some binding ->
         let (Scheme(schemeVars, constraints, _)) = binding.Scheme
 
@@ -456,9 +467,12 @@ let private demandOf (env: Env) (cands: Map<string, Candidate>) (name: string) (
 
         match traverse typeKey resolved with
         | Some keys ->
+            // The copy is emitted in *this* module whatever module the body was
+            // written in, so it is named bare and the qualifier does not travel
+            // onto it.
             Some
-                { Callee = name
-                  CopyName = copyName name keys
+                { Callee = bare
+                  CopyName = copyName bare keys
                   Bindings = List.zip schemeVars resolved }
         | None -> None
     | None -> None
@@ -649,8 +663,48 @@ let private publish
                 ConstrainedBodies =
                     bodies |> Map.fold (fun acc k v -> Map.add k v acc) env.Registry.ConstrainedBodies } }
 
-/// Specialises every constrained generic the written program calls at a ground
-/// instantiation.
+/// Every typed node in these declarations.
+///
+/// The measure the budget is kept in. It is not a count of emitted C# — nothing
+/// here has been lowered yet — but the copies and the module it is compared
+/// against are counted the same way, which is what the comparison needs.
+let private nodeCount (decls: TDecl list) =
+    decls |> List.sumBy (TypeVisitor.foldDecl (fun n _ -> n + 1) 0)
+
+/// How much specialised code a module may be given before this stops.
+///
+/// The budget is this or the module's own size, whichever is larger. A floor is
+/// needed because the copies a module asks for come out of the libraries it
+/// calls and have nothing to do with how much it wrote itself: `139_ord.bjo`
+/// writes 537 nodes and asks for 722, and a twenty-line `main` that sorts a
+/// list would otherwise be told it had spent its budget on the first copy.
+///
+/// Measured rather than chosen. Across the fixtures and the standard library
+/// the largest demand is that 722, so this is about five times the worst case
+/// anything here produces, and around twice the largest module in the suite. It
+/// bounds a runaway at roughly "one more large module", which is what makes it
+/// a backstop rather than a limit anything is expected to reach.
+///
+/// What it does not bound is the *shape* that would need bounding: the standard
+/// library's constrained call graph has out-degree at most one, so copies grow
+/// by addition. A graph that branched would grow by multiplication, and this is
+/// the number that would then matter.
+[<Literal>]
+let private budgetFloor = 4000
+
+/// Specialises every constrained generic the program calls at a ground
+/// instantiation, and then every one *those copies* call, to a fixpoint.
+///
+/// The fixpoint terminates without a depth counter, and the reason is worth
+/// stating because it is the thing that makes monomorphisation dangerous in
+/// other languages. A copy is keyed by its name together with its ground type
+/// arguments, so demanding one that already exists is a lookup. New keys can
+/// therefore only run out — unless the types themselves grow, which is
+/// *polymorphic recursion*: `f` at `T` calling `f` at `(List T)`. Bjolang
+/// cannot express it. A recursive occurrence is bound monomorphically, which is
+/// the same fact `Lowering.Scope.SelfCall` relies on, so `f` at `T` can only
+/// call `f` at `T`; and a mutually recursive group, where two functions could
+/// between them grow a type, is not a candidate at all.
 ///
 /// `decls` is the untyped program — the copies are made from its bodies — and
 /// `typed` is the checked one, which is where the demand and the call sites
@@ -674,34 +728,68 @@ let run
         env, typed
     else
 
-    let demands = collect env cands typed
+    let budget = max budgetFloor (nodeCount typed)
 
-    if Map.isEmpty demands then
-        env, typed
-    else
+    /// One round: the copies `source` asks for that do not exist yet.
+    ///
+    /// Only the previous round's output is searched, not the whole program
+    /// again. A demand `source` shares with an earlier round is already a key
+    /// in `made`, so re-collecting it would find nothing to do.
+    let rec expand (env: Env) made generated spent (source: TDecl list) =
+        let wanted =
+            collect env cands source
+            |> Map.filter (fun copyName _ -> not (Map.containsKey copyName made))
 
-    // Every copy is made before any call is pointed at one: a demand that
-    // cannot be met leaves its call sites alone, so redirection has to know
-    // which copies exist rather than which were wanted.
-    let env, made, generated =
-        demands
-        |> Map.toList
-        |> List.fold
-            (fun (env, made, generated) (copyName, demand) ->
-                match generate env (Map.find demand.Callee cands) demand with
-                | Some(env, decls) -> env, Map.add copyName demand made, generated @ decls
-                | None -> env, made, generated)
-            (env, Map.empty, [])
+        if Map.isEmpty wanted then
+            env, made, generated
+        else
+
+        let env, made, fresh, spent, exhausted =
+            wanted
+            |> Map.toList
+            |> List.fold
+                (fun (env, made, fresh, spent, exhausted) (copyName, demand) ->
+                    if exhausted || spent > budget then
+                        // Said once, naming what stopped rather than every call
+                        // that then went on dispatching. The generic function is
+                        // always a correct answer, so this is a lost
+                        // optimisation and not a failure.
+                        if not exhausted then
+                            Diagnostics.warn
+                                $"specialising '%s{demand.Callee}' would take this module past its budget of %d{budget} nodes of generated code. It and the calls after it keep passing a dictionary."
+
+                        env, made, fresh, spent, true
+                    else
+
+                    match generate env (Map.find demand.Callee cands) demand with
+                    | Some(env, decls) ->
+                        env, Map.add copyName demand made, fresh @ decls, spent + nodeCount decls, false
+                    | None -> env, made, fresh, spent, false)
+                (env, made, [], spent, false)
+
+        if exhausted || List.isEmpty fresh then
+            env, made, generated @ fresh
+        else
+            expand env made (generated @ fresh) spent fresh
+
+    let env, made, generated = expand env Map.empty [] 0 typed
 
     if Map.isEmpty made then
         env, typed
     else
 
-    // The generated declarations are added *after* the rewrite and are not
-    // themselves rewritten. That is the whole of "depth one": a call inside a
-    // copy is a call to whatever the original called, dictionary and all.
-    let rewritten =
-        typed
-        |> List.map (TypeVisitor.mapDecl (TypeVisitor.mapExpr (redirect env cands made)))
+    Diagnostics.progress (
+        sprintf
+            "Specialised %d constrained generic(s), %d nodes of a %d node budget"
+            made.Count
+            (nodeCount generated)
+            budget)
 
-    env, appendToLastModule generated rewritten
+    // The copies are rewritten along with the program, and that is what makes
+    // this a fixpoint rather than one level: a copy's own call to a constrained
+    // generic is pointed at *that* one's copy, which is the call the round
+    // after it made.
+    let rewrite =
+        TypeVisitor.mapDecl (TypeVisitor.mapExpr (redirect env cands made))
+
+    env, appendToLastModule (generated |> List.map rewrite) (typed |> List.map rewrite)

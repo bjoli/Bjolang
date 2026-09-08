@@ -371,8 +371,6 @@ If a user has a dir called lib/std it is mistaken as the stdlib :/
 
 fix tail recursion and parameterization: Since tail calls have no code in the recursive function running after it, we can restore the parameters outside the recursion. is this doable ?
 
-The current parameter implementation is very practical, but perhaps limiting. There are 3 "super fast" parameter slots (current input and output port and current-cancel). Then there are 31 fast slots that get the fast path when parameterizing, and the rest are "cold paths" which has at least one extra indirection. Should I change this? maybe an array of arrays(32x32) giving us 1024 fast parameters and let the rest in the cold path? 1024 parameters should be enough for anyone. 
-
 `port->lines` does not exist. The real thing is `reader->vec`, a builtin, `(-> TextReader (Vec string))`. RENAME
 
 `write-line` does not exist. The real name is `writeln` (`prelude.bjo:1359`). RENAME FIX
@@ -408,10 +406,6 @@ network io by wrapping c# async in events for the cml goodness. (std http) is he
 
 ** Performance things
 Hoist literals. Not just literal lists and vecs, but also symbols and keywords. They have a decently high init cost, since they do a parallel map lookup.
-
-Monomorphize constrained generics, to one level. Done, and across module boundaries: a call at a ground instantiation goes to a copy of the function checked at those types, so the dictionary parameter is gone and the trait calls inside it are inlined rather than dispatched. A `(where ...)` on an exported signature publishes the body in the dll, so the copy is made in whichever module calls it — including at types the library never saw. Still one level: a copy's own calls to other constrained generics pass a concrete singleton rather than a dictionary parameter, which is better but is still a call. See Todo.org. 
-
-Seq Fusion (done woop woop)
 
 Turn let-bound functions that are only  ever in function position as functions rather than delegates/Func.
 
