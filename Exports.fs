@@ -234,15 +234,34 @@ let metadata
             Map.containsKey traitName exportedTraits
             && Codegen.isSerializableTemplate tpl.Body)
 
-    // A template's free variables have to be reachable from the
+    // The body of every exported constrained generic, so that an importer can
+    // copy it at a ground instantiation instead of passing a dictionary.
+    //
+    // Filtered to the exports for the reason `blockingDefs` is: a private
+    // helper is nothing anyone outside can call. A body read back from a
+    // dependency is here too when this module re-exports the name — it carries
+    // its own `OriginModule`, so it goes on pointing at where it was written.
+    //
+    // A body that will not serialize is left out. Whoever imports it then calls
+    // the generic function, which is always correct.
+    let constrainedBodiesToExport =
+        env.Registry.ConstrainedBodies
+        |> Map.toList
+        |> List.filter (fun (name, (tpl: TypedAST.InlineTemplate)) ->
+            List.contains name exports && Codegen.isSerializableTemplate tpl.Body)
+
+    // A body's free variables have to be reachable from the
     // importing module, or re-inference at the splice fails and the call
     // falls back to one. Anything an exported template names is
     // therefore exported too — including a helper this module itself
     // imported from a third one, which is where the qualification points.
     let autoExports =
-        inlineTemplatesToExport
-        |> List.collect (fun (_, (tpl: TypedAST.InlineTemplate)) ->
-            tpl.Qualification |> Map.toList |> List.map fst)
+        (inlineTemplatesToExport
+         |> List.collect (fun (_, (tpl: TypedAST.InlineTemplate)) ->
+             tpl.Qualification |> Map.toList |> List.map fst))
+        @ (constrainedBodiesToExport
+           |> List.collect (fun (_, (tpl: TypedAST.InlineTemplate)) ->
+               tpl.Qualification |> Map.toList |> List.map fst))
         |> List.filter (fun n ->
             not (List.contains n exports)
             && not (Set.contains n exportedTraitMethods)
@@ -252,7 +271,7 @@ let metadata
     if isLibrary && not autoExports.IsEmpty then
         Diagnostics.progress (
             sprintf
-                "Auto-exporting %d name(s) reachable only through an exported inline template: %s"
+                "Auto-exporting %d name(s) reachable only through an exported body: %s"
                 autoExports.Length
                 (String.concat ", " autoExports))
 
@@ -311,6 +330,9 @@ let metadata
         (inlineTemplatesToExport
          |> List.collect (fun (_, (tpl: TypedAST.InlineTemplate)) ->
              bodyExternSubst (Set.ofList tpl.Params) tpl.Body |> Map.toList))
+        @ (constrainedBodiesToExport
+           |> List.collect (fun (_, (tpl: TypedAST.InlineTemplate)) ->
+               bodyExternSubst (Set.ofList tpl.Params) tpl.Body |> Map.toList))
         @ (exportedTraitDefaults
            |> List.collect (fun (_, decl) ->
                match decl with
@@ -854,6 +876,30 @@ let metadata
                 : ModuleMetadata.InlineTemplateEntry))
         else []
 
+    let constrainedBodies =
+        if isLibrary then
+            constrainedBodiesToExport
+            |> List.map (fun (name, (tpl: TypedAST.InlineTemplate)) ->
+                let body =
+                    AlphaRename.renameFree
+                        (bodyExternSubst (Set.ofList tpl.Params) tpl.Body)
+                        tpl.Body
+
+                ({ Name = name
+                   OriginModule = tpl.OriginModule
+                   Params = tpl.Params
+                   Body = Codegen.serializeExpr body
+                   Qualification = tpl.Qualification |> Map.toList }
+                : ModuleMetadata.ConstrainedBodyEntry))
+        else []
+
+    if isLibrary && not constrainedBodies.IsEmpty then
+        Diagnostics.progress (
+            sprintf
+                "Publishing %d constrained body(s) an importer may specialise: %s"
+                constrainedBodies.Length
+                (constrainedBodies |> List.map (fun b -> b.Name) |> String.concat ", "))
+
     // The macros this assembly publishes, and the class holding them.
     //
     // A separate field from the exported defs deliberately: those are
@@ -916,4 +962,5 @@ let metadata
       InlineTemplates = inlineTemplates
       Macros = macros
       BlockingDefs = blockingDefs
-      DoubleDefs = doubleDefs }
+      DoubleDefs = doubleDefs
+      ConstrainedBodies = constrainedBodies }

@@ -68,6 +68,29 @@
 (: sum-ints (-> int))
 (defun (sum-ints) (sum-sizes (list 1 2 3) 0))
 
+;; ---------------------------------------------------------------------------
+;; Across a dll
+;; ---------------------------------------------------------------------------
+
+;; `least` is `(where (Ord %a))` in `std/eq`, which is a compiled assembly. Its
+;; body travels in that assembly's metadata, so the copy is made here and
+;; emitted into *this* module's class rather than the library's.
+;; EXPECT-CS: public static int least__at_int\(int a, int b\) \{
+;;
+;; And the copy's body still means what it meant where it was written: the
+;; helper it calls is spelled with the module that defines it, not left bare to
+;; bind against whatever this module happens to call `at-most?`.
+;; EXPECT-CS: eq_Module\.atsubmost_QMARK\(Ord_System_Int32\.Instance, a, b\)
+(: least-int (-> int))
+(defun (least-int) (least 3 5))
+
+;; Depth is one, and this is what that looks like from the outside: the copy
+;; above calls `at-most?`, which is itself a constrained generic, and that call
+;; still passes evidence. It is the concrete singleton rather than a dictionary
+;; parameter, which is already better than the generic original — but it is a
+;; call, and a second round of this pass is what would remove it.
+;; EXPECT-NO-CS: atsubmost_QMARK__at_int
+
 ;; A CLR constraint is a `where` clause rather than a parameter, so there is no
 ;; dictionary to remove and no copy is made. The call keeps its type argument.
 ;; EXPECT-NO-CS: twice__at_
@@ -85,5 +108,6 @@
   (println (int->string (total-str)))
   (println (int->string (total-int-again)))
   (println (int->string (sum-ints)))
+  (println (int->string (least-int)))
   (println (int->string (twice-int)))
   0)

@@ -136,32 +136,39 @@ could mean here. It is the same wall generic arithmetic hits everywhere else.
 * Monomorphisation of constrained generics
 
 ~Monomorphise~ copies a constrained function at each ground instantiation the
-module calls it with, and the copy takes no dictionary. What it does not do,
-written as what was deferred rather than as what was found.
+module calls it with, and the copy takes no dictionary. The body of an exported
+one travels in the dll — ~Metadata.ConstrainedBodies~, format version 8 — so the
+copy is made in the module that calls it, which is also what lets it resolve
+against implementations the library never saw.
 
-** Only definitions in the module being compiled are copied
-
-The copy is generated as source and re-checked, so the pass needs the body. A
-module compiled to a ~.dll~ publishes a signature and not a body, so every call
-into ~std/prelude~ and ~std/eq~ still passes a dictionary — which is most calls
-in most programs. ~(pick 3 5)~ written here is specialised; ~(least 3 5)~ is not.
-
-Closing it means publishing bodies for constrained ~defun~s the way
-~InlineTemplateEntry~ already publishes them for inline-trait methods, and
-emitting the copy in the *caller's* module. The mechanism exists; what it costs
-is metadata size, a format version, and ~bjor~'s staleness check mattering more
-than it does now.
+What it does not do, written as what was deferred rather than as what was found.
 
 ** Depth is one, and the sweep does not iterate
 
 Demand is collected once, over the written program, and never over the copies.
-So a copy's own calls to other constrained functions still dispatch:
-~sum-sizes__at_int~ has no dictionary, and the ~size-of~ in it is inlined, but a
-call it makes to another ~(where ...)~ function is unchanged.
+So a copy's own calls to other constrained functions still dispatch.
+
+This is now the largest thing left, and publishing bodies is what made it so.
+~(least 3 5)~ gives
+
+#+BEGIN_SRC csharp
+public static int least__at_int(int a, int b) {
+    if (eq_Module.atsubmost_QMARK(Ord_System_Int32.Instance, a, b)) return a;
+    else return b;
+}
+#+END_SRC
+
+The dictionary parameter is gone and the evidence is a singleton of exactly
+known type, which is already better than the generic original. But ~at-most?~ is
+itself ~(where (Ord %a))~, its body is ~(<= (compare a b) 0)~, and that body is
+published too — so a second round would copy it at ~int~, resolve ~compare~ to
+~Ord_System_Int32~, and ~TraitInline~ would splice it to ~a.CompareTo(b) <= 0~.
+Three of the four frames in that call would disappear.
 
 Raising the depth is iterating the sweep, with the copies from round /n/ as the
-input to round /n+1/. It is left at one because a worklist's failure mode is a
-copy count nobody predicted, and one round is where the loop bodies are.
+input to round /n+1/. What it needs before it is worth doing is a budget: one
+round is bounded by what the program writes, and the second is bounded by what
+the standard library writes.
 
 ** Every type argument has to be ground
 
@@ -201,6 +208,37 @@ separate change.
 ~Lowering~ eta-expands one back into call position and supplies its dictionary
 there, so it is correct as it stands. Specialising it would remove the
 eta-expansion as well as the dictionary, and it is a rewrite at a different node.
+
+** A body that will not serialize is not published
+
+~Codegen.isSerializableTemplate~ decides, and it refuses ~try~, a bare list
+literal, a tuple-destructuring binding and a local function with keyword or rest
+parameters. Such a function crosses as a signature only, and a call to it keeps
+its dictionary — which is what every call did before bodies crossed at all, so
+nothing regresses and nothing says so either. The same rule has governed inline
+templates since they existed.
+
+** A published body is *checked* in the importer's scope
+
+Qualification rewrites the copy's free names to name the module they came from,
+but it is applied after inference: during checking the body still says ~helper~,
+and ~helper~ means whatever the importing module calls that. A module that binds
+a name the library's body uses would have its own binding checked into the copy
+and the library's emitted into it.
+
+Exactly the hazard ~qualifyInlineTemplates~ documents for a splice, with the
+same mechanism and the same gap. Closing it means inferring the body in one
+environment and emitting from another, which is a change to ~infer~'s ~EApp~
+case — see "A resolved call reads its arguments in the resolved name's scope"
+above, which is the same seam from the other side.
+
+** A private helper named by a published body becomes public
+
+~autoExports~ already did this for inline templates; there is simply more of it
+now. ~doubled~ in ~TestFiles/193_lib.bjo~ is not exported and is published
+anyway, because ~width-of~ names it and a copy of ~width-of~ has to be able to
+call it. The C# was public either way — what changes is that the name is now in
+the importing module's scope, where it can shadow or be shadowed.
 
 * Constraints and numerics
 

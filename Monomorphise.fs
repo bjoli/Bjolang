@@ -22,10 +22,18 @@ open Bjolang.Unification
 /// The copy is generated as **source** and re-checked, never by substituting
 /// into the checked tree. See `Inference.checkAddendum`.
 ///
+/// Which is also why the body of an exported constrained function is published
+/// in the module's metadata, and why the copy is made in whichever module calls
+/// it rather than ready-made by the one that wrote it. Which instantiations
+/// exist is not knowable where the function is defined — and a copy made in the
+/// caller is checked against the caller's registry, so it resolves against
+/// implementations the defining module never saw.
+///
 /// Depth is one, and structurally so: the sweep runs once over the written
 /// program and never over what it generates, so a call inside a copy still
-/// passes a dictionary. Raising the depth means iterating the sweep, which is
-/// deliberately not what this does yet.
+/// passes evidence. It is a concrete singleton rather than a dictionary
+/// parameter, which is what the copy bought; removing the call as well means
+/// iterating the sweep, which is deliberately not what this does yet.
 
 // ---------------------------------------------------------------------------
 // Naming a copy after the types it was made at
@@ -96,12 +104,29 @@ let rec private typeKey (t: HMType) : string option =
 
 /// The name of the copy `name` takes at these type arguments.
 ///
-/// Hashed past a length that keeps a stack trace readable. A nested type
-/// argument spells out every constructor in it, so the bound is reached by
-/// ordinary types rather than by pathological ones.
+/// Hashed past a length that keeps a stack trace readable. The bound is reached
+/// by ordinary types rather than by pathological ones: a type this module did
+/// not declare is keyed by the module that did, so one user type is already
+/// most of the budget.
+///
+/// The hash is over the whole key and the readable part is only a hint, so two
+/// instantiations that agree on their last segments still get distinct names.
 let private copyName (name: string) (keys: string list) =
     let joined = String.concat "__" keys
-    Naming.specializedCopy name (if joined.Length <= 40 then joined else stableHash joined)
+
+    if joined.Length <= 40 then
+        Naming.specializedCopy name joined
+    else
+
+    let lastSegment (k: string) =
+        match k.LastIndexOf '_' with
+        | i when i >= 0 && i < k.Length - 1 -> k.Substring(i + 1)
+        | _ -> k
+
+    let hint = keys |> List.map lastSegment |> String.concat "_"
+    let hint = if hint.Length > 24 then hint.Substring(0, 24) else hint
+
+    Naming.specializedCopy name (hint + "_" + stableHash joined)
 
 // ---------------------------------------------------------------------------
 // Spelling a ground type back as a surface type
@@ -203,12 +228,19 @@ let private specialiseType
 // What may be specialised
 // ---------------------------------------------------------------------------
 
-/// A written definition this pass is allowed to copy.
+/// A definition this pass is allowed to copy.
+///
+/// `Origin` is the module the body was *written* in, and is `None` when that is
+/// the module being compiled. For an imported one it decides two things: the
+/// module the body is re-checked under, and the qualification its free names
+/// are rewritten with afterwards.
 type private Candidate =
     { Name: string
       Signature: FType
       Args: DefunArg list
       Body: Expr
+      Origin: string option
+      Qualification: Map<string, string>
       SigRange: Lexer.Range
       DefRange: Lexer.Range }
 
@@ -232,17 +264,46 @@ let private isClrConstraint (registry: TraitRegistry) (traitName: string) =
     | Some info -> info.ClrConstraint.IsSome
     | None -> false
 
-/// The definitions of the module being compiled that a copy may be made from.
+/// Whether a definition of this name and shape may be copied at all.
 ///
-/// Read off the *untyped* declarations, which is the only place the body still
-/// exists as source. A module compiled to a `.dll` publishes no body, so a
-/// constrained function imported from one is not a candidate and its calls keep
-/// passing dictionaries.
-let private candidates (env: Env) (decls: Decl list) : Map<string, Candidate> =
-    let moduleDecls =
-        match List.tryLast decls with
-        | Some(DModule(_, inner, _)) -> inner
-        | _ -> decls
+/// Asked of a local definition and of an imported one alike, so that a library
+/// publishes exactly the bodies an importer would have been allowed to copy had
+/// it written them itself.
+let private eligible
+    (env: Env)
+    (name: string)
+    (ftype: FType)
+    (constraints: (string * string) list)
+    (args: DefunArg list)
+    =
+    // A copy is only worth making for a constraint that costs a dictionary.
+    constraints
+    |> List.exists (fun (traitName, _) ->
+        not (isClrConstraint env.Registry (Inference.originalName env.Registry traitName)))
+    && name <> "main"
+    // A `-?->` promises a second body, and the twin is generated inside
+    // `checkDeclGroup` — so it is not among the declarations read here, and a
+    // copy of the ordinary half alone would be a name `selectDoubles` cannot
+    // find a twin for. Both halves want specialising together, which is a
+    // second feature.
+    && not (mentionsPolyArrow ftype)
+    && not (Map.containsKey name env.Registry.DoubleDefs)
+    && not (Set.contains name env.Registry.GeneratedCopies)
+    && not (Set.contains name env.Registry.InferredCopies)
+    // Keyword and rest parameters are a calling convention, and a default value
+    // is an expression that would have to be re-checked in the copy alongside
+    // the body. `addInlineTemplate` declines them for the same reason.
+    && args |> List.forall (function MandatoryArg _ -> true | _ -> false)
+
+/// The declarations of the module being compiled, and its name.
+let private ownModule (decls: Decl list) : string * Decl list =
+    match List.tryLast decls with
+    | Some(DModule(name, inner, _)) -> name, inner
+    | _ -> "", decls
+
+/// The definitions written in this module that a copy may be made from.
+let private localCandidates (env: Env) (decls: Decl list) : Map<string, Candidate> =
+    let _, moduleDecls = ownModule decls
 
     let signatures =
         moduleDecls
@@ -251,27 +312,6 @@ let private candidates (env: Env) (decls: Decl list) : Map<string, Candidate> =
             | _ -> None)
         |> Map.ofList
 
-    let eligible name (ftype: FType) (constraints: (string * string) list) (args: DefunArg list) =
-        // A copy is only worth making for a constraint that costs a dictionary.
-        constraints
-        |> List.exists (fun (traitName, _) ->
-            not (isClrConstraint env.Registry (Inference.originalName env.Registry traitName)))
-        && name <> "main"
-        // A `-?->` promises a second body, and the twin is generated inside
-        // `checkDeclGroup` — so it is not among the declarations read here, and
-        // a copy of the ordinary half alone would be a name `selectDoubles`
-        // cannot find a twin for. Both halves want specialising together, which
-        // is a second feature.
-        && not (mentionsPolyArrow ftype)
-        && not (Map.containsKey name env.Registry.DoubleDefs)
-        && not (Set.contains name env.Registry.GeneratedCopies)
-        && not (Set.contains name env.Registry.InferredCopies)
-        // Keyword and rest parameters are a calling convention, and a default
-        // value is an expression that would have to be re-checked in the copy
-        // alongside the body. `addInlineTemplate` declines them for the same
-        // reason.
-        && args |> List.forall (function MandatoryArg _ -> true | _ -> false)
-
     let found =
         moduleDecls
         |> List.choose (function
@@ -279,13 +319,15 @@ let private candidates (env: Env) (decls: Decl list) : Map<string, Candidate> =
             // a `-?->` does.
             | DDefun(name, args, body, Ordinary, r) ->
                 match Map.tryFind name signatures with
-                | Some(ftype, constraints, sigRange) when eligible name ftype constraints args ->
+                | Some(ftype, constraints, sigRange) when eligible env name ftype constraints args ->
                     Some(
                         name,
                         { Name = name
                           Signature = ftype
                           Args = args
                           Body = body
+                          Origin = None
+                          Qualification = Map.empty
                           SigRange = sigRange
                           DefRange = r }
                     )
@@ -318,6 +360,54 @@ let private candidates (env: Env) (decls: Decl list) : Map<string, Candidate> =
         walk Set.empty (Map.tryFind start calls |> Option.defaultValue Set.empty)
 
     found |> Map.filter (fun name _ -> not (inCycle name))
+
+/// The imported definitions a copy may be made from.
+///
+/// The body comes from the dependency's metadata and the signature from the
+/// `DExtern` the importer parsed out of the same metadata, so the two are
+/// matched by the name the *origin* published: an import modifier changes what
+/// this module calls the function, and nothing about the body.
+///
+/// A local definition of the same name wins. Shadowing an import is what a
+/// module is entitled to do, and the local body is the one its calls mean.
+let private importedCandidates (env: Env) (local: Map<string, Candidate>) (decls: Decl list) : Map<string, Candidate> =
+    if Map.isEmpty env.Registry.ConstrainedBodies then
+        Map.empty
+    else
+
+    decls
+    |> List.collect (function
+        | DModule(_, inner, _) -> inner
+        | other -> [ other ])
+    |> List.choose (function
+        | DExtern(visible, origin, ftype, constraints, r) when not (Map.containsKey visible local) ->
+            match Map.tryFind origin.OriginalName env.Registry.ConstrainedBodies with
+            | Some tpl ->
+                let args = tpl.Params |> List.map (fun p -> MandatoryArg(p, None))
+
+                if eligible env visible ftype constraints args then
+                    Some(
+                        visible,
+                        { Name = visible
+                          Signature = ftype
+                          Args = args
+                          Body = tpl.Body
+                          Origin = Some tpl.OriginModule
+                          Qualification = tpl.Qualification
+                          SigRange = r
+                          DefRange = r }
+                    )
+                else
+                    None
+            | None -> None
+        | _ -> None)
+    |> Map.ofList
+
+let private candidates (env: Env) (decls: Decl list) : Map<string, Candidate> =
+    let local = localCandidates env decls
+
+    importedCandidates env local decls
+    |> Map.fold (fun acc name c -> Map.add name c acc) local
 
 // ---------------------------------------------------------------------------
 // Demand
@@ -449,13 +539,29 @@ let private generate (env: Env) (cand: Candidate) (demand: Demand) : (Env * TDec
         // precisely this instantiation.
         let body = AlphaRename.renameFree (Map.ofList [ cand.Name, demand.CopyName ]) cand.Body
 
-        let env, typed =
+        // An imported body is checked under the module it was *written* in, not
+        // the one it is landing in: it may name something its own module is
+        // allowed to name and this one is not. `TraitInline` does the same at a
+        // splice, and for the same reason.
+        let checkEnv =
+            match cand.Origin with
+            | Some origin -> { env with CurrentModule = origin }
+            | None -> env
+
+        let checked', typed =
             Inference.checkAddendum
-                env
+                checkEnv
                 [ DSignature(demand.CopyName, signature, [], cand.SigRange)
                   DDefun(demand.CopyName, cand.Args, body, Ordinary, cand.DefRange) ]
 
-        Some(env, typed)
+        // Free names now say which module they came from. The copy is emitted
+        // in *this* module's class, so a bare `helper` in it would bind to
+        // whatever this module calls `helper`.
+        let typed =
+            typed
+            |> List.map (TypeVisitor.mapDecl (AlphaRename.applyQualification cand.Qualification))
+
+        Some({ checked' with CurrentModule = env.CurrentModule }, typed)
     with ex ->
         Diagnostics.warn
             $"could not specialise '%s{cand.Name}' at %s{Lexer.formatPos cand.DefRange}: %s{ex.Message}. Calls to it keep passing a dictionary."
@@ -497,14 +603,72 @@ let rec private appendToLastModule (generated: TDecl list) (decls: TDecl list) :
 // The pass
 // ---------------------------------------------------------------------------
 
+/// Records this module's own candidates, so that `Exports` can publish their
+/// bodies and an importer can make the copies *it* needs.
+///
+/// The qualification is computed exactly as `Pipeline.qualifyInlineTemplates`
+/// computes a template's, off the same `moduleOf` map, and for the same reason:
+/// a body spliced into another module has to keep meaning what it meant here.
+///
+/// The recursive occurrence is qualified along with everything else and is
+/// never used: a copy renames it to the copy's own name before checking, on
+/// both sides of the boundary. It costs one map entry to leave it in and a case
+/// to take it out.
+let private publish
+    (moduleOf: Map<string, string * string>)
+    (ownModuleName: string)
+    (cands: Map<string, Candidate>)
+    (env: Env)
+    : Env =
+    let bodies =
+        cands
+        |> Map.filter (fun _ c -> c.Origin.IsNone)
+        |> Map.map (fun _ c ->
+            let params' = mandatoryNames c.Args
+
+            let qualification =
+                AlphaRename.freeNames (Set.ofList params') c.Body
+                |> Seq.choose (fun n ->
+                    // A name with no module class of its own — a data
+                    // constructor, a `Prelude` binding, a trait method — is
+                    // left as written. There is nothing to qualify it to.
+                    match Map.tryFind n moduleOf with
+                    | Some(m, original) -> Some(n, Naming.qualifiedBinding m original)
+                    | None -> None)
+                |> Map.ofSeq
+
+            { Params = params'
+              Body = c.Body
+              Qualification = qualification
+              OriginModule = ownModuleName }
+            : InlineTemplate)
+
+    { env with
+        Registry =
+            { env.Registry with
+                ConstrainedBodies =
+                    bodies |> Map.fold (fun acc k v -> Map.add k v acc) env.Registry.ConstrainedBodies } }
+
 /// Specialises every constrained generic the written program calls at a ground
 /// instantiation.
 ///
 /// `decls` is the untyped program — the copies are made from its bodies — and
 /// `typed` is the checked one, which is where the demand and the call sites
-/// are.
-let run (env: Env) (decls: Decl list) (typed: TDecl list) : Env * TDecl list =
+/// are. `moduleOf` says which module each top-level name belongs to, which is
+/// what a published body's free names are qualified with.
+let run
+    (env: Env)
+    (moduleOf: Map<string, string * string>)
+    (decls: Decl list)
+    (typed: TDecl list)
+    : Env * TDecl list =
+    let ownModuleName, _ = ownModule decls
     let cands = candidates env decls
+
+    // Before the early exits below: what this module publishes is what an
+    // importer may copy, and that does not depend on whether this module
+    // happened to call any of it itself.
+    let env = publish moduleOf ownModuleName cands env
 
     if Map.isEmpty cands then
         env, typed

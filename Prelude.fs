@@ -281,6 +281,7 @@ let emptyRegistry : TraitRegistry =
       BlanketImpls = Map.empty
       TraitOrigins = Map.empty
       InlineMethods = Map.empty
+      ConstrainedBodies = Map.empty
       Aliases = Map.empty
       ImportAliases = Map.empty
       Records = Map.empty

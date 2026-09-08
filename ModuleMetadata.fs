@@ -44,7 +44,12 @@ open System.Text
 /// `defbjouble`; without it an importer sees only the ordinary copy and a
 /// bjoroutine calling one parks where it should suspend.
 /// Version 7 metadata format: We now use fully namespace-qualified names (e.g. `BjoMod.std.set`) instead of just filenames to identify modules. This prevents collisions when a project imports two files that share the same name (like `utils.bjo`) from different directories.
-let currentVersion = 7
+/// 8: `ConstrainedBodies` carries the body of every exported function with a
+/// `(where ...)`, so that an importer can monomorphise a call to one. An
+/// assembly built before this publishes none, which is not an error and not
+/// visible in any answer — every call into it keeps passing a dictionary, which
+/// is what all of them did before the field existed.
+let currentVersion = 8
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {
@@ -70,6 +75,21 @@ type InlineTemplateEntry = {
     /// redundant: `infer`'s `EFun` case binds each parameter to a fresh
     /// metavariable in a scope of its own, discarding exactly the concrete
     /// argument types the inliner supplies.
+    Params: string list
+    /// A serialized Bjolang expression.
+    Body: string
+    Qualification: (string * string) list
+}
+
+/// The body of a constrained generic, so an importer can make a copy of it at a
+/// ground instantiation and drop the dictionary.
+///
+/// The same four fields an `InlineTemplateEntry` carries, and for the same
+/// reasons — the signature is not among them because it is already in `Defs`,
+/// under this same name.
+type ConstrainedBodyEntry = {
+    Name: string
+    OriginModule: string
     Params: string list
     /// A serialized Bjolang expression.
     Body: string
@@ -110,6 +130,12 @@ type Metadata = {
     /// and the reader derives the twin with the same function. Two spellings of
     /// one fact would be a pair that can disagree.
     DoubleDefs: string list
+    /// The bodies of exported definitions carrying a `(where ...)`.
+    ///
+    /// Unlike `DoubleDefs`, the copy cannot be derived on the far side: which
+    /// instantiations exist is the importer's business and not this module's,
+    /// so what crosses is the body and the importer makes the copies it needs.
+    ConstrainedBodies: ConstrainedBodyEntry list
 }
 
 let empty = {
@@ -124,6 +150,7 @@ let empty = {
     Macros = []
     BlockingDefs = []
     DoubleDefs = []
+    ConstrainedBodies = []
 }
 
 /// Nothing worth writing: an executable, or a library that exports nothing.
@@ -245,6 +272,26 @@ let private getTemplate (c: Cursor) : InlineTemplateEntry =
       Body = body
       Qualification = qualification }
 
+let private putConstrainedBody (sb: StringBuilder) (b: ConstrainedBodyEntry) =
+    putStr sb b.Name
+    putStr sb b.OriginModule
+    putList sb putStr b.Params
+    putStr sb b.Body
+    putList sb putPair b.Qualification
+
+let private getConstrainedBody (c: Cursor) : ConstrainedBodyEntry =
+    let name = getStr c
+    let originModule = getStr c
+    let params' = getList getStr c
+    let body = getStr c
+    let qualification = getList getPair c
+
+    { Name = name
+      OriginModule = originModule
+      Params = params'
+      Body = body
+      Qualification = qualification }
+
 let private putMacro (sb: StringBuilder) (m: MacroEntry) =
     putStr sb m.Name
     putStr sb m.ModuleName
@@ -267,6 +314,7 @@ let serialize (m: Metadata) : string =
     putList sb putMacro m.Macros
     putList sb putStr m.BlockingDefs
     putList sb putStr m.DoubleDefs
+    putList sb putConstrainedBody m.ConstrainedBodies
     sb.ToString()
 
 /// `assemblyPath` names the dependency in the error, because the fix is to
@@ -295,6 +343,7 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
     let macros = getList getMacro c
     let blockingDefs = getList getStr c
     let doubleDefs = getList getStr c
+    let constrainedBodies = getList getConstrainedBody c
 
     { Version = version
       Deps = deps
@@ -306,4 +355,5 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
       InlineTemplates = templates
       Macros = macros
       BlockingDefs = blockingDefs
-      DoubleDefs = doubleDefs }
+      DoubleDefs = doubleDefs
+      ConstrainedBodies = constrainedBodies }

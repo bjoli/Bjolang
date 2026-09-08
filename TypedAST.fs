@@ -1252,6 +1252,19 @@ type TraitRegistry =
       /// alone collides between `Monad for List` and `Monad for Option`, and the
       /// second registration would silently win.
       InlineMethods: Map<string * string * string, InlineTemplate>
+      /// The bodies of constrained generic functions, keyed by name.
+      ///
+      /// `Monomorphise` copies one of these per ground instantiation a call
+      /// site asks for, which needs the body rather than the signature — so a
+      /// function reached through a `.dll` is only specialisable if its body
+      /// travelled too.
+      ///
+      /// An `InlineTemplate` and not a record of its own, because a body
+      /// spliced into another module needs exactly the same four things
+      /// whichever pass splices it: the parameter names, the untyped body, the
+      /// module it was written in, and what its free names have to be emitted
+      /// as there.
+      ConstrainedBodies: Map<string, InlineTemplate>
       Aliases: Map<string, string list * HMType>
       /// Visible name -> what it is really a spelling of.
       ///

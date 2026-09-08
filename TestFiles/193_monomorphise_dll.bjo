@@ -1,0 +1,67 @@
+;; Monomorphisation across a dll boundary.
+;;
+;; Every call below is to a function defined in `193_lib.bjo` and compiled into
+;; a separate assembly. The copy is made *here*, from the body that travelled in
+;; the dependency's metadata, and emitted into this module's own class.
+;;
+;; As in `192_monomorphise.bjo`, nothing here can see by its answer that a copy
+;; was made — `codegen/monomorphise.bjo` pins that. What this asks is whether
+;; the copies are right, and the way to ask is to run each at more than one
+;; type: a copy that resolved the wrong implementation is invisible at `int`
+;; alone.
+
+(import (std prelude))
+(import (std simpletest))
+(import "193_lib.bjo")
+
+;; An implementation the *importer* declares, for a type the library never saw.
+;; A copy made here resolves against this module's registry, so it has to reach
+;; an impl that did not exist where the body was written.
+(type (: Tag (Record (: label string))))
+
+(impl (Sized Tag)
+  (defun (size-of t) (string-length (record-ref t label))))
+
+(defun (main)
+  ;; --- an imported body, copied here ----------------------------------------
+  (expect "imported, at int" (total-width 3 5) 8)
+  (expect "imported, at string" (total-width "ab" "cde") 5)
+  (expect "imported, through a conditional impl"
+          (total-width (list 1 2) (list 3))
+          6)
+
+  ;; --- a body naming a helper the library did not export --------------------
+  ;;
+  ;; `width-of` calls `doubled`, which is private to `193_lib`. It is published
+  ;; anyway, because an exported body names it.
+  (expect "a body naming a private helper" (width-of 21) 42)
+  (expect "the same, at string" (width-of "abcd") 8)
+
+  ;; --- recursion, in a copy made outside the module that wrote it -----------
+  (expect "recursing at int" (widest (list 1 7 3) 0) 7)
+  (expect "recursing at string" (widest (list "a" "bcd") 0) 3)
+
+  ;; --- two constraints, at two types ----------------------------------------
+  (expect "two constraints, same type" (tag-width 3 4) 7)
+  (expect "two constraints, two types" (tag-width 3 "ab") 5)
+
+  ;; --- an implementation the library never saw ------------------------------
+  ;;
+  ;; The copy is checked under the library's module, and still resolves `Sized`
+  ;; at a type declared here. This is the whole reason the copy is made in the
+  ;; importer rather than published ready-made.
+  (expect "an impl declared by the importer"
+          (total-width (Tag (label "abc")) (Tag (label "de")))
+          5)
+  (expect "and mixed with one of the library's own"
+          (tag-width (Tag (label "abc")) 4)
+          7)
+
+  ;; --- the standard library's own -------------------------------------------
+  ;;
+  ;; `least` and `greatest` are `(where (Ord %a))` in `std/eq`, so this is the
+  ;; same path through a module nobody wrote for this test.
+  (expect "std/eq, at int" (least 3 5) 3)
+  (expect "std/eq, at string" (greatest "pear" "fig") "pear")
+  (expect "and a sort" (list-length (list-sort (list 3 1 2))) 3)
+  0)

@@ -1,0 +1,46 @@
+;; The library half of the cross-dll monomorphisation test.
+;;
+;; A `(where ...)` on an exported signature now publishes the *body* as well,
+;; because which instantiations exist is the importer's business and not this
+;; module's — unlike a `defbjouble`'s twin, whose name the far side can derive.
+(export width-of total-width widest tag-width Sized size-of)
+
+(import (std prelude))
+
+(def/trait (Sized %a)
+  (: size-of (-> %a int)))
+
+(impl (Sized int)
+  (defun (size-of x) x))
+
+(impl (Sized string)
+  (defun (size-of x) (string-length x)))
+
+;; A conditional impl, so a copy made in the importer has to build evidence
+;; rather than name a singleton.
+(impl (Sized (List %a)) (where (Sized %a))
+  (defun (size-of xs) (list-foldl (fun (acc x) (+ acc (size-of x))) 0 xs)))
+
+;; Not exported, and named by a body that is. `Exports` has to notice and
+;; publish it anyway, or re-checking the copy in the importer fails on an
+;; unbound name and the call quietly keeps its dictionary.
+(: doubled (-> int int))
+(defun (doubled n) (* n 2))
+
+(: width-of (-> %a int) (where (Sized %a)))
+(defun (width-of x) (doubled (size-of x)))
+
+(: total-width (-> %a %a int) (where (Sized %a)))
+(defun (total-width a b) (+ (size-of a) (size-of b)))
+
+;; Recursive, so the copy's self-call has to reach the copy — in a module that
+;; is not the one the body was written in.
+(: widest (-> (List %a) int int) (where (Sized %a)))
+(defun (widest xs acc)
+  (if (list-empty? xs)
+      acc
+      (widest (list-tail xs) (greatest acc (size-of (list-head xs))))))
+
+;; Two constraints, at two different variables.
+(: tag-width (-> %a %b int) (where (Sized %a) (Sized %b)))
+(defun (tag-width x tag) (+ (size-of x) (size-of tag)))

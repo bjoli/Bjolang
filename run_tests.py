@@ -42,7 +42,13 @@ try:
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        print_color(YELLOW, "Another test runner is using this working tree. Waiting for it...")
+        # On stderr, and flushed: stdout is block-buffered when it is redirected
+        # to a file, so this message would sit in the buffer for as long as the
+        # wait lasts — and a run blocked on the lock is then indistinguishable
+        # from a run that has hung. Anything still holding the lock counts,
+        # including a REPL left open in this working tree.
+        print("Another test runner is using this working tree. Waiting for it...",
+              file=sys.stderr, flush=True)
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
 except Exception as e:
     print_color(RED, f"Failed to acquire lock: {e}")

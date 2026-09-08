@@ -134,41 +134,6 @@ let rec betaReduce (expr: TypedExpr) : TypedExpr =
     | _ -> expr
 
 // ---------------------------------------------------------------------------
-// Qualification
-// ---------------------------------------------------------------------------
-
-/// Rewrites the free names of a spliced body to name the module they actually
-/// came from.
-///
-/// Applied *after* inference, never before: `infer` fails hard on unbound names
-/// and `Origin_Module::helper` is not a key in `env.Bindings`.
-let applyQualification (qualification: Map<string, string>) (expr: TypedExpr) : TypedExpr =
-    if Map.isEmpty qualification then
-        expr
-    else
-
-    let rec go (e: TypedExpr) =
-        let node =
-            match e.Node with
-            | TIdent(n, tArgs) ->
-                match Map.tryFind n qualification with
-                | Some q -> TIdent(q, tArgs)
-                | None -> TIdent(n, tArgs)
-            | TSet(n, v) ->
-                let n' = Map.tryFind n qualification |> Option.defaultValue n
-                TSet(n', go v)
-            // A write reaching a splice is a write to whatever the target
-            // resolved to there, exactly as `set!` is.
-            | TRecordSet(n, fields) ->
-                let n' = Map.tryFind n qualification |> Option.defaultValue n
-                TRecordSet(n', fields |> List.map (fun (k, v) -> k, go v))
-            | _ -> (TypeVisitor.mapChildren go e).Node
-
-        { e with Node = node }
-
-    go expr
-
-// ---------------------------------------------------------------------------
 // The pass
 // ---------------------------------------------------------------------------
 
@@ -339,7 +304,7 @@ and private spliceTemplate
         Inference.solvePending spliceEnv
 
         // 4. Free names now say which module they came from.
-        let qualified = applyQualification tpl.Qualification typedBody
+        let qualified = AlphaRename.applyQualification tpl.Qualification typedBody
 
         // 5. Recurse, with this key held down for the current path only.
         let inlined = inlineExpr { ctx with Active = Set.add key ctx.Active } qualified

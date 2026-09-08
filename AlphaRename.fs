@@ -95,6 +95,41 @@ let rec private typedPatternBinders (pat: TypedPattern) : string list =
 /// Kept for callers that only need the names.
 let patternNames = typedPatternBinders
 
+/// Rewrites the free names of a body that was written somewhere else to name
+/// the module they actually came from — `Origin_Module::helper`.
+///
+/// Applied *after* inference, never before: `infer` fails hard on unbound names
+/// and `Origin_Module::helper` is not a key in `env.Bindings`.
+///
+/// Two callers, both splicing a body from another module into this one:
+/// `TraitInline` at an inlined trait method, and `Monomorphise` at a
+/// specialised copy of an imported constrained function.
+let applyQualification (qualification: Map<string, string>) (expr: TypedExpr) : TypedExpr =
+    if Map.isEmpty qualification then
+        expr
+    else
+
+    let rec go (e: TypedExpr) =
+        let node =
+            match e.Node with
+            | TIdent(n, tArgs) ->
+                match Map.tryFind n qualification with
+                | Some q -> TIdent(q, tArgs)
+                | None -> TIdent(n, tArgs)
+            | TSet(n, v) ->
+                let n' = Map.tryFind n qualification |> Option.defaultValue n
+                TSet(n', go v)
+            // A write reaching a splice is a write to whatever the target
+            // resolved to there, exactly as `set!` is.
+            | TRecordSet(n, fields) ->
+                let n' = Map.tryFind n qualification |> Option.defaultValue n
+                TRecordSet(n', fields |> List.map (fun (k, v) -> k, go v))
+            | _ -> (TypeVisitor.mapChildren go e).Node
+
+        { e with Node = node }
+
+    go expr
+
 /// The one traversal every typed renaming goes through.
 ///
 /// `freshenBinder` decides, per binder name, whether that binder is renamed and

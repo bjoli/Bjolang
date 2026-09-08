@@ -260,6 +260,25 @@ let rec private expandIncludes
 
     expanded, visited
 
+/// Reads one published constrained body back.
+///
+/// Not a declaration, unlike an inline template's: nothing is registered under
+/// a trait and nothing is checked. `Monomorphise` reads the map directly, and
+/// only if some call site asks for a copy.
+let private constrainedBodyTemplate
+    (source: string)
+    (entry: ModuleMetadata.ConstrainedBodyEntry)
+    : TypedAST.InlineTemplate =
+    let form =
+        match Lexer.tokenize source entry.Body |> read |> fst with
+        | [ form ] -> form
+        | _ -> failwithf $"Malformed constrained body in metadata for '%s{entry.Name}'."
+
+    { Params = entry.Params
+      Body = Parser.parseExpr form
+      Qualification = Map.ofList entry.Qualification
+      OriginModule = entry.OriginModule }
+
 /// Reads one metadata entry back into a declaration.
 ///
 /// Only the body needs parsing: everything else was a typed field, and the
@@ -1049,7 +1068,13 @@ let wrapInModule (moduleName: string) (filePath: string) (decls: Decl list) : De
     
     [ DModule(moduleName, decls, r) ]
 
-let loadModuleGraph (mainFilePath: string) : Decl list * string list * Set<string> * Set<string> =
+let loadModuleGraph
+    (mainFilePath: string)
+    : Decl list
+      * string list
+      * Set<string>
+      * Set<string>
+      * Map<string, TypedAST.InlineTemplate> =
     // Unconditionally, not only when something publishes a macro: the expander
     // is also what reports a macro used in the module that defines it.
     Macro.install ()
@@ -1075,6 +1100,12 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list * Set<strin
     /// origin published. The suspending copy is an ordinary imported binding
     /// like any other; what this adds is that the two are a pair.
     let doubleDefs = System.Collections.Generic.HashSet<string>()
+
+    /// The bodies of imported constrained generics, under the names their
+    /// origin published — which is what an importer's `DExtern` points back to
+    /// through `ImportAliases`, whatever an import modifier renamed it to here.
+    let constrainedBodies =
+        System.Collections.Generic.Dictionary<string, TypedAST.InlineTemplate>()
 
     /// Every import edge that reaches a given module, as the renaming it
     /// produces and the position of the form that wrote it.
@@ -1171,6 +1202,12 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list * Set<strin
 
                     for name in meta.DoubleDefs do
                         doubleDefs.Add name |> ignore
+
+                    // Transitive for the same reason `BlockingDefs` is: a name
+                    // re-exported through this DLL is bound here, and the body
+                    // a copy would be made from is still the one it reaches.
+                    for entry in meta.ConstrainedBodies do
+                        constrainedBodies[entry.Name] <- constrainedBodyTemplate absPath entry
 
                     // Inlineable method bodies, if this assembly published any.
                     // Without them everything that would have been inlined
@@ -1494,7 +1531,11 @@ let loadModuleGraph (mainFilePath: string) : Decl list * string list * Set<strin
             failwithf
                 $"Import collision at %s{Lexer.formatPos r}: '%s{visible}' would name %s{both}. A modifier or (:alias ...) that produces a name another import already produces is an error, not a shadowing."
 
-    allDecls, dllDeps |> Seq.toList, Set.ofSeq blockingDefs, Set.ofSeq doubleDefs
+    allDecls,
+    dllDeps |> Seq.toList,
+    Set.ofSeq blockingDefs,
+    Set.ofSeq doubleDefs,
+    constrainedBodies |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
 
 /// Which module each top-level name belongs to.
 ///
@@ -1530,9 +1571,7 @@ let private moduleOfName (decls: TypedAST.TDecl list) : Map<string, string * str
 /// impls either. Without it, a body that calls a module-level `helper`, inlined
 /// into a caller that happens to have a local named `helper`, emits a bare
 /// `helper` that binds to the local.
-let private qualifyInlineTemplates (env: TypedAST.Env) (decls: TypedAST.TDecl list) : TypedAST.Env =
-    let moduleOf = moduleOfName decls
-
+let private qualifyInlineTemplates (moduleOf: Map<string, string * string>) (env: TypedAST.Env) : TypedAST.Env =
     let qualified =
         env.Registry.InlineMethods
         |> Map.map (fun _ (tpl: TypedAST.InlineTemplate) ->
@@ -1563,7 +1602,7 @@ let private qualifyInlineTemplates (env: TypedAST.Env) (decls: TypedAST.TDecl li
 let runFullFrontendPipeline (mainFilePath: string) =
     try
         Diagnostics.progress "=== Step 1: Parsing & Module Resolution ==="
-        let parsedModuleDecls, dllDeps, importedBlocking, importedDoubles =
+        let parsedModuleDecls, dllDeps, importedBlocking, importedDoubles, importedBodies =
             Timing.phase "parse + module graph" (fun () -> loadModuleGraph mainFilePath)
 
         // The macros *this* compilation publishes. The main module is last, and
@@ -1624,14 +1663,26 @@ let runFullFrontendPipeline (mainFilePath: string) =
                         BlockingNames = Set.union env.Registry.BlockingNames importedBlocking
                         DoubleDefs =
                             importedDoublePairs
-                            |> Map.fold (fun acc k v -> Map.add k v acc) env.Registry.DoubleDefs } }
+                            |> Map.fold (fun acc k v -> Map.add k v acc) env.Registry.DoubleDefs
+                        // Added here rather than before inference for the same
+                        // reason: nothing in inference reads a body's source,
+                        // and `Monomorphise` below is the only thing that does.
+                        ConstrainedBodies =
+                            importedBodies
+                            |> Map.fold (fun acc k v -> Map.add k v acc) env.Registry.ConstrainedBodies } }
 
         // Before anything reads `main`: the entry point is generated code's
         // caller, and a type it cannot call is a diagnostic here rather than a
         // C# error in a file nobody wrote.
         checkEntryPoint env parsedModuleDecls
 
-        let env = qualifyInlineTemplates env typedAst
+        // Which module each top-level name belongs to. Read once: both a spliced
+        // trait method and a specialised constrained body have to keep meaning
+        // what they meant where they were written, and both ask this the same
+        // question.
+        let moduleOf = moduleOfName typedAst
+
+        let env = qualifyInlineTemplates moduleOf env
 
         // Before inlining, and deliberately: `spliceTemplate` is best-effort, so
         // a check after it would report on a spliced body but not on the same
@@ -1649,7 +1700,7 @@ let runFullFrontendPipeline (mainFilePath: string) =
         // It takes the untyped declarations as well as the checked ones,
         // because the copy is generated as source. See the module docstring.
         let env, typedAst =
-            Timing.phase "monomorphise" (fun () -> Monomorphise.run env letrecifiedDecls typedAst)
+            Timing.phase "monomorphise" (fun () -> Monomorphise.run env moduleOf letrecifiedDecls typedAst)
 
         Diagnostics.progress "=== Step 4: Trait Inlining ==="
         // Before dictionary lowering, so that the dictionary pass sees the

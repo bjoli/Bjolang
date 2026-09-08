@@ -409,7 +409,7 @@ network io by wrapping c# async in events for the cml goodness. (std http) is he
 ** Performance things
 Hoist literals. Not just literal lists and vecs, but also symbols and keywords. They have a decently high init cost, since they do a parallel map lookup.
 
-Monomorphize constrained generics, to one level. Done for a module's own definitions: a call at a ground instantiation goes to a copy checked at those types, so the dictionary is gone and the trait calls in it are inlined rather than dispatched. Calls into an already-compiled module still pass a dictionary, because the copy is made from the body and a .dll publishes none — see Todo.org. 
+Monomorphize constrained generics, to one level. Done, and across module boundaries: a call at a ground instantiation goes to a copy of the function checked at those types, so the dictionary parameter is gone and the trait calls inside it are inlined rather than dispatched. A `(where ...)` on an exported signature publishes the body in the dll, so the copy is made in whichever module calls it — including at types the library never saw. Still one level: a copy's own calls to other constrained generics pass a concrete singleton rather than a dictionary parameter, which is better but is still a call. See Todo.org. 
 
 Seq Fusion (done woop woop)
 
