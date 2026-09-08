@@ -1,20 +1,23 @@
-;; `until-cancelled`: leaving, rather than winning forever.
+;; `until-cancelled`: watching a token that is not the ambient one.
 ;;
-;; A fired token is *persistent* — that is the design, since cancellation is a
-;; fact every listener has to see — and persistence is also the trap. A loop
-;; that races `(cancelled tok)` in a `choose` and then goes round again finds
-;; the token branch available immediately, wins on it, goes round again, and
-;; spins a core at 100% until something else stops it.
+;; The ambient token is `sync`'s business — a `sync` under a cancelled scope
+;; raises `Cancelled`, and nothing has to be written for that to happen. This
+;; combinator is for every *other* token: a per-request deadline, a sub-scope's,
+;; one received from somewhere else. Those are ordinary events, and this is how
+;; one is raced against real work.
 ;;
-;; Two answers, and they are for two different loops.
+;; It answers `None` rather than raising, and the reason is the trap that would
+;; otherwise be there. A fired token is *persistent* — that is the design, since
+;; cancellation is a fact every listener has to see — and persistence is also
+;; the trap. A loop that races `(cancelled tok)` in a `choose` and then goes
+;; round again finds the token branch available immediately, wins on it, goes
+;; round again, and spins a core at 100%. `None` makes leaving the natural
+;; spelling, because not recursing is what you write anyway.
 ;;
-;;   * `until-cancelled`, over any event, for the loop that has a sync point.
-;;     `None` means cancelled, and not recursing is the natural spelling of
-;;     leaving — so the shape that avoids the spin is also the shape you would
-;;     have written.
-;;
-;;   * `(:until-cancelled)`, a loop clause, for the compute loop that has no
-;;     sync point to hang an event on at all.
+;; The loop clause `(:until-cancelled)` is the other half, and it is for a
+;; different loop: the compute loop that has no sync point to hang an event on
+;; at all. It is a poll, so it can read the ambient token without disagreeing
+;; with `sync` about anything.
 
 (import (std prelude))
 (import (std simpletest))
@@ -23,29 +26,28 @@
 ;; The combinator
 ;; ---------------------------------------------------------------------------
 ;;
-;; The token is *ambient*: nothing is passed to this worker, and the read
-;; happens inside the guard at each `sync` — on the fiber doing the syncing,
-;; which is the only fiber whose scope is the right one to consult. An event is
-;; a value, and a value can be built in one fiber and synced in another.
+;; The token is a parameter. It used to be read out of the dynamic environment,
+;; and that job moved to `sync`: two mechanisms watching one token — one
+;; raising, one answering `None` — would be two answers to the same question.
 
-(: worker (-> (Chan int) (Chan string) void))
-(defbjo (worker jobs results)
+(: worker (-> CancelToken (Chan int) (Chan string) void))
+(defbjo (worker tok jobs results)
   (let go ((total 0) (taken 0))
-    (match (sync (until-cancelled (chan-recv jobs)))
+    (match (sync (until-cancelled tok (chan-recv jobs)))
       ((Some j) (go (+ total j) (+ taken 1)))
       (None (sync (chan-send results
                              (string-append (int->string taken)
                                             (string-append "/" (int->string total)))))))))
 
-;; With nothing parameterized the ambient token is the root one, which never
-;; fires — so `until-cancelled` is `Some` for as long as there is anything to
-;; take, and the loop leaves on its own terms instead.
-(: bounded (-> (Chan int) int int))
-(defbjo (bounded jobs n)
+;; Handed a token nobody holds the other half of, `until-cancelled` is `Some`
+;; for as long as there is anything to take, and the loop leaves on its own
+;; terms instead.
+(: bounded (-> CancelToken (Chan int) int int))
+(defbjo (bounded tok jobs n)
   (let go ((i 0) (total 0))
     (if (= i n)
         total
-        (match (sync (until-cancelled (chan-recv jobs)))
+        (match (sync (until-cancelled tok (chan-recv jobs)))
           ((Some j) (go (+ i 1) (+ total j)))
           (None total)))))
 
@@ -93,10 +95,11 @@
 
 (defbjo (main args)
   ;; ---- The combinator, uncancelled -----------------------------------------
+  (def (never-fires! idle) (make-cancel))
   (def jobs (make-chan))
-  (def f (bjo (feed jobs 4)))
+  (spawn (feed jobs 4))
   (expect "an uncancelled until-cancelled is just the event"
-          (bounded jobs 4) 6)
+          (bounded idle jobs 4) 6)
 
   ;; ---- The combinator, cancelled while parked ------------------------------
   ;;
@@ -106,11 +109,11 @@
   (def (stop! tok) (make-cancel))
   (def jobs2 (make-chan))
   (def results (make-chan))
-  (def w (parameterize ((current-cancel tok)) (bjo (worker jobs2 results))))
+  (def w (bjo (worker tok jobs2 results)))
   (def s1 (sync (chan-send jobs2 20)))
   (def s2 (sync (chan-send jobs2 22)))
   (def stopped (stop! (Requested "the test")))
-  (expect "a parked until-cancelled wakes on the ambient token"
+  (expect "a parked until-cancelled wakes on the token it was handed"
           (sync (chan-recv results)) "2/42")
 
   ;; And the fiber came home rather than spinning: a `None` that is not

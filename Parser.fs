@@ -33,6 +33,37 @@ type Colour =
     /// `defbjo` / `bjoroutine`. May suspend; calling it is a yield point.
     | Suspending
 
+/// What the enclosing cancellation scope does about a fiber that was started
+/// inside it.
+///
+/// A scope waits for its children before it returns, so the first question about
+/// any spawn is whether it is one of those children. These four answers are the
+/// four surface forms, and the code generator emits a different runtime entry
+/// point for each; nothing else about them differs.
+type SpawnKind =
+    /// `(bjo (f x))`. A child, and the caller gets the promise. It is a value
+    /// like any other, so `MustUse` applies: join it, race it, or say `ignore`.
+    ///
+    /// The scope waits for it but does not report its failure, because the
+    /// failure is on the promise the caller is holding and reading it is what
+    /// `bjo` is for.
+    | SpawnScoped
+    /// `(spawn (f x))`. The same child, returning `Unit` because the scope is
+    /// the only thing that needs the handle — and therefore the only thing that
+    /// can report a failure, so this one's failure is the scope's.
+    ///
+    /// It exists so that the common case does not have to write
+    /// `(ignore (bjo ...))`. Exempting `bjo` from `MustUse` instead was the
+    /// alternative, and a second form is cheaper than a hole in a rule that has
+    /// no other exceptions.
+    | SpawnUnit
+    /// `(spawn/daemon (f x))`. Cancelled by the scope, but not waited for: a
+    /// heartbeat, a logger, a metrics pump.
+    | SpawnDaemon
+    /// `(spawn/detached (f x))`. Outside the scope entirely — nothing waits for
+    /// it and nothing cancels it. The name is meant to look uncomfortable.
+    | SpawnDetached
+
 type FType =
     | TName of string * Range
     | TApp of string * FType list * Range
@@ -208,8 +239,10 @@ and Expr =
     | ETryCatch of Expr * string list * Range
     /// `(seq body...)`: a lazy sequence evaluated one `yield` at a time.
     | ESeq of Expr * Range
-    /// `(bjo (f x y))`: spawn, and hand back a `(Promise %a)`. Operands are evaluated in the parent.
-    | EBjo of Expr * Range
+    /// `(bjo (f x y))` and the three `spawn` forms: start a fiber. Operands are
+    /// evaluated in the parent. `SpawnKind` says what the enclosing scope does
+    /// about the fiber afterwards, and it is the only difference between them.
+    | EBjo of Expr * SpawnKind * Range
     /// `(task->event (fetch url))` — the *event* of making an async .NET call.
     /// The task is started when the event is synced and cancelled if its branch loses.
     | ETaskEvent of Expr * Range
@@ -1447,7 +1480,7 @@ let exprRange (e: Expr) : Range =
     | ETryFinally(_, _, r)
     | ETryCatch(_, _, r)
     | ESeq(_, r)
-    | EBjo(_, r)
+    | EBjo(_, _, r)
     | ETaskEvent(_, r)
     | EYield(_, r)
     | EYieldFrom(_, r) -> r
@@ -1568,7 +1601,7 @@ let freeNamesWith (reference: string -> Range -> bool -> unit) (guarded: bool) (
         | ESeq(body, _) -> go true bound body
         // The operands are evaluated where the form is written; only the call
         // is deferred. Guarded all the same, because the call is.
-        | EBjo(body, _)
+        | EBjo(body, _, _) -> go true bound body
         | ETaskEvent(body, _) -> go true bound body
         | EYield(v, _)
         | EYieldFrom(v, _) -> sub v
@@ -1594,7 +1627,7 @@ let exprChildren (e: Expr) : Expr list =
     | EDynPack(_, x, _)
     | EGetField(x, _, _)
     | ESeq(x, _)
-    | EBjo(x, _)
+    | EBjo(x, _, _)
     | ETaskEvent(x, _)
     | EYield(x, _)
     | EYieldFrom(x, _) -> [ x ]
@@ -1819,7 +1852,7 @@ let private renameWith
         | ETryFinally(body, cleanup, r) -> ETryFinally(sub body, sub cleanup, r)
         | ETryCatch(body, exceptions, r) -> ETryCatch(sub body, exceptions, r)
         | ESeq(body, r) -> ESeq(sub body, r)
-        | EBjo(body, r) -> EBjo(sub body, r)
+        | EBjo(body, kind, r) -> EBjo(sub body, kind, r)
         | ETaskEvent(body, r) -> ETaskEvent(sub body, r)
         | EYield(v, r) -> EYield(sub v, r)
         | EYieldFrom(s, r) -> EYieldFrom(sub s, r)
@@ -2437,15 +2470,29 @@ let rec parseExpr (s: SExpr) : Expr =
                 | [] -> failwithf $"Invalid seq syntax at %s{Lexer.formatPos r}. Expected: (seq body...)"
                 | bodyExprs -> ESeq(parseBody bodyExprs listRange, listRange)
 
-            // `(bjo (f x y))`. The operand must be a call: `bjo` splits it into
-            // operands evaluated here and a call made over there, and there is
-            // nothing to split in anything else.
-            | "bjo" ->
+            // `(bjo (f x y))` and its three siblings. The operand must be a
+            // call: a spawn splits it into operands evaluated here and a call
+            // made over there, and there is nothing to split in anything else.
+            //
+            // All four start a fiber in the same way and differ only in what the
+            // enclosing scope does about it afterwards, which is what
+            // `SpawnKind` carries. Writing them as four forms rather than one
+            // form with a keyword argument is deliberate: the choice is not a
+            // detail of a spawn, it is what the spawn *is*, and a reader should
+            // see it at the head of the form.
+            | "bjo" | "spawn" | "spawn/daemon" | "spawn/detached" ->
+                let kind =
+                    match sym with
+                    | "bjo" -> SpawnScoped
+                    | "spawn" -> SpawnUnit
+                    | "spawn/daemon" -> SpawnDaemon
+                    | _ -> SpawnDetached
+
                 match args with
-                | [ SList(_ :: _, _) as call ] -> EBjo(parseExpr call, listRange)
+                | [ SList(_ :: _, _) as call ] -> EBjo(parseExpr call, kind, listRange)
                 | _ ->
                     failwithf
-                        $"Invalid bjo syntax at %s{Lexer.formatPos r}. Expected: (bjo (f args...)) — one call, whose operands are evaluated here and whose call happens in the new fiber. For a thunk you already have, use spawn-thunk."
+                        $"Invalid %s{sym} syntax at %s{Lexer.formatPos r}. Expected: (%s{sym} (f args...)) — one call, whose operands are evaluated here and whose call happens in the new fiber. For a thunk you already have, use spawn-thunk."
 
             // `(spawn-evt (worker q))` — start this when the event is synced,
             // and cancel it if the branch loses.
@@ -2468,7 +2515,7 @@ let rec parseExpr (s: SExpr) : Expr =
                 | [ SList(_ :: _, _) as call ] ->
                     EApp(
                         EResolved("spawn-evt/start", listRange),
-                        [ EFun([], EBjo(parseExpr call, listRange), Ordinary, listRange) ],
+                        [ EFun([], EBjo(parseExpr call, SpawnScoped, listRange), Ordinary, listRange) ],
                         listRange
                     )
                 | _ ->
@@ -2817,6 +2864,25 @@ let rec parseExpr (s: SExpr) : Expr =
                                 | bad ->
                                     failwithf
                                         $"Invalid try at %s{Lexer.formatPos (getRange bad)}: #:catch takes fully qualified .NET exception type names, as in System.IO.IOException.")
+
+                        // Cancellation may not be caught here.
+                        //
+                        // `Cancelled` is what a `sync` raises when the scope has
+                        // been cancelled, and a handler that turns it back into
+                        // an ordinary value is a fiber that has been told to
+                        // stop and has decided not to. The shape is always the
+                        // same — catch, log, loop — and it is the classic bug in
+                        // every language that made cancellation an exception.
+                        //
+                        // There is no catch-all in this language, so nothing can
+                        // swallow it by accident: `#:catch` with no named types
+                        // is already refused above. This is for the case where
+                        // someone names it on purpose, and the answer to what
+                        // they were trying to do is `with-shield`.
+                        for name in parsed do
+                            if name = "Cancelled" || name.EndsWith(".Cancelled") then
+                                failwithf
+                                    $"Invalid try at %s{Lexer.formatPos r}: #:catch may not name Cancelled.\n  Cancelled is what a sync raises once the scope has been cancelled, and catching it here would let this fiber carry on after it has been told to stop.\n  To run cleanup after a cancellation, put it in (with-shield ...): inside a shield the ambient token is a fresh one, so a sync works again."
 
                         readClauses (Some parsed) finallyForms rest
                     | SAtom { Token = Keyword "catch" } :: _ ->

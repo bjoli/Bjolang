@@ -69,7 +69,11 @@
   (decompress-all (: System.Net.DecompressionMethods.All #:get))
   (no-timeout     (: System.Threading.Timeout.InfiniteTimeSpan #:get))
   (utf8           (: System.Text.Encoding.UTF8 #:get))
-  (seconds        (: System.TimeSpan.FromSeconds (-> double Span)))
+  ;; Named `span-seconds` rather than `seconds`: `std/prelude` exports a
+  ;; `seconds` that answers milliseconds, for a deadline, and two bindings of
+  ;; one name that differ only in what they return is the kind of collision
+  ;; nothing reports usefully.
+  (span-seconds   (: System.TimeSpan.FromSeconds (-> double Span)))
   (escape         (: System.Uri.EscapeDataString (-> string string)))
   (encoding-named (: System.Text.Encoding.GetEncoding (-> string Encoding)
                      #:exceptions (System.ArgumentException)))
@@ -134,7 +138,7 @@
 (: make-client (-> (#:connection-seconds double) (#:redirects bool) Client))
 (defun (make-client #:connection-seconds 120.0 #:redirects #t)
   (let ((handler (SocketsHandler.)))
-    (handler-lifetime! handler (seconds connection-seconds))
+    (handler-lifetime! handler (span-seconds connection-seconds))
     (handler-decompress! handler decompress-all)
     (handler-redirects! handler redirects)
     (let ((client (Client. (cast MessageHandler handler))))

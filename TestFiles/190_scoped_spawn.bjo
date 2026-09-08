@@ -1,0 +1,98 @@
+;; A worker pool, written the way a scope lets it be written.
+;;
+;; This is the shape `Examples/first-15-sites.bjo` is built out of, with the
+;; network taken away. It is here because it is the case the whole feature is
+;; for: a crew of workers, a feeder, and a body that changes its mind partway
+;; through.
+;;
+;; What is *not* in it is the point. There is no vector of promises, no joining
+;; loop, and no `until-cancelled` anywhere. `spawn` puts a fiber in the current
+;; scope, `sync` watches the scope's token by itself, and `with-cancel` does not
+;; return until every fiber it started has stopped.
+
+(import (std prelude))
+(import (std simpletest))
+
+;; Take a job, double it, hand the answer on, repeat.
+;;
+;; The loop has no exit. It does not need one: when the scope is cancelled the
+;; `sync` it is parked in raises, and a fiber that stopped because it was
+;; cancelled has not failed — so the scope does not report it.
+(: worker (-bjo-> (Chan int) (Chan int) Unit))
+(defbjo (worker jobs answers)
+  (loop (:for n (up-from 0))
+        (:let j (sync (chan-recv jobs)))
+        (:do (sync (chan-send answers (* j 2))))))
+
+;; The channel is a rendezvous, so this parks as soon as the crew is busy.
+(: feeder (-bjo-> (Chan int) int Unit))
+(defbjo (feeder jobs n)
+  (loop (:for i (range 0 n))
+        (:do (sync (chan-send jobs i)))))
+
+;; Hires `n` workers. It hands nothing back: the promises used to be collected
+;; only so that something could join them at the end, and the scope holds them
+;; now.
+(: hire (-> (Chan int) (Chan int) int Unit))
+(defun (hire jobs answers n)
+  (loop (:for i (range 0 n))
+        (:do (spawn (worker jobs answers)))))
+
+;; Take `wanted` answers off the crew and stop. There are far more jobs than
+;; that, so several workers are still mid-rendezvous when the token fires, and
+;; the feeder is parked on a send nobody will ever take.
+(: first-few (-bjo-> int int int (Vec int)))
+(defbjo (first-few jobs-count wanted crew-size)
+  (with-cancel (cancel)
+    (def jobs (make-chan))
+    (def answers (make-chan))
+
+    (hire jobs answers crew-size)
+    (spawn (feeder jobs jobs-count))
+
+    (def kept (loop (:for seen (range 0 jobs-count))
+                    (:let a (sync (chan-recv answers)))
+                    (:acc got (vecing a))
+                    (:break (= (vecbuilder-length got) wanted))))
+
+    (def stopped (cancel (Requested "got what we came for")))
+    kept))
+
+;; A crew that is never cancelled, and a feeder that runs out. Every job is
+;; answered, the feeder finishes on its own, and the workers park forever on an
+;; empty channel — so this one *must* cancel, and it is the shape that would
+;; hang if it did not.
+(: all-of-them (-bjo-> int int (Vec int)))
+(defbjo (all-of-them jobs-count crew-size)
+  (with-cancel (cancel)
+    (def jobs (make-chan))
+    (def answers (make-chan))
+
+    (hire jobs answers crew-size)
+    (spawn (feeder jobs jobs-count))
+
+    (def kept (loop (:for seen (range 0 jobs-count))
+                    (:let a (sync (chan-recv answers)))
+                    (:acc got (vecing a))))
+
+    (def stopped (cancel (Requested "every job answered")))
+    kept))
+
+(defbjo (main args)
+  (def some (first-few 200 15 8))
+  (expect "a scope hands back what its body collected" (vec-length some) 15)
+
+  ;; Every answer is a doubled job, and the jobs were 0..199, so this is a check
+  ;; that the crew really did the work rather than that the shape compiled.
+  (expect "and every answer came from a worker"
+          (if (all? #(= 0 (% &1 2)) some) "doubled" "wrong") "doubled")
+
+  (def every (all-of-them 40 4))
+  (expect "a crew answers every job it is given" (vec-length every) 40)
+
+  (expect "and the answers add up"
+          (fold #(+ &1 &2) 0 every)
+          (* 2 (fold #(+ &1 &2) 0 (range 0 40))))
+
+  (println "190 ok")
+  0)

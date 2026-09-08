@@ -104,13 +104,23 @@
 
 (type (: Fetched (Union (Got string) TimedOut Failed)))
 
-;; Syncs a `task->event` on a call that will not finish in any reasonable time,
-;; and reports what came back. Cancelled from outside, it comes back at once
-;; with an `Err`, because the branch's token is linked to the ambient one.
-(: patient (-> (Chan string) void))
-(defbjo (patient report)
-  (def outcome (sync (task->event (pause 30000))))
-  (sync (chan-send report (match outcome ((Ok u) "finished") ((Err e) "cancelled")))))
+;; Syncs a `task->event` on a call that will not finish in any reasonable time.
+;;
+;; Cancelled from outside, this does *not* come back with an `Err`: it raises
+;; `Cancelled`, and the promise the spawn handed back is what carries it. That
+;; is the one representation rule. A cancelled call used to arrive as
+;; `(Err TaskCanceledException)`, a value nobody read, so a
+;; `(Result Exception string)` from a fetch meant either "the request failed" or
+;; "we were cancelled" and the caller had to tell them apart by exception type.
+;; Now it means the request failed, full stop.
+;;
+;; The mechanism is worth stating, because nothing here checks a token: an
+;; already-cancelled scope makes `task->event` offer *nothing*, so the ambient
+;; branch that `sync` adds is the only one left that can commit.
+(: patient (-> void))
+(defbjo (patient)
+  (ignore (sync (task->event (pause 30000))))
+  unit)
 
 (defbjo (main args)
   ;; A bjoroutine from another module whose suspension is a .NET await. The call
@@ -219,17 +229,47 @@
   ;; is driven by the nack **or** the ambient token". Nothing here loses a
   ;; choose: there is one branch, and it is cancelled because the scope was.
   ;;
+  ;; The outcome is read off the promise rather than off a channel the fiber
+  ;; sends to, because the fiber no longer gets to send anything: it is
+  ;; cancelled, so it raises, and the raise is what the promise carries.
+  ;;
   ;; Raced against a timeout so that a broken link is a FAILURE line rather than
   ;; a test that sits for thirty seconds.
   (def (stop! scope) (make-cancel))
-  (def report (make-chan))
-  (def waiting (parameterize ((current-cancel scope)) (bjo (patient report))))
+  (def waiting (parameterize ((current-cancel scope)) (bjo (patient))))
   (def s2 (stop! (Requested "the test")))
   (expect "the ambient token cancels a synced task->event"
-          (match (sync (choose (wrap (chan-recv report) (fun (m) (Got m)))
+          (match (sync (choose (wrap (promise-join waiting)
+                                     (fun (r) (match r ((Ok u) (Got "finished")) ((Err e) (Got "cancelled")))))
                                (wrap (timeout 10000) (fun (u) TimedOut))))
             ((Got m) m)
             (TimedOut "timed out")
             (Failed "failed"))
           "cancelled")
+
+  ;; ---- A cancelled .NET call is not a failure of the scope -----------------
+  ;;
+  ;; `sleep-forever` is parked in a *bare* `#:async` call rather than in a
+  ;; `sync`, so it does not unwind with `Cancelled` — .NET says cancellation
+  ;; with `TaskCanceledException` and that is what comes back up the fiber.
+  ;;
+  ;; The scope must not report it. It is the cancellation the scope itself just
+  ;; fired, and a scope that raised its own shutdown at its caller would make
+  ;; `spawn` unusable for anything that talks to .NET.
+  ;;
+  ;; What separates it from a real one is the token: an `HttpClient` timeout is
+  ;; also a `TaskCanceledException`, and with an unfired token nothing asked for
+  ;; it, so it still propagates.
+  (def clean
+    (try
+      (with-cancel (stop-scope)
+        (spawn (sleep-forever))
+        (sync (timeout 30))
+        (def stopped (stop-scope (Requested "enough")))
+        "returned")
+      #:catch (System.Exception)))
+
+  (expect "a child cancelled inside a .NET call is not a scope failure"
+          (match clean ((Ok v) v) ((Err e) "raised"))
+          "returned")
   0)

@@ -514,7 +514,7 @@ let rec private selectIn (registry: TraitRegistry) (allowed: bool) (expr: TypedE
 
     | TSeq body -> { expr with Node = TSeq(sealed_ body) }
 
-    | TBjo body ->
+    | TBjo(body, kind) ->
         // The operands run in the parent and the call runs in the child, which
         // is always async — the same split `ColourCheck` makes, down to
         // emptying the argument list so that the child's colour reaches the
@@ -536,8 +536,8 @@ let rec private selectIn (registry: TraitRegistry) (allowed: bool) (expr: TypedE
 
             let args = args |> List.map descend
             let kwArgs = kwArgs |> List.map (fun (n, v) -> n, descend v)
-            { expr with Node = TBjo { body with Node = TApply(target, args, kwArgs) } }
-        | _ -> { expr with Node = TBjo(selectIn registry true body) }
+            { expr with Node = TBjo({ body with Node = TApply(target, args, kwArgs) }, kind) }
+        | _ -> { expr with Node = TBjo(selectIn registry true body, kind) }
 
     | TLoop(members, bodyOpt) ->
         match bodyOpt with

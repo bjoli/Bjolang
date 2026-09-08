@@ -82,7 +82,7 @@ let mapChildren (f: TypedExpr -> TypedExpr) (expr: TypedExpr) : TypedExpr =
         | TTryFinally(body, cleanup) -> TTryFinally(f body, f cleanup)
         | TTryCatch(body, exceptions) -> TTryCatch(f body, exceptions)
         | TSeq body -> TSeq(f body)
-        | TBjo body -> TBjo(f body)
+        | TBjo(body, kind) -> TBjo(f body, kind)
         | TTaskEvent(receiver, clrType, name, args, payload, isVoid) ->
             TTaskEvent(Option.map f receiver, clrType, name, List.map f args, payload, isVoid)
         | TYield value -> TYield(f value)
@@ -235,7 +235,7 @@ let rec reachesAwait (expr: TypedExpr) : bool =
     // here, and a `TLetRec` group's members likewise.
     | TLambda _
     | TSeq _ -> false
-    | TBjo body ->
+    | TBjo(body, _) ->
         match body.Node with
         | TApply(target, args, kwArgs) ->
             reachesAwait target

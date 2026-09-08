@@ -241,6 +241,10 @@ let mapPrimitiveType (name: string) =
     // deadline watcher — and is compiled below anything a `def/type` could be
     // written in.
     | "CancelReason" -> "BjolangRuntime.CancelReason"
+    // A cancellation scope, which owns the fibers started inside it. Opaque:
+    // the only Bjolang that names one is the expansion of `with-cancel` and its
+    // two siblings.
+    | "Scope" -> "BjolangRuntime.Scope"
     | "AsyncSeq" -> "System.Collections.Generic.IAsyncEnumerable"
     | "Keyword" | "Bjolang.Keyword" -> "BjolangRuntime.Keyword"
     | "Symbol" | "Bjolang.Symbol" -> "BjolangRuntime.Symbol"
@@ -741,7 +745,18 @@ let rec serializeExpr (e: Parser.Expr) : string =
         list ("match" :: serializeExpr target :: clauseStrs)
 
     | Parser.ESeq(body, _) -> list [ "seq"; serializeExpr body ]
-    | Parser.EBjo(body, _) -> list [ "bjo"; serializeExpr body ]
+    // The kind is written back as the surface form it came from, so the reader
+    // needs nothing new: `(spawn ...)` parses to the same node it serialized
+    // from.
+    | Parser.EBjo(body, kind, _) ->
+        let head =
+            match kind with
+            | Parser.SpawnScoped -> "bjo"
+            | Parser.SpawnUnit -> "spawn"
+            | Parser.SpawnDaemon -> "spawn/daemon"
+            | Parser.SpawnDetached -> "spawn/detached"
+
+        list [ head; serializeExpr body ]
     | Parser.ETaskEvent(body, _) -> list [ "task->event"; serializeExpr body ]
     | Parser.EYield(v, _) -> list [ "yield"; serializeExpr v ]
     | Parser.EYieldFrom(s, _) -> list [ "yield-from"; serializeExpr s ]
@@ -2718,7 +2733,7 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
     // call shape working: keyword arguments, a rest parameter, an operator, a
     // trait method, and the `await` a bjoroutine callee needs all come from the
     // ordinary emitter.
-    | TBjo call ->
+    | TBjo(call, kind) ->
         let bindOperand (operand: TypedExpr) : TypedExpr =
             let tmp = freshName "__bjo"
             generateBindingValue ctx (DeclareAndAssign(typeToString operand.Type, tmp)) operand
@@ -2744,10 +2759,23 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
         let payload =
             if isVoidType spawned.Type then "Bjoml.Unit" else typeToString spawned.Type
 
+        // One entry point per kind, rather than one entry point and a flag, so
+        // that the generated C# says which of the four the source wrote. All
+        // four take the same lambda; what differs is whether the current scope
+        // waits for the fiber, only cancels it, or never hears about it.
+        let entryPoint =
+            match kind with
+            | Parser.SpawnScoped -> "BjolangRuntime.ScopeSpawn"
+            | Parser.SpawnUnit -> "BjolangRuntime.ScopeSpawnUnit"
+            | Parser.SpawnDaemon -> "BjolangRuntime.ScopeSpawnDaemon"
+            | Parser.SpawnDetached -> "BjolangRuntime.ScopeSpawnDetached"
+
         // Explicit type argument: BjoML's own docs warn that C# cannot infer the
-        // result of an async lambda, and this is exactly that call.
+        // result of an async lambda, and this is exactly that call. The three
+        // `Unit`-returning forms still need it, because the payload is the
+        // *call's* type and not the form's.
         emitTerminal ctx target expr.Type (fun c ->
-            append c $"Bjoml.Bjo.Spawn<%s{payload}>(async () => "
+            append c $"%s{entryPoint}<%s{payload}>(async () => "
             generateExpr c spawned
             append c ")")
 

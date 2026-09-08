@@ -119,6 +119,9 @@
   ;; Ports — output
   write-string write-char writeln get-output-string
 
+  ;; Durations, for a deadline.
+  millis seconds minutes
+
   promise-join/sync panic!)
 
 
@@ -1780,39 +1783,125 @@
 ;; ---------------------------------------------------------------------------
 ;; Cancellation scopes
 ;; ---------------------------------------------------------------------------
-
-;; `(with-cancel (cancel) body ...)` — a cancellation scope that ends when the
-;; scope does.
 ;;
-;; Cancel scope behavior.
+;; A scope owns the fibers started inside it. `(spawn ...)` and `(bjo ...)` put
+;; a fiber into the current scope, and the scope does not return until every one
+;; of those fibers has finished. So this
+;;
+;;     (with-cancel (cancel)
+;;       (spawn (process a))
+;;       (spawn (process b)))
+;;
+;; waits for both, and the work is over when the form returns.
+;;
+;; Stopping early is what the cancel thunk is for:
+;;
+;;     (with-cancel (cancel)
+;;       (spawn (worker jobs answers))
+;;       (def answer (sync (chan-recv answers)))
+;;       (cancel (Requested "got it"))
+;;       answer)
+;;
+;; The cost of waiting first rather than cancelling first: a scope whose children
+;; never end, and which never calls `cancel`, hangs here. That is the intended
+;; trade. A hang says where it is; a scope that returned while its children ran
+;; on says nothing at all.
+;;
+;; All three forms suspend, because waiting is the whole of what they do. They
+;; can only be written inside a bjoroutine.
+
+;; The shared expansion of `with-cancel`, `with-deadline` and `with-shield`.
+;;
+;; `opener` is the call that makes the scope, and it is the only difference
+;; between the three: a linked scope, a linked scope with a timer, or an
+;; unlinked one. Everything after that — install, run, close, restore — is the
+;; same, which is the point of writing it once.
+;;
+;; The two nested `try`s are one mechanism each. The inner one turns a failure in
+;; the body into a value, so that the close can be told about it and can cancel
+;; the other children before waiting for them. The outer one restores the
+;; dynamic binding however the form is left; a fired token left installed would
+;; make every later scope look cancelled.
+;;
+;; `(raise failure)` puts the body's exception back with the stack it arrived
+;; with. It is not reached when the close raised first, which is what happens
+;; when children failed too — the close reports them together.
+(def/macro (with-scope form inject compare)
+  (syntax-match form
+    ((_ opener (cancel) first body ...)
+     #'(let ()
+         (def scope ,opener)
+         (def saved (scope-push! scope))
+         (def ,cancel (scope-canceller scope))
+         (try
+             (match (try (let () ,first ,@body) #:catch (System.Exception))
+               ((Ok answer) (scope-close! scope None) answer)
+               ((Err failure) (scope-close! scope (Some failure)) (raise failure)))
+           #:finally (dyn-restore! saved))))
+    (bad (syntax-error bad "with-scope takes an opener, a cancel thunk name and a body. It is what with-cancel, with-deadline and with-shield expand to; write one of those."))))
+
+;; `(with-cancel (cancel) body ...)` — a scope that owns what it starts.
 (def/macro (with-cancel form inject compare)
   (syntax-match form
     ((_ (cancel) first body ...)
-     ;; Bind cancel.
-     #'(let ()
-         (def (,cancel scope-token) (make-cancel))
-         (def saved (parameter-push! current-cancel scope-token))
-         (try
-             ;; Catch failures.
-             (match (try (let () ,first ,@body) #:catch (System.Exception))
-               ((Ok answer) (,cancel Scope-Ended) answer)
-               ((Err failure) (,cancel (Failed failure)) (raise failure)))
-           #:finally (dyn-restore! saved))))
+     #'(with-scope (scope-open! 0) (,cancel) ,first ,@body))
     (bad (syntax-error bad "with-cancel names its cancel thunk and takes a body: (with-cancel (cancel) body ...)"))))
 
-;; `(with-deadline ms body ...)` — a `with-cancel` whose token also fires on its
-;; own, after `ms`, with `Deadline`.
+;; `(with-deadline ms body ...)` — the same scope, whose token also fires on its
+;; own after `ms` milliseconds, with `Deadline`.
 ;;
-;; Deadline behavior.
+;; The timer belongs to the scope rather than to a fiber racing it. A watcher
+;; fiber cannot work here: the scope waits for its children before it fires its
+;; token, and the watcher would be waiting for that token — so each would be
+;; waiting for the other.
 (def/macro (with-deadline form inject compare)
   (syntax-match form
     ((_ ms first body ...)
-     ;; Timeout cancel.
-     #'(with-cancel (fire)
-        (deadline-watch! fire ,ms)
-        ,first
-        ,@body))
+     #'(with-scope (scope-open! ,ms) (fire) ,first ,@body))
     (bad (syntax-error bad "with-deadline takes a millisecond limit and a body: (with-deadline 5000 body ...)"))))
+
+;; `(with-shield body ...)` and `(with-shield #:within ms body ...)` — a scope
+;; whose token is *not* linked to its parent's.
+;;
+;; This is how cleanup runs after a cancellation. Every `sync` consults the
+;; ambient token, so once a scope has been cancelled every `sync` in it raises —
+;; including the ones in the code that is trying to tidy up. Inside a shield the
+;; ambient token is a fresh one that has not fired, so a `sync` works again:
+;;
+;;     (with-shield #:within (seconds 5)
+;;       (spawn (flush-buffer a))
+;;       (spawn (flush-buffer b)))
+;;
+;; It is the same object as any other scope with one flag different, and that is
+;; deliberate: `(current-cancel)` inside a shield also reads as "not cancelled",
+;; so a hand-written `until-cancelled` agrees with what `sync` is doing rather
+;; than contradicting it.
+;;
+;; The deadline is not optional and defaults to thirty seconds. A shield with no
+;; deadline is unreachable from outside by construction, which would make the
+;; program impossible to kill.
+;;
+;; A shield is a scope, so it waits for its own children like any other.
+(def/macro (with-shield form inject compare)
+  (syntax-match form
+    ((_ #:within ms first body ...)
+     #'(with-scope (shield-open! ,ms) (fire) ,first ,@body))
+    ((_ first body ...)
+     #'(with-shield #:within 30000 ,first ,@body))
+    (bad (syntax-error bad "with-shield takes a body and an optional deadline: (with-shield #:within (seconds 5) body ...)"))))
+
+;; Milliseconds, spelled the way a deadline is usually said. Every timer in the
+;; language counts milliseconds, and `(seconds 5)` is harder to misread than
+;; `5000` — a deadline that is a thousand times too short is a bug that looks
+;; like a slow network.
+(: millis (-> int int))
+(defun (millis n) n)
+
+(: seconds (-> int int))
+(defun (seconds n) (* n 1000))
+
+(: minutes (-> int int))
+(defun (minutes n) (* n 60000))
 
 ;; ---------------------------------------------------------------------------
 ;; Container formats

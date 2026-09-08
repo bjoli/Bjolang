@@ -1,0 +1,28 @@
+;; `#:catch` may not name `Cancelled`.
+;;
+;; `Cancelled` is what a `sync` raises once the scope has been cancelled. A
+;; handler that catches it and carries on is a fiber that has been told to stop
+;; and has decided not to — the classic bug in every language that made
+;; cancellation an exception, and it always has the same shape: catch, log,
+;; loop.
+;;
+;; Nothing can swallow it by accident here, because there is no catch-all: a
+;; `#:catch` with no named types is already refused. This is for the case where
+;; someone names it deliberately, and the answer to what they were trying to do
+;; is `with-shield` — a scope whose token is not linked to its parent's, so a
+;; `sync` inside it works again and cleanup can run.
+
+;; EXPECT-ERROR: #:catch may not name Cancelled
+;; EXPECT-ERROR: with-shield
+
+(import (std prelude))
+
+(defbjo (main args)
+  (def outcome
+    (try
+      (with-cancel (cancel)
+        (def stopped (cancel (Requested "stop")))
+        (sync (timeout 10))
+        "not reached")
+      #:catch (Bjolang.Runtime.Cancelled)))
+  0)

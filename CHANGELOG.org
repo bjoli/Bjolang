@@ -3,6 +3,96 @@
 
 What each change guarantees, and what it leaves open.
 
+* A scope owns its fibers, and ~sync~ watches the token
+
+~with-cancel~ used to hold a cancellation token and nothing else, so every
+program wrote its own shutdown: keep the promises, cancel by hand, join them one
+at a time. And every channel operation needed three combinators to say "receive,
+or give up if we were cancelled".
+
+#+BEGIN_SRC scheme
+;; before
+(def crew (hire jobs answers 8))
+(def feed (bjo (feeder jobs urls)))
+...
+(cancel (Requested "enough"))
+(ignore (sync (promise-join feed)))
+(reap crew)
+
+;; after
+(hire jobs answers 8)
+(spawn (feeder jobs urls))
+...
+(cancel (Requested "enough"))     ;; the scope drains on the way out
+#+END_SRC
+
+Two changes, which fit together.
+
+*A scope waits for what it started.* ~spawn~ and ~bjo~ put a fiber in the
+current scope, and ~with-cancel~ does not return until every one of them has
+finished. When the form returns, the work is over.
+
+*~sync~ consults the ambient token by itself.* A ~sync~ under a cancelled scope
+raises ~Cancelled~, so a worker loop is written as if cancellation did not
+exist. The token is offered as one more branch of a ~choose~ and it is published
+*second*, so an event that is already available still wins: a rendezvous that
+happened is not undone by a token that fired while the value sat on the run
+queue.
+
+** What is new to write
+
+- ~(spawn (f x))~, ~(spawn/daemon (f x))~ and ~(spawn/detached (f x))~ beside
+  ~bjo~. A daemon is cancelled by the scope but not waited for; a detached fiber
+  inherits neither the scope nor the token. ~bjo~ keeps its promise and keeps
+  ~MustUse~ — a second form is cheaper than a hole in a rule with no other
+  exceptions.
+- ~(with-shield #:within ms body ...)~, a scope whose token is not linked to its
+  parent's, so cleanup after a cancellation can still ~sync~. Thirty seconds by
+  default, because a shield with no deadline cannot be reached from outside at
+  all.
+- ~seconds~, ~minutes~ and ~millis~, which answer milliseconds.
+- ~(spawn/thread thunk)~, for long CPU work. A *function* taking a thunk, like
+  ~blocking~ and not like the spawn forms: the pool cannot tell a parked thread
+  from a computing one, ~blocking~ answers the first case with ~Task.Run~, and
+  this answers the second with a thread of its own — because for compute
+  ~Task.Run~ is the same pool, the same core and a different worker holding it.
+  It decides *where* work runs, so it composes with all four spawn forms, which
+  decide *who owns* it.
+
+** What changed under existing code
+
+- ~until-cancelled~ takes the token to watch: ~(until-cancelled tok ev)~. The
+  ambient token is ~sync~'s business now, and two mechanisms watching it — one
+  raising, one answering ~None~ — would be two answers to one question. Every
+  *other* token still composes under ~choose~, which is what keeps the CML layer
+  intact.
+- A cancelled ~task->event~ raises ~Cancelled~ instead of answering
+  ~(Err TaskCanceledException)~. There is now one representation of
+  cancellation, so a ~(Result Exception string)~ from a fetch means the request
+  failed and nothing else.
+- ~with-cancel~, ~with-deadline~ and ~with-shield~ *suspend*, because waiting is
+  what they do. Only a bjoroutine may write them.
+- ~main~ runs inside a root scope, so a top-level ~spawn~ is a child of
+  something.
+- ~deadline-watch!~ is gone. A deadline is a timer the scope owns; a watcher
+  fiber would wait for a token the scope does not fire until its children are
+  done, and its children would include the watcher.
+- Naming ~Cancelled~ in a ~#:catch~ is an error, and the message points at
+  ~with-shield~.
+
+** What it leaves open
+
+A scope whose children never end, and which never calls ~cancel~, hangs instead
+of returning. That is the trade: a hang says where it is, and a scope that
+returned while its children ran on says nothing at all.
+
+A scope does not wait for a daemon to acknowledge its cancellation, so a daemon
+can still be finishing its last write when the scope returns.
+
+A scope owns fibers and nothing else. Eio's switches own file handles too, and
+~with-response~ does the same job for one type; unifying them is worth doing
+later, and the closing path leaves somewhere for a release action to go.
+
 * The parking warning says when the fix is a keyword
 
 The lint that reports a bjoroutine reaching a call which parks its thread used

@@ -17,7 +17,81 @@ public static partial class BjolangRuntime {
     /// anything about this method in particular. Building an event is pure and
     /// syncing it suspends, which is the split that makes `choose` possible —
     /// see concurrency-design.md §5.
-    public static async Fiber<T> sync<T>(IEvent<T> ev) => await ev;
+    ///
+    /// # It watches the ambient token by itself
+    ///
+    /// The event is raced against the scope's cancellation token. If the token
+    /// wins, this raises `Cancelled` rather than returning. So a worker loop is
+    /// written as if cancellation did not exist:
+    ///
+    ///     (def url (sync (chan-recv jobs)))
+    ///
+    /// and not, as it had to be written before:
+    ///
+    ///     (:break-let (Some url) (sync (until-cancelled (chan-recv jobs))))
+    ///
+    /// The second spelling still exists and still means what it meant, but the
+    /// token it watches is now written down — see `until-cancelled`. The
+    /// ambient one is this method's business.
+    ///
+    /// # Cancellation loses a race; it never undoes a commit
+    ///
+    /// The token is offered as one more branch of a `choose`, and it is
+    /// published *second*. Publish order is priority, so an event that is
+    /// already available — a channel with a sender parked in it — wins even
+    /// though the token has fired. That is deliberate: the sender has handed the
+    /// value over, the rendezvous happened, and throwing the value away would
+    /// lose a message that was successfully delivered.
+    ///
+    /// Once a branch has committed, `SyncState` is in its terminal state and the
+    /// token cannot take it back. Cancellation competes in the commit protocol
+    /// rather than reaching around it, and that is the only place the rule can
+    /// live: any check outside the protocol is a check with a window after it.
+    ///
+    /// # What it costs
+    ///
+    /// A scope's token is a live promise, so a program that opens any scope at
+    /// all pays for two `Wrap`s and a `Choose` on every `sync`. A program with
+    /// no scope — nothing has been parameterized and no `with-cancel` is open —
+    /// pays a reference comparison and takes the old path unchanged.
+    public static async Fiber<T> sync<T>(IEvent<T> ev) {
+        var token = Dyn.Current.Cancel;
+
+        // Nothing to lose to. The comparison against `RootCancel` is what makes
+        // a program that binds `(current-cancel)` to its own default free as
+        // well: that token has no other half and can never fire.
+        if (token is null || ReferenceEquals(token, RootCancel)) return await ev;
+
+        var landed = await Cml.Choose(
+            Cml.Wrap(ev, static v => Synced<T>.Value(v)),
+            Cml.Wrap(cancelled(token), static why => Synced<T>.Cancelled(why)));
+
+        // Raised here rather than in the `Wrap` above. A mapper runs inside the
+        // event continuation, on whichever thread completed the rendezvous, and
+        // an exception there lands in a channel's matching loop and wedges the
+        // whole sync block. This line runs on the fiber's own stack, after the
+        // await, which is where a raise belongs.
+        return landed.Unwrap();
+    }
+
+    /// The outcome of one `sync`: either the value the event carried, or the
+    /// reason the scope was cancelled.
+    ///
+    /// A struct with a factory per case rather than two constructors, because
+    /// `T` can be instantiated at `CancelReason` and two constructors would then
+    /// be the same constructor.
+    private readonly struct Synced<T> {
+        private readonly T _value;
+        private readonly CancelReason? _why;
+
+        private Synced(T value, CancelReason? why) { _value = value; _why = why; }
+
+        internal static Synced<T> Value(T v) => new(v, null);
+        internal static Synced<T> Cancelled(CancelReason why) => new(default!, why);
+
+        internal T Unwrap() =>
+            _why is null ? _value : throw new Bjolang.Runtime.Cancelled(_why);
+    }
 
     /// `(promise-join p)` — the joinable event. Pure: it allocates nothing that
     /// suspends, and hands back a description of a synchronisation that has not
@@ -47,12 +121,29 @@ public static partial class BjolangRuntime {
     /// whole difference from `bjo`: this spawns work that runs to completion
     /// without ever yielding. It is still genuinely concurrent — the body starts
     /// on the pool, not on the caller's stack.
+    ///
+    /// It goes into the current scope, exactly as `bjo` does. It is `bjo`'s
+    /// first-class counterpart, so a fiber started through it must be owned the
+    /// same way — otherwise `(map spawn-thunk thunks)` would be the one spelling
+    /// of "start some work" that nothing waits for, and it would be the spelling
+    /// that looks the most ordinary.
+    ///
+    /// **A thunk cannot be cancelled.** It has no yield point, so nothing can
+    /// interrupt it and the scope simply waits for it to finish. That is the
+    /// same cooperative limit `cancelled?` exists for, and it means a long thunk
+    /// holds its scope open for its whole duration.
     public static Promise<T> spawnsubthunk<T>(Func<T> f) =>
-        Bjo.Spawn<Func<T>, T>(static g => RunThunk(g), f);
+        ScopeSpawn<T>(() => RunThunk(f));
 
-    /// The state-taking shape of `Spawn` exists to avoid a closure, so the
-    /// lambda above must not capture: the thunk travels as the state argument
-    /// and this is what unpacks it.
+    /// The state-taking shape of `Spawn` used to be reachable from here, which
+    /// is why this is a separate method rather than an inline lambda: the
+    /// runner must not capture, so the thunk travelled as the state argument
+    /// and this unpacked it.
+    ///
+    /// The saving is gone now that the spawn goes through the scope, which
+    /// takes a `Func&lt;Fiber&lt;T&gt;&gt;` and so costs one closure. That is
+    /// the price of a thunk being owned like every other fiber, and it is one
+    /// allocation against a spawn that already makes several.
     private static async Fiber<T> RunThunk<T>(Func<T> f) => f();
 
     /// `(promise-done? p)` — has it landed? Answered without suspending, for
@@ -167,8 +258,16 @@ public static partial class BjolangRuntime {
     ///
     /// This is what `(ignore p)` will mean once §8.2's `Discard` trait exists.
     /// Until then it has to be named.
+    ///
+    /// A fiber that stopped because it was cancelled is not reported. Being
+    /// cancelled is how a worker normally ends, so reporting it would print an
+    /// unhandled-exception line every time a scope closes cleanly — and the
+    /// record that a cancellation happened is the scope's token, not this.
     public static Unit detach<T>(Promise<T> p) {
-        p.Detach();
+        // The ambient token, read here rather than at completion: this is the
+        // scope the caller is in, and it is the one whose cancellation would
+        // explain the fiber stopping.
+        ReportUnlessCancelled(p, Dyn.Current.Cancel);
         return default;
     }
 
@@ -235,44 +334,59 @@ public static partial class BjolangRuntime {
     public static IEvent<CancelReason> cancelled(Promise<CancelReason> ct) =>
         Cml.Wrap(ct.Join(), static r => r.Value);
 
-    /// `(until-cancelled ev)` — `ev`, or `None` if the ambient scope goes down
-    /// first.
+    /// `(until-cancelled token ev)` — `ev`, or `None` if `token` fires first.
     ///
-    /// One combinator over *any* event rather than a cancellable variant of
-    /// each primitive, and the shape that keeps a worker loop out of the trap
-    /// §4.4 describes: a fired token is persistent, so a loop that races one
-    /// directly wins on it every iteration thereafter and spins a core at 100%.
-    /// `None` is the answer that makes leaving the natural spelling —
+    /// # Why it takes the token now
     ///
-    ///     (match (sync (until-cancelled (chan-recv jobs)))
-    ///       ((Some job) (handle job) (loop))
-    ///       (None       (void)))
+    /// It used to read the ambient one, and that job belongs to `sync`. Leaving
+    /// it here as well would mean two mechanisms watching the same token and
+    /// disagreeing about what a cancellation looks like: one raising, one
+    /// returning `None`.
     ///
-    /// — because not recursing is what you write anyway.
+    /// So it keeps the *other* half of its job, which nothing else does. Any
+    /// token that is not the ambient one — a per-request deadline, a sub-scope's
+    /// token, one received from somewhere else — is an ordinary event and still
+    /// composes under `choose`:
     ///
-    /// The ambient token is read inside the `Guard`, so the read happens at
-    /// *sync* time on the fiber doing the syncing. An event is a value: it may
-    /// be built in one fiber and synced by another, and the token that matters
-    /// is the syncing fiber's. `timeout` and `task->event` guard for the same
-    /// reason.
+    ///     (match (sync (until-cancelled deadline (chan-recv jobs)))
+    ///       ((Some job) (handle job))
+    ///       (None       (give-up)))
+    ///
+    /// That is what protects the CML layer. Cancellation being automatic in
+    /// `sync` must not mean that a token can only ever be watched automatically.
+    ///
+    /// # Do not hand it the ambient token
+    ///
+    /// `sync` is already watching that one, so the block would hold two waiters
+    /// on one promise: this branch, and the branch `sync` adds. If the token
+    /// fires while the sync is parked, `Promise.Complete` wakes both by
+    /// *enqueuing* them, and two pool work items have no order relative to each
+    /// other. Whichever commits first decides whether the sync answers `None` or
+    /// raises `Cancelled` — both correct, and the caller cannot tell which it
+    /// will get, so a `None` arm stops running some of the time.
+    ///
+    /// It is deterministic in the other case, which is what makes the bug easy
+    /// to miss: a token that has *already* fired is committed inline during
+    /// publish, and this branch is published first, so `None` wins every time
+    /// in the test that was written to check it.
+    ///
+    /// Nothing here can detect the mistake. `sync` is handed an event and cannot
+    /// see which promises are inside it. Watching a token that is not the
+    /// ambient one has one waiter and no race.
+    ///
+    /// # Why `None` rather than a raise
+    ///
+    /// A fired token is persistent, so a loop that races one directly wins on it
+    /// every iteration thereafter and spins a core at 100%. `None` makes leaving
+    /// the natural spelling, because not recursing is what you write anyway.
     ///
     /// `ev` is published first, and that is the ordering `choose` gives meaning
     /// to: a token that has already fired must not take an iteration in which
     /// there was still a job waiting.
-    public static IEvent<Option<T>> untilsubcancelled<T>(IEvent<T> ev) =>
-        Cml.Guard(() => {
-            var token = parametersubref(currentsubcancel);
-
-            // Nothing has been parameterized, so there is nothing to lose to.
-            // The common case, and it costs a reference comparison to skip a
-            // `choose` and a join that could never fire.
-            if (ReferenceEquals(token, RootCancel))
-                return Cml.Wrap(ev, static v => Some(v));
-
-            return Cml.Choose(
-                Cml.Wrap(ev, static v => Some(v)),
-                Cml.Wrap(cancelled(token), static _ => None<T>()));
-        });
+    public static IEvent<Option<T>> untilsubcancelled<T>(Promise<CancelReason> token, IEvent<T> ev) =>
+        Cml.Choose(
+            Cml.Wrap(ev, static v => Some(v)),
+            Cml.Wrap(cancelled(token), static _ => None<T>()));
 
     /// `(cancelled? ct)` — has it fired, right now?
     ///
@@ -294,39 +408,14 @@ public static partial class BjolangRuntime {
     public static Option<CancelReason> cancelsubreason(Promise<CancelReason> ct) =>
         ct.IsCompleted ? Some(ct.GetAwaiter().GetResult()) : None<CancelReason>();
 
-    /// The timer behind `(with-deadline ms body...)`, which the parser emits and
-    /// nobody writes.
-    ///
-    /// A fiber that races the deadline against the scope's own token, so a scope
-    /// that finishes early takes its timer with it rather than leaving one
-    /// parked until an instant nothing is waiting for any more. That race is the
-    /// only reason this is not two lines of Bjolang in the desugar: it has to
-    /// read the ambient token *inside* the spawned fiber, which is where the
-    /// scope's token is the ambient one.
-    ///
-    /// The promise is detached rather than dropped. Dropping it would lose a
-    /// failure silently, and detaching says "I know, and I still do not want the
-    /// result" — which is exactly the case here, since the only thing the body
-    /// does is fire a token.
-    public static Unit deadlinesubwatch_BANG(Func<CancelReason, Unit> fire, int ms) {
-        var watcher = Bjo.Spawn<ValueTuple<Func<CancelReason, Unit>, int>, Unit>(
-            static async state => {
-                // Read inside the fiber: `Bjo.Spawn` installs the captured
-                // environment before the body runs, so this is the token
-                // `with-cancel` has just parameterized.
-                var scope = parametersubref(currentsubcancel);
-
-                await Cml.Choose(
-                    Cml.Wrap(Cml.Timeout(state.Item2), _ => state.Item1(new CancelReason.Deadline())),
-                    Cml.Wrap(cancelled(scope), static _ => default(Unit)));
-
-                return default;
-            },
-            new ValueTuple<Func<CancelReason, Unit>, int>(fire, ms));
-
-        watcher.Detach();
-        return default;
-    }
+    // `deadline-watch!` was here: the fiber `(with-deadline ms ...)` spawned to
+    // race a timer against the scope's own token.
+    //
+    // It cannot work now that a scope waits for its children. The watcher waited
+    // for the scope's token, and the scope's token does not fire until the
+    // children are done — so the scope would wait for the watcher and the
+    // watcher would wait for the scope. A deadline is a `System.Threading.Timer`
+    // owned by the `Scope` object instead; see `Scope.cs`.
 
     /// `(link-cancel parent child)` — cancelling the parent cancels the child.
     ///
@@ -383,6 +472,76 @@ public static partial class BjolangRuntime {
                         ? Result<Exception, T>.Err(r.Error!.SourceException)
                         : Result<Exception, T>.Ok(r.Value)));
 
+    /// `(spawn/thread thunk)` — run something on a thread of its own.
+    ///
+    /// **This is a function, not one of the `spawn` special forms.** It takes a
+    /// thunk and answers an *event*, exactly as `blocking` above does, so it is
+    /// written `(sync (spawn/thread #(crunch data)))` and not
+    /// `(spawn/thread (crunch data))`. The second is an ordinary application and
+    /// a type error, which is the failure the name invites — the two are
+    /// siblings by what they do, not by how they are spelled.
+    ///
+    /// # What it is for, and why `blocking` is not it
+    ///
+    /// `blocking` moves work that *parks a thread* to `Task.Run`. This one moves
+    /// work that *uses a core* to a thread of its own. The thread pool cannot
+    /// tell those apart — both are "a worker that is not coming back soon" — but
+    /// the programs are different, and only one of them is helped by `Task.Run`.
+    ///
+    /// For compute, `Task.Run` buys nothing at all: it is the same pool, so the
+    /// core is occupied either way and the only thing that changed is which pool
+    /// thread is holding it. `LongRunning` is what changes the answer, because
+    /// the default scheduler reads it as "do not take a pool thread" and starts a
+    /// dedicated one.
+    ///
+    /// So this is the form for work that is long and CPU-bound: an image resize,
+    /// a compression pass, a search over a big structure. A handful of such
+    /// fibers on the pool is fine and is what a pool is for; the case this exists
+    /// for is when there are more of them than there are cores, and fibers that
+    /// care about latency are queued behind them.
+    ///
+    /// # A dedicated thread is not free
+    ///
+    /// Roughly a megabyte of stack, and no reuse — the thread is created and
+    /// destroyed per call. That is the trade against a pool thread, and it is the
+    /// reason this is not simply the default for everything: it is worth it for
+    /// work measured in tens of milliseconds and upwards, and a loss for work
+    /// measured in microseconds.
+    ///
+    /// # Cancellation
+    ///
+    /// Not cancellable, and it cannot be, for the same reason `blocking` is not:
+    /// the thunk is arbitrary code with no yield point to interrupt. What *is*
+    /// cancellable is the wait. `(sync (spawn/thread ...))` consults the ambient
+    /// token like every other sync, so a cancelled scope stops waiting for the
+    /// result — while the thread carries on to the end. The scope will not wait
+    /// for it either; it waits for fibers, and this is not one.
+    ///
+    /// Work that must outlive its scope goes under `spawn/detached`, which is
+    /// the other axis: this form decides *where* the work runs, the four spawn
+    /// forms decide *who owns* it.
+    ///
+    /// Guarded, so each sync starts a fresh thread rather than replaying the
+    /// first one's answer. Failure is a value, as everywhere else that resolves
+    /// at sync time.
+    public static IEvent<Result<Exception, T>> spawndivthread<T>(Func<T> work) =>
+        Cml.Guard(() =>
+            Cml.Wrap(
+                TaskInterop.FromTask(
+                    Task.Factory.StartNew(
+                        work,
+                        CancellationToken.None,
+                        // The whole content of this method. `DenyChildAttach`
+                        // beside it so that a task started *inside* the thunk
+                        // cannot attach to this one and silently make the wait
+                        // longer than the thunk.
+                        TaskCreationOptions.LongRunning | TaskCreationOptions.DenyChildAttach,
+                        TaskScheduler.Default)).Join(),
+                static r =>
+                    r.IsError
+                        ? Result<Exception, T>.Err(r.Error!.SourceException)
+                        : Result<Exception, T>.Ok(r.Value)));
+
     /// `(sync/blocking ev)` — wait for an event from an ordinary function.
     ///
     /// `sync` is a yield point, so only a bjoroutine may write it, and a program
@@ -412,12 +571,27 @@ public static partial class BjolangRuntime {
     /// Nothing withdraws this once it is parked, so a wait that might not end
     /// needs its own way out built in before it gets here:
     /// `(sync/blocking (choose (chan-recv c) (wrap (timeout 1000) ...)))`.
+    ///
+    /// The ambient token is offered as a branch here for the same reason it is
+    /// in `sync`, and it matters more: this parks a real thread, so a wait that
+    /// cancellation could not reach would be a thread the program cannot get
+    /// back. `Cancelled` is raised on the calling thread, which is an ordinary
+    /// throw from an ordinary function.
     public static T syncdivblocking<T>(IEvent<T> ev) {
+        var token = Dyn.Current.Cancel;
+
+        var offered =
+            token is null || ReferenceEquals(token, RootCancel)
+                ? Cml.Wrap(ev, static v => Synced<T>.Value(v))
+                : Cml.Choose(
+                    Cml.Wrap(ev, static v => Synced<T>.Value(v)),
+                    Cml.Wrap(cancelled(token), static why => Synced<T>.Cancelled(why)));
+
         var gate = new object();
         bool landed = false;
-        T value = default!;
+        Synced<T> value = default!;
 
-        Cml.Sync(ev, v => {
+        Cml.Sync(offered, v => {
             lock (gate) {
                 value = v;
                 landed = true;
@@ -429,7 +603,9 @@ public static partial class BjolangRuntime {
             while (!landed) { Monitor.Wait(gate); }
         }
 
-        return value;
+        // Raised here rather than in the continuation above, which runs on the
+        // thread that completed the event and must not throw.
+        return value.Unwrap();
     }
 
     /// `(async-seq->chan s)` — a .NET async stream as a channel, plus a promise
@@ -687,10 +863,46 @@ public static partial class BjolangRuntime {
     ///
     /// Failure is a value, as it is at a join, and for the same reason: this
     /// runs at sync time rather than on the thread that completed the task, so
-    /// it must not raise. Cancellation arrives that way too — a losing branch's
-    /// `Err` holds a `TaskCanceledException` that nobody ever looks at.
+    /// it must not raise.
+    ///
+    /// # Cancellation is not one of those failures
+    ///
+    /// It used to be: a call stopped by the ambient token came back as
+    /// `(Err TaskCanceledException)`, a value nobody ever read. So an
+    /// `(Result Exception string)` from a fetch meant either "the request
+    /// failed" or "we were cancelled", and the caller had to tell them apart by
+    /// looking at the exception type.
+    ///
+    /// Now a scope that has already been cancelled makes this event offer
+    /// *nothing at all*. Look at what that leaves: `sync` publishes this branch
+    /// and then publishes the ambient token, the token has already fired, so the
+    /// token is the only branch that can commit — and `sync` raises `Cancelled`.
+    /// The unification costs one test, because the answer was already there in
+    /// the branch `sync` adds.
+    ///
+    /// Offering nothing is also the honest description. A call that must not be
+    /// made is not a call that failed, and `never` is CML's word for a branch
+    /// with nothing to offer this time round.
+    ///
+    /// The other direction — the token firing while the call is in flight —
+    /// needs nothing here. The token firing is what cancels the task, so the
+    /// token's branch in `sync` commits first and the task's late result is
+    /// dropped by the commit protocol.
+    ///
+    /// **The gap:** `sync/blocking` from outside any scope has no ambient token,
+    /// so nothing there can be cancelled and nothing here changes. A call made
+    /// under a token that fires later behaves as described above.
     public static IEvent<Result<Exception, T>> TaskEvent<T>(Func<CancellationToken, Task<T>> start) =>
         Cml.Guard(() => {
+            var scope = Dyn.Current.Cancel;
+
+            // Already cancelled at the moment of the sync, so there is nothing
+            // to start. Read inside the `Guard`, which is what makes it the
+            // *syncing* fiber's token: an event is a value and may be built in
+            // one scope and synced in another.
+            if (scope is not null && !ReferenceEquals(scope, RootCancel) && scope.IsCompleted)
+                return Cml.Never<Result<Exception, T>>();
+
             var ambient = AmbientCancellation();
 
             Func<CancellationToken, Task<T>> scoped =

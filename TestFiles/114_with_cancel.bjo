@@ -1,27 +1,27 @@
-;; `with-cancel`: a cancellation scope that ends when the scope does.
+;; `with-cancel`: a scope that owns the fibers started inside it.
 ;;
-;; `parameterize` restores the binding on the way out but never *fires* the
-;; token. So a scope can hand a child a token and then return, and what is left
-;; behind is a token nobody holds the canceller for — a child that runs forever
-;; with nothing able to stop it. It is the same leak `spawn-evt` exists to
-;; close, in the shape a reader is most likely to write:
+;; The one rule: when the form returns, the work it started is over. A scope
+;; keeps the fibers `spawn` and `bjo` put into it and waits for all of them
+;; before it returns, so a program no longer has to keep the promises, cancel by
+;; hand and join them one at a time.
 ;;
-;;     (parameterize ((current-cancel tok))
-;;       (bjo (worker jobs)))        ;; promise dropped
-;;     (respond 200)                 ;; scope exits, worker runs on
+;; The order on the way out is: wait, then cancel. The token fires *first* only
+;; when the body is leaving abnormally — an exception is on its way out, or the
+;; body called `cancel` itself. That is what keeps both shapes writable:
 ;;
-;; `with-cancel` makes the token, installs it, and fires it however the body
-;; leaves: `Scope-Ended` normally, `(Failed e)` on the way out of a failure, and
-;; the binding restored either way. A `std/prelude` macro over `make-cancel`,
-;; `parameterize`, `try` and `raise` — nothing the parser knows about, and so
-;; renameable on import like any other binding.
+;;     (with-cancel (cancel)          ;; run both and wait for both
+;;       (spawn (process a))
+;;       (spawn (process b)))
 ;;
-;; What it does *not* do: firing returns immediately, so a cooperating child
-;; stops *soon*, not before the scope exits. Joining them would need a nursery.
-;; This is the cheap half, and it is the half that stops the leak.
+;;     (with-cancel (cancel)          ;; stop early, on purpose
+;;       (def answer (sync (chan-recv results)))
+;;       (cancel (Requested "got it"))
+;;       answer)
 ;;
-;; Bare `parameterize ((current-cancel t))` stays legal, and is the deliberate
-;; airlock for a token that must outlive its creator.
+;; The accepted cost is in the last test in this file's history and in the shape
+;; of every test below: a scope whose children never end, and which never calls
+;; `cancel`, hangs here rather than returning. So a child that wants to watch
+;; the scope's own token is a `spawn/daemon`, not a `spawn`.
 
 (import (std prelude))
 (import (std simpletest))
@@ -35,126 +35,230 @@
     ((Some (Failed e)) "failed")
     (None "none")))
 
-;; A child that reports the reason it was stopped for, so that what the scope
-;; fired is observable from inside it rather than only from outside.
-(: child (-> (Chan string) void))
-(defbjo (child report)
-  (def why (sync (cancelled (parameter-ref current-cancel))))
-  (sync (chan-send report (reason-name (Some why)))))
+;; A child that finishes on its own after a moment. Two of these are what "the
+;; scope waited for both" is measured with.
+(: mark (-bjo-> (Box string) string void))
+(defbjo (mark b what)
+  (sync (timeout 20))
+  (box-set! b what))
 
-;; The token a scope installed, smuggled back out so the test can look at it
-;; after the scope has gone. Not something to write in earnest — the point of a
-;; scope is that its token is finished with when the scope is — but it is the
-;; only way to *test* that the firing happened.
-;;
-;; The send is a rendezvous, so this parks until the receive that follows the
-;; scope. That is deliberate: it reads the token while still inside the scope
-;; and hands it over once the scope has gone.
-(: capture (-> (Chan CancelToken) void))
-(defbjo (capture out)
-  (sync (chan-send out (parameter-ref current-cancel))))
+;; A child that never finishes on its own. Only a cancellation gets it out, and
+;; the `sync` is where the cancellation arrives.
+(: patient (-bjo-> (Chan string) void))
+(defbjo (patient nothing)
+  (let go ()
+    (ignore (sync (chan-recv nothing)))
+    (go)))
+
+;; A child that fails. The denominator is computed so that C# cannot fold it:
+;; dividing by a *literal* zero is a compile-time error over there, not an
+;; exception.
+(: explode (-bjo-> int void))
+(defbjo (explode zero)
+  (sync (timeout 10))
+  (ignore (/ 10 zero))
+  unit)
+
+;; A child that outlives its scope, for `spawn/detached`. It sends after the
+;; scope has gone, which only works because nothing cancelled it.
+(: late (-bjo-> (Chan string) void))
+(defbjo (late out)
+  (sync (timeout 30))
+  (sync (chan-send out "detached")))
 
 (defbjo (main args)
-  ;; ---- Normal exit fires Scope-Ended ---------------------------------------
-  (def tokens (make-chan))
+  (def zero (string-length ""))
+
+  ;; ---- A scope waits for what it started -----------------------------------
+  ;;
+  ;; Neither `spawn` is joined by anything the program wrote. The scope is what
+  ;; joins them, and this is the whole feature in three lines.
+  (def a (make-box "not run"))
+  (def b (make-box "not run"))
+
+  (with-cancel (cancel)
+    (spawn (mark a "a"))
+    (spawn (mark b "b")))
+
+  (expect "a scope waits for the fibers started inside it"
+          (string-append (box-ref a) (box-ref b)) "ab")
+
+  ;; ---- Stopping early ------------------------------------------------------
+  ;;
+  ;; `patient` parks forever, so this scope can only end because the body
+  ;; cancelled it. The child leaves by having its `sync` raise, which is not a
+  ;; failure: being cancelled is how a worker normally ends.
+  (def nothing (make-chan))
   (def answer
-    (with-cancel (stop!)
-      (def c (bjo (capture tokens)))
+    (with-cancel (cancel)
+      (spawn (patient nothing))
+      (sync (timeout 20))
+      (def stopped (cancel (Requested "got it")))
       "returned"))
 
-  (expect "a scope that returns normally runs its body" answer "returned")
-  (expect "and still fires its token on the way out"
-          (reason-name (cancel-reason (sync (chan-recv tokens)))) "scope-ended")
+  (expect "a body that cancels itself still returns its value" answer "returned")
 
-  ;; ---- The binding is restored --------------------------------------------
+  ;; ---- The token, and where the binding goes -------------------------------
   ;;
+  ;; The scope's token is smuggled out in a box so the test can look at it after
+  ;; the scope has gone. Not something to write in earnest — the point of a
+  ;; scope is that its token is finished with when the scope is — but it is the
+  ;; only way to *test* that the firing happened.
+  (def seen (make-box (parameter-ref current-cancel)))
+
+  (def plain
+    (with-cancel (cancel)
+      (box-set! seen (parameter-ref current-cancel))
+      "returned"))
+
+  (expect "a scope that returns normally runs its body" plain "returned")
+  (expect "and fires its token on the way out"
+          (reason-name (cancel-reason (box-ref seen))) "scope-ended")
+
   ;; A fired token left installed would make every later scope look cancelled,
-  ;; which is the failure a `finally` exists to prevent.
+  ;; which is the failure the `finally` in the expansion exists to prevent.
   (expect "and puts the ambient binding back"
           (if (cancelled? (parameter-ref current-cancel)) "still cancelled" "restored")
           "restored")
 
-  ;; ---- A child sees the scope end -----------------------------------------
-  ;;
-  ;; The child is parked on its inherited token and nothing else. Without the
-  ;; firing it would wait forever — so this is the test that would hang rather
-  ;; than fail, which is why the scope body does not wait for it.
-  (def report (make-chan))
-  (def kid
-    (with-cancel (stop2!)
-      (bjo (child report))))
-
-  (expect "a child parked on the scope's token is woken by the exit"
-          (sync (chan-recv report)) "scope-ended")
-  (expect "and comes home"
-          (match (sync (promise-join kid)) ((Ok u) "done") ((Err e) "failed"))
-          "done")
-
-  ;; ---- Explicit cancellation beats the scope's own exit --------------------
-  ;;
-  ;; First reason wins, and the thunk is what a scope hands to whoever may need
-  ;; to stop it early.
-  (def tokens2 (make-chan))
+  ;; First reason wins: the scope's own exit loses the race to a `cancel` the
+  ;; body already called.
+  (def early-seen (make-box (parameter-ref current-cancel)))
   (def early
-    (with-cancel (stop3!)
-      (def c2 (bjo (capture tokens2)))
-      (def s (stop3! (Requested "early")))
+    (with-cancel (cancel)
+      (box-set! early-seen (parameter-ref current-cancel))
+      (def stopped (cancel (Requested "early")))
       "returned"))
 
   (expect "an explicit cancel beats the scope's own exit"
-          (reason-name (cancel-reason (sync (chan-recv tokens2)))) "requested early")
+          (reason-name (cancel-reason (box-ref early-seen))) "requested early")
 
-  ;; ---- Exceptional exit fires (Failed e), and rethrows --------------------
+  ;; ---- A child that fails ---------------------------------------------------
   ;;
-  ;; The failure is a real one rather than a constructed value, and `raise` is
-  ;; what puts it back after the inner `try` has turned it into one. That round
-  ;; trip — value, then exception again, with the stack trace it arrived with —
-  ;; is the same one `with-cancel`'s own expansion makes.
-  ;;
-  ;; The denominator is computed so that C# cannot fold it: dividing by a
-  ;; *literal* zero is a compile-time error over there, not an exception.
-  (def zero (string-length ""))
-  (def tokens3 (make-chan))
-  (def outcome
+  ;; `explode` raises while `patient` is parked with nothing to receive. The
+  ;; scope fires its token — which is what gets `patient` out — waits for both,
+  ;; and only then re-raises. Without the cancellation this test would hang, and
+  ;; that is the point of it: the failure of one child is what stops the others.
+  (def idle (make-chan))
+  (def failed
     (try
-      (with-cancel (stop4!)
-        (def c3 (bjo (capture tokens3)))
-        (match (try (/ 10 zero) #:catch (System.DivideByZeroException))
-          ((Ok v) "not reached")
-          ((Err e) (raise e))))
+      (with-cancel (cancel)
+        (spawn (patient idle))
+        (spawn (explode zero)))
       #:catch (System.DivideByZeroException)))
 
-  (expect "an exception leaves the scope rather than being swallowed"
-          (match outcome ((Ok v) v) ((Err e) "propagated")) "propagated")
-  (expect "and the token says the scope failed"
-          (reason-name (cancel-reason (sync (chan-recv tokens3)))) "failed")
+  (expect "a child's failure leaves the scope"
+          (match failed ((Ok u) "not reached") ((Err e) "propagated"))
+          "propagated")
+
+  ;; A `bjo` is different, and deliberately: it handed back the promise, so the
+  ;; failure is the caller's and the scope does not raise it a second time.
+  (def kept
+    (try
+      (with-cancel (cancel)
+        (def p (bjo (explode zero)))
+        (match (sync (promise-join p))
+          ((Ok u) "not reached")
+          ((Err e) "handled")))
+      #:catch (System.DivideByZeroException)))
+
+  (expect "a bjo hands its failure to the caller, not to the scope"
+          (match kept ((Ok v) v) ((Err e) "propagated"))
+          "handled")
+
+  ;; ---- Cancellation is what a sync raises ----------------------------------
+  (def raised
+    (try
+      (with-cancel (cancel)
+        (def stopped (cancel (Requested "stop")))
+        (sync (timeout 10))
+        "not reached")
+      #:catch (System.Exception)))
+
+  (expect "a sync after the scope was cancelled raises"
+          (match raised ((Ok v) v) ((Err e) "cancelled"))
+          "cancelled")
+
+  ;; ---- with-shield ---------------------------------------------------------
+  ;;
+  ;; Which is exactly why cleanup needs a way out. Inside a shield the ambient
+  ;; token is a fresh one that has not fired, so a `sync` works again — and
+  ;; `(current-cancel)` agrees with it rather than contradicting it.
+  (def shielded
+    (try
+      (with-cancel (cancel)
+        (def stopped (cancel (Requested "stop")))
+        (with-shield #:within (seconds 5)
+          (sync (timeout 10))
+          (if (cancelled? (parameter-ref current-cancel)) "still cancelled" "flushed")))
+      #:catch (System.Exception)))
+
+  (expect "a shield gets a sync past a cancellation"
+          (match shielded ((Ok v) v) ((Err e) "raised"))
+          "flushed")
+
+  ;; ---- spawn/daemon --------------------------------------------------------
+  ;;
+  ;; `patient` never ends on its own, and the scope returns anyway: a daemon is
+  ;; cancelled by the scope but not waited for. As a `spawn` this would hang.
+  (def ignored (make-chan))
+  (def quick
+    (with-cancel (cancel)
+      (spawn/daemon (patient ignored))
+      (sync (timeout 20))
+      "returned"))
+
+  (expect "a scope does not wait for a daemon" quick "returned")
+
+  ;; ---- spawn/detached ------------------------------------------------------
+  ;;
+  ;; Nothing waits for it and nothing cancels it, so it is still there to send
+  ;; long after its scope has gone. The receive below is outside the scope; as a
+  ;; `spawn` this would deadlock, because the scope would be waiting for a send
+  ;; that nothing is receiving yet.
+  (def out (make-chan))
+
+  (with-cancel (cancel)
+    (spawn/detached (late out)))
+
+  (expect "a detached fiber outlives its scope and is not cancelled"
+          (sync (chan-recv out)) "detached")
 
   ;; ---- with-deadline -------------------------------------------------------
   ;;
-  ;; The body waits for its child, so the scope is still running when the
-  ;; deadline arrives — which is the case a deadline is for. A body that returns
-  ;; first fires `Scope-Ended` instead, and the next test pins exactly that.
-  (def deadline-report (make-chan))
-  (def why
-    (with-deadline 200
-      (def kid2 (bjo (child deadline-report)))
-      (sync (chan-recv deadline-report))))
+  ;; The deadline belongs to the scope rather than to a fiber racing it. A
+  ;; watcher fiber cannot work now: the scope waits for its children before it
+  ;; fires its token, so a fiber waiting for that token would be waiting for the
+  ;; scope that is waiting for it.
+  ;;
+  ;; The wait is a plain `(sync (timeout 60000))`, and the deadline arrives at
+  ;; it as a raise. Watching the scope's own token with `until-cancelled` would
+  ;; be the wrong shape *and* a race: `sync` is already watching that token, so
+  ;; there would be two branches on one promise and no saying which commits.
+  ;; `until-cancelled` is for a token that is not the ambient one.
+  (def hit-seen (make-box (parameter-ref current-cancel)))
+  (def hit
+    (try
+      (with-deadline 100
+        (box-set! hit-seen (parameter-ref current-cancel))
+        (sync (timeout 60000))
+        "the timer won")
+      #:catch (System.Exception)))
 
-  (expect "a deadline fires the scope's token" why "deadline")
+  (expect "a deadline stops the body"
+          (match hit ((Ok v) v) ((Err e) "cancelled")) "cancelled")
+  (expect "and the reason names it"
+          (reason-name (cancel-reason (box-ref hit-seen))) "deadline")
 
   ;; A scope that finishes before its deadline reports the exit, not the timer.
-  ;; The watcher races the scope's token, so it goes away with the scope rather
-  ;; than parking until an instant nothing is waiting for any more — without
-  ;; that race this would still pass, but the process would sit for a minute
-  ;; before it exited.
-  (def tokens4 (make-chan))
-  (def quick
+  (def beat-seen (make-box (parameter-ref current-cancel)))
+  (def beat
     (with-deadline 60000
-      (def c4 (bjo (capture tokens4)))
+      (box-set! beat-seen (parameter-ref current-cancel))
       "returned"))
 
   (expect "a scope that beats its deadline reports the exit"
-          (reason-name (cancel-reason (sync (chan-recv tokens4)))) "scope-ended")
+          (reason-name (cancel-reason (box-ref beat-seen))) "scope-ended")
 
   (println "114 ok")
   0)

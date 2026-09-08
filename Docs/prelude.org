@@ -524,10 +524,11 @@ anything or stored in a variable.
   unwrapped to, so a chain reads in the order it runs rather than inside out.
 - ~(let* ((name expr) ...) body ...)~ : sequential binding. 
 - ~(parameterize* ((param expr) ...) body ...)~ : the let* version of ~parameterize~
-- ~(with-cancel (cancel) body ...)~ : a cancellation scope that ends when the
-  scope does. See below.
-- ~(with-deadline ms body ...)~ : the same scope, with a timer holding the
-  canceller.
+- ~(with-cancel (cancel) body ...)~ : a cancellation scope that owns the fibers
+  started inside it and waits for them. See below.
+- ~(with-deadline ms body ...)~ : the same scope, with a timer that cancels it.
+- ~(with-shield #:within ms body ...)~ : a scope whose token is /not/ linked to
+  its parent's, so a ~sync~ in it works after a cancellation. For cleanup.
 
 #+BEGIN_SRC scheme
 (cond ((< n 0) "negative")
@@ -578,46 +579,197 @@ being waited for need in order to fire. There the answer is ~sync~.
 out composed in first, as in the ~choose~ above. Building an event is pure, so
 that composition costs nothing and happens before the thread ever parks.
 
+** Getting work off the fiber pool =(std prelude)=
+
+Two functions, same shape, and the thread pool is what cannot tell them apart.
+To the pool, a worker parked on a syscall and a worker halfway through resizing
+an image look identical — both are "not coming back soon" — but the programs are
+different, and only one of them is helped by moving the work to another pool
+thread.
+
+- ~(blocking thunk)~ : for work that *parks a thread*. ~File.ReadAllText~,
+  ~Console.ReadLine~, ~Monitor.Enter~. It goes to ~Task.Run~, so the thread that
+  parks is one the pool can grow to replace, and the fiber suspends on the
+  *result* rather than on the work.
+- ~(spawn/thread thunk)~ : for work that *uses a core*. An image resize, a
+  compression pass, a search over a big structure. It gets a thread of its own,
+  because for compute ~Task.Run~ buys nothing at all — the same pool, the same
+  core, a different worker holding it.
+
+#+BEGIN_SRC scheme
+(sync (blocking     #(file-read-text path)))     ;; (Result Exception string)
+(sync (spawn/thread #(resize image 2048)))       ;; (Result Exception Image)
+#+END_SRC
+
+*~spawn/thread~ is a function, not one of the ~spawn~ special forms*, despite
+the name. It takes a thunk, so it is ~(sync (spawn/thread #(crunch data)))~ and
+never ~(spawn/thread (crunch data))~ — the second is an ordinary application and
+a type error. The four spawn forms decide *who owns* a fiber; this decides
+*where work runs*, which is a different axis and composes with all four:
+
+#+BEGIN_SRC scheme
+;; not cancelled, not waited for, and off the pool
+(spawn/detached (crunching data))
+
+(defbjo (crunching data)
+  (ignore (sync (spawn/thread #(crunch data)))))
+#+END_SRC
+
+A dedicated thread is not free: about a megabyte of stack, created and destroyed
+per call. It is worth it for work measured in tens of milliseconds and a loss for
+work measured in microseconds. A handful of compute-bound fibers on the pool is
+fine and is what a pool is for; this is for when there are more of them than
+cores and fibers that care about latency are queued behind them.
+
+*Neither is cancellable*, and neither can be: a thunk is arbitrary code with no
+yield point to interrupt. What *is* cancellable is the wait — ~sync~ consults
+the ambient token as usual, so a cancelled scope stops waiting while the work
+carries on to the end. The scope will not wait for it either; a scope waits for
+fibers, and neither of these is one.
+
+Both are guarded, so each ~sync~ starts a fresh run rather than replaying the
+first one's answer. Failure is a value in both, as everywhere else that resolves
+at sync time.
+
 ** Cancellation scopes =(std prelude)=
 
-~parameterize~ restores the binding on the way out but never *fires* the token.
-So a scope can hand a child a token and then return, leaving a token nobody
-holds the canceller for — a child running on with nothing able to stop it:
+A scope owns the fibers started inside it. ~spawn~ and ~bjo~ put a fiber in the
+current scope, and the scope does not return until every one of them has
+finished. So this
 
 #+BEGIN_SRC scheme
-(parameterize ((current-cancel tok))
-  (bjo (worker jobs)))          ;; promise dropped
-(respond 200)                   ;; scope exits, worker runs on
+(with-cancel (cancel)
+  (spawn (process a))
+  (spawn (process b)))
 #+END_SRC
 
-- ~(with-cancel (cancel) body ...)~ : makes a token, installs it as
-  ~current-cancel~ for the body, and fires it however the body leaves —
-  ~Scope-Ended~ on a normal return, ~(Failed e)~ on a failure, with the
-  exception carrying on out. The binding is restored either way. ~cancel~ is
-  bound to the thunk, for stopping the scope early.
-- ~(with-deadline ms body ...)~ : the same, plus a fiber that fires ~Deadline~
-  after ~ms~. The timer races the scope's own token, so a body that finishes
-  early takes the timer with it.
+runs both and waits for both, and when the form returns the work is over.
+Stopping early is what the cancel thunk is for:
 
 #+BEGIN_SRC scheme
-(with-cancel (stop!)
-  (bjo (worker jobs))            ;; inherits the token
-  (sync (timeout 5000)))
-
-(with-deadline 5000 (fetch-all urls))
+(with-cancel (cancel)
+  (def answer (sync (chan-recv results)))
+  (cancel (Requested "got it"))
+  answer)
 #+END_SRC
 
-Both are macros over ~make-cancel~, ~parameterize~, ~try~ and ~raise~ — nothing
-the parser knows about, so the import modifiers reach them like any other
-binding.
+*** The forms
 
-*Firing returns immediately.* A cooperating child stops /soon/, not before the
-scope exits: a child midway through its cleanup can still be writing to a port
-the scope has closed. Guaranteeing otherwise needs the children joined.
+- ~(with-cancel (cancel) body ...)~ : makes a token linked to the ambient one,
+  installs it as ~current-cancel~ for the body, waits for the children, and
+  fires the token on the way out — ~Scope-Ended~ normally, ~(Failed e)~ when the
+  body is leaving with an exception. The binding is restored either way, and
+  ~cancel~ is bound to the thunk.
+- ~(with-deadline ms body ...)~ : the same, with a timer that fires ~Deadline~
+  after ~ms~. The timer belongs to the scope rather than to a fiber racing it: a
+  watcher fiber would be waiting for a token the scope does not fire until its
+  children are done, and its children would include the watcher.
+- ~(with-shield #:within ms body ...)~ : a scope whose token is *not* linked to
+  its parent's. ~#:within~ is optional and defaults to thirty seconds.
+
+*** The order on the way out
+
+Wait, then cancel. The token fires *first* only when the body is leaving
+abnormally — an exception is on its way out, or the body called ~cancel~ itself.
+That is what keeps both shapes above writable.
+
+The cost is accepted and worth knowing: a scope whose children never end, and
+which never calls ~cancel~, /hangs/ rather than returning. A hang says where it
+is. A scope that returned while its children ran on says nothing at all. A child
+that is meant to run until the scope ends is a ~spawn/daemon~.
+
+*** A child that fails
+
+The scope fires its token, waits for every remaining child, and only then
+propagates — in that order. Reporting the failure straight away would let the
+caller carry on while sockets were still tearing down. Several failures at once
+are reported together as one ~System.AggregateException~.
+
+A child that stopped because it was *cancelled* has not failed. Being cancelled
+is how a worker normally ends, and the record that it happened is the scope's
+token.
+
+~bjo~ is the exception, and deliberately: it hands back the promise, so its
+failure is the caller's to read and the scope does not raise it a second time.
+~spawn~ hands nothing back, so nobody else could be watching and the scope is
+what reports it.
+
+*** Shielding cleanup
+
+Every ~sync~ consults the ambient token, so once a scope has been cancelled
+every ~sync~ in it raises ~Cancelled~ — including the ones in the code trying to
+tidy up. Inside a shield the ambient token is a fresh one that has not fired, so
+a ~sync~ works again:
+
+#+BEGIN_SRC scheme
+(with-shield #:within (seconds 5)
+  (spawn (flush-buffer a))
+  (spawn (flush-buffer b)))
+#+END_SRC
+
+It is the same object as any other scope with one flag different, which is why
+~(current-cancel)~ inside a shield also reads as "not cancelled": a hand-written
+~until-cancelled~ agrees with what ~sync~ is doing instead of contradicting it.
+
+~until-cancelled~ itself is for a token that is *not* the ambient one, and that
+is a rule rather than a preference. ~sync~ already watches the ambient token, so
+handing it to ~until-cancelled~ as well puts two waiters on one promise; they are
+woken as two independent pool work items, and whichever commits first decides
+whether the sync answers ~None~ or raises. It is deterministic when the token has
+already fired, which is what makes the mistake easy to miss.
+The deadline is not optional, because a shield is unreachable from outside by
+construction and one without a deadline would make the program impossible to
+kill.
+
+Naming ~Cancelled~ in a ~#:catch~ is a compile error, and the message points
+here. A broad handler that swallows a cancellation and carries on is the classic
+bug in every language that made cancellation an exception.
+
+*** Odds and ends
+
+All three are macros over ~scope-open!~, ~scope-push!~, ~scope-canceller~,
+~scope-close!~, ~try~ and ~raise~ — nothing the parser knows about, so the
+import modifiers reach them like any other binding.
+
+All three *suspend*, because waiting is the whole of what they do. They can only
+be written inside a bjoroutine.
+
+~main~ runs inside a root scope of its own, so a ~(spawn ...)~ at the top level
+of ~main~ is a child of something and the process does not exit with fibers in
+flight.
 
 A bare ~(parameterize ((current-cancel t)) ...)~ stays legal, and is the
 deliberate airlock for a token that must outlive its creator — a daemon whose
-token lives in a registry.
+token lives in a registry. It binds the token without changing which scope a
+~spawn~ enlists in.
+
+** Starting a fiber =(special forms)=
+
+Four forms, differing only in what the enclosing scope does about the fiber.
+
+- ~(spawn (f x))~ : a child of the current scope. The scope waits for it and
+  reports its failure. Answers ~Unit~, so it needs no ~ignore~. This is the
+  common one.
+- ~(bjo (f x))~ : the same child, answering its ~(Promise %a)~. The scope waits
+  for it but the *failure is yours*, because you are holding the promise. There
+  is no ~MustUse~ exemption for it: join it, race it, or say ~ignore~.
+- ~(spawn/daemon (f x))~ : cancelled by the scope, but not waited for. A
+  heartbeat, a logger, a metrics pump — work that should not hold the scope open
+  and should not outlive it either. Its failure is reported, not propagated,
+  because by then there is nobody to propagate it to.
+- ~(spawn/detached (f x))~ : genuinely outside. Neither the scope nor the token
+  is inherited, so nothing waits for it and nothing cancels it. Rare, and the
+  name is meant to look uncomfortable.
+
+In all four the operands are evaluated where the form is written and only the
+call happens in the new fiber, so ~(spawn (handle (next-job!)))~ runs
+~next-job!~ here.
+
+Spawning into a scope that has already started closing does nothing at all: no
+fiber, no error, and the spawning code carries on. The scope is unwinding, so
+one more error on the way out would be noise rather than information. ~bjo~ has
+to answer *something*, and answers a promise that has already failed with
+~Cancelled~.
 
 ** Options (~Option~)
 Optional value type representing presence (~Some~) or absence (~None~).

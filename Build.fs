@@ -221,11 +221,22 @@ let compile (options: Options) (inputFilePath: string) : int =
             // rule it documents is never to call it from a pool thread, and the
             // thread `Main` runs on is the one thread in the process that is
             // certainly not one.
+            //
+            // `main` is wrapped in a root cancellation scope, so a `(spawn ...)`
+            // written at the top level of `main` is a child of something. Without
+            // it the outermost spawn in a program would be the one spawn nothing
+            // waited for, and the process could exit with fibers still running —
+            // which is the opposite of the rule everywhere else in the language.
+            //
+            // Two wrappers rather than one, because an ordinary `main` cannot
+            // suspend and so only the *drain* needs a fiber. Overloading the one
+            // name would be ambiguous at a `main` that returns a `Fiber<T>`:
+            // both would apply.
             let callMain (argExpr: string) =
                 if mainIsBjoroutine then
-                    $"        _ = Bjoml.Bjo.RunToCompletion(() => %s{mainModuleClass}.main(%s{argExpr}));\n"
+                    $"        _ = Bjoml.Bjo.RunToCompletion(() => BjolangRuntime.RunMainFiber(() => %s{mainModuleClass}.main(%s{argExpr})));\n"
                 else
-                    $"        %s{mainModuleClass}.main(%s{argExpr});\n"
+                    $"        _ = BjolangRuntime.RunMainSync(() => %s{mainModuleClass}.main(%s{argExpr}));\n"
 
             // One call, always. `main` takes the arguments as a `(Vec string)`
             // whether or not it was written with a parameter, so there is no

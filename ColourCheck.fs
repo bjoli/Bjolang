@@ -271,7 +271,7 @@ let rec private checkExpr (site: Site) (expr: TypedExpr) : unit =
     // whatever the caller is. Which is also why `bjo` is colourless: spawning
     // does not infect its caller, and a plain `main` can start workers without
     // becoming a bjoroutine.
-    | TBjo body ->
+    | TBjo(body, _) ->
         match body.Node with
         | TApply(target, args, kwArgs) ->
             descend target

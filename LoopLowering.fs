@@ -249,9 +249,9 @@ let rec private lowerExpr (targets: LoopTarget list) (inTail: bool) (expr: Typed
 
     // Likewise for a spawned call: it runs on the pool, so a call in its tail
     // position is not a jump into the loop it was written inside.
-    | TBjo b ->
+    | TBjo(b, kind) ->
         { expr with
-            Node = TBjo(newScope b) }
+            Node = TBjo(newScope b, kind) }
 
     | TLet(n, isFun, fn, v, b) ->
         let loweredValue = if isFun then newScope v else notTail v

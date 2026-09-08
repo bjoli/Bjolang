@@ -144,7 +144,7 @@ let rec letrecifyExpr (expr: Expr) : Expr =
     | ETryCatch(body, exceptions, r) -> ETryCatch(letrecifyExpr body, exceptions, r)
 
     | ESeq(body, r) -> ESeq(letrecifyExpr body, r)
-    | EBjo(body, r) -> EBjo(letrecifyExpr body, r)
+    | EBjo(body, kind, r) -> EBjo(letrecifyExpr body, kind, r)
     | ETaskEvent(body, r) -> ETaskEvent(letrecifyExpr body, r)
     | EYield(value, r) -> EYield(letrecifyExpr value, r)
     | EYieldFrom(value, r) -> EYieldFrom(letrecifyExpr value, r)

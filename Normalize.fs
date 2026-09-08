@@ -193,7 +193,7 @@ let rec private rewriteExpr (expr: Expr) : Expr =
     | ETryCatch(body, exceptions, r) -> ETryCatch(rewriteExpr body, exceptions, r)
 
     | ESeq(body, r) -> ESeq(rewriteExpr body, r)
-    | EBjo(body, r) -> EBjo(rewriteExpr body, r)
+    | EBjo(body, kind, r) -> EBjo(rewriteExpr body, kind, r)
     | ETaskEvent(body, r) -> ETaskEvent(rewriteExpr body, r)
     | EYield(value, r) -> EYield(rewriteExpr value, r)
     | EYieldFrom(value, r) -> EYieldFrom(rewriteExpr value, r)

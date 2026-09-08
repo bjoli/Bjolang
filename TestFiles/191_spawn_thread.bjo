@@ -1,0 +1,112 @@
+;; `spawn/thread`: long CPU work, on a thread of its own.
+;;
+;; `blocking` and this one are the two halves of a single question, and the
+;; thread pool is what cannot answer it. To the pool, a worker that has parked on
+;; a syscall and a worker that is halfway through resizing an image look
+;; identical — both are "not coming back soon" — but the programs are different:
+;;
+;;   * a parked thread does no work, and moving it to `Task.Run` is a real fix,
+;;     because the pool can grow to cover the one that is gone. That is
+;;     `blocking`.
+;;
+;;   * a computing thread is doing exactly what a pool is for. Moving it to
+;;     `Task.Run` buys nothing at all — the same pool, the same core, a
+;;     different worker holding it. `LongRunning` is what changes the answer,
+;;     because the default scheduler reads it as "do not take a pool thread".
+;;     That is this.
+;;
+;; So this is for work that is long and CPU-bound and would otherwise sit in
+;; front of fibers that care about latency. It is not free: a dedicated thread
+;; is about a megabyte of stack, created and destroyed per call, which is worth
+;; it at tens of milliseconds and a loss at microseconds.
+;;
+;; **It is a function, not one of the `spawn` special forms**, despite the name.
+;; The four spawn forms decide who owns a fiber; this decides where work runs,
+;; which is a different axis and composes with all four.
+
+(import (std prelude))
+(import (std simpletest))
+
+(import/class
+  (Thread (: System.Threading.Thread)))
+
+(import/extern
+  ;; Where the thunk actually ran, which is the only way to test the whole
+  ;; point of the form rather than just that it computed something.
+  (this-thread (: System.Threading.Thread.CurrentThread #:get))
+  (pool-thread? (: System.Threading.Thread.IsThreadPoolThread (-> Thread bool) #:get)))
+
+(: where-am-i (-> string))
+(defun (where-am-i)
+  (if (pool-thread? this-thread) "pool" "own thread"))
+
+(: boom (-> int))
+(defun (boom)
+  (/ 10 (string-length "")))
+
+(defbjo (main args)
+  ;; ---- It runs off the pool ------------------------------------------------
+  (expect "spawn/thread runs the thunk on a thread of its own"
+          (match (sync (spawn/thread where-am-i))
+            ((Ok w) w)
+            ((Err e) "raised"))
+          "own thread")
+
+  ;; The contrast, and the reason the two exist side by side: `blocking` is the
+  ;; same shape and stays on the pool.
+  (expect "blocking stays on the pool"
+          (match (sync (blocking where-am-i))
+            ((Ok w) w)
+            ((Err e) "raised"))
+          "pool")
+
+  ;; ---- It is on this fiber's own stack afterwards --------------------------
+  ;;
+  ;; The value comes back to the syncing fiber, not to the thread that computed
+  ;; it, which is what makes the result usable at all.
+  (expect "and the answer comes back here"
+          (match (sync (spawn/thread #(* 6 7))) ((Ok v) v) ((Err e) 0))
+          42)
+
+  ;; ---- Failure is a value --------------------------------------------------
+  ;;
+  ;; As everywhere else that resolves at sync time. A raise in an event
+  ;; continuation lands in a channel's matching loop rather than anywhere
+  ;; useful, so the exception is carried rather than thrown.
+  (expect "a thunk that throws is an Err"
+          (match (sync (spawn/thread boom)) ((Ok v) "computed") ((Err e) "failed"))
+          "failed")
+
+  ;; ---- Guarded: a fresh thread per sync ------------------------------------
+  ;;
+  ;; Built once and synced twice, this runs twice. Without the guard the event
+  ;; would replay the first run's answer, which is the trap a completed promise
+  ;; sets and the reason `timeout` is guarded too.
+  (def counter (make-box 0))
+  (def bump (spawn/thread #(let () (box-set! counter (+ 1 (box-ref counter))) (box-ref counter))))
+  (ignore (sync bump))
+  (ignore (sync bump))
+  (expect "each sync starts a fresh run" (box-ref counter) 2)
+
+  ;; ---- The two axes compose ------------------------------------------------
+  ;;
+  ;; Where the work runs and who owns it are separate questions. A fiber that is
+  ;; not cancelled and not waited for, doing its computing off the pool, is one
+  ;; of each: `spawn/detached` for the ownership, `spawn/thread` for the thread.
+  (def out (make-chan))
+  (with-cancel (cancel)
+    (spawn/detached (crunching out)))
+
+  (expect "detached ownership and a dedicated thread are independent"
+          (sync (chan-recv out)) "own thread")
+
+  (println "191 ok")
+  0)
+
+;; Deliberately below `main`, because it is the detail rather than the point.
+;; The `sync` is what makes this a bjoroutine; the thunk inside it is ordinary
+;; code that could not suspend if it wanted to.
+(: crunching (-bjo-> (Chan string) void))
+(defbjo (crunching out)
+  (def w (match (sync (spawn/thread where-am-i)) ((Ok w) w) ((Err e) "raised")))
+  (sync (chan-send out w)))

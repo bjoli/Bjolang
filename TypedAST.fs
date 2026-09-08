@@ -753,7 +753,8 @@ and TExprNode =
     /// runs when the sequence is enumerated, not where the form appears, so no
     /// tail call inside it belongs to the enclosing function's loop.
     | TSeq of TypedExpr
-    /// `(bjo (f x y))`, of type `(Promise %a)` where the call is of type `%a`.
+    /// `(bjo (f x y))`, of type `(Promise %a)` where the call is of type `%a`,
+    /// and the three `spawn` forms, which are of type `Unit`.
     ///
     /// The node holds the *whole* application, not a pre-split callee and
     /// argument list, because splitting it is a code generation concern: the
@@ -762,7 +763,11 @@ and TExprNode =
     /// means every call shape — keyword arguments, a rest parameter, an
     /// operator, a trait method — goes through the one emitter that already
     /// knows about them.
-    | TBjo of TypedExpr
+    ///
+    /// The `SpawnKind` says what the enclosing cancellation scope does about the
+    /// fiber: waits for it, cancels it without waiting, or lets it go. It
+    /// decides the runtime entry point the emitter names and nothing else.
+    | TBjo of TypedExpr * Parser.SpawnKind
     /// `(task->event (fetch url))` — the event of making an async .NET call.
     ///
     /// Deliberately *not* a `TForeignStaticCall`: the whole difference is that

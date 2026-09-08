@@ -3754,15 +3754,24 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     // are useful and both compile to the same thing. `ColourCheck` allows a
     // yield point in there whatever the enclosing colour, because the spawned
     // body becomes an async lambda of its own.
-    | EBjo(call, r) ->
+    // Only `bjo` hands the promise back. The three `spawn` forms are `Unit`,
+    // because the scope is holding the child and nothing else needs a handle —
+    // which is what keeps them out of `MustUse`'s way without giving `bjo` an
+    // exemption from it.
+    | EBjo(call, kind, r) ->
         let resultType, tCall = infer env call
 
-        let promiseType = TCon("Promise", [ resultType ])
+        let formType =
+            match kind with
+            | SpawnScoped -> TCon("Promise", [ resultType ])
+            | SpawnUnit
+            | SpawnDaemon
+            | SpawnDetached -> TypeConstants.unitType
 
-        promiseType,
-        { Type = promiseType
+        formType,
+        { Type = formType
           Range = r
-          Node = TBjo tCall }
+          Node = TBjo(tCall, kind) }
 
     // `(task->event (fetch url))`. The event of making an async .NET call.
     //

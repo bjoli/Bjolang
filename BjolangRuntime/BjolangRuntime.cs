@@ -1090,6 +1090,22 @@ public static partial class BjolangRuntime {
         /// of them states.
         public readonly Bjoml.Promise<CancelReason>? Cancel;
 
+        /// The cancellation scope a `spawn` enlists in, and null when there is
+        /// none.
+        ///
+        /// A field beside the token rather than a champ entry, because the two
+        /// are written together and read on the same paths: every spawn reads
+        /// this one, and every `sync` reads the token. They are bound by one
+        /// call — `scope-push!` — so they cannot fall out of step, which is what
+        /// keeps `(current-cancel)` and `sync` from disagreeing about whether
+        /// the current fiber is cancelled.
+        ///
+        /// Null is "no scope", which is what a REPL expression and a bare
+        /// thread both have. A spawn with no scope is an unowned spawn: nothing
+        /// waits for it. The root scope `main` runs in is what stops that being
+        /// the normal case for a compiled program.
+        public readonly Scope? Scope;
+
         /// Every parameter that is not one of the three ports, keyed by the
         /// parameter's <see cref="Param{T}.Id"/> rather than by the `Param`
         /// object itself.
@@ -1111,17 +1127,35 @@ public static partial class BjolangRuntime {
             System.IO.TextWriter output,
             System.IO.TextReader input,
             Bjoml.Promise<CancelReason>? cancel,
+            Scope? scope,
             Map.Map<int, object> vals) {
             Out = output;
             In = input;
             Cancel = cancel;
+            Scope = scope;
             Vals = vals;
         }
 
-        internal DynEnv WithOut(System.IO.TextWriter w) => new(w, In, Cancel, Vals);
-        internal DynEnv WithIn(System.IO.TextReader r) => new(Out, r, Cancel, Vals);
-        internal DynEnv WithCancel(Bjoml.Promise<CancelReason> c) => new(Out, In, c, Vals);
-        internal DynEnv WithVal(int id, object value) => new(Out, In, Cancel, Vals.Set(id, value));
+        internal DynEnv WithOut(System.IO.TextWriter w) => new(w, In, Cancel, Scope, Vals);
+        internal DynEnv WithIn(System.IO.TextReader r) => new(Out, r, Cancel, Scope, Vals);
+
+        /// Binding a token by hand leaves the scope alone. That is the airlock
+        /// `parameterize ((current-cancel t))` has always been: a fiber can be
+        /// given a token to stop on without being taken out of the group its
+        /// caller is waiting for.
+        internal DynEnv WithCancel(Bjoml.Promise<CancelReason> c) => new(Out, In, c, Scope, Vals);
+
+        /// Entering a scope binds both halves at once, so a spawn and a `sync`
+        /// inside it are always talking about the same cancellation.
+        internal DynEnv WithScope(Scope s) => new(Out, In, s.Token, s, Vals);
+
+        /// What `spawn/detached` hands its child: the ports and the parameters,
+        /// but neither the scope nor the token. Leaving the ports behind as well
+        /// would be a different feature — a detached fiber still prints to
+        /// wherever its parent was printing.
+        internal DynEnv Detached() => new(Out, In, null, null, Vals);
+
+        internal DynEnv WithVal(int id, object value) => new(Out, In, Cancel, Scope, Vals.Set(id, value));
     }
 
     /// <summary>
@@ -1148,6 +1182,7 @@ public static partial class BjolangRuntime {
         private static readonly DynEnv Root = new(
             Console.Out,
             StdIn,
+            null,
             null,
             Map.Map<int, object>.Empty);
 

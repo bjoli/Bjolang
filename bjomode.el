@@ -60,6 +60,7 @@
     (seq . 0) (letrec . 0) (export . 0) (re-export . 0)
     (import . 0) (import/extern . 0) (import/class . 0)
     (type . 0) (type-rec . 0) (bjo . 0) (begin . 0)
+    (spawn . 0) (spawn/daemon . 0) (spawn/detached . 0) (with-shield . 0)
     ;; Makron biblioteket skriver, som är former för den som skriver bjolang.
     (cond . 0) (time-it . 0)
     ;; One distinguished form, then the body.
@@ -155,14 +156,16 @@ else aligns under its first argument."
     ;; Makron biblioteket skriver. En som skriver bjolang ser ingen skillnad
     ;; mot det parsern kan, så de står här.
     "cond" "when-let" "if-let" "some->" "time-it" "syntax-match"
-    "with-cancel" "with-deadline" "with-response" "with-run" "def/json-type"
+    "with-cancel" "with-deadline" "with-shield" "with-response" "with-run"
+    "def/json-type"
     ;; `record' och `struct' står inte här: konstruktion namnger sin typ, så
     ;; `(Point (x 1) (y 2))', och de nakna formerna avvisas av parsern.
     ;; `struct*' är accepterade synonymer för `record*'.
     "record-ref" "record-set" "record-set!"
     "struct-ref" "struct-set" "struct-set!"
     "yield" "yield-from" "syntax-quote"
-    "bjo" "bjoroutine" "spawn-evt" "task->event"
+    "bjo" "spawn" "spawn/daemon" "spawn/detached"
+    "bjoroutine" "spawn-evt" "task->event"
     "import" "import/extern" "import/class" "export" "re-export" "include"
     "type" "type-rec" "type/derive"
     ;; Importmodifierare. De står bara inuti en `import', men de är former

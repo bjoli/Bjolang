@@ -103,6 +103,14 @@ let cancelTokenType = TCon("CancelToken", [])
 /// collapse to a single instantiation anyway.
 let cancelReasonType = TCon("CancelReason", [])
 
+/// A cancellation scope: a token, plus the fibers started under it.
+///
+/// Opaque, and there is nothing to do with one but hand it to the four calls
+/// `with-cancel`, `with-deadline` and `with-shield` expand into. It is a type
+/// rather than a hidden runtime detail because those macros have to name it in
+/// a `def`, and a macro is ordinary Bjolang.
+let scopeType = TCon("Scope", [])
+
 /// A saved dynamic environment. Produced by `parameter-push!` and consumed by
 /// `dyn-restore!`, both of which only ever appear in a `parameterize` desugar.
 let dynEnvType = TCon("DynEnv", [])
@@ -495,6 +503,20 @@ let prelude : Env =
         /// Failure is a value; cancellation is impossible. See §7.5.
         "blocking", {Scheme = Scheme(["a"], [], makeFunType [makeFunType [] (TVar "a")] (makeEventType (makeResultType (TCon("System.Exception", [])) (TVar "a")))); IsMutable = false }
 
+        /// Long CPU work, on a thread of its own rather than on the pool.
+        ///
+        /// The same signature as `blocking`, and the same shape at a call site,
+        /// because they are the two halves of one question: `blocking` moves
+        /// work that *parks* a thread, this moves work that *uses a core*. The
+        /// pool cannot tell them apart, and only the first is helped by moving
+        /// it to another pool thread.
+        ///
+        /// A function taking a thunk, not one of the `spawn` special forms
+        /// despite the name: `(sync (spawn/thread #(crunch data)))`. Those forms
+        /// decide who owns a fiber; this decides where work runs, which is a
+        /// different axis and composes with all four.
+        "spawn/thread", {Scheme = Scheme(["a"], [], makeFunType [makeFunType [] (TVar "a")] (makeEventType (makeResultType (TCon("System.Exception", [])) (TVar "a")))); IsMutable = false }
+
         /// A .NET async stream, as a channel and a promise that it is over.
         ///
         /// Two values because `Bjoml.Channel` has no close, and because a close
@@ -546,13 +568,26 @@ let prelude : Env =
         /// `Option` to get it would be a tax on the hot path this exists for.
         "cancelled?", {Scheme = Scheme([], [], makeFunType [cancelTokenType] boolType); IsMutable = false }
 
-        /// `ev`, or `None` if the ambient scope goes down first. One combinator
-        /// over any event rather than a cancellable variant of each primitive.
+        /// `ev`, or `None` if `token` fires first.
         ///
-        /// What keeps a worker loop out of §4.4's trap: a fired token is
-        /// persistent, so a loop that races one directly wins on it every
-        /// iteration and spins. `None` makes leaving the natural spelling.
-        "until-cancelled", {Scheme = Scheme(["a"], [], makeFunType [makeEventType (TVar "a")] (makeEventType (makeOptionType (TVar "a")))); IsMutable = false }
+        /// The token is written down, and that is the change: `sync` watches
+        /// the *ambient* token by itself now, and two mechanisms watching the
+        /// same token — one raising, one returning `None` — would disagree
+        /// about what a cancellation looks like.
+        ///
+        /// So this keeps the half nothing else does. Any other token — a
+        /// per-request deadline, a sub-scope's, one received from elsewhere —
+        /// is an ordinary event and still composes under `choose`.
+        ///
+        /// Handing it the *ambient* token is a race rather than a redundancy:
+        /// the block then has two waiters on one promise, they are woken as two
+        /// pool work items, and whichever commits first decides between `None`
+        /// and a raise. See the runtime docstring.
+        ///
+        /// `None` rather than a raise, because a fired token is persistent: a
+        /// loop that races one directly wins on it every iteration and spins.
+        /// `None` makes leaving the natural spelling.
+        "until-cancelled", {Scheme = Scheme(["a"], [], makeFunType [cancelTokenType; makeEventType (TVar "a")] (makeEventType (makeOptionType (TVar "a")))); IsMutable = false }
 
         /// The same poll, answering *why*. `None` is "not cancelled", which is
         /// the one case `cancelled?` collapses — so a loop tests with
@@ -589,10 +624,57 @@ let prelude : Env =
         /// Used in the repl.
         "currently-in-repl", {Scheme = Scheme([], [], makeParamType boolType); IsMutable = false }
 
-        /// The timer `with-deadline` desugars to. Not surface API: it fires a
-        /// token whose thunk the desugar has just made, and called by hand it
-        /// would be a fiber nobody owns racing a scope nobody established.
-        "deadline-watch!", {Scheme = Scheme([], [], makeFunType [makeFunType [cancelReasonType] unitType; intType] unitType); IsMutable = false }
+        // --- Scopes ----------------------------------------------------------
+        //
+        // The five calls `with-cancel`, `with-deadline` and `with-shield` expand
+        // into. Not surface API: written by hand they pair an install with a
+        // close that no `finally` is guarding, which is the one thing a scope
+        // must never be missing.
+        //
+        // `deadline-watch!` used to be here, and is gone. It spawned a fiber to
+        // race a timer against the scope's own token, and a scope now waits for
+        // its children before it fires that token — so the scope would wait for
+        // the watcher and the watcher would wait for the scope. A deadline is a
+        // timer the scope owns instead.
+
+        /// A scope linked to the ambient one, with a deadline in milliseconds,
+        /// or no deadline when that is zero.
+        ///
+        /// Linked one way only: cancelling the parent cancels this, and this
+        /// cancelling itself says nothing about the parent.
+        "scope-open!", {Scheme = Scheme([], [], makeFunType [intType] scopeType); IsMutable = false }
+
+        /// The same scope with no link to the parent, which is the whole of
+        /// what `with-shield` is: inside it the ambient token has not fired, so
+        /// a `sync` in the cleanup after a cancellation still works.
+        ///
+        /// The deadline is not optional. A shield nothing can reach into and
+        /// which never times out is a program that cannot be killed.
+        "shield-open!", {Scheme = Scheme([], [], makeFunType [intType] scopeType); IsMutable = false }
+
+        /// Install the scope, and hand back the environment it displaced.
+        /// Binds the scope and `current-cancel` together, so a `spawn` and a
+        /// `sync` inside it always mean the same cancellation.
+        "scope-push!", {Scheme = Scheme([], [], makeFunType [scopeType] dynEnvType); IsMutable = false }
+
+        /// The thunk that fires the scope's token. Separate from the scope for
+        /// the reason `make-cancel` hands back two values: the thunk is the
+        /// capability to cancel, the token is only the ability to notice.
+        "scope-canceller", {Scheme = Scheme([], [], makeFunType [scopeType] (makeFunType [cancelReasonType] unitType)); IsMutable = false }
+
+        /// The scope's token, for a child that would rather watch it explicitly
+        /// — under `until-cancelled`, say — than let `sync` do it.
+        "scope-token", {Scheme = Scheme([], [], makeFunType [scopeType] cancelTokenType); IsMutable = false }
+
+        /// End the scope: cancel the children if something went wrong, wait for
+        /// every one of them to finish, and only then report. Suspending,
+        /// because waiting is the whole of it — which is also why `with-cancel`
+        /// is now a form only a bjoroutine may write.
+        ///
+        /// The argument is the failure the body was leaving with, or `None`.
+        /// The scope needs it to decide whether to cancel before waiting, and
+        /// to report it together with any the children raised.
+        "scope-close!", {Scheme = Scheme([], [], TFun([scopeType; makeOptionType (TCon("System.Exception", []))], unitType, EAsync)); IsMutable = false }
 
         /// `(raise e)` — the counterpart of `try`, which turns the failures it
         /// names into values. This is how one gets back out, and it keeps the
