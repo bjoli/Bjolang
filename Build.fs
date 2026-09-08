@@ -131,7 +131,7 @@ let compile (options: Options) (inputFilePath: string) : int =
             /// which is colourless and so may be written in a plain `main`.
             ///
             /// The rest of `main`'s type is not a question. It is
-            /// `(-> (List string) int)`, given to the module rather than read
+            /// `(-> (Vec string) int)`, given to the module rather than read
             /// off it (`Pipeline.shapeEntryPoint`) and checked afterwards
             /// (`Pipeline.checkEntryPoint`).
             let mainIsBjoroutine =
@@ -227,16 +227,13 @@ let compile (options: Options) (inputFilePath: string) : int =
                 else
                     $"        %s{mainModuleClass}.main(%s{argExpr});\n"
 
-            // One call, always. `main` takes the arguments as a `(List string)`
+            // One call, always. `main` takes the arguments as a `(Vec string)`
             // whether or not it was written with a parameter, so there is no
             // shape of entry point to choose between — and no case in which the
             // arguments are dropped, or a placeholder is passed to a `main` that
             // cannot take one.
             let runBody =
-                $"        SchemeList.SchemeList<string> bjoArgs = SchemeList.SchemeList.Empty<string>();\n" +
-                $"        for (int i = args.Length - 1; i >= 0; i--) {{\n" +
-                $"            bjoArgs = SchemeList.SchemeList.Cons(args[i], bjoArgs);\n" +
-                $"        }}\n" +
+                $"        Collections.RrbList<string> bjoArgs = Collections.RrbList<string>.Create(new System.ReadOnlySpan<string>(args));\n" +
                 callMain "bjoArgs"
 
             let entryPointCode =

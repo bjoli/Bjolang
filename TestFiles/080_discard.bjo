@@ -19,13 +19,12 @@
 ;;
 ;;   level 1  no impl of its own — the blanket applies, the value is dropped
 ;;   level 2  an impl of its own — `ignore` runs it; `Promise` detaches
-;;   level 3  named in the no-discard set — `ignore` is an error, which is what
-;;            `Result` is: a discarded error has no defensible default
 ;;
-;; The third level needs the one name this check knows. `ignore` answers `void`,
-;; so a value handed to it is not in statement position and the walk would never
-;; see it — level three would be defeated by four characters. See
-;; `errors/ignore_result.bjo`.
+;; There is no third level. `Result` used to be one: `ignore` on it was an error
+;; rather than a permission, on the grounds that a discarded error has no
+;; defensible default. It is level 1 like everything else now, and a `Result`
+;; that is dropped without saying so is caught by the ordinary rule — see
+;; `errors/discard_result.bjo`.
 
 (import (std prelude))
 (import (std simpletest))
@@ -110,6 +109,11 @@
   ;; And on an ordinary value, where it means exactly nothing.
   (ignore (+ 1 2))
   (expect "the blanket drops" 1 1)
+
+  ;; A `Result`, which the blanket also drops. The rule still catches one that
+  ;; goes missing silently; what it no longer does is refuse the word for it.
+  (ignore (try (string-length "hi") #:catch (System.Exception)))
+  (expect "a discarded Result needs the word and nothing more" 1 1)
 
   ;; Level 2, resolved statically.
   (set! receipts-filed 0)

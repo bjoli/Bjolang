@@ -519,6 +519,9 @@ anything or stored in a variable.
   was something to bind. 
 - ~(some-> value step ...)~ : ~->~ that stops at the first ~None~. Each step
   answers an ~(Option ...)~ and it unwraps every step befor going on.
+- ~(try-> value step ...)~ : the same over ~Result~, stopping at the first
+  ~Err~. Each step answers a ~(Result ...)~ and receives what the step before
+  unwrapped to, so a chain reads in the order it runs rather than inside out.
 - ~(let* ((name expr) ...) body ...)~ : sequential binding. 
 - ~(parameterize* ((param expr) ...) body ...)~ : the let* version of ~parameterize~
 - ~(with-cancel (cancel) body ...)~ : a cancellation scope that ends when the
@@ -537,6 +540,8 @@ anything or stored in a variable.
   (println line))
 
 (some-> 16 (halve) (halve) (at-least & 3))   ;; (Some 4)
+
+(try-> path (open-input-file &) (read-header &))
 #+END_SRC
 
 ** Waiting from an ordinary function =(std prelude)=
@@ -622,6 +627,15 @@ Optional value type representing presence (~Some~) or absence (~None~).
 - ~(none? opt)~ : Returns true if ~opt~ is ~None~.
 - ~(option-ref opt)~ : Returns the unwrapped value; throws if ~None~.
 - ~(option-ref-or opt default-val)~ : Returns the unwrapped value, or ~default-val~ if ~None~.
+
+** Results (~Result~)
+An answer or the error that stopped it: ~(Ok val)~ or ~(Err e)~. A ~Result~ is
+must-use like every other value — it has to be handled, or handed to ~ignore~.
+- ~(ok? r)~ : Returns true if ~r~ is ~Ok~.
+- ~(err? r)~ : Returns true if ~r~ is ~Err~.
+- ~(result-map f r)~ : ~(Ok (f v))~ for an ~Ok~, and the ~Err~ untouched
+  otherwise. ~f~ answers a plain value; a step that answers a ~Result~ of its
+  own belongs in a ~try->~ chain instead.
 
 ** Sequences (~Seq~)
 Lazy, demand-driven sequences.

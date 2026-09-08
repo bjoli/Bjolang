@@ -57,7 +57,7 @@
   ;; The cursor `Iterable` walks with
   map-cursor map-cursor-done? map-cursor-current
   ;; Conversions.
-  list->map map->list vec->map map->vec seq->map map->seq
+  list->map list->vec map->list vec->list vec->map map->vec seq->map map->seq
   map->str map-entry->str
   ;; Builders.
   mapbuilder-empty map->mapbuilder mapbuilder-add! mapbuilder-add-all!
@@ -68,6 +68,9 @@
   transientmap-remove-all! transientmap-contains? transientmap-ref
   transientmap-ref-or transientmap-try-ref transientmap-length
   transientmap-empty? transientmap-filter!
+
+  ;; Results
+  ok? err? result-map
 
   ;; Box
   Box
@@ -888,19 +891,56 @@
   (loop (:for kvp xs)
         (:acc map (mapping kvp))))
 
+(: list->vec (-> (List %a) (Vec %a)))
+(defun (list->vec lst)
+  {vecing e (:for e lst)})
+
 (: map->list (-> (Map %k %v) (List (Tuple %k %v))))
 (defun (map->list m)
   (loop (:for kvp m)
         (:acc lst (listing kvp))))
+
 (: vec->map (-> (Vec (Tuple %k %v)) (Map %k %v)))
 (defun (vec->map v)
   (loop (:for kvp v)
         (:acc map (mapping kvp))))
 
+(: vec->list (-> (Vec %a) (List %a)))
+(defun (vec->list v)
+  (def b (listbuilder-empty))
+  (vec-for-each (fun (elem) (listbuilder-add! b elem)) v )
+  (listbuilder->list b))
+
 (: map->vec (-> (Map %k %v) (Vec (Tuple %k %v))))
 (defun (map->vec m)
   (loop (:for kvp m)
         (:acc v (vecing kvp))))
+
+
+;; --------------------------------------------------------------------------
+;; Results
+;; --------------------------------------------------------------------------
+
+;; `some?` and `none?`, for the other two-case builtin.
+
+(: ok? (-> (Result %e %a) bool))
+(defun (ok? r)
+  (match r
+    ((Ok v) #t)
+    ((Err e) #f)))
+
+(: err? (-> (Result %e %a) bool))
+(defun (err? r)
+  (match r
+    ((Ok v) #f)
+    ((Err e) #t)))
+
+;; If Err, return the same value, otherwise return Ok (f unwrapped-ok-value)
+(: result-map (-> (-?-> %a %b) (Result %e %a) (Result %e %b)))
+(defun (result-map f r)
+  (match r
+    ((Ok v) (Ok (f v)))
+    ((Err e) (Err e))))
 
 
 ;; --------------------------------------------------------------------------
@@ -1714,6 +1754,28 @@
      #'(match (-> ,value ,step)
         (None None)
         ((Some it) ,(some-steps #'it rest))))))
+
+;; `(try-> value step ...)` — `->`, stopping at the first `Err`.
+;;
+;; Threading result. Same as some-> but for Result.
+(def/macro (try-> form inject compare)
+  (syntax-match form
+    ((_ value step ...) (try-steps value step))
+    (bad (syntax-error bad "try-> takes a value and steps: (try-> value (f &) (g &))"))))
+
+(: try-steps (-> Syntax (List Syntax) Syntax))
+(defun (try-steps value steps)
+  (match steps
+    ;; No steps.
+    (Nil #'(Ok ,value))
+    ;; Last step.
+    ((Cons step Nil) #'(-> ,value ,step))
+    ((Cons step rest)
+     ;; The error is rebuilt rather than passed along, because the two Results
+     ;; differ in their Ok type.
+     #'(match (-> ,value ,step)
+        ((Err e) (Err e))
+        ((Ok it) ,(try-steps #'it rest))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Cancellation scopes

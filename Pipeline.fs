@@ -954,7 +954,7 @@ and private resolveDependency (basePath: string) (spec: ImportSpec) : string opt
     // names a `.dll` outright working, and leaves the rest to fail by name.
     else Some raw
 
-/// The one shape an entry point has: `(-> (List string) int)`.
+/// The one shape an entry point has: `(-> (Vec string) int)`.
 ///
 /// `main` is called by the generated entry point rather than by anything in the
 /// program, so what it takes is the runtime's to say and not inference's to
@@ -965,8 +965,8 @@ and private resolveDependency (basePath: string) (spec: ImportSpec) : string opt
 ///   not the program wants them, and the entry point then has a single call to
 ///   emit rather than a case analysis over what it may hand over.
 /// - a `main` with no signature is given this one, so its parameter is
-///   `(List string)` by declaration rather than by whatever its body happened
-///   to constrain. `(println (list-head args))` alone leaves the element type
+///   `(Vec string)` by declaration rather than by whatever its body happened
+///   to constrain. `(println (vec-ref args 0))` alone leaves the element type
 ///   open, and a generic entry point is one nothing can call.
 ///
 /// A signature written by hand is left as written and checked afterwards, by
@@ -1000,7 +1000,7 @@ let private shapeEntryPoint (decls: Decl list) : Decl list =
         if decls |> List.exists (function DSignature("main", _, _, _) -> true | _ -> false) then
             withParameter
         else
-            let argsType = TApp("List", [ TName("string", r) ], r)
+            let argsType = TApp("Vec", [ TName("string", r) ], r)
             DSignature("main", TArrow([ argsType ], [], None, TName("int", r), colour, r), [], r) :: withParameter
 
 /// The type `main` ended up with, once the whole program has been checked.
@@ -1030,12 +1030,12 @@ let private checkEntryPoint (env: TypedAST.Env) (decls: Decl list) : unit =
         let actual = Unification.prune env.Registry t
 
         match actual with
-        | TypedAST.TFun([ TypedAST.TCon("List", [ TypedAST.TCon(TypedAST.TypeConstants.StringName, []) ]) ],
+        | TypedAST.TFun([ TypedAST.TCon("Vec", [ TypedAST.TCon(TypedAST.TypeConstants.StringName, []) ]) ],
                         TypedAST.TCon(TypedAST.TypeConstants.Int32Name, []),
                         _) when constraints.IsEmpty -> ()
         | _ ->
             failwithf
-                $"Type Error at %s{Lexer.formatPos r}: 'main' is a program's entry point and has one type, (-> (List string) int). This one is %s{DotNetInterop.showType actual}. A main written without a signature is given that one, and a main written without a parameter is given the arguments anyway — so the way to a different type is a signature, and there is nothing the entry point could pass it."
+                $"Type Error at %s{Lexer.formatPos r}: 'main' is a program's entry point and has one type, (-> (Vec string) int). This one is %s{DotNetInterop.showType actual}. A main written without a signature is given that one, and a main written without a parameter is given the arguments anyway — so the way to a different type is a signature, and there is nothing the entry point could pass it."
     | _ -> ()
 
 let wrapInModule (moduleName: string) (filePath: string) (decls: Decl list) : Decl list =

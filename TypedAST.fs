@@ -1304,12 +1304,6 @@ type TraitRegistry =
       /// name they were bound to.
       ClrExterns: Map<string, ClrExternInfo>
 
-      /// Head constructors whose values may not be discarded at all — §8.2's
-      /// third level. `(ignore x)` on one of these is an error rather than a
-      /// permission, because there is no defensible automatic behaviour for a
-      /// discarded error and pretending otherwise is the bug.
-      NoDiscard: Set<string>
-
       /// Type keys whose name arrived without their representation — an
       /// `#:opaque` export, read back from a dependency's metadata.
       ///

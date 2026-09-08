@@ -3,7 +3,8 @@
 ;; They arrive with the implicit `(import (std prelude))` that every file gets,
 ;; so nothing here imports anything. They are macros — written with
 ;; `syntax-match`, in `lib/std/prelude.bjo` — which is why they can take a
-;; branch that is not evaluated, and why `some->` can skip the rest of a chain.
+;; branch that is not evaluated, and why `some->` and `try->` can skip the rest
+;; of a chain.
 
 (import (std simpletest))
 
@@ -34,6 +35,27 @@
 (defun (noted n)
   (set! calls (+ calls 1))
   (Some n))
+
+;; The same three, answering a Result. `try->` threads these the way `some->`
+;; threads the ones above.
+(: halve/try (-> int (Result string int)))
+(defun (halve/try n)
+  (if (= (% n 2) 0) (Ok (/ n 2)) (Err "odd")))
+
+(: at-least/try (-> int int (Result string int)))
+(defun (at-least/try n floor)
+  (if (>= n floor) (Ok n) (Err "too small")))
+
+(: noted/try (-> int (Result string int)))
+(defun (noted/try n)
+  (set! calls (+ calls 1))
+  (Ok n))
+
+(: or-zero (-> (Result string int) int))
+(defun (or-zero r)
+  (match r
+    ((Ok v) v)
+    ((Err e) 0)))
 
 (: classify (-> int string))
 (defun (classify n)
@@ -106,6 +128,47 @@
 
   ;; With no steps there is nothing that could have failed.
   (expect "some-no-steps" (option-ref-or (some-> 5) 0) 5)
+
+  ;; --- try-> --------------------------------------------------------------
+  ;; The same shape over a Result. Each step answers one and receives what the
+  ;; step before unwrapped to.
+  (expect "try-chain" (or-zero (try-> 8 (halve/try))) 4)
+  (expect "try-chain-two" (or-zero (try-> 8 (halve/try) (halve/try))) 2)
+  (expect "try-chain-three" (or-zero (try-> 16 (halve/try) (halve/try) (halve/try))) 2)
+
+  (expect "try-placeholder" (or-zero (try-> 8 (halve/try) (at-least/try & 3))) 4)
+  (expect "try-placeholder-fails" (or-zero (try-> 8 (halve/try) (at-least/try & 5))) 0)
+
+  ;; An `Err` anywhere stops the chain, and the steps after it do not run.
+  (set! calls 0)
+  (expect "try-stops" (or-zero (try-> 7 (halve/try) (noted/try) (halve/try))) 0)
+  (expect "try-stops-lazily" calls 0)
+
+  ;; The error is the one the failing step gave, not a new one.
+  (expect "try-keeps-the-error"
+          (match (try-> 7 (halve/try) (noted/try)) ((Ok v) "ok") ((Err e) e))
+          "odd")
+
+  ;; With no steps there is nothing that could have failed.
+  (expect "try-no-steps" (or-zero (try-> 5)) 5)
+
+  ;; --- result-map ---------------------------------------------------------
+  ;; The step answers a plain value and `result-map` puts the `Ok` back on; an
+  ;; `Err` goes through untouched.
+  (expect "result-map-over-ok" (or-zero (result-map (fun (n) (* n 10)) (Ok 4))) 40)
+  (expect "result-map-over-err"
+          (match (result-map (fun (n) (* n 10)) (halve/try 7))
+            ((Ok v) "ok")
+            ((Err e) e))
+          "odd")
+
+  ;; It does not run the function on an `Err`.
+  (set! calls 0)
+  (ignore (result-map bump (halve/try 7)))
+  (expect "result-map-skips-on-err" calls 0)
+
+  (expect "ok?" (ok? (halve/try 8)) #t)
+  (expect "err?" (err? (halve/try 7)) #t)
 
   (println "95 ok")
   0)

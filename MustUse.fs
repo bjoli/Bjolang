@@ -47,17 +47,6 @@ let private carriesNothing (registry: TraitRegistry) (t: HMType) =
     | TTuple [] -> true
     | _ -> false
 
-/// Types that may not be discarded even *with* `ignore`.
-///
-/// Level three of §8.2's table. `Result` is the case it exists for: there is no
-/// defensible automatic behaviour for a discarded error — dropping it silently
-/// is the bug, and "detach" means nothing here — so the only honest answer is to
-/// refuse and name the two things that do work.
-let private mustBeHandled (registry: TraitRegistry) (t: HMType) =
-    match Unification.prune registry t with
-    | TCon(name, _) -> Set.contains name registry.NoDiscard
-    | _ -> false
-
 let private describe = DotNetInterop.showType
 
 /// Checks if this call diverges (never returns).
@@ -76,39 +65,12 @@ let private neverReturns (registry: TraitRegistry) (expr: TypedExpr) =
 let private checkDiscard (registry: TraitRegistry) (what: string) (expr: TypedExpr) : unit =
     if neverReturns registry expr then
         ()
-    elif mustBeHandled registry expr.Type then
-        failwithf
-            $"Type Error at %s{formatPos expr.Range}: this value has type %s{describe expr.Type}, which may not be discarded — not even with `ignore`.\n  %s{what}\n  A discarded error is the bug the type exists to prevent, and there is no sensible default for one. Handle it with `match`, or take the value out with `unwrap`."
     elif not (carriesNothing registry expr.Type) then
         failwithf
             $"Type Error at %s{formatPos expr.Range}: this value has type %s{describe expr.Type} and is discarded.\n  %s{what}\n  Every value that is computed and then dropped has to say so: write `(ignore ...)` around it. A value that goes missing without a word is the bug this rule exists to catch."
 
-/// `(ignore x)` where `x` may not be discarded.
-///
-/// The one place this pass knows a name, and it has to: `ignore` answers `Unit`,
-/// so a value handed to it is not in statement position and the walk below would
-/// never see it. Level three would otherwise be defeated by four characters.
-///
-/// Matched on the trait and method rather than on the identifier alone, because
-/// `TTraitCall` records which trait a method belongs to precisely so that
-/// nothing has to guess from the name — a second trait with an `ignore` of its
-/// own would otherwise be caught by this.
-let private checkIgnored (registry: TraitRegistry) (expr: TypedExpr) : unit =
-    let ignored =
-        match expr.Node with
-        | TTraitCall(tref, [ arg ], []) when tref.Trait = "Discard" && tref.Method = "ignore" -> Some arg
-        | TApply({ Node = TIdent("ignore", _) }, [ arg ], []) -> Some arg
-        | _ -> None
-
-    match ignored with
-    | Some arg when mustBeHandled registry arg.Type ->
-        failwithf
-            $"Type Error at %s{formatPos arg.Range}: this value has type %s{describe arg.Type}, which may not be discarded — `ignore` does not make it allowed.\n  A discarded error is the bug the type exists to prevent, and there is no sensible default for one: dropping it silently is exactly what went wrong. Handle it with `match`, or take the value out with `unwrap`."
-    | _ -> ()
-
 let rec private checkExpr (registry: TraitRegistry) (expr: TypedExpr) : unit =
     let descend = checkExpr registry
-    checkIgnored registry expr
 
     match expr.Node with
     // A body of several forms is `TLet("_", …, first, rest)`: the parser

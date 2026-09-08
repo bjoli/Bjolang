@@ -331,7 +331,7 @@ let bindMeta (registry: TraitRegistry) (m: MetaVar) (t: HMType) =
 /// unknown? `prune` resolves a projection as soon as the implementor is
 /// concrete, so what is left is a projection waiting on a meta variable —
 /// something else in the same call has to pin it down first.
-let rec private awaitsImplementor (registry: TraitRegistry) (t: HMType) : bool =
+let rec awaitsImplementor (registry: TraitRegistry) (t: HMType) : bool =
     match prune registry t with
     | TAssoc(_, _, impl) ->
         match prune registry impl with

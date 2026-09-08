@@ -2494,28 +2494,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     // is nothing a local could be shadowing and the registries decide.
     | EResolved(name, r) -> infer (unshadow name env) (EIdent(name, r))
 
-    | EFun(args, body, colour, r) ->
-        let argTypes = args |> List.map (fun _ -> freshMeta ())
-        let eff = colourEffect colour
-
-        let localEnv =
-            List.zip args argTypes
-            |> List.fold
-                (fun acc (n, t) ->
-                    addBinding
-                        n
-                        { Scheme = Scheme([], [], t)
-                          IsMutable = false }
-                        acc)
-                (withoutSeqElement env)
-
-        let bodyType, typedBody = infer localEnv body
-        let funType = TFun(argTypes, bodyType, eff)
-
-        funType,
-        { Type = funType
-          Range = r
-          Node = TLambda(args, typedBody) }
+    | EFun(args, body, colour, r) -> inferLambda None env args body colour r
 
     // A trait method in application position.
     //
@@ -3189,19 +3168,72 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
             match remaining with
             | [] -> List.rev positional, List.rev keywords
             | EKeyword(kwName, _) :: value :: rest when isDeclaredKw kwName ->
-                let valType, typedVal = infer env value
-                splitArgs positional ((kwName, (valType, typedVal)) :: keywords) rest
+                splitArgs positional ((kwName, value) :: keywords) rest
             | EKeyword(kwName, kr) :: [] when isDeclaredKw kwName ->
                 failwithf $"Keyword argument '#:%s{kwName}' is missing a value at %s{Lexer.formatPos kr}"
-            | arg :: rest ->
+            | arg :: rest -> splitArgs (arg :: positional) keywords rest
+
+        let positionalExprs, keywordExprs = splitArgs [] [] args
+
+        // Positional arguments are inferred in two passes, lambdas last. A
+        // lambda's parameter types come from what the callee declares for its
+        // position, and `expectedParam` can only report that once the other
+        // arguments have pinned it: in `(vec-for-each (fun (r) ...) kept)` it is
+        // `kept` that says what `r` is, and the body cannot be inferred before
+        // then.
+        //
+        // Results are written back into their source position, because codegen
+        // emits the arguments in the order they are listed and they may have
+        // side effects.
+        let slots: (HMType * TypedExpr) option array = Array.create (List.length positionalExprs) None
+
+        /// Pin an argument to the parameter it fills, ahead of the flat
+        /// unification below, so that a later lambda argument can read its own
+        /// parameter types off the callee's arrow.
+        ///
+        /// The parameter goes first, because `unifyEffect` reads its first
+        /// argument as the expectation: the other way round an ordinary
+        /// function passed to a `-bjo->` parameter is reported as its opposite
+        /// and refused.
+        ///
+        /// A parameter still waiting on an implementor is skipped, the same
+        /// exception `unify` makes for `TFun`: in `(fold + 0 v)` the folding
+        /// function mentions `Foldable`'s associated type, which nothing knows
+        /// until `v` has been inferred.
+        let pinToParam (i: int) (argType: HMType) =
+            match expectedParam i with
+            | Some paramTy when not (awaitsImplementor env.Registry paramTy || awaitsImplementor env.Registry argType) ->
+                unify env.Registry paramTy argType
+            | _ -> ()
+
+        positionalExprs
+        |> List.iteri (fun i arg ->
+            match arg with
+            | EFun _ -> ()
+            | _ ->
                 let argType, typedArg =
-                    match arg, expectedParam (List.length positional) with
+                    match arg, expectedParam i with
                     | (EList _ | EVec _ | EArray _), Some paramTy -> inferChecked paramTy env arg
                     | _ -> infer env arg
 
-                splitArgs ((argType, typedArg) :: positional) keywords rest
+                pinToParam i argType
+                slots[i] <- Some(argType, typedArg))
 
-        let positionalArgs, keywordArgs = splitArgs [] [] args
+        let keywordArgs = keywordExprs |> List.map (fun (kwName, value) -> kwName, infer env value)
+
+        positionalExprs
+        |> List.iteri (fun i arg ->
+            match arg with
+            | EFun _ ->
+                let inferred =
+                    match expectedParam i with
+                    | Some paramTy -> inferChecked paramTy env arg
+                    | None -> infer env arg
+
+                slots[i] <- Some inferred
+            | _ -> ())
+
+        let positionalArgs = slots |> Array.toList |> List.map Option.get
         let retType = freshMeta ()
 
         match funMeta with
@@ -4148,8 +4180,55 @@ and private inferChecked (expected: HMType) (env: Env) (expr: Expr) : HMType * T
         let typedExprs = exprs |> List.map (inferAndMaybeInject elemTy env)
         TCon("Array", [ elemTy ]),
         { Type = TCon("Array", [ elemTy ]); Range = r; Node = TArrayMake typedExprs }
+
+    // A lambda whose parameters the expectation already names.
+    | EFun(args, body, colour, r), TFun(paramTys, _, _) when List.length paramTys = List.length args ->
+        inferLambda (Some paramTys) env args body colour r
+
     | _ ->
         infer env expr
+
+/// A lambda. `pins` are the parameter types the context expects, when it
+/// expects any: unifying them before the body is inferred is what lets the body
+/// read a record field off a parameter, since `recordTypeOfField` needs the
+/// record type at the moment of the access.
+///
+/// The effect is the lambda's own keyword and never comes from the context. A
+/// `fun` is `ESync` and a `bjoroutine` is `EAsync`, `ColourCheck` reads that off
+/// the node, and taking it from a `-bjo->` parameter instead would repaint the
+/// lambda and make the colour diagnostics wrong.
+and private inferLambda
+    (pins: HMType list option)
+    (env: Env)
+    (args: string list)
+    (body: Expr)
+    (colour: Colour)
+    (r: Range)
+    : HMType * TypedExpr =
+    let argTypes = args |> List.map (fun _ -> freshMeta ())
+
+    match pins with
+    | Some paramTys -> List.iter2 (fun argTy paramTy -> unify env.Registry argTy paramTy) argTypes paramTys
+    | None -> ()
+
+    let localEnv =
+        List.zip args argTypes
+        |> List.fold
+            (fun acc (n, t) ->
+                addBinding
+                    n
+                    { Scheme = Scheme([], [], t)
+                      IsMutable = false }
+                    acc)
+            (withoutSeqElement env)
+
+    let bodyType, typedBody = infer localEnv body
+    let funType = TFun(argTypes, bodyType, colourEffect colour)
+
+    funType,
+    { Type = funType
+      Range = r
+      Node = TLambda(args, typedBody) }
 
 /// Check one element of a literal against the type its position expects,
 /// injecting a union constructor around it where the expectation is a union.

@@ -3,6 +3,89 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~try->~ and ~result-map~
+
+#+BEGIN_SRC scheme
+(try-> path (open-input-file &) (read-header &) (parse &))
+
+(result-map (fun (r) (read-all (response-port r))) response)
+#+END_SRC
+
+~try->~ is ~some->~ over ~Result~: each step answers one, receives what the step
+before unwrapped to, and the first ~Err~ ends the chain with the steps after it
+unrun. ~&~ says where the value goes when it is not the first argument, since
+the threading is ~->~'s.
+
+~result-map~ is the single step, for a function that answers a plain value —
+it puts the ~Ok~ back on and passes an ~Err~ through. A step that answers a
+~Result~ of its own belongs in a ~try->~ chain, where the wrapping is already
+right.
+
+Both are in the prelude, beside ~ok?~ and ~err?~. ~(std monad)~'s ~bind~ and
+~(do ...)~ still exist and are still the general answer; these are the concrete
+ones, the way ~list-map~ is concrete beside ~Iterable~'s ~map~ — and they are
+reachable from the modules below ~(std monad)~ in the build, which ~bind~ is
+not.
+
+* A ~Result~ can be ignored
+
+#+BEGIN_SRC scheme
+(ignore (sync (promise-join fiber)))    ;; was a compile error, is now a discard
+#+END_SRC
+
+Must-use had a third level: a set of head constructors that ~ignore~ could not
+satisfy, holding exactly ~Result~. It is gone, along with the ~NoDiscard~ field
+and the check that read the argument of an ~ignore~ to enforce it.
+
+A ~Result~ is level 1 now — the blanket ~Discard~ impl drops it. The ordinary
+rule still applies, so a ~Result~ that goes missing without a word is the same
+error every other value gets. What no longer happens is the compiler refusing
+the word.
+
+The rule is now universal with no exceptions at all, which is what ~MustUse~'s
+header claimed for it already.
+
+* ~main~ takes a ~(Vec string)~
+
+#+BEGIN_SRC scheme
+(: main (-> (Vec string) int))
+(defun (main args)
+  (println (vec-ref args 0))
+  0)
+#+END_SRC
+
+The entry point still has exactly one type, and a ~main~ written without a
+signature is still given it. What changed is the collection: the arguments
+arrive indexable, which is what reading the third of them wants, and the
+generated ~Main~ builds the vec directly from the ~string[]~ instead of consing
+a list back to front.
+
+A ~main~ that declares ~(-> (List string) int)~ is now the rejected shape,
+with the same message the other way round.
+
+* A lambda argument is inferred after the arguments that pin its parameters
+
+#+BEGIN_SRC scheme
+(vec-for-each (fun (r) (println (record-ref r url))) kept)
+#+END_SRC
+
+~url~ is a field of more than one record, so reading it off ~r~ needs ~r~'s
+type — and ~kept~ is what says it. A call site now infers its positional
+arguments in two passes, everything that is not a lambda first, unifying each
+against the parameter it fills; the lambdas follow, with their parameters
+pinned from the callee's arrow before their bodies are inferred.
+
+Only the parameter types are pinned, never the effect: a ~fun~ passed to a
+~-bjo->~ parameter is still an ordinary function that ~Colour.Lift~ bridges,
+and ~ColourCheck~ still sees the colour the lambda was written with.
+
+Arguments are still *evaluated* left to right — this is the order they are type
+checked, not the order they run — and a parameter that is a bare type variable
+still expects nothing, so ~(map spawn-thunk thunks)~ is unchanged.
+
+What it leaves open: two lambda arguments that each need the other's type. That
+still needs field access to become a deferred constraint.
+
 * ~&~ is ~&1~ in a lambda shorthand
 
 #+BEGIN_SRC scheme

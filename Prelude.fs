@@ -131,11 +131,10 @@ let private withDynSafety (traitName: string) (info: TraitInfo) : TraitInfo =
 
 /// `Num`, before any source has declared it.
 ///
-/// Seeded rather than declared, for the reason `NoDiscard`'s `Result` is: the
-/// operators it constrains are builtins, and there is nowhere in source to hang
-/// a declaration that is in scope for them. `std/eq.bjo` is the case that
-/// forces it — the bottom of the library, importing nothing, and it adds and
-/// divides.
+/// Seeded rather than declared, because the operators it constrains are
+/// builtins and there is nowhere in source to hang a declaration that is in
+/// scope for them. `std/eq.bjo` is the case that forces it — the bottom of the
+/// library, importing nothing, and it adds and divides.
 ///
 /// Methodless on purpose. This is only enough for `+` to mean something at a
 /// type variable; `std/maths.bjo` declares the same trait *with* its members
@@ -282,12 +281,6 @@ let emptyRegistry : TraitRegistry =
       Unions = Map.empty
       ClrClasses = Map.empty
       ClrExterns = Map.empty
-
-      // Seeded rather than declared, because the type it is about is built in
-      // and there is nowhere in source to hang the declaration. `Result` is the
-      // whole of §8.2's third level: a discarded error is exactly the failure
-      // the type exists to make visible.
-      NoDiscard = Set.ofList [ "Result" ]
 
       OpaqueTypes = Set.empty
       HiddenMembers = Map.empty
