@@ -1,0 +1,20 @@
+;; An `Eq` implementation for a type another module declares.
+;;
+;; The orphan rule allows it, and `(= a b)` would even work — but `Map` and
+;; `Set` ask the *type* for its equality, and the type's class was compiled
+;; with the module that declares it, where this implementation did not exist.
+;; Materialization cannot reach back into that assembly, so the two answers
+;; would silently diverge. The implementation belongs in the declaring module;
+;; in the REPL, in the same entry as the type.
+
+;; EXPECT-ERROR: is declared in another module
+;; EXPECT-ERROR: same entry as the type
+
+(import (std prelude))
+(import "../inc/kitchen.bjo")
+
+(impl (Eq Tag)
+  (defun (= a b) #t)
+  (defun (eq-hash a) 0))
+
+(defun (main args) 0)

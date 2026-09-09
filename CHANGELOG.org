@@ -3,6 +3,45 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~Ord~ materializes too, and equality's last holes are closed
+
+An ~Ord~ implementation for a declared type is now emitted into the type as
+~IComparable<T>~ and its ~CompareTo~, the way an ~Eq~ implementation already
+became ~Equals~/~GetHashCode~. ~Comparer<T>.Default~ finds the interface, so
+the ordered collections — =(std orderedset)=, =(std orderedmap)=,
+~SortedSet~, ~PriorityQueue~ — move from "compiles, throws at the first
+comparison" to sorted by ~compare~. A union's ~CompareTo~ goes on the abstract
+base, the opposite corner from ~Equals~, which goes into every case:
+~Comparer~ asks the base type for the interface, and — unlike ~Equals~ —
+nothing synthesized in a case class displaces ~CompareTo~, so one member on
+the base serves every case and is dead on none.
+
+A parameterized type with an *unconditional* implementation materializes now
+too: ~(impl (Eq (Keyed %a)))~ with no ~(where ...)~ has a class that abstracts
+over exactly the type's parameters, so it is instantiated at them. A
+conditional implementation still keeps C#'s synthesized members, which compose
+through each field's own override — refusing it is not a hole.
+
+New to write: ~structural-equals~ and ~structural-hash~, the field-by-field
+comparison by name. They are what an implementation writes when it wants "what
+C# would have synthesized, plus one tweak" — written with ~clr-equals~ that
+shape would emit an ~Equals~ that calls the impl that calls ~Equals~, forever,
+which is why ~clr-equals~ stays private to ~(std eq)~ and its message now
+names these. They never consult the receiver type's own ~Equals~; each *field*
+still compares through its own type's equality, so nested implementations are
+reached.
+
+And one hole is refused rather than left silent: an ~Eq~ or ~Ord~
+implementation for a type the module did not declare — an ~import/class~
+alias, a type imported from another module, in the REPL a type from an earlier
+entry. Every one of them passes the orphan rule and works for ~(= a b)~, and
+none of them can reach the type's already-compiled ~Equals~ and ~CompareTo~,
+so ~Map~, ~Set~ and the ordered collections would disagree in silence. The
+message names the fix: the declaring module, the same REPL entry, or a wrapper
+type. ~lib/std~ is carved out — its implementations for .NET types delegate to
+the very members .NET consults, so its two answers cannot part ways, which no
+compiler check could establish of an arbitrary body.
+
 * A scope owns its fibers, and ~sync~ watches the token
 
 ~with-cancel~ used to hold a cancellation token and nothing else, so every

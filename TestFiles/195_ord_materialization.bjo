@@ -1,0 +1,59 @@
+;; A materialized `Ord`: the ordered collections work on a declared type.
+;;
+;; `OrderedSet.Empty()` compares through `Comparer<T>.Default`, which asks the
+;; element type for `IComparable<T>`. Before materialization an `Ord`
+;; implementation was invisible to it — an ordered set of a declared record
+;; compiled and threw at the first comparison. Now the implementation *is* the
+;; `CompareTo` the comparer finds, so the C# tree and `compare` cannot
+;; disagree.
+(import (std prelude))
+(import (std orderedset))
+(import (std simpletest))
+
+(type/derive (Eq Ord)
+  (: Ver (Record (: major int) (: minor int))))
+
+;; Hand-written, and deliberately not field-wise: ordering and equality read
+;; only `priority`, so the ordered set has to treat same-priority tasks as one
+;; — the invariant this whole design exists to keep.
+(type (: Task (Record (: priority int) (: name string))))
+
+(impl (Eq Task)
+  (defun (= a b) (= (record-ref a priority) (record-ref b priority)))
+  (defun (eq-hash a) (eq-hash (record-ref a priority))))
+
+(impl (Ord Task)
+  (defun (compare a b) (compare (record-ref a priority) (record-ref b priority))))
+
+;; A union: the case decides first, in declaration order.
+(type/derive (Eq Ord)
+  (: Level (Union Low (Mid int) High)))
+
+(defun (main)
+  (def v19 (Ver (major 1) (minor 9)))
+  (def v20 (Ver (major 2) (minor 0)))
+  (def v21 (Ver (major 2) (minor 1)))
+
+  (def s (orderedset-add (orderedset-add (orderedset-add (orderedset-empty) v21) v19) v20))
+  (expect "a derived record in an ordered set" (orderedset-length s) 3)
+  (expect-true "walks in Ord's order"
+          (= (orderedset->list s) (list v19 v20 v21)))
+  (expect-true "min" (match (orderedset-min s) ((Some m) (= m v19)) (None #f)))
+  (expect-true "max" (match (orderedset-max s) ((Some m) (= m v21)) (None #f)))
+  (expect-true "membership goes through compare"
+          (orderedset-contains? s (Ver (major 2) (minor 0))))
+
+  ;; The invariant: the implementation ignores `name`, so the collection must.
+  (def t (orderedset-add (orderedset-add (orderedset-empty)
+                                         (Task (priority 1) (name "one")))
+                         (Task (priority 1) (name "other"))))
+  (expect "same priority is the same task" (orderedset-length t) 1)
+  (expect-true "and different priorities sort"
+          (= 2 (orderedset-length (orderedset-add t (Task (priority 9) (name "one"))))))
+
+  ;; A union orders by case, then payload.
+  (def l (orderedset-add-all (orderedset-empty)
+                             (list->seq (list High (Mid 2) Low (Mid 1)))))
+  (expect-true "a union in an ordered set"
+          (= (orderedset->list l) (list Low (Mid 1) (Mid 2) High)))
+  0)

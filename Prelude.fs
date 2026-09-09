@@ -392,6 +392,15 @@ let prelude : Env =
         "clr-equals", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] boolType); IsMutable = false }
         "clr-hash", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"] intType); IsMutable = false }
 
+        // The field-by-field comparison and hash, by name. Public, unlike the
+        // three above: this is what an `Eq` impl writes when it wants "what C#
+        // would have synthesized, plus one tweak". It never consults the
+        // receiver type's own `Equals`, so it is safe inside the very impl
+        // that materializes into it — while each *field* still compares
+        // through its own type's equality, so nested impls are reached.
+        "structural-equals", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] boolType); IsMutable = false }
+        "structural-hash", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"] intType); IsMutable = false }
+
         /// What an `eq-hash` over several fields folds with. Public, unlike the
         /// three above: every derived and hand-written impl needs it.
         "hash-combine", {Scheme = Scheme([], [], makeFunType [intType; intType] intType); IsMutable = false }

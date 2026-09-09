@@ -2164,13 +2164,20 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
 
     // `std/eq`'s own equality primitives, refused everywhere else. See
     // `Naming.eqPrivateBindings` for why they are shut away at all.
+    //
+    // This refusal is also the recursion diagnostic for materialization: an
+    // `Eq` impl written as `(clr-equals a b)` would emit an `Equals` that
+    // calls the impl that calls `Equals`, forever. Refusing the *name* is
+    // deliberately blunter than scanning impl bodies — a shallow body check
+    // misses the same call one helper function away, and there is no use of
+    // these primitives outside std/eq that is not that loop waiting to happen.
     | EIdent(name, r) when
         Set.contains name Naming.eqPrivateBindings
         // Extract the simple module name from the fully-qualified `CurrentModule` key.
         && Naming.moduleNameOfPath env.CurrentModule <> Naming.eqModuleName
         ->
         failwithf
-            $"Type Error at %s{Lexer.formatPos r}: '%s{name}' is private to std/eq. It is .NET's equality, and a type's own `Eq` implementation is what .NET equality is made *of* — writing one in terms of the other is a loop. Compare the fields instead, or derive."
+            $"Type Error at %s{Lexer.formatPos r}: '%s{name}' is private to std/eq. It is .NET's equality, and a type's own `Eq` implementation is what .NET equality is made *of* — writing one in terms of the other is a loop. Use structural-equals and structural-hash for the field-by-field comparison, compare the fields yourself, or derive."
 
     // A trait method written where a value is wanted, rewritten into the lambda
     // it stands for: `even?` becomes `(fun (x) (even? x))`.
@@ -5919,6 +5926,37 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
         elif not (isLocalTrait || isLocalType) then
             failwithf
                 $"Orphan Rule Violation at %s{Lexer.formatPos r}: Cannot implement foreign trait '%s{traitName}' for foreign type '%s{typeKey}'."
+
+        // An `Eq` or `Ord` implementation for a type this module did not
+        // declare: an `import/class` alias, or a type imported from another
+        // module (in the REPL, from an earlier entry).
+        //
+        // Both pass the orphan rule, and both would work for `(= a b)` — but
+        // not for `Map`, `Set` or the ordered collections, which ask the
+        // *type* for its equality and ordering. Materialization can only put
+        // the implementation there at the moment the type's class is emitted,
+        // which is in the module that declares it; anywhere else the two
+        // answers silently diverge, which is the exact hole materialization
+        // exists to close. Refused, with the fix named.
+        //
+        // The standard library is carved out: `std/eq` and `std/clr-ord`
+        // implement these traits for .NET and runtime types as delegations to
+        // the very members .NET consults — `.CompareTo`,
+        // `EqualityComparer.Default` — so their two answers cannot part ways.
+        // No compiler check could establish that of an arbitrary body, so the
+        // privilege stops at `lib/std`.
+        if (traitName = "Eq" || traitName = "Ord")
+           && typeKey <> BlanketCtor
+           && not (isTupleCtor typeKey)
+           && not (Naming.isStdModuleKey env.CurrentModule) then
+            if not (Naming.isModuleKey typeKey) then
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos r}: '%s{Naming.showTypeName typeKey}' is a .NET type, so '%s{traitName}' cannot be implemented for it. Its equality and ordering are compiled into it already — this implementation would answer '=' and 'compare', but Map, Set and the ordered collections ask the type itself, and the two would silently disagree. Declare a wrapper type with (type ...) and implement '%s{traitName}' for that."
+            // `typeKey` is idempotent on a key this module built, so equality
+            // is the "declared here" test.
+            elif Naming.typeKey env.CurrentModule typeKey <> typeKey then
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos r}: '%s{Naming.showTypeName typeKey}' is declared in another module, so '%s{traitName}' cannot be implemented for it here. Its Equals, GetHashCode and CompareTo were compiled with that module — this implementation would answer '=' and 'compare', but Map, Set and the ordered collections ask the type itself, and the two would silently disagree. Write the implementation in the module that declares the type — in the REPL, in the same entry as the type."
 
         let hmAssocBindings =
             assocBindings

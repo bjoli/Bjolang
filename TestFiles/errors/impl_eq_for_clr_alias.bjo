@@ -1,0 +1,20 @@
+;; An `Eq` implementation for an `import/class` alias.
+;;
+;; Legal under the orphan rule, and it would even work for `(= a b)` — but not
+;; for `Map` or `Set`, which ask the type's own `Equals`, already compiled
+;; into it by .NET. Materialization cannot fix that from here, so the hole is
+;; refused rather than left silent. The way out is a wrapper type.
+
+;; EXPECT-ERROR: is a .NET type, so 'Eq' cannot be implemented for it
+;; EXPECT-ERROR: wrapper type
+
+(import (std prelude))
+
+(import/class
+  (Uri (: System.Uri)))
+
+(impl (Eq Uri)
+  (defun (= a b) #t)
+  (defun (eq-hash a) 0))
+
+(defun (main args) 0)

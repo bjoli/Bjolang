@@ -1,0 +1,59 @@
+;; `structural-equals` / `structural-hash`: the field-by-field comparison, by
+;; name.
+;;
+;; An `Eq` implementation materializes into its type's `Equals`, so one written
+;; in terms of `clr-equals` would call itself forever — the name is refused
+;; (`errors/eq_clr_primitive_is_private.bjo`). These are what such an
+;; implementation writes instead: they never consult the receiver type's own
+;; `Equals`, so the very shape that would loop terminates — while each *field*
+;; still compares through its own type's equality, so a nested implementation
+;; is reached.
+(import (std prelude))
+(import (std simpletest))
+
+(type (: Plain (Record (: a int) (: b string))))
+
+;; Exactly the shape that would stack-overflow written with `clr-equals`:
+;; full delegation, nothing tweaked.
+(impl (Eq Plain)
+  (defun (= x y) (structural-equals x y))
+  (defun (eq-hash x) (structural-hash x)))
+
+;; The reason to want the primitive at all: `hits` is bookkeeping, not
+;; identity, so equality reads only `key`.
+(type (: Entry (Record (: key string) (: hits int))))
+
+(impl (Eq Entry)
+  (defun (= x y) (= (record-ref x key) (record-ref y key)))
+  (defun (eq-hash x) (eq-hash (record-ref x key))))
+
+;; `structural-equals` over a type one of whose fields has an implementation of
+;; its own: the field compares through its own `Equals`, which *is* that
+;; implementation. Composition is wanted; only the top-level dispatch is the
+;; loop.
+(type (: Wrap (Record (: entry Entry) (: n int))))
+
+(impl (Eq Wrap)
+  (defun (= x y) (structural-equals x y))
+  (defun (eq-hash x) (structural-hash x)))
+
+(defun (main)
+  (def p1 (Plain (a 1) (b "x")))
+  (def p2 (Plain (a 1) (b "x")))
+  (def p3 (Plain (a 2) (b "x")))
+  (expect-true "full delegation terminates and agrees" (= p1 p2))
+  (expect-true "and separates" (not (= p1 p3)))
+  (expect-true "the hashes agree" (= (eq-hash p1) (eq-hash p2)))
+  (expect-true "usable as a Map key"
+          (= "v" (map-ref-or (map-set (map-empty) p1 "v") p2 "MISSING")))
+
+  (def e1 (Entry (key "k") (hits 1)))
+  (def e2 (Entry (key "k") (hits 999)))
+  (def w1 (Wrap (entry e1) (n 5)))
+  (def w2 (Wrap (entry e2) (n 5)))
+  (expect-true "a field's own implementation is reached" (= w1 w2))
+  (expect-true "field-wise still separates what differs"
+          (not (= w1 (Wrap (entry e1) (n 6)))))
+  (expect-true "the hash composes through the field's implementation"
+          (= (eq-hash w1) (eq-hash w2)))
+  0)

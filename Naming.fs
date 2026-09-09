@@ -297,6 +297,17 @@ let eqPrivateBindings = Set.ofList [ "clr-eq"; "clr-equals"; "clr-hash" ]
 
 let eqModuleName = "eq"
 
+/// Whether a module key names a file of the installed standard library.
+///
+/// `moduleNamespace` gives a file under `lib/` a namespace made of its
+/// relative path segments — `BjoMod.std.clr_ord` — and every other file one
+/// salted with a directory hash, so the prefix is the test. Used where the
+/// library is allowed something user code is not: its `Eq` and `Ord`
+/// implementations for .NET types delegate to the very members .NET consults,
+/// which no compiler check could establish of an arbitrary body.
+let isStdModuleKey (key: string) =
+    key.StartsWith(moduleNamespaceRoot + ".std.", StringComparison.Ordinal)
+
 /// The name a declared type — or one of its constructors — is known by
 /// everywhere except in source.
 ///

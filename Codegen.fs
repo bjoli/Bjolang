@@ -3705,7 +3705,7 @@ let private generateMethod
 //
 // A trait implementation for a type this module declares is emitted *into* that
 // type as the .NET member .NET asks for: `Eq` as `Equals`/`GetHashCode`, and
-// `Ord` as `IComparable<T>` when it arrives.
+// `Ord` as `IComparable<T>` with its `CompareTo`.
 //
 // C# synthesizes those members only when they are not written, and a record's
 // `==` calls `Equals`. So after this `EqualityComparer<T>.Default` *is* the
@@ -3718,18 +3718,45 @@ let private generateMethod
 // moment the type is emitted.
 
 /// The implementation of `traitName` for `typeKey` that can be materialized, if
-/// there is one.
+/// there is one. `typeArity` is the number of type parameters the emitted type
+/// declares.
 ///
 /// A *conditional* implementation cannot be. Its dictionary is built out of
 /// evidence for its `(where ...)`, and a C# type parameter carries none — there
 /// is nothing inside `Box<T>.Equals` that could produce the `Eq<T>` its own
 /// implementation needs. Such a type keeps C#'s synthesized equality, which is
-/// field-wise and therefore agrees with a derived implementation; only a
-/// hand-written one that ignores a field can differ, and only for a generic
-/// type.
-let private materializableImpl (registry: TraitRegistry) (traitName: string) (typeKey: string) : bool =
+/// field-wise and therefore reaches each field type's own materialized
+/// `Equals` through `EqualityComparer<T>.Default` — composition works without
+/// a dictionary, so refusing the conditional case here is not a hole. Only a
+/// hand-written implementation that disagrees with the fields differs, and
+/// only for a generic type.
+///
+/// An *unconditional* implementation for a parameterized type —
+/// `(impl (Eq (Box %a)))` with no `where` — is materialized: its class takes
+/// the same type parameters the emitted type does and needs no dictionary. The
+/// target has to be fully generic for that: every argument a distinct type
+/// variable, one per parameter, so that instantiating the impl class with the
+/// type's own parameters, in order, is the impl the trait system would have
+/// picked. A specialized target (`(impl (Eq (Pair %a %a)))`) is left to the
+/// synthesized members.
+let private materializableImpl
+    (registry: TraitRegistry)
+    (traitName: string)
+    (typeKey: string)
+    (typeArity: int)
+    : bool =
     match Map.tryFind (traitName, typeKey) registry.ImplTargets with
-    | Some target -> target.Constraints.IsEmpty
+    | Some target ->
+        let vars =
+            target.FixedPrefix
+            |> List.choose (function
+                | TVar v -> Some v
+                | _ -> None)
+
+        target.Constraints.IsEmpty
+        && target.FixedPrefix.Length = typeArity
+        && vars.Length = typeArity
+        && (List.distinct vars).Length = typeArity
     | None -> false
 
 /// What a materialized member is being written into. The three differ in what
@@ -3745,23 +3772,36 @@ type private MaterializeTarget =
     /// `sealed override Equals(Base?)` the compiler still synthesizes is what
     /// routes a comparison at the base type through to here.
     | SealedCase
+    /// A union's abstract base. `Eq` writes nothing here and `Ord` writes
+    /// everything here — see the match in `materializedMembers` for why the
+    /// two go opposite ways.
+    | UnionBase
 
 /// The members `traitName`'s implementation for `implKey` becomes.
 ///
 /// `selfType` is the C# type they are written into — the *case* class for a
 /// union — while `implKey` is the type the implementation was written for,
-/// which is the union itself in both cases.
+/// which is the union itself in both cases. `tyArgs` is the emitted type's own
+/// `<T_a, ...>` list (or `""`): a fully generic impl's class abstracts over
+/// exactly the target's arguments in order, so the type's own parameters are
+/// the arguments to instantiate it at. A union's cases are nested in the
+/// generic base, so the parameters are in scope there too.
 let private materializedMembers
     (traitName: string)
     (implKey: string)
     (selfType: string)
+    (tyArgs: string)
     (target: MaterializeTarget)
     : string list =
 
-    let instance = $"%s{implClassName (sanitizeIdent traitName) implKey}.Instance"
+    let instance = $"%s{implClassName (sanitizeIdent traitName) implKey}%s{tyArgs}.Instance"
 
-    match traitName with
-    | "Eq" ->
+    match traitName, target with
+    // `Eq` goes into every case class and never onto a union's base: a derived
+    // record synthesizes its own `Equals`, which would silently override one
+    // written there. See the union branch of `generateDecl`.
+    | "Eq", UnionBase -> []
+    | "Eq", _ ->
         // A reference type's `Equals` is handed `null` by .NET, which the
         // implementation — an ordinary Bjolang function over two values — has
         // no case for.
@@ -3772,24 +3812,59 @@ let private materializedMembers
 
         [ $"%s{modifier}bool Equals(%s{param}) => %s{notNull}%s{instance}.eq(this, other);"
           $"public override int GetHashCode() => %s{instance}.%s{hashMember}(this);" ]
+    // `Ord` goes the other way round: `CompareTo` is written on a union's
+    // *base* and not on its cases. `Comparer<Shape>.Default` asks `Shape` for
+    // `IComparable<Shape>`, which a member on `Circle` alone could not
+    // satisfy — and unlike `Equals`, nothing synthesized displaces it (a
+    // record synthesizes `Equals`, never `CompareTo`), so one member on the
+    // base is reached from every case and dead on none.
+    | "Ord", SealedCase -> []
+    | "Ord", ValueRecord ->
+        let compareMember = sanitizeIdent "compare"
+        [ $"public int CompareTo(%s{selfType} other) => %s{instance}.%s{compareMember}(this, other);" ]
+    | "Ord", (OpenRecord | UnionBase) ->
+        // Null sorts first, which is `Comparer<T>.Default`'s own convention;
+        // the implementation — an ordinary Bjolang function — never sees it.
+        let compareMember = sanitizeIdent "compare"
+        [ $"public int CompareTo(%s{selfType}? other) => other is null ? 1 : %s{instance}.%s{compareMember}(this, other);" ]
     | _ -> []
 
 /// The trait implementations materialized into a type, in the order their
 /// members are emitted. One list so that `Ord` is an entry rather than a second
 /// pass.
-let private materializedTraits = [ "Eq" ]
+let private materializedTraits = [ "Eq"; "Ord" ]
+
+/// The interfaces a declared type carries because of the implementations
+/// written for it, ready for its base clause.
+///
+/// `Eq` contributes none: a record implements `IEquatable<T>` whether or not
+/// its `Equals` is hand-written. But `Comparer<T>.Default` looks for
+/// `IComparable<T>` by *interface*, so a materialized `Ord` has to be declared
+/// in the base clause as well as emitted as a member — this is what moves
+/// `SortedSet` and `PriorityQueue` on a declared type from "compiles, throws
+/// at the first comparison" to working.
+let private materializedInterfaces
+    (registry: TraitRegistry)
+    (implKey: string)
+    (typeArity: int)
+    (selfType: string)
+    : string list =
+    [ if materializableImpl registry "Ord" implKey typeArity then
+          $"System.IComparable<%s{selfType}>" ]
 
 /// The body a declared type carries because of the implementations written for
 /// it, or `[]` if it carries none.
 let private materializedBody
     (registry: TraitRegistry)
     (implKey: string)
+    (typeArity: int)
     (selfType: string)
+    (tyArgs: string)
     (target: MaterializeTarget)
     : string list =
     materializedTraits
-    |> List.filter (fun t -> materializableImpl registry t implKey)
-    |> List.collect (fun t -> materializedMembers t implKey selfType target)
+    |> List.filter (fun t -> materializableImpl registry t implKey typeArity)
+    |> List.collect (fun t -> materializedMembers t implKey selfType tyArgs target)
 
 /// `;` for a type with nothing to carry, or the block that carries it.
 let private appendTypeBody (ctx: CodegenContext) (members: string list) : unit =
@@ -4020,22 +4095,31 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
             let tyArgsStr = 
                 if td.TypeArgs.IsEmpty then "" 
                 else "<" + (td.TypeArgs |> List.map typeParamName |> String.concat ", ") + ">"
-            // A type with a type parameter is left alone: an implementation for
-            // one is conditional, and there is nothing inside the emitted type
-            // that could build the dictionary its `(where ...)` asks for.
+            // A parameterized type materializes too, provided its
+            // implementation is unconditional — `materializableImpl` is where
+            // a `(where ...)` clause, and a target that is not fully generic,
+            // fall back to C#'s synthesized members.
             let materialized selfType target =
-                if td.TypeArgs.IsEmpty then
-                    materializedBody ctx.Registry td.Name selfType target
-                else
-                    []
+                materializedBody ctx.Registry td.Name td.TypeArgs.Length selfType tyArgsStr target
+
+            // The `: System.IComparable<T>` a materialized `Ord` adds. Written
+            // where the declaration line is built, because the base clause
+            // precedes the members: eligibility has to be known before the
+            // first character of the type is emitted.
+            let baseClause selfRef =
+                match materializedInterfaces ctx.Registry td.Name td.TypeArgs.Length selfRef with
+                | [] -> ""
+                | interfaces -> " : " + String.concat ", " interfaces
 
             match td.Kind with
             | Record(fields, isStruct) ->
                 let selfType = declaredTypeName td.Name
+                let selfRef = $"%s{selfType}%s{tyArgsStr}"
                 let fieldType (f: Parser.RecordField) =
                     typeToString (Inference.resolveTypeAnnotation ctx.Registry f.Type)
 
-                let members = materialized selfType (if isStruct then ValueRecord else OpenRecord)
+                let members =
+                    materialized selfRef (if isStruct then ValueRecord else OpenRecord)
 
                 // A record with a mutable field is still a record — `with`,
                 // `ToString` and the synthesized `Equals` are all wanted, and
@@ -4083,10 +4167,11 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                     // unconditional `Eq` implementation to write it from, and
                     // for a derived implementation that one throws too. This is
                     // the other two cases: a record with no implementation at
-                    // all, and — the one that matters — every *generic* record,
-                    // which materialization skips because there is nothing
-                    // inside the type that could build the dictionary a
-                    // conditional implementation asks for.
+                    // all, and a generic record whose implementation is
+                    // *conditional* — a `type/derive`d one — which
+                    // materialization skips because there is nothing inside
+                    // the type that could build the dictionary its
+                    // `(where ...)` asks for.
                     //
                     // Without it C# synthesizes a hash over all instance
                     // fields, the mutable one included, and a `Map` or a `Set`
@@ -4107,7 +4192,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                             [ $"public override int GetHashCode() => throw new System.InvalidOperationException(\"%s{shown} has a mutable field, so it has no stable hash: it cannot be a Map or Set key. Compare it with = instead, or write an Eq implementation whose eq-hash reads only the immutable fields.\");" ]
 
                     indent ctx
-                    append ctx $"public record %s{selfType}%s{tyArgsStr}"
+                    append ctx $"public record %s{selfType}%s{tyArgsStr}%s{baseClause selfRef}"
                     appendTypeBody ctx (declarations @ [ constructor ] @ members @ hashed)
                 else
                     indent ctx
@@ -4119,13 +4204,21 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                         append ctx " "
                         append ctx (sanitizeIdent f.Name)
                     append ctx ")"
+                    append ctx (baseClause selfRef)
                     appendTypeBody ctx members
             | Union cases ->
+                let selfRef = $"%s{declaredTypeName td.Name}%s{tyArgsStr}"
                 indent ctx
-                appendLine ctx $"public abstract record %s{declaredTypeName td.Name}%s{tyArgsStr} {{"
+                appendLine ctx $"public abstract record %s{selfRef}%s{baseClause selfRef} {{"
                 withIndent ctx (fun ctx ->
                     indent ctx
                     appendLine ctx $"private %s{declaredTypeName td.Name}() {{}}"
+
+                    // A materialized `Ord`'s `CompareTo` — and only that; `Eq`
+                    // writes nothing here. See `materializedMembers`.
+                    for m in materialized selfRef UnionBase do
+                        indent ctx
+                        appendLine ctx m
 
                     // Into every case class, and not onto the abstract base: a
                     // derived record synthesizes its own `Equals`, which

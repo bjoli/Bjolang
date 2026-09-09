@@ -1,0 +1,22 @@
+;; An `Ord` implementation for an `import/class` alias.
+;;
+;; The orphan rule allows it — importing the class is what makes the type
+;; "local" — but materialization cannot reach a type another assembly already
+;; compiled. The implementation would answer `compare` while the ordered
+;; collections ask the type itself, and the two would silently disagree, which
+;; is the exact divergence materialization exists to remove. The way out is a
+;; wrapper type. (`std/clr-ord` keeps its impls: they delegate to the very
+;; members .NET consults, and the privilege stops at the library.)
+
+;; EXPECT-ERROR: is a .NET type, so 'Ord' cannot be implemented for it
+;; EXPECT-ERROR: wrapper type
+
+(import (std prelude))
+
+(import/class
+  (Uri (: System.Uri)))
+
+(impl (Ord Uri)
+  (defun (compare a b) 0))
+
+(defun (main args) 0)

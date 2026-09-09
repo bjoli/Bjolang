@@ -76,6 +76,33 @@ Writing one by hand is ordinary, and is how a type says its equality is not its 
                                    (eq-hash (record-ref p y)))))
 #+END_SRC
 
+The implementation *is* the type's .NET equality. A declared type with an ~Eq~
+implementation has its ~Equals~ and ~GetHashCode~ emitted as calls to it, so
+~Map~, ~Set~ and every other .NET consumer agree with ~=~ without being told
+about the trait. ~Ord~ gets the same treatment as ~IComparable<T>~: an
+implementation becomes the type's ~CompareTo~, so the ordered collections —
+and any .NET code handed the type — sort by ~compare~ rather than throwing. A
+parameterized type materializes when its implementation is unconditional; one
+with a ~(where ...)~ keeps C#'s synthesized field-wise members, which reach
+each field's own implementation anyway.
+
+Two consequences:
+
+- An implementation written in terms of .NET equality would call itself —
+  ~Equals~ is the implementation now — which is why ~clr-equals~ is private to
+  ~(std eq)~. An implementation that wants "the field-by-field comparison,
+  plus one tweak" writes ~(structural-equals a b)~ and ~(structural-hash a)~:
+  they compare the fields directly and never consult the receiver type's own
+  ~Equals~, while each *field* still compares through its own type's equality,
+  so nested implementations are reached.
+- The implementation is compiled into the type, so it must live in the module
+  that declares the type. An ~Eq~ or ~Ord~ implementation for an imported
+  type, an ~import/class~ alias — or, in the REPL, a type from an earlier
+  entry — is refused, because ~(= a b)~ would answer through the trait while
+  the collections answer through the type, silently disagreeing. The way out
+  the message names: the declaring module, the same REPL entry, or a wrapper
+  type.
+
 *** ~type/derive~
 Writing that out per field is what ~type/derive~ is for. It is a macro in ~(std prelude)~, and a syntactic one — where a declaration is read there is no registry to ask what a type's fields are, only the form that declares them.
 

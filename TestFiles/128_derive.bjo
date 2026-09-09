@@ -94,6 +94,23 @@
 (type/derive (Eq)
   (: Wrapper (Record (: plain Plain) (: cached Cached))))
 
+;; No implementation either; its one field is a `Vec`, which is a C# tree
+;; comparing elements through `EqualityComparer<T>.Default` — the other .NET
+;; road to a hand-written implementation.
+(type
+  (: Pack (Record (: items (Vec Cached)))))
+
+;; A parameterized type with an *unconditional* implementation: identity is
+;; `id` alone whatever the payload, so there is no `(where ...)` — and the
+;; implementation materializes, its class instantiated at the type's own
+;; parameters.
+(type
+  (: (Keyed %a) (Record (: id int) (: payload %a))))
+
+(impl (Eq (Keyed %a))
+  (defun (= a b) (= (record-ref a id) (record-ref b id)))
+  (defun (eq-hash a) (eq-hash (record-ref a id))))
+
 (defun (main)
   ;; ---- records ------------------------------------------------------------
   (def p (Point (x 1) (y 2)))
@@ -172,6 +189,32 @@
   (expect-true "and still separates what really differs"
           (not (= (Wrapper (plain (Plain (a 1) (b 2))) (cached c1))
                   (Wrapper (plain (Plain (a 9) (b 2))) (cached c1)))))
+
+  ;; From inside a `Vec` too: the tree compares its elements through
+  ;; `EqualityComparer<T>.Default`, which is the implementation.
+  (expect-true "a Vec reaches a hand-written implementation"
+          (= (Pack (items (list->vec (list c1))))
+             (Pack (items (list->vec (list c2))))))
+
+  ;; A conditional (derived) generic as a Map key: `Box` keeps C#'s
+  ;; synthesized equality, whose field-wise walk reaches `Cached`'s override —
+  ;; composition, without a dictionary anywhere.
+  (expect-true "a derived generic as a Map key"
+          (= "boxed" (map-ref-or (map-set (map-empty) (Box (item c1) (label "b")) "boxed")
+                                 (Box (item c2) (label "b"))
+                                 "MISSING")))
+
+  ;; The unconditional generic: materialized, so a Map keyed at one payload
+  ;; type collides exactly where `=` says.
+  (def k1 (Keyed (id 7) (payload "left")))
+  (def k2 (Keyed (id 7) (payload "right")))
+  (expect-true "an unconditional generic implementation" (= k1 k2))
+  (expect-true "and as a Map key"
+          (= "hit" (map-ref-or (map-set (map-empty) k1 "hit") k2 "MISSING")))
+  (expect-true "which still separates ids"
+          (= "MISSING" (map-ref-or (map-set (map-empty) k1 "hit")
+                                   (Keyed (id 8) (payload "left"))
+                                   "MISSING")))
 
   ;; A tuple of an arity nothing implements has a head key of its own, so it
   ;; falls to the blanket rather than off the end.

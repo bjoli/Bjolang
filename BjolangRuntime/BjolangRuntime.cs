@@ -149,6 +149,65 @@ public static partial class BjolangRuntime {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int clrsubhash<T>(T a) => a is null ? 0 : EqualityComparer<T>.Default.GetHashCode(a);
 
+    // The field-by-field comparison, asked for by name.
+    //
+    // `EqualityComparer<T>.Default` reaches a type's own `Equals` — which, for
+    // a type with a materialized `Eq` implementation, *is* that implementation.
+    // So an impl that wants "what C# would have synthesized, plus one tweak"
+    // cannot be written in terms of `clr-equals`: `Equals` would call the impl
+    // would call `Equals`, forever. This is what such an impl writes instead:
+    // the field-wise comparison itself, never consulting the receiver type's
+    // own `Equals`. Each *field* still compares through `object.Equals`, so a
+    // nested type's materialized implementation is reached — composition is
+    // wanted, only the top-level dispatch is the loop.
+    //
+    // Reflection with a per-type field cache rather than a compiled delegate:
+    // this is an escape hatch, not a hot path, and a field walk that includes
+    // the private backing fields of every base type is exactly the synthesized
+    // comparison's coverage.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, System.Reflection.FieldInfo[]> structuralFields = new();
+
+    private static System.Reflection.FieldInfo[] structuralFieldsOf(Type type) =>
+        structuralFields.GetOrAdd(type, static t => {
+            var fields = new List<System.Reflection.FieldInfo>();
+            for (var cur = t; cur is not null && cur != typeof(object); cur = cur.BaseType)
+                fields.AddRange(cur.GetFields(System.Reflection.BindingFlags.Instance
+                                              | System.Reflection.BindingFlags.Public
+                                              | System.Reflection.BindingFlags.NonPublic
+                                              | System.Reflection.BindingFlags.DeclaredOnly));
+            return fields.ToArray();
+        });
+
+    // A type .NET defines has no materialized `Equals` to dodge, and reflecting
+    // over `string`'s innards would be both slow and wrong.
+    private static bool structurallyOpaque(Type t) =>
+        t.IsPrimitive || t.IsEnum || t == typeof(string) || t == typeof(decimal);
+
+    public static bool structuralsubequals<T>(T a, T b) {
+        if (a is null || b is null) return a is null && b is null;
+        if (!typeof(T).IsValueType && ReferenceEquals(a, b)) return true;
+        var type = a.GetType();
+        if (type != b.GetType()) return false;
+        if (structurallyOpaque(type)) return a.Equals(b);
+        foreach (var f in structuralFieldsOf(type))
+            if (!Equals(f.GetValue(a), f.GetValue(b))) return false;
+        return true;
+    }
+
+    // The hash that goes with `structural-equals`, folding the fields in
+    // declaration order. It does not reproduce the synthesized hash bit for
+    // bit; it only promises to agree with `structural-equals` about what is
+    // equal, which is all a hash ever promised.
+    public static int structuralsubhash<T>(T a) {
+        if (a is null) return 0;
+        var type = a.GetType();
+        if (structurallyOpaque(type)) return a.GetHashCode();
+        var hash = new HashCode();
+        foreach (var f in structuralFieldsOf(type))
+            hash.Add(f.GetValue(a));
+        return hash.ToHashCode();
+    }
+
     // What an `eq-hash` written over several fields folds with. Order matters,
     // so `(hash-combine (hash x) (hash y))` and its transpose differ.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

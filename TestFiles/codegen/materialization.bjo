@@ -24,10 +24,48 @@
 (type/derive (Eq)
   (: Shape (Union (Circle int) (Square int))))
 
-;; A type with a parameter is left alone. Its implementation is conditional, and
-;; there is nothing inside `Box<T>` that could build the `Eq<T>` dictionary the
-;; `(where ...)` asks for — so it keeps C#'s synthesized equality, which is
-;; field-wise and therefore agrees with what was derived.
+;; A type whose implementation is *conditional* is left alone. Deriving a
+;; parameterized type constrains every parameter, and there is nothing inside
+;; `Box<T>` that could build the `Eq<T>` dictionary the `(where ...)` asks for
+;; — so it keeps C#'s synthesized equality, which is field-wise and therefore
+;; agrees with what was derived.
 ;; EXPECT-CS: public record materialization__Box<T_a>\(T_a item\);
 (type/derive (Eq)
   (: (Box %a) (Record (: item %a))))
+
+;; `Ord` materializes as `IComparable<T>`: the interface in the base clause —
+;; which is the part `Comparer<T>.Default` actually looks for — and a
+;; `CompareTo` that answers through the implementation. Null sorts first, which
+;; is the comparer's own convention.
+;; EXPECT-CS: public record materialization__Ver\(int major, int minor\) : System.IComparable<materialization__Ver> {
+;; EXPECT-CS: public int CompareTo\(materialization__Ver\? other\) => other is null \? 1 : Ord_materialization__Ver\.Instance\.compare\(this, other\);
+(type/derive (Ord)
+  (: Ver (Record (: major int) (: minor int))))
+
+;; A record struct: no null to guard against.
+;; EXPECT-CS: public record struct materialization__Lat\(int deg\) : System.IComparable<materialization__Lat> {
+;; EXPECT-CS: public int CompareTo\(materialization__Lat other\) => Ord_materialization__Lat\.Instance\.compare\(this, other\);
+(type/derive (Ord)
+  (: Lat (Struct (: deg int))))
+
+;; A union's `CompareTo` goes onto the abstract *base*, the opposite of where
+;; `Equals` goes: `Comparer<Level>.Default` asks `Level` for
+;; `IComparable<Level>`, and — unlike `Equals` — nothing synthesized in a case
+;; class displaces `CompareTo`, so one member on the base serves every case.
+;; EXPECT-CS: public abstract record materialization__Level : System.IComparable<materialization__Level> {
+;; EXPECT-CS: public int CompareTo\(materialization__Level\? other\) => other is null \? 1 : Ord_materialization__Level\.Instance\.compare\(this, other\);
+;; EXPECT-NO-CS: CompareTo\(materialization__Low
+(type/derive (Ord)
+  (: Level (Union Low (Mid int) High)))
+
+;; An *unconditional* implementation for a parameterized type materializes: its
+;; class abstracts over exactly the type's parameters, so it is instantiated at
+;; them. Equality by tag alone needs nothing of `%a`, hence no `(where ...)`.
+;; EXPECT-CS: public virtual bool Equals\(materialization__Tagged<T_a>\? other\) => other is not null && Eq_materialization__Tagged<T_a>\.Instance\.eq\(this, other\);
+;; EXPECT-CS: public override int GetHashCode\(\) => Eq_materialization__Tagged<T_a>\.Instance\.eqsubhash\(this\);
+(type
+  (: (Tagged %a) (Record (: tag int) (: value %a))))
+
+(impl (Eq (Tagged %a))
+  (defun (= a b) (= (record-ref a tag) (record-ref b tag)))
+  (defun (eq-hash a) (eq-hash (record-ref a tag))))
