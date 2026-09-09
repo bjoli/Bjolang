@@ -1,0 +1,125 @@
+;; std/mutable/heap.bjo — the priority queue.
+;;
+;; A `MutableHeap` *is* a .NET `PriorityQueue<T,P>`: an array-backed quaternary
+;; min-heap. Pushing and popping are O(log n), reading the least is O(1).
+;;
+;; **An element and a priority, kept apart.** `(mutableheap-add! h task 3)`
+;; files `task` under priority 3, and the two come back together. Ordering the
+;; element itself would mean every element type needing an order, and a
+;; scheduler's task has none — the priority is the thing being ordered, and this
+;; is the one structure in the library where they are different values.
+;;
+;; **Least first.** `mutableheap-pop!` answers the smallest priority. A largest
+;; -first heap is the same structure under a negated comparison, which
+;; `mutableheap-by` takes.
+;;
+;; **Ordering is .NET's unless you say otherwise.** `mutableheap` uses
+;; `Comparer<P>.Default`, which is what `Map` and `Set` do for equality.
+;; `mutableheap-by` takes a comparison, and is how a priority is ordered by the
+;; `Ord` trait or by anything else.
+;;
+;; **No `Eq`, and deliberately.** Two heaps holding the same pairs are not
+;; distinguishable from the outside without draining both, and draining is a
+;; write. `=` therefore falls to the blanket, which for a `PriorityQueue<T,P>`
+;; is reference identity — which is honest, unlike a structural answer nothing
+;; could compute without destroying its arguments.
+(import (std prelude))
+
+(export
+  MutableHeap
+  mutableheap mutableheap-by
+  mutableheap-length mutableheap-empty? mutableheap-clear!
+  mutableheap-add! mutableheap-add-all! mutableheap-add-pop!
+  mutableheap-peek mutableheap-pop!
+  mutableheap-copy
+  list->mutableheap mutableheap->unordered-list
+  seq->mutableheap mutableheap->unordered-seq
+  mutableheap->str)
+
+;; The type is .NET's, so a `MutableHeap` handed to any other `import/extern`
+;; taking a `PriorityQueue<T,P>` is accepted as it stands.
+(import/class
+  ((MutableHeap %a %p) (: System.Collections.Generic.PriorityQueue)))
+
+;; ---------------------------------------------------------------------------
+;; The heap
+;; ---------------------------------------------------------------------------
+
+(import/extern
+  (mutableheap          (: Bjolang.Runtime.MutableHeapModule.Empty          (-> (MutableHeap %a %p))))
+  (mutableheap-by       (: Bjolang.Runtime.MutableHeapModule.WithComparison (-> (-> %p %p int) (MutableHeap %a %p))))
+  (mutableheap-length   (: Bjolang.Runtime.MutableHeapModule.Count          (-> (MutableHeap %a %p) int)))
+  (mutableheap-empty?   (: Bjolang.Runtime.MutableHeapModule.IsEmpty        (-> (MutableHeap %a %p) bool)))
+  (mutableheap-add!     (: Bjolang.Runtime.MutableHeapModule.Add            (-> (MutableHeap %a %p) %a %p void)))
+  (mutableheap-add-all! (: Bjolang.Runtime.MutableHeapModule.AddRange       (-> (MutableHeap %a %p) (Seq (Tuple %a %p)) void)))
+  ;; Pushes and pops as one rebalance, answering what came off — which may be
+  ;; the element just pushed. This is how a heap is held to a bound.
+  (mutableheap-add-pop! (: Bjolang.Runtime.MutableHeapModule.AddPop         (-> (MutableHeap %a %p) %a %p %a)))
+  (mutableheap-clear!   (: Bjolang.Runtime.MutableHeapModule.Clear          (-> (MutableHeap %a %p) void)))
+  ;; The copy keeps the comparer, so a heap built by `mutableheap-by` copies to
+  ;; one ordered the same way.
+  (mutableheap-copy     (: Bjolang.Runtime.MutableHeapModule.Copy           (-> (MutableHeap %a %p) (MutableHeap %a %p))))
+  ;; In *no* order: heap order is only observable by popping, and a walk that
+  ;; looked ordered would be a lie the structure cannot tell.
+  (mutableheap->unordered-seq (: Bjolang.Runtime.MutableHeapModule.AsEnumerable   (-> (MutableHeap %a %p) (Seq (Tuple %a %p)))))
+  (seq->mutableheap           (: Bjolang.Runtime.MutableHeapModule.FromEnumerable (-> (Seq (Tuple %a %p)) (MutableHeap %a %p))))
+
+  (clr-mutableheap-peek (: Bjolang.Runtime.MutableHeapModule.TryPeek (-> (MutableHeap %a %p) (Tuple bool %a %p))))
+  (clr-mutableheap-pop! (: Bjolang.Runtime.MutableHeapModule.TryPop  (-> (MutableHeap %a %p) (Tuple bool %a %p)))))
+
+;; The least element and its priority, left where they are.
+(: mutableheap-peek (-> (MutableHeap %a %p) (Option (Tuple %a %p))))
+(defun (mutableheap-peek h)
+  (def (found element priority) (clr-mutableheap-peek h))
+  (if found (Some (Tuple element priority)) None))
+
+;; The least element and its priority, removed. `None` leaves the heap as it
+;; was, so a drain can pop until it stops.
+(: mutableheap-pop! (-> (MutableHeap %a %p) (Option (Tuple %a %p))))
+(defun (mutableheap-pop! h)
+  (def (found element priority) (clr-mutableheap-pop! h))
+  (if found (Some (Tuple element priority)) None))
+
+;; ---------------------------------------------------------------------------
+;; Conversions
+;; ---------------------------------------------------------------------------
+
+(: list->mutableheap (-> (List (Tuple %a %p)) (MutableHeap %a %p)))
+(defun (list->mutableheap xs) (seq->mutableheap (list->seq xs)))
+
+(: mutableheap->unordered-list (-> (MutableHeap %a %p) (List (Tuple %a %p))))
+(defun (mutableheap->unordered-list h) (seq->list (mutableheap->unordered-seq h)))
+
+;; ---------------------------------------------------------------------------
+;; The traits
+;; ---------------------------------------------------------------------------
+;;
+;; `Collection` and `->str` only. There is no `Iterable`: the walk a heap has is
+;; unordered, and a caller reaching for `for-each` would get an order it had
+;; every reason to expect was the heap's. `mutableheap->unordered-seq` is that
+;; walk under a name that says so, and is `Iterable` by being a `Seq`.
+;;
+;; No `Addable!` either, since adding to a heap takes a priority as well as an
+;; element and the trait's `add!` has one argument.
+
+(impl (Collection (MutableHeap %a %p))
+  (type %content (Tuple %a %p))
+  (defun (length h) (mutableheap-length h))
+  (defun (empty? h) (mutableheap-empty? h)))
+
+;; `#mheap(element priority ...)`, unordered, for the reason above.
+(: mutableheap->str (-> (MutableHeap %a %p) string) (where (->str %a) (->str %p)))
+(defun (mutableheap->str h)
+  (let ((sb (stringbuilder-empty)))
+    (stringbuilder-add-string! sb "#mheap(")
+    (loop (:with first? #t #f)
+          (:for entry (mutableheap->unordered-seq h))
+          (:do (unless first? (stringbuilder-add-string! sb " "))
+               (stringbuilder-add-string! sb (map-entry->str entry))))
+    (stringbuilder-add-string! sb ")")
+    (stringbuilder->string sb)))
+
+(impl (->str (MutableHeap %a %p))
+  (where (->str %a) (->str %p))
+  (defun (->str h)
+    (mutableheap->str h)))

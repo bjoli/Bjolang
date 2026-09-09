@@ -1,0 +1,187 @@
+;; std/mutable/map.bjo — the hash table, written in place.
+;;
+;; A `MutableMap` *is* a .NET `Dictionary<K,V>`: open addressing over buckets,
+;; O(1) expected for every operation below.
+;;
+;; **This is the mutable one.** `(mutablemap-set! m k v)` writes `m`; it answers
+;; nothing, and everyone holding `m` sees the change. `Map` is the persistent
+;; structure of the same shape.
+;;
+;; **What `TransientMap` is not.** A transient is a `Map` being built: it is
+;; made from a persistent map, filled, and frozen back into one. This is a table
+;; that is never frozen — entries go in and come out for as long as the program
+;; holds it, which is what a cache, an index or a counter wants.
+;;
+;; **Keys are filed under .NET's equality**, `EqualityComparer<K>.Default`, not
+;; under the `Eq` implementation in `std/eq`. That is the same equality `Map` and
+;; `Set` file their keys under, so the three agree with each other — but a
+;; hand-written `Eq` that departs from .NET's is not consulted here.
+(import (std prelude))
+
+(export
+  MutableMap MutableMapCursor
+  mutablemap mutablemap-with-capacity
+  mutablemap-length mutablemap-empty?
+  mutablemap-ref mutablemap-try-ref mutablemap-ref-or
+  mutablemap-set! mutablemap-add! mutablemap-remove! mutablemap-clear!
+  mutablemap-contains? mutablemap-keys mutablemap-values mutablemap-copy
+  mutablemap-cursor mutablemap-cursor-done? mutablemap-cursor-current
+  mutablemap-for-each
+  list->mutablemap mutablemap->list vec->mutablemap mutablemap->vec
+  seq->mutablemap mutablemap->seq map->mutablemap mutablemap->map
+  mutablemap->str)
+
+;; The type is .NET's, so a `MutableMap` handed to any other `import/extern`
+;; taking a `Dictionary<K,V>` is accepted as it stands.
+(import/class
+  ((MutableMap %k %v) (: System.Collections.Generic.Dictionary))
+  ((MutableMapCursor %k %v) (: Bjolang.Runtime.MutableMapCursor)))
+
+;; ---------------------------------------------------------------------------
+;; The map
+;; ---------------------------------------------------------------------------
+
+(import/extern
+  (mutablemap               (: Bjolang.Runtime.MutableMapModule.Empty        (-> (MutableMap %k %v))))
+  (mutablemap-with-capacity (: Bjolang.Runtime.MutableMapModule.WithCapacity (-> int (MutableMap %k %v))))
+  (mutablemap-length        (: Bjolang.Runtime.MutableMapModule.Count        (-> (MutableMap %k %v) int)))
+  (mutablemap-empty?        (: Bjolang.Runtime.MutableMapModule.IsEmpty      (-> (MutableMap %k %v) bool)))
+  ;; Throws when the key is absent, which is what `Refable` asks. The two
+  ;; answers that are not an exception are below it.
+  (mutablemap-ref           (: Bjolang.Runtime.MutableMapModule.Get          (-> (MutableMap %k %v) %k %v)))
+  (mutablemap-ref-or        (: Bjolang.Runtime.MutableMapModule.GetOr        (-> (MutableMap %k %v) %k %v %v)))
+  ;; Replaces whatever was under the key.
+  (mutablemap-set!          (: Bjolang.Runtime.MutableMapModule.Set          (-> (MutableMap %k %v) %k %v void)))
+  ;; Writes only a key that is new, and answers whether it was — which is the
+  ;; one thing `set!` cannot tell you without a lookup of its own.
+  (mutablemap-add!          (: Bjolang.Runtime.MutableMapModule.Add          (-> (MutableMap %k %v) %k %v bool)))
+  (mutablemap-remove!       (: Bjolang.Runtime.MutableMapModule.Remove       (-> (MutableMap %k %v) %k bool)))
+  (mutablemap-clear!        (: Bjolang.Runtime.MutableMapModule.Clear        (-> (MutableMap %k %v) void)))
+  (mutablemap-contains?     (: Bjolang.Runtime.MutableMapModule.ContainsKey  (-> (MutableMap %k %v) %k bool)))
+  ;; Views, not copies: each walks the map as it stands when it is walked, so
+  ;; writing the map during one is an error .NET raises.
+  (mutablemap-keys          (: Bjolang.Runtime.MutableMapModule.Keys         (-> (MutableMap %k %v) (Seq %k))))
+  (mutablemap-values        (: Bjolang.Runtime.MutableMapModule.Values       (-> (MutableMap %k %v) (Seq %v))))
+  (mutablemap-copy          (: Bjolang.Runtime.MutableMapModule.Copy         (-> (MutableMap %k %v) (MutableMap %k %v))))
+  (mutablemap->seq          (: Bjolang.Runtime.MutableMapModule.AsEnumerable (-> (MutableMap %k %v) (Seq (Tuple %k %v)))))
+  ;; Later pairs win, so this and repeated `mutablemap-set!` agree.
+  (seq->mutablemap          (: Bjolang.Runtime.MutableMapModule.FromEnumerable (-> (Seq (Tuple %k %v)) (MutableMap %k %v))))
+
+  (clr-mutablemap-try-ref   (: Bjolang.Runtime.MutableMapModule.TryGet       (-> (MutableMap %k %v) %k (Tuple bool %v))))
+
+  (mutablemap-cursor         (: Bjolang.Runtime.MutableMapModule.Cursor        (-> (MutableMap %k %v) (MutableMapCursor %k %v))))
+  (mutablemap-cursor-done?   (: Bjolang.Runtime.MutableMapModule.CursorDone    (-> (MutableMapCursor %k %v) bool)))
+  (mutablemap-cursor-current (: Bjolang.Runtime.MutableMapModule.CursorCurrent (-> (MutableMapCursor %k %v) (Tuple %k %v)))))
+
+(: mutablemap-try-ref (-> (MutableMap %k %v) %k (Option %v)))
+(defun (mutablemap-try-ref m key)
+  (def (found value) (clr-mutablemap-try-ref m key))
+  (if found (Some value) None))
+
+;; The key and the value as two arguments, which is what a caller of a map
+;; almost always wants and what the `Iterable` walk over pairs cannot give.
+(: mutablemap-for-each (-> (-?-> %k %v void) (MutableMap %k %v) void))
+(defun (mutablemap-for-each f m)
+  (let ((c (mutablemap-cursor m)))
+    (let go ()
+      (if (mutablemap-cursor-done? c)
+          unit
+          (let ()
+            (def (k v) (mutablemap-cursor-current c))
+            (f k v)
+            (go))))))
+
+;; ---------------------------------------------------------------------------
+;; Conversions
+;; ---------------------------------------------------------------------------
+
+(: list->mutablemap (-> (List (Tuple %k %v)) (MutableMap %k %v)))
+(defun (list->mutablemap xs) (seq->mutablemap (list->seq xs)))
+
+(: mutablemap->list (-> (MutableMap %k %v) (List (Tuple %k %v))))
+(defun (mutablemap->list m) (seq->list (mutablemap->seq m)))
+
+(: vec->mutablemap (-> (Vec (Tuple %k %v)) (MutableMap %k %v)))
+(defun (vec->mutablemap v) (seq->mutablemap (vec->seq v)))
+
+(: mutablemap->vec (-> (MutableMap %k %v) (Vec (Tuple %k %v))))
+(defun (mutablemap->vec m) (seq->vec (mutablemap->seq m)))
+
+(: map->mutablemap (-> (Map %k %v) (MutableMap %k %v)))
+(defun (map->mutablemap m) (seq->mutablemap (map->seq m)))
+
+(: mutablemap->map (-> (MutableMap %k %v) (Map %k %v)))
+(defun (mutablemap->map m) (seq->map (mutablemap->seq m)))
+
+;; ---------------------------------------------------------------------------
+;; The traits
+;; ---------------------------------------------------------------------------
+
+(impl (Refable (MutableMap %k %v))
+  (type %index %k)
+  (type %out %v)
+  (defun (ref m key)
+    (mutablemap-ref m key))
+  (defun (try-ref m key)
+    (mutablemap-try-ref m key)))
+
+(impl (Iterable (MutableMap %k %v))
+  (type %elem (Tuple %k %v))
+  (type %cursor (MutableMapCursor %k %v))
+  (defun (iterable-start m) (mutablemap-cursor m))
+  (defun (iterable-done? m c) (mutablemap-cursor-done? c))
+  (defun (iterable-current m c) (mutablemap-cursor-current c))
+  (defun (iterable-next m c) c))
+
+(impl (Collection (MutableMap %k %v))
+  (type %content (Tuple %k %v))
+  (defun (length m) (mutablemap-length m))
+  (defun (empty? m) (mutablemap-empty? m)))
+
+;; Set semantics, as `Addable`'s do everywhere: a key already there is replaced.
+(impl (Addable! (MutableMap %k %v))
+  (type %elem (Tuple %k %v))
+  (defun (add! m pair)
+    (let (((k v) pair))
+      (mutablemap-set! m k v))))
+
+;; Two maps are equal when they hold the same keys with equal values.
+;;
+;; Without this they would fall to the blanket, which for a `Dictionary<K,V>` is
+;; reference identity. The walk is one-sided because the lengths are compared
+;; first: every key of `a` being in `b` with an equal value, at equal counts,
+;; leaves `b` no room for a key of its own.
+;;
+;; The *keys* are matched by .NET's equality, since finding one is a lookup;
+;; only the values go through `Eq`. `eq-hash` refuses, as `Deque`'s does.
+(impl (Eq (MutableMap %k %v))
+  (where (Eq %v))
+  (defun (= a b)
+    (and (= (mutablemap-length a) (mutablemap-length b))
+         (let ((c (mutablemap-cursor a)))
+           (let go ()
+             (if (mutablemap-cursor-done? c)
+                 #t
+                 (let ()
+                   (def (k v) (mutablemap-cursor-current c))
+                   (match (mutablemap-try-ref b k)
+                     (None #f)
+                     ((Some w) (if (= v w) (go) #f)))))))))
+  (defun (eq-hash m) (unhashable "MutableMap")))
+
+;; `#mmap(k v k v)`, the same shape `map->str` writes.
+(: mutablemap->str (-> (MutableMap %k %v) string) (where (->str %k) (->str %v)))
+(defun (mutablemap->str m)
+  (let ((sb (stringbuilder-empty)))
+    (stringbuilder-add-string! sb "#mmap(")
+    (loop (:with first? #t #f)
+          (:for entry m)
+          (:do (unless first? (stringbuilder-add-string! sb " "))
+               (stringbuilder-add-string! sb (map-entry->str entry))))
+    (stringbuilder-add-string! sb ")")
+    (stringbuilder->string sb)))
+
+(impl (->str (MutableMap %k %v))
+  (where (->str %k) (->str %v))
+  (defun (->str m)
+    (mutablemap->str m)))

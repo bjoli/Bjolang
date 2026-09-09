@@ -1,0 +1,557 @@
+;; The mutable collections written over the .NET ones: `(std mutable vec)`,
+;; `(std mutable map)`, `(std mutable set)` and `(std mutable heap)`.
+;;
+;; Each is a `List<T>`, a `Dictionary<K,V>`, a `HashSet<T>` and a
+;; `PriorityQueue<T,P>` respectively, reached through the static modules in
+;; `BjolangRuntime/BjoMutable.cs`. What that buys over `import/extern` straight
+;; onto the BCL type is the three things the interop cannot reach: a constructor
+;; for a generic class, an indexer, and a method with an `out` parameter — so
+;; `mutablevec`, `mutablevec-ref` and `mutablemap-try-ref` are each pinning one
+;; of those down as much as they are pinning down the collection.
+;;
+;; Two things are checked throughout and are easy to lose. A write is seen by
+;; *every* holder, which is what these exist for and what the aliasing tests
+;; below state. And `=` is structural while `eq-hash` throws, exactly as
+;; `Deque`'s pair does: a value whose elements move has no honest hash.
+(import (std prelude))
+;; For `set-length`, which the round trip through the persistent set uses.
+(import (std set))
+(import (std mutable vec))
+(import (std mutable map))
+(import (std mutable set))
+(import (std mutable heap))
+(import (std simpletest))
+
+;; An empty collection has nothing in it to pin its element type, and `=`,
+;; `->str` and the trait methods all need one. A signature is the whole of the
+;; fix, as it is in `130_deque`.
+(: ints (-> (MutableVec int)))
+(defun (ints) (mutablevec))
+
+(: counts (-> (MutableMap string int)))
+(defun (counts) (mutablemap))
+
+(: names (-> (MutableSet string)))
+(defun (names) (mutableset))
+
+(: tasks (-> (MutableHeap string int)))
+(defun (tasks) (mutableheap))
+
+(: gave? (-> (Option int) int bool))
+(defun (gave? o want)
+  (match o ((Some x) (= x want)) (None #f)))
+
+(: nothing? (-> (Option int) bool))
+(defun (nothing? o)
+  (match o ((Some _) #f) (None #t)))
+
+;; The heap answers a pair, so its `Option` needs an unwrapping of its own.
+(: popped? (-> (Option (Tuple string int)) string int bool))
+(defun (popped? o element priority)
+  (match o
+    ((Some (Tuple e p)) (and (= e element) (= p priority)))
+    (None #f)))
+
+(: nothing-popped? (-> (Option (Tuple string int)) bool))
+(defun (nothing-popped? o)
+  (match o ((Some _) #f) (None #t)))
+
+(: vec-of (-> (List int) (MutableVec int)))
+(defun (vec-of xs) (list->mutablevec xs))
+
+;; ---------------------------------------------------------------------------
+;; MutableVec — the growable array
+;; ---------------------------------------------------------------------------
+
+(: vec-basics (-> void))
+(defun (vec-basics)
+  (def v (ints))
+  (expect-true "a fresh vector is empty" (mutablevec-empty? v))
+  (mutablevec-add! v 10)
+  (mutablevec-add! v 20)
+  (mutablevec-add! v 30)
+  (expect "three in" (mutablevec-length v) 3)
+  (expect "read at an index" (mutablevec-ref v 1) 20)
+
+  (mutablevec-set! v 1 99)
+  (expect "written at an index" (mutablevec-ref v 1) 99)
+
+  (expect-true "a hit is Some" (gave? (mutablevec-try-ref v 2) 30))
+  (expect-true "past the end is None" (nothing? (mutablevec-try-ref v 3)))
+  (expect-true "a negative index is None" (nothing? (mutablevec-try-ref v -1)))
+
+  (expect-true "contains an element it holds" (mutablevec-contains? v 30))
+  (expect "the index of it" (mutablevec-index-of v 30) 2)
+  (expect "and -1 for one it does not" (mutablevec-index-of v 77) -1))
+
+(: vec-inserting (-> void))
+(defun (vec-inserting)
+  (def v (vec-of (Cons 1 (Cons 3 Nil))))
+  (mutablevec-insert! v 1 2)
+  (expect "inserted in the middle" (mutablevec->list v) (Cons 1 (Cons 2 (Cons 3 Nil))))
+
+  (mutablevec-remove-at! v 0)
+  (expect "removed at the front" (mutablevec->list v) (Cons 2 (Cons 3 Nil)))
+
+  (expect-true "removing an element that is there" (mutablevec-remove! v 3))
+  (expect-true "and one that is not" (not (mutablevec-remove! v 3)))
+  (expect "what is left" (mutablevec->list v) (Cons 2 Nil))
+
+  ;; `add-all!` takes a `Seq`; `Addable!`'s takes any `Iterable`, which the
+  ;; last line of `vec-traits` uses.
+  (mutablevec-add-all! v (list->seq (Cons 4 (Cons 5 Nil))))
+  (expect "added a run" (mutablevec->list v) (Cons 2 (Cons 4 (Cons 5 Nil))))
+
+  (expect "removed the even ones" (mutablevec-remove-where! v (fun (x) (even? x))) 2)
+  (expect "leaving the odd one" (mutablevec->list v) (Cons 5 Nil)))
+
+(: vec-as-a-stack (-> void))
+(defun (vec-as-a-stack)
+  (def v (vec-of (Cons 1 (Cons 2 Nil))))
+  (expect-true "the last one out" (gave? (mutablevec-pop! v) 2))
+  (expect-true "then the first" (gave? (mutablevec-pop! v) 1))
+  (expect-true "and then nothing" (nothing? (mutablevec-pop! v)))
+  (expect-true "empty, and still usable" (mutablevec-empty? v))
+  (mutablevec-add! v 7)
+  (expect "usable" (mutablevec-length v) 1))
+
+(: vec-ordering (-> void))
+(defun (vec-ordering)
+  (def v (vec-of (Cons 3 (Cons 1 (Cons 2 Nil)))))
+  (mutablevec-reverse! v)
+  (expect "reversed in place" (mutablevec->list v) (Cons 2 (Cons 1 (Cons 3 Nil))))
+
+  (mutablevec-sort! v)
+  (expect "sorted by Ord" (mutablevec->list v) (Cons 1 (Cons 2 (Cons 3 Nil))))
+
+  ;; The comparison is the whole of what an order is, so the reverse of it is
+  ;; the reverse order — no second entry point needed.
+  (mutablevec-sort-by! v (fun (a b) (compare b a)))
+  (expect "sorted by a comparison of ours" (mutablevec->list v) (Cons 3 (Cons 2 (Cons 1 Nil)))))
+
+;; A write is seen by every holder. That is the whole difference from `Vec`, so
+;; it is stated rather than assumed — and the copy is what does not share.
+(: vec-aliasing (-> void))
+(defun (vec-aliasing)
+  (def v (vec-of (Cons 1 Nil)))
+  (def same v)
+  (def other (mutablevec-copy v))
+
+  (mutablevec-add! v 2)
+  (expect "the second name sees the write" (mutablevec-length same) 2)
+  (expect "the copy does not" (mutablevec-length other) 1)
+
+  (mutablevec-clear! v)
+  (expect-true "cleared through one name" (mutablevec-empty? same))
+  (expect "and the copy is untouched" (mutablevec-length other) 1))
+
+(: vec-conversions (-> void))
+(defun (vec-conversions)
+  (def xs (Cons 1 (Cons 2 (Cons 3 Nil))))
+  (expect "a list round trip" (mutablevec->list (list->mutablevec xs)) xs)
+  (expect "a vec round trip"
+          (mutablevec->vec (vec->mutablevec [1 2 3]))
+          [1 2 3])
+  (expect "a seq round trip" (seq->list (mutablevec->seq (vec-of xs))) xs)
+  (expect "capacity is not length" (mutablevec-length (mutablevec-with-capacity 16)) 0)
+  (expect "an array" (array-length (mutablevec->array (vec-of xs))) 3))
+
+(: vec-traits (-> void))
+(defun (vec-traits)
+  (def v (vec-of (Cons 1 (Cons 2 (Cons 3 Nil)))))
+
+  ;; Collection.
+  (expect "length, through the trait" (length v) 3)
+  (expect-true "empty?, through the trait" (not (empty? v)))
+
+  ;; Refable.
+  (expect "ref, through the trait" (ref v 0) 1)
+  (expect-true "try-ref, through the trait" (gave? (try-ref v 2) 3))
+
+  ;; Iterable. The cursor is an `int`, so this is an index walk and nothing is
+  ;; allocated for it.
+  (expect "summed by a loop" (loop (:for x v) (:acc total (summing x))) 6)
+  (expect "folded" (fold (fun (acc x) (+ acc x)) 0 v) 6)
+  (expect "mapped" (seq->list (map (fun (x) (* x 2)) v))
+          (Cons 2 (Cons 4 (Cons 6 Nil))))
+  (expect "filtered" (seq->list (filter (fun (x) (> x 1)) v))
+          (Cons 2 (Cons 3 Nil)))
+
+  ;; Addable!, both halves. `add-all!` walks any `Iterable`, which is what the
+  ;; member-level `(where ...)` on the trait buys.
+  (def sink (ints))
+  (add! sink 1)
+  (add-all! sink v)
+  (expect "the sink took a run" (mutablevec->list sink)
+          (Cons 1 (Cons 1 (Cons 2 (Cons 3 Nil))))))
+
+;; Structural, and built twice from the same elements so that nothing is shared
+;; and only a structural answer can find it.
+(: vec-equality (-> void))
+(defun (vec-equality)
+  (expect-true "equal vectors are ="
+               (= (vec-of (Cons 1 (Cons 2 Nil))) (vec-of (Cons 1 (Cons 2 Nil)))))
+  (expect-true "a different element is not ="
+               (not (= (vec-of (Cons 1 (Cons 2 Nil))) (vec-of (Cons 1 (Cons 9 Nil)))))) 
+  (expect-true "a different length is not ="
+               (not (= (vec-of (Cons 1 Nil)) (vec-of (Cons 1 (Cons 2 Nil))))))
+  (expect "->str" (->str (vec-of (Cons 1 (Cons 2 Nil)))) "#mvec(1 2)")
+  (expect "->str of an empty one" (->str (ints)) "#mvec()"))
+
+;; ---------------------------------------------------------------------------
+;; MutableMap — the hash table
+;; ---------------------------------------------------------------------------
+
+(: map-basics (-> void))
+(defun (map-basics)
+  (def m (counts))
+  (expect-true "a fresh map is empty" (mutablemap-empty? m))
+
+  (mutablemap-set! m "a" 1)
+  (mutablemap-set! m "b" 2)
+  (expect "two in" (mutablemap-length m) 2)
+  (expect "read a key" (mutablemap-ref m "a") 1)
+
+  ;; `set!` replaces; `add!` refuses and says so.
+  (mutablemap-set! m "a" 11)
+  (expect "set! replaces" (mutablemap-ref m "a") 11)
+  (expect "and does not grow the map" (mutablemap-length m) 2)
+
+  (expect-true "add! writes a new key" (mutablemap-add! m "c" 3))
+  (expect-true "and refuses one that is there" (not (mutablemap-add! m "a" 99)))
+  (expect "leaving the value alone" (mutablemap-ref m "a") 11)
+
+  (expect-true "a hit is Some" (gave? (mutablemap-try-ref m "b") 2))
+  (expect-true "a miss is None" (nothing? (mutablemap-try-ref m "z")))
+  (expect "a fallback for a miss" (mutablemap-ref-or m "z" 0) 0)
+  (expect "and none for a hit" (mutablemap-ref-or m "b" 0) 2)
+
+  (expect-true "contains a key it holds" (mutablemap-contains? m "b"))
+  (expect-true "removing one that is there" (mutablemap-remove! m "b"))
+  (expect-true "and one that is not" (not (mutablemap-remove! m "b")))
+  (expect "what is left" (mutablemap-length m) 2))
+
+(: map-walking (-> void))
+(defun (map-walking)
+  (def m (list->mutablemap (Cons (Tuple "a" 1) (Cons (Tuple "b" 2) Nil))))
+
+  ;; The order a table walks in is not the order it was filled in, so every
+  ;; check here is order-free: a sum, a count, or a lookup.
+  (expect "summed values" (loop (:for (Tuple k v) m) (:acc total (summing v))) 3)
+  (expect "counted keys" (seq-length (mutablemap-keys m)) 2)
+  (expect "summed the values view" (loop (:for v (mutablemap-values m)) (:acc t (summing v))) 3)
+
+  (def/mutable seen 0)
+  (mutablemap-for-each (fun (k v) (set! seen (+ seen v))) m)
+  (expect "for-each takes the key and the value apart" seen 3)
+
+  (expect "->seq is the pairs" (seq-length (mutablemap->seq m)) 2))
+
+(: map-aliasing (-> void))
+(defun (map-aliasing)
+  (def m (counts))
+  (def same m)
+  (mutablemap-set! m "a" 1)
+  (expect "the second name sees the write" (mutablemap-length same) 1)
+
+  (def other (mutablemap-copy m))
+  (mutablemap-set! m "b" 2)
+  (expect "the copy does not" (mutablemap-length other) 1)
+
+  (mutablemap-clear! m)
+  (expect-true "cleared through one name" (mutablemap-empty? same))
+  (expect "and usable again" (mutablemap-ref-or (mutablemap-copy other) "a" 0) 1))
+
+(: map-conversions (-> void))
+(defun (map-conversions)
+  (def pairs (Cons (Tuple "a" 1) (Cons (Tuple "b" 2) Nil)))
+  (def m (list->mutablemap pairs))
+  (expect "a list round trip" (mutablemap-length (list->mutablemap (mutablemap->list m))) 2)
+  (expect "a vec round trip" (mutablemap-length (vec->mutablemap (mutablemap->vec m))) 2)
+
+  ;; Across to the persistent map and back.
+  (def persistent (mutablemap->map m))
+  (expect "to a Map" (map-length persistent) 2)
+  (expect "and back" (mutablemap-ref (map->mutablemap persistent) "b") 2)
+
+  ;; Later pairs win, which is what makes this and repeated `set!` agree.
+  (expect "a duplicate key keeps the later value"
+          (mutablemap-ref (list->mutablemap (Cons (Tuple "a" 1) (Cons (Tuple "a" 2) Nil))) "a")
+          2))
+
+(: map-traits (-> void))
+(defun (map-traits)
+  (def m (list->mutablemap (Cons (Tuple "a" 1) Nil)))
+
+  (expect "length, through the trait" (length m) 1)
+  (expect-true "empty?, through the trait" (not (empty? m)))
+  (expect "ref, through the trait" (ref m "a") 1)
+  (expect-true "try-ref, through the trait" (gave? (try-ref m "a") 1))
+
+  ;; Addable! has set semantics, as every `Addable` in the library does.
+  (add! m (Tuple "a" 9))
+  (expect "add! replaced rather than doubling" (mutablemap-length m) 1)
+  (expect "with the new value" (mutablemap-ref m "a") 9)
+
+  ;; One entry, so the order a table walks in cannot make this flaky.
+  (expect "->str" (->str m) "#mmap(a 9)")
+  (expect "->str of an empty one" (->str (counts)) "#mmap()"))
+
+(: map-equality (-> void))
+(defun (map-equality)
+  (def one (Cons (Tuple "a" 1) (Cons (Tuple "b" 2) Nil)))
+  ;; Filled in the other order on purpose: insertion order is not part of the
+  ;; value, and a comparison that walked both tables in step would say it was.
+  (def other (Cons (Tuple "b" 2) (Cons (Tuple "a" 1) Nil)))
+
+  (expect-true "equal maps are =" (= (list->mutablemap one) (list->mutablemap other)))
+  (expect-true "a different value is not ="
+               (not (= (list->mutablemap one)
+                       (list->mutablemap (Cons (Tuple "a" 1) (Cons (Tuple "b" 9) Nil))))))
+  (expect-true "a different key is not ="
+               (not (= (list->mutablemap one)
+                       (list->mutablemap (Cons (Tuple "a" 1) (Cons (Tuple "z" 2) Nil))))))
+  (expect-true "a different size is not ="
+               (not (= (list->mutablemap one) (list->mutablemap (Cons (Tuple "a" 1) Nil))))))
+
+;; ---------------------------------------------------------------------------
+;; MutableSet — the hash set
+;; ---------------------------------------------------------------------------
+
+(: set-of (-> (List string) (MutableSet string)))
+(defun (set-of xs) (list->mutableset xs))
+
+(: set-basics (-> void))
+(defun (set-basics)
+  (def s (names))
+  (expect-true "a fresh set is empty" (mutableset-empty? s))
+
+  (expect-true "add! answers that the element was new" (mutableset-add! s "a"))
+  (expect-true "and that a repeat was not" (not (mutableset-add! s "a")))
+  (expect "one member" (mutableset-length s) 1)
+
+  (expect-true "contains it" (mutableset-contains? s "a"))
+  (expect-true "and not something else" (not (mutableset-contains? s "z")))
+
+  (expect-true "removing a member" (mutableset-remove! s "a"))
+  (expect-true "and one that is not there" (not (mutableset-remove! s "a")))
+  (expect-true "empty again" (mutableset-empty? s))
+
+  (mutableset-add-all! s (list->seq (Cons "a" (Cons "b" (Cons "c" Nil)))))
+  (expect "three in" (mutableset-length s) 3)
+  (mutableset-remove-all! s (list->seq (Cons "a" (Cons "z" Nil))))
+  (expect "one of two removed, the other absent" (mutableset-length s) 2)
+  (expect "removed by a predicate" (mutableset-remove-where! s (fun (x) (= x "b"))) 1)
+  (expect-true "leaving the rest" (mutableset-contains? s "c")))
+
+;; The algebra writes the left-hand side, which is the reason to reach for this
+;; set rather than the persistent one.
+(: set-algebra (-> void))
+(defun (set-algebra)
+  (def a (set-of (Cons "1" (Cons "2" Nil))))
+  (mutableset-union! a (set-of (Cons "2" (Cons "3" Nil))))
+  (expect-true "union! wrote the left-hand side"
+               (= a (set-of (Cons "1" (Cons "2" (Cons "3" Nil))))))
+
+  (def b (set-of (Cons "1" (Cons "2" (Cons "3" Nil)))))
+  (mutableset-intersect! b (set-of (Cons "2" (Cons "3" (Cons "4" Nil)))))
+  (expect-true "intersect!" (= b (set-of (Cons "2" (Cons "3" Nil)))))
+
+  (def c (set-of (Cons "1" (Cons "2" (Cons "3" Nil)))))
+  (mutableset-difference! c (set-of (Cons "2" Nil)))
+  (expect-true "difference!" (= c (set-of (Cons "1" (Cons "3" Nil)))))
+
+  (def d (set-of (Cons "1" (Cons "2" Nil))))
+  (mutableset-symmetric-difference! d (set-of (Cons "2" (Cons "3" Nil))))
+  (expect-true "symmetric-difference!" (= d (set-of (Cons "1" (Cons "3" Nil)))))
+
+  ;; The comparisons write nothing.
+  (def small (set-of (Cons "1" Nil)))
+  (def big (set-of (Cons "1" (Cons "2" Nil))))
+  (expect-true "subset?" (mutableset-subset? small big))
+  (expect-true "not the other way" (not (mutableset-subset? big small)))
+  (expect-true "superset?" (mutableset-superset? big small))
+  (expect-true "overlaps?" (mutableset-overlaps? big small))
+  (expect-true "and does not overlap a disjoint one"
+               (not (mutableset-overlaps? big (set-of (Cons "9" Nil)))))
+  (expect "the comparison left the argument alone" (mutableset-length small) 1))
+
+(: set-aliasing (-> void))
+(defun (set-aliasing)
+  (def s (set-of (Cons "a" Nil)))
+  (def same s)
+  (def other (mutableset-copy s))
+
+  (ignore (mutableset-add! s "b"))
+  (expect "the second name sees the write" (mutableset-length same) 2)
+  (expect "the copy does not" (mutableset-length other) 1)
+
+  (mutableset-clear! s)
+  (expect-true "cleared through one name" (mutableset-empty? same)))
+
+(: set-conversions (-> void))
+(defun (set-conversions)
+  (def s (set-of (Cons "a" (Cons "b" Nil))))
+  (expect "a list round trip" (mutableset-length (list->mutableset (mutableset->list s))) 2)
+  (expect "a vec round trip" (mutableset-length (vec->mutableset (mutableset->vec s))) 2)
+  (expect "a seq round trip" (seq-length (mutableset->seq s)) 2)
+
+  ;; Across to the persistent set and back.
+  (def persistent (mutableset->set s))
+  (expect "to a Set" (set-length persistent) 2)
+  (expect-true "and back" (mutableset-contains? (set->mutableset persistent) "a"))
+
+  ;; A duplicate is one member, however it arrived.
+  (expect "a duplicate is one member"
+          (mutableset-length (set-of (Cons "a" (Cons "a" Nil))))
+          1))
+
+(: set-traits (-> void))
+(defun (set-traits)
+  (def s (set-of (Cons "a" (Cons "b" Nil))))
+
+  (expect "length, through the trait" (length s) 2)
+  (expect-true "empty?, through the trait" (not (empty? s)))
+  (expect-true "ref is membership" (ref s "a"))
+
+  ;; The walk is unordered, so it is counted rather than listed.
+  (expect "counted by a loop" (loop (:for x s) (:acc n (summing 1))) 2)
+
+  (def/mutable seen 0)
+  (mutableset-for-each (fun (x) (set! seen (+ seen 1))) s)
+  (expect "for-each saw them all" seen 2)
+
+  ;; Addable!'s `add!` is void where the module's answers a bool: whether an
+  ;; element was new is not something a sink reports.
+  (def sink (names))
+  (add! sink "a")
+  (add-all! sink s)
+  (expect "the sink took a run, duplicates and all" (mutableset-length sink) 2)
+
+  (expect "->str of a single member" (->str (set-of (Cons "a" Nil))) "#mset(a)")
+  (expect "->str of an empty one" (->str (names)) "#mset()"))
+
+(: set-equality (-> void))
+(defun (set-equality)
+  ;; Filled in opposite orders: what a set holds is not the order it was filled.
+  (expect-true "equal sets are ="
+               (= (set-of (Cons "a" (Cons "b" Nil))) (set-of (Cons "b" (Cons "a" Nil)))))
+  (expect-true "a different member is not ="
+               (not (= (set-of (Cons "a" Nil)) (set-of (Cons "b" Nil)))))
+  (expect-true "a different size is not ="
+               (not (= (set-of (Cons "a" Nil)) (set-of (Cons "a" (Cons "b" Nil)))))))
+
+;; ---------------------------------------------------------------------------
+;; MutableHeap — the priority queue
+;; ---------------------------------------------------------------------------
+
+(: heap-basics (-> void))
+(defun (heap-basics)
+  (def h (tasks))
+  (expect-true "a fresh heap is empty" (mutableheap-empty? h))
+  (expect-true "and peeks at nothing" (nothing-popped? (mutableheap-peek h)))
+  (expect-true "and pops nothing" (nothing-popped? (mutableheap-pop! h)))
+
+  ;; Added out of order, so only the heap can be putting them back in it.
+  (mutableheap-add! h "middle" 5)
+  (mutableheap-add! h "last" 9)
+  (mutableheap-add! h "first" 1)
+  (expect "three in" (mutableheap-length h) 3)
+
+  (expect-true "peek is the least priority" (popped? (mutableheap-peek h) "first" 1))
+  (expect "and peeking takes nothing" (mutableheap-length h) 3)
+
+  (expect-true "least out first" (popped? (mutableheap-pop! h) "first" 1))
+  (expect-true "then the next" (popped? (mutableheap-pop! h) "middle" 5))
+  (expect-true "then the last" (popped? (mutableheap-pop! h) "last" 9))
+  (expect-true "and then nothing" (nothing-popped? (mutableheap-pop! h)))
+  (expect-true "empty, and usable again" (mutableheap-empty? h))
+  (mutableheap-add! h "again" 1)
+  (expect "usable" (mutableheap-length h) 1))
+
+;; The comparison is the whole of what an order is, so a largest-first heap is
+;; this structure under the reverse of it.
+(: heap-ordering (-> void))
+(defun (heap-ordering)
+  (def h (mutableheap-by (fun (a b) (compare b a))))
+  (mutableheap-add! h "small" 1)
+  (mutableheap-add! h "big" 9)
+  (mutableheap-add! h "middle" 5)
+  (expect-true "greatest out first" (popped? (mutableheap-pop! h) "big" 9))
+  (expect-true "then the middle" (popped? (mutableheap-pop! h) "middle" 5))
+
+  ;; A copy keeps the comparer, so it is still largest-first.
+  (def again (mutableheap-copy h))
+  (mutableheap-add! again "huge" 99)
+  (expect-true "the copy is ordered the same way" (popped? (mutableheap-pop! again) "huge" 99))
+  (expect "and the original is untouched by the copy's write" (mutableheap-length h) 1))
+
+(: heap-bulk (-> void))
+(defun (heap-bulk)
+  (def h (tasks))
+  (mutableheap-add-all! h (list->seq (Cons (Tuple "b" 2) (Cons (Tuple "a" 1) Nil))))
+  (expect "added a run" (mutableheap-length h) 2)
+  (expect-true "still least first" (popped? (mutableheap-pop! h) "a" 1))
+
+  ;; Push and pop as one rebalance. The count does not grow, and what comes off
+  ;; may be the element just pushed.
+  (def bounded (list->mutableheap (Cons (Tuple "b" 2) Nil)))
+  (expect "pushing something larger pops the smaller"
+          (mutableheap-add-pop! bounded "c" 3)
+          "b")
+  (expect "the count held" (mutableheap-length bounded) 1)
+  (expect "pushing something smaller pops itself"
+          (mutableheap-add-pop! bounded "a" 1)
+          "a")
+  (expect "the count still held" (mutableheap-length bounded) 1)
+
+  (mutableheap-clear! bounded)
+  (expect-true "cleared" (mutableheap-empty? bounded)))
+
+(: heap-traits (-> void))
+(defun (heap-traits)
+  (def h (list->mutableheap (Cons (Tuple "a" 1) (Cons (Tuple "b" 2) Nil))))
+
+  (expect "length, through the trait" (length h) 2)
+  (expect-true "empty?, through the trait" (not (empty? h)))
+
+  ;; The walk is unordered and says so in its name, so it is counted rather
+  ;; than listed. Heap order is only observable by popping.
+  (expect "the unordered walk holds them all" (seq-length (mutableheap->unordered-seq h)) 2)
+  (expect "as a list" (list-length (mutableheap->unordered-list h)) 2)
+  (expect "the walk took nothing out" (mutableheap-length h) 2)
+
+  (expect "->str of a single entry"
+          (->str (list->mutableheap (Cons (Tuple "a" 1) Nil)))
+          "#mheap(a 1)")
+  (expect "->str of an empty one" (->str (tasks)) "#mheap()"))
+
+(defun (main args)
+  (vec-basics)
+  (vec-inserting)
+  (vec-as-a-stack)
+  (vec-ordering)
+  (vec-aliasing)
+  (vec-conversions)
+  (vec-traits)
+  (vec-equality)
+
+  (map-basics)
+  (map-walking)
+  (map-aliasing)
+  (map-conversions)
+  (map-traits)
+  (map-equality)
+
+  (set-basics)
+  (set-algebra)
+  (set-aliasing)
+  (set-conversions)
+  (set-traits)
+  (set-equality)
+
+  (heap-basics)
+  (heap-ordering)
+  (heap-bulk)
+  (heap-traits)
+  0)

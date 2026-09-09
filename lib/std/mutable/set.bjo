@@ -1,0 +1,179 @@
+;; std/mutable/set.bjo — the hash set, written in place.
+;;
+;; A `MutableSet` *is* a .NET `HashSet<T>`. O(1) expected membership, and set
+;; algebra that rewrites the receiver rather than building a new set.
+;;
+;; **This is the mutable one.** `(mutableset-add! s x)` writes `s`; everyone
+;; holding `s` sees the change. `Set` is the persistent structure of the same
+;; shape, and `TransientSet` is a `Set` being built — made from one, filled, and
+;; frozen back. This is the one that is never frozen.
+;;
+;; **The set algebra writes the left-hand side.** `(mutableset-union! a b)` is
+;; `a` becoming the union, not a third set: rebuilding is what the persistent
+;; `set-union` is for, and doing it in place is the reason to reach for this.
+;;
+;; **Members are filed under .NET's equality**, `EqualityComparer<T>.Default`,
+;; not under the `Eq` implementation in `std/eq` — the same equality `Map` and
+;; `Set` file their keys under.
+(import (std prelude))
+;; For `set->seq` and `seq->set`, which the two conversions at the bottom are
+;; written with. The persistent set is a module of its own.
+(import (std set))
+
+(export
+  MutableSet MutableSetCursor
+  mutableset
+  mutableset-length mutableset-empty?
+  mutableset-add! mutableset-add-all! mutableset-remove! mutableset-remove-all!
+  mutableset-remove-where! mutableset-clear! mutableset-contains?
+  mutableset-union! mutableset-intersect! mutableset-difference!
+  mutableset-symmetric-difference!
+  mutableset-subset? mutableset-superset? mutableset-overlaps?
+  mutableset-copy
+  mutableset-cursor mutableset-cursor-done? mutableset-cursor-current
+  mutableset-for-each
+  list->mutableset mutableset->list vec->mutableset mutableset->vec
+  seq->mutableset mutableset->seq set->mutableset mutableset->set
+  mutableset->str)
+
+;; The type is .NET's, so a `MutableSet` handed to any other `import/extern`
+;; taking a `HashSet<T>` is accepted as it stands.
+(import/class
+  ((MutableSet %a) (: System.Collections.Generic.HashSet))
+  ((MutableSetCursor %a) (: Bjolang.Runtime.MutableSetCursor)))
+
+;; ---------------------------------------------------------------------------
+;; The set
+;; ---------------------------------------------------------------------------
+
+(import/extern
+  (mutableset            (: Bjolang.Runtime.MutableSetModule.Empty       (-> (MutableSet %a))))
+  (mutableset-length     (: Bjolang.Runtime.MutableSetModule.Count       (-> (MutableSet %a) int)))
+  (mutableset-empty?     (: Bjolang.Runtime.MutableSetModule.IsEmpty     (-> (MutableSet %a) bool)))
+  ;; Answers whether the element was new, which is the one thing a caller
+  ;; cannot recover afterwards without a second lookup.
+  (mutableset-add!       (: Bjolang.Runtime.MutableSetModule.Add         (-> (MutableSet %a) %a bool)))
+  (mutableset-add-all!   (: Bjolang.Runtime.MutableSetModule.AddRange    (-> (MutableSet %a) (Seq %a) void)))
+  (mutableset-remove!    (: Bjolang.Runtime.MutableSetModule.Remove      (-> (MutableSet %a) %a bool)))
+  (mutableset-remove-all! (: Bjolang.Runtime.MutableSetModule.RemoveRange (-> (MutableSet %a) (Seq %a) void)))
+  ;; How many went.
+  (mutableset-remove-where! (: Bjolang.Runtime.MutableSetModule.RemoveWhere (-> (MutableSet %a) (-> %a bool) int)))
+  (mutableset-clear!     (: Bjolang.Runtime.MutableSetModule.Clear       (-> (MutableSet %a) void)))
+  (mutableset-contains?  (: Bjolang.Runtime.MutableSetModule.Contains    (-> (MutableSet %a) %a bool)))
+  (mutableset-copy       (: Bjolang.Runtime.MutableSetModule.Copy        (-> (MutableSet %a) (MutableSet %a))))
+  (mutableset->seq       (: Bjolang.Runtime.MutableSetModule.AsEnumerable   (-> (MutableSet %a) (Seq %a))))
+  (seq->mutableset       (: Bjolang.Runtime.MutableSetModule.FromEnumerable (-> (Seq %a) (MutableSet %a))))
+
+  ;; --- Set algebra, written into the first argument ---
+  (mutableset-union!                (: Bjolang.Runtime.MutableSetModule.Union           (-> (MutableSet %a) (MutableSet %a) void)))
+  (mutableset-intersect!            (: Bjolang.Runtime.MutableSetModule.Intersect       (-> (MutableSet %a) (MutableSet %a) void)))
+  (mutableset-difference!           (: Bjolang.Runtime.MutableSetModule.Except          (-> (MutableSet %a) (MutableSet %a) void)))
+  (mutableset-symmetric-difference! (: Bjolang.Runtime.MutableSetModule.SymmetricExcept (-> (MutableSet %a) (MutableSet %a) void)))
+
+  ;; --- Comparisons, which write nothing ---
+  (mutableset-subset?    (: Bjolang.Runtime.MutableSetModule.IsSubsetOf   (-> (MutableSet %a) (MutableSet %a) bool)))
+  (mutableset-superset?  (: Bjolang.Runtime.MutableSetModule.IsSupersetOf (-> (MutableSet %a) (MutableSet %a) bool)))
+  (mutableset-overlaps?  (: Bjolang.Runtime.MutableSetModule.Overlaps     (-> (MutableSet %a) (MutableSet %a) bool)))
+
+  (mutableset-cursor         (: Bjolang.Runtime.MutableSetModule.Cursor        (-> (MutableSet %a) (MutableSetCursor %a))))
+  (mutableset-cursor-done?   (: Bjolang.Runtime.MutableSetModule.CursorDone    (-> (MutableSetCursor %a) bool)))
+  (mutableset-cursor-current (: Bjolang.Runtime.MutableSetModule.CursorCurrent (-> (MutableSetCursor %a) %a))))
+
+;; A walk whose callback may suspend. The `Iterable` default would do as well;
+;; this one names the set first, matching `set-for-each`.
+(: mutableset-for-each (-> (-?-> %a void) (MutableSet %a) void))
+(defun (mutableset-for-each f s)
+  (let ((c (mutableset-cursor s)))
+    (let go ()
+      (if (mutableset-cursor-done? c)
+          unit
+          (let ()
+            (f (mutableset-cursor-current c))
+            (go))))))
+
+;; ---------------------------------------------------------------------------
+;; Conversions
+;; ---------------------------------------------------------------------------
+
+(: list->mutableset (-> (List %a) (MutableSet %a)))
+(defun (list->mutableset xs) (seq->mutableset (list->seq xs)))
+
+(: mutableset->list (-> (MutableSet %a) (List %a)))
+(defun (mutableset->list s) (seq->list (mutableset->seq s)))
+
+(: vec->mutableset (-> (Vec %a) (MutableSet %a)))
+(defun (vec->mutableset v) (seq->mutableset (vec->seq v)))
+
+(: mutableset->vec (-> (MutableSet %a) (Vec %a)))
+(defun (mutableset->vec s) (seq->vec (mutableset->seq s)))
+
+(: set->mutableset (-> (Set %a) (MutableSet %a)))
+(defun (set->mutableset s) (seq->mutableset (set->seq s)))
+
+(: mutableset->set (-> (MutableSet %a) (Set %a)))
+(defun (mutableset->set s) (seq->set (mutableset->seq s)))
+
+;; ---------------------------------------------------------------------------
+;; The traits
+;; ---------------------------------------------------------------------------
+
+(impl (Refable (MutableSet %a))
+  (type %index %a)
+  (type %out bool)
+  (defun (ref s elem)
+    (mutableset-contains? s elem)))
+
+(impl (Iterable (MutableSet %a))
+  (type %elem %a)
+  (type %cursor (MutableSetCursor %a))
+  (defun (iterable-start s) (mutableset-cursor s))
+  (defun (iterable-done? s c) (mutableset-cursor-done? c))
+  (defun (iterable-current s c) (mutableset-cursor-current c))
+  (defun (iterable-next s c) c))
+
+(impl (Collection (MutableSet %a))
+  (type %content %a)
+  (defun (length s) (mutableset-length s))
+  (defun (empty? s) (mutableset-empty? s)))
+
+;; `add!` is void where `mutableset-add!` answers a bool: the trait is the sink
+;; interface, and whether an element was new is not something a sink reports.
+(impl (Addable! (MutableSet %a))
+  (type %elem %a)
+  (defun (add! s elem)
+    (ignore (mutableset-add! s elem))))
+
+;; Two sets are equal when they hold the same elements. Same size, and every
+;; element of `a` in `b` — which leaves `b` no room for one of its own.
+;;
+;; Membership is .NET's equality, since finding an element is a lookup. Without
+;; this implementation the whole comparison would be .NET's too, and for a
+;; `HashSet<T>` that is reference identity. `eq-hash` refuses, as `Deque`'s does.
+(impl (Eq (MutableSet %a))
+  (defun (= a b)
+    (and (= (mutableset-length a) (mutableset-length b))
+         (let ((c (mutableset-cursor a)))
+           (let go ()
+             (if (mutableset-cursor-done? c)
+                 #t
+                 (if (mutableset-contains? b (mutableset-cursor-current c))
+                     (go)
+                     #f))))))
+  (defun (eq-hash s) (unhashable "MutableSet")))
+
+;; `#mset(a b c)`, in whatever order the table holds them.
+(: mutableset->str (-> (MutableSet %a) string) (where (->str %a)))
+(defun (mutableset->str s)
+  (let ((sb (stringbuilder-empty)))
+    (stringbuilder-add-string! sb "#mset(")
+    (loop (:with first? #t #f)
+          (:for elem s)
+          (:do (unless first? (stringbuilder-add-string! sb " "))
+               (stringbuilder-add-string! sb (->str elem))))
+    (stringbuilder-add-string! sb ")")
+    (stringbuilder->string sb)))
+
+(impl (->str (MutableSet %a))
+  (where (->str %a))
+  (defun (->str s)
+    (mutableset->str s)))

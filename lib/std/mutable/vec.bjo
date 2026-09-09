@@ -1,0 +1,185 @@
+;; std/mutable/vec.bjo — the growable array, written in place.
+;;
+;; A `MutableVec` *is* a .NET `List<T>`: a contiguous array that doubles when it
+;; fills. Indexing and appending are O(1), inserting and removing at an index
+;; are O(n) in what follows the index.
+;;
+;; **This is the mutable one.** `(mutablevec-add! v x)` writes `v`; it answers
+;; nothing, and everyone holding `v` sees the change. `Vec` is the persistent
+;; structure of the same shape, and a program that wants to keep old versions
+;; should use that.
+;;
+;; **What the existing builders are not.** `VecBuilder` and `ListBuilder` are
+;; append-only: an element goes in and nothing comes out until the collection is
+;; finished. This is the one that can be written at an index, sorted, and had
+;; elements removed from the middle — a scratch buffer rather than a funnel.
+;;
+;; **Not a key.** The `Eq` implementation at the bottom is structural, and
+;; `eq-hash` refuses: there is no honest number for a value whose elements move.
+(import (std prelude))
+
+(export
+  MutableVec
+  mutablevec mutablevec-with-capacity
+  mutablevec-length mutablevec-empty?
+  mutablevec-ref mutablevec-try-ref mutablevec-set!
+  mutablevec-add! mutablevec-add-all! mutablevec-insert!
+  mutablevec-remove-at! mutablevec-remove! mutablevec-remove-where!
+  mutablevec-pop! mutablevec-clear!
+  mutablevec-contains? mutablevec-index-of
+  mutablevec-reverse! mutablevec-sort! mutablevec-sort-by!
+  mutablevec-copy
+  list->mutablevec mutablevec->list vec->mutablevec mutablevec->vec
+  seq->mutablevec mutablevec->seq mutablevec->array
+  mutablevec->str)
+
+;; The type is .NET's, not an alias for a record of our own: a `MutableVec`
+;; handed to any other `import/extern` that takes a `List<T>` is accepted as it
+;; stands, with nothing to unwrap.
+(import/class
+  ((MutableVec %a) (: System.Collections.Generic.List)))
+
+;; ---------------------------------------------------------------------------
+;; The vector
+;; ---------------------------------------------------------------------------
+
+(import/extern
+  (mutablevec               (: Bjolang.Runtime.MutableVecModule.Empty        (-> (MutableVec %a))))
+  (mutablevec-with-capacity (: Bjolang.Runtime.MutableVecModule.WithCapacity (-> int (MutableVec %a))))
+  (mutablevec-length        (: Bjolang.Runtime.MutableVecModule.Count        (-> (MutableVec %a) int)))
+  (mutablevec-empty?        (: Bjolang.Runtime.MutableVecModule.IsEmpty      (-> (MutableVec %a) bool)))
+  ;; Throws when the index is out of range, which is what `Refable` asks of an
+  ;; indexed collection. `mutablevec-try-ref` is the checked one.
+  (mutablevec-ref           (: Bjolang.Runtime.MutableVecModule.Get          (-> (MutableVec %a) int %a)))
+  (mutablevec-set!          (: Bjolang.Runtime.MutableVecModule.Set          (-> (MutableVec %a) int %a void)))
+  (mutablevec-add!          (: Bjolang.Runtime.MutableVecModule.Add          (-> (MutableVec %a) %a void)))
+  (mutablevec-add-all!      (: Bjolang.Runtime.MutableVecModule.AddRange     (-> (MutableVec %a) (Seq %a) void)))
+  (mutablevec-insert!       (: Bjolang.Runtime.MutableVecModule.Insert       (-> (MutableVec %a) int %a void)))
+  (mutablevec-remove-at!    (: Bjolang.Runtime.MutableVecModule.RemoveAt     (-> (MutableVec %a) int void)))
+  (mutablevec-remove!       (: Bjolang.Runtime.MutableVecModule.Remove       (-> (MutableVec %a) %a bool)))
+  (mutablevec-remove-where! (: Bjolang.Runtime.MutableVecModule.RemoveWhere  (-> (MutableVec %a) (-> %a bool) int)))
+  (mutablevec-clear!        (: Bjolang.Runtime.MutableVecModule.Clear        (-> (MutableVec %a) void)))
+  (mutablevec-contains?     (: Bjolang.Runtime.MutableVecModule.Contains     (-> (MutableVec %a) %a bool)))
+  ;; -1 when there is none, which is what .NET answers and what an `Option`
+  ;; would cost an allocation to say.
+  (mutablevec-index-of      (: Bjolang.Runtime.MutableVecModule.IndexOf      (-> (MutableVec %a) %a int)))
+  (mutablevec-reverse!      (: Bjolang.Runtime.MutableVecModule.Reverse      (-> (MutableVec %a) void)))
+  (mutablevec-sort-by!      (: Bjolang.Runtime.MutableVecModule.SortBy       (-> (MutableVec %a) (-> %a %a int) void)))
+  (mutablevec-copy          (: Bjolang.Runtime.MutableVecModule.Copy         (-> (MutableVec %a) (MutableVec %a))))
+  (mutablevec->array        (: Bjolang.Runtime.MutableVecModule.ToArray      (-> (MutableVec %a) (Array %a))))
+  (mutablevec->seq          (: Bjolang.Runtime.MutableVecModule.AsEnumerable (-> (MutableVec %a) (Seq %a))))
+  (seq->mutablevec          (: Bjolang.Runtime.MutableVecModule.FromEnumerable (-> (Seq %a) (MutableVec %a))))
+
+  ;; The partial answers, as pairs. Each is wrapped in an `Option` below.
+  (clr-mutablevec-try-ref   (: Bjolang.Runtime.MutableVecModule.TryGet     (-> (MutableVec %a) int (Tuple bool %a))))
+  (clr-mutablevec-pop!      (: Bjolang.Runtime.MutableVecModule.TryPopBack (-> (MutableVec %a) (Tuple bool %a)))))
+
+(: mutablevec-try-ref (-> (MutableVec %a) int (Option %a)))
+(defun (mutablevec-try-ref xs index)
+  (def (found value) (clr-mutablevec-try-ref xs index))
+  (if found (Some value) None))
+
+;; The last element, removed. `None` leaves the vector as it was, so a
+;; stack-shaped loop can pop until it stops.
+(: mutablevec-pop! (-> (MutableVec %a) (Option %a)))
+(defun (mutablevec-pop! xs)
+  (def (found value) (clr-mutablevec-pop! xs))
+  (if found (Some value) None))
+
+;; Sorted by the element's own `Ord`. `mutablevec-sort-by!` takes the comparison
+;; directly, for an order that is not the type's.
+(: mutablevec-sort! (-> (MutableVec %a) void) (where (Ord %a)))
+(defun (mutablevec-sort! xs)
+  (mutablevec-sort-by! xs (fun (a b) (compare a b))))
+
+;; ---------------------------------------------------------------------------
+;; Conversions
+;; ---------------------------------------------------------------------------
+
+(: list->mutablevec (-> (List %a) (MutableVec %a)))
+(defun (list->mutablevec xs) (seq->mutablevec (list->seq xs)))
+
+(: mutablevec->list (-> (MutableVec %a) (List %a)))
+(defun (mutablevec->list xs) (seq->list (mutablevec->seq xs)))
+
+(: vec->mutablevec (-> (Vec %a) (MutableVec %a)))
+(defun (vec->mutablevec v) (seq->mutablevec (vec->seq v)))
+
+(: mutablevec->vec (-> (MutableVec %a) (Vec %a)))
+(defun (mutablevec->vec xs) (seq->vec (mutablevec->seq xs)))
+
+;; ---------------------------------------------------------------------------
+;; The traits
+;; ---------------------------------------------------------------------------
+
+(impl (Refable (MutableVec %a))
+  (type %index int)
+  (type %out %a)
+  (defun (ref xs index)
+    (mutablevec-ref xs index))
+  (defun (try-ref xs index)
+    (mutablevec-try-ref xs index)))
+
+;; An `int` cursor, as `Array` has: an index and an array read is what this
+;; collection makes cheap, so there is nothing a cursor object would save.
+;;
+;; A walk reads the length at every step rather than once, so a vector written
+;; *during* its own walk is walked as it now stands. Adding an element inside a
+;; `for-each` over the same vector therefore does not end the loop early — nor
+;; does it end at all, which is the usual hazard of writing a collection you
+;; are reading.
+(impl (Iterable (MutableVec %a))
+  (type %elem %a)
+  (type %cursor int)
+  (defun (iterable-start xs) 0)
+  (defun (iterable-done? xs index) (= index (mutablevec-length xs)))
+  (defun (iterable-current xs index) (mutablevec-ref xs index))
+  (defun (iterable-next xs index) (+ index 1)))
+
+(impl (Collection (MutableVec %a))
+  (type %content %a)
+  (defun (length xs) (mutablevec-length xs))
+  (defun (empty? xs) (mutablevec-empty? xs)))
+
+(impl (Addable! (MutableVec %a))
+  (type %elem %a)
+  (defun (add! xs elem)
+    (mutablevec-add! xs elem)))
+
+;; Two vectors are equal when they hold the same elements in the same order.
+;;
+;; Without this they would fall to the blanket, which is .NET's equality, which
+;; for a `List<T>` is reference identity — two vectors built the same way from
+;; the same elements would have compared unequal.
+;;
+;; `eq-hash` refuses, exactly as `Deque`'s does: there is no honest number for a
+;; value whose elements move, and a `Map` keyed on one would ask .NET rather
+;; than asking this.
+(impl (Eq (MutableVec %a))
+  (where (Eq %a))
+  (defun (= a b)
+    (defun (same-from i)
+      (if (= i (mutablevec-length a))
+          #t
+          (and (= (mutablevec-ref a i) (mutablevec-ref b i))
+               (same-from (+ i 1)))))
+    (and (= (mutablevec-length a) (mutablevec-length b))
+         (same-from 0)))
+  (defun (eq-hash xs) (unhashable "MutableVec")))
+
+;; `#mvec(a b c)`, in order, each element by its own `->str`.
+(: mutablevec->str (-> (MutableVec %a) string) (where (->str %a)))
+(defun (mutablevec->str xs)
+  (let ((sb (stringbuilder-empty)))
+    (stringbuilder-add-string! sb "#mvec(")
+    (loop (:with first? #t #f)
+          (:for elem xs)
+          (:do (unless first? (stringbuilder-add-string! sb " "))
+               (stringbuilder-add-string! sb (->str elem))))
+    (stringbuilder-add-string! sb ")")
+    (stringbuilder->string sb)))
+
+(impl (->str (MutableVec %a))
+  (where (->str %a))
+  (defun (->str xs)
+    (mutablevec->str xs)))
