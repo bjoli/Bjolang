@@ -1,0 +1,50 @@
+;; `Addable` — `Addable!` without the `!`: `add` answers a new collection and
+;; touches nothing.
+;;
+;; The same member-level `(where ...)` machinery drives `add-all`, so a
+;; persistent collection fills from any `Iterable` the way a sink does — and
+;; the original is unchanged afterwards, which is the half worth asserting.
+(import (std prelude))
+(import (std set))
+(import (std orderedset))
+(import (std orderedmap))
+(import (std simpletest))
+
+(defun (main)
+  ;; --- Vec: append at the end ----------------------------------------------
+  (def v [1 2])
+  (def v2 (add v 3))
+  (expect "vec: add appends" (vec-ref v2 2) 3)
+  (expect "vec: the original is untouched" (length v) 2)
+  (def v3 (add-all v2 (list 4 5)))
+  (expect "vec: add-all from a List" (length v3) 5)
+  (expect "vec: in order" (vec-ref v3 4) 5)
+
+  ;; --- Map: set semantics on a duplicate key -------------------------------
+  (def m (add (map-empty) (1 . "one")))
+  (expect "map: add" (map-ref m 1) "one")
+  (def m2 (add m (1 . "uno")))
+  (expect "map: a duplicate key is a replacement" (map-ref m2 1) "uno")
+  (expect "map: and the original still says one" (map-ref m 1) "one")
+  (def m3 (add-all m2 (list (2 . "two") (3 . "three"))))
+  (expect "map: add-all from a List of pairs" (map-length m3) 3)
+
+  ;; --- Set: idempotent -----------------------------------------------------
+  (def s (add-all (set-empty) [1 2 2 3]))
+  (expect "set: duplicates collapse" (set-length s) 3)
+  (expect "set: the empty one is still empty" (set-length (set-empty)) 0)
+
+  ;; --- The ordered collections ---------------------------------------------
+  (def os (add-all (orderedset-empty) (list 5 1 3)))
+  (expect-true "orderedset: arrives sorted"
+          (= (orderedset->list os) (list 1 3 5)))
+
+  (def om (add-all (orderedmap-empty) (list (2 . "b") (1 . "a"))))
+  (expect "orderedmap: ref" (orderedmap-ref om 1) "a")
+  (expect-true "orderedmap: entries in key order"
+          (= (orderedmap->list om) (list (1 . "a") (2 . "b"))))
+
+  ;; --- One source that is itself a persistent collection -------------------
+  (def everything (add-all (set-empty) v3))
+  (expect "a Vec pours into a Set" (set-length everything) 5)
+  0)

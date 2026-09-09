@@ -403,7 +403,23 @@ Mutable builders (~SchemeListBuilder~) for efficiently constructing Scheme lists
 - ~(listbuilder-length builder)~ : Returns the count of elements in the builder.
 - ~(listbuilder->list builder)~ : Freezes the builder into an immutable ~List~.
 
-** Addable! — the mutable sinks
+** Addable and Addable! — adding to collections
+The persistent trait first — ~add~ answers a new collection and touches nothing:
+
+#+BEGIN_SRC scheme
+(def/trait (Addable %coll)
+  (type %elem)
+  (: add (-> %coll %elem %coll))
+  (: add-all (-> %coll %s %coll)
+     (where (Iterable %s #:elem %elem #:cursor %k))))
+#+END_SRC
+
+- ~(add coll elem)~ : One element; a new collection back. ~Vec~ appends at the end; ~Set~ and ~OrderedSet~ are idempotent; ~Map~ and ~OrderedMap~ take a pair, ~(add m (k . v))~, with *set* semantics — a key already there is replaced. That is what the mutable sinks below do on a duplicate, and ~add~ and ~add!~ disagreeing about one would be a trap; ~map-add~, which refuses a duplicate, keeps its own name.
+- ~(add-all coll iterable)~ : Everything the source yields, folded in. ~(add-all (set-empty) some-vec)~ is how a collection changes shape.
+
+~List~ has no implementation, deliberately: a cheap add would prepend (reversing what ~add-all~ pours in), an in-order one costs O(n) per element, and a name as plain as ~add~ should not quietly mean either. Build with a ~ListBuilder~ instead.
+
+*** Addable! — the mutable sinks
 One trait over every builder and transient, so that filling a collection does not care which one it is filling:
 
 #+BEGIN_SRC scheme

@@ -20,8 +20,9 @@
   collector-init collector-step collector-finish
   ;; Collection
   length empty?
-  ;; Addable!
+  ;; Addable! and Addable
   add! add-all!
+  add add-all
   ;; Discard.
   ignore
   ;; Range
@@ -42,6 +43,7 @@
   list-map list-filter list-foldl list-foldr list-for-each
 
   ;; Vec operations.
+  vec-add
   vec-map vec-filter vec-fold vec-reduce
   vec-for-each vec-for-each/range vec-iter
 
@@ -778,7 +780,10 @@
   (clr-vec-reduce         (: BjolangRuntime.RrbReduce       (-> (-> %a %a %a) (Vec %a) %a)))
   (clr-vec-for-each       (: BjolangRuntime.RrbForEach      (-> (-> %a Unit) (Vec %a) Unit)))
   (clr-vec-for-each/range (: BjolangRuntime.RrbForEachRange (-> (-> %a Unit) (Vec %a) int int Unit)))
-  (clr-vec-iter           (: BjolangRuntime.RrbIter         (-> (-> %a bool) (Vec %a) bool))))
+  (clr-vec-iter           (: BjolangRuntime.RrbIter         (-> (-> %a bool) (Vec %a) bool)))
+  ;; Append one element at the end — the persistent counterpart of
+  ;; `vecbuilder-add!`, and what `Addable`'s impl for Vec delegates to.
+  (vec-add                (: Collections.RrbFun.Add         (-> (Vec %a) %a (Vec %a)))))
 
 ;; Vec map.
 (: vec-map (-> (-?-> %a %b) (Vec %a) (Vec %b)))
@@ -1759,6 +1764,49 @@
 ;; The set and ordered-collection sinks live with their types, in (std set),
 ;; (std orderedset) and (std orderedmap): `Addable!` is this module's trait,
 ;; so a module that owns the type may implement it.
+
+;;----------------------------------------------------------------------------
+;; Addable — the persistent counterpart
+;; ---------------------------------------------------------------------------
+;;
+;; The same shape without the `!`: `add` answers a new collection and touches
+;; nothing. One deliberate choice: for a map-shaped collection `add` has
+;; *set* semantics — a key already there is replaced — because that is what
+;; the mutable sinks do, and `(add m e)` and `(add! mb e)` disagreeing about
+;; a duplicate key would be a trap. `map-add`, which refuses a duplicate, is
+;; still there under its own name for the caller who wants the refusal.
+(def/trait (Addable %coll)
+  (type %elem)
+  (: add (-> %coll %elem %coll))
+  (: add-all (-> %coll %s %coll)
+     (where (Iterable %s #:elem %elem #:cursor %k)))
+  ;; A mutable cell rather than a named-let accumulator, deliberately: the
+  ;; cell is initialised from `coll`, so its type is the implementor's from
+  ;; the first line, and `(add acc e)` resolves before the loop is even
+  ;; checked. A let-bound accumulator is a fresh variable at the moment the
+  ;; recursive call is inferred, which leaves `add`'s element projection
+  ;; nothing to resolve against.
+  (defun (add-all coll xs)
+    (def/mutable acc coll)
+    (let go ((cur (iterable-start xs)))
+      (unless (iterable-done? xs cur)
+        (set! acc (add acc (iterable-current xs cur)))
+        (go (iterable-next xs cur))))
+    acc))
+
+(impl (Addable (Vec %a))
+      (type %elem %a)
+      (defun (add v elem)
+        (vec-add v elem)))
+
+(impl (Addable (Map %k %v))
+      (type %elem (%k . %v))
+      (defun (add m tup)
+        (let (((k v) tup))
+          (map-set m k v))))
+
+;; As with the sinks, the set and ordered-collection impls live with their
+;; types, in (std set), (std orderedset) and (std orderedmap).
 
 
 
