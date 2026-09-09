@@ -1,0 +1,74 @@
+;; `Addable!` across the whole builder family, and `add-all!` over any
+;; `Iterable`.
+;;
+;; `add-all!` is generic on both sides — `(where (Addable! %coll)
+;; (Iterable %iter))` — with both traits carrying associated types, and the
+;; element the source yields unifying with the element the sink takes. Every
+;; call below is at ground types, which is the shape constrained-generic
+;; monomorphisation resolves to copies with the dictionaries gone.
+(import (std prelude))
+(import (std set))
+(import (std orderedset))
+(import (std orderedmap))
+(import (std simpletest))
+
+(defun (main)
+  ;; --- the prelude's sinks -------------------------------------------------
+  (def vb (vecbuilder-empty))
+  (add! vb 1)
+  (add-all! vb (list 2 3 4))
+  (expect "vecbuilder: from a List" (length (vecbuilder->vec vb)) 4)
+
+  (def lb (listbuilder-empty))
+  (add-all! lb (range 0 4))
+  (expect "listbuilder: from a Range" (length (listbuilder->list lb)) 4)
+
+  (def sb (stringbuilder-empty))
+  (add! sb #\a)
+  (add-all! sb "bcd")
+  (expect "stringbuilder: from a string" (stringbuilder->string sb) "abcd")
+
+  (def mb (mapbuilder-empty))
+  (add! mb (1 . 10))
+  (add-all! mb (map-set (map-empty) 2 20))
+  (def m (mapbuilder->map mb))
+  (expect "mapbuilder: the added pair" (map-ref m 1) 10)
+  (expect "mapbuilder: from a Map" (map-ref m 2) 20)
+
+  (def tm (transientmap-empty))
+  (add-all! tm (list (1 . 10) (2 . 20)))
+  (expect "transientmap: from a List of pairs" (transientmap-ref tm 2) 20)
+
+  ;; --- (std set) -----------------------------------------------------------
+  (def setb (setbuilder-empty))
+  (add-all! setb [1 2 2 3])
+  (expect "setbuilder: duplicates collapse" (set-length (setbuilder->set setb)) 3)
+
+  (def ts (transientset-empty))
+  (add! ts 7)
+  (add-all! ts (list 7 8))
+  (expect "transientset" (transientset-length ts) 2)
+
+  ;; --- the ordered collections ---------------------------------------------
+  (def osb (orderedsetbuilder-empty))
+  (add-all! osb (list 5 1 3))
+  (expect-true "orderedsetbuilder: arrives sorted"
+          (= (orderedset->list (orderedsetbuilder->orderedset osb)) (list 1 3 5)))
+
+  (def tos (transientorderedset-empty))
+  (add-all! tos [2 9 4])
+  (expect-true "transientorderedset: arrives sorted"
+          (= (orderedset->list (transientorderedset->orderedset tos)) (list 2 4 9)))
+
+  (def omb (orderedmapbuilder-empty))
+  (add-all! omb (list (3 . "c") (1 . "a") (2 . "b")))
+  (def om (orderedmapbuilder->orderedmap omb))
+  (expect "orderedmapbuilder: ref" (orderedmap-ref om 2) "b")
+  (expect-true "orderedmapbuilder: entries in key order"
+          (= (orderedmap->list om) (list (1 . "a") (2 . "b") (3 . "c"))))
+
+  (def tom (transientorderedmap-empty))
+  (add! tom (1 . "x"))
+  (add-all! tom (list (2 . "y")))
+  (expect "transientorderedmap" (transientorderedmap-ref tom 2) "y")
+  0)

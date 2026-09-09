@@ -345,6 +345,23 @@ module DictionaryLowering =
 
             | None ->
 
+            // A member-level `(where ...)`: one dictionary argument per
+            // constraint, ahead of the ordinary arguments on every route —
+            // the interface slot, the landing pad and the generic dispatch
+            // all declare the same leading parameter.
+            let memberDictArgs =
+                tref.MemberConstraints
+                |> List.map (fun c ->
+                    buildEvidence
+                        env
+                        scope
+                        c.TraitName
+                        (prune env.Registry c.TargetType)
+                        expr.Range
+                        $"for the where clause of '%s{tref.Method}'")
+
+            let loweredArgs = memberDictArgs @ loweredArgs
+
             let node =
                 match tref.Resolved with
                 | Some(ctor, tyArgs) when isConditional env tref.Trait ctor ->
@@ -706,15 +723,29 @@ module DictionaryLowering =
             let lowerMethod (m: TDecl) =
                 match m with
                 | TDefun(name, tyArgs, args, kwArgs, restArg, retType, effect, body, mr) ->
+                    // A member-level `(where ...)`'s dictionaries arrived as
+                    // leading parameters, injected at inference. The body
+                    // finds them the way a constrained function's body finds
+                    // its own: by name, in scope.
+                    let methodScope =
+                        args
+                        |> List.fold
+                            (fun (s: Scope) (argName, _) ->
+                                if argName.StartsWith "_dict_" then
+                                    { s with Dicts = Map.add argName argName s.Dicts }
+                                else
+                                    s)
+                            scope
+
                     TDefun(
                         name,
                         tyArgs,
                         args,
-                        kwArgs |> List.map (fun (n, t, e) -> n, t, lowerExpr env scope e),
+                        kwArgs |> List.map (fun (n, t, e) -> n, t, lowerExpr env methodScope e),
                         restArg,
                         retType,
                         effect,
-                        lowerExpr env scope body,
+                        lowerExpr env methodScope body,
                         mr
                     )
                 | other -> lowerDecl env other

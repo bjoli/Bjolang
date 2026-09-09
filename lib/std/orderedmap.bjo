@@ -326,6 +326,20 @@
     acc)
   (defun (collector-finish c acc) (orderedmapbuilder->orderedmap acc)))
 
+;; The mutable sinks, one entry at a time. `Addable!` is the prelude's trait;
+;; this module owns the types, which is what licenses the impls.
+(impl (Addable! (OrderedMapBuilder %k %v))
+      (type %elem (%k . %v))
+      (defun (add! mb tup)
+        (let (((k v) tup))
+          (orderedmapbuilder-add! mb k v))))
+
+(impl (Addable! (TransientOrderedMap %k %v))
+      (type %elem (%k . %v))
+      (defun (add! tm tup)
+        (let (((k v) tup))
+          (transientorderedmap-set! tm k v))))
+
 ;; Equality for ordered maps.
 (impl (Eq (OrderedMap %k %v))
   (where (Eq %k) (Eq %v))

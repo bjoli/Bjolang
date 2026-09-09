@@ -155,7 +155,7 @@ let private providedNames (decl: Parser.Decl) : string list =
                 // A record is constructed by its own name, and an opaque type
                 // and an alias offer no constructor at all.
                 | _ -> []))
-    | Parser.DTrait(name, _, _, _, signatures, _, _, _) -> name :: List.map fst signatures
+    | Parser.DTrait(name, _, _, _, signatures, _, _, _) -> name :: List.map (fun (n, _, _) -> n) signatures
     | other -> definedNames other
 
 /// Does this entry have to be linked by every entry after it?

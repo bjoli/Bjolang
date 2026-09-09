@@ -13,13 +13,15 @@
   ;; Iterable
   iterable-start iterable-done? iterable-current iterable-next
   fold map filter take drop take-while drop-while
-  enumerate flat-map any? all? find for-each
+  enumerate flat-map any? all? find for-each ->seq
   ;; Cursor.
   cursor-start cursor-end cursor-end? cursor-ref cursor-next cursor-prev
   ;; Collector
   collector-init collector-step collector-finish
   ;; Collection
-  length empty? ->seq
+  length empty?
+  ;; Addable!
+  add! add-all!
   ;; Discard.
   ignore
   ;; Range
@@ -1642,6 +1644,20 @@
   (defun (empty? vec)
     (vec-empty? vec)))
 
+(impl (Collection (VecBuilder %a))
+  (type %content %a)
+  (defun (length vb)
+    (vecbuilder-length vb))
+  (defun (empty? vb)
+    (= (vecbuilder-length vb) 0)))
+
+(impl (Collection (ListBuilder %a))
+  (type %content %a)
+  (defun (length lb)
+    (listbuilder-length lb))
+  (defun (empty? lb)
+    (= (listbuilder-length lb) 0)))
+
 ;; Map collection.
 (impl (Collection (Map %k %v))
   (type %content (Tuple %k %v))
@@ -1649,6 +1665,19 @@
     (map-length m))
   (defun (empty? m)
     (map-empty? m)))
+
+(impl (Collection (TransientMap %k %v))
+      (type %content (%k . %v))
+      (defun (length tm)
+        (transientmap-length tm))
+      (defun (empty? tm)
+        (transientmap-empty? tm)))
+(impl (Collection (MapBuilder %k %v))
+      (type %content (%k . %v))
+      (defun (length mb)
+        (mapbuilder-length mb))
+      (defun (empty? mb)
+        (= (mapbuilder-length mb) 0)))
 
 ;; Range collection.
 (impl (Collection Range)
@@ -1678,6 +1707,59 @@
     (seq-length s))
   (defun (empty? s)
     (seq-empty? s)))
+
+
+;;----------------------------------------------------------------------------
+;; Addable! trait
+;; ---------------------------------------------------------------------------
+(def/trait (Addable! %coll)
+  (type %elem)
+  (: add! (-> %coll %elem void))
+  ;; Everything an `Iterable` holds, added in the order it yields. The
+  ;; `(where ...)` is member-level: each call site brings its own source type,
+  ;; with `#:elem` pinned to this trait's `%elem` — the element the source
+  ;; yields *is* the element the sink takes, which no function-level clause
+  ;; can say. The cursor is nobody's business, so it is pinned to a fresh
+  ;; variable.
+  (: add-all! (-> %coll %s void)
+     (where (Iterable %s #:elem %elem #:cursor %k)))
+  (defun (add-all! coll xs)
+    (let go ((cur (iterable-start xs)))
+      (unless (iterable-done? xs cur)
+        (add! coll (iterable-current xs cur))
+        (go (iterable-next xs cur))))))
+
+(impl (Addable! StringBuilder)
+      (type %elem Char)
+      (defun (add! sb s)
+        (stringbuilder-add! sb s)))
+
+(impl (Addable! (VecBuilder %a))
+      (type %elem %a)
+      (defun (add! vb elem)
+        (vecbuilder-add! vb elem)))
+
+(impl (Addable! (TransientMap %k %v))
+      (type %elem (%k . %v))
+      (defun (add! tm tup)
+        (let (((k v) tup))
+          (transientmap-set! tm k v))))
+
+(impl (Addable! (MapBuilder %k %v))
+      (type %elem (%k . %v))
+      (defun (add! mb tup)
+        (let (((k v) tup))
+          (mapbuilder-add! mb k v))))
+
+(impl (Addable! (ListBuilder %a))
+      (type %elem %a)
+      (defun (add! lb elem)
+        (listbuilder-add! lb elem)))
+
+;; The set and ordered-collection sinks live with their types, in (std set),
+;; (std orderedset) and (std orderedmap): `Addable!` is this module's trait,
+;; so a module that owns the type may implement it.
+
 
 
 ;; ---------------------------------------------------------------------------

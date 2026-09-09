@@ -73,11 +73,22 @@ let collectTraitConstraints (env: Env) (body: TypedExpr) : TraitConstraint list 
         // to be paid for by whoever instantiates this function: `(->str xs)` at
         // `(List %a)` resolves here and still owes a `(->str %a)`.
         | TTraitCall(tref, _, _) ->
-            tref.Holes
+            let acc =
+                tref.Holes
+                |> List.fold
+                    (fun acc hole ->
+                        leafConstraints registry tref.Trait hole
+                        |> List.fold (fun acc c -> Set.add c acc) acc)
+                    acc
+
+            // A member-level `(where ...)`: the constraints the member's own
+            // clause raised at this call — discharged here if the target is
+            // concrete, owed by the enclosing function if it is not.
+            tref.MemberConstraints
             |> List.fold
-                (fun acc hole ->
-                    leafConstraints registry tref.Trait hole
-                    |> List.fold (fun acc c -> Set.add c acc) acc)
+                (fun acc c ->
+                    leafConstraints registry c.TraitName c.TargetType
+                    |> List.fold (fun acc leaf -> Set.add leaf acc) acc)
                 acc
 
         // Packing a value into a trait box requires constructing the same
@@ -123,7 +134,7 @@ let collectTraitConstraints (env: Env) (body: TypedExpr) : TraitConstraint list 
     TypeVisitor.foldExpr step Set.empty body
     |> Set.toList
     |> List.map (fun (traitName, varName) ->
-        { TraitName = traitName; TargetType = TVar varName })
+        { TraitName = traitName; TargetType = TVar varName; Pins = [] })
 
 // --- INFERENCE ENGINE ---
 
@@ -1079,6 +1090,50 @@ let private defaultNumericLiterals (env: Env) : unit =
 
     openLiterals.Clear()
 
+/// The pin equations a constrained member's instantiation raised — one per
+/// `#:assoc` in its `(where ...)`, per call. Each says "this associated-type
+/// projection equals that type"; both sides may still be metavariables when
+/// queued, so they wait in line until resolution has fed them, exactly as a
+/// wanted does.
+let private pinEquations = ResizeArray<HMType * HMType * string * Lexer.Range>()
+
+/// Drops whatever pin equations are still queued; see `clearWanteds`.
+let clearPinEquations () : unit = pinEquations.Clear()
+
+/// Solves every pin equation whose two sides have said what they are.
+///
+/// An equation still blocked on a metavariable stays queued — the call that
+/// raised it has not resolved yet. One whose sides are settled, or rigid, is
+/// unified now: a projection on a rigid variable either reduces through the
+/// given equalities in `Registry.PinnedAssocs`, or unifies with the same
+/// projection on the other side, or genuinely does not hold — and the error
+/// then points at the call, naming the pin.
+let private solvePinEquations (env: Env) : unit =
+    let rec blocked t =
+        match t with
+        | TAssoc(_, _, TMeta _) -> true
+        | TAssoc(_, _, inner) -> blocked inner
+        | TCon(_, args) -> List.exists blocked args
+        | TTuple args -> List.exists blocked args
+        | TFun(args, ret, _) -> List.exists blocked args || blocked ret
+        | _ -> false
+
+    let pending = List.ofSeq pinEquations
+    pinEquations.Clear()
+
+    for (lhs, rhs, context, r) in pending do
+        let l = prune env.Registry lhs
+        let r' = prune env.Registry rhs
+
+        if blocked l || blocked r' then
+            pinEquations.Add(lhs, rhs, context, r)
+        else
+            try
+                unify env.Registry l r'
+            with ex ->
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos r}: %s{context}, does not hold at this call. %s{ex.Message}"
+
 /// Solves everything raised since the last call. Used at every point that is
 /// about to generalize, since a scheme must not be built over a constructor
 /// that resolution would still have pinned down.
@@ -1086,9 +1141,11 @@ let private defaultNumericLiterals (env: Env) : unit =
 /// Literals first. A trait obligation dispatches on its implementor, and one
 /// that is still an open literal — `(= 1 2)` — resolves to nothing at all, so
 /// the queue has to be drained after the numbers have said what they are.
+/// Pin equations last, after resolution has fed them.
 let solvePending (env: Env) : unit =
     defaultNumericLiterals env
     solveWanteds env (takeWanteds ())
+    solvePinEquations env
 
 /// Reads an impl's target as a pattern.
 ///
@@ -1242,11 +1299,13 @@ let private traitMethodArity (env: Env) (methodName: string) : int option =
 let private traitCallType (env: Env) (traitName: string) (methodName: string) (r: Range) : HMType * TraitRef =
     let info = Map.find traitName env.Registry.Traits
 
-    let methodType, holeArgs =
+    let methodType, holeArgs, memberConstraints =
         match info.Kind with
         | InlineTrait ->
             match Map.tryFind methodName info.Templates with
-            | Some tpl -> instantiateTemplateFresh tpl
+            | Some tpl ->
+                let t, holes = instantiateTemplateFresh tpl
+                t, holes, []
             | None -> failwithf $"Internal error: '%s{methodName}' is not a method of inline trait '%s{traitName}'"
         | InterfaceTrait ->
             // Instantiated from the trait's own signature rather than from
@@ -1270,23 +1329,58 @@ let private traitCallType (env: Env) (traitName: string) (methodName: string) (r
 
             let withAssoc = substTypeVars assocSubst sigType
 
+            // The member's own `(where ...)`, brought into the same variable
+            // space: a pin naming one of the trait's associated types becomes
+            // the projection at the same implementor variable — and so, below,
+            // at the same hole this very call is dispatching on.
+            let memberCs =
+                match Map.tryFind methodName info.MemberWheres with
+                | Some cs ->
+                    cs
+                    |> List.map (fun c ->
+                        { c with
+                            Pins = c.Pins |> List.map (fun (n, t) -> n, substTypeVars assocSubst t) })
+                | None -> []
+
             let vars =
-                implVar :: (freeTVars env.Registry withAssoc |> List.distinct |> List.filter ((<>) implVar))
+                let sigVars = freeTVars env.Registry withAssoc
+
+                let constraintVars =
+                    memberCs
+                    |> List.collect (fun c ->
+                        freeTVars env.Registry c.TargetType
+                        @ (c.Pins |> List.collect (fun (_, t) -> freeTVars env.Registry t)))
+
+                implVar :: ((sigVars @ constraintVars) |> List.distinct |> List.filter ((<>) implVar))
 
             // Through `instantiate` rather than a substitution of its own, so
             // that a `-?->` parameter becomes the one shared cell here as it
             // does at every other use site. Left `EPoly` it reaches `unify`,
             // which refuses it: instantiation is what removes it.
-            let instantiated, fresh, _ = instantiate env.Registry (Scheme(vars, [], withAssoc))
+            let instantiated, fresh, instantiatedCs =
+                instantiate env.Registry (Scheme(vars, memberCs, withAssoc))
+
+            // Each pin is an equation between a projection at this call and
+            // the type the member pinned it to. Queued rather than unified on
+            // the spot: both sides are metavariables until the surrounding
+            // expression has had its say.
+            for c in instantiatedCs do
+                for (assocName, pinType) in c.Pins do
+                    pinEquations.Add(
+                        TAssoc(c.TraitName, assocName, c.TargetType),
+                        pinType,
+                        $"the associated type #:%s{assocName} of '%s{c.TraitName}', which the where clause of '%s{methodName}' pins",
+                        r)
 
             // An implementor of arity zero is the hole, applied to nothing.
-            instantiated, [ List.head fresh, [] ]
+            instantiated, [ List.head fresh, [] ], instantiatedCs
 
     let tref =
         { Trait = traitName
           Method = methodName
           Holes = holeArgs |> List.map fst
           MethodType = methodType
+          MemberConstraints = memberConstraints
           Resolved = None }
 
     pushWanted
@@ -4103,6 +4197,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
               Method = writtenTrait
               Holes = [ hole ]
               MethodType = tfun [ hole ] TypeConstants.unitType
+              MemberConstraints = []
               Resolved = None }
 
         pushWanted
@@ -4747,7 +4842,7 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
             match sigOpt with
             | Some (_, _, constraints) ->
                 constraints |> List.map (fun (traitName, varName) ->
-                    { TraitName = originalName env.Registry traitName; TargetType = TVar varName })
+                    { TraitName = originalName env.Registry traitName; TargetType = TVar varName; Pins = [] })
             | None -> []
 
         // From here up to `exitLevel` below we are one level in: parameters
@@ -5552,7 +5647,7 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
         // Add constraints from DLL metadata
         let constraints = 
             constraintPairs |> List.map (fun (traitName, varName) ->
-                { TraitName = originalName env.Registry traitName; TargetType = TVar varName })
+                { TraitName = originalName env.Registry traitName; TargetType = TVar varName; Pins = [] })
         let schemeWithConstraints = Scheme(vars, constraints, schemeType)
         // The same hazard as a top-level definition over a method, arriving by
         // a different route and with nothing in this file to point at — so the
@@ -5602,6 +5697,14 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
         newEnv, sigs, [ TExtern(name, origin, ftype, r) ]
 
     | DTrait(traitName, implementorVar, holeArity, assocTypes, signatures, defaults, clrSpec, r) ->
+        // The member constraints ride the signature list; split them off here
+        // so the many readers of `(name, type)` pairs below keep their shape.
+        let memberWheres: Map<string, Parser.MemberConstraint list> =
+            signatures
+            |> List.choose (fun (name, _, cs) -> if List.isEmpty cs then None else Some(name, cs))
+            |> Map.ofList
+
+        let signatures = signatures |> List.map (fun (name, fType, _) -> name, fType)
         // The kind is derived, not declared: an implementor written applied to
         // arguments cannot be an interface, because there is no C# interface
         // that abstracts over a type constructor.
@@ -5790,6 +5893,123 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
             failwithf
                 $"Type Error at %s{Lexer.formatPos r}: trait '%s{traitName}' gives more than one default body for '%s{name}'."
 
+        // ---- Member-level `(where ...)` clauses -----------------------------
+        //
+        // Validated once, here, against the trait declaration, and resolved
+        // into the trait's own variable space: the constrained variable stays
+        // a `TVar`, and a pin's type may name the trait's associated types as
+        // bare variables, resolved to projections at each use the way the
+        // signatures themselves are. `traitCallType` instantiates these per
+        // call; the impl checker grants them as given equalities per body.
+        //
+        // The messages here are the member-level ones. The impl-level
+        // restriction — a constraint with associated types on an *impl* —
+        // stays refused with its own message: an impl is one class, and its
+        // constraints' associated types would have to be class parameters
+        // fixed before any call site exists. A method has no such problem: a
+        // generic method takes whatever each call site brings.
+        let resolvedMemberWheres: Map<string, TraitConstraint list> =
+            let resolved =
+                memberWheres
+                |> Map.map (fun methodName cs ->
+                    if kind <> InterfaceTrait then
+                        failwithf
+                            $"Type Error at %s{Lexer.formatPos r}: '%s{traitName}' is an inline trait, and only an interface trait's member may carry a where clause — an inline method has no dictionary slot to receive the evidence."
+
+                    let sigVars =
+                        match Map.tryFind methodName hmSignatures with
+                        | Some t -> freeTVars env.Registry t |> Set.ofList
+                        | None -> Set.empty
+
+                    cs
+                    |> List.map (fun (mc: Parser.MemberConstraint) ->
+                        let cTrait = originalName env.Registry mc.MCTrait
+                        let cr = mc.MCRange
+
+                        // Rule 1: a member's where constrains variables of its
+                        // own signature, and never the implementor. What the
+                        // implementor must satisfy is an impl-level matter.
+                        if mc.MCVar = "'" + implementorVar then
+                            failwithf
+                                $"Type Error at %s{Lexer.formatPos cr}: the where clause of '%s{methodName}' constrains '%%%s{implementorVar}', the trait's own implementor. A member's where may only constrain the member's own type variables; what the implementor satisfies is written on each impl."
+
+                        if not (Set.contains mc.MCVar sigVars) then
+                            let written = "%" + mc.MCVar.TrimStart('\'')
+
+                            failwithf
+                                $"Type Error at %s{Lexer.formatPos cr}: the where clause of '%s{methodName}' constrains '%s{written}', which its signature does not mention. A member may only constrain its own type variables."
+
+                        let cInfo =
+                            match Map.tryFind cTrait env.Registry.Traits with
+                            | Some i -> i
+                            | None ->
+                                failwithf
+                                    $"Unknown trait '%s{cTrait}' in the where clause of '%s{methodName}' at %s{Lexer.formatPos cr}"
+
+                        if cInfo.Kind = InlineTrait then
+                            failwithf
+                                $"Type Error at %s{Lexer.formatPos cr}: '%s{cTrait}' is an inline-only trait, so it cannot appear in a member's where clause. There is no dictionary for the call site to pass."
+
+                        // The colour decision, made rather than left: a
+                        // constraint whose methods suspend would make this
+                        // member a yield point its own arrow never declares.
+                        // Refused, so the wrong program is an error instead.
+                        let coloured =
+                            cInfo.Signatures
+                            |> Map.toList
+                            |> List.filter (fun (n, _) -> not (Naming.isSuspendingCopy n))
+                            |> List.tryPick (fun (n, t) ->
+                                match t with
+                                | TFun(_, _, EAsync) -> Some n
+                                | _ -> None)
+
+                        match coloured with
+                        | Some n ->
+                            failwithf
+                                $"Type Error at %s{Lexer.formatPos cr}: '%s{cTrait}' declares '%s{n}' with -bjo->, so calling it through this constraint is a yield point — one '%s{methodName}''s own arrow does not declare. A member's where clause may only name traits whose methods are ordinary."
+                        | None -> ()
+
+                        // Rule 2: every associated type pinned, by name, the
+                        // way a dyn type pins them — one rule shared between
+                        // the two is worth more than a laxer one that differs.
+                        for (pinName, _) in mc.MCPins do
+                            if not (List.contains pinName cInfo.AssociatedTypes) then
+                                let listed =
+                                    match cInfo.AssociatedTypes with
+                                    | [] -> "it has none"
+                                    | names -> "it has " + (names |> List.map (fun n -> "#:" + n) |> String.concat ", ")
+
+                                failwithf
+                                    $"Type Error at %s{Lexer.formatPos cr}: '%s{cTrait}' has no associated type #:%s{pinName} — %s{listed}."
+
+                        for (pinName, count) in mc.MCPins |> List.countBy fst |> List.filter (fun (_, n) -> n > 1) do
+                            ignore count
+
+                            failwithf
+                                $"Type Error at %s{Lexer.formatPos cr}: #:%s{pinName} is pinned more than once in '%s{methodName}''s where clause."
+
+                        for assocName in cInfo.AssociatedTypes do
+                            if not (mc.MCPins |> List.exists (fun (n, _) -> n = assocName)) then
+                                failwithf
+                                    $"Type Error at %s{Lexer.formatPos cr}: the associated type #:%s{assocName} of '%s{cTrait}' is not pinned in '%s{methodName}''s where clause. A member's constraint pins every one of them, the way a dyn type does — pin it to a fresh variable, #:%s{assocName} %%some-var, to say it does not matter."
+
+                        { TraitName = cTrait
+                          TargetType = TVar mc.MCVar
+                          Pins = mc.MCPins |> List.map (fun (n, t) -> n, resolveTypeAnnotation env.Registry t) }))
+
+            // A member with a `-?->` parameter has a derived suspending twin;
+            // the twin inherits the wheres, being the same source.
+            resolved
+            |> Map.toList
+            |> List.collect (fun (name, cs) ->
+                let twin = Naming.suspendingCopy name
+
+                if Map.containsKey twin hmSignatures then
+                    [ name, cs; twin, cs ]
+                else
+                    [ name, cs ])
+            |> Map.ofList
+
         let traitInfo =
             { ImplementorVar = implementorVar
               AssociatedTypes = assocTypes
@@ -5799,10 +6019,11 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
               Templates = templates
               Defaults = Map.ofList defaultBodies
               ClrConstraint = clrConstraint
+              MemberWheres = resolvedMemberWheres
               // Derived from signatures and computed on declaration: an
               // imported trait reconstructs its dyn-safety verdict without
               // serializing it to metadata.
-              DynSafe = dynSafety traitName implementorVar kind clrConstraint hmSignatures }
+              DynSafe = dynSafety traitName implementorVar kind clrConstraint hmSignatures resolvedMemberWheres }
 
         let newEnv = addTrait traitName traitInfo env
         let newEnv = registerDynImpl traitName traitInfo newEnv
@@ -5878,7 +6099,7 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
     | DTypeRec(typeDefs, r) ->
         let newEnv, keyed = registerTypeDefs true typeDefs env
         newEnv, sigs, [ TTypeRec(keyed, r) ]
-    | DImpl(traitName, targetTypeExpr, assocBindings, whereClause, methods, r) ->
+    | DImpl(traitName, targetTypeExpr, assocBindings, whereClause, implMethodWheres, methods, r) ->
         // The trait may be written under a spelling a `prefix` produced; the
         // registries are keyed on the name the `def/trait` gave it.
         let traitName = originalName env.Registry traitName
@@ -6016,7 +6237,7 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
                         failwithf
                             $"Type Error at %s{Lexer.formatPos r}: '%s{cTrait}' has associated types, which an implementation's where clause cannot carry yet. Constrain a function instead, where the association becomes a type parameter."
 
-                    { TraitName = cTrait; TargetType = TVar varName })
+                    { TraitName = cTrait; TargetType = TVar varName; Pins = [] })
 
         // Defaults are spliced in *here*, before anything looks at the method
         // list, so that everything below — the definition-site check, the
@@ -6044,6 +6265,48 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
             |> List.map snd
 
         let methods = methods @ inheritedMethods
+
+        // A hand-written body for a constrained member must repeat the
+        // member's `(where ...)` as `(: name (where ...))` beside its defun —
+        // required rather than inferred: it is more to write, and what the
+        // impl reader then sees is a method that takes evidence. The trait's
+        // own clause stays the authority for what is *checked*; the
+        // repetition has to name the same traits.
+        for name in definedMethodNames do
+            let traitWheres =
+                Map.tryFind name traitInfo.MemberWheres |> Option.defaultValue []
+
+            let written =
+                implMethodWheres |> List.tryFind (fun (n, _) -> n = name) |> Option.map snd
+
+            match traitWheres, written with
+            | [], None -> ()
+            | [], Some _ ->
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos r}: '%s{name}' carries no where clause in trait '%s{traitName}', so this implementation may not add one. Remove the (: %s{name} (where ...)) form."
+            | cs, None ->
+                let spelled = cs |> List.map (fun c -> c.TraitName) |> String.concat ", "
+
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos r}: trait '%s{traitName}' declares '%s{name}' with a where clause (over %s{spelled}), and an implementation writing it by hand repeats the clause: add (: %s{name} (where ...)) beside the defun, spelled as the trait spells it."
+            | cs, Some ws ->
+                let want = cs |> List.map (fun c -> c.TraitName) |> List.sort |> String.concat ", "
+
+                let got =
+                    ws
+                    |> List.map (fun (w: Parser.MemberConstraint) -> originalName env.Registry w.MCTrait)
+                    |> List.sort
+                    |> String.concat ", "
+
+                if want <> got then
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos r}: the where clause written for '%s{name}' does not match the trait's. The trait constrains %s{want}; this one names %s{got}."
+
+        // A marker beside no method is a leftover.
+        for (name, _) in implMethodWheres do
+            if not (Set.contains name definedMethodNames) then
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos r}: (: %s{name} (where ...)) has no hand-written '%s{name}' beside it in this implementation. The clause rides the method; remove it, or write the method."
 
         /// Does the trait declare this method with a callback of either colour?
         let takesEitherColour (name: string) =
@@ -6158,16 +6421,99 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
                         | InlineTrait -> implTarget.FixedPrefix |> List.collect typeVarsOf |> Set.ofList
                         | InterfaceTrait -> freeTVars regEnv.Registry targetType |> Set.ofList
                     let remainingVars = freeTVars regEnv.Registry expectedSignature |> List.distinct
+
+                    // The member's own `(where ...)`, if the trait gave it one.
+                    // Its variables — the constrained one and any a pin
+                    // introduced — are method-level generics exactly like a
+                    // signature's own, so they join the same instantiation.
+                    //
+                    // A variable a *pin alone* introduced is renamed out of
+                    // the way first: the trait spelled `#:cursor %k` in its
+                    // own namespace, and nothing stops this impl's target
+                    // using the same letter — `(MapBuilder %k %v)` — which
+                    // would quietly weld the member's cursor to the class's
+                    // key. The constrained variable itself appears in the
+                    // signature and must stay spelled as the signature spells
+                    // it, or the pins would miss the parameter they are about.
+                    let memberCs =
+                        let raw = Map.tryFind name traitInfo.MemberWheres |> Option.defaultValue []
+
+                        // The signature's own method-level variables — not the
+                        // class's, which reach `remainingVars` through the
+                        // substituted implementor and are exactly the capture
+                        // being avoided.
+                        let sigVars =
+                            remainingVars
+                            |> List.filter (fun v -> not (Set.contains v classLevelVars))
+                            |> Set.ofList
+
+                        let rename =
+                            raw
+                            |> List.collect (fun c ->
+                                freeTVars regEnv.Registry c.TargetType
+                                @ (c.Pins |> List.collect (fun (_, t) -> freeTVars regEnv.Registry t)))
+                            |> List.distinct
+                            |> List.filter (fun v ->
+                                not (Set.contains v sigVars) && not (Map.containsKey v substitutions))
+                            |> List.map (fun v -> v, TVar(v + "__mw"))
+                            |> Map.ofList
+
+                        raw
+                        |> List.map (fun c ->
+                            { c with
+                                TargetType = substTypeVars rename c.TargetType
+                                Pins = c.Pins |> List.map (fun (pn, t) -> pn, substTypeVars rename t) })
+
+                    let memberCsVars =
+                        memberCs
+                        |> List.collect (fun c ->
+                            freeTVars regEnv.Registry c.TargetType
+                            @ (c.Pins |> List.collect (fun (_, t) -> freeTVars regEnv.Registry t)))
+                        |> List.distinct
+
                     //
                     // `freshMetaInner`: `checkDecl` below generalizes at this
                     // level, so the method's own variables must lie one
                     // level in to be included in the scheme again.
                     let freshSubst =
-                        remainingVars
-                        |> List.filter (fun v -> not (Set.contains v classLevelVars))
+                        (remainingVars @ memberCsVars)
+                        |> List.distinct
+                        |> List.filter (fun v ->
+                            not (Set.contains v classLevelVars)
+                            && not (Map.containsKey v substitutions))
                         |> List.map (fun v -> v, freshMetaInner ())
                         |> Map.ofList
                     let instantiatedSig = substTypeVars freshSubst expectedSignature
+
+                    // Trait-space → this impl's space: the implementor and its
+                    // associated types by `substitutions`, the member's own
+                    // variables by the same fresh metas the signature got.
+                    let substituteAll (t: HMType) =
+                        substTypeVars freshSubst (applySubst t)
+
+                    // The pins, granted as *given* equalities while this body
+                    // is checked: here, where the implementor is known, the
+                    // projection at the member's variable simply is the pinned
+                    // type — `(assoc Iterable elem %s)` is `%added`, which
+                    // this impl bound. `Unification.prune` reads these where
+                    // it would otherwise leave the projection standing.
+                    let givenPins =
+                        memberCs
+                        |> List.collect (fun c ->
+                            let target = substituteAll c.TargetType
+
+                            c.Pins
+                            |> List.map (fun (assocName, pinT) ->
+                                c.TraitName, assocName, target, substituteAll pinT))
+
+                    let regEnv =
+                        if givenPins.IsEmpty then
+                            regEnv
+                        else
+                            { regEnv with
+                                Registry =
+                                    { regEnv.Registry with
+                                        PinnedAssocs = givenPins @ regEnv.Registry.PinnedAssocs } }
 
                     // The impl's definer against the trait's arrow.
                     //
@@ -6209,6 +6555,79 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
                     let _, _, tDecls = checkDecl regEnv methodSigs methodDecl
                     let tDecl = List.head tDecls // The fully verified TDefun node
 
+                    // A member-level `(where ...)` becomes the method's own
+                    // leading dictionary parameters, mirrored on the interface
+                    // slot by `Codegen`. Injected here rather than in
+                    // `Lowering` — which looks constraints up under a
+                    // binding's name, and a trait method's binding carries
+                    // none — because here the pinned associated types are
+                    // known in this impl's own variable space: the dictionary
+                    // for `(Iterable %s #:elem %added)` is an
+                    // `Iterable<T_s, %added-as-bound-here, T_k>`.
+                    let tDecl =
+                        if memberCs.IsEmpty then
+                            tDecl
+                        else
+                            match tDecl with
+                            | TDefun(n, tyArgs, args, kwArgs, restArg, retType, effect, body, mr) ->
+                                let dictParams =
+                                    memberCs
+                                    |> List.map (fun c ->
+                                        let target = prune regEnv.Registry (substituteAll c.TargetType)
+
+                                        let varName =
+                                            match target with
+                                            | TVar v -> v
+                                            | other -> DotNetInterop.showType other
+
+                                        let cInfo = Map.find c.TraitName regEnv.Registry.Traits
+
+                                        let assocArgs =
+                                            cInfo.AssociatedTypes
+                                            |> List.map (fun a ->
+                                                match c.Pins |> List.tryFind (fun (pn, _) -> pn = a) with
+                                                | Some(_, pinT) -> prune regEnv.Registry (substituteAll pinT)
+                                                | None -> prune regEnv.Registry (TAssoc(c.TraitName, a, target)))
+
+                                        dictParamName c.TraitName varName, TCon(c.TraitName, target :: assocArgs))
+
+                                // A pin to a fresh variable introduces a
+                                // generic the method's own signature never
+                                // mentions, so generalization cannot have
+                                // reached it. Settle any meta still open in
+                                // a dictionary's type as one more
+                                // method-level generic; the body shares the
+                                // cell, so every use follows.
+                                let extraVars = ResizeArray<string>()
+
+                                let rec settle t =
+                                    match prune regEnv.Registry t with
+                                    | TMeta m ->
+                                        let v = $"'mw%d{m.Id}"
+                                        m.Value <- Some(TVar v)
+                                        extraVars.Add v
+                                        TVar v
+                                    | TCon(n2, args2) -> TCon(n2, List.map settle args2)
+                                    | TTuple args2 -> TTuple(List.map settle args2)
+                                    | TFun(args2, ret2, eff2) -> TFun(List.map settle args2, settle ret2, eff2)
+                                    | TAssoc(tn, an, inner) -> TAssoc(tn, an, settle inner)
+                                    | other -> other
+
+                                let dictParams = dictParams |> List.map (fun (dn, t) -> dn, settle t)
+
+                                TDefun(
+                                    n,
+                                    (tyArgs @ List.ofSeq extraVars) |> List.distinct,
+                                    dictParams @ args,
+                                    kwArgs,
+                                    restArg,
+                                    retType,
+                                    effect,
+                                    body,
+                                    mr
+                                )
+                            | other -> other
+
                     // What the body turned out to need of the impl's own type
                     // variables, against what the impl declared. A method is not
                     // a generic function: there are no dictionary parameters to
@@ -6230,7 +6649,13 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
                                 implConstraints
                                 |> List.exists (fun d -> d.TraitName = c.TraitName && d.TargetType = TVar varName)
 
-                            if not declared then
+                            // A member-level `(where ...)` also supplies a
+                            // dictionary — as the method's own leading
+                            // parameter rather than a field of the class.
+                            let memberDeclared =
+                                memberCs |> List.exists (fun d -> d.TraitName = c.TraitName)
+
+                            if not (declared || memberDeclared) then
                                 // Spelled as the source spells a type variable,
                                 // because the message asks for a line to be
                                 // typed and `'a` is not how one is written.
@@ -6375,7 +6800,7 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
         // — the impl class in the other assembly has no `Instance` to reach for.
         let implConstraints =
             whereClause
-            |> List.map (fun (cTrait, varName) -> { TraitName = cTrait; TargetType = TVar varName })
+            |> List.map (fun (cTrait, varName) -> { TraitName = cTrait; TargetType = TVar varName; Pins = [] })
 
         let implTarget = implTargetOf traitName traitInfo targetType implConstraints r
         addImplementation traitName typeKey targetType implTarget hmAssocBindings env, sigs, []
@@ -6741,7 +7166,7 @@ and private checkDeclGroup
                             match kind with
                             | InterfaceTrait ->
                                 signatures
-                                |> List.map (fun (name, fType) -> name, resolveTypeAnnotation acc.Registry fType)
+                                |> List.map (fun (name, fType, _) -> name, resolveTypeAnnotation acc.Registry fType)
                                 |> Map.ofList
                             | InlineTrait -> Map.empty
 
@@ -6764,7 +7189,11 @@ and private checkDeclGroup
                               Templates = Map.empty
                               Defaults = Map.empty
                               ClrConstraint = clr
-                              DynSafe = dynSafety traitName implementorVar kind clr hmSignatures }
+                              // Member wheres are resolved by the full
+                              // `DTrait` pass; this pre-registration only
+                              // exists so signatures can be parsed.
+                              MemberWheres = Map.empty
+                              DynSafe = dynSafety traitName implementorVar kind clr hmSignatures Map.empty }
                             acc
                     with _ ->
                         acc
@@ -6817,7 +7246,7 @@ and private checkDeclGroup
             // templates by `DTrait` instead, and there is nothing to inject here.
             | DTrait(_, _, holeArity, _, signatures, _, _, r) when holeArity = 0 ->
                 signatures
-                |> List.map (fun (name, ftype) ->
+                |> List.map (fun (name, ftype, _) ->
                     name, (resolveSigAt r ftype, Some ftype, []))
             | _ -> [])
         |> Map.ofList
@@ -6833,7 +7262,7 @@ and private checkDeclGroup
         decls
         |> List.collect (function
             | DTrait(traitName, _, _, _, signatures, _, _, _) ->
-                traitName :: (signatures |> List.map fst)
+                traitName :: (signatures |> List.map (fun (n, _, _) -> n))
             | _ -> [])
         |> Set.ofList
 
@@ -6946,7 +7375,7 @@ and private checkDeclGroup
                     let constraints =
                         constraintPairs
                         |> List.map (fun (traitName, varName) ->
-                            { TraitName = originalName acc.Registry traitName; TargetType = TVar varName })
+                            { TraitName = originalName acc.Registry traitName; TargetType = TVar varName; Pins = [] })
 
                     let bound =
                         addBinding
@@ -6983,7 +7412,7 @@ and private checkDeclGroup
                     // carries the *call site's* range, so the line reported is
                     // the derive form rather than the field that asked for the
                     // comparison.
-                    | DImpl(traitName, target, _, _, _, ir) ->
+                    | DImpl(traitName, target, _, _, _, _, ir) ->
                         try
                             checkDecl currEnv currSigs d
                         with ex when Diagnostics.isDiagnostic ex ->

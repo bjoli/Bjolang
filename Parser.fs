@@ -398,6 +398,23 @@ type ClassImportSpec =
       Exceptions: string list
       Range: Range }
 
+/// A trait constraint written in a *member's* `(where ...)` clause inside a
+/// `def/trait`: the trait, the constrained variable, and every associated
+/// type of that trait pinned by keyword —
+/// `(: into! (-> %c %s void) (where (Iterable %s #:elem %added #:cursor %k)))`.
+///
+/// Distinct from the `(string * string)` pairs a function's or an impl's
+/// `where` carries, because only a member's constraint may pin associated
+/// types. A method-level constraint becomes method-level type parameters and
+/// a dictionary argument at each call site; an impl-level one would have to
+/// become class parameters fixed at impl-declaration time, which is why the
+/// impl-level restriction stays.
+type MemberConstraint =
+    { MCTrait: string
+      MCVar: string
+      MCPins: (string * FType) list
+      MCRange: Range }
+
 type Decl =
     | DSignature of string * FType * (string * string) list * Range
     | DImport of ImportSpec list * Range
@@ -450,7 +467,10 @@ type Decl =
     // The member bindings ride here rather than in `Signatures` so that the
     // signature list keeps its shape, and with it every site that reads a
     // trait's method names.
-    | DTrait of string * string * int * string list * (string * FType) list * Decl list * (string * FType list * (string * string) list) option * Range
+    //
+    // Each signature carries the member's own `(where ...)` constraints —
+    // empty for the ordinary member — see `MemberConstraint`.
+    | DTrait of string * string * int * string list * (string * FType * MemberConstraint list) list * Decl list * (string * FType list * (string * string) list) option * Range
     /// A binding an imported module publishes: the name it is visible under
     /// here, where it actually lives, its type and its constraints.
     ///
@@ -508,7 +528,14 @@ type Decl =
     //
     // The constraints are the impl's `(where (Trait %v) ...)`, spelled exactly
     // as a signature's are: this impl holds only where those do.
-    | DImpl of string * FType * (string * FType) list * (string * string) list * Decl list * Range
+    // DImpl (TraitName, TargetType, AssocBindings, WhereClause, MethodWheres, Methods, Range)
+    //
+    // `MethodWheres` is the impl-side spelling of a member-level `(where ...)`:
+    // an impl that writes a constrained member by hand repeats the clause as
+    // `(: name (where ...))` beside its `defun`, and is refused if it does not.
+    // The trait's own clause stays the authority for what is checked; the
+    // repetition is for the reader and for the diagnostic.
+    | DImpl of string * FType * (string * FType) list * (string * string) list * (string * MemberConstraint list) list * Decl list * Range
 
     // A declaration-only implementation: it records that the target type
     // implements the trait, and what its associated types are, without carrying
@@ -524,7 +551,7 @@ type Decl =
 let declRange (decl: Decl) : Range =
     match decl with
     | DDef(_, _, r) | DDefun(_, _, _, _, r) | DDefDouble(_, _, _, _, r) | DDefTuple(_, _, r) | DDefMutable(_, _, r)
-    | DSignature(_, _, _, r) | DType(_, r) | DTypeRec(_, r) | DTrait(_, _, _, _, _, _, _, r) | DImpl(_, _, _, _, _, r)
+    | DSignature(_, _, _, r) | DType(_, r) | DTypeRec(_, r) | DTrait(_, _, _, _, _, _, _, r) | DImpl(_, _, _, _, _, _, r)
     | DImplExtern(_, _, _, _, r) | DInlineImpl(_, _, _, _, _, _, _, r)
     | DModule(_, _, r) | DImport(_, r) | DAlias(_, _, r) | DExport(_, r) | DReExport(_, r)
     | DExtern(_, _, _, _, r) | DImportAlias(_, _, _, r)
@@ -965,6 +992,43 @@ let parseRecordField (s: SExpr) : RecordField =
         | _ -> failwithf $"Invalid record field at %s{Lexer.formatPos r}: a field is written (: name type), optionally followed by #:mutable."
     | _ -> failwithf $"Invalid record field at %s{Lexer.formatPos r}"
 
+/// The `(where ...)` of a trait member: `(TraitName %var #:assoc type ...)`
+/// constraints, each associated type of the constrained trait pinned by
+/// keyword — the same grammar a `dyn` type uses, and for the same reason: the
+/// constraint has to say what the associated types are before any implementor
+/// is known to answer for them. Pinning to a fresh variable (`#:cursor %k`)
+/// is how a member says "don't care"; that variable becomes another
+/// method-level generic.
+let parseMemberWhere (traitName: string) (constraintExprs: SExpr list) (wr: Range) : MemberConstraint list =
+    constraintExprs
+    |> List.map (fun c ->
+        match c with
+        | SList(StrippedSymbol cTrait :: varExpr :: pinItems, cr) ->
+            let varName =
+                match varExpr with
+                | SAtom { Token = QuotedSymbol v } -> "'" + v
+                | SAtom { Token = Symbol v } -> v
+                | _ ->
+                    failwithf
+                        $"Syntax error in def/trait '%s{traitName}' at %s{Lexer.formatPos cr}: a member's where clause constrains a type variable, as in (where (Iterable %%s #:elem %%item))."
+
+            let rec pins items =
+                match items with
+                | [] -> []
+                | SAtom { Token = Keyword assocName } :: typeExpr :: rest ->
+                    (assocName, parseType typeExpr) :: pins rest
+                | _ ->
+                    failwithf
+                        $"Syntax error in def/trait '%s{traitName}' at %s{Lexer.formatPos cr}: every associated type of '%s{cTrait}' is pinned by name in a member's where clause, as in (where (%s{cTrait} %%s #:elem %%item)) — the same way a dyn type pins them."
+
+            { MCTrait = cTrait
+              MCVar = varName
+              MCPins = pins pinItems
+              MCRange = cr }
+        | _ ->
+            failwithf
+                $"Syntax error in def/trait '%s{traitName}' at %s{Lexer.formatPos wr}: a member's where clause holds (TraitName %%var #:assoc type ...) constraints.")
+
 let parseTypeDefHead (head: SExpr) : string * string list =
     match head with
     | SAtom { Token = Symbol name } -> name, []
@@ -1260,7 +1324,7 @@ let private deriveImpl (traitName: string) (td: TypeDef) : Decl =
 
     let constraints = td.TypeArgs |> List.map (fun a -> traitName, "'" + a)
 
-    DImpl(traitName, target, [], constraints, deriveMethods traitName td, r)
+    DImpl(traitName, target, [], constraints, [], deriveMethods traitName td, r)
 
 /// `(type/derive (Eq) typedef ...)`, as the declarations it stands for.
 let private parseDerive (isRec: bool) (traits: SExpr list) (typeDefForms: SExpr list) (r: Range) : Decl list =
@@ -4824,8 +4888,8 @@ let rec boundNames (decls: Decl list) : Set<string> =
                     | Record _
                     | Opaque _ -> []))
         | DTrait(name, _, _, _, signatures, defaults, _, _) ->
-            (name :: (signatures |> List.map fst)) @ Set.toList (boundNames defaults)
-        | DImpl(_, _, _, _, methods, _) -> Set.toList (boundNames methods)
+            (name :: (signatures |> List.map (fun (n, _, _) -> n))) @ Set.toList (boundNames defaults)
+        | DImpl(_, _, _, _, _, methods, _) -> Set.toList (boundNames methods)
         | DExtern(visible, _, _, _, _) -> [ visible ]
         | DAlias(visible, _, _) -> [ visible ]
         | DImportAlias(visible, _, _, _) -> [ visible ]
@@ -4868,8 +4932,8 @@ let rec mapDeclExprs (f: Expr -> Expr) (d: Decl) : Decl =
         DDefDouble(name, List.map mapArg args, f syncBody, f bjoBody, r)
     | DTrait(name, v, arity, assoc, signatures, defaults, clr, r) ->
         DTrait(name, v, arity, assoc, signatures, defaults |> List.map (mapDeclExprs f), clr, r)
-    | DImpl(name, target, assoc, constraints, methods, r) ->
-        DImpl(name, target, assoc, constraints, methods |> List.map (mapDeclExprs f), r)
+    | DImpl(name, target, assoc, constraints, methodWheres, methods, r) ->
+        DImpl(name, target, assoc, constraints, methodWheres, methods |> List.map (mapDeclExprs f), r)
     | DModule(name, inner, r) -> DModule(name, inner |> List.map (mapDeclExprs f), r)
     | DInlineImpl(traitName, method_, ctor, origin, ps, body, qual, r) ->
         DInlineImpl(traitName, method_, ctor, origin, ps, f body, qual, r)
@@ -5290,12 +5354,19 @@ let rec tryParseDecl (s: SExpr) : Decl option =
             // inference; here it is only read.
             | SList (SAtom { Token = Colon } :: SAtom { Token = Symbol methodName } :: typeExpr
                      :: SAtom { Token = Keyword "clr-member" } :: SAtom { Token = Symbol memberName } :: [], _) ->
-                signatures <- (methodName, parseType typeExpr) :: signatures
+                signatures <- (methodName, parseType typeExpr, []) :: signatures
                 clrMembers <- (methodName, memberName) :: clrMembers
+
+            // Match: (: methodName signatureExpr (where ...)) — a member with
+            // constraints of its own, each associated type pinned by keyword.
+            // See `MemberConstraint` and `parseMemberWhere`.
+            | SList (SAtom { Token = Colon } :: SAtom { Token = Symbol methodName } :: typeExpr
+                     :: SList (SAtom { Token = Symbol "where" } :: constraintExprs, wr) :: [], _) ->
+                signatures <- (methodName, parseType typeExpr, parseMemberWhere traitName constraintExprs wr) :: signatures
 
             // Match: (: methodName signatureExpr)
             | SList (SAtom { Token = Colon } :: SAtom { Token = Symbol methodName } :: typeExpr :: [], _) ->
-                signatures <- (methodName, parseType typeExpr) :: signatures
+                signatures <- (methodName, parseType typeExpr, []) :: signatures
 
             // Match: (defun (methodName args...) body) — a default body, used by
             // any impl that does not write this method itself. The signature is
@@ -5348,6 +5419,7 @@ let rec tryParseDecl (s: SExpr) : Decl option =
 
         let mutable assocBindings = []
         let mutable constraints = []
+        let mutable methodWheres = []
         let mutable methods = []
 
         for item in flattenBegins body do
@@ -5375,6 +5447,13 @@ let rec tryParseDecl (s: SExpr) : Decl option =
                         failwithf
                             $"Syntax error in impl for '%s{traitName}' at %s{Lexer.formatPos wr}: a where clause holds (TraitName %%var) constraints, and the variable must be one the impl's own target names."
 
+            // Match: (: methodName (where ...)) — the impl-side repetition of
+            // a member-level where clause, required beside a hand-written
+            // body for a constrained member. See `DImpl`.
+            | SList (SAtom { Token = Colon } :: SAtom { Token = Symbol methodName }
+                     :: SList (SAtom { Token = Symbol "where" } :: constraintExprs, wr) :: [], _) ->
+                methodWheres <- (methodName, parseMemberWhere traitName constraintExprs wr) :: methodWheres
+
             // Match: (defun ...)
             | SList (SAtom { Token = Symbol "defun" } :: _, _) as defunExpr ->
                 methods <- parseDecl defunExpr :: methods
@@ -5401,7 +5480,17 @@ let rec tryParseDecl (s: SExpr) : Decl option =
                 failwithf
                     $"Syntax error in impl for '%s{traitName}' at %s{Lexer.formatPos (getRange item)}: Expected (type ...), (where ...), (defun ...), a (begin ...) of those, or a macro producing methods."
 
-        Some(DImpl(traitName, targetType, List.rev assocBindings, List.rev constraints, List.rev methods, r))
+        Some(
+            DImpl(
+                traitName,
+                targetType,
+                List.rev assocBindings,
+                List.rev constraints,
+                List.rev methodWheres,
+                List.rev methods,
+                r
+            )
+        )
 
     // Parse: (impl/extern (Foldable (Vec 'a)) (type 'item 'a))
     //

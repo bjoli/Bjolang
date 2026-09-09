@@ -450,7 +450,31 @@ let metadata
                                 |> Option.map (fun b -> $" #:clr-member %s{b.MemberName}")
                                 |> Option.defaultValue ""
 
-                            $"(: %s{mName} %s{Codegen.serializeHMType mType}%s{clrMember})")
+                            // A member-level `(where ...)` travels with the
+                            // signature, pins and all: the importing module
+                            // re-derives the constraint the way it re-derives
+                            // everything else about the trait, by parsing
+                            // this. Left out, the member would check
+                            // unconstrained there and fail at codegen.
+                            let whereStr =
+                                match Map.tryFind mName info.MemberWheres with
+                                | Some cs when not cs.IsEmpty ->
+                                    let parts =
+                                        cs
+                                        |> List.map (fun c ->
+                                            let pins =
+                                                c.Pins
+                                                |> List.map (fun (pn, t) ->
+                                                    $"#:%s{pn} %s{Codegen.serializeHMType t}")
+                                                |> String.concat " "
+
+                                            $"(%s{c.TraitName} %s{Codegen.serializeHMType c.TargetType} %s{pins})")
+                                        |> String.concat " "
+
+                                    $" (where %s{parts})"
+                                | _ -> ""
+
+                            $"(: %s{mName} %s{Codegen.serializeHMType mType}%s{clrMember}%s{whereStr})")
 
                 // Default bodies travel with the trait, so that an
                 // importing module can write an implementation of it and
@@ -744,9 +768,45 @@ let metadata
             // mention one, and a declaration is read in the order it is written.
             let typeDecls = classTypeDecls @ (typesToExport |> List.map serializeTypeDef)
 
+            // Dependency order, not map order. A member-level `(where ...)`
+            // names another trait, and the reader resolves the clause when it
+            // registers the declaration — so the named trait has to be read
+            // first. The map hands traits back alphabetically, which is how
+            // `Addable!` would arrive ahead of the `Iterable` its `add-all!`
+            // constrains over. A dependency published by another module is
+            // already registered by the time these are read, so only the
+            // traits in this very list order each other.
             let traitDecls =
-                exportedTraits
-                |> Map.toList
+                let dependsOn (info: TypedAST.TraitInfo) =
+                    info.MemberWheres
+                    |> Map.toList
+                    |> List.collect (fun (_, cs) -> cs |> List.map (fun c -> c.TraitName))
+                    |> Set.ofList
+
+                let rec order pending placed acc =
+                    match pending with
+                    | [] -> List.rev acc
+                    | _ ->
+                        let ready, blocked =
+                            pending
+                            |> List.partition (fun (_, info) ->
+                                dependsOn info
+                                |> Set.forall (fun d ->
+                                    Set.contains d placed
+                                    || not (pending |> List.exists (fun (n, _) -> n = d))))
+
+                        match ready with
+                        // A cycle, which two member clauses would have to form
+                        // between them. Emit what is left as it came and let
+                        // the reader's own diagnostic name the problem.
+                        | [] -> List.rev acc @ blocked
+                        | _ ->
+                            order
+                                blocked
+                                (ready |> List.fold (fun s (n, _) -> Set.add n s) placed)
+                                (List.rev ready @ acc)
+
+                order (exportedTraits |> Map.toList) Set.empty []
                 |> List.map (fun (traitName, info) -> serializeTrait traitName info)
 
             // Implementations follow the traits they belong to: reading

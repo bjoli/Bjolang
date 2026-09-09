@@ -171,7 +171,13 @@ let private landingPad (env: Env) (tref: TraitRef) (ctor: string) (tyArgs: HMTyp
         | Some target -> not target.Constraints.IsEmpty
         | None -> false
 
-    if conditional then
+    // A member-level `(where ...)` is the same story as a conditional impl:
+    // the call takes a dictionary argument built out of evidence, and that is
+    // `Lowering`'s job. (A *splice* of such a member never needs one — the
+    // body is re-checked source, and its trait calls resolve at the concrete
+    // types — but a landing pad is a call to the compiled method, which
+    // declares the parameter.)
+    if conditional || not tref.MemberConstraints.IsEmpty then
         { expr with Node = TTraitCall(tref, args, kwArgs) }
     else
 

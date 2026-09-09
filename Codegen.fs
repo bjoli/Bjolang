@@ -4360,14 +4360,72 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
             // The raw trait signature uses unprimed names (e.g. "col"),
             // but the TVars in the resolved HMType are primed (e.g. "'col").
             let classTyVarNames = classTyParamsList |> List.map (fun v -> "'" + v)
+
+            // Each member's own `(where ...)`, if the trait gave it one: the
+            // slot takes one dictionary ahead of the ordinary arguments, and
+            // the impl methods carry the same leading parameter — injected at
+            // inference — so slot and override agree.
+            let memberWheres =
+                match Map.tryFind name ctx.Registry.Traits with
+                | Some info -> info.MemberWheres
+                | None -> Map.empty
+
             for kvp in signatures do
                 let mName = kvp.Key
                 let mType = kvp.Value
-                // Method-level generics: TVars in this method that aren't class-level
+
+                // The dictionary parameter types, in the trait's own variable
+                // space: the constrained variable is a method generic, a pin
+                // naming an associated type of *this* trait is the class-level
+                // parameter that answers it, and a pin to a fresh variable is
+                // one more method generic.
+                let dictParamTypes =
+                    match Map.tryFind mName memberWheres with
+                    | Some cs ->
+                        cs
+                        |> List.map (fun c ->
+                            let assocOrder =
+                                match Map.tryFind c.TraitName ctx.Registry.Traits with
+                                | Some i -> i.AssociatedTypes
+                                | None -> []
+
+                            let assocArgs =
+                                assocOrder
+                                |> List.map (fun a ->
+                                    match c.Pins |> List.tryFind (fun (pn, _) -> pn = a) with
+                                    | Some(_, t) -> t
+                                    | None -> TAssoc(c.TraitName, a, c.TargetType))
+
+                            TCon(c.TraitName, c.TargetType :: assocArgs))
+                    | None -> []
+
+                // Method-level generics: TVars in this method that aren't
+                // class-level — including any a member's where clause
+                // introduced, which appear only in its dictionary's type.
                 let methodVars =
-                    collectTVars mType
+                    (collectTVars mType @ (dictParamTypes |> List.collect collectTVars))
                     |> List.distinct
                     |> List.filter (fun v -> not (List.contains v classTyVarNames))
+
+                // A constrained member's slot renames its method generics out
+                // of everyone's way. A C# method type parameter *shadows* a
+                // class one of the same name, so a slot generic named `T_k`
+                // read at an impl class `Addable_MapBuilder<T_k, T_v>` would
+                // quietly rebind the class's `T_k` inside the member's own
+                // signature — and the override then does not match its slot.
+                // Interface matching ignores the names, so renaming here costs
+                // nothing anywhere else.
+                let mType, dictParamTypes, methodVars =
+                    if dictParamTypes.IsEmpty then
+                        mType, dictParamTypes, methodVars
+                    else
+                        let renameSubst =
+                            methodVars |> List.map (fun v -> v, TVar(v + "__w")) |> Map.ofList
+
+                        substTypeVars renameSubst mType,
+                        dictParamTypes |> List.map (substTypeVars renameSubst),
+                        methodVars |> List.map (fun v -> v + "__w")
+
                 let methodTyParamsStr =
                     if methodVars.IsEmpty then ""
                     else "<" + (methodVars |> List.map typeParamName |> String.concat ", ") + ">"
@@ -4386,10 +4444,21 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                     append ctx (sanitizeIdent mName)
                     append ctx methodTyParamsStr
                     append ctx "("
+
+                    let mutable first = true
+
+                    for i, dictType in List.indexed dictParamTypes do
+                        if not first then append ctx ", "
+                        first <- false
+                        append ctx (typeToString dictType)
+                        append ctx $" _dict%d{i}"
+
                     for i, arg in List.indexed args do
-                        if i > 0 then append ctx ", "
+                        if not first then append ctx ", "
+                        first <- false
                         append ctx (typeToString arg)
                         append ctx $" arg%d{i}"
+
                     appendLine ctx ");"
                 | _ -> () // Should be function
         )

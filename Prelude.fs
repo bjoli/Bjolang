@@ -135,7 +135,7 @@ let syntaxType = TCon("Syntax", [])
 /// calculation so bootstrap trait infos agree with source definitions.
 let private withDynSafety (traitName: string) (info: TraitInfo) : TraitInfo =
     { info with
-        DynSafe = dynSafety traitName info.ImplementorVar info.Kind info.ClrConstraint info.Signatures }
+        DynSafe = dynSafety traitName info.ImplementorVar info.Kind info.ClrConstraint info.Signatures info.MemberWheres }
 
 /// `Num`, before any source has declared it.
 ///
@@ -164,6 +164,7 @@ let private bootstrapNum : TraitInfo =
                 { InterfaceName = "System.Numerics.INumber"
                   Args = [ TVar "'a" ]
                   Members = Map.empty }
+          MemberWheres = Map.empty
           DynSafe = Ok() }
 
 /// `Ordered`, which is what `<` asks of its operands.
@@ -209,9 +210,9 @@ let private bootstrapIntegral : TraitInfo =
 /// `TVar "a"` and not `"'a"`: it has to align positionally with the scheme's
 /// own variable list, which is how `Lowering` and `collectTraitConstraints`
 /// both read a constraint back out.
-let private numeric = [ { TraitName = "Num"; TargetType = TVar "a" } ]
-let private ordered = [ { TraitName = "Ordered"; TargetType = TVar "a" } ]
-let private integral = [ { TraitName = "Integral"; TargetType = TVar "a" } ]
+let private numeric = [ { TraitName = "Num"; TargetType = TVar "a"; Pins = [] } ]
+let private ordered = [ { TraitName = "Ordered"; TargetType = TVar "a"; Pins = [] } ]
+let private integral = [ { TraitName = "Integral"; TargetType = TVar "a"; Pins = [] } ]
 
 /// The builtins that park the thread they are called on.
 ///
@@ -266,6 +267,7 @@ let elsewhereBuiltins : Set<string> = Set.ofList [ "blocking"; "spawn-thunk" ]
 
 let emptyRegistry : TraitRegistry =
     { LocalTraits = Set.empty
+      PinnedAssocs = []
       // The types with no declaring module, which is exactly what `typeKey`
       // leaves unkeyed. One list, in `Naming`, so the registry that holds them
       // and the rule that exempts them cannot drift apart.

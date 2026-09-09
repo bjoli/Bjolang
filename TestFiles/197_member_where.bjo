@@ -1,0 +1,62 @@
+;; Member-level `(where ...)`, end to end, on a trait of this file's own.
+;;
+;; The stdlib's `add-all!` is the same shape; what this file pins down beyond
+;; `196_addable` is the *hand-written* member — with the `(: name (where ...))`
+;; clause required beside it — and that the default and the override coexist
+;; across impls of one trait.
+(import (std prelude))
+(import (std simpletest))
+
+(def/trait (Sink %c)
+  (type %added)
+  (: put! (-> %c %added void))
+  (: total (-> %c int))
+  ;; The member: any Iterable whose element is this sink's element.
+  (: fill! (-> %c %s void)
+     (where (Iterable %s #:elem %added #:cursor %k)))
+  (defun (fill! c xs)
+    (let go ((cur (iterable-start xs)))
+      (unless (iterable-done? xs cur)
+        (put! c (iterable-current xs cur))
+        (go (iterable-next xs cur))))))
+
+;; Inherits the default body.
+(type (: Tally (Record (: cell (VecBuilder int)))))
+
+(impl (Sink Tally)
+  (type %added int)
+  (defun (put! t x) (vecbuilder-add! (record-ref t cell) x))
+  (defun (total t) (length (vecbuilder->vec (record-ref t cell)))))
+
+;; Writes the member by hand — the clause beside it, as required — and
+;; deliberately differently: it also counts what it added.
+(type (: Counter (Record (: cell (VecBuilder int)) (: seen (VecBuilder int)))))
+
+(impl (Sink Counter)
+  (type %added int)
+  (defun (put! c x) (vecbuilder-add! (record-ref c cell) x))
+  (defun (total c) (length (vecbuilder->vec (record-ref c cell))))
+  (: fill! (where (Iterable %s #:elem %added #:cursor %k)))
+  (defun (fill! c xs)
+    (for-each (fun (e)
+                (vecbuilder-add! (record-ref c seen) 1)
+                (put! c e))
+              xs)))
+
+(defun (main)
+  ;; The default, at three source shapes.
+  (def t (Tally (cell (vecbuilder-empty))))
+  (fill! t (list 1 2 3))
+  (expect "default from a List" (total t) 3)
+  (fill! t [4 5])
+  (expect "default from a Vec" (total t) 5)
+  (fill! t (range 0 3))
+  (expect "default from a Range" (total t) 8)
+
+  ;; The hand-written member, and its own bookkeeping.
+  (def c (Counter (cell (vecbuilder-empty)) (seen (vecbuilder-empty))))
+  (fill! c (list 7 8))
+  (expect "hand-written fill" (total c) 2)
+  (expect "and it saw what it added"
+          (length (vecbuilder->vec (record-ref c seen))) 2)
+  0)

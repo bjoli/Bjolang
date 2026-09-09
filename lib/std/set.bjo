@@ -206,6 +206,18 @@
   (defun (collector-step c acc x) (setbuilder-add! acc x) acc)
   (defun (collector-finish c acc) (setbuilder->set acc)))
 
+;; The mutable sinks, one element at a time. `Addable!` is the prelude's
+;; trait; this module owns the types, which is what licenses the impls.
+(impl (Addable! (SetBuilder %a))
+      (type %elem %a)
+      (defun (add! sb elem)
+        (setbuilder-add! sb elem)))
+
+(impl (Addable! (TransientSet %a))
+      (type %elem %a)
+      (defun (add! ts elem)
+        (transientset-add! ts elem)))
+
 ;; Equality for sets.
 (impl (Eq (Set %a))
   (where (Eq %a))

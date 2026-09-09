@@ -1,0 +1,30 @@
+;; A hand-written body for a constrained member, without the clause beside it.
+;;
+;; The trait's `(where ...)` stays the authority for what is checked, but an
+;; implementation writing such a member by hand has to repeat the clause as
+;; `(: name (where ...))` beside its defun — required rather than inferred, so
+;; the impl's reader can see the method takes evidence.
+
+;; EXPECT-ERROR: declares 'fill!' with a where clause
+;; EXPECT-ERROR: add (: fill! (where ...))
+
+(import (std prelude))
+
+(def/trait (Sink %c)
+  (type %added)
+  (: put! (-> %c %added void))
+  (: fill! (-> %c %s void)
+     (where (Iterable %s #:elem %added #:cursor %k)))
+  (defun (fill! c xs)
+    (let go ((cur (iterable-start xs)))
+      (unless (iterable-done? xs cur)
+        (put! c (iterable-current xs cur))
+        (go (iterable-next xs cur))))))
+
+(impl (Sink (VecBuilder %a))
+  (type %added %a)
+  (defun (put! b x) (vecbuilder-add! b x))
+  (defun (fill! b xs)
+    (for-each (fun (e) (put! b e)) xs)))
+
+(defun (main) 0)

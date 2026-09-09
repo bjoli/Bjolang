@@ -156,8 +156,26 @@ let rec prune (registry: TraitRegistry) (t: HMType) : HMType =
             | Some resolved -> prune registry resolved
             | None ->
                 failwithf $"Missing implementation of %s{traitName} for %s{DotNetInterop.showType prunedImpl}"
-        // If still generic, keep deferred
-        | _ -> TAssoc(traitName, assocName, prunedImpl)
+        // Still generic. A member-level `(where ...)` may have pinned it: the
+        // given equalities in force while a constrained member's body is
+        // checked (see `TraitRegistry.PinnedAssocs`). Matched by rigid name
+        // or by metavariable identity, never structurally — a structural
+        // match would equate projections the pin never spoke for.
+        | _ ->
+            let pinned =
+                registry.PinnedAssocs
+                |> List.tryPick (fun (tn, an, impl, rhs) ->
+                    if tn = traitName && an = assocName then
+                        match prune registry impl, prunedImpl with
+                        | TVar a, TVar b when a = b -> Some rhs
+                        | TMeta a, TMeta b when System.Object.ReferenceEquals(a, b) -> Some rhs
+                        | _ -> None
+                    else
+                        None)
+
+            match pinned with
+            | Some rhs -> prune registry rhs
+            | None -> TAssoc(traitName, assocName, prunedImpl)
     | _ -> t
 
 /// The implementation `traitName` selects at `t`, with the substitution that
@@ -286,7 +304,11 @@ let instantiate
         constraints
         |> List.map (fun c ->
             { c with
-                TargetType = walk c.TargetType })
+                TargetType = walk c.TargetType
+                // A member constraint's pins instantiate under the same
+                // substitution as the type they constrain, or the equation
+                // they carry would relate variables of two different calls.
+                Pins = c.Pins |> List.map (fun (name, t) -> name, walk t) })
 
     instantiatedType, boundFreshTypes, instantiatedConstraints
 

@@ -403,6 +403,22 @@ Mutable builders (~SchemeListBuilder~) for efficiently constructing Scheme lists
 - ~(listbuilder-length builder)~ : Returns the count of elements in the builder.
 - ~(listbuilder->list builder)~ : Freezes the builder into an immutable ~List~.
 
+** Addable! — the mutable sinks
+One trait over every builder and transient, so that filling a collection does not care which one it is filling:
+
+#+BEGIN_SRC scheme
+(def/trait (Addable! %coll)
+  (type %elem)
+  (: add! (-> %coll %elem void))
+  (: add-all! (-> %coll %s void)
+     (where (Iterable %s #:elem %elem #:cursor %k))))
+#+END_SRC
+
+- ~(add! sink elem)~ : One element. For a map-shaped sink the element is a pair, ~(add! mb (k . v))~.
+- ~(add-all! sink iterable)~ : Everything an ~Iterable~ holds, in the order it yields. Generic on both sides — the source may be a ~List~, a ~Vec~, a ~Range~, a string, a ~Map~ — and the member-level ~(where ...)~ is what ties the source's element to the sink's (see *Member-level where clauses* in ~Syntax.org~). A mismatch is refused at the call.
+
+Implementations ship for ~VecBuilder~, ~ListBuilder~, ~StringBuilder~, ~MapBuilder~ and ~TransientMap~ in the prelude, and for the set and ordered-collection builders and transients in ~(std set)~, ~(std orderedset)~ and ~(std orderedmap)~ — each beside the type it fills.
+
 ** Maps (~Map~)
 High-performance immutable CHAMP (Compressed Hash-Array Mapped Prefix-tree) maps.
 

@@ -1,0 +1,29 @@
+;; A box over a trait one of whose members carries a where clause.
+;;
+;; The constrained member's slot takes a dictionary the box's forwarding
+;; method would have to thread through. Mechanical, but not built — refused
+;; rather than half-forwarded.
+
+;; EXPECT-ERROR: does not yet forward the dictionary
+
+(import (std prelude))
+
+(def/trait (Sink %c)
+  (type %added)
+  (: put! (-> %c %added void))
+  (: fill! (-> %c %s void)
+     (where (Iterable %s #:elem %added #:cursor %k)))
+  (defun (fill! c xs)
+    (let go ((cur (iterable-start xs)))
+      (unless (iterable-done? xs cur)
+        (put! c (iterable-current xs cur))
+        (go (iterable-next xs cur))))))
+
+(impl (Sink (VecBuilder %a))
+  (type %added %a)
+  (defun (put! b x) (vecbuilder-add! b x)))
+
+(: swallow (-> (dyn Sink #:added int) void))
+(defun (swallow s) (put! s 1))
+
+(defun (main) 0)

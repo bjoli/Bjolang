@@ -262,8 +262,8 @@ let rec normalizeDecl (decl: Decl) : Decl =
         // A trait default is a `DDefun` whose body is checked once per impl, so
         // it holds real code and is normalized like any other.
         DTrait(name, implementor, arity, assocTypes, signatures, List.map normalizeDecl defaults, clr, r)
-    | DImpl(traitName, target, assocTypes, constraints, methods, r) ->
-        DImpl(traitName, target, assocTypes, constraints, List.map normalizeDecl methods, r)
+    | DImpl(traitName, target, assocTypes, constraints, methodWheres, methods, r) ->
+        DImpl(traitName, target, assocTypes, constraints, methodWheres, List.map normalizeDecl methods, r)
     // An inline template's body is untyped source read back out of another
     // module's metadata, and that module was compiled by this same pipeline —
     // so it has been normalized already, at its origin.

@@ -676,6 +676,25 @@ type DotNetConstructorMetadata =
       ParameterTypes: HMType list
       Exceptions: string list }
 
+/// One "this type implements that trait" demand: on a function's signature, on
+/// an impl's `(where ...)`, or on a dictionary parameter derived from either.
+///
+/// Declared ahead of the typed-expression chain because a `TraitRef` carries
+/// a member's instantiated constraints.
+type TraitConstraint =
+    { TraitName: string
+      TargetType: HMType
+      /// The constrained trait's associated types, pinned by name — the
+      /// `#:elem %added` of a member-level `(where (Iterable %s #:elem
+      /// %added #:cursor %k))`. Empty everywhere else: a function's or an
+      /// impl's `where` has no pin syntax, and a trait with associated types
+      /// is refused there.
+      ///
+      /// Each pin is an equation, `(assoc Trait name target) = type`, queued
+      /// when the member is instantiated and solved when both sides have
+      /// said what they are.
+      Pins: (string * HMType) list }
+
 type TypedExpr =
     { Type: HMType
       Range: Range
@@ -954,6 +973,11 @@ and TraitRef =
       /// arguments cannot tell a parameter the trait let choose from one it
       /// declared `-bjo->`.
       MethodType: HMType
+      /// The member's own `(where ...)` constraints, instantiated with the
+      /// same substitution as `MethodType`. Empty for the ordinary member.
+      /// `Lowering` builds one dictionary argument per entry, and constraint
+      /// collection propagates them to an enclosing generic function.
+      MemberConstraints: TraitConstraint list
       mutable Resolved: (string * HMType list) option }
 
 /// How a trait is compiled.
@@ -995,12 +1019,6 @@ let noParams: LocalFun = { Params = []; KeywordArgs = []; RestArg = None }
 /// that was written without keyword or rest arguments.
 let onlyParams (names: string list) : LocalFun =
     { Params = names; KeywordArgs = []; RestArg = None }
-
-/// One "this type implements that trait" demand: on a function's signature, on
-/// an impl's `(where ...)`, or on a dictionary parameter derived from either.
-type TraitConstraint =
-    { TraitName: string
-      TargetType: HMType }
 
 /// The target of an `impl`, kept as a pattern rather than a bare head name.
 ///
@@ -1178,6 +1196,16 @@ type TraitInfo =
       /// it costs no parameter.
       ClrConstraint: ClrConstraintInfo option
 
+      /// Each member's own `(where ...)` constraints, by method name — empty
+      /// for a trait whose members carry none, which is nearly all of them.
+      ///
+      /// Kept in the trait declaration's own variable space: the target is
+      /// the member's type variable (`TVar 's`), and a pin's type may name
+      /// the trait's associated types as bare `TVar`s (`'added`), resolved to
+      /// `TAssoc` projections at each use the way the signatures themselves
+      /// are.
+      MemberWheres: Map<string, TraitConstraint list>
+
       /// Dynamic safety (boxability) verdict for `(dyn Trait ...)`.
       ///
       /// Derived directly from signatures and never serialized. Evaluated on
@@ -1246,6 +1274,20 @@ type TraitRegistry =
       /// is a backstop; it is not tolerable for blankets, where the whole point
       /// is that only the trait's own module may declare one.
       TraitOrigins: Map<string, string>
+      /// The pin equations in force while a constrained member's body is
+      /// checked — the *given* equalities its `(where ...)` grants.
+      ///
+      /// Each entry reads "the associated type `assoc` of `trait` at
+      /// `implementor` is `type`": `("Iterable", "elem", ?s, %a)` while the
+      /// body of an `add-all!` whose where pins `#:elem` is checked at an
+      /// impl where `%added = %a`. `Unification.prune` consults these where
+      /// it would otherwise leave a projection standing, which is what lets
+      /// the body unify `(assoc Iterable elem %s)` with the concrete element
+      /// type no ordinary unifier could equate.
+      ///
+      /// Empty outside those bodies; matched by rigid variable name or by
+      /// metavariable identity, never structurally.
+      PinnedAssocs: (string * string * HMType * HMType) list
       /// Inlineable method bodies, keyed `TraitName * MethodName * Ctor`.
       ///
       /// The constructor is part of the key on purpose: `(TraitName, MethodName)`
@@ -1863,7 +1905,18 @@ let dynSafety
     (kind: TraitKind)
     (clr: ClrConstraintInfo option)
     (signatures: Map<string, HMType>)
+    (memberWheres: Map<string, TraitConstraint list>)
     : Result<unit, string> =
+
+    // A constrained member's interface slot takes a dictionary argument the
+    // box's forwarding method would have to thread through. Mechanical, but
+    // not built — refused for now rather than half-forwarded.
+    if not (Map.isEmpty memberWheres) then
+        let named = memberWheres |> Map.toList |> List.map fst |> String.concat ", "
+
+        Error
+            $"'%s{traitName}' gives %s{named} a where clause of its own, and a box does not yet forward the dictionary such a member takes. Dispatch through the trait unboxed instead."
+    else
 
     let implVar = TVar("'" + implementorVar)
 

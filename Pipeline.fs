@@ -386,7 +386,7 @@ let private surfaceOf (moduleName: string) (decls: Decl list) (macros: ModuleMet
         decls
         |> List.collect (function
             | DTrait(traitName, _, _, _, signatures, _, _, _) ->
-                signatures |> List.map (fun (m, _) -> m, traitName)
+                signatures |> List.map (fun (m, _, _) -> m, traitName)
             | _ -> [])
         |> Map.ofList }
 
@@ -656,7 +656,7 @@ let private registerMacros
         let traitMethods =
             decls
             |> List.collect (function
-                | DTrait(_, _, _, _, signatures, _, _, _) -> signatures |> List.map fst
+                | DTrait(_, _, _, _, signatures, _, _, _) -> signatures |> List.map (fun (n, _, _) -> n)
                 | _ -> [])
             |> Set.ofList
 

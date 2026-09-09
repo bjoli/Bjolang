@@ -721,6 +721,29 @@ They can be used to bind overloaded .NET methods resolved per implementation:
 
 Defaults are exported with the trait. If a default cannot be serialized, it is not published and importing modules must provide their own implementation, which is enforced at their ~impl~.
 
+*** Member-level where clauses
+A member of an interface trait may carry a ~(where ...)~ of its own, written after its type. Each constraint pins every associated type of the trait it names — the way a ~dyn~ type does — and a pin may name the enclosing trait's own associated type, which is what ties the two traits together:
+
+#+BEGIN_SRC scheme
+(def/trait (Addable! %coll)
+  (type %elem)
+  (: add! (-> %coll %elem void))
+  (: add-all! (-> %coll %s void)
+     (where (Iterable %s #:elem %elem #:cursor %k)))
+  (defun (add-all! coll xs) ...))
+#+END_SRC
+
+~#:elem %elem~ says the element the source yields *is* the element the sink takes — an equation no function-level ~where~ can state, checked at every call site and reported there when it fails. Pinning to a fresh variable (~#:cursor %k~) says the association does not matter; that variable becomes one more method-level generic.
+
+The member's dictionary is a leading parameter of the method itself, supplied per call — which is exactly what an impl-level constraint could not do: an impl is one class, and a class's constraints are fixed before any call site exists. The impl-level restriction on constraints with associated types therefore stays.
+
+The rules:
+- a member's ~where~ constrains variables of its own signature, never the implementor;
+- every associated type of a constrained trait is pinned by name;
+- a trait whose methods suspend (~-bjo->~) may not be named — the call would be a yield point the member's own arrow does not declare;
+- an implementation writing such a member by hand repeats the clause as ~(: name (where ...))~ beside its ~defun~; one that leaves the member out inherits the default with no ceremony;
+- ~(dyn ...)~ over a trait with a constrained member is refused for now: the box does not yet forward the dictionary.
+
 *** Blanket implementations
 An implementation may apply to all types lacking a specific implementation by naming a bare type variable:
 

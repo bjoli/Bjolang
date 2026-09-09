@@ -3,6 +3,49 @@
 
 What each change guarantees, and what it leaves open.
 
+* A trait member may carry a ~where~ of its own, and ~add-all!~ exists
+
+A member of an interface trait can now be constrained, with every associated
+type of the constrained trait pinned by keyword — the grammar ~dyn~ already
+uses, for the same reason:
+
+#+BEGIN_SRC scheme
+(def/trait (Addable! %coll)
+  (type %elem)
+  (: add! (-> %coll %elem void))
+  (: add-all! (-> %coll %s void)
+     (where (Iterable %s #:elem %elem #:cursor %k)))
+  (defun (add-all! coll xs) ...))
+#+END_SRC
+
+~#:elem %elem~ is the point: the element the source yields *is* the element
+the sink takes, an equation neither a function's ~where~ nor an impl's could
+state. An impl-level constraint over a trait with associated types stays
+refused — an impl is one class, and its constraints' associated types would
+have to be class parameters fixed before any call site exists. A *method* has
+no such problem: the C# interface slot takes one generic parameter per
+member-level variable and a leading dictionary argument, each call site
+supplies the evidence, and a pin that fails is reported at the call that
+raised it, naming the pin and both types.
+
+What this bought immediately: ~(add-all! sink iterable)~ in the prelude, one
+default body walking any ~Iterable~ into any ~Addable!~ sink — every builder
+and transient, filled from a ~List~, a ~Vec~, a ~Range~, a string or a ~Map~,
+with the element types agreeing by construction. The sink impls live beside
+their types in ~(std set)~, ~(std orderedset)~ and ~(std orderedmap)~ as well
+as the prelude.
+
+The edges, decided rather than left:
+- an implementation writing a constrained member by hand repeats the clause
+  as ~(: name (where ...))~ beside its ~defun~, and is refused without it;
+- a constraint over a trait with a ~-bjo->~ method is refused — the call
+  would be a yield point the member's own arrow never declares;
+- ~(dyn ...)~ over a trait with a constrained member is refused for now: the
+  box does not yet forward the dictionary;
+- exported traits serialize their members' clauses and are written in
+  dependency order, so an importer re-derives the constraint before the trait
+  that carries it.
+
 * ~Ord~ materializes too, and equality's last holes are closed
 
 An ~Ord~ implementation for a declared type is now emitted into the type as

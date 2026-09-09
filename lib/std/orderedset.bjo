@@ -272,6 +272,18 @@
   (defun (collector-step c acc x) (orderedsetbuilder-add! acc x) acc)
   (defun (collector-finish c acc) (orderedsetbuilder->orderedset acc)))
 
+;; The mutable sinks, one element at a time. `Addable!` is the prelude's
+;; trait; this module owns the types, which is what licenses the impls.
+(impl (Addable! (OrderedSetBuilder %a))
+      (type %elem %a)
+      (defun (add! sb elem)
+        (orderedsetbuilder-add! sb elem)))
+
+(impl (Addable! (TransientOrderedSet %a))
+      (type %elem %a)
+      (defun (add! ts elem)
+        (transientorderedset-add! ts elem)))
+
 ;; Equality for ordered sets.
 (impl (Eq (OrderedSet %a))
   (where (Eq %a))
