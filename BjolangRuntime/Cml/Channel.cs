@@ -17,7 +17,15 @@ using System.Threading;
 
 namespace Bjoml;
 
-public class Channel<T> : IEvent<T>
+/// <summary>
+/// A synchronous, unbuffered channel.
+///
+/// It IS its own receive event: <see cref="Publish"/> is <see cref="PublishReceive"/>
+/// and <see cref="TryNow"/> is <see cref="TryDirectReceive"/>, so `(chan-recv ch)`
+/// hands back the channel rather than wrapping it. A send has to carry the value,
+/// so it still needs an object of its own.
+/// </summary>
+public class Channel<T> : IEvent<T>, INowable<T>
 {
     private readonly object _lock = new();
     private PutOp<T>? _giversHead;
@@ -29,6 +37,8 @@ public class Channel<T> : IEvent<T>
     {
         PublishReceive(state, eventId, onSync);
     }
+
+    bool INowable<T>.TryNow(out T value) => TryDirectReceive(out value);
 
     public ChannelReceiveAwaiter<T> GetAwaiter() => new(this);
 

@@ -21,6 +21,29 @@ public interface IEvent<T>
     void Publish(SyncState sharedState, int eventId, Action<T> onSync);
 }
 
+/// <summary>
+/// Can this event commit immediately, with no CML machinery at all — and if so,
+/// commit it.
+///
+/// Answering true PERFORMS the rendezvous, so an implementation must not be
+/// asked unless the caller is prepared to have committed. Only the two channel
+/// operations implement it: everything else either cannot commit without
+/// publishing or has no partner to commit against.
+///
+/// It is a type test at the point of use, never a name the compiler knows. That
+/// is what keeps the fast path attached to the VALUE rather than to the syntax,
+/// so a channel operation that reached <c>sync</c> through a helper, a record
+/// field or a <c>guard</c> still takes it.
+///
+/// Skipping the cancellation race when this answers true is not a change of
+/// meaning: the token branch is published second and publish order is priority,
+/// so an event that is available has already beaten it.
+/// </summary>
+internal interface INowable<T>
+{
+    bool TryNow(out T value);
+}
+
 public readonly struct Unit
 {
     public static readonly Unit Value = default;

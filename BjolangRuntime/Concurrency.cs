@@ -272,40 +272,28 @@ public static partial class BjolangRuntime {
     public static IEvent<Unit> chansubsend<T>(Channel<T> ch, T value) => new SendEvent<T>(ch, value);
 
     /// `(chan-recv ch)` — the event of taking one message.
-    public static IEvent<T> chansubrecv<T>(Channel<T> ch) => new RecvEvent<T>(ch);
-
-    /// Can this event commit immediately, with no CML machinery at all?
     ///
-    /// Only the two channel operations answer it, and answering yes *performs*
-    /// the rendezvous. <see cref="sync"/> asks before it builds the
-    /// cancellation race, because a race the event is going to win is a race
-    /// worth not running: the token branch is published second and publish
-    /// order is priority, so an available event already beat it.
+    /// The channel itself. `Channel<T>` implements `IEvent<T>` with
+    /// `Publish = PublishReceive` and `INowable<T>` with `TryNow =
+    /// TryDirectReceive`, which is everything a receive event has to be, so
+    /// wrapping it only allocated an object to forward through.
     ///
-    /// The event types are classes here rather than BjoML's own operation
-    /// structs because those structs box on the way into `IEvent<T>` anyway —
-    /// the allocation is the same one, and a class can carry this interface.
-    private interface INowable<T> {
-        bool TryNow(out T value);
-    }
+    /// Bjolang cannot tell: `(Chan a)` and `(Event a)` are different types in
+    /// the language whatever the runtime representation is, and this returns
+    /// the static type an event has to have.
+    public static IEvent<T> chansubrecv<T>(Channel<T> ch) => ch;
 
-    private sealed class RecvEvent<T> : IEvent<T>, INowable<T> {
-        private readonly Channel<T> _ch;
-        internal RecvEvent(Channel<T> ch) => _ch = ch;
-
-        public void Publish(SyncState state, int eventId, System.Action<T> onSync) =>
-            _ch.Receive().Publish(state, eventId, onSync);
-
-        public bool TryNow(out T value) => _ch.TryDirectReceive(out value);
-    }
-
+    /// A send has to carry the value, so unlike a receive it cannot be the
+    /// channel. A class rather than BjoML's own operation struct because that
+    /// struct boxes on the way into `IEvent<Unit>` anyway — the allocation is
+    /// the same one, and a class can carry `INowable`.
     private sealed class SendEvent<T> : IEvent<Unit>, INowable<Unit> {
         private readonly Channel<T> _ch;
         private readonly T _value;
         internal SendEvent(Channel<T> ch, T value) { _ch = ch; _value = value; }
 
         public void Publish(SyncState state, int eventId, System.Action<Unit> onSync) =>
-            _ch.Send(_value).Publish(state, eventId, onSync);
+            _ch.PublishSend(state, eventId, _value, onSync);
 
         public bool TryNow(out Unit value) {
             value = default;

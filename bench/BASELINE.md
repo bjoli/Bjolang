@@ -69,9 +69,45 @@ Spawn burst is the narrowest at 1.34x, and 4x on allocation. The extra bytes are
 the scope's `Attach` — a `Cml.Sync` per fiber, so a `SyncState` and a closure
 each — which phase 2d deletes.
 
+## Phase 2a — `chan-recv` returns the channel
+
+`Channel<T>` implements `IEvent<T>` and now `INowable<T>` as well, so
+`(chan-recv ch)` hands back `ch` and the `RecvEvent` wrapper is gone.
+
+| benchmark | Bjolang ns/op | Bjolang B/op | vs phase 1 |
+|---|---|---|---|
+| Ring | 113 | 256 | −8 ns, −24 B |
+| Ring, scoped | 104 | 257 | −24 ns, −24 B |
+| Spawn burst | 126 | 353 | unchanged |
+| Skewed choose(8) | 236 | 256 | unchanged |
+
+C# reference this run: ring 44.7, spawn burst 90.8, skewed choose 67.4 ns/op.
+
+The 24 bytes are exactly the `RecvEvent` — an object header and one reference
+field. That it is 24 and not 48 on the ring, where each trip does a receive and
+a send, is the point: a send still allocates, because it has to carry the value.
+
+Skewed choose does not move and should not. Its event is built once outside the
+loop, so the eight wrappers it dropped were eight allocations in total rather
+than eight per op.
+
+### A note on the noise floor
+
+Two columns in this file cannot be compared between runs and are recorded only
+so that a real change is not mistaken for one of them:
+
+- The C# **spawn burst B/op** is nondeterministic — 38 to 89 B/op across runs of
+  the same binary — because the number of `SpawnBatch` arrays a burst allocates
+  depends on how the batches happened to fill. The Bjolang spawn row is steady
+  at 353 because the scope's per-child bookkeeping dominates it.
+- Absolute ns/op drifts a few percent between sessions on this machine.
+  Phase-to-phase claims here rest on the allocation columns, which are
+  deterministic everywhere except the row named above, and on differences large
+  enough to survive a re-run.
+
 ## Test suites
 
-Green at phase 0 and again at phase 1.
+Green at phase 0, phase 1 and phase 2a.
 
 - Bjolang `./run_tests.sh`: 185 groups, 213 error tests, 8 warning tests, 22
   codegen assertions, 3 REPL transcripts, 3 staleness checks.
