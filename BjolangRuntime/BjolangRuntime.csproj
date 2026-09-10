@@ -6,13 +6,31 @@
     <NuGetAudit>false</NuGetAudit>
   </PropertyGroup>
   <ItemGroup>
+    <!-- The CML layer is compiled straight in: `Cml\*.cs` is swept up by this
+         project's own glob and wants no removal. Only the projects beside it do
+         — a test runner, a stress harness and a sample, each with a `Main`. -->
+    <Compile Remove="Cml\Tests\**" />
+    <Compile Remove="Cml\StressTest\**" />
+    <Compile Remove="Cml\Example\**" />
+    <None Remove="Cml\Tests\**" />
+    <None Remove="Cml\StressTest\**" />
+    <None Remove="Cml\Example\**" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The regression tests need to observe parked operations to get a reliable
+         "this fiber has suspended" signal. -->
+    <InternalsVisibleTo Include="Tests" />
+    <!-- The diagnostic harness benchmarks the direct TimeoutEvent against the
+         retained combinator specification (Cml.TimeoutViaCombinators). -->
+    <InternalsVisibleTo Include="Diag" />
+  </ItemGroup>
+  <ItemGroup>
     <!-- Every one of these is a submodule with a project of its own. Without
          the removals their sources are swept up by this project's own glob and
          compiled a second time. -->
     <Compile Remove="RrbList\**" />
     <Compile Remove="Map\**" />
     <Compile Remove="SchemeList\**" />
-    <Compile Remove="Bjoml\**" />
     <Compile Remove="Set\**" />
     <Compile Remove="OrderedSet\**" />
     <Compile Remove="OrderedMap\**" />
@@ -20,7 +38,6 @@
     <EmbeddedResource Remove="RrbList\**" />
     <EmbeddedResource Remove="Map\**" />
     <EmbeddedResource Remove="SchemeList\**" />
-    <EmbeddedResource Remove="Bjoml\**" />
     <EmbeddedResource Remove="Set\**" />
     <EmbeddedResource Remove="OrderedSet\**" />
     <EmbeddedResource Remove="OrderedMap\**" />
@@ -28,7 +45,6 @@
     <None Remove="RrbList\**" />
     <None Remove="Map\**" />
     <None Remove="SchemeList\**" />
-    <None Remove="Bjoml\**" />
     <None Remove="Set\**" />
     <None Remove="OrderedSet\**" />
     <None Remove="OrderedMap\**" />
@@ -44,6 +60,5 @@
     <ProjectReference Include="Set/Set/Set.csproj" />
     <ProjectReference Include="OrderedSet/OrderedSet/OrderedSet.csproj" />
     <ProjectReference Include="OrderedMap/OrderedMap/OrderedMap.csproj" />
-    <ProjectReference Include="Bjoml/Bjoml/Bjoml.csproj" />
   </ItemGroup>
 </Project>

@@ -28,7 +28,7 @@ namespace CmlBench;
 
 public static class Program
 {
-    const int Reps = 3;
+    const int Reps = 5;
 
     public static void Main(string[] args)
     {
@@ -40,7 +40,7 @@ public static class Program
             $".NET {Environment.Version}, ProcessorCount={Environment.ProcessorCount}, " +
             $"ServerGC={System.Runtime.GCSettings.IsServerGC}");
         Console.WriteLine();
-        Console.WriteLine($"{"benchmark",-22} {"ns/op",10} {"B/op",10}");
+        Console.WriteLine($"{"benchmark",-22} {"ns/op",10} {"B/op",10}   (min of {Reps})");
 
         Warmup();
 
@@ -60,8 +60,18 @@ public static class Program
 
     // ---- harness -----------------------------------------------------------
 
-    /// Median of <see cref="Reps"/>, not mean: a single rep that lands during a
-    /// gen-2 collection is an outlier, and averaging spreads it over the row.
+    /// Minimum of <see cref="Reps"/>, with the median printed beside it.
+    ///
+    /// The skewed-choose row on a multi-CCD part is bimodal: the sender and the
+    /// receiver either land on the same chiplet or they do not, and the two modes
+    /// are about 70 and 150 ns/op with nothing in between. A median over an odd
+    /// number of reps therefore reports whichever mode won the coin toss, which
+    /// makes two phases incomparable. The minimum is the machine at its least
+    /// disturbed and is stable across runs, so it is the column phases are
+    /// compared on; the median is printed so that a row whose two modes have
+    /// genuinely moved apart is still visible.
+    ///
+    /// Allocation needs neither: it is deterministic, and every rep agrees.
     static void Bench(string name, int n, Func<(TimeSpan, long)> body)
     {
         var ns = new double[Reps];
@@ -76,7 +86,8 @@ public static class Program
 
         Array.Sort(ns);
         Array.Sort(bytes);
-        Console.WriteLine($"{name,-22} {ns[Reps / 2],10:F1} {bytes[Reps / 2],10:F1}");
+        Console.WriteLine(
+            $"{name,-22} {ns[0],10:F1} {bytes[0],10:F1}   (median {ns[Reps / 2]:F1})");
     }
 
     static (TimeSpan, long) Measured(Action body)

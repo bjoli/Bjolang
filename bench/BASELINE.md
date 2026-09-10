@@ -6,7 +6,7 @@ The numbers the BjoML merge is measured against. Every phase appends a section.
 
 | | |
 |---|---|
-| CPU | AMD Ryzen 9 7900, 12C/24T |
+| CPU | AMD Ryzen 9 7900, 12C/24T, 2 CCDs |
 | RAM | 61 GB |
 | OS | Fedora 44, kernel 7.1.8-200.fc44.x86_64 |
 | .NET | 10.0.107, ServerGC on |
@@ -15,30 +15,40 @@ The numbers the BjoML merge is measured against. Every phase appends a section.
 ## How to reproduce
 
 ```sh
-dotnet build bench/Cml/Cml.Bench.csproj -c Release
-dotnet bench/Cml/bin/Release/net10.0/CmlBench.dll
-
-dotnet bin/Release/net10.0/Bjolang.dll bench/bjolang/cmlbench.bjo
-dotnet bench/bjolang/cmlbench.exe
+./bench/run.sh
 ```
 
-Both suites report `ns/op` and `B/op`, three reps, median. The C# suite is the
-raw CML layer; the Bjolang suite is the same topology through `spawn`, `sync`
-and a scope. `Ring (scoped)` has no C# twin — a scope is a Bjolang construct —
-so it is compared against the same C# ring.
+Both suites report `ns/op` and `B/op` over five reps, reduced to the **minimum**.
 
-## Phase 0 — before the merge
+The minimum rather than the median because the skewed-choose row is bimodal on
+a multi-CCD part: the sender and the receiver either land on the same chiplet or
+they do not, and the two modes are roughly 70 and 150 ns/op with nothing in
+between. A median over an odd number of reps reports whichever mode won the coin
+toss, which makes two phases incomparable. Allocation needs no statistic at all
+— it is deterministic and every rep agrees, which is also what makes it the
+reliable signal when a timing row is ambiguous.
+
+The C# suite is the raw CML layer; the Bjolang suite is the same topology
+through `spawn`, `sync` and a scope. `Ring (scoped)` has no C# twin — a scope is
+a Bjolang construct — so it is compared against the same C# ring.
+
+## Phase 0/1 — before the seam is touched
+
+Phase 1 moved the sources and changed their licence headers and nothing else,
+so it shares a row with phase 0. That it is genuinely a no-op is visible in the
+allocation column: every figure is bit-identical across the move, which a
+behaviour change could not be.
 
 | benchmark | BjoML ns/op | BjoML B/op | Bjolang ns/op | Bjolang B/op | ns ratio | B ratio |
 |---|---|---|---|---|---|---|
-| Ring (1e6 msgs) | 94.0 | 0.2 | 127 | 280 | 1.35x | 1400x |
-| Ring, scoped | 94.0 | 0.2 | 145 | 281 | 1.54x | 1405x |
-| Spawn burst (1e6) | 148.2 | 89.1 | 154 | 353 | 1.04x | 3.96x |
-| Skewed choose(8) | 72.6 | 40.0 | 294 | 256 | 4.05x | 6.4x |
+| Ring (1e6 msgs) | 51.0 | 0.2 | 121 | 280 | 2.37x | 1400x |
+| Ring, scoped | 51.0 | 0.2 | 128 | 281 | 2.51x | 1405x |
+| Spawn burst (1e6) | 91.0 | 89.1 | 122 | 353 | 1.34x | 3.96x |
+| Skewed choose(8) | 66.9 | 40.0 | 231 | 256 | 3.45x | 6.4x |
 
 ### What the rows already say
 
-The two ring rows are 127 and 145 ns/op and allocate the same 280 B/op. They
+The two ring rows are 121 and 128 ns/op and allocate the same 280 B/op. They
 should not be close: only the second opens a `with-cancel`. They are close
 because `main` itself runs inside a `Scope` with a live token, so
 `ReferenceEquals(token, RootCancel)` in `sync` is false in both, and both build
@@ -51,18 +61,18 @@ language allocates a `RecvEvent`/`SendEvent`, a `CancellableEvent`, the token
 branch's closure, a `SyncState` and an `EventAwaiter`, where the C# path parks
 one pooled `GetOp` and allocates nothing.
 
-Skewed choose is the widest gap at 4.05x. A `choose` publishes 8 branches and
+Skewed choose is the widest gap at 3.45x. A `choose` publishes 8 branches and
 the cancellation branch makes 9, so the per-branch cost is paid one extra time
 per op on top of the per-sync allocations.
 
-Spawn burst is already close on time (1.04x) and 4x on allocation. The extra
-bytes are the scope's `Attach` — a `Cml.Sync` per fiber, so a `SyncState` and a
-closure each — which phase 2d deletes.
+Spawn burst is the narrowest at 1.34x, and 4x on allocation. The extra bytes are
+the scope's `Attach` — a `Cml.Sync` per fiber, so a `SyncState` and a closure
+each — which phase 2d deletes.
 
-## Test suites at this commit
+## Test suites
 
-Both green.
+Green at phase 0 and again at phase 1.
 
 - Bjolang `./run_tests.sh`: 185 groups, 213 error tests, 8 warning tests, 22
   codegen assertions, 3 REPL transcripts, 3 staleness checks.
-- BjoML `dotnet run -c Release --project Tests`: 53 passed, 0 failed.
+- CML `dotnet run -c Release --project BjolangRuntime/Cml/Tests`: 53 passed.

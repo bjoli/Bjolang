@@ -58,15 +58,18 @@ let root: string = Path.GetFullPath(Path.Combine(libDir, ".."))
 
 /// The assemblies every compiled program links against, in link order.
 ///
-/// `Bjoml` is the concurrency runtime — fibers, promises, channels and the CML
-/// event combinators that bjoroutines are built on. It is listed here rather
-/// than pulled in on demand because the resolver a compiled program installs
-/// probes exactly these directories, and because the compiler reflects on it at
-/// type-check time to resolve `import/class` and `import/extern` against it.
+/// The concurrency runtime — fibers, promises, channels and the CML event
+/// combinators that bjoroutines are built on — is compiled into
+/// `BjolangRuntime` and is not a separate assembly. It used to be `Bjoml.dll`
+/// and is named here in neither form: the namespace is still `Bjoml`, but a
+/// namespace is not an assembly, and naming one that no longer exists makes
+/// every compiled program fail to resolve.
 ///
-/// `Microsoft.Extensions.ObjectPool` is Bjoml's own dependency. It is not named
-/// here: MSBuild copies it next to `Bjoml.dll`, which is already a probe
-/// directory, so the resolver finds it there.
+/// They are listed here rather than pulled in on demand because the resolver a
+/// compiled program installs probes exactly these directories, and because the
+/// compiler reflects on them at type-check time to resolve `import/class` and
+/// `import/extern`.
+///
 /// The three collection assemblies carry a `Bjo` prefix that their namespaces
 /// do not: `Set.Set<T>` lives in `BjoSet.dll`.
 ///
@@ -80,8 +83,7 @@ let private runtimeAssemblyNames =
       "Map"
       "BjoSet"
       "BjoOrderedSet"
-      "BjoOrderedMap"
-      "Bjoml" ]
+      "BjoOrderedMap" ]
 
 /// Directory holding the runtime support assemblies every compiled program
 /// links against.
