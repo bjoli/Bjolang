@@ -67,62 +67,110 @@ public static partial class BjolangRuntime {
     /// `Prelude.fs`, not read off this signature, so all the call site needs is
     /// that `await` compiles.
     public static SyncOp<T> sync<T>(IEvent<T> ev) {
-        var token = Dyn.Current.Cancel;
-
         // Nothing to lose to. The comparison against `RootCancel` is what makes
         // a program that binds `(current-cancel)` to its own default free as
         // well: that token has no other half and can never fire.
-        if (token is null || ReferenceEquals(token, RootCancel)) return new SyncOp<T>(ev, null);
-
-        return new SyncOp<T>(null, Cml.Choose(
-            Cml.Wrap(ev, static v => Synced<T>.Value(v)),
-            Cml.Wrap(cancelled(token), static why => Synced<T>.Cancelled(why))));
+        var token = Dyn.Current.Cancel;
+        return new SyncOp<T>(ev, ReferenceEquals(token, RootCancel) ? null : token);
     }
 
-    /// What `(sync ev)` evaluates to: the event, and whether the ambient token
-    /// is racing it. Building this is pure; `GetAwaiter` is what starts the
-    /// synchronisation, which is the same moment `await ev` started it before.
+    /// What `(sync ev)` evaluates to: the event, and the token racing it.
+    ///
+    /// Both fields are copied, nothing is built. `GetAwaiter` is where the
+    /// synchronisation starts, which is the same moment `await ev` started it
+    /// when `sync` was an ordinary async method.
     public readonly struct SyncOp<T> {
-        private readonly IEvent<T>? _plain;
-        private readonly IEvent<Synced<T>>? _raced;
+        private readonly IEvent<T> _ev;
+        private readonly Promise<CancelReason>? _token;
 
-        internal SyncOp(IEvent<T>? plain, IEvent<Synced<T>>? raced) {
-            _plain = plain;
-            _raced = raced;
+        internal SyncOp(IEvent<T> ev, Promise<CancelReason>? token) { _ev = ev; _token = token; }
+
+        public SyncAwaiter<T> GetAwaiter() {
+            // The partner is already here, so this commits without publishing
+            // anything, without a `SyncState`, and without the race. See
+            // `INowable` for why skipping the race is not a change of meaning.
+            if (_ev is INowable<T> now && now.TryNow(out var ready))
+                return SyncAwaiter<T>.Ready(ready);
+
+            if (_token is null) return new SyncAwaiter<T>(_ev.GetAwaiter(), null);
+
+            var race = new CancellableEvent<T>(_ev, _token);
+            return new SyncAwaiter<T>(((IEvent<T>)race).GetAwaiter(), race);
         }
-
-        public SyncAwaiter<T> GetAwaiter() =>
-            _plain is not null
-                ? new SyncAwaiter<T>(_plain.GetAwaiter())
-                : new SyncAwaiter<T>(_raced!.GetAwaiter());
     }
 
-    /// Forwards to whichever `EventAwaiter` the sync ended up with. A struct
-    /// holding one reference, so the indirection allocates nothing.
+    /// The event, racing the ambient token, as one event rather than as a
+    /// `choose` over two `wrap`s.
+    ///
+    /// Written out because the combinator spelling allocated seven objects per
+    /// parked rendezvous — a choose, three wraps, their mapper closures and the
+    /// join — and a `sync` is the most frequent thing a program does. Here the
+    /// event branch hands `onSync` straight through with no mapper at all, and
+    /// only the token branch needs a closure.
+    ///
+    /// The reason lands in <see cref="Why"/> rather than in the payload, so
+    /// that the payload can stay `T` and no wrapper struct is needed. Safe
+    /// because one of these is built per sync and exactly one branch commits:
+    /// the write happens before `onSync`, and the awaiter's own full fence
+    /// publishes it to whoever reads the result.
+    internal sealed class CancellableEvent<T> : IEvent<T> {
+        private readonly IEvent<T> _ev;
+        private readonly Promise<CancelReason> _token;
+
+        internal CancelReason? Why;
+
+        internal CancellableEvent(IEvent<T> ev, Promise<CancelReason> token) {
+            _ev = ev;
+            _token = token;
+        }
+
+        /// The token is published *second*, and that ordering is the semantics:
+        /// publish order is priority, so an event that is already available wins
+        /// even though the token has fired. The rendezvous happened and throwing
+        /// the value away would lose a delivered message.
+        public void Publish(SyncState state, int eventId, System.Action<T> onSync) {
+            _ev.Publish(state, state.NextEventId(), onSync);
+            if (state.IsSynchronized) return;
+            _token.Join().Publish(state, state.NextEventId(), r => { Why = r.Value; onSync(default!); });
+        }
+    }
+
+    /// Forwards to whichever awaiter the sync ended up with, or to nothing at
+    /// all when the rendezvous already happened.
     public readonly struct SyncAwaiter<T> : System.Runtime.CompilerServices.ICriticalNotifyCompletion {
-        private readonly EventAwaiter<T>? _plain;
-        private readonly EventAwaiter<Synced<T>>? _raced;
+        private readonly EventAwaiter<T>? _aw;
+        private readonly CancellableEvent<T>? _race;
+        private readonly T _ready;
+        private readonly bool _isReady;
 
-        internal SyncAwaiter(EventAwaiter<T> plain) { _plain = plain; _raced = null; }
-        internal SyncAwaiter(EventAwaiter<Synced<T>> raced) { _plain = null; _raced = raced; }
-
-        public bool IsCompleted => _plain is not null ? _plain.IsCompleted : _raced!.IsCompleted;
-
-        /// The raise happens here rather than in the `Wrap` that built the
-        /// result. A mapper runs inside the event continuation, on whichever
-        /// thread completed the rendezvous, and an exception there lands in a
-        /// channel's matching loop and wedges the whole sync block. `GetResult`
-        /// runs on the resuming fiber's own stack, which is where a raise
-        /// belongs.
-        public T GetResult() => _plain is not null ? _plain.GetResult() : _raced!.GetResult().Unwrap();
-
-        public void OnCompleted(System.Action k) {
-            if (_plain is not null) _plain.OnCompleted(k); else _raced!.OnCompleted(k);
+        internal SyncAwaiter(EventAwaiter<T> aw, CancellableEvent<T>? race) {
+            _aw = aw; _race = race; _ready = default!; _isReady = false;
         }
 
-        public void UnsafeOnCompleted(System.Action k) {
-            if (_plain is not null) _plain.UnsafeOnCompleted(k); else _raced!.UnsafeOnCompleted(k);
+        private SyncAwaiter(T ready) { _aw = null; _race = null; _ready = ready; _isReady = true; }
+
+        internal static SyncAwaiter<T> Ready(T value) => new SyncAwaiter<T>(value);
+
+        public bool IsCompleted => _isReady || _aw!.IsCompleted;
+
+        /// The raise happens here rather than in the event continuation. That
+        /// continuation runs on whichever thread completed the rendezvous, and
+        /// an exception there lands in a channel's matching loop and wedges the
+        /// whole sync block. `GetResult` runs on the resuming fiber's own stack,
+        /// which is where a raise belongs.
+        public T GetResult() {
+            if (_isReady) return _ready;
+
+            var v = _aw!.GetResult();
+            if (_race?.Why is { } why) throw new Bjolang.Runtime.Cancelled(why);
+            return v;
         }
+
+        public void OnCompleted(System.Action k) => UnsafeOnCompleted(k);
+
+        /// Never reached in the ready case: `IsCompleted` was true, and the
+        /// await contract does not ask for a continuation then.
+        public void UnsafeOnCompleted(System.Action k) => _aw!.UnsafeOnCompleted(k);
     }
 
     /// The outcome of one `sync`: either the value the event carried, or the
@@ -221,10 +269,49 @@ public static partial class BjolangRuntime {
 
     /// `(chan-send ch v)` — the event of handing `v` over. Not the handing
     /// over: that happens at the `sync`.
-    public static IEvent<Unit> chansubsend<T>(Channel<T> ch, T value) => ch.Send(value);
+    public static IEvent<Unit> chansubsend<T>(Channel<T> ch, T value) => new SendEvent<T>(ch, value);
 
     /// `(chan-recv ch)` — the event of taking one message.
-    public static IEvent<T> chansubrecv<T>(Channel<T> ch) => ch.Receive();
+    public static IEvent<T> chansubrecv<T>(Channel<T> ch) => new RecvEvent<T>(ch);
+
+    /// Can this event commit immediately, with no CML machinery at all?
+    ///
+    /// Only the two channel operations answer it, and answering yes *performs*
+    /// the rendezvous. <see cref="sync"/> asks before it builds the
+    /// cancellation race, because a race the event is going to win is a race
+    /// worth not running: the token branch is published second and publish
+    /// order is priority, so an available event already beat it.
+    ///
+    /// The event types are classes here rather than BjoML's own operation
+    /// structs because those structs box on the way into `IEvent<T>` anyway —
+    /// the allocation is the same one, and a class can carry this interface.
+    private interface INowable<T> {
+        bool TryNow(out T value);
+    }
+
+    private sealed class RecvEvent<T> : IEvent<T>, INowable<T> {
+        private readonly Channel<T> _ch;
+        internal RecvEvent(Channel<T> ch) => _ch = ch;
+
+        public void Publish(SyncState state, int eventId, System.Action<T> onSync) =>
+            _ch.Receive().Publish(state, eventId, onSync);
+
+        public bool TryNow(out T value) => _ch.TryDirectReceive(out value);
+    }
+
+    private sealed class SendEvent<T> : IEvent<Unit>, INowable<Unit> {
+        private readonly Channel<T> _ch;
+        private readonly T _value;
+        internal SendEvent(Channel<T> ch, T value) { _ch = ch; _value = value; }
+
+        public void Publish(SyncState state, int eventId, System.Action<Unit> onSync) =>
+            _ch.Send(_value).Publish(state, eventId, onSync);
+
+        public bool TryNow(out Unit value) {
+            value = default;
+            return _ch.TryDirectSend(_value);
+        }
+    }
 
     /// `(choose ev ...)` — offer several, commit to exactly one.
     ///

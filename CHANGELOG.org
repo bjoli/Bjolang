@@ -3,6 +3,47 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~sync~ costs what a rendezvous costs
+
+Three changes, no change of meaning in any of them. Against raw BjoML on the
+same box, a Bjolang rendezvous was 15x and is now about 2x.
+
+~sync~ is no longer an ~async~ method. It was ~async Fiber<T>~, and ~Fiber<T>~ is
+backed by a promise, so every rendezvous was: the event completes, that wakes
+~sync~'s state machine, which completes ~sync~'s promise, which wakes the caller.
+Two scheduler hops and a promise where one direct resume would do, and it threw
+away the inline dispatch that makes a ring fast in the first place. A control
+that does nothing but ~await ev~ inside an ~async Fiber<T>~ measured the same
+cost, so that was all of it. ~sync~ now returns a ~SyncOp<T>~ struct whose
+awaiter forwards to the event's own. Possible without touching the compiler
+because ~sync~'s type is written down in ~Prelude.fs~ rather than read off the
+C# signature. Ring, 1,000,000 messages: 870 ns/op to 130.
+
+A rendezvous that can commit immediately no longer runs the cancellation race.
+~chan-send~ and ~chan-recv~ answer whether the partner is already there; if it
+is, the send or receive happens with no ~SyncState~, nothing published and no
+token branch. This is not a relaxation: the token is published second and
+publish order is priority, so an available event already won that race.
+
+The race itself is one purpose-built event instead of a ~choose~ over two
+~wrap~s. The combinator spelling allocated seven objects per parked rendezvous;
+the event branch now passes its continuation straight through and only the token
+branch needs a closure.
+
+One difference worth writing down: calling ~sync~ and discarding the result no
+longer starts the synchronisation, because an async method body runs to its
+first await and a struct does not. Every call site in the language awaits, so it
+is unreachable from Bjolang, and "building an event is pure" is the better
+reading anyway.
+
+What is left: a fiber parked in a scope registers a waiter on the scope's token,
+and that list is one object shared by every fiber in the scope. It is pruned on
+an amortised threshold now rather than scanned on every registration — which is
+what took a 4,000-fiber ring from 20,000 ms to 1,650 — but the push still takes
+a lock. Topologies with thousands of fibers parked at once (a 4,000-node ring,
+200,000 senders convoying on one channel) still pay for that and are the rows
+furthest from BjoML. A lock-free waiter list would close it.
+
 * A scope closes in one wait
 
 A scope used to keep one entry per child and, at close time, wait on every entry
