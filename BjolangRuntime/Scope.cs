@@ -118,11 +118,9 @@ public static partial class BjolangRuntime {
         public readonly Promise<CancelReason> Token = new();
 
         /// <summary>
-        /// Guards <see cref="_failures"/> and <see cref="_closed"/> only, plus
-        /// the two moments where <see cref="_outstanding"/> has to agree with
-        /// one of them. No user code and no spawn ever runs while this is held:
-        /// a spawn takes the lock to count itself in, drops it, and only then
-        /// starts the fiber.
+        /// Guards <see cref="_failures"/> only, and the moments where
+        /// <see cref="_outstanding"/> has to be read together with it. A spawn
+        /// never takes it at all, and no user code runs while it is held.
         ///
         /// Nothing completes a promise while holding it either — not
         /// <see cref="Token"/> and not <see cref="_allDone"/>. Completing a
@@ -136,20 +134,29 @@ public static partial class BjolangRuntime {
         private readonly object _gate = new();
 
         /// <summary>
-        /// How many things the scope is still waiting for: one per started
-        /// child, plus one for the body itself, which <see cref="Close"/> gives
-        /// up. The counter section on <see cref="Close"/> says why the body
-        /// holds one.
+        /// How many things the scope is still waiting for, and whether it has
+        /// started closing, in one word: the low bits count, and the sign bit is
+        /// closed. One per started child, plus one for the body itself, which
+        /// <see cref="Close"/> gives up — the counter section on
+        /// <see cref="Close"/> says why the body holds one.
         ///
-        /// Interlocked rather than plain, so that a child which finished
-        /// without failing can take itself off the count without touching
-        /// <see cref="_gate"/>. Children land on every pool thread at once, and
-        /// one shared lock per landing measured slower, at 100,000 children,
-        /// than everything the old per-child list did. The increment in
-        /// <see cref="TryEnlist"/> is still inside the lock, because it has to
-        /// be atomic with the <see cref="_closed"/> test next to it.
+        /// The two live together because enlisting has to test one and change
+        /// the other *atomically*, or a spawn could read "still open", lose the
+        /// thread, and count itself in after the scope had already decided it
+        /// was finished — which is a fiber nothing waits for. Packed, that test
+        /// and increment is one compare-exchange and a spawn touches no lock at
+        /// all. In two fields it takes a lock, which is what it used to do.
+        ///
+        /// Counting down never disturbs the sign bit, because the count can
+        /// only reach zero after <see cref="Close"/> has given up the body's
+        /// reference, and Close sets the bit before it does. So "the scope is
+        /// empty" is exactly `int.MinValue`, and there is never a borrow.
         /// </summary>
         private int _outstanding = 1;
+
+        /// The sign bit of <see cref="_outstanding"/>. After it is set, a spawn
+        /// into this scope does nothing — see <see cref="TryEnlist"/>.
+        private const int ClosedBit = int.MinValue;
 
         /// <summary>
         /// The failures the scope has to raise, in the order the children
@@ -162,12 +169,6 @@ public static partial class BjolangRuntime {
         /// is the only thing <see cref="Close"/> waits on.
         /// </summary>
         private readonly Promise<Unit> _allDone = new();
-
-        /// <summary>
-        /// Set the moment closing begins. After this, a spawn into this scope
-        /// does nothing — see <see cref="TryEnlist"/>.
-        /// </summary>
-        private bool _closed;
 
         /// <summary>
         /// The scope's deadline, or null when it has none. A bare
@@ -202,7 +203,7 @@ public static partial class BjolangRuntime {
         }
 
         /// <summary>Has closing started? Read by the daemon and detached spawns.</summary>
-        internal bool IsClosed { get { lock (_gate) return _closed; } }
+        internal bool IsClosed => System.Threading.Volatile.Read(ref _outstanding) < 0;
 
         /// <summary>
         /// Count in a fiber that is about to be started, or answer false if this
@@ -217,18 +218,36 @@ public static partial class BjolangRuntime {
         /// in which a scope returns with work still running — which is the one
         /// thing this whole file exists to prevent.
         ///
-        /// # Why not simply hold the lock across the spawn
+        /// # Why not simply hold a lock across the spawn
         ///
         /// Because starting a fiber reaches into the scheduler, and the
         /// scheduler is allowed to run work inline. Holding a lock across it
         /// would mean holding a lock across arbitrary other fibers' code.
+        ///
+        /// There is no lock here at all now. The closed flag is the sign bit of
+        /// the count, so counting in *is* the test: increment, and read the
+        /// answer off the result.
+        ///
+        /// Deliberately an unconditional increment and not a compare-exchange
+        /// loop. Every landing decrements this same word from every pool
+        /// thread at once, so a CAS that has to match a value it read a moment
+        /// ago spends the storm retrying — measured as occasional 2-4x spikes
+        /// on a million spawns, where an increment, which always completes,
+        /// has none. The cost is that a spawn arriving after the scope closed
+        /// has to put the count back, and that is the rare case.
         /// </summary>
         private bool TryEnlist() {
-            lock (_gate) {
-                if (_closed) return false;
-                System.Threading.Interlocked.Increment(ref _outstanding);
-                return true;
-            }
+            // Both this and the `Or` in `Close` are atomic read-modify-writes on
+            // one word, so they are totally ordered against each other: either
+            // this child is counted before closing began, or it sees the bit.
+            if (System.Threading.Interlocked.Increment(ref _outstanding) >= 0) return true;
+
+            // Closed after all. Give the count back — and if that empties the
+            // scope, say so, exactly as a landing would.
+            if (System.Threading.Interlocked.Decrement(ref _outstanding) == ClosedBit)
+                _allDone.TrySetResult(default);
+
+            return false;
         }
 
         /// <summary>
@@ -278,8 +297,8 @@ public static partial class BjolangRuntime {
         /// Because it has nothing to say. A child that finished, or that
         /// finished by being cancelled, only has to come off the count, and the
         /// count is interlocked. The lock is for the failure list and the
-        /// `_closed` flag, which have to be read and written together, and a
-        /// failure is the rare case.
+        /// failure list, which has to be read and written together with the
+        /// count, and a failure is the rare case.
         ///
         /// # Why the token is fired here at all
         ///
@@ -307,11 +326,16 @@ public static partial class BjolangRuntime {
             if (failed) {
                 lock (_gate) {
                     (_failures ??= new List<ExceptionDispatchInfo>()).Add(error!);
-                    closed = _closed;
-                    none = System.Threading.Interlocked.Decrement(ref _outstanding) == 0;
+
+                    // One read answers both questions, and answers them for the
+                    // state this child left behind rather than for some later
+                    // one.
+                    int left = System.Threading.Interlocked.Decrement(ref _outstanding);
+                    closed = left < 0;
+                    none = left == ClosedBit;
                 }
             } else {
-                none = System.Threading.Interlocked.Decrement(ref _outstanding) == 0;
+                none = System.Threading.Interlocked.Decrement(ref _outstanding) == ClosedBit;
             }
 
             // Only once closing has begun. Close reads the same list under the
@@ -463,9 +487,12 @@ public static partial class BjolangRuntime {
             ExceptionDispatchInfo? firstFailure = null;
             bool none;
             lock (_gate) {
-                _closed = true;
+                // Closed first, then the body's own reference is given up. In
+                // that order the count cannot reach zero between the two: the
+                // body still holds one while the bit is being set.
+                System.Threading.Interlocked.Or(ref _outstanding, ClosedBit);
                 if (_failures is { Count: > 0 }) firstFailure = _failures[0];
-                none = System.Threading.Interlocked.Decrement(ref _outstanding) == 0;
+                none = System.Threading.Interlocked.Decrement(ref _outstanding) == ClosedBit;
             }
 
             // A child failed while the body was still running, so nothing has

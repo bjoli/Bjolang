@@ -36,6 +36,20 @@ first await and a struct does not. Every call site in the language awaits, so it
 is unreachable from Bjolang, and "building an event is pure" is the better
 reading anyway.
 
+Enlisting a spawn in a scope takes no lock either. The closed flag is the sign
+bit of the outstanding count, so counting a child in *is* the test for whether
+the scope is still open, and a spawn that arrives too late puts the count back.
+Deliberately an unconditional increment rather than a compare-exchange loop:
+every landing decrements that same word from every pool thread at once, and a
+CAS that has to match what it just read spends a spawn storm retrying — worth
+occasional 2-4x spikes on a million spawns, where an increment has none.
+
+Measured and rejected: reading the ambient environment with an unchecked cast
+instead of ~as~. ~DynEnv~ is sealed, so ~as~ is one method-table compare, and the
+two measured identical. It would have bought nothing for an invariant BjoML
+explicitly declines to make — the fiber context slot is documented as opaque,
+and the language is not promised to be its only writer.
+
 What is left: a fiber parked in a scope registers a waiter on the scope's token,
 and that list is one object shared by every fiber in the scope. It is pruned on
 an amortised threshold now rather than scanned on every registration — which is
