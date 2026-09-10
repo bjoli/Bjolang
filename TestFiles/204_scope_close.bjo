@@ -1,0 +1,319 @@
+;; What a scope does on the way out.
+;;
+;; `114_with_cancel.bjo` is the tour of the form; this is the drain underneath
+;; it. Every test here is about *when* the scope returns and *what* it raises
+;; when it does: a scope that is over is one whose children have all landed, and
+;; a failure among them has to come out exactly once, unwrapped, after the
+;; siblings have been stopped.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: reason-name (-> (Option CancelReason) string))
+(defun (reason-name r)
+  (match r
+    ((Some (Requested who)) (string-append "requested " who))
+    ((Some Deadline) "deadline")
+    ((Some Scope-Ended) "scope-ended")
+    ((Some (Failed e)) "failed")
+    (None "none")))
+
+;; ---- The children the tests are built out of --------------------------------
+
+;; Ends at once.
+(: touch (-bjo-> (Box string) string))
+(defbjo (touch b)
+  (box-set! b "ran")
+  "ran")
+
+;; Ends after `ms`, then marks the box. A child the scope has to wait for.
+(: mark (-bjo-> (Box string) string int void))
+(defbjo (mark b what ms)
+  (sync (timeout ms))
+  (box-set! b what))
+
+;; Never ends on its own: nothing is ever sent on the channel. Only a
+;; cancellation gets it out, and the `sync` is where the cancellation arrives.
+(: patient (-bjo-> (Chan string) (Box string) void))
+(defbjo (patient dead b)
+  (ignore (sync (chan-recv dead)))
+  (box-set! b "returned by itself"))
+
+;; Fails. The denominator is computed so that C# cannot fold it: dividing by a
+;; *literal* zero is a compile-time error over there, not an exception.
+(: explode (-bjo-> int int void))
+(defbjo (explode zero ms)
+  (sync (timeout ms))
+  (ignore (/ 10 zero))
+  unit)
+
+;; Fails without ever syncing, so it cannot be cancelled first. Two of these are
+;; how "both failures survive" is measured.
+(: explode-now (-bjo-> int void))
+(defbjo (explode-now zero)
+  (ignore (/ 10 zero))
+  unit)
+
+;; Spawns into its own scope long after that scope's body has ended. A daemon,
+;; so the scope does not wait for it and is still closing when this runs.
+(: late-spawner (-bjo-> (Box string) (Box string) void))
+(defbjo (late-spawner spawned bjod)
+  (sync (timeout 40))
+  (spawn (touch spawned))
+  (def p (bjo (touch spawned)))
+  (box-set! bjod
+            (match (sync (promise-join p))
+              ((Ok v) "ran")
+              ((Err e) (if (string-contains? (.-Message e) "cancelled")
+                           "cancelled"
+                           (.-Message e))))))
+
+;; An inner scope with a child of its own, both of which only the *outer*
+;; token can reach.
+(: nested (-bjo-> (Chan string) (Box string) void))
+(defbjo (nested dead b)
+  (with-cancel (cancel)
+    (spawn (patient dead b))
+    (sync (timeout 60000))))
+
+(defbjo (main args)
+  (def zero (string-length ""))
+  (def dead (make-chan))
+
+  ;; ---- A child started late is still waited for ----------------------------
+  ;;
+  ;; The count of what the scope is waiting for passes through zero in the
+  ;; middle of the body: `quick` lands while the body is in the timeout, before
+  ;; `slow` has been started. A drain that took that zero for "the scope is
+  ;; over" would return here with `slow` still running.
+  (def quick (make-box "not run"))
+  (def slow (make-box "not run"))
+
+  (with-cancel (cancel)
+    (spawn (touch quick))
+    (sync (timeout 60))
+    (spawn (mark slow "ran" 60)))
+
+  (expect "a scope waits for a child started after an earlier one landed"
+          (str (box-ref quick) " " (box-ref slow)) "ran ran")
+
+  ;; ---- A failure during the drain stops the siblings ------------------------
+  ;;
+  ;; The body ends normally, so nothing has been cancelled when the drain
+  ;; starts. `patient` is parked on a channel nobody writes to, and only the
+  ;; token that `explode`'s failure fires gets it out. Without that this hangs.
+  (def never (make-box "still parked"))
+  (def drained
+    (try
+      (with-cancel (cancel)
+        (spawn (patient dead never))
+        (spawn (explode zero 20)))
+      #:catch (System.DivideByZeroException)))
+
+  (expect "a failure during the drain leaves the scope unwrapped"
+          (match drained ((Ok u) "not reached") ((Err e) "divide by zero"))
+          "divide by zero")
+
+  (expect "and the sibling was cancelled rather than left running"
+          (box-ref never) "still parked")
+
+  ;; The child's own exception, so the child's own stack. An aggregate, or a
+  ;; rethrow that reset the trace, would lose the line that actually divided.
+  (expect "and it still carries the stack it was raised with"
+          (match drained
+            ((Ok u) "not reached")
+            ((Err e) (if (string-contains? (.-StackTrace e) "explode") "explode" (.-StackTrace e))))
+          "explode")
+
+  ;; ---- A failure while the body is still running ---------------------------
+  ;;
+  ;; The child fails at 10 ms and the body runs to 80 ms. The body is *not*
+  ;; interrupted — that is deliberate, and this pins it — but the failure is
+  ;; still the scope's, so closing has to fire the token for it. Nothing else
+  ;; ever will, and the sibling parked on the dead channel would wait forever.
+  (def body-finished (make-box "not run"))
+  (def sibling (make-box "still parked"))
+  (def late
+    (try
+      (with-cancel (cancel)
+        (spawn (patient dead sibling))
+        (spawn (explode zero 10))
+        (sync (timeout 80))
+        (box-set! body-finished "ran to the end"))
+      #:catch (System.DivideByZeroException)))
+
+  (expect "a child failing does not interrupt the body"
+          (box-ref body-finished) "ran to the end")
+  (expect "and the failure is raised once the body is done"
+          (match late ((Ok u) "not reached") ((Err e) "divide by zero"))
+          "divide by zero")
+  (expect "and closing cancels the sibling it left behind"
+          (box-ref sibling) "still parked")
+
+  ;; ---- Two failures --------------------------------------------------------
+  ;;
+  ;; Neither child syncs, so neither can be cancelled before it fails and both
+  ;; failures are real. Losing the second would hide that the group failed as a
+  ;; group.
+  (def both
+    (try
+      (with-cancel (cancel)
+        (spawn (explode-now zero))
+        (spawn (explode-now zero)))
+      #:catch (System.Exception)))
+
+  (expect "several failures travel together"
+          (match both
+            ((Ok u) "not reached")
+            ((Err (:is System.AggregateException a)) (if (string-contains? (.-Message a) "2 failures")
+                                                         "two"
+                                                         (.-Message a)))
+            ((Err e) (.-Message e)))
+          "two")
+
+  ;; ---- The body throws -----------------------------------------------------
+  ;;
+  ;; The children are cancelled by the failure on its way out, and what reaches
+  ;; the caller is the body's own exception rather than anything about them.
+  (def by-body (make-box "still parked"))
+  (def thrown
+    (try
+      (with-cancel (cancel)
+        (spawn (patient dead by-body))
+        (ignore (/ 10 zero))
+        "not reached")
+      #:catch (System.DivideByZeroException)))
+
+  (expect "a body that throws takes its children down with it"
+          (match thrown ((Ok v) v) ((Err e) "divide by zero"))
+          "divide by zero")
+  (expect "and the children were cancelled" (box-ref by-body) "still parked")
+
+  ;; ---- A bjo child that fails ----------------------------------------------
+  ;;
+  ;; Waited for, not reported. The failure is on the promise that `bjo` handed
+  ;; back, and this one deliberately drops it — a scope that raised it as well
+  ;; would raise past a program that had chosen to ignore it.
+  ;; The promise is smuggled out in a box so the failure can be read after the
+  ;; scope has gone. `(ignore ...)` would detach it, and a detached promise that
+  ;; failed is printed to stderr — which is the right behaviour for a promise
+  ;; nobody will ever look at, and the wrong thing to test with.
+  (def waited (make-box "not run"))
+  (def kept (make-box None))
+  (def quiet
+    (try
+      (with-cancel (cancel)
+        (box-set! kept (Some (bjo (explode zero 20))))
+        (spawn (mark waited "waited" 40))
+        "returned")
+      #:catch (System.Exception)))
+
+  (expect "a bjo failure is not the scope's to raise"
+          (match quiet ((Ok v) v) ((Err e) (.-Message e))) "returned")
+  (expect "and the scope still waited for everything" (box-ref waited) "waited")
+  (expect "and the failure was on the promise the whole time"
+          (match (box-ref kept)
+            ((Some p) (match (sync (promise-join p))
+                        ((Ok u) "not reached")
+                        ((Err e) "divide by zero")))
+            (None "no promise"))
+          "divide by zero")
+
+  ;; ---- A cancelled child is not a failure ----------------------------------
+  ;;
+  ;; `patient` leaves by having its `sync` raise `Cancelled`. That is how a
+  ;; worker normally ends, so a scope that reported it would report its own
+  ;; cancellation back to its caller every single time.
+  (def stopped-child (make-box "still parked"))
+  (def clean
+    (try
+      (with-cancel (cancel)
+        (spawn (patient dead stopped-child))
+        (sync (timeout 20))
+        (def stopped (cancel (Requested "enough")))
+        "returned")
+      #:catch (System.Exception)))
+
+  (expect "a child that was cancelled is not reported as a failure"
+          (match clean ((Ok v) v) ((Err e) (.-Message e))) "returned")
+
+  ;; ---- Spawning into a scope that is closing -------------------------------
+  ;;
+  ;; The daemon wakes at 40 ms, by which time the body has ended and the drain
+  ;; is waiting for the 150 ms child. `spawn` starts nothing at all, and `bjo`
+  ;; has to hand back a promise, so it hands back one that has already failed.
+  (def spawned (make-box "not run"))
+  (def bjod (make-box "not run"))
+
+  (with-cancel (cancel)
+    (spawn/daemon (late-spawner spawned bjod))
+    (spawn (mark (make-box "x") "x" 150)))
+
+  (expect "a spawn into a closing scope starts nothing" (box-ref spawned) "not run")
+  (expect "and a bjo hands back a promise that has already failed"
+          (box-ref bjod) "cancelled")
+
+  ;; ---- A deadline ----------------------------------------------------------
+  ;;
+  ;; The timer fires long before the body's own wait, the children stop because
+  ;; of it, and none of them is reported: the reason is on the token, and the
+  ;; token is what says a deadline happened.
+  (def by-deadline (make-box "still parked"))
+  (def seen (make-box (parameter-ref current-cancel)))
+  (def timed
+    (try
+      (with-deadline 100
+        (box-set! seen (parameter-ref current-cancel))
+        (spawn (patient dead by-deadline))
+        (sync (timeout 60000))
+        "the timer lost")
+      #:catch (System.Exception)))
+
+  (expect "a deadline ends the scope"
+          (match timed ((Ok v) v) ((Err e) "cancelled")) "cancelled")
+  (expect "and the reason is the deadline, not a child"
+          (reason-name (cancel-reason (box-ref seen))) "deadline")
+  (expect "and the children it stopped are not reported"
+          (box-ref by-deadline) "still parked")
+
+  ;; ---- The last child to land is the one that failed -----------------------
+  ;;
+  ;; The order matters: the failure has to reach the token before the drain is
+  ;; told everything has landed, or the scope's recorded reason would be its own
+  ;; orderly exit when it was really a failure.
+  (def last-seen (make-box (parameter-ref current-cancel)))
+  (def lastly
+    (try
+      (with-cancel (cancel)
+        (box-set! last-seen (parameter-ref current-cancel))
+        (spawn (touch (make-box "x")))
+        (spawn (explode zero 30)))
+      #:catch (System.DivideByZeroException)))
+
+  (expect "the last child to land can still be the one that failed"
+          (match lastly ((Ok u) "not reached") ((Err e) "divide by zero"))
+          "divide by zero")
+  (expect "and the token says so"
+          (reason-name (cancel-reason (box-ref last-seen))) "failed")
+
+  ;; ---- Cancellation reaches through a nested scope --------------------------
+  ;;
+  ;; The inner scope's token is linked to the outer one, so the outer failure
+  ;; cancels an inner child that the outer scope has never heard of. Without the
+  ;; link the outer drain waits for the inner scope, which waits for a child
+  ;; nothing will ever wake.
+  (def deep (make-box "still parked"))
+  (def outer
+    (try
+      (with-cancel (cancel)
+        (spawn (nested dead deep))
+        (spawn (explode zero 20)))
+      #:catch (System.DivideByZeroException)))
+
+  (expect "an outer failure reaches the children of an inner scope"
+          (match outer ((Ok u) "not reached") ((Err e) "divide by zero"))
+          "divide by zero")
+  (expect "and the inner child was cancelled" (box-ref deep) "still parked")
+
+  (println "204 ok")
+  0)

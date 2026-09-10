@@ -54,24 +54,75 @@ public static partial class BjolangRuntime {
     /// all pays for two `Wrap`s and a `Choose` on every `sync`. A program with
     /// no scope — nothing has been parameterized and no `with-cancel` is open —
     /// pays a reference comparison and takes the old path unchanged.
-    public static async Fiber<T> sync<T>(IEvent<T> ev) {
+    /// EXPERIMENT: not an `async` method.
+    ///
+    /// It used to be `async Fiber<T>`, and that cost a whole extra promise and
+    /// scheduler hop per rendezvous: the event completed, that woke `sync`'s own
+    /// state machine, which completed `sync`'s promise, which woke the caller.
+    /// Measured on a 1,000,000-message ring, 40 ns/op became 870.
+    ///
+    /// So `sync` builds the event and hands back something awaitable that
+    /// forwards to the event's own awaiter. One suspension, one resume. The
+    /// language does not notice: `sync`'s Bjolang type is written down in
+    /// `Prelude.fs`, not read off this signature, so all the call site needs is
+    /// that `await` compiles.
+    public static SyncOp<T> sync<T>(IEvent<T> ev) {
         var token = Dyn.Current.Cancel;
 
         // Nothing to lose to. The comparison against `RootCancel` is what makes
         // a program that binds `(current-cancel)` to its own default free as
         // well: that token has no other half and can never fire.
-        if (token is null || ReferenceEquals(token, RootCancel)) return await ev;
+        if (token is null || ReferenceEquals(token, RootCancel)) return new SyncOp<T>(ev, null);
 
-        var landed = await Cml.Choose(
+        return new SyncOp<T>(null, Cml.Choose(
             Cml.Wrap(ev, static v => Synced<T>.Value(v)),
-            Cml.Wrap(cancelled(token), static why => Synced<T>.Cancelled(why)));
+            Cml.Wrap(cancelled(token), static why => Synced<T>.Cancelled(why))));
+    }
 
-        // Raised here rather than in the `Wrap` above. A mapper runs inside the
-        // event continuation, on whichever thread completed the rendezvous, and
-        // an exception there lands in a channel's matching loop and wedges the
-        // whole sync block. This line runs on the fiber's own stack, after the
-        // await, which is where a raise belongs.
-        return landed.Unwrap();
+    /// What `(sync ev)` evaluates to: the event, and whether the ambient token
+    /// is racing it. Building this is pure; `GetAwaiter` is what starts the
+    /// synchronisation, which is the same moment `await ev` started it before.
+    public readonly struct SyncOp<T> {
+        private readonly IEvent<T>? _plain;
+        private readonly IEvent<Synced<T>>? _raced;
+
+        internal SyncOp(IEvent<T>? plain, IEvent<Synced<T>>? raced) {
+            _plain = plain;
+            _raced = raced;
+        }
+
+        public SyncAwaiter<T> GetAwaiter() =>
+            _plain is not null
+                ? new SyncAwaiter<T>(_plain.GetAwaiter())
+                : new SyncAwaiter<T>(_raced!.GetAwaiter());
+    }
+
+    /// Forwards to whichever `EventAwaiter` the sync ended up with. A struct
+    /// holding one reference, so the indirection allocates nothing.
+    public readonly struct SyncAwaiter<T> : System.Runtime.CompilerServices.ICriticalNotifyCompletion {
+        private readonly EventAwaiter<T>? _plain;
+        private readonly EventAwaiter<Synced<T>>? _raced;
+
+        internal SyncAwaiter(EventAwaiter<T> plain) { _plain = plain; _raced = null; }
+        internal SyncAwaiter(EventAwaiter<Synced<T>> raced) { _plain = null; _raced = raced; }
+
+        public bool IsCompleted => _plain is not null ? _plain.IsCompleted : _raced!.IsCompleted;
+
+        /// The raise happens here rather than in the `Wrap` that built the
+        /// result. A mapper runs inside the event continuation, on whichever
+        /// thread completed the rendezvous, and an exception there lands in a
+        /// channel's matching loop and wedges the whole sync block. `GetResult`
+        /// runs on the resuming fiber's own stack, which is where a raise
+        /// belongs.
+        public T GetResult() => _plain is not null ? _plain.GetResult() : _raced!.GetResult().Unwrap();
+
+        public void OnCompleted(System.Action k) {
+            if (_plain is not null) _plain.OnCompleted(k); else _raced!.OnCompleted(k);
+        }
+
+        public void UnsafeOnCompleted(System.Action k) {
+            if (_plain is not null) _plain.UnsafeOnCompleted(k); else _raced!.UnsafeOnCompleted(k);
+        }
     }
 
     /// The outcome of one `sync`: either the value the event carried, or the
@@ -80,7 +131,7 @@ public static partial class BjolangRuntime {
     /// A struct with a factory per case rather than two constructors, because
     /// `T` can be instantiated at `CancelReason` and two constructors would then
     /// be the same constructor.
-    private readonly struct Synced<T> {
+    internal readonly struct Synced<T> {
         private readonly T _value;
         private readonly CancelReason? _why;
 

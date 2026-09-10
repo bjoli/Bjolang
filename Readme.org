@@ -3,7 +3,7 @@
 I think we have all had the thought: all programming languages suck in at least one way. Not all of us think it is a big deal, but some of us feel the urge to try our wings at designing a language. This is my 95% vibe coded try. Not really meant for real use, but to see if my thoughts made any sense.
 
 * Elevator pitch
-Bjolang is a scheme-inspired language with local HM type inference that bjompiles to constipated c#. It has traits instead of classes, meaning you don't ever have to think about two-way interop. The default bjollections are immutable. A fast RRB tree (Vec), a very fast CHAMP (hash table), a bjordered map (b-tree),  a linked list (List) and both bjordered and unbjordered sets.
+Bjolang is a scheme-inspired language with local HM type inference that bjompiles to constipated c#. It has traits instead of classes, meaning you don't ever have to think about two-way interop. The default bjollections are immutable. A fast RRB tree (Vec), a very fast CHAMP (hash table), a bjordered map (b-tree), a linked list (List) and both bjordered and unbjordered sets.
 
 It also fakes Brand/higher kinded types by inlining traits when the trait is known at compile time, giving us among other things, a Monad trait. It is eager and non-curried, but has a bjombda shorthand.
 
@@ -43,13 +43,8 @@ Here is an example of a program that runs a command line pipeline with the bjoro
 ;; A Filter is defined in (std run) as (-bjo-> TextReader TextWriter unit)
 (: my-rot13 Filter)
 (defbjo (my-rot13 in out)
-  (let lp ()
-    (cond
-     ((port-eof? in) unit)
-     (else
-      (write-char out (rot13-char (read-char in)))
-      (lp)))))
-
+  (loop (:for ch (in-port in read-char))
+        (:do (write-char out (rot13-char ch)))))
 
 (defun (main args)
   ;; run/string returns a Result of (Ok a-string)
@@ -70,7 +65,7 @@ Here is an example of a program that runs a command line pipeline with the bjoro
 
 #+end_src
 
-This program (found in Examples/run_with_bjoroutine.bjo) reads itself and runs each char through my-rot13. It "decrypts" the source comment ";; guvf shapgvba vf GUR OBZO!" and prints
+This program (found in Examples/run_with_bjoroutine.bjo) reads itself and runs each char through my-rot13. It "decrypts" the source comment ";; guvf sha gvba vf GUR OBZO!" and prints
 
 DANGER!
 this function is THE BOMB!
@@ -118,7 +113,7 @@ and it is extensible.
 ;; In (std orderedmap):
 (def/pattern (om-has form inject compare)
   (syntax-match form
-    ((List _ key p)
+    ((_ key p)
      #'(:view (orderedmap-try-ref & ,key) (Some ,p)))
     (_ (syntax-error form "(om-has key p) matches a map that has key."))))
 
@@ -128,65 +123,6 @@ and it is extensible.
   (_ "8080"))
 #+END_SRC
 
-~(:view step p)~ is the only pattern that runs code, and what it cannot do is
-worth knowing. It cannot suspend, because a C# ~when~ has no ~await~. It cannot
-need a statement to evaluate, exactly as a ~#:when~ cannot. It cannot appear in
-an ~(or ...)~, because only one alternative runs. It sees a ~#:opaque~ type only
-through a view function that type's own module exported. And it runs once per
-clause that tries it — three clauses each viewing ~parse-int~ call it three
-times, so a step that costs something belongs in front of the ~match~.
-
-*** And it composes
-
-~(or p q)~ matches any one of them and none of them may bind. ~(and p q)~
-matches all of them and each may bind, as long as no two bind the same name.
-That is how a value is taken apart and kept whole at the same time, and how
-several views are put on one value:
-
-#+BEGIN_SRC scheme
-(match config
-  ((and whole (Some n))                (log whole n))
-  ((and (Has "host" h) (Has "port" p)) (connect h p))
-  (_                                   (default)))
-#+END_SRC
-
-A conjunction of ordinary patterns is one ~case~ label, so nothing runs and the
-clause keeps its place in the jump table. A conjunction of views becomes one
-~&&~ chain, so ~"port"~ is not looked up when ~"host"~ is absent.
-
-*** And it is checked
-
-A ~match~ that does not cover every value its scrutinee can have is a compile
-error, and so is a clause nothing can reach. The message prints one value that
-gets through, written as a pattern.
-
-#+begin_src scheme
-(match r
-  ((Ok (Some n)) (->str n))
-  ((Err e) e))
-;; Pattern Error at conf.bjo:12: this match does not cover every value.
-;; (Ok None) reaches no clause.
-#+end_src
-
-What counts as covered:
-
-- a union is covered by its cases, ~bool~ by ~#t~ and ~#f~, a tuple by its one
-  shape, a list by ~Nil~ and ~Cons~, a ~Vec~ or ~Array~ by the lengths written
-  plus a rest pattern for everything longer;
-- ~int~, ~string~, ~char~, keywords, symbols, .NET types and anything imported
-  ~#:opaque~ have no listable set of values, so only a binder covers them;
-- an ~(or ...)~ covers each alternative it holds; an ~(and ...)~ covers what its
-  one conjunct that can fail covers, and nothing at all when two of them can.
-
-What covers nothing: a clause with a ~#:when~ guard, since the guard may fail;
-a ~(:view ...)~, since nothing here works out what a step returns; and a
-~(:is ...)~, since the types below a class are not a set. Such a clause is
-still checked for being reachable — a guarded clause after ~_~ is dead like any
-other — but the clause list still has to end in a binder.
-
-A pattern macro is expanded before any of this runs, so a macro that rewrites to
-a covering set covers. The counterexample is printed in expanded form; the
-macro's name cannot be recovered from it.
 
 * Examples
 
@@ -410,8 +346,6 @@ Check how locales work so that we don't get bitten. Like (std run) and how it tr
 
 ** Minor problems
 
-'(1 2 3) and (list 1 2 3) produces different code.
-
 If a function is not exported, an unreferenced async version of it is not purged.
 
 If a user has a dir called lib/std it is mistaken as the stdlib :/
@@ -447,7 +381,6 @@ abandon c# strings, despite giving us a nice regex engine because utf16. (deferr
 data structures:
 - deque, perhaps by adding a prefix to the vec
 - heap with transients
-- mutable collections, defer to the BCL. 
 
 network io by wrapping c# async in events for the cml goodness. (std http) is here, but we need sockets.
 

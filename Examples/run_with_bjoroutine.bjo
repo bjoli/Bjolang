@@ -33,12 +33,10 @@
 ;; an input port, an output port and returns unit.
 (: my-rot13 Filter)
 (defbjo (my-rot13 in out)
-  (let lp ()
-    (cond
-     ((port-eof? in) unit)
-     (else
-      (write-char out (rot13-char (read-char in)))
-      (lp)))))
+  ;; While Iterable is synchronous, it is inlined in well-typed cases
+  ;; at which point the restriction goes away.
+  (loop (:for ch (in-port in read-char))
+        (:do (write-char out (rot13-char ch))))
 
 
 (defun (main args)

@@ -5,8 +5,8 @@ using Bjoml;
 // A partial of its own, for the reason `Concurrency.cs` is one: `using Bjoml;`
 // brings `Bjoml.Result<T>` into scope, and that is a different type from
 // `BjolangRuntime.Result<TErr, TOk>`. Keeping the `using` inside one file keeps
-// the two apart everywhere else. The `using` is needed here because the drain
-// writes `await someEvent`, and `IEvent<T>.GetAwaiter` is an extension method.
+// the two apart everywhere else. The `using` is needed here because a scope is
+// built out of `Promise`, `Cml` and `Bjo`.
 public static partial class BjolangRuntime {
 
     // -----------------------------------------------------------------------
@@ -38,61 +38,6 @@ public static partial class BjolangRuntime {
     //
     // When `with-cancel` returns, the work it started is over. Everything below
     // exists to make that sentence true.
-
-    /// <summary>
-    /// One fiber the scope is waiting for.
-    ///
-    /// # Why a second promise per child
-    ///
-    /// The scope holds children of many different result types — a
-    /// `(Promise string)` next to a `(Promise Unit)` — and it has to wait on all
-    /// of them at once, so it needs one list of one type. `Done` is that type: a
-    /// `Promise&lt;Unit&gt;` that is completed when the child finishes, whichever
-    /// way it finished.
-    ///
-    /// The alternative was a non-generic child interface wrapping each child's
-    /// own promise. That reads better but cannot get at the *outcome*: BjoML
-    /// keeps `Promise.Outcome` internal, so the only public way to read a failed
-    /// promise is `GetResult()`, which throws — and a drain that has to catch an
-    /// exception per failed child in order to collect it is worse than an extra
-    /// object per child.
-    ///
-    /// # Why the error is a field and not the promise's own failure
-    ///
-    /// `Done` always completes *successfully*. The child's failure is put in
-    /// <see cref="Error"/> first, so the drain can read it with a field load
-    /// rather than by catching a rethrow. Setting the field before completing
-    /// the promise is what makes it visible: `TrySetResult` is a full fence, and
-    /// the drain only reads `Error` after it has seen `Done.IsCompleted`.
-    /// </summary>
-    private sealed class ScopeChild {
-        internal readonly Promise<Unit> Done = new();
-        internal volatile ExceptionDispatchInfo? Error;
-
-        /// <summary>
-        /// Does this child's failure belong to the scope?
-        ///
-        /// True for `(spawn ...)`, which hands nothing back: nobody else can be
-        /// watching, so if the scope does not report the failure then nothing
-        /// does and a fiber that died is never mentioned.
-        ///
-        /// False for `(bjo ...)`, which hands back the promise. The failure is
-        /// already on that promise, and the caller asked for it — the whole
-        /// reason to write `bjo` rather than `spawn` is to read the outcome:
-        ///
-        ///     (match (sync (promise-join p))
-        ///       ((Ok v)  (use v))
-        ///       ((Err e) (recover e)))
-        ///
-        /// A scope that reported it as well would raise past a program that had
-        /// just handled it.
-        ///
-        /// The scope still *waits* for a `bjo` child either way. Waiting is
-        /// about when the scope is over; reporting is about who owns the
-        /// failure, and they are different questions.
-        /// </summary>
-        internal bool Reports;
-    }
 
     /// <summary>
     /// Did this fiber stop because it was told to, rather than because
@@ -158,8 +103,8 @@ public static partial class BjolangRuntime {
     /// A scope owns fibers and nothing else today. Eio's switches also own file
     /// handles, and `with-response` in `std/http` does the same job for one
     /// type. Unifying them is worth doing later, and nothing here is in the way
-    /// of it: a release action would be a second list beside
-    /// <see cref="_children"/>, run at the end of <see cref="Close"/> where the
+    /// of it: a release action would be a list of thunks guarded by
+    /// <see cref="_gate"/>, run at the end of <see cref="Close"/> where the
     /// deadline timer is disposed today. It is deliberately not added yet,
     /// because a list nothing writes to is a list nobody maintains.
     /// </summary>
@@ -173,13 +118,50 @@ public static partial class BjolangRuntime {
         public readonly Promise<CancelReason> Token = new();
 
         /// <summary>
-        /// Guards <see cref="_children"/> and <see cref="_closed"/> only. No
-        /// user code and no spawn ever runs while this is held: a spawn takes
-        /// the lock to add a child, drops it, and only then starts the fiber.
+        /// Guards <see cref="_failures"/> and <see cref="_closed"/> only, plus
+        /// the two moments where <see cref="_outstanding"/> has to agree with
+        /// one of them. No user code and no spawn ever runs while this is held:
+        /// a spawn takes the lock to count itself in, drops it, and only then
+        /// starts the fiber.
+        ///
+        /// Nothing completes a promise while holding it either — not
+        /// <see cref="Token"/> and not <see cref="_allDone"/>. Completing a
+        /// promise can run a woken fiber inline, on this very thread, and that
+        /// fiber is free to spawn into this scope. A C# lock is re-entrant, so
+        /// the spawn would not deadlock; it would walk straight into the middle
+        /// of a half-finished update, which is worse. Everything below therefore
+        /// reads and writes in one lock section and fires whatever it has to
+        /// fire after releasing it.
         /// </summary>
         private readonly object _gate = new();
 
-        private readonly List<ScopeChild> _children = new();
+        /// <summary>
+        /// How many things the scope is still waiting for: one per started
+        /// child, plus one for the body itself, which <see cref="Close"/> gives
+        /// up. The counter section on <see cref="Close"/> says why the body
+        /// holds one.
+        ///
+        /// Interlocked rather than plain, so that a child which finished
+        /// without failing can take itself off the count without touching
+        /// <see cref="_gate"/>. Children land on every pool thread at once, and
+        /// one shared lock per landing measured slower, at 100,000 children,
+        /// than everything the old per-child list did. The increment in
+        /// <see cref="TryEnlist"/> is still inside the lock, because it has to
+        /// be atomic with the <see cref="_closed"/> test next to it.
+        /// </summary>
+        private int _outstanding = 1;
+
+        /// <summary>
+        /// The failures the scope has to raise, in the order the children
+        /// landed. Null until the first one, because almost no scope has any.
+        /// </summary>
+        private List<ExceptionDispatchInfo>? _failures;
+
+        /// <summary>
+        /// Completed by whoever takes <see cref="_outstanding"/> to zero. This
+        /// is the only thing <see cref="Close"/> waits on.
+        /// </summary>
+        private readonly Promise<Unit> _allDone = new();
 
         /// <summary>
         /// Set the moment closing begins. After this, a spawn into this scope
@@ -223,17 +205,17 @@ public static partial class BjolangRuntime {
         internal bool IsClosed { get { lock (_gate) return _closed; } }
 
         /// <summary>
-        /// Take a slot for a fiber that is about to be started, or answer null
-        /// if this scope is already closing.
+        /// Count in a fiber that is about to be started, or answer false if this
+        /// scope is already closing.
         ///
-        /// # Why the slot is taken before the fiber is started
+        /// # Why the child is counted before the fiber is started
         ///
-        /// The child is in the list, unfinished, before it exists. So there is
-        /// no window in which the drain can look at the list, find it empty and
-        /// declare the scope over while a fiber is on its way to the run queue.
-        /// Registering after the spawn would leave exactly that window, and it
-        /// is the window in which a scope returns with work still running —
-        /// which is the one thing this whole file exists to prevent.
+        /// The count says the child exists before the child does. So there is no
+        /// window in which the drain can find nothing outstanding and declare
+        /// the scope over while a fiber is on its way to the run queue. Counting
+        /// after the spawn would leave exactly that window, and it is the window
+        /// in which a scope returns with work still running — which is the one
+        /// thing this whole file exists to prevent.
         ///
         /// # Why not simply hold the lock across the spawn
         ///
@@ -241,29 +223,106 @@ public static partial class BjolangRuntime {
         /// scheduler is allowed to run work inline. Holding a lock across it
         /// would mean holding a lock across arbitrary other fibers' code.
         /// </summary>
-        private ScopeChild? TryEnlist(bool reports) {
+        private bool TryEnlist() {
             lock (_gate) {
-                if (_closed) return null;
-                var child = new ScopeChild { Reports = reports };
-                _children.Add(child);
-                return child;
+                if (_closed) return false;
+                System.Threading.Interlocked.Increment(ref _outstanding);
+                return true;
             }
         }
 
         /// <summary>
-        /// Wire a started fiber to the slot it was given: when the fiber lands,
-        /// its failure — if any — is stored and the slot is marked done.
+        /// Wire a started fiber to the count: when it lands, whichever way it
+        /// landed, <see cref="Landed"/> runs.
         ///
         /// A bare completion callback rather than a fiber that joins. A joining
         /// fiber would be one more fiber per child, and it would have to be
-        /// waited for too. This callback stores two fields and returns, which is
-        /// the rule for anything running on a borrowed thread.
+        /// waited for too.
         /// </summary>
-        private static void Attach<T>(Promise<T> fiber, ScopeChild slot) {
-            Cml.Sync(fiber.Join(), r => {
-                if (r.IsError) slot.Error = r.Error;
-                slot.Done.TrySetResult(default);
-            });
+        private void Attach<T>(Promise<T> fiber, bool reports) =>
+            Cml.Sync(fiber.Join(), r => Landed(reports, r.IsError ? r.Error : null));
+
+        /// <summary>
+        /// One child has finished. Keep its failure if the failure is the
+        /// scope's, then take the child off the count.
+        ///
+        /// This runs on whatever thread happened to complete the child, so it
+        /// must not suspend, must not run user code, and should allocate as
+        /// little as it can. It never suspends, it runs no user code, and the
+        /// only thing it ever allocates is the failure list, on the first
+        /// failure.
+        ///
+        /// # A child that was cancelled has not failed
+        ///
+        /// Without that rule cancellation is unusable, because the ordinary way
+        /// a worker ends is that a `sync` raised `Cancelled` at it, and the
+        /// scope would then report its own cancellation back to its caller as an
+        /// error every single time. Nothing is lost by staying quiet: the record
+        /// that a cancellation happened is the scope's token, which has fired
+        /// and carries the reason.
+        ///
+        /// # Why that is decided here and not at the end
+        ///
+        /// Behaviour change, and a deliberate one. The test asks whether the
+        /// token had fired, so its answer depends on *when* it is asked. It used
+        /// to be asked after the drain, by which time the token had almost
+        /// always fired, and a child that died of a genuine
+        /// `OperationCanceledException` — an `HttpClient` timeout, say — before
+        /// the body called `cancel` was then quietly classified as cancelled and
+        /// dropped. Asking at the moment the child lands asks about the state of
+        /// the world the child actually died in, so that failure is now
+        /// reported.
+        ///
+        /// # Why an ordinary landing takes no lock
+        ///
+        /// Because it has nothing to say. A child that finished, or that
+        /// finished by being cancelled, only has to come off the count, and the
+        /// count is interlocked. The lock is for the failure list and the
+        /// `_closed` flag, which have to be read and written together, and a
+        /// failure is the rare case.
+        ///
+        /// # Why the token is fired here at all
+        ///
+        /// Because after <see cref="Close"/> has started, this is the only place
+        /// left that can. A child failing during the drain has to stop its
+        /// siblings, or the drain waits for workers that nothing will ever wake.
+        /// While the body is still running the token is deliberately left alone;
+        /// see <see cref="Close"/>.
+        ///
+        /// # Why the token is fired before <see cref="_allDone"/>
+        ///
+        /// Completing `_allDone` can resume <see cref="Close"/> inline on this
+        /// thread, and the next thing Close does is fire the token with
+        /// `ScopesubEnded`. If the last child to land is the one that failed,
+        /// doing these two in the other order would leave the scope's recorded
+        /// reason as "the scope ended" when it was really "a child failed".
+        /// </summary>
+        private void Landed(bool reports, ExceptionDispatchInfo? error) {
+            // Outside the lock: `IsCancellation` reads the token, and the token
+            // is not ours to read while holding the gate.
+            bool failed = reports && error is not null && !IsCancellation(error, Token);
+
+            bool closed = false;
+            bool none;
+            if (failed) {
+                lock (_gate) {
+                    (_failures ??= new List<ExceptionDispatchInfo>()).Add(error!);
+                    closed = _closed;
+                    none = System.Threading.Interlocked.Decrement(ref _outstanding) == 0;
+                }
+            } else {
+                none = System.Threading.Interlocked.Decrement(ref _outstanding) == 0;
+            }
+
+            // Only once closing has begun. Close reads the same list under the
+            // same lock, so a failure recorded before it got there is fired by
+            // Close instead, and one recorded after is fired here. Whichever of
+            // the two runs second sees the other's work, so none is missed and
+            // none is fired twice.
+            if (failed && closed)
+                Token.TrySetResult(new CancelReason.Failed(error!.SourceException));
+
+            if (none) _allDone.TrySetResult(default);
         }
 
         /// <summary>
@@ -272,16 +331,37 @@ public static partial class BjolangRuntime {
         ///
         /// Returns null in the second case, and the caller decides what that
         /// means for its own result type.
-        ///
-        /// <paramref name="reports"/> says whether a failure of this child is
-        /// the scope's to raise; see <see cref="ScopeChild.Reports"/>.
         /// </summary>
+        /// <param name="reports">
+        /// Does this child's failure belong to the scope?
+        ///
+        /// True for `(spawn ...)`, which hands nothing back: nobody else can be
+        /// watching, so if the scope does not report the failure then nothing
+        /// does and a fiber that died is never mentioned.
+        ///
+        /// False for `(bjo ...)`, which hands back the promise. The failure is
+        /// already on that promise, and the caller asked for it — the whole
+        /// reason to write `bjo` rather than `spawn` is to read the outcome:
+        ///
+        ///     (match (sync (promise-join p))
+        ///       ((Ok v)  (use v))
+        ///       ((Err e) (recover e)))
+        ///
+        /// A scope that reported it as well would raise past a program that had
+        /// just handled it.
+        ///
+        /// The scope still *waits* for a `bjo` child either way. Waiting is
+        /// about when the scope is over; reporting is about who owns the
+        /// failure, and they are different questions.
+        /// </param>
         internal Promise<T>? Start<T>(System.Func<Fiber<T>> body, bool reports) {
-            var slot = TryEnlist(reports);
-            if (slot is null) return null;
+            if (!TryEnlist()) return null;
 
+            // No `try` around the spawn. `Bjo.Spawn` does not call the body — it
+            // allocates a fiber object and queues it — so nothing the program
+            // wrote can throw here, and the count cannot be left one too high.
             var fiber = Bjo.Spawn(body);
-            Attach(fiber, slot);
+            Attach(fiber, reports);
             return fiber;
         }
 
@@ -310,15 +390,56 @@ public static partial class BjolangRuntime {
         /// hang says where it is. A scope that returned while its children ran
         /// on would say nothing at all.
         ///
-        /// # Why a choose and not a loop
+        /// # Why a counter and not a list of children
         ///
         /// The obvious way to wait for several children is to join them one at a
-        /// time. That is wrong here. If child 3 fails while we are parked on
+        /// time, and that is wrong here: if child 3 fails while we are parked on
         /// child 1, we do not find out until children 1 and 2 have finished on
         /// their own — which may be never, because nothing has told them to
-        /// stop. So we wait on all the remaining children at once and rebuild
-        /// the wait each time one of them lands, which is what lets a failure
-        /// anywhere in the group cancel the rest immediately.
+        /// stop. So the scope used to keep one entry per child and wait on every
+        /// entry still running at once, rebuilding that wait each time one of
+        /// them landed.
+        ///
+        /// The rebuilding is what had to go. Waiting on a child is not free: it
+        /// publishes a fresh waiter on that child, and a round that waits on
+        /// everything still running pays one waiter per child. Children usually
+        /// land one at a time, so n children meant n rounds and about n²/2
+        /// waiter publications — 4,000 children measured 8,002,000 of them, and
+        /// 100,000 children would be five billion.
+        ///
+        /// Nobody waits on the children individually now. A child that lands
+        /// decrements a counter, the one that takes it to zero completes a
+        /// single promise, and this waits on that promise. One wait, and O(1)
+        /// per child.
+        ///
+        /// # Why the body holds a count of its own
+        ///
+        /// <see cref="_outstanding"/> starts at one, and the one is the body.
+        /// Otherwise zero would mean "no child is running just now", which is
+        /// not the same thing as "the scope is over":
+        ///
+        ///     (with-cancel (cancel)
+        ///       (spawn (quick))        ; finishes at once
+        ///       (sync (timeout 100))
+        ///       (spawn (slow)))        ; started after quick landed
+        ///
+        /// `quick` lands while the body is still in the timeout, the count hits
+        /// zero and the promise is completed — for good, because a promise
+        /// completes once. Close would then return with `slow` still running.
+        /// Holding one for the body makes zero reachable only after Close has
+        /// given it up, which is the fact worth waiting for.
+        ///
+        /// # A child that failed while the body was still running
+        ///
+        /// The token is not fired for it at the time; whether it should be is a
+        /// separate question, and today the answer is that a child's failure
+        /// does not interrupt the body. But something has to fire it eventually,
+        /// or the siblings that failure was supposed to stop are never told. The
+        /// old code never did, so a body that ended normally, with one failed
+        /// child and one child parked on a channel nobody writes to, hung here
+        /// forever. Closing therefore reads the failure list in the same lock
+        /// section that sets the closed flag, and fires the token for whatever
+        /// is already in it.
         ///
         /// # Why report comes last
         ///
@@ -334,43 +455,31 @@ public static partial class BjolangRuntime {
             if (bodyFailure.IsSome)
                 Token.TrySetResult(new CancelReason.Failed(bodyFailure.Value));
 
-            // From here on a spawn into this scope starts nothing. The scope is
-            // already unwinding, so a fiber added now would either be waited for
-            // in a group that has been declared complete, or be left running
-            // with nobody watching.
-            lock (_gate) _closed = true;
-
-            var failures = new List<ExceptionDispatchInfo>();
-
-            // Children that finished while the body was still running.
-            Harvest(failures);
-
-            while (true) {
-                var pending = Pending();
-                if (pending.Length == 0) break;
-
-                // Deliberately not `sync`: `sync` consults the ambient token,
-                // and the ambient token here is this scope's own — very possibly
-                // already fired. A drain that gave up on cancellation would be a
-                // drain that never drains.
-                if (pending.Length == 1) {
-                    await pending[0];
-                } else {
-                    var branches = new IEvent<Result<Unit>>[pending.Length];
-                    for (int i = 0; i < pending.Length; i++) branches[i] = pending[i];
-                    _ = await Cml.Choose(branches);
-                }
-
-                var before = failures.Count;
-                Harvest(failures);
-
-                // A child failed, so the rest are told to stop. Without this the
-                // group would only shrink when its members happened to finish,
-                // and a worker parked on a channel nobody will write to never
-                // does.
-                if (failures.Count > before)
-                    Token.TrySetResult(new CancelReason.Failed(failures[before].SourceException));
+            // From here on a spawn into this scope starts nothing, and every
+            // child that lands from now on fires the token itself if it failed.
+            // The scope is already unwinding, so a fiber added now would either
+            // be waited for in a group that has been declared complete, or be
+            // left running with nobody watching.
+            ExceptionDispatchInfo? firstFailure = null;
+            bool none;
+            lock (_gate) {
+                _closed = true;
+                if (_failures is { Count: > 0 }) firstFailure = _failures[0];
+                none = System.Threading.Interlocked.Decrement(ref _outstanding) == 0;
             }
+
+            // A child failed while the body was still running, so nothing has
+            // told the siblings to stop yet. Without this the wait below only
+            // ends when they finish of their own accord, and a worker parked on
+            // a channel nobody will write to never does.
+            if (firstFailure is not null)
+                Token.TrySetResult(new CancelReason.Failed(firstFailure.SourceException));
+
+            // Deliberately not `sync`: `sync` consults the ambient token, and
+            // the ambient token here is this scope's own — very possibly already
+            // fired. A drain that gave up on cancellation would be a drain that
+            // never drains.
+            if (!none) await _allDone;
 
             // Everything the scope waits for has finished. The token fires now
             // for the things it does not wait for: daemons, and any child that
@@ -381,7 +490,10 @@ public static partial class BjolangRuntime {
             _deadline?.Dispose();
             _deadline = null;
 
-            if (failures.Count == 0) return default;
+            List<ExceptionDispatchInfo>? failures;
+            lock (_gate) failures = _failures;
+
+            if (failures is null) return default;
 
             // The body's own failure is the first cause, so it comes first and
             // the children's are attached to it. The body's failure is *not*
@@ -402,6 +514,12 @@ public static partial class BjolangRuntime {
         /// Several children failed at once, so all of them are reported. Losing
         /// the second one hides the fact that the group failed as a group,
         /// which is usually the more interesting fact.
+        ///
+        /// They come out in the order the children landed, which is not the
+        /// order the children were started in. There is no cheaper order that
+        /// means anything: a child's position in the group says nothing about
+        /// when it died, and landing order at least says which failure came
+        /// first.
         /// </summary>
         private static System.AggregateException Aggregate(
             System.Exception? first, List<ExceptionDispatchInfo> failures) {
@@ -411,56 +529,6 @@ public static partial class BjolangRuntime {
             foreach (var f in failures) all.Add(f.SourceException);
             return new System.AggregateException(
                 $"{all.Count} failures inside one cancellation scope", all);
-        }
-
-        /// <summary>
-        /// The children that have not finished yet. A fresh array each round,
-        /// because `choose` publishes what it is given and a child that has
-        /// already landed would win every round from then on.
-        /// </summary>
-        private Promise<Unit>[] Pending() {
-            lock (_gate) {
-                if (_children.Count == 0) return System.Array.Empty<Promise<Unit>>();
-
-                var pending = new List<Promise<Unit>>(_children.Count);
-                foreach (var c in _children)
-                    if (!c.Done.IsCompleted) pending.Add(c.Done);
-
-                return pending.ToArray();
-            }
-        }
-
-        /// <summary>
-        /// Collect the failures of every child that has landed, and forget those
-        /// children.
-        ///
-        /// Every landed child is read, not only the one that woke the drain.
-        /// Several can land between two rounds, and a failure that is only
-        /// noticed when its own branch happens to win the `choose` is a failure
-        /// that is sometimes not noticed at all.
-        /// </summary>
-        private void Harvest(List<ExceptionDispatchInfo> failures) {
-            lock (_gate) {
-                for (int i = _children.Count - 1; i >= 0; i--) {
-                    var c = _children[i];
-                    if (!c.Done.IsCompleted) continue;
-
-                    // A child that stopped because it was cancelled did not
-                    // fail. This is not a nicety — without it cancellation is
-                    // unusable, because the ordinary way a worker ends is that
-                    // a `sync` raised `Cancelled` at it, and the scope would
-                    // then report its own cancellation back to its caller as an
-                    // error every single time.
-                    //
-                    // The record that a cancellation happened is the scope's
-                    // token, which has fired and carries the reason. Nothing is
-                    // lost by not raising here.
-                    if (c.Reports && c.Error is { } e && !IsCancellation(e, Token))
-                        failures.Add(e);
-
-                    _children.RemoveAt(i);
-                }
-            }
         }
     }
 
@@ -550,12 +618,12 @@ public static partial class BjolangRuntime {
     /// are done, the scope fires its token, and this fiber — which inherited
     /// that token like any other — stops at its next `sync`.
     ///
-    /// # Why it is not in the child list
+    /// # Why it is not counted
     ///
-    /// Because the list is exactly "what the scope waits for", and this is not
+    /// Because the count is exactly "what the scope waits for", and this is not
     /// that. Cancellation reaches a daemon through the ambient token, which it
-    /// inherits from the dynamic environment and not from being enlisted, so an
-    /// entry here would be a record nothing ever reads.
+    /// inherits from the dynamic environment and not from being enlisted, so
+    /// counting it in would hold the scope open for nothing.
     ///
     /// # What the scope does not do
     ///

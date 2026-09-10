@@ -3,6 +3,35 @@
 
 What each change guarantees, and what it leaves open.
 
+* A scope closes in one wait
+
+A scope used to keep one entry per child and, at close time, wait on every entry
+still running at once, rebuilding that wait each time one of them landed.
+Children usually land one at a time, so n children cost about n²/2 waiter
+publications — 4,000 children measured 8,002,000 of them. A child now decrements
+a counter and whoever takes it to zero completes a single promise, so closing is
+one wait and a child is O(1). 100,000 trivial ~spawn~ calls in one ~with-cancel~:
+30 ms before, 16 ms after.
+
+The counter starts at one, and that one is the body. Otherwise ~(spawn (quick))~,
+a sleep, ~(spawn (slow))~ would end the scope the moment ~quick~ landed.
+
+A landing that has no failure to report takes no lock, only an interlocked
+decrement. Children land on every pool thread at once, and one shared lock per
+landing measured slower than the per-child list it replaced.
+
+Three behaviour changes:
+
+- A child that failed while the body was still running now fires the token once
+  the body ends. Nothing did before, so a body that returned normally, with one
+  failed child and one child parked on a channel nobody writes to, hung in
+  ~with-cancel~ forever. A child's failure still does not interrupt the body.
+- Whether a child was cancelled or failed is decided when it lands, not after
+  the drain. A genuine ~OperationCanceledException~ — an ~HttpClient~ timeout —
+  raised before the scope's token fired used to be classified after it had
+  fired, and dropped. It is reported now.
+- Several failures come out of the ~AggregateException~ in landing order.
+
 * ~(and p q ...)~ in pattern position
 
 Every conjunct against the same value. Each may bind — two of them binding one
