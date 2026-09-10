@@ -1,0 +1,160 @@
+;; The four rows the merge is measured against, written in Bjolang.
+;;
+;; Twin of bench/Cml/Program.cs. Same counts, same topology, same work per unit,
+;; so the gap between the two tables is what the language costs on top of the
+;; runtime.
+;;
+;; The scoped ring has no C# twin: a scope is a Bjolang construct, and the row
+;; exists to price it. Its 1000 spawns are inside the timed region because they
+;; have to be inside the scope; against 1,000,000 messages that is under 0.2%.
+
+(import (std prelude))
+(import (std stopwatch))
+
+;; Per-thread allocation is useless here — the work is spread over the pool — so
+;; the process-wide counter is used instead.
+(import/extern
+  (total-allocated (: System.GC.GetTotalAllocatedBytes (-> bool long))))
+
+(: report (-> string int long long void))
+(defun (report name n ms bytes)
+  (let ((ops (cast System.Int64 n)))
+    (println (str name "|"
+                  (->str (/ (* ms 1000000L) ops)) "|"
+                  (->str (/ bytes ops))))))
+
+;; ---------------------------------------------------------------------------
+;; 1. Ring — 1000 nodes, 1000 trips, a million parked rendezvous.
+;; ---------------------------------------------------------------------------
+
+(: ring-node (-bjo-> (Chan int) (Chan int) bool int void))
+(defbjo (ring-node in out is-last trips)
+  (let go ()
+    (def msg (sync (chan-recv in)))
+    (if (= msg -1)
+        (if is-last unit (sync (chan-send out -1)))
+        (let ((m (if is-last (+ msg 1) msg)))
+          (if (and is-last (>= m trips))
+              (let () (sync (chan-send out -1)) (go))
+              (let () (sync (chan-send out m)) (go)))))))
+
+;; Spawned with `bjo` and joined by hand, so the nodes start outside the timed
+;; region exactly as they do in the C# twin.
+(: ring-unscoped (-bjo-> int int void))
+(defbjo (ring-unscoped workers trips)
+  (def channels (loop (:for i (range 0 workers))
+                      (:acc v (vecing (make-chan)))))
+  (def handles (loop (:for i (range 0 workers))
+                     (:acc v (vecing (bjo (ring-node (vec-ref channels i)
+                                                     (vec-ref channels (% (+ i 1) workers))
+                                                     (= i (- workers 1))
+                                                     trips))))))
+  (def before (total-allocated #t))
+  (def sw (stopwatch))
+  (stopwatch-start! sw)
+  (sync (chan-send (vec-ref channels 0) 0))
+  (loop (:for i (range 0 workers))
+        (:do (ignore (sync (promise-join (vec-ref handles i))))))
+  (stopwatch-stop! sw)
+  (report "Ring" (* workers trips) (stopwatch-ms sw) (- (total-allocated #t) before)))
+
+;; The same ring inside a `with-cancel`. Every `sync` in every node now races the
+;; scope's live token, which is the row's whole point.
+(: ring-scoped (-bjo-> int int void))
+(defbjo (ring-scoped workers trips)
+  (def channels (loop (:for i (range 0 workers))
+                      (:acc v (vecing (make-chan)))))
+  (def before (total-allocated #t))
+  (def sw (stopwatch))
+  (stopwatch-start! sw)
+  (with-cancel (cancel)
+    (loop (:for i (range 0 workers))
+          (:do (spawn (ring-node (vec-ref channels i)
+                                 (vec-ref channels (% (+ i 1) workers))
+                                 (= i (- workers 1))
+                                 trips))))
+    (sync (chan-send (vec-ref channels 0) 0)))
+  (stopwatch-stop! sw)
+  (report "Ring (scoped)" (* workers trips) (stopwatch-ms sw) (- (total-allocated #t) before)))
+
+;; ---------------------------------------------------------------------------
+;; 2. Spawn burst — a million fibers that do nothing.
+;;
+;; The scope is the completion signal, which is what the C# twin's countdown
+;; latch is. The scope's per-child bookkeeping is on this row.
+;; ---------------------------------------------------------------------------
+
+(: nothing (-bjo-> void))
+(defbjo (nothing) unit)
+
+(: spawn-burst (-bjo-> int void))
+(defbjo (spawn-burst n)
+  (def before (total-allocated #t))
+  (def sw (stopwatch))
+  (stopwatch-start! sw)
+  (with-cancel (cancel)
+    (loop (:for i (range 0 n))
+          (:do (spawn (nothing)))))
+  (stopwatch-stop! sw)
+  (report "Spawn burst" n (stopwatch-ms sw) (- (total-allocated #t) before)))
+
+;; ---------------------------------------------------------------------------
+;; 3. Skewed choose — 8 branches, only the first ever fires.
+;;
+;; The other 7 accumulate dead takers that only the amortised sweep reclaims.
+;; ---------------------------------------------------------------------------
+
+(: skewed-sender (-bjo-> (Chan int) int void))
+(defbjo (skewed-sender ch rounds)
+  (loop (:for i (range 0 rounds))
+        (:do (sync (chan-send ch i)))))
+
+(: skewed-receiver (-bjo-> (Vec (Chan int)) int void))
+(defbjo (skewed-receiver chs rounds)
+  ;; Built once and synced a million times, as in the C# twin.
+  (def ev (choose (chan-recv (vec-ref chs 0))
+                  (chan-recv (vec-ref chs 1))
+                  (chan-recv (vec-ref chs 2))
+                  (chan-recv (vec-ref chs 3))
+                  (chan-recv (vec-ref chs 4))
+                  (chan-recv (vec-ref chs 5))
+                  (chan-recv (vec-ref chs 6))
+                  (chan-recv (vec-ref chs 7))))
+  (loop (:for i (range 0 rounds))
+        (:do (ignore (sync ev)))))
+
+(: skewed-choose (-bjo-> int void))
+(defbjo (skewed-choose rounds)
+  (def chs (loop (:for i (range 0 8))
+                 (:acc v (vecing (make-chan)))))
+  (def sender (bjo (skewed-sender (vec-ref chs 0) rounds)))
+  (def before (total-allocated #t))
+  (def sw (stopwatch))
+  (stopwatch-start! sw)
+  (skewed-receiver chs rounds)
+  (ignore (sync (promise-join sender)))
+  (stopwatch-stop! sw)
+  (report "Skewed choose(8)" rounds (stopwatch-ms sw) (- (total-allocated #t) before)))
+
+;; ---------------------------------------------------------------------------
+
+(defbjo (main args)
+  ;; Warm up every path the suite uses, so the first measured rep is not the one
+  ;; paying for tier-0 code. The warmup rows go to a port nobody reads.
+  (let ((quiet (open-output-string)))
+    (ignore (parameterize ((current-output-port quiet))
+              (ring-unscoped 100 100)
+              (ring-scoped 100 100)
+              (spawn-burst 50000)
+              (skewed-choose 50000)
+              (get-output-string quiet))))
+
+  (loop (:for r (range 0 3))
+        (:do (ring-unscoped 1000 1000)))
+  (loop (:for r (range 0 3))
+        (:do (ring-scoped 1000 1000)))
+  (loop (:for r (range 0 3))
+        (:do (spawn-burst 1000000)))
+  (loop (:for r (range 0 3))
+        (:do (skewed-choose 1000000)))
+  0)
