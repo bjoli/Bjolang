@@ -82,6 +82,16 @@
     ((:view ->str "yes") "affirmative")
     (_ "other")))
 
+;; A trait method with an *associated* type as the step. The step is inferred
+;; against the arrow it has to have, so `&` stands at the scrutinee's type and
+;; `Refable`'s `%index` resolves through it; inferring the call first has
+;; nothing to resolve it from.
+(: port-of (-> (Map string int) int))
+(defun (port-of config)
+  (match config
+    ((:view (try-ref & "port") (Some p)) p)
+    (_ 8080)))
+
 ;; A step closing over a local of the enclosing scope.
 (: count-over (-> (Vec int) int int))
 (defun (count-over xs limit)
@@ -121,6 +131,9 @@
   (expect "trait-step-binder" (named 7) "n7")
   (expect "trait-step-dict" (shouted? 4) "other")
   (expect "trait-step-dict-hit" (shouted? "yes") "affirmative")
+
+  (expect "associated-type-step" (port-of (map-set (map-empty) "port" 9000)) 9000)
+  (expect "associated-type-step-miss" (port-of (map-empty)) 8080)
 
   (expect "closes-over-a-local" (count-over [1 5 9] 4) 2)
 

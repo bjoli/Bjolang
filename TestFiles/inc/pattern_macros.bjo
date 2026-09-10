@@ -43,6 +43,17 @@
     ((_ limit p) #'(:view (< ,limit &) ,p))
     (bad (syntax-error bad "(Over limit p) matches a number above limit."))))
 
+;; A template that writes a `(fun ...)` step. The head arrives marked like every
+;; other symbol, so it is read through `headName` — otherwise the step is
+;; threaded instead of taken as the function it is.
+;;
+;; `x` is written into the parameter list and into the body. One renaming runs
+;; per expansion, so both come out as the same fresh name.
+(def/pattern (Squared form inject compare)
+  (syntax-match form
+    ((_ p) #'(:view (fun (x) (* x x)) ,p))
+    (bad (syntax-error bad "(Squared p) matches the square of a number against p."))))
+
 ;; A destructuring macro, for `(loop (:for (Both k v) ...))` — a `:for` pattern
 ;; has to be a name or a tuple, and a pattern macro is expanded before that is
 ;; decided.

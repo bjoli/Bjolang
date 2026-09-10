@@ -308,9 +308,11 @@ let private currentSeqElement (env: Env) (formName: string) (r: Range) : HMType 
 ///
 /// `inferStep` is the inferencer, passed in rather than called: a `(:view step
 /// p)` holds an ordinary expression, and this is compiled well before `infer`
-/// is. It is `infer` at the one call site there is.
+/// is. It is `inferChecked` at the one call site there is, so that a step
+/// written as a lambda has its parameter at the scrutinee's type before its
+/// body is inferred.
 let rec checkPattern
-    (inferStep: Env -> Expr -> HMType * TypedExpr)
+    (inferStep: HMType -> Env -> Expr -> HMType * TypedExpr)
     (env: Env)
     (expectedType: HMType)
     (pat: Pattern)
@@ -460,8 +462,14 @@ let rec checkPattern
     // be in it. Its binders are the inner pattern's, and the view contributes
     // none of its own.
     | PView(step, inner, r) ->
-        let stepType, typedStep = inferStep env step
         let resultType = freshMeta ()
+
+        // Inferred against the arrow it has to have, so that a lambda step —
+        // which is what a `&` form is — reads its parameter at the scrutinee's
+        // type. A trait method with an associated type, `(try-ref & key)`, has
+        // nothing to resolve that type through otherwise.
+        let stepType, typedStep =
+            inferStep (TFun([ expectedType ], resultType, ESync)) env step
 
         // The call is emitted into a C# `case ... when`, which has no `await`,
         // so the arrow has to be an ordinary one. Refused here rather than left
@@ -4059,7 +4067,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         let typedClauses =
             clauses
             |> List.map (fun (pat, guard, body) ->
-                let typedPat, boundVars = checkPattern infer env targetType pat
+                let typedPat, boundVars = checkPattern inferChecked env targetType pat
 
                 let boundEnv =
                     Map.fold

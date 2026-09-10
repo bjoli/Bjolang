@@ -3331,10 +3331,19 @@ and private expandPatternMacro (s: SExpr) : Pattern option =
 /// application, because the emitter inlines a lambda's body into the guard and
 /// so emits a direct call. A written `(fun ...)` is already that function and
 /// is taken as it stands; threading it would make the value its first argument.
+///
+/// The head is read through `headName`, as every dispatched head is: a template
+/// writing `(fun ...)` arrives with the mark still on it.
 and private parseViewStep (step: SExpr) (r: Range) : Expr =
     match step with
-    | SAtom { Token = Symbol _ }
-    | SList(SAtom { Token = Symbol("fun" | "bjoroutine") } :: _, _) -> parseExpr step
+    | SAtom { Token = Symbol _ } -> parseExpr step
+    | SList(SAtom { Token = Symbol sym } :: _, _) when
+        (match headName sym with
+         | "fun"
+         | "bjoroutine" -> true
+         | _ -> false)
+        ->
+        parseExpr step
     | _ ->
         let hole = Gensym.fresh "view"
         let holeAtom = SAtom { Token = Symbol hole; Range = getRange step }
