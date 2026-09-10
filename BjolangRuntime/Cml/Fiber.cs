@@ -116,9 +116,48 @@ internal sealed class FiberStateMachineBox<TStateMachine> : IFiberResume
 // copied around; this reference is what actually persists.
 // ---------------------------------------------------------------------------
 
+/// <summary>
+/// Told when a fiber it started has finished, whichever way it finished.
+///
+/// The alternative is to join the fiber, and a scope that joins every child pays
+/// a <c>Cml.Sync</c> per child — a <see cref="SyncState"/>, a join event and a
+/// closure — to learn something the completion already knows. An owner is one
+/// object shared by every child it started, so the per-fiber cost is the field.
+///
+/// <see cref="Landed"/> runs on whichever thread completed the fiber and is
+/// subject to the same rules as a nack action: it must not suspend and must not
+/// run user code. Throwing from it is reported, not propagated: the completion
+/// path it runs on belongs to the fiber, not to the owner.
+/// </summary>
+public interface IFiberLanding
+{
+    void Landed(System.Runtime.ExceptionServices.ExceptionDispatchInfo? error);
+}
+
 public class FiberCore<T> : Promise<T>, IThreadPoolWorkItem
 {
     [ThreadStatic] internal static FiberCore<T>? CurrentSpawning;
+
+    /// <summary>
+    /// Who to tell when this fiber lands, or null for a fiber nobody owns.
+    ///
+    /// Assigned before the core is enqueued, because the fiber can be running on
+    /// another thread by the time <c>EnqueueSpawn</c> returns.
+    /// </summary>
+    internal IFiberLanding? Landing;
+
+    protected override void OnLanded(System.Runtime.ExceptionServices.ExceptionDispatchInfo? error)
+    {
+        var landing = Landing;
+        if (landing is null) return;
+
+        // Cleared before the call so that an owner which completes this promise
+        // again from inside Landed cannot be told twice.
+        Landing = null;
+
+        try { landing.Landed(error); }
+        catch (Exception ex) { Scheduler.ReportUnhandled(ex); }
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static FiberCore<T>? TakeSpawning()

@@ -92,6 +92,27 @@ public static partial class BjolangRuntime {
     }
 
     /// <summary>
+    /// <see cref="ReportUnlessCancelled{T}"/> as a landing, for the spawns that
+    /// are starting the fiber and can therefore hand it an owner rather than
+    /// join it afterwards.
+    ///
+    /// One per spawn, where joining cost a `SyncState`, a join event and a
+    /// closure. `detach` cannot use this — it is handed a promise that has
+    /// already been started, and may not be a fiber at all — so the joining
+    /// version above stays for it.
+    /// </summary>
+    private sealed class UnhandledReporter : IFiberLanding {
+        private readonly Promise<CancelReason>? _token;
+
+        internal UnhandledReporter(Promise<CancelReason>? token) => _token = token;
+
+        public void Landed(ExceptionDispatchInfo? error) {
+            if (error is not null && !IsCancellation(error, _token))
+                Scheduler.ReportUnhandled(error.SourceException);
+        }
+    }
+
+    /// <summary>
     /// A cancellation scope, and the fibers started inside it.
     ///
     /// Opaque to Bjolang: the only things that touch one are the four `spawn`
@@ -185,6 +206,9 @@ public static partial class BjolangRuntime {
         private System.Threading.Timer? _deadline;
 
         internal Scope(int deadlineMs, Promise<CancelReason>? parent) {
+            _reporting = new Landing(this, reports: true);
+            _silent = new Landing(this, reports: false);
+
             // Linking is one-directional: the parent cancels the child, never
             // the other way round. A `with-cancel` inside a `with-cancel` that
             // stops early must not take its parent's other work down with it.
@@ -251,15 +275,26 @@ public static partial class BjolangRuntime {
         }
 
         /// <summary>
-        /// Wire a started fiber to the count: when it lands, whichever way it
-        /// landed, <see cref="Landed"/> runs.
+        /// The two ways a child can land, as two objects per scope rather than
+        /// one per child.
         ///
-        /// A bare completion callback rather than a fiber that joins. A joining
-        /// fiber would be one more fiber per child, and it would have to be
-        /// waited for too.
+        /// A child is wired to the count by <see cref="IFiberLanding"/>, which is
+        /// a field on the fiber. Joining the child said the same thing and cost a
+        /// `SyncState`, a join event and a closure each. Which of the two an
+        /// individual child gets is the only thing that varies, so the flag lives
+        /// in the adapter and the adapter is shared.
         /// </summary>
-        private void Attach<T>(Promise<T> fiber, bool reports) =>
-            Cml.Sync(fiber.Join(), r => Landed(reports, r.IsError ? r.Error : null));
+        private sealed class Landing : IFiberLanding {
+            private readonly Scope _scope;
+            private readonly bool _reports;
+
+            internal Landing(Scope scope, bool reports) { _scope = scope; _reports = reports; }
+
+            public void Landed(ExceptionDispatchInfo? error) => _scope.Landed(_reports, error);
+        }
+
+        private readonly Landing _reporting;
+        private readonly Landing _silent;
 
         /// <summary>
         /// One child has finished. Keep its failure if the failure is the
@@ -384,9 +419,7 @@ public static partial class BjolangRuntime {
             // No `try` around the spawn. `Bjo.Spawn` does not call the body — it
             // allocates a fiber object and queues it — so nothing the program
             // wrote can throw here, and the count cannot be left one too high.
-            var fiber = Bjo.Spawn(body);
-            Attach(fiber, reports);
-            return fiber;
+            return Bjo.Spawn(body, reports ? _reporting : _silent);
         }
 
         /// <summary>
@@ -628,7 +661,10 @@ public static partial class BjolangRuntime {
     /// </summary>
     public static Unit ScopeSpawnUnit<T>(System.Func<Fiber<T>> body) {
         var scope = Dyn.Current.Scope;
-        if (scope is null) { ReportUnlessCancelled(Bjo.Spawn(body), Dyn.Current.Cancel); return default; }
+        if (scope is null) {
+            _ = Bjo.Spawn(body, new UnhandledReporter(Dyn.Current.Cancel));
+            return default;
+        }
 
         // Null means the scope is closing and nothing was started. Nothing to
         // report, and nothing to hand back.
@@ -672,7 +708,7 @@ public static partial class BjolangRuntime {
 
         // The scope's token, so that a daemon unwinding on the cancellation the
         // scope just fired is not printed as an unhandled exception.
-        ReportUnlessCancelled(Bjo.Spawn(body), scope?.Token);
+        _ = Bjo.Spawn(body, new UnhandledReporter(scope?.Token));
         return default;
     }
 
@@ -703,7 +739,7 @@ public static partial class BjolangRuntime {
         try {
             // No token: a detached fiber inherits none, so nothing can have
             // asked it to stop and every failure it has is a real one.
-            ReportUnlessCancelled(Bjo.Spawn(body), null);
+            _ = Bjo.Spawn(body, new UnhandledReporter(null));
         } finally {
             Dyn.Current = saved;
         }

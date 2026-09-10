@@ -39,10 +39,21 @@ public static class Bjo
     /// Note for callers: C# cannot infer <typeparamref name="T"/> from an async
     /// lambda, so write <c>Bjo.Spawn&lt;int&gt;(async () =&gt; ...)</c>.
     /// </summary>
-    public static Promise<T> Spawn<T>(Func<Fiber<T>> body)
+    public static Promise<T> Spawn<T>(Func<Fiber<T>> body) => Spawn(body, null);
+
+    /// <summary>
+    /// The same spawn, told who owns the fiber.
+    ///
+    /// <paramref name="landing"/> is called once when the fiber finishes, which is
+    /// what a scope needs and is cheaper than the scope joining the promise. The
+    /// field is set before the enqueue: after it, the fiber may already be running
+    /// on another thread and may already have landed.
+    /// </summary>
+    public static Promise<T> Spawn<T>(Func<Fiber<T>> body, IFiberLanding? landing)
     {
         var inherited = FiberContext.Current;
         var core = new FiberCore<T>(SpawnRunners<T>.FuncRunner, body, inherited);
+        core.Landing = landing;
         Scheduler.EnqueueSpawn(core);
         return core;
     }

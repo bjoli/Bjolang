@@ -182,8 +182,23 @@ public class Promise<T> : IEvent<Result<T>>
             }
         }
 
+        OnLanded(error);
         return true;
     }
+
+    /// <summary>
+    /// Run once, by the completion that won, after the value is readable and the
+    /// waiters have been enqueued.
+    ///
+    /// For an owner that has to hear about every fiber it started and does not
+    /// otherwise want the value. Registering a waiter says the same thing and
+    /// costs a <see cref="SyncState"/>, a join event and a closure per fiber;
+    /// this costs a null check on a field the owner already had to store.
+    ///
+    /// It runs on whichever thread completed the promise, so the same rules apply
+    /// as to a nack: no user code, no suspending.
+    /// </summary>
+    protected virtual void OnLanded(ExceptionDispatchInfo? error) { }
 
     // ---- waiter registration ----------------------------------------------
 

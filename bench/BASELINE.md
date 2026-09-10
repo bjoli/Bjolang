@@ -105,9 +105,47 @@ so that a real change is not mistaken for one of them:
   deterministic everywhere except the row named above, and on differences large
   enough to survive a re-run.
 
+## Phase 2d — the scope is told, it does not ask
+
+A fiber carries an `IFiberLanding?`, and `Promise.Complete` calls it. The scope
+hands each child one of two adapters it made in its own constructor, so joining
+every child — a `SyncState`, a join event, a waiter and a closure each — is
+gone. `Attach` is deleted.
+
+Taken out of order: 2b and 2c are both gated on 2f, since until `main` is
+unscoped no `sync` in a real program can reach a direct park. 2d is independent
+of all of them.
+
+| benchmark | Bjolang ns/op | Bjolang B/op | vs phase 2a |
+|---|---|---|---|
+| Ring | 123 | 256 | unchanged |
+| Ring, scoped | 117 | 256 | unchanged |
+| Spawn burst | 74 | 185 | **−52 ns, −168 B** |
+| Skewed choose(8) | 274 | 256 | unchanged |
+
+The 168 bytes are the `SyncState`, the promise waiter, the closure over
+`(this, reports)` and the waiter list the promise had to grow to hold it.
+
+The ring rows do not move and should not: a scope's bookkeeping is per fiber,
+and the ring spawns 1000 fibers against 1,000,000 messages.
+
+### The spawn row is not a ratio
+
+Bjolang now reports 74 ns/op against the C# suite's 95.8, and that does **not**
+mean the language beats the runtime it is built on. The two spawn benchmarks
+have different children: the C# one does an `Interlocked.Increment` and a
+countdown on a `ManualResetEventSlim`, because a pure-C# harness has no scope to
+tell it when the burst is over, while the Bjolang one uses the scope as the
+completion signal and its child body is empty. The C# row carries a latch the
+Bjolang row does not.
+
+Only the Bjolang column moves meaningfully on this row, and 126 → 74 is what
+phase 2d is judged on. The cross-suite ratio for spawn is not reported in the
+final table for this reason.
+
 ## Test suites
 
-Green at phase 0, phase 1 and phase 2a.
+Green at phase 0, 1, 2a and 2d.
 
 - Bjolang `./run_tests.sh`: 185 groups, 213 error tests, 8 warning tests, 22
   codegen assertions, 3 REPL transcripts, 3 staleness checks.
