@@ -2469,3 +2469,22 @@
   (match (sync/blocking (promise-join p))
     ((Err e) (raise e))
     ((Ok v) v)))
+
+
+;; Pattern matching thingies
+;;
+;; Has is useful when matching against Refable. It matches they key and binds the key if it exists
+;; (match my-map
+;; ((Has :my-key pat) (println #"The value of :my-key is ${pat}"))
+;; (_ (panic! "it didn't have it")))
+(def/pattern (Has form inject compare)
+  (syntax-match form
+    ((_ key p) #'(:view (try-ref & ,key) (Some ,p)))
+    (bad (syntax-error bad "(Has key pattern) matches a Refable that holds key."))))
+
+(def/pattern (Has* form inject compare)
+  (syntax-match form
+    ((_) (syntax-error form "(Has* (key pattern) ...) needs at least one key."))
+    ((_ (key pat) ...)
+     #'(and ,@{listing #'(Has ,k ,p) (:for k key) (:for p pat)}))
+    (bad (syntax-error bad "(Has* (key pattern) ...) pairs each key with a pattern for its value."))))

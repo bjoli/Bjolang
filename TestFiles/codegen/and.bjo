@@ -1,0 +1,47 @@
+;; What `(and p q ...)` compiles to.
+;;
+;; The shape, read off the generated C# by hand once and pinned here:
+;;
+;;   case (var w and { Tag: 1, Value: var n }):
+;;
+;;   case (var __view__22 and var __view__23)
+;;     when map_try_ref(__view__22, "a") is { Tag: 1, Value: var x }
+;;       && map_try_ref(__view__23, "b") is { Tag: 1, Value: var y }:
+;;
+;; Two things are being kept. A conjunction of ordinary patterns is a *label*,
+;; so nothing runs and the clause is still a jump-table entry. And a conjunction
+;; of views is one `&&` chain, so a later step is not evaluated when an earlier
+;; one has already failed — which is the whole reason to write them under one
+;; `and` rather than to pack them into a tuple.
+;;
+;; Each `EXPECT-CS` is an extended regex matched against a single line.
+;; `203_and_patterns.bjo` is what checks the answers.
+
+(import (std prelude))
+
+;; A binder beside a constructor pattern: no guard at all.
+;; EXPECT-CS: case \(var w and \{ Tag: 1, Value: var n \}\):
+;; EXPECT-NO-CS: case \(var w and \{ Tag: 1, Value: var n \}\) when
+(: describe (-> (Option int) string))
+(defun (describe o)
+  (match o
+    ((and w (Some n)) (str (->str n) " of " (->str w)))
+    (None "none")))
+
+;; Two views under one `and`: two designations in the label, and the two tests
+;; joined with `&&` in pattern order.
+;; EXPECT-CS: case \(var __view__[0-9]+ and var __view__[0-9]+\) when .* && .*
+(: both-keys (-> (Map string int) int))
+(defun (both-keys m)
+  (match m
+    ((and (:view (try-ref & "a") (Some x)) (:view (try-ref & "b") (Some y))) (+ x y))
+    (_ 0)))
+
+;; C#'s `and` binds tighter than its `or`, so the alternatives have to arrive
+;; parenthesised or `(and (or 1 2) x)` reads as `1 or (2 and var x)`.
+;; EXPECT-CS: case \(\(1 or 2\) and var x\):
+(: low? (-> int string))
+(defun (low? n)
+  (match n
+    ((and (or 1 2) x) (str "low " (->str x)))
+    (_ "other")))

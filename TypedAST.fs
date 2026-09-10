@@ -728,6 +728,10 @@ and TPatternNode =
     /// Alternatives, none of which binds. Emitted as several labels on one
     /// `switch` section, which is the shape Roslyn turns into a jump table.
     | TPOr of TypedPattern list
+    /// Conjuncts, all against the same value, each free to bind. Emitted as a
+    /// C# `and` chain, which is one label — so a clause carrying one keeps its
+    /// place in the section but not, if it holds a view, in the jump table.
+    | TPAnd of TypedPattern list
 
 and TExprNode =
     | TInt of string

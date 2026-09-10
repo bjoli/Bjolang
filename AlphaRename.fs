@@ -91,6 +91,8 @@ let rec private typedPatternBinders (pat: TypedPattern) : string list =
     // recurses anyway rather than answering `[]`, so that the day an
     // alternative may bind, every binder still arrives here.
     | TPOr alts -> alts |> List.collect typedPatternBinders
+    // Every conjunct matches, so every conjunct's binders are the clause's.
+    | TPAnd alts -> alts |> List.collect typedPatternBinders
 
 /// Kept for callers that only need the names.
 let patternNames = typedPatternBinders
@@ -262,29 +264,22 @@ let rec private renameCore
                 |> List.map (fun c ->
                     let _, inner, innerSubst = bind (typedPatternBinders c.Pattern) scope subst
 
-                    // The pattern hole `LoopLowering` left open: `TPApp` carries
-                    // a `TypedExpr` whose free variables live in the *enclosing*
-                    // scope, and `TPAs` binds a name. Neither used to be
-                    // touched, so a free variable inside a view pattern escaped
-                    // renaming entirely.
+                    // The two nodes that are not merely structural: `TPIdent`
+                    // and `TPAs` bind a name, and a view's step — reached
+                    // through `mapPatternChildrenWith`'s expression argument —
+                    // is evaluated in the scope the `match` sits in rather than
+                    // under the names the pattern binds.
+                    //
+                    // Everything else recurses through the one traversal, so a
+                    // pattern node added later cannot be silently dropped here.
                     let rec goPat (p: TypedPattern) : TypedPattern =
-                        let pnode =
-                            match p.Node with
-                            | TPIdent n -> TPIdent(Map.tryFind n innerSubst |> Option.defaultValue n)
-                            | TPAs(inner', n) ->
-                                TPAs(goPat inner', Map.tryFind n innerSubst |> Option.defaultValue n)
-                            | TPApp(e, inner') ->
-                                // Evaluated in the scope the `match` sits in,
-                                // not under the names the pattern binds.
-                                TPApp(sub e, goPat inner')
-                            | TPList(items, tailOpt) -> TPList(List.map goPat items, Option.map goPat tailOpt)
-                            | TPVec(items, tailOpt) -> TPVec(List.map goPat items, Option.map goPat tailOpt)
-                            | TPArray(items, tailOpt) -> TPArray(List.map goPat items, Option.map goPat tailOpt)
-                            | TPTuple items -> TPTuple(List.map goPat items)
-                            | TPConstruct(n, args) -> TPConstruct(n, List.map goPat args)
-                            | leaf -> leaf
-
-                        { p with Node = pnode }
+                        match p.Node with
+                        | TPIdent n ->
+                            { p with Node = TPIdent(Map.tryFind n innerSubst |> Option.defaultValue n) }
+                        | TPAs(inner', n) ->
+                            { p with
+                                Node = TPAs(goPat inner', Map.tryFind n innerSubst |> Option.defaultValue n) }
+                        | _ -> TypeVisitor.mapPatternChildrenWith sub goPat p
 
                     { Pattern = goPat c.Pattern
                       Guard = Option.map (renameCore freshenBinder inner innerSubst) c.Guard

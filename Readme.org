@@ -136,6 +136,24 @@ through a view function that type's own module exported. And it runs once per
 clause that tries it — three clauses each viewing ~parse-int~ call it three
 times, so a step that costs something belongs in front of the ~match~.
 
+*** And it composes
+
+~(or p q)~ matches any one of them and none of them may bind. ~(and p q)~
+matches all of them and each may bind, as long as no two bind the same name.
+That is how a value is taken apart and kept whole at the same time, and how
+several views are put on one value:
+
+#+BEGIN_SRC scheme
+(match config
+  ((and whole (Some n))                (log whole n))
+  ((and (Has "host" h) (Has "port" p)) (connect h p))
+  (_                                   (default)))
+#+END_SRC
+
+A conjunction of ordinary patterns is one ~case~ label, so nothing runs and the
+clause keeps its place in the jump table. A conjunction of views becomes one
+~&&~ chain, so ~"port"~ is not looked up when ~"host"~ is absent.
+
 *** And it is checked
 
 A ~match~ that does not cover every value its scrutinee can have is a compile
@@ -157,7 +175,8 @@ What counts as covered:
   plus a rest pattern for everything longer;
 - ~int~, ~string~, ~char~, keywords, symbols, .NET types and anything imported
   ~#:opaque~ have no listable set of values, so only a binder covers them;
-- an ~(or ...)~ covers each alternative it holds.
+- an ~(or ...)~ covers each alternative it holds; an ~(and ...)~ covers what its
+  one conjunct that can fail covers, and nothing at all when two of them can.
 
 What covers nothing: a clause with a ~#:when~ guard, since the guard may fail;
 a ~(:view ...)~, since nothing here works out what a step returns; and a

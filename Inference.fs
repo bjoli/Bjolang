@@ -415,6 +415,29 @@ let rec checkPattern
           Range = r
           Node = TPOr typedAlts },
         Map.empty
+
+    // `(and p q ...)` — every conjunct against the one value, so every conjunct
+    // is checked at the scrutinee's type and every conjunct's binders are the
+    // clause's. The parser has already refused two conjuncts binding one name.
+    //
+    // The node's own type stays the scrutinee's even where a conjunct narrows:
+    // a `(:is ...)` narrows the name it binds and nothing else, and the label
+    // is emitted against the value as the `match` has it.
+    | PAnd(alts, r) ->
+        let mutable currentEnv = Map.empty
+
+        let typedAlts =
+            alts
+            |> List.map (fun alt ->
+                let typed, binders = checkPattern env expectedType alt
+                currentEnv <- Map.fold (fun acc k v -> Map.add k v acc) currentEnv binders
+                typed)
+
+        { Type = expectedType
+          Range = r
+          Node = TPAnd typedAlts },
+        currentEnv
+
     // `(:is Clr.Type binder)` — a .NET type test, which is how one exception is
     // told from another inside an `Err` arm.
     //

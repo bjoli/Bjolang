@@ -194,6 +194,23 @@ let rec private headOf (pat: TypedPattern) : Head =
     | TPOr alts -> HOr alts
     | TPTypeTest _
     | TPApp _ -> HNever
+    // An `and` matches the *intersection* of its conjuncts, and a matrix column
+    // holds one head constructor. A conjunct that cannot fail rules nothing
+    // out, so it is dropped; one that can and stands alone is the whole of what
+    // the conjunction matches. Two that can is an intersection nothing here
+    // spells, and it covers nothing rather than being over-reported.
+    | TPAnd alts ->
+        let refutable =
+            alts
+            |> List.filter (fun alt ->
+                match headOf alt with
+                | HWild -> false
+                | _ -> true)
+
+        match refutable with
+        | [] -> HWild
+        | [ only ] -> headOf only
+        | _ -> HNever
     | TPVec(items, tailOpt)
     | TPArray(items, tailOpt) ->
         // A rest that is itself refutable constrains lengths this does not

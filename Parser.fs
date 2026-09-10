@@ -164,6 +164,14 @@ type Pattern =
     /// Alternatives, none of which may bind: what `case` builds from a clause's
     /// datum list, and what makes one `switch` section carry several labels.
     | POr of Pattern list * Range
+    /// Every one of these has to match the same value. Each may bind, and no
+    /// two may bind the same name.
+    ///
+    /// `(and name p)` is how a value is bound and taken apart at once, and a
+    /// conjunction of `(:view ...)`s is how several views are tried against one
+    /// value — the tests become one `&&` chain, so a later one is not run when
+    /// an earlier one fails.
+    | PAnd of Pattern list * Range
 
 and Expr =
     | EInt of string * Range
@@ -1529,6 +1537,7 @@ let rec patternBinders (pat: Pattern) : string list =
     | PTuple(items, _) -> items |> List.collect patternBinders
     | PConstruct(_, args, _) -> args |> List.collect patternBinders
     | POr(alts, _) -> alts |> List.collect patternBinders
+    | PAnd(alts, _) -> alts |> List.collect patternBinders
     // A view binds what its inner pattern binds. The step is an expression and
     // binds nothing.
     | PView(_, inner, _) -> patternBinders inner
@@ -1558,6 +1567,7 @@ let rec patternSteps (pat: Pattern) : Expr list =
     | PTuple(items, _) -> items |> List.collect patternSteps
     | PConstruct(_, args, _) -> args |> List.collect patternSteps
     | POr(alts, _) -> alts |> List.collect patternSteps
+    | PAnd(alts, _) -> alts |> List.collect patternSteps
     | PView(step, inner, _) -> step :: patternSteps inner
 
 /// `f` applied to every view step in a pattern.
@@ -1571,6 +1581,7 @@ let rec mapPatternSteps (f: Expr -> Expr) (pat: Pattern) : Pattern =
     | PTuple(items, r) -> PTuple(List.map go items, r)
     | PConstruct(n, args, r) -> PConstruct(n, List.map go args, r)
     | POr(alts, r) -> POr(List.map go alts, r)
+    | PAnd(alts, r) -> PAnd(List.map go alts, r)
     | PView(step, inner, r) -> PView(f step, go inner, r)
     | leaf -> leaf
 
@@ -1780,6 +1791,7 @@ let rec private renamePattern
     | PTuple(items, r) -> PTuple(List.map go items, r)
     | PConstruct(n, args, r) -> PConstruct(n, List.map go args, r)
     | POr(alts, r) -> POr(List.map go alts, r)
+    | PAnd(alts, r) -> PAnd(List.map go alts, r)
     | PView(step, inner, r) -> PView(renameStep step, go inner, r)
     | PTypeTest(t, binder, r) ->
         PTypeTest(t, binder |> Option.map (fun n -> Map.tryFind n subst |> Option.defaultValue n), r)
@@ -3302,6 +3314,38 @@ and parsePattern (s: SExpr) : Pattern =
                         $"Invalid or pattern at %s{Lexer.formatPos r}: an alternative cannot run a view. Give the (:view ...) a clause of its own."
 
             POr(alts, r)
+
+    // `(and p q ...)` — every one of them against the same value. Before the
+    // constructor case below, for the reason `or` is, and beside it because the
+    // expression forms of both names live in `parseExpr`: a head is read in the
+    // position it stands in, so neither takes the other's spelling away.
+    //
+    // Unlike `or`, an alternative may bind and may run a view: all of them
+    // match, so a name bound here has a value on the arm however the value got
+    // through.
+    | SList(SAtom { Token = Symbol "and" } :: args, _) ->
+        match args with
+        | [] ->
+            failwithf
+                $"Invalid and pattern at %s{Lexer.formatPos r}. (and ...) needs patterns to match together."
+        | [ single ] -> parsePattern single
+        | _ ->
+            let alts = List.map parsePattern args
+
+            let duplicates =
+                alts
+                |> List.collect patternBinders
+                |> List.countBy id
+                |> List.filter (fun (_, n) -> n > 1)
+                |> List.map fst
+
+            if not duplicates.IsEmpty then
+                let names = String.concat ", " duplicates
+
+                failwithf
+                    $"Invalid and pattern at %s{Lexer.formatPos r}: %s{names} is bound by more than one of these, and each of them matches. Bind it once."
+
+            PAnd(alts, r)
 
     // A pattern macro, before the constructor fallback: the name is tried in
     // the pattern table first, so a macro shadows a constructor of the same

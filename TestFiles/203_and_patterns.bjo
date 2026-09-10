@@ -1,0 +1,111 @@
+;; `(and p q ...)` — every one of them against the same value.
+;;
+;; Two things it is for: binding a value and taking it apart in one pattern, and
+;; putting several `(:view ...)`s on one value. `TestFiles/codegen/and.bjo` pins
+;; the emitted shape; this file is about what the patterns answer.
+
+(import (std prelude))
+(import (std simpletest))
+
+(type (: Shape (Union (Circle int) (Rect int int))))
+
+;; The whole and the parts at once. Nothing runs: the conjunction is a label.
+(: describe (-> (Option int) string))
+(defun (describe o)
+  (match o
+    ((and w (Some n)) (str (->str n) " of " (->str w)))
+    (None "none")))
+
+;; Several views on one value. They become one `&&` chain, so `"b"` is not
+;; looked up when `"a"` is absent.
+(: both-keys (-> (Map string int) int))
+(defun (both-keys m)
+  (match m
+    ((and (:view (try-ref & "a") (Some x)) (:view (try-ref & "b") (Some y))) (+ x y))
+    ((:view (try-ref & "a") (Some x)) x)
+    (_ 0)))
+
+;; A conjunct may narrow while another binds the value as it stands.
+(: area (-> Shape string))
+(defun (area s)
+  (match s
+    ((and whole (Circle r)) (str "circle " (->str r) " " (->str (shape-tag whole))))
+    ((Rect w h) (str "rect " (->str (* w h))))))
+
+(: shape-tag (-> Shape int))
+(defun (shape-tag s)
+  (match s
+    ((Circle _) 1)
+    ((Rect _ _) 2)))
+
+;; An `(or ...)` inside an `(and ...)`. C#'s `and` binds tighter than its `or`,
+;; so this only works because both are emitted parenthesised.
+(: low? (-> int string))
+(defun (low? n)
+  (match n
+    ((and (or 1 2) x) (str "low " (->str x)))
+    (_ "other")))
+
+;; Nested under a constructor, with a `#:when` after it: the guard runs last, so
+;; both the binder and what the view bound are available to it.
+(: even-inside (-> (Option int) string))
+(defun (even-inside o)
+  (match o
+    ((Some (and v (:view even? #t))) #:when (> v 4) (str "big even " (->str v)))
+    ((Some (and v (:view even? #t))) (str "even " (->str v)))
+    (_ "no")))
+
+;; Three conjuncts, and one of them a whole nested pattern.
+(: pair-up (-> (Tuple int int) string))
+(defun (pair-up p)
+  (match p
+    ((and whole (Tuple a _) (Tuple _ b)) #:when (< a b) (str "rising " (->str whole)))
+    ((and (Tuple a b) (:view (fun (t) (match t ((Tuple x y) (+ x y)))) 10)) "ten")
+    (_ "other")))
+
+;; A conjunction that cannot fail is irrefutable, so this needs no other clause
+;; — and a clause after it would be reported as dead.
+(: sum (-> (Tuple int int) int))
+(defun (sum p)
+  (match p
+    ((and w (Tuple a b)) (+ a b))))
+
+;; The expression `and` is untouched: a head is read in the position it stands
+;; in, so the two spellings never meet. Here both are in one clause.
+(: both-odd? (-> (Tuple int int) string))
+(defun (both-odd? p)
+  (match p
+    ((and whole (Tuple a b)) #:when (and (odd? a) (odd? b)) (str "odd " (->str whole)))
+    (_ "not both")))
+
+(defun (main args)
+  (def m (map-set (map-set (map-empty) "a" 1) "b" 2))
+
+  (expect "whole and parts" (describe (Some 3)) "3 of (Some 3)")
+  (expect "whole and parts, other case" (describe None) "none")
+
+  (expect "two views" (both-keys m) 3)
+  (expect "two views, one key" (both-keys (map-set (map-empty) "a" 5)) 5)
+  (expect "two views, no key" (both-keys (map-empty)) 0)
+
+  (expect "narrowing beside a binder" (area (Circle 2)) "circle 2 1")
+  (expect "the other case" (area (Rect 3 4)) "rect 12")
+
+  (expect "or inside and" (low? 2) "low 2")
+  (expect "or inside and, miss" (low? 9) "other")
+
+  (expect "nested, guarded" (even-inside (Some 8)) "big even 8")
+  (expect "nested, plain" (even-inside (Some 2)) "even 2")
+  (expect "nested, miss" (even-inside (Some 3)) "no")
+
+  (expect "three conjuncts" (pair-up (Tuple 2 8)) "rising (2, 8)")
+  (expect "conjunct with a view" (pair-up (Tuple 8 2)) "ten")
+  (expect "neither" (pair-up (Tuple 9 5)) "other")
+
+  (expect "irrefutable conjunction" (sum (Tuple 3 4)) 7)
+
+  (expect "the expression and still means and" (both-odd? (Tuple 3 5)) "odd (3, 5)")
+  (expect "the expression and, false" (both-odd? (Tuple 3 4)) "not both")
+
+  (println "203 ok")
+  0)

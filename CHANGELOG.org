@@ -3,6 +3,39 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(and p q ...)~ in pattern position
+
+Every conjunct against the same value. Each may bind — two of them binding one
+name is refused at the parser — so this is how a value is kept whole and taken
+apart at once:
+
+#+BEGIN_SRC scheme
+(match o
+  ((and whole (Some n)) (log whole n))
+  (None                 (skip)))
+#+END_SRC
+
+It is emitted as C#'s own ~and~, so a conjunction of ordinary patterns is a
+label and the clause stays in the jump table. A conjunction of views is one
+~&&~ chain in the guard, which is the reason to write them under an ~and~
+rather than to pack the results into a tuple: a later step is not evaluated when
+an earlier one has already failed, and nothing is allocated for the packing.
+
+Both combinators are now emitted parenthesised. C#'s ~and~ binds tighter than
+its ~or~, so ~(and (or 1 2) x)~ emitted bare read as ~1 or (2 and var x)~.
+
+For exhaustiveness a conjunction covers the intersection of its conjuncts, which
+the matrix has no head constructor for. A conjunct that cannot fail is dropped;
+one that can and stands alone is the whole of what the conjunction matches; two
+that can means the clause covers nothing.
+
+~and~ makes ~:as~ redundant — ~(and name p)~ is what it would have been — so the
+unimplemented ~TPAs~ can go rather than be finished.
+
+Found on the way: ~AlphaRename~'s pattern walk inside ~TMatch~ was written out
+by hand with a ~leaf -> leaf~ fallback, so it dropped every node it had no case
+for. It goes through ~TypeVisitor.mapPatternChildrenWith~ now.
+
 * ~match~ is checked for exhaustiveness
 
 A clause list that does not cover its scrutinee is a compile error at the

@@ -763,6 +763,7 @@ and serializePattern (p: Parser.Pattern) : string =
     | Parser.PTypeTest(t, binder, _) ->
         "(:is " + String.concat " " (t :: Option.toList binder) + ")"
     | Parser.POr(alts, _) -> "(or " + String.concat " " (List.map serializePattern alts) + ")"
+    | Parser.PAnd(alts, _) -> "(and " + String.concat " " (List.map serializePattern alts) + ")"
     // The step is written as the function it already is, so it reads back
     // without the `&` form being re-derived.
     | Parser.PView(step, inner, _) ->
@@ -825,6 +826,9 @@ let rec private isIrrefutablePattern (p: TypedPattern) =
     | TPWildcard
     | TPIdent _ -> true
     | TPTuple items -> items |> List.forall isIrrefutablePattern
+    // Every conjunct has to match, so the conjunction fails as soon as any of
+    // them can.
+    | TPAnd alts -> alts |> List.forall isIrrefutablePattern
     | _ -> false
 
 /// A clause that matches unconditionally; anything after it is dead code.
@@ -1149,11 +1153,32 @@ let rec generatePattern (ctx: CodegenContext) (views: ResizeArray<ViewFragment>)
     // C#'s own or-pattern. Only reached where the alternatives share one
     // pattern position — a switch *expression* arm; a switch statement gives
     // them a label each instead, which is what makes a jump table.
+    //
+    // Parenthesised, as `and` is: C#'s `and` binds tighter than its `or`, so
+    // `(and (or 1 2) x)` emitted bare would read as `1 or (2 and var x)`.
     | TPOr alts ->
+        append ctx "("
+
         alts
         |> List.iteri (fun i alt ->
             if i > 0 then append ctx " or "
             generatePattern ctx alt)
+
+        append ctx ")"
+
+    // C#'s own and-pattern. A view inside one appends its designation to the
+    // label and its test to the guard exactly as anywhere else, so several
+    // views under an `and` come out as one `&&` chain and a later step is not
+    // run when an earlier one fails.
+    | TPAnd alts ->
+        append ctx "("
+
+        alts
+        |> List.iteri (fun i alt ->
+            if i > 0 then append ctx " and "
+            generatePattern ctx alt)
+
+        append ctx ")"
     | TPKeyword k -> append ctx $"BjolangRuntime.Keyword {{ Name: \"{escapeStringLiteral k}\" }}"
     | TPSymbol s -> append ctx $"BjolangRuntime.Symbol {{ Name: \"{escapeStringLiteral s}\" }}"
     // `Option` is the runtime's `Option<T>` struct — a flag and a value rather

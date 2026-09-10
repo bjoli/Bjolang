@@ -35,6 +35,7 @@ let mapPatternChildrenWith (f: TypedExpr -> TypedExpr) (fp: TypedPattern -> Type
         | TPApp(expr, inner) -> TPApp(f expr, fp inner)
         | TPAs(inner, name) -> TPAs(fp inner, name)
         | TPOr alts -> TPOr(List.map fp alts)
+        | TPAnd alts -> TPAnd(List.map fp alts)
 
     { pat with Node = node }
 
