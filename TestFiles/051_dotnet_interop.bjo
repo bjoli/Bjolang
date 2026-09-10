@@ -321,11 +321,14 @@
 
 ;; The binder is narrowed: `.-FileName` belongs to FileNotFoundException, not
 ;; to System.Exception, so this only compiles because the pattern narrowed it.
+;;
+;; A `:is` covers nothing, so the `Err` column still needs a clause of its own.
 (: missing-file-name (-> string string))
 (defun (missing-file-name path)
   (match (try (file-read-text path) #:catch (System.IO.FileNotFoundException))
     ((Ok text) "")
-    ((Err (:is System.IO.FileNotFoundException e)) (.-FileName e))))
+    ((Err (:is System.IO.FileNotFoundException e)) (.-FileName e))
+    ((Err e) "")))
 
 ;; A type test on an ordinary .NET value, with no exceptions involved: the
 ;; scrutinee is `object`, and each arm narrows it.

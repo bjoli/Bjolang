@@ -1,0 +1,129 @@
+;; Clause lists that cover their scrutinee. Every match here compiles, which is
+;; the whole assertion — the counterexamples live in `TestFiles/errors/`.
+
+(import "inc/pattern_macros.bjo")
+(import (std simpletest))
+
+(type
+  (: Colour (Enum Red Green Blue))
+  (: (Tree %a) (Union Leaf (Node (Tree %a) %a (Tree %a)))))
+
+;; Every case of a union.
+(: shade (-> Colour string))
+(defun (shade c)
+  (match c
+    (Red "r")
+    (Green "g")
+    (Blue "b")))
+
+;; An `(or ...)` counts for each alternative it holds.
+(: warm? (-> Colour string))
+(defun (warm? c)
+  (match c
+    ((or Red Green) "warm")
+    (Blue "cool")))
+
+;; A recursive union: the nested column is covered by a binder.
+(: depth (-> (Tree int) int))
+(defun (depth t)
+  (match t
+    (Leaf 0)
+    ((Node l _ r) (+ 1 (max (depth l) (depth r))))))
+
+;; `Option` inside `Result` — both cases of the inner one, under one of the
+;; outer.
+(: nested (-> (Result string (Option int)) string))
+(defun (nested r)
+  (match r
+    ((Ok (Some n)) (->str n))
+    ((Ok None) "none")
+    ((Err e) e)))
+
+;; A list, as its two constructors.
+(: total (-> (List int) int))
+(defun (total xs)
+  (match xs
+    (Nil 0)
+    ((Cons h t) (+ h (total t)))))
+
+;; And as list patterns, which are the same two constructors written another
+;; way. The rest pattern covers every length from two up.
+(: first-two (-> (List int) int))
+(defun (first-two xs)
+  (match xs
+    ((List) 0)
+    ((List a) a)
+    ((List a b rest ...) (+ a b))))
+
+;; A tuple of unions: one constructor with a column per field.
+(: mix (-> (Tuple Colour bool) string))
+(defun (mix p)
+  (match p
+    ((Tuple Red #t) "a")
+    ((Tuple Red #f) "b")
+    ((Tuple Green _) "c")
+    ((Tuple Blue _) "d")))
+
+;; `case` over `bool` with both values and no `(else ...)`. The one type a
+;; program can exhaust by listing its values.
+(: yes-no (-> bool string))
+(defun (yes-no b)
+  (case b
+    ((#t) "yes")
+    ((#f) "no")))
+
+;; A `Vec`, by length classes: the fixed lengths written, and everything from
+;; the rest pattern's prefix up.
+(: vec-head (-> (Vec int) int))
+(defun (vec-head v)
+  (match v
+    ([] 0)
+    ([a] a)
+    ([a b rest ...] (+ a b))))
+
+(: arr-head (-> (Array int) int))
+(defun (arr-head v)
+  (match v
+    (#[] 0)
+    (#[a rest ...] a)))
+
+;; A pattern macro rewrites before inference, so it is invisible here: `Both`
+;; leaves a tuple pattern behind, and a tuple pattern of binders covers.
+(: sum-pair (-> (Tuple int int) int))
+(defun (sum-pair p)
+  (match p
+    ((Both a b) (+ a b))))
+
+;; A guarded clause covers nothing, so the same pattern unguarded is still
+;; reachable below it — and is what makes the list exhaustive.
+(: sign (-> int string))
+(defun (sign n)
+  (match n
+    (x #:when (< x 0) "negative")
+    (0 "zero")
+    (_ "positive")))
+
+;; A view covers nothing either. The binder at the end is what covers.
+(: even-half (-> int string))
+(defun (even-half n)
+  (match n
+    ((Half k) (->str k))
+    (_ "odd")))
+
+(defun (main args)
+  (expect "union" (shade Blue) "b")
+  (expect "or-pattern" (warm? Green) "warm")
+  (expect "nested union" (depth (Node Leaf 1 (Node Leaf 2 Leaf))) 2)
+  (expect "option in result" (nested (Ok None)) "none")
+  (expect "list constructors" (total (list 1 2 3)) 6)
+  (expect "list patterns" (first-two (list 1 2 3)) 3)
+  (expect "tuple of unions" (mix (Tuple Green #f)) "c")
+  (expect "bool by case" (yes-no #f) "no")
+  (expect "vec lengths" (vec-head [1 2 3]) 3)
+  (expect "array lengths" (arr-head #[7 8]) 7)
+  (expect "pattern macro" (sum-pair (Tuple 3 4)) 7)
+  (expect "guard covers nothing" (sign 0) "zero")
+  (expect "view covers nothing" (even-half 7) "odd")
+
+  (println "202 ok")
+  0)

@@ -1716,6 +1716,11 @@ let runFullFrontendPipeline (mainFilePath: string) =
         // errors depending on inliner luck. See the module docstring and §8.3.
         MustUse.run env.Registry typedAst
 
+        // Beside `MustUse` and for its reason: the program as written is what
+        // the reader is owed a report about, and a monomorphised copy would be
+        // reported on once per instantiation under a name nobody wrote.
+        Exhaustiveness.run env.Registry typedAst
+
         Diagnostics.progress "=== Step 3.5: Monomorphisation ==="
         // Before trait inlining, and for the sake of it: a copy checked at a
         // concrete type has its trait calls resolved, so the inliner splices

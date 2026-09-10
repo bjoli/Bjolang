@@ -3,6 +3,40 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~match~ is checked for exhaustiveness
+
+A clause list that does not cover its scrutinee is a compile error at the
+~match~, with one value that gets through printed as a pattern; a clause nothing
+can reach is a compile error at that clause. Both come out of Maranget's
+usefulness algorithm, run over the typed patterns after inference in the new
+~Exhaustiveness.fs~.
+
+A union is covered by its cases, ~bool~ by its two values, a tuple by its one
+shape, a list by ~Nil~ and ~Cons~, a ~Vec~ or ~Array~ by the lengths written
+plus a rest pattern for everything longer. ~int~, ~string~, ~char~, keywords,
+symbols, .NET types and anything imported ~#:opaque~ have no listable set of
+values, so only a binder covers them. An ~(or ...)~ covers each alternative.
+
+Three things cover nothing: a clause with a ~#:when~ guard, a ~(:view ...)~ and
+a ~(:is ...)~. Each decides by running code or by testing something with no
+enumerable set behind it. Such a clause is still checked for being reachable, so
+a guarded clause after ~_~ is as dead as any other, but a clause list made of
+them has to end in a binder.
+
+Pattern macros expand before this runs, so they are invisible to it: a macro
+that rewrites to a covering set covers, and a counterexample is printed in
+expanded form with the macro's name gone.
+
+What this leaves open: nothing reasons about what a view returns, and no view
+call is shared between clauses. A run of consecutive clauses over one
+argument-free view, exhaustive over the view's result type, could be one call
+with an inner switch — "total views". Not implemented; the note is in
+~Exhaustiveness.fs~.
+
+~Codegen.liveClauses~ no longer drops the clauses after an irrefutable one. It
+asserts there are none, since reaching it with one now means a pass built it.
+Three test files had a match the old ~default: throw~ was standing in for.
+
 * ~match~ is extensible: ~(:view step p)~ and ~def/pattern~
 
 Two layers. ~(:view step p)~ hands the value to ~step~ and matches what comes

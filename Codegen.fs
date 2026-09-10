@@ -873,14 +873,17 @@ let private coversBool (clauses: TMatchClause list) =
 
     has true && has false
 
-/// Bjolang matches are first-match-wins. C# rejects arms it can prove are
-/// unreachable (CS8510), so drop everything following the first irrefutable clause.
+/// Every clause, having checked that none of them is dead.
+///
+/// C# rejects arms it can prove are unreachable (CS8510). `Exhaustiveness`
+/// reports a clause after an irrefutable one as an error, so nothing reaching
+/// here has any — and a clause list that does was built by a pass rather than
+/// written, which is a bug here rather than in the program.
 let private liveClauses (clauses: TMatchClause list) =
-    let rec take acc remaining =
-        match remaining with
-        | [] -> List.rev acc
-        | c :: rest -> if isIrrefutable c then List.rev (c :: acc) else take (c :: acc) rest
-    take [] clauses
+    match clauses |> List.rev with
+    | _ :: earlier when earlier |> List.exists isIrrefutable ->
+        failwith "internal error: a match clause follows an irrefutable one"
+    | _ -> clauses
 
 // ---------------------------------------------------------------------------
 // Keyword defaults

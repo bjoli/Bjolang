@@ -1,0 +1,18 @@
+;; An `#:opaque` import publishes no cases, so there is no case list to cover
+;; and the type is read as one with no listable values. The only way into one is
+;; an exported view, which covers nothing.
+
+;; EXPECT-ERROR: does not cover every value
+;; EXPECT-ERROR: _ reaches no clause
+
+(import "../inc/vault.bjo")
+
+(: state (-> (Handle int) string))
+(defun (state h)
+  (match h
+    ((:view handle-live? #t) "live")
+    ((:view handle-live? #f) "closed")))
+
+(defun (main args)
+  (println (state (open-handle 1 2)))
+  0)

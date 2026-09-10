@@ -128,6 +128,47 @@ and it is extensible.
   (_ "8080"))
 #+END_SRC
 
+~(:view step p)~ is the only pattern that runs code, and what it cannot do is
+worth knowing. It cannot suspend, because a C# ~when~ has no ~await~. It cannot
+need a statement to evaluate, exactly as a ~#:when~ cannot. It cannot appear in
+an ~(or ...)~, because only one alternative runs. It sees a ~#:opaque~ type only
+through a view function that type's own module exported. And it runs once per
+clause that tries it — three clauses each viewing ~parse-int~ call it three
+times, so a step that costs something belongs in front of the ~match~.
+
+*** And it is checked
+
+A ~match~ that does not cover every value its scrutinee can have is a compile
+error, and so is a clause nothing can reach. The message prints one value that
+gets through, written as a pattern.
+
+#+begin_src scheme
+(match r
+  ((Ok (Some n)) (->str n))
+  ((Err e) e))
+;; Pattern Error at conf.bjo:12: this match does not cover every value.
+;; (Ok None) reaches no clause.
+#+end_src
+
+What counts as covered:
+
+- a union is covered by its cases, ~bool~ by ~#t~ and ~#f~, a tuple by its one
+  shape, a list by ~Nil~ and ~Cons~, a ~Vec~ or ~Array~ by the lengths written
+  plus a rest pattern for everything longer;
+- ~int~, ~string~, ~char~, keywords, symbols, .NET types and anything imported
+  ~#:opaque~ have no listable set of values, so only a binder covers them;
+- an ~(or ...)~ covers each alternative it holds.
+
+What covers nothing: a clause with a ~#:when~ guard, since the guard may fail;
+a ~(:view ...)~, since nothing here works out what a step returns; and a
+~(:is ...)~, since the types below a class are not a set. Such a clause is
+still checked for being reachable — a guarded clause after ~_~ is dead like any
+other — but the clause list still has to end in a binder.
+
+A pattern macro is expanded before any of this runs, so a macro that rewrites to
+a covering set covers. The counterexample is printed in expanded form; the
+macro's name cannot be recovered from it.
+
 * Examples
 
 Have a look inte the Examples directory. Or at the code in [[file:lib/text/json.bjo][the json module]]. It is a decently fast json reader, that reaches a between 150 and 380MB/s on jsonbench. 
@@ -338,8 +379,6 @@ The same machinery gives (std run) its shell notation, have a look at [[file:Exa
 Probably many.
 
 ** Problems
-pattern matching has no exhaustiveness checking.
-
 macros are always exported, invisibly.
 
 The compiler actually doesn't check if types exist, so a function typed (: a-fun (-> DoesNotExist int)) errors first in the c# compilation with CS0246.

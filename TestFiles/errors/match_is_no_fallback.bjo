@@ -1,0 +1,21 @@
+;; A `(:is ...)` is a .NET type test, and the types below a class are not a set
+;; anything can enumerate. It covers nothing, so the `Err` column still needs a
+;; clause of its own.
+
+;; EXPECT-ERROR: does not cover every value
+;; EXPECT-ERROR: (Err _) reaches no clause
+
+(import (std prelude))
+
+(import/extern
+  (file-read-text (: System.IO.File.ReadAllText (-> string string))))
+
+(: classify (-> string string))
+(defun (classify path)
+  (match (try (file-read-text path) #:catch (System.IO.FileNotFoundException))
+    ((Ok text) "read")
+    ((Err (:is System.IO.FileNotFoundException)) "no such file")))
+
+(defun (main args)
+  (println (classify "nope"))
+  0)
