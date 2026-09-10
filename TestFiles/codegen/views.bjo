@@ -1,0 +1,64 @@
+;; What a `(:view step p)` compiles to.
+;;
+;; The shape, read off the generated C# by hand once and pinned here:
+;;
+;;   switch (n) {
+;;     case 0: { return "zero"; }
+;;     case var __view__5 when views_Module.halve(__view__5) is { Tag: 1, Value: var k }:
+;;     { ... }
+;;     default: { return "odd"; }
+;;   }
+;;
+;; Two things are being kept. A clause *without* a view keeps its constant label
+;; and so stays in the jump table — the `case 0:` above is a label, not a test.
+;; And the view itself is a direct call in the guard, with the value bound by a
+;; designation in the label: no temporary, no closure, and nothing evaluated
+;; before the label has matched.
+;;
+;; Each `EXPECT-CS` is an extended regex matched against a single line.
+;; `200_views.bjo` is what checks the answers.
+
+(import (std prelude))
+
+(: halve (-> int (Option int)))
+(defun (halve n)
+  (if (even? n) (Some (/ n 2)) None))
+
+;; A constant label beside a view clause. The `case 0:` is what must survive.
+;; EXPECT-CS: switch \(n\)
+;; EXPECT-CS: case 0:
+;; EXPECT-CS: case var __view__[0-9]+ when views_Module.halve\(__view__[0-9]+\) is \{ Tag: 1, Value: var k \}:
+(: halved (-> int string))
+(defun (halved n)
+  (match n
+    (0 "zero")
+    ((:view halve (Some k)) (->str k))
+    (_ "odd")))
+
+;; The `&` form emits the call the source wrote, with the value substituted for
+;; `&`. No lambda is allocated for it.
+;; EXPECT-CS: when \(limit < __view__[0-9]+\) is true:
+;; EXPECT-NO-CS: __view__[0-9]+ =>
+(: over (-> int int string))
+(defun (over n limit)
+  (match n
+    ((:view (< limit &) #t) "big")
+    (_ "small")))
+
+;; Nested views chain in one guard, joined with `&&` in pattern order: the inner
+;; step reads the name the outer one's inner pattern bound.
+;; EXPECT-CS: is \{ Tag: 1, Value: var __view__[0-9]+ \} && views_Module.halve\(__view__[0-9]+\)
+(: quarter (-> int string))
+(defun (quarter n)
+  (match n
+    ((:view halve (Some (:view halve (Some k)))) (->str k))
+    (_ "no")))
+
+;; The user's `#:when` comes last, so a name a view bound is assigned where the
+;; guard reads it.
+;; EXPECT-CS: is \{ Tag: 1, Value: var a \} && \(a < 3\):
+(: small-half (-> int string))
+(defun (small-half n)
+  (match n
+    ((:view halve (Some a)) #:when (< a 3) "small")
+    (_ "no")))

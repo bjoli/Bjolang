@@ -110,16 +110,28 @@
 ;; and the parent's `finally` restoring the binding does not take the child's
 ;; token away.
 
+;; Both of these report *after* the token has fired — `leaf` waits for it, and
+;; that wait is what proves it was handed the ambient one. So both reports are
+;; syncs in a cancelled fiber, which is the one thing a cancelled fiber cannot
+;; do: an unshielded `sync` succeeds only where its partner is already parked,
+;; and is cancelled where it stands otherwise. Which of the two happens is up to
+;; the scheduler, so unshielded these assertions would hold by luck.
+;;
+;; Reporting after a cancellation is exactly the work a shield is for, and
+;; `with-shield` above is where that promise is tested on its own.
+
 (: leaf (-> (Chan string) void))
 (defbjo (leaf report)
   (def fired (sync (cancelled (parameter-ref current-cancel))))
-  (sync (chan-send report "leaf")))
+  (with-shield #:within (seconds 5)
+    (sync (chan-send report "leaf"))))
 
 (: branch (-> (Chan string) void))
 (defbjo (branch report)
   (def kid (bjo (leaf report)))
-  (def joined (sync (promise-join kid)))
-  (sync (chan-send report "branch")))
+  (with-shield #:within (seconds 5)
+    (def joined (sync (promise-join kid)))
+    (sync (chan-send report "branch"))))
 
 ;; Spawned *outside* the scope, and so under the root token rather than the
 ;; scope's. Reports what it sees rather than waiting for it, because what it

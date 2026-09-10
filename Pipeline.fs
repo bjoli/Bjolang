@@ -332,7 +332,12 @@ type private ImportSurface =
 /// through: a declaration is keyed by the module that wrote it, and what an
 /// importer spells — with or without a modifier — is the bare name inside that
 /// key.
-let private surfaceOf (moduleName: string) (decls: Decl list) (macros: ModuleMetadata.MacroEntry list) : ImportSurface =
+let private surfaceOf
+    (moduleName: string)
+    (decls: Decl list)
+    (macros: ModuleMetadata.MacroEntry list)
+    (patternMacros: ModuleMetadata.MacroEntry list)
+    : ImportSurface =
     let bare = Naming.bareTypeName moduleName
 
     let typeDefs =
@@ -352,6 +357,7 @@ let private surfaceOf (moduleName: string) (decls: Decl list) (macros: ModuleMet
                  |> List.filter (fun a -> not (a.StartsWith publishedAliasPrefix))
              | _ -> []))
         @ (macros |> List.map (fun m -> m.Name))
+        @ (patternMacros |> List.map (fun m -> m.Name))
         |> Set.ofList
 
       Types = typeDefs |> List.map (fun td -> bare td.Name) |> Set.ofList
@@ -632,11 +638,12 @@ let private installAssemblyResolver () =
 let private registerMacros
     (asm: System.Reflection.Assembly)
     (entries: ModuleMetadata.MacroEntry list)
+    (patternEntries: ModuleMetadata.MacroEntry list)
     (decls: Decl list)
     (renaming: Map<string, string>)
     : unit =
 
-    if not entries.IsEmpty then
+    if not (entries.IsEmpty && patternEntries.IsEmpty) then
         let exports =
             decls
             |> List.choose (function
@@ -660,33 +667,39 @@ let private registerMacros
                 | _ -> [])
             |> Set.ofList
 
+        let bindingOf (what: string) (entry: ModuleMetadata.MacroEntry) (visibleName: string) : Macro.MacroBinding =
+            // Modulnyckeln bär sin namnrymd, så klassen går att stava ur
+            // den ensam.
+            let className =
+                $"%s{Naming.namespaceOfKey entry.ModuleName}.%s{Naming.moduleClassName entry.ModuleName}"
+
+            let clrType = asm.GetType className
+
+            if isNull clrType then
+                failwithf
+                    $"'%s{entry.Name}' is declared a %s{what} by %s{asm.GetName().Name}, but the class '%s{className}' holding it is not in that assembly."
+
+            let method = clrType.GetMethod(Prelude.moduleClrMemberName entry.Name)
+
+            if isNull method then
+                failwithf
+                    $"'%s{entry.Name}' is declared a %s{what} by %s{asm.GetName().Name}, but '%s{className}' has no method '%s{Prelude.moduleClrMemberName entry.Name}'."
+
+            { Name = visibleName
+              ModuleName = entry.ModuleName
+              Exports = exports
+              TraitMethods = traitMethods
+              Method = method }
+
         for entry in entries do
             match Map.tryFind entry.Name renaming with
             | None -> ()
-            | Some visibleName ->
-                // Modulnyckeln bär sin namnrymd, så klassen går att stava ur
-                // den ensam.
-                let className =
-                    $"%s{Naming.namespaceOfKey entry.ModuleName}.%s{Naming.moduleClassName entry.ModuleName}"
+            | Some visibleName -> Macro.register (bindingOf "macro" entry visibleName)
 
-                let clrType = asm.GetType className
-
-                if isNull clrType then
-                    failwithf
-                        $"'%s{entry.Name}' is declared a macro by %s{asm.GetName().Name}, but the class '%s{className}' holding it is not in that assembly."
-
-                let method = clrType.GetMethod(Prelude.moduleClrMemberName entry.Name)
-
-                if isNull method then
-                    failwithf
-                        $"'%s{entry.Name}' is declared a macro by %s{asm.GetName().Name}, but '%s{className}' has no method '%s{Prelude.moduleClrMemberName entry.Name}'."
-
-                Macro.register
-                    { Name = visibleName
-                      ModuleName = entry.ModuleName
-                      Exports = exports
-                      TraitMethods = traitMethods
-                      Method = method }
+        for entry in patternEntries do
+            match Map.tryFind entry.Name renaming with
+            | None -> ()
+            | Some visibleName -> Macro.registerPattern (bindingOf "pattern macro" entry visibleName)
 
         Macro.install ()
 
@@ -704,6 +717,7 @@ type LoadedModule = {
     /// The macros the assembly publishes, and the assembly holding them.
     /// Registration is per edge, so it does not happen where this is built.
     Macros: ModuleMetadata.MacroEntry list
+    PatternMacros: ModuleMetadata.MacroEntry list
     Assembly: System.Reflection.Assembly option
 }
 
@@ -728,6 +742,7 @@ let mutable cacheLoadedModules = false
 type private CachedDll =
     { Decls: Decl list
       Macros: ModuleMetadata.MacroEntry list
+      PatternMacros: ModuleMetadata.MacroEntry list
       Assembly: System.Reflection.Assembly
       /// Everything reading it added to the link set — itself, and the
       /// transitive dependencies its metadata named.
@@ -1136,7 +1151,7 @@ let loadModuleGraph
                 else
                     None
 
-            let parsedDecls, deps, macros, assembly =
+            let parsedDecls, deps, macros, patternMacros, assembly =
                 match cached with
                 | Some hit ->
                     // The link set is per compilation and the parse is not, so
@@ -1145,7 +1160,7 @@ let loadModuleGraph
                         dllDeps.Add path |> ignore
                         noteAssemblyPath path
 
-                    hit.Decls, [], hit.Macros, Some hit.Assembly
+                    hit.Decls, [], hit.Macros, hit.PatternMacros, Some hit.Assembly
                 | None ->
 
                 if absPath.EndsWith(".dll") then
@@ -1321,11 +1336,12 @@ let loadModuleGraph
                         dllCache[cacheKey] <-
                             { Decls = decls
                               Macros = meta.Macros
+                              PatternMacros = meta.PatternMacros
                               Assembly = asm
                               Linked =
                                 absPath :: (meta.Deps |> List.filter (fun p -> p <> "" && File.Exists p)) }
 
-                    decls, [], meta.Macros, Some asm
+                    decls, [], meta.Macros, meta.PatternMacros, Some asm
                 else
                     // Reported rather than left to `File.ReadAllText`, whose
                     // `FileNotFoundException` is not a diagnostic and so prints
@@ -1350,15 +1366,18 @@ let loadModuleGraph
                     // S-expressions, like the imports: a `def/macro` is
                     // recognizable without parsing, and using one here has to
                     // be reported as what it is rather than as an unbound name.
-                    let localMacros =
+                    let declaredHere (definer: string) =
                         forms
                         |> List.choose (function
-                            | SList(SAtom { Token = Lexer.Symbol "def/macro" }
+                            | SList(SAtom { Token = Lexer.Symbol d }
                                     :: SList(SAtom { Token = Lexer.Symbol name } :: _, _)
                                     :: _,
-                                    _) -> Some name
+                                    _) when d = definer -> Some name
                             | _ -> None)
                         |> Set.ofList
+
+                    let localMacros = declaredHere "def/macro"
+                    let localPatternMacros = declaredHere "def/pattern"
 
                     // Resolved *and built*: an imported `.bjo` becomes a `.dll`
                     // here, so every edge in the graph names a compiled unit and
@@ -1383,7 +1402,7 @@ let loadModuleGraph
                         // computed here rather than inside `load`, which is
                         // keyed by path and shared by every importer.
                         let m = resolvedModules[dep]
-                        let surface = surfaceOf m.ModuleName m.ParsedDecls m.Macros
+                        let surface = surfaceOf m.ModuleName m.ParsedDecls m.Macros m.PatternMacros
                         let renaming = defRenaming r (Path.GetFileName dep) surface spec.Modifiers
 
                         if not (edges.ContainsKey dep) then
@@ -1394,7 +1413,7 @@ let loadModuleGraph
                         // A macro has to be in the table under the name this
                         // import gives it before the form using it is read.
                         match m.Assembly with
-                        | Some asm -> registerMacros asm m.Macros m.ParsedDecls renaming
+                        | Some asm -> registerMacros asm m.Macros m.PatternMacros m.ParsedDecls renaming
                         | None -> ()
 
                     // `(:alias new old)` where `old` is a macro, for the same
@@ -1408,15 +1427,19 @@ let loadModuleGraph
                         | SList([ SAtom { Token = Lexer.Keyword "alias" }
                                   SAtom { Token = Lexer.Symbol newName }
                                   SAtom { Token = Lexer.Symbol oldName } ],
-                                _) -> Macro.alias newName oldName |> ignore
+                                _) ->
+                            Macro.alias newName oldName |> ignore
+                            Macro.aliasPattern newName oldName |> ignore
                         | _ -> ()
 
                     // Set immediately before parsing, and not earlier: loading a
                     // dependency parses *that* module, whose own macros are a
                     // different set.
                     Macro.setLocalMacros localMacros
+                    Macro.setLocalPatternMacros localPatternMacros
                     let parsed = Parser.parseModule forms
                     Macro.setLocalMacros Set.empty
+                    Macro.setLocalPatternMacros Set.empty
 
                     // Only the file being compiled has an entry point. A `main`
                     // in a module this one imports is one of its functions.
@@ -1426,7 +1449,7 @@ let loadModuleGraph
                         else
                             parsed
 
-                    parsed, (importEdges |> List.map (fun (dep, _, _) -> dep)), [], None
+                    parsed, (importEdges |> List.map (fun (dep, _, _) -> dep)), [], [], None
 
             // Dependencies were loaded above, before this module was parsed. A
             // `.dll` has none to load: its transitive deps are link-only and
@@ -1439,6 +1462,7 @@ let loadModuleGraph
                 Dependencies = deps
                 ParsedDecls = parsedDecls
                 Macros = macros
+                PatternMacros = patternMacros
                 Assembly = assembly
             }
             currentPath.Remove(absPath) |> ignore
@@ -1611,10 +1635,12 @@ let runFullFrontendPipeline (mainFilePath: string) =
         //
         // Read here rather than after type checking, because `DMacro` does not
         // survive it: a macro is checked as the `defun` it also produced.
-        let declaredMacros =
+        let declaredMacros, declaredPatternMacros =
             match List.tryLast parsedModuleDecls with
-            | Some(DModule(_, decls, _)) -> decls |> List.choose (function DMacro(n, _) -> Some n | _ -> None)
-            | _ -> []
+            | Some(DModule(_, decls, _)) ->
+                decls |> List.choose (function DMacro(n, _) -> Some n | _ -> None),
+                decls |> List.choose (function DPatternMacro(n, _) -> Some n | _ -> None)
+            | _ -> [], []
 
         Diagnostics.progress "=== Step 2: Normalization ==="
         // First of the source-to-source passes, and before `LetRecify` on
@@ -1750,7 +1776,7 @@ let runFullFrontendPipeline (mainFilePath: string) =
         let uniquifiedAst = Timing.phase "alpha rename" (fun () -> AlphaRename.uniquifyProgram loopLoweredAst)
 
         Diagnostics.progress "=== Frontend pipeline complete ==="
-        Some (env, uniquifiedAst, dllDeps, declaredMacros)
+        Some (env, uniquifiedAst, dllDeps, declaredMacros, declaredPatternMacros)
     with ex ->
         Diagnostics.reportFailure ex
         None

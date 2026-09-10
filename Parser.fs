@@ -153,6 +153,14 @@ type Pattern =
     /// `(:is System.IO.IOException e)` — matches when the value is of that .NET type, binding it there at the narrowed type.
     /// The binder is optional. Used in `Err` arms.
     | PTypeTest of string * string option * Range
+    /// `(:view step p)` — hand the value to `step` and match what comes back
+    /// against `p`. The only pattern that runs code.
+    ///
+    /// The step is a function-valued expression of the scope the `match` sits
+    /// in, not of the clause: nothing the pattern binds is visible to it. A
+    /// step written with `&` is read as a lambda over the value, so that the
+    /// emitter has a body to inline rather than a closure to call.
+    | PView of Expr * Pattern * Range
     /// Alternatives, none of which may bind: what `case` builds from a clause's
     /// datum list, and what makes one `switch` section carry several labels.
     | POr of Pattern list * Range
@@ -514,6 +522,13 @@ type Decl =
     /// the assembly's metadata, which is what an importing compilation reads.
     | DMacro of string * Range
 
+    /// The same, for a name that heads a *pattern* rather than a form.
+    ///
+    /// A second declaration rather than a flag on `DMacro` because the two
+    /// tables are separate: a name may be an ordinary function in expression
+    /// position and a pattern macro in pattern position.
+    | DPatternMacro of string * Range
+
     /// Records that a name is to be given no suspending copy: `(: name #:sync (-> ...))`.
     ///
     /// `#:sync` prevents the generation of an async counterpart for a function.
@@ -555,7 +570,7 @@ let declRange (decl: Decl) : Range =
     | DImplExtern(_, _, _, _, r) | DInlineImpl(_, _, _, _, _, _, _, r)
     | DModule(_, _, r) | DImport(_, r) | DAlias(_, _, r) | DExport(_, r) | DReExport(_, r)
     | DExtern(_, _, _, _, r) | DImportAlias(_, _, _, r)
-    | DImportExtern(_, r) | DImportClass(_, r) | DMacro(_, r) | DSyncOnly(_, r) -> r
+    | DImportExtern(_, r) | DImportClass(_, r) | DMacro(_, r) | DPatternMacro(_, r) | DSyncOnly(_, r) -> r
 
 // ---------------------------------------------------------------------------
 // Macro expansion
@@ -586,6 +601,15 @@ type Expansion =
 /// already-expanded metadata bodies and must keep working with no macros
 /// registered at all.
 let mutable expandHook: SExpr -> Expansion option = fun _ -> None
+
+/// The same, for the table `def/pattern` fills.
+///
+/// Separate from `expandHook` because the tables are separate: a name may be a
+/// function in expression position and a pattern macro in pattern position, the
+/// way `Cons` is already both. Asked for a list headed by a symbol and for a
+/// bare capitalized symbol, which are the two shapes a pattern macro is called
+/// in.
+let mutable patternExpandHook: SExpr -> Expansion option = fun _ -> None
 
 /// Whether a head symbol names a macro, without running the transformer.
 ///
@@ -677,111 +701,47 @@ let stripMethodName (s: SExpr) : SExpr =
 
 // --- Parser ---
 
-let rec parsePattern (s: SExpr) : Pattern =
-    let r = getRange s
+/// One `->` step, threaded over the value that reached it.
+///
+/// A bare symbol `f` becomes `(f prev)`. A list containing `&` puts `prev` at
+/// every `&`; a list without one takes it as its first argument. A `#(...)`
+/// inside the step is left alone, because its `&` is the shorthand lambda's
+/// own placeholder.
+///
+/// `(:view step p)` reads its step through this too, so that the threading
+/// notation means one thing.
+let threadStep (prev: SExpr) (step: SExpr) : SExpr =
+    match step with
+    | SAtom { Token = Symbol _ } as sym -> SList([ sym; prev ], getRange sym)
+    | SList(items, stepR) ->
+        let rec replaceListItems (items: SExpr list) : SExpr list * bool =
+            match items with
+            | [] -> [], false
+            | SAtom { Token = Hash } as h :: SList(subItems, subR) :: tail ->
+                let rest, foundInRest = replaceListItems tail
+                h :: SList(subItems, subR) :: rest, foundInRest
+            | head :: tail ->
+                let newHead, foundHead = replaceAmpersand head
+                let newTail, foundTail = replaceListItems tail
+                newHead :: newTail, foundHead || foundTail
 
-    // The third renaming rule, applied to a pattern's head.
-    //
-    // A constructor is never a binder, so the first two rules cannot reach one:
-    // nothing in the expansion binds it, and a macro module publishes bindings
-    // rather than constructors. Stripping is therefore the whole answer, and it
-    // has to happen here — `AlphaRename.freeNames` reports the names a pattern
-    // *binds* and never the constructor it matches, so a template's `(Cons a
-    // Nil)` would otherwise reach inference as `Cons__37`.
-    //
-    // A bare lowercase symbol is left alone: that is a binder, and its mark is
-    // what makes it uncapturable.
-    let s =
-        match s with
-        | SList(SAtom({ Token = Symbol sym } as head) :: args, lr) when headName sym <> sym ->
-            SList(SAtom { head with Token = Symbol(headName sym) } :: args, lr)
-        | SAtom({ Token = Symbol sym } as atom) when
-            sym.Length > 0 && System.Char.IsUpper sym[0] && headName sym <> sym
-            ->
-            SAtom { atom with Token = Symbol(headName sym) }
-        | _ -> s
+        and replaceAmpersand (expr: SExpr) : SExpr * bool =
+            match expr with
+            | SAtom { Token = Symbol "&" } -> prev, true
+            | SList(subItems, subR) ->
+                let newItems, found = replaceListItems subItems
+                SList(newItems, subR), found
+            | _ -> expr, false
 
-    match s with
-    | SAtom { Token = Symbol "_" } -> PWildcard r
-    // Before the binder case below, which would otherwise read `#t` as a name
-    // and match everything. That is what it did: a boolean pattern bound a
-    // variable called `#t` and reached the code generator, which spelled it
-    // into C# as written and produced a preprocessor directive.
-    | SAtom { Token = BoolLit true } -> PBool(true, r)
-    | SAtom { Token = BoolLit false } -> PBool(false, r)
-    | SAtom { Token = Symbol sym } ->
-        if System.Char.IsUpper(sym.[0]) then PConstruct(sym, [], r)
-        else PIdent(sym, r)
-    | SAtom { Token = NumberLit n } -> PInt(n, r)
-    | SAtom { Token = StringLit str } -> PString(str, r)
-    | SAtom { Token = Keyword kw } -> PKeyword(kw, r)
-    | SAtom { Token = CharLit c } -> PChar(c, r)
-    | SAtom { Token = QuotedSymbol sym } -> PQuotedSymbol(sym, r)
+        let newItems, hasAmp = replaceListItems items
 
-    // `(:is Some.Clr.Type)` and `(:is Some.Clr.Type binder)`.
-    | SList([ SAtom { Token = Keyword "is" }; SAtom { Token = Symbol typeName } ], _) ->
-        PTypeTest(typeName, None, r)
-    | SList([ SAtom { Token = Keyword "is" }
-              SAtom { Token = Symbol typeName }
-              SAtom { Token = Symbol binder } ],
-            _) ->
-        PTypeTest(typeName, Some binder, r)
-    | SList(SAtom { Token = Keyword "is" } :: _, _) ->
-        failwithf
-            $"Invalid :is pattern at %s{Lexer.formatPos r}. Expected (:is Fully.Qualified.Type) or (:is Fully.Qualified.Type binding-name)."
-
-    // Special handling for List/Vec patterns and the spread operator
-    | SList(SAtom { Token = Symbol "List" } :: args, _) ->
-        let elements, tail = parseSpreadArgs r args
-        PList(elements, tail, r)
-
-    // `(Vec a b c ...)` and the bracket literal form `[a b c ...]`, which the
-    // reader rewrites to `(vec-literal a b c ...)`.
-    | SList(SAtom { Token = Symbol("Vec" | "vec-literal") } :: args, _) ->
-        let elements, tail = parseSpreadArgs r args
-        PVec(elements, tail, r)
-
-    // `(Array a b c ...)` and the literal form `#[a b c ...]`, which the reader
-    // rewrites to `(array-literal a b c ...)`.
-    | SList(SAtom { Token = Symbol("Array" | "array-literal") } :: args, _) ->
-        let elements, tail = parseSpreadArgs r args
-        PArray(elements, tail, r)
-
-    // `(Tuple a b ...)` and dotted pairs `(a . b ...)` which the reader rewrites to `(Tuple a b ...)`
-    | SList(SAtom { Token = Symbol "Tuple" } :: args, _) ->
-        PTuple(List.map parsePattern args, r)
-
-    // `(or p q ...)` — several patterns in one position, which a `switch`
-    // statement gives a label each. Before the constructor case below, which
-    // would otherwise read `or` as one.
-    | SList(SAtom { Token = Symbol "or" } :: args, _) ->
-        match args with
-        | [] ->
-            failwithf
-                $"Invalid or pattern at %s{Lexer.formatPos r}. (or ...) needs alternatives to choose between."
-        | [ single ] -> parsePattern single
-        | _ -> POr(List.map parsePattern args, r)
-
-    | SList(SAtom { Token = Symbol name } :: args, _) -> PConstruct(name, List.map parsePattern args, r)
-
-    | SList([], _) -> PList([], None, r) // Empty list pattern
-
-    | _ -> failwithf $"Invalid pattern at %s{Lexer.formatPos r}"
-
-/// Splits the arguments of a sequence pattern into its fixed leading elements
-/// plus an optional trailing rest pattern introduced by `...`.
-/// For example `a b c ...` yields ([a; b], Some c), binding `c` to the rest.
-and parseSpreadArgs (r: Range) (args: SExpr list) : Pattern list * Pattern option =
-    let rec go acc items =
-        match items with
-        | [] -> (List.rev acc, None)
-        // Matches `c ...` at the end of the sequence
-        | [ tailItem; SAtom { Token = Spread } ] -> (List.rev acc, Some(parsePattern tailItem))
-        // Fails if spread is used incorrectly (e.g., in the middle of the sequence)
-        | SAtom { Token = Spread } :: _ -> failwithf $"Invalid use of spread operator at %s{Lexer.formatPos r}"
-        | head :: tail -> go (parsePattern head :: acc) tail
-
-    go [] args
+        if hasAmp then
+            SList(newItems, stepR)
+        else
+            match items with
+            | head :: tail -> SList(head :: prev :: tail, stepR)
+            | [] -> failwithf $"Invalid empty list in -> macro at %s{Lexer.formatPos stepR}"
+    | _ -> failwithf $"Invalid step in -> macro at %s{Lexer.formatPos (getRange step)}"
 
 /// The third renaming rule, applied to a type name.
 ///
@@ -1569,6 +1529,50 @@ let rec patternBinders (pat: Pattern) : string list =
     | PTuple(items, _) -> items |> List.collect patternBinders
     | PConstruct(_, args, _) -> args |> List.collect patternBinders
     | POr(alts, _) -> alts |> List.collect patternBinders
+    // A view binds what its inner pattern binds. The step is an expression and
+    // binds nothing.
+    | PView(_, inner, _) -> patternBinders inner
+
+/// Every view step a pattern holds, outermost first.
+///
+/// The one place a pattern holds an expression, and the reason every traversal
+/// over a `match` clause has two scopes to keep apart: these are evaluated
+/// where the `match` is written, and everything else in the pattern is about
+/// what the clause binds.
+let rec patternSteps (pat: Pattern) : Expr list =
+    match pat with
+    | PWildcard _
+    | PInt _
+    | PString _
+    | PChar _
+    | PBool _
+    | PKeyword _
+    | PQuotedSymbol _
+    | PIdent _
+    | PTypeTest _ -> []
+    | PList(items, tailOpt, _)
+    | PVec(items, tailOpt, _)
+    | PArray(items, tailOpt, _) ->
+        (items |> List.collect patternSteps)
+        @ (tailOpt |> Option.map patternSteps |> Option.defaultValue [])
+    | PTuple(items, _) -> items |> List.collect patternSteps
+    | PConstruct(_, args, _) -> args |> List.collect patternSteps
+    | POr(alts, _) -> alts |> List.collect patternSteps
+    | PView(step, inner, _) -> step :: patternSteps inner
+
+/// `f` applied to every view step in a pattern.
+let rec mapPatternSteps (f: Expr -> Expr) (pat: Pattern) : Pattern =
+    let go = mapPatternSteps f
+
+    match pat with
+    | PList(items, tailOpt, r) -> PList(List.map go items, Option.map go tailOpt, r)
+    | PVec(items, tailOpt, r) -> PVec(List.map go items, Option.map go tailOpt, r)
+    | PArray(items, tailOpt, r) -> PArray(List.map go items, Option.map go tailOpt, r)
+    | PTuple(items, r) -> PTuple(List.map go items, r)
+    | PConstruct(n, args, r) -> PConstruct(n, List.map go args, r)
+    | POr(alts, r) -> POr(List.map go alts, r)
+    | PView(step, inner, r) -> PView(f step, go inner, r)
+    | leaf -> leaf
 
 /// One walk over an untyped expression, calling `reference name range guarded`
 /// at every name it mentions but does not bind.
@@ -1652,6 +1656,12 @@ let freeNamesWith (reference: string -> Range -> bool -> unit) (guarded: bool) (
             sub target
 
             for (pat, guard, body) in clauses do
+                // A view's step is read in the enclosing scope: what the clause
+                // binds is not in scope in the expression that decides whether
+                // the clause matches at all.
+                for step in patternSteps pat do
+                    sub step
+
                 let inner = Set.union bound (Set.ofList (patternBinders pat))
                 Option.iter (go guarded inner) guard
                 go guarded inner body
@@ -1715,7 +1725,9 @@ let exprChildren (e: Expr) : Expr list =
     | ETryCatch(b, _, _) -> [ b ]
     | EMatch(target, clauses, _) ->
         target
-        :: (clauses |> List.collect (fun (_, guard, body) -> (Option.toList guard) @ [ body ]))
+        :: (clauses
+            |> List.collect (fun (pat, guard, body) ->
+                patternSteps pat @ (Option.toList guard) @ [ body ]))
 
 // ---------------------------------------------------------------------------
 // Scope
@@ -1748,17 +1760,27 @@ let exprChildren (e: Expr) : Expr list =
 let isRenamable (name: string) : bool =
     not (name.Contains "::") && name <> "_"
 
-let rec private renamePattern (subst: Map<string, string>) (pat: Pattern) : Pattern =
+/// Renames a pattern's binders, and its view steps with `renameStep`.
+///
+/// Two renamers because a view sits in two scopes at once: what the pattern
+/// binds is the clause's, and the step is evaluated in the scope the `match`
+/// sits in — where the names the clause binds do not exist yet.
+let rec private renamePattern
+    (renameStep: Expr -> Expr)
+    (subst: Map<string, string>)
+    (pat: Pattern)
+    : Pattern =
+    let go = renamePattern renameStep subst
+
     match pat with
     | PIdent(n, r) -> PIdent((Map.tryFind n subst |> Option.defaultValue n), r)
-    | PList(items, tailOpt, r) ->
-        PList(List.map (renamePattern subst) items, Option.map (renamePattern subst) tailOpt, r)
-    | PVec(items, tailOpt, r) ->
-        PVec(List.map (renamePattern subst) items, Option.map (renamePattern subst) tailOpt, r)
-    | PArray(items, tailOpt, r) ->
-        PArray(List.map (renamePattern subst) items, Option.map (renamePattern subst) tailOpt, r)
-    | PTuple(items, r) -> PTuple(List.map (renamePattern subst) items, r)
-    | PConstruct(n, args, r) -> PConstruct(n, List.map (renamePattern subst) args, r)
+    | PList(items, tailOpt, r) -> PList(List.map go items, Option.map go tailOpt, r)
+    | PVec(items, tailOpt, r) -> PVec(List.map go items, Option.map go tailOpt, r)
+    | PArray(items, tailOpt, r) -> PArray(List.map go items, Option.map go tailOpt, r)
+    | PTuple(items, r) -> PTuple(List.map go items, r)
+    | PConstruct(n, args, r) -> PConstruct(n, List.map go args, r)
+    | POr(alts, r) -> POr(List.map go alts, r)
+    | PView(step, inner, r) -> PView(renameStep step, go inner, r)
     | PTypeTest(t, binder, r) ->
         PTypeTest(t, binder |> Option.map (fun n -> Map.tryFind n subst |> Option.defaultValue n), r)
     | leaf -> leaf
@@ -1909,7 +1931,9 @@ let private renameWith
                 clauses
                 |> List.map (fun (pat, guard, body) ->
                     let _, inner = bind (patternBinders pat) subst
-                    renamePattern inner pat, Option.map (go inner) guard, go inner body),
+                    // The step keeps the outer substitution: it is evaluated
+                    // where the `match` is, not under what the clause binds.
+                    renamePattern sub inner pat, Option.map (go inner) guard, go inner body),
                 r
             )
 
@@ -2468,40 +2492,7 @@ let rec parseExpr (s: SExpr) : Expr =
             | "->" ->
                 match args with
                 | init :: steps ->
-                    let rec buildThread (prev: SExpr) (step: SExpr) : SExpr =
-                        match step with
-                        | SAtom { Token = Symbol _ } as sym ->
-                            SList([sym; prev], getRange sym)
-                        | SList(items, stepR) ->
-                            let rec replaceListItems (items: SExpr list) : SExpr list * bool =
-                                match items with
-                                | [] -> [], false
-                                | SAtom { Token = Hash } as h :: SList(subItems, subR) :: tail ->
-                                    let rest, foundInRest = replaceListItems tail
-                                    h :: SList(subItems, subR) :: rest, foundInRest
-                                | head :: tail ->
-                                    let newHead, foundHead = replaceAmpersand head
-                                    let newTail, foundTail = replaceListItems tail
-                                    newHead :: newTail, foundHead || foundTail
-
-                            and replaceAmpersand (expr: SExpr) : SExpr * bool =
-                                match expr with
-                                | SAtom { Token = Symbol "&" } -> prev, true
-                                | SList(subItems, subR) ->
-                                    let newItems, found = replaceListItems subItems
-                                    SList(newItems, subR), found
-                                | _ -> expr, false
-
-                            let newItems, hasAmp = replaceListItems items
-                            if hasAmp then
-                                SList(newItems, stepR)
-                            else
-                                match items with
-                                | head :: tail -> SList(head :: prev :: tail, stepR)
-                                | [] -> failwithf $"Invalid empty list in -> macro at %s{Lexer.formatPos stepR}"
-                        | _ -> failwithf $"Invalid step in -> macro at %s{Lexer.formatPos (getRange step)}"
-
-                    let threadExpr = steps |> List.fold buildThread init
+                    let threadExpr = steps |> List.fold threadStep init
                     parseExpr threadExpr
                 | _ -> failwithf $"-> requires at least one argument at %s{Lexer.formatPos r}"
             | "if" ->
@@ -3197,6 +3188,174 @@ let rec parseExpr (s: SExpr) : Expr =
     | _ -> failwithf $"Unexpected expression at %s{Lexer.formatPos r}"
 
 // ---------------------------------------------------------------------------
+// Patterns
+// ---------------------------------------------------------------------------
+//
+// Read here, in `parseExpr`'s group, because a pattern holds an expression: a
+// `(:view step p)` runs `step` on the value, and the step is read by the same
+// reader everything else is.
+
+and parsePattern (s: SExpr) : Pattern =
+    let r = getRange s
+
+    // The third renaming rule, applied to a pattern's head.
+    //
+    // A constructor is never a binder, so the first two rules cannot reach one:
+    // nothing in the expansion binds it, and a macro module publishes bindings
+    // rather than constructors. Stripping is therefore the whole answer, and it
+    // has to happen here — `AlphaRename.freeNames` reports the names a pattern
+    // *binds* and never the constructor it matches, so a template's `(Cons a
+    // Nil)` would otherwise reach inference as `Cons__37`.
+    //
+    // A bare lowercase symbol is left alone: that is a binder, and its mark is
+    // what makes it uncapturable.
+    let s =
+        match s with
+        | SList(SAtom({ Token = Symbol sym } as head) :: args, lr) when headName sym <> sym ->
+            SList(SAtom { head with Token = Symbol(headName sym) } :: args, lr)
+        | SAtom({ Token = Symbol sym } as atom) when
+            sym.Length > 0 && System.Char.IsUpper sym[0] && headName sym <> sym
+            ->
+            SAtom { atom with Token = Symbol(headName sym) }
+        | _ -> s
+
+    match s with
+    | SAtom { Token = Symbol "_" } -> PWildcard r
+    // Before the binder case below, which would otherwise read `#t` as a name
+    // and match everything. That is what it did: a boolean pattern bound a
+    // variable called `#t` and reached the code generator, which spelled it
+    // into C# as written and produced a preprocessor directive.
+    | SAtom { Token = BoolLit true } -> PBool(true, r)
+    | SAtom { Token = BoolLit false } -> PBool(false, r)
+    | SAtom { Token = Symbol sym } ->
+        if System.Char.IsUpper(sym.[0]) then
+            // A capitalized bare symbol is a nullary constructor, and a pattern
+            // macro may be called as one.
+            match expandPatternMacro s with
+            | Some expanded -> expanded
+            | None -> PConstruct(sym, [], r)
+        else PIdent(sym, r)
+    | SAtom { Token = NumberLit n } -> PInt(n, r)
+    | SAtom { Token = StringLit str } -> PString(str, r)
+    | SAtom { Token = Keyword kw } -> PKeyword(kw, r)
+    | SAtom { Token = CharLit c } -> PChar(c, r)
+    | SAtom { Token = QuotedSymbol sym } -> PQuotedSymbol(sym, r)
+
+    // `(:is Some.Clr.Type)` and `(:is Some.Clr.Type binder)`.
+    | SList([ SAtom { Token = Keyword "is" }; SAtom { Token = Symbol typeName } ], _) ->
+        PTypeTest(typeName, None, r)
+    | SList([ SAtom { Token = Keyword "is" }
+              SAtom { Token = Symbol typeName }
+              SAtom { Token = Symbol binder } ],
+            _) ->
+        PTypeTest(typeName, Some binder, r)
+    | SList(SAtom { Token = Keyword "is" } :: _, _) ->
+        failwithf
+            $"Invalid :is pattern at %s{Lexer.formatPos r}. Expected (:is Fully.Qualified.Type) or (:is Fully.Qualified.Type binding-name)."
+
+    // `(:view step p)` — run `step` on the value and match what it answers.
+    | SList([ SAtom { Token = Keyword "view" }; step; inner ], _) ->
+        PView(parseViewStep step r, parsePattern inner, r)
+    | SList(SAtom { Token = Keyword "view" } :: _, _) ->
+        failwithf
+            $"Invalid :view pattern at %s{Lexer.formatPos r}. Expected (:view step pattern), where step is a name, a form with & where the value goes, or a (fun ...)."
+
+    // Special handling for List/Vec patterns and the spread operator
+    | SList(SAtom { Token = Symbol "List" } :: args, _) ->
+        let elements, tail = parseSpreadArgs r args
+        PList(elements, tail, r)
+
+    // `(Vec a b c ...)` and the bracket literal form `[a b c ...]`, which the
+    // reader rewrites to `(vec-literal a b c ...)`.
+    | SList(SAtom { Token = Symbol("Vec" | "vec-literal") } :: args, _) ->
+        let elements, tail = parseSpreadArgs r args
+        PVec(elements, tail, r)
+
+    // `(Array a b c ...)` and the literal form `#[a b c ...]`, which the reader
+    // rewrites to `(array-literal a b c ...)`.
+    | SList(SAtom { Token = Symbol("Array" | "array-literal") } :: args, _) ->
+        let elements, tail = parseSpreadArgs r args
+        PArray(elements, tail, r)
+
+    // `(Tuple a b ...)` and dotted pairs `(a . b ...)` which the reader rewrites to `(Tuple a b ...)`
+    | SList(SAtom { Token = Symbol "Tuple" } :: args, _) ->
+        PTuple(List.map parsePattern args, r)
+
+    // `(or p q ...)` — several patterns in one position, which a `switch`
+    // statement gives a label each. Before the constructor case below, which
+    // would otherwise read `or` as one.
+    | SList(SAtom { Token = Symbol "or" } :: args, _) ->
+        match args with
+        | [] ->
+            failwithf
+                $"Invalid or pattern at %s{Lexer.formatPos r}. (or ...) needs alternatives to choose between."
+        | [ single ] -> parsePattern single
+        | _ ->
+            let alts = List.map parsePattern args
+
+            // For the reason an alternative may not bind: only one of them
+            // runs. A view decides the pattern by running code, and which code
+            // ran would depend on which alternative was tried.
+            for alt in alts do
+                if not (patternSteps alt).IsEmpty then
+                    failwithf
+                        $"Invalid or pattern at %s{Lexer.formatPos r}: an alternative cannot run a view. Give the (:view ...) a clause of its own."
+
+            POr(alts, r)
+
+    // A pattern macro, before the constructor fallback: the name is tried in
+    // the pattern table first, so a macro shadows a constructor of the same
+    // name in pattern position.
+    | SList(SAtom { Token = Symbol name } :: args, _) ->
+        match expandPatternMacro s with
+        | Some expanded -> expanded
+        | None -> PConstruct(name, List.map parsePattern args, r)
+
+    | SList([], _) -> PList([], None, r) // Empty list pattern
+
+    | _ -> failwithf $"Invalid pattern at %s{Lexer.formatPos r}"
+
+/// A pattern macro's expansion, read back as a pattern.
+///
+/// `Resolve` reaches the expressions in the result — which is to say a view's
+/// step, the only place a pattern holds one. Rules 2 and 3 apply to it exactly
+/// as they do to an expansion in expression position.
+and private expandPatternMacro (s: SExpr) : Pattern option =
+    patternExpandHook s
+    |> Option.map (fun expansion ->
+        parsePattern expansion.Form |> mapPatternSteps (expansion.Resolve Set.empty))
+
+/// The `step` of a `(:view step p)`, as the function the view applies.
+///
+/// A `&` form becomes a lambda over the value rather than a partial
+/// application, because the emitter inlines a lambda's body into the guard and
+/// so emits a direct call. A written `(fun ...)` is already that function and
+/// is taken as it stands; threading it would make the value its first argument.
+and private parseViewStep (step: SExpr) (r: Range) : Expr =
+    match step with
+    | SAtom { Token = Symbol _ }
+    | SList(SAtom { Token = Symbol("fun" | "bjoroutine") } :: _, _) -> parseExpr step
+    | _ ->
+        let hole = Gensym.fresh "view"
+        let holeAtom = SAtom { Token = Symbol hole; Range = getRange step }
+        EFun([ hole ], parseExpr (threadStep holeAtom step), Ordinary, r)
+
+/// Splits the arguments of a sequence pattern into its fixed leading elements
+/// plus an optional trailing rest pattern introduced by `...`.
+/// For example `a b c ...` yields ([a; b], Some c), binding `c` to the rest.
+and parseSpreadArgs (r: Range) (args: SExpr list) : Pattern list * Pattern option =
+    let rec go acc items =
+        match items with
+        | [] -> (List.rev acc, None)
+        // Matches `c ...` at the end of the sequence
+        | [ tailItem; SAtom { Token = Spread } ] -> (List.rev acc, Some(parsePattern tailItem))
+        // Fails if spread is used incorrectly (e.g., in the middle of the sequence)
+        | SAtom { Token = Spread } :: _ -> failwithf $"Invalid use of spread operator at %s{Lexer.formatPos r}"
+        | head :: tail -> go (parsePattern head :: acc) tail
+
+    go [] args
+
+// ---------------------------------------------------------------------------
 // (loop ...)
 // ---------------------------------------------------------------------------
 
@@ -3311,6 +3470,14 @@ and private parseLoopClause (s: SExpr) : LoopClause =
 /// filter, and a pattern that could fail would need somewhere to send the
 /// failure. So only the shapes that cannot fail are accepted.
 and private bindLoopPattern (pat: SExpr) (value: Expr) (body: Expr) (r: Range) : Expr =
+    // Expanded first, so that a pattern macro rewriting to `(Tuple a b)` is one
+    // of the shapes below rather than something this refuses. The head is
+    // unmarked for the reason `parsePattern` unmarks one: `Tuple` in a template
+    // is dispatched on, not bound.
+    match patternExpandHook pat with
+    | Some expansion -> bindLoopPattern (stripHeadMark expansion.Form) value body r
+    | None ->
+
     match pat with
     | SAtom { Token = Symbol name } -> ELet(name, false, [], None, value, body, r)
 
@@ -4902,6 +5069,7 @@ let rec boundNames (decls: Decl list) : Set<string> =
         | DExport _
         | DReExport _
         | DMacro _
+        | DPatternMacro _
         | DSyncOnly _
         | DImplExtern _
         | DInlineImpl _ -> []
@@ -4951,6 +5119,7 @@ let rec mapDeclExprs (f: Expr -> Expr) (d: Decl) : Decl =
     | DImportExtern _
     | DImportClass _
     | DMacro _
+    | DPatternMacro _
     | DSyncOnly _
     | DImplExtern _ -> d
 
@@ -4992,6 +5161,7 @@ let declKindName (d: Decl) : string =
     | DImportClass _ -> "a class import"
     | DInlineImpl _ -> "an inline method body"
     | DMacro _ -> "a macro"
+    | DPatternMacro _ -> "a pattern macro"
     | DSyncOnly _ -> "a #:sync marker"
     | DImpl _ -> "an implementation"
     | DImplExtern _ -> "an imported implementation"
@@ -5600,7 +5770,16 @@ and parseDeclForms (s: SExpr) : Decl list =
     let s = stripHeadMark s
 
     match s with
-    | SList(SAtom { Token = Symbol "def/macro" } :: SList(head, _) :: body, r) ->
+    // `def/pattern` is the same declaration in the other table. Its transformer
+    // is invoked when the name heads a *pattern*, and what it answers is read
+    // by `parsePattern` — so it is tried before the constructor fallback and
+    // shadows a constructor of the same name in pattern position.
+    //
+    // Hygiene is the expander's and needs nothing here, with one consequence
+    // worth stating: a binder the template writes arrives renamed, so it is not
+    // the name the clause body can read. A pattern macro that binds a user's
+    // name has to take that name out of the input form.
+    | SList(SAtom { Token = Symbol(("def/macro" | "def/pattern") as definer) } :: SList(head, _) :: body, r) ->
         let name, argNames =
             match head with
             | SAtom { Token = Symbol name } :: rest ->
@@ -5610,27 +5789,27 @@ and parseDeclForms (s: SExpr) : Decl list =
                         | SAtom { Token = Symbol a } -> a
                         | bad ->
                             failwithf
-                                $"Invalid def/macro parameter at %s{Lexer.formatPos (getRange bad)}. A transformer takes exactly three plain parameters: the form, inject and compare.")
+                                $"Invalid %s{definer} parameter at %s{Lexer.formatPos (getRange bad)}. A transformer takes exactly three plain parameters: the form, inject and compare.")
 
                 name, args
             | _ ->
                 failwithf
-                    $"Invalid def/macro at %s{Lexer.formatPos r}. Expected (def/macro (name form inject compare) body...)"
+                    $"Invalid %s{definer} at %s{Lexer.formatPos r}. Expected (%s{definer} (name form inject compare) body...)"
 
         if argNames.Length <> 3 then
             failwithf
-                $"Invalid def/macro '%s{name}' at %s{Lexer.formatPos r}: a transformer takes exactly three parameters — the form, inject and compare — and this one takes %d{argNames.Length}."
+                $"Invalid %s{definer} '%s{name}' at %s{Lexer.formatPos r}: a transformer takes exactly three parameters — the form, inject and compare — and this one takes %d{argNames.Length}."
 
         if body.IsEmpty then
-            failwithf $"Invalid def/macro '%s{name}' at %s{Lexer.formatPos r}: it has no body."
+            failwithf $"Invalid %s{definer} '%s{name}' at %s{Lexer.formatPos r}: it has no body."
 
         [ DSignature(name, macroTransformerType r, [], r)
           DDefun(name, argNames |> List.map (fun n -> MandatoryArg(n, None)), parseBody body r, Ordinary, r)
-          DMacro(name, r) ]
+          (if definer = "def/macro" then DMacro(name, r) else DPatternMacro(name, r)) ]
 
-    | SList(SAtom { Token = Symbol "def/macro" } :: _, r) ->
+    | SList(SAtom { Token = Symbol(("def/macro" | "def/pattern") as definer) } :: _, r) ->
         failwithf
-            $"Invalid def/macro at %s{Lexer.formatPos r}. Expected (def/macro (name form inject compare) body...)"
+            $"Invalid %s{definer} at %s{Lexer.formatPos r}. Expected (%s{definer} (name form inject compare) body...)"
 
     // Each step removes one wrapper, so the form count strictly decreases and
     // arbitrary nesting flattens.

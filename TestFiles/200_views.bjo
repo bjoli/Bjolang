@@ -1,0 +1,129 @@
+;; `(:view step p)` — the only pattern that runs code.
+;;
+;; A view is emitted into the clause's `case ... when`, so a clause without one
+;; keeps its constant labels and its jump table. `TestFiles/codegen/views.bjo`
+;; is where that shape is pinned; this file is about what the patterns answer.
+
+(import (std simpletest))
+
+(: halve (-> int (Option int)))
+(defun (halve n)
+  (if (even? n) (Some (/ n 2)) None))
+
+;; A bare name as the step, and a predicate as the whole of the pattern.
+(: parity (-> int string))
+(defun (parity n)
+  (match n
+    (0 "zero")
+    ((:view even? #t) "even")
+    (_ "odd")))
+
+;; A partial view: the step answers an Option and the pattern reads it.
+(: halved (-> int string))
+(defun (halved n)
+  (match n
+    ((:view halve (Some k)) (->str k))
+    (_ "odd")))
+
+;; A step with extra arguments, written like a `->` step. No lambda is
+;; allocated: `&` marks where the value goes and the call is emitted directly.
+(: over (-> int int string))
+(defun (over n limit)
+  (match n
+    ((:view (< limit &) #t) "big")
+    (_ "small")))
+
+;; A `(fun ...)` is a step too. It is applied to the value rather than closed
+;; over — the body is emitted into the guard — and what it answers is matched
+;; against a constant like anything else.
+;;
+;; What it may not do is need a statement to evaluate, exactly as a `#:when`
+;; may not: `(= 0 (% x 3))` is refused here, because `=` inlines to a binding.
+(: squares (-> int string))
+(defun (squares n)
+  (match n
+    ((:view (fun (x) (* x x)) 81) "nine")
+    (_ "no")))
+
+;; Nested inside a constructor, and nested inside itself: the inner step reads
+;; what the outer one bound.
+(: quarter (-> (Option int) string))
+(defun (quarter o)
+  (match o
+    ((Some (:view halve (Some (:view halve (Some k))))) (->str k))
+    ((Some _) "no")
+    (None "none")))
+
+;; Two views in one clause, and a `#:when` after them — the guard runs last, so
+;; the names the views bound are available to it.
+(: pair-up (-> (Tuple int int) string))
+(defun (pair-up p)
+  (match p
+    ((Tuple (:view halve (Some a)) (:view halve (Some b))) #:when (< a b) "rising")
+    ((Tuple (:view halve (Some a)) (:view halve (Some b))) (->str (+ a b)))
+    (_ "odd")))
+
+;; The step is a trait method, dispatched where the clause is written.
+(: named (-> int string))
+(defun (named n)
+  (match n
+    ((:view ->str "4") "four")
+    ((:view ->str s) (string-append "n" s))))
+
+;; And the same through a constraint, where the method is reached through a
+;; dictionary rather than a direct call.
+(: shouted? (-> %a string) (where (->str %a)))
+(defun (shouted? x)
+  (match x
+    ((:view ->str "yes") "affirmative")
+    (_ "other")))
+
+;; A step closing over a local of the enclosing scope.
+(: count-over (-> (Vec int) int int))
+(defun (count-over xs limit)
+  (loop (:for x xs)
+        (:acc total (summing (match x ((:view (< limit &) #t) 1) (_ 0))))
+        => total))
+
+;; A `match` in argument position is a switch *expression*, and a view is a
+;; `when` on the arm there.
+(: bracket (-> int string))
+(defun (bracket n)
+  (string-append "<" (string-append (match n ((:view halve (Some k)) (->str k)) (_ "-")) ">")))
+
+(defun (main args)
+  (expect "predicate-zero" (parity 0) "zero")
+  (expect "predicate-even" (parity 4) "even")
+  (expect "predicate-odd" (parity 5) "odd")
+
+  (expect "partial-hit" (halved 8) "4")
+  (expect "partial-miss" (halved 7) "odd")
+
+  (expect "ampersand" (over 10 3) "big")
+  (expect "ampersand-no" (over 1 3) "small")
+
+  (expect "lambda-step" (squares 9) "nine")
+  (expect "lambda-step-no" (squares 8) "no")
+
+  (expect "nested" (quarter (Some 8)) "2")
+  (expect "nested-once" (quarter (Some 6)) "no")
+  (expect "nested-none" (quarter None) "none")
+
+  (expect "two-views-guarded" (pair-up (Tuple 2 8)) "rising")
+  (expect "two-views" (pair-up (Tuple 8 2)) "5")
+  (expect "two-views-miss" (pair-up (Tuple 1 2)) "odd")
+
+  (expect "trait-step" (named 4) "four")
+  (expect "trait-step-binder" (named 7) "n7")
+  (expect "trait-step-dict" (shouted? 4) "other")
+  (expect "trait-step-dict-hit" (shouted? "yes") "affirmative")
+
+  (expect "closes-over-a-local" (count-over [1 5 9] 4) 2)
+
+  (expect "switch-expression" (bracket 4) "<2>")
+  (expect "switch-expression-miss" (bracket 3) "<->")
+
+  ;; A view runs once per clause that tries it. Nothing shares the call, which
+  ;; is why a step that costs something belongs in front of the `match`.
+  (println "200 ok")
+  0)

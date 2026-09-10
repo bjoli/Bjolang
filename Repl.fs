@@ -550,15 +550,16 @@ let private evaluate (state: State) (text: string) : State =
         else
             match check false [] with
             | None -> None
-            | Some(env, _, _, _) -> check true (unsigned |> List.choose (Exports.signatureForm env))
+            | Some(env, _, _, _, _) -> check true (unsigned |> List.choose (Exports.signatureForm env))
 
     match compiled with
     | None ->
         // The diagnostic has already been printed by the pipeline, naming the
         // entry's file and the line the user typed on.
         state
-    | Some(env, typedAst, dllDeps, declaredMacros) ->
-        let source = Build.generateSource env typedAst dllDeps declaredMacros sourcePath true
+    | Some(env, typedAst, dllDeps, declaredMacros, declaredPatternMacros) ->
+        let source =
+            Build.generateSource env typedAst dllDeps declaredMacros declaredPatternMacros sourcePath true
 
         let references =
             (Paths.runtimeAssemblies @ dllDeps)

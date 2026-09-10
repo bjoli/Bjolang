@@ -132,7 +132,8 @@ let rec letrecifyExpr (expr: Expr) : Expr =
     | EMatch(target, clauses, r) ->
         let optimizedClauses =
             clauses
-            |> List.map (fun (p, g, b) -> (p, Option.map letrecifyExpr g, letrecifyExpr b))
+            |> List.map (fun (p, g, b) ->
+                (Parser.mapPatternSteps letrecifyExpr p, Option.map letrecifyExpr g, letrecifyExpr b))
 
         EMatch(letrecifyExpr target, optimizedClauses, r)
 

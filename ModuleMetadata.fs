@@ -98,6 +98,9 @@ type ConstrainedBodyEntry = {
 
 /// One macro an assembly publishes: the Bjolang name, and the module that
 /// defines it.
+///
+/// The same shape for a pattern macro, which differs only in the table it is
+/// registered into.
 type MacroEntry = { Name: string; ModuleName: string }
 
 /// Declaration groups are separate fields because an importer has to read them
@@ -115,6 +118,9 @@ type Metadata = {
     Defs: ExportedDef list
     InlineTemplates: InlineTemplateEntry list
     Macros: MacroEntry list
+    /// The `def/pattern`s. A separate list because they are registered into a
+    /// separate table: a name may be an ordinary export and a pattern macro.
+    PatternMacros: MacroEntry list
     /// Exported definitions whose call parks the thread it runs on.
     ///
     /// A separate list rather than a flag on `ExportedDef` because it is about
@@ -148,6 +154,7 @@ let empty = {
     Defs = []
     InlineTemplates = []
     Macros = []
+    PatternMacros = []
     BlockingDefs = []
     DoubleDefs = []
     ConstrainedBodies = []
@@ -166,6 +173,7 @@ let isEmpty (m: Metadata) =
     && m.Defs.IsEmpty
     && m.InlineTemplates.IsEmpty
     && m.Macros.IsEmpty
+    && m.PatternMacros.IsEmpty
 
 
 // ---------------------------------------------------------------------------
@@ -312,6 +320,7 @@ let serialize (m: Metadata) : string =
     putList sb putDef m.Defs
     putList sb putTemplate m.InlineTemplates
     putList sb putMacro m.Macros
+    putList sb putMacro m.PatternMacros
     putList sb putStr m.BlockingDefs
     putList sb putStr m.DoubleDefs
     putList sb putConstrainedBody m.ConstrainedBodies
@@ -341,6 +350,7 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
     let defs = getList getDef c
     let templates = getList getTemplate c
     let macros = getList getMacro c
+    let patternMacros = getList getMacro c
     let blockingDefs = getList getStr c
     let doubleDefs = getList getStr c
     let constrainedBodies = getList getConstrainedBody c
@@ -354,6 +364,7 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
       Defs = defs
       InlineTemplates = templates
       Macros = macros
+      PatternMacros = patternMacros
       BlockingDefs = blockingDefs
       DoubleDefs = doubleDefs
       ConstrainedBodies = constrainedBodies }

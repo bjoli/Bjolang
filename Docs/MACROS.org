@@ -353,12 +353,51 @@ In expression position — where a value is wanted and no body was being read �
 ~(begin ...)~ opens a nested body instead, which is the sequencing expression
 the language otherwise lacks: ~(+ 1 (begin (log!) 2))~.
 
+** ~def/pattern~: a macro in pattern position
+
+~def/pattern~ writes the same three declarations ~def/macro~ does — a
+signature, a ~defun~, and a note about the name — into a second table. Its
+transformer runs when the name heads a *pattern*, and what it answers is read
+as one:
+
+#+BEGIN_SRC scheme
+;; In (std orderedmap):
+(def/pattern (om-has form inject compare)
+  (match form
+    ((SList (Cons _ (Cons key (Cons p Nil))))
+     #'(:view (orderedmap-try-ref & ,key) (Some ,p)))
+    (_ (syntax-error form "(om-has key p) matches a map that has key."))))
+
+;; Anywhere that imports it:
+(match config
+  ((om-has "port" p) p)
+  (_ "8080"))
+#+END_SRC
+
+The tables are separate, so a name may be an ordinary function in expression
+position and a pattern macro in pattern position — and in pattern position the
+macro is tried before the constructor of that name, which it therefore shadows.
+It is called both as ~(name args ...)~ and, for one taking no arguments, as a
+bare capitalized symbol.
+
+The three renaming rules are unchanged, and rule 1 has a consequence worth
+stating: a binder the template writes arrives renamed, so it is *not* the name
+the clause body reads. A pattern macro that binds a name the caller wrote takes
+that name out of the input form. A constructor head in a template is
+mark-stripped as everywhere else, and a view function a template names resolves
+by rule 2 — so it has to be exported by the macro's module.
+
+~(:view step p)~ is the only pattern that runs code, and the only place a
+pattern holds an expression. What it cannot do — suspend, need a statement,
+appear in an ~(or ...)~, or see through ~#:opaque~ — is in the Readme.
+
 ** What a macro cannot do
 
 - *Appear anywhere but where a whole expression or declaration is expected.* Not
-  as a ~loop~ clause, a ~match~ arm, a ~let~ binding, a ~#:when~ guard, a
-  pattern, or a type: those are read structurally by their parent and never
-  reach the point where a head symbol is dispatched.
+  as a ~loop~ clause, a ~match~ arm, a ~let~ binding or a type: those are read
+  structurally by their parent and never reach the point where a head symbol is
+  dispatched. A *pattern* is the exception, and has a table of its own:
+  ~def/pattern~ above.
 - *Shadow a special form.* Expansion is tried after every special form has
   failed to match, so a macro named ~if~ is never reached.
 - *See types.* Expansion happens at parse time, before inference.
@@ -385,9 +424,11 @@ which is what the hundred-level expansion limit is for.
 |--------------------------------+---------------------------------|
 | the ~Syntax~ type              | ~BjolangRuntime/Syntax.cs~      |
 | ~#'~, ~,@~ and the desugaring  | ~Lexer.fs~, ~Pipeline.read~, ~Parser.desugarSyntaxQuote~ |
-| ~def/macro~                    | ~Parser.parseDeclForms~         |
+| ~def/macro~ and ~def/pattern~  | ~Parser.parseDeclForms~         |
 | marshalling, renaming, the call | ~Macro.fs~                     |
 | the ~BjolangMacros~ metadata   | ~Program.fs~, ~Pipeline.parseMacroEntries~ |
 | ~begin~ splicing               | ~Parser.parseDeclForms~, ~Parser.parseBody~ |
+| ~(:view step p)~               | ~Parser.parsePattern~, ~Inference.checkPattern~, ~Codegen.generatePattern~ |
 | worked examples                | ~TestFiles/inc/macros.bjo~, ~TestFiles/091_macros.bjo~ |
+| pattern macros                 | ~TestFiles/inc/pattern_macros.bjo~, ~TestFiles/201_pattern_macros.bjo~ |
 | splicing examples              | ~TestFiles/122_splice.bjo~, ~TestFiles/123_begin.bjo~ |

@@ -1,0 +1,15 @@
+;; A pattern macro cannot be used in the module that defines it, for the reason
+;; a macro cannot: the transformer runs inside the compiler, so it has to be
+;; compiled before whatever uses it is read.
+;;
+;; EXPECT-ERROR: is a pattern macro defined in this module
+;; EXPECT-ERROR: Move it to a module of its own
+
+(def/pattern (Single form inject compare)
+  (match form
+    ((SList (Cons _ (Cons p Nil))) #'(Cons ,p Nil))
+    (_ (syntax-error form "Single takes one pattern"))))
+
+(defun (main args)
+  (println (match (list 4) ((Single x) (int->string x)) (_ "no")))
+  0)

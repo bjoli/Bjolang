@@ -606,39 +606,6 @@ let rec serializeFType (ft: Parser.FType) : string =
 let private escapeSexpr (s: string) =
     s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\t", "\\t")
 
-let rec serializePattern (p: Parser.Pattern) : string =
-    match p with
-    | Parser.PWildcard _ -> "_"
-    | Parser.PIdent(n, _) -> n
-    | Parser.PInt(v, _) -> v
-    | Parser.PString(v, _) -> "\"" + escapeSexpr v + "\""
-    // Always the hex spelling: it round-trips through the lexer for every
-    // codepoint, including ones with no name and ones that are not printable.
-    | Parser.PChar(c, _) -> $"#\\x%X{c}"
-    | Parser.PBool(b, _) -> if b then "#t" else "#f"
-    | Parser.PKeyword(k, _) -> "#:" + k
-    | Parser.PQuotedSymbol(s, _) -> "'" + s
-    // Always parenthesized, even with no arguments. A bare name reads back as a
-    // constructor only when it happens to start with a capital, and that is not
-    // something to rely on.
-    | Parser.PConstruct(n, args, _) ->
-        "(" + String.concat " " (n :: List.map serializePattern args) + ")"
-    | Parser.PList(items, tailOpt, _) -> serializeSeqPattern "List" items tailOpt
-    | Parser.PVec(items, tailOpt, _) -> serializeSeqPattern "Vec" items tailOpt
-    | Parser.PArray(items, tailOpt, _) -> serializeSeqPattern "Array" items tailOpt
-    | Parser.PTuple(items, _) -> "(" + String.concat " " ("Tuple" :: List.map serializePattern items) + ")"
-    | Parser.PTypeTest(t, binder, _) ->
-        "(:is " + String.concat " " (t :: Option.toList binder) + ")"
-    | Parser.POr(alts, _) -> "(or " + String.concat " " (List.map serializePattern alts) + ")"
-
-and private serializeSeqPattern (head: string) items tailOpt =
-    let itemStrs = items |> List.map serializePattern
-    let tailStrs =
-        match tailOpt with
-        | Some t -> [ serializePattern t; "..." ]
-        | None -> []
-    "(" + String.concat " " (head :: (itemStrs @ tailStrs)) + ")"
-
 /// Writes an untyped expression as source the reader accepts again.
 ///
 /// The *untyped* expression is what an inline template stores: `HMType` is full
@@ -766,6 +733,48 @@ let rec serializeExpr (e: Parser.Expr) : string =
     | Parser.EList _ -> failwith "an inline template body may not contain a bare list literal"
     | Parser.ETryFinally _ -> failwith "an inline template body may not contain try/finally"
     | Parser.ETryCatch _ -> failwith "an inline template body may not contain try/catch"
+
+/// A pattern, written back as source.
+///
+/// In this group because a pattern holds an expression: a view's step. A
+/// pattern macro is not written back, and cannot be — it expanded while the
+/// module holding this body was parsed, and what is stored is what it produced.
+and serializePattern (p: Parser.Pattern) : string =
+    match p with
+    | Parser.PWildcard _ -> "_"
+    | Parser.PIdent(n, _) -> n
+    | Parser.PInt(v, _) -> v
+    | Parser.PString(v, _) -> "\"" + escapeSexpr v + "\""
+    // Always the hex spelling: it round-trips through the lexer for every
+    // codepoint, including ones with no name and ones that are not printable.
+    | Parser.PChar(c, _) -> $"#\\x%X{c}"
+    | Parser.PBool(b, _) -> if b then "#t" else "#f"
+    | Parser.PKeyword(k, _) -> "#:" + k
+    | Parser.PQuotedSymbol(s, _) -> "'" + s
+    // Always parenthesized, even with no arguments. A bare name reads back as a
+    // constructor only when it happens to start with a capital, and that is not
+    // something to rely on.
+    | Parser.PConstruct(n, args, _) ->
+        "(" + String.concat " " (n :: List.map serializePattern args) + ")"
+    | Parser.PList(items, tailOpt, _) -> serializeSeqPattern "List" items tailOpt
+    | Parser.PVec(items, tailOpt, _) -> serializeSeqPattern "Vec" items tailOpt
+    | Parser.PArray(items, tailOpt, _) -> serializeSeqPattern "Array" items tailOpt
+    | Parser.PTuple(items, _) -> "(" + String.concat " " ("Tuple" :: List.map serializePattern items) + ")"
+    | Parser.PTypeTest(t, binder, _) ->
+        "(:is " + String.concat " " (t :: Option.toList binder) + ")"
+    | Parser.POr(alts, _) -> "(or " + String.concat " " (List.map serializePattern alts) + ")"
+    // The step is written as the function it already is, so it reads back
+    // without the `&` form being re-derived.
+    | Parser.PView(step, inner, _) ->
+        "(:view " + serializeExpr step + " " + serializePattern inner + ")"
+
+and private serializeSeqPattern (head: string) items tailOpt =
+    let itemStrs = items |> List.map serializePattern
+    let tailStrs =
+        match tailOpt with
+        | Some t -> [ serializePattern t; "..." ]
+        | None -> []
+    "(" + String.concat " " (head :: (itemStrs @ tailStrs)) + ")"
 
 /// Can this body be written out and read back at all? A template that cannot be
 /// serialized is simply not exported; its landing pad still is.
@@ -1104,8 +1113,24 @@ let private foreignTypeArguments (meta: DotNetMethodMetadata option) =
 /// colour with the same walk that decides a guarded region's here.
 let private containsAwait = TypeVisitor.reachesAwait
 
+/// A view met while a label was emitted.
+///
+/// The label carries `Name` as a `var` designation where the view stood, and
+/// the test itself goes into the clause's guard — which is the only place a
+/// pattern may run code. `Applied` is the step already applied to that name.
+type ViewFragment =
+    { Name: string
+      Applied: TypedExpr
+      Inner: TypedPattern }
+
 /// Translates a typed pattern into C# pattern syntax.
-let rec generatePattern (ctx: CodegenContext) (pat: TypedPattern) : unit =
+///
+/// Every view in the pattern is appended to `views` and stands in the label as
+/// a designation. The caller emits the fragments as a guard; both callers are
+/// clause emitters, and a clause is the only place a pattern is written.
+let rec generatePattern (ctx: CodegenContext) (views: ResizeArray<ViewFragment>) (pat: TypedPattern) : unit =
+    let generatePattern ctx pat = generatePattern ctx views pat
+
     match pat.Node with
     | TPWildcard -> append ctx "_"
     | TPIdent name -> append ctx $"var {sanitizeIdent name}"
@@ -1235,8 +1260,33 @@ let rec generatePattern (ctx: CodegenContext) (pat: TypedPattern) : unit =
             append ctx ")"
     | TPAs _ ->
         failwithf $"'as' patterns have no C# equivalent (line %d{pat.Range.Start.Line})"
-    | TPApp _ ->
-        failwithf $"Applied patterns are not supported by the C# backend (line %d{pat.Range.Start.Line})"
+
+    // A view. The label binds the value under a name of its own and the test
+    // moves to the guard, where C# allows a call — so a clause without a view
+    // keeps its constant label and its place in the jump table.
+    //
+    // A step that is a one-parameter lambda is applied here rather than called:
+    // the argument is a name, so substituting it into the body is the same
+    // value and leaves a direct call where a closure would have been. That is
+    // what makes the `&` form cost nothing.
+    | TPApp(step, inner) ->
+        let name = freshName "__view"
+
+        let argument: TypedExpr =
+            { Type = pat.Type
+              Range = pat.Range
+              Node = TIdent(name, []) }
+
+        let applied: TypedExpr =
+            match step.Node with
+            | TLambda([ param ], body) -> AlphaRename.renameExpr (Map.ofList [ param, name ]) body
+            | _ ->
+                { Type = inner.Type
+                  Range = pat.Range
+                  Node = TApply(step, [ argument ], []) }
+
+        views.Add { Name = name; Applied = applied; Inner = inner }
+        append ctx $"var %s{name}"
 
 // ---------------------------------------------------------------------------
 // Operators
@@ -1804,12 +1854,9 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
             let armCtx = { c with Prelude = None }
             for clause in live do
                 indent armCtx
-                generatePattern armCtx clause.Pattern
-                match clause.Guard with
-                | Some guard ->
-                    append armCtx " when "
-                    generateExpr armCtx guard
-                | None -> ()
+                let views = ResizeArray()
+                generatePattern armCtx views clause.Pattern
+                generateClauseGuard armCtx views clause.Guard
                 append armCtx " => "
                 generateExpr armCtx clause.Body
                 appendLine armCtx ","
@@ -3088,6 +3135,57 @@ and private emitTerminal (ctx: CodegenContext) (target: BlockTarget) (valueType:
             append ctx "_ = "; emit ctx; appendLine ctx ";"
         exitInlineLoop ctx
 
+/// Emits a clause's `when`: every view's test, then the guard the source wrote.
+///
+/// The views come first, and in pattern order, so that a name one of them
+/// introduces is definitely assigned by the time the user's guard reads it. C#
+/// scopes a pattern variable declared in a case guard over the whole section,
+/// and one declared in a switch-expression arm over the arm, which is what lets
+/// this work without a local of its own.
+///
+/// The loop is over a growing list: emitting a fragment's inner pattern appends
+/// the fragments of any view nested inside it, and each of those is joined
+/// after the one that binds the name it reads.
+and private generateClauseGuard
+    (ctx: CodegenContext)
+    (views: ResizeArray<ViewFragment>)
+    (guard: TypedExpr option)
+    : unit =
+
+    let guardCtx = { ctx with Prelude = None }
+    let mutable joined = 0
+
+    let next () =
+        append ctx (if joined = 0 then " when " else " && ")
+        joined <- joined + 1
+
+    let mutable i = 0
+
+    while i < views.Count do
+        let view = views[i]
+
+        if containsHoist view.Applied then
+            codegenError
+                view.Applied.Range
+                "this view's step needs statements to evaluate, but C# gives `case ... when` no statement position; move the call into the arm body"
+
+        next ()
+        generateExpr guardCtx view.Applied
+        append ctx " is "
+        generatePattern ctx views view.Inner
+        i <- i + 1
+
+    match guard with
+    | Some g ->
+        if containsHoist g then
+            codegenError
+                g.Range
+                "this `match` guard needs statements to evaluate, but C# gives `case ... when` no statement position; move the test into the arm body"
+
+        next ()
+        generateExpr guardCtx g
+    | None -> ()
+
 and private generateMatch
     (ctx: CodegenContext)
     (target: BlockTarget)
@@ -3149,15 +3247,6 @@ and private generateMatch
         { ctx with
             Loop = ctx.Loop |> Option.map (fun l -> { l with NestedSwitches = l.NestedSwitches + 1 }) }
 
-    let generateGuard (c: CodegenContext) (guard: TypedExpr) =
-        if containsHoist guard then
-            codegenError
-                guard.Range
-                "this `match` guard needs statements to evaluate, but C# gives `case ... when` no statement position; move the test into the arm body"
-
-        append c " when "
-        generateExpr { c with Prelude = None } guard
-
     let emitSwitch (armTarget: BlockTarget) =
         // A `Return` target always terminates the section itself
         // (return / continue / goto / throw), so a break would be unreachable.
@@ -3186,8 +3275,11 @@ and private generateMatch
                 for label in labelsOf clause do
                     indent c
                     append c "case "
-                    generatePattern c label
-                    clause.Guard |> Option.iter (generateGuard c)
+                    // A label per alternative means a set of view names per
+                    // alternative too, which is what the fresh list is for.
+                    let views = ResizeArray()
+                    generatePattern c views label
+                    generateClauseGuard c views clause.Guard
                     appendLine c ":"
 
                 indent c

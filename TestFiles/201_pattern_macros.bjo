@@ -1,0 +1,113 @@
+;; Pattern macros, end to end. `TestFiles/inc/pattern_macros.bjo` is compiled to
+;; a .dll and loaded into the compiler, which runs its transformers while the
+;; patterns below are read.
+
+(import "inc/pattern_macros.bjo")
+(import (std orderedmap))
+(import (std simpletest))
+
+;; A second spelling, made before this module is parsed for the reason a macro's
+;; own name is: the parser decides what a pattern's head means when it meets it.
+(:alias Duo Pair)
+
+;; A function of this module named as one of the imported pattern macros is.
+;; Expression position reads the binding, pattern position reads the macro.
+(: single (-> int int))
+(defun (single n) (+ n 100))
+
+(: describe (-> (List int) string))
+(defun (describe xs)
+  (match xs
+    ((Pair a b) (string-append "pair " (->str (+ a b))))
+    ((single x) (string-append "one " (->str x)))
+    (_ "other")))
+
+(: last-two (-> (List int) string))
+(defun (last-two xs)
+  (match xs
+    ((Leading a b) (string-append "leading " (->str (+ a b))))
+    (_ "other")))
+
+(: halves (-> int string))
+(defun (halves n)
+  (match n
+    ((Half k) (->str k))
+    (_ "odd")))
+
+(: big? (-> int string))
+(defun (big? n)
+  (match n
+    ((Over 10 #t) "big")
+    (_ "small")))
+
+(: aliased (-> (List int) string))
+(defun (aliased xs)
+  (match xs
+    ((Duo a b) (->str (+ a b)))
+    (_ "other")))
+
+;; Two levels of pattern macro under a constructor, and a `#:when` after the
+;; view the inner one expands to.
+(: nested (-> (Option int) string))
+(defun (nested o)
+  (match o
+    ((Some (Half k)) #:when (< 3 k) "big half")
+    ((Some (Half k)) (string-append "half " (->str k)))
+    ((Some _) "odd")
+    (None "none")))
+
+;; The standard library's own, over an exported view: `(om-has key p)` matches a
+;; map that has `key`.
+(: port-of (-> (OrderedMap string string) string))
+(defun (port-of config)
+  (match config
+    ((om-has "port" p) p)
+    (_ "8080")))
+
+;; A pattern macro in a `:for`. `(Both a b)` rewrites to a tuple, which is one
+;; of the two shapes a loop pattern may be.
+(: sum-pairs (-> (Vec (Tuple int int)) int))
+(defun (sum-pairs pairs)
+  (loop (:for (Both a b) pairs)
+        (:acc total (summing (* a b)))
+        => total))
+
+(defun (main args)
+  (expect "rewrite-only" (describe (list 1 2)) "pair 3")
+  (expect "one" (describe (list 7)) "one 7")
+  (expect "neither" (describe (list 1 2 3)) "other")
+
+  ;; The same name, called: a pattern macro does not take a name out of
+  ;; expression position.
+  (expect "still-a-function" (single 7) 107)
+
+  (expect "macro-in-macro" (last-two (list 9 1 2)) "leading 3")
+  (expect "macro-in-macro-no" (last-two (list 1 2)) "other")
+
+  (expect "view-macro" (halves 8) "4")
+  (expect "view-macro-odd" (halves 7) "odd")
+
+  (expect "spliced-argument" (big? 11) "big")
+  (expect "spliced-argument-no" (big? 10) "small")
+
+  (expect "alias" (aliased (list 20 22)) "42")
+
+  (expect "nested-guarded" (nested (Some 10)) "big half")
+  (expect "nested-plain" (nested (Some 4)) "half 2")
+  (expect "nested-odd" (nested (Some 3)) "odd")
+  (expect "nested-none" (nested None) "none")
+
+  ;; Hygiene: the template's `tmp` is renamed apart, so the body reads the `tmp`
+  ;; this file wrote. A pattern macro that means to bind a caller's name has to
+  ;; take it out of the input form.
+  (let ((tmp 9))
+    (expect "template-binder-invisible" (match (list 4) (Single tmp) (_ 0)) 9)
+    (expect "no-match-is-still-a-match" (match (list 4 5) (Single tmp) (_ 0)) 0))
+
+  (expect "loop-for" (sum-pairs [(Tuple 2 3) (Tuple 4 5)]) 26)
+
+  (expect "std-om-has" (port-of (orderedmap-set (orderedmap-empty) "port" "9000")) "9000")
+  (expect "std-om-has-miss" (port-of (orderedmap-empty)) "8080")
+
+  (println "201 ok")
+  0)

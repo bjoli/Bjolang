@@ -263,7 +263,7 @@ def fixture_modules():
     modules = []
     for f in sorted(INC_DIR.glob("*.bjo")):
         content = f.read_text()
-        if re.search(r'^[ \t]*\((export|def/macro)', content, re.MULTILINE):
+        if re.search(r'^[ \t]*\((export|def/macro|def/pattern)', content, re.MULTILINE):
             modules.append(f)
     return modules
 
@@ -356,6 +356,18 @@ if not prefixes:
     print_color(RED, "No test files matching TestFiles/[0-9][0-9][0-9]_*.bjo found.")
     sys.exit(1)
 
+# Hur länge ett testprogram får köra.
+#
+# Ett program som hänger hängde förut hela sviten: körningen har ingen egen
+# tidsgräns, och de andra grupperna blir klara utan att någon sammanställning
+# skrivs ut. Gränsen är per program och inte per grupp, eftersom en grupp är
+# flera program i följd.
+#
+# Ett test som fungerar blir klart långt under den här gränsen, så det som
+# tar längre tid har fastnat snarare än blivit långsamt.
+RUN_TIMEOUT = 10
+
+
 def run_prefix_group(prefix, log_file, compiled):
     """Kör en grupps redan kompilerade program, i filordning."""
     for bjo_file in groups[prefix]:
@@ -393,7 +405,16 @@ def run_prefix_group(prefix, log_file, compiled):
             if input_file.exists():
                 stdin = open(input_file, "r")
             try:
-                res = subprocess.run(["dotnet", str(exe_file)], stdin=stdin, stdout=out, stderr=subprocess.STDOUT)
+                res = subprocess.run(["dotnet", str(exe_file)], stdin=stdin, stdout=out,
+                                     stderr=subprocess.STDOUT, timeout=RUN_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                # Programmet dödas av `subprocess.run` innan undantaget når
+                # hit, så gruppen kan avslutas som vilket annat fel som helst.
+                with open(log_file, "a") as log:
+                    log.write(f"FAIL_RUN: {basename} (timed out after {RUN_TIMEOUT}s)\n")
+                out.close()
+                run_output_file.unlink()
+                return 2
             finally:
                 if stdin:
                     stdin.close()

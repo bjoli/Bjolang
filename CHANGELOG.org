@@ -3,6 +3,46 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~match~ is extensible: ~(:view step p)~ and ~def/pattern~
+
+Two layers. ~(:view step p)~ hands the value to ~step~ and matches what comes
+back against ~p~ — the only pattern that runs code:
+
+#+BEGIN_SRC scheme
+(match n
+  ((:view even? #t) "even")                          ; a predicate
+  ((:view halve (Some k)) (int->string k))           ; a partial view
+  ((:view (orderedmap-try-ref & "port") (Some p)) p) ; extra arguments, no lambda
+  (_ "none"))
+#+END_SRC
+
+The step is written like a ~->~ step and read by the same code: a bare name is
+applied to the value, and ~&~ says where the value goes in a form. A ~(fun
+...)~ is accepted too. It is emitted into the clause's ~case ... when~ with the
+value bound by a designation in the label, so the call is direct, nothing is
+allocated for it, and a clause *without* a view keeps its constant labels and
+its jump table.
+
+~def/pattern~ is ~def/macro~ in a second table: the transformer runs when its
+name heads a pattern, and what it answers is read as one. A name can be an
+ordinary function in expression position and a pattern macro in pattern
+position, the way ~Cons~ is already both, and a pattern macro shadows a
+constructor of the same name in pattern position. Hygiene is the expander's and
+unchanged — a binder a template writes is not the name the clause body reads,
+so a macro that binds a caller's name takes it out of the input form. ~(std
+orderedmap)~ ships the worked example, ~(om-has key p)~.
+
+What a view cannot do. It cannot suspend: a C# ~when~ has no ~await~, so a
+~-bjo->~ step is a type error. It cannot need a statement to evaluate, exactly
+as a ~#:when~ cannot. It cannot appear in an ~(or ...)~, because only one
+alternative runs. And it runs once per clause that tries it — three clauses
+each viewing ~parse-int~ call it three times, so a step that costs something
+belongs in front of the ~match~. A view sees a ~#:opaque~ type only through a
+view function that type's own module exported.
+
+Module metadata is version 9: a ~.dll~ built before this publishes no pattern
+macros and has to be rebuilt.
+
 * A trait member may carry a ~where~ of its own, and ~add-all!~ exists
 
 A member of an interface trait can now be constrained, with every associated

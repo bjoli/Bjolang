@@ -108,6 +108,25 @@
 (: orderedmap-has-key? (-> (OrderedMap %k %v) %k bool))
 (defun (orderedmap-has-key? m key) (orderedmap-contains? m key))
 
+;; `(om-has key p)` matches a map that has `key`, with `p` matching its value:
+;;
+;;     (match config
+;;       ((om-has "port" (:view ->str p)) p)
+;;       (_ "8080"))
+;;
+;; A pattern macro over `orderedmap-try-ref`, which is an exported binding of
+;; this module — a template resolves a name to the module it was written in, so
+;; the call site needs no name for it.
+;;
+;; The lookup runs once per clause that tries it, as every view does. Three
+;; clauses reading three keys are three lookups; that is the price of writing
+;; the test in the pattern rather than before the `match`.
+(def/pattern (om-has form inject compare)
+  (match form
+    ((SList (Cons _ (Cons key (Cons p Nil))))
+     #'(:view (orderedmap-try-ref & ,key) (Some ,p)))
+    (_ (syntax-error form "(om-has key p) matches a map that has key, p matching the value."))))
+
 ;; Min entry as Option.
 (: orderedmap-min (-> (OrderedMap %k %v) (Option (Tuple %k %v))))
 (defun (orderedmap-min m)

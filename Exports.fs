@@ -72,6 +72,7 @@ let metadata
     (env: TypedAST.Env)
     (typedAst: TypedAST.TDecl list)
     (declaredMacros: string list)
+    (declaredPatternMacros: string list)
     (inputFilePath: string)
     (isLibrary: bool)
     : ModuleMetadata.Metadata =
@@ -972,7 +973,7 @@ let metadata
     // because a macro that cannot be used from anywhere is the one thing
     // a macro cannot be: it is unusable in its own module by
     // construction.
-    let macros =
+    let publish (names: string list) =
         if isLibrary then
             // The Bjolang module name, not the C# class. The reader
             // needs both — the class to reflect on, and the module to
@@ -981,14 +982,24 @@ let metadata
             // derives the second from the first.
             let moduleName = Naming.moduleKeyOfPath inputFilePath
 
-            declaredMacros
+            names
             |> List.map (fun name ->
                 ({ Name = name; ModuleName = moduleName }: ModuleMetadata.MacroEntry))
         else []
 
+    let macros = publish declaredMacros
+    let patternMacros = publish declaredPatternMacros
+
     if isLibrary && not declaredMacros.IsEmpty then
         Diagnostics.progress (
             sprintf "Publishing %d macro(s): %s" declaredMacros.Length (String.concat ", " declaredMacros))
+
+    if isLibrary && not declaredPatternMacros.IsEmpty then
+        Diagnostics.progress (
+            sprintf
+                "Publishing %d pattern macro(s): %s"
+                declaredPatternMacros.Length
+                (String.concat ", " declaredPatternMacros))
 
     let typeDecls, externDecls, traitDecls, implDecls, defs = declMetadata
 
@@ -1021,6 +1032,7 @@ let metadata
       Defs = defs
       InlineTemplates = inlineTemplates
       Macros = macros
+      PatternMacros = patternMacros
       BlockingDefs = blockingDefs
       DoubleDefs = doubleDefs
       ConstrainedBodies = constrainedBodies }

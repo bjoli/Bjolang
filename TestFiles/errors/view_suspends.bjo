@@ -1,0 +1,15 @@
+;; A view is emitted into a C# `case ... when`, which has no `await`. A step
+;; that suspends therefore has nowhere to do it.
+;;
+;; EXPECT-ERROR: a view runs inside a match guard, which cannot suspend
+
+(: fetch (-bjo-> int (Option int)))
+(defbjo (fetch n) (Some n))
+
+(: pick (-bjo-> int string))
+(defbjo (pick n)
+  (match n
+    ((:view fetch (Some k)) "yes")
+    (_ "no")))
+
+(defun (main args) 0)

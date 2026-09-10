@@ -1,0 +1,65 @@
+;; A pattern macro module. `def/pattern` is `def/macro` in the other table: the
+;; transformer runs when the name heads a *pattern*, and what it answers is read
+;; as one.
+;;
+;; It lives in another module for the reason a macro does — the transformer is
+;; compiled code, so it has to exist before the file using it is read.
+
+(import (std syntax-match))
+
+(export halve)
+
+;; The view a pattern macro below is written over. Exported, because a template
+;; naming a binding of its own module resolves to it by the second renaming
+;; rule, and there has to be something to resolve to.
+(: halve (-> int (Option int)))
+(defun (halve n)
+  (if (even? n) (Some (/ n 2)) None))
+
+;; Rewrite-only: nothing runs, and the pattern is another pattern. A clause
+;; using this keeps its constant labels.
+(def/pattern (Pair form inject compare)
+  (syntax-match form
+    ((_ a b) #'(Cons ,a (Cons ,b Nil)))
+    (bad (syntax-error bad "(Pair a b) matches a two-element list."))))
+
+;; A template that calls another pattern macro. The expander reads what a
+;; transformer answers, so it meets `Pair` and expands that too.
+(def/pattern (Leading form inject compare)
+  (syntax-match form
+    ((_ a b) #'(Cons _ (Pair ,a ,b)))
+    (bad (syntax-error bad "(Leading a b) matches the last two of three."))))
+
+;; A pattern macro over a view. The step is this module's `halve`, which the
+;; call site has no name for.
+(def/pattern (Half form inject compare)
+  (syntax-match form
+    ((_ p) #'(:view halve (Some ,p)))
+    (bad (syntax-error bad "(Half p) matches an even number, p being half of it."))))
+
+;; The same, with the argument the caller wrote spliced into the step.
+(def/pattern (Over form inject compare)
+  (syntax-match form
+    ((_ limit p) #'(:view (< ,limit &) ,p))
+    (bad (syntax-error bad "(Over limit p) matches a number above limit."))))
+
+;; A destructuring macro, for `(loop (:for (Both k v) ...))` — a `:for` pattern
+;; has to be a name or a tuple, and a pattern macro is expanded before that is
+;; decided.
+(def/pattern (Both form inject compare)
+  (syntax-match form
+    ((_ a b) #'(Tuple ,a ,b))
+    (bad (syntax-error bad "(Both a b) destructures a pair."))))
+
+;; The template binds a name of its own. Hygiene renames it, so the clause body
+;; sees whatever `tmp` meant where the clause was written.
+(def/pattern (Single form inject compare)
+  #'(Cons tmp Nil))
+
+;; A lowercase name, which is what makes it possible for the same spelling to be
+;; an ordinary function in expression position at the call site. The tables are
+;; separate, so neither hides the other.
+(def/pattern (single form inject compare)
+  (syntax-match form
+    ((_ p) #'(Cons ,p Nil))
+    (bad (syntax-error bad "(single p) matches a one-element list."))))

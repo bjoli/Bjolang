@@ -20,10 +20,11 @@
 ///     run, and one of them can reach a diagnostic.
 ///   * `Unification.currentLevel`. A compilation starts at the top level, and
 ///     one that threw halfway through a binding left it raised.
-///   * `Macro.table`, `Macro.localMacros`, `Macro.expansions`. Which macros
-///     exist is decided by *this* module's imports under *this* module's
-///     modifiers. A leaked entry does not raise an error; it makes a form read
-///     as a macro call because a different file imported something.
+///   * `Macro.table`, `Macro.patternTable`, their local sets and
+///     `Macro.expansions`. Which macros exist is decided by *this* module's
+///     imports under *this* module's modifiers. A leaked entry does not raise
+///     an error; it makes a form read as a macro call because a different file
+///     imported something.
 ///   * `Parser.introducedNames`. Correct if leaked, but it only grows.
 ///   * `Inference.wantedQueue` and `Inference.openLiterals`. Both empty after a
 ///     compilation that succeeded, and neither after one that threw.
@@ -48,7 +49,8 @@
 ///   * `DotNetInterop.typeCache` and `extraAssemblies`. Reflection over what
 ///     the process has loaded, which is the same answer for every compilation
 ///     in it.
-///   * `Parser.expandHook` and `Parser.isMacroName`. Function pointers into
+///   * `Parser.expandHook`, `Parser.patternExpandHook` and
+///     `Parser.isMacroName`. Function pointers into
 ///     `Macro`, installed idempotently; it is the tables behind them that are
 ///     scoped.
 ///   * `Unification.heldMetaIds` and `heldLocalMetaIds`, likewise.

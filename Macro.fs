@@ -79,14 +79,24 @@ type MacroBinding =
 
 let private table = Dictionary<string, MacroBinding>()
 
+/// The same, for `def/pattern`.
+///
+/// A second table rather than a flag, because the two are asked in different
+/// positions and a name may be in both: `Cons` is a function in expression
+/// position and a constructor in pattern position, and a pattern macro is how a
+/// library says the same thing about a name of its own.
+let private patternTable = Dictionary<string, MacroBinding>()
+
 /// Macros defined by the module currently being parsed.
 ///
 /// They are not in `table` and cannot be: the transformer would have to be
 /// compiled before the file defining it has been read. Tracked anyway so that
 /// using one says so, rather than failing later with "Unbound variable".
 let mutable private localMacros: Set<string> = Set.empty
+let mutable private localPatternMacros: Set<string> = Set.empty
 
 let setLocalMacros (names: Set<string>) = localMacros <- names
+let setLocalPatternMacros (names: Set<string>) = localPatternMacros <- names
 
 /// Registers the macros an imported assembly publishes.
 ///
@@ -94,6 +104,8 @@ let setLocalMacros (names: Set<string>) = localMacros <- names
 /// importing module is parsed, which is the whole reason dependency discovery
 /// moved ahead of parsing.
 let register (binding: MacroBinding) = table[binding.Name] <- binding
+
+let registerPattern (binding: MacroBinding) = patternTable[binding.Name] <- binding
 
 /// A second spelling of a macro already in the table.
 ///
@@ -105,12 +117,16 @@ let register (binding: MacroBinding) = table[binding.Name] <- binding
 ///
 /// `ModuleName`, `Exports` and `Method` are the original's — the transformer
 /// and the module its templates resolve against do not move.
-let alias (newName: string) (oldName: string) : bool =
-    match table.TryGetValue oldName with
+let private aliasIn (tbl: Dictionary<string, MacroBinding>) (newName: string) (oldName: string) : bool =
+    match tbl.TryGetValue oldName with
     | true, binding ->
-        table[newName] <- { binding with Name = newName }
+        tbl[newName] <- { binding with Name = newName }
         true
     | _ -> false
+
+let alias (newName: string) (oldName: string) : bool = aliasIn table newName oldName
+
+let aliasPattern (newName: string) (oldName: string) : bool = aliasIn patternTable newName oldName
 
 /// Whether a head symbol names a macro — including one a macro wrote.
 ///
@@ -120,6 +136,12 @@ let alias (newName: string) (oldName: string) : bool =
 /// macro that expands to a `def` is read wrongly if the answer is no.
 let isMacro (name: string) =
     let known (n: string) = table.ContainsKey n || Set.contains n localMacros
+    known name || known (Parser.headName name)
+
+let isPatternMacro (name: string) =
+    let known (n: string) =
+        patternTable.ContainsKey n || Set.contains n localPatternMacros
+
     known name || known (Parser.headName name)
 
 // ---------------------------------------------------------------------------
@@ -338,76 +360,107 @@ let private resolveIntroduced
 /// nesting happens in the parser rather than inside the call this module makes.
 let private expansions = Dictionary<string * Range, int>()
 
+/// Expands one form against one table.
+///
+/// `what` names the kind in a diagnostic, and is the whole of the difference
+/// between an expression macro and a pattern macro: the same marshalling, the
+/// same hygiene, the same depth guard, the same wrapping of a transformer's own
+/// failure.
+let private expandIn
+    (tbl: Dictionary<string, MacroBinding>)
+    (local: Set<string>)
+    (what: string)
+    (form: SExpr)
+    (head: string)
+    (callSite: Range)
+    : Expansion option =
+    // A macro call written by another macro arrives renamed. Rule 3 again,
+    // and the same stripping the parser does for a special form.
+    let key =
+        if tbl.ContainsKey head then Some head
+        else
+            let stripped = Parser.headName head
+            if tbl.ContainsKey stripped then Some stripped else None
+
+    // A macro this very module defines. Not an expansion — its transformer
+    // does not exist yet — but saying so beats the "Unbound variable" that
+    // would otherwise arrive several passes later.
+    if key.IsNone && Set.contains head local then
+        failwithf
+            $"'%s{head}' is a %s{what} defined in this module, and a %s{what} cannot be used where it is defined, at %s{Lexer.formatPos callSite}. Its transformer runs inside the compiler, so it has to be compiled before whatever uses it is read — which cannot be true of the file it is written in. Move it to a module of its own and import that. An (include ...) will not do: an included file becomes part of this one."
+
+    match key with
+    | None -> None
+    | Some key ->
+        let binding = tbl[key]
+
+        // A macro *may* expand to a call to itself — that is how a form of
+        // any length is taken apart, and each round is one level. This is
+        // where it stops being that.
+        let site = ($"%s{what}:%s{binding.Name}", callSite)
+
+        let seen =
+            match expansions.TryGetValue site with
+            | true, n -> n
+            | _ -> 0
+
+        if seen >= maxDepth then
+            failwithf
+                $"'%s{binding.Name}' has expanded %d{maxDepth} times at %s{Lexer.formatPos callSite}, which is as far as expansion goes. A transformer that expands to a call to itself on the same input does not terminate; one that recurses on a smaller form does, so check that this one is taking something off."
+
+        expansions[site] <- seen + 1
+
+        let result =
+            try
+                binding.Method.Invoke(null, [| box (ofSExpr form); box inject; box compareIdent |]) :?> Syn
+            with :? TargetInvocationException as ex ->
+                // The transformer's own failure, not ours. Unwrapped,
+                // because the reflection frame in the middle says nothing a
+                // reader can use.
+                let inner = if isNull ex.InnerException then ex :> exn else ex.InnerException
+
+                failwithf
+                    $"The %s{what} '%s{binding.Name}' failed at %s{Lexer.formatPos callSite}: %s{inner.Message}"
+
+        let memo = Dictionary<string, string>()
+        let expanded = toSExpr memo callSite result
+
+        // The parser has to see through these marks when it dispatches a
+        // head symbol, and only these: `x__1` is a name a program may
+        // define for itself.
+        Parser.noteIntroduced memo.Values
+
+        Some
+            { Form = expanded
+              Resolve = resolveIntroduced binding memo }
+
 /// Expands one form, if its head names a macro.
 ///
 /// Installed as `Parser.expandHook`, and reached only after every special form
 /// has failed to match — so a macro can never shadow `if`.
 let expand (form: SExpr) : Expansion option =
     match form with
+    | SList(SAtom { Token = Symbol head } :: _, callSite) -> expandIn table localMacros "macro" form head callSite
+    | _ -> None
+
+/// Expands one *pattern*, if its head names a pattern macro.
+///
+/// Installed as `Parser.patternExpandHook`. A bare symbol is a call too — a
+/// pattern macro may take no arguments, as `Nil` does — but only a capitalized
+/// one: a lowercase symbol in pattern position is a binder, and the table must
+/// not be able to claim one.
+let expandPattern (form: SExpr) : Expansion option =
+    match form with
     | SList(SAtom { Token = Symbol head } :: _, callSite) ->
-        // A macro call written by another macro arrives renamed. Rule 3 again,
-        // and the same stripping the parser does for a special form.
-        let key =
-            if table.ContainsKey head then Some head
-            else
-                let stripped = Parser.headName head
-                if table.ContainsKey stripped then Some stripped else None
-
-        // A macro this very module defines. Not an expansion — its transformer
-        // does not exist yet — but saying so beats the "Unbound variable" that
-        // would otherwise arrive several passes later.
-        if key.IsNone && Set.contains head localMacros then
-            failwithf
-                $"'%s{head}' is a macro defined in this module, and a macro cannot be used where it is defined, at %s{Lexer.formatPos callSite}. Its transformer runs inside the compiler, so it has to be compiled before whatever uses it is read — which cannot be true of the file it is written in. Move it to a module of its own and import that. An (include ...) will not do: an included file becomes part of this one."
-
-        match key with
-        | None -> None
-        | Some key ->
-            let binding = table[key]
-
-            // A macro *may* expand to a call to itself — that is how a form of
-            // any length is taken apart, and each round is one level. This is
-            // where it stops being that.
-            let seen =
-                match expansions.TryGetValue((binding.Name, callSite)) with
-                | true, n -> n
-                | _ -> 0
-
-            if seen >= maxDepth then
-                failwithf
-                    $"'%s{binding.Name}' has expanded %d{maxDepth} times at %s{Lexer.formatPos callSite}, which is as far as expansion goes. A transformer that expands to a call to itself on the same input does not terminate; one that recurses on a smaller form does, so check that this one is taking something off."
-
-            expansions[(binding.Name, callSite)] <- seen + 1
-
-            let result =
-                try
-                    binding.Method.Invoke(null, [| box (ofSExpr form); box inject; box compareIdent |]) :?> Syn
-                with :? TargetInvocationException as ex ->
-                    // The transformer's own failure, not ours. Unwrapped,
-                    // because the reflection frame in the middle says nothing a
-                    // reader can use.
-                    let inner = if isNull ex.InnerException then ex :> exn else ex.InnerException
-
-                    failwithf
-                        $"The macro '%s{binding.Name}' failed at %s{Lexer.formatPos callSite}: %s{inner.Message}"
-
-            let memo = Dictionary<string, string>()
-            let expanded = toSExpr memo callSite result
-
-            // The parser has to see through these marks when it dispatches a
-            // head symbol, and only these: `x__1` is a name a program may
-            // define for itself.
-            Parser.noteIntroduced memo.Values
-
-            Some
-                { Form = expanded
-                  Resolve = resolveIntroduced binding memo }
-
+        expandIn patternTable localPatternMacros "pattern macro" form head callSite
+    | SAtom { Token = Symbol head; Range = r } when head.Length > 0 && System.Char.IsUpper head[0] ->
+        expandIn patternTable localPatternMacros "pattern macro" form head r
     | _ -> None
 
 /// Installs the expander into the parser. Idempotent.
 let install () =
     Parser.expandHook <- expand
+    Parser.patternExpandHook <- expandPattern
     Parser.isMacroName <- isMacro
 
 // ---------------------------------------------------------------------------
@@ -428,15 +481,23 @@ let install () =
 /// a long-lived process is exactly where that matters.
 type State =
     { Bindings: (string * MacroBinding) list
+      PatternBindings: (string * MacroBinding) list
       Local: Set<string>
+      LocalPatterns: Set<string>
       Expansions: ((string * Range) * int) list }
 
 let emptyState =
-    { Bindings = []; Local = Set.empty; Expansions = [] }
+    { Bindings = []
+      PatternBindings = []
+      Local = Set.empty
+      LocalPatterns = Set.empty
+      Expansions = [] }
 
 let snapshot () : State =
     { Bindings = table |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq
+      PatternBindings = patternTable |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq
       Local = localMacros
+      LocalPatterns = localPatternMacros
       Expansions = expansions |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq }
 
 let restore (state: State) : unit =
@@ -445,7 +506,13 @@ let restore (state: State) : unit =
     for (name, binding) in state.Bindings do
         table[name] <- binding
 
+    patternTable.Clear()
+
+    for (name, binding) in state.PatternBindings do
+        patternTable[name] <- binding
+
     localMacros <- state.Local
+    localPatternMacros <- state.LocalPatterns
     expansions.Clear()
 
     for (site, count) in state.Expansions do

@@ -72,6 +72,7 @@ let generateSource
     (typedAst: TypedAST.TDecl list)
     (dllDeps: string list)
     (declaredMacros: string list)
+    (declaredPatternMacros: string list)
     (inputFilePath: string)
     (isLibrary: bool)
     : string =
@@ -79,7 +80,7 @@ let generateSource
     // chain: nothing imports it, so nothing needs to find the assemblies
     // behind it.
     let metadata =
-        { Exports.metadata env typedAst declaredMacros inputFilePath isLibrary with
+        { Exports.metadata env typedAst declaredMacros declaredPatternMacros inputFilePath isLibrary with
             Deps = if isLibrary then dllDeps |> List.map Path.GetFullPath else [] }
 
     Timing.phase "codegen" (fun () -> Codegen.generateProgram env metadata dllDeps inputFilePath typedAst)
@@ -106,7 +107,7 @@ let compile (options: Options) (inputFilePath: string) : int =
 
         let result = Pipeline.runFullFrontendPipeline inputFilePath
         match result with
-        | Some (env, typedAst, dllDeps, declaredMacros) ->
+        | Some (env, typedAst, dllDeps, declaredMacros, declaredPatternMacros) ->
             // A source file with no `main` is a library whether or not `--lib`
             // was passed: an entry point would call a method that does not
             // exist, and a C# `Exe` without a `Main` does not link at all.
@@ -117,7 +118,7 @@ let compile (options: Options) (inputFilePath: string) : int =
             Diagnostics.progress (sprintf "Compilation succeeded. %d declarations." typedAst.Length)
             
             let csCode =
-                generateSource env typedAst dllDeps declaredMacros inputFilePath isLibrary
+                generateSource env typedAst dllDeps declaredMacros declaredPatternMacros inputFilePath isLibrary
 
             let csDumpPath, astDumpPath = dumpPaths options.EmitCs
 

@@ -303,7 +303,20 @@ let private currentSeqElement (env: Env) (formName: string) (r: Range) : HMType 
         failwithf
             $"Type Error: '%s{formName}' only means something inside a (seq ...) body, and there is none here, at %s{Lexer.formatPos r}"
 
-let rec checkPattern (env: Env) (expectedType: HMType) (pat: Pattern) : TypedPattern * Map<string, HMType> =
+/// Checks a pattern against the type of the value it will meet, answering the
+/// typed pattern and what it binds.
+///
+/// `inferStep` is the inferencer, passed in rather than called: a `(:view step
+/// p)` holds an ordinary expression, and this is compiled well before `infer`
+/// is. It is `infer` at the one call site there is.
+let rec checkPattern
+    (inferStep: Env -> Expr -> HMType * TypedExpr)
+    (env: Env)
+    (expectedType: HMType)
+    (pat: Pattern)
+    : TypedPattern * Map<string, HMType> =
+    let checkPattern env expectedType pat = checkPattern inferStep env expectedType pat
+
     match pat with
     | PWildcard r ->
         { Type = expectedType
@@ -438,6 +451,34 @@ let rec checkPattern (env: Env) (expectedType: HMType) (pat: Pattern) : TypedPat
             (match binder with
              | Some n -> Map.add n testedType Map.empty
              | None -> Map.empty)
+
+    // `(:view step p)` — the value is handed to `step` and `p` matches what
+    // comes back.
+    //
+    // The step is inferred in `env`, which is the scope the `match` sits in:
+    // the clause's own binders are established by this very pattern and cannot
+    // be in it. Its binders are the inner pattern's, and the view contributes
+    // none of its own.
+    | PView(step, inner, r) ->
+        let stepType, typedStep = inferStep env step
+        let resultType = freshMeta ()
+
+        // The call is emitted into a C# `case ... when`, which has no `await`,
+        // so the arrow has to be an ordinary one. Refused here rather than left
+        // to unification, which would report a mismatch of two arrows and say
+        // nothing about why this one may not suspend.
+        if callSuspends (prune env.Registry stepType) then
+            failwithf
+                $"Pattern Error at %s{Lexer.formatPos r}: a view runs inside a match guard, which cannot suspend, so its step cannot be a bjoroutine. Call it before the match and match on the result."
+
+        unify env.Registry stepType (TFun([ expectedType ], resultType, ESync))
+
+        let typedInner, binders = checkPattern env resultType inner
+
+        { Type = expectedType
+          Range = r
+          Node = TPApp(typedStep, typedInner) },
+        binders
 
     | PConstruct(name, args, r) ->
         // A prefixed constructor is a spelling: the typed pattern carries the
@@ -4018,7 +4059,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         let typedClauses =
             clauses
             |> List.map (fun (pat, guard, body) ->
-                let typedPat, boundVars = checkPattern env targetType pat
+                let typedPat, boundVars = checkPattern infer env targetType pat
 
                 let boundEnv =
                     Map.fold
@@ -5201,7 +5242,8 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
                     | DDef(n, _, _)
                     | DDefMutable(n, _, _)
                     | DDefun(n, _, _, _, _)
-                    | DMacro(n, _) -> [ n ]
+                    | DMacro(n, _)
+                    | DPatternMacro(n, _) -> [ n ]
                     | DDefTuple(ns, _, _) -> ns
                     | _ -> [])
                 |> Set.ofList
@@ -5339,7 +5381,7 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
         // A macro is not a binding. It was registered under the new name before
         // this module was parsed — it had to be, since the parser decides what a
         // head symbol means when it meets it — so there is nothing left to do.
-        | None when Macro.isMacro oldName -> env, sigs, [ TAlias(newName, None, r) ]
+        | None when Macro.isMacro oldName || Macro.isPatternMacro oldName -> env, sigs, [ TAlias(newName, None, r) ]
 
         | None ->
             failwithf
@@ -5352,6 +5394,7 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
     // beside this, and `#:sync` is read off the declaration list by
     // `checkDeclGroup` before any body is looked at.
     | DMacro _
+    | DPatternMacro _
     | DSyncOnly _ -> env, sigs, []
     | DExport(names, r) -> env, sigs, [ TExport(names, r) ]
 

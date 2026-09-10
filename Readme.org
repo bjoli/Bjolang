@@ -95,28 +95,6 @@ Bjolang supports hygienic macros based on implicit-renaming. Together with synta
 
 The main limitation is that macros cannot be used in the same module.
 
-*** Nothing gets dropped by accident
-
-Every non-~void~ (or non-unit) value in statement position must be used. If not you need to use (ignore ...). Ignore is a trait function, so it can do the right thing when ignoring things like promises.
-
-#+begin_src scheme
-(defun (main args )
-  (+ 1 2) ;; ERROR
-
-  (ignore (+ 1 2))              ;; blanket impl: drops it
-  (ignore (.Append sb "a"))     ;; fluent .NET stops being a footgun
-  (ignore (bjo (work 21))))     ;; Promise's impl detaches the fiber
-
-;; Receipt has its own impl, so the discard site actually runs code
-(impl (Discard Receipt)
-  (defun (ignore r) (set! receipts-filed (+ receipts-filed 1))))
-
-;; a Result is dropped by the blanket like anything else — but it still has to
-;; say so, and this is a compile error:
-;; (open-input-file "x")
-#+end_src
-
-
 *** Pattern matching that knows about the CLR
 
 ~(:is Type binder)~ is a .NET type test in pattern position, and the binder is narrowed to that type afterwards. Which also means ~try~ can discriminate on exception type the same way ~match~ does.
@@ -134,6 +112,21 @@ Every non-~void~ (or non-unit) value in statement position must be used. If not 
   #:finally (cleanup))
 #+end_src
 
+and it is extensible.
+
+#+BEGIN_SRC scheme
+;; In (std orderedmap):
+(def/pattern (om-has form inject compare)
+  (syntax-match form
+    ((List _ key p)
+     #'(:view (orderedmap-try-ref & ,key) (Some ,p)))
+    (_ (syntax-error form "(om-has key p) matches a map that has key."))))
+
+;; Anywhere that imports it:
+(match config
+  ((om-has "port" p) p)
+  (_ "8080"))
+#+END_SRC
 
 * Examples
 
@@ -349,13 +342,9 @@ pattern matching has no exhaustiveness checking.
 
 macros are always exported, invisibly.
 
-pattern matching has no extensibility
-
 The compiler actually doesn't check if types exist, so a function typed (: a-fun (-> DoesNotExist int)) errors first in the c# compilation with CS0246.
 
 mutual recursion doesn't do any dictionary passing, so it is monomorphic once entered. This is pretty minor, tbh.
-
-defining how to pattern match a new data structure is impossible. 
 
 pruning raises type resolution errors eagerly during environment traversals which causes the compiler to report errors on unrelated lines of code.
 

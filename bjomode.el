@@ -65,7 +65,7 @@
     (cond . 0) (time-it . 0)
     ;; One distinguished form, then the body.
     (defun . 1) (defbjo . 1) (defbjouble . 1) (def . 1) (def/mutable . 1)
-    (def/trait . 1) (impl . 1) (impl/extern . 1) (def/macro . 1)
+    (def/trait . 1) (impl . 1) (impl/extern . 1) (def/macro . 1) (def/pattern . 1)
     (type/derive . 1)
     (when . 1) (unless . 1) (match . 1) (case . 1) (try . 1)
     (with-open . 1) (parameterize . 1) (parameterize* . 1) (fun . 1)
@@ -176,11 +176,12 @@ else aligns under its first argument."
 
 (defvar bjo-font-lock-keywords
   `(;; (defun (name args) ...) — the name is inside the parameter list.
-    ;; `def/macro' is written the same way and names a function too, even though
-    ;; the compiler is the only thing that ever calls it.
+    ;; `def/macro' and `def/pattern' are written the same way and name a
+    ;; function too, even though the compiler is the only thing that ever calls
+    ;; one.
     ;; `defbjouble' names one too, and writes two bodies under it:
     ;; (defbjouble (name args) (#:sync ...) (#:bjo ...)).
-    ("(\\(defun\\|defbjouble\\|defbjo\\|def/macro\\)\\_>\\s-*(\\s-*\\([^ \t\n()]+\\)"
+    ("(\\(defun\\|defbjouble\\|defbjo\\|def/macro\\|def/pattern\\)\\_>\\s-*(\\s-*\\([^ \t\n()]+\\)"
      (1 font-lock-keyword-face)
      (2 font-lock-function-name-face))
 

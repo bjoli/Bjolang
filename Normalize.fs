@@ -185,7 +185,8 @@ let rec private rewriteExpr (expr: Expr) : Expr =
     | EMatch(target, clauses, r) ->
         let clauses' =
             clauses
-            |> List.map (fun (p, guard, b) -> (p, Option.map rewriteExpr guard, rewriteExpr b))
+            |> List.map (fun (p, guard, b) ->
+                (Parser.mapPatternSteps rewriteExpr p, Option.map rewriteExpr guard, rewriteExpr b))
 
         EMatch(rewriteExpr target, clauses', r)
 
@@ -281,6 +282,7 @@ let rec normalizeDecl (decl: Decl) : Decl =
     | DImportExtern _
     | DImportClass _
     | DMacro _
+    | DPatternMacro _
     | DSyncOnly _
     | DImplExtern _ -> decl
 
