@@ -17,58 +17,59 @@ The things I am most smug about, in descending order of smugness.
 
 Bjolang has ConcurrentML. And by that I mean: WOOP WOOP WAKE UP, BJOLANG HAS CONCURRENTML. No async. No Task. We have channels and bjoroutines. And not only that, it competes with go on allocations and speed, while being actually expressive. 
 
-It is fully cooperative, and yields control when calling other bjoroutines or when syncing on channels. Any function that calls down to a "leaf" IO function gets one synchronous and one asynchronous version, so that any function that does IO can suspend.
+It is fully cooperative, and yields control when calling other bjoroutines or when syncing on channels. Any function that calls down to a "leaf" IO function gets one synchronous and one asynchronous version, so that any function that does IO can suspend. Examples/run_with_bjoroutine.bjo runs a shell pipeline with a bjoroutine as one stage of it, suspending whenever the (cat ...) or the (grep ...) is not ready.
 
-Here is an example of a program that runs a command line pipeline with the bjoroutine my-rot13 as one part of the pipeline. The bjoroutine runs in a background thread, and in the event that the (cat ...) or (grep ...) would not write/read input it would suspend and wait for IO.
+But here is the part that is actually worth waking up for. ~within~ is a deadline, written once, as an ordinary function — and it works on every event there will ever be, because an event is a *value* and not a statement.
 
 #+begin_src scheme
-(import (std run))
+(: within (-> int (Event %a) (Event (Option %a))))
+(defun (within ms ev)
+  (choose (wrap ev #(Some &))
+          (wrap (timeout ms) (fun (u) None))))
 
-;; Encryption and decryption are the same. It is the beauty of
-;; rot-13. Or as, we say:
-;; guvf shapgvba vf GUR OBZO!
-(: rot13-char (-> Char Char))
-(defun (rot13-char ch)
-  (defun (char+int ch i)
-    (-> (char->integer ch)
-        (+ & i)
-        integer->char))
-  (cond
-   ((<= #\a (char-downcase ch) #\m)
-    (char+int ch 13))
-   ((<= #\n (char-downcase ch) #\z)
-    (char+int ch -13))
-   (else ch)))
+;; A cook in no particular hurry.
+(: cook (-> (Chan string) void))
+(defbjo (cook ch)
+  (sync (timeout 60))
+  (sync (chan-send ch "dinner")))
 
-;; A Filter is defined in (std run) as (-bjo-> TextReader TextWriter unit)
-(: my-rot13 Filter)
-(defbjo (my-rot13 in out)
-  (loop (:for ch (in-port in read-char/opt))
-        (:do (write-char out (rot13-char ch)))))
+;; Work that takes as long as it is told to.
+(: count-to (-> int int))
+(defbjo (count-to ms)
+  (sync (timeout ms))
+  ms)
 
-(defun (main args)
-  ;; run/string returns a Result of (Ok a-string)
-  ;; the list is a small DSL, where symbols, strings and functions
-  ;; are wrapped so that we don't need to do the f# dance of
-  ;; (ProcSym 'pipe) ((ProcSym 'cat) (ProcString ...)...)
-  (match (run/string '(pipe (cat "Examples/run_with_bjoroutine.bjo")
-                            ,my-rot13
-                            (grep "-i" "bomb")))
-    ((Err e) (println #"Command failed with ${e}"))
-    ;; An empty result, we didn't find any bombs.
-    ((Ok "")
-     (println "Everything is safe"))
-    ((Ok r)
-     (println "DANGER!")
-     (println r)))
+(defbjo (main args)
+  (def kitchen (make-chan))
+  (spawn (cook kitchen))
+
+  ;; Too impatient. The receive loses the race and is withdrawn.
+  (report "first ask " (sync (within 20 (chan-recv kitchen))))
+
+  ;; Withdrawn, not consumed. Nothing came off the channel, so the cook is
+  ;; still holding dinner out and this ask gets it.
+  (report "second ask" (sync (within 500 (chan-recv kitchen))))
+
+  ;; The same combinator on something that is not a channel at all: the result
+  ;; of a fiber. The deadline wins, so that branch loses, and a losing
+  ;; spawn-evt cancels its child rather than leaving it running.
+  (report "slow work "
+          (match (sync (within 20 (spawn-evt (count-to 1000))))
+            ((Some (Ok n)) (Some (int->string n)))
+            ((Some (Err e)) (Some "it threw"))
+            (None None)))
   0)
-
 #+end_src
 
-This program (found in Examples/run_with_bjoroutine.bjo) reads itself and runs each char through my-rot13. It "decrypts" the source comment ";; guvf shapgvba vf GUR OBZO!" and prints
+which prints
 
-DANGER!
-;; this function is THE BOMB!
+first ask : gave up
+second ask: dinner
+slow work : gave up
+
+~second ask: dinner~ is the whole argument. Go cannot give ~within~ a name: ~select~ only reads channel operations spelled out at the site, and a statement is not a thing you can hand to a function — so there, every function that might one day need a deadline has to be given one, all the way down. Neither ~cook~ nor ~count-to~ was given anything. And a ~select~ that had taken the message off the channel before deciding to drop that branch would have lost dinner for good.
+
+The whole program, ~report~ included, is in Examples/events_are_values.bjo.
 
 *** Macros
 Bjolang supports hygienic macros based on implicit-renaming. Together with syntax-match, thing brings about 90% of what syntax-case brings: An anaphoric if could look like this, for example:
