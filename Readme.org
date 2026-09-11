@@ -70,53 +70,6 @@ This program (found in Examples/run_with_bjoroutine.bjo) reads itself and runs e
 DANGER!
 this function is THE BOMB!
 
-**** When main returns, the program is over
-
-=main= is not inside a scope. When it returns the process exits, and any fiber
-still running is discarded — the same rule Go has. =main='s own fiber is still
-waited for, and an unhandled failure in it still ends the process.
-
-So a top-level =spawn= is *not* waited for. This prints nothing at all: =main=
-reaches the end and the process exits while the worker is still in its timeout.
-
-#+begin_src scheme
-(defbjo (main args)
-  (spawn (slow-worker))     ;; nobody waits for this
-  0)
-#+end_src
-
-Wrap it in a scope, which is the same intent written down. =with-cancel= does
-not return until everything started inside it has finished, so this prints:
-
-#+begin_src scheme
-(defbjo (main args)
-  (with-cancel (cancel)
-    (spawn (slow-worker)))  ;; the scope waits for it
-  0)
-#+end_src
-
-That is also what you want for more than one worker, because a scope does the
-other half too: if one of them fails, the rest are cancelled and the failure
-comes out of the =with-cancel=.
-
-#+begin_src scheme
-(defbjo (main args)
-  (with-cancel (cancel)
-    (spawn (feed jobs urls))
-    (loop (:for i (range 0 8))
-          (:do (spawn (worker jobs results)))))
-  0)
-#+end_src
-
-=main= used to run in a scope of its own, so a top-level =spawn= was waited for.
-The cost was that the scope's token was live in every program, which meant every
-=sync= in every program raced a cancellation that could never fire. Removing it
-took an unscoped rendezvous from 256 to 72 bytes.
-
-The thing genuinely lost: there is no longer a root token for Ctrl-C or SIGTERM
-to fire, so there is no built-in graceful shutdown. A program that wants one
-opens a scope at the top and cancels it itself.
-
 *** Macros
 Bjolang supports hygienic macros based on implicit-renaming. Together with syntax-match, thing brings about 90% of what syntax-case brings: An anaphoric if could look like this, for example:
 
@@ -382,11 +335,6 @@ embeds into your program — inlined functions, monomorphised generics, whatever
 macro expanded to — does not drag section 3's source-availability obligation
 into your executable. See [[file:LICENSE]].
 
-The concurrency runtime was a separate project, BjoML, under LGPL-3.0. It has
-been merged into [[file:BjolangRuntime/Cml]] and relicensed to the above. Every
-file in it had the same copyright holder as the rest of Bjolang and none of it
-was vendored from anywhere, so nobody else had to agree. Its namespace is still
-=Bjoml=.
 
 * Things to fix/TODO
 
