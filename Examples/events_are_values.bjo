@@ -1,0 +1,70 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; ConcurrentML: an event is a value.
+;;
+;; `(chan-recv ch)` does not receive anything. It *describes* a receive that has
+;; not happened — a value you can store, pass to a function and combine with
+;; others. Only `sync` commits to one. Everything below falls out of that.
+
+(import (std prelude))
+
+;; Write a deadline once, for every event there will ever be.
+;;
+;; Go cannot name this. `select` reads channel operations spelled out at the
+;; site, and a statement is not something you can hand to a function — so there
+;; every function that might need a deadline has to be given one, all the way
+;; down. Nothing below was given one.
+(: within (-> int (Event %a) (Event (Option %a))))
+(defun (within ms ev)
+  (choose (wrap ev #(Some &))
+          (wrap (timeout ms) (fun (u) None))))
+
+;; A cook in no particular hurry.
+(: cook (-> (Chan string) void))
+(defbjo (cook ch)
+  (sync (timeout 60))
+  (sync (chan-send ch "dinner")))
+
+;; Work that takes as long as it is told to.
+(: count-to (-> int int))
+(defbjo (count-to ms)
+  (sync (timeout ms))
+  ms)
+
+(: report (-> string (Option string) void))
+(defun (report what answer)
+  (println (match answer
+             ((Some v) #"${what}: ${v}")
+             (None     #"${what}: gave up"))))
+
+(defbjo (main args)
+  (def kitchen (make-chan))
+  (spawn (cook kitchen))
+
+  ;; Too impatient. The receive loses the race and is *withdrawn*.
+  (report "first ask " (sync (within 20 (chan-recv kitchen))))
+
+  ;; Withdrawn, not consumed. Nothing was taken off the channel, so the cook is
+  ;; still holding dinner out and this ask gets it. A `select` that had taken
+  ;; the message and then thrown it away would have lost dinner for good.
+  (report "second ask" (sync (within 500 (chan-recv kitchen))))
+
+  ;; The same combinator over something that is not a channel at all — the
+  ;; result of a fiber. The deadline wins, so that branch loses, and a losing
+  ;; `spawn-evt` cancels its child rather than leaving it running.
+  (report "slow work "
+          (match (sync (within 20 (spawn-evt (count-to 1000))))
+            ((Some (Ok n)) (Some (int->string n)))
+            ((Some (Err e)) (Some "it threw"))
+            (None None)))
+  0)
