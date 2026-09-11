@@ -279,7 +279,8 @@ ns/op and B/op. Bold is where the phase was aimed.
 | 2d scope is told | 123, 256 | 117, 256 | **74, 185** | 274, 256 |
 | 2f main is not in a scope | **90, 72** | 118, 256 | 73, 185 | **216, 72** |
 | 2b one park path | **77, 32** | 113, 256 | 85, 185 | 221, 72 |
-| final | 76, **32** | 118, **256** | 72, **185** | 242, **72** |
+| 2c cancellation is a link | 76–81, 32 | **91–97, 72** | 72–86, 185 | 87–91, 72 |
+| final | 76–81, **32** | 91–97, **72** | 72–86, **185** | 87–91, **72** |
 
 Allocation is the column to read. It is deterministic everywhere except the C#
 spawn row, and it moved 280 → 32 on the ring: an 8.75x reduction, and the 32 that
@@ -293,13 +294,14 @@ figure.
 
 | benchmark | BjoML ns/op | Bjolang ns/op | ratio then | ratio now |
 |---|---|---|---|---|
-| Ring | 42–65 | 76 | 2.37x | **1.2–1.8x** |
-| Skewed choose(8) | 65–68 | 216–242 | 3.45x | 3.3–3.7x |
-| Ring, scoped | 42–65 | 113–118 | 2.51x | 1.8–2.8x |
+| Ring | 42–65 | 76–81 | 2.37x | **1.2–1.9x** |
+| Skewed choose(8) | 65–68 | 87–91 | 3.45x | **1.3–1.4x** |
+| Ring, scoped | 42–65 | 91–97 | 2.51x | **1.4–2.3x** |
 
 | benchmark | BjoML B/op | Bjolang B/op | ratio then | ratio now |
 |---|---|---|---|---|
 | Ring | 0.2 | 32 | 1400x | **160x** |
+| Ring, scoped | 0.2 | 72 | 1405x | **360x** |
 | Skewed choose(8) | 40.0 | 72 | 6.4x | **1.8x** |
 
 Spawn is deliberately absent: the two suites' spawn benchmarks have different
@@ -307,18 +309,11 @@ children, as recorded under phase 2d, so their ratio means nothing.
 
 ### What was not done, and why
 
-**2c, cancellation as a link, is not done.** It is the reason the scoped ring is
-still 256 B/op against the unscoped 32, and it is the largest remaining win.
-
-It was not attempted because it needs arbitration that does not exist yet. A
-direct op commits unconditionally, which is exactly what makes 2b sound; the
-moment a token can also take that op, "unconditionally" is false and the op needs
-a claim word of its own, plus a registration on the token that has to be pruned
-when the op commits normally. That is a third commit protocol beside the
-`SyncState` one and the unconditional one, in code whose failure mode is a lost
-wakeup that appears once in a million rendezvous. The measurable gap it would
-close is now isolated and written down — 32 against 256 B/op on two rows of this
-file — so the next person starts with the number.
+**The scoped ring is 72 B/op against the unscoped 32.** The difference is the
+one `CancelWatch` per parked sync, and it is there because nothing can remove a
+waiter from a promise's list, so the watch cannot be pooled. Closing it needs
+either an unregister on `Promise` — O(n) in the waiter count, which is 1000 on
+this benchmark — or a different waiter structure. Neither is obviously worth it.
 
 **2e, the typed fiber context, is not done.** It is small, and worth roughly one
 `isinst` per `Dyn.Current` read. It is untouched because `FiberContext.Current`
@@ -331,10 +326,11 @@ but it buys less than it disturbs, and it buys nothing on any row above.
 last. It touches `Prelude.fs` and `Codegen.fs`, and there was more value in the
 comments and the dead-code pass.
 
-**Headers were applied only to the files that had an LGPL header.** The 22 merged
-files carry MPL-2.0 + the linking exception. The F# compiler sources and
-`lib/std/*.bjo` still carry no header at all; that is a separate mechanical
-sweep.
+**`TestFiles/` carries no licence header.** The sweep covered the compiler, the
+runtime, the standard library, the examples, the benchmarks and the tooling —
+121 files. The 487 test fixtures were left out as fixture data rather than
+shipped source; one of them, `errors/macro_runaway.bjo`, asserts on a line
+number and would need its expectation moved first.
 
 ### Where Codegen was not told a runtime function's name
 
