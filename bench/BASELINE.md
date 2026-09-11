@@ -221,6 +221,51 @@ from `Publish`. Four tests in `CmlTests` assert it against the parked list:
 a bare sync parks with no `SyncState`, a `choose` branch never does, and the two
 protocols pair in both directions.
 
+## Phase 2c — cancellation is a link, not a branch
+
+A sync offering one channel operation parks one op, and an op can carry a
+claim, so the ambient token links to that claim instead of being published as a
+second branch. One interlocked word decides between the channel and the token.
+
+Measured A/B against the same tree with only this change stashed:
+
+| benchmark | without 2c | with 2c |
+|---|---|---|
+| Ring | 74–75, 32 B | 76–81, 32 B |
+| **Ring, scoped** | **116–132, 256 B** | **91–97, 72 B** |
+| Spawn burst | 75–81, 185 B | 72–86, 185 B |
+| Skewed choose(8) | 165–230, 72 B | 87–91, 72 B |
+
+The scoped ring is the row this was aimed at: 256 → 72 B/op, and the 72 is
+exactly the predicted structure — one `CancelWatch` (40) plus the
+`ChannelSendEvent` (32). What went is the `CancellableEvent`, its closure, the
+`SyncState` the two-branch form forced, and the promise waiter.
+
+`choose` keeps the published-branch form. It has branches to arbitrate between
+and a claim on one op cannot speak for the rest, so `CancellableEvent` stays for
+that case.
+
+### Why it is 72 and not 32
+
+The watch cannot be pooled. Nothing can remove a waiter from a promise's list —
+`Promise` prunes amortised on the next registration, via `IsAbandoned` — so a
+recycled watch could still be sitting in the token's list and would then be
+signalled on behalf of a sync it no longer belongs to. One object per parked
+sync under a scope is the price, against the four it replaces.
+
+### An unexplained row
+
+Skewed choose went from 165–230 to 87–91 ns/op, reproducibly, with its
+allocation unchanged at 72 B/op. **This change should not affect it**: that
+benchmark opens no scope, so its token is null and neither the link nor the old
+`CancellableEvent` is reached. The row was also much more variable before
+(165–408 across sessions) than after (87–91).
+
+It is recorded rather than claimed. The likely cause is code layout or inlining
+around the channel matching loops, which this change edited in eight places;
+that would be a real effect but not one 2c earns. It should be attributed
+properly before anyone banks it.
+
 ## Final report
 
 ### Bjolang, by phase

@@ -118,8 +118,104 @@ public static partial class BjolangRuntime {
 
             if (_token is null) return new SyncAwaiter<T>(_ev.GetAwaiter(), null);
 
+            // A single channel operation parks one op, and one op can carry a
+            // claim — so cancellation is a link to that claim rather than a
+            // second published branch. No `CancellableEvent`, no closure, no
+            // `SyncState`.
+            if (_ev is IDirectSyncable<T> direct)
+                return new SyncAwaiter<T>(CancelWatch<T>.Start(direct, _token), null);
+
+            // A `choose` has branches to arbitrate between, so it keeps the
+            // published-branch form: the `SyncState` is already the thing that
+            // decides, and a claim on one op could not speak for the rest.
             var race = new CancellableEvent<T>(_ev, _token);
             return new SyncAwaiter<T>(((IEvent<T>)race).GetAwaiter(), race);
+        }
+    }
+
+    /// The link between a parked channel operation and the ambient token.
+    ///
+    /// # Why a link and not a branch
+    ///
+    /// Racing the token as a second published branch needs a `SyncState` to
+    /// arbitrate between the two, and a `SyncState` is what a single channel
+    /// operation otherwise does not need — see `IDirectSyncable`. So watching
+    /// the token cost the whole general protocol on a sync that had one commit
+    /// point: a `CancellableEvent`, its closure, a `SyncState` and a promise
+    /// waiter, 112 bytes a sync where the unwatched form allocates none.
+    ///
+    /// There are only ever two contenders for a parked op — the channel and the
+    /// token — so one interlocked word decides between them. This object is that
+    /// word, and it is also the registration on the token, which is why it
+    /// implements both `ITakeable` and `PromiseWaiter`: two objects would be two
+    /// allocations for one fact.
+    ///
+    /// # An available event still beats a fired token
+    ///
+    /// `sync` asks `INowable` first, and `SyncDirect` scans for a partner before
+    /// it parks, so a rendezvous that can happen does happen and this is never
+    /// reached. Only once the op is genuinely parked is the token registered,
+    /// and a token that has *already* fired is signalled inline at that point.
+    /// The rendezvous therefore wins whenever there was one to be had, which is
+    /// the rule the published-branch form got from publish order.
+    ///
+    /// # It cannot undo a commit
+    ///
+    /// Whoever takes the claim first wins for good. A channel that has paired
+    /// this op has already taken it, so a token firing afterwards finds the
+    /// claim gone and does nothing — the value was delivered and throwing it
+    /// away would lose a message.
+    ///
+    /// # Why it is not pooled
+    ///
+    /// Nothing can remove a waiter from a promise's list; `Promise` prunes
+    /// amortised, on the next registration, using `IsAbandoned`. So a watch that
+    /// was recycled and handed out again could still be sitting in the token's
+    /// list, and would then be signalled on behalf of a sync it no longer
+    /// belongs to. One allocation per parked sync under a scope is the price of
+    /// that, and it is one object rather than the four it replaces.
+    private sealed class CancelWatch<T> : PromiseWaiter, ITakeable {
+        private int _taken;
+        private EventAwaiter<T>? _aw;
+        private Promise<CancelReason>? _token;
+
+        public bool TryTake() => System.Threading.Interlocked.Exchange(ref _taken, 1) == 0;
+
+        public bool Taken => System.Threading.Volatile.Read(ref _taken) != 0;
+
+        /// Taken means resolved, whichever side took it — so this is also the
+        /// answer to "may the promise drop me", and what keeps a scope's token
+        /// from accumulating a waiter per rendezvous.
+        public override bool IsAbandoned => Taken;
+
+        /// The token fired. Take the op if the channel has not already, and
+        /// complete the sync as cancelled.
+        ///
+        /// The reason is only *stored*; the raise happens in
+        /// <see cref="SyncAwaiter{T}.GetResult"/>, on the resuming fiber's own
+        /// stack. Throwing here would unwind into a promise's completion walk.
+        public override void Signal() {
+            if (!TryTake()) return;
+            _aw!.OnCancelled(_token!.GetAwaiter().GetResult());
+        }
+
+        internal static EventAwaiter<T> Start(
+            IDirectSyncable<T> ev, Promise<CancelReason> token) {
+
+            var watch = new CancelWatch<T> { _token = token };
+
+            // The op has to be parked before the token is registered. The other
+            // order leaves a window where the token fires, finds nothing parked,
+            // and resumes a fiber that then parks anyway.
+            var aw = EventAwaiter<T>.RentLinked(ev, watch, out bool parked);
+            watch._aw = aw;
+
+            // Committed inline, so there is no op to take and nothing to watch.
+            // Registering now would leave a waiter on the token for a sync that
+            // is already over.
+            if (parked) token.Register(watch);
+
+            return aw;
         }
     }
 
@@ -185,7 +281,12 @@ public static partial class BjolangRuntime {
         public T GetResult() {
             if (_isReady) return _ready;
 
-            var v = _aw!.GetResult();
+            var v = _aw!.TakeResult(out var linked);
+
+            // Two ways a cancellation arrives: carried on the awaiter by a
+            // `CancelWatch` that took the parked op, or recorded on the
+            // `CancellableEvent` by the token branch of a `choose`.
+            if (linked is CancelReason reason) throw new Bjolang.Runtime.Cancelled(reason);
             if (_race?.Why is { } why) throw new Bjolang.Runtime.Cancelled(why);
             return v;
         }

@@ -74,6 +74,16 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion
     private T _result = default!;
     private Action? _continuation;
 
+    /// <summary>
+    /// Why this sync was cancelled, or null when the event completed normally.
+    ///
+    /// Typed <c>object</c> because a reason belongs to the hosted language and
+    /// this layer has no business knowing what one is. It only has to survive
+    /// the handover to the resuming fiber, which is why it is written before the
+    /// fence in <see cref="OnSync"/> rather than after it.
+    /// </summary>
+    private object? _cancelReason;
+
     private EventAwaiter() => _onSync = OnSync;
 
     public EventAwaiter(IEvent<T> ev) : this()
@@ -139,10 +149,23 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion
     /// Clearing <c>_result</c> here rather than at rent keeps a pooled awaiter from
     /// pinning a stale T, mirroring <see cref="GetOp{T}.Recycle"/>.
     /// </summary>
-    public T GetResult()
+    public T GetResult() => TakeResult(out _);
+
+    /// <summary>
+    /// The outcome, and whether a link cancelled this sync instead of the event
+    /// completing. Recycles, exactly as <see cref="GetResult"/> does.
+    ///
+    /// Two answers rather than a throw because the raise belongs on the resuming
+    /// fiber's own stack and in the language's own exception type, neither of
+    /// which this layer has. The caller decides.
+    /// </summary>
+    public T TakeResult(out object? cancelReason)
     {
+        cancelReason = _cancelReason;
+
         var r = _result;
         _result = default!;
+        _cancelReason = null;
         _continuation = null;
 
         if (_freeCount < MaxCached)
@@ -153,6 +176,45 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion
         }
 
         return r;
+    }
+
+    /// <summary>
+    /// Complete this sync as cancelled rather than as a value.
+    ///
+    /// Called by whoever won the parked op's claim. The reason is stored before
+    /// <see cref="OnSync"/>, whose interlocked handover is the fence that
+    /// publishes it to the resuming fiber.
+    /// </summary>
+    internal void OnCancelled(object reason)
+    {
+        _cancelReason = reason;
+        OnSync(default!);
+    }
+
+    /// <summary>
+    /// Rent and start a direct sync with a claim on the parked op, so
+    /// <paramref name="link"/> can take it instead of the channel.
+    ///
+    /// <paramref name="parked"/> is false when the rendezvous happened inline, in
+    /// which case there is nothing to take and the caller must not arm the link.
+    /// </summary>
+    internal static EventAwaiter<T> RentLinked(
+        IDirectSyncable<T> ev, ITakeable link, out bool parked)
+    {
+        var aw = _free;
+        if (aw is null)
+        {
+            aw = new EventAwaiter<T>();
+        }
+        else
+        {
+            _free = aw._next;
+            _freeCount--;
+            aw._next = null;
+        }
+
+        parked = ev.SyncDirect(aw._onSync, link);
+        return aw;
     }
 
     public void OnCompleted(Action continuation) => UnsafeOnCompleted(continuation);

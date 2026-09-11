@@ -12,17 +12,66 @@
  */
 
 using System;
+using System.Threading;
 
 namespace Bjoml;
+
+/// <summary>
+/// The claim that lets something other than the channel take a parked op.
+///
+/// A direct op — one parked with no <see cref="SyncState"/> — normally commits
+/// unconditionally, because the sync block that parked it offered nothing else
+/// and so has nothing to arbitrate. A cancellation token is the one other thing
+/// that can want such an op, and this word is what makes exactly one of the two
+/// win.
+///
+/// It is not a <see cref="SyncState"/>: there are no branches, no event ids and
+/// no nacks here, only "who got there first". One interlocked exchange rather
+/// than a claim protocol and a locked list walk.
+///
+/// Owned by whatever parked the op — in practice a pooled awaiter — and re-armed
+/// with <see cref="Rearm"/> before each park, so linking costs no allocation.
+/// </summary>
+/// An interface rather than a class so that one object can be both this claim
+/// and the registration on whatever else wants the op — see the cancellation
+/// watch in `Concurrency.cs`, which is a promise waiter as well.
+public interface ITakeable
+{
+    /// <summary>Win the op. Exactly one caller can.</summary>
+    bool TryTake();
+
+    /// <summary>
+    /// Has someone already taken it? Read by the channel's sweep to reclaim an
+    /// op the other side won, and by a registration to report itself prunable.
+    /// </summary>
+    bool Taken { get; }
+}
 
 public abstract class Operation
 {
     public SyncState? State;
     public int EventId;
 
+    /// <summary>
+    /// Non-null while something other than the channel can take this op.
+    ///
+    /// Only ever set on a direct op. A choose op arbitrates through its
+    /// <see cref="SyncState"/>, which already handles every competitor.
+    /// </summary>
+    internal ITakeable? Link;
+
     public bool IsSynchronized => State != null && State.IsSynchronized;
 
     public bool TrySync() => State != null && State.TrySync();
+
+    /// <summary>
+    /// Win a direct op. Unlinked ones cannot be contested, so they always win;
+    /// a linked one goes through the claim.
+    /// </summary>
+    internal bool TryTakeDirect() => Link is null || Link.TryTake();
+
+    /// <summary>A direct op that a token already took, and the channel may drop.</summary>
+    internal bool IsCancelled => Link is { Taken: true };
 }
 
 public sealed class PutOp<T> : Operation
@@ -73,6 +122,7 @@ public sealed class PutOp<T> : Operation
         _freeCount--;
         op.Next = null;
         op.State = state;
+        op.Link = null;
         op.EventId = eventId;
         op.Value = value;
         op.ResumeGive = resumeGive;
@@ -89,6 +139,7 @@ public sealed class PutOp<T> : Operation
         _freeCount--;
         op.Next = null;
         op.State = null;
+        op.Link = null;
         op.EventId = 0;
         op.Value = value;
         return op;
@@ -97,6 +148,7 @@ public sealed class PutOp<T> : Operation
     public void Recycle()
     {
         State = null;
+        Link = null;
         Value = default!;
         ResumePut = null!;
         ResumeGive = null;
@@ -144,6 +196,7 @@ public sealed class GetOp<T> : Operation
         _freeCount--;
         op.Next = null;
         op.State = state;
+        op.Link = null;
         op.EventId = eventId;
         op.ResumeGet = resumeGet;
         op.DirectResume = null;
@@ -170,6 +223,7 @@ public sealed class GetOp<T> : Operation
         _freeCount--;
         op.Next = null;
         op.State = null;
+        op.Link = null;
         op.EventId = 0;
         op.ResumeGet = null;
         op.DirectResume = null;
@@ -180,6 +234,7 @@ public sealed class GetOp<T> : Operation
     public void Recycle()
     {
         State = null;
+        Link = null;
         ResumeGet = null;
         DirectResume = null;
         DirectValue = default!;

@@ -42,6 +42,9 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
 
     void IDirectSyncable<T>.SyncDirect(Action<T> onSync) => SyncDirectReceive(onSync);
 
+    bool IDirectSyncable<T>.SyncDirect(Action<T> onSync, ITakeable link) =>
+        SyncDirectReceive(onSync, link);
+
     /// <summary>
     /// Receive with no <see cref="SyncState"/>: commit against a parked giver if
     /// there is one, otherwise park uncontested.
@@ -56,7 +59,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     /// the unconditional commit sound: an op parked here cannot be inside a
     /// choose, so nothing can ever need to withdraw it.
     /// </summary>
-    internal void SyncDirectReceive(Action<T> onSync)
+    internal bool SyncDirectReceive(Action<T> onSync, ITakeable? link = null)
     {
         Action? putResume = null;
         Action<Unit>? putResumeGive = null;
@@ -74,7 +77,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
             {
                 var next = curr.Next;
 
-                if (curr.State != null && curr.IsSynchronized)
+                if ((curr.State != null && curr.IsSynchronized) || curr.IsCancelled)
                 {
                     if (prev == null) _giversHead = next;
                     else prev.Next = next;
@@ -127,6 +130,15 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                     if (curr == _giversTail) _giversTail = prev;
 
                     putValue = curr.Value;
+                    // A token took it first. It is off the queue now, and its
+                    // fiber has already been resumed, so keep looking.
+                    if (!curr.TryTakeDirect())
+                    {
+                        curr.Recycle();
+                        curr = next;
+                        continue;
+                    }
+
                     if (curr.ResumeGive != null)
                     {
                         putResumeGive = curr.ResumeGive;
@@ -152,6 +164,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                 // State null: uncontested. The sweep leaves it alone, which is
                 // right — a direct op is never dead, because it cannot lose.
                 var myOp = GetOp<T>.Rent(null, 0, onSync);
+                myOp.Link = link;
                 if (_takersTail == null)
                 {
                     _takersHead = _takersTail = myOp;
@@ -161,7 +174,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                     _takersTail.Next = myOp;
                     _takersTail = myOp;
                 }
-                return;
+                return true;
             }
         }
 
@@ -171,10 +184,11 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         else Scheduler.Dispatch(putResume!);
 
         Scheduler.Dispatch(onSync, putValue);
+        return false;
     }
 
     /// <summary>Send with no <see cref="SyncState"/>. See <see cref="SyncDirectReceive"/>.</summary>
-    internal void SyncDirectSend(T value, Action<Unit> onSync)
+    internal bool SyncDirectSend(T value, Action<Unit> onSync, ITakeable? link = null)
     {
         Action<T>? getResume = null;
         Action? directTakerResume = null;
@@ -191,7 +205,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
             {
                 var next = curr.Next;
 
-                if (curr.State != null && curr.IsSynchronized)
+                if ((curr.State != null && curr.IsSynchronized) || curr.IsCancelled)
                 {
                     if (prev == null) _takersHead = next;
                     else prev.Next = next;
@@ -240,6 +254,15 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
 
                     if (curr == _takersTail) _takersTail = prev;
 
+                    // A token took it first. It is off the queue now, and its
+                    // fiber has already been resumed, so keep looking.
+                    if (!curr.TryTakeDirect())
+                    {
+                        curr.Recycle();
+                        curr = next;
+                        continue;
+                    }
+
                     if (curr.ResumeGet != null)
                     {
                         getResume = curr.ResumeGet;
@@ -264,6 +287,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                 NotePark();
 
                 var myOp = PutOp<T>.Rent(null, 0, value, onSync);
+                myOp.Link = link;
                 if (_giversTail == null)
                 {
                     _giversHead = _giversTail = myOp;
@@ -273,7 +297,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                     _giversTail.Next = myOp;
                     _giversTail = myOp;
                 }
-                return;
+                return true;
             }
         }
 
@@ -283,6 +307,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         else if (directTakerResume != null) Scheduler.Dispatch(directTakerResume);
 
         Scheduler.Dispatch(onSync, Unit.Value);
+        return false;
     }
 
     public ChannelReceiveAwaiter<T> GetAwaiter() => new(this);
@@ -456,7 +481,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         while (curr != null)
         {
             var next = curr.Next;
-            if (curr.State != null && curr.IsSynchronized)
+            if ((curr.State != null && curr.IsSynchronized) || curr.IsCancelled)
             {
                 if (prev == null) _takersHead = next;
                 else prev.Next = next;
@@ -484,7 +509,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         while (curr != null)
         {
             var next = curr.Next;
-            if (curr.State != null && curr.IsSynchronized)
+            if ((curr.State != null && curr.IsSynchronized) || curr.IsCancelled)
             {
                 if (prev == null) _giversHead = next;
                 else prev.Next = next;
@@ -520,7 +545,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
             {
                 var next = curr.Next;
 
-                if (curr.State != null && curr.IsSynchronized)
+                if ((curr.State != null && curr.IsSynchronized) || curr.IsCancelled)
                 {
                     if (prev == null) _takersHead = next;
                     else prev.Next = next;
@@ -588,6 +613,16 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                         else prev.Next = next;
 
                         if (curr == _takersTail) _takersTail = prev;
+
+                        // A token took it first. It is off the queue now, and its
+                        // fiber has already been resumed, so keep looking.
+                        if (!curr.TryTakeDirect())
+                        {
+                            state.ResetClaim();
+                            curr.Recycle();
+                            curr = next;
+                            continue;
+                        }
 
                         if (curr.ResumeGet != null)
                         {
@@ -662,7 +697,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
             {
                 var next = curr.Next;
 
-                if (curr.State != null && curr.IsSynchronized)
+                if ((curr.State != null && curr.IsSynchronized) || curr.IsCancelled)
                 {
                     if (prev == null) _giversHead = next;
                     else prev.Next = next;
@@ -727,6 +762,16 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                         if (curr == _giversTail) _giversTail = prev;
 
                         putValue = curr.Value;
+                        // A token took it first. It is off the queue now, and its
+                        // fiber has already been resumed, so keep looking.
+                        if (!curr.TryTakeDirect())
+                        {
+                            state.ResetClaim();
+                            curr.Recycle();
+                            curr = next;
+                            continue;
+                        }
+
                         if (curr.ResumeGive != null)
                         {
                             putResumeGive = curr.ResumeGive;
@@ -802,7 +847,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
             {
                 var next = curr.Next;
 
-                if (curr.State != null && curr.IsSynchronized)
+                if ((curr.State != null && curr.IsSynchronized) || curr.IsCancelled)
                 {
                     if (prev == null) _giversHead = next;
                     else prev.Next = next;
@@ -852,6 +897,15 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                     if (curr == _giversTail) _giversTail = prev;
 
                     value = curr.Value;
+                    // A token took it first. It is off the queue now, and its
+                    // fiber has already been resumed, so keep looking.
+                    if (!curr.TryTakeDirect())
+                    {
+                        curr.Recycle();
+                        curr = next;
+                        continue;
+                    }
+
                     if (curr.ResumeGive != null)
                     {
                         putResumeGive = curr.ResumeGive;
@@ -903,7 +957,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
             {
                 var next = curr.Next;
 
-                if (curr.State != null && curr.IsSynchronized)
+                if ((curr.State != null && curr.IsSynchronized) || curr.IsCancelled)
                 {
                     if (prev == null) _giversHead = next;
                     else prev.Next = next;
@@ -955,6 +1009,15 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                     if (curr == _giversTail) _giversTail = prev;
 
                     val = curr.Value;
+                    // A token took it first. It is off the queue now, and its
+                    // fiber has already been resumed, so keep looking.
+                    if (!curr.TryTakeDirect())
+                    {
+                        curr.Recycle();
+                        curr = next;
+                        continue;
+                    }
+
                     if (curr.ResumeGive != null)
                     {
                         putResumeGive = curr.ResumeGive;
@@ -1016,7 +1079,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
             {
                 var next = curr.Next;
 
-                if (curr.State != null && curr.IsSynchronized)
+                if ((curr.State != null && curr.IsSynchronized) || curr.IsCancelled)
                 {
                     if (prev == null) _takersHead = next;
                     else prev.Next = next;
@@ -1063,6 +1126,15 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                     else prev.Next = next;
 
                     if (curr == _takersTail) _takersTail = prev;
+
+                    // A token took it first. It is off the queue now, and its
+                    // fiber has already been resumed, so keep looking.
+                    if (!curr.TryTakeDirect())
+                    {
+                        curr.Recycle();
+                        curr = next;
+                        continue;
+                    }
 
                     if (curr.ResumeGet != null)
                     {
@@ -1115,7 +1187,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
             {
                 var next = curr.Next;
 
-                if (curr.State != null && curr.IsSynchronized)
+                if ((curr.State != null && curr.IsSynchronized) || curr.IsCancelled)
                 {
                     if (prev == null) _takersHead = next;
                     else prev.Next = next;
@@ -1159,14 +1231,31 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                 }
                 else
                 {
-                    // Direct taker
+                    // Uncontested taker; see PublishSend for the two shapes.
                     if (prev == null) _takersHead = next;
                     else prev.Next = next;
 
                     if (curr == _takersTail) _takersTail = prev;
 
-                    curr.DirectValue = op.Value;
-                    directResume = curr.DirectResume;
+                    // A token took it first. It is off the queue now, and its
+                    // fiber has already been resumed, so keep looking.
+                    if (!curr.TryTakeDirect())
+                    {
+                        curr.Recycle();
+                        curr = next;
+                        continue;
+                    }
+
+                    if (curr.ResumeGet != null)
+                    {
+                        getResume = curr.ResumeGet;
+                        curr.Recycle();
+                    }
+                    else
+                    {
+                        curr.DirectValue = op.Value;
+                        directResume = curr.DirectResume;
+                    }
                     matched = true;
                     break;
                 }

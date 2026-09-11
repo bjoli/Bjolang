@@ -99,8 +99,38 @@
     (spawn (mark b)))
   (expect "a with-cancel still waits for its children" (box-ref b) "done")
 
+  ;; ---- Cancelling a fiber parked on a rendezvous ---------------------------
+  ;;
+  ;; A `sync` on a single channel operation parks one op and links the ambient
+  ;; token to it, rather than publishing the token as a second branch. These
+  ;; pin the two rules that link has to keep.
+
+  ;; It reaches a fiber that is parked with nothing to receive.
+  (def idle (make-chan))
+  (expect "a cancelled scope wakes a fiber parked on a bare chan-recv"
+          (with-cancel (stop)
+            (spawn (never-ending idle))
+            (stop (Requested "the test"))
+            "the scope returned")
+          "the scope returned")
+
+  ;; And it does not undo a rendezvous that already happened. The value was
+  ;; handed over, so a token firing afterwards must not take it back.
+  (def handoff (make-chan))
+  (expect "a delivered value survives a cancellation racing it"
+          (with-cancel (stop2)
+            (spawn (give handoff 41))
+            (let ((v (sync (chan-recv handoff))))
+              (stop2 (Requested "after the handover"))
+              (+ v 1)))
+          42)
+
   (println "205 ok")
   0)
+
+(: give (-bjo-> (Chan int) int void))
+(defbjo (give ch v)
+  (sync (chan-send ch v)))
 
 (: mark (-bjo-> (Box string) void))
 (defbjo (mark b)

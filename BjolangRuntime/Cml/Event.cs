@@ -68,6 +68,20 @@ internal interface IDirectSyncable<T>
     /// commits, which may be this one.
     /// </summary>
     void SyncDirect(Action<T> onSync);
+
+    /// <summary>
+    /// The same, with a claim on the parked op so that <paramref name="link"/>
+    /// can take it instead of the channel — which is how a cancellation token
+    /// reaches a fiber parked on a rendezvous.
+    ///
+    /// Returns true when it actually parked. False means it committed inline and
+    /// <paramref name="onSync"/> has already run, so there is nothing to take and
+    /// the caller must not arm anything.
+    ///
+    /// The claim is only consulted for ops that carry a link, so an unlinked
+    /// direct park keeps committing unconditionally.
+    /// </summary>
+    bool SyncDirect(Action<T> onSync, ITakeable link);
 }
 
 public readonly struct Unit
@@ -489,6 +503,9 @@ public class ChannelSendEvent<T> : IEvent<Unit>, INowable<Unit>, IDirectSyncable
 
     void IDirectSyncable<Unit>.SyncDirect(Action<Unit> onSync) =>
         _channel.SyncDirectSend(_value, onSync);
+
+    bool IDirectSyncable<Unit>.SyncDirect(Action<Unit> onSync, ITakeable link) =>
+        _channel.SyncDirectSend(_value, onSync, link);
 }
 
 public class ChannelReceiveEvent<T> : IEvent<T>
