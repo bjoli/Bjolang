@@ -44,6 +44,32 @@ internal interface INowable<T>
     bool TryNow(out T value);
 }
 
+/// <summary>
+/// An event with exactly one commit point, which can therefore be synchronised
+/// without a <see cref="SyncState"/>.
+///
+/// A <see cref="SyncState"/> exists to arbitrate between the branches of one
+/// sync block and to fire the nacks of the losers. A block offering a single
+/// channel operation has no branches and no nacks, so it pays for a commit
+/// protocol it cannot use — an allocation, and two locked nack walks per
+/// rendezvous.
+///
+/// <see cref="SyncDirect"/> is reached only from the top of a sync, never from
+/// <c>Publish</c>. That is what makes the unconditional commit sound: an op
+/// parked this way cannot be inside a <c>choose</c>, so nothing can ever need to
+/// withdraw it. <c>choose</c> publishes its branches the general way and keeps
+/// the full protocol.
+/// </summary>
+internal interface IDirectSyncable<T>
+{
+    /// <summary>
+    /// Commit against a waiting partner if there is one, otherwise park.
+    /// <paramref name="onSync"/> is called with the value on whichever thread
+    /// commits, which may be this one.
+    /// </summary>
+    void SyncDirect(Action<T> onSync);
+}
+
 public readonly struct Unit
 {
     public static readonly Unit Value = default;
@@ -431,7 +457,13 @@ public class NeverEvent<T> : IEvent<T>
 
 // ---------------- Base Channel Events ----------------
 
-public class ChannelSendEvent<T> : IEvent<Unit>
+/// <summary>
+/// The event of handing one value over.
+///
+/// Unlike a receive this cannot be the channel itself, because it has to carry
+/// the value. It is the object `(chan-send ch v)` evaluates to.
+/// </summary>
+public class ChannelSendEvent<T> : IEvent<Unit>, INowable<Unit>, IDirectSyncable<Unit>
 {
     private readonly Channel<T> _channel;
     private readonly T _value;
@@ -448,6 +480,15 @@ public class ChannelSendEvent<T> : IEvent<Unit>
     {
         _channel.PublishSend(sharedState, eventId, _value, onSync);
     }
+
+    bool INowable<Unit>.TryNow(out Unit value)
+    {
+        value = default;
+        return _channel.TryDirectSend(_value);
+    }
+
+    void IDirectSyncable<Unit>.SyncDirect(Action<Unit> onSync) =>
+        _channel.SyncDirectSend(_value, onSync);
 }
 
 public class ChannelReceiveEvent<T> : IEvent<T>

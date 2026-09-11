@@ -184,10 +184,52 @@ in `main` with no enclosing scope found one, `TestFiles/113_until_cancelled.bjo`
 and it does not rely on the root drain: it spawns a feeder and then receives
 every item the feeder sends, so the rendezvous is what waits, not the scope.
 
+## Phase 2b — one park path
+
+A sync offering a single channel operation parks an op with `State == null` and
+commits unconditionally. No `SyncState`, no commit protocol, and no
+`EventAwaiter` change visible to `SyncAwaiter`, which still sees one awaiter
+type. `choose` publishes the general way and is untouched.
+
+| benchmark | Bjolang ns/op | Bjolang B/op | vs phase 2f |
+|---|---|---|---|
+| Ring | 77 | 32 | **−13 ns, −40 B** |
+| Ring, scoped | 113 | 256 | unchanged |
+| Spawn burst | 85 | 185 | unchanged |
+| Skewed choose(8) | 221 | 72 | unchanged |
+
+The 40 bytes are the `SyncState`. What went with it is not only the allocation:
+committing a rendezvous used to call `MarkSynchronized` on two sync states, and
+each one takes a lock to walk a nack list that a single-branch block cannot
+have.
+
+The ring is now **32 B/op, and all of it is the `ChannelSendEvent`**. A receive
+allocates nothing at all: `(chan-recv ch)` is the channel, it parks a pooled
+`GetOp`, and the awaiter is pooled too. Phase 2a's note that a send "may become
+a struct-backed pooled object if the ring benchmark shows the allocation" is now
+the only thing left on this row.
+
+Skewed choose does not move, and that is the design: a `choose` keeps the full
+protocol because a losing branch has to be withdrawable.
+
+### The invariant this rests on
+
+An unconditional commit cannot be withdrawn, so it is only sound while a direct
+op can never be a branch of a `choose`. Nothing in the type system says so — it
+follows from `SyncDirect` being reachable only from the top of a sync and never
+from `Publish`. Four tests in `CmlTests` assert it against the parked list:
+a bare sync parks with no `SyncState`, a `choose` branch never does, and the two
+protocols pair in both directions.
+
 ## Test suites
 
-Green at phase 0, 1, 2a, 2d and 2f, the last with one test added
-(`TestFiles/205_root_is_not_a_scope.bjo`, 6 assertions).
+Green at every phase.
+
+- Bjolang `./run_tests.sh`: 186 groups (one added at 2f,
+  `TestFiles/205_root_is_not_a_scope.bjo`), 213 error, 8 warning, 22 codegen,
+  3 REPL, 3 staleness.
+- CML `dotnet run -c Release --project BjolangRuntime/Cml/Tests`: 57 passed
+  (four added at 2b).
 
 - Bjolang `./run_tests.sh`: 185 groups, 213 error tests, 8 warning tests, 22
   codegen assertions, 3 REPL transcripts, 3 staleness checks.

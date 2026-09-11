@@ -45,6 +45,12 @@ public static class CmlTests
         Run("a live parked receive is NOT cleaned away", LiveReceiveSurvivesCleanup);
         Run("withNack losers stay bounded too", WithNackLosersBounded);
 
+        Section("The direct park");
+        Run("a bare sync parks with no SyncState", BareSyncParksDirectly);
+        Run("a choose branch never parks directly", ChooseNeverParksDirectly);
+        Run("a directly parked receive pairs with a choose send", DirectPairsWithChooseSend);
+        Run("a directly parked send pairs with a choose receive", DirectSendPairsWithChooseReceive);
+
         Section("Baseline combinator behaviour");
         Run("wrap maps the value", WrapMapsValue);
         Run("guard is evaluated at sync time", GuardIsDeferred);
@@ -594,6 +600,126 @@ public static class CmlTests
         }
 
         return idle.RawPendingReceiveCount;
+    }
+
+    // ---- the direct park ---------------------------------------------------
+    //
+    // A sync that offers one channel operation has nothing to arbitrate and no
+    // nack to fire, so it parks an op with no SyncState and commits
+    // unconditionally when a partner arrives. That is only sound while such an
+    // op can never be a branch of a choose, because an unconditional commit
+    // cannot be withdrawn.
+    //
+    // The invariant is structural — SyncDirect is reachable only from the top of
+    // a sync, never from Publish — so these assert it where it would break.
+
+    /// <summary>Park, then wait for the park to be visible in the channel.</summary>
+    private static void AwaitPark(Func<int> count, string what, int timeoutMs = 5000)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (count() == 0)
+        {
+            if (sw.ElapsedMilliseconds > timeoutMs)
+                throw new AssertionException($"timed out waiting for {what}");
+            Thread.Sleep(1);
+        }
+    }
+
+    private static void BareSyncParksDirectly()
+    {
+        var ch = new Channel<int>();
+
+        // Through the event awaiter, which is the path `(sync ev)` compiles to.
+        // `await ch` would take the struct awaiter instead, which is a different
+        // entry point to the same parked shape.
+        _ = Bjo.Spawn<int>(async () => await (IEvent<int>)ch);
+
+        AwaitPark(() => ch.RawPendingReceiveCount, "the receive to park");
+
+        AssertEqual(1, ch.RawDirectReceiveCount,
+            "a sync offering one channel operation must park without a SyncState");
+
+        // And it still pairs.
+        Cml.Sync(new ChannelSendEvent<int>(ch, 7), _ => { });
+    }
+
+    private static void ChooseNeverParksDirectly()
+    {
+        var a = new Channel<int>();
+        var b = new Channel<int>();
+
+        _ = Bjo.Spawn<int>(async () => await Cml.Choose<int>(a, b));
+
+        AwaitPark(() => a.RawPendingReceiveCount, "the choose to park");
+        AwaitPark(() => b.RawPendingReceiveCount, "the choose to park in both");
+
+        AssertEqual(0, a.RawDirectReceiveCount,
+            "a choose branch parked directly, and a direct op cannot be withdrawn");
+        AssertEqual(0, b.RawDirectReceiveCount,
+            "a choose branch parked directly, and a direct op cannot be withdrawn");
+
+        Cml.Sync(new ChannelSendEvent<int>(a, 1), _ => { });
+    }
+
+    /// <summary>
+    /// The two protocols have to interoperate in both directions, because which
+    /// side of a rendezvous is direct is decided independently by each side.
+    /// </summary>
+    private static void DirectPairsWithChooseSend()
+    {
+        var ch = new Channel<int>();
+        var other = new Channel<int>();
+        var got = new ManualResetEventSlim(false);
+        int seen = 0;
+
+        _ = Bjo.Spawn<int>(async () =>
+        {
+            seen = await (IEvent<int>)ch;
+            got.Set();
+            return seen;
+        });
+
+        AwaitPark(() => ch.RawPendingReceiveCount, "the direct receive to park");
+        AssertEqual(1, ch.RawDirectReceiveCount, "the receive was not direct");
+
+        // A send offered under a choose, so it arrives with a SyncState.
+        Cml.Sync(
+            Cml.Choose(
+                new ChannelSendEvent<int>(ch, 99),
+                new ChannelSendEvent<int>(other, 0)),
+            _ => { });
+
+        Await(got, "the directly parked receive to be resumed by a choose send");
+        AssertEqual(99, seen, "the value did not survive the pairing");
+    }
+
+    private static void DirectSendPairsWithChooseReceive()
+    {
+        var ch = new Channel<int>();
+        var other = new Channel<int>();
+        var sent = new ManualResetEventSlim(false);
+
+        _ = Bjo.Spawn<Unit>(async () =>
+        {
+            await (IEvent<Unit>)new ChannelSendEvent<int>(ch, 55);
+            sent.Set();
+            return default;
+        });
+
+        AwaitPark(() => ch.RawPendingSendCount, "the direct send to park");
+        AssertEqual(1, ch.RawDirectSendCount, "the send was not direct");
+
+        int seen = 0;
+        var got = new ManualResetEventSlim(false);
+        Cml.Sync(
+            Cml.Choose(
+                new ChannelReceiveEvent<int>(ch),
+                new ChannelReceiveEvent<int>(other)),
+            v => { seen = v; got.Set(); });
+
+        Await(got, "the choose receive to take the directly parked send");
+        Await(sent, "the directly parked send to be resumed");
+        AssertEqual(55, seen, "the value did not survive the pairing");
     }
 
     /// <summary>

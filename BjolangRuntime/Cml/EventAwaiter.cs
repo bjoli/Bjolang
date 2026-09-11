@@ -74,7 +74,7 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion
 
     public EventAwaiter(IEvent<T> ev) : this()
     {
-        Cml.Sync(ev, _onSync);
+        Start(ev, _onSync);
     }
 
     public static EventAwaiter<T> Rent(IEvent<T> ev)
@@ -87,8 +87,26 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion
         aw._next = null;
 
         // _result/_continuation were cleared when this instance was recycled.
-        Cml.Sync(ev, aw._onSync);
+        Start(ev, aw._onSync);
         return aw;
+    }
+
+    /// <summary>
+    /// Begin the synchronisation, without a <see cref="SyncState"/> where the
+    /// event does not need one.
+    ///
+    /// A single channel operation has one commit point and no branches to
+    /// withdraw, so the commit protocol has nothing to arbitrate. It parks one
+    /// pooled op instead. <c>_onSync</c> is the awaiter's own cached delegate,
+    /// so carrying the value as an argument costs no closure.
+    ///
+    /// Everything else — including a <c>choose</c> over channels — goes the
+    /// general way, which is what keeps a losing branch withdrawable.
+    /// </summary>
+    private static void Start(IEvent<T> ev, Action<T> onSync)
+    {
+        if (ev is IDirectSyncable<T> direct) direct.SyncDirect(onSync);
+        else Cml.Sync(ev, onSync);
     }
 
     private void OnSync(T value)

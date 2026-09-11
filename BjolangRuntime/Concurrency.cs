@@ -269,7 +269,13 @@ public static partial class BjolangRuntime {
 
     /// `(chan-send ch v)` — the event of handing `v` over. Not the handing
     /// over: that happens at the `sync`.
-    public static IEvent<Unit> chansubsend<T>(Channel<T> ch, T value) => new SendEvent<T>(ch, value);
+    ///
+    /// A send cannot be the channel, the way a receive can, because it has to
+    /// carry the value. `ChannelSendEvent` carries both the `INowable` and the
+    /// `IDirectSyncable` fast paths, so there is nothing left for this layer to
+    /// add.
+    public static IEvent<Unit> chansubsend<T>(Channel<T> ch, T value) =>
+        new ChannelSendEvent<T>(ch, value);
 
     /// `(chan-recv ch)` — the event of taking one message.
     ///
@@ -282,24 +288,6 @@ public static partial class BjolangRuntime {
     /// the language whatever the runtime representation is, and this returns
     /// the static type an event has to have.
     public static IEvent<T> chansubrecv<T>(Channel<T> ch) => ch;
-
-    /// A send has to carry the value, so unlike a receive it cannot be the
-    /// channel. A class rather than BjoML's own operation struct because that
-    /// struct boxes on the way into `IEvent<Unit>` anyway — the allocation is
-    /// the same one, and a class can carry `INowable`.
-    private sealed class SendEvent<T> : IEvent<Unit>, INowable<Unit> {
-        private readonly Channel<T> _ch;
-        private readonly T _value;
-        internal SendEvent(Channel<T> ch, T value) { _ch = ch; _value = value; }
-
-        public void Publish(SyncState state, int eventId, System.Action<Unit> onSync) =>
-            _ch.PublishSend(state, eventId, _value, onSync);
-
-        public bool TryNow(out Unit value) {
-            value = default;
-            return _ch.TryDirectSend(_value);
-        }
-    }
 
     /// `(choose ev ...)` — offer several, commit to exactly one.
     ///

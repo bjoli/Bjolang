@@ -25,7 +25,7 @@ namespace Bjoml;
 /// hands back the channel rather than wrapping it. A send has to carry the value,
 /// so it still needs an object of its own.
 /// </summary>
-public class Channel<T> : IEvent<T>, INowable<T>
+public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
 {
     private readonly object _lock = new();
     private PutOp<T>? _giversHead;
@@ -39,6 +39,251 @@ public class Channel<T> : IEvent<T>, INowable<T>
     }
 
     bool INowable<T>.TryNow(out T value) => TryDirectReceive(out value);
+
+    void IDirectSyncable<T>.SyncDirect(Action<T> onSync) => SyncDirectReceive(onSync);
+
+    /// <summary>
+    /// Receive with no <see cref="SyncState"/>: commit against a parked giver if
+    /// there is one, otherwise park uncontested.
+    ///
+    /// This is the whole of a <c>sync</c> on a bare receive. The general path
+    /// costs a `SyncState` and, on every commit, two `MarkSynchronized` calls
+    /// that each take a lock to walk a nack list — for a block that offered one
+    /// thing and so has no branch to withdraw and no nack to fire.
+    ///
+    /// Only reachable from the top of a sync. A `choose` publishes through
+    /// <see cref="Publish"/> and keeps the general protocol, which is what makes
+    /// the unconditional commit sound: an op parked here cannot be inside a
+    /// choose, so nothing can ever need to withdraw it.
+    /// </summary>
+    internal void SyncDirectReceive(Action<T> onSync)
+    {
+        Action? putResume = null;
+        Action<Unit>? putResumeGive = null;
+        SyncState? putState = null;
+        int putEventId = 0;
+        T putValue = default!;
+        bool matched = false;
+
+        lock (_lock)
+        {
+            PutOp<T>? prev = null;
+            PutOp<T>? curr = _giversHead;
+
+            while (curr != null)
+            {
+                var next = curr.Next;
+
+                if (curr.State != null && curr.IsSynchronized)
+                {
+                    if (prev == null) _giversHead = next;
+                    else prev.Next = next;
+
+                    if (curr == _giversTail) _giversTail = prev;
+
+                    curr.Recycle();
+                    curr = next;
+                    continue;
+                }
+
+                if (curr.State != null)
+                {
+                    // A choose giver still has to be claimed: it may be offering
+                    // this send somewhere else as well.
+                    if (curr.TrySync())
+                    {
+                        if (prev == null) _giversHead = next;
+                        else prev.Next = next;
+
+                        if (curr == _giversTail) _giversTail = prev;
+
+                        putValue = curr.Value;
+                        putResumeGive = curr.ResumeGive;
+                        putState = curr.State;
+                        putEventId = curr.EventId;
+                        curr.Recycle();
+
+                        matched = true;
+                        break;
+                    }
+
+                    if (curr.IsSynchronized)
+                    {
+                        if (prev == null) _giversHead = next;
+                        else prev.Next = next;
+
+                        if (curr == _giversTail) _giversTail = prev;
+
+                        curr.Recycle();
+                        curr = next;
+                        continue;
+                    }
+                }
+                else
+                {
+                    if (prev == null) _giversHead = next;
+                    else prev.Next = next;
+
+                    if (curr == _giversTail) _giversTail = prev;
+
+                    putValue = curr.Value;
+                    if (curr.ResumeGive != null)
+                    {
+                        putResumeGive = curr.ResumeGive;
+                        curr.Recycle();
+                    }
+                    else
+                    {
+                        putResume = curr.ResumePut;
+                    }
+
+                    matched = true;
+                    break;
+                }
+
+                prev = curr;
+                curr = next;
+            }
+
+            if (!matched)
+            {
+                NotePark();
+
+                // State null: uncontested. The sweep leaves it alone, which is
+                // right — a direct op is never dead, because it cannot lose.
+                var myOp = GetOp<T>.Rent(null, 0, onSync);
+                if (_takersTail == null)
+                {
+                    _takersHead = _takersTail = myOp;
+                }
+                else
+                {
+                    _takersTail.Next = myOp;
+                    _takersTail = myOp;
+                }
+                return;
+            }
+        }
+
+        putState?.MarkSynchronized(putEventId);
+
+        if (putResumeGive != null) Scheduler.Dispatch(putResumeGive, Unit.Value);
+        else Scheduler.Dispatch(putResume!);
+
+        Scheduler.Dispatch(onSync, putValue);
+    }
+
+    /// <summary>Send with no <see cref="SyncState"/>. See <see cref="SyncDirectReceive"/>.</summary>
+    internal void SyncDirectSend(T value, Action<Unit> onSync)
+    {
+        Action<T>? getResume = null;
+        Action? directTakerResume = null;
+        SyncState? getState = null;
+        int getEventId = 0;
+        bool matched = false;
+
+        lock (_lock)
+        {
+            GetOp<T>? prev = null;
+            GetOp<T>? curr = _takersHead;
+
+            while (curr != null)
+            {
+                var next = curr.Next;
+
+                if (curr.State != null && curr.IsSynchronized)
+                {
+                    if (prev == null) _takersHead = next;
+                    else prev.Next = next;
+
+                    if (curr == _takersTail) _takersTail = prev;
+
+                    curr.Recycle();
+                    curr = next;
+                    continue;
+                }
+
+                if (curr.State != null)
+                {
+                    if (curr.TrySync())
+                    {
+                        if (prev == null) _takersHead = next;
+                        else prev.Next = next;
+
+                        if (curr == _takersTail) _takersTail = prev;
+
+                        getResume = curr.ResumeGet;
+                        getState = curr.State;
+                        getEventId = curr.EventId;
+                        curr.Recycle();
+
+                        matched = true;
+                        break;
+                    }
+
+                    if (curr.IsSynchronized)
+                    {
+                        if (prev == null) _takersHead = next;
+                        else prev.Next = next;
+
+                        if (curr == _takersTail) _takersTail = prev;
+
+                        curr.Recycle();
+                        curr = next;
+                        continue;
+                    }
+                }
+                else
+                {
+                    if (prev == null) _takersHead = next;
+                    else prev.Next = next;
+
+                    if (curr == _takersTail) _takersTail = prev;
+
+                    if (curr.ResumeGet != null)
+                    {
+                        getResume = curr.ResumeGet;
+                        curr.Recycle();
+                    }
+                    else
+                    {
+                        curr.DirectValue = value;
+                        directTakerResume = curr.DirectResume;
+                    }
+
+                    matched = true;
+                    break;
+                }
+
+                prev = curr;
+                curr = next;
+            }
+
+            if (!matched)
+            {
+                NotePark();
+
+                var myOp = PutOp<T>.Rent(null, 0, value, onSync);
+                if (_giversTail == null)
+                {
+                    _giversHead = _giversTail = myOp;
+                }
+                else
+                {
+                    _giversTail.Next = myOp;
+                    _giversTail = myOp;
+                }
+                return;
+            }
+        }
+
+        getState?.MarkSynchronized(getEventId);
+
+        if (getResume != null) Scheduler.Dispatch(getResume, value);
+        else if (directTakerResume != null) Scheduler.Dispatch(directTakerResume);
+
+        Scheduler.Dispatch(onSync, Unit.Value);
+    }
 
     public ChannelReceiveAwaiter<T> GetAwaiter() => new(this);
 
@@ -106,6 +351,43 @@ public class Channel<T> : IEvent<T>, INowable<T>
             {
                 int count = 0;
                 for (var curr = _takersHead; curr != null; curr = curr.Next) count++;
+                return count;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Parked receive entries with no <see cref="SyncState"/>. Test-only.
+    ///
+    /// A direct op commits unconditionally, which is only sound while no such op
+    /// can be a branch of a <c>choose</c>. Nothing in the type system says so —
+    /// it follows from <see cref="SyncDirectReceive"/> being reachable only from
+    /// the top of a sync — so the tests assert it against the parked list.
+    /// </summary>
+    internal int RawDirectReceiveCount
+    {
+        get
+        {
+            lock (_lock)
+            {
+                int count = 0;
+                for (var curr = _takersHead; curr != null; curr = curr.Next)
+                    if (curr.State == null) count++;
+                return count;
+            }
+        }
+    }
+
+    /// <summary>Parked send entries with no <see cref="SyncState"/>. Test-only.</summary>
+    internal int RawDirectSendCount
+    {
+        get
+        {
+            lock (_lock)
+            {
+                int count = 0;
+                for (var curr = _giversHead; curr != null; curr = curr.Next)
+                    if (curr.State == null) count++;
                 return count;
             }
         }
@@ -292,14 +574,31 @@ public class Channel<T> : IEvent<T>, INowable<T>
                     }
                     else
                     {
-                        // Direct taker
+                        // A taker with no state is uncontested: it belongs to
+                        // one sync that offered nothing else, so there is
+                        // nothing to arbitrate and it commits unconditionally.
+                        //
+                        // Two resume shapes. `ResumeGet` takes the value as an
+                        // argument and is a pooled awaiter's cached delegate,
+                        // so the op is finished the moment it is unlinked and
+                        // is recycled here. `DirectResume` is a bare `Action`
+                        // belonging to a struct awaiter, which reads the value
+                        // off the op afterwards and recycles it itself.
                         if (prev == null) _takersHead = next;
                         else prev.Next = next;
 
                         if (curr == _takersTail) _takersTail = prev;
 
-                        curr.DirectValue = value;
-                        directTakerResume = curr.DirectResume;
+                        if (curr.ResumeGet != null)
+                        {
+                            getResume = curr.ResumeGet;
+                            curr.Recycle();
+                        }
+                        else
+                        {
+                            curr.DirectValue = value;
+                            directTakerResume = curr.DirectResume;
+                        }
 
                         matched = true;
                         break;
@@ -335,15 +634,12 @@ public class Channel<T> : IEvent<T>, INowable<T>
 
         // Outside lock:
         state.MarkSynchronized(eventId);
-        if (getState != null)
-        {
-            getState.MarkSynchronized(getEventId);
-            Scheduler.Dispatch(getResume!, value);
-        }
-        else if (directTakerResume != null)
-        {
-            Scheduler.Dispatch(directTakerResume);
-        }
+
+        // Null for a taker that had no state to synchronize.
+        getState?.MarkSynchronized(getEventId);
+
+        if (getResume != null) Scheduler.Dispatch(getResume, value);
+        else if (directTakerResume != null) Scheduler.Dispatch(directTakerResume);
 
         Scheduler.Dispatch(onSync, Unit.Value);
     }
@@ -421,14 +717,25 @@ public class Channel<T> : IEvent<T>, INowable<T>
                     }
                     else
                     {
-                        // Direct giver
+                        // A giver with no state is uncontested; see PublishSend
+                        // for why, and for the two resume shapes. The value is
+                        // on the op either way — a send has to carry it — so
+                        // only the resume differs.
                         if (prev == null) _giversHead = next;
                         else prev.Next = next;
 
                         if (curr == _giversTail) _giversTail = prev;
 
                         putValue = curr.Value;
-                        putResume = curr.ResumePut;
+                        if (curr.ResumeGive != null)
+                        {
+                            putResumeGive = curr.ResumeGive;
+                            curr.Recycle();
+                        }
+                        else
+                        {
+                            putResume = curr.ResumePut;
+                        }
 
                         matched = true;
                         break;
@@ -464,15 +771,13 @@ public class Channel<T> : IEvent<T>, INowable<T>
 
         // Outside lock:
         state.MarkSynchronized(eventId);
-        if (putState != null)
-        {
-            putState.MarkSynchronized(putEventId);
-            Scheduler.Dispatch(putResumeGive!, Unit.Value);
-        }
-        else
-        {
-            Scheduler.Dispatch(putResume!);
-        }
+
+        // Null for a giver that had no state to synchronize.
+        putState?.MarkSynchronized(putEventId);
+
+        if (putResumeGive != null) Scheduler.Dispatch(putResumeGive, Unit.Value);
+        else Scheduler.Dispatch(putResume!);
+
         Scheduler.Dispatch(resumeGet, putValue);
     }
 
@@ -540,14 +845,22 @@ public class Channel<T> : IEvent<T>, INowable<T>
                 }
                 else
                 {
-                    // Direct giver
+                    // Uncontested giver; see PublishReceive for the two shapes.
                     if (prev == null) _giversHead = next;
                     else prev.Next = next;
 
                     if (curr == _giversTail) _giversTail = prev;
 
                     value = curr.Value;
-                    putResume = curr.ResumePut;
+                    if (curr.ResumeGive != null)
+                    {
+                        putResumeGive = curr.ResumeGive;
+                        curr.Recycle();
+                    }
+                    else
+                    {
+                        putResume = curr.ResumePut;
+                    }
                     break;
                 }
 
@@ -556,10 +869,10 @@ public class Channel<T> : IEvent<T>, INowable<T>
             }
         }
 
-        if (putState != null)
+        if (putResumeGive != null)
         {
-            putState.MarkSynchronized(putEventId);
-            Scheduler.Dispatch(putResumeGive!, Unit.Value);
+            putState?.MarkSynchronized(putEventId);
+            Scheduler.Dispatch(putResumeGive, Unit.Value);
             return true;
         }
 
@@ -635,14 +948,22 @@ public class Channel<T> : IEvent<T>, INowable<T>
                 }
                 else
                 {
-                    // Direct giver
+                    // Uncontested giver; see PublishReceive for the two shapes.
                     if (prev == null) _giversHead = next;
                     else prev.Next = next;
 
                     if (curr == _giversTail) _giversTail = prev;
 
                     val = curr.Value;
-                    putResume = curr.ResumePut;
+                    if (curr.ResumeGive != null)
+                    {
+                        putResumeGive = curr.ResumeGive;
+                        curr.Recycle();
+                    }
+                    else
+                    {
+                        putResume = curr.ResumePut;
+                    }
 
                     matched = true;
                     break;
@@ -671,15 +992,11 @@ public class Channel<T> : IEvent<T>, INowable<T>
             }
         }
 
-        if (putState != null)
-        {
-            putState.MarkSynchronized(putEventId);
-            Scheduler.Dispatch(putResumeGive!, Unit.Value);
-        }
-        else
-        {
-            Scheduler.Dispatch(putResume!);
-        }
+        putState?.MarkSynchronized(putEventId);
+
+        if (putResumeGive != null) Scheduler.Dispatch(putResumeGive, Unit.Value);
+        else Scheduler.Dispatch(putResume!);
+
         Scheduler.Enqueue(op.DirectResume!);
     }
 
@@ -741,14 +1058,22 @@ public class Channel<T> : IEvent<T>, INowable<T>
                 }
                 else
                 {
-                    // Direct taker
+                    // Uncontested taker; see PublishSend for the two shapes.
                     if (prev == null) _takersHead = next;
                     else prev.Next = next;
 
                     if (curr == _takersTail) _takersTail = prev;
 
-                    curr.DirectValue = value;
-                    directResume = curr.DirectResume;
+                    if (curr.ResumeGet != null)
+                    {
+                        getResume = curr.ResumeGet;
+                        curr.Recycle();
+                    }
+                    else
+                    {
+                        curr.DirectValue = value;
+                        directResume = curr.DirectResume;
+                    }
                     break;
                 }
 
@@ -757,10 +1082,10 @@ public class Channel<T> : IEvent<T>, INowable<T>
             }
         }
 
-        if (getState != null)
+        if (getResume != null)
         {
-            getState.MarkSynchronized(getEventId);
-            Scheduler.Dispatch(getResume!, value);
+            getState?.MarkSynchronized(getEventId);
+            Scheduler.Dispatch(getResume, value);
             return true;
         }
 
@@ -865,15 +1190,10 @@ public class Channel<T> : IEvent<T>, INowable<T>
             }
         }
 
-        if (getState != null)
-        {
-            getState.MarkSynchronized(getEventId);
-            Scheduler.Dispatch(getResume!, op.Value);
-        }
-        else if (directResume != null)
-        {
-            Scheduler.Dispatch(directResume);
-        }
+        getState?.MarkSynchronized(getEventId);
+
+        if (getResume != null) Scheduler.Dispatch(getResume, op.Value);
+        else if (directResume != null) Scheduler.Dispatch(directResume);
 
         Scheduler.Enqueue(op.ResumePut);
     }
