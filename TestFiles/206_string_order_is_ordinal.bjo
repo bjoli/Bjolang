@@ -1,0 +1,55 @@
+;; String order is ordinal, not cultural.
+;;
+;; `String.CompareTo` — and so `Comparer<string>.Default`, which is what an
+;; ordered collection reaches for — compares in the ambient culture: "ä" sorts
+;; beside "a" under en-US and after "z" under sv-SE, and lower case sorts first.
+;; `compare` and the ordered collections both use ordinal instead. Two things
+;; are being checked: that the answer does not depend on the machine, and that
+;; the C# tree and `compare` cannot disagree, which is the invariant the whole
+;; `Ord` materialization exists to keep.
+(import (std prelude))
+(import (std orderedmap))
+(import (std orderedset))
+(import (std simpletest))
+
+;; Chosen so cultural and ordinal differ in both ways available: where case
+;; lands, and where a non-ASCII letter lands.
+(def words (list "zebra" "ärlig" "apple" "Apple" "Ödla"))
+
+;; Cultural would answer "apple,Apple,ärlig,Ödla,zebra" under en-US and
+;; "apple,Apple,zebra,ärlig,Ödla" under sv-SE.
+(def ordinal "Apple,apple,zebra,Ödla,ärlig")
+
+(: join (-> (List string) string))
+(defun (join xs)
+  (if (list-empty? xs)
+      ""
+      (list-foldl (fun (acc s) (string-append acc (string-append "," s)))
+                  (list-head xs)
+                  (list-tail xs))))
+
+(defun (main)
+  ;; The trait.
+  (expect "compare sorts ordinally" (join (list-sort words)) ordinal)
+  ;; Upper before lower is ordinal; cultural is the other way round.
+  (expect "case goes ordinal's way" (least "Apple" "apple") "Apple")
+  (expect "and so does a non-ASCII letter" (less? "zebra" "ärlig") #t)
+
+  ;; The trees.
+  (def s (list->orderedset words))
+  (expect "an ordered set walks ordinally" (join (orderedset->list s)) ordinal)
+
+  (def m (list-foldl (fun (acc w) (orderedmap-set acc w (string-length w)))
+                     (orderedmap-empty)
+                     words))
+  (expect "an ordered map walks ordinally"
+          (join (seq->list (orderedmap-keys m)))
+          ordinal)
+
+  ;; The invariant, stated directly rather than through two string literals.
+  (expect-true "the tree and compare agree"
+               (= (orderedset->list s) (list-sort words)))
+
+  ;; Ordinal is not ordinal-ignore-case: these are two members, not one.
+  (expect "case still distinguishes" (orderedset-length s) 5)
+  0)

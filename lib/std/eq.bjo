@@ -15,6 +15,13 @@
         Ord compare less? greater? at-most? at-least?
         least greatest list-sort list-min list-max)
 
+;; `String.CompareTo` compares in the ambient culture, so `(compare "ä" "z")`
+;; answers one way under sv-SE and the other under en-US. Ordinal instead: the
+;; same answer everywhere, and the same answer the ordered collections give,
+;; which default to `StringComparer.Ordinal` for string keys.
+(import/extern
+  (clr-string-compare-ordinal (: System.String.CompareOrdinal (-> string string int))))
+
 ;; ---------------------------------------------------------------------------
 ;; Eq — the one equality
 ;; ---------------------------------------------------------------------------
@@ -198,8 +205,8 @@
 
 (impl (Ord bool)   (defun (compare a b) (.CompareTo a b)))
 
-;; Ord for string uses CompareTo.
-(impl (Ord string) (defun (compare a b) (.CompareTo a b)))
+;; Ord for string is ordinal, not cultural. See the extern above.
+(impl (Ord string) (defun (compare a b) (clr-string-compare-ordinal a b)))
 
 (impl (Ord char)   (defun (compare a b) (.CompareTo a b)))
 
