@@ -677,9 +677,12 @@ if [ -d "$CODEGEN_DIR" ] && ls "$CODEGEN_DIR"/*.bjo >/dev/null 2>&1; then
         fi
 
         cs_missing=""
+        # `LC_ALL=C`: a bracket range is collation order, not ASCII order, so
+        # `[a-z_0-9]` fails to match `_i__5` under `tr_TR.UTF-8`. The patterns
+        # and the generated C# are both ASCII; the locale has no business here.
         while IFS= read -r pattern; do
             [ -z "$pattern" ] && continue
-            if ! grep -qE -- "$pattern" "$CS_WORK/out.cs"; then
+            if ! LC_ALL=C grep -qE -- "$pattern" "$CS_WORK/out.cs"; then
                 cs_missing="$pattern"
                 break
             fi
@@ -692,7 +695,7 @@ if [ -d "$CODEGEN_DIR" ] && ls "$CODEGEN_DIR"/*.bjo >/dev/null 2>&1; then
         cs_present=""
         while IFS= read -r pattern; do
             [ -z "$pattern" ] && continue
-            if grep -qE -- "$pattern" "$CS_WORK/out.cs"; then
+            if LC_ALL=C grep -qE -- "$pattern" "$CS_WORK/out.cs"; then
                 cs_present="$pattern"
                 break
             fi

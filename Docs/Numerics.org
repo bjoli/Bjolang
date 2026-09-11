@@ -141,6 +141,12 @@ comparable, ~string~ and ~bool~ included, and everything ordering-shaped is
 built on it: ~less?~, ~greater?~, ~at-most?~, ~at-least?~, ~least~, ~greatest~,
 ~list-sort~, ~list-min~, ~list-max~.
 
+On ~string~ it is *ordinal* — code unit by code unit — and not .NET's
+~CompareTo~, which orders in the ambient culture and would put ~"ä"~ beside
+~"a"~ on one machine and after ~"z"~ on the next. ~OrderedMap~ and ~OrderedSet~
+default to the same ordering for string keys, so a tree and ~compare~ cannot
+disagree. Pass a comparer to the collection to order a different way.
+
 #+BEGIN_SRC scheme
 (compare 2.5 1.5)             ;; 1
 (least "pear" "apple")        ;; "apple"
@@ -240,8 +246,9 @@ string.
 those names; the other three types have no wrapper of their own, so use ~->str~.
 ~number->string~ is ~int->string~ under the name R7RS uses.
 
-Conversion to string is .NET's ~ToString()~, so ~6.0~ prints as ~6~ and infinity
-prints as ~∞~. Reach for ~(std fmt)~ when the shape of the output matters.
+Conversion to string is .NET's ~ToString()~ in the invariant culture, so ~6.0~
+prints as ~6~, infinity prints as ~∞~, and a minus is a minus wherever the
+program runs. Reach for ~(std fmt)~ when the shape of the output matters.
 
 ~string->int~ and ~string->double~ *throw* ~System.FormatException~ on input that
 is not a number. Wrap them wherever the input is not yours:

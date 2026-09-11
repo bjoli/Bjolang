@@ -494,6 +494,19 @@ Helper functions: ~some?~, ~none?~, ~option-ref~, and ~(option-ref-or opt fallba
 ** Foreign .NET interop
 .NET methods, classes, and constructors are imported directly. Overloads are selected at compile time based on Bjolang arguments.
 
+**** The culture a program runs in
+A Bjolang program runs in the *invariant* culture: ~main~ installs it before the
+body starts. This matters here and nowhere else. ~double->string~ and its
+neighbours are invariant on their own, but an imported ~StringBuilder.Append~ or
+~DateTime.ToString~ formats the value itself, and .NET formats in the ambient
+culture — writing ~2,5~ where the decimal separator is a comma, and ~-100~ with
+a U+2212 MINUS SIGN where the locale says so. Installing the culture once covers
+every import rather than one binding at a time.
+
+Only formatting. ~CurrentUICulture~ is untouched, so an exception message is in
+whatever language .NET would have used. A program that wants the user's locale
+sets ~CultureInfo.CurrentCulture~ itself.
+
 *** ~import/extern~ — methods
 #+BEGIN_SRC scheme
 (import/extern

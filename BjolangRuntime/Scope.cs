@@ -850,14 +850,45 @@ public static partial class BjolangRuntime {
     // program and the fast path it guards was unreachable. Work that has to be
     // waited for goes in a `with-cancel`, which is the same thing written down.
 
+    /// A Bjolang program runs in the invariant culture.
+    ///
+    /// Bjolang's own conversions are invariant already — `BjoNum` is nothing
+    /// but that. A borrowed one is not: `import/extern` on
+    /// `StringBuilder.Append(double)` or `DateTime.ToString()` reaches straight
+    /// past `BjoNum` into whatever `LANG` says, and writes `2,5` or `−100` with
+    /// a U+2212. Setting the culture once here covers every such call, present
+    /// and future, rather than one binding at a time.
+    ///
+    /// Both are set: `DefaultThreadCurrentCulture` is what a thread with no
+    /// culture of its own falls back to, which is every scheduler thread, and
+    /// the assignment to `CurrentCulture` pins the thread `main` starts on.
+    ///
+    /// Formatting only. `CurrentUICulture` decides what language an exception
+    /// message is in and is left alone.
+    ///
+    /// A program that wants the user's locale asks for it by name, the same
+    /// way a C# program that wants invariant formatting has to.
+    private static void RunInvariant() {
+        System.Globalization.CultureInfo.DefaultThreadCurrentCulture =
+            System.Globalization.CultureInfo.InvariantCulture;
+        System.Globalization.CultureInfo.CurrentCulture =
+            System.Globalization.CultureInfo.InvariantCulture;
+    }
+
     /// The entry point for a bjoroutine `main`.
-    public static Fiber<T> RunMainFiber<T>(System.Func<Fiber<T>> body) => body();
+    public static Fiber<T> RunMainFiber<T>(System.Func<Fiber<T>> body) {
+        RunInvariant();
+        return body();
+    }
 
     /// The entry point for an ordinary `main`.
     ///
     /// A plain `defun` cannot suspend, so there is nothing to wait for and
     /// nothing to drain: the body runs on the calling thread and returns.
-    public static T RunMainSync<T>(System.Func<T> body) => body();
+    public static T RunMainSync<T>(System.Func<T> body) {
+        RunInvariant();
+        return body();
+    }
 }
 
 namespace Bjolang.Runtime {
