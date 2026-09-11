@@ -1,0 +1,108 @@
+;; `main` is not in a scope.
+;;
+;; It used to be: `main` ran inside a `Scope` so that a top-level `(spawn ...)`
+;; was waited for. That scope had a live token, so `sync`'s check for "nothing
+;; can cancel me" was false in every compiled program and the fast path behind
+;; it was unreachable. The rule now is Go's — when `main` returns the process
+;; exits — and work that has to be waited for goes in a `with-cancel`.
+;;
+;; Two consequences are asserted here rather than assumed, because both are
+;; conditions written in the runtime that nothing else would notice breaking:
+;; the `Scope` constructor treats a root parent as "no parent", and the .NET
+;; `CancellationToken` bridge maps a root token to `None`.
+
+(import (std prelude))
+(import (std simpletest))
+
+(import/class
+  (CancellationToken (: System.Threading.CancellationToken)))
+
+;; The bridge itself. Nobody writes this by hand — the compiler emits it as the
+;; trailing argument of an `#:async` import that has a token overload — so this
+;; is the only way to look at what it produced.
+(import/extern
+  (ambient-cancellation (: BjolangRuntime.AmbientCancellation (-> CancellationToken))))
+
+;; `CanBeCanceled` is false for exactly one token: `CancellationToken.None`. A
+;; token from a real source answers true whether or not it has fired, which is
+;; what makes this the question to ask.
+(: ambient-can-be-cancelled? (-> bool))
+(defun (ambient-can-be-cancelled?)
+  (.-CanBeCanceled (ambient-cancellation)))
+
+(: never-ending (-bjo-> (Chan string) void))
+(defbjo (never-ending nothing)
+  (let go ()
+    (ignore (sync (chan-recv nothing)))
+    (go)))
+
+(defbjo (main args)
+  ;; ---- The root token ------------------------------------------------------
+  ;;
+  ;; `main` has no scope, so the ambient token is the root one: a promise
+  ;; nobody holds the other half of, which can never fire.
+  (expect "main's ambient token has not fired"
+          (cancelled? (parameter-ref current-cancel)) #f)
+
+  ;; ---- The bridge maps a root token to None --------------------------------
+  ;;
+  ;; A program that never opened a scope must not pay for a
+  ;; CancellationTokenSource it could never fire.
+  (expect "at top level the .NET bridge is CancellationToken.None"
+          (ambient-can-be-cancelled?) #f)
+
+  ;; And inside a scope it is a real source, which is what says the check above
+  ;; is testing the root case rather than a bridge that never works.
+  (expect "inside a scope the .NET bridge is a real token"
+          (with-cancel (cancel) (ambient-can-be-cancelled?))
+          #t)
+
+  ;; ---- A scope whose parent is the root has no parent -----------------------
+  ;;
+  ;; The constructor links a child to its parent unless the parent is the root
+  ;; token. Were the root linked anyway, every scope a program opened would
+  ;; register a waiter on a promise that outlives the program.
+  ;;
+  ;; What is observable is that the scope is not born cancelled and runs
+  ;; normally to its end.
+  (expect "a top-level scope is not born cancelled"
+          (with-cancel (cancel) (cancelled? (parameter-ref current-cancel)))
+          #f)
+
+  ;; The contrast: a scope opened *inside* another one IS linked, so cancelling
+  ;; the outer stops the inner. This is the behaviour the root case is an
+  ;; exception to, and it is what says the exception is a real special case
+  ;; rather than linking being broken everywhere.
+  ;;
+  ;; The inner scope waits for a child that only a cancellation can end, and
+  ;; nobody cancels the inner scope. So the only way this returns at all is the
+  ;; outer token forwarding into the inner one — and if the link were missing it
+  ;; would hang here rather than fail an assertion.
+  ;;
+  ;; The wait is also what makes it deterministic. Forwarding is asynchronous —
+  ;; `Promise.Forward` enqueues its waiter — so reading the inner token straight
+  ;; after cancelling the outer is a race. Waiting for the child is not.
+  (def nothing (make-chan))
+  (expect "an inner scope is linked to its outer scope"
+          (with-cancel (outer)
+            (with-cancel (inner)
+              (spawn (never-ending nothing))
+              (outer (Requested "the test")))
+            "the inner scope returned")
+          "the inner scope returned")
+
+  ;; ---- The scope still waits ------------------------------------------------
+  ;;
+  ;; Removing the root scope did not change what a written-down scope does.
+  (def b (make-box "not yet"))
+  (with-cancel (cancel)
+    (spawn (mark b)))
+  (expect "a with-cancel still waits for its children" (box-ref b) "done")
+
+  (println "205 ok")
+  0)
+
+(: mark (-bjo-> (Box string) void))
+(defbjo (mark b)
+  (sync (timeout 20))
+  (box-set! b "done"))

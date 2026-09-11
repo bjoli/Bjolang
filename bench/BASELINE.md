@@ -143,9 +143,51 @@ Only the Bjolang column moves meaningfully on this row, and 126 → 74 is what
 phase 2d is judged on. The cross-suite ratio for spawn is not reported in the
 final table for this reason.
 
+## Phase 2f — `main` is not in a scope
+
+`RunMainFiber` and `RunMainSync` no longer open a `Scope`. `main` runs with
+`Scope == null` and no token, so `sync` takes the branch that skips the
+cancellation race.
+
+| benchmark | Bjolang ns/op | Bjolang B/op | vs phase 2d |
+|---|---|---|---|
+| Ring | 90 | 72 | **−33 ns, −184 B** |
+| Ring, scoped | 118 | 256 | unchanged |
+| Spawn burst | 73 | 185 | unchanged |
+| Skewed choose(8) | 216 | 72 | **−58 ns, −184 B** |
+
+The 184 bytes are the `CancellableEvent`, its token-branch closure, and the
+promise waiter the token branch registered.
+
+The ring is now 72 B/op, and that is exactly a `SendEvent` (32) plus a
+`SyncState` (40). Nothing else is left on the rendezvous path.
+
+**The scoped ring did not move, and that is the point.** A written-down
+`with-cancel` still has a live token and still pays the race, so it still costs
+256 B/op. Before this phase both rings paid it, because there was no such thing
+as an unscoped program. The gap between 72 and 256 B/op is now a measurement of
+what phase 2c would remove, which it was not possible to take before.
+
+### The gate is not met
+
+The stated gate was "the unscoped ring inside `main` is within noise of the
+pure-C# ring". It is 90 against 42.1, so it is not. The remaining gap is the
+general publish path: a `SyncState` per sync and the commit protocol on top of
+it, which is what phase 2b removes and which this phase only made *reachable*.
+2f did its own part — the cancellation race is gone from an unscoped `sync` —
+but it cannot close that gap on its own.
+
+### Programs that had to change: none
+
+The suite is green with no edit to any `.bjo`. Grepping for a top-level `spawn`
+in `main` with no enclosing scope found one, `TestFiles/113_until_cancelled.bjo`,
+and it does not rely on the root drain: it spawns a feeder and then receives
+every item the feeder sends, so the rendezvous is what waits, not the scope.
+
 ## Test suites
 
-Green at phase 0, 1, 2a and 2d.
+Green at phase 0, 1, 2a, 2d and 2f, the last with one test added
+(`TestFiles/205_root_is_not_a_scope.bjo`, 6 assertions).
 
 - Bjolang `./run_tests.sh`: 185 groups, 213 error tests, 8 warning tests, 22
   codegen assertions, 3 REPL transcripts, 3 staleness checks.

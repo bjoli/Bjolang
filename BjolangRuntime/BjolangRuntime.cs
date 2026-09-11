@@ -1159,10 +1159,11 @@ public static partial class BjolangRuntime {
         /// keeps `(current-cancel)` and `sync` from disagreeing about whether
         /// the current fiber is cancelled.
         ///
-        /// Null is "no scope", which is what a REPL expression and a bare
-        /// thread both have. A spawn with no scope is an unowned spawn: nothing
-        /// waits for it. The root scope `main` runs in is what stops that being
-        /// the normal case for a compiled program.
+        /// Null is "no scope", which is what `main`, a REPL expression and a
+        /// bare thread all have. A spawn with no scope is an unowned spawn:
+        /// nothing waits for it, and when `main` returns the process exits
+        /// whether or not it has finished. A `with-cancel` is what makes a
+        /// spawn owned.
         public readonly Scope? Scope;
 
         /// Every parameter that is not one of the three ports, keyed by the

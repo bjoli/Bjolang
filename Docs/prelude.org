@@ -793,9 +793,14 @@ import modifiers reach them like any other binding.
 All three *suspend*, because waiting is the whole of what they do. They can only
 be written inside a bjoroutine.
 
-~main~ runs inside a root scope of its own, so a ~(spawn ...)~ at the top level
-of ~main~ is a child of something and the process does not exit with fibers in
-flight.
+~main~ is *not* inside a scope. When it returns the process exits and any fiber
+still running is discarded, so a ~(spawn ...)~ at the top level of ~main~ is a
+child of nothing and nobody waits for it. Work that has to be waited for goes
+inside one of these three forms.
+
+It used to run in a root scope. The cost was that the root scope's token was
+live in every program, so every ~sync~ raced a cancellation that could never
+fire, and the fast path for "nothing can cancel me" was unreachable.
 
 A bare ~(parameterize ((current-cancel t)) ...)~ stays legal, and is the
 deliberate airlock for a token that must outlive its creator — a daemon whose

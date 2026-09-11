@@ -819,63 +819,32 @@ public static partial class BjolangRuntime {
         scope.Close(failure);
 
     // -----------------------------------------------------------------------
-    // The root scope
+    // `main`
     // -----------------------------------------------------------------------
     //
-    // `main` runs inside a scope like any other body, so `(spawn ...)` at the
-    // top level of `main` is legal and the process does not exit with fibers
-    // still in flight. Without it, the outermost `spawn` in a program would be
-    // the one spawn nothing waited for — the opposite of the rule everywhere
-    // else.
+    // `main` is not in a scope. It runs with no `Scope` and no token, which is
+    // what makes `(current-cancel)` the root token and what lets `sync` skip
+    // the cancellation race entirely — the race is against a token that cannot
+    // fire, and a program that opens no scope should not pay for one.
     //
-    // The root scope is unlinked (there is nothing above it) and has no
-    // deadline (a program is allowed to take as long as it takes).
+    // The rule that follows is Go's: when `main` returns the process exits, and
+    // a fiber still running is discarded. `main`'s own fiber is still awaited,
+    // and a failure in it still ends the process.
+    //
+    // `main` used to run inside a `Scope`, which waited for every top-level
+    // `spawn` before returning. That scope had a live token, so
+    // `ReferenceEquals(token, RootCancel)` in `sync` was false in every real
+    // program and the fast path it guards was unreachable. Work that has to be
+    // waited for goes in a `with-cancel`, which is the same thing written down.
 
     /// The entry point for a bjoroutine `main`.
-    public static async Fiber<T> RunMainFiber<T>(System.Func<Fiber<T>> body) {
-        var scope = new Scope(0, null);
-        var saved = scopesubpush_BANG(scope);
-        try {
-            T result;
-            try {
-                result = await body();
-            } catch (System.Exception e) {
-                await scope.Close(Some(e));
-                throw;
-            }
-
-            await scope.Close(None<System.Exception>());
-            return result;
-        } finally {
-            Dyn.Current = saved;
-        }
-    }
+    public static Fiber<T> RunMainFiber<T>(System.Func<Fiber<T>> body) => body();
 
     /// The entry point for an ordinary `main`.
     ///
-    /// A plain `defun` cannot suspend, so the body runs as it always did and
-    /// only the *drain* needs a fiber. `RunToCompletion` parks the calling
-    /// thread until that fiber lands, which is safe here and nowhere else: the
-    /// rule it documents is never to call it from a pool thread, and the thread
-    /// `Main` runs on is the one thread in the process that is certainly not one.
-    public static T RunMainSync<T>(System.Func<T> body) {
-        var scope = new Scope(0, null);
-        var saved = scopesubpush_BANG(scope);
-        try {
-            T result;
-            try {
-                result = body();
-            } catch (System.Exception e) {
-                _ = Bjo.RunToCompletion(() => scope.Close(Some(e)));
-                throw;
-            }
-
-            _ = Bjo.RunToCompletion(() => scope.Close(None<System.Exception>()));
-            return result;
-        } finally {
-            Dyn.Current = saved;
-        }
-    }
+    /// A plain `defun` cannot suspend, so there is nothing to wait for and
+    /// nothing to drain: the body runs on the calling thread and returns.
+    public static T RunMainSync<T>(System.Func<T> body) => body();
 }
 
 namespace Bjolang.Runtime {
