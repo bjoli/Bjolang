@@ -149,8 +149,12 @@
   (clr-panic msg exit-code))
 
 
+;; The `->str` fallback, invariant. `System.Convert.ToString` reads the ambient
+;; culture, which is how a `short` or a `float` — types with no conversion of
+;; their own below — would print differently on a differently configured
+;; machine.
 (import/extern
-  (clr-tostring (: System.Convert.ToString)))
+  (clr-tostring (: Bjolang.Runtime.BjoNum.ToStringInvariant)))
 
 ;; First, and before the includes. = is a trait and needs to be imported
 (import (std eq))
@@ -1080,13 +1084,18 @@
 
 ;; --- Strings ---
 
+;; Invariant throughout. The ambient culture reads and writes "1.5" as "1,5"
+;; where the decimal separator is a comma, and writes -100 as "−100" with
+;; U+2212 where sv-SE does, so a number written by one machine is unreadable on
+;; the next.
 (import/extern
   (clr-concat        (: System.String.Concat))
-  (clr-parse-int     (: System.Int32.Parse))
-  ;; Invariant. `System.Double.Parse` reads the ambient culture, so "1.5"
-  ;; throws where the decimal separator is a comma.
+  (clr-parse-int     (: Bjolang.Runtime.BjoNum.ParseInt))
   (clr-parse-double  (: Bjolang.Runtime.BjoNum.ParseDouble))
-  (clr-double-string (: Bjolang.Runtime.BjoNum.DoubleToString)))
+  (clr-double-string (: Bjolang.Runtime.BjoNum.DoubleToString))
+  (clr-int-string    (: Bjolang.Runtime.BjoNum.IntToString))
+  (clr-long-string   (: Bjolang.Runtime.BjoNum.LongToString))
+  (clr-byte-string   (: Bjolang.Runtime.BjoNum.ByteToString)))
 
 (: string-append (-> string string string))
 (defun (string-append a b) (clr-concat a b))
@@ -1182,20 +1191,20 @@
     (stringbuilder->string b)))
 
 ;; --- Conversions ---
-;; ToString wrappers.
+;; ToString wrappers. Each is invariant, so each round-trips through the
+;; matching reader on any machine. See the externs above.
 
 (: int->string (-> int string))
-(defun (int->string n) (.ToString n))
+(defun (int->string n) (clr-int-string n))
 
 (: long->string (-> long string))
-(defun (long->string n) (.ToString n))
+(defun (long->string n) (clr-long-string n))
 
-;; Invariant, so that it round-trips through `string->double`.
 (: double->string (-> double string))
 (defun (double->string n) (clr-double-string n))
 
 (: byte->string (-> byte string))
-(defun (byte->string n) (.ToString n))
+(defun (byte->string n) (clr-byte-string n))
 
 ;; Number to string.
 (: number->string (-> int string))

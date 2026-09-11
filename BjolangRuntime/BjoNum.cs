@@ -22,11 +22,11 @@ namespace Bjolang.Runtime;
 ///
 /// <remarks>
 /// <para>
-/// <c>double.Parse</c> and <c>double.ToString</c> both take the ambient
-/// culture, so <c>1.5</c> is unreadable and unwritable where the decimal
-/// separator is a comma. Every conversion Bjolang offers goes through here
-/// instead, which means a document written by one program is readable by the
-/// next.
+/// <c>Parse</c> and <c>ToString</c> both take the ambient culture, so
+/// <c>1.5</c> is unreadable and unwritable where the decimal separator is a
+/// comma, and <c>-100</c> comes back as <c>−100</c> where the minus is U+2212.
+/// Every conversion Bjolang offers goes through here instead, which means a
+/// document written by one program is readable by the next.
 /// </para>
 /// <para>
 /// <c>NumberStyles.Float</c> is a sign, digits, a point, and an exponent —
@@ -39,6 +39,27 @@ public static class BjoNum {
 
     public static string DoubleToString(double d) =>
         d.ToString(CultureInfo.InvariantCulture);
+
+    // Integers too. `sv-SE` writes its minus as U+2212 MINUS SIGN, so
+    // `(-100).ToString()` there is not a string any parser expects — it is not
+    // even ASCII.
+    public static int ParseInt(string s) =>
+        int.Parse(s, NumberStyles.Integer, CultureInfo.InvariantCulture);
+
+    public static string IntToString(int n) =>
+        n.ToString(CultureInfo.InvariantCulture);
+
+    public static string LongToString(long n) =>
+        n.ToString(CultureInfo.InvariantCulture);
+
+    public static string ByteToString(byte n) =>
+        n.ToString(CultureInfo.InvariantCulture);
+
+    /// The `->str` fallback: whatever a type with no implementation of its own
+    /// says about itself, asked in the invariant culture. Reaches the numeric
+    /// types the prelude names no conversion for, and every `IFormattable`.
+    public static string ToStringInvariant(object? o) =>
+        System.Convert.ToString(o, CultureInfo.InvariantCulture) ?? "";
 
     // A scanner that has just spelled a number into a builder wants the number,
     // not the string. `ToString` allocates one per number read; these copy into
