@@ -305,7 +305,7 @@ Opening a file returns a ~Result~ because a missing file is expected; opening a 
 
 Textual ports follow the R7RS shape. Ports directly wrap .NET streams (~TextInputPort~ is ~System.IO.TextReader~ and ~TextOutputPort~ is ~System.IO.TextWriter~). Consequently, file ports and string ports share the same type, allowing functions like ~with-open~ to dispose of either uniformly. Opening returns a ~Result~ to handle missing files, while operating throws exceptions for mid-stream device errors.
 
-Only the *reader-parameterised* drains — ~port->list~, ~port->vec~, ~port->seq~ and ~file->seq~ — are in ~(std ports)~ and have to be imported. Opening, reading, writing and closing are here, since a program that reads a file should not need a header line to do it.
+Only the drains — ~port->list~, ~port->vec~, ~port->seq~, ~file->seq~ and ~port->lines~ — are in ~(std ports)~ and have to be imported. The first four take the per-item reader as their first argument; ~port->lines~ is ~port->vec~ with ~read-line~ supplied, giving a ~(Vec string)~. Opening, reading, writing and closing are here, since a program that reads a file should not need a header line to do it.
 
 - ~(open-input-file path)~ : ~(Result Exception TextInputPort)~. The ~Err~ carries the real .NET exception, so an arm can say ~(:is System.IO.FileNotFoundException e)~.
 - ~(open-input-string contents)~ : A string as an input port. Cannot fail, so no ~Result~.
@@ -318,7 +318,6 @@ Only the *reader-parameterised* drains — ~port->list~, ~port->vec~, ~port->seq
 - ~(read-char p)~ : The next character. *Throws at end of input* — guard with ~port-eof?~.
 - ~(read-char/opt p)~ : The next character, or ~None~ at end of input.
 - ~(read-all p)~ : Everything remaining, as one string. Empty at end of input.
-- ~(port->lines p)~ : Every remaining line, as a ~(Vec string)~. The drain to reach for when the shape does not matter; it runs in the runtime, so each line is added once.
 - ~(write-string p s)~ / ~(writeln p s)~ : The port comes first, as it does for every operation here.
 - ~(write-char p c)~ : One character.
 
