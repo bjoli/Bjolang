@@ -221,6 +221,103 @@ from `Publish`. Four tests in `CmlTests` assert it against the parked list:
 a bare sync parks with no `SyncState`, a `choose` branch never does, and the two
 protocols pair in both directions.
 
+## Final report
+
+### Bjolang, by phase
+
+ns/op and B/op. Bold is where the phase was aimed.
+
+| phase | Ring | Ring scoped | Spawn burst | Skewed choose(8) |
+|---|---|---|---|---|
+| 0/1 baseline | 121, 280 | 128, 281 | 122, 353 | 231, 256 |
+| 2a chan-recv is the channel | **113, 256** | 104, 257 | 126, 353 | 236, 256 |
+| 2d scope is told | 123, 256 | 117, 256 | **74, 185** | 274, 256 |
+| 2f main is not in a scope | **90, 72** | 118, 256 | 73, 185 | **216, 72** |
+| 2b one park path | **77, 32** | 113, 256 | 85, 185 | 221, 72 |
+| final | 76, **32** | 118, **256** | 72, **185** | 242, **72** |
+
+Allocation is the column to read. It is deterministic everywhere except the C#
+spawn row, and it moved 280 → 32 on the ring: an 8.75x reduction, and the 32 that
+remain are one object.
+
+### Against the raw CML layer
+
+The C# suite drifts between sessions — the ring's min-of-5 ranged 42 to 65 ns/op
+across runs of identical binaries — so the ratio is given as a band rather than a
+figure.
+
+| benchmark | BjoML ns/op | Bjolang ns/op | ratio then | ratio now |
+|---|---|---|---|---|
+| Ring | 42–65 | 76 | 2.37x | **1.2–1.8x** |
+| Skewed choose(8) | 65–68 | 216–242 | 3.45x | 3.3–3.7x |
+| Ring, scoped | 42–65 | 113–118 | 2.51x | 1.8–2.8x |
+
+| benchmark | BjoML B/op | Bjolang B/op | ratio then | ratio now |
+|---|---|---|---|---|
+| Ring | 0.2 | 32 | 1400x | **160x** |
+| Skewed choose(8) | 40.0 | 72 | 6.4x | **1.8x** |
+
+Spawn is deliberately absent: the two suites' spawn benchmarks have different
+children, as recorded under phase 2d, so their ratio means nothing.
+
+### What was not done, and why
+
+**2c, cancellation as a link, is not done.** It is the reason the scoped ring is
+still 256 B/op against the unscoped 32, and it is the largest remaining win.
+
+It was not attempted because it needs arbitration that does not exist yet. A
+direct op commits unconditionally, which is exactly what makes 2b sound; the
+moment a token can also take that op, "unconditionally" is false and the op needs
+a claim word of its own, plus a registration on the token that has to be pruned
+when the op commits normally. That is a third commit protocol beside the
+`SyncState` one and the unconditional one, in code whose failure mode is a lost
+wakeup that appears once in a million rendezvous. The measurable gap it would
+close is now isolated and written down — 32 against 256 B/op on two rows of this
+file — so the next person starts with the number.
+
+**2e, the typed fiber context, is not done.** It is small, and worth roughly one
+`isinst` per `Dyn.Current` read. It is untouched because `FiberContext.Current`
+is typed `object?` and six tests in `FiberTests.cs` put their own `Ctx` type in
+the slot to check propagation; typing the slot to `DynEnv` means rewriting those
+tests to use a type they cannot currently construct meaningfully. Worth doing,
+but it buys less than it disturbs, and it buys nothing on any row above.
+
+**The namespace is still `Bjoml`.** Phase 3 lists renaming it as optional and
+last. It touches `Prelude.fs` and `Codegen.fs`, and there was more value in the
+comments and the dead-code pass.
+
+**Headers were applied only to the files that had an LGPL header.** The 22 merged
+files carry MPL-2.0 + the linking exception. The F# compiler sources and
+`lib/std/*.bjo` still carry no header at all; that is a separate mechanical
+sweep.
+
+### Where Codegen was not told a runtime function's name
+
+Every fast path in this work is a runtime type test on the event value, never a
+special form and never a name the compiler matches. Three places where the name
+would have been easier:
+
+1. **`(sync (chan-recv ch))`.** The direct park could have been a pattern in
+   `Codegen.fs`: see `chan-recv` under a `sync`, emit the park. Instead
+   `EventAwaiter.Start` tests `ev is IDirectSyncable<T>`. The difference is
+   visible in `(sync (guard #(chan-recv ch)))` and in a `chan-recv` stored in a
+   record and synced later — both keep the fast path, and both would have lost it
+   under a syntactic rule.
+
+2. **`(sync (chan-send ch v))`.** Same test, on `ChannelSendEvent`. Keeping the
+   send event a class rather than a struct is what lets it carry the interfaces;
+   a struct would box on the way into `IEvent<Unit>` for the same 32 bytes and
+   could not answer the type test.
+
+3. **`INowable` in `sync`.** `sync` asks whether the event can commit now before
+   it builds anything. It would have been cheaper still to have the compiler emit
+   `TryDirectReceive` at a call site it recognised. It asks the value instead, so
+   an event that arrived through a helper is asked too.
+
+The one place the runtime is named directly is unchanged and was already so:
+`Prelude.fs` writes down `sync`'s Bjolang type, and `Codegen.fs` wraps a
+suspending call in `await`. Neither knows what a channel is.
+
 ## Test suites
 
 Green at every phase.
