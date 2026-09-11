@@ -1,8 +1,39 @@
-# BjoML runtime design
+# The CML layer: design
 
-BjoML is a Concurrent ML implementation for a Scheme-like language that compiles to
-C#. This document describes the runtime after the `IThreadPoolWorkItem` + `Fiber`
+A Concurrent ML implementation for a Scheme-like language that compiles to C#.
+This document describes the runtime after the `IThreadPoolWorkItem` + `Fiber`
 migration, and records what is deliberately *not* done yet.
+
+## It is one project with Bjolang, not two
+
+This was a separate project, `Bjoml.csproj`, referenced by `BjolangRuntime`. It is
+now compiled into `BjolangRuntime` directly. The namespace is still `Bjoml`.
+
+Being two projects had a cost beyond the build graph: the two layers had to agree
+through a public interface, and the agreement was what was slow. Bjolang wrapped
+every channel operation in a class of its own so it could carry an interface
+`IEvent<T>` did not have; every `sync` took the general commit protocol even for a
+bare channel operation, where a C# caller would have used the direct awaiter; and
+a scope learned that a child had finished by *joining* it, which cost a whole sync
+block per fiber.
+
+Those are gone. What replaced them lives *under* `IEvent<T>` rather than beside it:
+
+- `Channel<T>` is its own receive event. `(chan-recv ch)` is `ch`.
+- `INowable<T>` — commit without publishing at all, when a partner is already
+  parked.
+- `IDirectSyncable<T>` — park with no `SyncState`, for a sync block with one
+  branch and so nothing to withdraw. Reachable only from the top of a sync, never
+  from `Publish`, which is what keeps a `choose` branch withdrawable.
+- `IFiberLanding` — a fiber tells its owner it has finished, instead of the owner
+  joining it.
+
+Each is a type test at the point of use, never a name the code generator knows, so
+a channel operation that reaches `sync` through a helper, a record field or a
+`guard` keeps every fast path.
+
+`IEvent<T>` is still the specification. The general path is still there, still
+used by `choose`, and still the thing the fast paths are tested against.
 
 ## Scope: a compiler backend, not a CML library for C#
 

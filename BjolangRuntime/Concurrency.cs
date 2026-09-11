@@ -50,10 +50,21 @@ public static partial class BjolangRuntime {
     ///
     /// # What it costs
     ///
-    /// A scope's token is a live promise, so a program that opens any scope at
-    /// all pays for two `Wrap`s and a `Choose` on every `sync`. A program with
-    /// no scope — nothing has been parameterized and no `with-cancel` is open —
-    /// pays a reference comparison and takes the old path unchanged.
+    /// Outside a scope, nothing: the token is the root one, which has no other
+    /// half and can never fire, so the race is skipped after one reference
+    /// comparison. A single channel operation then parks one pooled op with no
+    /// `SyncState` at all — see `IDirectSyncable` — and a rendezvous allocates
+    /// only the send event, 32 bytes, which a receive does not pay either.
+    ///
+    /// Inside a `with-cancel` the token is live, and every `sync` builds a
+    /// `CancellableEvent` and publishes the token as a second branch: 256 bytes
+    /// a rendezvous against 32. That is the remaining gap between a scoped and
+    /// an unscoped program, and it is what turning the race into a link on the
+    /// parked op would remove.
+    ///
+    /// `main` is not in a scope, which is what makes the first paragraph the
+    /// common case rather than an unreachable one.
+    ///
     /// EXPERIMENT: not an `async` method.
     ///
     /// It used to be `async Fiber<T>`, and that cost a whole extra promise and

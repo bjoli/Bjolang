@@ -22,6 +22,10 @@ namespace Bjoml;
 /// compiles to <c>await ev</c> and the suspension points of the language are exactly
 /// its sync points. That equivalence is what makes CML reasoning work: between two
 /// syncs a fiber is atomic with respect to every other fiber.
+///
+/// This looks unreferenced and is not: <c>SyncOp.GetAwaiter</c> calls
+/// <c>_ev.GetAwaiter()</c> on an <c>IEvent&lt;T&gt;</c>, which resolves here.
+/// Deleting it takes every <c>sync</c> in the language with it.
 /// </summary>
 public static class EventAwaitExtensions
 {
@@ -168,10 +172,4 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion
     }
 }
 
-/// <summary>Convenience constructors for the common channel operations.</summary>
-public static class ChannelEvents
-{
-    public static ChannelReceiveOperation<T> Receive<T>(this Channel<T> ch) => ch.Receive();
 
-    public static ChannelSendOperation<T> Send<T>(this Channel<T> ch, T value) => ch.Send(value);
-}
