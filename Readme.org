@@ -43,7 +43,7 @@ Here is an example of a program that runs a command line pipeline with the bjoro
 ;; A Filter is defined in (std run) as (-bjo-> TextReader TextWriter unit)
 (: my-rot13 Filter)
 (defbjo (my-rot13 in out)
-  (loop (:for ch (in-port in read-char))
+  (loop (:for ch (in-port in read-char/opt))
         (:do (write-char out (rot13-char ch)))))
 
 (defun (main args)
@@ -54,7 +54,7 @@ Here is an example of a program that runs a command line pipeline with the bjoro
   (match (run/string '(pipe (cat "Examples/run_with_bjoroutine.bjo")
                             ,my-rot13
                             (grep "-i" "bomb")))
-    ((Err e) (println "Command failed with ${e}"))
+    ((Err e) (println #"Command failed with ${e}"))
     ;; An empty result, we didn't find any bombs.
     ((Ok "")
      (println "Everything is safe"))
@@ -65,10 +65,10 @@ Here is an example of a program that runs a command line pipeline with the bjoro
 
 #+end_src
 
-This program (found in Examples/run_with_bjoroutine.bjo) reads itself and runs each char through my-rot13. It "decrypts" the source comment ";; guvf sha gvba vf GUR OBZO!" and prints
+This program (found in Examples/run_with_bjoroutine.bjo) reads itself and runs each char through my-rot13. It "decrypts" the source comment ";; guvf shapgvba vf GUR OBZO!" and prints
 
 DANGER!
-this function is THE BOMB!
+;; this function is THE BOMB!
 
 *** Macros
 Bjolang supports hygienic macros based on implicit-renaming. Together with syntax-match, thing brings about 90% of what syntax-case brings: An anaphoric if could look like this, for example:
