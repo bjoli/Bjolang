@@ -724,6 +724,13 @@ let run () : int =
     // Pushed once and never restored. 
     BjolangRuntime.parametersubpush_BANG(BjolangRuntime.currentlysubinsubrepl, true) |> ignore
 
+    // The session scope. Every entry runs inside it, so a port opened at the
+    // prompt lives until the session ends rather than until the next line, and
+    // a `spawn` has somewhere to enlist. It does not propagate failures — see
+    // the runtime docstring for why a prompt must not be cancellable by one bad
+    // spawn.
+    let session = BjolangRuntime.OpenReplSession()
+
     printfn "Bjolang REPL. :help for commands, Ctrl-D to leave."
 
     let rec loop (state: State) =
@@ -749,6 +756,10 @@ let run () : int =
           Entries = []
           Directory = directory }
     |> ignore
+
+    // Before the directory, so that anything the session still owns is released
+    // while the session's own files are still where it left them.
+    BjolangRuntime.CloseReplSession session |> ignore
 
     // The session directory goes; the assemblies in it are already loaded, and
     // a loaded assembly does not need its file back.

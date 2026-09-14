@@ -293,6 +293,25 @@ public static partial class BjolangRuntime {
         private int _ownedCount;
 
         /// <summary>
+        /// The release walk has taken the list. Set under <see cref="_gate"/>
+        /// by <see cref="ClaimAll"/>, which is what makes it the exact point
+        /// after which an <see cref="Own"/> would register on a list nobody
+        /// will read.
+        ///
+        /// Deliberately later than the closed bit. Closing starts with the
+        /// drain, and a child is still running during the drain — so
+        ///
+        ///     (with-scope (spawn (fetch-into "a.txt")))
+        ///
+        /// opens its file after the body has ended and before the releases run.
+        /// That handle has somebody to release it, so it is registered. Only a
+        /// fiber the scope does not wait for — a daemon, or a detached one —
+        /// can still be running past the walk, and that is the case where
+        /// refusing is the right answer.
+        /// </summary>
+        private bool _releasing;
+
+        /// <summary>
         /// Completed by whoever takes <see cref="_outstanding"/> to zero. This
         /// is the only thing <see cref="Close"/> waits on.
         /// </summary>
@@ -344,7 +363,7 @@ public static partial class BjolangRuntime {
         /// Register a release on this scope, and hand back the handle that runs
         /// it early.
         ///
-        /// # A closing scope refuses this, where it ignores a spawn
+        /// # A finished scope refuses this, where a closing one ignores a spawn
         ///
         /// The asymmetry is deliberate, and it is about what the two leave
         /// behind. A fiber that was never started leaks nothing, so `spawn`
@@ -353,14 +372,21 @@ public static partial class BjolangRuntime {
         /// to release it, so the only safe answer is to refuse before the
         /// caller lets go of it — which is why this throws and the caller
         /// disposes what it had just opened.
+        ///
+        /// The two also differ in *when* they begin refusing, for the reason on
+        /// <see cref="_releasing"/>: a spawn is refused as soon as closing
+        /// starts, because the drain has been declared complete, and an `own!`
+        /// is refused only once the releases have run, because until then there
+        /// is still somebody to release it.
         /// </summary>
         internal Owned Own(System.Action release) {
             lock (_gate) {
                 // Under the gate, so that the test and the link are one step
-                // against a `Close` that takes the same lock to detach.
-                if (System.Threading.Volatile.Read(ref _outstanding) < 0)
+                // against the release walk, which takes the same lock to detach
+                // the list.
+                if (_releasing)
                     throw new Bjolang.Runtime.ScopeEnded(
-                        "own! on a scope that is closing: the scope is already releasing what it holds, so nothing would release this.");
+                        "own! on a scope that has already released what it held: nothing would release this. The caller is a daemon or a detached fiber outliving its scope; give it a scope of its own.");
 
                 var node = new Owned(this, release) { Next = _head };
                 if (_head is not null) _head.Prev = node;
@@ -409,6 +435,7 @@ public static partial class BjolangRuntime {
             Owned? last = null;
 
             lock (_gate) {
+                _releasing = true;
                 var node = _head;
                 _head = null;
                 _ownedCount = 0;
@@ -917,8 +944,7 @@ public static partial class BjolangRuntime {
     /// the same as ignoring any other promise.
     /// </summary>
     public static Promise<T> ScopeSpawn<T>(System.Func<Fiber<T>> body) {
-        var scope = Dyn.Current.Scope;
-        if (scope is null) return Bjo.Spawn(body);
+        var scope = RequireScope("bjo");
 
         var child = scope.Start(body, reports: false);
         if (child is not null) return child;
@@ -948,15 +974,9 @@ public static partial class BjolangRuntime {
     /// raise to, and the failure is reported instead.
     /// </summary>
     public static Unit ScopeSpawnUnit<T>(System.Func<Fiber<T>> body) {
-        var scope = Dyn.Current.Scope;
-        if (scope is null) {
-            _ = Bjo.Spawn(body, new UnhandledReporter(Dyn.Current.Cancel));
-            return default;
-        }
-
         // Null means the scope is closing and nothing was started. Nothing to
         // report, and nothing to hand back.
-        _ = scope.Start(body, reports: true);
+        _ = RequireScope("spawn").Start(body, reports: true);
         return default;
     }
 
@@ -988,15 +1008,15 @@ public static partial class BjolangRuntime {
     /// there is no longer anyone to propagate it to.
     /// </summary>
     public static Unit ScopeSpawnDaemon<T>(System.Func<Fiber<T>> body) {
-        var scope = Dyn.Current.Scope;
+        var scope = RequireScope("spawn/daemon");
 
         // A scope that is closing starts nothing, daemons included: it is about
         // to fire its token, so the fiber's first act would be to stop.
-        if (scope is not null && scope.IsClosed) return default;
+        if (scope.IsClosed) return default;
 
         // The scope's token, so that a daemon unwinding on the cancellation the
         // scope just fired is not printed as an unhandled exception.
-        _ = Bjo.Spawn(body, new UnhandledReporter(scope?.Token));
+        _ = Bjo.Spawn(body, new UnhandledReporter(scope.Token));
         return default;
     }
 
@@ -1027,11 +1047,48 @@ public static partial class BjolangRuntime {
         try {
             // No token: a detached fiber inherits none, so nothing can have
             // asked it to stop and every failure it has is a real one.
-            _ = Bjo.Spawn(body, new UnhandledReporter(null));
+            _ = Bjo.Spawn(() => DetachedSubtree(body), new UnhandledReporter(null));
         } finally {
             Dyn.Current = saved;
         }
         return default;
+    }
+
+    /// <summary>
+    /// A detached fiber's body, inside a scope of its own.
+    ///
+    /// Detaching clears the ambient scope, and `spawn` and `own!` both refuse
+    /// when there is none. Without this, every spawn and every file opened
+    /// anywhere under a detached fiber would raise — which is a semantic change
+    /// nobody asked for, and would make the escape hatch unusable.
+    ///
+    /// So the subtree gets a scope: unlinked, so nothing outside can cancel it
+    /// as before; no deadline, because there is no outer deadline to inherit;
+    /// and `propagate: false`, because there is nobody to raise to. A child that
+    /// fails is reported as it lands, which is what an unowned spawn did before
+    /// there was a scope here at all.
+    ///
+    /// The fiber therefore waits for its own children and releases its own
+    /// resources before it ends. That is new, and it is the point: detached
+    /// means outside *this* program's scopes, not unstructured.
+    /// </summary>
+    private static async Fiber<T> DetachedSubtree<T>(System.Func<Fiber<T>> body) {
+        var scope = new Scope(0, null, propagate: false);
+        var saved = scopesubpush_BANG(scope);
+        try {
+            T answer;
+            try {
+                answer = await body();
+            } catch (System.Exception e) {
+                await scope.Close(new Option<System.Exception>(e));
+                throw;
+            }
+
+            await scope.Close(default);
+            return answer;
+        } finally {
+            _ = dynsubrestore_BANG(saved);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1165,6 +1222,31 @@ public static partial class BjolangRuntime {
     public static Bjolang.Runtime.BjoWriter OwnWriter(Bjolang.Runtime.BjoWriter port) {
         port.Owner = RegisterPort(port);
         return port;
+    }
+
+    /// <summary>
+    /// Take ownership of whatever a handler answered `open-input-file` with.
+    ///
+    /// A real port is already owned, by the constructor that opened it and
+    /// before the caller could lose it, so this hands it straight back. Anything
+    /// else — a `StringReader` a fake filesystem built with
+    /// `open-input-string` — is wrapped and registered on the scope the
+    /// *perform* happened in.
+    ///
+    /// That is the whole point of the phase: a leak test over a fake filesystem
+    /// means the same thing as over a real one, because both kinds of port are
+    /// on the same list. Ports made directly with `open-input-string` are still
+    /// unowned; only ports that arrive through the effect are adopted.
+    /// </summary>
+    public static System.IO.TextReader AdoptReader(System.IO.TextReader port) {
+        if (port is Bjolang.Runtime.BjoPort { Owner: not null }) return port;
+        return OwnReader(Bjolang.Runtime.BjoPort.Wrap(port));
+    }
+
+    /// <summary>See <see cref="AdoptReader"/>.</summary>
+    public static System.IO.TextWriter AdoptWriter(System.IO.TextWriter port) {
+        if (port is Bjolang.Runtime.BjoWriter { Owner: not null }) return port;
+        return OwnWriter(Bjolang.Runtime.BjoWriter.Wrap(port));
     }
 
     private static Owned RegisterPort(System.IDisposable port) {
@@ -1305,6 +1387,45 @@ public static partial class BjolangRuntime {
             Console.Error.Flush();
         });
         return scope;
+    }
+
+    /// <summary>
+    /// The REPL's session scope: opened when the session starts, installed for
+    /// every entry, closed on the way out.
+    ///
+    /// Without one, `(def p (open-input-file "x"))` at the prompt would be
+    /// closed before the next line was typed, and a `spawn` would have nowhere
+    /// to enlist.
+    ///
+    /// `propagate: false`, and that is the whole of what makes a prompt
+    /// survivable. One `(spawn (fn () (raise ...)))` would otherwise fire the
+    /// session token, and every later `sync` at the prompt would raise
+    /// `Cancelled` — a session poisoned by one typo. Instead the failure is
+    /// printed as it lands and the session goes on, which is what a scopeless
+    /// spawn did before there was a session scope.
+    ///
+    /// Pushed and not restored, like `currently-in-repl` beside it: the session
+    /// is the process.
+    /// </summary>
+    public static Scope OpenReplSession() {
+        var scope = new Scope(0, null, propagate: false);
+        _ = scopesubpush_BANG(scope);
+        return scope;
+    }
+
+    /// <summary>
+    /// End the session.
+    ///
+    /// The token is fired *before* the drain, which is the one place this
+    /// departs from what `with-cancel` does. A scope waits first so that
+    /// "run both and wait for both" is writable; a prompt that has been left
+    /// has nothing left to wait for, and a `(spawn (forever))` typed an hour
+    /// ago must not be able to hold Ctrl-D.
+    /// </summary>
+    public static Unit CloseReplSession(Scope scope) {
+        scope.Token.TrySetResult(new CancelReason.Requested("the REPL session ended"));
+        _ = Bjo.RunToCompletion(() => scope.Close(default));
+        return default;
     }
 
     /// The entry point for a bjoroutine `main`.

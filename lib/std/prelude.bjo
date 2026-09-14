@@ -130,6 +130,11 @@
   open-input-file open-input-string open-output-file open-output-string
   ;; Ports — closing
   close-input-port close-output-port flush-port
+  ;; Ports — opening through the FS effect, and the raw openers it defaults to
+  open-input-file op/open-input-file open-input-file/raw
+  open-output-file op/open-output-file open-output-file/raw
+  call-with-input-file call-with-output-file
+  adopt-input adopt-output
   ;; Ports — input
   port-eof? read-line read-line/opt read-char read-char/opt read-all port-fold
   ;; Ports — output
@@ -1511,9 +1516,11 @@
   (close-in     (: BjolangRuntime.CloseInput  (-> TextInputPort void)))
   (close-out    (: BjolangRuntime.CloseOutput (-> TextOutputPort void))))
 
-;; Open input file.
-(: open-input-file (-> string (Result Exception TextInputPort)))
-(defun (open-input-file path)
+;; `open-input-file/raw` opens the real file and bypasses the `FS` effect. The
+;; `/raw` says so, and it is the default handler for `open-input-file` below -
+;; so a program that installs no handler reaches this and nothing has changed.
+(: open-input-file/raw (-> string (Result Exception TextInputPort)))
+(defun (open-input-file/raw path)
   ;; Raises here if there is no scope, before the file exists to leak.
   (ignore (current-scope))
   (match (StreamReader. path)
@@ -1525,9 +1532,9 @@
 (defun (open-input-string contents)
   (cast TextInputPort (StringReader. contents)))
 
-;; Open output file.
-(: open-output-file (-> string (Result Exception TextOutputPort)))
-(defun (open-output-file path)
+;; Open output file. See `open-input-file/raw`.
+(: open-output-file/raw (-> string (Result Exception TextOutputPort)))
+(defun (open-output-file/raw path)
   (ignore (current-scope))
   (match (StreamWriter. path)
     ((Ok w) (Ok (cast TextOutputPort (own-port-out (BjoWriter. (cast TextOutputPort w))))))
@@ -1553,6 +1560,76 @@
 
 (: close-output-port (-> TextOutputPort void))
 (defun (close-output-port p) (close-out p))
+
+;; --- Opening a file is an effect ---
+;;
+;; `open-input-file` and `open-output-file` read the filesystem through a
+;; handler, so a test can answer for them without touching the disk. With no
+;; handler installed they are `open-input-file/raw` and `open-output-file/raw`,
+;; which open the real file - so nothing about an existing program changes.
+;;
+;; Opening a file is a synchronous operation (it doesn't pause execution). 
+;; 
+;; The actual reading and writing are the parts that might pause, but those 
+;; are handled later by the port's own async `read-line` and `write-string` methods. 
+;; Because the returned port object handles the async behavior itself, this 
+;; file-opening effect doesn't need to be async.
+;;
+;; Why `#:adopt`? 
+;; Real files are automatically tracked ("owned") by the scope they are opened in 
+;; to prevent resource leaks. Fake string ports (like `open-input-string`) are not.
+;; 
+;; `#:adopt` explicitly registers the fake port returned by the handler into the 
+;; current scope. This makes the fake port behave like a real one, ensuring that 
+;; resource leak tests fail correctly if a program forgets to close a fake file.
+;;
+;; A port made directly with `open-input-string` is still unowned. Only ports
+;; that arrive through the effect are adopted.
+(import/extern
+  (adopt-reader (: BjolangRuntime.AdoptReader (-> TextInputPort TextInputPort)))
+  (adopt-writer (: BjolangRuntime.AdoptWriter (-> TextOutputPort TextOutputPort))))
+
+(: adopt-input (-> (Result Exception TextInputPort) (Result Exception TextInputPort)))
+(defun (adopt-input r)
+  (match r
+    ((Ok p) (Ok (adopt-reader p)))
+    ((Err e) (Err e))))
+
+(: adopt-output (-> (Result Exception TextOutputPort) (Result Exception TextOutputPort)))
+(defun (adopt-output r)
+  (match r
+    ((Ok p) (Ok (adopt-writer p)))
+    ((Err e) (Err e))))
+
+(defeffect FS
+  (open-input-file  (-> string (Result Exception TextInputPort)))
+  (open-output-file (-> string (Result Exception TextOutputPort)))
+  #:default ((open-input-file open-input-file/raw)
+             (open-output-file open-output-file/raw))
+  #:adopt ((open-input-file adopt-input)
+           (open-output-file adopt-output))
+  #:cold (open-input-file open-output-file))
+
+;; `(call-with-input-file path proc)` - open, hand the port to `proc`, close.
+;;
+;; The port is closed however the body ends, through the owner handle, so the
+;; scope's list comes back to the length it had. `with-open` and not
+;; `with-scope`: the guarantee is the same and this one neither suspends nor
+;; allocates a scope, so an ordinary `defun` can still call it.
+;;
+;; `proc` is `-?->`, so it may be either colour and both copies are generated.
+;; A suspending body gets the same closing.
+(: call-with-input-file (-> string (-?-> TextInputPort %a) (Result Exception %a)))
+(defun (call-with-input-file path proc)
+  (match (open-input-file path)
+    ((Ok p) (with-open ((it p)) (Ok (proc it))))
+    ((Err e) (Err e))))
+
+(: call-with-output-file (-> string (-?-> TextOutputPort %a) (Result Exception %a)))
+(defun (call-with-output-file path proc)
+  (match (open-output-file path)
+    ((Ok p) (with-open ((it p)) (Ok (proc it))))
+    ((Err e) (Err e))))
 
 ;; Flush.
 (import/extern
@@ -2058,7 +2135,7 @@
 ;; trade. A hang says where it is; a scope that returned while its children ran
 ;; on says nothing at all.
 ;;
-;; All three forms suspend, because waiting is the whole of what they do. They
+;; All four forms suspend, because waiting is the whole of what they do. They
 ;; can only be written inside a bjoroutine.
 
 ;; The shared expansion of `with-cancel`, `with-deadline` and `with-shield`.
@@ -2175,10 +2252,13 @@
 ;; a release that blocks blocks the close. That is the same trade `with-cancel`
 ;; makes for a child that never lands: a hang says where it is.
 ;;
-;; A closing scope refuses `own!` and ignores `spawn`. The two differ because
-;; the consequences do: a fiber that was never started leaks nothing, but a
-;; resource that was opened and then not registered is a leak with nobody to
-;; release it, so the only safe answer is to refuse before the caller lets go.
+;; A closing scope ignores `spawn`, and a finished one refuses `own!`. The two
+;; differ because the consequences do: a fiber that was never started leaks
+;; nothing, but a resource that was opened and then not registered is a leak
+;; with nobody to release it, so the only safe answer is to refuse before the
+;; caller lets go. They also differ in when: a spawn is refused once closing
+;; begins, an `own!` only once the releases have run - a child still running
+;; during the drain can open a file, and the walk will close it.
 ;;
 ;; **Fibers are not scopes.** A file opened inside `(spawn ...)` or `(bjo ...)`
 ;; belongs to the enclosing scope, not to the fiber, and outlives it:

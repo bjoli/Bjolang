@@ -135,6 +135,7 @@
      (syntax-match c
        (#:default (operation-clauses (rest-after rest)))
        (#:cold (operation-clauses (rest-after rest)))
+       (#:adopt (operation-clauses (rest-after rest)))
        (_ (Cons c (operation-clauses rest)))))))
 
 (: default-clauses (-> (List Syntax) (List Syntax)))
@@ -154,6 +155,15 @@
      (syntax-match c
        (#:cold (clause-items rest))
        (_ (cold-clauses rest))))))
+
+(: adopt-clauses (-> (List Syntax) (List Syntax)))
+(defun (adopt-clauses clauses)
+  (match clauses
+    (Nil Nil)
+    ((Cons c rest)
+     (syntax-match c
+       (#:adopt (clause-items rest))
+       (_ (adopt-clauses rest))))))
 
 (: named-in? (-> Syntax (List Syntax) bool))
 (defun (named-in? name names)
@@ -196,8 +206,19 @@
 ;; The handler goes into a local before it is applied. A suspending call is only
 ;; awaited when its callee is a name, so `((parameter-ref cell) x)` would emit a
 ;; `Fiber<T>` where the value was wanted.
-(: operation-decls (-> (-> Symbol Syntax) Syntax (List Syntax) (List Syntax) (List Syntax)))
-(defun (operation-decls inject clause defaults colds)
+;;
+;; `#:adopt` intercepts the value returned by a handler and passes it through a named
+;; function before returning it to the caller. This is crucial for operations that return 
+;; *resources* (like files). It allows the resource to be 'adopted' into the current scope 
+;; so it gets cleaned up properly, ensuring leak tests work for fake filesystems.
+(: wrapper-body (-> Syntax Syntax (List Syntax) (List Syntax) Syntax))
+(defun (wrapper-body name cell args adopts)
+  (match (default-for name adopts)
+    (None #'(let ((handler (parameter-ref ,cell))) (handler ,@args)))
+    ((Some adopt) #'(let ((handler (parameter-ref ,cell))) (,adopt (handler ,@args))))))
+
+(: operation-decls (-> (-> Symbol Syntax) Syntax (List Syntax) (List Syntax) (List Syntax) (List Syntax)))
+(defun (operation-decls inject clause defaults colds adopts)
   (syntax-match clause
     ((name arrow)
      (if (not (arrow? arrow))
@@ -210,19 +231,17 @@
                      #'(def ,cell (make-parameter ,(handler-default name arrow args defaults))))
                  #'(: ,name ,arrow)
                  (if (suspending-arrow? arrow)
-                     #'(defbjo (,name ,@args)
-                         (let ((handler (parameter-ref ,cell))) (handler ,@args)))
-                     #'(defun (,name ,@args)
-                         (let ((handler (parameter-ref ,cell))) (handler ,@args))))))))
+                     #'(defbjo (,name ,@args) ,(wrapper-body name cell args adopts))
+                     #'(defun (,name ,@args) ,(wrapper-body name cell args adopts)))))))
     (bad (list (syntax-error bad "an operation is written (name arrow), as in (log (-> string void)).")))))
 
-(: effect-decls (-> (-> Symbol Syntax) (List Syntax) (List Syntax) (List Syntax) (List Syntax)))
-(defun (effect-decls inject ops defaults colds)
+(: effect-decls (-> (-> Symbol Syntax) (List Syntax) (List Syntax) (List Syntax) (List Syntax) (List Syntax)))
+(defun (effect-decls inject ops defaults colds adopts)
   (match ops
     (Nil Nil)
     ((Cons op rest)
-     (syntax-splice (operation-decls inject op defaults colds)
-                    (effect-decls inject rest defaults colds)))))
+     (syntax-splice (operation-decls inject op defaults colds adopts)
+                    (effect-decls inject rest defaults colds adopts)))))
 
 ;; ---------------------------------------------------------------------------
 ;; The macros
@@ -260,6 +279,12 @@
 ;; ids. `#:cold` gives that claim up, for an operation its author knows is not
 ;; performed in a loop: the ids are a budget, and a program with many rarely
 ;; performed effects should not push its ports out of the cheap slots.
+;;
+;; `#:adopt ((op fn))` intercepts the value returned by a handler and passes it through `fn` before
+;; returning it to the caller. This is crucial for operations that return *resources* (like files). If a test
+;; handler returns a fake resource (like a string port), it must be 'adopted' into the current scope so it
+;; gets cleaned up properly. Without this, handlers would return fake resources that never get released,
+;; breaking leak tests. The prelude's `FS` effect is the case it exists for.
 (def/macro (defeffect form inject compare)
   (syntax-match form
     ((_ name clause ...)
@@ -269,7 +294,8 @@
              ,@(effect-decls inject
                              (operation-clauses clause)
                              (default-clauses clause)
-                             (cold-clauses clause)))))
+                             (cold-clauses clause)
+                             (adopt-clauses clause)))))
     (bad (syntax-error bad "defeffect takes an effect name and one or more operations: (defeffect Log (log (-> string void)) #:default ((log write-it)))"))))
 
 ;; `(with-handler ((op handler) ...) body ...)` — install handlers for the
@@ -301,6 +327,41 @@
 ;; Put the `with-handler` outside the `with-cancel`, and read after both have
 ;; returned. `parameterize` behaves the same way; a collecting handler is only
 ;; where it shows.
+;;
+;; # Forwarding
+;;
+;; A handler runs with itself installed, so one that performs its own operation
+;; calls itself:
+;;
+;;     (with-handler ((log (fun (s) (log (str "[app] " s))))) ...)   ;; loops
+;;
+;; The handler installed before it is `(handler-of log)`. The bindings of a
+;; `with-handler` are evaluated before any of them is installed, so it can be
+;; read in the binding itself:
+;;
+;;     (with-handler ((log (let ((outer (handler-of log)))
+;;                           (fun (s) (outer (str "[app] " s))))))
+;;       ...)
+;;
+;; # The cell is found by spelling
+;;
+;; `with-handler` derives the cell from the operation's written name: `log`
+;; binds `op/log`. That is a convention, not a binding, so an operation imported
+;; under a prefix or a rename has no cell of that spelling and `with-handler`
+;; cannot find it. The fallback is the expansion itself:
+;;
+;;     (parameterize ((p:op/log collect)) ...)
+;;
+;; `op/log` is an ordinary exported binding and follows every rename.
+;;
+;; The same convention is why a macro that writes a `with-handler` has to
+;; `inject` the operation name: a template renames `log`, and a renamed `log`
+;; derives a cell nothing declares.
+;;
+;;     (with-handler ((,(inject (string->symbol "log")) collect)) ...)
+;;
+;; A name taken from the macro's own input is already unrenamed.
+;; `std/simpletest`'s `with-fake-fs` is the worked example.
 (def/macro (with-handler form inject compare)
   (syntax-match form
     ((_ ((op handler) ...) first body ...)
@@ -317,3 +378,13 @@
      (match handlers
        (Nil Nil)
        ((Cons h hrest) (Cons #'(,(op-cell inject op) ,h) (handler-bindings inject orest hrest)))))))
+
+;; `(handler-of op)` - the handler installed for `op` here.
+;;
+;; `(parameter-ref op/x)`, with the cell derived the way `with-handler` derives
+;; it. Read it where a `with-handler` is written to forward to the handler that
+;; one replaces.
+(def/macro (handler-of form inject compare)
+  (syntax-match form
+    ((_ op) #'(parameter-ref ,(op-cell inject op)))
+    (bad (syntax-error bad "handler-of takes an operation name: (handler-of log)"))))

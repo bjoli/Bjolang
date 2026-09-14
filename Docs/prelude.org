@@ -676,6 +676,61 @@ in a loop. Without it a program with many rarely-performed effects pushes its ow
 hot parameters out of the cheap slots. ~now~ and ~getenv~ are cold; ~warn~ and
 ~log~ are not.
 
+*** ~#:adopt~, for an operation that hands back a resource
+
+~#:adopt ((op fn))~ intercepts the value returned by a handler and passes it through ~fn~ before
+returning it to the caller. This is crucial for operations that return *resources* (like files). If a test
+handler returns a fake resource (like a string port), it must be 'adopted' into the current scope so it
+gets cleaned up properly. Without this, handlers would return fake resources that never get released,
+breaking leak tests. The prelude's ~FS~ effect is the case it exists for; see the files section above.
+
+*** Forwarding
+
+A handler runs with itself installed, so one that performs its own operation
+calls itself:
+
+#+BEGIN_SRC scheme
+(with-handler ((log (fun (s) (log (str "[app] " s))))) ...)   ;; loops
+#+END_SRC
+
+The handler installed before it is ~(handler-of log)~. The bindings of a
+~with-handler~ are evaluated before any of them is installed, so it can be read
+in the binding itself:
+
+#+BEGIN_SRC scheme
+(with-handler ((log (let ((outer (handler-of log)))
+                      (fun (s) (outer (str "[app] " s))))))
+  ...)
+#+END_SRC
+
+The same applies to a fake that wants to fall through: ~open-input-file/raw~ is
+the real filesystem by name, and ~(handler-of open-input-file)~ is whatever was
+installed before.
+
+*** The cell is found by spelling
+
+~with-handler~ and ~handler-of~ derive the cell from the operation's written
+name: ~log~ binds ~op/log~. That is a convention, not a binding, so an operation
+imported under a prefix or a rename has no cell of that spelling and
+~with-handler~ cannot find it. The fallback is the expansion itself:
+
+#+BEGIN_SRC scheme
+(parameterize ((p:op/log collect)) ...)
+#+END_SRC
+
+~op/log~ is an ordinary exported binding and follows every rename.
+
+The same convention is why a macro that writes a ~with-handler~ has to ~inject~
+the operation name: a template renames ~log~, and a renamed ~log~ derives a cell
+nothing declares.
+
+#+BEGIN_SRC scheme
+(with-handler ((,(inject (string->symbol "log")) collect)) ...)
+#+END_SRC
+
+A name taken from the macro's own input is already unrenamed.
+~std/simpletest~'s ~with-fake-fs~ is the worked example.
+
 *** A handler frame is not a scope
 
 A scope waits for its children; ~with-handler~ does not.
@@ -724,6 +779,27 @@ binding and cannot be re-exported.
 Both diagnostic operations are sync on purpose: a plain ~defun~ has to be able to
 say something. A handler that wants to send a line down a channel pushes it onto
 a mutable queue rather than ~sync~ing.
+
+** Testing =(std simpletest)=
+
+- ~(expect label actual wanted)~ / ~(expect-true label ok)~ / ~(fail label)~ :
+  the assertions. A line beginning ~FAILURE:~ is what the runner looks for.
+- ~(with-test "name" body ...)~ : run a body under ~(with-deadline ...)~. The
+  test gets a timeout that names it, a fiber it spawned is waited for, resources
+  it opened are released, and several failures are reported together. It also
+  asserts the body left nothing open, read before the scope closes.
+  ~#:within ms~ overrides the deadline; ~#:open-ok~ turns off the leak check,
+  for the tests whose subject /is/ release-at-close.
+- ~(with-fake-fs ((path contents) ...) body ...)~ : install both halves of the
+  ~FS~ effect out of a map. A path written inside it reads back afterwards, and
+  a write to a seeded path replaces the seed. ~(fake-fs-written fs path)~ reads
+  back what was written, and works after the port is closed.
+
+~with-fake-fs~ is a handler frame, not a scope, so the extent rule applies. A
+fiber spawned inside it keeps the fake — a spawn takes the environment as it
+stood at the spawn — but nothing waits for it, so the body's assertions and
+~with-test~'s leak check run before it is done. Spawn inside a ~with-scope~ of
+your own inside it.
 
 ** Waiting from an ordinary function =(std prelude)=
 
@@ -833,8 +909,36 @@ Stopping early is what the cancel thunk is for:
   answer)
 #+END_SRC
 
+*** ~main~ is a scope
+
+There is always one. ~main~ runs inside an ordinary scope — the same one
+~with-cancel~ opens, with no special-cased token and no separate code path — so
+the rule is the rule one level up: *when ~main~ returns, the work it started is
+over.* A top-level ~spawn~ is waited for, a top-level ~open-input-file~ is
+closed, and a failure anywhere is reported.
+
+This automatic tracking isn't completely free. Keeping track of cancellation adds a small
+overhead (a ~CancelWatch~) to every paused ~sync~ operation, and slightly more
+overhead to ~choose~ operations. The figures are in ~bench/BASELINE.md~.
+
+~spawn~, ~bjo~, ~spawn/daemon~ and ~own!~ all *raise* when there is no ambient
+scope. After the above that leaves two places: module-level initialisation,
+which runs before ~main~, and a callback arriving from .NET on a foreign thread.
+Both are answered by ~in-scope~ below.
+
+*** What is not prevented
+
+- A fiber in a pure loop with no ~sync~ never observes cancellation. There is no
+  preemption; a scope asks, it does not interrupt.
+- Two fibers waiting on each other is still a deadlock — now a scope that never
+  closes. ~with-deadline~ is the form to reach for by default, precisely because
+  it turns that into a failure with a place attached.
+- A release that blocks blocks the close, for the same reason.
+
 *** The forms
 
+- ~(with-scope body ...)~ : a scope with no cancel thunk. The plain form, and
+  the one to put around resources.
 - ~(with-cancel (cancel) body ...)~ : makes a token linked to the ambient one,
   installs it as ~current-cancel~ for the body, waits for the children, and
   fires the token on the way out — ~Scope-Ended~ normally, ~(Failed e)~ when the
@@ -905,23 +1009,108 @@ Naming ~Cancelled~ in a ~#:catch~ is a compile error, and the message points
 here. A broad handler that swallows a cancellation and carries on is the classic
 bug in every language that made cancellation an exception.
 
+*** What a scope owns besides fibers
+
+Use scopes to track resources that the Garbage Collector doesn't know how to manage
+automatically: OS file handles, network permits, subscriptions, or state that needs to be manually
+restored. *Do not use scopes to manage memory* — that is the GC's job.
+
+#+BEGIN_SRC scheme
+(with-scope
+  (def p (unwrap (open-input-file "notes.txt")))
+  (read-all p))            ;; closed when the scope returns, said or not
+#+END_SRC
+
+- ~(current-scope)~ : the ambient scope as a value. Raises when there is none.
+- ~(own! thunk)~ : register a release, newest first. Answers an ~Owned~.
+- ~(release! owned)~ : run it now and unlink. A second call is a no-op, and so
+  is one that lost the race with the scope's own pass — the thunk runs exactly
+  once either way.
+- ~(own-disposable x)~ : ~.Dispose~ on the ambient scope, answering ~x~. A form,
+  so ~.Dispose~ resolves at the call site the way ~with-open~ resolves it.
+- ~(in-scope s body ...)~ : run the body with ~s~ as the ambient scope.
+- ~(scope-cancel! s reason)~ : what the cancel thunk does, on a scope value.
+
+~Owned~ is opaque, and more so than ~Scope~: no ~Eq~, no ~Ord~, no ~->str~, no
+fields. The only thing to do with one is ~release!~ it.
+
+*The ordering at close is fixed.* Body finishes or fails → on failure the token
+fires → every owned fiber lands → the token fires → releases run newest-first,
+under a shield → failures aggregate, body first, then children, then releases.
+Cleanup functions (releases) run in a protected state ("under a shield"). Because the scope is
+technically already cancelling, this shield ensures the cleanup code itself doesn't get interrupted
+while doing its job.
+
+*A release is a plain thunk.* ~(-> void)~, no suspension, no deadline, run on
+the closer's stack. Cleanup functions cannot be interrupted or cancelled. Because of this, if your
+cleanup function freezes or blocks, it will freeze the entire scope's closing process.
+A release that throws is recorded and the walk carries
+on.
+
+*A closing scope ignores ~spawn~ and a finished one refuses ~own!~.* The
+consequences differ: a fiber that was never started leaks nothing, but a
+resource that was opened and then not registered is a leak with nobody to
+release it. They also differ in *when*: a spawn is refused as soon as closing
+begins, because the drain has been declared complete; an ~own!~ only once the
+releases have run, because until then there is still somebody to release it.
+That is what makes ~(with-scope (spawn (fetch-into "a.txt")))~ work — the child
+opens its file during the drain.
+
+*Fibers are not scopes.* A file opened inside ~(spawn ...)~ or ~(bjo ...)~
+belongs to the enclosing scope and outlives the fiber. A scope per spawn would
+be an allocation per spawn. For many short-lived resources under one long-lived
+scope, open a *child scope per unit of work* rather than ~own!~/~release!~ into
+the parent: the parent then holds a count and not a list, and closing is a drain
+rather than a walk.
+
+A handle returned out of the block that owned it is dangling. Nothing checks
+that; what makes it harmless is that there is nothing to read off it.
+
+*** Files, and the ~FS~ effect
+
+~open-input-file~ and ~open-output-file~ are *effect operations*. With no handler
+they are ~open-input-file/raw~ and ~open-output-file/raw~, which open the real
+file and register it on the ambient scope before the caller can lose it.
+
+- A file port is owned. When its scope returns it is closed, said or not.
+- A *string* port is not. It is memory.
+- The three standard ports are not. ~close-output-port~ on one flushes and stops
+  — nothing in the language can take stdout away from the rest of the program.
+- ~(call-with-input-file path proc)~ and ~(call-with-output-file path proc)~ open,
+  hand the port over, and close however the body ends. ~proc~ is ~-?->~, so
+  either colour works.
+- ~close-input-port~, ~close-output-port~ and ~with-open~ all go through the
+  owner handle. A direct ~.Dispose~ would close the stream and leave the
+  registration on the list.
+- ~open-input-file/raw~ *bypasses the handler*. The ~/raw~ says so.
+
+A port that arrives *through the effect* is adopted: a real one is already
+owned, and one a handler built with ~open-input-string~ is registered on the
+scope the perform happened in. So a leak test over a fake filesystem means what
+it means over a real one. A port made *directly* with ~open-input-string~ is
+still unowned.
+
+~std/simpletest~ has ~with-fake-fs~, which installs both halves out of a map.
+
+*** Calling back from .NET
+
+A handler arriving on a foreign thread has no ambient scope, so a ~spawn~ or an
+~own!~ in it raises. Capture the scope where you register, and re-enter it:
+
+#+BEGIN_SRC scheme
+(def home (current-scope))
+(on-event (fun (e) (in-scope home (handle e))))
+#+END_SRC
+
 *** Odds and ends
 
-All three are macros over ~scope-open!~, ~scope-push!~, ~scope-canceller~,
+All four forms are macros over ~scope-open!~, ~scope-push!~, ~scope-canceller~,
 ~scope-close!~, ~try~ and ~raise~ — nothing the parser knows about, so the
 import modifiers reach them like any other binding.
 
-All three *suspend*, because waiting is the whole of what they do. They can only
-be written inside a bjoroutine.
-
-~main~ is *not* inside a scope. When it returns the process exits and any fiber
-still running is discarded, so a ~(spawn ...)~ at the top level of ~main~ is a
-child of nothing and nobody waits for it. Work that has to be waited for goes
-inside one of these three forms.
-
-It used to run in a root scope. The cost was that the root scope's token was
-live in every program, so every ~sync~ raced a cancellation that could never
-fire, and the fast path for "nothing can cancel me" was unreachable.
+All four *suspend*, because waiting is the whole of what they do. They can only
+be written inside a bjoroutine. ~in-scope~ does not: it installs a scope
+somebody else is waiting for.
 
 A bare ~(parameterize ((current-cancel t)) ...)~ stays legal, and is the
 deliberate airlock for a token that must outlive its creator — a daemon whose

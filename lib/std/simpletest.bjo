@@ -12,9 +12,13 @@
 
 ;; std/simpletest.bjo — basic test assertion module.
 
-(export expect expect-true fail)
+(export expect expect-true fail
+        default-test-ms overran?
+        FakeFs fake-fs fake-fs-reader fake-fs-writer fake-fs-written)
 
 (import (std prelude))
+(import (std effect))
+(import (std syntax-match))
 
 ;; Asserts equality and prints result.
 (: expect (-> string %a %a void) (where (Eq %a) (->str %a)))
@@ -34,3 +38,181 @@
 (: fail (-> string void))
 (defun (fail label)
   (println #"FAILURE: ${label}"))
+
+;; ---------------------------------------------------------------------------
+;; A test body, under a scope
+;; ---------------------------------------------------------------------------
+;;
+;; `(with-test "name" body ...)` runs the body under a deadline and asserts that
+;; it did not leave a resource behind:
+;;
+;;     (with-test "reads the fixture"
+;;       (with-fake-fs (("a.txt" "hello"))
+;;         (expect "read it" (call-with-input-file "a.txt" read-all) (Ok "hello"))))
+;;
+;; Four things come from the scope rather than from the harness. A test gets a
+;; timeout, so a leaked fiber is a failure that names the test instead of a
+;; suite that hangs. A fiber the body spawned is waited for, so an assertion
+;; inside one cannot be missed. Resources the body opened are released. And
+;; several failures in one body are reported together rather than only the
+;; first.
+;;
+;; We check if the test left any resources open *before* the scope finishes. 
+;; If we checked after, the scope would have already silently cleaned them up! 
+;; We want tests to explicitly fail if they forget to close their files.
+;;
+;; You can disable this check using `#:open-ok` (useful if you are specifically 
+;; testing that cleanup happens on scope-close).
+;;
+;; `#:within ms` overrides the deadline.
+;;
+;; We catch `System.Exception` here to handle `Cancelled` exceptions caused by timeouts.
+;;
+;; Normally, catching and hiding a cancellation is a terrible idea in structured 
+;; concurrency. But since this is the top-level test runner, we *want* to catch 
+;; it. Doing so lets us report a clean failure with the test's name, instead 
+;; of crashing and dumping an unhelpful stack trace.
+
+(: default-test-ms (-> int))
+(defun (default-test-ms) 5000)
+
+(: leak-check (-> Syntax Syntax))
+(defun (leak-check name)
+  #'(let ((left (scope-owned-count (current-scope))))
+      (unless (= left 0)
+        (fail (string-append ,name (string-append " left " (string-append (int->string left) " resource(s) open")))))))
+
+;; Whether the deadline was what ended the scope.
+;;
+;; A fiber the body leaked is *cancelled* by the deadline rather than failing,
+;; and a cancelled child is not a failure - so the scope closes cleanly and the
+;; test would otherwise pass, slowly. The token carries the reason, so the
+;; scope is kept in a box and the reason read after it has closed.
+(: overran? (-> (Box (Option Scope)) bool))
+(defun (overran? holder)
+  (match (box-ref holder)
+    (None #f)
+    ((Some s)
+     (match (cancel-reason (scope-token s))
+       ((Some Deadline) #t)
+       (_ #f)))))
+
+(: test-expansion (-> Syntax Syntax bool (List Syntax) Syntax))
+(defun (test-expansion name ms check body)
+  (let ((core (if check
+                  #'(let () ,@body ,(leak-check name) unit)
+                  #'(let () ,@body unit))))
+    #'(let ((holder (make-box None)))
+        (match (try (with-deadline ,ms (let () (box-set! holder (Some (current-scope))) ,core))
+                 #:catch (System.Exception))
+          ((Ok _)
+           (when (overran? holder)
+             (fail (string-append ,name " ran past its deadline: something it started never finished"))))
+          ((Err e) (fail (string-append ,name (string-append " did not finish: " (.-Message e)))))))))
+
+(def/macro (with-test form inject compare)
+  (syntax-match form
+    ((_ name #:within ms #:open-ok first body ...)
+     (test-expansion name ms #f (cons first body)))
+    ((_ name #:within ms first body ...)
+     (test-expansion name ms #t (cons first body)))
+    ((_ name #:open-ok first body ...)
+     (test-expansion name #'(default-test-ms) #f (cons first body)))
+    ((_ name first body ...)
+     (test-expansion name #'(default-test-ms) #t (cons first body)))
+    (bad (syntax-error bad "with-test takes a name and a body: (with-test \"name\" body ...), optionally #:within ms and #:open-ok."))))
+
+;; ---------------------------------------------------------------------------
+;; A filesystem that is not one
+;; ---------------------------------------------------------------------------
+;;
+;; `with-fake-fs` installs handlers for both halves of the prelude's `FS`
+;; effect, so `open-input-file` and `open-output-file` answer out of a map
+;; instead of off the disk:
+;;
+;;     (with-fake-fs (("notes.txt" "a b c")
+;;                    ("empty.txt" ""))
+;;       (expect "read it back" (call-with-input-file "notes.txt" read-all) (Ok "a b c")))
+;;
+;; A path written earlier in the same `with-fake-fs` is readable afterwards, and
+;; `(fake-fs-written fs "out.txt")` gives what was written to it - which works
+;; after the port has been closed, because `StringWriter.ToString` does.
+;;
+;; The ports it hands out are *owned* like real ones. `open-input-file` adopts
+;; whatever its handler answered, so a fake port is registered on the scope the
+;; perform happened in, and a leak test over a fake filesystem means what it
+;; means over a real one.
+;;
+;; `with-fake-fs` is a handler frame, not a scope: it does not wait for a fiber
+;; spawned inside it. The fiber keeps the fake - a spawn takes the environment
+;; as it stood at the spawn - but the body's assertions, and `with-test`'s leak
+;; check, run before the fiber is done. So a fiber that reads or writes the fake
+;; goes inside a `with-scope` of its own, inside `with-fake-fs`. No scope is
+;; opened here, because one would hide from `with-test` what the body left open.
+
+(import/class
+  (StringWriter (: System.IO.StringWriter (-> StringWriter)))
+  (FileNotFound (: System.IO.FileNotFoundException (-> string FileNotFound))))
+
+;; Reads and writes, keyed by path. Mutable because a write has to be visible to
+;; a later read, which is the one thing a map of strings could not do.
+(type
+  (: FakeFs #:opaque
+     (Record (: files (Map string string) #:mutable)
+             (: writers (Map string TextOutputPort) #:mutable))))
+
+(: fake-fs (-> (List (Tuple string string)) FakeFs))
+(defun (fake-fs entries)
+  (FakeFs (files (list-foldl (fun (m entry) (let (((path text) entry)) (map-set m path text)))
+                             (map-empty)
+                             entries))
+          (writers (map-empty))))
+
+;; What `path` holds: what was written to it, else what it was seeded with. A
+;; write wins over a seed of the same path, as on a real filesystem.
+(: fake-fs-contents (-> FakeFs string (Option string)))
+(defun (fake-fs-contents fs path)
+  (match (map-try-ref (record-ref fs writers) path)
+    ((Some w) (Some (get-output-string w)))
+    (None (map-try-ref (record-ref fs files) path))))
+
+;; The reader half. A missing path gives the same exception type the real
+;; constructor gives, so a test that matches on the error matches either way.
+(: fake-fs-reader (-> FakeFs (-> string (Result Exception TextInputPort))))
+(defun (fake-fs-reader fs)
+  (fun (path)
+    (match (fake-fs-contents fs path)
+      ((Some text) (Ok (open-input-string text)))
+      (None (Err (cast Exception (FileNotFound. #"the fake filesystem has no ${path}")))))))
+
+;; The writer half. The `StringWriter` is kept, so that a later read and
+;; `fake-fs-written` see what was written to it.
+(: fake-fs-writer (-> FakeFs (-> string (Result Exception TextOutputPort))))
+(defun (fake-fs-writer fs)
+  (fun (path)
+    (let ((w (cast TextOutputPort (StringWriter.))))
+      (record-set! fs (writers (map-set (record-ref fs writers) path w)))
+      (Ok w))))
+
+;; What was written to `path`, or `None` if nothing was.
+;;
+;; Valid after the port has been closed: closing a `StringWriter` does not
+;; discard what it collected.
+(: fake-fs-written (-> FakeFs string (Option string)))
+(defun (fake-fs-written fs path)
+  (match (map-try-ref (record-ref fs writers) path)
+    ((Some w) (Some (get-output-string w)))
+    (None None)))
+
+;; The two operation names go through `inject`, so they arrive at
+;; `with-handler` unrenamed. `with-handler` derives the cell it binds from the
+;; name it is given, and a renamed `open-input-file` would derive a cell nothing
+;; declares. Any macro that writes a `with-handler` has to do this.
+(def/macro (with-fake-fs form inject compare)
+  (syntax-match form
+    ((_ ((path text) ...) first body ...)
+     #'(let ((fs (fake-fs (list ,@{listing #'(Tuple ,p ,t) (:for p path) (:for t text)}))))
+         (with-handler ((,(inject (string->symbol "open-input-file")) (fake-fs-reader fs))
+                        (,(inject (string->symbol "open-output-file")) (fake-fs-writer fs)))
+           ,first ,@body)))
+    (bad (syntax-error bad "with-fake-fs takes a list of (path contents) pairs and a body: (with-fake-fs ((\"a.txt\" \"hello\")) body ...)"))))

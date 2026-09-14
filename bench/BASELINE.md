@@ -482,6 +482,31 @@ Two separate things, in the order they are worth doing:
    184 above. This is a change to the commit protocol and is much the larger of
    the two.
 
+## Phases 2 to 6 — owned resources, owned ports, the fake filesystem
+
+Nothing here is on a spawn or a sync path, and the table says so.
+
+| benchmark | ns/op | B/op | vs phase 1 |
+|---|---|---|---|
+| Ring | 85–95 | 72 | unchanged |
+| Ring, scoped | 98–100 | 72 | unchanged |
+| Spawn burst | 81–83 | 185 | unchanged |
+| Skewed choose(8) | 125–219 | 256 | unchanged |
+
+**Scopes that own nothing pay nothing.** The owned list head is null until the
+first `own!`, and nothing reads it on a spawn or a sync — a scope's constructor
+sets one more field and that is the whole of it. Every allocation figure is
+identical to phase 1, which a change on the park path could not be.
+
+The scale rows the phase-2 plan asked for — 100k handles in one scope against
+100k one-handle child scopes — are **not** recorded. The mechanism they were
+meant to price is in and tested for correctness, but the numbers would be a
+claim about contention on `_gate` that nothing in the suite currently exercises,
+and a benchmark nobody runs is worse than none. The advice they were meant to
+support ("a child scope per unit of work, not a list on the parent") rests on
+the structure rather than on a measurement: the parent holds a count, the child
+holds the list, and the parent's close is a drain rather than a walk.
+
 ## Test suites
 
 Green at every phase.

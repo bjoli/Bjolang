@@ -83,6 +83,28 @@
     (log "two"))
   (expect "log goes where the handler says" (box-ref lines) "[one][two]")
 
+  ;; --- forwarding ----------------------------------------------------------
+  ;;
+  ;; A handler runs with itself installed, so one that performs its own
+  ;; operation loops. `(handler-of log)` is the one installed before it, read
+  ;; where the `with-handler` is written.
+  (def forwarded (make-box ""))
+  (with-handler ((log (collect-into forwarded)))
+    (let ((outer (handler-of log)))
+      (with-handler ((log (fun (s) (outer (str "[app] " s)))))
+        (log "tagged"))
+      (log "plain")))
+  (expect "a handler forwards to the one it replaced" (box-ref forwarded) "[[app] tagged][plain]")
+
+  ;; The bindings are evaluated before any is installed, so the read can sit
+  ;; in the binding itself.
+  (def inline (make-box ""))
+  (with-handler ((log (collect-into inline)))
+    (with-handler ((log (let ((outer (handler-of log)))
+                          (fun (s) (outer (str "[app] " s))))))
+      (log "tagged")))
+  (expect "a binding reads the handler it is about to replace" (box-ref inline) "[[app] tagged]")
+
   ;; --- now, and the stopwatch over it --------------------------------------
   ;;
   ;; `std/stopwatch` performs `now`; it does not name a parameter and does not

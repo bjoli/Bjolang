@@ -1,0 +1,155 @@
+;; Opening a file is an effect, so a test can answer for it.
+;;
+;; `open-input-file` and `open-output-file` read the filesystem through a
+;; handler. With nothing installed they are `open-input-file/raw`, which opens
+;; the real file - so the point of this file is that the two are
+;; indistinguishable from the caller's side, ownership included.
+;;
+;; That last part is what `#:adopt` buys. A real port is owned by the
+;; constructor that opened it; a fake one is owned by the scope the *perform*
+;; happened in. Either way it is on a scope's list, so the leak test below means
+;; the same thing over both.
+
+(import (std prelude))
+(import (std effect))
+(import (std simpletest))
+
+(: read-it (-> string (Result Exception string)))
+(defun (read-it path)
+  (call-with-input-file path read-all))
+
+;; A library function with no idea a filesystem can be faked. This is the shape
+;; the effect exists for.
+(: first-word (-> string string))
+(defun (first-word path)
+  (match (read-it path)
+    ((Ok text) (let ((words (string-split text " ")))
+                 (if (empty? words) "" (vec-ref words 0))))
+    ((Err e) "unreadable")))
+
+(: shown (-> (Option string) string))
+(defun (shown o)
+  (match o
+    ((Some s) s)
+    (None "#none")))
+
+(defbjo (main)
+  ;; --- Reading --------------------------------------------------------------
+  ;;
+  ;; Under `with-test`, which is the harness form: a deadline, a drain, and an
+  ;; assertion that the body left nothing open. `call-with-input-file` closes
+  ;; each port it opens, so the count is back at zero by the end.
+  (with-test "a fake filesystem reads"
+    (with-fake-fs (("notes.txt" "alpha beta gamma")
+                   ("empty.txt" ""))
+      (expect "a fake file reads back" (read-it "notes.txt") (Ok "alpha beta gamma"))
+      (expect "an empty fake file is empty" (read-it "empty.txt") (Ok ""))
+      (expect "a library function sees the fake" (first-word "notes.txt") "alpha")))
+
+  ;; --- A missing path is the real error type -------------------------------
+  (with-fake-fs (("notes.txt" "x"))
+    (expect-true "a missing fake path is an Err of the real type"
+                 (match (open-input-file "nowhere.txt")
+                   ((Ok _) #f)
+                   ((Err e) (string-contains? (->str e) "FileNotFoundException")))))
+
+  ;; --- Writing, and reading what was written -------------------------------
+  (def fs (fake-fs (list (Tuple "seed.txt" "seeded"))))
+  (with-handler ((open-input-file (fake-fs-reader fs))
+                 (open-output-file (fake-fs-writer fs)))
+    (ignore (call-with-output-file "out.txt" (fun (w) (write-string w "written here"))))
+    (expect "what was written can be read back" (shown (fake-fs-written fs "out.txt")) "written here")
+    (expect "a path nothing wrote to is None" (shown (fake-fs-written fs "other.txt")) "#none")
+    ;; A written path is a file from then on, and a write to a seeded path
+    ;; replaces the seed.
+    (expect "a written path reads back through the effect" (read-it "out.txt") (Ok "written here"))
+    (ignore (call-with-output-file "seed.txt" (fun (w) (write-string w "overwritten"))))
+    (expect "a write to a seeded path wins over the seed" (read-it "seed.txt") (Ok "overwritten")))
+
+  ;; --- The leak test --------------------------------------------------------
+  ;;
+  ;; A fake port opened without `with-open`, inside a scope of its own. It is
+  ;; adopted at the perform, so the scope releases it - and the count comes back
+  ;; to where it started, exactly as it does for a real file.
+  (def counts (make-box ""))
+  (with-fake-fs (("notes.txt" "some text"))
+    (with-scope
+      (let ((here (current-scope))
+            (start (scope-owned-count (current-scope))))
+        (def p (match (open-input-file "notes.txt") ((Ok p) p) ((Err e) (panic! "no fake port"))))
+        (box-set! counts (str (box-ref counts) (int->string (- (scope-owned-count here) start))))
+        (ignore (read-all p))
+        ;; Closed by the scope, not here.
+        unit)))
+  (expect "a fake port registers on the scope it was performed in" (box-ref counts) "1")
+
+  ;; And the same port is closed by then: reading it raises.
+  (def escaped (make-box None))
+  (with-fake-fs (("notes.txt" "some text"))
+    (with-scope
+      (box-set! escaped (Some (match (open-input-file "notes.txt")
+                                ((Ok p) p)
+                                ((Err e) (panic! "no fake port")))))))
+  (match (box-ref escaped)
+    (None (fail "the fake port did not escape"))
+    ((Some p)
+     (expect-true "a fake port nobody closed is released when its scope returns"
+                  (match (try (port-eof? p) #:catch (System.ObjectDisposedException))
+                    ((Ok _) #f)
+                    ((Err _) #t)))))
+
+  ;; --- with-open closes a fake port ----------------------------------------
+  (def counts2 (make-box ""))
+  (with-fake-fs (("notes.txt" "closing"))
+    (with-scope
+      (let ((here (current-scope))
+            (start (scope-owned-count (current-scope))))
+        (with-open ((p (match (open-input-file "notes.txt") ((Ok p) p) ((Err e) (panic! "no fake port")))))
+          (ignore (read-all p)))
+        (box-set! counts2 (int->string (- (scope-owned-count here) start))))))
+  (expect "with-open takes a fake port off the list too" (box-ref counts2) "0")
+
+  ;; --- A spawned fiber sees the fake ---------------------------------------
+  ;;
+  ;; Inside a `with-scope` of its own, per the extent rule. The fiber keeps the
+  ;; fake either way - a spawn takes the environment as it stood at the spawn -
+  ;; but `with-fake-fs` does not wait for it, so without the scope the `expect`
+  ;; below would read the box before the fiber had written it.
+  (def seen (make-box "not run"))
+  (with-fake-fs (("notes.txt" "from a fiber"))
+    (with-scope
+      (spawn (read-into seen "notes.txt"))))
+  (expect "a fiber spawned inside with-fake-fs sees it" (box-ref seen) "from a fiber")
+
+  ;; --- A perform off the fiber sees the fake -------------------------------
+  ;;
+  ;; `blocking` runs its thunk on a pool thread with no fiber context. The
+  ;; environment travels with the thunk, so the handler does - and so does the
+  ;; scope, which is what lets the adopted port be registered at all.
+  (def off (make-box "not run"))
+  (with-fake-fs (("notes.txt" "from off the fiber"))
+    (with-scope
+      (ignore (sync (blocking (fun () (box-set! off (match (read-it "notes.txt")
+                                                      ((Ok s) s)
+                                                      ((Err e) "unreadable")))))))))
+  (expect "a perform inside blocking sees the fake" (box-ref off) "from off the fiber")
+
+  ;; --- The raw opener bypasses the handler ---------------------------------
+  ;;
+  ;; `open-input-file/raw` is the default, and naming it directly goes past
+  ;; whatever is installed. Here the real file does not exist, so it fails while
+  ;; the effect would have succeeded.
+  (with-fake-fs (("notes.txt" "only in the fake"))
+    (expect-true "open-input-file/raw goes past the handler"
+                 (match (open-input-file/raw "notes.txt")
+                   ((Ok p) (let () (close-input-port p) #f))
+                   ((Err e) #t)))
+    (expect "while the effect answers from the fake" (read-it "notes.txt") (Ok "only in the fake")))
+
+  0)
+
+(: read-into (-bjo-> (Box string) string void))
+(defbjo (read-into b path)
+  (box-set! b (match (read-it path)
+                ((Ok s) s)
+                ((Err e) "unreadable"))))
