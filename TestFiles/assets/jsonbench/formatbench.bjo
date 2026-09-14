@@ -310,6 +310,24 @@
                 (string-pad-left (int->string (/ (string-length text) 1000)) 6) " kB"
                 (string-pad-left (int->string (/ (string-length text) records)) 6) " B/rec")))
 
+;; Throughput, in megabytes of *text* a second.
+;;
+;; A tick is 100 ns, so bytes per second is `chars * 10 / ticks` millions, and
+;; the largest intermediate is `chars * 10` — 24 million here, which an `int`
+;; holds. A corpus ten times this size would not, and this would have to count
+;; in kilobytes first.
+;;
+;; The corpus is ASCII, so a character is one byte of UTF-8 on disk and two of
+;; UTF-16 in memory. This counts the first, because that is what a file is.
+(: mb-per-s (-> string int string))
+(defun (mb-per-s text ticks)
+  (if (= ticks 0) "n/a" (int->string (/ (* (string-length text) 10) ticks))))
+
+(: speed-row (-> string string int void))
+(defun (speed-row label text ticks)
+  (println (str (string-pad-right label 18)
+                (string-pad-left (mb-per-s text ticks) 6) " MB/s")))
+
 (defun (main)
   (let ((jt (json-text records))
         (bt (bjodat-text records))
@@ -369,6 +387,13 @@
         (println (str "  total:  bjodat is " (ratio jtot btot) "x json"))
         (println (str "  1-pass: " (ratio jtot bone) "x json, "
                       (ratio btot bone) "x the two-pass bjodat"))
+        (println "")
+        (println "  text through, megabytes a second:")
+        (speed-row "  json parse" jt jp)
+        (speed-row "  bjodat parse" bt bp)
+        (speed-row "  json total" jt jtot)
+        (speed-row "  bjodat total" bt btot)
+        (speed-row "  bjodat 1-pass" bt bone)
         (println (str "  check:  json " (int->string (json-sum jitems))
                       ", bjodat " (int->string (bjodat-sum bitems))))
         (println "")

@@ -449,7 +449,7 @@
   (if (= (held-code rd) 48)
       (begin
         (step! rd)
-        (let* ((c (held-code rd)))
+        (let ((c (held-code rd)))
           (cond
             ((or (= c 120) (= c 88)) (read-radix rd neg 16))
             ((or (= c 98) (= c 66)) (read-radix rd neg 2))
@@ -469,7 +469,7 @@
        ((Err e) (Err e))
        ((Ok exp?)
         (if (or frac? exp?)
-            (let* ((d (clr-to-double sb)))
+            (let ((d (clr-to-double sb)))
               (Ok (BjoFloat (if neg (- 0.0 d) d))))
             ;; Wider than a long is still a number.
             (match (try (clr-to-long sb) #:catch (System.OverflowException))
@@ -533,7 +533,7 @@
         ;; `n` is bound rather than inlined into the test: a name compares
         ;; straight into the `if`, where the call needs a temporary for its
         ;; result and then a second one for the comparison.
-        (let* ((n (take-name! rd sb)))
+        (let ((n (take-name! rd sb)))
           (if (= n 0)
               (Ok (BjoChar (integer->char first)))
               (let* ((name (stringbuilder->string sb))
@@ -548,7 +548,7 @@
   (step! rd)
   (if (at-end? rd)
       (Err (at rd "the document ended after '#'"))
-      (let* ((c (peek rd)))
+      (let ((c (peek rd)))
         (cond
           ((char=? c #\t) (step! rd) (Ok (BjoBool #t)))
           ((char=? c #\f) (step! rd) (Ok (BjoBool #f)))
@@ -617,7 +617,7 @@
                  (Err (at rd (str "an entry holds a key and a value, and then there is "
                                   (found rd))))))))))))) 
 
-;; `{k v k v}`. The opening brace has been stepped over.
+;; `{k v k v}`. The opening brace has been stepped over before reaching this fun.
 (: read-flat-map (-> Reader int int (Result string Bjodat)))
 (defun (read-flat-map rd depth mark)
   (let go ()

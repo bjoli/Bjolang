@@ -1,0 +1,137 @@
+;; Parse speed for (text json). Run from the repository root:
+;;
+;;   ./bjor TestFiles/assets/jsonbench/bench.bjo
+;;   dotnet TestFiles/assets/jsonbench/bench.exe
+;;
+;; The three files are the set every JSON parser is measured on, and they are
+;; three because one file measures one thing:
+;;
+;;   canada        2.2M, almost all doubles — number scanning
+;;   citm_catalog  1.7M, objects and short strings — map building
+;;   twitter       0.6M, strings, much of it non-ASCII — escapes and decoding
+;;
+;; Timed off a string that was read first, so the disk is not in the loop. The
+;; file column is the streaming path, for comparison.
+;;
+;; The figure is the *fastest* of twenty rather than the mean of them, because
+;; the mean is largely a measurement of the garbage collector: each parse leaves
+;; a tree of a hundred thousand nodes behind, a collection lands in some reps
+;; and not others, and the mean of ten moved 25% between runs of one binary. For
+;; comparing one reader against another, the run that was interrupted least is
+;; the one to read.
+
+(import (std prelude))
+(import (text json))
+
+(import/class
+  (Stopwatch (: System.Diagnostics.Stopwatch))
+  (FileInfo  (: System.IO.FileInfo)))
+
+(import/extern (clr-to-int (: System.Convert.ToInt32)))
+
+(: dir string)
+(def dir "TestFiles/assets/jsonbench")
+
+(: reps int)
+(def reps 20)
+
+;; A `TimeSpan` tick is 100ns whatever the platform's timer frequency is, so the
+;; small file is measured to a part in ten thousand instead of to the nearest
+;; whole millisecond — which for a two-millisecond parse was a rate that could
+;; be wrong by half.
+(: elapsed-ticks (-> Stopwatch int))
+(defun (elapsed-ticks sw)
+  (clr-to-int (.-Ticks (.-Elapsed sw))))
+
+;; What the file weighs, rather than how many characters it holds. `twitter` is
+;; 11% larger in UTF-8 than in characters, and a rate quoted in characters would
+;; flatter it by that much.
+(: byte-length (-> string int))
+(defun (byte-length path)
+  (clr-to-int (.-Length (FileInfo. path))))
+
+;; The tree is walked once, outside the timing, so a parse that quietly failed
+;; cannot read as a fast one.
+(: nodes (-> Json int))
+(defun (nodes j)
+  (match j
+    ((JsonArr v) (+ 1 (vec-fold (fun (acc x) (+ acc (nodes x))) 0 v)))
+    ((JsonObj m) (+ 1 (map-fold (fun (acc k x) (+ acc (nodes x))) 0 m)))
+    (_ 1)))
+
+;; The fastest of `reps` parses, in ticks. The outcome is folded into a counter
+;; so the work cannot be dead.
+(: best-ticks (-> string int))
+(defun (best-ticks text)
+  (let go ((i 0) (best 2000000000) (ok 0))
+    (if (= i reps)
+        (let ()
+          (when (< ok 0) (println "unreachable"))
+          best)
+        (let ((sw (stopwatch-of)))
+          (.Start sw)
+          (let ((got (match (parse-json text) ((Ok _) 1) ((Err _) 0))))
+            (.Stop sw)
+            (let ((t (elapsed-ticks sw)))
+              (go (+ i 1) (if (< t best) t best) (+ ok got))))))))
+
+(: stopwatch-of (-> Stopwatch))
+(defun (stopwatch-of) (Stopwatch.))
+
+(: file-ticks (-> string int))
+(defun (file-ticks path)
+  (let ((sw (stopwatch-of)))
+    (.Start sw)
+    (let ((r (match (open-input-file path)
+               ((Err e) (Err "unopenable"))
+               ((Ok p) (let ((v (read-json p))) (close-input-port p) v)))))
+      (.Stop sw)
+      (when (match r ((Ok _) #f) ((Err _) #t)) (println "the file did not parse"))
+      (elapsed-ticks sw))))
+
+;; Tenths of a MB/s. Ticks are 100ns, so bytes per second is bytes times 1e7
+;; over ticks, and a tenth of a MB/s is bytes times 100 over ticks.
+(: rate (-> int int string))
+(defun (rate bytes ticks)
+  (if (= ticks 0)
+      "n/a"
+      (let ((tenths (/ (* bytes 100) ticks)))
+        (str (int->string (/ tenths 10)) "." (int->string (% tenths 10))))))
+
+;; Ticks as milliseconds with two decimals, since the smallest is under three.
+(: as-ms (-> int string))
+(defun (as-ms ticks)
+  (let ((hundredths (/ ticks 100)))
+    (let ((frac (% hundredths 100)))
+      (str (int->string (/ hundredths 100))
+           (if (< frac 10) ".0" ".")
+           (int->string frac)))))
+
+(: run (-> string void))
+(defun (run name)
+  (let ((path (path-combine dir (str name ".json"))))
+    (if (not (file-exists? path))
+        (println (str "missing " path))
+        (let ((text (file-read-text path))
+              (bytes (byte-length path)))
+          ;; Warmed, and counted, so that a file which does not parse says so
+          ;; here rather than reading as a fast one.
+          (let ((count (nodes (match (parse-json text)
+                                ((Ok j) j)
+                                ((Err e) (let () (println (str name ": " e)) JsonNull))))))
+          (let ((t (best-ticks text))
+                (ft (file-ticks path)))
+            (println
+             (str (string-pad-right name 14)
+                  (string-pad-left (int->string (/ bytes 1000)) 6) " kB"
+                  (string-pad-left (as-ms t) 9) " ms"
+                  (string-pad-left (rate bytes t) 8) " MB/s"
+                  (string-pad-left (as-ms ft) 10) " ms off a file"
+                  (string-pad-left (int->string count) 9) " nodes"))))))))
+
+(defun (main)
+  (println (str "file             size   best of " (int->string reps) "        rate"))
+  (run "canada")
+  (run "citm_catalog")
+  (run "twitter")
+  0)

@@ -6,10 +6,11 @@
 ;; emitted as keyword *literals* at expansion time, so decoding a field compares
 ;; interned references and never interns anything at run time.
 ;;
-;; There is no null. A key that may be absent is `#:optional`, which is exactly
-;; `#:default None` — and absence is the whole of it, because a data format
-;; whose values are the language's values has no separate empty. Where an
-;; `(Option %a)` must be written anyway, `None` is the empty list.
+;; There is no `null`. If a field is allowed to be missing, mark it with `#:optional` 
+;; (which is just shorthand for `#:default None`). Since this format maps directly 
+;; to Bjolang values, missing fields are strictly represented as `None`. If an 
+;; `(Option %a)` must be explicitly written out in the file, `None` is encoded as 
+;; an empty list `()`.
 
 (export
   ;; The traits
@@ -138,6 +139,7 @@
   (defun (bjodat-> v)
     (match v
       ((BjoVec items)
+       ;; vec-fold is already very very fast. no need to rewrite it as a loop
        (vec-fold (fun (acc el)
                    (match acc
                      ((Err e) (Err e))
@@ -161,6 +163,7 @@
   (defun (bjodat-> v)
     (match v
       ((BjoList items)
+       ;; this should be a loop.
        (match (list-foldl (fun (acc el)
                             (match acc
                               ((Err e) (Err e))
@@ -208,12 +211,14 @@
 
 ;; --- and what a one-pass decoder calls --------------------------------------
 ;;
-;; The value is still read into a `Bjodat` and handed to the field type's own
-;; instance. That is deliberate: it is what keeps every instance working —
-;; including one a user wrote for a type this macro has never heard of — and
-;; every message identical to the two above. What the one-pass decoder saves is
-;; the *entry*: the key's string, its interned `Keyword`, the `BjoKey` node, the
-;; vec they live in, and the scan over it.
+;; Wait, if this is a "one-pass" decoder, why are we still reading values into 
+;; intermediate `Bjodat` trees? This is deliberate! It allows us to reuse all the 
+;; existing `bjodat->` decoders (including custom ones written by users) and keeps 
+;; error messages perfectly consistent. 
+;; 
+;; The performance savings of "one-pass" come entirely from the keys: we avoid 
+;; allocating the map, interning the keywords, creating `BjoKey` nodes, and doing 
+;; map lookups.
 
 (: bjodat-read-field (-> string Keyword Reader (Result string %a)) (where (bjodat-> %a)))
 (defun (bjodat-read-field owner key rd)
@@ -274,14 +279,13 @@
 ;; one the key is the field's own name. Built here, at expansion time, so the
 ;; generated code holds a keyword literal.
 ;;
-;; The literal is written straight into the decoder, once per field per record
-;; read, and that is not what it costs. A keyword used to be emitted as
-;; `Keyword.Intern("name")` at every site it appeared — a string hash and a
-;; dictionary probe per evaluation — and this macro worked around it by
-;; emitting a `(def __jb-key-Type-field :name)` per field and reading the static
-;; field instead. `Codegen` now hoists every keyword literal into a static field
-;; of its own accord, so the workaround was deleted: the same C# comes out, and
-;; every other keyword in every other program gets it too.
+;; Note: We generate a keyword literal directly in the decoder for every field. 
+;; You might worry this is slow (e.g. hashing and interning the string every time), 
+;; and historically, this macro used to generate a static variable to cache it. 
+;; 
+;; We don't do that anymore because the compiler's `Codegen` phase is now smart 
+;; enough to automatically hoist all keyword literals into static fields behind 
+;; the scenes. It's just as fast, and the code is cleaner.
 (: jb-key (-> Syntax (List Syntax) Syntax))
 (defun (jb-key name markers)
   (let go ((ms markers))
@@ -431,13 +435,16 @@
 ;;                        ((key=? rd "git")  ... (go s0 (Some x)))
 ;;                        (else <skip the value> (go s0 s1))))))
 ;;
-;; An `(Option %a)` per field rather than a value and a seen-flag, because a
-;; field of type `%a` has no value to start the loop with and `Option` is a
-;; struct — so the slot costs nothing and answers both questions at once.
+;; We use an `(Option %a)` variable to track each field during the loop, rather 
+;; than a separate value and a boolean 'seen' flag. Since `Option` is a lightweight 
+;; struct, this adds no extra memory overhead and elegantly tracks both "has it 
+;; been seen?" and "what is the value?" simultaneously.
 ;;
-;; A key is compared against the field's *name*, in the reader's buffer. This is
-;; the whole point: `key=?` builds nothing and interns nothing, where the tree
-;; decoder had to intern every key of every record before it could look one up.
+;; We compare incoming keys directly against the expected string in the reader's 
+;; raw buffer using `key=?`. This is the core optimization of the one-pass 
+;; decoder: we never allocate memory or intern strings for keys we encounter in 
+;; the file. (The standard tree decoder had to intern every single key just to 
+;; look it up in the map).
 
 (: jb-slot (-> int Syntax))
 (defun (jb-slot i) (jb-sym (str "__jb-s" (int->string i))))
@@ -577,7 +584,14 @@
           (: ,rdr (-> Reader (Result string ,head)) ,@(jb-where inject head "bjodat->"))
           (defun (,rdr rd) ,(jb-one-pass head fields))
           (: ,prs (-> string (Result string ,head)) ,@(jb-where inject head "bjodat->"))
-          (defun (,prs text) (parse-one-pass text (fun (rd) (,rdr rd))))))))
+          ;; The reader is passed by *name*, not wrapped in a `(fun (rd) ...)`.
+          ;; A lambda body is a member of its own and is sealed to the sync copy
+          ;; of whatever it calls, so the wrapped form made the suspending copy
+          ;; of this function park the thread — which the blocking lint said in
+          ;; as many words. A bare name carries an effect variable instead, and
+          ;; `parse-one-pass` declares its parameter `-?->`, so the caller's
+          ;; colour picks the copy.
+          (defun (,prs text) (parse-one-pass text ,rdr))))))
 
 (def/macro (def/bjodat-type form inject compare)
   (syntax-match form
