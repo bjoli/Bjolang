@@ -1,0 +1,262 @@
+* text/bjodat — a data format, and records that read themselves
+
+#+BEGIN_SRC scheme
+(import (text bjodat-core))
+(import (text bjodat))
+
+(def/bjodat-type
+  (: Dep (Record (: name string)
+                 (: version string #:default "*")
+                 (: note (Option string) #:optional))))
+
+(bjodat-parse-Dep "{:name \"http\" :version \"1.2\"}")  ;; -> (Ok Dep)
+(bjodat->string (Dep->bjodat d))                        ;; -> "{:name \"http\" …}"
+#+END_SRC
+
+bjodat is Bjolang's shapes read as *data*: no evaluation, no macro expansion,
+no environment. A file is what it says it is. It is what a package manifest, a
+lockfile or a config file is written in.
+
+~bjodat-parse-<Name>~ reads the text **straight into the record**. There is no
+intermediate tree: the key is compared against the field names in the reader's
+own buffer, so a record costs no key string, no interned ~Keyword~, no node and
+no map. That is the interface to reach for.
+
+** The two modules
+
+| ~(text bjodat)~      | ~def/bjodat-type~, the traits, and what they generate |
+| ~(text bjodat-core)~ | the ~Bjodat~ value, the reader and the writer         |
+
+**Import both.** The code ~def/bjodat-type~ writes is spliced into *your*
+module and names ~Bjodat~ and ~Reader~ in its signatures, and a type cannot be
+republished through a facade as the same type — ~(export Bjodat)~ in a module
+that only imported it declares a *second* ~Bjodat~, and the two then refuse to
+unify. ~(text json)~ and ~(text json-codec)~ are imported in pairs for exactly
+the same reason.
+
+* The format
+
+Two differences from source, and they are the whole of it:
+
+- A bare identifier is a ~Symbol~. It is already quoted, because there is
+  nothing here to evaluate and so nothing for a quote to protect it from.
+  ~'foo~ is *refused*: the mark would be a second spelling of one value.
+- ~{...}~ is a map. In source a brace opens a comprehension, and a
+  comprehension is a loop, and a loop is not data.
+
+#+BEGIN_SRC scheme
+42  -100  3.14159  1e10  0x2A  0b101010   ;; integer or double, and nothing else
+#t  #f                                    ;; the booleans; `true` is a symbol
+#\a  #\newline  #\space                   ;; characters, as in source
+"a \"quoted\" word\n"                     ;; strings, escaped as source escapes
+:key   #:key                              ;; a keyword, either spelling
+a-symbol   bjolang/http   net8.0          ;; symbols; `.` and `/` are in a name
+(a list "of" :anything)                   ;; a list
+["a" "vec" "of" "strings"]                ;; a vec — the one sequence type
+{:name "http" :version "1.2"}             ;; a map, flat
+{(:name "http") (:version "1.2")}         ;; a map, parenthesised
+;; a comment, to the end of the line
+#+END_SRC
+
+A number has no width suffix. ~21uy~ and ~21L~ name a .NET type, and which type
+a field holds is the record's to say, not the file's.
+
+There is no ~#[...]~. Source splits vec from array because one is immutable and
+the other is a .NET array; data is neither, so a second spelling would read the
+same and mean nothing.
+
+A comma is not whitespace. Source lexes ~,~ as unquote, so a stray one is a
+token rather than a decoration, and it is refused. Separate with spaces.
+
+** Maps
+
+Two spellings, and no third. **Which one a map is, is decided by the character
+after the brace**: a ~(~ means the parenthesised form, anything else means the
+flat one. They do not mix, and a map that starts one way and continues the other
+is refused.
+
+That rule is why *a list may not be a key*. If it could, ~{(a b) 1}~ would be
+both a flat map keyed by the list ~(a b)~ and a parenthesised map whose first
+entry is ~a -> b~. A key is a name, and a name is a keyword, a symbol, a string,
+a number or a char — never a list.
+
+A flat map with an odd number of forms is the other refusal.
+
+**Entries keep the order they were written in**, and writing one back out writes
+them in that order. A manifest that round-trips through a record comes back
+looking like what a person wrote, not sorted by hash.
+
+** A file is a stream
+
+Nothing requires a file to hold exactly one value, which is what makes a log or
+a lockfile writable by appending. ~parse-bjodat~ asks for exactly one and
+refuses trailing text; ~parse-bjodat-all~ takes them all, and an empty file is
+an empty list rather than an error.
+
+* ~def/bjodat-type~
+
+#+BEGIN_SRC scheme
+(def/bjodat-type
+  (: Package (Record (: name Symbol)
+                     (: version string)
+                     (: description string #:key :desc)
+                     (: authors (Vec string))
+                     (: entry string #:default "src/main.bjo")
+                     (: private bool #:default #f)
+                     (: note (Option string) #:optional)
+                     (: deps (Vec Dep)))))
+#+END_SRC
+
+Declares the record *and* its codecs. A record is a map whose keys are keywords
+naming its fields.
+
+** Field markers
+
+| ~#:key :other-name~ | written and read under ~:other-name~ rather than the field's own |
+| ~#:optional~        | may be absent; absent is ~None~                                  |
+| ~#:default <expr>~  | may be absent; absent is that expression, evaluated at decode    |
+| ~#:mutable~         | passed through to the record declaration, and means nothing here |
+
+~#:optional~ is exactly ~#:default None~, and the field's type must be an
+~(Option %a)~ to hold it.
+
+**There is no null.** A key that may be missing is ~#:optional~, and absence is
+the whole of it — a data format whose values are the language's values has no
+separate empty. Where an ~(Option %a)~ *is* written out, ~None~ is the empty
+list ~()~.
+
+** What it generates
+
+For ~(: Package (Record ...))~:
+
+| ~(bjodat-parse-Package text)~  | ~(-> string (Result string Package))~ — **the one to use** |
+| ~(bjodat-read-Package rd)~     | ~(-> Reader (Result string Package))~ — from a port        |
+| ~(Package->bjodat p)~          | ~(-> Package Bjodat)~                                      |
+| ~(bjodat->Package v)~          | ~(-> Bjodat (Result string Package))~                      |
+
+and the ~->bjodat~ / ~bjodat->~ instances the last two stand for. The named
+pair exists because ~bjodat->~ alone is ambiguous at a call site; the signature
+is what fixes the instance.
+
+~bjodat-read-Package~ is what to hand ~read-one-pass-all~ for a document that is
+a ~[...]~ of records:
+
+#+BEGIN_SRC scheme
+(parse-one-pass-all text bjodat-read-Dep)   ;; -> (Result string (List Dep))
+#+END_SRC
+
+Pass it **by name**, not wrapped in a ~(fun (rd) ...)~. A lambda body is a
+member of its own and is sealed to the sync copy of what it calls, so the
+wrapped form makes a bjoroutine park its thread. The blocking lint says so.
+
+* Instances for a type of your own
+
+The generated decoders reach a field's type through its ~bjodat->~ instance, so
+a type the macro never heard of works as soon as it has one:
+
+#+BEGIN_SRC scheme
+(type (: Port (Record (: number int))))
+
+(impl (->bjodat Port)
+  (defun (->bjodat p) (BjoInt (cast System.Int64 (record-ref p number)))))
+
+(impl (bjodat-> Port)
+  (defun (bjodat-> v)
+    (match v
+      ((BjoInt n) (Ok (Port (number (cast System.Int32 n)))))
+      (_ (Err "expected a port number")))))
+
+(def/bjodat-type (: Server (Record (: host string) (: port Port))))
+#+END_SRC
+
+~BjoInt~ and the other cases come from ~(text bjodat-core)~.
+
+Instances ship for ~long~, ~int~, ~double~, ~bool~, ~string~, ~char~, ~Symbol~,
+~Keyword~, ~Bjodat~ itself, and conditionally for ~(Option %a)~, ~(Vec %a)~ and
+~(List %a)~.
+
+* The tree, for data whose shape you do not know
+
+#+BEGIN_SRC scheme
+(parse-bjodat "{:a 1 :b [2 3]}")     ;; -> (Ok Bjodat)
+(bjodat->string v)                   ;; -> the canonical spelling, maps flat
+#+END_SRC
+
+~Bjodat~ is a union: ~BjoBool~, ~BjoInt~ (a ~long~), ~BjoFloat~, ~BjoStr~,
+~BjoChar~, ~BjoSym~, ~BjoKey~, ~BjoList~, ~BjoVec~, ~BjoMap~.
+
+**A ~BjoMap~ holds a flat ~(Vec Bjodat)~ of alternating key and value**, in
+written order — not a trie. Building a trie was about seventy percent of what
+reading a keyed document cost, and a record decoded from one reads every field
+once and throws it away. Reach for it with:
+
+| ~(bjodat-entry-count entries)~   | how many entries                            |
+| ~(bjodat-entry-key entries i)~   | the ~i~ th key                              |
+| ~(bjodat-entry-value entries i)~ | its value                                   |
+| ~(bjodat-ref entries k)~         | the first value under keyword ~k~, or ~None~ |
+
+~bjodat-ref~ is a **linear scan** comparing interned keywords by reference. That
+is the right shape for a record's handful of fields and the wrong one for a map
+with thousands of keys used as a lookup table. If you want a dictionary, build
+one from the entries.
+
+~bjodat-max-depth~ is 200 and applies to nesting in the reader.
+
+* Errors
+
+Every decoder answers ~(Result string _)~, and the message names the path:
+
+#+BEGIN_SRC text
+Package: the map has no :version entry
+Package.name: expected a symbol
+Package.deps: Dep: the map has no :version entry
+line 1, column 12: Package: this map is written flat, so a '(' here is an entry of the other form
+#+END_SRC
+
+**The one-pass and the tree decoders give the same message for the same
+document**, word for word, which is asserted rather than assumed — the codec
+tests check each refusal through both paths.
+
+* What to watch out for
+
+- **An unknown key is read and ignored.** It has to be *read*: finding where a
+  value ends means parsing it. Whether a manifest format should instead refuse
+  a misspelled ~:verison~ is still open — refusing is safer, ignoring is what
+  makes a file forward-compatible with a newer tool, and it may want to be a
+  marker rather than a decision taken once for everyone.
+- **A key that is not a keyword can never name a field**, so it is ignored too.
+  The tree decoder agrees, for its own reason: ~bjodat-ref~ only matches a
+  ~BjoKey~.
+- **A duplicate key: the first wins**, in both decoders. The later one is still
+  *read* — finding where a value ends means parsing it — and then dropped.
+- **An ~(Option (List %a))~ holding ~(Some Nil)~ writes ~()~ and reads back as
+  ~None~**, because ~None~ is written as the empty list. Nothing else collides.
+- **The one-pass decoder does not track nesting depth across records.** Each
+  generated decoder starts a fresh budget, so a chain of nested *record types*
+  is bounded by the types rather than by ~bjodat-max-depth~. The values inside a
+  field are bounded normally.
+
+* Speed
+
+20 000 records, 2.36 MB, best of 20 on one machine. Five scalar fields:
+
+| text → records, one pass | 376–383 ns/rec | ~310 MB/s |
+| text → records, via tree | 478–492 ns/rec | ~245 MB/s |
+| the same through ~(text json)~ + ~(text json-codec)~ | 582–599 ns/rec | ~215 MB/s |
+
+**A record whose fields are sequences gains nothing.** The same corpus with a
+~(Vec string)~ and an ~(Option string)~ field measures 725–737 ns/rec one-pass
+against 708–711 through the tree — a wash, and on some runs marginally worse.
+
+That is the design, not a defect. The one-pass decoder saves the *entry*: the
+key's string, its interned ~Keyword~, the ~BjoKey~ node, the vec slot it lived
+in, and the scan over it. It does **not** save the *value* — each still becomes
+a ~Bjodat~ and goes through its field type's own instance, which is what keeps a
+hand-written instance working and every message identical. Where the values
+dominate, there is nothing left for it to take away.
+
+So: reach for ~bjodat-parse-<Name>~ by default, and do not expect it to be the
+thing that makes a sequence-heavy document fast. If it matters, measure both —
+they are both there and they agree.
+
+Numbers, and what did not move, are in ~bench/BASELINE.md~.

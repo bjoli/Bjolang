@@ -87,11 +87,13 @@ echo "Building standard library..."
 # transformer is written in.
 ./bjor --lib lib/text/json-codec.bjo
 
-# `text/bjodat` imports `prelude` and nothing else.
-./bjor --lib lib/text/bjodat.bjo
+# `text/bjodat-core` imports `prelude` and nothing else. It is the value type,
+# the reader and the writer; `text/bjodat` is the interface people import.
+./bjor --lib lib/text/bjodat-core.bjo
 
-# After `bjodat`, whose `Bjodat` type it names, and after `syntax-match`, which
-# its transformer is written in.
-./bjor --lib lib/text/bjodat-codec.bjo
+# After `bjodat-core`, whose `Bjodat` type it names and whose reader its
+# generated decoders drive, and after `syntax-match`, which its transformer is
+# written in.
+./bjor --lib lib/text/bjodat.bjo
 
 echo "Standard library built successfully!"

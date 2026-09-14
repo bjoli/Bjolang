@@ -1,0 +1,1000 @@
+;; text/bjodat-core.bjo
+;;
+;; The bjodat value, the reader and the writer. One character at a time.
+;;
+;; **This is the machinery, not the interface.** `(text bjodat)` is what a
+;; program imports: it declares a record and generates a decoder that reads the
+;; text straight into it, with no `Bjodat` value in between. What is here is
+;; what that decoder is built out of, and what a program reaches for directly
+;; only when the shape of its data is not known until run time.
+;;
+;; The two are imported together — see the note at the head of `(text bjodat)`
+;; for why a facade could not spare you the second line.
+;;
+;; Source's shapes, read as data: a bare identifier is a Symbol rather than a
+;; reference, and `{...}` is a map rather than a comprehension. A file is a
+;; stream of values.
+;;
+;; A map is held as a *flat* vec of alternating key and value, in the order it
+;; was written. Not a trie, for two reasons that a benchmark settled: building
+;; one is about seventy percent of what reading a keyed document costs, and a
+;; record decoded from it reads every field once and then throws it away. A
+;; linear scan of reference comparisons over a handful of interned keywords is
+;; cheaper than hashing them. Keeping the order is what lets a value be written
+;; back out looking like what was read.
+
+(export
+  Bjodat
+  bjodat-max-depth
+  read-bjodat parse-bjodat
+  read-bjodat-all parse-bjodat-all
+  bjodat->string
+  bjodat-entry-count bjodat-entry-key bjodat-entry-value bjodat-ref
+  ;; What a generated one-pass decoder drives. Not an API for people: see the
+  ;; section it is defined in.
+  Reader
+  open-map! next-key! end-entry! key=? field-value skip-value!
+  read-one-pass parse-one-pass read-one-pass-all parse-one-pass-all)
+
+(import (std prelude))
+
+(import/extern
+  (clr-to-long   (: Bjolang.Runtime.BjoNum.ParseLong))
+  (clr-to-double (: Bjolang.Runtime.BjoNum.ParseDouble)))
+
+;; Hex and binary, which have no reader of their own.
+(import/extern
+  (clr-radix-long (: System.Convert.ToInt64 (-> string int long)
+                     #:exceptions (System.OverflowException System.FormatException))))
+
+;; One UTF-16 unit, or -1 at the end.
+(import/extern
+  (clr-unit       (: Bjolang.Runtime.BjoPort.ReadUnit      (-> TextInputPort int) #:blocking))
+  (clr-unit-await (: Bjolang.Runtime.BjoPort.ReadUnitAsync (-> TextInputPort int) #:async)))
+
+(: read-unit (-> TextInputPort int))
+(defbjouble (read-unit p)
+  (#:sync (clr-unit p))
+  (#:bjo  (clr-unit-await p)))
+
+;; ---------------------------------------------------------------------------
+;; The value
+;; ---------------------------------------------------------------------------
+
+(type
+  (: Bjodat (Union
+             (BjoBool bool)
+             (BjoInt long)
+             (BjoFloat double)
+             (BjoStr string #:literal)
+             (BjoChar char)
+             (BjoSym Symbol)
+             (BjoKey Keyword)
+             (BjoList (List Bjodat))
+             (BjoVec (Vec Bjodat))
+             ;; key, value, key, value — an even length, in written order.
+             (BjoMap (Vec Bjodat)))))
+
+(: bjodat-max-depth int)
+(def bjodat-max-depth 200)
+
+;; --- what a map is, for anyone holding one ---------------------------------
+
+(: bjodat-entry-count (-> (Vec Bjodat) int))
+(defun (bjodat-entry-count entries) (/ (vec-length entries) 2))
+
+(: bjodat-entry-key (-> (Vec Bjodat) int Bjodat))
+(defun (bjodat-entry-key entries i) (vec-ref entries (* i 2)))
+
+(: bjodat-entry-value (-> (Vec Bjodat) int Bjodat))
+(defun (bjodat-entry-value entries i) (vec-ref entries (+ (* i 2) 1)))
+
+;; A keyword key, found by reference. Written order, so the first wins.
+(: bjodat-ref (-> (Vec Bjodat) Keyword (Option Bjodat)))
+(defun (bjodat-ref entries k)
+  (def n (vec-length entries))
+  (let go ((i 0))
+    (if (>= i n)
+        None
+        (match (vec-ref entries i)
+          ((BjoKey kk) (if (eq? kk k) (Some (vec-ref entries (+ i 1))) (go (+ i 2))))
+          (_ (go (+ i 2)))))))
+
+;; ---------------------------------------------------------------------------
+;; The name cache
+;; ---------------------------------------------------------------------------
+;; A document repeats its names. A manifest of twenty thousand records writes
+;; the same five keys twenty thousand times, and interning one costs a string
+;; built off the scratch buffer and then a dictionary probe — so almost every
+;; one of those allocations is of a string that already exists.
+;;
+;; This holds the last name seen in each slot and compares the buffer against it
+;; without building a string, which is what `stringbuilder-code-ref` is for. A
+;; hit costs that comparison and nothing else. A miss costs what interning
+;; always cost, plus the failed comparison.
+;;
+;; Direct-mapped rather than associative: a probe is one comparison, and two
+;; names colliding costs a miss rather than a wrong answer. Sized for the number
+;; of distinct names a *record* has, not the number of records.
+;;
+;; This was a class in `BjolangRuntime/BjoText.cs` — a hundred lines of C# that
+;; existed for one library. It is here instead because a library in the standard
+;; library should not need a file in the runtime; what the runtime owes it is
+;; primitives, and `stringbuilder-code-ref` and `string-code-ref` are the two it
+;; was missing. The comparison is a loop here where it was `StringBuilder.Equals`
+;; over a span there, and what that costs is measured in `bench/BASELINE.md`.
+
+(: name-slots int)
+(def name-slots 16)
+
+;; Empty slots hold `""`. No name of any other length can equal it, and a name
+;; that *is* empty answers `""`, which is the right answer anyway — so there is
+;; no empty case to test for. `make-array` would leave nulls, which
+;; `string-length` would not survive.
+(: new-name-cache (-> (Array string)))
+(defun (new-name-cache)
+  (def a (make-array name-slots))
+  (loop (:for i (range 0 name-slots))
+        (:do (array-set! a i "")))
+  a)
+
+;; The first unit and the length. Cheap, and enough to separate the names of one
+;; record: `version` and `commit` differ by length, `git` and `name` by both.
+(: name-slot (-> StringBuilder int int))
+(defun (name-slot sb n)
+  (if (= n 0)
+      0
+      (bitwise-and (bitwise-xor (* (stringbuilder-code-ref sb 0) 31) n)
+                   (- name-slots 1))))
+
+;; Is what was just buffered the name already held here? Length first, which
+;; settles most of it without looking at a single unit.
+(: buffer=? (-> StringBuilder string int bool))
+(defun (buffer=? sb name n)
+  (if (not (= n (string-length name)))
+      #f
+      (let go ((i 0))
+        (cond ((= i n) #t)
+              ((= (stringbuilder-code-ref sb i) (string-code-ref name i)) (go (+ i 1)))
+              (else #f)))))
+
+;; The buffer's contents as a string, reusing the one already handed out for
+;; those same units.
+;;
+;; This stops short of answering the interned `Keyword` itself, which would save
+;; the probe inside `string->keyword` as well. Nothing here can: interning is
+;; the runtime's, and a name read from a port is not known until it is read.
+(: cached-name (-> (Array string) StringBuilder string))
+(defun (cached-name cache sb)
+  (def n (stringbuilder-length sb))
+  (def i (name-slot sb n))
+  (def name (array-ref cache i))
+  (if (buffer=? sb name n)
+      name
+      (let ((s (stringbuilder->string sb)))
+        (array-set! cache i s)
+        s)))
+
+;; ---------------------------------------------------------------------------
+;; The reader
+;; ---------------------------------------------------------------------------
+;; One character of lookahead, held as a code so the end of the port is a value
+;; rather than a second field.
+
+(: spent int)
+(def spent -1)
+
+(type
+  (: Reader (Record (: port TextInputPort)
+                    (: held int #:mutable)
+                    (: row int #:mutable)
+                    (: col int #:mutable)
+                    ;; One buffer for every string, symbol and number.
+                    (: scratch StringBuilder)
+                    ;; One array for every list, vec and map in the document.
+                    (: stack (Array Bjodat) #:mutable)
+                    (: top int #:mutable)
+                    ;; One cache for every name in the document.
+                    (: names (Array string)))))
+
+(: reader (-> TextInputPort Reader))
+(defun (reader port)
+  (Reader (port port)
+          (held (read-unit port))
+          (row 1)
+          (col 1)
+          (scratch (stringbuilder-empty))
+          (stack (make-array 16))
+          (top 0)
+          (names (new-name-cache))))
+
+(: push! (-> Reader Bjodat void))
+(defun (push! rd v)
+  (def a (record-ref rd stack))
+  (def n (record-ref rd top))
+  (if (< n (array-length a))
+      (array-set! a n v)
+      (let* ((bigger (array-resize a (* n 2))))
+        (array-set! bigger n v)
+        (record-set! rd (stack bigger))))
+  (record-set! rd (top (+ n 1))))
+
+(: harvest! (-> Reader int (Vec Bjodat)))
+(defun (harvest! rd mark)
+  (def v (subarray->vec (record-ref rd stack) mark (- (record-ref rd top) mark)))
+  (record-set! rd (top mark))
+  v)
+
+(: buffer (-> Reader StringBuilder))
+(defun (buffer rd)
+  (def sb (record-ref rd scratch))
+  (stringbuilder-clear! sb)
+  sb)
+
+(: held-code (-> Reader int))
+(defun (held-code rd) (record-ref rd held))
+
+(: at-end? (-> Reader bool))
+(defun (at-end? rd) (= (record-ref rd held) spent))
+
+;; Anything that is not ASCII answers #\nul, because every character this is
+;; asked about is one of the format's own punctuation.
+(: peek (-> Reader char))
+(defun (peek rd)
+  (def c (held-code rd))
+  (if (< c 128) (integer->char c) #\nul))
+
+(: step! (-> Reader void))
+(defun (step! rd)
+  (record-set! rd
+               (held (read-unit (record-ref rd port)))
+               (col (+ (record-ref rd col) 1))))
+
+(: newline! (-> Reader void))
+(defun (newline! rd)
+  (record-set! rd
+               (held (read-unit (record-ref rd port)))
+               (row (+ (record-ref rd row) 1))
+               (col 1)))
+
+;; --- character classes ------------------------------------------------------
+
+;; A `case` rather than a chain of `=`: it is a C# switch, which Roslyn turns
+;; into a jump table, and this is asked about every character of the document.
+(: space-code? (-> int bool))
+(defun (space-code? c)
+  (case c
+    ((32 10 9 13) #t)
+    (else #f)))
+
+;; What ends a name: whitespace, the end of the port (`spent`, -1), or one of
+;; the delimiters the lexer refuses inside a symbol — ( ) [ ] { } , : " ; '
+;;
+;; One case rather than three calls and fifteen comparisons, because
+;; `take-name!` asks this per character of every symbol, keyword and number.
+;;
+;; A `.` and a `/` are deliberately absent: they are symbol characters, which
+;; is what makes `net8.0` and `bjolang/http` one symbol each.
+(: symbol-code? (-> int bool))
+(defun (symbol-code? c)
+  (case c
+    ((-1 32 10 9 13 40 41 91 93 123 125 44 58 34 59 39) #f)
+    (else #t)))
+
+(: digit-code? (-> int bool))
+(defun (digit-code? c) (and (>= c 48) (<= c 57)))
+
+;; Whitespace, and `;` to the end of the line.
+(: skip-space! (-> Reader void))
+(defun (skip-space! rd)
+  (let go ()
+    (def c (held-code rd))
+    (cond
+     ((space-code? c)
+      (if (= c 10)
+          (newline! rd)
+          (step! rd))
+      (go))
+     ((= c 59)
+      (let skip ()
+        (def k (held-code rd))
+        (when (and (not (= k spent)) (not (= k 10)))
+          (step! rd)
+          (skip)))
+      (go))
+     (else unit))))
+
+;; ---------------------------------------------------------------------------
+;; Refusals
+;; ---------------------------------------------------------------------------
+
+(: at (-> Reader string string))
+(defun (at rd what)
+  (str "line " (int->string (record-ref rd row))
+       ", column " (int->string (record-ref rd col))
+       ": " what))
+
+(: found (-> Reader string))
+(defun (found rd)
+  (def c (held-code rd))
+  (if (= c spent)
+      "the document ended"
+      (str "'" (list->string (list (integer->char c))) "'")))
+
+(: too-deep (-> Reader string string))
+(defun (too-deep rd what)
+  (at rd (str "this " what " nests deeper than " (int->string bjodat-max-depth)
+              ", which is as far as reading goes")))
+
+;; ---------------------------------------------------------------------------
+;; Strings
+;; ---------------------------------------------------------------------------
+
+(: hex-digit (-> char int))
+(defun (hex-digit c)
+  (cond
+    ((and (char>=? c #\0) (char<=? c #\9)) (- (char->integer c) 48))
+    ((and (char>=? c #\a) (char<=? c #\f)) (- (char->integer c) 87))
+    ((and (char>=? c #\A) (char<=? c #\F)) (- (char->integer c) 55))
+    (else -1)))
+
+;; The escapes source writes. `\n`, `\t`, `\r`, `\\`, `\"`, `\0`, and `\uXXXX`.
+(: read-escape! (-> Reader StringBuilder (Result string bool)))
+(defun (read-escape! rd sb)
+  (step! rd)
+  (if (at-end? rd)
+      (Err (at rd "the document ended inside a string"))
+      (let* ((c (peek rd)))
+        (cond
+          ((char=? c #\n) (stringbuilder-add-code! sb 10) (step! rd) (Ok #t))
+          ((char=? c #\t) (stringbuilder-add-code! sb 9) (step! rd) (Ok #t))
+          ((char=? c #\r) (stringbuilder-add-code! sb 13) (step! rd) (Ok #t))
+          ((char=? c #\0) (stringbuilder-add-code! sb 0) (step! rd) (Ok #t))
+          ((char=? c #\\) (stringbuilder-add-code! sb 92) (step! rd) (Ok #t))
+          ((char=? c #\") (stringbuilder-add-code! sb 34) (step! rd) (Ok #t))
+          ((char=? c #\u) (read-unicode-escape! rd sb))
+          (else (Err (at rd (str "\\" (list->string (list c)) " is not an escape"))))))))
+
+(: read-unicode-escape! (-> Reader StringBuilder (Result string bool)))
+(defun (read-unicode-escape! rd sb)
+  (step! rd)
+  (let go ((k 0) (acc 0))
+    (if (= k 4)
+        (begin (stringbuilder-add-code! sb acc) (Ok #t))
+        (if (at-end? rd)
+            (Err (at rd "the document ended inside a \\u escape"))
+            (let* ((d (hex-digit (peek rd))))
+              (if (< d 0)
+                  (Err (at rd (str "a \\u escape wants four hex digits, and this is "
+                                   (found rd))))
+                  (begin (step! rd) (go (+ k 1) (+ (* acc 16) d)))))))))
+
+(: read-text (-> Reader (Result string string)))
+(defun (read-text rd)
+  (step! rd)
+  (def sb (buffer rd))
+  (let go ()
+    (if (at-end? rd)
+        (Err (at rd "the document ended inside a string"))
+        (let* ((c (held-code rd)))
+          (cond
+           ((= c 34) (step! rd) (Ok (stringbuilder->string sb)))
+           ((= c 92) (match (read-escape! rd sb)
+                       ((Err e) (Err e))
+                       ((Ok _) (go))))
+           (else
+            (stringbuilder-add-code! sb c)
+            (if (= c 10) (newline! rd) (step! rd))
+            (go)))))))
+
+;; ---------------------------------------------------------------------------
+;; Numbers
+;; ---------------------------------------------------------------------------
+
+(: take-digits! (-> Reader StringBuilder int))
+(defun (take-digits! rd sb)
+  (let go ((n 0))
+    (if (digit-code? (held-code rd))
+        (begin
+          (stringbuilder-add-code! sb (held-code rd))
+          (step! rd)
+          (go (+ n 1)))
+        n)))
+
+;; `0x` and `0b`. The `0` has been stepped over and the marker is held.
+(: read-radix (-> Reader bool int (Result string Bjodat)))
+(defun (read-radix rd neg radix)
+  (step! rd)
+  (def sb (buffer rd))
+  (let go ((n 0))
+    (if (and (not (at-end? rd)) (>= (hex-digit (peek rd)) 0))
+        (begin (stringbuilder-add-code! sb (held-code rd)) (step! rd) (go (+ n 1)))
+        (if (= n 0)
+            (Err (at rd (str "this number has no digits after its radix, and there is "
+                             (found rd))))
+            (match (clr-radix-long (stringbuilder->string sb) radix)
+              ((Err _) (Err (at rd "this number does not fit in a long")))
+              ((Ok v) (Ok (BjoInt (if neg (- 0L v) v)))))))))
+
+(: scan-fraction! (-> Reader StringBuilder (Result string bool)))
+(defun (scan-fraction! rd sb)
+  (if (not (= (held-code rd) 46))
+      (Ok #f)
+      (begin
+        (stringbuilder-add-code! sb 46)
+        (step! rd)
+        (if (= (take-digits! rd sb) 0)
+            (Err (at rd (str "a number needs a digit after its decimal point, and this is "
+                             (found rd))))
+            (Ok #t)))))
+
+(: scan-exponent! (-> Reader StringBuilder (Result string bool)))
+(defun (scan-exponent! rd sb)
+  (def c (held-code rd))
+  (if (not (or (= c 101) (= c 69)))
+      (Ok #f)
+      (begin
+        (stringbuilder-add-code! sb 101)
+        (step! rd)
+        ;; `s` is bound rather than read three times, and it is not only the
+        ;; calls: with a name, `(or (= s 43) (= s 45))` is emitted as a
+        ;; ternary, and with the calls inlined the operands stop being simple
+        ;; and it becomes an if/else over a temporary, to keep the short
+        ;; circuit in the right order.
+        (let* ((s (held-code rd)))
+          (when (or (= s 43) (= s 45))
+            (stringbuilder-add-code! sb s)
+            (step! rd)))
+        (if (= (take-digits! rd sb) 0)
+            (Err (at rd (str "a number needs a digit after its exponent, and this is "
+                             (found rd))))
+            (Ok #t)))))
+
+;; A digit is held. The sign, if there was one, has been stepped over already —
+;; which is what tells `-` the symbol apart from `-1` the number, since deciding
+;; needs a character of lookahead the reader does not have until it has moved.
+(: read-magnitude (-> Reader bool (Result string Bjodat)))
+(defun (read-magnitude rd neg)
+  (if (= (held-code rd) 48)
+      (begin
+        (step! rd)
+        (let ((c (held-code rd)))
+          (cond
+            ((or (= c 120) (= c 88)) (read-radix rd neg 16))
+            ((or (= c 98) (= c 66)) (read-radix rd neg 2))
+            (else
+             (def sb (buffer rd))
+             (stringbuilder-add-code! sb 48)
+             (finish-number rd neg sb)))))
+      (finish-number rd neg (buffer rd))))
+
+(: finish-number (-> Reader bool StringBuilder (Result string Bjodat)))
+(defun (finish-number rd neg sb)
+  (ignore (take-digits! rd sb))
+  (match (scan-fraction! rd sb)
+    ((Err e) (Err e))
+    ((Ok frac?)
+     (match (scan-exponent! rd sb)
+       ((Err e) (Err e))
+       ((Ok exp?)
+        (if (or frac? exp?)
+            (let ((d (clr-to-double sb)))
+              (Ok (BjoFloat (if neg (- 0.0 d) d))))
+            ;; Wider than a long is still a number.
+            (match (try (clr-to-long sb) #:catch (System.OverflowException))
+              ((Ok n) (Ok (BjoInt (if neg (- 0L n) n))))
+              ((Err _)
+               (def d (clr-to-double sb))
+               (Ok (BjoFloat (if neg (- 0.0 d) d)))))))))))
+
+;; ---------------------------------------------------------------------------
+;; Symbols, keywords, and what a `#` begins
+;; ---------------------------------------------------------------------------
+
+(: take-name! (-> Reader StringBuilder int))
+(defun (take-name! rd sb)
+  (let go ((n 0))
+    (if (symbol-code? (held-code rd))
+        (begin
+          (stringbuilder-add-code! sb (held-code rd))
+          (step! rd)
+          (go (+ n 1)))
+        n)))
+
+(: read-symbol (-> Reader (Result string Bjodat)))
+(defun (read-symbol rd)
+  (def sb (buffer rd))
+  (if (= (take-name! rd sb) 0)
+      (Err (at rd (str (found rd) " does not begin a value")))
+      (Ok (BjoSym (string->symbol (cached-name (record-ref rd names) sb))))))
+
+;; `:name`. The colon is held.
+(: read-keyword (-> Reader (Result string Bjodat)))
+(defun (read-keyword rd)
+  (step! rd)
+  (def sb (buffer rd))
+  (if (= (take-name! rd sb) 0)
+      (Err (at rd (str "a keyword needs a name after its colon, and this is "
+                       (found rd))))
+      (Ok (BjoKey (string->keyword (cached-name (record-ref rd names) sb))))))
+
+;; The characters source spells with a word.
+(: named-char (-> string int))
+(defun (named-char name)
+  (cond
+    ((= name "newline") 10)
+    ((= name "space") 32)
+    ((= name "tab") 9)
+    ((= name "return") 13)
+    ((= name "nul") 0)
+    (else -1)))
+
+;; `#\c`, `#\newline`. The backslash is held.
+(: read-char-literal (-> Reader (Result string Bjodat)))
+(defun (read-char-literal rd)
+  (step! rd)
+  (if (at-end? rd)
+      (Err (at rd "the document ended inside a character"))
+      (let* ((first (held-code rd))
+             (sb (buffer rd)))
+        (stringbuilder-add-code! sb first)
+        (step! rd)
+        ;; `n` is bound rather than inlined into the test: a name compares
+        ;; straight into the `if`, where the call needs a temporary for its
+        ;; result and then a second one for the comparison.
+        (let ((n (take-name! rd sb)))
+          (if (= n 0)
+              (Ok (BjoChar (integer->char first)))
+              (let* ((name (stringbuilder->string sb))
+                     (code (named-char name)))
+                (if (< code 0)
+                    (Err (at rd (str "#\\" name " is not a character")))
+                    (Ok (BjoChar (integer->char code))))))))))
+
+;; `#t`, `#f`, `#\c`, `#:keyword`. The `#` is held.
+(: read-hash (-> Reader (Result string Bjodat)))
+(defun (read-hash rd)
+  (step! rd)
+  (if (at-end? rd)
+      (Err (at rd "the document ended after '#'"))
+      (let ((c (peek rd)))
+        (cond
+          ((char=? c #\t) (step! rd) (Ok (BjoBool #t)))
+          ((char=? c #\f) (step! rd) (Ok (BjoBool #f)))
+          ((char=? c #\\) (read-char-literal rd))
+          ((char=? c #\:) (read-keyword rd))
+          (else (Err (at rd (str "'#' begins #t, #f, #\\c or #:keyword, and this is "
+                                 (found rd)))))))))
+
+;; ---------------------------------------------------------------------------
+;; Lists, vecs and maps
+;; ---------------------------------------------------------------------------
+
+(: read-sequence (-> Reader int int char string (Result string (Vec Bjodat))))
+(defun (read-sequence rd depth closer-code closer what)
+  (step! rd)
+  (def mark (record-ref rd top))
+  (let go ()
+    (skip-space! rd)
+    (cond
+      ((at-end? rd)
+       (Err (at rd (str "the document ended inside a " what))))
+      ((= (held-code rd) closer-code)
+       (step! rd)
+       (Ok (harvest! rd mark)))
+      (else
+       (match (read-value rd (+ depth 1))
+         ((Err e) (Err e))
+         ((Ok v) (push! rd v) (go)))))))
+
+;; A key is any value but a list. Refusing one is what makes `{(` unambiguous:
+;; a `(` where a key would go means the map is written in the parenthesised
+;; form, and nothing else.
+(: read-key (-> Reader int (Result string Bjodat)))
+(defun (read-key rd depth)
+  (match (read-value rd depth)
+    ((Err e) (Err e))
+    ((Ok (BjoList _)) (Err (at rd "a list is not a key")))
+    ((Ok v) (Ok v))))
+
+;; `{(k v) (k v)}`. The opening brace has been stepped over and a `(` is held.
+(: read-paired-map (-> Reader int int (Result string Bjodat)))
+(defun (read-paired-map rd depth mark)
+  (let go ()
+    (skip-space! rd)
+    (cond
+      ((at-end? rd) (Err (at rd "the document ended inside a map")))
+      ((= (held-code rd) 125)
+       (step! rd)
+       (Ok (BjoMap (harvest! rd mark))))
+      ((not (= (held-code rd) 40))
+       (Err (at rd (str "this map is written (key value), so its entries all are, "
+                        "and here there is " (found rd)))))
+      (else
+       (step! rd)
+       (match (read-key rd (+ depth 1))
+         ((Err e) (Err e))
+         ((Ok k)
+          (push! rd k)
+          (match (read-value rd (+ depth 1))
+            ((Err e) (Err e))
+            ((Ok v)
+             (push! rd v)
+             (skip-space! rd)
+             (if (= (held-code rd) 41)
+                 (begin (step! rd) (go))
+                 (Err (at rd (str "an entry holds a key and a value, and then there is "
+                                  (found rd))))))))))))) 
+
+;; `{k v k v}`. The opening brace has been stepped over before reaching this fun.
+(: read-flat-map (-> Reader int int (Result string Bjodat)))
+(defun (read-flat-map rd depth mark)
+  (let go ()
+    (skip-space! rd)
+    (cond
+      ((at-end? rd) (Err (at rd "the document ended inside a map")))
+      ((= (held-code rd) 125)
+       (step! rd)
+       (Ok (BjoMap (harvest! rd mark))))
+      ((= (held-code rd) 40)
+       (Err (at rd "this map is written flat, so a '(' here is an entry of the other form")))
+      (else
+       (match (read-key rd (+ depth 1))
+         ((Err e) (Err e))
+         ((Ok k)
+          (push! rd k)
+          (skip-space! rd)
+          (if (or (at-end? rd) (= (held-code rd) 125))
+              (Err (at rd "this map has a key with no value"))
+              (match (read-value rd (+ depth 1))
+                ((Err e) (Err e))
+                ((Ok v) (push! rd v) (go))))))))))
+
+;; Which form a map is written in is decided by the first thing inside it, and
+;; then every entry has to agree.
+(: read-map (-> Reader int (Result string Bjodat)))
+(defun (read-map rd depth)
+  (step! rd)
+  (def mark (record-ref rd top))
+  (skip-space! rd)
+  (cond
+    ((at-end? rd) (Err (at rd "the document ended inside a map")))
+    ((= (held-code rd) 125)
+     (step! rd)
+     (Ok (BjoMap (harvest! rd mark))))
+    ((= (held-code rd) 40) (read-paired-map rd depth mark))
+    (else (read-flat-map rd depth mark))))
+
+;; ---------------------------------------------------------------------------
+;; A value
+;; ---------------------------------------------------------------------------
+
+(: read-value (-> Reader int (Result string Bjodat)))
+(defun (read-value rd depth)
+  (skip-space! rd)
+  (cond
+    ((> depth bjodat-max-depth) (Err (too-deep rd "value")))
+    ((at-end? rd) (Err (at rd "the document ended where a value was expected")))
+    (else
+     (def c (peek rd))
+     (cond
+       ((char=? c #\()
+        (match (read-sequence rd depth 41 #\) "list")
+          ((Err e) (Err e))
+          ((Ok v) (Ok (BjoList (vec->list v))))))
+       ((char=? c #\[)
+        (match (read-sequence rd depth 93 #\] "vec")
+          ((Err e) (Err e))
+          ((Ok v) (Ok (BjoVec v)))))
+       ((char=? c #\{) (read-map rd depth))
+       ((char=? c #\")
+        (match (read-text rd)
+          ((Err e) (Err e))
+          ((Ok s) (Ok (BjoStr s)))))
+       ((char=? c #\#) (read-hash rd))
+       ((char=? c #\:) (read-keyword rd))
+       ((char=? c #\)) (Err (at rd "')' closes nothing here")))
+       ((char=? c #\]) (Err (at rd "']' closes nothing here")))
+       ((char=? c #\}) (Err (at rd "'}' closes nothing here")))
+       ((char=? c #\,) (Err (at rd "a comma is not a separator here")))
+       ((char=? c #\') (Err (at rd "a symbol in bjodat is written without a quote")))
+       ((digit-code? (held-code rd)) (read-magnitude rd #f))
+       ;; `-` is a symbol of its own, and the start of a number when a digit
+       ;; follows it. Stepping over it first is what makes the difference
+       ;; visible; if no digit came, what was stepped over is the first
+       ;; character of a symbol.
+       ((char=? c #\-)
+        (step! rd)
+        (if (digit-code? (held-code rd))
+            (read-magnitude rd #t)
+            (let* ((sb (buffer rd)))
+              (stringbuilder-add-code! sb 45)
+              (ignore (take-name! rd sb))
+              (Ok (BjoSym (string->symbol (cached-name (record-ref rd names) sb)))))))
+       (else (read-symbol rd))))))
+
+;; ---------------------------------------------------------------------------
+;; Reading a document
+;; ---------------------------------------------------------------------------
+
+(: skip-bom! (-> Reader void))
+(defun (skip-bom! rd)
+  (when (= (held-code rd) 65279)
+    (step! rd)
+    (record-set! rd (col 1))))
+
+;; Exactly one value, and then the end.
+(: read-bjodat (-> TextInputPort (Result string Bjodat)))
+(defun (read-bjodat port)
+  (def rd (reader port))
+  (skip-bom! rd)
+  (match (read-value rd 1)
+    ((Err e) (Err e))
+    ((Ok v)
+     (skip-space! rd)
+     (if (at-end? rd)
+         (Ok v)
+         (Err (at rd (str "the value ended here, and then there is " (found rd))))))))
+
+(: parse-bjodat (-> string (Result string Bjodat)))
+(defun (parse-bjodat text)
+  (read-bjodat (open-input-string text)))
+
+;; Every value in the file, in order. A file is a stream, so an empty one is an
+;; empty list rather than a refusal.
+(: read-bjodat-all (-> TextInputPort (Result string (List Bjodat))))
+(defun (read-bjodat-all port)
+  (def rd (reader port))
+  (skip-bom! rd)
+  (let go ((acc Nil))
+    (skip-space! rd)
+    (if (at-end? rd)
+        (Ok (list-reverse acc))
+        (match (read-value rd 1)
+          ((Err e) (Err e))
+          ((Ok v) (go (Cons v acc)))))))
+
+(: parse-bjodat-all (-> string (Result string (List Bjodat))))
+(defun (parse-bjodat-all text)
+  (read-bjodat-all (open-input-string text)))
+
+;; ---------------------------------------------------------------------------
+;; Reading a record in one pass
+;; ---------------------------------------------------------------------------
+;; What `(text bjodat-codec)`'s generated decoders drive, so that a record can be
+;; read without a `Bjodat` tree standing between the text and the fields.
+;;
+;; The tree is not free. A map costs, per entry, a name string built off the
+;; buffer, an interned `Keyword`, a `BjoKey` node and two slots in a vec — and
+;; then the decoder scans that vec once per field, and the whole of it is thrown
+;; away the moment the record exists. A generated decoder knows its field names
+;; when it is *compiled*, so it can compare the key against them in the buffer
+;; and build none of it.
+;;
+;; The caller drives the loop rather than handing in a table, because the caller
+;; is generated code that already knows what it is looking for, and a table
+;; would be the thing this is trying not to build. So these are small and
+;; awkward on purpose: they are not an API for people.
+;;
+;; What is *not* here is a typed value reader. A field's value still goes
+;; through `read-value` and the field type's own `bjodat->` instance, which is
+;; what keeps every instance — including one a user wrote — working, and every
+;; error message identical to the tree decoder's. The entry is what this saves,
+;; not the value.
+
+;; Steps over `{`, and answers whether this map's entries are parenthesised.
+;; Which form it is in is decided by the first thing inside it, exactly as
+;; `read-map` decides it, and then every entry has to agree.
+(: open-map! (-> Reader string (Result string bool)))
+(defun (open-map! rd owner)
+  (skip-space! rd)
+  (cond
+    ((at-end? rd)
+     (Err (at rd (str owner ": the document ended where a map was expected"))))
+    ((not (= (held-code rd) 123))
+     (Err (at rd (str owner ": expected a map, and here there is " (found rd)))))
+    (else
+     (step! rd)
+     (skip-space! rd)
+     (Ok (= (held-code rd) 40)))))
+
+;; A key's name, taken into the buffer without being interned.
+;;
+;; A key that is not a keyword is read and dropped, and leaves the buffer empty
+;; — which no field name can equal, so it takes the same path an unknown key
+;; does. That matches the tree decoder, where `bjodat-ref` only ever matches a
+;; `BjoKey` and a key of any other shape is simply never found.
+(: take-key! (-> Reader string (Result string bool)))
+(defun (take-key! rd owner)
+  (skip-space! rd)
+  (if (= (held-code rd) 58)
+      (begin
+        (step! rd)
+        (let ((sb (buffer rd)))
+          (if (= (take-name! rd sb) 0)
+              (Err (at rd (str owner ": a keyword needs a name after its colon, and this is "
+                               (found rd))))
+              (Ok #t))))
+      (match (read-key rd 1)
+        ((Err e) (Err e))
+        ((Ok _)
+         (stringbuilder-clear! (record-ref rd scratch))
+         (Ok #t)))))
+
+;; `#t` when a key is in the buffer and the reader stands at its value; `#f`
+;; when the map closed.
+(: next-key! (-> Reader string bool (Result string bool)))
+(defun (next-key! rd owner paired)
+  (skip-space! rd)
+  (cond
+    ((at-end? rd) (Err (at rd (str owner ": the document ended inside a map"))))
+    ((= (held-code rd) 125) (step! rd) (Ok #f))
+    ((and paired (not (= (held-code rd) 40)))
+     (Err (at rd (str owner ": this map is written (key value), so its entries all are, "
+                      "and here there is " (found rd)))))
+    ((and (not paired) (= (held-code rd) 40))
+     (Err (at rd (str owner ": this map is written flat, so a '(' here is an entry of the "
+                      "other form"))))
+    (else
+     (when paired (step! rd))
+     (match (take-key! rd owner)
+       ((Err e) (Err e))
+       ((Ok _)
+        (skip-space! rd)
+        (if (or (at-end? rd) (= (held-code rd) 125))
+            (Err (at rd (str owner ": this map has a key with no value")))
+            (Ok #t)))))))
+
+;; The `)` of a parenthesised entry. Nothing at all in the flat form.
+(: end-entry! (-> Reader string bool (Result string bool)))
+(defun (end-entry! rd owner paired)
+  (if (not paired)
+      (Ok #t)
+      (begin
+        (skip-space! rd)
+        (if (= (held-code rd) 41)
+            (begin (step! rd) (Ok #t))
+            (Err (at rd (str owner ": an entry holds a key and a value, and then there is "
+                             (found rd))))))))
+
+;; Is the key in the buffer this name? The comparison the whole thing is for:
+;; no string is built, and nothing is interned.
+(: key=? (-> Reader string bool))
+(defun (key=? rd name)
+  (def sb (record-ref rd scratch))
+  (buffer=? sb name (stringbuilder-length sb)))
+
+;; A field's value, as a `Bjodat` for its own instance to convert.
+(: field-value (-> Reader (Result string Bjodat)))
+(defun (field-value rd) (read-value rd 1))
+
+;; An unknown key's value, read and dropped. It has to be *read*: a value is not
+;; a token, and finding where it ends means parsing it.
+(: skip-value! (-> Reader (Result string bool)))
+(defun (skip-value! rd)
+  (match (read-value rd 1)
+    ((Err e) (Err e))
+    ((Ok _) (Ok #t))))
+
+;; One record, and then the end, for a decoder generated by `def/bjodat-type`.
+;;
+;; The decoder is declared `-?->` rather than `->`, and has to be: a written
+;; arrow outranks the default, so a plain one would pin the generated decoder to
+;; its *sync* copy — and then a bjoroutine reading a socket would call the copy
+;; that parks the thread. The blocking lint says so in as many words, which is
+;; how this was found.
+(: read-one-pass (-> TextInputPort (-?-> Reader (Result string %a)) (Result string %a)))
+(defun (read-one-pass port decode)
+  (def rd (reader port))
+  (skip-bom! rd)
+  (match (decode rd)
+    ((Err e) (Err e))
+    ((Ok v)
+     (skip-space! rd)
+     (if (at-end? rd)
+         (Ok v)
+         (Err (at rd (str "the value ended here, and then there is " (found rd))))))))
+
+(: parse-one-pass (-> string (-?-> Reader (Result string %a)) (Result string %a)))
+(defun (parse-one-pass text decode)
+  (read-one-pass (open-input-string text) decode))
+
+;; A `[...]` of them, which is what a manifest's list of dependencies is.
+;;
+;; A `List` rather than a `Vec` because it is built by consing and turned round
+;; once, where a vec would be an RRB append per element. A caller that wants a
+;; vec can say so in one call; a caller that folds over it once — which is most
+;; of them — should not pay for a tree it does not index into.
+(: read-one-pass-all (-> TextInputPort (-?-> Reader (Result string %a)) (Result string (List %a))))
+(defun (read-one-pass-all port decode)
+  (def rd (reader port))
+  (skip-bom! rd)
+  (skip-space! rd)
+  (if (not (= (held-code rd) 91))
+      (Err (at rd (str "expected a vec of values, and here there is " (found rd))))
+      (begin
+        (step! rd)
+        (let go ((acc Nil))
+          (skip-space! rd)
+          (cond
+            ((at-end? rd) (Err (at rd "the document ended inside a vec")))
+            ((= (held-code rd) 93) (step! rd) (Ok (list-reverse acc)))
+            (else
+             (match (decode rd)
+               ((Err e) (Err e))
+               ((Ok v) (go (Cons v acc))))))))))
+
+(: parse-one-pass-all (-> string (-?-> Reader (Result string %a)) (Result string (List %a))))
+(defun (parse-one-pass-all text decode)
+  (read-one-pass-all (open-input-string text) decode))
+
+;; ---------------------------------------------------------------------------
+;; Writing
+;; ---------------------------------------------------------------------------
+;; The canonical spelling: maps flat, in the order they are held.
+
+(: escape-into! (-> StringBuilder string void))
+(defun (escape-into! sb s)
+  (stringbuilder-add! sb #\")
+  (loop (:for c s)
+        (:do (let* ((n (char->integer c)))
+               (cond
+                 ((= n 34) (stringbuilder-add-string! sb "\\\""))
+                 ((= n 92) (stringbuilder-add-string! sb "\\\\"))
+                 ((= n 10) (stringbuilder-add-string! sb "\\n"))
+                 ((= n 9) (stringbuilder-add-string! sb "\\t"))
+                 ((= n 13) (stringbuilder-add-string! sb "\\r"))
+                 (else (stringbuilder-add! sb c))))))
+  (stringbuilder-add! sb #\"))
+
+(: char-into! (-> StringBuilder char void))
+(defun (char-into! sb c)
+  (def n (char->integer c))
+  (stringbuilder-add-string! sb "#\\")
+  (cond
+    ((= n 10) (stringbuilder-add-string! sb "newline"))
+    ((= n 32) (stringbuilder-add-string! sb "space"))
+    ((= n 9) (stringbuilder-add-string! sb "tab"))
+    ((= n 13) (stringbuilder-add-string! sb "return"))
+    ((= n 0) (stringbuilder-add-string! sb "nul"))
+    (else (stringbuilder-add! sb c))))
+
+(: write-into! (-> StringBuilder Bjodat void))
+(defun (write-into! sb v)
+  (match v
+    ((BjoBool b) (stringbuilder-add-string! sb (if b "#t" "#f")))
+    ((BjoInt n) (stringbuilder-add-string! sb (long->string n)))
+    ((BjoFloat d) (stringbuilder-add-string! sb (double->string d)))
+    ((BjoStr s) (escape-into! sb s))
+    ((BjoChar c) (char-into! sb c))
+    ((BjoSym s) (stringbuilder-add-string! sb (symbol->string s)))
+    ((BjoKey k)
+     (stringbuilder-add! sb #\:)
+     (stringbuilder-add-string! sb (keyword->string k)))
+    ((BjoList xs)
+     (stringbuilder-add! sb #\()
+     (loop (:with first #t #f)
+           (:for x xs)
+           (:do (unless first (stringbuilder-add! sb #\space))
+                (write-into! sb x)))
+     (stringbuilder-add! sb #\)))
+    ((BjoVec xs)
+     (stringbuilder-add! sb #\[)
+     (loop (:with first #t #f)
+           (:for x xs)
+           (:do (unless first (stringbuilder-add! sb #\space))
+                (write-into! sb x)))
+     (stringbuilder-add! sb #\]))
+    ((BjoMap entries)
+     (stringbuilder-add! sb #\{)
+     (loop (:with first #t #f)
+           (:for x entries)
+           (:do (unless first (stringbuilder-add! sb #\space))
+                (write-into! sb x)))
+     (stringbuilder-add! sb #\}))))
+
+(: bjodat->string (-> Bjodat string))
+(defun (bjodat->string v)
+  (def sb (stringbuilder-empty))
+  (write-into! sb v)
+  (stringbuilder->string sb))
