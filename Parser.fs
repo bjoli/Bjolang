@@ -3038,8 +3038,19 @@ let rec parseExpr (s: SExpr) : Expr =
                         (fun binding acc ->
                             match binding with
                             | SList([ Ident name; value ], bindRange) ->
+                                // Not a direct `.Dispose`: on a port its scope
+                                // owns, that would close the stream and leave
+                                // the registration on the scope's list. The
+                                // helper releases through the owner handle when
+                                // there is one and disposes when there is not,
+                                // so `with-open` still works on any
+                                // `IDisposable` from interop.
                                 let dispose =
-                                    EApp(EIdent(".Dispose", bindRange), [ EIdent(name, bindRange) ], bindRange)
+                                    EApp(
+                                        EResolved("close-owned-or-dispose", bindRange),
+                                        [ EIdent(name, bindRange) ],
+                                        bindRange
+                                    )
 
                                 ELet(
                                     name,

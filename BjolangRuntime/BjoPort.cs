@@ -60,6 +60,21 @@ public sealed class BjoPort : TextReader {
 
     private bool disposed;
 
+    /// <summary>
+    /// The scope registration that will dispose this port, or null for a port
+    /// nothing owns.
+    ///
+    /// Null for the three standard ports and for a string port: nothing
+    /// releases stdin, and a `StringReader` is memory. Non-null for a file, set
+    /// by the constructor that opened it, before the caller can lose the
+    /// handle.
+    ///
+    /// A C# field and not an `(owner p)` in Bjolang. The only things that read
+    /// it are `close-input-port` and `with-open`, both of which go through
+    /// <see cref="BjolangRuntime.CloseOwnedOrDispose"/>.
+    /// </summary>
+    public BjolangRuntime.Owned? Owner;
+
     public BjoPort(TextReader inner) : this(inner, DefaultBufferSize) { }
 
     /// The buffer size is settable because every interesting bug in this class
@@ -552,6 +567,9 @@ public sealed class BjoWriter : TextWriter {
     private readonly char[] buf;
     private int len;
     private bool disposed;
+
+    /// <summary>See <see cref="BjoPort.Owner"/>.</summary>
+    public BjolangRuntime.Owned? Owner;
 
     public BjoWriter(TextWriter inner) : this(inner, DefaultBufferSize) { }
 

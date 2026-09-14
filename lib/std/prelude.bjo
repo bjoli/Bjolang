@@ -1497,15 +1497,30 @@
   (: TextOutputPort System.IO.TextWriter))
 
 ;; --- Opening ---
+;;
+;; A file port is owned by the ambient scope: when the scope returns, the file
+;; is closed, whether the program said so or not. A string port is not - it is
+;; memory, and the GC prices memory.
+;;
+;; The scope is read before the file is opened, so a program with no scope to
+;; put the port in fails without having opened anything.
+
+(import/extern
+  (own-port-in  (: BjolangRuntime.OwnReader  (-> BjoPort BjoPort)))
+  (own-port-out (: BjolangRuntime.OwnWriter  (-> BjoWriter BjoWriter)))
+  (close-in     (: BjolangRuntime.CloseInput  (-> TextInputPort void)))
+  (close-out    (: BjolangRuntime.CloseOutput (-> TextOutputPort void))))
 
 ;; Open input file.
 (: open-input-file (-> string (Result Exception TextInputPort)))
 (defun (open-input-file path)
+  ;; Raises here if there is no scope, before the file exists to leak.
+  (ignore (current-scope))
   (match (StreamReader. path)
-    ((Ok r) (Ok (cast TextInputPort (BjoPort. (cast TextInputPort r)))))
+    ((Ok r) (Ok (cast TextInputPort (own-port-in (BjoPort. (cast TextInputPort r))))))
     ((Err e) (Err e))))
 
-;; Open input string.
+;; Open input string. Memory only, so nothing registers it.
 (: open-input-string (-> string TextInputPort))
 (defun (open-input-string contents)
   (cast TextInputPort (StringReader. contents)))
@@ -1513,23 +1528,31 @@
 ;; Open output file.
 (: open-output-file (-> string (Result Exception TextOutputPort)))
 (defun (open-output-file path)
+  (ignore (current-scope))
   (match (StreamWriter. path)
-    ((Ok w) (Ok (cast TextOutputPort (BjoWriter. (cast TextOutputPort w)))))
+    ((Ok w) (Ok (cast TextOutputPort (own-port-out (BjoWriter. (cast TextOutputPort w))))))
     ((Err e) (Err e))))
 
-;; Open output string.
+;; Open output string. Memory only, so nothing registers it.
 (: open-output-string (-> TextOutputPort))
 (defun (open-output-string)
   (cast TextOutputPort (StringWriter.)))
 
 ;; --- Closing ---
-
-;; Close ports.
+;;
+;; Closing goes through the owner handle rather than calling `.Dispose`. A
+;; direct dispose would close the stream and leave the registration on the
+;; scope's list, so a long-lived scope would collect one spent entry per file it
+;; had already finished with.
+;;
+;; On a port nothing owns this disposes, which is what a string port wants. On
+;; one of the standard ports it flushes and stops: nothing in the language
+;; should be able to take stdout away from the rest of the program.
 (: close-input-port (-> TextInputPort void))
-(defun (close-input-port p) (.Dispose p))
+(defun (close-input-port p) (close-in p))
 
 (: close-output-port (-> TextOutputPort void))
-(defun (close-output-port p) (.Dispose p))
+(defun (close-output-port p) (close-out p))
 
 ;; Flush.
 (import/extern
@@ -2054,7 +2077,7 @@
 ;; `(raise failure)` puts the body's exception back with the stack it arrived
 ;; with. It is not reached when the close raised first, which is what happens
 ;; when children failed too — the close reports them together.
-(def/macro (with-scope form inject compare)
+(def/macro (scope-form form inject compare)
   (syntax-match form
     ((_ opener (cancel) first body ...)
      #'(let ()
@@ -2066,13 +2089,28 @@
                ((Ok answer) (scope-close! scope None) answer)
                ((Err failure) (scope-close! scope (Some failure)) (raise failure)))
            #:finally (dyn-restore! saved))))
-    (bad (syntax-error bad "with-scope takes an opener, a cancel thunk name and a body. It is what with-cancel, with-deadline and with-shield expand to; write one of those."))))
+    (bad (syntax-error bad "scope-form takes an opener, a cancel thunk name and a body. It is what with-scope, with-cancel, with-deadline and with-shield expand to; write one of those."))))
+
+;; `(with-scope body ...)` - a scope with no cancel thunk.
+;;
+;; The plain form, and the one to put around resources. Everything the other
+;; three do about fibers it does too: it waits for what was spawned in it, and
+;; it releases what was owned in it, newest first.
+;;
+;; The cancel thunk is bound to a name the template made up, so nothing in the
+;; body can reach it. A scope that wants to stop early says so with
+;; `with-cancel`; a scope that only wants ownership says so with this.
+(def/macro (with-scope form inject compare)
+  (syntax-match form
+    ((_ first body ...)
+     #'(scope-form (scope-open! 0) (no-cancel) ,first ,@body))
+    (bad (syntax-error bad "with-scope takes a body: (with-scope body ...). For a cancel thunk write with-cancel."))))
 
 ;; `(with-cancel (cancel) body ...)` — a scope that owns what it starts.
 (def/macro (with-cancel form inject compare)
   (syntax-match form
     ((_ (cancel) first body ...)
-     #'(with-scope (scope-open! 0) (,cancel) ,first ,@body))
+     #'(scope-form (scope-open! 0) (,cancel) ,first ,@body))
     (bad (syntax-error bad "with-cancel names its cancel thunk and takes a body: (with-cancel (cancel) body ...)"))))
 
 ;; `(with-deadline ms body ...)` — the same scope, whose token also fires on its
@@ -2085,7 +2123,7 @@
 (def/macro (with-deadline form inject compare)
   (syntax-match form
     ((_ ms first body ...)
-     #'(with-scope (scope-open! ,ms) (fire) ,first ,@body))
+     #'(scope-form (scope-open! ,ms) (fire) ,first ,@body))
     (bad (syntax-error bad "with-deadline takes a millisecond limit and a body: (with-deadline 5000 body ...)"))))
 
 ;; `(with-shield body ...)` and `(with-shield #:within ms body ...)` — a scope
@@ -2113,10 +2151,96 @@
 (def/macro (with-shield form inject compare)
   (syntax-match form
     ((_ #:within ms first body ...)
-     #'(with-scope (shield-open! ,ms) (fire) ,first ,@body))
+     #'(scope-form (shield-open! ,ms) (fire) ,first ,@body))
     ((_ first body ...)
      #'(with-shield #:within 30000 ,first ,@body))
     (bad (syntax-error bad "with-shield takes a body and an optional deadline: (with-shield #:within (seconds 5) body ...)"))))
+
+;; ---------------------------------------------------------------------------
+;; What a scope owns besides fibers
+;; ---------------------------------------------------------------------------
+;;
+;; Own things the GC cannot price: OS handles, permits, subscriptions, state
+;; that has to be put back. Do not own memory - that is what the GC is for.
+;;
+;;     (with-scope
+;;       (def p (unwrap (open-input-file "notes.txt")))
+;;       (read-all p))
+;;
+;; Releases run when the scope returns, after every fiber has landed, newest
+;; first - so a port wrapped around a stream closes before the stream. A release
+;; that throws is recorded and the walk carries on.
+;;
+;; A release is a plain thunk. It cannot suspend, so it cannot be abandoned, so
+;; a release that blocks blocks the close. That is the same trade `with-cancel`
+;; makes for a child that never lands: a hang says where it is.
+;;
+;; A closing scope refuses `own!` and ignores `spawn`. The two differ because
+;; the consequences do: a fiber that was never started leaks nothing, but a
+;; resource that was opened and then not registered is a leak with nobody to
+;; release it, so the only safe answer is to refuse before the caller lets go.
+;;
+;; **Fibers are not scopes.** A file opened inside `(spawn ...)` or `(bjo ...)`
+;; belongs to the enclosing scope, not to the fiber, and outlives it:
+;;
+;;     (with-scope
+;;       (spawn (fetch-into "a.txt"))    ;; the port it opens lives until
+;;       (spawn (fetch-into "b.txt")))   ;; this form returns, not until the
+;;                                       ;; fiber lands
+;;
+;; That is deliberate - a scope per spawn would be an allocation per spawn - and
+;; it is the reason for the advice below.
+;;
+;; For many short-lived resources under one long-lived scope, open a child scope
+;; per unit of work rather than `own!`/`release!` into the parent. The parent
+;; then holds a count and not a list, and the close is a drain rather than a
+;; walk. See the scale rows in bench/BASELINE.md.
+;;
+;; A handle returned out of the block that owned it is dangling. Nothing checks
+;; that; what makes it harmless is that there is nothing to read off it.
+
+;; `(in-scope s body ...)` - run the body with `s` as the ambient scope.
+;;
+;; The way to own something in a scope other than the innermost one, and the
+;; way back in from a .NET callback, which runs on a foreign thread with no
+;; ambient scope at all:
+;;
+;;     (def home (current-scope))
+;;     (on-event (fun (e) (in-scope home (handle e))))
+;;
+;; This installs a scope; it does not open or close one. Whoever opened `s` is
+;; still the one that waits for it.
+;;
+;; A form and not a keyword argument on `spawn` and `own!`: Bjolang has no
+;; rest-keywords, so a `#:scope` could not be forwarded through a wrapper, and
+;; the two would drift apart.
+(def/macro (in-scope form inject compare)
+  (syntax-match form
+    ((_ scope first body ...)
+     #'(let ()
+         (def saved (scope-push! ,scope))
+         (try (let () ,first ,@body)
+           #:finally (dyn-restore! saved))))
+    (bad (syntax-error bad "in-scope takes a scope and a body: (in-scope s body ...)"))))
+
+;; `(own-disposable x)` - register `.Dispose` on the ambient scope, and hand
+;; `x` straight back.
+;;
+;; A form rather than a function so that `.Dispose` is resolved at the call
+;; site, the way `with-open` resolves it. A function would need the whole
+;; `System.IDisposable` constraint apparatus to say the same thing.
+;;
+;; `with-open` is the other spelling: that one for a resource whose lifetime is
+;; one block, this one for a resource whose lifetime is the scope's.
+(def/macro (own-disposable form inject compare)
+  (syntax-match form
+    ((_ x)
+     ;; `unit` after the call, not the call itself: `.Dispose` is a void .NET
+     ;; method, so it has no value for the thunk to return.
+     #'(let ((it ,x))
+         (ignore (own! (fun () (.Dispose it) unit)))
+         it))
+    (bad (syntax-error bad "own-disposable takes one expression: (own-disposable (StreamReader. path))"))))
 
 ;; Milliseconds, spelled the way a deadline is usually said. Every timer in the
 ;; language counts milliseconds, and `(seconds 5)` is harder to misread than

@@ -258,6 +258,9 @@ let mapPrimitiveType (name: string) =
     // the only Bjolang that names one is the expansion of `with-cancel` and its
     // two siblings.
     | "Scope" -> "BjolangRuntime.Scope"
+    // The handle `own!` hands back. Opaque in the same way a scope is, and with
+    // one operation on it rather than five.
+    | "Owned" -> "BjolangRuntime.Owned"
     | "AsyncSeq" -> "System.Collections.Generic.IAsyncEnumerable"
     | "Keyword" | "Bjolang.Keyword" -> "BjolangRuntime.Keyword"
     | "Symbol" | "Bjolang.Symbol" -> "BjolangRuntime.Symbol"

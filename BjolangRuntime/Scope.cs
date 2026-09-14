@@ -78,11 +78,21 @@ public static partial class BjolangRuntime {
     /// <paramref name="token"/> is null where there is no token to consult — a
     /// detached fiber has neither scope nor token by construction, so its
     /// `OperationCanceledException` is always a failure.
+    ///
+    /// # `ObjectDisposedException` is read the same way
+    ///
+    /// A scope does not wait for a daemon, so a daemon can still be parked in
+    /// `read-line` on an owned port when the release walk disposes that port.
+    /// The daemon then unwinds with `ObjectDisposedException` because the scope
+    /// ended, which is the same fact `OperationCanceledException` carries, and
+    /// it is read by the same test: a fired token makes it cancellation, and no
+    /// token makes it a genuine use-after-close.
     /// </summary>
     private static bool IsCancellation(ExceptionDispatchInfo e, Promise<CancelReason>? token) {
         var ex = e.SourceException;
         if (ex is Bjolang.Runtime.Cancelled) return true;
-        return ex is System.OperationCanceledException && token is { IsCompleted: true };
+        return ex is System.OperationCanceledException or System.ObjectDisposedException
+            && token is { IsCompleted: true };
     }
 
     /// <summary>
@@ -126,21 +136,70 @@ public static partial class BjolangRuntime {
     }
 
     /// <summary>
-    /// A cancellation scope, and the fibers started inside it.
+    /// One resource a scope owns, and the handle `own!` hands back.
+    ///
+    /// The node is the handle: there is no separate registration record, so
+    /// releasing early is an unlink rather than a lookup. Doubly linked, so a
+    /// scope that owns a hundred thousand handles can drop any one of them
+    /// without walking.
+    ///
+    /// <see cref="_state"/> is flipped with an interlocked exchange, and
+    /// whoever flips it owns the release. That is the whole of the race between
+    /// an early <see cref="Release"/> and the scope's closing pass: exactly one
+    /// of them wins, so the thunk runs exactly once.
+    /// </summary>
+    public sealed class Owned {
+        private const int Registered = 0;
+        private const int Released = 1;
+
+        private readonly Scope _scope;
+        private readonly System.Action _release;
+        private int _state = Registered;
+
+        /// Guarded by the owning scope's `_gate`, both of them.
+        internal Owned? Prev;
+        internal Owned? Next;
+
+        internal Owned(Scope scope, System.Action release) {
+            _scope = scope;
+            _release = release;
+        }
+
+        /// True for whoever flips the state, false for everyone after.
+        internal bool Claim() =>
+            System.Threading.Interlocked.Exchange(ref _state, Released) == Registered;
+
+        internal void Run() => _release();
+
+        /// <summary>
+        /// `(release! owned)` — run the release now and take the node off the
+        /// scope's list. A second call does nothing, and neither does a call
+        /// that lost the race with the scope's closing pass.
+        ///
+        /// The thunk runs on the caller's stack and outside the lock, so its
+        /// exception reaches the caller and no user code runs under `_gate`.
+        /// </summary>
+        public Unit Release() {
+            if (!Claim()) return default;
+            _scope.Unlink(this);
+            _release();
+            return default;
+        }
+    }
+
+    /// <summary>
+    /// A cancellation scope: the fibers started inside it, and the resources
+    /// registered on it.
     ///
     /// Opaque to Bjolang: the only things that touch one are the four `spawn`
-    /// forms and the `with-cancel` / `with-deadline` / `with-shield` macros,
-    /// which open it, install it and close it again.
+    /// forms, `own!`, and the `with-scope` / `with-cancel` / `with-deadline` /
+    /// `with-shield` macros, which open it, install it and close it again.
     ///
-    /// # Room left on purpose
+    /// # Scopes that own nothing pay nothing
     ///
-    /// A scope owns fibers and nothing else today. Eio's switches also own file
-    /// handles, and `with-response` in `std/http` does the same job for one
-    /// type. Unifying them is worth doing later, and nothing here is in the way
-    /// of it: a release action would be a list of thunks guarded by
-    /// <see cref="_gate"/>, run at the end of <see cref="Close"/> where the
-    /// deadline timer is disposed today. It is deliberately not added yet,
-    /// because a list nothing writes to is a list nobody maintains.
+    /// <see cref="_head"/> is null until the first <see cref="Own"/>, and
+    /// neither a spawn nor a sync reads it. A program that owns no resources
+    /// runs the code it ran before this existed.
     /// </summary>
     public sealed class Scope {
 
@@ -195,8 +254,43 @@ public static partial class BjolangRuntime {
         /// <summary>
         /// The failures the scope has to raise, in the order the children
         /// landed. Null until the first one, because almost no scope has any.
+        ///
+        /// Capped at <see cref="MaxKept"/>. A million failing children must not
+        /// hold a million exceptions alive, so past the cap only
+        /// <see cref="_failureCount"/> moves and the report says how many were
+        /// dropped.
         /// </summary>
         private List<ExceptionDispatchInfo>? _failures;
+
+        /// How many children failed, which is not `_failures.Count` once the
+        /// cap is reached.
+        private int _failureCount;
+
+        private const int MaxKept = 32;
+
+        /// <summary>
+        /// Does a child's failure belong to this scope?
+        ///
+        /// True everywhere except the REPL session scope and the scope around a
+        /// detached fiber. Those two have nobody to raise to — the REPL has a
+        /// prompt to return to, and a detached subtree is outside every scope
+        /// by construction — so a failure there is reported to stderr as it
+        /// lands and does not fire the token. Without that, one failed spawn at
+        /// the prompt would cancel the session and every later `sync` would
+        /// raise.
+        ///
+        /// A flag rather than a second scope type: everything else about the
+        /// two is the same, and the drain has to behave identically.
+        /// </summary>
+        private readonly bool _propagate;
+
+        /// The head of the owned list, newest first. Null until the first
+        /// <see cref="Own"/>, and guarded by <see cref="_gate"/>.
+        private Owned? _head;
+
+        /// How many handles are on the list. For the test hook only; nothing in
+        /// the runtime branches on it.
+        private int _ownedCount;
 
         /// <summary>
         /// Completed by whoever takes <see cref="_outstanding"/> to zero. This
@@ -218,7 +312,8 @@ public static partial class BjolangRuntime {
         /// </summary>
         private System.Threading.Timer? _deadline;
 
-        internal Scope(int deadlineMs, Promise<CancelReason>? parent) {
+        internal Scope(int deadlineMs, Promise<CancelReason>? parent, bool propagate = true) {
+            _propagate = propagate;
             _reporting = new Landing(this, reports: true);
             _silent = new Landing(this, reports: false);
 
@@ -241,6 +336,100 @@ public static partial class BjolangRuntime {
 
         /// <summary>Has closing started? Read by the daemon and detached spawns.</summary>
         internal bool IsClosed => System.Threading.Volatile.Read(ref _outstanding) < 0;
+
+        /// <summary>How many handles the scope is still holding. Test hook.</summary>
+        internal int OwnedCount { get { lock (_gate) return _ownedCount; } }
+
+        /// <summary>
+        /// Register a release on this scope, and hand back the handle that runs
+        /// it early.
+        ///
+        /// # A closing scope refuses this, where it ignores a spawn
+        ///
+        /// The asymmetry is deliberate, and it is about what the two leave
+        /// behind. A fiber that was never started leaks nothing, so `spawn`
+        /// into a closing scope starts nothing and says nothing. A resource
+        /// that was opened and then not registered is a leak with nobody left
+        /// to release it, so the only safe answer is to refuse before the
+        /// caller lets go of it — which is why this throws and the caller
+        /// disposes what it had just opened.
+        /// </summary>
+        internal Owned Own(System.Action release) {
+            lock (_gate) {
+                // Under the gate, so that the test and the link are one step
+                // against a `Close` that takes the same lock to detach.
+                if (System.Threading.Volatile.Read(ref _outstanding) < 0)
+                    throw new Bjolang.Runtime.ScopeEnded(
+                        "own! on a scope that is closing: the scope is already releasing what it holds, so nothing would release this.");
+
+                var node = new Owned(this, release) { Next = _head };
+                if (_head is not null) _head.Prev = node;
+                _head = node;
+                _ownedCount++;
+                return node;
+            }
+        }
+
+        /// <summary>
+        /// Take a node off the list. Only ever called by whoever won the node's
+        /// claim, so it cannot race the closing pass over the same node.
+        ///
+        /// A node the closing pass has already detached has null links and is
+        /// not the head, so this finds nothing to do — which is the case where
+        /// an early `release!` lost the race and its `Claim` told it so.
+        /// </summary>
+        internal void Unlink(Owned node) {
+            lock (_gate) {
+                if (node.Prev is not null) node.Prev.Next = node.Next;
+                else if (ReferenceEquals(_head, node)) _head = node.Next;
+
+                if (node.Next is not null) node.Next.Prev = node.Prev;
+
+                node.Prev = null;
+                node.Next = null;
+                _ownedCount--;
+            }
+        }
+
+        /// <summary>
+        /// Take the whole list, claim every node on it, and hand back the ones
+        /// this pass won as a chain in release order — newest first.
+        ///
+        /// Claiming happens under the lock so that it cannot interleave with an
+        /// <see cref="Unlink"/>, which takes the same lock. Running happens
+        /// afterwards and outside it, because a release is user code.
+        ///
+        /// Every node visited has its links cleared, won or not. A node an
+        /// early `release!` won is then invisible to the <see cref="Unlink"/>
+        /// that is still on its way in, so it cannot write into the private
+        /// chain built here.
+        /// </summary>
+        private Owned? ClaimAll() {
+            Owned? first = null;
+            Owned? last = null;
+
+            lock (_gate) {
+                var node = _head;
+                _head = null;
+                _ownedCount = 0;
+
+                while (node is not null) {
+                    var next = node.Next;
+                    node.Prev = null;
+                    node.Next = null;
+
+                    if (node.Claim()) {
+                        if (last is null) first = node;
+                        else last.Next = node;
+                        last = node;
+                    }
+
+                    node = next;
+                }
+            }
+
+            return first;
+        }
 
         /// <summary>
         /// Count in a fiber that is about to be started, or answer false if this
@@ -369,11 +558,22 @@ public static partial class BjolangRuntime {
             // is not ours to read while holding the gate.
             bool failed = reports && error is not null && !IsCancellation(error, Token);
 
+            // A scope that does not propagate says it here and now, because
+            // there is nobody it could say it to later: it will not store the
+            // failure and will not fire its token for it. From this point the
+            // child counts as an ordinary landing.
+            if (failed && !_propagate) {
+                Scheduler.ReportUnhandled(error!.SourceException);
+                failed = false;
+            }
+
             bool closed = false;
             bool none;
             if (failed) {
                 lock (_gate) {
-                    (_failures ??= new List<ExceptionDispatchInfo>()).Add(error!);
+                    _failureCount++;
+                    _failures ??= new List<ExceptionDispatchInfo>();
+                    if (_failures.Count < MaxKept) _failures.Add(error!);
 
                     // One read answers both questions, and answers them for the
                     // state this child left behind rather than for some later
@@ -563,8 +763,15 @@ public static partial class BjolangRuntime {
             _deadline?.Dispose();
             _deadline = null;
 
+            // Every fiber has landed and the token has fired, so nothing the
+            // scope owns is still in use. Releases run newest-first, which is
+            // the order the resources were opened in reversed — a port wrapped
+            // around a stream is closed before the stream.
+            ReleaseAll();
+
             List<ExceptionDispatchInfo>? failures;
-            lock (_gate) failures = _failures;
+            int total;
+            lock (_gate) { failures = _failures; total = _failureCount; }
 
             if (failures is null) return default;
 
@@ -573,14 +780,72 @@ public static partial class BjolangRuntime {
             // dropped here — the caller re-raises it when this returns without
             // throwing, which is the case where no child failed as well.
             if (bodyFailure.IsSome)
-                throw Aggregate(bodyFailure.Value, failures);
+                throw Aggregate(bodyFailure.Value, failures, total);
 
             // One failure travels as itself, with the stack it was raised with.
             // Wrapping a single exception in an aggregate would make every
             // `#:catch` in the language have to unwrap before it could match.
-            if (failures.Count == 1) failures[0].Throw();
+            // `total` and not `failures.Count`, so that a run which hit the cap
+            // is never mistaken for a single failure.
+            if (total == 1) failures[0].Throw();
 
-            throw Aggregate(null, failures);
+            throw Aggregate(null, failures, total);
+        }
+
+        /// <summary>
+        /// Run every release the scope still holds, newest first.
+        ///
+        /// # Under a shield
+        ///
+        /// The scope's own token has fired by now, so anything a release calls
+        /// that consults the ambient token would refuse before doing its work —
+        /// which is the cleanup-after-cancellation problem `with-shield` exists
+        /// for, arriving here by default. The environment is pushed with a
+        /// fresh token for the walk and put back afterwards. The scope field is
+        /// left alone: it is closed, so a `spawn` inside a release starts
+        /// nothing and an `own!` refuses, which is what should happen.
+        ///
+        /// # No deadline
+        ///
+        /// A release is a plain thunk. It cannot suspend, so there is no point
+        /// at which it could be abandoned, and interrupting one would mean
+        /// running every release on a pool thread and walking away from it —
+        /// a leaked thread per stuck release and a thread hop per handle. So a
+        /// release that blocks blocks the close, which is the trade
+        /// `with-cancel` already makes for a child that never lands: a hang
+        /// says where it is. `own-bjo!` is where a deadline would live, and it
+        /// is additive from here — the shield is already in place, only the
+        /// wait and the timer would be new.
+        ///
+        /// # A release that throws
+        ///
+        /// Caught, recorded and the walk goes on. One failing handle must not
+        /// leave the rest of them open.
+        /// </summary>
+        private void ReleaseAll() {
+            var node = ClaimAll();
+            if (node is null) return;
+
+            var saved = Dyn.Current;
+            Dyn.Current = saved.WithCancel(new Promise<CancelReason>());
+            try {
+                while (node is not null) {
+                    var next = node.Next;
+                    try {
+                        node.Run();
+                    } catch (System.Exception e) {
+                        lock (_gate) {
+                            _failureCount++;
+                            _failures ??= new List<ExceptionDispatchInfo>();
+                            if (_failures.Count < MaxKept)
+                                _failures.Add(ExceptionDispatchInfo.Capture(e));
+                        }
+                    }
+                    node = next;
+                }
+            } finally {
+                Dyn.Current = saved;
+            }
         }
 
         /// <summary>
@@ -594,14 +859,24 @@ public static partial class BjolangRuntime {
         /// when it died, and landing order at least says which failure came
         /// first.
         /// </summary>
+        /// <paramref name="total"/> is how many failed, which is more than
+        /// <paramref name="failures"/> holds once the cap is reached. The count
+        /// is what the message reports, so a run that dropped some says so
+        /// rather than quietly under-reporting.
         private static System.AggregateException Aggregate(
-            System.Exception? first, List<ExceptionDispatchInfo> failures) {
+            System.Exception? first, List<ExceptionDispatchInfo> failures, int total) {
 
             var all = new List<System.Exception>(failures.Count + 1);
             if (first is not null) all.Add(first);
             foreach (var f in failures) all.Add(f.SourceException);
-            return new System.AggregateException(
-                $"{all.Count} failures inside one cancellation scope", all);
+
+            int counted = total + (first is not null ? 1 : 0);
+            int dropped = counted - all.Count;
+            var message = dropped > 0
+                ? $"{counted} failures inside one cancellation scope, and {dropped} more not kept"
+                : $"{counted} failures inside one cancellation scope";
+
+            return new System.AggregateException(message, all);
         }
     }
 
@@ -831,24 +1106,160 @@ public static partial class BjolangRuntime {
     public static Fiber<Unit> scopesubclose_BANG(Scope scope, Option<System.Exception> failure) =>
         scope.Close(failure);
 
+    /// `(scope-cancel! sc reason)` — fire the token of a scope held as a value.
+    public static Unit scopesubcancel_BANG(Scope scope, CancelReason reason) {
+        scope.Token.TrySetResult(reason);
+        return default;
+    }
+
+    /// `(scope-owned-count sc)` — the test hook. Not part of the surface.
+    public static int scopesubownedsubcount(Scope scope) => scope.OwnedCount;
+
+    // -----------------------------------------------------------------------
+    // Owned resources
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// The ambient scope, or a raise if there is none.
+    ///
+    /// The same error `own!` gives, because they are the same fact: there is
+    /// nowhere to put this.
+    /// </summary>
+    internal static Scope RequireScope(string what) =>
+        Dyn.Current.Scope ?? throw new Bjolang.Runtime.ScopeEnded(
+            $"{what} outside a scope: there is nothing here to own it or wait for it. Open one with (with-scope ...), or capture one with (current-scope) and re-enter it with (in-scope ...).");
+
+    /// `(current-scope)` — the ambient scope as a value.
+    public static Scope currentsubscope() => RequireScope("(current-scope)");
+
+    /// `(own! thunk)` — register a release on the ambient scope.
+    ///
+    /// The scope is read before anything else happens, so a caller that holds a
+    /// freshly opened handle finds out it has nowhere to put it before it lets
+    /// go of it.
+    public static Owned own_BANG(System.Func<Unit> release) =>
+        RequireScope("own!").Own(() => release());
+
+    /// `(release! owned)` — run the release now. See <see cref="Owned.Release"/>.
+    public static Unit release_BANG(Owned owned) => owned.Release();
+
+    // -----------------------------------------------------------------------
+    // Ports the scope owns
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Register a freshly opened port on the ambient scope, and hand it back.
+    ///
+    /// Called by the file-port constructors after they have wrapped the stream.
+    /// The scope is read *before* the stream is opened — see the Bjolang side —
+    /// so reaching here means there is a scope, and the only way `Own` fails is
+    /// that the scope began closing in between. In that case the port is
+    /// disposed here rather than leaked, and the raise reaches the caller that
+    /// asked for it.
+    /// </summary>
+    public static Bjolang.Runtime.BjoPort OwnReader(Bjolang.Runtime.BjoPort port) {
+        port.Owner = RegisterPort(port);
+        return port;
+    }
+
+    public static Bjolang.Runtime.BjoWriter OwnWriter(Bjolang.Runtime.BjoWriter port) {
+        port.Owner = RegisterPort(port);
+        return port;
+    }
+
+    private static Owned RegisterPort(System.IDisposable port) {
+        var scope = Dyn.Current.Scope;
+        if (scope is null) {
+            port.Dispose();
+            throw new Bjolang.Runtime.ScopeEnded(
+                "a port was opened outside a scope: there is nothing here to close it.");
+        }
+
+        try {
+            return scope.Own(port.Dispose);
+        } catch {
+            port.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// `close-input-port`, `close-output-port`, and the way out of a
+    /// `with-open`.
+    ///
+    /// A port its scope owns is *released*, not disposed: a direct `.Dispose`
+    /// would close the stream and leave the node on the scope's list, so a
+    /// long-lived scope would accumulate one spent entry per file it had
+    /// already finished with.
+    ///
+    /// Anything else is disposed, which is what a string port wants and what an
+    /// `IDisposable` from interop wants. The three standard ports have no owner
+    /// and are never disposed — closing one flushes it and stops there, because
+    /// nothing in the language should be able to take stdout away from the rest
+    /// of the program.
+    /// </summary>
+    public static Unit CloseInput(System.IO.TextReader? port) {
+        if (port is null) return default;
+        if (port is Bjolang.Runtime.BjoPort { Owner: { } owned }) return owned.Release();
+        if (ReferenceEquals(port, StdIn) || ReferenceEquals(port, Console.In)) return default;
+        port.Dispose();
+        return default;
+    }
+
+    public static Unit CloseOutput(System.IO.TextWriter? port) {
+        if (port is null) return default;
+        if (port is Bjolang.Runtime.BjoWriter { Owner: { } owned }) return owned.Release();
+        if (IsStandard(port)) { port.Flush(); return default; }
+        port.Dispose();
+        return default;
+    }
+
+    /// `(close-owned-or-dispose x)` — the `with-open` exit, which is handed
+    /// whatever the binding held: a port, or any `IDisposable` that came out of
+    /// interop.
+    public static Unit closesubownedsuborsubdispose<T>(T thing) => CloseOwnedOrDispose(thing);
+
+    public static Unit CloseOwnedOrDispose(object? thing) {
+        switch (thing) {
+            case null: return default;
+            case System.IO.TextReader r: return CloseInput(r);
+            case System.IO.TextWriter w: return CloseOutput(w);
+            case System.IDisposable d: d.Dispose(); return default;
+            default: return default;
+        }
+    }
+
+    /// The writers a program must not be able to close. `Console.Out` and
+    /// `Console.Error` as .NET hands them over, and a `BjoWriter` wrapped round
+    /// either.
+    private static bool IsStandard(System.IO.TextWriter w) =>
+        ReferenceEquals(w, Console.Out) || ReferenceEquals(w, Console.Error);
+
     // -----------------------------------------------------------------------
     // `main`
     // -----------------------------------------------------------------------
     //
-    // `main` is not in a scope. It runs with no `Scope` and no token, which is
-    // what makes `(current-cancel)` the root token and what lets `sync` skip
-    // the cancellation race entirely — the race is against a token that cannot
-    // fire, and a program that opens no scope should not pay for one.
+    // `main` runs in a scope, and it is an ordinary one: no special-cased
+    // token, no separate code path, the same `scope-open!` that `with-cancel`
+    // uses. So the rule is the same rule, one level up — when `main` returns,
+    // the work it started is over: every fiber landed, every resource released.
     //
-    // The rule that follows is Go's: when `main` returns the process exits, and
-    // a fiber still running is discarded. `main`'s own fiber is still awaited,
-    // and a failure in it still ends the process.
+    // A sibling failure cancels the rest, `main` does not return until every
+    // owned fiber has landed, and a top-level failure is reported through the
+    // aggregated report like any other.
     //
-    // `main` used to run inside a `Scope`, which waited for every top-level
-    // `spawn` before returning. That scope had a live token, so
-    // `ReferenceEquals(token, RootCancel)` in `sync` was false in every real
-    // program and the fast path it guards was unreachable. Work that has to be
-    // waited for goes in a `with-cancel`, which is the same thing written down.
+    // # What this costs, and why it is paid
+    //
+    // A live ambient token puts one `CancelWatch` on every parked sync: 40
+    // bytes and about 20% on the ring benchmark, measured in
+    // `bench/BASELINE.md`. `main` was taken out of a scope to avoid exactly
+    // that. It is back because the alternative is that a top-level `spawn` is
+    // owned by nothing, a top-level `open-input-file` is released by nothing,
+    // and `own!` has no answer at all outside a written-down `with-cancel`.
+    //
+    // The watch is the thing to make cheaper, and it is not a scope problem:
+    // nothing can remove a waiter from a promise's list, so it cannot be
+    // pooled. See the baseline.
 
     /// A Bjolang program runs in the invariant culture.
     ///
@@ -875,19 +1286,84 @@ public static partial class BjolangRuntime {
             System.Globalization.CultureInfo.InvariantCulture;
     }
 
-    /// The entry point for a bjoroutine `main`.
-    public static Fiber<T> RunMainFiber<T>(System.Func<Fiber<T>> body) {
-        RunInvariant();
-        return body();
+    /// <summary>
+    /// The scope around `main`, with the standard streams registered on it.
+    ///
+    /// The flush is the *first* release, so under LIFO it is the last to run:
+    /// every resource the program owns has written its final lines by then.
+    /// Registered rather than done in a `finally` so that it is subject to the
+    /// same ordering as everything else, and so that a release which throws
+    /// cannot skip it.
+    ///
+    /// The standard streams themselves are never owned — nothing releases them,
+    /// and `close-output-port` on one flushes and does nothing else.
+    /// </summary>
+    private static Scope OpenMainScope() {
+        var scope = scopesubopen_BANG(0);
+        _ = scope.Own(static () => {
+            Console.Out.Flush();
+            Console.Error.Flush();
+        });
+        return scope;
     }
 
+    /// The entry point for a bjoroutine `main`.
+    ///
+    /// The shape is the `with-scope` macro's, written out: install, run, close
+    /// with whatever the body was leaving with, restore. The body's failure is
+    /// rethrown after the close so that the children are cancelled and waited
+    /// for first, and so that a child that also failed is reported with it.
+    public static async Fiber<T> RunMainFiber<T>(System.Func<Fiber<T>> body) {
+        RunInvariant();
+
+        var scope = OpenMainScope();
+        var saved = scopesubpush_BANG(scope);
+        try {
+            T answer;
+            try {
+                answer = await body();
+            } catch (System.Exception e) {
+                await scope.Close(new Option<System.Exception>(e));
+                throw;
+            }
+
+            await scope.Close(default);
+            return answer;
+        } finally {
+            _ = dynsubrestore_BANG(saved);
+        }
+    }
+
+    /// <summary>
     /// The entry point for an ordinary `main`.
     ///
-    /// A plain `defun` cannot suspend, so there is nothing to wait for and
-    /// nothing to drain: the body runs on the calling thread and returns.
+    /// A plain `defun` cannot suspend, so the body runs on the calling thread.
+    /// The *close* still has to wait — `spawn` is colourless, so a `defun` main
+    /// can start fibers even though it cannot join one — and waiting is a
+    /// fiber's business, so the drain is driven by `RunToCompletion`.
+    ///
+    /// Parking this thread is allowed where parking a pool thread would not be:
+    /// it is the process's entry thread, and nothing is queued behind it.
+    /// </summary>
     public static T RunMainSync<T>(System.Func<T> body) {
         RunInvariant();
-        return body();
+
+        var scope = OpenMainScope();
+        var saved = scopesubpush_BANG(scope);
+        try {
+            T answer;
+            try {
+                answer = body();
+            } catch (System.Exception e) {
+                _ = Bjo.RunToCompletion(() => scope.Close(new Option<System.Exception>(e)));
+                throw;
+            }
+
+            _ = Bjo.RunToCompletion(() => scope.Close(default));
+            return answer;
+        } finally {
+            _ = dynsubrestore_BANG(saved);
+        }
     }
 }
 
@@ -932,5 +1408,17 @@ namespace Bjolang.Runtime {
 
         public Cancelled(global::BjolangRuntime.CancelReason reason)
             : base($"cancelled: {reason}") => Reason = reason;
+    }
+
+    /// <summary>
+    /// Raised by `own!`, either because there is no scope to own the thing or
+    /// because the scope there is has begun closing.
+    ///
+    /// An ordinary exception rather than a `Cancelled`: nothing was cancelled,
+    /// and a program is free to catch this and dispose what it was holding.
+    /// `#:catch` may name it, unlike `Cancelled`.
+    /// </summary>
+    public sealed class ScopeEnded : System.Exception {
+        public ScopeEnded(string message) : base(message) { }
     }
 }

@@ -124,6 +124,15 @@ let cancelReasonType = TCon("CancelReason", [])
 /// a `def`, and a macro is ordinary Bjolang.
 let scopeType = TCon("Scope", [])
 
+/// One resource a scope owns, as handed back by `own!`.
+///
+/// Opaque, and deliberately more so than `Scope`: no `Eq`, no `Ord`, no
+/// `->str`, no field access. The only thing to do with one is `release!` it.
+/// A handle returned out of the block that owns it is dangling, and there is no
+/// static check for that — what stops it being useful is that there is nothing
+/// to read off it.
+let ownedType = TCon("Owned", [])
+
 /// A saved dynamic environment. Produced by `parameter-push!` and consumed by
 /// `dyn-restore!`, both of which only ever appear in a `parameterize` desugar.
 let dynEnvType = TCon("DynEnv", [])
@@ -700,6 +709,59 @@ let prelude : Env =
         /// The scope needs it to decide whether to cancel before waiting, and
         /// to report it together with any the children raised.
         "scope-close!", {Scheme = Scheme([], [], TFun([scopeType; makeOptionType (TCon("System.Exception", []))], unitType, EAsync)); IsMutable = false }
+
+        // --- Owned resources --------------------------------------------------
+        //
+        // The other half of what a scope owns. A scope waits for its fibers and
+        // releases its resources, in that order, and both are over when it
+        // returns.
+
+        /// The ambient scope as a value, for `in-scope` and for a callback that
+        /// has to capture one. Raises when there is none, which after the scope
+        /// around `main` means module load time and a callback from .NET.
+        "current-scope", {Scheme = Scheme([], [], makeFunType [] scopeType); IsMutable = false }
+
+        /// `(own! thunk)` — register a release on the ambient scope, newest
+        /// first, and hand back the handle that runs it early.
+        ///
+        /// The owner is always the ambient scope. Overriding it is `in-scope`
+        /// and never a keyword argument: Bjolang has no rest-keywords, so a
+        /// `#:scope` could not be forwarded through a wrapper.
+        ///
+        /// A plain thunk, so no deadline and no outcome. It cannot suspend,
+        /// which means it cannot be abandoned, which means a release that
+        /// blocks blocks the close.
+        ///
+        /// Raises with no ambient scope, and raises on a scope that has begun
+        /// closing. The second is the asymmetry with `spawn`, which is silent
+        /// in the same position: an unstarted fiber leaks nothing, an
+        /// unregistered handle is a leak with nobody to release it.
+        "own!", {Scheme = Scheme([], [], makeFunType [makeFunType [] unitType] ownedType); IsMutable = false }
+
+        /// `(release! owned)` — run the release now and unlink. A second call
+        /// is a no-op, and so is one that lost the race with the scope's
+        /// closing pass, so the thunk runs exactly once either way.
+        "release!", {Scheme = Scheme([], [], makeFunType [ownedType] unitType); IsMutable = false }
+
+        /// The exit of a `with-open`, and what `close-input-port` and
+        /// `close-output-port` are written in terms of. Not surface API: the
+        /// parser emits it, and the prelude's two closers name it.
+        ///
+        /// Generic in the thing closed, because `with-open` binds anything an
+        /// `import/class` can produce. A port its scope owns is released
+        /// through the owner handle; anything else is disposed; a standard port
+        /// is flushed and left alone.
+        "close-owned-or-dispose", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"] unitType); IsMutable = false }
+
+        /// `(scope-cancel! s reason)` — what the cancel thunk does, on a scope
+        /// held as a value.
+        "scope-cancel!", {Scheme = Scheme([], [], makeFunType [scopeType; cancelReasonType] unitType); IsMutable = false }
+
+        /// How many handles a scope is still holding. For `std/simpletest`,
+        /// which fails a test that left one behind. Not exported by the
+        /// prelude: counts, list length, token state and drain order are not
+        /// part of the scope surface.
+        "scope-owned-count", {Scheme = Scheme([], [], makeFunType [scopeType] intType); IsMutable = false }
 
         /// `(raise e)` — the counterpart of `try`, which turns the failures it
         /// names into values. This is how one gets back out, and it keeps the

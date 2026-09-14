@@ -430,6 +430,58 @@ is the single highest-value optimisation left on this path: it would take the
 scoped ring to the 32 B/op the unscoped one has, and every program is on the
 scoped row now.
 
+## Phase 1 — `main` is a scope again
+
+`RunMainFiber` and `RunMainSync` open an ordinary scope, install it, run the
+body, close it and restore. The standard-stream flush is registered as the first
+release on it, so under LIFO it runs last.
+
+Three runs, min-of-5 each:
+
+| benchmark | ns/op | B/op | vs phase 0 |
+|---|---|---|---|
+| Ring | 95–115 | 72 | **+40 B, +25%** |
+| Ring, scoped | 89–96 | 72 | unchanged |
+| Spawn burst | 74–84 | 185 | unchanged |
+| Skewed choose(8) | 122–128 | 256 | **+184 B, +35%** |
+
+### The two ring rows are now one measurement
+
+`Ring` spawns its nodes with `bjo` and joins them by hand, outside any
+`with-cancel`. That used to mean no ambient token; it now means `main`'s. So the
+row is the scoped row with extra steps, and the 72 B/op it reports is the same
+`CancelWatch` the scoped row has always paid. **There is no unscoped row left**,
+and nothing in the table measures a program without a live token any more,
+because no such program exists.
+
+### `choose` costs more than a park does
+
+Skewed choose is the row that moved most, and it was not predicted by the ring
+measurement the gate was taken on. 72 → 256 B/op.
+
+A `sync` offering one channel operation parks one op and *links* the ambient
+token to it, which is phase 2c and costs one `CancelWatch`. A `choose` cannot:
+it has branches to arbitrate between, and a claim on one op cannot speak for the
+rest, so the token goes back to being a published branch — a `CancellableEvent`,
+its closure, the `SyncState` the multi-branch form needs anyway, and a promise
+waiter. 184 bytes, on every `sync` of a `choose`.
+
+So the cost of this phase is not uniform: a program built on channel
+rendezvous pays 40 B/op, and a program built on `choose` and `select` pays 184.
+The gate was measured on the cheaper of the two. Recorded here so that the next
+person reads the number rather than the ring's.
+
+### What would close it
+
+Two separate things, in the order they are worth doing:
+
+1. **A poolable `CancelWatch`**, which needs an unregister on `Promise`. Worth
+   40 B/op on every parked sync under a scope, which is now every parked sync.
+2. **A claim that can speak for a whole `choose`**, which would let the
+   multi-branch form take the link instead of the published branch. Worth the
+   184 above. This is a change to the commit protocol and is much the larger of
+   the two.
+
 ## Test suites
 
 Green at every phase.

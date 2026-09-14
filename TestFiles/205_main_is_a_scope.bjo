@@ -1,0 +1,137 @@
+;; `main` runs in a scope.
+;;
+;; An ordinary one: the same `scope-open!` a `with-cancel` uses, with no
+;; special-cased token and no separate code path. So the rule is the rule one
+;; level up - when `main` returns, the work it started is over. Every fiber it
+;; spawned has landed, and every resource it owns has been released.
+;;
+;; It was not always so. `main` ran outside any scope for a while, to keep a
+;; live token off the park path, and `205_root_is_not_a_scope.bjo` asserted
+;; that. The cost of putting it back is in bench/BASELINE.md; what the cost buys
+;; is below.
+;;
+;; The assertions that have to observe the close run *in a release*. Releases
+;; run after the drain, so a release is the only place a program can stand and
+;; look back at its own scope ending.
+
+(import (std prelude))
+(import (std simpletest))
+
+(import/class
+  (CancellationToken (: System.Threading.CancellationToken)))
+
+;; The bridge itself. Nobody writes this by hand - the compiler emits it as the
+;; trailing argument of an `#:async` import that has a token overload - so this
+;; is the only way to look at what it produced.
+(import/extern
+  (ambient-cancellation (: BjolangRuntime.AmbientCancellation (-> CancellationToken))))
+
+;; `CanBeCanceled` is false for exactly one token: `CancellationToken.None`. A
+;; token from a real source answers true whether or not it has fired, which is
+;; what makes this the question to ask.
+(: ambient-can-be-cancelled? (-> bool))
+(defun (ambient-can-be-cancelled?)
+  (.-CanBeCanceled (ambient-cancellation)))
+
+(: never-ending (-bjo-> (Chan string) void))
+(defbjo (never-ending nothing)
+  (let go ()
+    (ignore (sync (chan-recv nothing)))
+    (go)))
+
+;; Ends after `ms`, then marks the box. A child the scope has to wait for.
+(: mark-after (-bjo-> (Box string) int void))
+(defbjo (mark-after b ms)
+  (sync (timeout ms))
+  (box-set! b "landed"))
+
+(defbjo (main args)
+  ;; ---- main has a scope, and it is a real one ------------------------------
+  (expect "main's ambient token has not fired"
+          (cancelled? (parameter-ref current-cancel)) #f)
+
+  ;; The reverse of what this file used to assert. A live scope means a live
+  ;; token, and a live token bridges to a real `CancellationToken` rather than
+  ;; to `None`. This is the 40 bytes per parked sync the baseline records.
+  (expect "at top level the .NET bridge is a real token"
+          (ambient-can-be-cancelled?) #t)
+
+  ;; ---- A top-level spawn is owned ------------------------------------------
+  ;;
+  ;; The point of the whole change. `landed` is read from a release, which runs
+  ;; after the drain, so reading "landed" says the scope waited for a fiber
+  ;; nothing else was watching.
+  (def landed (make-box "still running"))
+  (spawn (mark-after landed 40))
+  (ignore (own! (fun ()
+                  (expect "main waited for its top-level spawn"
+                          (box-ref landed) "landed"))))
+
+  ;; ---- Releases run newest first -------------------------------------------
+  ;;
+  ;; Registered checker, then "c", then "b". Newest first is b, c, checker - so
+  ;; by the time the checker runs the box reads "bc" and not "cb".
+  (def order (make-box ""))
+  (ignore (own! (fun () (expect "releases run newest first" (box-ref order) "bc"))))
+  (ignore (own! (fun () (box-set! order (str (box-ref order) "c")))))
+  (ignore (own! (fun () (box-set! order (str (box-ref order) "b")))))
+
+  ;; ---- release! runs the thunk once, now -----------------------------------
+  (def early (make-box 0))
+  (def handle (own! (fun () (box-set! early (+ (box-ref early) 1)))))
+  (expect "release! runs the thunk" (let () (release! handle) (box-ref early)) 1)
+  (expect "a second release! does nothing" (let () (release! handle) (box-ref early)) 1)
+
+  ;; ---- A scope inside main's scope is linked to it -------------------------
+  ;;
+  ;; It always was linked to whatever was ambient; what changed is that there is
+  ;; now something ambient at the top level. The inner scope waits for a child
+  ;; only a cancellation can end, and nobody cancels the inner scope - so the
+  ;; only way this returns is the outer token forwarding into it.
+  (def nothing (make-chan))
+  (expect "an inner scope is linked to its outer scope"
+          (with-cancel (outer)
+            (with-cancel (inner)
+              (spawn (never-ending nothing))
+              (outer (Requested "the test")))
+            "the inner scope returned")
+          "the inner scope returned")
+
+  ;; ---- A written-down scope is unchanged -----------------------------------
+  (def b (make-box "not yet"))
+  (with-cancel (cancel)
+    (spawn (mark-after b 20)))
+  (expect "a with-cancel still waits for its children" (box-ref b) "landed")
+
+  ;; ---- Cancelling a fiber parked on a rendezvous ---------------------------
+  ;;
+  ;; A `sync` on a single channel operation parks one op and links the ambient
+  ;; token to it, rather than publishing the token as a second branch. These
+  ;; pin the two rules that link has to keep.
+
+  ;; It reaches a fiber that is parked with nothing to receive.
+  (def idle (make-chan))
+  (expect "a cancelled scope wakes a fiber parked on a bare chan-recv"
+          (with-cancel (stop)
+            (spawn (never-ending idle))
+            (stop (Requested "the test"))
+            "the scope returned")
+          "the scope returned")
+
+  ;; And it does not undo a rendezvous that already happened. The value was
+  ;; handed over, so a token firing afterwards must not take it back.
+  (def handoff (make-chan))
+  (expect "a delivered value survives a cancellation racing it"
+          (with-cancel (stop2)
+            (spawn (give handoff 41))
+            (let ((v (sync (chan-recv handoff))))
+              (stop2 (Requested "after the handover"))
+              (+ v 1)))
+          42)
+
+  (println "205 body done")
+  0)
+
+(: give (-bjo-> (Chan int) int void))
+(defbjo (give ch v)
+  (sync (chan-send ch v)))

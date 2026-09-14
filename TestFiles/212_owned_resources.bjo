@@ -1,0 +1,168 @@
+;; A scope owns resources as well as fibers.
+;;
+;; `own!` registers a release and hands back a handle. The scope runs what it
+;; still holds when it returns - after every fiber has landed, newest first -
+;; and `release!` runs one early. Whoever gets there first runs the thunk, and
+;; it runs exactly once either way.
+;;
+;; The ordering the whole file rests on: body finishes, children land, token
+;; fires, releases run. So a release is the one place a program can stand and
+;; look back at its own scope ending, and most of the assertions here are
+;; written from inside one.
+
+(import (std prelude))
+(import (std simpletest))
+
+(import/class
+  (Refusal (: System.InvalidOperationException (-> string Refusal))))
+
+;; `scope-owned-count` is the test hook. It is a builtin rather than a prelude
+;; export, because counts and list length are not part of the scope surface -
+;; it is here to fail a test that leaked, and nothing else.
+
+(: note! (-> (Box string) string (-> void)))
+(defun (note! b what)
+  (fun () (box-set! b (str (box-ref b) what))))
+
+;; Ends after `ms`, then appends. A child the scope has to wait for.
+(: late (-bjo-> (Box string) string int void))
+(defbjo (late b what ms)
+  (sync (timeout ms))
+  (box-set! b (str (box-ref b) what)))
+
+(defbjo (main)
+  ;; --- Releases run when the scope returns ---------------------------------
+  (def log (make-box ""))
+  (with-scope
+    (ignore (own! (note! log "a")))
+    (box-set! log (str (box-ref log) "body")))
+  (expect "a release runs when the scope returns" (box-ref log) "bodya")
+
+  ;; --- Newest first --------------------------------------------------------
+  (def order (make-box ""))
+  (with-scope
+    (ignore (own! (note! order "1")))
+    (ignore (own! (note! order "2")))
+    (ignore (own! (note! order "3"))))
+  (expect "releases run newest first" (box-ref order) "321")
+
+  ;; --- After the children, not before --------------------------------------
+  ;;
+  ;; The child appends "child" at 30 ms; the release appends "release". A scope
+  ;; that released before draining would give the other order.
+  (def sequence (make-box ""))
+  (with-scope
+    (ignore (own! (note! sequence "release")))
+    (spawn (late sequence "child" 30)))
+  (expect "releases run after the children have landed" (box-ref sequence) "childrelease")
+
+  ;; --- release! unlinks ----------------------------------------------------
+  ;;
+  ;; The count is the observable: an early release takes the node off the list
+  ;; rather than leaving a spent one on it, so a long-lived scope that opens and
+  ;; closes in a loop does not grow.
+  (def counts (make-box ""))
+  (with-scope
+    (let ((here (current-scope)))
+      (def h1 (own! (fun () unit)))
+      (def h2 (own! (fun () unit)))
+      (box-set! counts (str (box-ref counts) (int->string (scope-owned-count here))))
+      (release! h1)
+      (box-set! counts (str (box-ref counts) (int->string (scope-owned-count here))))
+      (release! h2)
+      (box-set! counts (str (box-ref counts) (int->string (scope-owned-count here))))))
+  (expect "release! takes the handle off the list" (box-ref counts) "210")
+
+  ;; --- Exactly once, whichever way the race goes ---------------------------
+  (def once (make-box 0))
+  (def bump (fun () (box-set! once (+ (box-ref once) 1))))
+
+  ;; Released early, then the scope closes over a list it is no longer on.
+  (with-scope
+    (let ((h (own! bump)))
+      (release! h)
+      (release! h)))
+  (expect "an early release runs the thunk once" (box-ref once) 1)
+
+  ;; Left to the scope, then released after the scope has already run it.
+  (def kept (make-box None))
+  (def twice (make-box 0))
+  (with-scope
+    (box-set! kept (Some (own! (fun () (box-set! twice (+ (box-ref twice) 1)))))))
+  (match (box-ref kept)
+    ((Some h) (release! h))
+    (None (fail "the handle was not kept")))
+  (expect "a release after the close does not run again" (box-ref twice) 1)
+
+  ;; --- A release that throws does not stop the others ----------------------
+  ;;
+  ;; Registered oldest first, so "c" runs, then the thrower, then "a". All three
+  ;; are visited, and the failure comes out of the scope.
+  (def survived (make-box ""))
+  (def outcome
+    (try (with-scope
+           (ignore (own! (note! survived "a")))
+           (ignore (own! (fun () (raise (cast Exception (Refusal. "this release refuses"))))))
+           (ignore (own! (note! survived "c"))))
+      #:catch (System.InvalidOperationException System.AggregateException)))
+
+  (expect "a throwing release does not stop the walk" (box-ref survived) "ca")
+  (expect-true "and the failure comes out of the scope"
+               (match outcome
+                 ((Ok _) #f)
+                 ((Err e) (string-contains? (.-Message e) "this release refuses"))))
+
+  ;; --- A closed scope refuses own! and ignores spawn -----------------------
+  ;;
+  ;; The asymmetry, and why it is one. A fiber that was never started leaks
+  ;; nothing, so `spawn` says nothing; a handle that was never registered is a
+  ;; leak with nobody to release it, so `own!` refuses before the caller lets go
+  ;; of what it is holding.
+  ;;
+  ;; The scope is smuggled out in a box and used after it has closed, which is
+  ;; the same state a fiber still running during the close would find, and needs
+  ;; no timing to arrange.
+  (def escaped (make-box None))
+  (with-scope
+    (box-set! escaped (Some (current-scope))))
+
+  (match (box-ref escaped)
+    (None (fail "the scope did not escape"))
+    ((Some closed)
+     (expect "own! on a closed scope raises"
+             (match (try (in-scope closed (own! (fun () unit)))
+                      #:catch (Bjolang.Runtime.ScopeEnded))
+               ((Ok _) "allowed")
+               ((Err _) "refused"))
+             "refused")
+
+     (def never (make-box "not run"))
+     (in-scope closed (spawn (mark-it never)))
+     (sync (timeout 30))
+     (expect "spawn on a closed scope starts nothing, and says nothing"
+             (box-ref never) "not run")))
+
+  ;; --- in-scope puts ownership somewhere else ------------------------------
+  ;;
+  ;; The inner scope closes first and releases nothing, because the handle was
+  ;; registered on the outer one.
+  (def where (make-box ""))
+  (with-scope
+    (let ((outer (current-scope)))
+      (with-scope
+        (in-scope outer
+          (ignore (own! (note! where "outer")))))
+      (box-set! where (str (box-ref where) "|inner closed|"))))
+  (expect "in-scope registers on the scope it names" (box-ref where) "|inner closed|outer")
+
+  ;; --- own-disposable hands the value back ---------------------------------
+  (def w (open-output-string))
+  (with-scope
+    (let ((p (own-disposable w)))
+      (write-string p "written")))
+  (expect "own-disposable returns its argument" (get-output-string w) "written")
+
+  0)
+
+(: mark-it (-bjo-> (Box string) void))
+(defbjo (mark-it b) (box-set! b "ran"))

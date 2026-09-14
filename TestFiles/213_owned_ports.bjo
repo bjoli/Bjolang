@@ -1,0 +1,121 @@
+;; A file port is owned by the scope it was opened in.
+;;
+;; When the scope returns the file is closed, whether the program said so or
+;; not. That is the leak test below: a port opened and then forgotten is not a
+;; leak any more, it is a port that closes a little later than it might have.
+;;
+;; A string port is not owned. It is memory, and the GC prices memory. The three
+;; standard ports are not owned either - nothing releases stdout, and closing it
+;; flushes and stops.
+
+(import (std prelude))
+(import (std simpletest))
+
+;; The test hook, as in 212. Counts are not part of the scope surface.
+
+(: probe-dir (-> string))
+(defun (probe-dir) "213_probe_dir")
+
+(: probe (-> string))
+(defun (probe) (path-combine (probe-dir) "notes.txt"))
+
+;; Reading a closed port throws `ObjectDisposedException`, which is how a
+;; released port announces itself at the use site.
+(: still-open? (-> TextInputPort bool))
+(defun (still-open? p)
+  (match (try (port-eof? p) #:catch (System.ObjectDisposedException))
+    ((Ok _) #t)
+    ((Err _) #f)))
+
+(: unwrap-port (-> (Result Exception TextInputPort) TextInputPort))
+(defun (unwrap-port r)
+  (match r
+    ((Ok p) p)
+    ((Err e) (panic! (str "could not open the probe file: " (.-Message e))))))
+
+(defbjo (main)
+  (directory-create (probe-dir))
+  (file-write-text (probe) "one\ntwo\n")
+
+  ;; --- The leak test -------------------------------------------------------
+  ;;
+  ;; Opened, read, and never closed. The handle is smuggled out so that the
+  ;; state of the port can be asked about after its scope has gone.
+  (def escaped (make-box None))
+  (def contents
+    (with-scope
+      (let ((p (unwrap-port (open-input-file (probe)))))
+        (box-set! escaped (Some p))
+        (read-all p))))
+
+  (expect "the port worked inside its scope" contents "one\ntwo\n")
+
+  (match (box-ref escaped)
+    (None (fail "the port did not escape"))
+    ((Some p)
+     (expect-true "a port nobody closed is released when its scope returns"
+                  (not (still-open? p)))))
+
+  ;; --- The count goes back to where it started -----------------------------
+  ;;
+  ;; Three ways of finishing with a port, and none of them leaves an entry on
+  ;; the scope's list.
+  (def counts (make-box ""))
+  (with-scope
+    (let ((here (current-scope))
+          (start (scope-owned-count (current-scope))))
+
+      ;; with-open
+      (with-open ((p (unwrap-port (open-input-file (probe)))))
+        (ignore (read-all p)))
+      (box-set! counts (str (box-ref counts) (int->string (- (scope-owned-count here) start))))
+
+      ;; close-input-port by hand
+      (let ((p (unwrap-port (open-input-file (probe)))))
+        (ignore (read-all p))
+        (close-input-port p))
+      (box-set! counts (str (box-ref counts) (int->string (- (scope-owned-count here) start))))
+
+      ;; a string port, which never registered in the first place
+      (let ((s (open-input-string "in memory")))
+        (ignore (read-all s))
+        (close-input-port s))
+      (box-set! counts (str (box-ref counts) (int->string (- (scope-owned-count here) start))))))
+
+  (expect "closing a port takes it off the scope's list" (box-ref counts) "000")
+
+  ;; --- A string port is not owned ------------------------------------------
+  (def before (scope-owned-count (current-scope)))
+  (def s (open-input-string "still memory"))
+  (expect "a string port does not register"
+          (- (scope-owned-count (current-scope)) before) 0)
+  (expect "and it still reads" (read-all s) "still memory")
+
+  ;; --- An output file is owned the same way --------------------------------
+  (def out-path (path-combine (probe-dir) "written.txt"))
+  (with-scope
+    (let ((w (match (open-output-file out-path)
+               ((Ok w) w)
+               ((Err e) (panic! "could not open the output probe")))))
+      (write-string w "from an owned port")))
+
+  ;; The scope released it, which is what flushed and closed it - so the file
+  ;; has the text even though nothing called close-output-port.
+  (expect "an output port nobody closed is flushed and closed by its scope"
+          (file-read-text out-path) "from an owned port")
+
+  ;; --- The standard ports are never owned ----------------------------------
+  ;;
+  ;; A scope that wrote to stdout must not close it. The proof is the line after
+  ;; it: the harness reads this file's stdout, so if the scope had closed it
+  ;; nothing below would be seen at all.
+  (with-scope
+    (display ""))
+  (expect "a scope that wrote to stdout did not close it" "still here" "still here")
+
+  (expect "closing stdout flushes and does nothing else"
+          (let () (close-output-port (parameter-ref current-output-port)) "still here")
+          "still here")
+
+  (directory-delete-tree (probe-dir))
+  0)
