@@ -227,6 +227,29 @@
 (defun (bjodat-rich-total text)
   (match (parse-bjodat text) ((Ok (BjoVec v)) (bjodat-rich-sum v)) (_ 0)))
 
+;; --- and straight through, with no tree at all ------------------------------
+;;
+;; `def/bjodat-type` also generates `bjodat-read-<Name>`, which reads a record
+;; off the reader without building the map first: the key is compared against
+;; the field names in the reader's own buffer, so no key string, no interned
+;; `Keyword`, no `BjoKey` node, no entry vec and no scan over it. The values are
+;; still read into a `Bjodat` each and handed to the field type's instance.
+;;
+;; This answers a `List` where the phases above answer a `Vec`, which is one
+;; cons per record against one vec slot. Both are counted in the figure.
+
+(: bjodat-one-pass (-> string int))
+(defun (bjodat-one-pass text)
+  (match (parse-one-pass-all text bjodat-read-BDep)
+    ((Err _) 0)
+    ((Ok ds) (list-foldl (fun (acc d) (+ acc (string-length (record-ref d version)))) 0 ds))))
+
+(: bjodat-rich-one-pass (-> string int))
+(defun (bjodat-rich-one-pass text)
+  (match (parse-one-pass-all text bjodat-read-BRich)
+    ((Err _) 0)
+    ((Ok ds) (list-foldl (fun (acc d) (+ acc (vec-length (record-ref d tags)))) 0 ds))))
+
 ;; ---------------------------------------------------------------------------
 ;; Timing
 ;; ---------------------------------------------------------------------------
@@ -319,7 +342,9 @@
                  (ignore (json-rich-sum jritems))
                  (ignore (bjodat-rich-sum britems))
                  (ignore (json-rich-total jrt))
-                 (ignore (bjodat-rich-total brt))))
+                 (ignore (bjodat-rich-total brt))
+                 (ignore (bjodat-one-pass bt))
+                 (ignore (bjodat-rich-one-pass brt))))
       (println (str "warmed " (int->string warmups) " passes over every phase"))
       (println "")
 
@@ -328,7 +353,8 @@
             (jd (timed json-sum jitems))
             (bd (timed bjodat-sum bitems))
             (jtot (timed json-total jt))
-            (btot (timed bjodat-total bt)))
+            (btot (timed bjodat-total bt))
+            (bone (timed bjodat-one-pass bt)))
         (println "--- five scalar fields ---")
         (row "json parse" jp jp)
         (row "bjodat parse" bp jp)
@@ -336,10 +362,13 @@
         (row "bjodat decode" bd jd)
         (row "json total" jtot jtot)
         (row "bjodat total" btot jtot)
+        (row "bjodat 1-pass" bone jtot)
         (println "")
         (println (str "  parse:  bjodat is " (ratio jp bp) "x json"))
         (println (str "  decode: bjodat is " (ratio jd bd) "x json"))
         (println (str "  total:  bjodat is " (ratio jtot btot) "x json"))
+        (println (str "  1-pass: " (ratio jtot bone) "x json, "
+                      (ratio btot bone) "x the two-pass bjodat"))
         (println (str "  check:  json " (int->string (json-sum jitems))
                       ", bjodat " (int->string (bjodat-sum bitems))))
         (println "")
@@ -356,7 +385,8 @@
               (jrd (timed json-rich-sum jritems))
               (brd (timed bjodat-rich-sum britems))
               (jrtot (timed json-rich-total jrt))
-              (brtot (timed bjodat-rich-total brt)))
+              (brtot (timed bjodat-rich-total brt))
+              (brone (timed bjodat-rich-one-pass brt)))
           (println "--- a vec and an absent-able field ---")
           (row "json parse" jrp jrp)
           (row "bjodat parse" brp jrp)
@@ -364,10 +394,13 @@
           (row "bjodat decode" brd jrd)
           (row "json total" jrtot jrtot)
           (row "bjodat total" brtot jrtot)
+          (row "bjodat 1-pass" brone jrtot)
           (println "")
           (println (str "  parse:  bjodat is " (ratio jrp brp) "x json"))
           (println (str "  decode: bjodat is " (ratio jrd brd) "x json"))
           (println (str "  total:  bjodat is " (ratio jrtot brtot) "x json"))
+          (println (str "  1-pass: " (ratio jrtot brone) "x json, "
+                        (ratio brtot brone) "x the two-pass bjodat"))
           (println (str "  check:  json " (int->string (json-rich-sum jritems))
                         ", bjodat " (int->string (bjodat-rich-sum britems))))))))
   0)

@@ -633,3 +633,98 @@ untouched: both keyword spellings interning to one value, `eq?` on symbols,
 pattern matching, and `string->keyword` reaching a literal's value. That last
 assertion is the whole safety argument in one line — interning is idempotent, so
 a hoisted literal and a name built at run time are still the same reference.
+
+## The name cache moved into Bjolang, and the C# file went
+
+`BjolangRuntime/BjoText.cs` held a sixteen-slot direct-mapped cache from the
+reader's scratch buffer to an interned name. It existed because
+`StringBuilder.Equals(ReadOnlySpan<char>)` had no counterpart in Bjolang: there
+was no way to ask whether what had just been buffered was a name already held,
+without building the string to ask with — and building that string was 35% of
+parse.
+
+What the runtime owed the library was two primitives, not a class:
+
+```
+stringbuilder-code-ref : (-> StringBuilder int int)
+string-code-ref        : (-> string int int)
+```
+
+One UTF-16 unit each, the counterpart of the `stringbuilder-add-code!` that was
+already there, and named for units rather than characters because
+`string-cursor-ref` is the scalar-aware accessor and stays that. With those, the
+cache is twenty lines of Bjolang in `lib/text/bjodat.bjo` and the C# file is
+deleted.
+
+The comparison is now an interpreted loop over units where it was a vectorised
+`Equals`. That is the cost, and it is not visible:
+
+| | bjodat parse, ns/rec |
+|---|---|
+| cache in C# (`BjoNameCache`) | 405, 412, 413, 415, 425 |
+| cache in Bjolang | 405, 407, 425, 427, 435, 437 |
+
+The two ranges overlap. There may be a percent or two in it; this harness cannot
+see it, and saying which is faster on these numbers would be making it up. Names
+are short — three to seven units — so the loop the vectorised compare replaced
+was never long enough to matter.
+
+## One-pass record decoding
+
+`def/bjodat-type` now generates `bjodat-read-<Name>` and `bjodat-parse-<Name>`
+beside `bjodat-><Name>`. They read a record straight off the reader: the key is
+compared against the field names **in the reader's own buffer**, so a record
+costs no key string, no interned `Keyword`, no `BjoKey` node, no entry vec and
+no scan over it. The shape is a loop carrying one `(Option field)` slot per
+field — a struct, so the slots are free, and absence and the value are one
+question instead of two.
+
+The values are *not* read specially. Each still becomes a `Bjodat` and goes
+through its field type's own `bjodat->` instance, which is what keeps an
+instance a user wrote working and every error message identical — asserted, word
+for word, in `Playground/bjodat-codec-test.bjo`, which now carries 46
+assertions against 26.
+
+| corpus, 20 000 records | two-pass | one-pass | |
+|---|---|---|---|
+| five scalar fields | 479–488 ns/rec | **373–383** | 0.76–0.78x |
+| a `Vec` and an `Option` | 747–762 ns/rec | 719–729 | 0.95–0.96x |
+
+Against JSON through `(text json-codec)`, the scalar figure is **0.65x**.
+
+### This is a fifth of what was predicted, and the prediction was wrong
+
+The estimate that started this was "~3x conservatively", taken from
+`codecbench.bjo`, where parsing JSON *objects* costs 3.3x parsing the same
+records as positional arrays. That measured the whole of a map's machinery
+including JSON's string keys — and bjodat had already removed most of it before
+this change: a `BjoMap` is a flat vec rather than a trie, and the name cache had
+already killed the per-key allocation. What was left of the tree to remove was
+about a fifth, and a fifth is what came off.
+
+The rich corpus moves 4%, and that is the design saying so out loud: a
+`(Vec string)` field still builds a `BjoVec` of `BjoStr` and converts it. The
+entry is what this saves, not the value.
+
+### Where the time actually is, since it is not the tree
+
+`scratch/portfloor.bjo`, over the same 2.36 MB corpus:
+
+| | ns/byte |
+|---|---|
+| a bare loop over `BjoPort.ReadUnit`, counting units | 0.371 |
+| the same text parsed into a tree | 3.492 |
+
+**The port is 10% of the parse.** I had expected it to be most of it — a virtual
+`TextReader.Read()` per character sounds expensive and is not; on a
+`StringReader` the JIT deals with it. So the remaining nine tenths is the
+reader's own per-character work: `skip-space!`, `symbol-code?`, the lookahead
+field on the `Reader` record, and the buffer appends. That is where anything
+further has to come from, and it is a different kind of work from anything this
+session removed.
+
+### Test suites
+
+`python3 run_tests.py`: 196 groups, 0 failures, 222/222 error, 8/8 warning,
+23/23 codegen, 4/4 REPL, 3/3 staleness. `Playground`: reader 68/68, codec 46/46,
+and the real `mydata.bjodat` round-trips.

@@ -899,6 +899,18 @@ let prelude : Env =
         // The caller owns what `add!` would have checked.
         "stringbuilder-add-code!", {Scheme = Scheme([], [], makeFunType [stringBuilderType; intType] unitType); IsMutable = false }
         "stringbuilder-length", {Scheme = Scheme([], [], makeFunType [stringBuilderType] intType); IsMutable = false }
+        // One UTF-16 unit back out, the counterpart of `add-code!`, and for the
+        // same reason: a reader that holds codes. It is what lets a name be
+        // compared against one already interned without building the string to
+        // compare with — the allocation is the cost of interning a name a
+        // document repeats, and this is how it is avoided in Bjolang rather
+        // than in a helper written in C#.
+        //
+        // Indices are units, not characters. `string-cursor-ref` is the
+        // scalar-aware accessor and remains the one to reach for when the index
+        // means a character.
+        "stringbuilder-code-ref", {Scheme = Scheme([], [], makeFunType [stringBuilderType; intType] intType); IsMutable = false }
+        "string-code-ref", {Scheme = Scheme([], [], makeFunType [stringType; intType] intType); IsMutable = false }
         "stringbuilder->string", {Scheme = Scheme([], [], makeFunType [stringBuilderType] stringType); IsMutable = false }
 
         "keyword?", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"] boolType); IsMutable = false }

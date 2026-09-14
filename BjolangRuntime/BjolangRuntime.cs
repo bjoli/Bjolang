@@ -480,6 +480,28 @@ public static partial class BjolangRuntime {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int stringbuildersublength(StringBuilder b) => b.Length;
 
+    // One UTF-16 unit out of the buffer, the counterpart of `add-code!`.
+    //
+    // This is what lets a reader answer "is what I just buffered the name I
+    // already have?" without building the string to ask — which is the whole
+    // cost of interning a name that a document repeats. Reading a buffer it
+    // filled itself, a reader knows the units are its own and needs no scalar
+    // to be reconstituted; a caller that wants scalars wants a string and the
+    // cursor API.
+    //
+    // `StringBuilder`'s indexer walks its chunk list, so this is a few
+    // operations rather than one. For the short names a reader compares, the
+    // buffer is one chunk and the walk stops immediately.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int stringbuildersubcodesubref(StringBuilder b, int i) => b[i];
+
+    // The same for a string, so that the two sides of that comparison are
+    // spelled the same way. `string-cursor-ref` is the scalar-aware accessor
+    // and stays the one to reach for when the index means a character; this one
+    // means a unit, as `string-length` does.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int stringsubcodesubref(string s, int i) => s[i];
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static string stringbuildersubgtstring(StringBuilder b) => b.ToString();
 

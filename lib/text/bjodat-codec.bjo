@@ -17,6 +17,7 @@
   ;; What generated field code calls. Exported because a macro template's names
   ;; resolve against this module's scope.
   bjodat-map bjodat-field bjodat-field/default
+  bjodat-read-field bjodat-need-field
   ;; The generator
   def/bjodat-type)
 
@@ -205,6 +206,32 @@
        ((Err e) (Err (str owner "." (keyword->string key) ": " e)))
        ((Ok x) (Ok x))))))
 
+;; --- and what a one-pass decoder calls --------------------------------------
+;;
+;; The value is still read into a `Bjodat` and handed to the field type's own
+;; instance. That is deliberate: it is what keeps every instance working —
+;; including one a user wrote for a type this macro has never heard of — and
+;; every message identical to the two above. What the one-pass decoder saves is
+;; the *entry*: the key's string, its interned `Keyword`, the `BjoKey` node, the
+;; vec they live in, and the scan over it.
+
+(: bjodat-read-field (-> string Keyword Reader (Result string %a)) (where (bjodat-> %a)))
+(defun (bjodat-read-field owner key rd)
+  (match (field-value rd)
+    ((Err e) (Err e))
+    ((Ok v)
+     (match (bjodat-> v)
+       ((Err e) (Err (str owner "." (keyword->string key) ": " e)))
+       ((Ok x) (Ok x))))))
+
+;; A field that was never met. The message is `bjodat-field`'s, word for word,
+;; so which decoder read the document is not something an error report reveals.
+(: bjodat-need-field (-> (Option %a) string Keyword (Result string %a)))
+(defun (bjodat-need-field slot owner key)
+  (match slot
+    ((Some x) (Ok x))
+    (None (Err (str owner ": the map has no :" (keyword->string key) " entry")))))
+
 ;; ---------------------------------------------------------------------------
 ;; The generator
 ;; ---------------------------------------------------------------------------
@@ -392,13 +419,141 @@
         ((Err ,e) (Err ,e))
         ((Ok ,entries) ,(jb-chain owner entries fields 0 (jb-ctor head fields))))))
 
+;; --- decode in one pass -----------------------------------------------------
+;;
+;; The same record, read straight off the reader with no `Bjodat` map in
+;; between. The shape is a loop carrying one slot per field:
+;;
+;;     (let go ((s0 None) (s1 None))
+;;       (match (next-key! rd owner paired)
+;;         ((Ok #f) <every slot answered for, then the constructor>)
+;;         ((Ok _)  (cond ((key=? rd "name") ... (go (Some x) s1))
+;;                        ((key=? rd "git")  ... (go s0 (Some x)))
+;;                        (else <skip the value> (go s0 s1))))))
+;;
+;; An `(Option %a)` per field rather than a value and a seen-flag, because a
+;; field of type `%a` has no value to start the loop with and `Option` is a
+;; struct — so the slot costs nothing and answers both questions at once.
+;;
+;; A key is compared against the field's *name*, in the reader's buffer. This is
+;; the whole point: `key=?` builds nothing and interns nothing, where the tree
+;; decoder had to intern every key of every record before it could look one up.
+
+(: jb-slot (-> int Syntax))
+(defun (jb-slot i) (jb-sym (str "__jb-s" (int->string i))))
+
+(: jb-var (-> int Syntax))
+(defun (jb-var i) (jb-sym (str "__jb-v" (int->string i))))
+
+;; The key's name as a string, for `key=?`. `#:key :other-name` renames it here
+;; exactly as it renames the keyword literal, so the two cannot drift.
+(: jb-key-name (-> Syntax (List Syntax) Syntax))
+(defun (jb-key-name name markers)
+  (let go ((ms markers))
+    (if (list-empty? ms)
+        (SStr (syntax->string name))
+        (if (jb-marker=? (list-head ms) "#:key")
+            (match (list-head (list-tail ms))
+              ((SKey k) (SStr (keyword->string k)))
+              (other (SStr (syntax->string other))))
+            (go (list-tail ms))))))
+
+(: jb-slot-inits (-> (List Syntax) int (List Syntax)))
+(defun (jb-slot-inits fields i)
+  (if (list-empty? fields)
+      Nil
+      (Cons #'(,(jb-slot i) None)
+            (jb-slot-inits (list-tail fields) (+ i 1)))))
+
+;; The slots a recursive call passes on, unchanged.
+(: jb-slot-args (-> (List Syntax) int (List Syntax)))
+(defun (jb-slot-args fields i)
+  (if (list-empty? fields)
+      Nil
+      (Cons (jb-slot i) (jb-slot-args (list-tail fields) (+ i 1)))))
+
+;; The same, with slot `hit` replaced by the value just read.
+(: jb-slot-args/hit (-> (List Syntax) int int Syntax (List Syntax)))
+(defun (jb-slot-args/hit fields i hit v)
+  (if (list-empty? fields)
+      Nil
+      (Cons (if (= i hit) v (jb-slot i))
+            (jb-slot-args/hit (list-tail fields) (+ i 1) hit v))))
+
+(: jb-clauses (-> Syntax Syntax Syntax (List Syntax) (List Syntax) int (List Syntax)))
+(defun (jb-clauses owner paired go all fields i)
+  (if (list-empty? fields)
+      Nil
+      (let* ((f (list-head fields))
+             (markers (jb-field-markers f))
+             (name (jb-field-name f))
+             (x (jb-sym "__jb-x"))
+             (e (jb-sym "__jb-e")))
+        (Cons #'((key=? rd ,(jb-key-name name markers))
+                 (match (bjodat-read-field ,owner ,(jb-key name markers) rd)
+                   ((Err ,e) (Err ,e))
+                   ((Ok ,x)
+                    (match (end-entry! rd ,owner ,paired)
+                      ((Err ,e) (Err ,e))
+                      ((Ok _) (,go ,@(jb-slot-args/hit all 0 i #'(Some ,x))))))))
+              (jb-clauses owner paired go all (list-tail fields) (+ i 1))))))
+
+;; Every slot answered for, innermost first, ending in the constructor. A
+;; required field that was never met is the one refusal; a field with a fallback
+;; takes it here rather than at the entry, because absence is only known once
+;; the map has closed.
+(: jb-settle (-> Syntax Syntax (List Syntax) (List Syntax) int Syntax))
+(defun (jb-settle head owner all fields i)
+  (if (list-empty? fields)
+      (jb-ctor head all)
+      (let* ((f (list-head fields))
+             (markers (jb-field-markers f))
+             (key (jb-key (jb-field-name f) markers))
+             (e (jb-sym "__jb-e"))
+             (p (jb-sym "__jb-p"))
+             (rest (jb-settle head owner all (list-tail fields) (+ i 1))))
+        (match (jb-fallback markers)
+          (None #'(match (bjodat-need-field ,(jb-slot i) ,owner ,key)
+                    ((Err ,e) (Err ,e))
+                    ((Ok ,(jb-var i)) ,rest)))
+          ((Some d) #'(let ((,(jb-var i) (match ,(jb-slot i)
+                                           ((Some ,p) ,p)
+                                           (None ,d))))
+                        ,rest))))))
+
+(: jb-one-pass (-> Syntax (List Syntax) Syntax))
+(defun (jb-one-pass head fields)
+  (let* ((owner (jb-str (jb-head-name head)))
+         (paired (jb-sym "__jb-paired"))
+         (go (jb-sym "__jb-go"))
+         (e (jb-sym "__jb-e")))
+    #'(match (open-map! rd ,owner)
+        ((Err ,e) (Err ,e))
+        ((Ok ,paired)
+         (let ,go (,@(jb-slot-inits fields 0))
+           (match (next-key! rd ,owner ,paired)
+             ((Err ,e) (Err ,e))
+             ((Ok #f) ,(jb-settle head owner fields fields 0))
+             ((Ok _)
+              (cond
+                ,@(jb-clauses owner paired go fields fields 0)
+                (else
+                 (match (skip-value! rd)
+                   ((Err ,e) (Err ,e))
+                   ((Ok _)
+                    (match (end-entry! rd ,owner ,paired)
+                      ((Err ,e) (Err ,e))
+                      ((Ok _) (,go ,@(jb-slot-args fields 0)))))))))))))))
+
 ;; --- the form ---------------------------------------------------------------
 
 (: jb-expand (-> (-> Symbol Syntax) Syntax Syntax (List Syntax) Syntax))
 (defun (jb-expand inject colon head fields)
   (let ((name (syntax->string (jb-head-name head))))
     (let ((enc (inject (string->symbol (str name "->bjodat"))))
-          (dec (inject (string->symbol (str "bjodat->" name)))))
+          (dec (inject (string->symbol (str "bjodat->" name))))
+          (rdr (inject (string->symbol (str "bjodat-read-" name))))
+          (prs (inject (string->symbol (str "bjodat-parse-" name)))))
       #'(begin
           (type (,colon ,head (Record ,@(list-map jb-strip fields))))
 
@@ -415,7 +570,14 @@
           (: ,enc (-> ,head Bjodat) ,@(jb-where inject head "->bjodat"))
           (defun (,enc v) (->bjodat v))
           (: ,dec (-> Bjodat (Result string ,head)) ,@(jb-where inject head "bjodat->"))
-          (defun (,dec v) (bjodat-> v))))))
+          (defun (,dec v) (bjodat-> v))
+
+          ;; And the one-pass pair, which reads the text itself rather than a
+          ;; map someone else built. Same record, same messages; no tree.
+          (: ,rdr (-> Reader (Result string ,head)) ,@(jb-where inject head "bjodat->"))
+          (defun (,rdr rd) ,(jb-one-pass head fields))
+          (: ,prs (-> string (Result string ,head)) ,@(jb-where inject head "bjodat->"))
+          (defun (,prs text) (parse-one-pass text (fun (rd) (,rdr rd))))))))
 
 (def/macro (def/bjodat-type form inject compare)
   (syntax-match form
