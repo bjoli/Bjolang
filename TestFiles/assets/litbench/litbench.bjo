@@ -1,0 +1,229 @@
+;; What a keyword literal costs where it is written.
+;;
+;; A keyword is emitted as `Keyword.Intern("apple")`, which is a string hash and
+;; a `ConcurrentDictionary` probe, for a value that was fully known when the
+;; file was compiled. Hoisting it to a static field replaces all of that with a
+;; field read. This measures the difference, on the only shape where it can be
+;; seen on its own: a literal in a loop, with nothing else in the loop.
+;;
+;; Four shapes, because they do not all move and it matters which:
+;;
+;;   literal      `(eq? k :apple)` — the thing being optimised.
+;;   def          `(eq? k apple-key)`, the keyword bound by a module-level
+;;                `def`. This is what hoisting by hand looked like, and it is
+;;                the floor the literal should reach. It is *not* zero: a module
+;;                class with a `def` has an explicit static constructor, so it
+;;                is not `beforefieldinit` and every read of one of its statics
+;;                carries an initialisation check the hoisted field does not.
+;;   cond         three literals per call, which is what keyword dispatch
+;;                written with `eq?` actually costs.
+;;   match        the same dispatch as patterns. **This one does not move and
+;;                is not supposed to.** A keyword pattern is emitted as
+;;                `Keyword { Name: "apple" }` — a string comparison, not an
+;;                `Intern` call — so no amount of literal hoisting touches it.
+;;                Recorded here so that nobody expects it to.
+;;   intern       `(string->keyword "apple")` per iteration: the probe, still
+;;                paid, by the one caller that cannot avoid it because its name
+;;                arrives at run time. The reader in `(text bjodat)` is this
+;;                row, and this is the row that says what the others saved.
+;;   vec          `[1 2 3]` in the loop, which is the same idea over a bigger
+;;                object: `FromArray` allocates an array *and* a list on every
+;;                evaluation, and a `Vec` is immutable, so one instance can
+;;                serve every one of them. Measured on its own because it is a
+;;                separate change that could be kept or dropped on its own.
+;;
+;;   ./bjor TestFiles/assets/litbench/litbench.bjo
+
+(import (std prelude))
+
+(import/class
+  (Stopwatch (: System.Diagnostics.Stopwatch)))
+
+(import/extern (clr-to-int (: System.Convert.ToInt32)))
+(import/extern (clr-collect (: System.GC.Collect (-> void))))
+
+;; Two million, so that ticks * 100 stays inside an `int` in `ps-per-op` below.
+;; A tick is 100 ns, the products there are ns and then ps, and a benchmark
+;; that silently wrapped would be worse than none.
+(: iterations int)
+(def iterations 2000000)
+
+(: reps int)
+(def reps 20)
+
+(: warmups int)
+(def warmups 5)
+
+;; The hand-hoisted shape this work is meant to make unnecessary.
+(: apple-key Keyword)
+(def apple-key :apple)
+
+;; ---------------------------------------------------------------------------
+;; The shapes
+;; ---------------------------------------------------------------------------
+;; Every one takes the keyword as an argument, so that nothing about the answer
+;; is known before the call, and every one answers a count that depends on the
+;; work, so that none of it is dead.
+
+(: via-literal (-> Keyword int))
+(defun (via-literal k)
+  (let go ((i 0) (hits 0))
+    (if (= i iterations)
+        hits
+        (go (+ i 1) (if (eq? k :apple) (+ hits 1) hits)))))
+
+(: via-def (-> Keyword int))
+(defun (via-def k)
+  (let go ((i 0) (hits 0))
+    (if (= i iterations)
+        hits
+        (go (+ i 1) (if (eq? k apple-key) (+ hits 1) hits)))))
+
+(: via-intern (-> Keyword int))
+(defun (via-intern k)
+  (let go ((i 0) (hits 0))
+    (if (= i iterations)
+        hits
+        (go (+ i 1) (if (eq? k (string->keyword "apple")) (+ hits 1) hits)))))
+
+;; Both of these are handed a keyword that matches *none* of the three, so that
+;; all three literals are reached on every call. Handed `:apple` the first arm
+;; answers and the row measures one literal, not three — which is a perfectly
+;; real shape but not the one this is here to price. The fallback answers 4
+;; rather than 0 so that `timed`'s "a shape answered nothing" check still has
+;; something to see.
+(: classify-cond (-> Keyword int))
+(defun (classify-cond k)
+  (cond ((eq? k :apple) 1)
+        ((eq? k :banana) 2)
+        ((eq? k :cherry) 3)
+        (else 4)))
+
+(: classify-match (-> Keyword int))
+(defun (classify-match k)
+  (match k
+    (:apple 1)
+    (:banana 2)
+    (:cherry 3)
+    (_ 4)))
+
+(: via-cond (-> Keyword int))
+(defun (via-cond k)
+  (let go ((i 0) (hits 0))
+    (if (= i iterations)
+        hits
+        (go (+ i 1) (+ hits (classify-cond k))))))
+
+(: via-match (-> Keyword int))
+(defun (via-match k)
+  (let go ((i 0) (hits 0))
+    (if (= i iterations)
+        hits
+        (go (+ i 1) (+ hits (classify-match k))))))
+
+(: via-vec (-> Keyword int))
+(defun (via-vec k)
+  (ignore k)
+  (let go ((i 0) (hits 0))
+    (if (= i iterations)
+        hits
+        (go (+ i 1) (+ hits (vec-ref [1 2 3] 1))))))
+
+;; The empty loop, so that every row above can be read net of the loop itself.
+(: via-nothing (-> Keyword int))
+(defun (via-nothing k)
+  (ignore k)
+  (let go ((i 0) (hits 0))
+    (if (= i iterations)
+        hits
+        (go (+ i 1) (+ hits 1)))))
+
+;; ---------------------------------------------------------------------------
+;; Timing
+;; ---------------------------------------------------------------------------
+
+(: elapsed-ticks (-> Stopwatch int))
+(defun (elapsed-ticks sw)
+  (clr-to-int (.-Ticks (.-Elapsed sw))))
+
+(: timed (-> (-> Keyword int) Keyword int))
+(defun (timed f k)
+  (let go ((i 0) (best 2000000000))
+    (if (= i reps)
+        best
+        (let ((sw (Stopwatch.)))
+          (clr-collect)
+          (.Start sw)
+          (let ((got (f k)))
+            (.Stop sw)
+            (when (= got 0) (println "  a shape answered nothing"))
+            (let ((t (elapsed-ticks sw)))
+              (go (+ i 1) (if (< t best) t best))))))))
+
+(: as-ms (-> int string))
+(defun (as-ms ticks)
+  (let* ((hundredths (/ ticks 100))
+         (frac (% hundredths 100)))
+    (str (int->string (/ hundredths 100))
+         (if (< frac 10) ".0" ".")
+         (int->string frac))))
+
+;; Picoseconds per iteration, printed as nanoseconds with three decimals. A
+;; tick is 100 ns and the loop runs `iterations / 1000` thousand times, so the
+;; largest intermediate is `ticks * 100`, which a two-second rep keeps inside an
+;; `int`.
+(: ns-per-op (-> int string))
+(defun (ns-per-op ticks)
+  (let* ((ps (/ (* ticks 100) (/ iterations 1000)))
+         (frac (% ps 1000)))
+    (str (int->string (/ ps 1000))
+         (cond ((< frac 10) ".00")
+               ((< frac 100) ".0")
+               (else "."))
+         (int->string frac))))
+
+(: row (-> string int int void))
+(defun (row label ticks floor)
+  (println (str (string-pad-right label 14)
+                (string-pad-left (as-ms ticks) 8) " ms"
+                (string-pad-left (ns-per-op ticks) 10) " ns/op"
+                (string-pad-left (ns-per-op (- ticks floor)) 10) " net")))
+
+(defun (main)
+  ;; `miss` matches none of the three arms, so a dispatch over it reaches every
+  ;; literal it is written with.
+  (let ((k :apple)
+        (miss :pear))
+    (println (str "iterations " (int->string iterations) ", best of " (int->string reps)))
+
+    (loop (:for w (range 0 warmups))
+          (:do (ignore (via-nothing k))
+               (ignore (via-literal k))
+               (ignore (via-def k))
+               (ignore (via-intern k))
+               (ignore (via-cond miss))
+               (ignore (via-match miss))
+               (ignore (via-vec k))))
+    (println (str "warmed " (int->string warmups) " passes over every shape"))
+    (println "")
+
+    (let ((base (timed via-nothing k))
+          (lit (timed via-literal k))
+          (dfn (timed via-def k))
+          (itn (timed via-intern k))
+          (cnd (timed via-cond miss))
+          (mch (timed via-match miss))
+          (vc (timed via-vec k)))
+      (row "empty loop" base base)
+      (row "literal" lit base)
+      (row "def" dfn base)
+      (row "cond x3" cnd base)
+      (row "match x3" mch base)
+      (row "string->kw" itn base)
+      (row "vec [1 2 3]" vc base)
+      (println "")
+      (println (str "  check: " (int->string (via-literal k))
+                    " " (int->string (via-def k))
+                    " " (int->string (via-cond miss))
+                    " " (int->string (via-match miss))))))
+  0)

@@ -1,0 +1,426 @@
+;; text/bjodat-codec.bjo
+;;
+;; Two traits and a macro that writes a record's codecs.
+;;
+;; A record is a map whose keys are keywords naming its fields. The keys are
+;; emitted as keyword *literals* at expansion time, so decoding a field compares
+;; interned references and never interns anything at run time.
+;;
+;; There is no null. A key that may be absent is `#:optional`, which is exactly
+;; `#:default None` — and absence is the whole of it, because a data format
+;; whose values are the language's values has no separate empty. Where an
+;; `(Option %a)` must be written anyway, `None` is the empty list.
+
+(export
+  ;; The traits
+  ->bjodat bjodat->
+  ;; What generated field code calls. Exported because a macro template's names
+  ;; resolve against this module's scope.
+  bjodat-map bjodat-field bjodat-field/default
+  ;; The generator
+  def/bjodat-type)
+
+(import (std prelude))
+(import (std syntax-match))
+(import (text bjodat))
+
+;; ---------------------------------------------------------------------------
+;; The traits
+;; ---------------------------------------------------------------------------
+
+(def/trait (->bjodat %a)
+  (: ->bjodat (-> %a Bjodat)))
+
+(def/trait (bjodat-> %a)
+  (: bjodat-> (-> Bjodat (Result string %a))))
+
+;; ---------------------------------------------------------------------------
+;; Scalars
+;; ---------------------------------------------------------------------------
+
+(impl (->bjodat Bjodat) (defun (->bjodat v) v))
+(impl (->bjodat long)   (defun (->bjodat n) (BjoInt n)))
+(impl (->bjodat int)    (defun (->bjodat n) (BjoInt (cast System.Int64 n))))
+(impl (->bjodat double) (defun (->bjodat n) (BjoFloat n)))
+(impl (->bjodat bool)   (defun (->bjodat b) (BjoBool b)))
+(impl (->bjodat string) (defun (->bjodat s) (BjoStr s)))
+(impl (->bjodat char)   (defun (->bjodat c) (BjoChar c)))
+(impl (->bjodat Symbol) (defun (->bjodat s) (BjoSym s)))
+(impl (->bjodat Keyword) (defun (->bjodat k) (BjoKey k)))
+
+(impl (bjodat-> Bjodat)
+  (defun (bjodat-> v) (Ok v)))
+
+(impl (bjodat-> long)
+  (defun (bjodat-> v)
+    (match v
+      ((BjoInt n) (Ok n))
+      (_ (Err "expected an integer")))))
+
+(impl (bjodat-> int)
+  (defun (bjodat-> v)
+    (match v
+      ((BjoInt n) (Ok (cast System.Int32 n)))
+      (_ (Err "expected an integer")))))
+
+(impl (bjodat-> double)
+  (defun (bjodat-> v)
+    (match v
+      ((BjoFloat d) (Ok d))
+      ;; An integer is a perfectly good double.
+      ((BjoInt n) (Ok (cast System.Double n)))
+      (_ (Err "expected a number")))))
+
+(impl (bjodat-> bool)
+  (defun (bjodat-> v)
+    (match v
+      ((BjoBool b) (Ok b))
+      (_ (Err "expected #t or #f")))))
+
+(impl (bjodat-> string)
+  (defun (bjodat-> v)
+    (match v
+      ((BjoStr s) (Ok s))
+      (_ (Err "expected a string")))))
+
+(impl (bjodat-> char)
+  (defun (bjodat-> v)
+    (match v
+      ((BjoChar c) (Ok c))
+      (_ (Err "expected a character")))))
+
+;; A symbol and a keyword are different values, and a field asking for one does
+;; not take the other: that distinction is the reason both are in the format.
+(impl (bjodat-> Symbol)
+  (defun (bjodat-> v)
+    (match v
+      ((BjoSym s) (Ok s))
+      (_ (Err "expected a symbol")))))
+
+(impl (bjodat-> Keyword)
+  (defun (bjodat-> v)
+    (match v
+      ((BjoKey k) (Ok k))
+      (_ (Err "expected a keyword")))))
+
+;; ---------------------------------------------------------------------------
+;; Absence
+;; ---------------------------------------------------------------------------
+
+(impl (->bjodat (Option %a))
+  (where (->bjodat %a))
+  (defun (->bjodat o)
+    (match o
+      ((Some x) (->bjodat x))
+      (None (BjoList Nil)))))
+
+(impl (bjodat-> (Option %a))
+  (where (bjodat-> %a))
+  (defun (bjodat-> v)
+    (match v
+      ((BjoList Nil) (Ok None))
+      (_ (match (bjodat-> v)
+           ((Err e) (Err e))
+           ((Ok x) (Ok (Some x))))))))
+
+;; ---------------------------------------------------------------------------
+;; Sequences
+;; ---------------------------------------------------------------------------
+
+(impl (->bjodat (Vec %a))
+  (where (->bjodat %a))
+  (defun (->bjodat v)
+    (BjoVec (vec-map (fun (x) (->bjodat x)) v))))
+
+(impl (bjodat-> (Vec %a))
+  (where (bjodat-> %a))
+  (defun (bjodat-> v)
+    (match v
+      ((BjoVec items)
+       (vec-fold (fun (acc el)
+                   (match acc
+                     ((Err e) (Err e))
+                     ((Ok b)
+                      (match (bjodat-> el)
+                        ((Err e) (Err e))
+                        ((Ok x) (Ok (vec-add b x)))))))
+                 (Ok (vec-empty))
+                 items))
+      (_ (Err "expected a vec")))))
+
+;; A list is the other sequence, and it is a different shape on the page: a
+;; `(...)` rather than a `[...]`. A field takes the one its type names.
+(impl (->bjodat (List %a))
+  (where (->bjodat %a))
+  (defun (->bjodat xs)
+    (BjoList (list-map (fun (x) (->bjodat x)) xs))))
+
+(impl (bjodat-> (List %a))
+  (where (bjodat-> %a))
+  (defun (bjodat-> v)
+    (match v
+      ((BjoList items)
+       (match (list-foldl (fun (acc el)
+                            (match acc
+                              ((Err e) (Err e))
+                              ((Ok b)
+                               (match (bjodat-> el)
+                                 ((Err e) (Err e))
+                                 ((Ok x) (Ok (Cons x b)))))))
+                          (Ok Nil)
+                          items)
+         ((Err e) (Err e))
+         ((Ok b) (Ok (list-reverse b)))))
+      (_ (Err "expected a list")))))
+
+;; ---------------------------------------------------------------------------
+;; What generated field code calls
+;; ---------------------------------------------------------------------------
+
+(: bjodat-map (-> string Bjodat (Result string (Vec Bjodat))))
+(defun (bjodat-map owner v)
+  (match v
+    ((BjoMap entries) (Ok entries))
+    (_ (Err (str owner ": expected a map")))))
+
+;; The owner and the key are prefixed onto whatever the value's own decoder
+;; said, so a wrong type reads "Package.version: expected a string" rather than
+;; naming neither.
+(: bjodat-field (-> string (Vec Bjodat) Keyword (Result string %a)) (where (bjodat-> %a)))
+(defun (bjodat-field owner entries key)
+  (match (bjodat-ref entries key)
+    (None (Err (str owner ": the map has no :" (keyword->string key) " entry")))
+    ((Some v)
+     (match (bjodat-> v)
+       ((Err e) (Err (str owner "." (keyword->string key) ": " e)))
+       ((Ok x) (Ok x))))))
+
+;; Absent is the default. Unlike JSON there is no null to mean it as well.
+(: bjodat-field/default (-> string (Vec Bjodat) Keyword %a (Result string %a)) (where (bjodat-> %a)))
+(defun (bjodat-field/default owner entries key fallback)
+  (match (bjodat-ref entries key)
+    (None (Ok fallback))
+    ((Some v)
+     (match (bjodat-> v)
+       ((Err e) (Err (str owner "." (keyword->string key) ": " e)))
+       ((Ok x) (Ok x))))))
+
+;; ---------------------------------------------------------------------------
+;; The generator
+;; ---------------------------------------------------------------------------
+;; A runtime macro. Field types are never inspected: what a field encodes as is
+;; settled later by instance resolution, and only the markers are read here.
+
+(: jb-sym (-> string Syntax))
+(defun (jb-sym name) (SSym (string->symbol name)))
+
+(: jb-str (-> Syntax Syntax))
+(defun (jb-str s) (SStr (syntax->string s)))
+
+;; `(Box %a)` names the type `Box`; a bare `Package` names itself.
+(: jb-head-name (-> Syntax Syntax))
+(defun (jb-head-name head)
+  (match head
+    ((SList parts) (list-head parts))
+    (_ head)))
+
+(: jb-head-vars (-> Syntax (List Syntax)))
+(defun (jb-head-vars head)
+  (match head
+    ((SList parts) (list-tail parts))
+    (_ Nil)))
+
+(: jb-where (-> (-> Symbol Syntax) Syntax string (List Syntax)))
+(defun (jb-where inject head trait)
+  (let ((vars (jb-head-vars head)))
+    (if (list-empty? vars)
+        Nil
+        (list #'(,(inject 'where)
+                 ,@(list-map (fun (v) #'(,(inject (string->symbol trait)) ,v)) vars))))))
+
+;; --- markers ---------------------------------------------------------------
+
+(: jb-marker=? (-> Syntax string bool))
+(defun (jb-marker=? m name) (= (syntax->string m) name))
+
+;; The key this field is written under. `#:key :other-name` renames it; without
+;; one the key is the field's own name. Built here, at expansion time, so the
+;; generated code holds a keyword literal.
+;;
+;; The literal is written straight into the decoder, once per field per record
+;; read, and that is not what it costs. A keyword used to be emitted as
+;; `Keyword.Intern("name")` at every site it appeared — a string hash and a
+;; dictionary probe per evaluation — and this macro worked around it by
+;; emitting a `(def __jb-key-Type-field :name)` per field and reading the static
+;; field instead. `Codegen` now hoists every keyword literal into a static field
+;; of its own accord, so the workaround was deleted: the same C# comes out, and
+;; every other keyword in every other program gets it too.
+(: jb-key (-> Syntax (List Syntax) Syntax))
+(defun (jb-key name markers)
+  (let go ((ms markers))
+    (if (list-empty? ms)
+        (SKey (string->keyword (syntax->string name)))
+        (if (jb-marker=? (list-head ms) "#:key")
+            (list-head (list-tail ms))
+            (go (list-tail ms))))))
+
+;; The fallback expression, or None if the field is required.
+(: jb-fallback (-> (List Syntax) (Option Syntax)))
+(defun (jb-fallback markers)
+  (let go ((ms markers))
+    (if (list-empty? ms)
+        None
+        (let ((m (list-head ms)))
+          (cond
+            ((jb-marker=? m "#:optional") (Some (jb-sym "None")))
+            ((jb-marker=? m "#:default") (Some (list-head (list-tail ms))))
+            (else (go (list-tail ms))))))))
+
+(: jb-optional? (-> (List Syntax) bool))
+(defun (jb-optional? markers)
+  (let go ((ms markers))
+    (if (list-empty? ms)
+        #f
+        (if (jb-marker=? (list-head ms) "#:optional")
+            #t
+            (go (list-tail ms))))))
+
+;; What the record declaration keeps: everything that is not ours.
+(: jb-keep (-> (List Syntax) (List Syntax)))
+(defun (jb-keep markers)
+  (let go ((ms markers))
+    (if (list-empty? ms)
+        Nil
+        (let ((m (list-head ms)))
+          (cond
+            ((jb-marker=? m "#:default") (go (list-tail (list-tail ms))))
+            ((jb-marker=? m "#:key") (go (list-tail (list-tail ms))))
+            ((jb-marker=? m "#:optional") (go (list-tail ms)))
+            (else (Cons m (go (list-tail ms)))))))))
+
+(: jb-shape string)
+(def jb-shape
+  "a field is written (: name type), then any of #:mutable, #:optional, #:default <expr>, #:key :name.")
+
+(: jb-fail-list (-> Syntax string (List Syntax)))
+(defun (jb-fail-list form message)
+  (ignore (syntax-error form message))
+  Nil)
+
+(: jb-field-name (-> Syntax Syntax))
+(defun (jb-field-name f)
+  (syntax-match f
+    ((_ name _ marker ...) name)
+    (bad (syntax-error bad jb-shape))))
+
+(: jb-field-markers (-> Syntax (List Syntax)))
+(defun (jb-field-markers f)
+  (syntax-match f
+    ((_ _ _ marker ...) marker)
+    (bad (jb-fail-list bad jb-shape))))
+
+(: jb-strip (-> Syntax Syntax))
+(defun (jb-strip f)
+  (syntax-match f
+    ((colon name ty marker ...) #'(,colon ,name ,ty ,@(jb-keep marker)))
+    (bad (syntax-error bad jb-shape))))
+
+;; --- encode ----------------------------------------------------------------
+;;
+;; The entries are built up in reverse and turned round once, so a map is one
+;; vec and the order is the order the fields were declared in. An optional
+;; field that is None is not written at all.
+
+(: jb-enc-chain (-> (List Syntax) Syntax Syntax))
+(defun (jb-enc-chain fields acc)
+  (if (list-empty? fields)
+      #'(BjoMap (list->vec (list-reverse ,acc)))
+      (let* ((f (list-head fields))
+             (name (jb-field-name f))
+             (markers (jb-field-markers f))
+             (key (jb-key name markers))
+             (push #'(Cons (->bjodat (record-ref v ,name))
+                           (Cons (BjoKey ,key) ,acc)))
+             (step (if (jb-optional? markers)
+                       #'(if (some? (record-ref v ,name)) ,push ,acc)
+                       push)))
+        #'(let ((,acc ,step))
+            ,(jb-enc-chain (list-tail fields) acc)))))
+
+(: jb-encode (-> (List Syntax) Syntax))
+(defun (jb-encode fields)
+  (let ((acc (jb-sym "__jb-acc")))
+    #'(let ((,acc Nil))
+        ,(jb-enc-chain fields acc))))
+
+;; --- decode ----------------------------------------------------------------
+;;
+;; One `match` per field wrapping the next, with the constructor innermost.
+
+(: jb-chain (-> Syntax Syntax (List Syntax) int Syntax Syntax))
+(defun (jb-chain owner entries fields i ctor)
+  (if (list-empty? fields)
+      ctor
+      (let* ((f (list-head fields))
+             (v (jb-sym (str "__jb-v" (int->string i))))
+             (e (jb-sym (str "__jb-e" (int->string i))))
+             (markers (jb-field-markers f))
+             (key (jb-key (jb-field-name f) markers))
+             (get (match (jb-fallback markers)
+                    (None #'(bjodat-field ,owner ,entries ,key))
+                    ((Some d) #'(bjodat-field/default ,owner ,entries ,key ,d)))))
+        #'(match ,get
+            ((Err ,e) (Err ,e))
+            ((Ok ,v) ,(jb-chain owner entries (list-tail fields) (+ i 1) ctor))))))
+
+(: jb-ctor (-> Syntax (List Syntax) Syntax))
+(defun (jb-ctor head fields)
+  #'(Ok (,(jb-head-name head)
+         ,@(let go ((fs fields) (i 0))
+             (if (list-empty? fs)
+                 Nil
+                 (Cons #'(,(jb-field-name (list-head fs))
+                          ,(jb-sym (str "__jb-v" (int->string i))))
+                       (go (list-tail fs) (+ i 1))))))))
+
+(: jb-decode (-> Syntax (List Syntax) Syntax))
+(defun (jb-decode head fields)
+  (let ((owner (jb-str (jb-head-name head)))
+        (entries (jb-sym "__jb-entries"))
+        (e (jb-sym "__jb-e")))
+    #'(match (bjodat-map ,owner v)
+        ((Err ,e) (Err ,e))
+        ((Ok ,entries) ,(jb-chain owner entries fields 0 (jb-ctor head fields))))))
+
+;; --- the form ---------------------------------------------------------------
+
+(: jb-expand (-> (-> Symbol Syntax) Syntax Syntax (List Syntax) Syntax))
+(defun (jb-expand inject colon head fields)
+  (let ((name (syntax->string (jb-head-name head))))
+    (let ((enc (inject (string->symbol (str name "->bjodat"))))
+          (dec (inject (string->symbol (str "bjodat->" name)))))
+      #'(begin
+          (type (,colon ,head (Record ,@(list-map jb-strip fields))))
+
+          (impl (->bjodat ,head)
+            ,@(jb-where inject head "->bjodat")
+            (defun (->bjodat v) ,(jb-encode fields)))
+
+          (impl (bjodat-> ,head)
+            ,@(jb-where inject head "bjodat->")
+            (defun (bjodat-> v) ,(jb-decode head fields)))
+
+          ;; The named pair. `bjodat->` alone would be ambiguous at a call site;
+          ;; this signature is what fixes the instance, once per type.
+          (: ,enc (-> ,head Bjodat) ,@(jb-where inject head "->bjodat"))
+          (defun (,enc v) (->bjodat v))
+          (: ,dec (-> Bjodat (Result string ,head)) ,@(jb-where inject head "bjodat->"))
+          (defun (,dec v) (bjodat-> v))))))
+
+(def/macro (def/bjodat-type form inject compare)
+  (syntax-match form
+    ((_ typedef)
+     (syntax-match typedef
+       ((colon head ('Record field ...)) (jb-expand inject colon head field))
+       (bad (syntax-error bad "def/bjodat-type takes a record: (def/bjodat-type (: Name (Record (: field type) ...)))"))))
+    (bad (syntax-error bad "def/bjodat-type takes exactly one record declaration."))))

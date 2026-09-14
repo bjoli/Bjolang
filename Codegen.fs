@@ -58,10 +58,67 @@ type LoopScope = {
 /// nested `CodegenContext` records (e.g. during `withIndent`).
 type LineState = { mutable Pending: Lexer.Range option }
 
+/// The constant literals lifted out of method bodies into static fields.
+///
+/// A keyword is emitted as `Keyword.Intern("k")`, which is a string hash and a
+/// `ConcurrentDictionary` probe, for a value that was fully known when the file
+/// was compiled. Written in a loop it pays that per iteration. Interning is
+/// idempotent and the table is process-wide, so one call per literal per
+/// assembly answers every use with the same reference — which is all `eq?` and
+/// pattern matching ever ask of it.
+///
+/// Shared by reference across every `CodegenContext` copy, exactly as
+/// `LineState` is. `{ ctx with IndentLevel = ... }` makes a new record many
+/// times per expression, and a table that copied with it would collect a
+/// literal into one copy and emit the class from another.
+type LiteralTable = {
+    /// Initializer text -> the field holding it. Keyed by the *text* rather
+    /// than by the literal's name, because that is exactly what has to agree
+    /// for two uses to be able to share a field: `:a` and `a` have the same
+    /// name and are not the same value.
+    Fields: System.Collections.Generic.Dictionary<string, string>
+    /// The field names already handed out. `sanitizeIdent` is deliberately not
+    /// injective — `a-b` and `asubb` both come out as `asubb` — so a name can
+    /// already be taken by a *different* literal and need a counter.
+    Taken: System.Collections.Generic.HashSet<string>
+    /// The declarations in the order they were first asked for, so that the
+    /// same input emits the same text. The codegen tests diff emitted output.
+    Decls: ResizeArray<string>
+}
+
+/// The class hoisted literals are emitted into.
+///
+/// One per assembly, sitting in the compilation's own namespace, rather than a
+/// set of fields on each emitted class. Three reasons, in order of weight:
+///
+///   - A static field of a *generic* class exists once per closed
+///     instantiation, so hoisting into the enclosing class would intern the
+///     same name once per instantiation of every generic impl class. Correct,
+///     since interning is idempotent, but it buys nothing after the first and
+///     costs metadata for every one.
+///   - A class with an explicit static constructor is not `beforefieldinit`,
+///     and every static access to it then carries an initialization check.
+///     Module classes with a `def` already have such a constructor; classes
+///     without one must not grow one, and a holder with nothing but field
+///     initializers cannot.
+///   - One table, so deduplication is one lookup. A `defbjouble`'s two bodies
+///     land in the same class and an `impl` method in another, and both share
+///     a field without anyone tracking which class is being written.
+///
+/// The name is resolved without qualification at the use site: C# looks in the
+/// enclosing namespace's own members before it consults that namespace's
+/// `using` directives, and this class is declared there. The `internal` is what
+/// keeps a dependency's copy out of the way — it is never visible across an
+/// assembly boundary, so the `using` for a dependency's namespace cannot make
+/// the name ambiguous.
+let literalHolderClass = "__Literals"
+
 type CodegenContext = {
     Builder: StringBuilder
     /// The directive owed to the next line written to `Builder`.
     Line: LineState
+    /// The literals hoisted so far, shared by reference across copies.
+    Literals: LiteralTable
     IndentLevel: int
     UnionCases: Map<string, UnionCaseInfo>
     /// Visible name -> the module class holding it and the member it is
@@ -305,6 +362,97 @@ let moduleClassName = Naming.moduleClassName
 
 /// The C# spelling of a Bjolang type parameter.
 let typeParamName = Naming.typeParamName
+
+/// The field name a hoisted literal is given.
+///
+/// `sanitizeIdent` first, so that the result is spelled the way the rest of the
+/// generated code spells a name, and then filtered down to the characters a C#
+/// identifier may hold: a keyword's name can contain anything the reader
+/// accepts, and `sanitizeIdent` has a table for the operators but no reason to
+/// have one for every character. The `kind` prefix is what keeps a name out of
+/// the reserved set — `:base` sanitizes to `@base`, and `Kw_base` needs no
+/// escape — and it is also what keeps a keyword and a symbol of the same name
+/// from wanting the same field.
+let private literalFieldBase (kind: string) (name: string) =
+    let sb = StringBuilder()
+
+    for c in sanitizeIdent name do
+        if Char.IsLetterOrDigit c || c = '_' then sb.Append(c) |> ignore
+
+    // A vec literal has no name to be called after, and comes through here with
+    // an empty one: `Vec`, `Vec_2`, `Vec_3` by the counter below.
+    if sb.Length = 0 then kind else $"%s{kind}_%s{sb.ToString()}"
+
+/// Lifts a constant literal into a static field and answers how the use site
+/// names it.
+///
+/// `init` is both the value emitted into the field and the deduplication key:
+/// two uses share a field exactly when they would have emitted the same text,
+/// which is the only condition under which sharing is sound.
+let private hoistLiteral (ctx: CodegenContext) (kind: string) (name: string) (csType: string) (init: string) : string =
+    let table = ctx.Literals
+
+    let field =
+        match table.Fields.TryGetValue init with
+        | true, existing -> existing
+        | _ ->
+            let wanted = literalFieldBase kind name
+            let mutable field = wanted
+            let mutable n = 2
+
+            // `Taken.Add` answers false when the name is already spoken for, by
+            // a literal that sanitized to the same thing. The counter is only
+            // reached in that case, so the common name stays readable.
+            while not (table.Taken.Add field) do
+                field <- $"%s{wanted}_%d{n}"
+                n <- n + 1
+
+            table.Fields[init] <- field
+            table.Decls.Add $"public static readonly %s{csType} %s{field} = %s{init};"
+            field
+
+    $"%s{literalHolderClass}.%s{field}"
+
+/// Does this type stand on its own, with no type parameter left in it?
+///
+/// Asked of a vec literal's type before hoisting it, because the holder class
+/// is not generic and cannot hold a field of `T_a`. An unresolved metavariable
+/// counts as *not* ground: it is a variable inference never settled, and what
+/// it is spelled as is not this function's business.
+let private isGroundType (t: HMType) =
+    let rec leaf t =
+        match t with
+        | TVar _ -> [ () ]
+        | TMeta { Value = Some inner } -> foldType leaf inner
+        | TMeta _ -> [ () ]
+        | _ -> []
+
+    List.isEmpty (foldType leaf t)
+
+/// Is this expression a literal whose value is fixed at compile time?
+///
+/// Deliberately short. It answers a question about *sharing*: may one instance
+/// stand for every evaluation of this expression? For a scalar that is
+/// trivially so, and for a vec it is so because a `Vec` cannot be written to —
+/// `vec-set` answers a new one. It is emphatically **not** so for an array
+/// literal, which `Docs/Syntax.org` promises is a fresh array per evaluation
+/// and which `036_array.bjo` and `187_array_literals.bjo` test; `TArrayMake` is
+/// absent from this list on purpose and must stay absent.
+///
+/// Nothing cleverer belongs here either. An element that mentions a
+/// module-level `def` is constant in the sense that it never changes, but
+/// hoisting it would move its evaluation ahead of the static constructor that
+/// assigns it, and read a zeroed field.
+let rec private isSharableLiteral (expr: TypedExpr) =
+    match expr.Node with
+    | TInt _
+    | TString _
+    | TBool _
+    | TChar _
+    | TKeyword _
+    | TSymbol _ -> true
+    | TVecMake items -> isGroundType expr.Type && items |> List.forall isSharableLiteral
+    | _ -> false
 
 /// The class holding a CLR-constraint trait's members, as generic methods.
 ///
@@ -1462,8 +1610,13 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     | TString s -> append ctx $"\"%s{escapeStringLiteral s}\""
     | TChar c -> append ctx $"new Bjolang.Runtime.BjoChar(%d{c})"
     | TBool b -> append ctx (if b then "true" else "false")
-    | TKeyword k -> append ctx $"BjolangRuntime.Keyword.Intern(\"{escapeStringLiteral k}\")"
-    | TSymbol s -> append ctx $"BjolangRuntime.Symbol.Intern(\"{escapeStringLiteral s}\")"
+    // Both interned once per assembly rather than once per evaluation. See
+    // `LiteralTable`: the name is a constant, `Intern` is idempotent, and what
+    // it costs at a use site is a string hash and a dictionary probe.
+    | TKeyword k ->
+        append ctx (hoistLiteral ctx "Kw" k "BjolangRuntime.Keyword" $"BjolangRuntime.Keyword.Intern(\"{escapeStringLiteral k}\")")
+    | TSymbol s ->
+        append ctx (hoistLiteral ctx "Sym" s "BjolangRuntime.Symbol" $"BjolangRuntime.Symbol.Intern(\"{escapeStringLiteral s}\")")
     // A dictionary singleton: "Foldable_Vec::Instance" with the impl class's own
     // type arguments. `Lowering` produces these when it passes a dictionary to a
     // constrained function, and the class is generic whenever the implemented
@@ -1882,11 +2035,33 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     // `Vec` is immutable from there on.
     | TVecMake items ->
         let elementTypeStr = elementTypeString expr.Type
-        append ctx $"Collections.RrbBuilder<%s{elementTypeStr}>.FromArray(new %s{elementTypeStr}[] {{ "
-        for i, emit in List.indexed (prepareOperands ctx items) do
-            if i > 0 then append ctx ", "
-            emit ctx
-        append ctx " }, true)"
+
+        let emitInto (c: CodegenContext) (emitters: (CodegenContext -> unit) list) =
+            append c $"Collections.RrbBuilder<%s{elementTypeStr}>.FromArray(new %s{elementTypeStr}[] {{ "
+            for i, emit in List.indexed emitters do
+                if i > 0 then append c ", "
+                emit c
+            append c " }, true)"
+
+        // A vec of literals is built once per assembly rather than once per
+        // evaluation. `FromArray` allocates the array *and* the list every time
+        // it is reached, and a `Vec` is immutable, so one instance answers every
+        // evaluation — the same argument as for a keyword, over a bigger object.
+        //
+        // The initializer is generated into a buffer of its own so that it can
+        // become a field's value. Nothing in it can hoist a statement — that is
+        // what `isSharableLiteral` established — so the buffer never has to be
+        // merged back into the enclosing statement. An element that is itself a
+        // hoistable literal registers its own field on the way through, and
+        // lands *ahead* of this one in the table, which is also the order C#
+        // runs field initializers in.
+        if isSharableLiteral expr then
+            let scratch = StringBuilder()
+            let inner = { ctx with Builder = scratch; Prelude = None }
+            emitInto inner (items |> List.map (fun item -> fun (c: CodegenContext) -> generateExpr c item))
+            append ctx (hoistLiteral ctx "Vec" "" (typeToString expr.Type) (scratch.ToString()))
+        else
+            emitInto ctx (prepareOperands ctx items)
 
     | TMatch (matchTarget, clauses) ->
         // Reached only when every live arm and guard is expression-shaped.
@@ -5045,6 +5220,10 @@ let generateProgram
     let ctx =
         { Builder = StringBuilder()
           Line = { Pending = None }
+          Literals =
+            { Fields = System.Collections.Generic.Dictionary()
+              Taken = System.Collections.Generic.HashSet()
+              Decls = ResizeArray() }
           IndentLevel = 0
           UnionCases = unionCases
           GlobalBindings = globalBindings
@@ -5104,6 +5283,31 @@ let generateProgram
         let mainModule = List.last decls
         appendLine ctx $"namespace %s{Naming.moduleNamespace mainModulePath} {{"
         withIndent ctx (fun ctx -> generateDecl ctx mainModule)
+
+        // Last, because the table is only complete once everything that could
+        // add to it has been generated — and appended rather than inserted, so
+        // that not one line of the code above moves and the `#line` directives
+        // still map to what they mapped to before.
+        //
+        // Field initializers and nothing else: see `literalHolderClass`. A
+        // `static __Literals()` here would take `beforefieldinit` off the class
+        // and put an initialization check on every read of every field, which
+        // is the cost this is supposed to remove.
+        if ctx.Literals.Decls.Count > 0 then
+            hiddenDirective ctx
+
+            withIndent ctx (fun ctx ->
+                indent ctx
+                appendLine ctx $"internal static class %s{literalHolderClass} {{"
+
+                withIndent ctx (fun ctx ->
+                    for decl in ctx.Literals.Decls do
+                        indent ctx
+                        appendLine ctx decl)
+
+                indent ctx
+                appendLine ctx "}")
+
         appendLine ctx "}"
 
     ctx.Builder.ToString()

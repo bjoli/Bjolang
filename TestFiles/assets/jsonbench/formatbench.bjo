@@ -1,0 +1,374 @@
+;; bjodat against JSON, over the same records.
+;;
+;; `codecbench.bjo` asked where the time goes inside one format. This asks
+;; whether the other format is cheaper, and it is the same question a package
+;; manager asks: text on disk, records in hand, how long.
+;;
+;; The two corpora hold the same values in the same order and decode into
+;; records with the same fields, declared by each format's own generator. They
+;; are not the same size — bjodat writes `:name` where JSON writes `"name":`,
+;; and `#f` where JSON writes `false` — so the figure to compare is the one per
+;; record, not the one per byte. Both are printed.
+;;
+;; Three phases each:
+;;
+;;   parse    text -> tree
+;;   decode   tree -> records, the tree parsed outside the timing
+;;   total    text -> records, which is the number that matters
+;;
+;;   ./bjor TestFiles/assets/jsonbench/formatbench.bjo
+
+(import (std prelude))
+(import (text json))
+(import (text json-codec))
+(import (text bjodat))
+(import (text bjodat-codec))
+
+(import/class
+  (Stopwatch (: System.Diagnostics.Stopwatch)))
+
+(import/extern (clr-to-int (: System.Convert.ToInt32)))
+
+;; Collected before every rep, outside the stopwatch. Each parse leaves a tree
+;; of a hundred thousand nodes behind and the corpora are held live throughout,
+;; so without this a collection lands inside some reps and not others — which
+;; showed up as `total` measuring faster than the `parse` it contains.
+(import/extern (clr-collect (: System.GC.Collect (-> void))))
+
+;; --- the same record, declared to each generator ----------------------------
+
+(def/json-type
+  (: JDep (Record (: name string)
+                  (: git string)
+                  (: version string)
+                  (: commit string)
+                  (: pinned bool))))
+
+(def/bjodat-type
+  (: BDep (Record (: name string)
+                  (: git string)
+                  (: version string)
+                  (: commit string)
+                  (: pinned bool))))
+
+;; And the same again with the field types a manifest really has: a sequence
+;; and an absent-able field, both of which decode through conditional impls.
+(def/json-type
+  (: JRich (Record (: name string)
+                   (: tags (Vec string))
+                   (: note (Option string) #:optional)
+                   (: version string))))
+
+(def/bjodat-type
+  (: BRich (Record (: name string)
+                   (: tags (Vec string))
+                   (: note (Option string) #:optional)
+                   (: version string))))
+
+(: records int)
+(def records 20000)
+
+(: reps int)
+(def reps 20)
+
+;; .NET compiles a method at tier 0 first and promotes it only once it has been
+;; called enough times, so a single warm pass leaves the timed reps measuring
+;; the promotion rather than the code. Every phase runs this many times before
+;; anything is timed.
+(: warmups int)
+(def warmups 5)
+
+;; ---------------------------------------------------------------------------
+;; The corpora
+;; ---------------------------------------------------------------------------
+
+(: json-text (-> int string))
+(defun (json-text n)
+  (let ((sb (stringbuilder-empty)))
+    (stringbuilder-add! sb #\[)
+    (let loop ((i 0))
+      (when (< i n)
+        (when (> i 0) (stringbuilder-add! sb #\,))
+        (stringbuilder-add-string! sb "{\"name\":\"dep")
+        (stringbuilder-add-string! sb (int->string i))
+        (stringbuilder-add-string! sb "\",\"git\":\"https://github.com/linus/bjo-")
+        (stringbuilder-add-string! sb (int->string i))
+        (stringbuilder-add-string! sb "\",\"version\":\"1.2.3\",\"commit\":\"abcdeffffff00112233\",\"pinned\":false}")
+        (loop (+ i 1))))
+    (stringbuilder-add! sb #\])
+    (stringbuilder->string sb)))
+
+(: bjodat-text (-> int string))
+(defun (bjodat-text n)
+  (let ((sb (stringbuilder-empty)))
+    (stringbuilder-add! sb #\[)
+    (let loop ((i 0))
+      (when (< i n)
+        (when (> i 0) (stringbuilder-add! sb #\space))
+        (stringbuilder-add-string! sb "{:name \"dep")
+        (stringbuilder-add-string! sb (int->string i))
+        (stringbuilder-add-string! sb "\" :git \"https://github.com/linus/bjo-")
+        (stringbuilder-add-string! sb (int->string i))
+        (stringbuilder-add-string! sb "\" :version \"1.2.3\" :commit \"abcdeffffff00112233\" :pinned #f}")
+        (loop (+ i 1))))
+    (stringbuilder-add! sb #\])
+    (stringbuilder->string sb)))
+
+;; The same map keyed by strings rather than keywords. Nothing else about it
+;; differs, so the gap between this and `bjodat parse` is what interning costs:
+;; a string built off the scratch buffer and then a ConcurrentDictionary
+;; lookup, once per key per record.
+(: bjodat-strkey-text (-> int string))
+(defun (bjodat-strkey-text n)
+  (let ((sb (stringbuilder-empty)))
+    (stringbuilder-add! sb #\[)
+    (let loop ((i 0))
+      (when (< i n)
+        (when (> i 0) (stringbuilder-add! sb #\space))
+        (stringbuilder-add-string! sb "{\"name\" \"dep")
+        (stringbuilder-add-string! sb (int->string i))
+        (stringbuilder-add-string! sb "\" \"git\" \"https://github.com/linus/bjo-")
+        (stringbuilder-add-string! sb (int->string i))
+        (stringbuilder-add-string! sb "\" \"version\" \"1.2.3\" \"commit\" \"abcdeffffff00112233\" \"pinned\" #f}")
+        (loop (+ i 1))))
+    (stringbuilder-add! sb #\])
+    (stringbuilder->string sb)))
+
+(: json-rich-text (-> int string))
+(defun (json-rich-text n)
+  (let ((sb (stringbuilder-empty)))
+    (stringbuilder-add! sb #\[)
+    (let loop ((i 0))
+      (when (< i n)
+        (when (> i 0) (stringbuilder-add! sb #\,))
+        (stringbuilder-add-string! sb "{\"name\":\"dep")
+        (stringbuilder-add-string! sb (int->string i))
+        (stringbuilder-add-string! sb "\",\"tags\":[\"alpha\",\"beta\",\"gamma\"],\"note\":\"a note\",\"version\":\"1.2.3\"}")
+        (loop (+ i 1))))
+    (stringbuilder-add! sb #\])
+    (stringbuilder->string sb)))
+
+(: bjodat-rich-text (-> int string))
+(defun (bjodat-rich-text n)
+  (let ((sb (stringbuilder-empty)))
+    (stringbuilder-add! sb #\[)
+    (let loop ((i 0))
+      (when (< i n)
+        (when (> i 0) (stringbuilder-add! sb #\space))
+        (stringbuilder-add-string! sb "{:name \"dep")
+        (stringbuilder-add-string! sb (int->string i))
+        (stringbuilder-add-string! sb "\" :tags [\"alpha\" \"beta\" \"gamma\"] :note \"a note\" :version \"1.2.3\"}")
+        (loop (+ i 1))))
+    (stringbuilder-add! sb #\])
+    (stringbuilder->string sb)))
+
+;; ---------------------------------------------------------------------------
+;; The phases
+;; ---------------------------------------------------------------------------
+;; Every one answers an int that depends on the work, so none of it can be dead.
+;; The scalar decoders all answer 5 per record and the rich ones 3, which is
+;; also how we know the two formats decoded the same thing.
+
+(: json-parse (-> string int))
+(defun (json-parse text)
+  (match (parse-json text) ((Ok _) 1) ((Err _) 0)))
+
+(: bjodat-parse (-> string int))
+(defun (bjodat-parse text)
+  (match (parse-bjodat text) ((Ok _) 1) ((Err _) 0)))
+
+(: json-sum (-> (Vec Json) int))
+(defun (json-sum items)
+  (vec-fold (fun (acc j)
+              (+ acc (match (json->JDep j)
+                       ((Ok d) (string-length (record-ref d version)))
+                       ((Err _) 0))))
+            0 items))
+
+(: bjodat-sum (-> (Vec Bjodat) int))
+(defun (bjodat-sum items)
+  (vec-fold (fun (acc b)
+              (+ acc (match (bjodat->BDep b)
+                       ((Ok d) (string-length (record-ref d version)))
+                       ((Err _) 0))))
+            0 items))
+
+(: json-rich-sum (-> (Vec Json) int))
+(defun (json-rich-sum items)
+  (vec-fold (fun (acc j)
+              (+ acc (match (json->JRich j)
+                       ((Ok d) (vec-length (record-ref d tags)))
+                       ((Err _) 0))))
+            0 items))
+
+(: bjodat-rich-sum (-> (Vec Bjodat) int))
+(defun (bjodat-rich-sum items)
+  (vec-fold (fun (acc b)
+              (+ acc (match (bjodat->BRich b)
+                       ((Ok d) (vec-length (record-ref d tags)))
+                       ((Err _) 0))))
+            0 items))
+
+;; --- text straight through to records ---------------------------------------
+
+(: json-total (-> string int))
+(defun (json-total text)
+  (match (parse-json text) ((Ok (JsonArr v)) (json-sum v)) (_ 0)))
+
+(: bjodat-total (-> string int))
+(defun (bjodat-total text)
+  (match (parse-bjodat text) ((Ok (BjoVec v)) (bjodat-sum v)) (_ 0)))
+
+(: json-rich-total (-> string int))
+(defun (json-rich-total text)
+  (match (parse-json text) ((Ok (JsonArr v)) (json-rich-sum v)) (_ 0)))
+
+(: bjodat-rich-total (-> string int))
+(defun (bjodat-rich-total text)
+  (match (parse-bjodat text) ((Ok (BjoVec v)) (bjodat-rich-sum v)) (_ 0)))
+
+;; ---------------------------------------------------------------------------
+;; Timing
+;; ---------------------------------------------------------------------------
+
+(: elapsed-ticks (-> Stopwatch int))
+(defun (elapsed-ticks sw)
+  (clr-to-int (.-Ticks (.-Elapsed sw))))
+
+;; The fastest of `reps`, because the mean is largely a measurement of the
+;; garbage collector: each rep leaves a tree behind, a collection lands in some
+;; and not others, and the run that was interrupted least is the one to read.
+(: timed (-> (-> %a int) %a int))
+(defun (timed f x)
+  (let go ((i 0) (best 2000000000))
+    (if (= i reps)
+        best
+        (let ((sw (Stopwatch.)))
+          (clr-collect)
+          (.Start sw)
+          (let ((got (f x)))
+            (.Stop sw)
+            (when (= got 0) (println "  a phase answered nothing"))
+            (let ((t (elapsed-ticks sw)))
+              (go (+ i 1) (if (< t best) t best))))))))
+
+(: as-ms (-> int string))
+(defun (as-ms ticks)
+  (let ((hundredths (/ ticks 100)))
+    (let ((frac (% hundredths 100)))
+      (str (int->string (/ hundredths 100))
+           (if (< frac 10) ".0" ".")
+           (int->string frac)))))
+
+(: ns-per-record (-> int int string))
+(defun (ns-per-record n ticks)
+  (if (= n 0) "n/a" (int->string (/ (* ticks 100) n))))
+
+(: ratio (-> int int string))
+(defun (ratio a b)
+  (if (= a 0)
+      "n/a"
+      (let ((hundredths (/ (* b 100) a)))
+        (let ((frac (% hundredths 100)))
+          (str (int->string (/ hundredths 100))
+               (if (< frac 10) ".0" ".")
+               (int->string frac))))))
+
+(: row (-> string int int void))
+(defun (row label ticks base)
+  (println (str (string-pad-right label 18)
+                (string-pad-left (as-ms ticks) 9) " ms"
+                (string-pad-left (ns-per-record records ticks) 8) " ns/rec"
+                (string-pad-left (ratio base ticks) 9) "x json")))
+
+(: size-row (-> string string void))
+(defun (size-row label text)
+  (println (str (string-pad-right label 18)
+                (string-pad-left (int->string (/ (string-length text) 1000)) 6) " kB"
+                (string-pad-left (int->string (/ (string-length text) records)) 6) " B/rec")))
+
+(defun (main)
+  (let ((jt (json-text records))
+        (bt (bjodat-text records))
+        (skt (bjodat-strkey-text records))
+        (jrt (json-rich-text records))
+        (brt (bjodat-rich-text records)))
+    (let ((jitems (match (parse-json jt) ((Ok (JsonArr v)) v) (_ (vec-empty))))
+          (bitems (match (parse-bjodat bt) ((Ok (BjoVec v)) v) (_ (vec-empty))))
+          (jritems (match (parse-json jrt) ((Ok (JsonArr v)) v) (_ (vec-empty))))
+          (britems (match (parse-bjodat brt) ((Ok (BjoVec v)) v) (_ (vec-empty)))))
+
+      (println (str "records " (int->string records) ", best of " (int->string reps)))
+      (println "")
+      (size-row "json" jt)
+      (size-row "bjodat" bt)
+      (size-row "json rich" jrt)
+      (size-row "bjodat rich" brt)
+      (println "")
+
+      ;; Every phase, warmups times over, before a stopwatch is started.
+      (loop (:for w (range 0 warmups))
+            (:do (ignore (json-parse jt))
+                 (ignore (bjodat-parse bt))
+                 (ignore (json-sum jitems))
+                 (ignore (bjodat-sum bitems))
+                 (ignore (json-total jt))
+                 (ignore (bjodat-total bt))
+                 (ignore (json-parse jrt))
+                 (ignore (bjodat-parse brt))
+                 (ignore (json-rich-sum jritems))
+                 (ignore (bjodat-rich-sum britems))
+                 (ignore (json-rich-total jrt))
+                 (ignore (bjodat-rich-total brt))))
+      (println (str "warmed " (int->string warmups) " passes over every phase"))
+      (println "")
+
+      (let ((jp (timed json-parse jt))
+            (bp (timed bjodat-parse bt))
+            (jd (timed json-sum jitems))
+            (bd (timed bjodat-sum bitems))
+            (jtot (timed json-total jt))
+            (btot (timed bjodat-total bt)))
+        (println "--- five scalar fields ---")
+        (row "json parse" jp jp)
+        (row "bjodat parse" bp jp)
+        (row "json decode" jd jd)
+        (row "bjodat decode" bd jd)
+        (row "json total" jtot jtot)
+        (row "bjodat total" btot jtot)
+        (println "")
+        (println (str "  parse:  bjodat is " (ratio jp bp) "x json"))
+        (println (str "  decode: bjodat is " (ratio jd bd) "x json"))
+        (println (str "  total:  bjodat is " (ratio jtot btot) "x json"))
+        (println (str "  check:  json " (int->string (json-sum jitems))
+                      ", bjodat " (int->string (bjodat-sum bitems))))
+        (println "")
+
+        ;; What the keys cost, with everything else held still.
+        (let ((sk (timed bjodat-parse skt)))
+          (size-row "bjodat strkey" skt)
+          (row "bjodat strkey" sk jp)
+          (println (str "  keyword keys are " (ratio sk bp) "x string keys")))
+        (println "")
+
+        (let ((jrp (timed json-parse jrt))
+              (brp (timed bjodat-parse brt))
+              (jrd (timed json-rich-sum jritems))
+              (brd (timed bjodat-rich-sum britems))
+              (jrtot (timed json-rich-total jrt))
+              (brtot (timed bjodat-rich-total brt)))
+          (println "--- a vec and an absent-able field ---")
+          (row "json parse" jrp jrp)
+          (row "bjodat parse" brp jrp)
+          (row "json decode" jrd jrd)
+          (row "bjodat decode" brd jrd)
+          (row "json total" jrtot jrtot)
+          (row "bjodat total" brtot jrtot)
+          (println "")
+          (println (str "  parse:  bjodat is " (ratio jrp brp) "x json"))
+          (println (str "  decode: bjodat is " (ratio jrd brd) "x json"))
+          (println (str "  total:  bjodat is " (ratio jrtot brtot) "x json"))
+          (println (str "  check:  json " (int->string (json-rich-sum jritems))
+                        ", bjodat " (int->string (bjodat-rich-sum britems))))))))
+  0)
+)

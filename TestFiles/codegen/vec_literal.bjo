@@ -8,6 +8,16 @@
 ;;
 ;; No behavioural test can see the difference — the vector is the same vector —
 ;; which is why the assertion is on the emitted C#.
+;;
+;; Since literal hoisting landed, two of the three assertions below match text
+;; that has *moved*: a vec of literals is now built once into a static field of
+;; `__Literals` rather than in the method, so the `FromArray` call they look for
+;; is the field's initializer. The shape being asserted is unchanged and that is
+;; what this file is for — one array, handed over whole, no `Add` — but if you
+;; are reading this to find out where `three` builds its vector, the answer is
+;; that it no longer does. See `literal_hoisting.bjo`. The third assertion, the
+;; one with a hoisted element in it, is untouched: an element that needs
+;; statements is not a literal, so that vec is still built where it is written.
 (import (std prelude))
 
 ;; The whole of it on one line, `Add`-free.

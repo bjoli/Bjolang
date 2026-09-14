@@ -1,0 +1,279 @@
+;; Where the time goes when JSON becomes a *record*.
+;;
+;; `bench.bjo` measures `parse-json`: text in, `Json` tree out. That is the
+;; reader, and the reader is not what this is about. Everything here happens
+;; *after* the tree exists, which is the pass `def/json-type` generates.
+;;
+;; Three figures, over one corpus of small manifest-shaped records:
+;;
+;;   parse     text -> Json          the reader, for scale
+;;   generated Json -> Dep           what def/json-type writes
+;;   by hand   Json -> Dep           the same lookups with no Result chain
+;;
+;; The tree is parsed once, outside every timed region, so `generated` and
+;; `by hand` measure the second pass and nothing else. The difference between
+;; those two is the plumbing; what `by hand` still costs is the map itself.
+;;
+;;   ./bjor TestFiles/assets/jsonbench/codecbench.bjo
+
+(import (std prelude))
+(import (text json))
+(import (text json-codec))
+
+(import/class
+  (Stopwatch (: System.Diagnostics.Stopwatch)))
+
+(import/extern (clr-to-int (: System.Convert.ToInt32)))
+
+;; A dependency as a manifest would carry one: four strings and a flag. Every
+;; field required, so that neither decoder is measured taking a default path.
+(def/json-type
+  (: Dep (Record (: name string)
+                 (: git string)
+                 (: version string)
+                 (: commit string)
+                 (: optional bool))))
+
+;; The same, but with the field types a manifest actually has. `(Vec %a)` and
+;; `(Option %a)` decode through *conditional* impls — `(where (json-> %a))` —
+;; so these fields reach their element decoder through a dictionary rather than
+;; a direct call, which the all-scalar record above never exercises.
+(def/json-type
+  (: Rich (Record (: name string)
+                  (: tags (Vec string))
+                  (: note (Option string) #:optional)
+                  (: version string))))
+
+(: records int)
+(def records 20000)
+
+(: reps int)
+(def reps 20)
+
+;; ---------------------------------------------------------------------------
+;; The corpus
+;; ---------------------------------------------------------------------------
+
+(: make-text (-> int string))
+(defun (make-text n)
+  (let ((sb (stringbuilder-empty)))
+    (stringbuilder-add! sb #\[)
+    (let loop ((i 0))
+      (when (< i n)
+        (when (> i 0) (stringbuilder-add! sb #\,))
+        (stringbuilder-add-string! sb "{\"name\":\"dep")
+        (stringbuilder-add-string! sb (int->string i))
+        (stringbuilder-add-string! sb "\",\"git\":\"https://github.com/linus/bjo-")
+        (stringbuilder-add-string! sb (int->string i))
+        (stringbuilder-add-string! sb "\",\"version\":\"1.2.3\",\"commit\":\"abcdeffffff00112233\",\"optional\":false}")
+        (loop (+ i 1))))
+    (stringbuilder-add! sb #\])
+    (stringbuilder->string sb)))
+
+;; The same five values per record, positionally: no keys, and no map. Parsing
+;; this instead of the objects is what a decoder saves by not going through a
+;; tree keyed by field name — the key strings it never allocates and the trie it
+;; never builds. Fewer bytes, so the comparison is per record, not per byte.
+(: make-array-text (-> int string))
+(defun (make-array-text n)
+  (let ((sb (stringbuilder-empty)))
+    (stringbuilder-add! sb #\[)
+    (let loop ((i 0))
+      (when (< i n)
+        (when (> i 0) (stringbuilder-add! sb #\,))
+        (stringbuilder-add-string! sb "[\"dep")
+        (stringbuilder-add-string! sb (int->string i))
+        (stringbuilder-add-string! sb "\",\"https://github.com/linus/bjo-")
+        (stringbuilder-add-string! sb (int->string i))
+        (stringbuilder-add-string! sb "\",\"1.2.3\",\"abcdeffffff00112233\",false]")
+        (loop (+ i 1))))
+    (stringbuilder-add! sb #\])
+    (stringbuilder->string sb)))
+
+;; A vec field of three elements and an optional that is present, so both
+;; conditional impls really run.
+(: make-rich-text (-> int string))
+(defun (make-rich-text n)
+  (let ((sb (stringbuilder-empty)))
+    (stringbuilder-add! sb #\[)
+    (let loop ((i 0))
+      (when (< i n)
+        (when (> i 0) (stringbuilder-add! sb #\,))
+        (stringbuilder-add-string! sb "{\"name\":\"dep")
+        (stringbuilder-add-string! sb (int->string i))
+        (stringbuilder-add-string! sb "\",\"tags\":[\"alpha\",\"beta\",\"gamma\"],\"note\":\"a note\",\"version\":\"1.2.3\"}")
+        (loop (+ i 1))))
+    (stringbuilder-add! sb #\])
+    (stringbuilder->string sb)))
+
+;; ---------------------------------------------------------------------------
+;; The hand-written decoder
+;; ---------------------------------------------------------------------------
+;;
+;; The same design as the generated one — look each field up in the map the
+;; reader built — with everything optional about it removed: no `Result` per
+;; field, no error text, no owner prefix. What is left is the map lookups and
+;; the unwrapping, which is the floor for any decoder that reads from a tree.
+
+(: get-str (-> (Map string Json) string string))
+(defun (get-str m k)
+  (match (map-try-ref m k)
+    ((Some (JsonStr s)) s)
+    (_ "")))
+
+(: get-bool (-> (Map string Json) string bool))
+(defun (get-bool m k)
+  (match (map-try-ref m k)
+    ((Some (JsonBool b)) b)
+    (_ #f)))
+
+(: hand->Dep (-> Json Dep))
+(defun (hand->Dep j)
+  (match j
+    ((JsonObj m)
+     (Dep (name (get-str m "name"))
+          (git (get-str m "git"))
+          (version (get-str m "version"))
+          (commit (get-str m "commit"))
+          (optional (get-bool m "optional"))))
+    (_ (Dep (name "") (git "") (version "") (commit "") (optional #f)))))
+
+;; ---------------------------------------------------------------------------
+;; Timing
+;; ---------------------------------------------------------------------------
+
+(: elapsed-ticks (-> Stopwatch int))
+(defun (elapsed-ticks sw)
+  (clr-to-int (.-Ticks (.-Elapsed sw))))
+
+;; Each measured body answers an int that depends on the work, so that none of
+;; it can be dead. The two decoders answer the same int, which is also how we
+;; know they decoded the same thing.
+
+(: parse-ticks (-> string int))
+(defun (parse-ticks text)
+  (let go ((i 0) (best 2000000000))
+    (if (= i reps)
+        best
+        (let ((sw (Stopwatch.)))
+          (.Start sw)
+          (let ((got (match (parse-json text) ((Ok _) 1) ((Err _) 0))))
+            (.Stop sw)
+            (when (= got 0) (println "the corpus did not parse"))
+            (let ((t (elapsed-ticks sw)))
+              (go (+ i 1) (if (< t best) t best))))))))
+
+(: generated-sum (-> (Vec Json) int))
+(defun (generated-sum items)
+  (vec-fold (fun (acc j)
+              (+ acc (match (json->Dep j)
+                       ((Ok d) (string-length (record-ref d version)))
+                       ((Err _) 0))))
+            0 items))
+
+(: hand-sum (-> (Vec Json) int))
+(defun (hand-sum items)
+  (vec-fold (fun (acc j) (+ acc (string-length (record-ref (hand->Dep j) version))))
+            0 items))
+
+;; Forced on the vec field, so the element decoder really ran.
+(: rich-sum (-> (Vec Json) int))
+(defun (rich-sum items)
+  (vec-fold (fun (acc j)
+              (+ acc (match (json->Rich j)
+                       ((Ok d) (vec-length (record-ref d tags)))
+                       ((Err _) 0))))
+            0 items))
+
+(: decode-ticks (-> (-> (Vec Json) int) (Vec Json) int))
+(defun (decode-ticks decode items)
+  (let go ((i 0) (best 2000000000))
+    (if (= i reps)
+        best
+        (let ((sw (Stopwatch.)))
+          (.Start sw)
+          (let ((got (decode items)))
+            (.Stop sw)
+            (when (= got 0) (println "a decoder answered nothing"))
+            (let ((t (elapsed-ticks sw)))
+              (go (+ i 1) (if (< t best) t best))))))))
+
+;; Ticks are 100ns, so this is milliseconds with two decimals.
+(: as-ms (-> int string))
+(defun (as-ms ticks)
+  (let ((hundredths (/ ticks 100)))
+    (let ((frac (% hundredths 100)))
+      (str (int->string (/ hundredths 100))
+           (if (< frac 10) ".0" ".")
+           (int->string frac)))))
+
+;; A ratio to two decimals, as `b` over `a`.
+(: ratio (-> int int string))
+(defun (ratio a b)
+  (if (= a 0)
+      "n/a"
+      (let ((hundredths (/ (* b 100) a)))
+        (let ((frac (% hundredths 100)))
+          (str (int->string (/ hundredths 100))
+               (if (< frac 10) ".0" ".")
+               (int->string frac))))))
+
+;; Nanoseconds per record. A tick is 100ns, so this is ticks*100/records — and
+;; it stays inside an int, which `records * 10000000` did not.
+(: ns-per-record (-> int int string))
+(defun (ns-per-record n ticks)
+  (if (= n 0) "n/a" (int->string (/ (* ticks 100) n))))
+
+(: row (-> string int int void))
+(defun (row label ticks base)
+  (println (str (string-pad-right label 14)
+                (string-pad-left (as-ms ticks) 9) " ms"
+                (string-pad-left (ns-per-record records ticks) 8) " ns/rec"
+                (string-pad-left (ratio base ticks) 9) "x parse")))
+
+(defun (main)
+  (let ((text (make-text records))
+        (atext (make-array-text records)))
+    (let ((items (match (parse-json text)
+                   ((Ok (JsonArr v)) v)
+                   (_ (let () (println "the corpus is not an array") (vec-empty))))))
+      (println (str "records " (int->string records)
+                    ", as objects " (int->string (/ (string-length text) 1000)) " kB"
+                    ", as arrays " (int->string (/ (string-length atext) 1000)) " kB"
+                    ", best of " (int->string reps)))
+      (println "")
+
+      ;; Warm, so that the first timed rep is not also the first JIT.
+      (let ((warm (+ (generated-sum items) (hand-sum items))))
+        (when (= warm 0) (println "warmup decoded nothing")))
+
+      (let ((rtext (make-rich-text records)))
+        (let ((ritems (match (parse-json rtext)
+                        ((Ok (JsonArr v)) v)
+                        (_ (let () (println "the rich corpus is not an array") (vec-empty))))))
+          (let ((rwarm (rich-sum ritems)))
+            (when (= rwarm 0) (println "rich warmup decoded nothing")))
+
+          (let ((p (parse-ticks text))
+                (pa (parse-ticks atext))
+                (g (decode-ticks generated-sum items))
+                (h (decode-ticks hand-sum items))
+                (rp (parse-ticks rtext))
+                (rg (decode-ticks rich-sum ritems)))
+            (row "parse objects" p p)
+            (row "parse arrays" pa p)
+            (row "generated" g p)
+            (row "by hand" h p)
+            (println "")
+            (row "rich parse" rp p)
+            (row "rich decode" rg p)
+            (println "")
+            (println (str "the keys and the map cost " (ratio pa p) "x a positional parse"))
+            (println (str "generated is " (ratio h g) "x the hand-written decoder"))
+            (println (str "scalar decode is " (ratio p g) "x the parse it reads from"))
+            (println (str "rich decode is " (ratio rp rg) "x the parse it reads from"))
+            (println (str "a Vec+Option record decodes " (ratio g rg) "x an all-scalar one"))
+            (println (str "check: generated " (int->string (generated-sum items))
+                          ", by hand " (int->string (hand-sum items))
+                          ", rich " (int->string (rich-sum ritems)))))))))
+  0)

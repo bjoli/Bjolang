@@ -520,3 +520,116 @@ Green at every phase.
 - Bjolang `./run_tests.sh`: 185 groups, 213 error tests, 8 warning tests, 22
   codegen assertions, 3 REPL transcripts, 3 staleness checks.
 - CML `dotnet run -c Release --project BjolangRuntime/Cml/Tests`: 53 passed.
+
+## Literal hoisting — a constant is evaluated once, not once per evaluation
+
+`Codegen` emitted a keyword as `BjolangRuntime.Keyword.Intern("apple")` at every
+site it appeared: a string hash and a `ConcurrentDictionary` probe, per
+evaluation, for a value that was fully known when the file was compiled. It now
+interns once into a static field of a per-assembly `internal static class
+__Literals` and reads the field. Symbols go the same way, and so does a `[...]`
+vec literal whose elements are all literals, which used to allocate an array
+*and* a list on every evaluation.
+
+`#[...]` array literals are deliberately excluded: `Docs/Syntax.org` promises a
+fresh array per evaluation, an array can be written to, and `036_array.bjo` and
+`187_array_literals.bjo` test it.
+
+### The measurement
+
+`TestFiles/assets/litbench/litbench.bjo`, 2,000,000 iterations, min of 20 reps,
+five warm-up passes over every shape, `GC.Collect` before each rep and outside
+the stopwatch. The columns are ns/op **net of the empty loop**, which is
+0.18 ns/op and identical in both builds. A/B against the same tree with only
+`Codegen.fs` reverted, both rebuilt through `build_std.sh`.
+
+| shape | before | after |
+|---|---|---|
+| `(eq? k :apple)` | 4.769 | **0.001** |
+| `(eq? k apple-key)`, a module `def` | 0.001 | 0.001 |
+| `cond` over three literals, all reached | 14.716 | **0.181** |
+| `match` over three keyword patterns | 0.816 | 1.073 |
+| `(string->keyword "apple")` | 4.768 | 4.767 |
+| `[1 2 3]` in the loop | 6.250 | **0.454** |
+
+A keyword literal cost **4.77 ns** and now costs nothing measurable: the field
+read is loop-invariant and the JIT lifts it out. Three of them in a dispatch
+cost 14.7 ns and now cost 0.18. A constant vec cost 6.25 ns — an array and an
+`RrbList` per evaluation — and now costs 0.45, which is the `vec-ref` that was
+always there.
+
+Two rows are controls and both behave:
+
+- **`def` does not move**, because it was already a static field. It is the
+  floor the literal row was aiming at, and the literal row reached it.
+- **`string->keyword` does not move**, because its name arrives at run time and
+  no hoisting can help it. It is also what says the other rows are real: 4.77 ns
+  is `Intern`, and it is still there for the one caller that has to pay it —
+  the reader in `(text bjodat)`, which is why `BjoNameCache` exists.
+
+### The `match` row got slower, and this change cannot have done it
+
+0.816 → 1.073 ns/op, stable to ±0.01 across four runs of each build. A keyword
+pattern is emitted as `case BjolangRuntime.Keyword { Name: "apple" }` — a string
+comparison, and **no `Intern` call** — so `classify-match` is byte-identical
+before and after; the emitted C# was diffed to be sure. The likely cause is code
+layout in an assembly whose other methods all got shorter. Recorded rather than
+explained, as the skewed-choose row was under phase 2c.
+
+It does say something worth acting on later: a keyword pattern still compares
+*names*, where it could now compare references against the hoisted field.
+`Keyword.Equals` is `ReferenceEquals`, so the value is already there to use.
+That is a change to pattern lowering and is not part of this work.
+
+### On the record decoders, where this started
+
+`TestFiles/assets/jsonbench/formatbench.bjo`, 20 000 records, ns/rec. The
+`def/bjodat-type` macro used to hoist its record keys by hand — a
+`(def __jb-key-Type-field :name)` per field — and that workaround was deleted as
+part of this change. So both columns below are the macro *without* its
+workaround, and the only difference is whether the compiler hoists:
+
+| | before | after |
+|---|---|---|
+| bjodat decode | 66 ns/rec | **52 ns/rec** |
+
+52 is what the hand-hoisted macro reached, so the compiler gives back exactly
+what the workaround did — for every keyword in every program, rather than for
+five keys in one macro.
+
+Nothing else in that benchmark moves, and the reason is worth writing down:
+parse is unaffected because a reader's key names arrive at run time, and the
+**JSON** decode column is unaffected because JSON keys are strings, which the
+CLR already interns in metadata. `codecbench.bjo` was run before and after and
+shows no reliable change for the same reason — its columns move ±25% between
+runs of an identical binary, which is the noise floor for that harness and is
+larger than any effect this could have on it.
+
+### Assembly size
+
+One field and one initialiser per distinct literal, and nothing else:
+
+| | before | after | |
+|---|---|---|---|
+| `lib/std/prelude.dll` | 666,112 | 667,648 | +1,536 B, +0.23% |
+| `lib/std/run.dll` | 83,456 | 83,968 | +512 B |
+| `lib/std/fmt.dll` | 38,400 | 38,400 | unchanged |
+| `lib/text/json.dll` | 54,272 | 54,272 | unchanged |
+
+The prelude hoists **77** distinct literals, which is more than anything else in
+the tree, for 1,536 bytes — about 20 bytes each. The two unchanged rows are
+files whose literal count did not cross a 512-byte sector boundary; PE sizes
+quantise, so these columns should be read as "one sector or none", not as a byte
+count.
+
+### Test suites
+
+Green. `python3 run_tests.py`: 196 groups, 0 compile failures, 0 execution
+failures, 222/222 error tests, 8/8 warning, **23/23 codegen** (one added,
+`TestFiles/codegen/literal_hoisting.bjo`), 4/4 REPL transcripts, 3/3 staleness.
+
+`034_keywords_and_symbols.bjo` is the one that matters most and it passes
+untouched: both keyword spellings interning to one value, `eq?` on symbols,
+pattern matching, and `string->keyword` reaching a literal's value. That last
+assertion is the whole safety argument in one line — interning is idempotent, so
+a hoisted literal and a name built at run time are still the same reference.

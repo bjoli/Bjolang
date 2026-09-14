@@ -87,4 +87,11 @@ echo "Building standard library..."
 # transformer is written in.
 ./bjor --lib lib/text/json-codec.bjo
 
+# `text/bjodat` imports `prelude` and nothing else.
+./bjor --lib lib/text/bjodat.bjo
+
+# After `bjodat`, whose `Bjodat` type it names, and after `syntax-match`, which
+# its transformer is written in.
+./bjor --lib lib/text/bjodat-codec.bjo
+
 echo "Standard library built successfully!"

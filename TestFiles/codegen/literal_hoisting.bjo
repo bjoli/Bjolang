@@ -1,0 +1,109 @@
+;; Where a constant literal is evaluated.
+;;
+;; A keyword used to be emitted as `BjolangRuntime.Keyword.Intern("apple")` at
+;; every site it appeared — a string hash and a `ConcurrentDictionary` probe per
+;; evaluation, for a value that was fully known when the file was compiled. It
+;; is now interned once into a static field and read from there.
+;;
+;; This has to be a codegen test. Nothing about the *value* changes: interning
+;; is idempotent, so a hoisted keyword and one built by `string->keyword` are
+;; the same reference either way, which is what `034_keywords_and_symbols.bjo`
+;; asserts and what no amount of hoisting may disturb. The difference is where
+;; the work happens, and that is visible only in the emitted C#.
+;;
+;; Each `EXPECT-CS` line is an extended regex matched against the output; an
+;; `EXPECT-NO-CS` line must match nothing.
+
+(export which also pear tagged three fresh pair)
+
+(import (std prelude))
+(import (std ports))
+
+;; --- The field, and the use site --------------------------------------------
+;;
+;; The holder class is one per assembly rather than a set of fields on each
+;; emitted class, because a static field of a *generic* class exists once per
+;; closed instantiation — hoisting into the enclosing class would intern the
+;; same name once per instantiation of every generic impl.
+;; EXPECT-CS: internal static class __Literals \{
+;; EXPECT-CS: public static readonly BjolangRuntime\.Keyword Kw_apple = BjolangRuntime\.Keyword\.Intern\("apple"\);
+;; EXPECT-CS: return __Literals\.Kw_apple;
+(: which (-> Keyword))
+(defun (which) :apple)
+
+;; --- One field, however many uses -------------------------------------------
+;;
+;; Deduplication is on the emitted text, so the second `:apple` finds the first
+;; one's field. A failure to deduplicate would not be silent: the name is
+;; already taken, so the second field would be called `Kw_apple_2`, and that is
+;; what this asserts the absence of.
+;; EXPECT-NO-CS: Kw_apple_2
+(: also (-> Keyword))
+(defun (also) :apple)
+
+;; And nothing is left calling `Intern` at a use site. The only `Intern` in the
+;; file is the one in the field initializer above, which is why this can be
+;; asserted so bluntly.
+;; EXPECT-NO-CS: return BjolangRuntime\.Keyword\.Intern
+
+;; --- A symbol is the same case ----------------------------------------------
+;; EXPECT-CS: public static readonly BjolangRuntime\.Symbol Sym_pear = BjolangRuntime\.Symbol\.Intern\("pear"\);
+;; EXPECT-CS: return __Literals\.Sym_pear;
+(: pear (-> Symbol))
+(defun (pear) 'pear)
+
+;; --- Two bodies, one field --------------------------------------------------
+;;
+;; `tagged` mentions no colour, but it calls `port-eof?`, which is a
+;; `defbjouble` in the prelude, so it is emitted twice into the same class. The
+;; literal is in both copies and must be interned once for the two of them:
+;; deduplication is on the literal, not on the use site.
+;; EXPECT-CS: public static int tagged\(System.IO.TextReader p\)
+;; EXPECT-CS: public static async Bjoml.Fiber<int> tagged__bjo\(System.IO.TextReader p\)
+;; EXPECT-NO-CS: Kw_doubled_2
+(: tagged (-> TextInputPort int))
+(defun (tagged p)
+  (if (port-eof? p)
+      (string-length (keyword->string :doubled))
+      0))
+
+;; --- No static constructor --------------------------------------------------
+;;
+;; This module has no `def`, so its class has none today and must have none
+;; after this. A class with an explicit static constructor is not
+;; `beforefieldinit`, and every static access to it then carries an
+;; initialization check — which is the cost this whole change is about removing,
+;; so paying it to carry the hoisted literals would be a poor trade. They go in
+;; a class of their own with nothing but field initializers instead.
+;;
+;; Nothing else in the suite would catch this. It is not a behaviour.
+;; EXPECT-NO-CS: static literal_hoisting_Module\(\)
+
+;; --- A vec of literals is built once ----------------------------------------
+;;
+;; `FromArray` allocates the array *and* the list on every evaluation, and a
+;; `Vec` is immutable, so one instance can serve every evaluation. The field's
+;; number depends on how many vec literals precede it, so the use site is
+;; matched loosely and the initializer by its contents.
+;; EXPECT-CS: public static readonly Collections\.RrbList<int> Vec[0-9_]* = Collections\.RrbBuilder<int>\.FromArray\(new int\[\] \{ 11, 22, 33 \}, true\);
+;; EXPECT-CS: return __Literals\.Vec[0-9_]*;
+(: three (-> (Vec int)))
+(defun (three) [11 22 33])
+
+;; --- An array literal is *not* -----------------------------------------------
+;;
+;; `Docs/Syntax.org` promises a fresh array per evaluation and `036_array.bjo`
+;; and `187_array_literals.bjo` test it. An array can be written to, so sharing
+;; one would be a correctness bug rather than an optimization. It stays where it
+;; is written.
+;; EXPECT-CS: return new int\[\] \{ 44, 55 \};
+(: fresh (-> (Array int)))
+(defun (fresh) #[44 55])
+
+;; --- Nor a vec whose type is not yet a type ----------------------------------
+;;
+;; The holder class is not generic and cannot hold a field of `T_a`. Nor are the
+;; elements literals here, which alone would settle it.
+;; EXPECT-CS: Collections\.RrbBuilder<T_a>\.FromArray\(new T_a\[\] \{ a, b \}, true\)
+(: pair (-> %a %a (Vec %a)))
+(defun (pair a b) [a b])
