@@ -1,0 +1,103 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; A head symbol that says more than which form it is, written in a template.
+;;
+;; `parseExpr` dispatches on the mark-stripped head, which is what lets a
+;; template write `if` and `let`. Two of its arms then choose between siblings by
+;; reading the head a second time: `fun` against `bjoroutine`, and the four spawn
+;; forms against each other. Read renamed, a template's `bjoroutine` was an
+;; ordinary lambda and every one of its spawn forms was `spawn/detached`.
+;;
+;; Neither failure is visible at the macro. The first surfaces wherever the
+;; lambda is used at its declared arrow. The second does not surface at all: a
+;; detached fiber is one nothing waits for and nothing cancels, so a `spawn`
+;; that became one still runs, and the only sign is a scope that returned too
+;; early. That is what the boxes below are for — a value read *after* the scope,
+;; which only a child the scope waited for can have written.
+
+(import (std prelude))
+(import (std simpletest))
+(import "inc/colour_macros.bjo")
+
+;; Ends after `ms`, then marks the box. A child a scope has to wait for.
+(: mark (-bjo-> (Box string) string int void))
+(defbjo (mark b what ms)
+  (sync (timeout ms))
+  (box-set! b what))
+
+(: twice-it (-bjo-> int int))
+(defbjo (twice-it n) (* n 2))
+
+(: accept-bjo (-bjo-> (-bjo-> int) int))
+(defbjo (accept-bjo f) (f))
+
+(: accept-sync (-> (-> int) int))
+(defun (accept-sync f) (f))
+
+(defbjo (main)
+  ;; --- the colour of a template's lambda -----------------------------------
+  ;;
+  ;; The declared arrow is the assertion: only a suspending lambda goes into a
+  ;; `(-bjo-> ...)` slot, and only an ordinary one into a `(-> ...)` slot.
+  (def suspending (bjo-thunk (sync (timeout 0)) 7))
+  (def ordinary (sync-thunk 7))
+
+  (expect "a template's bjoroutine is suspending" (accept-bjo suspending) 7)
+  (expect "a template's fun is ordinary" (accept-sync ordinary) 7)
+
+  ;; --- a template's spawn is owned -----------------------------------------
+  ;;
+  ;; The box is read after the scope has returned. A `spawn` is waited for, so
+  ;; "ran" is there; a `spawn/detached` is not, so the read would find the
+  ;; initial value while the fiber was still in its timeout.
+  (def owned (make-box "not run"))
+  (with-cancel (cancel)
+    (enlist (mark owned "ran" 30)))
+  (expect "the scope waited for a template's spawn" (box-ref owned) "ran")
+
+  ;; --- a template's bjo hands back its promise -----------------------------
+  ;;
+  ;; `spawn/detached` is `void`, so this would not even have a value to bind.
+  (def doubled
+    (with-cancel (cancel)
+      (let ((p (enlist/promise (twice-it 20))))
+        (match (sync (promise-join p))
+          ((Ok v) v)
+          ((Err e) -1)))))
+  (expect "a template's bjo hands back its promise" doubled 40)
+
+  ;; --- a template's daemon is not waited for -------------------------------
+  ;;
+  ;; The other half of the same rule, and the reason `spawn` above needed a box
+  ;; rather than a channel: a daemon must *not* hold the scope open. The scope
+  ;; below returns while this one is still in its timeout, so the box still
+  ;; reads as it started.
+  (def daemonic (make-box "not run"))
+  (with-cancel (cancel)
+    (enlist/daemon (mark daemonic "ran" 5000)))
+  (expect "the scope did not wait for a template's daemon" (box-ref daemonic) "not run")
+
+  ;; --- a template's detached fiber is outside every scope ------------------
+  ;;
+  ;; Neither waited for nor cancelled, so it is joined through a channel of its
+  ;; own rather than by the scope.
+  (def e (make-chan))
+  (with-cancel (cancel)
+    (enlist/detached (announce e 9)))
+  (expect "a template's spawn/detached still starts a fiber" (sync (chan-recv e)) 9)
+
+  0)
+
+(: announce (-bjo-> (Chan int) int void))
+(defbjo (announce out n)
+  (ignore (sync (chan-send out n))))

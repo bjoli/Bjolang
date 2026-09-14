@@ -2561,8 +2561,12 @@ let rec parseExpr (s: SExpr) : Expr =
             // detail of a spawn, it is what the spawn *is*, and a reader should
             // see it at the head of the form.
             | "bjo" | "spawn" | "spawn/daemon" | "spawn/detached" ->
+                // `headName sym` again, not `sym`: a template writes these
+                // renamed, and the rename is only stripped for the dispatch
+                // above. Reading the raw spelling here made every spawn form a
+                // macro produced fall to the `_` arm and detach.
                 let kind =
-                    match sym with
+                    match headName sym with
                     | "bjo" -> SpawnScoped
                     | "spawn" -> SpawnUnit
                     | "spawn/daemon" -> SpawnDaemon
@@ -2664,7 +2668,10 @@ let rec parseExpr (s: SExpr) : Expr =
 
             | "fun"
             | "bjoroutine" ->
-                let colour = if sym = "bjoroutine" then Suspending else Ordinary
+                // `headName sym`, for the reason the spawn forms above use it:
+                // a `bjoroutine` a template wrote arrives renamed, and reading
+                // the raw spelling made it an ordinary lambda.
+                let colour = if headName sym = "bjoroutine" then Suspending else Ordinary
 
                 match args with
                 | SList(fargs, _) :: bodyExprs ->

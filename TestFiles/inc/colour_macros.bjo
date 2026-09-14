@@ -1,0 +1,55 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; Templates whose head carries a meaning beyond which form it is.
+;;
+;; `fun` and `bjoroutine` are one head each in the parser and differ only in the
+;; colour they build; the four spawn forms are one head each and differ only in
+;; what the scope does with the fiber. Both are dispatched on the mark-stripped
+;; name, so a template may write them — and both used to re-read the *renamed*
+;; spelling to pick between the siblings.
+
+(import (std syntax-match))
+
+;; A suspending lambda, whose colour is the whole of what `bjoroutine` says.
+(def/macro (bjo-thunk form inject compare)
+  (syntax-match form
+    ((_ body ...) #'(bjoroutine () ,@body))
+    (bad (syntax-error bad "bjo-thunk takes a body."))))
+
+(def/macro (sync-thunk form inject compare)
+  (syntax-match form
+    ((_ body ...) #'(fun () ,@body))
+    (bad (syntax-error bad "sync-thunk takes a body."))))
+
+;; The four spawn forms, each written in a template. `enlist` is the one that
+;; matters most: a scope waits for it, and reading the renamed spelling made it
+;; fall through to `spawn/detached`, which nothing waits for.
+(def/macro (enlist form inject compare)
+  (syntax-match form
+    ((_ call) #'(spawn ,call))
+    (bad (syntax-error bad "enlist takes one call."))))
+
+(def/macro (enlist/promise form inject compare)
+  (syntax-match form
+    ((_ call) #'(bjo ,call))
+    (bad (syntax-error bad "enlist/promise takes one call."))))
+
+(def/macro (enlist/daemon form inject compare)
+  (syntax-match form
+    ((_ call) #'(spawn/daemon ,call))
+    (bad (syntax-error bad "enlist/daemon takes one call."))))
+
+(def/macro (enlist/detached form inject compare)
+  (syntax-match form
+    ((_ call) #'(spawn/detached ,call))
+    (bad (syntax-error bad "enlist/detached takes one call."))))
