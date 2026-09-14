@@ -702,14 +702,42 @@ public static partial class BjolangRuntime {
     /// `choose` on this stops you listening and nothing else — which is exactly
     /// what `task->event` exists to avoid, and is why this is the last resort
     /// rather than the way to call .NET.
+    ///
+    /// The dynamic environment travels with the thunk; see
+    /// <see cref="InTheCallersEnvironment{T}"/>.
     public static IEvent<Result<Exception, T>> blocking<T>(Func<T> work) =>
         Cml.Guard(() =>
             Cml.Wrap(
-                TaskInterop.FromTask(Task.Run(work)).Join(),
+                TaskInterop.FromTask(Task.Run(InTheCallersEnvironment(work))).Join(),
                 static r =>
                     r.IsError
                         ? Result<Exception, T>.Err(r.Error!.SourceException)
                         : Result<Exception, T>.Ok(r.Value)));
+
+    /// <summary>
+    /// Wrap a thunk so that it runs against the environment of whoever is about
+    /// to hand it off, rather than against <c>Dyn.Root</c>.
+    ///
+    /// <c>FiberContext</c> is thread-static and is not flowed, so a thunk given
+    /// to <c>Task.Run</c> or to a <c>LongRunning</c> task starts on a thread
+    /// with no environment at all. Without this a `parameterize` — and so a
+    /// handler, and so a faked `open-input-file` — is invisible inside
+    /// `(blocking ...)`.
+    ///
+    /// Called from inside the <see cref="Cml.Guard{T}"/>, so the environment
+    /// read is the one in force at the `sync`, not the one in force when the
+    /// event value was built.
+    ///
+    /// Save and restore rather than assign: the thread is borrowed, and pool
+    /// threads are reused.
+    /// </summary>
+    private static Func<T> InTheCallersEnvironment<T>(Func<T> work) {
+        var env = Dyn.Current;
+        return () => {
+            using var _ = Bjoml.FiberContext.Push(env);
+            return work();
+        };
+    }
 
     /// `(spawn/thread thunk)` — run something on a thread of its own.
     ///
@@ -763,12 +791,15 @@ public static partial class BjolangRuntime {
     /// Guarded, so each sync starts a fresh thread rather than replaying the
     /// first one's answer. Failure is a value, as everywhere else that resolves
     /// at sync time.
+    ///
+    /// The dynamic environment travels with the thunk; see
+    /// <see cref="InTheCallersEnvironment{T}"/>.
     public static IEvent<Result<Exception, T>> spawndivthread<T>(Func<T> work) =>
         Cml.Guard(() =>
             Cml.Wrap(
                 TaskInterop.FromTask(
                     Task.Factory.StartNew(
-                        work,
+                        InTheCallersEnvironment(work),
                         CancellationToken.None,
                         // The whole content of this method. `DenyChildAttach`
                         // beside it so that a task started *inside* the thunk

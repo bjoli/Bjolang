@@ -1,0 +1,91 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; The dynamic environment reaches code that runs off the fiber.
+;;
+;; `blocking` and `spawn/thread` hand a thunk to a thread that is not the
+;; fiber's, and the environment lives in a thread-static slot that nothing
+;; flows. So the thunk used to run against the root environment: a
+;; `parameterize` around the `sync` was invisible inside it, and a parameter
+;; read there answered its initial value.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: tag (Param string))
+(def tag (make-parameter "root"))
+
+;; An ordinary function, which is all a thunk handed to `blocking` may be.
+(: read-tag (-> string))
+(defun (read-tag) (parameter-ref tag))
+
+(: read-tag-or (-> (Result Exception string) string))
+(defun (read-tag-or r)
+  (match r
+    ((Ok s) s)
+    ((Err e) "raised")))
+
+(defbjo (main)
+  ;; --- blocking ------------------------------------------------------------
+  (expect "an unbound parameter reads its initial off-fiber"
+          (read-tag-or (sync (blocking read-tag)))
+          "root")
+
+  (expect "blocking sees the ambient binding"
+          (parameterize ((tag "bound"))
+            (read-tag-or (sync (blocking read-tag))))
+          "bound")
+
+  ;; The binding in force at the `sync` is the one that travels, not the one in
+  ;; force where the event value was built: `blocking` is guarded, so the
+  ;; environment is read per sync.
+  (def ev (blocking read-tag))
+  (expect "the environment is read at the sync, not at the build"
+          (parameterize ((tag "at-the-sync"))
+            (read-tag-or (sync ev)))
+          "at-the-sync")
+
+  (expect "and the same event syncs again in another environment"
+          (parameterize ((tag "second"))
+            (read-tag-or (sync ev)))
+          "second")
+
+  ;; --- spawn/thread --------------------------------------------------------
+  (expect "spawn/thread sees the ambient binding"
+          (parameterize ((tag "on-its-own-thread"))
+            (read-tag-or (sync (spawn/thread read-tag))))
+          "on-its-own-thread")
+
+  ;; --- nesting -------------------------------------------------------------
+  (expect "the innermost binding is the one that travels"
+          (parameterize ((tag "outer"))
+            (parameterize ((tag "inner"))
+              (read-tag-or (sync (blocking read-tag)))))
+          "inner")
+
+  (expect "the fiber's own environment is untouched afterwards"
+          (parameterize ((tag "still-here"))
+            (let ((off (read-tag-or (sync (blocking read-tag)))))
+              (string-append off (string-append "/" (read-tag)))))
+          "still-here/still-here")
+
+  (expect "restored at the top" (read-tag) "root")
+
+  ;; --- the output port, which is a field rather than a champ entry ----------
+  ;;
+  ;; Both storage kinds travel, because the whole environment does.
+  (def w (open-output-string))
+  (parameterize ((current-output-port w))
+    (ignore (sync (blocking (fun () (display "written off-fiber"))))))
+  (expect "a port binding travels too" (get-output-string w) "written off-fiber")
+
+  0)
