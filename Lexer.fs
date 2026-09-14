@@ -74,10 +74,12 @@ module Lexer =
         ///
         /// String interpolation expands to tokens rather than to a syntax tree
         /// — that is what makes it a *reader* feature — so it has no node to
-        /// emit and needs a token to say "this `->str` is mine".
+        /// emit and needs a token to say "this `str` or `->str` is mine".
         ///
-        /// Nothing else produces one, and no spelling reads as one, so a
-        /// program cannot write what would capture it.
+        /// No spelling reads as one, so a program cannot write what would
+        /// capture it. A macro's input or template may contain one; it crosses
+        /// into `Syntax` as an `SSym` with the `Resolved` origin and comes back
+        /// as this token.
         | ResolvedSymbol of string
         | NumberLit of string
         | Keyword of string
@@ -443,8 +445,11 @@ module Lexer =
 
                     // `#` introduces a reader form; it is not a name character.
                     // What can follow it here is one of the two booleans, or
-                    // `#map`, which the reader consumes together with the
-                    // bracket after it.
+                    // a hash macro's name — `#map(`, `#fl[` — which is a name
+                    // only when the bracket comes right after it. The reader
+                    // consumes the two together. `#t(` and `#f(` are booleans
+                    // first, so `t` and `f` are not names a hash macro can
+                    // take.
                     //
                     // Anything else used to be read as a symbol and became an
                     // ordinary identifier. Bjolang accepted it all the way
@@ -456,13 +461,16 @@ module Lexer =
                         let len = nextPos - pos
                         let text = input.Substring(pos, len)
 
+                        let bracketFollows =
+                            nextPos < length && (input[nextPos] = '(' || input[nextPos] = '[')
+
                         match text with
                         | "#t" -> emit (BoolLit true) len
                         | "#f" -> emit (BoolLit false) len
-                        | "#map" -> emit (Symbol text) len
+                        | _ when len > 1 && bracketFollows -> emit (Symbol text) len
                         | _ ->
                             failwithf
-                                $"Unknown reader syntax '%s{text}' at %s{formatAt file line col}. '#' begins a reader form — #t, #f, #\\c, #:keyword, #'template, #(...), #[...], #map(...) or #\"...\" — and is not part of a name."
+                                $"Unknown reader syntax '%s{text}' at %s{formatAt file line col}. '#' begins a reader form — #t, #f, #\\c, #:keyword, #'template, #(...), #[...], #name(...) or #\"...\" — and is not part of a name."
                 | '#' -> emit Hash 1
 
                 // Symbols
@@ -636,10 +644,13 @@ module Lexer =
         // is a special case in the language — both are what `(str ...)` of them
         // would produce — so this is only about not emitting a call with
         // nothing to concatenate.
+        //
+        // `str` is resolved for the reason `->str` is: a local of that name
+        // must not capture what the reader wrote.
         let expansion =
             match parts with
             | [] -> [ mk (StringLit "") ]
             | [ single ] -> single
-            | many -> [ mk LParen; mk (Symbol "str") ] @ List.concat many @ [ mk RParen ]
+            | many -> [ mk LParen; mk (ResolvedSymbol "str") ] @ List.concat many @ [ mk RParen ]
 
         expansion, p, l, c

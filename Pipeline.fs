@@ -46,43 +46,6 @@ let rec collectPositionalArgs (expr: SExpr) : Set<int> =
         items |> List.map collectPositionalArgs |> Set.unionMany
     | _ -> Set.empty
 
-let desugarMapLiteral (headRange: Lexer.Range) (entriesSList: SExpr) : SExpr =
-    let listRange = getRange entriesSList
-    let entries =
-        match entriesSList with
-        | SList(items, _) -> items
-        | _ -> []
-
-    if List.isEmpty entries then
-        let mapEmptyToken = SAtom { Token = Lexer.Symbol "map-empty"; Range = headRange }
-        SList([ mapEmptyToken ], listRange)
-    else
-        let parsePair entry =
-            match entry with
-            | SList([ k; v ], er) -> (k, v, er)
-            | SList([ SAtom { Token = Lexer.Symbol "Tuple" }; k; v ], er) -> (k, v, er)
-            | SList([ SAtom { Token = Lexer.Symbol "vec-literal" }; k; v ], er) -> (k, v, er)
-            | bad ->
-                let er = getRange bad
-                failwithf
-                    "Invalid map entry at %s. Expected (key value), [key value], or (key . value)"
-                    (Lexer.formatPos er)
-
-        let pairs = List.map parsePair entries
-        let nilToken = SAtom { Token = Lexer.Symbol "Nil"; Range = listRange }
-        let rec makeConsChain listPairs =
-            match listPairs with
-            | [] -> nilToken
-            | (k, v, er) :: rest ->
-                let tupleSExpr = SList([ SAtom { Token = Lexer.Symbol "Tuple"; Range = er }; k; v ], er)
-                let restChain = makeConsChain rest
-                let consToken = SAtom { Token = Lexer.Symbol "Cons"; Range = er }
-                SList([ consToken; tupleSExpr; restChain ], er)
-
-        let consChain = makeConsChain pairs
-        let listMapToken = SAtom { Token = Lexer.Symbol "list->map"; Range = headRange }
-        SList([ listMapToken; consChain ], listRange)
-
 /// Folds `#'` into `(syntax-quote form)`.
 ///
 /// `#'` is a prefix on the *form* after it, and which shapes a form can take is
@@ -178,12 +141,18 @@ let rec read (tokens: LexedToken list) : SExpr list * LexedToken list =
             let node, afterList = readForm false r hr (headed "array-literal" hr) rest
             loop (node :: acc) afterList
 
-        // Map shorthand: #map((k1 v1) (k2 v2) ...) or #map[(k1 v1) (k2 v2) ...]
-        | { Token = Lexer.Symbol "#map"; Range = hr } :: { Token = LParen; Range = r } :: rest
-        | { Token = Lexer.Symbol "#map"; Range = hr } :: { Token = LBracket; Range = r } :: rest ->
-            let entriesSList, afterList = readForm true r hr id rest
-            let mapSExpr = desugarMapLiteral hr entriesSList
-            loop (mapSExpr :: acc) afterList
+        // Hash macro call: #name(args...) or #name[args...] → (#name args...)
+        //
+        // The lexer only makes a `#name` symbol when a bracket follows it, so
+        // the second token is always one of these two. A dot directly among
+        // the arguments is handed to the macro as written rather than making
+        // the form a tuple, which would lose the head; an argument that is
+        // itself a `(k . v)` gets the tuple rule from its own parentheses.
+        | { Token = Lexer.Symbol name; Range = hr } :: { Token = (LParen | LBracket); Range = r } :: rest when
+            name.StartsWith "#"
+            ->
+            let node, afterList = readForm false r hr (headed name hr) rest
+            loop (node :: acc) afterList
 
         | { Token = LParen; Range = r } :: rest ->
             let node, afterList = readForm true r r id rest
@@ -335,6 +304,11 @@ type private ImportSurface =
     { /// Exported bindings, foreign aliases and macros — the names a modifier
       /// may filter or rename.
       Defs: Set<string>
+      /// The `def/hash-extend`s, by bare name. Their own set because `#fl`
+      /// is its own namespace: `only`, `except` and `rename` are about the
+      /// defs and do not see these, and a `prefix` reaches them as it reaches
+      /// everything.
+      HashMacros: Set<string>
       Types: Set<string>
       Constructors: Set<string>
       Traits: Set<string>
@@ -350,6 +324,7 @@ let private surfaceOf
     (decls: Decl list)
     (macros: ModuleMetadata.MacroEntry list)
     (patternMacros: ModuleMetadata.MacroEntry list)
+    (hashMacros: ModuleMetadata.MacroEntry list)
     : ImportSurface =
     let bare = Naming.bareTypeName moduleName
 
@@ -372,6 +347,8 @@ let private surfaceOf
         @ (macros |> List.map (fun m -> m.Name))
         @ (patternMacros |> List.map (fun m -> m.Name))
         |> Set.ofList
+
+      HashMacros = hashMacros |> List.map (fun m -> m.Name) |> Set.ofList
 
       Types = typeDefs |> List.map (fun td -> bare td.Name) |> Set.ofList
 
@@ -490,6 +467,28 @@ let private defRenaming
         | PostfixTypes _ -> visible
 
     surface.Defs
+    |> Set.toList
+    |> List.map (fun n -> n, n)
+    |> Map.ofList
+    |> fun start -> List.fold step start modifiers
+
+/// What each of a dependency's hash macros is called after one import edge's
+/// modifiers, keyed and valued on the bare name: `fl` -> `s/fl` for
+/// `(prefix (m) "s/")`, and then `#s/fl(...)` is the call.
+///
+/// Only `prefix` and `postfix` apply. The three that name things — `only`,
+/// `except`, `rename` — name defs, and a hash macro is not one; so every hash
+/// macro always arrives, under whatever spelling the affixes give it.
+let private hashRenaming (surface: ImportSurface) (modifiers: ImportModifier list) : Map<string, string> =
+    let step (visible: Map<string, string>) (m: ImportModifier) =
+        match m with
+        | Prefix a
+        | PrefixDefs a -> visible |> Map.map (fun _ v -> a + v)
+        | Postfix a
+        | PostfixDefs a -> visible |> Map.map (fun _ v -> v + a)
+        | _ -> visible
+
+    surface.HashMacros
     |> Set.toList
     |> List.map (fun n -> n, n)
     |> Map.ofList
@@ -652,11 +651,13 @@ let private registerMacros
     (asm: System.Reflection.Assembly)
     (entries: ModuleMetadata.MacroEntry list)
     (patternEntries: ModuleMetadata.MacroEntry list)
+    (hashEntries: ModuleMetadata.MacroEntry list)
     (decls: Decl list)
     (renaming: Map<string, string>)
+    (hashRenaming: Map<string, string>)
     : unit =
 
-    if not (entries.IsEmpty && patternEntries.IsEmpty) then
+    if not (entries.IsEmpty && patternEntries.IsEmpty && hashEntries.IsEmpty) then
         let exports =
             decls
             |> List.choose (function
@@ -680,7 +681,14 @@ let private registerMacros
                 | _ -> [])
             |> Set.ofList
 
-        let bindingOf (what: string) (entry: ModuleMetadata.MacroEntry) (visibleName: string) : Macro.MacroBinding =
+        // `transformer` is the `defun` the transformer was compiled as: the
+        // macro's own name, or `#name` for a hash macro.
+        let bindingOf
+            (what: string)
+            (entry: ModuleMetadata.MacroEntry)
+            (transformer: string)
+            (visibleName: string)
+            : Macro.MacroBinding =
             // Modulnyckeln bär sin namnrymd, så klassen går att stava ur
             // den ensam.
             let className =
@@ -692,11 +700,11 @@ let private registerMacros
                 failwithf
                     $"'%s{entry.Name}' is declared a %s{what} by %s{asm.GetName().Name}, but the class '%s{className}' holding it is not in that assembly."
 
-            let method = clrType.GetMethod(Prelude.moduleClrMemberName entry.Name)
+            let method = clrType.GetMethod(Prelude.moduleClrMemberName transformer)
 
             if isNull method then
                 failwithf
-                    $"'%s{entry.Name}' is declared a %s{what} by %s{asm.GetName().Name}, but '%s{className}' has no method '%s{Prelude.moduleClrMemberName entry.Name}'."
+                    $"'%s{entry.Name}' is declared a %s{what} by %s{asm.GetName().Name}, but '%s{className}' has no method '%s{Prelude.moduleClrMemberName transformer}'."
 
             { Name = visibleName
               ModuleName = entry.ModuleName
@@ -707,12 +715,17 @@ let private registerMacros
         for entry in entries do
             match Map.tryFind entry.Name renaming with
             | None -> ()
-            | Some visibleName -> Macro.register (bindingOf "macro" entry visibleName)
+            | Some visibleName -> Macro.register (bindingOf "macro" entry entry.Name visibleName)
 
         for entry in patternEntries do
             match Map.tryFind entry.Name renaming with
             | None -> ()
-            | Some visibleName -> Macro.registerPattern (bindingOf "pattern macro" entry visibleName)
+            | Some visibleName -> Macro.registerPattern (bindingOf "pattern macro" entry entry.Name visibleName)
+
+        for entry in hashEntries do
+            match Map.tryFind entry.Name hashRenaming with
+            | None -> ()
+            | Some visibleName -> Macro.registerHash (bindingOf "hash macro" entry ("#" + entry.Name) visibleName)
 
         Macro.install ()
 
@@ -731,6 +744,7 @@ type LoadedModule = {
     /// Registration is per edge, so it does not happen where this is built.
     Macros: ModuleMetadata.MacroEntry list
     PatternMacros: ModuleMetadata.MacroEntry list
+    HashMacros: ModuleMetadata.MacroEntry list
     Assembly: System.Reflection.Assembly option
 }
 
@@ -756,6 +770,7 @@ type private CachedDll =
     { Decls: Decl list
       Macros: ModuleMetadata.MacroEntry list
       PatternMacros: ModuleMetadata.MacroEntry list
+      HashMacros: ModuleMetadata.MacroEntry list
       Assembly: System.Reflection.Assembly
       /// Everything reading it added to the link set — itself, and the
       /// transitive dependencies its metadata named.
@@ -1164,7 +1179,7 @@ let loadModuleGraph
                 else
                     None
 
-            let parsedDecls, deps, macros, patternMacros, assembly =
+            let parsedDecls, deps, macros, patternMacros, hashMacros, assembly =
                 match cached with
                 | Some hit ->
                     // The link set is per compilation and the parse is not, so
@@ -1173,7 +1188,7 @@ let loadModuleGraph
                         dllDeps.Add path |> ignore
                         noteAssemblyPath path
 
-                    hit.Decls, [], hit.Macros, hit.PatternMacros, Some hit.Assembly
+                    hit.Decls, [], hit.Macros, hit.PatternMacros, hit.HashMacros, Some hit.Assembly
                 | None ->
 
                 if absPath.EndsWith(".dll") then
@@ -1350,11 +1365,12 @@ let loadModuleGraph
                             { Decls = decls
                               Macros = meta.Macros
                               PatternMacros = meta.PatternMacros
+                              HashMacros = meta.HashMacros
                               Assembly = asm
                               Linked =
                                 absPath :: (meta.Deps |> List.filter (fun p -> p <> "" && File.Exists p)) }
 
-                    decls, [], meta.Macros, meta.PatternMacros, Some asm
+                    decls, [], meta.Macros, meta.PatternMacros, meta.HashMacros, Some asm
                 else
                     // Reported rather than left to `File.ReadAllText`, whose
                     // `FileNotFoundException` is not a diagnostic and so prints
@@ -1391,6 +1407,7 @@ let loadModuleGraph
 
                     let localMacros = declaredHere "def/macro"
                     let localPatternMacros = declaredHere "def/pattern"
+                    let localHashMacros = declaredHere "def/hash-extend"
 
                     // Resolved *and built*: an imported `.bjo` becomes a `.dll`
                     // here, so every edge in the graph names a compiled unit and
@@ -1415,7 +1432,7 @@ let loadModuleGraph
                         // computed here rather than inside `load`, which is
                         // keyed by path and shared by every importer.
                         let m = resolvedModules[dep]
-                        let surface = surfaceOf m.ModuleName m.ParsedDecls m.Macros m.PatternMacros
+                        let surface = surfaceOf m.ModuleName m.ParsedDecls m.Macros m.PatternMacros m.HashMacros
                         let renaming = defRenaming r (Path.GetFileName dep) surface spec.Modifiers
 
                         if not (edges.ContainsKey dep) then
@@ -1426,7 +1443,15 @@ let loadModuleGraph
                         // A macro has to be in the table under the name this
                         // import gives it before the form using it is read.
                         match m.Assembly with
-                        | Some asm -> registerMacros asm m.Macros m.PatternMacros m.ParsedDecls renaming
+                        | Some asm ->
+                            registerMacros
+                                asm
+                                m.Macros
+                                m.PatternMacros
+                                m.HashMacros
+                                m.ParsedDecls
+                                renaming
+                                (hashRenaming surface spec.Modifiers)
                         | None -> ()
 
                     // `(:alias new old)` where `old` is a macro, for the same
@@ -1443,6 +1468,7 @@ let loadModuleGraph
                                 _) ->
                             Macro.alias newName oldName |> ignore
                             Macro.aliasPattern newName oldName |> ignore
+                            Macro.aliasHash newName oldName |> ignore
                         | _ -> ()
 
                     // Set immediately before parsing, and not earlier: loading a
@@ -1450,9 +1476,11 @@ let loadModuleGraph
                     // different set.
                     Macro.setLocalMacros localMacros
                     Macro.setLocalPatternMacros localPatternMacros
+                    Macro.setLocalHashMacros localHashMacros
                     let parsed = Parser.parseModule forms
                     Macro.setLocalMacros Set.empty
                     Macro.setLocalPatternMacros Set.empty
+                    Macro.setLocalHashMacros Set.empty
 
                     // Only the file being compiled has an entry point. A `main`
                     // in a module this one imports is one of its functions.
@@ -1462,7 +1490,7 @@ let loadModuleGraph
                         else
                             parsed
 
-                    parsed, (importEdges |> List.map (fun (dep, _, _) -> dep)), [], [], None
+                    parsed, (importEdges |> List.map (fun (dep, _, _) -> dep)), [], [], [], None
 
             // Dependencies were loaded above, before this module was parsed. A
             // `.dll` has none to load: its transitive deps are link-only and
@@ -1476,6 +1504,7 @@ let loadModuleGraph
                 ParsedDecls = parsedDecls
                 Macros = macros
                 PatternMacros = patternMacros
+                HashMacros = hashMacros
                 Assembly = assembly
             }
             currentPath.Remove(absPath) |> ignore
@@ -1648,12 +1677,13 @@ let runFullFrontendPipeline (mainFilePath: string) =
         //
         // Read here rather than after type checking, because `DMacro` does not
         // survive it: a macro is checked as the `defun` it also produced.
-        let declaredMacros, declaredPatternMacros =
+        let declaredMacros, declaredPatternMacros, declaredHashMacros =
             match List.tryLast parsedModuleDecls with
             | Some(DModule(_, decls, _)) ->
                 decls |> List.choose (function DMacro(n, _) -> Some n | _ -> None),
-                decls |> List.choose (function DPatternMacro(n, _) -> Some n | _ -> None)
-            | _ -> [], []
+                decls |> List.choose (function DPatternMacro(n, _) -> Some n | _ -> None),
+                decls |> List.choose (function DHashMacro(n, _) -> Some n | _ -> None)
+            | _ -> [], [], []
 
         Diagnostics.progress "=== Step 2: Normalization ==="
         // First of the source-to-source passes, and before `LetRecify` on
@@ -1794,7 +1824,7 @@ let runFullFrontendPipeline (mainFilePath: string) =
         let uniquifiedAst = Timing.phase "alpha rename" (fun () -> AlphaRename.uniquifyProgram loopLoweredAst)
 
         Diagnostics.progress "=== Frontend pipeline complete ==="
-        Some (env, uniquifiedAst, dllDeps, declaredMacros, declaredPatternMacros)
+        Some (env, uniquifiedAst, dllDeps, declaredMacros, declaredPatternMacros, declaredHashMacros)
     with ex ->
         Diagnostics.reportFailure ex
         None

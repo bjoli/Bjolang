@@ -1582,6 +1582,12 @@ public static partial class BjolangRuntime {
     public static Bjolang.Runtime.Syntax syntaxsuberror(Bjolang.Runtime.Syntax form, string message) =>
         throw new InvalidOperationException($"{message} — in {form}");
 
+    /// What a `#"..."`'s `str` and `->str` become inside a `#'` template: an
+    /// identifier hygiene leaves alone and the expander lowers back to a
+    /// resolved reference.
+    public static Bjolang.Runtime.Syntax syntaxsubresolved(Symbol name) =>
+        new Bjolang.Runtime.Syntax.SSym(name) { Origin = Bjolang.Runtime.SyntaxOrigin.Resolved };
+
     /// What `,@` compiles to: append, on the children of one template form.
     ///
     /// Monomorphic, and named for the one thing it is for, rather than being a

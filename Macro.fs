@@ -100,6 +100,12 @@ let private table = Dictionary<string, MacroBinding>()
 /// library says the same thing about a name of its own.
 let private patternTable = Dictionary<string, MacroBinding>()
 
+/// The same, for `def/hash-extend`.
+///
+/// Keyed on the bare name: `#fl(...)` looks up `fl`. A third table because the
+/// spelling is its own namespace — `#map` beside the prelude's `map`.
+let private hashTable = Dictionary<string, MacroBinding>()
+
 /// Macros defined by the module currently being parsed.
 ///
 /// They are not in `table` and cannot be: the transformer would have to be
@@ -107,9 +113,11 @@ let private patternTable = Dictionary<string, MacroBinding>()
 /// using one says so, rather than failing later with "Unbound variable".
 let mutable private localMacros: Set<string> = Set.empty
 let mutable private localPatternMacros: Set<string> = Set.empty
+let mutable private localHashMacros: Set<string> = Set.empty
 
 let setLocalMacros (names: Set<string>) = localMacros <- names
 let setLocalPatternMacros (names: Set<string>) = localPatternMacros <- names
+let setLocalHashMacros (names: Set<string>) = localHashMacros <- names
 
 /// Registers the macros an imported assembly publishes.
 ///
@@ -119,6 +127,8 @@ let setLocalPatternMacros (names: Set<string>) = localPatternMacros <- names
 let register (binding: MacroBinding) = table[binding.Name] <- binding
 
 let registerPattern (binding: MacroBinding) = patternTable[binding.Name] <- binding
+
+let registerHash (binding: MacroBinding) = hashTable[binding.Name] <- binding
 
 /// A second spelling of a macro already in the table.
 ///
@@ -141,6 +151,8 @@ let alias (newName: string) (oldName: string) : bool = aliasIn table newName old
 
 let aliasPattern (newName: string) (oldName: string) : bool = aliasIn patternTable newName oldName
 
+let aliasHash (newName: string) (oldName: string) : bool = aliasIn hashTable newName oldName
+
 /// Whether a head symbol names a macro — including one a macro wrote.
 ///
 /// The mark is stripped for the same reason `expand` strips it: a recursive
@@ -156,6 +168,10 @@ let isPatternMacro (name: string) =
         patternTable.ContainsKey n || Set.contains n localPatternMacros
 
     known name || known (Parser.headName name)
+
+/// Asked with the bare name, `fl` for `#fl`.
+let isHashMacro (name: string) =
+    hashTable.ContainsKey name || Set.contains name localHashMacros
 
 // ---------------------------------------------------------------------------
 // Marshalling
@@ -190,10 +206,21 @@ let private punctToken = punctuation |> List.map (fun (t, s) -> s, t) |> Map.ofL
 /// hygiene leaves alone. Note that the marking has to be a field — `Symbol`
 /// interns, so the `x` in the input and an `x` a template builds are the same
 /// object and identity cannot tell them apart.
+///
+/// The one exception is a `ResolvedSymbol`, the `str` or `->str` of a `#"..."`
+/// the reader expanded: it crosses as an ordinary `SSym` marked `Resolved`, so
+/// a transformer can match it, splice it and hand it back, and `toSExpr` turns
+/// it into the same resolved reference it was.
 let rec private ofSExpr (s: SExpr) : Syn =
+    let origin =
+        match s with
+        | SAtom { Token = ResolvedSymbol _ } -> Origin.Resolved
+        | _ -> Origin.CallSite
+
     let node: Syn =
         match s with
         | SAtom { Token = Symbol sym } -> Syn.SSym(BjolangRuntime.Symbol.Intern sym)
+        | SAtom { Token = ResolvedSymbol sym } -> Syn.SSym(BjolangRuntime.Symbol.Intern sym)
         | SAtom { Token = QuotedSymbol sym } -> Syn.SDatum(BjolangRuntime.Symbol.Intern sym)
         | SAtom { Token = NumberLit n } -> Syn.SInt n
         | SAtom { Token = StringLit str } -> Syn.SStr str
@@ -211,7 +238,7 @@ let rec private ofSExpr (s: SExpr) : Syn =
         | SList(items, _) ->
             Syn.SList(SchemeList.SchemeList.FromEnumerable(items |> List.map ofSExpr))
 
-    node.WithRange(toSrcRange (getRange s)).WithOrigin(Origin.CallSite)
+    node.WithRange(toSrcRange (getRange s)).WithOrigin(origin)
 
 /// Identifiers a template may write that must keep their spelling.
 ///
@@ -221,7 +248,9 @@ let rec private ofSExpr (s: SExpr) : Syn =
 ///
 ///   * `_` is the wildcard, in patterns and in `AlphaRename`.
 ///   * `&`, `&1`, `&2` … are positional placeholders, in `->` and in `#(...)`.
-///   * `#t` and `#f` are the boolean literals.
+///   * `#t` and `#f` are the boolean literals, and any other `#name` is the
+///     head of a hash macro call, looked up by that spelling where the
+///     expansion lands.
 ///
 /// Neither a head symbol nor a pattern's constructor needs an entry here:
 /// `Parser.headName` strips the mark wherever one is dispatched on, which is
@@ -229,8 +258,7 @@ let rec private ofSExpr (s: SExpr) : Syn =
 /// call to the macro module's own helper keeps the mark that resolves it.
 let private neverRenamed (name: string) =
     not (AlphaRename.isRenamable name)
-    || name = "#t"
-    || name = "#f"
+    || name.StartsWith "#"
     || name.StartsWith "&"
 
 /// Lowers a transformer's result back to a form, renaming as it goes.
@@ -248,6 +276,10 @@ let rec private toSExpr (memo: Dictionary<string, string>) (callSite: Range) (no
     let atom t = SAtom { Token = t; Range = r }
 
     match node with
+    // Back to the token the reader wrote. Neither renamed nor looked up: the
+    // name means what it meant at module level, whatever is in scope here.
+    | :? Syn.SSym as s when node.Origin = Origin.Resolved -> atom (ResolvedSymbol s.Item1.Name)
+
     | :? Syn.SSym as s ->
         let name = s.Item1.Name
 
@@ -470,10 +502,23 @@ let expandPattern (form: SExpr) : Expansion option =
         expandIn patternTable localPatternMacros "pattern macro" form head r
     | _ -> None
 
+/// Expands one `#name(...)` form, if `name` is a hash macro.
+///
+/// Installed as `Parser.hashExpandHook`. The head arrives spelled `#name`, as
+/// the lexer made it, and the table is keyed without the `#`. Never renamed
+/// (see `neverRenamed`), so there is no mark to strip. `what` is what keeps its
+/// depth count apart from an ordinary macro of the same name at one call site.
+let expandHash (form: SExpr) : Expansion option =
+    match form with
+    | SList(SAtom { Token = Symbol head } :: _, callSite) when head.StartsWith "#" ->
+        expandIn hashTable localHashMacros "hash macro" form (head.Substring 1) callSite
+    | _ -> None
+
 /// Installs the expander into the parser. Idempotent.
 let install () =
     Parser.expandHook <- expand
     Parser.patternExpandHook <- expandPattern
+    Parser.hashExpandHook <- expandHash
     Parser.isMacroName <- isMacro
 
 // ---------------------------------------------------------------------------
@@ -482,7 +527,7 @@ let install () =
 
 /// Everything the expander knows, as a value.
 ///
-/// All three fields belong to *one* compilation. Which macros exist is decided
+/// Every field belongs to *one* compilation. Which macros exist is decided
 /// by that module's imports under that module's modifiers, so a second module
 /// compiled in the same process must not inherit them — the symptom otherwise
 /// is not an error but a form silently read as a macro call because some other
@@ -495,22 +540,28 @@ let install () =
 type State =
     { Bindings: (string * MacroBinding) list
       PatternBindings: (string * MacroBinding) list
+      HashBindings: (string * MacroBinding) list
       Local: Set<string>
       LocalPatterns: Set<string>
+      LocalHashes: Set<string>
       Expansions: ((string * Range) * int) list }
 
 let emptyState =
     { Bindings = []
       PatternBindings = []
+      HashBindings = []
       Local = Set.empty
       LocalPatterns = Set.empty
+      LocalHashes = Set.empty
       Expansions = [] }
 
 let snapshot () : State =
     { Bindings = table |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq
       PatternBindings = patternTable |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq
+      HashBindings = hashTable |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq
       Local = localMacros
       LocalPatterns = localPatternMacros
+      LocalHashes = localHashMacros
       Expansions = expansions |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq }
 
 let restore (state: State) : unit =
@@ -524,8 +575,14 @@ let restore (state: State) : unit =
     for (name, binding) in state.PatternBindings do
         patternTable[name] <- binding
 
+    hashTable.Clear()
+
+    for (name, binding) in state.HashBindings do
+        hashTable[name] <- binding
+
     localMacros <- state.Local
     localPatternMacros <- state.LocalPatterns
+    localHashMacros <- state.LocalHashes
     expansions.Clear()
 
     for (site, count) in state.Expansions do

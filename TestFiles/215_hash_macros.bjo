@@ -1,0 +1,84 @@
+;; Hash macros: `#name(args...)`, a namespace of their own beside the functions.
+;;
+;; The prelude's four are called directly and through the operator surface the
+;; parser rewrites to them — `(+ a b c)` is `#fl(+ a b c)` and `(< a b c)` is
+;; `#ch(< a b c)`. A module's own come from `inc/hashmacros.bjo`, which also
+;; writes operators at three operands inside templates.
+(import (std prelude))
+(import (std simpletest))
+(import "inc/hashmacros.bjo")
+
+(: expect-b (-> string bool bool void))
+(defun (expect-b label actual wanted)
+  (if (eq? actual wanted)
+      (println (string-append "ok: " label))
+      (println (string-append "FAILURE: " label))))
+
+(defun (main)
+  (def calls (make-array 1))
+  (array-set! calls 0 0)
+
+  (defun (tick x)
+    (array-set! calls 0 (+ (array-ref calls 0) 1))
+    x)
+
+  ;; ---- #fl and #fr ---------------------------------------------------------
+  (expect "#fl(+ 1 2 3 4)" #fl(+ 1 2 3 4) 10)
+  (expect "#fl folds left" #fl(- 10 1 2 3) 4)
+  (expect "#fl at two operands" #fl(* 6 7) 42)
+  (expect "#fl of a function" #fl(string-append "a" "b" "c") "abc")
+  (expect "#fr builds in order" #fr(Cons 1 2 3 Nil) (list 1 2 3))
+  (expect "#fr folds right" #fr(- 10 3 2) 9)
+
+  ;; ---- #ch -----------------------------------------------------------------
+  (expect-b "#ch(< 1 2 3)" #ch(< 1 2 3) #t)
+  (expect-b "#ch(< 1 3 2)" #ch(< 1 3 2) #f)
+  (expect-b "#ch at two operands" #ch(= 1 1) #t)
+
+  (array-set! calls 0 0)
+  (expect-b "#ch(< 0 (tick 5) 10)" #ch(< 0 (tick 5) 10) #t)
+  (expect "the middle operand ran once" (array-ref calls 0) 1)
+
+  ;; A failed test stops the chain: the last operand is never evaluated.
+  (array-set! calls 0 0)
+  (expect-b "#ch(< 5 (tick 0) 1 (tick 2))" #ch(< 5 (tick 0) 1 (tick 2)) #f)
+  (expect "a failed test stops the chain" (array-ref calls 0) 1)
+
+  ;; Four middles that need a temporary: the two template names take turns.
+  (array-set! calls 0 0)
+  (expect-b "temporaries in turn" (< 1 (tick 2) (tick 3) (tick 4) (tick 5) 10) #t)
+  (expect "each middle ran once" (array-ref calls 0) 4)
+
+  ;; The surface is the same macro.
+  (array-set! calls 0 0)
+  (expect-b "(< 5 (tick 0) 1 (tick 2))" (< 5 (tick 0) 1 (tick 2)) #f)
+  (expect "short-circuit through the surface" (array-ref calls 0) 1)
+
+  ;; ---- #map ----------------------------------------------------------------
+  (def m #map(("a" 1) ["b" 2] ("c" . 3)))
+  (expect "#map, (k v)" (map-ref m "a") 1)
+  (expect "#map, [k v]" (map-ref m "b") 2)
+  (expect "#map, (k . v)" (map-ref m "c") 3)
+  (expect "#map[...]" (map-ref #map[("x" 9)] "x") 9)
+  (expect-b "#map() is empty" (map-empty? #map()) #t)
+
+  ;; ---- a module's own --------------------------------------------------------
+  (array-set! calls 0 0)
+  (expect "#twice" #twice((tick 21)) 42)
+  (expect "#twice evaluates once" (array-ref calls 0) 1)
+  (expect "#pairs" #pairs(1 2 3 4) (list (Tuple 1 2) (Tuple 3 4)))
+  (expect "#pairs[...]" #pairs[1 2] (list (Tuple 1 2)))
+
+  ;; ---- operators at three operands, in templates -----------------------------
+  (expect "sum3" (sum3 1 2 3) 6)
+  (array-set! calls 0 0)
+  (expect-b "bounded" (bounded 1 (tick 2) 3) #t)
+  (expect "bounded ran its middle once" (array-ref calls 0) 1)
+  (expect "folded" (folded + 1 2 3 4) 10)
+  (expect "folded with a function" (folded string-append "x" "y" "z") "xyz")
+
+  ;; The operator `folded` splices is the caller's, so a local binding of it
+  ;; is what the fold calls.
+  (let ((string-append (fun (a b) "shadowed")))
+    (expect "folded splices the caller's operator" (folded string-append "x" "y" "z") "shadowed"))
+  0)

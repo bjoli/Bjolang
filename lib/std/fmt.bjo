@@ -129,6 +129,7 @@
 ;; Renders to current output port. `#:sync` for `render`'s reason, and stated
 ;; here too rather than left to follow from it: this is the exported one, and
 ;; what it promises a caller should be readable at it.
+;; 
 (: show #:sync (-> (Vec Block) void))
 (defun (show bs) (render (parameter-ref current-output-port) bs))
 
@@ -432,13 +433,13 @@
          (parts (split-at-point body))
          (whole (first-of parts))
          (fraction (second-of parts)))
-        (string-append
-         (if negative? "-" (if signed "+" ""))
-         (string-append
-          (grouped whole comma comma-sep)
-          (if (string-empty? fraction)
-              ""
-              (string-append (char->string decimal-sep) fraction))))))
+    (string-append
+     (if negative? "-" (if signed "+" ""))
+     (string-append
+      (grouped whole comma comma-sep)
+      (if (string-empty? fraction)
+          ""
+          (string-append (char->string decimal-sep) fraction))))))
 
 ;; The common case, and the reason `comma` is spelled that way: thousands.
 (: numeric/comma (-> double Block))
@@ -474,33 +475,35 @@
 (: words-of (-> string (Vec string)))
 (defun (words-of s)
   (let ((out (vecbuilder-empty)))
-    (let loop ((c (string-cursor-start s)) (start (string-cursor-start s)) (in? #f))
+    (let lp ((c (string-cursor-start s)) (start (string-cursor-start s)) (in? #f))
       (if (string-cursor-end? s c)
+          ;; todo: add a (cond ...) here
           (when in? (vecbuilder-add! out (substring/cursors s start c)))
           (if (char-whitespace? (string-cursor-ref s c))
               (let ()
                 (when in? (vecbuilder-add! out (substring/cursors s start c)))
-                (loop (string-cursor-next s c) (string-cursor-next s c) #f))
-              (loop (string-cursor-next s c) (if in? start c) #t))))
+                (lp (string-cursor-next s c) (string-cursor-next s c) #f))
+              (lp (string-cursor-next s c) (if in? start c) #t))))
     (vecbuilder->vec out)))
 
 ;; Packs words into lines.
 (: packed (-> (Vec string) int int (List (List string))))
 (defun (packed ws first width)
-  (let loop ((i 0) (line Nil) (used 0) (budget first) (lines Nil))
+  (let lp ((i 0) (line Nil) (used 0) (budget first) (lines Nil))
     (if (>= i (vec-length ws))
         (list-reverse (if (list-empty? line) lines (Cons (list-reverse line) lines)))
         (let* ((w (vec-ref ws i))
                (needed (if (= used 0) (width-of w) (+ used 1 (width-of w)))))
-              (if (or (= used 0) (<= needed budget))
-                  (loop (+ i 1) (Cons w line) needed budget lines)
-                  (loop i Nil 0 width (Cons (list-reverse line) lines)))))))
+          (if (or (= used 0) (<= needed budget))
+              (lp (+ i 1) (Cons w line) needed budget lines)
+              (lp i Nil 0 width (Cons (list-reverse line) lines)))))))
 
 ;; The words with a single pad character between them.
 (: spaced (-> (List string) string))
 (defun (spaced ws)
   (let ((b (stringbuilder-empty))
         (gap (padding 1)))
+    ;; rewrite as {folding }
     (ignore (list-foldl (fun (first? w)
                           (unless first? (stringbuilder-add-string! b gap))
                           (stringbuilder-add-string! b w)
@@ -520,6 +523,7 @@
                (base (/ room gaps))
                (extra (% room gaps))
                (b (stringbuilder-empty)))
+              ;; TODO: rewrite as a {folding ...}
               (ignore (list-foldl (fun (i w)
                                     (when (> i 0)
                                       (stringbuilder-add-string!
@@ -540,12 +544,13 @@
                   (match ls
                     (Nil c)
                     ((Cons line rest)
+                     ;; Todo: rewrite using (def ...)
                      (let* ((c1 (if first? c (run-block out c nl)))
                             (budget (if first? (- width col) width))
                             (text (if (and justify? (not (list-empty? rest)))
                                       (stretched line budget)
                                       (spaced line))))
-                           (loop rest (run-block out c1 (BStr text)) #f)))))))))
+                       (loop rest (run-block out c1 (BStr text)) #f)))))))))
 
 ;; Filled to the right margin, ragged on the right.
 (: wrapped (-> (Vec Block) Block))
@@ -573,34 +578,35 @@
 
 (: laid-out (-> (Vec (Vec string)) (Vec int) string bool Block))
 (defun (laid-out cells widths sep cut?)
+  ;; this can be rewritten using both def ... and loop.
   (BRun (fun (out col)
           (let ((rows (vec-fold (fun (acc ls) (max acc (vec-length ls))) 0 cells)))
-            (let loop ((r 0) (c (run-block out col fl)))
+            (let lp ((r 0) (c (run-block out col fl)))
               (if (>= r rows)
                   c
-                  (loop (+ r 1)
-                        (run-block out
-                                   (run-block out c (BStr (row-of cells widths sep cut? r)))
-                                   nl))))))))
+                  (lp (+ r 1)
+                      (run-block out
+                                 (run-block out c (BStr (row-of cells widths sep cut? r)))
+                                 nl))))))))
 
 ;; Formats row string.
 (: row-of (-> (Vec (Vec string)) (Vec int) string bool int string))
 (defun (row-of cells widths sep cut? r)
   (let ((b (stringbuilder-empty))
         (n (vec-length cells)))
-    (let loop ((i 0))
+    (let lp ((i 0))
       (when (< i n)
         (when (> i 0) (stringbuilder-add-string! b sep))
         (let* ((ls (vec-ref cells i))
                (text (if (< r (vec-length ls)) (vec-ref ls r) ""))
                (w (vec-ref widths i))
                (last? (= i (- n 1))))
-              (stringbuilder-add-string!
-               b
-               (cond (last? (if cut? (trim/right w text) text))
-                     (cut? (pad/right w (trim/right w text)))
-                     (else (pad/right w text)))))
-        (loop (+ i 1))))
+          (stringbuilder-add-string!
+           b
+           (cond (last? (if cut? (trim/right w text) text))
+                 (cut? (pad/right w (trim/right w text)))
+                 (else (pad/right w text)))))
+        (lp (+ i 1))))
     (stringbuilder->string b)))
 
 (: rendered-columns (-> (Vec (Vec Block)) (Vec (Vec string))))
@@ -616,9 +622,9 @@
                  (room (- (parameter-ref current-width)
                           (* (width-of sep) (max (- n 1) 0))))
                  (each-width (if (> n 0) (max (/ room n) 0) 0)))
-                (run-block out
-                           col
-                           (laid-out cells (vec-map (fun (ls) each-width) cells) sep #t))))))
+            (run-block out
+                       col
+                       (laid-out cells (vec-map (fun (ls) each-width) cells) sep #t))))))
 
 (: tabular (-> (Vec (Vec Block)) (#:sep string) Block))
 (defun (tabular cols #:sep " ")

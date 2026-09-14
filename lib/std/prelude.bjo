@@ -2109,6 +2109,92 @@
         ((Ok it) ,(try-steps #'it rest))))))
 
 ;; ---------------------------------------------------------------------------
+;; Hash macros
+;; ---------------------------------------------------------------------------
+;;
+;; `#name(args...)` calls a hash macro, its own namespace beside the functions:
+;; `#map` and `map` are two things. `(def/hash-extend (name form inject compare)
+;; body)` writes one; like any macro it cannot be used in the module that
+;; defines it, so nothing below uses these four.
+;;
+;; The parser hands an operator with three or more operands to the first three:
+;; `(+ a b c)` is `#fl(+ a b c)` and `(< a b c)` is `#ch(< a b c)`.
+
+;; `#fl(op a b c ...)` — `(op (op a b) c)`, folded left.
+(def/hash-extend (fl form inject compare)
+  (syntax-match form
+    ((_ op a b rest ...) (fold-left-forms op #'(,op ,a ,b) rest))
+    (bad (syntax-error bad "#fl takes an operator and at least two operands: #fl(+ a b c)."))))
+
+(: fold-left-forms (-> Syntax Syntax (List Syntax) Syntax))
+(defun (fold-left-forms op acc rest)
+  (match rest
+    (Nil acc)
+    ((Cons x more) (fold-left-forms op #'(,op ,acc ,x) more))))
+
+;; `#fr(op a b c ...)` — `(op a (op b c))`, folded right.
+(def/hash-extend (fr form inject compare)
+  (syntax-match form
+    ((_ op a b rest ...) (fold-right-forms op a (Cons b rest)))
+    (bad (syntax-error bad "#fr takes an operator and at least two operands: #fr(Cons 1 2 Nil)."))))
+
+(: fold-right-forms (-> Syntax Syntax (List Syntax) Syntax))
+(defun (fold-right-forms op x rest)
+  (match rest
+    (Nil x)
+    ((Cons y more) #'(,op ,x ,(fold-right-forms op y more)))))
+
+;; `#ch(op a b c ...)` — `(op a b)`, and `(op b c)`, and so on, each tested only
+;; if the one before it held. A middle operand that is not an atom is bound
+;; once, right before its first use.
+;;
+;; Two template names for the temporaries, `t` and `u`, taken in turn. Hygiene
+;; gives a template name one fresh spelling per expansion, so a single name
+;; would shadow itself and `(op t t)` would compare a value to itself.
+(def/hash-extend (ch form inject compare)
+  (syntax-match form
+    ((_ op a b rest ...) (chain-forms op a (Cons b rest) #t))
+    (bad (syntax-error bad "#ch takes an operator and at least two operands: #ch(< a b c)."))))
+
+;; `prev` is safe to read twice: the first operand, an atom, or a temporary.
+;; `use-t` says which temporary is free; the other may be `prev`.
+(: chain-forms (-> Syntax Syntax (List Syntax) bool Syntax))
+(defun (chain-forms op prev rest use-t)
+  (match rest
+    (Nil prev)
+    ((Cons x Nil) #'(,op ,prev ,x))
+    ((Cons x more)
+     (if (syntax-atom? x)
+         #'(if (,op ,prev ,x) ,(chain-forms op x more use-t) #f)
+         (if use-t
+             #'(let ((t ,x)) (if (,op ,prev t) ,(chain-forms op #'t more #f) #f))
+             #'(let ((u ,x)) (if (,op ,prev u) ,(chain-forms op #'u more #t) #f)))))))
+
+;; Cheap to evaluate twice: anything but a list.
+(: syntax-atom? (-> Syntax bool))
+(defun (syntax-atom? s)
+  (match s
+    ((SList _) #f)
+    (_ #t)))
+
+;; `#map((k v) ...)` — a `Map`. An entry is `(k v)`, `[k v]` or `(k . v)`.
+(def/hash-extend (map form inject compare)
+  (syntax-match form
+    ((_) #'(map-empty))
+    ((_ entry ...) #'(list->map ,(map-entries entry)))))
+
+(: map-entries (-> (List Syntax) Syntax))
+(defun (map-entries entries)
+  (match entries
+    (Nil #'Nil)
+    ((Cons entry rest)
+     (syntax-match entry
+       (('vec-literal k v) #'(Cons (Tuple ,k ,v) ,(map-entries rest)))
+       (('Tuple k v) #'(Cons (Tuple ,k ,v) ,(map-entries rest)))
+       ((k v) #'(Cons (Tuple ,k ,v) ,(map-entries rest)))
+       (bad (syntax-error bad "A map entry is (key value), [key value] or (key . value)."))))))
+
+;; ---------------------------------------------------------------------------
 ;; Cancellation scopes
 ;; ---------------------------------------------------------------------------
 ;;

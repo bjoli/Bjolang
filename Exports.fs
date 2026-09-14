@@ -86,6 +86,7 @@ let metadata
     (typedAst: TypedAST.TDecl list)
     (declaredMacros: string list)
     (declaredPatternMacros: string list)
+    (declaredHashMacros: string list)
     (inputFilePath: string)
     (isLibrary: bool)
     : ModuleMetadata.Metadata =
@@ -1002,6 +1003,7 @@ let metadata
 
     let macros = publish declaredMacros
     let patternMacros = publish declaredPatternMacros
+    let hashMacros = publish declaredHashMacros
 
     if isLibrary && not declaredMacros.IsEmpty then
         Diagnostics.progress (
@@ -1013,6 +1015,13 @@ let metadata
                 "Publishing %d pattern macro(s): %s"
                 declaredPatternMacros.Length
                 (String.concat ", " declaredPatternMacros))
+
+    if isLibrary && not declaredHashMacros.IsEmpty then
+        Diagnostics.progress (
+            sprintf
+                "Publishing %d hash macro(s): %s"
+                declaredHashMacros.Length
+                (declaredHashMacros |> List.map (fun n -> "#" + n) |> String.concat ", "))
 
     let typeDecls, externDecls, traitDecls, implDecls, defs = declMetadata
 
@@ -1046,6 +1055,7 @@ let metadata
       InlineTemplates = inlineTemplates
       Macros = macros
       PatternMacros = patternMacros
+      HashMacros = hashMacros
       BlockingDefs = blockingDefs
       DoubleDefs = doubleDefs
       ConstrainedBodies = constrainedBodies }

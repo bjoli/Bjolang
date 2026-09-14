@@ -1,0 +1,35 @@
+;; A `#"..."` on either side of a macro.
+;;
+;; The reader expands one to `(str ... (->str hole) ...)` with `str` and `->str`
+;; as resolved names, which no binding can capture. Those cross into a
+;; transformer as `SSym`s marked `Resolved` and come back out as the same
+;; resolved names, so a macro can be handed an interpolation, can write one in
+;; a template, and can take one apart.
+
+(import (std syntax-match))
+
+;; `(twice-said x)` — the input, spliced back twice. The input holds a
+;; `#"..."`, which is the case that used to be refused at the boundary.
+(def/macro (twice-said form inject compare)
+  (syntax-match form
+    ((_ x) #'(string-append ,x ,x))
+    (bad (syntax-error bad "twice-said takes one argument."))))
+
+;; `(labelled x)` — a template that writes a `#"..."` of its own. `tmp` is the
+;; template's and is renamed; the `str` and `->str` inside the interpolation are
+;; the reader's and are not.
+(def/macro (labelled form inject compare)
+  (syntax-match form
+    ((_ x) #'(let ((tmp ,x)) #"value: ${tmp}"))
+    (bad (syntax-error bad "labelled takes one argument."))))
+
+;; `(head-of form)` — the name at the head of the input, as a string. A
+;; `#"a ${b}"` given here answers "str", which is what shows the transformer
+;; sees an ordinary identifier and not an opaque token.
+(def/macro (head-of form inject compare)
+  (syntax-match form
+    ((_ (h rest ...))
+     (match h
+       ((SSym name) (SStr (symbol->string name)))
+       (_ (SStr "not a symbol"))))
+    (bad (syntax-error bad "head-of takes one form."))))

@@ -1,0 +1,50 @@
+;; Hash macros of a module of its own, and templates that write an operator at
+;; three operands. A macro cannot be used where it is defined, so every one of
+;; these is exercised from `215_hash_macros*.bjo`.
+
+(import (std syntax-match))
+
+(export tag)
+
+;; An ordinary export, for an `(only ...)` to keep while `#twice` arrives
+;; regardless.
+(: tag (-> string string))
+(defun (tag s) (string-append "tag:" s))
+
+;; `#twice(x)` — `x` doubled, evaluated once.
+(def/hash-extend (twice form inject compare)
+  (syntax-match form
+    ((_ x) #'(let ((v ,x)) (+ v v)))
+    (bad (syntax-error bad "#twice takes one argument."))))
+
+;; `#pairs(a b c d)` — `(list (Tuple a b) (Tuple c d))`.
+(def/hash-extend (pairs form inject compare)
+  (syntax-match form
+    ((_ item ...) (pair-up item form))))
+
+(: pair-up (-> (List Syntax) Syntax Syntax))
+(defun (pair-up items whole)
+  (match items
+    (Nil #'Nil)
+    ((Cons a (Cons b rest)) #'(Cons (Tuple ,a ,b) ,(pair-up rest whole)))
+    (_ (syntax-error whole "#pairs takes an even number of arguments."))))
+
+;; `(sum3 a b c)` — a three-operand `+` in a template. The template's `+` is
+;; `Num`'s wherever the expansion lands, however the call site spells `+`.
+(def/macro (sum3 form inject compare)
+  (syntax-match form
+    ((_ a b c) #'(+ ,a ,b ,c))
+    (bad (syntax-error bad "sum3 takes three arguments."))))
+
+;; `(bounded lo x hi)` — a chained comparison in a template.
+(def/macro (bounded form inject compare)
+  (syntax-match form
+    ((_ lo x hi) #'(<= ,lo ,x ,hi))
+    (bad (syntax-error bad "bounded takes three arguments."))))
+
+;; `(folded op arg ...)` — `#fl` written in a template, the operator spliced
+;; from the call: it is the caller's, and means what the caller's scope says.
+(def/macro (folded form inject compare)
+  (syntax-match form
+    ((_ op arg ...) #'#fl(,op ,@arg))
+    (bad (syntax-error bad "folded takes an operator and its operands."))))

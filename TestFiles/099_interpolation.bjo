@@ -4,10 +4,14 @@
 ;;
 ;;   (str "text " (->str expression) " more")
 ;;
-;; and hands that to the parser, so there is no new token, no new AST node, no
-;; new type rule and nothing for the emitter. Everything downstream sees a call
-;; somebody could have written by hand, which is why a `#"..."` works unchanged
-;; inside a quasiquote, a macro template, or another `#"..."`.
+;; and hands that to the parser, so there is no new AST node, no new type rule
+;; and nothing for the emitter. Everything downstream sees a call somebody could
+;; have written by hand, which is why a `#"..."` works unchanged inside a
+;; quasiquote, a macro template, a macro's input, or another `#"..."`.
+;;
+;; The one token is `str` and `->str` themselves: the reader writes them
+;; *resolved*, so a local binding of either name cannot capture them. They cross
+;; a macro boundary as identifiers marked `Resolved` and come back the same.
 ;;
 ;; Two decisions are worth stating.
 ;;
@@ -25,6 +29,7 @@
 
 (import (std prelude))
 (import (std simpletest))
+(import "inc/interp_macros.bjo")
 
 ;; A string as its codepoints, `92,110` and so on.
 ;;
@@ -142,5 +147,33 @@ second"
   (expect "str, called by hand" (str "a" "b" "c") "abc")
   (expect "str of one" (str "solo") "solo")
   (expect "str of none" (str) "")
+
+  ;; ---- The names are the reader's -----------------------------------------
+  ;;
+  ;; A local `->str` or `str` shadows the trait method or the function for
+  ;; every call written by hand, and for none the reader wrote.
+  (let ((->str (fun (n) "hidden")))
+    (expect "a local ->str is what a hand-written call reaches" (->str 5) "hidden")
+    (expect "and is not what a hole reaches" #"n is ${x}" "n is 5"))
+  (let ((str (fun (a b) "hidden")))
+    (expect "a local str does not capture the concatenation" #"${x} and ${x}" "5 and 5"))
+
+  ;; ---- Across a macro -----------------------------------------------------
+  ;;
+  ;; As input: the whole interpolation is handed to the transformer and
+  ;; spliced back, resolved names and all.
+  (expect "an interpolation as macro input" (twice-said #"x=${x};") "x=5;x=5;")
+  (let ((->str (fun (n) "hidden")))
+    (expect "and still the reader's ->str on the way out" (twice-said #"${x}") "55"))
+
+  ;; In a template: the macro writes the interpolation, and the hole reads the
+  ;; template's own renamed temporary.
+  (expect "an interpolation in a macro template" (labelled (* x 2)) "value: 10")
+  (expect "with a user impl through it" (labelled (Kr 3)) "value: 3 kr")
+
+  ;; Taken apart: the transformer sees an identifier at the head, not an
+  ;; opaque token.
+  (expect "a transformer can read the head" (head-of #"a ${x}") "str")
+  (expect "of a single hole too" (head-of #"${x}") "->str")
 
   0)

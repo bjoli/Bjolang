@@ -1,0 +1,16 @@
+;; A hash macro, like any macro, cannot be used in the module that defines it.
+
+;; EXPECT-ERROR: 'thrice' is a hash macro defined in this module
+;; EXPECT-ERROR: cannot be used where it is defined
+
+(import (std prelude))
+(import (std syntax-match))
+
+(def/hash-extend (thrice form inject compare)
+  (syntax-match form
+    ((_ x) #'(* 3 ,x))
+    (bad (syntax-error bad "#thrice takes one argument."))))
+
+(defun (main)
+  (println #thrice(2))
+  0)

@@ -62,7 +62,8 @@ open System.Text
 /// assembly built before this publishes none, which is not an error and not
 /// visible in any answer — every call into it keeps passing a dictionary, which
 /// is what all of them did before the field existed.
-let currentVersion = 8
+/// 9: `HashMacros`, the `def/hash-extend`s, beside the other two macro lists.
+let currentVersion = 9
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {
@@ -134,6 +135,8 @@ type Metadata = {
     /// The `def/pattern`s. A separate list because they are registered into a
     /// separate table: a name may be an ordinary export and a pattern macro.
     PatternMacros: MacroEntry list
+    /// The `def/hash-extend`s, by bare name: `fl` for `#fl(...)`.
+    HashMacros: MacroEntry list
     /// Exported definitions whose call parks the thread it runs on.
     ///
     /// A separate list rather than a flag on `ExportedDef` because it is about
@@ -168,6 +171,7 @@ let empty = {
     InlineTemplates = []
     Macros = []
     PatternMacros = []
+    HashMacros = []
     BlockingDefs = []
     DoubleDefs = []
     ConstrainedBodies = []
@@ -187,6 +191,7 @@ let isEmpty (m: Metadata) =
     && m.InlineTemplates.IsEmpty
     && m.Macros.IsEmpty
     && m.PatternMacros.IsEmpty
+    && m.HashMacros.IsEmpty
 
 
 // ---------------------------------------------------------------------------
@@ -334,6 +339,7 @@ let serialize (m: Metadata) : string =
     putList sb putTemplate m.InlineTemplates
     putList sb putMacro m.Macros
     putList sb putMacro m.PatternMacros
+    putList sb putMacro m.HashMacros
     putList sb putStr m.BlockingDefs
     putList sb putStr m.DoubleDefs
     putList sb putConstrainedBody m.ConstrainedBodies
@@ -364,6 +370,7 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
     let templates = getList getTemplate c
     let macros = getList getMacro c
     let patternMacros = getList getMacro c
+    let hashMacros = getList getMacro c
     let blockingDefs = getList getStr c
     let doubleDefs = getList getStr c
     let constrainedBodies = getList getConstrainedBody c
@@ -378,6 +385,7 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
       InlineTemplates = templates
       Macros = macros
       PatternMacros = patternMacros
+      HashMacros = hashMacros
       BlockingDefs = blockingDefs
       DoubleDefs = doubleDefs
       ConstrainedBodies = constrainedBodies }

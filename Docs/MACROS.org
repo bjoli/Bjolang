@@ -64,6 +64,15 @@ pattern all work on a macro's input:
 ~SSym~ and ~SDatum~ carry the same payload and differ in one thing: hygiene
 renames the first and never the second.
 
+A ~#"..."~ in the input arrives as what the reader made of it, ~(str "text"
+(->str hole) ...)~, and its ~str~ and ~->str~ are ~SSym~s the reader wrote
+/resolved/: no binding at the call site can capture them, and they stay so
+through a transformer — matched, spliced with ~,~ and handed back, they come
+out as the same resolved names. The same holds for a ~#"..."~ written in a
+template. A transformer that rebuilds one of the two from its /name/, with
+~(SSym (string->symbol ...))~, has made an ordinary identifier, which resolves
+where the expansion lands.
+
 Also available: ~(syntax->string s)~, which renders back to something that reads
 as source; ~(syntax-file s)~ and ~(syntax-line s)~; ~(syntax-ident=? a b)~, which
 is ~compare~ as a function rather than as a parameter; and ~(syntax-error form
@@ -175,6 +184,14 @@ expansions of the same macro never share one. A renamed identifier is then an
 
 Diagnostics report names with renames stripped, so a message names what was
 written rather than a name that appears in no source file.
+
+One gap in rule 2: the qualified spelling carries the helper's type but not
+its ~#:key~/~#:rest~ shape, so a template that calls an exported helper taking
+either has its arguments checked positionally — a rest helper reports a
+mismatch against the rest array's type, a keyword helper a ~Keyword~ where a
+value was expected. The same helper called from the importing module by its
+plain name is fine. Until this is fixed, give the template a fixed-arity
+wrapper to call instead.
 
 *** ~inject~
 
@@ -441,5 +458,6 @@ which is what the hundred-level expansion limit is for.
 | ~(:view step p)~               | ~Parser.parsePattern~, ~Inference.checkPattern~, ~Codegen.generatePattern~ |
 | the exhaustiveness check       | ~Exhaustiveness.fs~             |
 | worked examples                | ~TestFiles/inc/macros.bjo~, ~TestFiles/091_macros.bjo~ |
+| ~#"..."~ across a macro        | ~TestFiles/inc/interp_macros.bjo~, ~TestFiles/099_interpolation.bjo~ |
 | pattern macros                 | ~TestFiles/inc/pattern_macros.bjo~, ~TestFiles/201_pattern_macros.bjo~ |
 | splicing examples              | ~TestFiles/122_splice.bjo~, ~TestFiles/123_begin.bjo~ |

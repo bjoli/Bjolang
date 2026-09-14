@@ -1030,6 +1030,10 @@ let prelude : Env =
         "SList", {Scheme = Scheme([], [], makeFunType [makeListType syntaxType] syntaxType); IsMutable = false }
         "SPunct", {Scheme = Scheme([], [], makeFunType [stringType] syntaxType); IsMutable = false }
 
+        // What the `str` and `->str` of a `#"..."` desugar to inside a `#'`
+        // template: an `SSym` with the `Resolved` origin.
+        "syntax-resolved", {Scheme = Scheme([], [], makeFunType [symbolType] syntaxType); IsMutable = false }
+
         // What `,@` desugars to. Deliberately not a general `list-append`:
         // `std/prelude` publishes one of those, and a builtin sharing its name
         // is ambiguous to C# wherever both are in scope.
@@ -1133,6 +1137,7 @@ let prelude : Env =
       // Filled in by `checkDecl`, from `Bindings`, once per top-level
       // declaration. Empty here because nothing is being checked yet.
       Resolved = Map.empty
+      ResolvedFunMetas = Map.empty
       TraitMethodNames = Set.empty
       ImplMethod = None
       Registry = emptyRegistry

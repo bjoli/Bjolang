@@ -283,6 +283,15 @@ let private unshadow (name: string) (env: Env) : Env =
         else
             env
 
+    // The shape comes back with the binding. `addBinding` dropped it when the
+    // local went in, and a `#:rest` call without it is a call with the wrong
+    // number of arguments.
+    let env =
+        match Map.tryFind name env.ResolvedFunMetas with
+        | Some meta when Map.tryFind name env.FunMetas <> Some meta ->
+            { env with FunMetas = Map.add name meta env.FunMetas }
+        | _ -> env
+
     match Map.tryFind name env.Resolved with
     | Some binding when Map.tryFind name env.Bindings <> Some binding ->
         { env with Bindings = Map.add name binding env.Bindings }
@@ -303,6 +312,43 @@ let private unshadow (name: string) (env: Env) : Env =
                 | None -> Map.remove name env.Bindings }
 
     | _ -> env
+
+/// The spelling a resolved name is emitted under when a local has its bare one.
+///
+/// `unshadow` gives inference the module-level binding back, but the typed
+/// node still carries the bare name, and C# resolves a bare name lexically:
+/// emitted beside the local it would bind to it. The class-qualified spelling
+/// is what `Codegen` emits past a local — the same one an inlined body uses
+/// for its free names — so a shadowed resolved name is rewritten to it.
+///
+/// Imports only. A trait method dispatches rather than naming a class; a
+/// builtin has no class to name; and which of the rest this module defines
+/// itself is not known here, since `Prelude` is compiled after this file. So a
+/// module that defines its own `str`, shadows it locally and interpolates
+/// there still emits the bare name — which is what every case did before.
+let private resolvedSpelling (name: string) (env: Env) : string option =
+    let shadowed = Map.tryFind name env.Bindings <> Map.tryFind name env.Resolved
+
+    if not shadowed || Map.containsKey name env.Registry.TraitMethods then
+        None
+    else
+        match Map.tryFind name env.Registry.ImportAliases with
+        | Some origin when origin.OriginModule <> "" ->
+            Some(Naming.qualifiedBinding origin.OriginModule origin.OriginalName)
+        | _ -> None
+
+/// Rewrites the head of a typed resolved reference to its qualified spelling,
+/// where `resolvedSpelling` says there is one. `env` is the scope *before*
+/// `unshadow`, which is where the local is.
+let private requalifyResolved (name: string) (env: Env) (te: TypedExpr) : TypedExpr =
+    match resolvedSpelling name env with
+    | None -> te
+    | Some q ->
+        match te.Node with
+        | TIdent(n, tArgs) when n = name -> { te with Node = TIdent(q, tArgs) }
+        | TApply({ Node = TIdent(n, tArgs) } as callee, args, kws) when n = name ->
+            { te with Node = TApply({ callee with Node = TIdent(q, tArgs) }, args, kws) }
+        | _ -> te
 
 let private withoutSeqElement (env: Env) : Env =
     { env with Bindings = Map.remove seqElementSlot env.Bindings }
@@ -2678,7 +2724,9 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     //
     // Nothing to put back means nothing at module level had that name, so there
     // is nothing a local could be shadowing and the registries decide.
-    | EResolved(name, r) -> infer (unshadow name env) (EIdent(name, r))
+    | EResolved(name, r) ->
+        let t, te = infer (unshadow name env) (EIdent(name, r))
+        t, requalifyResolved name env te
 
     | EFun(args, body, colour, r) -> inferLambda None env args body colour r
 
@@ -2694,7 +2742,9 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     // wrote reaches whichever of them it should — trait method, record
     // constructor, union case or ordinary function — with its head meaning what
     // it meant at module level.
-    | EApp(EResolved(name, mr), args, r) -> infer (unshadow name env) (EApp(EIdent(name, mr), args, r))
+    | EApp(EResolved(name, mr), args, r) ->
+        let t, te = infer (unshadow name env) (EApp(EIdent(name, mr), args, r))
+        t, requalifyResolved name env te
 
     // A trait method call, unless the name has been bound over.
     //
@@ -4708,7 +4758,10 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
     //
     // It is what an `EResolved` resolves against — a name the compiler wrote,
     // which has to mean what it meant where it was written.
-    let env = { env with Resolved = env.Bindings }
+    let env =
+        { env with
+            Resolved = env.Bindings
+            ResolvedFunMetas = env.FunMetas }
 
     match decl with
     | DSignature(name, ftype, constraints, _) -> env, Map.add name (resolveTypeAnnotation env.Registry ftype, Some ftype, constraints) sigs, []
@@ -5425,7 +5478,8 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
         // A macro is not a binding. It was registered under the new name before
         // this module was parsed — it had to be, since the parser decides what a
         // head symbol means when it meets it — so there is nothing left to do.
-        | None when Macro.isMacro oldName || Macro.isPatternMacro oldName -> env, sigs, [ TAlias(newName, None, r) ]
+        | None when Macro.isMacro oldName || Macro.isPatternMacro oldName || Macro.isHashMacro oldName ->
+            env, sigs, [ TAlias(newName, None, r) ]
 
         | None ->
             failwithf
@@ -5439,6 +5493,7 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
     // `checkDeclGroup` before any body is looked at.
     | DMacro _
     | DPatternMacro _
+    | DHashMacro _
     | DSyncOnly _ -> env, sigs, []
     | DExport(names, r) -> env, sigs, [ TExport(names, r) ]
 

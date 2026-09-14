@@ -43,8 +43,10 @@ let private escapeReserved (s: string) =
 /// The name may be a path, and `::` is normalized to `.` here, so the escaping
 /// and the leading-digit fix are applied to each segment: both are about what
 /// makes an *identifier*, and a path is a sequence of them.
+///
+/// `#` is only ever the first character of a hash macro's transformer, `#fl`.
 let sanitizeIdent (s: string) =
-    let s = s.Replace("::", ".").Replace("-", "sub").Replace("?", "_QMARK").Replace("!", "_BANG").Replace("+", "add").Replace("*", "mul").Replace("/", "div").Replace("<", "lt").Replace(">", "gt").Replace("=", "eq").Replace("'", "").Replace("&", "arg_")
+    let s = s.Replace("::", ".").Replace("-", "sub").Replace("?", "_QMARK").Replace("!", "_BANG").Replace("+", "add").Replace("*", "mul").Replace("/", "div").Replace("<", "lt").Replace(">", "gt").Replace("=", "eq").Replace("'", "").Replace("&", "arg_").Replace("#", "hash__")
 
     let segment (part: string) =
         let part = if part.Length > 0 && Char.IsDigit(part[0]) then "_" + part else part

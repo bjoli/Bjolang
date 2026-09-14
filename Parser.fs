@@ -550,6 +550,11 @@ type Decl =
     /// position and a pattern macro in pattern position.
     | DPatternMacro of string * Range
 
+    // `(def/hash-extend (name form inject compare) body...)`, registered as
+    // `#name(...)`. The name is the bare one; the transformer `defun` beside it
+    // is spelled `#name`, which no source identifier can be.
+    | DHashMacro of string * Range
+
     /// Records that a name is to be given no suspending copy: `(: name #:sync (-> ...))`.
     ///
     /// `#:sync` prevents the generation of an async counterpart for a function.
@@ -591,7 +596,8 @@ let declRange (decl: Decl) : Range =
     | DImplExtern(_, _, _, _, r) | DInlineImpl(_, _, _, _, _, _, _, r)
     | DModule(_, _, r) | DImport(_, r) | DAlias(_, _, r) | DExport(_, r) | DReExport(_, r)
     | DExtern(_, _, _, _, r) | DImportAlias(_, _, _, r)
-    | DImportExtern(_, r) | DImportClass(_, r) | DMacro(_, r) | DPatternMacro(_, r) | DSyncOnly(_, r) -> r
+    | DImportExtern(_, r) | DImportClass(_, r) | DMacro(_, r) | DPatternMacro(_, r) | DHashMacro(_, r)
+    | DSyncOnly(_, r) -> r
 
 // ---------------------------------------------------------------------------
 // Macro expansion
@@ -631,6 +637,14 @@ let mutable expandHook: SExpr -> Expansion option = fun _ -> None
 /// bare capitalized symbol, which are the two shapes a pattern macro is called
 /// in.
 let mutable patternExpandHook: SExpr -> Expansion option = fun _ -> None
+
+/// The same, for the table `def/hash-extend` fills.
+///
+/// Asked for a list whose head is a `#name` symbol — the reader's rendering of
+/// `#name(...)` — and before the special forms, since no special form is
+/// spelled with a `#`. Expression position only: a pattern refuses one, and a
+/// quoted list refuses one.
+let mutable hashExpandHook: SExpr -> Expansion option = fun _ -> None
 
 /// Whether a head symbol names a macro, without running the transformer.
 ///
@@ -1366,6 +1380,10 @@ let desugarSyntaxQuote (parseExprFn: SExpr -> Expr) (template: SExpr) (r: Range)
         // token on either side of it changed.
         | SAtom { Token = BoolLit b } -> call "SSym" [ EQuotedSymbol((if b then "#t" else "#f"), ir) ] ir
         | SAtom { Token = Symbol sym } -> call "SSym" [ EQuotedSymbol(sym, ir) ] ir
+        // The `str` and `->str` of a `#"..."` written inside the template. An
+        // `SSym` marked `Resolved`, so hygiene leaves it and the expander
+        // lowers it back to the reference the reader wrote.
+        | SAtom { Token = ResolvedSymbol sym } -> call "syntax-resolved" [ EQuotedSymbol(sym, ir) ] ir
         | SAtom { Token = Comma } ->
             failwithf $"Unexpected , at %s{Lexer.formatPos ir}: nothing to unquote."
         | SAtom { Token = CommaAt } ->
@@ -1464,12 +1482,16 @@ let desugarQuotedList (parseExprFn: SExpr -> Expr) (items: SExpr list) (r: Range
         | SList(SAtom { Token = Symbol "comprehension" } :: _, cr) ->
             failwithf
                 $"A comprehension inside a quoted list at %s{Lexer.formatPos cr}. Quoting builds data, and a comprehension is a loop that produces a value: write ,{{...}} to splice what it produces."
+        // A hash macro call: a `#name` head is nothing a quoted list can hold.
+        | SList(SAtom { Token = Symbol name } :: _, hr) when name.StartsWith "#" ->
+            failwithf
+                $"'%s{name}(...)' inside a quoted list at %s{Lexer.formatPos hr}. Quoting builds data, and a hash macro expands to an expression: write ,%s{name}(...) to splice what it produces."
         // Any other list is data as well: '('(a b) '(c d)) nests.
         //
-        // The two remaining reader rewrites arrive here — `#(...)` as a `fun`
-        // form, `#map(...)` as a `list->map` call — and neither can be told
-        // apart from the same list written by hand, so both are quoted as the
-        // lists they have become. Write `,#(...)` to splice the function.
+        // The one remaining reader rewrite arrives here — `#(...)` as a `fun`
+        // form — and cannot be told apart from the same list written by hand,
+        // so it is quoted as the list it has become. Write `,#(...)` to splice
+        // the function.
         | SList(inner, lr) -> collectItems inner lr
         | SAtom { Token = CommaAt } ->
             failwithf
@@ -2203,100 +2225,81 @@ let private operatorArity =
           "recip", 1
           "bitwise-not", 1 ]
 
-/// Is re-evaluating this expression free and side-effect free?
+/// `(op args...)` at whatever arity it was written.
 ///
-/// Only used to decide whether a chained comparison's middle operand needs a
-/// temporary. Anything not obviously atomic gets one, so being conservative
-/// here costs a binding and never costs correctness.
-let private isAtomicOperand (e: Expr) : bool =
-    match e with
-    | EInt _
-    | EString _
-    | EQuotedSymbol _
-    | EKeyword _
-    | EIdent _ -> true
-    | _ -> false
+/// Up to two operands are read here. `(+)` is 0 and `(*)` is 1, each
+/// operator's identity as in Scheme; `(+ x)` is `x`; `(- x)` is `negate` and
+/// `(/ x)` is `recip`, because `-` and `/` are binary trait methods with no
+/// one-operand meaning of their own and `Codegen` emits the unary names. Two
+/// operands are the binary application everything downstream understands, and
+/// what keeps the infix emission in `Codegen` free of allocation.
+///
+/// Three or more are the prelude's: the form is handed to `#fl`, which
+/// left-folds the arithmetic and bitwise operators — `(+ a b c)` is
+/// `(+ (+ a b) c)` — or to `#ch`, which chains the comparisons — `(< a b c)`
+/// is `a < b && b < c`, not `(a < b) < c`, with a middle operand evaluated once
+/// and a later one not at all once an earlier test has failed. The expansion
+/// is read like any other, and its binary applications land back here.
+///
+/// `sym` is the head as written and `op` its base name; they differ when the
+/// head carried a macro's rename, which the operator table stripped in order
+/// to recognise it. Every operator here is a trait method — `=` is `Eq`'s, `<`
+/// is `Ord`'s, `+` is `Num`'s — so a template that wrote one meant the method,
+/// and the reference resolves where it was written rather than where the
+/// expansion lands. `EResolved` is that spelling; without it a module that
+/// binds `=` for its own purposes silently redefines the arithmetic of every
+/// macro it calls, `type/derive` included. The stripping is why this cannot be
+/// left to `Macro.resolveIntroduced` like an ordinary call head: by the time it
+/// runs, the mark is gone. The operator goes across to `#fl`/`#ch` as written,
+/// mark and all, so the same holds for what they hand back.
+let private desugarOperator
+    (parseExprFn: SExpr -> Expr)
+    (head: SExpr)
+    (sym: string)
+    (op: string)
+    (args: SExpr list)
+    (r: Range)
+    : Expr =
+    let opRef = if op <> sym then EResolved(op, r) else EIdent(op, r)
 
-/// `(op a b c ...)` as nested binary applications.
-///
-/// Arithmetic left-folds, so `(+ a b c)` is `(+ (+ a b) c)` — which is what
-/// keeps every arithmetic operator binary by the time codegen sees it, and so
-/// keeps the infix emission in `Codegen` and its freedom from allocation.
-///
-/// Comparisons chain instead of folding: `(< a b c)` means `a < b && b < c`,
-/// not `(a < b) < c`. Each middle operand appears in two comparisons, so one
-/// that is not atomic is bound to a temporary first — `(< 0 (next!) 10)` must
-/// call `next!` once, not twice.
-///
-/// `marked` says the head carried a macro's rename, which the operator table
-/// stripped in order to recognise it. Every operator here is a trait method —
-/// `=` is `Eq`'s, `<` is `Ord`'s, `+` is `Num`'s — so a template that wrote one
-/// meant the method, and the reference resolves where it was written rather than
-/// where the expansion lands. `EResolved` is that spelling; without it a module
-/// that binds `=` for its own purposes silently redefines the arithmetic of
-/// every macro it calls, `type/derive` included. The stripping is why this
-/// cannot be left to `Macro.resolveIntroduced` like an ordinary call head: by
-/// the time it runs, the mark is gone.
-let private desugarNaryOp (marked: bool) (op: string) (args: Expr list) (r: Range) : Expr =
-    let opRef = if marked then EResolved(op, r) else EIdent(op, r)
-    let binary a b = EApp(opRef, [ a; b ], r)
+    let items =
+        args
+        |> List.filter (function
+            | SAtom { Token = Comma } -> false
+            | _ -> true)
 
     let arityError (wanted: string) =
         failwithf
-            $"Syntax error at %s{Lexer.formatPos r}: '%s{op}' takes %s{wanted}, but was given %d{args.Length}."
+            $"Syntax error at %s{Lexer.formatPos r}: '%s{op}' takes %s{wanted}, but was given %d{items.Length}."
 
-    if List.contains op foldingOps then
-        match args with
-        // `(+)` is 0 and `(*)` is 1 — each operator's identity, as in Scheme.
-        // They are `int`; a zero of another type is written as a literal.
-        | [] ->
-            match op with
-            | "+" -> EInt("0", r)
-            | "*" -> EInt("1", r)
-            | _ -> arityError "at least one argument"
-        | [ single ] ->
-            match op with
-            | "+"
-            | "*"
-            | "bitwise-and"
-            | "bitwise-ior"
-            | "bitwise-xor" -> single
-            | "-" -> EApp(EResolved("negate", r), [ single ], r)
-            | "/" -> EApp(EResolved("recip", r), [ single ], r)
-            | _ -> arityError "at least two arguments"
-        | first :: rest -> rest |> List.fold binary first
-    else
-        match args with
-        | []
-        | [ _ ] -> arityError "at least two arguments"
-        | _ ->
-            let lastIndex = List.length args - 1
+    let folding = List.contains op foldingOps
 
-            // Only the middle operands are read twice; the ends are not.
-            let bindings = ResizeArray<string * Expr>()
+    match items with
+    | [] ->
+        match op with
+        | "+" -> EInt("0", r)
+        | "*" -> EInt("1", r)
+        | _ -> arityError (if folding then "at least one argument" else "at least two arguments")
+    | [ single ] ->
+        match op with
+        | "+"
+        | "*"
+        | "bitwise-and"
+        | "bitwise-ior"
+        | "bitwise-xor" -> parseExprFn single
+        | "-" -> EApp(EResolved("negate", r), [ parseExprFn single ], r)
+        | "/" -> EApp(EResolved("recip", r), [ parseExprFn single ], r)
+        | _ -> arityError "at least two arguments"
+    | [ a; b ] -> EApp(opRef, [ parseExprFn a; parseExprFn b ], r)
+    | _ ->
+        let macro = if folding then "#fl" else "#ch"
+        let form = SList(SAtom { Token = Symbol macro; Range = r } :: head :: items, r)
 
-            let operands =
-                args
-                |> List.mapi (fun i a ->
-                    if i > 0 && i < lastIndex && not (isAtomicOperand a) then
-                        let name = Gensym.fresh "cmp"
-                        bindings.Add(name, a)
-                        EIdent(name, r)
-                    else
-                        a)
-
-            let comparisons = operands |> List.pairwise |> List.map (fun (l, rr) -> binary l rr)
-
-            let rec buildAnd items =
-                match items with
-                | [] -> EBool(true, r)
-                | [ last ] -> last
-                | current :: rest -> EIf(current, buildAnd rest, EBool(false, r), r)
-
-            List.foldBack
-                (fun (name, value) acc -> ELet(name, false, [], None, value, acc, r))
-                (List.ofSeq bindings)
-                (buildAnd comparisons)
+        match hashExpandHook form with
+        | Some expansion -> expansion.Resolve Set.empty (parseExprFn expansion.Form)
+        | None ->
+            failwithf
+                $"'%s{op}' with %d{items.Length} operands at %s{Lexer.formatPos r} is spelled out by the prelude's %s{macro} hash macro, which is not in scope here. Import (std prelude), or nest the binary applications by hand."
 
 let rec parseExpr (s: SExpr) : Expr =
     let r = getRange s
@@ -2334,7 +2337,7 @@ let rec parseExpr (s: SExpr) : Expr =
         let ps = List.init operatorArity[op] (fun _ -> Gensym.fresh "op")
         // The call inside the lambda is in call position like any other, so a
         // marked operator resolves where the template wrote it. See
-        // `desugarNaryOp`.
+        // `desugarOperator`.
         let opRef = if op <> sym then EResolved(op, r) else EIdent(op, r)
         EFun(ps, EApp(opRef, ps |> List.map (fun p -> EIdent(p, r)), r), Ordinary, r)
 
@@ -2342,6 +2345,16 @@ let rec parseExpr (s: SExpr) : Expr =
 
     | SList(head :: args, listRange) ->
         match head with
+        // `#name(...)`. Ahead of the special forms, none of which is spelled
+        // with a `#`. A miss is a syntax error here and not an unbound name
+        // later: nothing else a `#name` symbol could be.
+        | Ident sym when sym.StartsWith "#" ->
+            match hashExpandHook s with
+            | Some expansion -> expansion.Resolve Set.empty (parseExpr expansion.Form)
+            | None ->
+                failwithf
+                    $"Unknown hash macro '%s{sym}' at %s{Lexer.formatPos listRange}. A #name(...) form calls a hash macro, which arrives with the import of the module that (def/hash-extend ...)s it — the prelude's are #fl, #fr, #ch and #map."
+
         | Ident sym ->
             // Dispatch sees through a macro's rename; the identifier does not.
             // `sym` is what an application is built from, so a template's call
@@ -3208,7 +3221,7 @@ let rec parseExpr (s: SExpr) : Expr =
                                              | SAtom { Token = Keyword _ } -> true
                                              | _ -> false))
                 ->
-                desugarNaryOp (op <> sym) op (processArgs args) listRange
+                desugarOperator parseExpr head sym op args listRange
 
             // A macro, tried last so that a special form always wins. Anything
             // reaching here is either a macro call or an ordinary application,
@@ -3264,6 +3277,10 @@ and parsePattern (s: SExpr) : Pattern =
 
     match s with
     | SAtom { Token = Symbol "_" } -> PWildcard r
+    // A hash macro expands to an expression, and a pattern is not one.
+    | SList(SAtom { Token = Symbol name } :: _, _) when name.StartsWith "#" ->
+        failwithf
+            $"'%s{name}(...)' in a pattern at %s{Lexer.formatPos r}. A hash macro expands in expression position only; a pattern that is a macro is a (def/pattern ...)."
     // Before the binder case below, which would otherwise read `#t` as a name
     // and match everything. That is what it did: a boolean pattern bound a
     // variable called `#t` and reached the code generator, which spelled it
@@ -5154,6 +5171,7 @@ let rec boundNames (decls: Decl list) : Set<string> =
         | DReExport _
         | DMacro _
         | DPatternMacro _
+        | DHashMacro _
         | DSyncOnly _
         | DImplExtern _
         | DInlineImpl _ -> []
@@ -5204,6 +5222,7 @@ let rec mapDeclExprs (f: Expr -> Expr) (d: Decl) : Decl =
     | DImportClass _
     | DMacro _
     | DPatternMacro _
+    | DHashMacro _
     | DSyncOnly _
     | DImplExtern _ -> d
 
@@ -5246,6 +5265,7 @@ let declKindName (d: Decl) : string =
     | DInlineImpl _ -> "an inline method body"
     | DMacro _ -> "a macro"
     | DPatternMacro _ -> "a pattern macro"
+    | DHashMacro _ -> "a hash macro"
     | DSyncOnly _ -> "a #:sync marker"
     | DImpl _ -> "an implementation"
     | DImplExtern _ -> "an imported implementation"
@@ -5863,7 +5883,13 @@ and parseDeclForms (s: SExpr) : Decl list =
     // worth stating: a binder the template writes arrives renamed, so it is not
     // the name the clause body can read. A pattern macro that binds a user's
     // name has to take that name out of the input form.
-    | SList(SAtom { Token = Symbol(("def/macro" | "def/pattern") as definer) } :: SList(head, _) :: body, r) ->
+    //
+    // `def/hash-extend` is the third table. Its transformer `defun` is named
+    // `#name` — a spelling no source identifier can have, so the prelude's
+    // `#map` sits beside its `map`. `DHashMacro` carries the bare name, which
+    // is what the table is keyed on and what an import modifier prefixes.
+    | SList(SAtom { Token = Symbol(("def/macro" | "def/pattern" | "def/hash-extend") as definer) } :: SList(head, _) :: body,
+            r) ->
         let name, argNames =
             match head with
             | SAtom { Token = Symbol name } :: rest ->
@@ -5887,11 +5913,23 @@ and parseDeclForms (s: SExpr) : Decl list =
         if body.IsEmpty then
             failwithf $"Invalid %s{definer} '%s{name}' at %s{Lexer.formatPos r}: it has no body."
 
-        [ DSignature(name, macroTransformerType r, [], r)
-          DDefun(name, argNames |> List.map (fun n -> MandatoryArg(n, None)), parseBody body r, Ordinary, r)
-          (if definer = "def/macro" then DMacro(name, r) else DPatternMacro(name, r)) ]
+        let transformerName, marker =
+            match definer with
+            | "def/macro" -> name, DMacro(name, r)
+            | "def/pattern" -> name, DPatternMacro(name, r)
+            | _ -> "#" + name, DHashMacro(name, r)
 
-    | SList(SAtom { Token = Symbol(("def/macro" | "def/pattern") as definer) } :: _, r) ->
+        [ DSignature(transformerName, macroTransformerType r, [], r)
+          DDefun(
+              transformerName,
+              argNames |> List.map (fun n -> MandatoryArg(n, None)),
+              parseBody body r,
+              Ordinary,
+              r
+          )
+          marker ]
+
+    | SList(SAtom { Token = Symbol(("def/macro" | "def/pattern" | "def/hash-extend") as definer) } :: _, r) ->
         failwithf
             $"Invalid %s{definer} at %s{Lexer.formatPos r}. Expected (%s{definer} (name form inject compare) body...)"
 

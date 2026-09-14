@@ -1663,6 +1663,12 @@ type Env =
       /// module's own definitions, and nothing a body binds. That is exactly
       /// the scope a name the compiler wrote was written in.
       Resolved: Map<string, Binding>
+      /// `FunMetas` as they stood at module level, snapshotted beside
+      /// `Resolved` for the same reason: a binder drops a shadowed name's
+      /// `FunMeta`, and an `EResolved` call to a `#:rest` function — the `str`
+      /// of a `#"..."` under a local `str` — needs its shape back with its
+      /// binding.
+      ResolvedFunMetas: Map<string, FunMeta>
       /// The trait method names whose binding is still the method's own.
       ///
       /// A method is bound like anything else, so a program that binds the same

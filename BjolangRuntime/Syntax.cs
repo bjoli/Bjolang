@@ -36,6 +36,9 @@ public enum SyntaxOrigin
     Template = 0,
     /// Taken from the input form, or produced by `inject`. Left alone.
     CallSite = 1,
+    /// Written by the reader — the `str` and `->str` of a `#"..."`. Never
+    /// renamed, and lowered back to a reference nothing in scope can capture.
+    Resolved = 2,
 }
 
 /// <summary>
