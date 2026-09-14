@@ -1,0 +1,455 @@
+* Bjolang in twenty minutes
+
+Bjolang is a Scheme-shaped language with Hindley–Milner type inference that
+compiles to C#. Traits instead of classes. Immutable collections — an RRB
+vector, a CHAMP map, a B-tree ordered map. Concurrent ML for concurrency, with
+scopes that own the fibers and the resources started inside them.
+Tail-resumptive effect handlers. Hygienic macros. Literals that elaborate into
+your own unions, which is what the formatting and shell DSLs are built on. And
+everything in .NET one ~import/extern~ away, in both directions.
+
+This is just a small tour.
+
+** Running a program
+
+#+BEGIN_SRC scheme
+(defun (main)
+  (println "hello")
+  0)
+#+END_SRC
+
+#+BEGIN_SRC
+./bjor hello.bjo        # compiles if stale, then runs
+./bjor --repl           # a REPL, under rlwrap
+#+END_SRC
+
+~main~ is the one top-level function that needs no signature. It returns the
+exit code. See [[file:Compiling.org][Compiling.org]] and [[file:Repl.org][Repl.org]].
+
+** Functions and types
+
+A top-level function carries a signature on the line above it. Inside the body
+everything is inferred.
+
+#+BEGIN_SRC scheme
+(: greet (-> string string))
+(defun (greet who) #"hello, ${who}")            ;; #"..." interpolates
+
+(: sum-of-squares (-> (Vec int) int))
+(defun (sum-of-squares xs)
+  (-> xs                                        ;; thread through &
+      (map #(* & &) &)                          ;; #(...) is a lambda; & its argument
+      (fold + 0 &)))
+
+(: repeat-line (-> string (#:times int) void))
+(defun (repeat-line s #:times 1)                ;; keyword arguments, with defaults
+  (let go ((n times))                           ;; a named let is a loop
+    (when (> n 0)
+      (println s)
+      (go (- n 1)))))
+
+(repeat-line "hi" #:times 3)
+#+END_SRC
+
+Type variables are written ~%a~. A function that compares two of them picks up
+~(where (Eq %a))~ on its own. See [[file:Syntax.org][Syntax.org]].
+
+The default higher order functions return lazy collections. For eager loops,
+see the ~loop~ form below.
+
+** Data, and taking it apart
+
+Records and unions are declared in a ~type~ form and constructed by naming the
+type. ~match~ takes them apart.
+
+#+BEGIN_SRC scheme
+(type
+  (: Shape (Union (Circle double) (Rect double double)))
+  (: Point (Record (: x double) (: y double))))
+
+(: area (-> Shape double))
+(defun (area s)
+  (match s
+    ((Circle r) (* 3.14159 (* r r)))
+    ((Rect w h) (* w h))))
+
+(def origin (Point (x 0.0) (y 0.0)))
+(def moved (record-set origin (x 1.0)))         ;; a copy; records are immutable
+(record-ref moved x)                            ;; 1.0
+#+END_SRC
+
+~Option~ and ~Result~ are how absence and failure travel. There is no null.
+
+#+BEGIN_SRC scheme
+(: safe-div (-> int int (Option int)))
+(defun (safe-div a b) (if (= b 0) None (Some (/ a b))))
+
+(match (safe-div 10 2)
+  ((Some q) (println #"quotient ${q}"))
+  (None (println "division by zero")))
+#+END_SRC
+
+Patterns reach into vectors, .NET types and anything a ~def/pattern~ teaches
+them to see:
+
+#+BEGIN_SRC scheme
+(: describe-row (-> (Vec int) string))
+(defun (describe-row row)
+  (match row
+    ([] "empty")
+    ([x] #"just ${x}")
+    ([x y rest ...] #"${x}, ${y} and ${(vec-length rest)} more")))
+
+(match (try (file-read-text path) #:catch (System.IO.IOException))
+  ((Ok text) text)
+  ((Err (:is System.IO.FileNotFoundException e)) #"missing: ${(.-FileName e)}")
+  ((Err e) (raise e)))                           ;; not ours
+#+END_SRC
+
+~(:is Type binder)~ is a .NET type test in pattern position, and the binder is
+narrowed. ~try~ is how a call that throws becomes a ~Result~. See *~try~* and
+*Records and structs* in [[file:Syntax.org][Syntax.org]].
+
+** Traits
+
+A trait is a set of functions a type may implement. ~=~ is one — there is one
+equality, and a record says what its own is, or derives it:
+
+#+BEGIN_SRC scheme
+(type/derive (Eq Ord)
+  (: Version (Record (: major int) (: minor int))))
+
+(list-sort (list (Version (major 2) (minor 0)) (Version (major 1) (minor 9))))
+#+END_SRC
+
+The implementation becomes the type's .NET ~Equals~ and ~CompareTo~, so a
+~Map~ keyed by it, or any C# code handed it, agrees with ~=~.
+
+#+BEGIN_SRC scheme
+(def/trait (Describe %a)
+  (: describe (-> %a string)))
+
+(impl (Describe Shape)
+  (defun (describe s)
+    (match s
+      ((Circle r) #"a circle of radius ${r}")
+      ((Rect w h) #"a ${w} by ${h} rectangle"))))
+
+(impl (Describe Point)
+  (defun (describe p) #"(${(record-ref p x)}, ${(record-ref p y)})"))
+
+(: describe-all (-> (List %a) (List string)) (where (Describe %a)))
+(defun (describe-all xs) (list-map describe xs))
+#+END_SRC
+
+Where the type is known at the call, the method is inlined and costs a
+function call. That is also what lets a trait range over a type /constructor/
+— ~(Mappable (%f %a))~, ~(Monad (%m %a))~ — which C# interfaces cannot say.
+~(std monad)~'s ~do~ notation is written on top of that. See *Traits* in
+[[file:Syntax.org][Syntax.org]] and [[file:Constraints.org][Constraints.org]].
+
+** Collections and loops
+
+#+BEGIN_SRC scheme
+(def xs [1 2 3])                                ;; Vec: an RRB tree, structural sharing
+(def ys (vec-add xs 4))                         ;; xs is unchanged
+(def m #map(("a" 1) ("b" 2)))                   ;; Map: a CHAMP trie
+(def m2 (map-set m "c" 3))
+(def zs (list 1 2 3))                           ;; List: a linked list
+
+(loop (:for k (list "a" "b"))
+      (:for v (list 1 2))                       ;; two :for in a row walk in lockstep
+      (:acc out (listing (Tuple k v))))         ;; => ((a . 1) (b . 2))
+
+(loop (:for x xs)
+      (:subloop)                                ;; and this nests them
+      (:for y ys)
+      (:when (< x y))
+      (:acc pairs (listing (Tuple x y))))       ;; => ((1 . 2) (1 . 3) ...)
+
+;; There is also a comprehension form using { }. Together with the tuple shorthand
+;; (k . v) => (Tuple k v), it can be written as:
+{listing (k . v) (:for k (list "a" "b")) (:for v (list 1 2))}
+#+END_SRC
+
+~loop~ compiles to the loop you would have written by hand. ~seql~ is the same
+form yielding lazily. See *Loops* in [[file:Syntax.org][Syntax.org]].
+
+** Elaboration: a literal takes the type it is given
+
+Where a union is expected, each piece of a ~'(...)~ or ~[...]~ literal becomes
+the case that can hold it: a string, a number or a symbol by its own type, a
+nested ~(...)~ by the case whose payload is a ~List~, an unquoted expression by
+its type. So a union declared like this
+
+#+BEGIN_SRC scheme
+(type-rec
+  (: Item (Union (Name string)
+                 (Count int)
+                 (Group (List Item)))))
+
+(: inventory (List Item))
+(def inventory '("apples" 3 ("pears" 2)))
+;; = (list (Name "apples") (Count 3) (Group (list (Name "pears") (Count 2))))
+#+END_SRC
+
+is written without its constructors, at any depth, and is still an ordinary
+union to ~match~ on. Nothing about the type says so — the expected type at the
+literal is what decides, so ~inventory~ needs its signature. ~(std run)~'s shell
+notation, ~(run/lines '(pipe (ls "-l") ,my-filter))~, is one of these. See
+*Quoted lists* in [[file:Syntax.org][Syntax.org]].
+
+** A DSL on top of it: ~(std fmt)~
+
+~(std fmt)~ lays text out with a ~Block~ union whose cases hold a string, an
+int, a char, or a layout combinator. A ~(Vec Block)~ is therefore written as a
+plain vector of the things themselves:
+
+#+BEGIN_SRC scheme
+(import (std fmt))
+
+(type (: Bar (Record (: label string) (: value int))))
+
+(: bar (-> Bar Block))
+(defun (bar b)
+  (each [(padded/right 5 [(record-ref b label)]) ;; pads every label so that it is at least 5 chars long.
+         "|"
+         ;; builds the bars. Pad a null string with (record-ref b value) amount of #\#
+         (with-pad #\# [(padded/right (record-ref b value) [""])])
+         " "
+         (record-ref b value)                   ;; an int, elaborated
+         nl]))
+
+(: chart (-> string (List Bar) (Vec Block)))
+(defun (chart title bars)
+  [(with-pad #\= [(padded/both 24 [" " title " "])]) nl
+   (joined bar bars [])
+   (tabular [["days" nl (list-length bars)]
+             ["cups" nl (list-foldl (fun (acc b) (+ acc (record-ref b value))) 0 bars)]]
+            #:sep "  ")
+   nl])
+
+(show (chart "Coffee" (list (Bar (label "Mon") (value 3))
+                            (Bar (label "Tue") (value 5))
+                            (Bar (label "Wed") (value 12)))))
+#+END_SRC
+
+#+BEGIN_SRC
+======== Coffee ========
+Mon  |### 3
+Tue  |##### 5
+Wed  |############ 12
+days  cups
+3     20
+#+END_SRC
+
+Padding, trimming, justified paragraphs, tables that size their own columns,
+and numbers with grouping and precision are all blocks, and a setting like the
+pad character or the ellipsis is a ~with-fmt~ around the blocks it applies to.
+[[file:../Examples/receipt.bjo][Examples/receipt.bjo]] is a forty-column shop
+receipt written this way.
+
+** Concurrency: bjoroutines, channels, events
+
+A function that may suspend is a ~defbjo~. It runs as a fiber on a pool, and
+suspends when it ~sync~s on an event. A channel operation is an event; so is a
+timeout, a fiber's result, or a .NET ~Task~.
+
+#+BEGIN_SRC scheme
+(: worker (-bjo-> (Chan int) (Chan int) void))
+(defbjo (worker jobs answers)
+  (let go ()
+    (def job (sync (chan-recv jobs)))
+    (sync (chan-send answers (* job job)))
+    (go)))
+
+(: feed (-bjo-> (Chan int) int void))
+(defbjo (feed jobs n)
+  (let go ((i 1))
+    (when (<= i n)
+      (sync (chan-send jobs i))
+      (go (+ i 1)))))
+
+(defbjo (main)
+  (def jobs (make-chan))
+  (def answers (make-chan))
+  (with-cancel (cancel)
+    (spawn (worker jobs answers))
+    (spawn (worker jobs answers))
+    (spawn (feed jobs 4))
+    (let take ((i 1))
+      (when (<= i 4) (println (sync (chan-recv answers))) (take (+ i 1))))
+    (cancel (Requested "done")))                ;; the workers stop at their next sync
+  0)
+#+END_SRC
+
+A channel is a rendezvous: a send waits for its receive. That is what makes a
+losing branch withdrawable, and it is why the feeder is a fiber of its own.
+
+The part worth waking up for: an event is a *value*. ~choose~ races events and
+~wrap~ maps one, so a deadline is an ordinary function that works on every
+event there will ever be — and a losing branch is withdrawn, not consumed.
+
+#+BEGIN_SRC scheme
+(: within (-> int (Event %a) (Event (Option %a))))
+(defun (within ms ev)
+  (choose (wrap ev #(Some &))
+          (wrap (timeout ms) (fun (u) None))))
+
+(sync (within 20 (chan-recv answers)))          ;; None, or (Some answer)
+#+END_SRC
+
+Nobody had to pass a deadline down to ~worker~. Go's ~select~ cannot be given a
+name. [[file:../Examples/events_are_values.bjo][Examples/events_are_values.bjo]]
+is the whole program.
+
+An ordinary ~defun~ that calls something with a suspending copy gets a
+suspending copy of its own, so the colour is decided at the leaf and not
+repeated up the tree. See *Colour* in [[file:Syntax.org][Syntax.org]].
+
+** Scopes: when it returns, the work is over
+
+~spawn~ puts a fiber in the ambient scope, and the scope does not return until
+every one of them has landed. A child that fails cancels its siblings and the
+failure is reported when the scope returns, not lost. ~with-deadline~ is
+~with-cancel~ with a timer; ~main~ is a scope too.
+
+#+BEGIN_SRC scheme
+(with-deadline (seconds 5)
+  (spawn (fetch "a"))
+  (spawn (fetch "b")))                          ;; both landed, or Deadline
+#+END_SRC
+
+A scope owns resources the same way. A file port is registered on the scope
+that opened it and closed when that scope returns, said or not.
+
+#+BEGIN_SRC scheme
+(with-scope
+  (match (open-input-file "notes.txt")
+    ((Ok p) (println (read-all p)))             ;; closed when the scope returns
+    ((Err e) (println "no notes"))))
+
+(ignore (own! (fun () (release-the-permit))))   ;; anything else: a release thunk
+#+END_SRC
+
+Releases run newest-first after every fiber has landed, inside a shield so
+cleanup can still ~sync~. See *Cancellation scopes* in
+[[file:prelude.org][prelude.org]].
+
+** Effects: mock production code
+
+An effect operation is a typed function the program performs and a handler
+decides. With no handler it does its default; a test installs another.
+
+#+BEGIN_SRC scheme
+(import (std effect))
+
+(defeffect Audit
+  (audit (-> string void))
+  #:default ((audit (fun (s) (println (str "audit: " s))))))
+
+(: transfer (-> int void))
+(defun (transfer amount)                        ;; a plain defun performs it
+  (audit #"transfer ${amount}"))
+
+(def seen (make-box ""))
+(with-handler ((audit (fun (s) (box-set! seen s))))
+  (transfer 10))                                ;; seen: "transfer 10", nothing printed
+#+END_SRC
+
+The handler runs on the performer's stack and answers once, or throws. Nothing
+is captured, so it costs a parameter read. Opening a file is an effect, which
+is what makes this possible without touching the disk:
+
+#+BEGIN_SRC scheme
+(import (std simpletest))
+
+(with-fake-fs (("notes.txt" "a b c"))
+  (call-with-input-file "notes.txt" read-all))  ;; (Ok "a b c")
+#+END_SRC
+
+The fake port is owned by a scope exactly as a real one is, so a leak test
+means the same thing over both. ~warn~, ~log~, ~now~ and ~getenv~ are effects
+in the prelude. See *Effects* in [[file:prelude.org][prelude.org]].
+
+** Macros
+
+A macro is a function from syntax to syntax, run by the compiler. ~syntax-match~
+reads the form and ~#'~ builds the answer; ~,~ and ~,@~ splice into it.
+Renaming is implicit, so a template's ~let~ cannot capture the caller's names —
+~inject~ is the one deliberate hole.
+
+#+BEGIN_SRC scheme
+(import (std syntax-match))
+
+(def/macro (aif form inject compare)
+  (syntax-match form
+    ((_ test then else)
+     #'(match ,test
+         ((Some ,(inject 'it)) ,then)           ;; `it` is visible to the caller
+         (None ,else)))
+    (bad (syntax-error bad "(aif test then else)"))))
+
+;; in another module:
+(aif (map-try-ref m "port")
+     (println it)
+     (println "no port"))
+#+END_SRC
+
+A macro cannot be used in the module that defines it. ~def/pattern~ is the
+same thing for ~match~. See [[file:MACROS.org][MACROS.org]].
+
+** .NET, both ways
+
+#+BEGIN_SRC scheme
+(import/class
+  (StringBuilder (: System.Text.StringBuilder (-> StringBuilder)))
+  (FileMode      (: System.IO.FileMode))
+  (FileStream    (: System.IO.FileStream (-> string FileMode FileStream)
+                    #:exceptions (System.IO.FileNotFoundException))))
+
+(import/extern
+  (read-text (: System.IO.File.ReadAllText (-> string string) #:blocking))
+  (read-line-async (: System.IO.StreamReader.ReadLineAsync
+                      (-> StreamReader string) #:async)))
+
+(def sb (StringBuilder.))                       ;; new
+(ignore (.Append sb "hello"))                   ;; a method; a dropped value says so
+(.-Length sb)                                   ;; a property
+
+(match (FileStream. path FileMode.Open)         ;; #:exceptions: a Result
+  ((Ok fs) (use fs))
+  ((Err e) (fallback)))
+#+END_SRC
+
+~#:async~ makes a ~Task~-returning method a yield point, so ~await~ is never
+written. ~#:blocking~ says a call parks the thread; ~(sync (blocking (fun ()
+...)))~ moves it off the fiber. A Bjolang module compiles to a static class, so
+C# calls it back without ceremony. See *Foreign .NET interop* in
+[[file:Syntax.org][Syntax.org]].
+
+** Modules
+
+A file is a module. ~export~ says what crosses; an import can be filtered,
+renamed or prefixed.
+
+#+BEGIN_SRC scheme
+(import (std orderedmap))
+(import (only (std ports) port->lines))
+(import (prefix (std set) "s/"))
+(import "geometry.bjo")
+
+(export area describe Shape)
+#+END_SRC
+
+See [[file:MODULES.org][MODULES.org]].
+
+** Where next
+
+- [[file:Syntax.org][Syntax.org]] — the language, form by form.
+- [[file:prelude.org][prelude.org]] — the standard library, scopes and effects.
+- [[file:MACROS.org][MACROS.org]] — transformers, hygiene, ~def/pattern~.
+- [[file:../Examples][Examples/]] — small whole programs, and ~Examples/receipt.bjo~
+  for the formatting DSL.
+- [[file:../lib/text/json.bjo][lib/text/json.bjo]] — a fast JSON reader, as a
+  larger piece of idiomatic code.
