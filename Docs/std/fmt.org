@@ -1,0 +1,129 @@
+* std/fmt — formatting
+
+Formatting in Bjolang is divided into two layers: interpolation and layout.
+
+#+BEGIN_SRC scheme
+(import (std prelude))
+(import (std fmt))
+
+;; Layer 1: Interpolation
+(println* ["Hello, " 42 ", ok? " #t])
+
+;; Layer 2: Layout
+(show ["Padding: [" (padded/left 10 ["foo"]) "]\n"])
+(show ["Number: " (numeric/comma 1234567.89) "\n"])
+(show ["Columns:\n"
+       (columnar [["first long text string" "second text string"]
+                  ["col 2" "more text for col 2"]])])
+#+END_SRC
+
+** Layer 1 — Interpolation
+
+Interpolation provides a simple way to combine mixed scalar types into strings or print them directly. It operates on a ~(Vec Disp)~, where ~Disp~ is a union of ~string~, ~int~, ~double~, ~char~, and ~bool~.
+
+- ~(println* ds)~ : Prints the elements to standard output, followed by a newline.
+- ~(str* ds)~ : Converts the elements into a single string.
+
+** Layer 2 — Layout
+
+The layout layer provides a composable block algebra for more complex text formatting, such as padding, aligning, wrapping paragraphs, and laying out tables. The fundamental unit is a ~Block~, which can represent simple scalars or a ~BRun~ function that threads the current column position through an output sink.
+
+*** Running blocks
+- ~(show bs)~ : Renders a ~(Vec Block)~ to the ~current-output-port~.
+- ~(render port bs)~ : Renders the blocks to the given ~TextOutputPort~.
+- ~(render->string bs)~ : Renders the blocks into a string and returns it.
+
+*** Vertical and horizontal space
+- ~nl~ : A newline block.
+- ~fl~ : A fresh line block. Outputs a newline only if not already at the start of a line.
+- ~(space-to goal)~ : Pads with the current pad character until the specified column.
+- ~(tab-to #:width 8)~ : Moves to the next tab stop.
+
+*** Fitting to a width
+These combinators fit their content to a specified width. They take a width and a ~(Vec Block)~ as their content.
+
+- ~(padded/left w bs)~, ~(padded/right w bs)~, ~(padded/both w bs)~ : Pads the content to ~w~ columns.
+- ~(trimmed/left w bs)~, ~(trimmed/right w bs)~, ~(trimmed/both w bs)~ : Trims the content to ~w~ columns, inserting ~current-ellipsis~ if truncated.
+- ~(fitted/left w bs)~, ~(fitted/right w bs)~, ~(fitted/both w bs)~ : Pads if shorter, trims if longer.
+
+*** Sequences
+- ~(joined f xs sep)~ : Formats every element of list ~xs~ using function ~f~, with ~sep~ blocks between them.
+- ~(joined/prefix f xs sep)~ : Includes ~sep~ before each element.
+- ~(joined/suffix f xs sep)~ : Includes ~sep~ after each element.
+- ~(joined/last f last-f xs sep)~ : Joins elements, using a custom ~last-f~ formatter for the final element.
+
+#+BEGIN_SRC scheme
+(show [(joined (fun (n) (BInt n)) (list 1 2 3) [", "])])
+;; => "1, 2, 3"
+
+(show [(joined/prefix (fun (s) (BStr s)) (list "a" "b") [","])])
+;; => ",a,b"
+
+(show [(joined/suffix (fun (s) (BStr s)) (list "a" "b") [","])])
+;; => "a,b,"
+
+(show [(joined/last (fun (s) (BStr s)) 
+                              (fun (s) (each ["and " (BStr s)]))
+                              (list "a" "b" "c") 
+                              [", "])])
+;; => "a, b, and c"
+#+END_SRC
+
+*** Numbers
+- ~(numeric x #:precision -1 #:comma -1 #:comma-sep #\nul #:decimal-sep #\nul #:signed #f)~ : Formats a ~double~. Keyword arguments default to their corresponding ~current-*~ parameters if not specified.
+- ~(numeric/comma x)~ : The common case, grouping by thousands (e.g. ~1,234,567.89~).
+
+*** Paragraphs and tables
+- ~(wrapped bs)~ : Fills content to ~current-width~, ragged on the right.
+- ~(justified bs)~ : Fills content to ~current-width~ and flushes against both margins (last line excepted).
+- ~(columnar cols #:sep " ")~ : Lays out columns evenly dividing ~current-width~, cutting what doesn't fit. Takes a ~(Vec (Vec Block))~ representing the columns.
+- ~(tabular cols #:sep " ")~ : Lays out columns giving each the width its content asks for, cutting nothing.
+
+#+BEGIN_SRC scheme
+;; columnar divides the available current-width (e.g., 11)
+(show
+  [(with-fmt current-width 11
+    [(columnar [["abc" nl "def"] 
+                ["123" nl "456"]])])])
+;; => "abc   123\n"
+;;    "def   456\n"
+
+;; tabular measures the content instead, cutting nothing
+(show
+  [(tabular [["a" nl "bbb"] 
+             ["1" nl "2"]])])
+;; => "a   1\n"
+;;    "bbb 2\n"
+
+;; tables with custom separators
+(show
+  [(tabular [["a" nl "bbb"] 
+             ["1" nl "2"]] #:sep " | ")])
+;; => "a   | 1\n"
+;;    "bbb | 2\n"
+#+END_SRC
+
+*** The block algebra
+- ~nothing~ : An empty block. Useful as a conditional arm that has nothing to say.
+- ~(each bs)~ : Combines multiple blocks into one.
+- ~(captured f bs)~ : Renders blocks ~bs~ to a string and applies ~f~, returning a new block. Useful for creating custom combinators.
+
+** Settings
+
+Formatting settings are handled via parameters, meaning they are dynamically scoped. You can set them temporarily using ~with-fmt~.
+
+- ~(with-fmt p v bs)~ : Parameterizes parameter ~p~ with value ~v~ around blocks ~bs~.
+- ~(with-pad c bs)~ : Shorthand for ~(with-fmt current-pad c bs)~.
+
+*** Available Parameters
+- ~current-pad~ : The character used for padding (default ~#\space~).
+- ~current-width~ : The right margin for ~wrapped~, ~justified~, and ~columnar~ (default ~78~).
+- ~current-ellipsis~ : The string used when trimming (default ~""~).
+- ~current-string-width~ : The function calculating string width (default uses character count).
+
+*Number settings:*
+- ~current-precision~ : Digits after decimal separator (default ~-1~, meaning as many as needed).
+- ~current-comma~ : Digits per group (default ~0~, no grouping).
+- ~current-comma-sep~ : Separator character for groups (default ~#\,~).
+- ~current-decimal-sep~ : Decimal separator character (default ~#\.~).
+- ~current-signed~ : Whether to force a leading ~+~ for positive numbers (default ~#f~).
