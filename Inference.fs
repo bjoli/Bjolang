@@ -5762,12 +5762,52 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
         // cannot apply. What can be checked is that the name is actually in
         // scope here — otherwise the module would advertise something it does
         // not have.
+        //
+        // A *type* is here too, and it is a different thing from a binding in
+        // every respect but the one that matters: it is in scope, and the
+        // module wants its importers to be able to write the name. It has no
+        // signature to carry and is not in `Bindings` at all, so what crosses
+        // is the spelling together with the declaration it stands for — under
+        // the key its own module gave it, so that there is one type and not
+        // two. See `ModuleMetadata.ReExportedType`, which is where the
+        // reasoning about the key lives.
+        //
+        // Exporting a union exports its cases, and re-exporting one does too:
+        // a union that arrives without its cases is a type nothing can take
+        // apart, and the cases travel inside the declaration rather than as
+        // eleven more names to have written.
+        let where = Lexer.formatPos r
+
         for name in names do
             if not (Map.containsKey name env.Bindings) then
-                                    failwithf
-                                        "Re-export Error: '%s' is not in scope at %s. A re-exported name must be imported by this module."
-                                        name
-                                        (Lexer.formatPos r)
+                let keyed = originalName env.Registry name
+
+                if Set.contains keyed env.Registry.LocalTypes then
+                    // A type this module declared is published by `export`,
+                    // which publishes the declaration. Re-exporting one would
+                    // be the same declaration written twice under one key.
+                    if keyed = Naming.typeKey env.CurrentModule name then
+                        failwithf
+                            "Re-export Error: '%s' at %s is a type this module declares, and (re-export ...) publishes a name this module imported. Write (export %s)."
+                            name
+                            where
+                            name
+                elif Map.containsKey name env.Registry.Traits then
+                    failwithf
+                        "Re-export Error: '%s' at %s is a trait. A trait travels with its methods, so re-export one of them and the whole trait crosses with it."
+                        name
+                        where
+                elif Map.containsKey name env.Registry.ClrClasses then
+                    failwithf
+                        "Re-export Error: '%s' at %s is an (import/class ...) alias of this module's, and an alias is a name for a .NET class rather than something imported. Write (export %s), or import the class here as well."
+                        name
+                        where
+                        name
+                else
+                    failwithf
+                        "Re-export Error: '%s' is not in scope at %s. A re-exported name must be a binding or a type this module imported."
+                        name
+                        where
 
         env, sigs, [ TReExport(names, r) ]
     | DType(typeDefs, r) ->

@@ -309,8 +309,17 @@ type private ImportSurface =
       /// defs and do not see these, and a `prefix` reaches them as it reaches
       /// everything.
       HashMacros: Set<string>
-      Types: Set<string>
-      Constructors: Set<string>
+      /// The spelling a type is written under here, and the key it resolves
+      /// to.
+      ///
+      /// The key is carried rather than rebuilt from the module name, because
+      /// a module publishes two kinds: the ones it declared, keyed by itself,
+      /// and the ones it re-exported, keyed by whoever declared them. The
+      /// second kind has no derivation from this module's name at all.
+      Types: Map<string, string>
+      /// The same, for the constructors. A record is built by its own name, so
+      /// its type name is in here too.
+      Constructors: Map<string, string>
       Traits: Set<string>
       /// Method name -> the trait that declares it.
       TraitMethods: Map<string, string> }
@@ -350,26 +359,39 @@ let private surfaceOf
 
       HashMacros = hashMacros |> List.map (fun m -> m.Name) |> Set.ofList
 
-      Types = typeDefs |> List.map (fun td -> bare td.Name) |> Set.ofList
+      Types =
+        (typeDefs |> List.map (fun td -> bare td.Name, td.Name))
+        // What a re-export publishes is a spelling for somebody else's
+        // declaration, and the spelling arrives as the alias it is. Nothing
+        // has to be derived from it: the alias already holds both halves.
+        @ (decls
+           |> List.choose (function
+               | DImportAlias(visible, keyed, AliasType, _) -> Some(visible, keyed)
+               | _ -> None))
+        |> Map.ofList
 
       Constructors =
-        typeDefs
-        |> List.collect (fun td ->
-            match td.Kind with
-            | Union cases ->
-                cases
-                |> List.map (function
-                    | SimpleCase(n, _) -> bare n
-                    | DataCase(n, _, _, _) -> bare n)
-            // A record is constructed by its own name.
-            | Record _ -> [ bare td.Name ]
-            // An opaque type offers no constructor, not even the record one
-            // that shares its name — which is why the name is in `Types` and
-            // absent here. Its hidden members are held for diagnostics and are
-            // not part of any surface.
-            | Opaque _
-            | Alias _ -> [])
-        |> Set.ofList
+        (typeDefs
+         |> List.collect (fun td ->
+             match td.Kind with
+             | Union cases ->
+                 cases
+                 |> List.map (function
+                     | SimpleCase(n, _) -> bare n, n
+                     | DataCase(n, _, _, _) -> bare n, n)
+             // A record is constructed by its own name.
+             | Record _ -> [ bare td.Name, td.Name ]
+             // An opaque type offers no constructor, not even the record one
+             // that shares its name — which is why the name is in `Types` and
+             // absent here. Its hidden members are held for diagnostics and are
+             // not part of any surface.
+             | Opaque _
+             | Alias _ -> []))
+        @ (decls
+           |> List.choose (function
+               | DImportAlias(visible, keyed, AliasConstructor, _) -> Some(visible, keyed)
+               | _ -> None))
+        |> Map.ofList
 
       Traits =
         decls
@@ -414,8 +436,8 @@ let private defRenaming
         let refuse (what: string) : unit =
             failwithf $"Invalid (%s{form} ...) at %s{where}: '%s{name}' %s{what}. %s{advice}"
 
-        if Set.contains name surface.Types then refuse "is a type"
-        elif Set.contains name surface.Constructors then refuse "is a constructor"
+        if Map.containsKey name surface.Types then refuse "is a type"
+        elif Map.containsKey name surface.Constructors then refuse "is a constructor"
         elif Set.contains name surface.Traits then refuse "is a trait"
         else
             match Map.tryFind name surface.TraitMethods with
@@ -509,44 +531,44 @@ let private hashRenaming (surface: ImportSurface) (modifiers: ImportModifier lis
 /// `(prefix-types "b.bjo" "B/")` gives two spellings of two different types
 /// rather than two spellings of one.
 ///
+/// The key comes from the surface rather than being rebuilt here. It used to be
+/// `Naming.typeKey moduleName original`, which is right for a type the module
+/// declared and wrong for one it re-exported — those carry the key of whoever
+/// declared them, and there is nothing in this module's name to derive it from.
+///
 /// `only`, `except` and `rename` contribute nothing here: they are refused on
 /// these names outright, and a type always arrives.
 let private typeRenaming
-    (moduleName: string)
     (surface: ImportSurface)
     (modifiers: ImportModifier list)
     : (string * string * AliasKind) list =
 
+    // (key, the name source writes, the spelling this edge gives it, kind).
+    // The middle one is only here to answer "did a modifier change anything",
+    // which is what decides whether a spelling is produced at all.
     let start =
-        (surface.Types |> Set.toList |> List.map (fun n -> n, n, AliasType))
-        @ (surface.Constructors |> Set.toList |> List.map (fun n -> n, n, AliasConstructor))
-        @ (surface.Traits |> Set.toList |> List.map (fun n -> n, n, AliasTrait))
+        (surface.Types |> Map.toList |> List.map (fun (n, key) -> key, n, n, AliasType))
+        @ (surface.Constructors |> Map.toList |> List.map (fun (n, key) -> key, n, n, AliasConstructor))
+        @ (surface.Traits |> Set.toList |> List.map (fun n -> n, n, n, AliasTrait))
         // A method is prefixed with the trait it belongs to. Dispatch resolves
         // through the original, so a systematic prefix costs nothing — which is
         // the reason rule 4 refuses an individual rename and points here.
-        @ (surface.TraitMethods |> Map.toList |> List.map (fun (m, _) -> m, m, AliasTrait))
+        @ (surface.TraitMethods |> Map.toList |> List.map (fun (m, _) -> m, m, m, AliasTrait))
 
-    let step (visible: (string * string * AliasKind) list) (m: ImportModifier) =
+    let step (visible: (string * string * string * AliasKind) list) (m: ImportModifier) =
         match m with
         | Prefix a
-        | PrefixTypes a -> visible |> List.map (fun (o, v, k) -> o, a + v, k)
+        | PrefixTypes a -> visible |> List.map (fun (key, o, v, k) -> key, o, a + v, k)
         | Postfix a
-        | PostfixTypes a -> visible |> List.map (fun (o, v, k) -> o, v + a, k)
+        | PostfixTypes a -> visible |> List.map (fun (key, o, v, k) -> key, o, v + a, k)
         | _ -> visible
 
     List.fold step start modifiers
-    |> List.filter (fun (original, visible, _) -> original <> visible)
+    |> List.filter (fun (_, original, visible, _) -> original <> visible)
     // A record's name is both its type and its constructor, so it arrives
     // twice. Which kind wins does not matter — both resolve the same way.
-    |> List.distinctBy (fun (original, visible, _) -> original, visible)
-    // The spelling is invented from the bare name; what it resolves to is the
-    // key. A trait is not keyed — it is still nominal by its bare name, and
-    // `TraitOrigins` is what answers where one was declared.
-    |> List.map (fun (original, visible, kind) ->
-        match kind with
-        | AliasType
-        | AliasConstructor -> Naming.typeKey moduleName original, visible, kind
-        | _ -> original, visible, kind)
+    |> List.distinctBy (fun (key, _, visible, _) -> key, visible)
+    |> List.map (fun (key, _, visible, kind) -> key, visible, kind)
 
 /// A dependency's declarations as every edge that reaches it sees them.
 ///
@@ -658,15 +680,23 @@ let private registerMacros
     : unit =
 
     if not (entries.IsEmpty && patternEntries.IsEmpty && hashEntries.IsEmpty) then
+        // The name, and the module whose class actually holds it. `""` is this
+        // one — the spelling a `.dll`'s metadata uses for a name its own module
+        // defined, and the only thing a `DDefun` here can mean.
+        //
+        // A `DExtern` carries the origin because a module publishes names it
+        // did not define. Rule 2 qualifies a template's free name to a module
+        // class, and for a re-export that class is the *origin's*: a facade
+        // generates no member, so qualifying to the facade names nothing.
         let exports =
             decls
             |> List.choose (function
-                | DExtern(_, origin, _, _, _) -> Some origin.OriginalName
-                | DDefun(n, _, _, _, _) -> Some n
-                | DDef(n, _, _) -> Some n
-                | DDefMutable(n, _, _) -> Some n
+                | DExtern(_, origin, _, _, _) -> Some(origin.OriginalName, origin.OriginModule)
+                | DDefun(n, _, _, _, _) -> Some(n, "")
+                | DDef(n, _, _) -> Some(n, "")
+                | DDefMutable(n, _, _) -> Some(n, "")
                 | _ -> None)
-            |> Set.ofList
+            |> Map.ofList
 
         // The names rule three *resolves* rather than merely strips. Read off
         // the same declarations as `exports`, which is what limits it to the
@@ -740,6 +770,15 @@ type LoadedModule = {
     ModuleName: string
     Dependencies: string list
     ParsedDecls: Decl list
+    /// Declarations this module brought with it but did not make: the types it
+    /// re-exported, each already wrapped in a `DModule` naming whoever
+    /// declared it.
+    ///
+    /// Kept apart from `ParsedDecls` rather than picked back out of them,
+    /// because these are placed *beside* this module and before it — a nested
+    /// module would have `registerTypeDefs` key its types to this one, which
+    /// is the second copy the whole thing exists to avoid.
+    Carried: Decl list
     /// The macros the assembly publishes, and the assembly holding them.
     /// Registration is per edge, so it does not happen where this is built.
     Macros: ModuleMetadata.MacroEntry list
@@ -768,6 +807,7 @@ let mutable cacheLoadedModules = false
 /// and importing it again in the same process gets the new one.
 type private CachedDll =
     { Decls: Decl list
+      Carried: Decl list
       Macros: ModuleMetadata.MacroEntry list
       PatternMacros: ModuleMetadata.MacroEntry list
       HashMacros: ModuleMetadata.MacroEntry list
@@ -1179,7 +1219,7 @@ let loadModuleGraph
                 else
                     None
 
-            let parsedDecls, deps, macros, patternMacros, hashMacros, assembly =
+            let parsedDecls, carriedDecls, deps, macros, patternMacros, hashMacros, assembly =
                 match cached with
                 | Some hit ->
                     // The link set is per compilation and the parse is not, so
@@ -1188,7 +1228,7 @@ let loadModuleGraph
                         dllDeps.Add path |> ignore
                         noteAssemblyPath path
 
-                    hit.Decls, [], hit.Macros, hit.PatternMacros, hit.HashMacros, Some hit.Assembly
+                    hit.Decls, hit.Carried, [], hit.Macros, hit.PatternMacros, hit.HashMacros, Some hit.Assembly
                 | None ->
 
                 if absPath.EndsWith(".dll") then
@@ -1307,6 +1347,63 @@ let loadModuleGraph
                                        | _ -> []))
                             | _ -> [])
 
+                    // The types this assembly re-exported: declarations another
+                    // module made, arriving under that module's key.
+                    //
+                    // They are kept in a `DModule` of the module that declared
+                    // them, and that module is placed beside this one rather
+                    // than inside it. `registerTypeDefs` keys a declaration to
+                    // whichever module it is being read in, idempotently for a
+                    // key that module already made — so read as this one's they
+                    // would be keyed twice over and become a second type, which
+                    // is exactly what a re-export must not produce.
+                    //
+                    // The spellings are the point of the exercise. The type's
+                    // is published, because a facade may call it something of
+                    // its own; every case's is derived from the declaring
+                    // module's name, because a case follows its type and two
+                    // spellings of one fact would be a pair that can disagree.
+                    // Exporting a union exports its cases, and this is the same
+                    // rule one module further along: a union that arrived
+                    // without them would be a type nothing could take apart.
+                    let reExportedGroups =
+                        meta.ReExportedTypes
+                        |> List.map (fun (entry: ModuleMetadata.ReExportedType) ->
+                            entry, (Lexer.tokenize absPath entry.Decl |> read |> fst |> Parser.parseModule))
+                        |> List.filter (fun (_, decls) -> not decls.IsEmpty)
+
+                    let reExportedSpellings =
+                        reExportedGroups
+                        |> List.collect (fun (entry, decls) ->
+                            let bare = Naming.bareTypeName entry.OriginModule
+                            let r = Parser.declRange (List.head decls)
+
+                            let cases =
+                                decls
+                                |> List.collect (function
+                                    | DType(tds, _)
+                                    | DTypeRec(tds, _) ->
+                                        tds
+                                        |> List.collect (fun td ->
+                                            match td.Kind with
+                                            | Union cs ->
+                                                cs
+                                                |> List.map (function
+                                                    | SimpleCase(n, _)
+                                                    | DataCase(n, _, _, _) -> n)
+                                            | _ -> [])
+                                    | _ -> [])
+
+                            DImportAlias(entry.Name, entry.Key, AliasType, r)
+                            :: (cases |> List.map (fun n -> DImportAlias(bare n, n, AliasConstructor, r))))
+
+                    let carriedDecls =
+                        reExportedGroups
+                        |> List.groupBy (fun (entry, _) -> entry.OriginModule)
+                        |> List.map (fun (originModule, group) ->
+                            let decls = group |> List.collect snd
+                            DModule(originModule, decls, Parser.declRange (List.head decls)))
+
                     // An exported binding becomes an extern: a name with a type
                     // and no body, which is exactly what an importer can say
                     // about it. The signature is rebuilt as source because a
@@ -1350,7 +1447,8 @@ let loadModuleGraph
                                     DExtern(name, origin, t, constraints, r)
                                 | other -> other))
 
-                    let parsedDecls = typeSpellingDecls @ declsFromText @ externDecls
+                    let parsedDecls =
+                        typeSpellingDecls @ reExportedSpellings @ declsFromText @ externDecls
                     // Macros are registered per import *edge*, not here: which
                     // name a transformer answers to is the importer's to say.
                     //
@@ -1363,6 +1461,7 @@ let loadModuleGraph
                     if cacheLoadedModules then
                         dllCache[cacheKey] <-
                             { Decls = decls
+                              Carried = carriedDecls
                               Macros = meta.Macros
                               PatternMacros = meta.PatternMacros
                               HashMacros = meta.HashMacros
@@ -1370,7 +1469,7 @@ let loadModuleGraph
                               Linked =
                                 absPath :: (meta.Deps |> List.filter (fun p -> p <> "" && File.Exists p)) }
 
-                    decls, [], meta.Macros, meta.PatternMacros, meta.HashMacros, Some asm
+                    decls, carriedDecls, [], meta.Macros, meta.PatternMacros, meta.HashMacros, Some asm
                 else
                     // Reported rather than left to `File.ReadAllText`, whose
                     // `FileNotFoundException` is not a diagnostic and so prints
@@ -1438,7 +1537,7 @@ let loadModuleGraph
                         if not (edges.ContainsKey dep) then
                             edges[dep] <- ResizeArray()
 
-                        edges[dep].Add(renaming, typeRenaming m.ModuleName surface spec.Modifiers, r)
+                        edges[dep].Add(renaming, typeRenaming surface spec.Modifiers, r)
 
                         // A macro has to be in the table under the name this
                         // import gives it before the form using it is read.
@@ -1490,7 +1589,7 @@ let loadModuleGraph
                         else
                             parsed
 
-                    parsed, (importEdges |> List.map (fun (dep, _, _) -> dep)), [], [], [], None
+                    parsed, [], (importEdges |> List.map (fun (dep, _, _) -> dep)), [], [], [], None
 
             // Dependencies were loaded above, before this module was parsed. A
             // `.dll` has none to load: its transitive deps are link-only and
@@ -1502,6 +1601,7 @@ let loadModuleGraph
                 ModuleName = moduleName
                 Dependencies = deps
                 ParsedDecls = parsedDecls
+                Carried = carriedDecls
                 Macros = macros
                 PatternMacros = patternMacros
                 HashMacros = hashMacros
@@ -1556,9 +1656,16 @@ let loadModuleGraph
                 spellings.Add(visible, m.ModuleName, original, visible <> original, r)
 
             // Reported under the name source writes rather than the key, which
-            // is what the reader of the collision message is looking at.
-            for (original, visible, _, r) in typeSpellings do
-                spellings.Add(visible, m.ModuleName, Naming.bareTypeName m.ModuleName original, true, r)
+            // is what the reader of the collision message is looking at. A key
+            // this module did not make is one it re-exported, and there is no
+            // prefix of this module's to take off it — what a reader can act on
+            // is then the whole thing, module and all.
+            for (key, visible, _, r) in typeSpellings do
+                let readable =
+                    let bare = Naming.bareTypeName m.ModuleName key
+                    if bare = key then Naming.showTypeName key else bare
+
+                spellings.Add(visible, m.ModuleName, readable, true, r)
 
             let byOriginal =
                 merged
@@ -1575,8 +1682,15 @@ let loadModuleGraph
 
     let allDecls =
         sorted
-        |> Seq.map (fun m -> wrapInModule m.ModuleName m.FilePath (viewOf m))
-        |> List.concat
+        |> Seq.collect (fun m ->
+            // What a module carried stands beside it and ahead of it: those
+            // declarations belong to the module that made them, so they are
+            // registered as its, and the module re-exporting them is checked
+            // after they exist. A module reached both directly and through a
+            // facade therefore has its types registered twice, under one key
+            // and with one meaning, which is the whole point of the key.
+            m.Carried @ wrapInModule m.ModuleName m.FilePath (viewOf m))
+        |> List.ofSeq
 
     // Rule 5. Only a spelling a modifier *invented* is checked: two plain
     // imports offering the same name is the older shadowing rule, where the

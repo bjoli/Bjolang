@@ -1,0 +1,95 @@
+;; A type across a facade.
+;;
+;; `inc/reexport_origin.bjo` declares them; `inc/reexport_facade.bjo` re-exports
+;; them and is the only thing imported here. Nothing in this file names the
+;; origin, and the origin's assembly is linked anyway — dependencies are
+;; transitive, which is the same mechanism that has always carried a re-exported
+;; binding's code.
+;;
+;; What has to hold: the spelling resolves in a signature, a union's cases come
+;; with it, a record can be built and read, an `#:opaque` type stays opaque two
+;; modules along, and a value built through the facade's spelling is the same
+;; type as one built through the origin's — which `108_type_identity.bjo` is
+;; the negative of.
+;;
+;; What does *not* cross is an implementation. A re-export publishes a spelling
+;; and the declaration behind it; an impl reaches a consumer through the module
+;; that wrote it, which is why `inc/reexport_origin.bjo` has none for these.
+;;
+;; The refusals are in `errors/reexport_*.bjo`, since a test that compiles
+;; cannot contain one.
+(import "inc/reexport_facade.bjo")
+(import "inc/reexport_chain.bjo")
+;; The same facade again, with its types spelled apart. A re-exported type is
+;; part of a module's surface like any other name, so `prefix-types` reaches
+;; it — and what the prefixed spelling resolves to is still the *declaring*
+;; module's key, which is why `C/Shape` and `Shape` below are one type.
+(import (prefix-types "inc/reexport_facade.bjo" "C/"))
+(import (std simpletest))
+
+;; The spelling in a signature of this module's own, applied — a re-exported
+;; type constructor is a type constructor like any other.
+(: doubled (-> (Shape int) int))
+(defun (doubled s) (* 2 (shape-size s)))
+
+;; Cases, in expression position and in pattern position. Neither is named in
+;; the facade's `(re-export ...)`: they follow their type.
+(: describe (-> (Shape string) string))
+(defun (describe s)
+  (match s
+    (Dot "dot")
+    ((Line a b) (string-append a b))
+    ((Blob xs) (string-append "blob" (int->string (length xs))))))
+
+;; A record built here and read here, at a type this module never declared.
+(: heavier (-> Crate Crate))
+(defun (heavier c)
+  (record-set c (weight (+ 1 (record-ref c weight)))))
+
+;; The opaque one. It may be held, passed and returned; `Locked` may not be
+;; written.
+(: twice-sealed (-> int Sealed))
+(defun (twice-sealed n) (seal (* 2 n)))
+
+;; The prefixed spelling, in a signature and in a pattern, over a value built
+;; through the unprefixed one.
+(: prefixed (-> (C/Shape int) int))
+(defun (prefixed s)
+  (match s
+    (C/Dot 0)
+    ((C/Line a b) (+ a b))
+    ((C/Blob xs) (length xs))))
+
+;; The nullary case, as a binding of this module's, which is the shape that
+;; needs the constructor to be *bound* rather than merely spelled.
+(: dot (Shape int))
+(def dot Dot)
+
+(defun (main)
+  (expect "a case built here" (shape-size (Line 1 2)) 2)
+  (expect "the nullary case" (shape-size dot) 0)
+  (expect "a case with a payload" (describe (Blob (list "a" "b"))) "blob2")
+  (expect "matched here" (describe (Line "x" "y")) "xy")
+  (expect "through a signature of ours" (doubled (Blob (list 1 2 3))) 6)
+
+  ;; One type, not two: `crate-of` builds a `Crate` over there and `heavier`
+  ;; takes one apart here.
+  (expect "a record across the facade" (record-ref (heavier (crate-of "box")) weight) 2)
+  (expect "and built here" (record-ref (heavier (Crate (label "b") (weight 7))) weight) 8)
+
+  ;; Opaque two modules along: the name crosses and the representation does not.
+  (expect "opaque, and still usable" (sealed-tag (twice-sealed 21)) 42)
+
+  ;; A facade in front of a facade. `chain-line` builds a `Shape` over there,
+  ;; out of a declaration that reached it through one facade already.
+  (expect "a chain flattens to one type" (shape-size (chain-line 5)) 2)
+  (expect "and the case is ours to match" (describe (chain-line "z")) "zz")
+
+  ;; `prefix-types` over a facade. One type, two spellings: a value goes in
+  ;; under the bare name and comes apart under the prefixed one.
+  (expect "a prefixed spelling of a re-exported type" (prefixed (Line 20 22)) 42)
+  (expect "and of its cases" (prefixed (C/Blob (list 1 2 3))) 3)
+  (expect "the two spellings are one type" (shape-size (C/Line 1 2)) 2)
+
+  (println "216 ok")
+  0)

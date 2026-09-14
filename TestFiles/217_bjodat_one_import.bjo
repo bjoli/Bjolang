@@ -1,0 +1,90 @@
+;; `(text bjodat)` costs one import.
+;;
+;; This is the thing re-exporting a type was for. `def/bjodat-type` splices a
+;; decoder into *this* module, and that decoder's signatures name `Bjodat` and
+;; `Reader` — types `(text bjodat-core)` declares. The one import below is all
+;; that is in scope, so every one of them arrives through the facade.
+;;
+;; Four separate things are being asserted, and each of them used to need the
+;; second import:
+;;
+;;   - `Reader` and `Bjodat` in a generated signature
+;;   - `BjoInt`, a *case* of a re-exported union, in a hand-written instance
+;;   - the one-pass driver the generated decoder calls — `open-map!`, `key=?`
+;;     and the rest, which are re-exported bindings a macro template names
+;;   - `bjodat->string`, so the round trip closes
+(import (text bjodat))
+(import (std simpletest))
+
+(def/bjodat-type
+  (: Dep (Record (: name string)
+                 (: version string #:default "*")
+                 (: note (Option string) #:optional))))
+
+;; A type the macro never heard of, decoded through an instance written by
+;; hand. `BjoInt` is a case of the re-exported `Bjodat`, and naming it here is
+;; the assertion.
+(type (: Port (Record (: number int))))
+
+(impl (->bjodat Port)
+  (defun (->bjodat p) (BjoInt (cast System.Int64 (record-ref p number)))))
+
+(impl (bjodat-> Port)
+  (defun (bjodat-> v)
+    (match v
+      ((BjoInt n) (Ok (Port (number (cast System.Int32 n)))))
+      (_ (Err "expected a port number")))))
+
+(def/bjodat-type (: Server (Record (: host string) (: port Port))))
+
+;; `Reader` named in a signature of this module's own, which is what a
+;; generated `bjodat-read-<Name>` is handed.
+(: read-dep (-> Reader (Result string Dep)))
+(defun (read-dep rd) (bjodat-read-Dep rd))
+
+(: dep-text (-> Dep string))
+(defun (dep-text d) (bjodat->string (Dep->bjodat d)))
+
+(: shown (-> (Result string Dep) string))
+(defun (shown r)
+  (match r
+    ((Err e) (str "err:" e))
+    ((Ok d) (dep-text d))))
+
+(defun (main)
+  (expect "one pass, straight into the record"
+          (shown (bjodat-parse-Dep "{:name \"http\" :version \"1.2\"}"))
+          "{:name \"http\" :version \"1.2\"}")
+
+  (expect "a default is taken here, not in the file"
+          (shown (bjodat-parse-Dep "{:name \"http\"}"))
+          "{:name \"http\" :version \"*\"}")
+
+  ;; Through the tree, which names `Bjodat` in both directions.
+  (expect "and through the tree"
+          (shown (bjodat->Dep (Dep->bjodat (Dep (name "x") (version "1") (note None)))))
+          "{:name \"x\" :version \"1\"}")
+
+  ;; The hand-written instance.
+  (expect "a field type of our own"
+          (match (bjodat-parse-Server "{:host \"local\" :port 8080}")
+            ((Err e) (str "err:" e))
+            ((Ok s) (bjodat->string (Server->bjodat s))))
+          "{:host \"local\" :port 8080}")
+
+  ;; A generated reader passed by name to a driver that is itself re-exported.
+  (expect "a document of records"
+          (match (parse-one-pass-all "[{:name \"a\"} {:name \"b\"}]" bjodat-read-Dep)
+            ((Err e) -1)
+            ((Ok ds) (length ds)))
+          2)
+
+  ;; `read-dep` exists to make the signature above a real one.
+  (expect "a reader in a signature of ours"
+          (match (parse-one-pass "{:name \"z\"}" read-dep)
+            ((Err e) (str "err:" e))
+            ((Ok d) (record-ref d name)))
+          "z")
+
+  (println "217 ok")
+  0)

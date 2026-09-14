@@ -63,7 +63,10 @@ open System.Text
 /// visible in any answer — every call into it keeps passing a dictionary, which
 /// is what all of them did before the field existed.
 /// 9: `HashMacros`, the `def/hash-extend`s, beside the other two macro lists.
-let currentVersion = 9
+/// 10: `ReExportedTypes`, the types a module publishes that it did not declare.
+/// An assembly built before this offers none, and a facade built before this
+/// would have been unable to say it anyway — the form was refused.
+let currentVersion = 10
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {
@@ -110,6 +113,34 @@ type ConstrainedBodyEntry = {
     Qualification: (string * string) list
 }
 
+/// A type another module declared, published under a spelling of this one's.
+///
+/// The counterpart of `ExportedDef.Origin` for the type namespace, and it
+/// carries more for the reason that makes the two different: a binding is
+/// reached through a *reference*, and the importer can emit one as soon as it
+/// knows where the member lives, whereas a type has to be *registered* before
+/// a signature naming it will resolve. So the declaration travels along —
+/// under the key its own module gave it, which is the whole point. Two modules
+/// publishing the same declaration publish the same key, and a key resolves to
+/// itself, so there is one type however many facades stand in front of it.
+///
+/// It is deliberately not in `TypeDecls`. Everything there was declared *here*
+/// and is re-keyed to this module when it is read back; one of these is
+/// already keyed and must not be.
+type ReExportedType = {
+    /// The spelling this module publishes it under, which is the name its
+    /// `(re-export ...)` wrote.
+    Name: string
+    /// The key the declaring module gave it.
+    Key: string
+    /// That module, so that the importer registers the declaration as its
+    /// owner's rather than as the facade's — and so that the bare spelling of
+    /// each of a union's cases can be derived rather than published beside it.
+    OriginModule: string
+    /// The declaration itself, as `Exports.serializeTypeDef` wrote it.
+    Decl: string
+}
+
 /// One macro an assembly publishes: the Bjolang name, and the module that
 /// defines it.
 ///
@@ -126,6 +157,10 @@ type Metadata = {
     /// where the code of anything re-exported through this module lives.
     Deps: string list
     TypeDecls: string list
+    /// The types this module re-exported: somebody else's declarations, under
+    /// somebody else's keys. Read before `TypeDecls`, because one of this
+    /// module's own types may name one of these.
+    ReExportedTypes: ReExportedType list
     ExternDecls: string list
     TraitDecls: string list
     ImplDecls: string list
@@ -164,6 +199,7 @@ let empty = {
     Version = currentVersion
     Deps = []
     TypeDecls = []
+    ReExportedTypes = []
     ExternDecls = []
     TraitDecls = []
     ImplDecls = []
@@ -184,6 +220,7 @@ let empty = {
 let isEmpty (m: Metadata) =
     m.Deps.IsEmpty
     && m.TypeDecls.IsEmpty
+    && m.ReExportedTypes.IsEmpty
     && m.ExternDecls.IsEmpty
     && m.TraitDecls.IsEmpty
     && m.ImplDecls.IsEmpty
@@ -318,6 +355,23 @@ let private getConstrainedBody (c: Cursor) : ConstrainedBodyEntry =
       Body = body
       Qualification = qualification }
 
+let private putReExportedType (sb: StringBuilder) (t: ReExportedType) =
+    putStr sb t.Name
+    putStr sb t.Key
+    putStr sb t.OriginModule
+    putStr sb t.Decl
+
+let private getReExportedType (c: Cursor) : ReExportedType =
+    let name = getStr c
+    let key = getStr c
+    let originModule = getStr c
+    let decl = getStr c
+
+    { Name = name
+      Key = key
+      OriginModule = originModule
+      Decl = decl }
+
 let private putMacro (sb: StringBuilder) (m: MacroEntry) =
     putStr sb m.Name
     putStr sb m.ModuleName
@@ -332,6 +386,7 @@ let serialize (m: Metadata) : string =
     putStr sb (string m.Version)
     putList sb putStr m.Deps
     putList sb putStr m.TypeDecls
+    putList sb putReExportedType m.ReExportedTypes
     putList sb putStr m.ExternDecls
     putList sb putStr m.TraitDecls
     putList sb putStr m.ImplDecls
@@ -363,6 +418,7 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
 
     let deps = getList getStr c
     let typeDecls = getList getStr c
+    let reExportedTypes = getList getReExportedType c
     let externDecls = getList getStr c
     let traitDecls = getList getStr c
     let implDecls = getList getStr c
@@ -378,6 +434,7 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
     { Version = version
       Deps = deps
       TypeDecls = typeDecls
+      ReExportedTypes = reExportedTypes
       ExternDecls = externDecls
       TraitDecls = traitDecls
       ImplDecls = implDecls

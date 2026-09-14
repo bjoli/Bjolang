@@ -23,6 +23,15 @@
 ;; `(text bjodat-core)`, and the names this module re-exports below are enough
 ;; that most programs never need to name it.
 ;;
+;; One import is enough. That was not true when this module was split out, and
+;; the reason it was not is worth recording rather than leaving as a silence: I
+;; believed a type could not be republished through a facade, wrote that in
+;; three places, and was wrong. `re-export` takes a type now — it publishes the
+;; declaring module's declaration under a spelling of this module's, so there
+;; is one `Bjodat` and not two — and a union comes with its cases, so a
+;; hand-written `->bjodat` instance can name `BjoInt` here as readily as it
+;; could over there. See `re-export` in `Docs/MODULES.org`.
+;;
 ;; A record is a map whose keys are keywords naming its fields. The keys are
 ;; emitted as keyword *literals* at expansion time, so decoding a field through
 ;; a tree compares interned references and never interns anything at run time.
@@ -44,25 +53,37 @@
   bjodat-read-field bjodat-need-field
   bjodat-key bjodat-entries)
 
-;; Both modules are imported together, and a program that uses this one wants
-;; `(import (text bjodat-core))` beside it.
-;;
-;; I tried to make one import enough and could not, and the reason is worth
-;; writing down rather than rediscovering. A facade can re-export a *binding* —
-;; the origin is recorded and the reference goes straight to the defining class
-;; — but it cannot republish a *type* as the same type. `(export Bjodat)` here
-;; declares a second `Bjodat`, and a generated signature then reads
-;; `bjodat_core/Bjodat` against `bjodat/Bjodat` and refuses. `re-export` will
-;; not take a type at all, nor a union's cases, which are not bindings either.
-;;
-;; So the generated code names two things it cannot bring with it — `Bjodat` in
-;; `(-> Name Bjodat)` and `Reader` in `(-> Reader ...)` — and the importing
-;; module has to have them in scope. `(text json)` and `(text json-codec)` are
-;; imported in pairs for exactly the same reason.
-
 (import (std prelude))
 (import (std syntax-match))
 (import (text bjodat-core))
+
+;; What `def/bjodat-type` writes has to resolve where it lands, and where it
+;; lands is somebody else's module. So everything the template names travels
+;; from here, whether or not this module wrote it.
+;;
+;; The two types are the reason the split used to cost every consumer a second
+;; import: a generated signature reads `(-> Name Bjodat)` and `(-> Reader ...)`.
+;; They are *this* module's spellings of `bjodat-core`'s declarations, not
+;; copies of them — the key is still `bjodat_core`'s, so a value built through
+;; either name is one type. `Bjodat`'s cases come with it, which is what lets a
+;; hand-written instance match `BjoInt` without naming the other module.
+;;
+;; The rest is the one-pass driver the generated decoder calls, and the entry
+;; points that drive a generated `bjodat-read-<Name>`. `bjodat->string` is here
+;; because writing a record back out is the other half of the round trip, and
+;; nothing else about the tree is: a program that wants to read data of unknown
+;; shape imports `(text bjodat-core)` and gets the reader, the writer and the
+;; accessors together.
+;;
+;; What does *not* travel is an implementation. A re-export publishes a
+;; spelling and the declaration behind it, and an impl reaches a consumer
+;; through the module that wrote it — see `re-export` in `Docs/MODULES.org`.
+;; `bjodat-core` writes none, so there is nothing here to miss.
+(re-export
+  Bjodat Reader
+  open-map! next-key! end-entry! key=? skip-value!
+  read-one-pass parse-one-pass read-one-pass-all parse-one-pass-all
+  bjodat->string)
 
 ;; ---------------------------------------------------------------------------
 ;; The traits

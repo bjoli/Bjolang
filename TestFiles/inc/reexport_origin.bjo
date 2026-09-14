@@ -1,0 +1,41 @@
+;; The module that declares. Nothing here knows it is behind a facade.
+;;
+;; Everything a facade might have to pass on is in one place: a generic union,
+;; a record, an `#:opaque` type, and an implementation keyed on one of them.
+;; See `216_reexport_type.bjo` for what is asserted about each.
+(export Shape Crate Sealed seal sealed-tag shape-size)
+
+(import (std prelude))
+
+;; A generic union. Its cases are what `216` builds and matches through the
+;; facade, and are the whole reason a re-exported type carries its declaration.
+(type (: (Shape %a) (Union Dot (Line %a %a) (Blob (List %a)))))
+
+(type (: Crate (Record (: label string) (: weight int))))
+
+;; Opaque, so that what crosses two module boundaries is still a head. `Locked`
+;; and `Open` are names an importer may not write however many facades stand in
+;; between — `errors/reexport_opaque_case.bjo` is that refusal.
+(type (: Sealed #:opaque (Union (Locked int) Open)))
+
+(: seal (-> int Sealed))
+(defun (seal n) (Locked n))
+
+(: sealed-tag (-> Sealed int))
+(defun (sealed-tag s)
+  (match s
+    ((Locked n) n)
+    (Open 0)))
+
+(: shape-size (-> (Shape %a) int))
+(defun (shape-size s)
+  (match s
+    (Dot 0)
+    ((Line a b) 2)
+    ((Blob xs) (length xs))))
+
+;; Deliberately no `impl` here. An implementation reaches a consumer through
+;; the module that *wrote* it, and a facade re-exporting a type does not carry
+;; one along: it publishes a spelling and a declaration, and nothing else. See
+;; the note under `re-export` in `Docs/MODULES.org` — a program that needs the
+;; implementations of a re-exported type imports its module too.

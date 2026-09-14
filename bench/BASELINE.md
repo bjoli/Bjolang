@@ -728,3 +728,56 @@ session removed.
 `python3 run_tests.py`: 196 groups, 0 failures, 222/222 error, 8/8 warning,
 23/23 codegen, 4/4 REPL, 3/3 staleness. `Playground`: reader 68/68, codec 46/46,
 and the real `mydata.bjodat` round-trips.
+
+## A type crosses a facade, and the split that said it could not
+
+No measurement in this section. It is here because a commit message cannot be
+edited, and three places in the tree asserted something that was not true.
+
+`(text bjodat)` was split out of `(text bjodat-core)` on the belief that a type
+cannot be republished through a facade. Everything in the table below was
+actually run before that conclusion was drawn, so it was not a guess — but the
+conclusion was still wrong, and the row that shows why was found afterwards:
+
+| attempt | result |
+|---|---|
+| `(export Thing)` in the facade | declares a **second** type; `a/Thing` vs `b/Thing` |
+| `(re-export Thing)` | refused — `DReExport` looked in `env.Bindings` only |
+| `(type (: Thing Thing))` | "a and b each declared one" |
+| `(prefix-types "a.bjo" "Core")` + `(type (: Thing CoreThing))` + `(export Thing)` | **works** |
+| writing the key `a/Thing` in source | parses, does not resolve |
+
+The last row is what made me generalise too far. A key written in *source* does
+not resolve, and I read that as "a key cannot be serialised and read back" — but
+the metadata has been doing exactly that all along, which is the fourth row: the
+alias `b` publishes is `(type (: <b's key> <a's key>))`, and `a`'s key resolves
+on the far side without trouble. Source and metadata are not the same reader,
+and the failure of one said nothing about the other.
+
+So `re-export` takes a type now. It publishes the *declaring* module's
+declaration under the declaring module's key, with a spelling of the facade's
+pointing at it — one type, and a union's cases come with it. `(text bjodat)`
+re-exports `Bjodat` and `Reader` and needs one import. The claim is corrected in
+`lib/text/bjodat.bjo`'s header and in `Docs/std/bjodat.org`; the commit that
+made the split (`343682d`) still states it, and this is the correction.
+
+Two things turned up on the way that are worth keeping:
+
+- **A macro template naming a re-exported binding was broken, and had been.**
+  `Macro.fs` rule 2 qualifies a template's free name to `Module_Module::name`
+  using the *macro's* module. For a name the macro's module re-exported, that
+  class has no such member — a facade generates none — so the expansion failed
+  with "Unbound variable". Nothing had hit it before because no macro's module
+  re-exported a name its templates used; `(text bjodat)` became the first the
+  moment it re-exported the one-pass driver. `MacroBinding.Exports` now carries
+  the module each name is *defined* in.
+- **An implementation does not cross a facade.** A re-export publishes a
+  spelling and the declaration behind it; an `impl` reaches a consumer through
+  the module that wrote it. `bjodat-core` writes none, so bjodat is unaffected,
+  but it is a real limit and it is documented rather than worked around.
+
+### Test suites
+
+`python3 run_tests.py`: 198 groups, 0 failures, 225/225 error, 8/8 warning,
+23/23 codegen, 4/4 REPL, 3/3 staleness. `Playground`: reader 68/68, codec
+48/48, and the real `mydata.bjodat` round-trips.

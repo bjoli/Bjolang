@@ -78,8 +78,15 @@ text that has to resolve the types it mentions, so there is no view of a module
 in which its own signatures do not typecheck. ~only~ and ~except~ therefore
 filter defs and macros only, and naming a type in one is an error rather than a
 silent no-op. What decides which types there are to arrive is the exporting
-module's ~(export ...)~ (see [[*Exporting a type][Exporting a type]]) — a
+module's ~(export ...)~ (see [[*Exporting a type][Exporting a type]]) and its
+~(re-export ...)~ (see [[*Re-exporting a type][Re-exporting a type]]) — a
 modifier narrows the *spelling* of a surface, never the surface.
+
+A re-exported type is in that surface like any other, and the ~-types~ variants
+reach it: a prefix falls on the spelling this module publishes, and what it
+resolves to is still the *declaring* module's key. So ~(prefix-types (text
+bjodat) "B/")~ gives ~B/Bjodat~, and ~B/Bjodat~ and ~bjodat-core~'s ~Bjodat~ are
+one type under two names.
 
 An ~#:opaque~ type arrives as its name alone, so it is a type here and has no
 constructor to be filtered, renamed or prefixed.
@@ -288,6 +295,10 @@ imports. So a facade in front of a facade flattens rather than chaining, and two
 facades publishing one binding under two names give a consumer two spellings of
 one reference — not a conflict.
 
+A facade may pass on a *type* the same way, with ~(re-export SomeType)~; see
+[[*Re-exporting a type][Re-exporting a type]]. That is what lets a library whose
+macros generate signatures cost its consumers one import rather than two.
+
 ** ~export~
 
 #+BEGIN_SRC scheme
@@ -322,9 +333,10 @@ the whole of it.
 
 *** Exporting a type
 
-A type is visible to an importer only if it is named in an ~(export ...)~. There
-are three levels, and the declaration and the export list decide between them
-together:
+A type is visible to an importer only if it is named in an ~(export ...)~ — or,
+for a type the module did not declare, in a ~(re-export ...)~; see
+[[*Re-exporting a type][Re-exporting a type]]. There are three levels, and the
+declaration and the export list decide between them together:
 
 | In ~(export ...)~ | ~#:opaque~ | What an importer gets                     |
 |-------------------+------------+-------------------------------------------|
@@ -423,6 +435,71 @@ This is how an aggregate module works:
 
 Anything importing ~(std prelude)~ sees ~print~ and ~println~ — and nothing else
 from ~core~, ~list~ or ~iter~.
+
+*** Re-exporting a type
+
+A type may be re-exported, and it is the only way to pass one on:
+
+#+BEGIN_SRC scheme
+;; text/bjodat.bjo
+(import (text bjodat-core))
+
+(re-export Bjodat Reader)
+#+END_SRC
+
+#+BEGIN_SRC scheme
+;; a consumer, with one import
+(import (text bjodat))
+
+(: read-it (-> Reader (Result string Package)))
+(defun (read-it rd) (bjodat-read-Package rd))
+#+END_SRC
+
+*It is one type, not two.* A type's identity is the module that declared it
+plus the name it was declared under, and that is what a re-export publishes: the
+declaring module's declaration, under the declaring module's key, with a
+spelling of this module's pointing at it. A value built through the facade's
+spelling and one built through the origin's unify silently and everywhere.
+
+~(export Bjodat)~ in a module that only *imported* ~Bjodat~ does something
+else entirely and is almost never what is wanted: ~export~ publishes what this
+module declares, so the two names then denote two types and refuse to unify.
+The error names both, and their modules.
+
+*A union comes with its cases.* ~(re-export Bjodat)~ makes ~BjoInt~, ~BjoStr~
+and the rest nameable too, in an expression and in a pattern. They are not
+written in the list and could not usefully be: exporting a union exports its
+cases, and a re-exported union that arrived without them would be a type nothing
+could take apart. The same holds for a record's own name, which is its
+constructor.
+
+~#:opaque~ survives the trip, for the reason it needs no rule: what crossed the
+first boundary was a head, and a head is what this module passes on.
+
+*An implementation does not travel.* A re-export publishes a spelling and the
+declaration behind it, and nothing else — an ~impl~ reaches a consumer through
+the module that *wrote* it. So a facade in front of a library whose types have
+~->str~, ~Eq~ or ~Ord~ instances hands on the types and not the instances, and a
+program that needs them imports that library too. (A type exported the ordinary
+way is unaffected: its module publishes its impls itself, which is what makes an
+~#:opaque~ type usable.)
+
+Three things are refused, each at the form that wrote them:
+
+| ~(re-export MyOwnType)~ | a type this module declares — write ~(export ...)~, which publishes the declaration |
+| ~(re-export SomeTrait)~ | a trait travels with its methods: re-export a method and the trait crosses with it  |
+| ~(re-export Nonsense)~  | neither a binding nor a type this module imported                                   |
+
+A re-exported type is part of this module's surface like any other name, so an
+import modifier reaches it: ~(prefix-types (text bjodat) "B/")~ spells it
+~B/Bjodat~, and its cases ~B/BjoInt~ and the rest.
+
+*Why this is worth having.* Generated code cannot choose its imports. A macro's
+template is spliced into somebody else's module, and every type it names has to
+resolve *there* — so without this, a library that generates code either
+publishes every type its output mentions, or makes every consumer import a
+module they never asked about. ~(text bjodat)~ was the second of those for one
+release, and is now the first.
 
 ** Exporting a trait
 

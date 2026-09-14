@@ -97,6 +97,38 @@ let metadata
             | TypedAST.TReExport(names, _) -> names
             | _ -> [])
 
+    /// The names a `(re-export ...)` wrote, on their own.
+    ///
+    /// The one place the two forms have to be told apart. `export` publishes
+    /// what this module declared and `re-export` publishes what it imported,
+    /// and for a *type* that difference is the whole of it: one is a
+    /// declaration of this module's, the other is somebody else's declaration
+    /// passed on under their key.
+    let reExports =
+        typedAst
+        |> TypedAST.collectDecls (function
+            | TypedAST.TReExport(names, _) -> names
+            | _ -> [])
+
+    /// Every type declaration in the compilation, with the module that made
+    /// it.
+    ///
+    /// `collectDecls` would gather the declarations in one line and lose the
+    /// module, which is exactly what a re-exported one has to carry: it is
+    /// published under its owner's key, the importer registers it as its
+    /// owner's, and the bare spelling of each of a union's cases is derived
+    /// from that same module name on the far side.
+    let rec typeDeclarations (moduleName: string) (ds: TypedAST.TDecl list) =
+        ds
+        |> List.collect (function
+            | TypedAST.TModule(name, inner, _) -> typeDeclarations name inner
+            | TypedAST.TType(defs, _) -> defs |> List.map (fun d -> moduleName, d, false)
+            | TypedAST.TTypeRec(defs, _) -> defs |> List.map (fun d -> moduleName, d, true)
+            | _ -> [])
+
+    let allTypeDeclarations =
+        typeDeclarations (Naming.moduleKeyOfPath inputFilePath) typedAst
+
     // The types *this* module declares, and not a dependency's.
     //
     // A declaration is published under the key it was given, and a key names
@@ -741,6 +773,42 @@ let metadata
                 | Parser.Opaque(members) ->
                     $"({head} (: {headStr} (Opaque " + String.concat " " members + ")))"
 
+            // The types this module re-exports: declared elsewhere, published
+            // here under the key their own module gave them.
+            //
+            // Deliberately not joined to `typesToExport`. That list is what
+            // this module *declares*, the leak check below reads it as such,
+            // and a declaration published under this module's key would be the
+            // second copy the whole design is against. What goes out is the
+            // origin's declaration exactly as the origin wrote it, which is
+            // also how `#:opaque` survives the trip without a rule of its own:
+            // an opaque type arrived here as a head, and a head is what leaves.
+            //
+            // A binding of the same name wins. `re-export` was a binding's form
+            // first, so a module that has both meant the binding.
+            let reExportedTypes =
+                reExports
+                |> List.filter (fun n -> not (Map.containsKey n env.Bindings))
+                |> List.distinct
+                |> List.map (fun n ->
+                    let key = Inference.originalName env.Registry n
+
+                    match allTypeDeclarations |> List.tryFind (fun (_, (td: Parser.TypeDef), _) -> td.Name = key) with
+                    | Some(originModule, td, isRec) ->
+                        ({ Name = n
+                           Key = key
+                           OriginModule = originModule
+                           Decl = serializeTypeDef (td, isRec) }
+                        : ModuleMetadata.ReExportedType)
+                    | None ->
+                        // Reached only if the name resolved as a type and no
+                        // declaration answers to its key, which means the type
+                        // came from a dependency that published a spelling and
+                        // withheld the declaration. Refused here rather than
+                        // published, so that the failure is in the module doing
+                        // the re-exporting instead of in somebody else's build.
+                        failwith
+                            $"Export Error: '%s{n}' is re-exported as a type, and the declaration it names did not cross into this module. A type is published as its declaration, so there has to be one here to pass on.")
 
             // A trait method is published by its `def/trait`, which
             // gives it the associated types a bare signature cannot
@@ -925,8 +993,8 @@ let metadata
                 for (traitName, typeKey), text in implEntries do
                     check $"the implementation of '%s{traitName}' for '%s{bare typeKey}'" text
 
-            typeDecls, externDecls, traitDecls, implDecls, defs
-        else [], [], [], [], []
+            typeDecls, reExportedTypes, externDecls, traitDecls, implDecls, defs
+        else [], [], [], [], [], []
 
     let inlineTemplates =
         if isLibrary then
@@ -1023,7 +1091,7 @@ let metadata
                 declaredHashMacros.Length
                 (declaredHashMacros |> List.map (fun n -> "#" + n) |> String.concat ", "))
 
-    let typeDecls, externDecls, traitDecls, implDecls, defs = declMetadata
+    let typeDecls, reExportedTypes, externDecls, traitDecls, implDecls, defs = declMetadata
 
     // Only the exported ones. A private helper that parks is this module's own
     // business — nothing outside can call it, so nothing outside can be told
@@ -1048,6 +1116,7 @@ let metadata
     { Version = ModuleMetadata.currentVersion
       Deps = []
       TypeDecls = typeDecls
+      ReExportedTypes = reExportedTypes
       ExternDecls = externDecls
       TraitDecls = traitDecls
       ImplDecls = implDecls

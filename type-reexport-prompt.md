@@ -1,5 +1,10 @@
 # Let a module re-export a type
 
+> **Implemented.** All three phases. `(re-export SomeType)` binds the spelling,
+> a union's cases come with it, and `(text bjodat)` needs one import. What
+> follows is the prompt as written, with two corrections marked where they
+> belong and a note at the end of what was found doing it.
+
 ## Context
 
 A module can publish a name it did not define. `re-export` does it for a
@@ -78,6 +83,22 @@ qualified key written in source text is parsed as an ordinary name and resolves
 to a fresh type in the reading module, which is what the identical-looking
 `a/Thing` vs `a/Thing` error is. Whatever carries the alias has to bypass
 source-level name resolution.
+
+> **Correction, written after the work was done.** This paragraph is wrong, and
+> it is why the bjodat split was made in the first place. A key serialized into
+> *metadata* resolves perfectly well on the far side — the fourth row of the
+> table above does exactly that, and always has: what `b.dll` publishes is
+> `(type (: BjoMod....b__Thing BjoMod....a__Thing))`, and `a`'s key is read back
+> as `a`'s key. What fails is a key written in a *source file*, where `a/Thing`
+> is lexed as one ordinary identifier and keyed to the reading module. Source
+> and metadata are not the same reader, and the failure of one said nothing
+> about the other.
+>
+> So the implementation does serialize a declaration — the *whole* declaration
+> rather than an alias to it, and under the origin's key rather than this
+> module's. It goes in a list of its own, `ReExportedTypes`, rather than in
+> `TypeDecls`: everything in `TypeDecls` is re-keyed to the module reading it,
+> and one of these must not be. See `ModuleMetadata.ReExportedType`.
 
 ## Where the code is
 
@@ -239,3 +260,60 @@ generates code either publishes every type its output mentions, or it makes
 every consumer import a module they never asked about. `(text bjodat)` is that
 library today, and `(text json)` and `(text json-codec)` have been that pair for
 longer.
+
+---
+
+## What it turned out to be
+
+Written after the fact, against the plan above.
+
+**Phase 2's decision: the cases come.** A union is re-exported whole. They are
+not written in the `re-export` list and could not usefully be — exporting a
+union exports its cases, and this is the same rule one module further along. It
+falls out of the shape rather than needing machinery: the declaration travels,
+and the importer derives each case's bare spelling from the declaring module's
+name, which is in the entry beside it. Nothing is published twice.
+
+**Where it landed.**
+
+- `ModuleMetadata.ReExportedType` — spelling, key, declaring module, and the
+  serialized declaration. `currentVersion` 9 → 10.
+- `Inference.fs` `DReExport` — a name that is not a binding may be a type some
+  other module declared. Three refusals: this module's own type, a trait, and
+  an `import/class` alias, each pointing at the form that would work.
+- `Exports.fs` — the classification and the serialization. `typesToExport` is
+  untouched, so the leak check goes on reading it as "what this module
+  declares".
+- `Pipeline.fs` — each entry becomes a `DModule` of the *declaring* module,
+  placed beside the facade's module and before it, plus `DImportAlias`
+  spellings for the type and every case. Beside rather than inside, because
+  `registerTypeDefs` keys a declaration to whichever module it is read in and
+  would otherwise key an already-keyed name twice over.
+- `ImportSurface.Types` and `.Constructors` became `Map<spelling, key>`, and
+  `typeRenaming` now takes the key from the surface instead of rebuilding it
+  with `Naming.typeKey moduleName`. That rebuilding was right for a type the
+  module declared and wrong for one it re-exported; carrying the key is also
+  one derivation fewer.
+
+**Two things found on the way.**
+
+- *A macro template naming a re-exported binding was broken, and had been.*
+  `Macro.fs` rule 2 qualifies a template's free name to `Module_Module::name`
+  using the macro's own module. For a name that module re-exported there is no
+  such member — a facade generates none — and the expansion fails with
+  "Unbound variable". Nothing had hit it because no macro's module re-exported
+  a name its templates used; `(text bjodat)` became the first the moment it
+  re-exported the one-pass driver. `MacroBinding.Exports` now carries, per
+  name, the module that defines it.
+- *An implementation does not cross a facade.* Out of scope here and left so
+  deliberately — which trait would have to travel with it is a design question
+  of its own, and `bjodat-core` writes no impls. Documented under `re-export`
+  in `Docs/MODULES.org` and pinned by a comment in
+  `TestFiles/inc/reexport_origin.bjo`.
+
+**Tests.** `TestFiles/216_reexport_type.bjo` over `inc/reexport_origin.bjo`,
+`inc/reexport_facade.bjo` and `inc/reexport_chain.bjo` — a generic union, a
+record, an `#:opaque` type, and a facade in front of a facade;
+`TestFiles/217_bjodat_one_import.bjo` for the thing this was for. Three
+refusals in `TestFiles/errors/reexport_*.bjo`. Suite: 198 groups, 225 error
+tests, everything else unchanged.

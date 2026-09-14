@@ -81,9 +81,16 @@ type MacroBinding =
       /// The Bjolang module the transformer was defined in. Used to spell
       /// `Module_Module::helper` for rule 2.
       ModuleName: string
-      /// What that module publishes. A template may only name an exported
-      /// binding of its own module; anything else has nowhere to resolve to.
-      Exports: Set<string>
+      /// What that module publishes, and where each one is *defined*. A
+      /// template may only name an exported binding of its own module;
+      /// anything else has nowhere to resolve to.
+      ///
+      /// The module is carried rather than assumed to be `ModuleName`, because
+      /// a module publishes names it did not define: a facade's re-export
+      /// lives in the class of whoever wrote it, and qualifying such a name to
+      /// the macro's own module names a member that is not there. `""` is
+      /// "this module", which is how a `.dll`'s metadata spells it.
+      Exports: Map<string, string>
       /// The methods of the traits that module *declares*. Rule 3a: a template
       /// calling one of these meant the method, whatever the call site binds.
       /// A trait it merely imports is not in here — see `Todo.org`.
@@ -372,11 +379,20 @@ let private resolveIntroduced
             match Map.tryFind n introduced with
             | None -> None
             | Some original ->
-                if Set.contains original binding.Exports then
+                match Map.tryFind original binding.Exports with
+                | Some home ->
                     // Rule 2. Qualified, so a local of the same name at the
                     // call site cannot take it over.
-                    Some(n, Naming.qualifiedBinding binding.ModuleName original)
-                else
+                    //
+                    // Qualified to the module that *defines* it rather than to
+                    // the macro's own. The two differ when the macro's module
+                    // re-exported the name, and the difference was invisible
+                    // until one did: a facade generates no member, so
+                    // `Facade_Module::name` is a spelling nothing answers to.
+                    let home = if home = "" then binding.ModuleName else home
+
+                    Some(n, Naming.qualifiedBinding home original)
+                | None ->
                     // Rule 3. A prelude binding, a data constructor, an
                     // operator, or a special form that reached here as an
                     // identifier — none of which has a module to qualify to.

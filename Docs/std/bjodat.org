@@ -1,7 +1,6 @@
 * text/bjodat — a data format, and records that read themselves
 
 #+BEGIN_SRC scheme
-(import (text bjodat-core))
 (import (text bjodat))
 
 (def/bjodat-type
@@ -27,12 +26,23 @@ no map. That is the interface to reach for.
 | ~(text bjodat)~      | ~def/bjodat-type~, the traits, and what they generate |
 | ~(text bjodat-core)~ | the ~Bjodat~ value, the reader and the writer         |
 
-**Import both.** The code ~def/bjodat-type~ writes is spliced into *your*
-module and names ~Bjodat~ and ~Reader~ in its signatures, and a type cannot be
-republished through a facade as the same type — ~(export Bjodat)~ in a module
-that only imported it declares a *second* ~Bjodat~, and the two then refuse to
-unify. ~(text json)~ and ~(text json-codec)~ are imported in pairs for exactly
-the same reason.
+**~(text bjodat)~ is enough** for everything on this page except the tree: the
+generator, the traits, ~bjodat->string~, and hand-written instances naming
+~BjoInt~ and the other cases. The code ~def/bjodat-type~ writes is spliced into
+*your* module and names ~Bjodat~ and ~Reader~ in its signatures, and
+~(text bjodat)~ re-exports both — one spelling of ~bjodat-core~'s declarations,
+not a copy of them, so a ~Bjodat~ built either side of the boundary is one type.
+
+Import ~(text bjodat-core)~ as well when you want the *tree*: ~parse-bjodat~,
+~read-bjodat~, ~bjodat-ref~ and the entry accessors, for data whose shape is not
+known until run time.
+
+This used to say "import both", and said so because I had concluded a type could
+not cross a facade. That was wrong, and it was wrong in a way worth naming: what
+cannot cross is a type *declared* twice, and what a re-export publishes is the
+declaring module's declaration under a spelling of the facade's. See ~re-export~
+in ~Docs/MODULES.org~. ~(text json)~ and ~(text json-codec)~ are still imported
+in pairs, and no longer have to be.
 
 * The format
 
@@ -169,7 +179,8 @@ a type the macro never heard of works as soon as it has one:
 (def/bjodat-type (: Server (Record (: host string) (: port Port))))
 #+END_SRC
 
-~BjoInt~ and the other cases come from ~(text bjodat-core)~.
+~BjoInt~ and the other cases arrive with ~Bjodat~ itself: re-exporting a union
+re-exports its cases, so ~(import (text bjodat))~ is all this needs.
 
 Instances ship for ~long~, ~int~, ~double~, ~bool~, ~string~, ~char~, ~Symbol~,
 ~Keyword~, ~Bjodat~ itself, and conditionally for ~(Option %a)~, ~(Vec %a)~ and
@@ -177,7 +188,11 @@ Instances ship for ~long~, ~int~, ~double~, ~bool~, ~string~, ~char~, ~Symbol~,
 
 * The tree, for data whose shape you do not know
 
+This is the one part that wants the second import: ~(text bjodat-core)~.
+
 #+BEGIN_SRC scheme
+(import (text bjodat-core))
+
 (parse-bjodat "{:a 1 :b [2 3]}")     ;; -> (Ok Bjodat)
 (bjodat->string v)                   ;; -> the canonical spelling, maps flat
 #+END_SRC

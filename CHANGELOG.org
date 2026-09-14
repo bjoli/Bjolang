@@ -3,6 +3,46 @@
 
 What each change guarantees, and what it leaves open.
 
+* A module may re-export a type
+
+~(re-export SomeType)~ publishes a type this module imported. It is *one* type:
+what crosses is the declaring module's declaration under the declaring module's
+key, with a spelling of this module's pointing at it, so a value built through
+either name unifies with one built through the other. No declaration of this
+module's is made and none is published — the difference from ~(export ...)~,
+which in a module that only imported the type declares a second one.
+
+A union comes with its cases, in an expression and in a pattern, and a record
+with its own name. They are not written in the list: exporting a union exports
+its cases, and this is that rule one module further along. ~#:opaque~ survives
+the trip for the reason it needs no rule — what crossed the first boundary was
+a head, and a head is what is passed on. An import modifier reaches a
+re-exported type like any other name, so ~(prefix-types (m) "M/")~ spells it
+~M/Thing~ and its cases with it. Three things are refused at the form that
+wrote them: a type this module declares, a trait, and an ~import/class~ alias.
+Metadata is version 10, so every ~.dll~ rebuilds.
+
+~(text bjodat)~ is what this was for. It re-exports ~Bjodat~, ~Reader~ and the
+one-pass driver, so a program that declares records with ~def/bjodat-type~ — or
+writes a ~->bjodat~ instance by hand, naming ~BjoInt~ — needs one import rather
+than two. The reason generated code needs this at all is that it cannot choose
+its imports: a template is spliced into somebody else's module and every type it
+names has to resolve *there*.
+
+A bug fell out of it that had been there all along. A macro template naming a
+binding its own module *re-exported* resolved to ~Facade_Module::name~, and a
+facade generates no member, so the expansion failed with "Unbound variable".
+Nothing had reached it because no macro's module re-exported a name its
+templates used. ~Macro.MacroBinding.Exports~ now carries the module each name is
+defined in.
+
+Left open: an implementation does not cross a facade. A re-export publishes a
+spelling and the declaration behind it, and an ~impl~ reaches a consumer through
+the module that wrote it — so a facade hands on a type and not its ~->str~,
+~Eq~ or ~Ord~ instances, and a program that wants those imports that module too.
+Which trait would have to travel beside a republished impl is the question that
+kept it out.
+
 * Hash macros, and the operators fold in the prelude
 
 A third macro table. ~(def/hash-extend (name form inject compare) body)~ is
