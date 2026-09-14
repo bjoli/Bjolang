@@ -8,6 +8,7 @@
 - Characters: ~#\a~, ~#\newline~
 - Vecs: ~[1 2 3]~
 - Arrays: ~#[1 2 3]~
+- Maps: ~#map(("a" 1) ("b" 2))~ — a hash macro, see below
 
 A boolean is a literal and not a name. ~true~ and ~false~ are ordinary identifiers, free for a program to use; in a quoted list they are symbols, which is how ~'(true)~ names the program of that name.
 
@@ -90,6 +91,21 @@ Both spellings are patterns as well, with ~...~ for the rest:
 #+END_SRC
 
 The rest of an array pattern is an array of its own — a slice is a copy — where the rest of a vec pattern is a ~Vec~ sharing structure with the one it came from.
+
+*** ~#name(...)~ — a hash macro
+~#name(args...)~, or ~#name[args...]~, calls the hash macro ~name~: a macro in a namespace of its own, so ~#map~ and the function ~map~ are two things. The ~#~ is not part of a name — ~#name~ is a token only with the bracket right after it — and the whole reads as a list headed by that token, which the parser expands before it looks at anything else. It expands in expression position only: a pattern refuses one, and in a quoted list it is written ~,#name(...)~.
+
+The prelude's four:
+#+BEGIN_SRC scheme
+#fl(+ 1 2 3)                   ;; (+ (+ 1 2) 3) — folded left
+#fr(Cons 1 2 Nil)              ;; (Cons 1 (Cons 2 Nil)) — folded right
+#ch(< a b c)                   ;; a < b, and then b < c — a comparison chain
+#map(("a" 1) ["b" 2] ("c" . 3)) ;; a Map; an entry is (k v), [k v] or (k . v)
+#+END_SRC
+
+~#fl~, ~#fr~ and ~#ch~ take an operator and at least two operands, and ~#fl~ and ~#fr~ take any binary function. ~#ch~ evaluates a middle operand once and stops at the first comparison that fails, so a later operand is not evaluated at all. An arithmetic or comparison operator written with three or more operands is one of these: ~(+ a b c)~ is ~#fl(+ a b c)~ and ~(< a b c)~ is ~#ch(< a b c)~. Fewer operands the parser reads itself — ~(+)~ is ~0~, ~(*)~ is ~1~, ~(+ x)~ is ~x~, ~(- x)~ negates and ~(/ x)~ takes the reciprocal.
+
+A hash macro is written with ~def/hash-extend~ and arrives with an import, under a ~prefix~ if the import has one: ~#s/fl(...)~. See [[file:MACROS.org]].
 
 *** Quoted lists, and the constructors they elaborate into
 ~'(...)~ is data. A symbol inside one is a ~Symbol~ value rather than a reference, ~,x~ splices the value of an expression, and ~[...]~ is a vec:

@@ -93,6 +93,16 @@ Bjolang supports hygienic macros based on implicit-renaming. Together with synta
 
 The main limitation is that macros cannot be used in the same module.
 
+*** Reader macros
+ Anyone can define reader macros. They work like macros, and add nothing exciting, but you can do things like
+ #+BEGIN_SRC scheme
+\#fl(compose f1 f2 f3) => (compose (compose f1 f2) f3) ;; syntactic left fold
+\#ch(char<=? #\a my-char #\m) => (and (char<=? #\a my-char) (char<=? my-char #\m)) ;; and-chain
+\#fr(cons 1 2 3 4 Nil) => (cons 1 (cons 2 (cons 3 (cons 4 Nil)))) ;; Right fold
+
+ #+END_SRC
+ They could just as well be regular macros: (fl compose f1 f2 f3), but i kind of like the distinction.
+
 *** Pattern matching that knows about the CLR
 
 ~(:is Type binder)~ is a .NET type test in pattern position, and the binder is narrowed to that type afterwards. Which also means ~try~ can discriminate on exception type the same way ~match~ does.
@@ -364,8 +374,6 @@ fix tail recursion and parameterization: Since tail calls have no code in the re
 
 
 ** features to add in no particular order
-Syntactic folding, because #:rest arrays means an allocation. As reader macros #fl(compose fun1 fun2 fun3) => (compose (compose fun1 fun2) fun3).  #ch(my= 1 2 3 4) (and (= 1 2) (= 2 3) (= 3 4)) (but with letbound terms) plus an inline phase for variables bound to constants or expressions. The macros should be fold left #fl, fold-right #fr and and-chain #ch. That means I will also remove the special treatment the maths operators get, so that (+ 50 10 5) must be written #fl(+ 50 10 5).
-
 add #:align to columnar and tabular in (std fmt)
 
 remove the use for (bjoroutine ...) special syntax in places where the lambda is in direct argument position: (result-map #(read-line &) r) currently needs a bjoroutine.

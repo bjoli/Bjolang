@@ -3,6 +3,45 @@
 
 What each change guarantees, and what it leaves open.
 
+* Hash macros, and the operators fold in the prelude
+
+A third macro table. ~(def/hash-extend (name form inject compare) body)~ is
+called as ~#name(args...)~ or ~#name[args...]~, and ~#name~ is a namespace of
+its own: the prelude's ~#map~ sits beside its ~map~. The lexer makes a ~#name~
+token only when a bracket follows it, so nothing that read before reads
+differently now; ~t~ and ~f~ are the two names a hash macro cannot take. A
+~#~ head is never renamed, is expanded before any special form is tried, is
+refused in a pattern and in a quoted list, and a miss is a syntax error at the
+parser rather than an unbound name later. ~prefix~ and ~postfix~ reach it;
+~only~, ~except~ and ~rename~ do not see it, so a module's hash macros arrive
+with every import of it. Metadata is version 9, so every ~.dll~ rebuilds.
+
+The prelude defines four: ~#fl~ folds left, ~#fr~ right, ~#ch~ chains
+comparisons, ~#map~ is the map literal. The parser now hands an arithmetic,
+bitwise or comparison operator with three or more operands to ~#fl~ or ~#ch~
+instead of folding it itself, and reads only arities 0–2 on its own. The
+surface is unchanged — ~(+ a b c)~ still works and is still binary by the time
+inference sees it — and the generated C# of every library module and Example
+is byte-identical except where a chained comparison bound a temporary, whose
+name is now the template's ~t~/~u~ instead of ~cmp~.
+
+One change of meaning. ~(< a (f) (g) d)~ used to evaluate ~(f)~ and ~(g)~
+both before testing anything; it now binds each right before its first use,
+so once ~a < (f)~ fails, ~(g)~ does not run. A middle operand still runs
+exactly once.
+
+~#map(...)~ used to be rewritten by the reader into a ~list->map~ call; it is
+now a prelude macro whose expansion reaches ~list->map~ by rule 2, so a local
+binding of that name at the call site no longer matters. The reader's
+~desugarMapLiteral~ is gone with it.
+
+Left open: ~def/hash-extend~ at the REPL prompt fails as ~def/macro~ does
+there, and an import modifier is not honoured by the REPL for any kind of
+name; both are the REPL's, not the tables'. A ~#name~ written in a template is
+looked up by spelling where the expansion lands, as an ordinary macro's head
+is — a caller that imported the macro's module under a prefix has to have
+written the prefixed spelling.
+
 * ~sync~ costs what a rendezvous costs
 
 Three changes, no change of meaning in any of them. Against raw BjoML on the

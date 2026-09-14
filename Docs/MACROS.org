@@ -418,13 +418,74 @@ exhaustiveness check: one that rewrites to a covering set covers, and one that
 rewrites to a ~(:view ...)~ covers nothing. A counterexample is printed in
 expanded form, and the macro's name cannot be recovered from it.
 
+** ~def/hash-extend~: a macro spelled ~#name(...)~
+
+#+BEGIN_SRC scheme
+(def/hash-extend (twice form inject compare)
+  (syntax-match form
+    ((_ x) #'(let ((v ,x)) (+ v v)))
+    (bad (syntax-error bad "#twice takes one argument."))))
+
+;; Anywhere that imports it:
+#twice(21)                             ;; 42
+#twice[21]                             ;; the same, with the other bracket
+#+END_SRC
+
+The third table. A hash macro is declared under a bare name and called with a
+~#~ in front of it, and the ~#~ spelling is a namespace of its own: the
+prelude's ~#map~ sits beside its ~map~, and neither is in the other's way.
+Everything else is ~def/macro~: the same three parameters, the same ~Syntax~
+in and out, the same hygiene and the same three renaming rules, the same
+"cannot be used where it is defined".
+
+What is different is the reader. ~#twice~ is a token only when a ~(~ or ~[~
+comes right after it — ~#twice 21~ is the reader's error, as any other ~#~
+form that is not one of its own — and the two together read as a list headed
+by the ~#twice~ symbol. The parser expands a ~#~-headed list before it looks
+at special forms, so a miss is "unknown hash macro" at the parser and never
+an unbound name later. ~t~ and ~f~ are not available as names: ~#t(~ is a
+boolean followed by a bracket.
+
+A ~#~ head is never renamed. Written in a template — ~#'#fl(,op ,@args)~ — it
+is looked up by that spelling where the expansion lands, as an ordinary
+macro's head is after its mark is stripped.
+
+Expression position only. In a pattern it is refused; in a quoted list it is
+refused with the suggestion to write ~,#name(...)~; in declaration position
+there is nothing that would dispatch it.
+
+An import's ~prefix~ and ~postfix~ reach a hash macro as they reach everything
+— ~(prefix (m) "s/")~ makes ~#s/twice(...)~ the call and ~#twice(...)~ nothing
+— while ~only~, ~except~ and ~rename~ are about the defs and do not see it, so
+every hash macro of a module arrives with every import of the module.
+
+*** The prelude's four
+
+~#fl~, ~#fr~ and ~#ch~ take an operator and at least two operands; fewer is a
+~syntax-error~. ~#fl(op a b c)~ is ~(op (op a b) c)~ and ~#fr(op a b c)~ is
+~(op a (op b c))~, for any binary ~op~ — ~#fr(Cons 1 2 Nil)~ is a list.
+~#ch(op a b c)~ is ~(op a b)~ and then ~(op b c)~: a middle operand that is
+not an atom is bound once, right before its first use, and a comparison that
+fails ends the chain with the operands after it unevaluated. ~#map((k v) ...)~
+builds a ~Map~ from entries written ~(k v)~, ~[k v]~ or ~(k . v)~, and
+~#map()~ is ~(map-empty)~.
+
+The parser hands an arithmetic, bitwise or comparison operator with three or
+more operands to the first two of these — ~(+ a b c)~ *is* ~#fl(+ a b c)~ and
+~(< a b c)~ *is* ~#ch(< a b c)~ — which is what makes the operators usable at
+any arity and keeps everything after the parser binary. The operator symbol
+goes across as written, mark and all, so a template's ~(+ ,a ,b ,c)~ still
+means ~Num~'s ~+~ wherever it lands. In a module that does not import the
+prelude, three operands are an error that names ~#fl~.
+
 ** What a macro cannot do
 
 - *Appear anywhere but where a whole expression or declaration is expected.* Not
   as a ~loop~ clause, a ~match~ arm, a ~let~ binding or a type: those are read
   structurally by their parent and never reach the point where a head symbol is
   dispatched. A *pattern* is the exception, and has a table of its own:
-  ~def/pattern~ above.
+  ~def/pattern~ above. A *hash macro* is narrower still: expression position
+  only.
 - *Shadow a special form.* Expansion is tried after every special form has
   failed to match, so a macro named ~if~ is never reached.
 - *See types.* Expansion happens at parse time, before inference.
@@ -460,4 +521,6 @@ which is what the hundred-level expansion limit is for.
 | worked examples                | ~TestFiles/inc/macros.bjo~, ~TestFiles/091_macros.bjo~ |
 | ~#"..."~ across a macro        | ~TestFiles/inc/interp_macros.bjo~, ~TestFiles/099_interpolation.bjo~ |
 | pattern macros                 | ~TestFiles/inc/pattern_macros.bjo~, ~TestFiles/201_pattern_macros.bjo~ |
+| hash macros                    | ~TestFiles/inc/hashmacros.bjo~, ~TestFiles/215_hash_macros.bjo~, the prelude's ~#fl~ ~#fr~ ~#ch~ ~#map~ |
 | splicing examples              | ~TestFiles/122_splice.bjo~, ~TestFiles/123_begin.bjo~ |
+    | ~TestFiles/122_splice.bjo~, ~TestFiles/123_begin.bjo~ |
