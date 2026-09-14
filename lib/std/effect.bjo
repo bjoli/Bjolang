@@ -1,0 +1,314 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/effect.bjo — tail-resumptive effect handlers.
+;;
+;; An effect operation is a parameter holding a function. `with-handler` is
+;; `parameterize`, and performing an operation reads the parameter and calls the
+;; function on the performer's own stack. No continuation is captured, so a
+;; handler can return once (resume) or throw (abort) and nothing else.
+;;
+;; What that rules out, and rules out for good on this backend: generators,
+;; backtracking, and resuming an operation twice. Nothing here can be extended
+;; to give them — there is no continuation to hold on to.
+;;
+;; This module imports neither `prelude` nor anything that imports it, and that
+;; is what lets `prelude` declare effects of its own: a macro cannot be used in
+;; the module that defines it, so `defeffect` has to live below the module with
+;; the most to declare. The parameter machinery a template reaches for —
+;; `make-parameter`, `make-cold-parameter`, `parameter-ref`, `Param` and
+;; `parameterize` — is built in rather than imported, so an expansion resolves
+;; wherever it lands.
+
+(import (std eq))
+(import (std syntax-match))
+
+(import/extern
+  (str-concat (: System.String.Concat)))
+
+(import/class
+  (Exception (: System.Exception))
+  (Unhandled (: Bjolang.Runtime.Unhandled (-> string Unhandled))))
+
+(export unhandled-effect)
+
+(: cat (-> string string string))
+(defun (cat a b) (str-concat a b))
+
+;; What an operation declared with no `#:default` does when it is performed.
+;; Written here rather than in the template so that the message is in one place.
+(: unhandled-effect (-> string %a))
+(defun (unhandled-effect operation)
+  (raise (cast Exception (Unhandled. operation))))
+
+;; ---------------------------------------------------------------------------
+;; Reading a declaration
+;; ---------------------------------------------------------------------------
+
+(: ident-name (-> Syntax string))
+(defun (ident-name s)
+  (match s
+    ((SSym name) (symbol->string name))
+    (_ "")))
+
+;; The head of an arrow: "->" or "-bjo->".
+(: arrow-head (-> Syntax string))
+(defun (arrow-head arrow)
+  (match arrow
+    ((SList (Cons head _)) (ident-name head))
+    (_ "")))
+
+(: suspending-arrow? (-> Syntax bool))
+(defun (suspending-arrow? arrow)
+  (= (arrow-head arrow) "-bjo->"))
+
+(: arrow? (-> Syntax bool))
+(defun (arrow? arrow)
+  (if (= (arrow-head arrow) "->") #t (suspending-arrow? arrow)))
+
+;; Everything but the head and the return type.
+(: arrow-arity (-> Syntax int))
+(defun (arrow-arity arrow)
+  (match arrow
+    ((SList items) (- (list-length items) 2))
+    (_ 0)))
+
+;; The parameter that holds an operation's handler.
+;;
+;; `op/log` is the cell and `log` is the wrapper that reads it. Both are
+;; ordinary module-level names: a module that wants another module to be able to
+;; handle its effect exports both.
+;;
+;; Built through `inject`, so the name is *not* renamed. `defeffect` and
+;; `with-handler` are separate invocations with separate rename tables, and a
+;; renamed cell would give each of them a spelling the other could not write.
+(: op-cell (-> (-> Symbol Syntax) Syntax Syntax))
+(defun (op-cell inject name)
+  (inject (string->symbol (cat "op/" (ident-name name)))))
+
+;; The wrapper's parameters. Built rather than written in the template, so they
+;; arrive unrenamed — which is harmless here, since the only thing in scope
+;; inside the wrapper is the wrapper.
+(: wrapper-args (-> int int (List Syntax)))
+(defun (wrapper-args i n)
+  (if (>= i n)
+      Nil
+      (Cons (SSym (string->symbol (cat "effect-arg" (.ToString i))))
+            (wrapper-args (+ i 1) n))))
+
+;; ---------------------------------------------------------------------------
+;; The clauses of a `defeffect`
+;; ---------------------------------------------------------------------------
+
+(: rest-after (-> (List Syntax) (List Syntax)))
+(defun (rest-after clauses)
+  (match clauses
+    (Nil Nil)
+    ((Cons _ rest) rest)))
+
+;; The items of the form following a keyword clause.
+(: clause-items (-> (List Syntax) (List Syntax)))
+(defun (clause-items clauses)
+  (match clauses
+    (Nil Nil)
+    ((Cons c _)
+     (match c
+       ((SList items) items)
+       (_ (list (syntax-error c "a #:default or #:cold clause takes a parenthesized list.")))))))
+
+;; The operation declarations, which is everything that is not a keyword clause
+;; or the form one introduces.
+(: operation-clauses (-> (List Syntax) (List Syntax)))
+(defun (operation-clauses clauses)
+  (match clauses
+    (Nil Nil)
+    ((Cons c rest)
+     (syntax-match c
+       (#:default (operation-clauses (rest-after rest)))
+       (#:cold (operation-clauses (rest-after rest)))
+       (_ (Cons c (operation-clauses rest)))))))
+
+(: default-clauses (-> (List Syntax) (List Syntax)))
+(defun (default-clauses clauses)
+  (match clauses
+    (Nil Nil)
+    ((Cons c rest)
+     (syntax-match c
+       (#:default (clause-items rest))
+       (_ (default-clauses rest))))))
+
+(: cold-clauses (-> (List Syntax) (List Syntax)))
+(defun (cold-clauses clauses)
+  (match clauses
+    (Nil Nil)
+    ((Cons c rest)
+     (syntax-match c
+       (#:cold (clause-items rest))
+       (_ (cold-clauses rest))))))
+
+(: named-in? (-> Syntax (List Syntax) bool))
+(defun (named-in? name names)
+  (match names
+    (Nil #f)
+    ((Cons n rest) (if (syntax-ident=? n name) #t (named-in? name rest)))))
+
+(: default-for (-> Syntax (List Syntax) (Option Syntax)))
+(defun (default-for name pairs)
+  (match pairs
+    (Nil None)
+    ((Cons pair rest)
+     (syntax-match pair
+       ((op handler) (if (syntax-ident=? op name) (Some handler) (default-for name rest)))
+       (bad (Some (syntax-error bad "a #:default clause pairs an operation with a handler: (log write-it)")))))))
+
+;; ---------------------------------------------------------------------------
+;; What one operation expands to
+;; ---------------------------------------------------------------------------
+
+;; The default is a lambda of the operation's own colour: colours are not
+;; subtypes here, so an ordinary `fun` does not stand in for a `(-bjo-> ...)`.
+(: handler-default (-> Syntax Syntax (List Syntax) (List Syntax) Syntax))
+(defun (handler-default name arrow args defaults)
+  (match (default-for name defaults)
+    ((Some handler) handler)
+    (None
+     (if (suspending-arrow? arrow)
+         #'(bjoroutine (,@args) (unhandled-effect ,(SStr (ident-name name))))
+         #'(fun (,@args) (unhandled-effect ,(SStr (ident-name name))))))))
+
+;; Three definitions per operation, and nothing per effect: the cell, the
+;; wrapper's signature, and the wrapper.
+;;
+;; The wrapper is a named function rather than a bare parameter read so that the
+;; declared arrow is checked at every call, and so that the colour machinery
+;; sees a function: a `(-bjo-> ...)` operation performed inside a `defun` is then
+;; the ordinary "cannot suspend here" error.
+;;
+;; The handler goes into a local before it is applied. A suspending call is only
+;; awaited when its callee is a name, so `((parameter-ref cell) x)` would emit a
+;; `Fiber<T>` where the value was wanted.
+(: operation-decls (-> (-> Symbol Syntax) Syntax (List Syntax) (List Syntax) (List Syntax)))
+(defun (operation-decls inject clause defaults colds)
+  (syntax-match clause
+    ((name arrow)
+     (if (not (arrow? arrow))
+         (list (syntax-error arrow "an operation's type is an arrow: (-> ...) for one performable anywhere, (-bjo-> ...) for one only a bjoroutine may perform."))
+         (let ((cell (op-cell inject name))
+               (args (wrapper-args 0 (arrow-arity arrow))))
+           (list #'(: ,cell (Param ,arrow))
+                 (if (named-in? name colds)
+                     #'(def ,cell (make-cold-parameter ,(handler-default name arrow args defaults)))
+                     #'(def ,cell (make-parameter ,(handler-default name arrow args defaults))))
+                 #'(: ,name ,arrow)
+                 (if (suspending-arrow? arrow)
+                     #'(defbjo (,name ,@args)
+                         (let ((handler (parameter-ref ,cell))) (handler ,@args)))
+                     #'(defun (,name ,@args)
+                         (let ((handler (parameter-ref ,cell))) (handler ,@args))))))))
+    (bad (list (syntax-error bad "an operation is written (name arrow), as in (log (-> string void)).")))))
+
+(: effect-decls (-> (-> Symbol Syntax) (List Syntax) (List Syntax) (List Syntax) (List Syntax)))
+(defun (effect-decls inject ops defaults colds)
+  (match ops
+    (Nil Nil)
+    ((Cons op rest)
+     (syntax-splice (operation-decls inject op defaults colds)
+                    (effect-decls inject rest defaults colds)))))
+
+;; ---------------------------------------------------------------------------
+;; The macros
+;; ---------------------------------------------------------------------------
+
+;; `(defeffect Name (op arrow) ... #:default ((op handler) ...) #:cold (op ...))`
+;;
+;;     (defeffect Log
+;;       (log   (-> string void))
+;;       (audit (-bjo-> string void))
+;;       #:default ((log (fun (s) (display s))))
+;;       #:cold (audit))
+;;
+;; The effect name is documentation: nothing is emitted for it, and there is no
+;; form that installs a whole effect at once. Handlers are installed one
+;; operation at a time with `with-handler`.
+;;
+;; An operation with no `#:default` raises `Bjolang.Runtime.Unhandled` when it is
+;; performed with nothing installed. Give a default when there is one sensible
+;; meaning; leave it out when running with no handler should fail loudly.
+;;
+;; An operation's colour is its declared arrow, and a handler has to match it.
+;; A `(-> ...)` operation takes `fun` handlers and can be performed anywhere,
+;; including inside a `defun`. A `(-bjo-> ...)` operation takes `bjoroutine`
+;; handlers and can only be performed from a bjoroutine; an ordinary `fun` is
+;; *not* lifted into one, because the two arrows are different calling
+;; conventions rather than a subtype pair.
+;;
+;; Prefer a sync operation. Anything a `defun` has to be able to perform must be
+;; one, and an operation that has to return something suspendable can return a
+;; value whose own methods are colour-aware — a port, say — rather than
+;; suspending itself.
+;;
+;; Every operation spends one of the dynamic environment's 31 cheap parameter
+;; ids. `#:cold` gives that claim up, for an operation its author knows is not
+;; performed in a loop: the ids are a budget, and a program with many rarely
+;; performed effects should not push its ports out of the cheap slots.
+(def/macro (defeffect form inject compare)
+  (syntax-match form
+    ((_ name clause ...)
+     (if (list-empty? clause)
+         (syntax-error form "defeffect needs at least one operation: (defeffect Log (log (-> string void)))")
+         #'(begin
+             ,@(effect-decls inject
+                             (operation-clauses clause)
+                             (default-clauses clause)
+                             (cold-clauses clause)))))
+    (bad (syntax-error bad "defeffect takes an effect name and one or more operations: (defeffect Log (log (-> string void)) #:default ((log write-it)))"))))
+
+;; `(with-handler ((op handler) ...) body ...)` — install handlers for the
+;; extent of the body.
+;;
+;; This is `parameterize` on the operations' cells: the bindings are
+;; simultaneous, and the environment is restored however the body ends.
+;;
+;; A handler runs on the *performer's* stack. So a handler that throws unwinds
+;; the performer rather than the installer, and inside a spawned fiber that is a
+;; child failure like any other.
+;;
+;; # A handler frame is not a scope
+;;
+;; A scope waits for its children; this does not. So
+;;
+;;     (with-cancel (cancel)
+;;       (with-handler ((log (fun (s) (vec-push! buf s))))
+;;         (spawn (work)))
+;;       (report buf))
+;;
+;; lets the child go on logging into `buf` after `with-handler` has returned,
+;; and `report` sees a partial buffer. **A handler that collects must enclose
+;; the scope that owns the performers** — put the `with-handler` outside the
+;; `with-cancel`. `parameterize` behaves the same way; a collecting handler is
+;; only where it shows.
+(def/macro (with-handler form inject compare)
+  (syntax-match form
+    ((_ ((op handler) ...) first body ...)
+     (if (list-empty? op)
+         (syntax-error form "with-handler installs at least one handler: (with-handler ((log collect)) body ...)")
+         #'(parameterize ,(SList (handler-bindings inject op handler)) ,first ,@body)))
+    (bad (syntax-error bad "with-handler takes a list of (operation handler) pairs and a body: (with-handler ((log collect)) body ...)"))))
+
+(: handler-bindings (-> (-> Symbol Syntax) (List Syntax) (List Syntax) (List Syntax)))
+(defun (handler-bindings inject ops handlers)
+  (match ops
+    (Nil Nil)
+    ((Cons op orest)
+     (match handlers
+       (Nil Nil)
+       ((Cons h hrest) (Cons #'(,(op-cell inject op) ,h) (handler-bindings inject orest hrest)))))))

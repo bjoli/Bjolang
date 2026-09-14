@@ -1,0 +1,23 @@
+;; A bjoroutine cannot handle a sync operation.
+;;
+;; An operation's cell is a `(Param <the declared arrow>)`, so installing a
+;; handler is an ordinary assignment at that arrow and the colour check is the
+;; one every other assignment gets. Nothing in `with-handler` knows about
+;; colour.
+;;
+;; The rule matters because `say` below can be performed from a `defun`, which
+;; has no way to wait for anything. A handler that suspended would have to
+;; suspend the performer, and there is no continuation here to suspend.
+
+;; EXPECT-ERROR: a bjoroutine cannot be used where an ordinary function is expected
+
+(import (std prelude))
+(import (std effect))
+
+(defeffect Console
+  (say (-> string void)))
+
+(defbjo (main)
+  (with-handler ((say (bjoroutine (s) (let () (sync (timeout 1)) (ignore s)))))
+    (say "hello"))
+  0)

@@ -1,0 +1,22 @@
+;; A `-bjo->` operation performed from an ordinary function.
+;;
+;; `defeffect` emits a named wrapper carrying the declared arrow, so performing
+;; is an ordinary call and this is the ordinary "yield point is not allowed
+;; here". The wrapper exists for this: a bare `((parameter-ref cell) x)` would
+;; be a call to a computed value, which the colour checker attributes to nothing
+;; in particular.
+
+;; EXPECT-ERROR: yield point is not allowed here
+;; EXPECT-ERROR: 'read-it' is defined with (defun ...)
+
+(import (std prelude))
+(import (std effect))
+
+(defeffect Remote
+  (fetch (-bjo-> string string)))
+
+(: read-it (-> string string))
+(defun (read-it path)
+  (fetch path))
+
+(defun (main args) 0)

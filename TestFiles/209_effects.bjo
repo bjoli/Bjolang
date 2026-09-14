@@ -1,0 +1,173 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; Tail-resumptive effects: `defeffect` and `with-handler`.
+;;
+;; An operation is a parameter holding a function, `with-handler` is
+;; `parameterize`, and performing reads the parameter and calls it on the
+;; performer's own stack. So a handler returns once or throws, and everything
+;; below follows from that and from the parameter's own rules.
+;;
+;; The two shapes that are compile errors rather than cases here are in
+;; `errors/handler_colour.bjo` and `errors/bjo_operation_in_defun.bjo`.
+
+(import (std prelude))
+(import (std effect))
+(import (std simpletest))
+
+(import/class
+  (Refusal (: System.InvalidOperationException (-> string Refusal))))
+
+;; A sync effect with a default, a sync effect without one, and a suspending
+;; effect. The three cases the expansion has.
+(defeffect Console
+  (say (-> string void))
+  #:default ((say (fun (s) (ignore s)))))
+
+(defeffect Config
+  (setting (-> string string)))
+
+(defeffect Remote
+  (fetch (-bjo-> string string))
+  #:cold (fetch))
+
+;; Performing from a plain `defun`, with no idea a handler exists. That is the
+;; whole point of the indirection, and it is why `say` is sync.
+(: greet (-> string void))
+(defun (greet who) (say (str "hello " who)))
+
+(: collect-into (-> (Box string) (-> string void)))
+(defun (collect-into b) (fun (s) (box-set! b (str (box-ref b) "[" s "]"))))
+
+(: boom (-> string void))
+(defun (boom s) (raise (cast Exception (Refusal. (str "refused: " s)))))
+
+(: caught (-> (Result Exception void) string))
+(defun (caught r)
+  (match r
+    ((Ok _) "returned")
+    ((Err e) (.-Message e))))
+
+(: worker (-bjo-> (Chan int) void))
+(defbjo (worker done)
+  (say "from a fiber")
+  (ignore (sync (chan-send done 1))))
+
+(defbjo (main)
+  ;; --- no handler ----------------------------------------------------------
+  ;;
+  ;; An operation declared without `#:default` raises, and the error names the
+  ;; operation. There is nothing else it could usefully say: the default handler
+  ;; is what raises it, and all it knows is its own name.
+  (def unhandled (try (setting "port") #:catch (Bjolang.Runtime.Unhandled)))
+  (expect-true "an operation with no handler raises Unhandled naming it"
+               (match unhandled
+                 ((Ok v) #f)
+                 ((Err e) (string-contains? (.-Message e) "'setting'"))))
+
+  ;; One *with* a default does not raise; the default is the meaning.
+  (expect "a default is what runs when nothing is installed"
+          (caught (try (greet "nobody") #:catch (System.Exception)))
+          "returned")
+
+  ;; --- a handler's return value is the perform's ---------------------------
+  (expect "a handler's value is the value of the perform"
+          (with-handler ((setting (fun (k) (str k "=8080"))))
+            (setting "port"))
+          "port=8080")
+
+  ;; --- installing, and restoring -------------------------------------------
+  (def buf (make-box ""))
+  (with-handler ((say (collect-into buf)))
+    (greet "one")
+    (greet "two"))
+  (greet "three")
+  (expect "the handler saw the performs inside it" (box-ref buf) "[hello one][hello two]")
+
+  ;; `three` went to the default, which discards. The environment is a
+  ;; parameter's, so it is restored by the same `finally` `parameterize` writes.
+  (expect "and the default has it again afterwards" (box-ref buf) "[hello one][hello two]")
+
+  ;; Restored through a throw out of the body, too.
+  (def buf2 (make-box ""))
+  (ignore (try (with-handler ((say (collect-into buf2)))
+                 (greet "before")
+                 (boom "stop"))
+            #:catch (System.InvalidOperationException)))
+  (greet "after")
+  (expect "restored when the body throws" (box-ref buf2) "[hello before]")
+
+  ;; --- a handler that throws unwinds the performer -------------------------
+  ;;
+  ;; Nothing is captured, so there is no installer frame to unwind to. The
+  ;; handler runs where the perform is, and its exception leaves from there —
+  ;; which is what a `try` around the `with-handler` catches.
+  (expect "a handler that throws unwinds the performer"
+          (caught (try (with-handler ((say boom)) (greet "you"))
+                    #:catch (System.InvalidOperationException)))
+          "refused: hello you")
+
+  ;; --- nesting -------------------------------------------------------------
+  (expect "the innermost handler wins"
+          (with-handler ((setting (fun (k) "outer")))
+            (with-handler ((setting (fun (k) "inner")))
+              (setting "x")))
+          "inner")
+
+  (expect "and the outer one is back"
+          (with-handler ((setting (fun (k) "outer")))
+            (ignore (with-handler ((setting (fun (k) "inner"))) (setting "x")))
+            (setting "x"))
+          "outer")
+
+  ;; Two operations at once, from two different effects.
+  (expect "two operations in one with-handler"
+          (with-handler ((setting (fun (k) "S")) (say (fun (s) (ignore s))))
+            (greet "quiet")
+            (setting "k"))
+          "S")
+
+  ;; --- a spawned fiber sees the handler ------------------------------------
+  ;;
+  ;; `Bjo.Spawn` snapshots the dynamic environment, and a handler is part of it.
+  (def buf3 (make-box ""))
+  (def done (make-chan))
+  (with-handler ((say (collect-into buf3)))
+    (with-cancel (cancel)
+      (spawn (worker done))
+      (ignore (sync (chan-recv done)))))
+  (expect "a fiber spawned inside with-handler sees it" (box-ref buf3) "[from a fiber]")
+
+  ;; --- a perform off the fiber sees the handler ----------------------------
+  ;;
+  ;; `blocking` runs its thunk on a pool thread, which has no fiber context of
+  ;; its own. The environment travels with the thunk, so the handler does too.
+  (def buf4 (make-box ""))
+  (with-handler ((say (collect-into buf4)))
+    (ignore (sync (blocking (fun () (greet "off-fiber"))))))
+  (expect "a perform inside blocking sees the handler" (box-ref buf4) "[hello off-fiber]")
+
+  ;; --- a suspending operation ----------------------------------------------
+  ;;
+  ;; Declared `-bjo->`, so only a bjoroutine may perform it and only a
+  ;; `bjoroutine` handler may answer it. Colours are not a subtype pair here.
+  (expect-true "a -bjo-> operation with no handler raises Unhandled"
+               (match (try (fetch "/x") #:catch (Bjolang.Runtime.Unhandled))
+                 ((Ok v) #f)
+                 ((Err e) (string-contains? (.-Message e) "'fetch'"))))
+
+  (expect "a bjoroutine handler answers a -bjo-> operation"
+          (with-handler ((fetch (bjoroutine (path) (let () (sync (timeout 0)) (str "body of " path)))))
+            (fetch "/here"))
+          "body of /here")
+
+  0)

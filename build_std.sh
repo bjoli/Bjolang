@@ -26,6 +26,11 @@ echo "Building standard library..."
 # compares two values imports the module declaring the trait.
 ./bjor --lib lib/std/eq.bjo
 ./bjor --lib lib/std/syntax-match.bjo
+# `effect` is between them and `prelude` for the same reason `syntax-match` is
+# below it: `prelude` declares effects of its own, so `defeffect` has to be
+# compiled first. It imports `eq` and `syntax-match` and nothing else, which is
+# what keeps it below `prelude` rather than beside it.
+./bjor --lib lib/std/effect.bjo
 ./bjor --lib lib/std/maths.bjo
 ./bjor --lib lib/std/prelude.bjo
 # `ports` imports `prelude`, so it comes last for the same reason.
