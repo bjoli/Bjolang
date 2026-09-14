@@ -1,0 +1,145 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; The effects the standard library performs: `warn`, `log`, `now`, `getenv`.
+;;
+;; Each has a default, so a program that installs nothing behaves as it did
+;; before there was an effect at all. What the handler buys is in each section.
+
+(import (std prelude))
+(import (std effect))
+(import (std stopwatch))
+(import (std simpletest))
+
+(import/class
+  (Escalated (: System.InvalidOperationException (-> string Escalated))))
+
+;; A library function that warns and carries on. It does not know, and must not
+;; need to know, what the program has decided a warning means.
+(: parse-port (-> string int))
+(defun (parse-port text)
+  (if (all? char-numeric? text)
+      (string->int text)
+      (let ()
+        (warn (str "not a port number: " text))
+        8080)))
+
+(: collect-into (-> (Box string) (-> string void)))
+(defun (collect-into b) (fun (s) (box-set! b (str (box-ref b) "[" s "]"))))
+
+;; A clock that answers from a list of readings, one per call. Exact, so an
+;; elapsed time can be asserted rather than bounded.
+(: ticking (-> (Box (List long)) (-> long)))
+(defun (ticking readings)
+  (fun ()
+    (match (box-ref readings)
+      (Nil 0L)
+      ((Cons t rest) (box-set! readings rest) t))))
+
+(: caught (-> (Result Exception int) string))
+(defun (caught r)
+  (match r
+    ((Ok v) (str "returned " (->str v)))
+    ((Err e) (.-Message e))))
+
+(defun (main)
+  ;; --- warn ----------------------------------------------------------------
+  ;;
+  ;; The default writes a line to the error port and returns, so the library
+  ;; call still answers. The harness reads stdout, so nothing is asserted about
+  ;; where the line went — only that the call came back with its fallback.
+  (expect "the default warn returns, so the caller carries on"
+          (parse-port "not-a-number") 8080)
+
+  ;; Collected. This is the shape a test wants: the warning is a value now.
+  (def warnings (make-box ""))
+  (expect "a handler collects the warning"
+          (with-handler ((warn (collect-into warnings)))
+            (parse-port "nope"))
+          8080)
+  (expect "and the text is the library's" (box-ref warnings) "[not a port number: nope]")
+
+  ;; Escalated. The handler throws, so the performer unwinds — which is the case
+  ;; `raise` inside `parse-port` could not have left open to the caller.
+  (expect "a handler can escalate a warning to a failure"
+          (caught (try (with-handler ((warn (fun (s) (raise (cast Exception (Escalated. (str "fatal: " s)))))))
+                         (parse-port "nope"))
+                    #:catch (System.InvalidOperationException)))
+          "fatal: not a port number: nope")
+
+  ;; --- log ----------------------------------------------------------------
+  (def lines (make-box ""))
+  (with-handler ((log (collect-into lines)))
+    (log "one")
+    (log "two"))
+  (expect "log goes where the handler says" (box-ref lines) "[one][two]")
+
+  ;; --- now, and the stopwatch over it --------------------------------------
+  ;;
+  ;; `std/stopwatch` performs `now`; it does not name a parameter and does not
+  ;; hold a clock. So installing one here decides what it measures, and the
+  ;; elapsed time is exact rather than approximate.
+  (def clock (make-box (list 1000L 1250L)))
+  (def measured
+    (with-handler ((now (ticking clock)))
+      (let ((sw (stopwatch)))
+        (stopwatch-start! sw)
+        (stopwatch-stop! sw)
+        (stopwatch-ms sw))))
+  (expect "a fake clock gives an exact elapsed time" measured 250L)
+
+  ;; Two intervals on one watch add up, which is what `elapsed` is for.
+  (def clock2 (make-box (list 0L 10L 100L 130L)))
+  (def summed
+    (with-handler ((now (ticking clock2)))
+      (let ((sw (stopwatch)))
+        (stopwatch-start! sw)
+        (stopwatch-stop! sw)
+        (stopwatch-start! sw)
+        (stopwatch-stop! sw)
+        (stopwatch-ms sw))))
+  (expect "two runs of one stopwatch add up" summed 40L)
+
+  ;; `(ref sw 'ms)` reads the same number.
+  (def clock3 (make-box (list 0L 7000L)))
+  (def named
+    (with-handler ((now (ticking clock3)))
+      (let ((sw (stopwatch)))
+        (stopwatch-start! sw)
+        (stopwatch-stop! sw)
+        (str (->str (ref sw 'ms)) "/" (->str (ref sw 's))))))
+  (expect "a stopwatch is read by unit name" named "7000/7")
+
+  ;; The real clock is monotonic, so the same watch never goes backwards.
+  (def real (stopwatch))
+  (stopwatch-start! real)
+  (stopwatch-stop! real)
+  (expect-true "the default clock does not run backwards" (>= (stopwatch-ms real) 0L))
+
+  ;; --- getenv --------------------------------------------------------------
+  (expect "a handler answers for the environment"
+          (with-handler ((getenv (fun (name) (if (= name "HOME") (Some "/fake") None))))
+            (match (getenv "HOME") ((Some v) v) (None "unset")))
+          "/fake")
+
+  (expect "and an unknown name is None under the same handler"
+          (with-handler ((getenv (fun (name) (if (= name "HOME") (Some "/fake") None))))
+            (match (getenv "NOT_SET_ANYWHERE") ((Some v) v) (None "unset")))
+          "unset")
+
+  ;; The default reaches the real process environment.
+  (set-environment-variable! "BJOLANG_EFFECT_TEST" "real")
+  (expect "the default getenv reads the process environment"
+          (match (getenv "BJOLANG_EFFECT_TEST") ((Some v) v) (None "unset"))
+          "real")
+
+  0)

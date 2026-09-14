@@ -3,9 +3,9 @@
 I think we have all had the thought: all programming languages suck in at least one way. Not all of us think it is a big deal, but some of us feel the urge to try our wings at designing a language. This is my 95% vibe coded try. Not really meant for real use, but to see if my thoughts made any sense.
 
 * Elevator pitch
-Bjolang is a scheme-inspired language with local HM type inference that bjompiles to constipated c#. It has traits instead of classes, meaning you don't ever have to think about two-way interop. The default bjollections are immutable. A fast RRB tree (Vec), a very fast CHAMP (hash table), a bjordered map (b-tree), a linked list (List) and both bjordered and unbjordered sets.
+Bjolang is a scheme-inspired eager language with local HM type inference that bjompiles to constipated c#. Traits instead of classes. Never worry about two-way-interop with c# ever again! Fast immutable bjollections. Rrb tree! A champ map! A  b-tree bjordered map! Sets based on the previous 2! (and of course a linked list). Tail-resumptive effects: Fearlessly mock production code! 
 
-It also fakes Brand/higher kinded types by inlining traits when the trait is known at compile time, giving us among other things, a Monad trait. It is eager and non-curried, but has a bjombda shorthand.
+Inlineable traits gives us brand-like types that enable things like functors and do-notation.
 
 It has concurrentML. 
 
@@ -19,7 +19,7 @@ Bjolang has ConcurrentML. And by that I mean: WOOP WOOP WAKE UP, BJOLANG HAS CON
 
 It is fully cooperative, and yields control when calling other bjoroutines or when syncing on channels. Any function that calls down to a "leaf" IO function gets one synchronous and one asynchronous version, so that any function that does IO can suspend. Examples/run_with_bjoroutine.bjo runs a shell pipeline with a bjoroutine as one stage of it, suspending whenever the (cat ...) or the (grep ...) is not ready.
 
-But here is the part that is actually worth waking up for. ~within~ is a deadline, written once, as an ordinary function — and it works on every event there will ever be, because an event is a *value* and not a statement.
+But here is the part that is actually worth waking up for. "within" is a deadline, written once, as an ordinary function — and it works on every event there will ever be, because an event is a *value* and not a statement.
 
 #+begin_src scheme
 (: within (-> int (Event %a) (Event (Option %a))))
@@ -63,11 +63,13 @@ But here is the part that is actually worth waking up for. ~within~ is a deadlin
 
 which prints
 
+#+BEGIN_SRC
 first ask : gave up
 second ask: dinner
 slow work : gave up
+#+END_SRC
 
-second ask: dinner~ is the whole argument. Go cannot give within a name: select only reads channel operations spelled out at the site, and a statement is not a thing you can hand to a function — so there, every function that might one day need a deadline has to be given one, all the way down. Neither cook nor count-to was given anything. And a select that had taken the message off the channel before deciding to drop that branch would have lost dinner for good.
+"second ask: dinner" is what is important here. Go cannot give within a name: select only reads channel operations spelled out at the site, and a statement is not a thing you can hand to a function - so there, every function that might one day need a deadline has to be given one, all the way down. Neither cook nor count-to was given anything. And a select that had taken the message off the channel before deciding to drop that branch would have lost dinner for good.
 
 The whole program, report included, is in Examples/events_are_values.bjo.
 
@@ -127,7 +129,7 @@ and it is extensible.
 
 * Examples
 
-Have a look inte the Examples directory. Or at the code in [[file:lib/text/json.bjo][the json module]]. It is a decently fast json reader, that reaches a between 150 and 380MB/s on jsonbench. 
+Have a look inte the Examples directory. Or at the code in [[file:lib/text/json.bjo][the json module]]. It is a decently fast json reader, that reaches a between 150 and 380MB/s on jsonbench. That code is written to be fast, and while a lot of it is idiomatic, there are some things that are not really pretty. For the love of god, do not look at the json-coder.bjo. That is half AI-translated from guile code I wrote a long time ago, and AI does NOT write good bjolang code. 
 
 * Further code
 
@@ -178,7 +180,7 @@ Unlike f#, bjolang has keyword arguments (but no optargs!):
 (key-fun 10 #:what "orange") ;; prints "orange\n" 10 times
 #+end_src
 
-You can use arbitrary expressions as default values for keyword args. If the function only takes c# literals, it is transformed into a c# named parameter call. If no parameters are used, a body that just binds the names is picked over one that checks which are used. The slow path does some Option unpacking. 
+You can use arbitrary expressions as default values for keyword args. If the function only takes c# literals, it is transformed into a c# named parameter call. If no parameters are used, a body that just binds the names is picked over one that checks which are used. The slow path does some Option unpacking.
 
 *** Structs and records
 Have the same syntax, and both are constructed by naming the type — there is no f#-esque guessing at which type a bag of field names belongs to. This is a record example:
@@ -393,6 +395,7 @@ Hoist literals. Not just literal lists and vecs, but also symbols and keywords. 
 Turn let-bound functions that are only  ever in function position as functions rather than delegates/Func.
 
 Some simple inlining.
+
 
 Hoist the threadlocal loads of several parameter-ref in synchronous functions. Say I do 5 (parameter-ref ) in a body, since there is no parameter-set! we can hoist the environment so that we do not pay the [ThreadLocal] read cost.
 

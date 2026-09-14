@@ -14,31 +14,50 @@
 (import (std syntax-match))
 
 (import/class
-  (Stopwatch (: System.Diagnostics.Stopwatch))
   (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
 
 (import/extern (get-memory-usage (: System.GC.GetAllocatedBytesForCurrentThread)))
 
-(export Stopwatch stopwatch stopwatch-start! stopwatch-stop! stopwatch-ms stopwatch-ticks time-it get-memory-usage )
+(export Stopwatch stopwatch stopwatch-start! stopwatch-stop! stopwatch-ms time-it get-memory-usage )
+
+;; A stopwatch reads the clock through the prelude's `now` effect rather than
+;; holding a `System.Diagnostics.Stopwatch`, so that a test can install a clock
+;; and get an exact elapsed time instead of a real one.
+;;
+;; `started` is the `now` reading the watch was last started at, or -1 when it
+;; is not running; `elapsed` is what earlier runs added up to. Both mutable,
+;; because a stopwatch is a thing that is started and stopped rather than a
+;; value that is replaced.
+(type
+  (: Stopwatch (Record (: started long #:mutable)
+                       (: elapsed long #:mutable))))
 
 (: stopwatch (-> Stopwatch))
-(defun (stopwatch) (Stopwatch.))
+(defun (stopwatch) (Stopwatch (started -1L) (elapsed 0L)))
 
+(: running? (-> Stopwatch bool))
+(defun (running? sw) (>= (record-ref sw started) 0L))
+
+;; Starting a running watch does nothing, as restarting a .NET one does not.
 (: stopwatch-start! (-> Stopwatch void))
 (defun (stopwatch-start! sw)
-  (.Start sw))
+  (unless (running? sw)
+    (record-set! sw (started (now)))))
 
 (: stopwatch-stop! (-> Stopwatch void))
 (defun (stopwatch-stop! sw)
-  (.Stop sw))
+  (when (running? sw)
+    (record-set! sw
+                 (elapsed (+ (record-ref sw elapsed) (- (now) (record-ref sw started))))
+                 (started -1L))))
 
+;; The reading while running includes the segment in progress, so a watch can be
+;; read without stopping it.
 (: stopwatch-ms (-> Stopwatch long))
 (defun (stopwatch-ms sw)
-  (.-ElapsedMilliseconds sw))
-
-(: stopwatch-ticks (-> Stopwatch long))
-(defun (stopwatch-ticks sw)
-  (.-ElapsedTicks sw))
+  (if (running? sw)
+      (+ (record-ref sw elapsed) (- (now) (record-ref sw started)))
+      (record-ref sw elapsed)))
 
 ;; `(ref sw 'ms)` — the elapsed time under the name of a unit.
 (impl (Refable Stopwatch)
@@ -46,14 +65,13 @@
   (type %out long)
   (defun (ref sw sym)
     (case sym
-      ('ticks (stopwatch-ticks sw))
       ('ms (stopwatch-ms sw))
       ('s (/ (stopwatch-ms sw) 1000L))
       (else
         (raise
           (cast Exception
                 (ArgumentException.
-                  (str "A stopwatch is read with 'ticks, 'ms or 's, and this was '"
+                  (str "A stopwatch is read with 'ms or 's, and this was '"
                        (->str sym) "."))))))))
 
 

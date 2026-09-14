@@ -21,8 +21,7 @@
 
 (import (std prelude))
 
-;; TODO: use bjolangs builtings when I have figured out the culture thing
-;; these two use the invariant culture.
+;; TODO: use bjolangs builtins: bjolangs builtins uses the invariant culture now.
 (import/extern
   (clr-to-long   (: Bjolang.Runtime.BjoNum.ParseLong))
   (clr-to-double (: Bjolang.Runtime.BjoNum.ParseDouble)))
@@ -217,11 +216,11 @@
       ((at-end? rd) (Err (at rd "the document ended inside a \\u escape")))
       (else
        (def d (hex-digit (peek rd)))
-       (if (< d 0)
-           (Err (at rd (str "a \\u escape takes four hex digits, and this is " (found rd))))
-           (let ()
-             (step! rd)
-             (go (+ (* n 16) d) (- left 1))))))))
+       (cond
+        ((< d 0) (Err (at rd (str "a \\u escape takes four hex digits, and this is " (found rd)))))
+        (else
+         (step! rd)
+         (go (+ (* n 16) d) (- left 1))))))))
 
 ;; The pair is one character. A Bjolang char is a Unicode scalar... Not a match made in heaven
 (: read-low-surrogate (-> Reader int (Result string string)))
@@ -410,13 +409,14 @@
 (: read-word (-> Reader string Json (Result string Json)))
 (defun (read-word rd word value)
   (let go ((k (string-cursor-start word)))
-    (if (string-cursor-end? word k)
-        (Ok value)
-        (if (or (at-end? rd) (not (char=? (peek rd) (string-cursor-ref word k))))
-            (Err (at rd (str "'" word "' is spelled out to here, and then there is " (found rd))))
-            (let ()
-              (step! rd)
-              (go (string-cursor-next word k)))))))
+    (cond
+     ((string-cursor-end? word k)
+      (Ok value))
+     ((or (at-end? rd) (not (char=? (peek rd) (string-cursor-ref word k))))
+      (Err (at rd (str "'" word "' is spelled out to here, and then there is " (found rd)))))
+     (else
+      (step! rd)
+      (go (string-cursor-next word k))))))
 
 (: read-array (-> Reader int (Result string Json)))
 (defun (read-array rd depth)

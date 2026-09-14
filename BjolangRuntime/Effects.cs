@@ -11,6 +11,28 @@
  * availability requirements or notice obligations of Section 3 of the MPL 2.0.
  */
 
+public static partial class BjolangRuntime {
+
+    /// <summary>
+    /// The default handler for the prelude's `now`: milliseconds on a
+    /// monotonic clock.
+    ///
+    /// Monotonic rather than wall-clock, because what reads it is
+    /// `std/stopwatch`, and a wall clock can step backwards over an NTP
+    /// adjustment or a leap second — which would make an elapsed time negative.
+    ///
+    /// The origin is arbitrary and unspecified: only differences mean anything.
+    /// </summary>
+    public static long ClockMs() =>
+        System.Diagnostics.Stopwatch.GetTimestamp() / TicksPerMs;
+
+    /// Fixed at startup, so the division below is against a constant the JIT
+    /// can see. At least 1, since a frequency under a kilohertz would make this
+    /// zero and the division throw.
+    private static readonly long TicksPerMs =
+        System.Math.Max(1L, System.Diagnostics.Stopwatch.Frequency / 1000L);
+}
+
 namespace Bjolang.Runtime {
 
     /// <summary>

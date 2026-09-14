@@ -603,6 +603,128 @@ anything or stored in a variable.
 (try-> path (open-input-file &) (read-header &))
 #+END_SRC
 
+** Effects =(std effect)=
+
+An /effect operation/ is a typed, named parameter holding a function.
+~with-handler~ is ~parameterize~ on that parameter, and performing an operation
+reads it and calls it *on the performer's own stack*.
+
+#+BEGIN_SRC scheme
+(import (std effect))
+
+(defeffect Console
+  (say (-> string void))
+  #:default ((say (fun (s) (writeln (parameter-ref current-error-port) s)))))
+
+(: greet (-> string void))
+(defun (greet who) (say (str "hello " who)))   ;; an ordinary defun
+
+(with-handler ((say (collect-into buf)))
+  (greet "world"))
+#+END_SRC
+
+~defeffect~ emits three definitions per operation and nothing per effect: the
+cell ~op/say~, the signature, and the wrapper ~say~. The effect name is
+documentation. There is no form that installs a whole effect at once, so a
+handler is installed one operation at a time.
+
+*** What this is not
+
+Nothing is captured. A handler returns once — which resumes the performer with
+its value — or throws, which unwinds the performer. That rules out generators,
+backtracking and resuming an operation twice, and it rules them out *for good on
+this backend*: there is no continuation here to hold on to, and no extension of
+this design would produce one. Plan around a handler that answers once.
+
+A handler that throws unwinds the /performer/, not the installer. Inside a
+spawned fiber that is a child failure like any other, and the enclosing scope
+reports it.
+
+*** Colour
+
+An operation's colour is its declared arrow, and a handler has to match it.
+
+- ~(-> ...)~ : performable anywhere, including inside a ~defun~. Takes ~fun~
+  handlers.
+- ~(-bjo-> ...)~ : performable only from a bjoroutine. Takes ~bjoroutine~
+  handlers, or a ~defbjouble~, which has a copy of each colour.
+
+An ordinary ~fun~ is *not* lifted into a ~(-bjo-> ...)~ slot: the two arrows are
+different calling conventions rather than a subtype pair, and a lambda has no
+second copy to offer. Both mismatches are ordinary type errors —
+~with-handler~ knows nothing about colour, because the cell is a
+~(Param <the declared arrow>)~ and installing a handler is an assignment at that
+arrow.
+
+Prefer a sync operation. Anything a ~defun~ has to be able to perform must be
+one, and an operation that needs to return something suspendable can return a
+/value/ whose own methods are colour-aware — a port, say — rather than
+suspending itself.
+
+*** ~#:default~ against ~Unhandled~
+
+Give a default when there is one sensible meaning: ~log~ writing to stderr, the
+system clock, the real filesystem. Leave it off when running with no handler
+should fail loudly — performing then raises ~Bjolang.Runtime.Unhandled~, naming
+the operation, from the default handler rather than from the runtime.
+
+*** ~#:cold~, and why ids are a budget
+
+Every operation spends one of the dynamic environment's 31 cheap parameter ids.
+~#:cold~ gives that claim up, for an operation its author knows is not performed
+in a loop. Without it a program with many rarely-performed effects pushes its own
+hot parameters out of the cheap slots. ~now~ and ~getenv~ are cold; ~warn~ and
+~log~ are not.
+
+*** A handler frame is not a scope
+
+A scope waits for its children; ~with-handler~ does not.
+
+#+BEGIN_SRC scheme
+(with-cancel (cancel)
+  (with-handler ((log (collect-into buf)))
+    (spawn (work)))
+  (report buf))              ;; reads while the child is still filling buf
+#+END_SRC
+
+The child does not lose the handler — a spawn takes the environment as it stood
+at the spawn — so the read is *early*, not empty. **A handler that collects must
+enclose the scope that owns the performers.** Put the ~with-handler~ outside the
+~with-cancel~ and read after both have returned.
+
+*** The test for what is an effect
+
+If the thing installed is a /value/ the caller reads, it is a parameter. If it is
+a /behaviour/ the caller decides — with a default worth naming, a possible abort,
+and a signature worth checking — it is an effect.
+
+By that test errors stay ~try~/~raise~, state stays ~parameterize~ and
+~def/mutable~, the three standard ports stay parameters, and ~random~ stays the
+parameter ~(std random)~ already has: it is swappable, it has no abort case, and
+an effect would put a wrapper function over a read that is already one.
+
+*** The operations the prelude performs
+
+Exported from ~(std prelude)~, so performing one needs no import; installing a
+handler needs ~(import (std effect))~ for ~with-handler~, since a macro is not a
+binding and cannot be re-exported.
+
+- ~(warn s)~ : something is wrong and carrying on is the default. The case a
+  plain exception cannot express — the same library call can be a line on stderr
+  in one program and a raise in another. Default: a line on the error port.
+- ~(log s)~ : a line of diagnostics. Default: a line on the error port. The
+  natural logarithm in ~(std maths)~ was renamed ~loge~ to leave this name free,
+  since a prelude export and a ~(std maths)~ export of one name would make
+  importing both an ambiguity rather than a choice.
+- ~(now)~ : milliseconds on a monotonic clock, with an unspecified origin — only
+  differences mean anything. ~(std stopwatch)~ performs it rather than holding a
+  clock, so a test can install one and assert an exact elapsed time. Cold.
+- ~(getenv name)~ : ~(Option string)~ from the process environment. Cold.
+
+Both diagnostic operations are sync on purpose: a plain ~defun~ has to be able to
+say something. A handler that wants to send a line down a channel pushes it onto
+a mutable queue rather than ~sync~ing.
+
 ** Waiting from an ordinary function =(std prelude)=
 
 ~sync~ is a yield point, so only a ~defbjo~ may write it. A program whose ~main~

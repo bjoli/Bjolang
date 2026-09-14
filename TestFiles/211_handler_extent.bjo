@@ -1,0 +1,73 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; A handler frame is not a scope.
+;;
+;; A scope waits for its children; `with-handler` does not, any more than
+;; `parameterize` does. The child keeps the handler — a spawn snapshots the
+;; dynamic environment, so the handler goes with it — but the *form* returns
+;; while the child is still running, and a buffer read there is a buffer read
+;; early.
+;;
+;; So the rule for a handler that collects: it has to enclose the scope that
+;; owns the performers, not sit inside it.
+
+(import (std prelude))
+(import (std effect))
+(import (std simpletest))
+
+(: collect-into (-> (Box string) (-> string void)))
+(defun (collect-into b) (fun (s) (box-set! b (str (box-ref b) "[" s "]"))))
+
+;; Logs after everything in the body that spawned it has run.
+(: late-worker (-bjo-> int void))
+(defbjo (late-worker ms)
+  (sync (timeout ms))
+  (log "from the child"))
+
+(defbjo (main)
+  ;; --- the handler inside the scope ----------------------------------------
+  ;;
+  ;; `with-handler` returns as soon as the spawn is queued. The read below is
+  ;; still inside the `with-cancel`, so nothing has waited for the child yet.
+  (def early (make-box ""))
+  (def read-too-soon (make-box "unset"))
+  (with-handler ((log (collect-into early)))
+    (with-cancel (cancel)
+      (with-handler ((log (collect-into early)))
+        (spawn (late-worker 40)))
+      ;; The handler frame has been left, the scope has not been closed.
+      (box-set! read-too-soon (box-ref early))))
+
+  (expect "a buffer read inside the scope is read early" (box-ref read-too-soon) "")
+
+  ;; The child did write, and it wrote into the *inner* buffer: a spawn takes
+  ;; the environment as it stood at the spawn, so the handler travelled with it
+  ;; and outlived the form that installed it. Losing the line is not the
+  ;; failure; reading before the scope drained is.
+  (expect "the child logged into the handler it was spawned under"
+          (box-ref early) "[from the child]")
+
+  ;; --- the handler around the scope ----------------------------------------
+  ;;
+  ;; The read now happens after the `with-cancel` has returned, and a scope that
+  ;; has returned has no children left.
+  (def complete (make-box ""))
+  (with-handler ((log (collect-into complete)))
+    (with-cancel (cancel)
+      (spawn (late-worker 40))
+      (spawn (late-worker 10))))
+
+  (expect "a handler that encloses the scope sees every line"
+          (box-ref complete) "[from the child][from the child]")
+
+  0)

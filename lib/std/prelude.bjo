@@ -138,6 +138,13 @@
   ;; Durations, for a deadline.
   millis seconds minutes
 
+  ;; Effects the standard library performs. The `op/` name of each is the
+  ;; parameter `with-handler` binds, and is exported for that reason.
+  warn op/warn
+  log op/log
+  now op/now
+  getenv op/getenv
+
   promise-join/sync panic!)
 
 
@@ -1628,6 +1635,70 @@
 ;; Gets the accumulated string in the textoutputport
 (: get-output-string (-> TextOutputPort string))
 (defun (get-output-string p) (writer->string p))
+
+
+;; ---------------------------------------------------------------------------
+;; Effects
+;; ---------------------------------------------------------------------------
+;;
+;; An operation is a parameter holding a function, and performing an effect
+;; calls that function on the performer's own stack.
+;; (std effect) has the whole of the mechanism; what is here is the handful
+;; of operations the standard library performs itself.
+;;
+;; What is an effect and what is a parameter?
+;; If the thing is a value the caller reads, it is a parameter. If it is a
+;; behaviour the caller decides - with a default worth naming, a possible
+;; abort, and a signature worth checking - it is an effect. So errors stay
+;; try/raise, state stays parameterize and def/mutable, the three
+;; standard ports stay parameters, and random stays the parameter
+;; (std random) already has: it is swappable, it has no abort case, and an
+;; effect would put a wrapper function over a read that is already one.
+;;
+;; Installing a handler needs (import (std effect)) for with-handler. A
+;; macro is not a binding, so it cannot be re-exported from here.
+
+(import (std effect))
+
+;; `(warn "...")` - something is wrong, and carrying on is the default.
+;;
+;; Warn continues by default, but this is overridable.
+;;
+;; (log "...") - a line of diagnostics, and nobody's decision.
+;;
+;; Both are sync. If you want a -bjo-> effect, the best course of action
+;; is to return a promise or something that is acted on using the parallell
+;; facilities.
+(defeffect Diagnostics
+  (warn (-> string void))
+  (log (-> string void))
+  #:default ((warn (fun (s) (writeln (parameter-ref current-error-port) s)))
+             (log (fun (s) (writeln (parameter-ref current-error-port) s)))))
+
+;; (now) - milliseconds on a monotonic clock, for measuring an interval.
+;;
+;; An effect rather than a parameter because std/stopwatch performs it, and
+;; library code that times something should not have to know which parameter a
+;; test put the clock in.
+;;
+;; Cold, as in using a cold parameter since it is not necessarily used within a loop,
+;; but at the end of it. 
+(import/extern
+  (clock-ms (: BjolangRuntime.ClockMs (-> long))))
+
+(defeffect Clock
+  (now (-> long))
+  #:default ((now clock-ms))
+  #:cold (now))
+
+;; (getenv "HOME") - the process environment, as an effect so that a test can
+;; answer for it without writing to the real one.
+;;
+;; Cold, for the reason now is: read at startup, not in a loop.
+(defeffect Env
+  (getenv (-> string (Option string)))
+  #:default ((getenv get-environment-variable))
+  #:cold (getenv))
 
 
 ;; ---------------------------------------------------------------------------

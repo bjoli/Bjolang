@@ -287,15 +287,20 @@
 ;; A scope waits for its children; this does not. So
 ;;
 ;;     (with-cancel (cancel)
-;;       (with-handler ((log (fun (s) (vec-push! buf s))))
+;;       (with-handler ((log (collect-into buf)))
 ;;         (spawn (work)))
 ;;       (report buf))
 ;;
-;; lets the child go on logging into `buf` after `with-handler` has returned,
-;; and `report` sees a partial buffer. **A handler that collects must enclose
-;; the scope that owns the performers** — put the `with-handler` outside the
-;; `with-cancel`. `parameterize` behaves the same way; a collecting handler is
-;; only where it shows.
+;; returns from `with-handler` as soon as the spawn is queued, and `report`
+;; reads a buffer the child is still filling. The child does not lose the
+;; handler — a spawn takes the environment as it stood at the spawn, so the
+;; handler travels with it and outlives the form that installed it — which is
+;; why the read is early rather than empty.
+;;
+;; **A handler that collects must enclose the scope that owns the performers.**
+;; Put the `with-handler` outside the `with-cancel`, and read after both have
+;; returned. `parameterize` behaves the same way; a collecting handler is only
+;; where it shows.
 (def/macro (with-handler form inject compare)
   (syntax-match form
     ((_ ((op handler) ...) first body ...)

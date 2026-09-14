@@ -359,6 +359,77 @@ The one place the runtime is named directly is unchanged and was already so:
 `Prelude.fs` writes down `sync`'s Bjolang type, and `Codegen.fs` wraps a
 suspending call in `await`. Neither knows what a channel is.
 
+## Scopes-as-owners, phase 0 — tail-resumptive effects
+
+`blocking` and `spawn/thread` now carry the dynamic environment to the thunk,
+`(std effect)` adds `defeffect`/`with-handler`, and the prelude declares `warn`,
+`log!`, `now` and `getenv`. None of it is on a spawn or a sync path.
+
+Four runs, min-of-5 per run:
+
+| benchmark | ns/op | B/op | vs before phase 0 |
+|---|---|---|---|
+| Ring | 71–84 | 32 | unchanged |
+| Ring, scoped | 88–98 | 72 | unchanged |
+| Spawn burst | 72–82 | 185 | unchanged |
+| Skewed choose(8) | 92–233 | 72 | unchanged |
+
+Every allocation figure is bit-identical to the pre-phase run, which is the
+column to read: a change that touched the park path could not leave all four
+alone. The ns spread is this machine's session drift, and skewed choose is the
+bimodal row described above.
+
+`std/stopwatch` is now a Bjolang record over the `now` effect rather than a
+`System.Diagnostics.Stopwatch`, and the benchmark harness reads it — twice per
+measured region, against 1e6 messages.
+
+## The phase 1 gate — measured, not met, and overridden
+
+**Decision: proceed anyway.** The numbers below stand; what changed is the
+judgement about them. The cost is one 40-byte allocation per parked sync under a
+live scope, and at 72 B/op the scoped ring is still at the low end against other
+CML implementations and against Go's channels. The structure a scope around
+`main` buys — every fiber owned, every resource released, a failure reported
+rather than lost — is worth that. Recorded here so the next person reads a
+measurement rather than an assumption.
+
+### The numbers
+
+Phase 1 would restore an implicit scope around `main`, on the premise that after
+the BjoML merge "the token is a link on the parked op, so a scope's per-park cost
+is one pointer write". The gate was: the scoped ring within ~5% of the unscoped
+ring.
+
+Same tree, same run, four repetitions:
+
+| | unscoped ring | scoped ring | difference |
+|---|---|---|---|
+| ns/op (min of 4 runs) | 71 | 88 | **+24%** |
+| ns/op (typical) | 74–84 | 88–98 | +19% |
+| **B/op** | **32** | **72** | **+40 B, 2.25x** |
+
+The gate is not met, on either column, and the allocation column says why. Phase
+2c made the ambient token a link rather than a published branch, which removed
+the `CancellableEvent`, its closure, the `SyncState` and a promise waiter — but
+it did not make the link free. A parked sync under a live token still allocates
+one `CancelWatch`, and that object cannot be pooled: nothing can remove a waiter
+from a promise's list, so a recycled watch could still be sitting in the token's
+list and be signalled for a sync it no longer belongs to. The final-report
+section above records this as the one thing phase 2c did not close.
+
+So a scope around `main` puts 40 B/op and roughly 20% back onto every parked
+rendezvous in every program, including programs that never open a scope of their
+own — which is the cost phase 2f removed. Phase 2f is therefore reverted in
+substance: `main` is in a scope again, and the unscoped ring row above no longer
+describes any real program, only a `main` that never parks.
+
+Closing the gap needs the `CancelWatch` to become poolable, which needs either an
+unregister on `Promise` — O(n) in the waiter count, 1000 on this benchmark — or a
+different waiter structure. That is a change to `Promise`, not to `Scope`, and it
+is the single highest-value optimisation left on this path: it would take the
+scoped ring to the 32 B/op the unscoped one has, and every program is on the
+scoped row now.
+
 ## Test suites
 
 Green at every phase.
