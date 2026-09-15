@@ -820,6 +820,25 @@ and TExprNode =
     /// Produce every element of another sequence in turn. Always void.
     | TYieldFrom of TypedExpr
     | TMatch of TypedExpr * TMatchClause list
+    /// `(with-return ret body)` — a named early-exit block, carrying the label
+    /// its exits jump to. The label is generated rather than taken from the
+    /// name, so that two nested blocks written with the same name after a
+    /// rename still have distinct exits.
+    | TWithReturn of string * TypedExpr
+    /// `(ret e)` — leave the block whose label this names. `None` is `(ret)`,
+    /// which only a void-typed block admits.
+    ///
+    /// Never yields a value, so its own type is a fresh metavariable: it stands
+    /// wherever a value of any type was wanted and constrains nothing there.
+    | TReturn of string * TypedExpr option
+    /// `(guard ...)` / `(guard* ...)` — clauses, the rest of the body they were
+    /// written in, and the shared else body that leaves the named block.
+    ///
+    /// Not desugared into `TMatch` and `TReturn`, though a single clause would
+    /// go that way exactly: a `guard*` has one else body and many ways to reach
+    /// it, and nesting matches would emit that body once per clause. Here it is
+    /// emitted once, after the sequel, with every failing clause jumping to it.
+    | TBindElse of string * TBindElseClause list * TypedExpr * TypedExpr
     /// A dispatched trait method: the dictionary's type, the method, the
     /// method's type *at this call*, the dictionary, and the arguments.
     ///
@@ -953,6 +972,16 @@ and TMatchClause =
     { Pattern: TypedPattern
       Guard: TypedExpr option
       Body: TypedExpr }
+
+/// One clause of a `guard` or `guard*`.
+///
+/// There is no `Guard` field beside the pattern, unlike `TMatchClause`: a
+/// `#:when` here would be a second way to fail a clause and would read as
+/// belonging to the *form* rather than to the clause. Write the test as a
+/// pattern, or as an `if` in the body.
+and TBindElseClause =
+    { Pattern: TypedPattern
+      Scrutinee: TypedExpr }
 
 /// The parameters of a function-shaped local binding — a body-local `defun`, a
 /// named `let`, a lowered loop member.
@@ -1695,7 +1724,29 @@ type Env =
       /// An inline template records where its body came from, because its free
       /// variables have to be emitted as references into *that* module's class
       /// rather than resolved wherever the body ends up spliced.
-      CurrentModule: string }
+      CurrentModule: string
+      /// The `with-return` escapes in scope, by the name that leaves them.
+      ///
+      /// A separate map rather than a `Binding`, because an escape is not a
+      /// value: there is no type it could be given that would let it be passed
+      /// anywhere, and giving it one would make `(map ret xs)` a type error
+      /// naming a function type nobody wrote instead of saying what is wrong.
+      ///
+      /// Shadowing still works, and works the way everything else does:
+      /// `addBinding` removes the name from here, exactly as it removes one
+      /// from `TraitMethodNames`. Binding over an escape is what shadowing one
+      /// *is*, and after it the name means the new binding.
+      Escapes: Map<string, EscapeInfo>
+      /// The innermost block in scope, for a `guard` that named none.
+      InnermostEscape: string option }
+
+/// What a `with-return` put in scope.
+and EscapeInfo =
+    { /// The label its exits jump to. Generated, not the source name: two
+      /// nested blocks may be written with the same name.
+      Label: string
+      /// The block's type. Every `(ret e)` unifies `e` against this.
+      Result: HMType }
 
 
 let addTrait (name: string) (info: TraitInfo) (env: Env) : Env =

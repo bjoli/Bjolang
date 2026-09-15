@@ -47,6 +47,28 @@ type LoopScope = {
     ExitLabelUsed: bool ref
 }
 
+/// A `with-return` block an escape may leave.
+///
+/// Two shapes, and which one this is decides what `(ret e)` emits. When the
+/// block *is* the method's value — the common case, and the whole of the worked
+/// example — an escape is a plain C# `return` and there is no slot, no label,
+/// no definite-assignment question and nothing for a relocated scratch buffer
+/// to strand. Otherwise the value goes to a slot and control jumps to a label
+/// past the body.
+type ReturnScope =
+    /// The block *is* the method's value, so an escape is a plain `return`.
+    /// No slot, no label, no definite-assignment question, and nothing for a
+    /// relocated scratch buffer to strand.
+    | ReturnsFromMethod
+    /// The value goes to the slot — absent when the block is void, which has
+    /// nothing to carry out — and control jumps to the label.
+    ///
+    /// The `bool ref` is set when something actually jumped. A label C# can see
+    /// no jump to is a warning, and whether one exists is known only once the
+    /// body has been generated: exactly how `ExitLabelUsed` works for an
+    /// inlined loop's exit, and modelled on it.
+    | ExitsToLabel of slot: string option * label: string * used: bool ref
+
 /// Stores the `#line` directive to be emitted before the next line of C# code.
 ///
 /// Directives are buffered here rather than written immediately. This prevents 
@@ -132,6 +154,13 @@ type CodegenContext = {
     Prelude: ResizeArray<string> option
     /// The innermost loop in scope.
     Loop: LoopScope option
+    /// The `with-return` blocks in scope, by the label inference gave them.
+    ///
+    /// By label rather than by source name: two nested blocks may be written
+    /// with the same name, and after a macro's renaming they may be written
+    /// with names that differ but mean the same escape. The label is the
+    /// identity, and inference is what decided it.
+    Returns: Map<string, ReturnScope>
     /// Type parameters the enclosing method or class already introduced.
     TypeParams: Set<string>
     /// True inside the iterator method a `seq` was emitted as. `yield` is a
@@ -892,6 +921,33 @@ let rec serializeExpr (e: Parser.Expr) : string =
     | Parser.EYield(v, _) -> list [ "yield"; serializeExpr v ]
     | Parser.EYieldFrom(s, _) -> list [ "yield-from"; serializeExpr s ]
 
+    | Parser.EWithReturn(name, body, _) -> list [ "with-return"; name; serializeExpr body ]
+
+    // A guard holds the rest of the body it was written in, and the reader
+    // gives it that sequel back by position rather than from the form itself.
+    // So it is written out as a *body* — `begin` splices in body position, and
+    // `parseBody` hands the guard whatever follows it there, which is exactly
+    // the sequel that went in.
+    | Parser.EBindElse(target, clauses, sequel, elseBody, _) ->
+        let named = target |> Option.toList
+
+        let guardForm =
+            match clauses with
+            | [ (pat, scrutinee) ] ->
+                list ([ "def/else" ] @ named @ [ list [ serializePattern pat; serializeExpr scrutinee ]; serializeExpr elseBody ])
+            | _ ->
+                let clauseForms =
+                    clauses
+                    |> List.map (fun (pat, scrutinee) -> list [ serializePattern pat; serializeExpr scrutinee ])
+
+                list (
+                    [ "def/else*" ]
+                    @ named
+                    @ [ list clauseForms; serializeExpr elseBody ]
+                )
+
+        list [ "begin"; guardForm; serializeExpr sequel ]
+
     // No reader form produces these, so none can appear in a template body.
     | Parser.ELetTuple _ -> failwith "an inline template body may not destructure a tuple binding"
     | Parser.EList _ -> failwith "an inline template body may not contain a bare list literal"
@@ -1211,7 +1267,11 @@ let rec isStatementShaped (expr: TypedExpr) : bool =
     // emitted inside the lambda would be evaluated again each time.
     | TTaskEvent _
     | TYield _
-    | TYieldFrom _ -> true
+    | TYieldFrom _
+    // All three are jumps or hold one, and C# has no expression that jumps.
+    | TWithReturn _
+    | TReturn _
+    | TBindElse _ -> true
 
     // A conditional stays `c ? t : f` as long as it yields a value and neither
     // arm needs statements. Hoisting out of an arm would evaluate it
@@ -2062,6 +2122,17 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
             append ctx (hoistLiteral ctx "Vec" "" (typeToString expr.Type) (scratch.ToString()))
         else
             emitInto ctx (prepareOperands ctx items)
+
+    // `isStatementShaped` says all three of these are statements, so a
+    // `Prelude` was available and hoisted them before reaching here. Left
+    // unreachable rather than given a lowering, because the lowering would be a
+    // second one to keep in step with `generateBlock`'s.
+    | TWithReturn _
+    | TReturn _
+    | TBindElse _ ->
+        codegenError
+            expr.Range
+            "this form is a jump, and C# has no expression that jumps; it should have been hoisted into a statement"
 
     | TMatch (matchTarget, clauses) ->
         // Reached only when every live arm and guard is expression-shaped.
@@ -3227,6 +3298,116 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
 
     | TMatch (matchTarget, clauses) -> generateMatch ctx target expr matchTarget clauses
 
+    | TWithReturn (label, body) ->
+        match target with
+        // The fast path. Nothing is emitted for the block itself: its body is
+        // generated straight into the method's `return` position, and every
+        // escape inside it becomes a `return` of its own.
+        | Return ->
+            generateBlock { ctx with Returns = Map.add label ReturnsFromMethod ctx.Returns } Return body
+
+        | _ ->
+            let isVoid = isVoidType expr.Type
+            let endLabel = freshName "__ret_end"
+            let slot = if isVoid then None else Some(freshName "__ret")
+
+            // Declared here, in the block the `with-return` stands in, rather
+            // than inside a block of its own — so that every `goto` below is
+            // lexically within the label's block. A label that ends up in a
+            // *sibling* block is CS0159, which is what would happen if this
+            // opened braces of its own.
+            //
+            // `default!` because a path that falls through without assigning is
+            // CS0165 about code no user wrote. One redundant store, usually
+            // elided; cheaper than proving assignment here.
+            match slot with
+            | Some name ->
+                indent ctx
+                appendLine ctx $"%s{typeToString expr.Type} %s{name} = default!;"
+            | None -> ()
+
+            let used = ref false
+
+            let bodyCtx =
+                { ctx with Returns = Map.add label (ExitsToLabel(slot, endLabel, used)) ctx.Returns }
+
+            generateBlock
+                bodyCtx
+                (match slot with
+                 | Some name -> Assign name
+                 | None -> Effect)
+                body
+
+            if used.Value then
+                indent ctx
+                appendLine ctx $"%s{endLabel}: ;"
+
+            match slot with
+            | Some name -> emitTerminal ctx target expr.Type (fun c -> append c name)
+            | None -> dischargeVoid ctx target
+
+    | TReturn (label, value) -> generateEscape ctx ctx.Returns[label] value
+
+    | TBindElse (label, clauses, sequel, elseBody) ->
+        let scope = ctx.Returns[label]
+        let elseLabel = freshName "__else"
+        let doneLabel = freshName "__else_done"
+
+        // Nested `if`s rather than a `switch`, because what a pattern binds has
+        // to scope over **the sequel** — and a switch section scopes its
+        // bindings to the section, which the sequel is not inside of.
+        let rec emitClauses (c: CodegenContext) (remaining: TBindElseClause list) =
+            match remaining with
+            | [] -> generateBlock c target sequel
+            | clause :: rest ->
+                // The scrutinee is named first: it is read by the `is` test and
+                // again by any view's step in the `when`, and evaluating it
+                // twice would run its effects twice.
+                let scrutinee = freshName "__bound"
+
+                emitStatement c (fun cc ->
+                    indent cc
+                    append cc $"var %s{scrutinee} = "
+                    generateExpr cc clause.Scrutinee
+                    appendLine cc ";")
+
+                let views = ResizeArray<ViewFragment>()
+                indent c
+                append c $"if (%s{scrutinee} is "
+                generatePattern c views clause.Pattern
+                generateClauseGuard c views None
+                appendLine c ") {"
+                withIndent c (fun inner -> emitClauses inner rest)
+                indent c
+                // Every clause that fails jumps to the *one* else body below.
+                // This is the whole reason a `guard*` is a node of its own
+                // rather than nested matches: there the body would be emitted
+                // once per clause.
+                appendLine c $"}} else goto %s{elseLabel};"
+
+        emitClauses ctx clauses
+
+        // The else body always leaves the block — by `return` on the fast path,
+        // by `goto` otherwise — so it never falls out of the bottom and needs
+        // nothing after it. The *sequel* does fall through, unless it was
+        // generated into the method's `return` position.
+        let sequelFallsThrough =
+            match target with
+            | Return -> false
+            | _ -> true
+
+        if sequelFallsThrough then
+            indent ctx
+            appendLine ctx $"goto %s{doneLabel};"
+
+        indent ctx
+        appendLine ctx $"%s{elseLabel}: ;"
+        generateEscape ctx scope (Some elseBody)
+
+        if sequelFallsThrough then
+            indent ctx
+            appendLine ctx $"%s{doneLabel}: ;"
+
     // Any node with no statement shape of its own: emit it as a C# expression
     // and let `emitTerminal` discharge the target. The `emitStatement` wrapper
     // supplies the hoisting buffer that `generateExpr` may need.
@@ -3273,6 +3454,39 @@ and private exitInlineLoop (ctx: CodegenContext) : unit =
 
 /// Discharges `target` after a form that has already emitted all of its own
 /// statements and produced no value.
+/// Leaves a `with-return` block, carrying `value` out of it.
+///
+/// What `(ret e)` emits, and what a guard's else body emits — they are the same
+/// jump, which is why a guard inherits the boundary rule that governs `ret`.
+and private generateEscape
+    (ctx: CodegenContext)
+    (scope: ReturnScope)
+    (value: TypedExpr option)
+    : unit =
+
+    match scope with
+    | ReturnsFromMethod ->
+        match value with
+        | Some v -> emitStatement ctx (fun c -> emitTerminal c Return v.Type (fun c2 -> generateExpr c2 v))
+        | None -> emitReturnOfNothing ctx
+
+    | ExitsToLabel(slot, label, used) ->
+        match slot, value with
+        | Some name, Some v ->
+            emitStatement ctx (fun c ->
+                indent c
+                append c $"%s{name} = "
+                generateExpr c v
+                appendLine c ";")
+        // A void block still runs the form for its effect; there is simply
+        // nowhere to put what it did not produce.
+        | None, Some v -> emitStatement ctx (fun c -> emitTerminal c Effect v.Type (fun c2 -> generateExpr c2 v))
+        | _, None -> ()
+
+        used.Value <- true
+        indent ctx
+        appendLine ctx $"goto %s{label};"
+
 and private dischargeVoid (ctx: CodegenContext) (target: BlockTarget) : unit =
     match target with
     // Not terminal: the statements that follow still have to run.
@@ -5229,6 +5443,7 @@ let generateProgram
           GlobalBindings = globalBindings
           Prelude = None
           Loop = None
+          Returns = Map.empty
           TypeParams = Set.empty
           InSeq = false
           Registry = registry

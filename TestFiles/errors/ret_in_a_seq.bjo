@@ -1,0 +1,15 @@
+;; A `seq` is emitted as a C# iterator block, and an iterator may not be jumped
+;; out of. This is the language following the platform rather than a matter of
+;; taste, and the diagnostic says so.
+
+;; EXPECT-ERROR: cannot leave a `seq` block
+
+(import (std prelude))
+
+(: count-until-negative (-> (List int) int))
+(defun (count-until-negative xs)
+  (with-return ret
+    (ignore (seq (loop (:for x xs)
+                       (:do (when (< x 0) (ret 0))
+                            (yield x)))))
+    1))

@@ -1165,7 +1165,11 @@ let prelude : Env =
           // would refuse the shorter argument list.
           ("choose", { MandatoryCount = 0; KeywordParams = []; RestParam = Some (TCon("Event", [ TVar "a" ])) })
       ]
-      CurrentModule = "" }
+      CurrentModule = ""
+      // A `with-return` is the only thing that puts one of these in scope, and
+      // there is none around the prelude.
+      Escapes = Map.empty
+      InnermostEscape = None }
 
 /// The names already bound by `using static BjolangRuntime`.
 let builtinNames: Set<string> =

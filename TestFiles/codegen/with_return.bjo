@@ -1,0 +1,64 @@
+;; What `with-return` and `def/else` compile to.
+;;
+;; Two shapes, read off the generated C# by hand once and pinned here.
+;;
+;; **The tail case emits neither a slot nor a label.** When the block *is* the
+;; function's value, an escape is a plain `return`:
+;;
+;;   if (!(o is { Tag: 1, Value: var n })) { goto __else__12; }
+;;   if (n < 0) { return "negative"; }
+;;   return "positive";
+;;   __else__12: ;
+;;   return "none";
+;;
+;; Anywhere else the value goes to a slot and control jumps past the body. The
+;; slot is declared, and the label emitted, in the block the form stands in
+;; rather than in one of its own: a `goto` whose label ends up in a sibling
+;; block is CS0159. The `default!` is there because a path that falls through
+;; without assigning is CS0165 about code no user wrote.
+;;
+;;   string __ret__20 = default!;
+;;   ...
+;;   __ret__20 = "small"; goto __ret_end__21;
+;;   ...
+;;   __ret_end__21: ;
+;;
+;; And a `def/else*` emits its else body **once**, with every failing clause
+;; jumping to it. That is the whole reason it is a node of its own rather than
+;; nested matches, which would emit the body once per clause: below there are
+;; three `goto __else` and one copy of `"missing"`.
+
+(import (std prelude))
+
+;; Tail position: no slot, no `__ret_end`.
+(: classify (-> (Option int) string))
+(defun (classify o)
+  (with-return ret
+    (def/else ((Some n) o)
+      "none")
+    (when (< n 0) (ret "negative"))
+    "positive"))
+
+;; Not tail position: slot and label.
+(: described (-> int string))
+(defun (described n)
+  (str "n is "
+       (with-return ret
+         (when (< n 10) (ret "small"))
+         "large")))
+
+;; One else body, three ways to reach it.
+(: triple (-> (Option int) (Option int) (Option int) string))
+(defun (triple a b c)
+  (with-return ret
+    (def/else* (((Some x) a)
+                ((Some y) b)
+                ((Some z) c))
+      "missing")
+    (int->string (+ x (+ y z)))))
+
+(defun (main)
+  (println (classify (Some 1)))
+  (println (described 3))
+  (println (triple (Some 1) (Some 2) (Some 3)))
+  0)

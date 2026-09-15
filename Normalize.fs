@@ -212,6 +212,15 @@ let rec private rewriteExpr (expr: Expr) : Expr =
     | EYield(value, r) -> EYield(rewriteExpr value, r)
     | EYieldFrom(value, r) -> EYieldFrom(rewriteExpr value, r)
 
+    | EWithReturn(name, body, r) -> EWithReturn(name, rewriteExpr body, r)
+
+    | EBindElse(target, clauses, sequel, elseBody, r) ->
+        let clauses' =
+            clauses
+            |> List.map (fun (p, scrutinee) -> (Parser.mapPatternSteps rewriteExpr p, rewriteExpr scrutinee))
+
+        EBindElse(target, clauses', rewriteExpr sequel, rewriteExpr elseBody, r)
+
 /// A keyword parameter's default is an expression like any other, and is the
 /// only expression an argument list holds.
 and private rewriteArgs (args: DefunArg list) : DefunArg list =

@@ -143,7 +143,16 @@ let addBinding (name: string) (binding: Binding) (env: Env) : Env =
         // Whatever this name meant, it now means this. A trait method is bound
         // like anything else, so binding over one is what shadowing it *is*,
         // and the call site has to stop dispatching on the trait.
-        TraitMethodNames = Set.remove name env.TraitMethodNames }
+        TraitMethodNames = Set.remove name env.TraitMethodNames
+        // And the same for a `with-return` escape, for the same reason. This is
+        // the whole of what makes `ret` "bound in the ordinary value namespace"
+        // true rather than merely claimed: shadowing it needs no rule of its
+        // own, because binding a name already means this.
+        Escapes = Map.remove name env.Escapes
+        InnermostEscape =
+            match env.InnermostEscape with
+            | Some inner when inner = name -> None
+            | other -> other }
 
 let rec prune (registry: TraitRegistry) (t: HMType) : HMType =
     match t with

@@ -561,9 +561,30 @@ let private checkMatch (registry: TraitRegistry) (range: Range) (scrutinee: HMTy
     with Undecidable ->
         ()
 
+/// A `def/else` clause whose pattern cannot fail, which makes the else body
+/// dead code.
+///
+/// Almost always a typo where a constructor name was not in scope and so parsed
+/// as a plain variable — `(def/else ((Some cfg) opts) ...)` written against a
+/// module that never imported `Some` binds a variable called `Some` to the
+/// whole option and takes the successful path every time. Warned rather than
+/// refused, because a pattern that happens to be irrefutable is legal and a
+/// generated one may well be.
+let private checkBindElse (clauses: TBindElseClause list) =
+    for clause in clauses do
+        match clause.Pattern.Node with
+        | TPIdent name ->
+            Diagnostics.warn
+                $"Pattern Warning at %s{formatPos clause.Pattern.Range}: `%s{name}` is a plain variable, so this def/else clause always matches and its else body can never run. If a constructor of that name was meant, it is not in scope here."
+        | TPWildcard ->
+            Diagnostics.warn
+                $"Pattern Warning at %s{formatPos clause.Pattern.Range}: a wildcard always matches, so this def/else clause's else body can never run."
+        | _ -> ()
+
 let rec private checkExpr (registry: TraitRegistry) (expr: TypedExpr) : unit =
     match expr.Node with
     | TMatch(target, clauses) -> checkMatch registry expr.Range target.Type clauses
+    | TBindElse(_, clauses, _, _) -> checkBindElse clauses
     | _ -> ()
 
     TypeVisitor.children expr |> List.iter (checkExpr registry)

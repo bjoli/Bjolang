@@ -1,0 +1,16 @@
+;; Leaving a `try` *body* is legal — C# runs the `finally` on a `goto` as it
+;; does on a `return`, so resources unwind. Leaving the cleanup itself is what
+;; C# forbids.
+
+;; EXPECT-ERROR: cannot leave a cleanup body
+
+(import (std prelude))
+
+(: f (-> bool string))
+(defun (f early)
+  (with-return ret
+    (try
+      (println "body")
+      #:finally
+      (when early (ret "left from the cleanup")))
+    "fell through"))

@@ -3,6 +3,91 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~with-return~ and ~def/else~
+
+A named early-exit block, and a refutable binding that leaves it.
+
+#+BEGIN_SRC scheme
+(with-return ret
+  (def/else ((Some cfg) (map-ref opts 'config))
+    (Err "no config"))
+  (loop (:for h (record-ref cfg hosts))
+        (:do (when (blocked? h) (ret (Err "blocked host")))))
+  (Ok (listen cfg)))
+#+END_SRC
+
+The name is required and there is no implicit ~return~: ~:return~ already means
+~pure~ in ~(do ...)~ notation, and a second meaning for that word would be a
+trap. ~ret~ is bound in the *ordinary value namespace*, and that is not a claim
+but a mechanism — ~addBinding~ drops the name from the escape table exactly as
+it drops one from ~TraitMethodNames~, so shadowing an escape needs no rule of
+its own.
+
+~def/else~ is in the ~def~ family and consumed by ~parseBody~ beside
+~def/mutable~, because it *is* a definition: what its pattern binds scopes over
+the rest of the body. That is ~def~'s scoping and not ~let~'s, which opens a
+nested scope with a body of its own — which is why this is not spelled
+~let/else~ however well Rust's version reads.
+
+It was ~guard~ while it was being written, and could not stay. ~guard~ already
+names a match clause's ~#:when~ test all through the pattern machinery —
+~TMatchClause.Guard~, ~generateClauseGuard~ — and separately names CML's event
+combinator, which ~http.bjo~ calls. A third meaning, in the middle of the
+subsystem that already owns the first, is worse than a longer word. The plural
+lost its ~#:else~ marker with the rename: that existed to keep a bare ~else~
+from colliding with a pattern macro of that name, and once the clauses are one
+parenthesised group there is nothing left for it to disambiguate.
+
+** What it lowers to
+
+Two shapes, and which one a block gets is not something a program can see.
+
+**When the block is the function's value, nothing is emitted for the block at
+all**: the body is generated straight into the method's ~return~ position and
+every escape becomes a ~return~. No slot, no label, no definite-assignment
+question, and nothing for a relocated scratch buffer to strand. Anywhere else
+the value goes to a slot and control jumps past the body — the slot declared,
+and the label emitted, in the block the form *stands in* rather than in one of
+its own, since a ~goto~ whose label lands in a sibling block is CS0159.
+
+~def/else~ is a node of its own rather than a ~match~ with a ~ret~ in its
+fallback arm. A single clause would go that way exactly, but a ~def/else*~ has
+one else body and many ways to reach it, and nesting matches would emit that
+body once per clause. ~TestFiles/codegen/with_return.bjo~ pins the difference:
+three jumps, one copy. It lowers to nested ~if~ s rather than a ~switch~,
+because a switch section scopes its pattern bindings to the section and the
+sequel lives after it.
+
+No local function is generated anywhere in this, which is what makes the
+lowering colour-blind: the sync and suspending copies of a body get the
+identical rewrite.
+
+** Where an escape may go
+
+Only where the path to its block crosses no function boundary — refused inside a
+lambda, inside a ~seq~ (a C# iterator may not be jumped out of, which is the
+platform's rule rather than a taste), inside a ~#:finally~ cleanup, and inside a
+spawned call. Leaving a ~try~ *body* is legal and correct: C# runs the
+~finally~ on a ~goto~ as it does on a ~return~, so resources unwind either way.
+
+**A loop is not a function boundary, however it is spelled.** ~loop~, ~for~ and
+a named ~let~ all desugar to a letrec whose body immediately calls one of its
+own members, which is exactly what ~LoopLowering.flatLoopEntry~ recognises in
+order to emit a ~while~ rather than a local function — so an escape crossing one
+is leaving a loop, and the loop's own ~ExitLabel~ already jumps out of it.
+
+Every one of these is decided syntactically, in ~Parser.checkEscapeUses~, before
+the body is typed: they are all questions about shape, and inference would
+otherwise have to invent a type for a form that never yields a value.
+
+Left open: ~(ret e)~ is admitted as a statement or in tail position and nowhere
+else. As a proper subexpression it would have to interact with the hoisting of
+statement-shaped operands and would need a bottom type to have one at all;
+relaxing it later is a codegen change only. And the boundary check reads the
+loop shape off the untyped AST, so a loop that ~LoopLowering~ later declines to
+inline would strand a ~goto~ inside a local function — a C# error rather than
+wrong behaviour, but the check would be better placed after that pass.
+
 * A record may be written as a tagged form
 
 ~(: Package (Record #:tag package (: name (List Symbol)) ...))~ reads and writes

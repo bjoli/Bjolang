@@ -2387,6 +2387,123 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
           Range = r
           Node = TString value }
 
+    // `(ret e)` — an application of an escape some enclosing `with-return` put
+    // in scope. Taken before the general application case, and before the
+    // general `EIdent` below it, because an escape is not a value and there is
+    // nothing in `Bindings` for either of them to find.
+    //
+    // Where it may *stand* was settled syntactically by `checkEscapeUses` when
+    // the block was entered, so nothing here has to ask.
+    | EApp(EIdent(name, _), args, r) when Map.containsKey name env.Escapes ->
+        let info = env.Escapes[name]
+
+        let typedValue =
+            match args with
+            | [] ->
+                // `(ret)` says the block produces nothing, which only a
+                // void-typed block can agree with.
+                unify env.Registry info.Result TypeConstants.unitType
+                None
+            | [ value ] ->
+                let valueType, typedValue = infer env value
+                unify env.Registry valueType info.Result
+                Some typedValue
+            | _ ->
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos r}: `%s{name}` leaves its block with one value or with none, and here it was given %d{List.length args}."
+
+        // Never yields a value, so it is given a fresh metavariable: it stands
+        // wherever a value of any type was wanted and constrains nothing there.
+        let resultType = freshMeta ()
+
+        resultType,
+        { Type = resultType
+          Range = r
+          Node = TReturn(info.Label, typedValue) }
+
+    | EIdent(name, r) when Map.containsKey name env.Escapes ->
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: `%s{name}` is an escape, not a value: it can only be applied inside its own `with-return`."
+
+    | EWithReturn(name, body, r) ->
+        // Every rule about where `name` may be applied is a question about
+        // shape, so all of them are decided here, over the body as written,
+        // before a single form in it is typed.
+        Parser.checkEscapeUses name body
+
+        let resultType = freshMeta ()
+        let label = Gensym.fresh "__ret"
+
+        let bodyEnv =
+            { env with
+                Escapes = Map.add name { Label = label; Result = resultType } env.Escapes
+                InnermostEscape = Some name }
+
+        let bodyType, typedBody = infer bodyEnv body
+        unify env.Registry bodyType resultType
+
+        resultType,
+        { Type = resultType
+          Range = r
+          Node = TWithReturn(label, typedBody) }
+
+    | EBindElse(target, clauses, sequel, elseBody, r) ->
+        let escapeName =
+            match target with
+            | Some named -> named
+            | None ->
+                match env.InnermostEscape with
+                | Some innermost -> innermost
+                | None ->
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos r}: `guard` needs an enclosing `(with-return name ...)`."
+
+        let info =
+            match Map.tryFind escapeName env.Escapes with
+            | Some found -> found
+            | None ->
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos r}: `guard` needs an enclosing `(with-return %s{escapeName} ...)`."
+
+        // Clauses bind sequentially, so the environment is threaded through
+        // them: a later scrutinee sees what an earlier pattern bound.
+        let reversedClauses, boundEnv =
+            clauses
+            |> List.fold
+                (fun (acc, envAcc) (pat, scrutinee) ->
+                    let scrutineeType, typedScrutinee = infer envAcc scrutinee
+                    let typedPat, boundVars = checkPattern inferChecked envAcc scrutineeType pat
+
+                    let envAcc' =
+                        Map.fold
+                            (fun inner n t ->
+                                addBinding
+                                    n
+                                    { Scheme = Scheme([], [], t)
+                                      IsMutable = false }
+                                    inner)
+                            envAcc
+                            boundVars
+
+                    (({ Pattern = typedPat
+                        Scrutinee = typedScrutinee }
+                      : TBindElseClause)
+                     :: acc,
+                     envAcc'))
+                ([], env)
+
+        // The sequel is the rest of the body, so the guard's own type is the
+        // sequel's. The else body's is the *block's*: it does not fall through
+        // to what follows, it leaves.
+        let sequelType, typedSequel = infer boundEnv sequel
+        let elseType, typedElse = infer env elseBody
+        unify env.Registry elseType info.Result
+
+        sequelType,
+        { Type = sequelType
+          Range = r
+          Node = TBindElse(info.Label, List.rev reversedClauses, typedSequel, typedElse) }
+
     // `std/eq`'s own equality primitives, refused everywhere else. See
     // `Naming.eqPrivateBindings` for why they are shut away at all.
     //

@@ -1,0 +1,224 @@
+;; `with-return` and `def/else` — a named early-exit block, and a refutable
+;; binding that leaves it.
+;;
+;; `def/else` is in the `def` family and consumed by `parseBody` beside
+;; `def/mutable`, because it *is* a definition: what its pattern binds scopes
+;; over the rest of the body. That is `def`'s scoping and not `let`'s, which
+;; opens a nested scope with a body of its own.
+;;
+;; Two lowerings are being exercised here, and which one a block gets is not
+;; something a program can see. When the block *is* the function's value, an
+;; escape is a plain C# `return` — no slot, no label. Anywhere else the value
+;; goes to a slot and control jumps past the body. `sub-expression` below is the
+;; second kind; everything else is the first.
+
+(import (std prelude))
+(import (std simpletest))
+
+(type (: Cfg (Record (: port int) (: hosts (List string)))))
+
+(: blocked? (-> string bool))
+(defun (blocked? h) (= h "bad"))
+
+;; --- def/else at the head of a body, and two in sequence -------------------
+;;
+;; The second scrutinee reads `cfg`, which the first clause bound: a def/else
+;; scopes over its sequel, and the sequel is where the next one stands.
+(: configure (-> (Option Cfg) (Option string) (Result string string)))
+(defun (configure cfg-opt host-opt)
+  (with-return ret
+    (def/else ((Some cfg) cfg-opt)
+      (Err "no config"))
+    (def/else ((Cons first-host _) (record-ref cfg hosts))
+      (Err (str "no hosts, and the port was " (int->string (record-ref cfg port)))))
+    (def/else ((Some host) host-opt)
+      (Err "no host"))
+    (Ok (str host "/" first-host ":" (int->string (record-ref cfg port))))))
+
+;; --- def/else* with three clauses, binding sequentially --------------------
+;;
+;; One else body, three ways to reach it. `codegen/with_return.bjo` is where the
+;; assertion that it is *emitted* once lives; this one is about behaviour.
+(: triple (-> (Option int) (Option int) (Option int) string))
+(defun (triple a b c)
+  (with-return ret
+    (def/else* (((Some x) a)
+                ((Some y) b)
+                ((Some z) c))
+      "something was missing")
+    (str (int->string (+ x (+ y z))))))
+
+;; --- ret from inside a loop ------------------------------------------------
+;;
+;; A loop is not a function boundary, however it is spelled before lowering: it
+;; desugars to a letrec whose body immediately calls one of its own members,
+;; which is exactly what makes it a `while` rather than a local function.
+(: first-blocked (-> (List string) (Option string)))
+(defun (first-blocked hosts)
+  (with-return ret
+    (loop (:for h hosts)
+          (:do (when (blocked? h) (ret (Some h)))))
+    None))
+
+;; --- ret from a try body whose #:finally must still run --------------------
+;;
+;; Leaving a `try` body is legal and correct: C# runs a `finally` on a `goto`
+;; and on a `return` alike, so resources unwind either way.
+(: cleanup-order (-> bool string))
+(defun (cleanup-order early)
+  (def/mutable log "")
+  (def result
+    (with-return ret
+      (try
+        (when early (ret "early"))
+        (set! log (str log "body "))
+        #:finally
+        (set! log (str log "cleanup ")))
+      "fell-through"))
+  (str log "-> " result))
+
+;; --- the block as a subexpression, which forces the slot-and-label path ----
+(: sub-expression (-> int int))
+(defun (sub-expression n)
+  (+ 1
+     (with-return ret
+       (when (< n 0) (ret 0))
+       (* n 10))))
+
+;; --- nested blocks, the inner body naming the outer escape -----------------
+(: nested (-> int string))
+(defun (nested n)
+  (with-return outer
+    (when (= n 0) (outer "outer-from-outer"))
+    (with-return inner
+      (when (= n 1) (outer "outer-from-inner"))
+      (when (= n 2) (inner "inner"))
+      "inner-fell-through")))
+
+;; --- shadowing needs no rule of its own ------------------------------------
+;;
+;; Binding `ret` as an ordinary name is what shadowing an escape *is*:
+;; `addBinding` drops it from the escape table exactly as it drops a name from
+;; `TraitMethodNames`. After the `let` below, `ret` is an int.
+(: shadowed (-> int))
+(defun (shadowed)
+  (with-return ret
+    (let ((ret 7))
+      (+ ret 1))))
+
+;; --- a void block, left with `(ret)` ---------------------------------------
+(: void-block (-> bool string))
+(defun (void-block stop)
+  (def/mutable trace "")
+  (with-return ret
+    (set! trace (str trace "a"))
+    (when stop (ret))
+    (set! trace (str trace "b")))
+  trace)
+
+;; --- an escape inside a match arm ------------------------------------------
+(: from-arm (-> (Option int) string))
+(defun (from-arm o)
+  (with-return ret
+    (match o
+      (None (ret "none"))
+      ((Some n) (when (< n 0) (ret "negative"))))
+    "positive"))
+
+;; --- both colour copies of one body ----------------------------------------
+;;
+;; The lowering generates no local function, so it is colour-blind: the sync and
+;; suspending copies of this body get the identical rewrite. A `defun` is
+;; already colour-polymorphic and a copy is made for each colour actually used,
+;; so calling it from a bjoroutine below is what asks for the second one.
+(: classify (-> (Option int) string))
+(defun (classify o)
+  (with-return ret
+    (def/else ((Some n) o)
+      "none")
+    (when (< n 0) (ret "negative"))
+    "positive"))
+
+;; This is what asks for the second copy. A bjoroutine's call reaches the
+;; suspending copy of `classify`, so declaring this forces that copy to be
+;; emitted — and since the two bodies get the identical rewrite, the assertion
+;; is that this file compiles at all. Running it would need a `sync`, and `main`
+;; is a `defun`, which may not await.
+(: classify-in-fiber (-bjo-> (Option int) string))
+(defbjo (classify-in-fiber o)
+  (classify o))
+
+(defun (main)
+  (expect "def/else at the head of a body, twice over"
+          (match (configure (Some (Cfg (port 80) (hosts (list "a")))) (Some "h"))
+            ((Ok s) s)
+            ((Err e) (str "err:" e)))
+          "h/a:80")
+
+  (expect "the first clause fails"
+          (match (configure None (Some "h"))
+            ((Ok s) s)
+            ((Err e) (str "err:" e)))
+          "err:no config")
+
+  (expect "the second scrutinee reads what the first bound"
+          (match (configure (Some (Cfg (port 8080) (hosts Nil))) (Some "h"))
+            ((Ok s) s)
+            ((Err e) (str "err:" e)))
+          "err:no hosts, and the port was 8080")
+
+  (expect "the third clause fails"
+          (match (configure (Some (Cfg (port 80) (hosts (list "a")))) None)
+            ((Ok s) s)
+            ((Err e) (str "err:" e)))
+          "err:no host")
+
+  (expect "def/else* with every clause matching"
+          (triple (Some 1) (Some 2) (Some 3))
+          "6")
+  (expect "def/else*, first clause failing" (triple None (Some 2) (Some 3)) "something was missing")
+  (expect "def/else*, middle clause failing" (triple (Some 1) None (Some 3)) "something was missing")
+  (expect "def/else*, last clause failing" (triple (Some 1) (Some 2) None) "something was missing")
+
+  (expect "ret from inside a loop"
+          (match (first-blocked (list "a" "bad" "c"))
+            ((Some h) h)
+            (None "none"))
+          "bad")
+  (expect "and the loop running to its end"
+          (match (first-blocked (list "a" "c"))
+            ((Some h) h)
+            (None "none"))
+          "none")
+
+  ;; The cleanup runs on the way out, before the block's value is produced.
+  (expect "a #:finally runs when ret leaves the try body"
+          (cleanup-order #t)
+          "cleanup -> early")
+  (expect "and when the body runs to its end"
+          (cleanup-order #f)
+          "body cleanup -> fell-through")
+
+  (expect "a block used as a subexpression, escaping" (sub-expression -5) 1)
+  (expect "a block used as a subexpression, falling through" (sub-expression 4) 41)
+
+  (expect "the outer escape, from the outer body" (nested 0) "outer-from-outer")
+  (expect "the outer escape, named from the inner body" (nested 1) "outer-from-inner")
+  (expect "the inner escape" (nested 2) "inner")
+  (expect "neither" (nested 9) "inner-fell-through")
+
+  (expect "an ordinary binding shadows an escape" (shadowed) 8)
+
+  (expect "a void block, left early" (void-block #t) "a")
+  (expect "a void block, run to its end" (void-block #f) "ab")
+
+  (expect "an escape from a match arm" (from-arm None) "none")
+  (expect "another" (from-arm (Some -1)) "negative")
+  (expect "and falling out of the match" (from-arm (Some 1)) "positive")
+
+  (expect "the sync copy" (classify (Some 3)) "positive")
+  (expect "the sync copy, escaping" (classify (Some -3)) "negative")
+  (expect "the sync copy, on the def/else" (classify None) "none")
+
+  (println "219 ok")
+  0)

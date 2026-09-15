@@ -102,6 +102,18 @@ let mapChildren (f: TypedExpr -> TypedExpr) (expr: TypedExpr) : TypedExpr =
         | TYield value -> TYield(f value)
         | TYieldFrom source -> TYieldFrom(f source)
         | TMatch(target, clauses) -> TMatch(f target, List.map mapClause clauses)
+        | TWithReturn(label, body) -> TWithReturn(label, f body)
+        | TReturn(label, value) -> TReturn(label, Option.map f value)
+        | TBindElse(label, clauses, sequel, elseBody) ->
+            TBindElse(
+                label,
+                clauses
+                |> List.map (fun (c: TBindElseClause) ->
+                    { Pattern = mapPat c.Pattern
+                      Scrutinee = f c.Scrutinee }),
+                f sequel,
+                f elseBody
+            )
         | TInterfaceCall(iType, mName, mType, dict, args) -> TInterfaceCall(iType, mName, mType, f dict, List.map f args)
         | TTraitCall(tref, args, kwArgs) ->
             TTraitCall(tref, List.map f args, kwArgs |> List.map (fun (n, e) -> n, f e))

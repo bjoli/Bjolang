@@ -71,6 +71,14 @@ let private neverReturns (registry: TraitRegistry) (expr: TypedExpr) =
     match expr.Node with
     | TApply({ Node = TIdent(name, _) }, _, _) ->
         Set.contains (Naming.writtenName name) registry.ReturnOnlyGenerics
+    // `(ret e)` leaves its block, so it yields nothing here to be dropped. Its
+    // type is a fresh metavariable precisely because it never produces a value,
+    // and without this every `(when c (ret x))` — which is what the form is
+    // *for* — would be asked to `ignore` a value that does not exist.
+    //
+    // What `e` itself carries is not discarded either: it becomes the block's
+    // value, and the block's own use is where that question belongs.
+    | TReturn _ -> true
     | _ -> false
 
 /// `what` names the shape that is doing the discarding, so that the message can

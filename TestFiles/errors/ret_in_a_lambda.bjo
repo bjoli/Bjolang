@@ -1,0 +1,14 @@
+;; `ret` may be applied only where the path to its block crosses no function
+;; boundary. A lambda is one, even when it is handed to something that calls it
+;; at once: the call happens inside a C# method of its own, and there is nothing
+;; to jump out of it to.
+
+;; EXPECT-ERROR: cannot leave the lambda here
+
+(import (std prelude))
+
+(: any-blocked? (-> (List string) bool))
+(defun (any-blocked? hosts)
+  (with-return ret
+    (ignore (list-map (fun (h) (when (= h "bad") (ret #t))) hosts))
+    #f))

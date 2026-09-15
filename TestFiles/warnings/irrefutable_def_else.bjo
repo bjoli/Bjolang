@@ -1,0 +1,20 @@
+;; A `def/else` whose pattern cannot fail makes its else body dead code.
+;;
+;; Almost always a typo where a constructor was not in scope and so parsed as a
+;; plain variable. Warned rather than refused: a pattern that happens to be
+;; irrefutable is legal, and a generated one may well be.
+
+;; EXPECT-WARNING: always matches and its else body can never run
+
+(import (std prelude))
+
+(: f (-> (Option int) string))
+(defun (f o)
+  (with-return ret
+    (def/else (whatever o)
+      "this can never run")
+    "always here"))
+
+(defun (main)
+  (println (f (Some 1)))
+  0)

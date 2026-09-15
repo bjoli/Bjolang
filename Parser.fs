@@ -279,6 +279,31 @@ and Expr =
     | EYield of Expr * Range
     /// `(yield-from s)`: hand over every element of `s` in turn.
     | EYieldFrom of Expr * Range
+    /// `(with-return ret body ...)` — a named early-exit block.
+    ///
+    /// The name is required and there is no implicit `return`: `:return`
+    /// already means `pure` in `(do ...)` notation, and a second meaning for
+    /// that word would be a trap. `ret` is bound in the *ordinary value
+    /// namespace*, so shadowing, unbound-name errors and nested blocks all
+    /// follow the scope rules that already exist rather than new ones.
+    | EWithReturn of string * Expr * Range
+    /// `(guard (pattern scrutinee) else-form ...)` and its `guard*` plural.
+    ///
+    /// Carries the clauses, **the rest of the body it was written in**, and the
+    /// else body. The sequel is what makes this a binding form: a guard's
+    /// pattern variables scope over what follows it exactly as an internal
+    /// `def`'s name does, and `parseBody` is what hands it that sequel.
+    ///
+    /// Clauses bind sequentially — a later scrutinee may name what an earlier
+    /// pattern bound — and any one of them failing runs the single shared else
+    /// body, whose value becomes the *enclosing block's* value. That last part
+    /// is why this is not simply a `match` over the sequel: from a nested body
+    /// the else has to leave the whole `with-return`, not just the body it
+    /// stands in.
+    ///
+    /// The `string option` names which enclosing block to leave; `None` is the
+    /// nearest one.
+    | EBindElse of string option * (Pattern * Expr) list * Expr * Expr * Range
 
 and DefunArg =
     /// A positional parameter, with the type `(: name type)` gave it if it was
@@ -1550,7 +1575,9 @@ let exprRange (e: Expr) : Range =
     | EBjo(_, _, r)
     | ETaskEvent(_, r)
     | EYield(_, r)
-    | EYieldFrom(_, r) -> r
+    | EYieldFrom(_, r)
+    | EWithReturn(_, _, r)
+    | EBindElse(_, _, _, _, r) -> r
 
 /// Every name a pattern binds.
 let rec patternBinders (pat: Pattern) : string list =
@@ -1726,6 +1753,36 @@ let freeNamesWith (reference: string -> Range -> bool -> unit) (guarded: bool) (
         | EYield(v, _)
         | EYieldFrom(v, _) -> sub v
 
+        // `ret` is an ordinary binding over the body, which is what makes
+        // shadowing, unbound-name reporting and nested blocks follow the rules
+        // that already exist.
+        | EWithReturn(name, body, _) -> go guarded (Set.add name bound) body
+
+        | EBindElse(target, clauses, sequel, elseBody, r) ->
+            // A named target is a *reference* to an escape some enclosing block
+            // bound, so it counts as one.
+            Option.iter (fun n -> refer n r) target
+
+            // The else body runs because a clause did not match, so nothing any
+            // clause would have bound is in scope in it.
+            go guarded bound elseBody
+
+            // Clauses bind sequentially: a later scrutinee may name what an
+            // earlier pattern bound. A view's step is read in the scope the
+            // clause began in, as it is in `EMatch` above.
+            let inner =
+                clauses
+                |> List.fold
+                    (fun acc (pat, scrutinee) ->
+                        for step in patternSteps pat do
+                            go guarded acc step
+
+                        go guarded acc scrutinee
+                        Set.union acc (Set.ofList (patternBinders pat)))
+                    bound
+
+            go guarded inner sequel
+
     go guarded bound expr
 
 /// Every expression held directly inside `e`.
@@ -1774,6 +1831,188 @@ let exprChildren (e: Expr) : Expr list =
         :: (clauses
             |> List.collect (fun (pat, guard, body) ->
                 patternSteps pat @ (Option.toList guard) @ [ body ]))
+    | EWithReturn(_, b, _) -> [ b ]
+    | EBindElse(_, clauses, sequel, elseBody, _) ->
+        (clauses
+         |> List.collect (fun (pat, scrutinee) -> patternSteps pat @ [ scrutinee ]))
+        @ [ sequel; elseBody ]
+
+/// What stands between an escape's application and the block it would leave.
+type private EscapeBarrier =
+    | BarrierLambda
+    | BarrierSeq
+    | BarrierSpawn
+    | BarrierFinally
+
+/// Where `(name ...)` may be applied inside a `with-return` body.
+///
+/// Every rule about `ret` is a question about *shape* — is this application in
+/// tail position, does a lambda stand between it and its block — so all of them
+/// are answered here, over the body as written, rather than during inference,
+/// where a type would have to be invented for a form that never yields one.
+///
+/// Shadowing stops the walk: a binding of the same name means the escape is
+/// simply not what `name` names any more, which is the rule every other binding
+/// already follows.
+let checkEscapeUses (name: string) (body: Expr) : unit =
+    let refuse (r: Range) (message: string) =
+        failwithf $"Syntax error at %s{Lexer.formatPos r}: %s{message}"
+
+    let crossed (barrier: EscapeBarrier) (r: Range) =
+        match barrier with
+        | BarrierLambda ->
+            refuse r $"`%s{name}` cannot leave the lambda here. Use a loop, or a function returning a Result."
+        | BarrierSeq ->
+            refuse r $"`%s{name}` cannot leave a `seq` block: generated iterators may not be jumped out of."
+        | BarrierSpawn ->
+            refuse
+                r
+                $"`%s{name}` cannot leave the fiber here: a spawned call runs on its own, and the block it would return from may already have finished."
+        | BarrierFinally -> refuse r $"`%s{name}` cannot leave a cleanup body."
+
+    // `barrier` is the innermost function boundary crossed so far, and `tail`
+    // says whether an escape applied *here* would stand in statement or tail
+    // position. Everything else is a proper subexpression, which phase one
+    // refuses: it would have to interact with `hoistToTemp` and would need a
+    // bottom type to have one at all.
+    let rec go (barrier: EscapeBarrier option) (tail: bool) (e: Expr) =
+        // A body's statement form, which `parseBody` writes as a `_` binding.
+        let stmt = go barrier true
+        let sub = go barrier false
+        let shadowed names = List.contains name names
+
+        match e with
+        | EIdent(n, r) when n = name ->
+            refuse
+                r
+                $"`%s{name}` is an escape, not a value: it can only be applied inside its own `with-return`."
+
+        | EApp(EIdent(n, _), args, r) when n = name ->
+            match barrier with
+            | Some b -> crossed b r
+            | None -> ()
+
+            if not tail then
+                refuse r $"`%s{name}` may only appear as a statement or in tail position."
+
+            List.iter sub args
+
+        | EFun(args, b, _, _) -> if not (shadowed args) then go (Some BarrierLambda) true b
+        | ESeq(b, _) -> go (Some BarrierSeq) true b
+        | EBjo(b, _, _)
+        | ETaskEvent(b, _) -> go (Some BarrierSpawn) true b
+
+        // Leaving a `try` body is legal and correct — C# runs a `finally` on a
+        // `goto` and on a `return` alike, so resources unwind. Leaving the
+        // cleanup itself is what C# forbids.
+        | ETryFinally(b, cleanup, _) ->
+            stmt b
+            go (Some BarrierFinally) true cleanup
+
+        | ETryCatch(b, _, _) -> stmt b
+
+        | ELet(n, isFun, args, _, value, b, _) ->
+            // `(def x (ret 1))` is an initialiser, not a statement. Only the
+            // `_` binding `parseBody` writes for a bare form in a body is one.
+            if isFun then
+                (if not (shadowed (allArgNames args)) then go (Some BarrierLambda) true value)
+            elif n = "_" then
+                stmt value
+            else
+                sub value
+
+            if n <> name then go barrier tail b
+
+        | ELetRec(bindings, b, _) ->
+            let names = bindings |> List.map (fun (n, _, _, _, _) -> n)
+
+            // A loop is not a function boundary, however it is spelled here.
+            //
+            // `loop`, `for` and a named `let` all desugar to a letrec whose
+            // body immediately calls one of its own members, and that is
+            // exactly what `LoopLowering.flatLoopEntry` recognises in order to
+            // emit a `while` rather than a local function. A `goto` out of a
+            // `while` is what the loop's own `ExitLabel` already does, so an
+            // escape crossing one is leaving a loop and not a method.
+            //
+            // Recognised by shape rather than by the names the desugaring
+            // generates: `(let go (...) ...)` is a loop too, and its member
+            // carries a name the user chose.
+            let isLoopEntry =
+                match b with
+                | EApp(EIdent(entry, _), _, _) -> List.contains entry names
+                | _ -> false
+
+            if not (shadowed names) then
+                for (_, isFun, args, _, value) in bindings do
+                    if isFun && not isLoopEntry then
+                        (if not (shadowed (allArgNames args)) then go (Some BarrierLambda) true value)
+                    elif isFun then
+                        (if not (shadowed (allArgNames args)) then go barrier true value)
+                    else
+                        sub value
+
+                go barrier tail b
+
+        | ELetMono(n, value, b, _) ->
+            sub value
+            if n <> name then go barrier tail b
+
+        | ELetTuple(names, value, b, _) ->
+            sub value
+            if not (shadowed names) then go barrier tail b
+
+        | ELetMutable(n, _, value, b, _) ->
+            sub value
+            if n <> name then go barrier tail b
+
+        | EIf(c, t, f, _) ->
+            sub c
+            go barrier tail t
+            go barrier tail f
+
+        // A `when` body's value is discarded, so it is a statement and an
+        // escape is at home in it.
+        | EWhen(c, b, _, _) ->
+            sub c
+            stmt b
+
+        | EMatch(target, clauses, _) ->
+            sub target
+
+            for (pat, guard, clauseBody) in clauses do
+                for step in patternSteps pat do
+                    sub step
+
+                Option.iter sub guard
+
+                if not (shadowed (patternBinders pat)) then
+                    go barrier tail clauseBody
+
+        // A nested block binding the same name shadows this one, exactly as any
+        // other binding of it would.
+        | EWithReturn(n, b, _) -> if n <> name then go barrier tail b
+
+        | EBindElse(_, clauses, sequel, elseBody, _) ->
+            let bound =
+                clauses
+                |> List.fold
+                    (fun acc (pat, scrutinee) ->
+                        if not acc then
+                            for step in patternSteps pat do
+                                sub step
+
+                            sub scrutinee
+
+                        acc || shadowed (patternBinders pat))
+                    false
+
+            if not bound then go barrier tail sequel
+            go barrier tail elseBody
+
+        | _ -> List.iter sub (exprChildren e)
+
+    go None true body
 
 // ---------------------------------------------------------------------------
 // Scope
@@ -1991,6 +2230,34 @@ let private renameWith
         | ETaskEvent(body, r) -> ETaskEvent(sub body, r)
         | EYield(v, r) -> EYield(sub v, r)
         | EYieldFrom(s, r) -> EYieldFrom(sub s, r)
+
+        | EWithReturn(name, body, r) ->
+            let renamed, bodySubst = bind [ name ] subst
+            EWithReturn(List.head renamed, go bodySubst body, r)
+
+        | EBindElse(target, clauses, sequel, elseBody, r) ->
+            // Threading the substitution through the clauses in order is what
+            // makes a later scrutinee see what an earlier pattern bound.
+            let clauses', inner =
+                clauses
+                |> List.fold
+                    (fun (acc, s) (pat, scrutinee) ->
+                        // The scrutinee and the pattern's steps are evaluated
+                        // in the scope this clause began in, not under what it
+                        // binds — same rule as a match clause's view step.
+                        let scrutinee' = go s scrutinee
+                        let _, s' = bind (patternBinders pat) s
+                        ((renamePattern (go s) s' pat, scrutinee') :: acc, s'))
+                    ([], subst)
+
+            EBindElse(
+                target |> Option.map reference,
+                List.rev clauses',
+                go inner sequel,
+                // Outside every clause's bindings, for the reason above.
+                sub elseBody,
+                r
+            )
 
     go rootSubst expr
 
@@ -2554,6 +2821,39 @@ let rec parseExpr (s: SExpr) : Expr =
                 | cond :: bodyExprs when not bodyExprs.IsEmpty ->
                     EWhen(parseExpr cond, parseBody bodyExprs listRange, true, listRange)
                 | _ -> failwithf $"Invalid unless syntax at %s{Lexer.formatPos r}. Expected: (unless cond body...)"
+
+            // `(with-return ret body ...)`. The body is an ordinary body, so a
+            // `def` or a `guard` in it scopes over what follows.
+            //
+            // `name` keeps whatever mark it arrived with. It is a *binder*, and
+            // a template's binder is meant to be uncapturable — stripping it
+            // here would let a macro's `ret` be caught by a user's, which is
+            // the one thing the marks exist to prevent.
+            | "with-return" ->
+                match args with
+                | SAtom { Token = Symbol name } :: bodyExprs when not bodyExprs.IsEmpty ->
+                    EWithReturn(name, parseBody bodyExprs listRange, listRange)
+                | [ SAtom { Token = Symbol name } ] ->
+                    failwithf
+                        $"Syntax error at %s{Lexer.formatPos r}: the with-return block named '%s{name}' has no body."
+                | _ ->
+                    failwithf
+                        $"Syntax error at %s{Lexer.formatPos r}: with-return needs a name for its escape. Expected: (with-return name body...). The name is required — there is no implicit `return`."
+
+            // A `guard` that got this far is one `parseBody` did not take,
+            // which means it is not in body position. It has nowhere to put its
+            // sequel there, so saying so is the only answer: silently reading
+            // it as a call would fail with "Unbound variable: guard" and name
+            // nothing the programmer did wrong.
+            // A `def/else` that got this far is one `parseBody` did not take,
+            // which means it is not in body position. It has nowhere to put its
+            // sequel there, so saying so is the only answer: reading it as a
+            // call would fail with "Unbound variable: def/else" and name
+            // nothing the programmer did wrong.
+            | "def/else"
+            | "def/else*" ->
+                failwithf
+                    $"Syntax error at %s{Lexer.formatPos r}: `def/else` must appear directly in a body, not inside another expression."
 
             // A `seq` body is a block like any other, but it is *not* run where
             // it is written: the form evaluates to a sequence, and the body runs
@@ -4678,7 +4978,17 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         match items with
         | SList(SAtom({ Token = Symbol sym } as head) :: rest, r) :: tail when sym <> headName sym ->
             match headName sym with
-            | ("def" | "defun" | "defbjo" | "def/mutable" | "begin") as stripped ->
+            // `def/else` and `def/else*` are here for the same reason `def` is:
+            // they are consumed by this function and never reach `parseExpr`'s
+            // chain, so a template that writes one arrives marked and would
+            // otherwise be read as a call to something named `def/else__37`.
+            | ("def"
+              | "defun"
+              | "defbjo"
+              | "def/mutable"
+              | "def/else"
+              | "def/else*"
+              | "begin") as stripped ->
                 SList(SAtom { head with Token = Symbol stripped } :: rest, r) :: tail
             | _ -> items
         | _ -> items
@@ -4764,6 +5074,73 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         // lets a macro expand to several forms — a definition and the code
         // after it — where only one was written.
         | SList(SAtom { Token = Symbol "begin" } :: inner, _) :: rest -> parseItems (inner @ rest)
+
+        // `(def/else (pattern scrutinee) else-form ...)`, and the `def/else*`
+        // plural below it.
+        //
+        // In the `def` family, and consumed here beside `def/mutable`, because
+        // it *is* a definition: what the pattern binds scopes over the rest of
+        // this body. That is `def`'s scoping and not `let`'s — a `let` opens a
+        // nested scope with a body of its own — which is why the form is handed
+        // `parseItems rest` as its sequel rather than desugared in `parseExpr`,
+        // which has no sequel to give it.
+        //
+        // The name was `guard` while this was being written, and could not
+        // stay. `guard` already means a match clause's `#:when` test all
+        // through the pattern machinery — `TMatchClause.Guard`,
+        // `generateClauseGuard` — and separately names CML's event combinator,
+        // which `http.bjo` calls. A third meaning, in the middle of the
+        // subsystem that already owns the first, is worse than a longer word.
+        //
+        // An optional name may come first — `(def/else ret (p e) ...)` — saying
+        // which enclosing `with-return` the else body leaves. Without one it is
+        // the nearest.
+        | SList(SAtom { Token = Symbol "def/else" } :: forms, r) :: rest ->
+            let target, clauseAndElse =
+                match forms with
+                | SAtom { Token = Symbol name } :: tail -> Some name, tail
+                | tail -> None, tail
+
+            match clauseAndElse with
+            | SList([ pattern; scrutinee ], _) :: elseForms when not elseForms.IsEmpty ->
+                EBindElse(
+                    target,
+                    [ (parsePattern pattern, parseExpr scrutinee) ],
+                    parseItems rest,
+                    parseBody elseForms r,
+                    r
+                )
+            | _ ->
+                failwithf
+                    $"Syntax error at %s{Lexer.formatPos r}: expected (def/else (pattern scrutinee) else-form...), optionally naming a block as (def/else name (pattern scrutinee) else-form...)."
+
+        // `(def/else* ((p1 e1) (p2 e2) ...) else-form ...)`.
+        //
+        // No `#:else` marker. It was there to keep a bare `else` from colliding
+        // with a pattern macro or a constructor of that name — but once the
+        // clauses are one parenthesised group, what follows them is the else
+        // body and there is nothing left for a marker to disambiguate. It was
+        // paying for a collision that this shape does not have.
+        | SList(SAtom { Token = Symbol "def/else*" } :: forms, r) :: rest ->
+            let target, clausesAndElse =
+                match forms with
+                | SAtom { Token = Symbol name } :: tail -> Some name, tail
+                | tail -> None, tail
+
+            match clausesAndElse with
+            | SList(clauseForms, _) :: elseForms when not clauseForms.IsEmpty && not elseForms.IsEmpty ->
+                let clauses =
+                    clauseForms
+                    |> List.map (function
+                        | SList([ pattern; scrutinee ], _) -> (parsePattern pattern, parseExpr scrutinee)
+                        | bad ->
+                            failwithf
+                                $"Syntax error at %s{Lexer.formatPos (getRange bad)}: a def/else* clause is written (pattern scrutinee).")
+
+                EBindElse(target, clauses, parseItems rest, parseBody elseForms r, r)
+            | _ ->
+                failwithf
+                    $"Syntax error at %s{Lexer.formatPos r}: expected (def/else* ((pattern scrutinee) ...) else-form...)."
 
         | SList(SAtom { Token = Symbol "def/mutable" } :: SAtom { Token = Symbol name } :: [ expr ], r) :: rest ->
             ELetMutable(name, None, parseExpr expr, parseItems rest, fallbackRange)
