@@ -1,0 +1,304 @@
+;; A record written as a tagged form: `(package (name ...) (version ...))`.
+;;
+;; Four things are asserted here, and the third is the one that matters most:
+;;
+;;   - `#:tag` reads and writes a record as `(tag (field value) ...)`
+;;   - `#:rest` lets one clause hold many values, which is how `(depends
+;;     (package ...) (package ...))` fills a `(List Dep)`
+;;   - **the one-pass and the tree decoders refuse the same document in the same
+;;     words**, which is asserted rather than assumed — every refusal below goes
+;;     through both, and the assertion is that they agree
+;;   - `(bjor manifest)` is an ordinary user of all of it, reading a real
+;;     manifest off standard input
+;;
+;; The manifest in `218_bjodat_forms.in` is not a fixture: it is read here, so
+;; it cannot drift away from the types in `(bjor manifest)` without the suite
+;; saying so.
+
+(import (text bjodat))
+;; For the *tree*, which is what the second decoder in every comparison below
+;; is. A program that only declares types and reads them needs one import; this
+;; one deliberately reads both ways in order to compare them.
+(import (text bjodat-core))
+(import (bjor manifest))
+(import (std simpletest))
+
+;; A type of the test's own, so that the markers can be exercised away from
+;; anything a manifest happens to need. `#:key` renames a clause exactly as it
+;; renames a map key, and `kids` is recursive.
+(def/bjodat-type
+  (: Item (Record #:tag item
+                  (: name string)
+                  (: kind Symbol #:key :sort)
+                  (: tags (Vec string) #:default (vec-empty))
+                  (: note (Option string) #:optional)
+                  (: kids (List Item) #:rest #:default Nil))))
+
+;; The same fields as a map, to show that the two encodings are a property of
+;; the type rather than of the format.
+(def/bjodat-type
+  (: Mapped (Record (: name string)
+                    (: kind Symbol #:key :sort))))
+
+(: shown (-> (Result string Item) string))
+(defun (shown r)
+  (match r
+    ((Err e) (str "err: " e))
+    ((Ok x) (bjodat->string (Item->bjodat x)))))
+
+(: shown-tree (-> (Result string Bjodat) string))
+(defun (shown-tree r)
+  (match r
+    ((Err e) (str "parse: " e))
+    ((Ok v) (shown (bjodat->Item v)))))
+
+;; What the two decoders said, when they agree. When they do not, the
+;; disagreement is the answer, so the failure names both.
+(: agreed (-> string string string))
+(defun (agreed one-pass tree)
+  (if (= one-pass tree)
+      one-pass
+      (str "DIFFER | one-pass: " one-pass " | tree: " tree)))
+
+(: dep-names (-> Package string))
+(defun (dep-names p)
+  (def sb (stringbuilder-empty))
+  (loop (:with first #t #f)
+        (:for d (record-ref p depends))
+        (:do (unless first (stringbuilder-add! sb #\space))
+             (stringbuilder-add-string! sb (module-name->string (record-ref d name)))))
+  (stringbuilder->string sb))
+
+(: satisfied (-> string (Option VersionReq) string))
+(defun (satisfied v req)
+  (match (parse-version v)
+    ((Err e) e)
+    ((Ok ver)
+     (match req
+       (None "unconstrained")
+       ((Some r) (if (version-satisfies? ver r) "yes" "no"))))))
+
+(: nth-dep (-> Package int (Option Dep)))
+(defun (nth-dep p i)
+  (let go ((ds (record-ref p depends)) (k 0))
+    (match ds
+      (Nil None)
+      ((Cons d rest) (if (= k i) (Some d) (go rest (+ k 1)))))))
+
+(: dep-version (-> Package int (Option VersionReq)))
+(defun (dep-version p i)
+  (match (nth-dep p i)
+    (None None)
+    ((Some d) (record-ref d version))))
+
+(defun (main)
+  ;; ------------------------------------------------------------------
+  ;; The round trip
+  ;; ------------------------------------------------------------------
+  (expect "a tagged record, read straight into the record and written back"
+          (agreed (shown (bjodat-parse-Item "(item (name \"a\") (sort leaf))"))
+                  (shown-tree (parse-bjodat "(item (name \"a\") (sort leaf))")))
+          "(item (name \"a\") (sort leaf) (tags []))")
+
+  ;; `#:key :sort` renames the clause, and the field is still `kind`.
+  (expect "#:key renames a clause as it renames a map key"
+          (match (bjodat-parse-Item "(item (name \"a\") (sort leaf))")
+            ((Err e) (str "err: " e))
+            ((Ok x) (symbol->string (record-ref x kind))))
+          "leaf")
+
+  ;; The same fields under the other encoding. Which one a type is written in is
+  ;; the type's to say; the format carries both and prefers neither.
+  (expect "a map-encoded record is untouched by any of this"
+          (match (bjodat-parse-Mapped "{:name \"a\" :sort leaf}")
+            ((Err e) (str "err: " e))
+            ((Ok x) (bjodat->string (Mapped->bjodat x))))
+          "{:name \"a\" :sort leaf}")
+
+  ;; ------------------------------------------------------------------
+  ;; #:rest
+  ;; ------------------------------------------------------------------
+  (expect "one clause holding many values, recursively"
+          (agreed (shown (bjodat-parse-Item
+                          "(item (name \"root\") (sort branch)
+                                 (kids (item (name \"a\") (sort leaf))
+                                       (item (name \"b\") (sort leaf))))"))
+                  (shown-tree (parse-bjodat
+                               "(item (name \"root\") (sort branch)
+                                      (kids (item (name \"a\") (sort leaf))
+                                            (item (name \"b\") (sort leaf))))")))
+          (str "(item (name \"root\") (sort branch) (tags []) "
+               "(kids (item (name \"a\") (sort leaf) (tags [])) "
+               "(item (name \"b\") (sort leaf) (tags []))))"))
+
+  (expect "an empty #:rest field writes no clause at all"
+          (shown (bjodat-parse-Item "(item (name \"a\") (sort leaf) (kids))"))
+          "(item (name \"a\") (sort leaf) (tags []))")
+
+  ;; A `#:rest` field recurses through `read-value`, which carries the depth
+  ;; budget. Without that a manifest could nest its way through the stack.
+  (expect "nesting past bjodat-max-depth is refused, not overflowed"
+          (match (bjodat-parse-Item
+                  (let go ((i 0) (acc "(item (name \"leaf\") (sort leaf))"))
+                    (if (>= i 400)
+                        acc
+                        (go (+ i 1) (str "(item (name \"n\") (sort b) (kids " acc "))")))))
+            ((Err _) "refused")
+            ((Ok _) "accepted"))
+          "refused")
+
+  ;; ------------------------------------------------------------------
+  ;; Unknown clauses, of every arity
+  ;; ------------------------------------------------------------------
+  (expect "an unknown clause holding nothing, one value, or two"
+          (agreed (shown (bjodat-parse-Item
+                          "(item (nothing) (name \"a\") (license \"MIT\") (sort leaf) (pair 1 2))"))
+                  (shown-tree (parse-bjodat
+                               "(item (nothing) (name \"a\") (license \"MIT\") (sort leaf) (pair 1 2))")))
+          "(item (name \"a\") (sort leaf) (tags []))")
+
+  (expect "a repeated clause: the first wins, in both decoders"
+          (agreed (shown (bjodat-parse-Item "(item (name \"a\") (name \"b\") (sort leaf))"))
+                  (shown-tree (parse-bjodat "(item (name \"a\") (name \"b\") (sort leaf))")))
+          "(item (name \"a\") (sort leaf) (tags []))")
+
+  ;; ------------------------------------------------------------------
+  ;; The refusals, through both decoders
+  ;; ------------------------------------------------------------------
+  (expect "a clause that is not there"
+          (agreed (shown (bjodat-parse-Item "(item (name \"a\"))"))
+                  (shown-tree (parse-bjodat "(item (name \"a\"))")))
+          "err: Item: there is no (sort ...) clause")
+
+  (expect "a clause whose value is the wrong type"
+          (agreed (shown (bjodat-parse-Item "(item (name 42) (sort leaf))"))
+                  (shown-tree (parse-bjodat "(item (name 42) (sort leaf))")))
+          "err: Item.name: expected a string")
+
+  ;; The tag is checked where a map's brace is checked, so the one-pass decoder
+  ;; knows a position for it and the tree decoder does not. The sentence is one
+  ;; sentence either way.
+  (expect "the wrong tag, as the tree decoder says it"
+          (shown-tree (parse-bjodat "(banana (name \"a\") (sort leaf))"))
+          "err: Item: expected (item ...), and this is (banana ...)")
+
+  (expect "the wrong tag, as the reader says it"
+          (shown (bjodat-parse-Item "(banana (name \"a\") (sort leaf))"))
+          "err: line 1, column 8: Item: expected (item ...), and this is (banana ...)")
+
+  (expect "a clause holding two values where one was wanted"
+          (shown-tree (parse-bjodat "(item (name \"a\" \"b\") (sort leaf))"))
+          "err: Item.name: a clause holds a field name and one value")
+
+  (expect "a clause that does not begin with a name"
+          (shown-tree (parse-bjodat "(item (name \"a\") (sort leaf) (\"str\" 1))"))
+          "err: Item: a clause begins with a field name")
+
+  ;; ------------------------------------------------------------------
+  ;; A real manifest, off standard input, in one pass
+  ;; ------------------------------------------------------------------
+  (def read-in (read-one-pass (parameter-ref current-input-port) bjodat-read-Package))
+
+  (expect "a module name is the list of symbols `import` would have written"
+          (match read-in
+            ((Err e) (str "err: " e))
+            ((Ok p) (module-name->string (record-ref p name))))
+          "(bjolang http)")
+
+  (expect "the package's own version"
+          (match read-in
+            ((Err e) (str "err: " e))
+            ((Ok p) (version->string (record-ref p version))))
+          "1.2.3")
+
+  (expect "every dependency, named"
+          (match read-in
+            ((Err e) (str "err: " e))
+            ((Ok p) (dep-names p)))
+          "(std prelude) (bjolang cml) (bjolang tls) (bjo core)")
+
+  (expect "a defaulted clause the file never wrote"
+          (match read-in
+            ((Err e) (str "err: " e))
+            ((Ok p) (record-ref p entry)))
+          "src/main.bjo")
+
+  ;; The three version tags, exercised against the constraints in the file.
+  (expect "(version-at-least \"2.0.1\") admits 2.1, and not 2.0"
+          (match read-in
+            ((Err e) (str "err: " e))
+            ((Ok p) (str (satisfied "2.1" (dep-version p 1)) " "
+                         (satisfied "2.0" (dep-version p 1)))))
+          "yes no")
+
+  (expect "(version-between \"0.4\" \"1.0\") is inclusive at both ends"
+          (match read-in
+            ((Err e) (str "err: " e))
+            ((Ok p) (str (satisfied "0.4" (dep-version p 2)) " "
+                         (satisfied "0.9" (dep-version p 2)) " "
+                         (satisfied "1.0" (dep-version p 2)) " "
+                         (satisfied "1.0.1" (dep-version p 2)))))
+          "yes yes yes no")
+
+  (expect "a dependency with no version clause is unconstrained"
+          (match read-in
+            ((Err e) (str "err: " e))
+            ((Ok p) (satisfied "9.9.9" (dep-version p 0))))
+          "unconstrained")
+
+  ;; `(version-at-most "2.0")` lives on the dev dependency.
+  (expect "(version-at-most \"2.0\") admits 2.0 and refuses 2.0.1"
+          (match read-in
+            ((Err e) (str "err: " e))
+            ((Ok p)
+             (match (record-ref p dev-depends)
+               (Nil "none")
+               ((Cons d _) (str (satisfied "2.0" (record-ref d version)) " "
+                                (satisfied "2.0.1" (record-ref d version)))))))
+          "yes no")
+
+  ;; The whole manifest, written back out. A source is a union picked by its
+  ;; head symbol, and it comes back under the tag it went in as.
+  ;;
+  ;; Two things are *not* preserved, and both are deliberate. The unknown
+  ;; `(workspace ...)` clause is gone, because a record holds its fields and
+  ;; nothing else — a tool that wants to edit a manifest in place has to work on
+  ;; the tree, not on the record. And `"0.4"` comes back `"0.4.0"`: a `Version`
+  ;; is three numbers, the two spellings are one value, and writing the
+  ;; canonical one is what the writer does everywhere else. Preserving the
+  ;; shorter spelling would mean carrying a field that exists only to remember
+  ;; how the file looked, which is a second source of truth for one fact.
+  (expect "the manifest round-trips, normalised, unknown clause dropped"
+          (match read-in
+            ((Err e) (str "err: " e))
+            ((Ok p) (bjodat->string (Package->bjodat p))))
+          (str "(package (name (bjolang http)) (version \"1.2.3\") "
+               "(description \"An HTTP client and server.\") (license \"MPL-2.0\") "
+               "(authors [\"Linus\" \"someone@example.com\"]) (entry \"src/main.bjo\") "
+               "(targets [net8.0 net9.0]) "
+               "(source (git (url \"https://github.com/linus/bjo-http\") "
+               "(commit \"abcdef0011223344\"))) "
+               "(depends (package (name (std prelude))) "
+               "(package (name (bjolang cml)) (version (version-at-least \"2.0.1\"))) "
+               "(package (name (bjolang tls)) (version (version-between \"0.4.0\" \"1.0.0\")) "
+               "(source (git (url \"https://github.com/linus/bjo-tls\") (branch main)))) "
+               "(package (name (bjo core)) (source (path (dir \"../bjo-core\"))))) "
+               "(dev-depends (package (name (std simpletest)) "
+               "(version (version-at-most \"2.0.0\")))))"))
+
+  (expect "a constraint that is not one of the three"
+          (match (bjodat-parse-Dep "(package (name (a b)) (version (version-ish \"1\")))")
+            ((Err e) (str "err: " e))
+            ((Ok _) "accepted"))
+          (str "err: Dep.version: (version-ish ...) is not a version constraint: "
+               "expected a version constraint: (version-at-least \"1.2\"), "
+               "(version-at-most \"2.0\") or (version-between \"1.2\" \"2.0\")"))
+
+  (expect "a version that is not a version"
+          (match (bjodat-parse-Dep "(package (name (a b)) (version (version-at-least \"1.x\")))")
+            ((Err e) (str "err: " e))
+            ((Ok _) "accepted"))
+          "err: Dep.version: \"1.x\" is not a version: a version is written \"1.2.3\"")
+
+  (println "218 ok")
+  0)

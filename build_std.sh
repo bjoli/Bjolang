@@ -96,4 +96,10 @@ echo "Building standard library..."
 # written in.
 ./bjor --lib lib/text/bjodat.bjo
 
+# `bjor/manifest` is the package manifest, as types. After `text/bjodat`, whose
+# `def/bjodat-type` it is written with and whose `Bjodat` cases its hand-written
+# instances name. It is the first thing in the library that is not machinery for
+# other code to build on, which is why it is last.
+./bjor --lib lib/bjor/manifest.bjo
+
 echo "Standard library built successfully!"

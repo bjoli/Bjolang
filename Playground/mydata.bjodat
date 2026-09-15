@@ -102,12 +102,33 @@
 ;; ---------------------------------------------------------------------------
 ;;
 ;; Each clause is a list headed by the symbol naming it. It reads like source
-;; and diffs a line at a time, at the price of saying nothing about which
-;; clauses may repeat: `requires` holds many, `version` holds one, and only the
-;; package manager knows which is which.
+;; and diffs a line at a time.
+;;
+;; It used to say here that this form "says nothing about which clauses may
+;; repeat: `requires` holds many, `version` holds one, and only the package
+;; manager knows which is which". The first half was right and the conclusion
+;; was wrong. The *type* knows, and it is the only thing that could — so it
+;; says so, with `#:rest` on the field:
+;;
+;;   (: depends (List Dep) #:rest)   ;; (depends (package ...) (package ...))
+;;   (: version Version)             ;; (version "1.2.3")
+;;
+;; A field is marked, not a clause repeated: `(depends a) (depends b)` does not
+;; accumulate, because the first entry under a key wins for a map and one rule
+;; is better than two. See `#:tag` and `#:rest` in `Docs/std/bjodat.org`, and
+;; `lib/bjor/manifest.bjo` for the whole of it.
+
+;; A name is a *parenthesised list of symbols* — `(bjolang http)`, `(std run)`
+;; — because that is how `import` writes one, and a name written one way is one
+;; thing. `bjolang/http` as a single symbol read too, and was a second spelling
+;; of the same value with a slash to parse.
+;;
+;; A version constraint is a form rather than a string. `">=0.4"` is a small
+;; language smuggled past the reader: it needs its own parser, its own errors
+;; and its own positions, all of which the reader already has.
 
 (package
-  (name bjolang/http)
+  (name (bjolang http))
   (version "1.2.3")
   (description "An HTTP client and server.")
   (authors ["Linus" "someone@example.com"])
@@ -115,18 +136,15 @@
   (entry "src/main.bjo")
   (targets [net8.0 net9.0])
 
-  (requires
-    (git "repo address here" (version<= "1.3") (commit "abcdeffffff00112233"))
-    (git "https://github.com/linus/bjo-tls" (version>= "0.4") (branch main))
-    (path "../bjo-core")
-    (registry cml (version= "2.0.1")))
+  (depends
+    (package (name (bjolang cml)) (version (version-at-least "2.0.1")))
+    (package (name (bjolang tls))
+             (version (version-between "0.4" "1.0"))
+             (source (git (url "https://github.com/linus/bjo-tls") (branch main))))
+    (package (name (bjo core)) (source (path (dir "../bjo-core")))))
 
-  (dev-requires
-    (registry simpletest (version>= "1.0")))
-
-  (scripts
-    (build "bjor build --release")
-    (test "bjor test")))
+  (dev-depends
+    (package (name (std simpletest)) (version (version-at-least "1.0")))))
 
 ;; ---------------------------------------------------------------------------
 ;; The same manifest, as a record
@@ -168,25 +186,29 @@
 ;; natural reading of a different kind of type, and between them they cover what
 ;; a manifest declares.
 ;;
-;;   {:field value ...}     a Record. Keys are keywords naming its fields.
-;;   (Ctor arg ...)         a Union case. The head symbol names the case, and
-;;                          the rest is its payload, positionally.
+;;   {:field value ...}     a Record, written as a map.
+;;   (tag (field value) …)  a Record, written as a tagged form — `#:tag`.
+;;   (Ctor arg ...)         a Union case, positionally.
+;;   (a b c)                a List — which is what a module name is.
 ;;   [a b c]                a Vec, homogeneous.
 ;;   {k v ...}              a Map, when the keys are not field names.
 ;;
-;; So a dependency's source is a union and reads as a list:
+;; This table used to read as though the shape decided. It does not, and that is
+;; the load-bearing rule of the whole format: **the expected type picks the
+;; shape, and the shape never picks the type.** Four of the six rows above are
+;; `(...)`, and they are told apart by what the field asked for, not by anything
+;; the reader could see. `(std run)` is a module name where a `(List Symbol)` is
+;; wanted and a tagged record where one is; neither reading is privileged and
+;; the reader commits to neither.
 ;;
-;;   (Git "…" (VersionLe "1.3"))   ;; (: Source (Union (Git string Constraint)
-;;   (Path "../bjo-core")          ;;                  (Path string)
-;;   (Registry "2.0.1")            ;;                  (Registry string)))
+;; That is the same correspondence `#:literal` uses in source, where a quoted
+;; list elaborates into the union case whose payload it fits — driven by the
+;; expected type there too. A format that agrees with it means a manifest can be
+;; pasted into a `.bjo` and compile.
 ;;
-;; which is the same correspondence `#:literal` already uses in source, where a
-;; quoted list elaborates into the union case whose payload it fits. A format
-;; that agrees with it means a manifest can be pasted into a `.bjo` and compile.
-;;
-;; A record decodes without an intermediate map: its fields are known when the
-;; decoder is generated, so the reader fills slots as it goes and calls the
-;; constructor once, rather than building a map for the decoder to query.
+;; A record decodes without an intermediate map either way: its fields are known
+;; when the decoder is generated, so the reader compares each name against them
+;; in its own buffer, fills slots as it goes, and calls the constructor once.
 
 ;; ---------------------------------------------------------------------------
 ;; Still open
@@ -198,6 +220,12 @@
 ;;   refuse — a misspelled `:verison` that is silently dropped is a bad day —
 ;;   but that forbids forward compatibility, so it may want to be a marker.
 ;;   The reader ignores one today; the codec is where this would be decided.
+;;   The same question, and the same answer for now, for an unknown *clause* —
+;;   which is skipped at any arity, so that a new clause is not a breaking
+;;   change for every older tool.
+;; - Writing a nested form back out puts it on one line. `bjodat->string` is the
+;;   canonical spelling and a manifest wants an indented one, which is a second
+;;   writer and not a second format. Nothing needs it to read.
 
 ;; ---------------------------------------------------------------------------
 ;; Settled
@@ -214,3 +242,16 @@
 ;;   second spelling of one value, and this file is where that gets decided
 ;;   rather than discovered.
 ;; - Map entries keep their written order, in and out.
+;; - **The expected type picks the shape.** A `(...)` headed by a symbol is a
+;;   tagged record, a union case or a plain list according to the field that
+;;   wanted it, and the reader decides none of it.
+;; - **Which clauses repeat is a property of the field**, marked `#:rest`. A
+;;   clause is not repeated to mean many: `(depends a) (depends b)` takes the
+;;   first, because the first entry under a key wins for a map and one rule is
+;;   better than two.
+;; - A module name is `(bjolang http)` — the parenthesised symbols `import`
+;;   writes — and not the string `"bjolang/http"` or the symbol `bjolang/http`.
+;; - A version constraint is a form: `(version-at-least "1.2")`,
+;;   `(version-at-most "2.0")`, `(version-between "1.2" "2.0")`, all inclusive.
+;;   Not `">=1.2"`, which would be a language inside a string with a parser and
+;;   an error vocabulary of its own.

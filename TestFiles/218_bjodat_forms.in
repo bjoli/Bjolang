@@ -1,0 +1,38 @@
+;; A bjor package manifest, in bjodat's tagged form.
+;;
+;; This file is not a fixture copied from somewhere: it is the manifest that
+;; `218_bjodat_forms.bjo` reads on its standard input, so if the shape here and
+;; the types in `(bjor manifest)` ever disagree, the suite says so.
+;;
+;; A module name is written the way `import` writes one — `(std prelude)`,
+;; `(bjolang http)` — because it is the same name.
+
+(package
+  (name (bjolang http))
+  (version "1.2.3")
+  (description "An HTTP client and server.")
+  (license "MPL-2.0")
+  (authors ["Linus" "someone@example.com"])
+  (entry "src/main.bjo")
+  (targets [net8.0 net9.0])
+
+  (source
+    (git (url "https://github.com/linus/bjo-http")
+         (commit "abcdef0011223344")))
+
+  (depends
+    (package (name (std prelude)))
+    (package (name (bjolang cml)) (version (version-at-least "2.0.1")))
+    (package (name (bjolang tls))
+             (version (version-between "0.4" "1.0"))
+             (source (git (url "https://github.com/linus/bjo-tls") (branch main))))
+    (package (name (bjo core)) (source (path (dir "../bjo-core")))))
+
+  (dev-depends
+    (package (name (std simpletest)) (version (version-at-most "2.0"))))
+
+  ;; A clause no tool of this vintage knows, holding two values. It is read and
+  ;; ignored, which is what lets a manifest written for a newer bjor still be
+  ;; built by an older one. An unknown clause may hold any number of values —
+  ;; refusing every arity but one would make each new clause a breaking change.
+  (workspace (members (bjo core) (bjo tls)) (exclude "scratch")))

@@ -3,6 +3,55 @@
 
 What each change guarantees, and what it leaves open.
 
+* A record may be written as a tagged form
+
+~(: Package (Record #:tag package (: name (List Symbol)) ...))~ reads and writes
+~(package (name (bjolang http)) ...)~ instead of ~{:name ... }~. The head symbol
+names the type and each clause names a field. It diffs a line at a time and it
+is what a person writes a manifest in.
+
+**The format did not change.** ~(package (name ...))~ was already a ~BjoList~
+headed by a ~BjoSym~ and still is; what ~#:tag~ settles is which shape a
+*record's codec* reads and writes. The rule underneath is that **the expected
+type picks the shape, and the shape never picks the type** — a ~(...)~ headed by
+a symbol is a tagged record, a union case or a plain list according to the field
+that wanted it. That is what lets a module name be ~(std run)~, the spelling
+~import~ uses, with no ambiguity against a ~(git ...)~ in the next clause.
+
+~#:rest~ answers the question a tagged list otherwise leaves open, which is
+which clauses may repeat. It is answered per *field*, by the type, because
+nothing else knows: ~(: depends (List Dep) #:rest)~ takes every value of its
+clause, and ~(: version Version)~ takes one. A field is marked; a clause is not
+repeated. ~(depends a) (depends b)~ takes the first, because the first entry
+under a key wins for a map and one rule is better than two.
+
+Reading costs what the parenthesised map form already cost: the tag and every
+field name are matched against the reader's buffer by ~key=?~, so no string is
+built and nothing is interned for either. A ~#:rest~ field reads its values
+through ~read-value~, which carries the depth budget — so a manifest nested five
+hundred deep is refused by ~bjodat-max-depth~ rather than by the stack. A
+~#:rest~ that recursed into a generated decoder would have had no budget at all,
+and that is the reason it does not.
+
+An unknown *clause* is read and ignored at any arity, where an unknown key was
+one value and done. A clause may hold none, one or five, and refusing every
+arity but one would make each new clause a breaking change for every older tool.
+
+~(bjor manifest)~ is the first user: the package types ~bjor~ reads, with module
+names as ~(List Symbol)~ and version constraints as the forms
+~(version-at-least "1.2")~, ~(version-at-most "2.0")~ and ~(version-between
+"1.2" "2.0")~ — all three inclusive. A constraint inside a string would have
+been a small language smuggled past the reader, with a parser, an error
+vocabulary and a notion of position all its own, all of which the reader has.
+
+Left open: writing a nested form back out puts it on one line, because
+~bjodat->string~ is the canonical spelling. A manifest wants an indented writer,
+which is a second writer and not a second format; nothing needs it in order to
+read. And a record holds its fields and nothing else, so a manifest that
+round-trips through one loses the clauses that version of the tool did not know
+— a tool that edits a manifest in place has to work on the tree. That is the
+same fact as the paragraph about unknown clauses, seen from the other side.
+
 * A module may re-export a type
 
 ~(re-export SomeType)~ publishes a type this module imported. It is *one* type:

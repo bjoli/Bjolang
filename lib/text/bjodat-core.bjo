@@ -42,6 +42,8 @@
   ;; section it is defined in.
   Reader
   open-map! next-key! end-entry! key=? field-value skip-value!
+  ;; The same, for a record written as a tagged form: `(tag (field value) ...)`.
+  open-form! next-field! end-clause! skip-clause! clause-values!
   read-one-pass parse-one-pass read-one-pass-all parse-one-pass-all)
 
 (import (std prelude))
@@ -883,6 +885,123 @@
   (match (read-value rd 1)
     ((Err e) (Err e))
     ((Ok _) (Ok #t))))
+
+;; ---------------------------------------------------------------------------
+;; Reading a record written as a tagged form
+;; ---------------------------------------------------------------------------
+;; `(package (name bjolang/http) (version "1.2.3"))` — the head symbol names the
+;; type, and each clause is a field.
+;;
+;; This is the *parenthesised map* with two differences: a `(` opens it rather
+;; than a `{`, and it carries a tag. So the loop a generated decoder runs is the
+;; one `next-key!` and `end-entry!` already drive, and what is new here is only
+;; the opener, the clause name being a bare symbol rather than a keyword, and
+;; what an unknown clause costs to get past.
+;;
+;; **The shape never picks the type.** A `BjoList` headed by a symbol is a
+;; tagged record where a tagged record is expected and a union case where a
+;; union is, exactly as a `{...}` is a record in one field and a lookup table in
+;; the next. The reader commits to neither and there is nothing here that could:
+;; these functions are called by a decoder that already knows what it wants.
+
+;; Steps over `(` and the head symbol, and refuses a head that is not `tag`.
+(: open-form! (-> Reader string string (Result string bool)))
+(defun (open-form! rd owner tag)
+  (skip-space! rd)
+  (cond
+    ((at-end? rd)
+     (Err (at rd (str owner ": the document ended where (" tag " ...) was expected"))))
+    ((not (= (held-code rd) 40))
+     (Err (at rd (str owner ": expected (" tag " ...), and here there is " (found rd)))))
+    (else
+     (step! rd)
+     (skip-space! rd)
+     (let ((sb (buffer rd)))
+       (if (= (take-name! rd sb) 0)
+           (Err (at rd (str owner ": a form begins with the name of its type, and this is "
+                            (found rd))))
+           ;; The comparison the whole thing is for: the tag is matched against
+           ;; the buffer, so a form costs no string and interns nothing for its
+           ;; own name any more than it does for a field's.
+           (if (key=? rd tag)
+               (Ok #t)
+               ;; Only here, on the way to refusing, is a string built.
+               (Err (at rd (str owner ": expected (" tag " ...), and this is ("
+                                (stringbuilder->string sb) " ...)")))))))))
+
+;; `#t` when a clause's field name sits in the buffer and the reader stands at
+;; its first value; `#f` when the form closed.
+(: next-field! (-> Reader string (Result string bool)))
+(defun (next-field! rd owner)
+  (skip-space! rd)
+  (cond
+    ((at-end? rd) (Err (at rd (str owner ": the document ended inside a form"))))
+    ((= (held-code rd) 41) (step! rd) (Ok #f))
+    ((not (= (held-code rd) 40))
+     (Err (at rd (str owner ": a clause is written (name value), and here there is "
+                      (found rd)))))
+    (else
+     (step! rd)
+     (skip-space! rd)
+     (let ((sb (buffer rd)))
+       (if (= (take-name! rd sb) 0)
+           (Err (at rd (str owner ": a clause begins with a field name, and this is "
+                            (found rd))))
+           (Ok #t))))))
+
+;; The `)` that closes a clause holding one value.
+;;
+;; The owner and the field name arrive apart and are joined only on the way to
+;; refusing. Joined by the caller they would be one string built per field per
+;; record — which is the cost this whole path exists to avoid — and dropped they
+;; would leave a message that does not say which clause was wrong. The tree
+;; decoder's `bjodat-one-value` says the same sentence under the same name.
+(: end-clause! (-> Reader string string (Result string bool)))
+(defun (end-clause! rd owner name)
+  (skip-space! rd)
+  (if (= (held-code rd) 41)
+      (begin (step! rd) (Ok #t))
+      (Err (at rd (str owner "." name
+                       ": a clause holds a field name and one value, and then there is "
+                       (found rd))))))
+
+;; An unknown clause, read and dropped: the name has been taken, the values have
+;; not. **Any arity**, and that is the point of it. A flat map's unknown key is
+;; one value and done, but a clause may hold none, one or five, and a reader
+;; that insisted on one would make every new clause a breaking change for every
+;; older tool. This is what keeps a manifest forward-compatible.
+(: skip-clause! (-> Reader (Result string bool)))
+(defun (skip-clause! rd)
+  (let go ()
+    (skip-space! rd)
+    (cond
+      ((at-end? rd) (Err (at rd "the document ended inside a clause")))
+      ((= (held-code rd) 41) (step! rd) (Ok #t))
+      (else
+       (match (read-value rd 1)
+         ((Err e) (Err e))
+         ((Ok _) (go)))))))
+
+;; Every value of a clause, in written order, for a `#:rest` field that takes
+;; them all. The closing `)` is stepped over.
+;;
+;; The values arrive as `Bjodat` and are converted by the element type's own
+;; instance, exactly as the single-value case does through `field-value`. That
+;; is not laziness: `read-value` carries the depth budget, so a manifest nesting
+;; `(package (depends (package (depends ...))))` five hundred deep is refused by
+;; `bjodat-max-depth` rather than by the stack. A `#:rest` that recursed
+;; straight back into a generated decoder would have no budget at all.
+(: clause-values! (-> Reader (Result string (List Bjodat))))
+(defun (clause-values! rd)
+  (let go ((acc Nil))
+    (skip-space! rd)
+    (cond
+      ((at-end? rd) (Err (at rd "the document ended inside a clause")))
+      ((= (held-code rd) 41) (step! rd) (Ok (list-reverse acc)))
+      (else
+       (match (read-value rd 1)
+         ((Err e) (Err e))
+         ((Ok v) (go (Cons v acc))))))))
 
 ;; One record, and then the end, for a decoder generated by `def/bjodat-type`.
 ;;
