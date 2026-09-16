@@ -35,16 +35,31 @@ namespace Bjoml;
 /// An interface rather than a class so that one object can be both this claim
 /// and the registration on whatever else wants the op — see the cancellation
 /// watch in `Concurrency.cs`, which is a promise waiter as well.
+///
+/// The generation is what makes a claim REUSABLE. A watch that serves one park
+/// and is then thrown away needs none, but one that a fiber keeps across syncs
+/// must be able to tell "the park you are asking about" from "a park of mine
+/// that is already over" — an op left behind by a cancelled sync stays on the
+/// channel's list until the sweep reaches it, and it must not be matched against
+/// the fiber's next park. The op records the generation it was parked with and
+/// hands it back here.
 public interface ITakeable
 {
-    /// <summary>Win the op. Exactly one caller can.</summary>
-    bool TryTake();
+    /// <summary>The generation a park starting now belongs to.</summary>
+    int Gen { get; }
 
     /// <summary>
-    /// Has someone already taken it? Read by the channel's sweep to reclaim an
-    /// op the other side won, and by a registration to report itself prunable.
+    /// Win the park <paramref name="gen"/> identifies. Exactly one caller can,
+    /// and a caller naming a generation that is over never does.
     /// </summary>
-    bool Taken { get; }
+    bool TryTake(int gen);
+
+    /// <summary>
+    /// Is this op's park over — taken by the other side, or left behind by one?
+    /// Read by the channel's sweep to reclaim it, and by a registration to
+    /// report itself prunable.
+    /// </summary>
+    bool IsDead(int gen);
 }
 
 public abstract class Operation
@@ -60,6 +75,9 @@ public abstract class Operation
     /// </summary>
     internal ITakeable? Link;
 
+    /// <summary>Which park of <see cref="Link"/> this op belongs to.</summary>
+    internal int LinkGen;
+
     public bool IsSynchronized => State != null && State.IsSynchronized;
 
     public bool TrySync() => State != null && State.TrySync();
@@ -68,10 +86,10 @@ public abstract class Operation
     /// Win a direct op. Unlinked ones cannot be contested, so they always win;
     /// a linked one goes through the claim.
     /// </summary>
-    internal bool TryTakeDirect() => Link is null || Link.TryTake();
+    internal bool TryTakeDirect() => Link is null || Link.TryTake(LinkGen);
 
-    /// <summary>A direct op that a token already took, and the channel may drop.</summary>
-    internal bool IsCancelled => Link is { Taken: true };
+    /// <summary>A direct op whose park is over, and which the channel may drop.</summary>
+    internal bool IsCancelled => Link is { } link && link.IsDead(LinkGen);
 }
 
 public sealed class PutOp<T> : Operation

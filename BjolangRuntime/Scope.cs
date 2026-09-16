@@ -659,7 +659,21 @@ public static partial class BjolangRuntime {
             // No `try` around the spawn. `Bjo.Spawn` does not call the body — it
             // allocates a fiber object and queues it — so nothing the program
             // wrote can throw here, and the count cannot be left one too high.
-            return Bjo.Spawn(body, reports ? _reporting : _silent);
+            var landing = reports ? _reporting : _silent;
+
+            var env = Dyn.Current;
+            if (env.Park is null) return Bjo.Spawn(body, landing);
+
+            // The child does not inherit the parent's registration on the token:
+            // two fibers cannot park on one claim, so it would fall back to a
+            // watch per park for its whole life. It builds its own at its first
+            // sync. Only a parent that has parked at least once pays the copy.
+            Dyn.Current = env.WithPark(null);
+            try {
+                return Bjo.Spawn(body, landing);
+            } finally {
+                Dyn.Current = env;
+            }
         }
 
         /// <summary>
@@ -1016,7 +1030,17 @@ public static partial class BjolangRuntime {
 
         // The scope's token, so that a daemon unwinding on the cancellation the
         // scope just fired is not printed as an unhandled exception.
-        _ = Bjo.Spawn(body, new UnhandledReporter(scope.Token));
+        //
+        // Started with its own park cell, for the reason `Scope.Start` does the
+        // same: a child that inherits its parent's cannot use it.
+        var env = Dyn.Current;
+        if (env.Park is not null) Dyn.Current = env.WithPark(null);
+        try {
+            _ = Bjo.Spawn(body, new UnhandledReporter(scope.Token));
+        } finally {
+            Dyn.Current = env;
+        }
+
         return default;
     }
 

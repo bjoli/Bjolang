@@ -1218,21 +1218,44 @@ public static partial class BjolangRuntime {
         /// the number that exist. A program pays for what it overloads.
         public readonly Map.Map<int, object> Vals;
 
+        /// This fiber's reusable registration on <see cref="Cancel"/>, or null
+        /// until its first `sync` builds one.
+        ///
+        /// The environment is what a fiber has instead of an identity: it is
+        /// inherited through nested bjoroutine calls, re-captured at every
+        /// suspension, and replaced wholesale when a scope is entered. A fiber
+        /// that installs one of these on its own environment therefore keeps it
+        /// for as long as it stays in the same scope, which is exactly the
+        /// lifetime a registration on that scope's token wants.
+        ///
+        /// It is not private to one fiber: a child spawned after the parent
+        /// built one inherits the same environment and so the same cell. That
+        /// costs nothing but speed — the cell is claimed for the duration of a
+        /// park, and a fiber that cannot claim it falls back to a registration
+        /// of its own.
+        internal readonly FiberWatch? Park;
+
         internal DynEnv(
             System.IO.TextWriter output,
             System.IO.TextReader input,
             Bjoml.Promise<CancelReason>? cancel,
             Scope? scope,
-            Map.Map<int, object> vals) {
+            Map.Map<int, object> vals,
+            FiberWatch? park = null) {
             Out = output;
             In = input;
             Cancel = cancel;
             Scope = scope;
             Vals = vals;
+            Park = park;
         }
 
-        internal DynEnv WithOut(System.IO.TextWriter w) => new(w, In, Cancel, Scope, Vals);
-        internal DynEnv WithIn(System.IO.TextReader r) => new(Out, r, Cancel, Scope, Vals);
+        internal DynEnv WithOut(System.IO.TextWriter w) => new(w, In, Cancel, Scope, Vals, Park);
+        internal DynEnv WithIn(System.IO.TextReader r) => new(Out, r, Cancel, Scope, Vals, Park);
+
+        /// The cell travels with the environment except where the token changes
+        /// under it, which is the one thing it may not outlive.
+        internal DynEnv WithPark(FiberWatch? park) => new(Out, In, Cancel, Scope, Vals, park);
 
         /// Binding a token by hand leaves the scope alone. That is the airlock
         /// `parameterize ((current-cancel t))` has always been: a fiber can be
@@ -1250,7 +1273,7 @@ public static partial class BjolangRuntime {
         /// wherever its parent was printing.
         internal DynEnv Detached() => new(Out, In, null, null, Vals);
 
-        internal DynEnv WithVal(int id, object value) => new(Out, In, Cancel, Scope, Vals.Set(id, value));
+        internal DynEnv WithVal(int id, object value) => new(Out, In, Cancel, Scope, Vals.Set(id, value), Park);
     }
 
     /// <summary>

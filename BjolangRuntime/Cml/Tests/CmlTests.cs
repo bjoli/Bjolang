@@ -81,6 +81,11 @@ public static class CmlTests
         Run("a token that fires after the commit loses, and the value survives", LateTokenKeepsTheValue);
         Run("a token that fired first cancels and leaves nothing live parked", FiredTokenLeavesNothingParked);
         Run("a token does not collect a waiter per rendezvous", TokenWaitersStayBounded);
+        Run("a fiber reuses one registration across its syncs", RegistrationIsReused);
+        Run("every parked fiber raises exactly once when the token fires", AllParkedFibersRaiseOnce);
+        Run("cancelling a running ping-pong never hangs or resumes twice", CancelRacesWithParking);
+        Run("a cancel that lands while a fiber is parking is not lost", CancelDuringAParkIsNotLost);
+        Run("two fibers sharing one environment both park and both cancel", SharedCellStillCancelsBoth);
     }
 
     // -----------------------------------------------------------------------
@@ -274,6 +279,221 @@ public static class CmlTests
     {
         AssertEqual(WaitersAfter(500), WaitersAfter(4000),
             "the token's waiter list grew with the number of rendezvous");
+    }
+
+    /// <summary>
+    /// A sync on one channel operation borrows the fiber's own registration and
+    /// gives it back, so a fiber in a loop registers once rather than once per
+    /// park. Two fibers, so two registrations, and the count must not follow the
+    /// rendezvous count at all.
+    /// </summary>
+    private static void RegistrationIsReused()
+    {
+        var token = new Promise<global::BjolangRuntime.CancelReason>();
+        var ch = new Channel<int>();
+
+        var receiver = UnderToken(token, async () =>
+        {
+            for (int i = 0; i < 4000; i++) await global::BjolangRuntime.sync((IEvent<int>)ch);
+            return default;
+        });
+
+        var sender = UnderToken(token, async () =>
+        {
+            for (int i = 0; i < 4000; i++)
+                await global::BjolangRuntime.sync(global::BjolangRuntime.chansubsend(ch, i));
+            return default;
+        });
+
+        receiver.ToTask().GetAwaiter().GetResult();
+        sender.ToTask().GetAwaiter().GetResult();
+
+        int waiters = token.RawWaiterCount;
+        Assert(waiters <= 4, $"4000 rendezvous left {waiters} registrations on the token");
+    }
+
+    private static void AllParkedFibersRaiseOnce()
+    {
+        const int N = 200;
+
+        var token = new Promise<global::BjolangRuntime.CancelReason>();
+        var channels = new Channel<int>[N];
+        var done = new CountdownEvent(N);
+        int raised = 0;
+        int delivered = 0;
+
+        for (int i = 0; i < N; i++)
+        {
+            var ch = channels[i] = new Channel<int>();
+            _ = UnderToken(token, async () =>
+            {
+                try
+                {
+                    await global::BjolangRuntime.sync((IEvent<int>)ch);
+                    Interlocked.Increment(ref delivered);
+                }
+                catch (Bjolang.Runtime.Cancelled) { Interlocked.Increment(ref raised); }
+
+                done.Signal();
+                return default;
+            });
+        }
+
+        for (int i = 0; i < N; i++) AwaitPark(() => channels[i].RawPendingReceiveCount, $"fiber {i} to park");
+
+        token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested("all of you"));
+
+        Assert(done.Wait(10_000), $"only {raised + delivered} of {N} fibers came back");
+        AssertEqual(N, raised, "fibers that raised Cancelled");
+        AssertEqual(0, delivered, "fibers that were handed a value");
+    }
+
+    /// <summary>
+    /// The lost-wake-up hunt: fire the token while a rendezvous loop is running,
+    /// so that the cancel lands in the window between a fiber checking the token
+    /// and publishing its park. A miss shows up as a fiber that never comes back,
+    /// which the harness reports as a timeout.
+    /// </summary>
+    private static void CancelRacesWithParking()
+    {
+        for (int trial = 0; trial < 60; trial++)
+        {
+            var token = new Promise<global::BjolangRuntime.CancelReason>();
+            var ch = new Channel<int>();
+            var receiverDone = new ManualResetEventSlim(false);
+            var senderDone = new ManualResetEventSlim(false);
+            int received = 0;
+
+            _ = UnderToken(token, async () =>
+            {
+                try
+                {
+                    while (true)
+                    {
+                        await global::BjolangRuntime.sync((IEvent<int>)ch);
+                        received++;
+                    }
+                }
+                catch (Bjolang.Runtime.Cancelled) { }
+
+                receiverDone.Set();
+                return default;
+            });
+
+            _ = UnderToken(token, async () =>
+            {
+                try
+                {
+                    for (int i = 0; i < 50_000; i++)
+                        await global::BjolangRuntime.sync(global::BjolangRuntime.chansubsend(ch, i));
+                }
+                catch (Bjolang.Runtime.Cancelled) { }
+
+                senderDone.Set();
+                return default;
+            });
+
+            if ((trial & 1) == 0) Thread.Sleep(trial % 4);
+            token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested($"trial {trial}"));
+
+            Await(receiverDone, $"the receiver of trial {trial} ({received} received)");
+            Await(senderDone, $"the sender of trial {trial}");
+        }
+    }
+
+    /// <summary>
+    /// The window between a fiber reading the token and publishing its park.
+    ///
+    /// A cancel that lands in there is delivered by neither side unless the park
+    /// re-reads the token after arming: the token's walk of its waiters sees a
+    /// park that is not published yet, and the fiber goes on to park for good.
+    /// These fibers park on channels no one will ever send to, so a miss is a
+    /// fiber that never comes back rather than one that is rescued by the next
+    /// rendezvous. The spins spread the fires across the window.
+    /// </summary>
+    private static void CancelDuringAParkIsNotLost()
+    {
+        const int Trials = 300;
+        const int N = 8;
+
+        for (int trial = 0; trial < Trials; trial++)
+        {
+            var token = new Promise<global::BjolangRuntime.CancelReason>();
+            var done = new CountdownEvent(N);
+
+            for (int i = 0; i < N; i++)
+            {
+                var ch = new Channel<int>();
+                int spin = (trial * 7 + i * 13) % 97;
+
+                _ = UnderToken(token, async () =>
+                {
+                    for (int s = 0; s < spin; s++) Thread.SpinWait(1);
+
+                    try { await global::BjolangRuntime.sync((IEvent<int>)ch); }
+                    catch (Bjolang.Runtime.Cancelled) { }
+
+                    done.Signal();
+                    return default;
+                });
+            }
+
+            Thread.SpinWait((trial * 31) % 4096);
+            token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested($"trial {trial}"));
+
+            Assert(done.Wait(5000),
+                $"trial {trial}: {done.CurrentCount} of {N} fibers parked through the cancel");
+        }
+    }
+
+    /// <summary>
+    /// A child spawned straight from `Bjo.Spawn` inherits its parent's
+    /// environment, and therefore its cell. Only one of them can hold it, so the
+    /// other takes a watch of its own — and cancellation has to reach both.
+    /// </summary>
+    private static void SharedCellStillCancelsBoth()
+    {
+        var token = new Promise<global::BjolangRuntime.CancelReason>();
+        var warmup = new Channel<int>();
+        var a = new Channel<int>();
+        var b = new Channel<int>();
+        var done = new CountdownEvent(2);
+        int raised = 0;
+
+        _ = UnderToken(token, async () =>
+        {
+            // Builds the cell on this fiber's environment, which the child below
+            // then inherits.
+            _ = Bjo.Spawn<Unit>(async () =>
+            {
+                await warmup.Send(1);
+                return default;
+            });
+            await global::BjolangRuntime.sync((IEvent<int>)warmup);
+
+            _ = Bjo.Spawn<Unit>(async () =>
+            {
+                try { await global::BjolangRuntime.sync((IEvent<int>)b); }
+                catch (Bjolang.Runtime.Cancelled) { Interlocked.Increment(ref raised); }
+
+                done.Signal();
+                return default;
+            });
+
+            try { await global::BjolangRuntime.sync((IEvent<int>)a); }
+            catch (Bjolang.Runtime.Cancelled) { Interlocked.Increment(ref raised); }
+
+            done.Signal();
+            return default;
+        });
+
+        AwaitPark(() => a.RawPendingReceiveCount, "the parent to park");
+        AwaitPark(() => b.RawPendingReceiveCount, "the child to park");
+
+        token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested("both of you"));
+
+        Assert(done.Wait(10_000), $"only {raised} of 2 fibers came back");
+        AssertEqual(2, raised, "fibers that raised Cancelled");
     }
 
     private static int WaitersAfter(int rendezvous)

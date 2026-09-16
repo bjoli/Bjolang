@@ -165,6 +165,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                 // right — a direct op is never dead, because it cannot lose.
                 var myOp = GetOp<T>.Rent(null, 0, onSync);
                 myOp.Link = link;
+                myOp.LinkGen = link is null ? 0 : link.Gen;
                 if (_takersTail == null)
                 {
                     _takersHead = _takersTail = myOp;
@@ -288,6 +289,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
 
                 var myOp = PutOp<T>.Rent(null, 0, value, onSync);
                 myOp.Link = link;
+                myOp.LinkGen = link is null ? 0 : link.Gen;
                 if (_giversTail == null)
                 {
                     _giversHead = _giversTail = myOp;

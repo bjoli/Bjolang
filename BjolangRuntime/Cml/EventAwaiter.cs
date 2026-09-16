@@ -33,6 +33,18 @@ public static class EventAwaitExtensions
 }
 
 /// <summary>
+/// The non-generic half of <see cref="EventAwaiter{T}"/>.
+///
+/// A cancellation watch that one fiber keeps across its syncs cannot be generic
+/// in the value of the sync it is currently watching, since that changes from
+/// one sync to the next. This is the only thing it needs to do to one.
+/// </summary>
+internal interface ICancellableAwaiter
+{
+    void OnCancelled(object reason);
+}
+
+/// <summary>
 /// The synchronisation is STARTED in <see cref="Rent"/> (or the constructor), i.e.
 /// when <c>await</c> evaluates its operand.
 ///
@@ -60,7 +72,7 @@ public static class EventAwaitExtensions
 /// <see cref="Cml.Sync"/> publishes, because the instant an op is parked, a thread
 /// on the other side of the channel can call <see cref="OnSync"/> concurrently.
 /// </summary>
-public sealed class EventAwaiter<T> : ICriticalNotifyCompletion
+public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwaiter
 {
     /// <summary>Marks "already completed" so a late continuation runs immediately.</summary>
     private static readonly Action Sentinel = () => { };
@@ -185,11 +197,29 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion
     /// <see cref="OnSync"/>, whose interlocked handover is the fence that
     /// publishes it to the resuming fiber.
     /// </summary>
-    internal void OnCancelled(object reason)
+    void ICancellableAwaiter.OnCancelled(object reason)
     {
         _cancelReason = reason;
         OnSync(default!);
     }
+
+    /// <summary>
+    /// Rent an awaiter without starting anything, for a caller that has to arm a
+    /// claim on it before the operation becomes visible to anyone else.
+    /// </summary>
+    internal static EventAwaiter<T> RentBare()
+    {
+        var aw = _free;
+        if (aw is null) return new EventAwaiter<T>();
+
+        _free = aw._next;
+        _freeCount--;
+        aw._next = null;
+        return aw;
+    }
+
+    /// <summary>The cached continuation to hand to a channel's park site.</summary>
+    internal Action<T> OnSyncAction => _onSync;
 
     /// <summary>
     /// Rent and start a direct sync with a claim on the parked op, so
@@ -216,6 +246,9 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion
         parked = ev.SyncDirect(aw._onSync, link);
         return aw;
     }
+
+    /// <summary>Complete this sync as cancelled. See the interface.</summary>
+    internal void Cancel(object reason) => ((ICancellableAwaiter)this).OnCancelled(reason);
 
     public void OnCompleted(Action continuation) => UnsafeOnCompleted(continuation);
 
