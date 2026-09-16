@@ -73,6 +73,235 @@ public static class CmlTests
         Run("detach routes a failure to the scheduler", DetachReportsFailure);
         Run("detach stays quiet on success", DetachIsQuietOnSuccess);
         Run("forward pipes an outcome into another promise", ForwardPipesOutcome);
+
+        Section("The ambient token that `sync` races");
+        Run("a parked choose raises on the resuming fiber's own stack", ParkedChooseRaisesOnItsOwnStack);
+        Run("cancellation runs no user code on the thread that fired the token", CancelRunsNothingOnTheSignaller);
+        Run("a delivered value beats a token that has already fired", ValueBeatsFiredToken);
+        Run("a token that fires after the commit loses, and the value survives", LateTokenKeepsTheValue);
+        Run("a token that fired first cancels and leaves nothing live parked", FiredTokenLeavesNothingParked);
+        Run("a token does not collect a waiter per rendezvous", TokenWaitersStayBounded);
+    }
+
+    // -----------------------------------------------------------------------
+    // The ambient token
+    // -----------------------------------------------------------------------
+    //
+    // `sync` races the event against the token bound to `current-cancel`, which
+    // in a compiled program is the scope's. These drive that binding directly,
+    // since there is no scope here to open.
+
+    private static Promise<Unit> UnderToken(
+        Promise<global::BjolangRuntime.CancelReason> token, Func<Fiber<Unit>> body) =>
+        Bjo.Spawn<Unit>(async () =>
+        {
+            var saved = global::BjolangRuntime.parametersubpush_BANG(
+                global::BjolangRuntime.currentsubcancel, token);
+            try { return await body(); }
+            finally { global::BjolangRuntime.dynsubrestore_BANG(saved); }
+        });
+
+    /// <summary>
+    /// Park a choose under <paramref name="token"/>, fire the token, and report
+    /// where the raise happened.
+    /// </summary>
+    private static (bool caught, int thread, string stack) CancelAParkedChoose(
+        Promise<global::BjolangRuntime.CancelReason> token)
+    {
+        var a = new Channel<int>();
+        var b = new Channel<int>();
+        var done = new ManualResetEventSlim(false);
+
+        bool caught = false;
+        int thread = 0;
+        string stack = "";
+
+        _ = UnderToken(token, async () =>
+        {
+            try
+            {
+                await global::BjolangRuntime.sync(Cml.Choose<int>(a, b));
+            }
+            catch (Bjolang.Runtime.Cancelled e)
+            {
+                caught = true;
+                thread = Environment.CurrentManagedThreadId;
+                stack = e.StackTrace ?? "";
+            }
+
+            done.Set();
+            return default;
+        });
+
+        AwaitPark(() => a.RawPendingReceiveCount, "the choose to park");
+        AwaitPark(() => b.RawPendingReceiveCount, "the choose to park in both channels");
+
+        token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested("test"));
+        Await(done, "the cancelled choose to resume");
+
+        return (caught, thread, stack);
+    }
+
+    /// <summary>
+    /// The reason is carried to the awaiter and raised in <c>GetResult</c>, so the
+    /// throw unwinds the fiber's own state machine. Raising it where the token is
+    /// completed would unwind a promise's completion walk instead, and be
+    /// swallowed by the scheduler's catch-all.
+    /// </summary>
+    private static void ParkedChooseRaisesOnItsOwnStack()
+    {
+        var token = new Promise<global::BjolangRuntime.CancelReason>();
+        var (caught, _, stack) = CancelAParkedChoose(token);
+
+        Assert(caught, "a parked choose under a fired token did not raise Cancelled");
+        Assert(stack.Contains("MoveNext"),
+            $"the raise did not come from the fiber's state machine; stack was:\n{stack}");
+        Assert(!stack.Contains("Promise") && !stack.Contains("Complete"),
+            $"the raise came out of a promise completion walk; stack was:\n{stack}");
+    }
+
+    private static void CancelRunsNothingOnTheSignaller()
+    {
+        var token = new Promise<global::BjolangRuntime.CancelReason>();
+        int signaller = Environment.CurrentManagedThreadId;
+        var (caught, thread, _) = CancelAParkedChoose(token);
+
+        Assert(caught, "a parked choose under a fired token did not raise Cancelled");
+        Assert(thread != signaller,
+            "the cancelled fiber resumed on the thread that fired the token");
+    }
+
+    /// <summary>
+    /// Publish order is priority and the token is published last, so a branch
+    /// that is available at publish time wins even though the token has fired.
+    /// The rendezvous happened; throwing the value away would lose a delivered
+    /// message.
+    /// </summary>
+    private static void ValueBeatsFiredToken()
+    {
+        var token = new Promise<global::BjolangRuntime.CancelReason>();
+        var a = new Channel<int>();
+        var b = new Channel<int>();
+
+        _ = Bjo.Spawn<Unit>(async () => { await a.Send(7); return default; });
+        AwaitPark(() => a.RawPendingSendCount, "the sender to park");
+
+        token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested("before the sync"));
+
+        var done = new ManualResetEventSlim(false);
+        int got = -1;
+        bool cancelled = false;
+
+        _ = UnderToken(token, async () =>
+        {
+            try { got = await global::BjolangRuntime.sync(Cml.Choose<int>(a, b)); }
+            catch (Bjolang.Runtime.Cancelled) { cancelled = true; }
+            done.Set();
+            return default;
+        });
+
+        Await(done, "the sync to finish");
+        Assert(!cancelled, "an available branch lost to a token that had already fired");
+        AssertEqual(7, got, "the delivered value");
+    }
+
+    private static void LateTokenKeepsTheValue()
+    {
+        var token = new Promise<global::BjolangRuntime.CancelReason>();
+        var a = new Channel<int>();
+        var b = new Channel<int>();
+
+        var done = new ManualResetEventSlim(false);
+        int got = -1;
+        bool cancelled = false;
+
+        _ = UnderToken(token, async () =>
+        {
+            try { got = await global::BjolangRuntime.sync(Cml.Choose<int>(a, b)); }
+            catch (Bjolang.Runtime.Cancelled) { cancelled = true; }
+            done.Set();
+            return default;
+        });
+
+        AwaitPark(() => a.RawPendingReceiveCount, "the choose to park");
+
+        // Returns once the rendezvous has committed, so the token below is
+        // strictly later than the commit.
+        Cml.Sync(new ChannelSendEvent<int>(a, 11), _ => { });
+        token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested("after the commit"));
+
+        Await(done, "the committed sync to resume");
+        Assert(!cancelled, "a token fired after the commit took the sync back");
+        AssertEqual(11, got, "the committed value");
+    }
+
+    /// <summary>
+    /// The branches are published before the token, so they do park; what must
+    /// not survive is a LIVE op, which would hold a message nobody will ever
+    /// read.
+    /// </summary>
+    private static void FiredTokenLeavesNothingParked()
+    {
+        var token = new Promise<global::BjolangRuntime.CancelReason>();
+        token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested("already cancelled"));
+
+        var a = new Channel<int>();
+        var b = new Channel<int>();
+        var done = new ManualResetEventSlim(false);
+        bool cancelled = false;
+
+        _ = UnderToken(token, async () =>
+        {
+            try { await global::BjolangRuntime.sync(Cml.Choose<int>(a, b)); }
+            catch (Bjolang.Runtime.Cancelled) { cancelled = true; }
+            done.Set();
+            return default;
+        });
+
+        Await(done, "the sync under a fired token to finish");
+        Assert(cancelled, "a sync under a token that had already fired did not raise");
+
+        Assert(!a.TryDirectSend(1), "a live receive was left parked in the first branch");
+        Assert(!b.TryDirectSend(2), "a live receive was left parked in the second branch");
+    }
+
+    /// <summary>
+    /// Nothing removes a waiter from a promise: the token's list is pruned
+    /// amortised, using <c>IsAbandoned</c>. Without that, a long-lived scope
+    /// collects one waiter per rendezvous of every fiber under it.
+    /// </summary>
+    private static void TokenWaitersStayBounded()
+    {
+        AssertEqual(WaitersAfter(500), WaitersAfter(4000),
+            "the token's waiter list grew with the number of rendezvous");
+    }
+
+    private static int WaitersAfter(int rendezvous)
+    {
+        var token = new Promise<global::BjolangRuntime.CancelReason>();
+        var ch = new Channel<int>();
+        var idle = new Channel<int>();
+
+        var receiver = UnderToken(token, async () =>
+        {
+            for (int i = 0; i < rendezvous; i++)
+                await global::BjolangRuntime.sync(Cml.Choose<int>(ch, idle));
+            return default;
+        });
+
+        var sender = UnderToken(token, async () =>
+        {
+            for (int i = 0; i < rendezvous; i++)
+                await global::BjolangRuntime.sync(global::BjolangRuntime.chansubsend(ch, i));
+            return default;
+        });
+
+        receiver.ToTask().GetAwaiter().GetResult();
+        sender.ToTask().GetAwaiter().GetResult();
+
+        // Both fibers are done, so every waiter still on the list is abandoned;
+        // what is asserted is that the count does not scale with the workload.
+        return token.RawWaiterCount <= 64 ? 0 : token.RawWaiterCount;
     }
 
     // -----------------------------------------------------------------------

@@ -242,6 +242,26 @@ public class Promise<T> : IEvent<Result<T>>
         }
     }
 
+    /// <summary>
+    /// Registered waiters, counted without pruning first. Test-only.
+    ///
+    /// A sync under a scope registers on the scope's token and never removes the
+    /// registration; <see cref="IPromiseWaiter.IsAbandoned"/> and the amortised
+    /// prune are what keep the list from growing with the number of rendezvous.
+    /// Proving that needs the raw count, since every path that could report it
+    /// also prunes.
+    /// </summary>
+    internal int RawWaiterCount
+    {
+        get
+        {
+            var w = Volatile.Read(ref _waiters);
+            if (w is null || ReferenceEquals(w, s_completedSentinel)) return 0;
+            if (w is List<object> list) { lock (list) return list.Count; }
+            return 1;
+        }
+    }
+
     internal void Register(PromiseWaiter waiter) => RegisterAny(waiter);
 
     /// <summary>Run <paramref name="k"/> now if already complete, else on completion.</summary>
