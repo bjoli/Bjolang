@@ -446,7 +446,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     //
     // The alternative, having SyncState record each channel and drive cleanup on
     // commit, gives a strictly stronger guarantee (zero stranded, not merely bounded)
-    // and was measured at 36 ns/op on Select/Choose. See docs/design.md; do not
+    // and was measured at 36 ns/op on Select/Choose. See BjolangRuntime/Cml/design.md; do not
     // reintroduce it without re-measuring.
     private int _parksSinceSweep;
     private int _sweepThreshold = MinSweepThreshold;
@@ -454,7 +454,8 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     private const int MinSweepThreshold = 32;
 
     /// <summary>
-    /// Called from the park sites with <c>_lock</c> already held. Sweeps once parks
+    /// Called from all four park sites — direct and published, send and receive —
+    /// with <c>_lock</c> already held. Sweeps once parks
     /// since the last sweep reach a threshold that scales with the live set, which
     /// amortises the O(n) walk to O(1) per park.
     /// </summary>

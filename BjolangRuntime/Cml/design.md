@@ -243,8 +243,8 @@ properties, so nothing in production ever ran them.
 
 All that was missing was a trigger, and the cheap one is a **park counter on the
 channel**. Every dead entry is necessarily preceded by a park in that same channel, so
-counting parks bounds the dead set. `Channel<T>.NotePark` is called from the two park
-sites with `_lock` already held, and sweeps once parks since the last sweep reach
+counting parks bounds the dead set. `Channel<T>.NotePark` is called from all four park
+sites — direct and published, send and receive — with `_lock` already held, and sweeps once parks since the last sweep reach
 `max(32, live * 2)` — which amortises the O(n) walk to O(1) per park. The fast path
 pays one non-atomic increment.
 

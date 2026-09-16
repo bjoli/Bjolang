@@ -71,7 +71,7 @@ public class SyncState
 
     // B7 cleanup is deliberately NOT tracked here. SyncState used to remember every
     // channel a block parked in so that committing could drive cleanup, and that cost
-    // 36 ns/op on Select/Choose — see the B7 section of docs/design.md. The trigger
+    // 36 ns/op on Select/Choose — see the B7 section of BjolangRuntime/Cml/design.md. The trigger
     // lives in Channel<T> instead, where a park is already visible under a lock that
     // is already held.
 
