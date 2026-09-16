@@ -364,6 +364,44 @@ buy the allocation and nothing else, at the price of a fast path attached to syn
 rather than to the value: an event reaching `sync` through a variable or a `guard`
 would take the slow path. Not worth it for 32 bytes.
 
+**Parking the fiber's own resume delegate, with no `EventAwaiter`.** Built,
+measured and reverted. A direct park does not need an awaiter object: the op has
+slots for a resume delegate and a value, which is exactly how the C# twin's
+`ChannelSendAwaiter` works. `IDirectSyncable` grew `StartDirect` / `ParkDirect` /
+`TakeDirect` — rent the op, park it with the fiber's own resume in it once the
+fiber decides to suspend, read the value back out — and `SyncAwaiter` became the
+struct that holds the op. That removes a pooled object, a delegate hop and the
+awaiter's interlocked handover per rendezvous.
+
+It works, all tests pass, and **with the token switched off it is 13% faster**:
+ring 90 -> 78, skewed choose 129 -> 115 ns/op. With the token on — which is every
+real program — the ring goes 129 -> ~200 ns/op while the skewed row barely moves.
+The regression tracks the per-park `CancelWatch` registration: with the watch
+allocated but not registered the ring is 88.
+
+What it is not, each ruled out by measurement rather than by argument:
+
+- GC. Gen-0, gen-1 and gen-2 counts per rep are the same either way (the ring's
+  gen-2 count is 20 in both), and B/op moves only by the watch's 8 extra bytes.
+- The op pools. 4639 `new` fallbacks against 10 million parks.
+- The commit-during-park path, where `ParkDirect` has to queue the resume instead
+  of completing inline: 80 times in 10 million parks.
+- `NotePark` at the two new park sites: removing it again changes nothing.
+- The state-machine box holding the watch alive across the suspension: building
+  the watch inside `UnsafeOnCompleted` and reaching it back through the op's link
+  measures the same.
+- Where the registration sits. Registering in `GetAwaiter` as the old path did,
+  and only arming and parking later, measures the same.
+
+So the awaiter indirection really is worth ~13 ns, and something about combining
+the op-carries-the-resume shape with a per-park registration on a shared token
+costs three times that. Whatever it is did not show up in the six places it
+should have, and `perf` is not available on this machine to look further. The
+change is not on the branch; this paragraph and the numbers are what is left of
+it. Anyone reinstating it should first make the per-park registration go away —
+which is the persistent-registration item below, and which this measurement moves
+from "the remaining token cost" to "the thing that has to happen first".
+
 **A lock-free waiter list on `Promise`.** Worth at most the 18 ns of hack 2b, and
 only part of that is the lock — the rest is the list add and the prune. Removing
 the `Monitor` means a Treiber push whose prune has to detach the whole stack to
