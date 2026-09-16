@@ -3,9 +3,84 @@
 
 What each change guarantees, and what it leaves open.
 
+* A ~def/else~ else body is an arm, not a jump
+
+~def/else~ no longer needs an enclosing ~with-return~. Its else body produces
+the value of the whole form, exactly as the else arm of an ~if~ does, and the
+form is once again just a definition:
+
+#+BEGIN_SRC scheme
+(defun (label s)
+  (def/else ((Ok n) (parse-int s))
+    "unparseable")
+  (fmt "n = {}" n))
+#+END_SRC
+
+What it replaces: the else body used to be typed against the *enclosing
+block's* result and compiled to an escape. That implicit jump was the only
+thing the form needed a block for, so a ~def/else~ with nothing blocklike about
+it — the one above — had to be wrapped in a ~with-return~ that existed solely
+to be jumped out of, and the wrapping was invisible at the point of use.
+
+Leaving a block is still available and is now simply written:
+
+#+BEGIN_SRC scheme
+(with-return ret
+  (def/else ((Ok n) (parse-int s))
+    (ret (Err "bad input")))
+  (Ok (+ n 1)))
+#+END_SRC
+
+~(ret ...)~ sits in tail position of the else body, which is where
+~checkEscapeUses~ already allowed it, so this compiles to what it always did —
+one unreachable ~return~ shorter, the old lowering having emitted the escape's
+own return after the one the ~ret~ had already taken.
+
+The optional block name is gone with the implicit jump: ~(def/else outer (p e)
+...)~ named the block to leave, and there is nothing left for it to name. Write
+the escape instead, which is what every other form does.
+
+~InnermostEscape~ is gone from the inference environment with it. ~def/else~ was
+its only consumer, and "the nearest enclosing block" is no longer a thing the
+form has an opinion about.
+
+** What it lowers to
+
+The sequel and the else body are the two arms, so both are generated into the
+same target. In the method's ~return~ position each ends in a ~return~ of its
+own and nothing else is emitted. Anywhere else the value goes to a local,
+declared *once* ahead of the construct and assigned by each arm, with the
+~goto~ and the label that let them meet afterwards — the shape ~TIf~ has, with
+the ~default!~ that ~TWithReturn~ and ~TThrow~ carry and ~TIf~ omits.
+
+The clause-failure label and the nested-~if~ lowering are unchanged: a
+~def/else*~ still emits one else body with every failing clause jumping to it,
+which is still why it is a node of its own rather than nested matches.
+
+** What is unchanged
+
+Clauses still bind sequentially, so a later scrutinee sees what an earlier
+pattern bound. The else body still stands outside every clause's bindings — it
+runs because a clause failed, so which bindings would exist is not known. The
+sequel is still the rest of the enclosing body, supplied by position.
+
+Left open: the ~default!~ on that declaration is defensive rather than load
+bearing. It guards an arm that never assigns, and none can be written today,
+because ~checkEscapeUses~ will not let a ~ret~ stand where the form's value is
+wanted. It costs one store, usually elided, and stays correct if that check is
+ever relaxed.
+
+Also left open, and older than this change: a ~def/else~ clause pattern that
+shadows a name an enclosing scope already bound emits C# that does not compile
+(CS0128) — the clause binder and the outer local collide, where a ~match~ arm
+in the same position renames and does not. It is a lowering bug, not a scoping
+one, and it predates this work.
+
 * ~with-return~ and ~def/else~
 
-A named early-exit block, and a refutable binding that leaves it.
+A named early-exit block, and a refutable binding that leaves it. The part
+below about the else body *leaving* the block is superseded by the entry above:
+it is an arm now, and says so with a ~ret~ when it means to leave.
 
 #+BEGIN_SRC scheme
 (with-return ret
@@ -411,6 +486,45 @@ view function that type's own module exported.
 
 Module metadata is version 9: a ~.dll~ built before this publishes no pattern
 macros and has to be rebuilt.
+
+* Four mutable collections, over the .NET ones
+
+~(std mutable vec)~, ~(std mutable map)~, ~(std mutable set)~ and ~(std mutable
+heap)~ — a ~List<T>~, a ~Dictionary<K,V>~, a ~HashSet<T>~ and a
+~PriorityQueue<T,P>~ respectively, joining the ~Deque~ already under
+~std/mutable~. The value each hands back *is* the .NET collection, so one may
+be passed straight to any other ~import/extern~ that takes one.
+
+What they fill: ~VecBuilder~ and ~ListBuilder~ are append-only and
+~TransientMap~ and ~TransientSet~ are a persistent collection being built and
+frozen. None of those can be written at an index, sorted, or have an entry
+removed and go on being used. ~MutableHeap~ has no counterpart at all.
+
+Each is reached through a static module in ~BjolangRuntime/BjoMutable.cs~
+rather than by importing the BCL type's members directly, because three things
+the interop cannot reach are needed to use one: ~import/class~ declares no
+constructor for a generic class, an accessor import takes no index so there is
+no indexer, and a method with an ~out~ parameter is filtered out of overload
+resolution. Every method in that file is one of those three or a one-line
+forward.
+
+~MutableVec~, ~MutableMap~ and ~MutableSet~ implement ~Refable~, ~Iterable~,
+~Collection~, ~Addable!~, ~Eq~ and ~->str~. ~=~ is structural and ~eq-hash~
+throws ~unhashable~, which is the pair ~Deque~ already carries: there is no
+honest number for a value whose elements move. ~MutableHeap~ has ~Collection~
+and ~->str~ only — its walk is unordered, so an ~Iterable~ would hand a caller
+an order it had every reason to think was the heap's, and its ~add!~ takes a
+priority as well as an element.
+
+What this leaves open: keys are filed under ~EqualityComparer<T>.Default~ and
+priorities ordered by ~Comparer<P>.Default~, which is .NET's answer and not the
+~Eq~ or ~Ord~ implementation in ~std/eq~. That is the same hole
+~TestFiles/186_collection_keys.bjo~ documents for ~Map~ and ~Set~, so the
+collections agree with each other; a hand-written ~Eq~ that departs from .NET's
+is still not consulted. ~mutableheap-by~ is the way out for an ordering, and
+there is no equivalent for equality. Stack and queue are deliberately absent —
+~Deque~ is both — as are ~SortedDictionary~ and ~SortedSet~, which would need
+an ~Ord~-to-~IComparer~ bridge that does not exist yet.
 
 * A trait member may carry a ~where~ of its own, and ~add-all!~ exists
 

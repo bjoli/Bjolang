@@ -148,11 +148,7 @@ let addBinding (name: string) (binding: Binding) (env: Env) : Env =
         // the whole of what makes `ret` "bound in the ordinary value namespace"
         // true rather than merely claimed: shadowing it needs no rule of its
         // own, because binding a name already means this.
-        Escapes = Map.remove name env.Escapes
-        InnermostEscape =
-            match env.InnermostEscape with
-            | Some inner when inner = name -> None
-            | other -> other }
+        Escapes = Map.remove name env.Escapes }
 
 let rec prune (registry: TraitRegistry) (t: HMType) : HMType =
     match t with

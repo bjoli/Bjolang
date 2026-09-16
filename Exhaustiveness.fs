@@ -584,7 +584,7 @@ let private checkBindElse (clauses: TBindElseClause list) =
 let rec private checkExpr (registry: TraitRegistry) (expr: TypedExpr) : unit =
     match expr.Node with
     | TMatch(target, clauses) -> checkMatch registry expr.Range target.Type clauses
-    | TBindElse(_, clauses, _, _) -> checkBindElse clauses
+    | TBindElse(clauses, _, _) -> checkBindElse clauses
     | _ -> ()
 
     TypeVisitor.children expr |> List.iter (checkExpr registry)

@@ -1168,8 +1168,7 @@ let prelude : Env =
       CurrentModule = ""
       // A `with-return` is the only thing that puts one of these in scope, and
       // there is none around the prelude.
-      Escapes = Map.empty
-      InnermostEscape = None }
+      Escapes = Map.empty }
 
 /// The names already bound by `using static BjolangRuntime`.
 let builtinNames: Set<string> =

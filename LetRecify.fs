@@ -165,12 +165,12 @@ let rec letrecifyExpr (expr: Expr) : Expr =
 
     | EWithReturn(name, body, r) -> EWithReturn(name, letrecifyExpr body, r)
 
-    | EBindElse(target, clauses, sequel, elseBody, r) ->
+    | EBindElse(clauses, sequel, elseBody, r) ->
         let clauses' =
             clauses
             |> List.map (fun (p, scrutinee) -> (Parser.mapPatternSteps letrecifyExpr p, letrecifyExpr scrutinee))
 
-        EBindElse(target, clauses', letrecifyExpr sequel, letrecifyExpr elseBody, r)
+        EBindElse(clauses', letrecifyExpr sequel, letrecifyExpr elseBody, r)
 
     | ELetRec(bindings, body, r) ->
         let optBindings =

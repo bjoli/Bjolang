@@ -104,9 +104,8 @@ let mapChildren (f: TypedExpr -> TypedExpr) (expr: TypedExpr) : TypedExpr =
         | TMatch(target, clauses) -> TMatch(f target, List.map mapClause clauses)
         | TWithReturn(label, body) -> TWithReturn(label, f body)
         | TReturn(label, value) -> TReturn(label, Option.map f value)
-        | TBindElse(label, clauses, sequel, elseBody) ->
+        | TBindElse(clauses, sequel, elseBody) ->
             TBindElse(
-                label,
                 clauses
                 |> List.map (fun (c: TBindElseClause) ->
                     { Pattern = mapPat c.Pattern

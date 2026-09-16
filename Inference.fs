@@ -2436,8 +2436,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
 
         let bodyEnv =
             { env with
-                Escapes = Map.add name { Label = label; Result = resultType } env.Escapes
-                InnermostEscape = Some name }
+                Escapes = Map.add name { Label = label; Result = resultType } env.Escapes }
 
         let bodyType, typedBody = infer bodyEnv body
         unify env.Registry bodyType resultType
@@ -2447,24 +2446,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
           Range = r
           Node = TWithReturn(label, typedBody) }
 
-    | EBindElse(target, clauses, sequel, elseBody, r) ->
-        let escapeName =
-            match target with
-            | Some named -> named
-            | None ->
-                match env.InnermostEscape with
-                | Some innermost -> innermost
-                | None ->
-                    failwithf
-                        $"Type Error at %s{Lexer.formatPos r}: `guard` needs an enclosing `(with-return name ...)`."
-
-        let info =
-            match Map.tryFind escapeName env.Escapes with
-            | Some found -> found
-            | None ->
-                failwithf
-                    $"Type Error at %s{Lexer.formatPos r}: `guard` needs an enclosing `(with-return %s{escapeName} ...)`."
-
+    | EBindElse(clauses, sequel, elseBody, r) ->
         // Clauses bind sequentially, so the environment is threaded through
         // them: a later scrutinee sees what an earlier pattern bound.
         let reversedClauses, boundEnv =
@@ -2493,16 +2475,39 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
                 ([], env)
 
         // The sequel is the rest of the body, so the guard's own type is the
-        // sequel's. The else body's is the *block's*: it does not fall through
-        // to what follows, it leaves.
+        // sequel's — and so is the else body's. The two are the form's arms,
+        // exactly as an `if`'s are: whichever runs produces the whole form's
+        // value. A body that means to leave an enclosing block says so with a
+        // `(ret ...)`, which is an ordinary tail-position form here.
+        //
+        // The else body is inferred in `env`, not `boundEnv`: it runs because a
+        // clause failed, so nothing a clause would have bound is in scope.
         let sequelType, typedSequel = infer boundEnv sequel
         let elseType, typedElse = infer env elseBody
-        unify env.Registry elseType info.Result
+
+        try
+            unify env.Registry elseType sequelType
+        with ex when Diagnostics.isDiagnostic ex ->
+            let shown =
+                DotNetInterop.showTypesTogether [ prune env.Registry elseType; prune env.Registry sequelType ]
+
+            // The `void` sequel is the mistake this form invites, and it is
+            // worth naming: it is what a body written for its effects leaves
+            // behind, and the else body that "returned a value" from it was
+            // relying on the escape this form no longer performs.
+            let hint =
+                if shown[1] = "void" then
+                    "\nThe rest of the body produces nothing, so the else body may not produce anything either. If it was meant to leave the enclosing block, say so: `(ret ...)` naming an enclosing `with-return`, or `(panic! ...)`."
+                else
+                    "\nThe else body is the form's other arm, as an `if`'s is — it does not leave the enclosing block by itself. To leave one, write it: `(ret ...)` naming an enclosing `with-return`, or `(panic! ...)`."
+
+            failwithf
+                $"Type Error at %s{Lexer.formatPos typedElse.Range}: a `def/else` else body produces the value of the whole form, and here it disagrees with the rest of the body:\n  the else body:        %s{shown[0]}\n  the rest of the body: %s{shown[1]}%s{hint}"
 
         sequelType,
         { Type = sequelType
           Range = r
-          Node = TBindElse(info.Label, List.rev reversedClauses, typedSequel, typedElse) }
+          Node = TBindElse(List.rev reversedClauses, typedSequel, typedElse) }
 
     // `std/eq`'s own equality primitives, refused everywhere else. See
     // `Naming.eqPrivateBindings` for why they are shut away at all.

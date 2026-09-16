@@ -928,23 +928,17 @@ let rec serializeExpr (e: Parser.Expr) : string =
     // So it is written out as a *body* — `begin` splices in body position, and
     // `parseBody` hands the guard whatever follows it there, which is exactly
     // the sequel that went in.
-    | Parser.EBindElse(target, clauses, sequel, elseBody, _) ->
-        let named = target |> Option.toList
-
+    | Parser.EBindElse(clauses, sequel, elseBody, _) ->
         let guardForm =
             match clauses with
             | [ (pat, scrutinee) ] ->
-                list ([ "def/else" ] @ named @ [ list [ serializePattern pat; serializeExpr scrutinee ]; serializeExpr elseBody ])
+                list [ "def/else"; list [ serializePattern pat; serializeExpr scrutinee ]; serializeExpr elseBody ]
             | _ ->
                 let clauseForms =
                     clauses
                     |> List.map (fun (pat, scrutinee) -> list [ serializePattern pat; serializeExpr scrutinee ])
 
-                list (
-                    [ "def/else*" ]
-                    @ named
-                    @ [ list clauseForms; serializeExpr elseBody ]
-                )
+                list [ "def/else*"; list clauseForms; serializeExpr elseBody ]
 
         list [ "begin"; guardForm; serializeExpr sequel ]
 
@@ -3348,17 +3342,36 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
 
     | TReturn (label, value) -> generateEscape ctx ctx.Returns[label] value
 
-    | TBindElse (label, clauses, sequel, elseBody) ->
-        let scope = ctx.Returns[label]
+    | TBindElse (clauses, sequel, elseBody) ->
         let elseLabel = freshName "__else"
         let doneLabel = freshName "__else_done"
+
+        // The sequel and the else body are the form's two arms, so both are
+        // generated into the *same* target: whichever runs produces the value.
+        //
+        // A `DeclareAndAssign` cannot be handed to two arms as it stands — the
+        // local would be declared twice, and on whichever path ran second the
+        // declaration would not be in scope — so it is split here, the way
+        // `TThrow` and `TWithReturn` already split theirs: declared once ahead
+        // of the whole construct, and assigned by each arm.
+        //
+        // `default!` is required, not cosmetic. An else body that ends in a
+        // `ret` or a `throw` never reaches an assignment, and C# calls the
+        // later read of that local CS0165 — about code no user wrote.
+        let armTarget =
+            match target with
+            | DeclareAndAssign (varType, varName) ->
+                indent ctx
+                appendLine ctx $"%s{varType} %s{varName} = default!;"
+                Assign varName
+            | other -> other
 
         // Nested `if`s rather than a `switch`, because what a pattern binds has
         // to scope over **the sequel** — and a switch section scopes its
         // bindings to the section, which the sequel is not inside of.
         let rec emitClauses (c: CodegenContext) (remaining: TBindElseClause list) =
             match remaining with
-            | [] -> generateBlock c target sequel
+            | [] -> generateBlock c armTarget sequel
             | clause :: rest ->
                 // The scrutinee is named first: it is read by the `is` test and
                 // again by any view's step in the `when`, and evaluating it
@@ -3387,24 +3400,24 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
 
         emitClauses ctx clauses
 
-        // The else body always leaves the block — by `return` on the fast path,
-        // by `goto` otherwise — so it never falls out of the bottom and needs
-        // nothing after it. The *sequel* does fall through, unless it was
-        // generated into the method's `return` position.
-        let sequelFallsThrough =
-            match target with
+        // Both arms now fall out of the bottom, so the sequel has to jump over
+        // the else body and the two have to meet again afterwards. The one
+        // exception is the `return` position: there each arm ends in a `return`
+        // of its own, nothing falls through, and neither label is needed.
+        let armsFallThrough =
+            match armTarget with
             | Return -> false
             | _ -> true
 
-        if sequelFallsThrough then
+        if armsFallThrough then
             indent ctx
             appendLine ctx $"goto %s{doneLabel};"
 
         indent ctx
         appendLine ctx $"%s{elseLabel}: ;"
-        generateEscape ctx scope (Some elseBody)
+        generateBlock ctx armTarget elseBody
 
-        if sequelFallsThrough then
+        if armsFallThrough then
             indent ctx
             appendLine ctx $"%s{doneLabel}: ;"
 

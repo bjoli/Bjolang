@@ -296,14 +296,14 @@ and Expr =
     ///
     /// Clauses bind sequentially — a later scrutinee may name what an earlier
     /// pattern bound — and any one of them failing runs the single shared else
-    /// body, whose value becomes the *enclosing block's* value. That last part
-    /// is why this is not simply a `match` over the sequel: from a nested body
-    /// the else has to leave the whole `with-return`, not just the body it
-    /// stands in.
+    /// body, whose value becomes *this form's* value, exactly as the else arm
+    /// of an `if` does. It jumps nowhere on its own: a body that means to leave
+    /// an enclosing block writes the `(ret ...)` that leaves it.
     ///
-    /// The `string option` names which enclosing block to leave; `None` is the
-    /// nearest one.
-    | EBindElse of string option * (Pattern * Expr) list * Expr * Expr * Range
+    /// Still not a `match` over the sequel, for the reason it never was: one
+    /// else body with many ways to reach it is emitted once here, where nested
+    /// matches would emit it once per clause.
+    | EBindElse of (Pattern * Expr) list * Expr * Expr * Range
 
 and DefunArg =
     /// A positional parameter, with the type `(: name type)` gave it if it was
@@ -1577,7 +1577,7 @@ let exprRange (e: Expr) : Range =
     | EYield(_, r)
     | EYieldFrom(_, r)
     | EWithReturn(_, _, r)
-    | EBindElse(_, _, _, _, r) -> r
+    | EBindElse(_, _, _, r) -> r
 
 /// Every name a pattern binds.
 let rec patternBinders (pat: Pattern) : string list =
@@ -1758,11 +1758,7 @@ let freeNamesWith (reference: string -> Range -> bool -> unit) (guarded: bool) (
         // that already exist.
         | EWithReturn(name, body, _) -> go guarded (Set.add name bound) body
 
-        | EBindElse(target, clauses, sequel, elseBody, r) ->
-            // A named target is a *reference* to an escape some enclosing block
-            // bound, so it counts as one.
-            Option.iter (fun n -> refer n r) target
-
+        | EBindElse(clauses, sequel, elseBody, r) ->
             // The else body runs because a clause did not match, so nothing any
             // clause would have bound is in scope in it.
             go guarded bound elseBody
@@ -1832,7 +1828,7 @@ let exprChildren (e: Expr) : Expr list =
             |> List.collect (fun (pat, guard, body) ->
                 patternSteps pat @ (Option.toList guard) @ [ body ]))
     | EWithReturn(_, b, _) -> [ b ]
-    | EBindElse(_, clauses, sequel, elseBody, _) ->
+    | EBindElse(clauses, sequel, elseBody, _) ->
         (clauses
          |> List.collect (fun (pat, scrutinee) -> patternSteps pat @ [ scrutinee ]))
         @ [ sequel; elseBody ]
@@ -1993,7 +1989,7 @@ let checkEscapeUses (name: string) (body: Expr) : unit =
         // other binding of it would.
         | EWithReturn(n, b, _) -> if n <> name then go barrier tail b
 
-        | EBindElse(_, clauses, sequel, elseBody, _) ->
+        | EBindElse(clauses, sequel, elseBody, _) ->
             let bound =
                 clauses
                 |> List.fold
@@ -2235,7 +2231,7 @@ let private renameWith
             let renamed, bodySubst = bind [ name ] subst
             EWithReturn(List.head renamed, go bodySubst body, r)
 
-        | EBindElse(target, clauses, sequel, elseBody, r) ->
+        | EBindElse(clauses, sequel, elseBody, r) ->
             // Threading the substitution through the clauses in order is what
             // makes a later scrutinee see what an earlier pattern bound.
             let clauses', inner =
@@ -2251,7 +2247,6 @@ let private renameWith
                     ([], subst)
 
             EBindElse(
-                target |> Option.map reference,
                 List.rev clauses',
                 go inner sequel,
                 // Outside every clause's bindings, for the reason above.
@@ -5092,19 +5087,14 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         // which `http.bjo` calls. A third meaning, in the middle of the
         // subsystem that already owns the first, is worse than a longer word.
         //
-        // An optional name may come first — `(def/else ret (p e) ...)` — saying
-        // which enclosing `with-return` the else body leaves. Without one it is
-        // the nearest.
+        // No block name to give it. The else body produces this form's value
+        // and jumps nowhere, so there is nothing for a name to name: a body
+        // that means to leave a block writes the `(ret ...)` that leaves it,
+        // and that `ret` names the block itself.
         | SList(SAtom { Token = Symbol "def/else" } :: forms, r) :: rest ->
-            let target, clauseAndElse =
-                match forms with
-                | SAtom { Token = Symbol name } :: tail -> Some name, tail
-                | tail -> None, tail
-
-            match clauseAndElse with
+            match forms with
             | SList([ pattern; scrutinee ], _) :: elseForms when not elseForms.IsEmpty ->
                 EBindElse(
-                    target,
                     [ (parsePattern pattern, parseExpr scrutinee) ],
                     parseItems rest,
                     parseBody elseForms r,
@@ -5112,7 +5102,7 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
                 )
             | _ ->
                 failwithf
-                    $"Syntax error at %s{Lexer.formatPos r}: expected (def/else (pattern scrutinee) else-form...), optionally naming a block as (def/else name (pattern scrutinee) else-form...)."
+                    $"Syntax error at %s{Lexer.formatPos r}: expected (def/else (pattern scrutinee) else-form...)."
 
         // `(def/else* ((p1 e1) (p2 e2) ...) else-form ...)`.
         //
@@ -5122,12 +5112,7 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         // body and there is nothing left for a marker to disambiguate. It was
         // paying for a collision that this shape does not have.
         | SList(SAtom { Token = Symbol "def/else*" } :: forms, r) :: rest ->
-            let target, clausesAndElse =
-                match forms with
-                | SAtom { Token = Symbol name } :: tail -> Some name, tail
-                | tail -> None, tail
-
-            match clausesAndElse with
+            match forms with
             | SList(clauseForms, _) :: elseForms when not clauseForms.IsEmpty && not elseForms.IsEmpty ->
                 let clauses =
                     clauseForms
@@ -5137,7 +5122,7 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
                             failwithf
                                 $"Syntax error at %s{Lexer.formatPos (getRange bad)}: a def/else* clause is written (pattern scrutinee).")
 
-                EBindElse(target, clauses, parseItems rest, parseBody elseForms r, r)
+                EBindElse(clauses, parseItems rest, parseBody elseForms r, r)
             | _ ->
                 failwithf
                     $"Syntax error at %s{Lexer.formatPos r}: expected (def/else* ((pattern scrutinee) ...) else-form...)."

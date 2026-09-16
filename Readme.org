@@ -39,6 +39,12 @@ But here is the part that is actually worth waking up for. "within" is a deadlin
   (sync (timeout ms))
   ms)
 
+(: report (-> string (Option string) void))
+(defun (report what answer)
+  (println (match answer
+             ((Some v) #"${what}: ${v}")
+             (None     #"${what}: gave up"))))
+
 (defbjo (main args)
   (def kitchen (make-chan))
   (spawn (cook kitchen))
@@ -386,8 +392,6 @@ Even better: do a CPS macro like goof-loop and let users define their own do cla
 
 output LINE-directives a little bit better than I do now
 
-(with-return ...) that allows for (return ...). Disallowed in loops and seq. loops maybe allowed later. Maybe maybe not.
-
 abandon c# strings, despite giving us a nice regex engine because utf16. (deferred out of necessity. This has too much of a cost.)
 
 ** Things for the stdlib
@@ -399,7 +403,6 @@ data structures:
 network io by wrapping c# async in events for the cml goodness. (std http) is here, but we need sockets.
 
 ** Performance things
-Hoist literals. Not just literal lists and vecs, but also symbols and keywords. They have a decently high init cost, since they do a parallel map lookup.
 
 Turn let-bound functions that are only  ever in function position as functions rather than delegates/Func.
 

@@ -79,6 +79,19 @@ echo "Building standard library..."
 # The mutable collections, under `std/mutable` so that reaching for one is a
 # deliberate act. `deque` imports `prelude` and nothing else.
 ./bjor --lib lib/std/mutable/deque.bjo
+# The four written over the .NET collections. Each binds names out of the
+# runtime assembly — `Bjolang.Runtime.MutableVecModule` and its neighbours — so
+# a change to `BjolangRuntime/BjoMutable.cs` has to reach the compiler before
+# these lines, exactly as `run` and `random` need. Rebuild the compiler after
+# the runtime, then run this.
+#
+# `vec`, `map` and `heap` import `prelude` and nothing else. `set` also imports
+# `std/set`, for the `set->seq` and `seq->set` its two conversions to the
+# persistent set are written with, so it comes after the line that builds it.
+./bjor --lib lib/std/mutable/vec.bjo
+./bjor --lib lib/std/mutable/map.bjo
+./bjor --lib lib/std/mutable/set.bjo
+./bjor --lib lib/std/mutable/heap.bjo
 
 # `text/json` imports `prelude` and nothing else.
 ./bjor --lib lib/text/json.bjo
@@ -100,6 +113,12 @@ echo "Building standard library..."
 # `def/bjodat-type` it is written with and whose `Bjodat` cases its hand-written
 # instances name. It is the first thing in the library that is not machinery for
 # other code to build on, which is why it is last.
-./bjor --lib lib/bjor/manifest.bjo
+#
+# Commented out because `lib/bjor/manifest.bjo` does not exist: the line came in
+# with `826ceab` but the file itself was never committed, so this failed and
+# `set -e` took the rest of the build with it. `TestFiles/218_bjodat_forms.bjo`
+# imports `(bjor manifest)` and fails for the same reason. Restore both by
+# committing the file.
+# ./bjor --lib lib/bjor/manifest.bjo
 
 echo "Standard library built successfully!"

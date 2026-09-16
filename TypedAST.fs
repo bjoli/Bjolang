@@ -832,13 +832,18 @@ and TExprNode =
     /// wherever a value of any type was wanted and constrains nothing there.
     | TReturn of string * TypedExpr option
     /// `(guard ...)` / `(guard* ...)` — clauses, the rest of the body they were
-    /// written in, and the shared else body that leaves the named block.
+    /// written in, and the shared else body that stands in for it.
     ///
-    /// Not desugared into `TMatch` and `TReturn`, though a single clause would
-    /// go that way exactly: a `guard*` has one else body and many ways to reach
-    /// it, and nesting matches would emit that body once per clause. Here it is
+    /// The else body is the form's other arm, exactly as an `if`'s is: it
+    /// produces the value of the whole form. It jumps nowhere by itself, so a
+    /// body that means to leave an enclosing block writes the `(ret ...)` that
+    /// does it, and that `ret` is an ordinary tail-position form there.
+    ///
+    /// Not desugared into `TMatch`, though a single clause would go that way
+    /// exactly: a `guard*` has one else body and many ways to reach it, and
+    /// nesting matches would emit that body once per clause. Here it is
     /// emitted once, after the sequel, with every failing clause jumping to it.
-    | TBindElse of string * TBindElseClause list * TypedExpr * TypedExpr
+    | TBindElse of TBindElseClause list * TypedExpr * TypedExpr
     /// A dispatched trait method: the dictionary's type, the method, the
     /// method's type *at this call*, the dictionary, and the arguments.
     ///
@@ -1736,9 +1741,7 @@ type Env =
       /// `addBinding` removes the name from here, exactly as it removes one
       /// from `TraitMethodNames`. Binding over an escape is what shadowing one
       /// *is*, and after it the name means the new binding.
-      Escapes: Map<string, EscapeInfo>
-      /// The innermost block in scope, for a `guard` that named none.
-      InnermostEscape: string option }
+      Escapes: Map<string, EscapeInfo> }
 
 /// What a `with-return` put in scope.
 and EscapeInfo =
