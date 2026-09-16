@@ -26,6 +26,19 @@
 ;; children, so every `sync` anywhere in this file races a token. What the
 ;; second row adds is the nested scope itself — children owned and waited for
 ;; by it, a token linked to the outer one, and the close at the end.
+;;
+;; What still differs from the C# twin, after the shapes were matched:
+;;
+;; - The token. No row here can be run without one, because `main` is a scope;
+;;   the C# rows race nothing. That difference is the point of the comparison
+;;   rather than a flaw in it.
+;; - The spawn-burst completion signal is a nested scope, where the C# twin
+;;   counts down to a `ManualResetEventSlim`. A scope waits for its children by
+;;   construction, so there is no Bjolang spelling of the latch that is not
+;;   also a scope.
+;; - Every `sync` here goes through the language's `sync`, which builds an
+;;   event value; the C# twin awaits `ch.Send(v)` / `ch.Receive()` directly and
+;;   so has no event object on the send side.
 
 (import (std prelude))
 (import (std stopwatch))
@@ -66,6 +79,13 @@
               (let () (sync (chan-send out -1)) (go))
               (let () (sync (chan-send out m)) (go)))))))
 
+;; The kick-off message, sent from a fiber of its own as in the C# twin, so that
+;; the timed region starts with a spawn rather than with a send on the fiber
+;; that is about to wait for everybody.
+(: send-one (-bjo-> (Chan int) int void))
+(defbjo (send-one ch v)
+  (sync (chan-send ch v)))
+
 ;; Spawned with `bjo` and joined by hand, so the nodes start outside the timed
 ;; region exactly as they do in the C# twin. The main scope's token is still
 ;; ambient, so every `sync` here races it; this row is the C# twin plus that.
@@ -82,7 +102,7 @@
   (def before (total-allocated #t))
   (def sw (stopwatch))
   (stopwatch-start! sw)
-  (sync (chan-send (vec-ref channels 0) 0))
+  (ignore (sync (promise-join (bjo (send-one (vec-ref channels 0) 0)))))
   (loop (:for i (range 0 workers))
         (:do (ignore (sync (promise-join (vec-ref handles i))))))
   (stopwatch-stop! sw)
@@ -107,7 +127,7 @@
                                  (vec-ref channels (% (+ i 1) workers))
                                  (= i (- workers 1))
                                  trips))))
-    (sync (chan-send (vec-ref channels 0) 0)))
+    (spawn (send-one (vec-ref channels 0) 0)))
   (stopwatch-stop! sw)
   (report "Ring (nested scope)" (* workers trips) (stopwatch-ms sw) (- (total-allocated #t) before)))
 
@@ -167,7 +187,10 @@
   (def before (total-allocated #t))
   (def sw (stopwatch))
   (stopwatch-start! sw)
-  (skewed-receiver chs rounds)
+  ;; Spawned and joined rather than run here, as in the C# twin: on the main
+  ;; fiber the receiver would be the one fiber in the row whose resume does not
+  ;; go through the scheduler the same way.
+  (ignore (sync (promise-join (bjo (skewed-receiver chs rounds)))))
   (ignore (sync (promise-join sender)))
   (stopwatch-stop! sw)
   (report "Skewed choose(8)" rounds (stopwatch-ms sw) (- (total-allocated #t) before)))
