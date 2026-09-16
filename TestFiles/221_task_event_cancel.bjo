@@ -1,0 +1,105 @@
+;; Cancelling a `task->event` raises `Cancelled`. It never hands the
+;; cancellation back as a value.
+;;
+;; That is the one representation rule for this form: an `(Err e)` from a
+;; `task->event` means the request *failed*. It does not mean "we were
+;; cancelled", and a caller must never have to tell those apart by looking at
+;; the exception type. `079_dotnet_async.bjo` states the rule and checks it
+;; once; this file is the one that can actually catch it being broken.
+;;
+;; # Why this is a loop
+;;
+;; It was broken, and a single-shot test could not see it. The ambient token
+;; used to be linked into the call's own `CancellationTokenSource`, so the token
+;; firing woke two branches from one cause: the call faulted and its branch
+;; became ready, and the ambient branch `sync` publishes became ready. Two ready
+;; branches race and the first commit wins, so roughly one sync in fifty
+;; committed the *task* branch and produced `(Err TaskCanceledException)` —
+;; exactly the representation the rule forbids.
+;;
+;; A test that tried it once passed forty-nine times in fifty. The failure
+;; surfaced as `079` going red every few dozen runs, which reads like flakiness
+;; in a timing test and is not: it was a real race with a real consequence, and
+;; anything that handles `(Err e)` as a failure — logging it, retrying it,
+;; falling back — would have run on a cancelled scope.
+;;
+;; So: many trials, and any leak at all is a failure. The fix was to give the
+;; call the nack's token and nothing else, which makes cancellation an ordered
+;; sequence rather than a race — see `Concurrency.cs`, `TaskEvent`.
+;;
+;; # Why each trial is its own scope
+;;
+;; A token fires once. Reusing one would make every trial after the first the
+;; *already cancelled* case, which is the other path through the `Guard` and is
+;; not what is being tested here.
+
+(import (std prelude))
+(import (std simpletest))
+
+(import/extern
+  ;; Long enough that it cannot finish on its own: any trial that comes back
+  ;; did so because it was cancelled, not because the delay elapsed.
+  (pause (: System.Threading.Tasks.Task.Delay (-> int void) #:async)))
+
+;; Returns only if the sync *returned*. Under the rule it never does: the sync
+;; raises, and the raise is what the promise carries.
+(: probe (-> string))
+(defbjo (probe)
+  (match (sync (task->event (pause 30000)))
+    ((Ok u) "leaked-as-ok")
+    ((Err e) "leaked-as-err")))
+
+;; One trial. `settle` is how long the call is left in flight before the scope
+;; is cancelled, which is what selects the path under test:
+;;
+;;   0  — mostly the already-cancelled `Guard`, and sometimes the race;
+;;   >0 — the call is definitely running, so it is the race every time.
+;;
+;; Raced against a timeout so that a regression that *wedges* a sync is a
+;; failure line rather than a suite that never finishes.
+(: trial (-> int string))
+(defbjo (trial settle)
+  (def (stop! scope) (make-cancel))
+  (def waiting (parameterize ((current-cancel scope)) (bjo (probe))))
+  (sync (timeout settle))
+  (def fired (stop! (Requested "the test")))
+  (match (sync (choose (wrap (promise-join waiting)
+                             (fun (r) (match r
+                                        ((Ok v) v)
+                                        ((Err e) "raised"))))
+                       (wrap (timeout 10000) (fun (u) "hung"))))
+    (v v)))
+
+;; The number of trials that did anything other than raise.
+(: leaks (-> int int int))
+(defbjo (leaks settle n)
+  (def/mutable bad 0)
+  (loop (:for i (range 0 n))
+        (:do (match (trial settle)
+               ("raised" unit)
+               (other (begin
+                        (println #"  trial ${i} at settle=${settle}: ${other}")
+                        (set! bad (+ bad 1)))))))
+  bad)
+
+(defbjo (main args)
+  ;; The counts are lopsided on purpose. A `settle` of zero is both the cheapest
+  ;; trial — nothing sleeps — and the one that leaked most often when the bug
+  ;; was live, since cancelling as the call starts is what lines the two wakeups
+  ;; up. So the bulk of the evidence is gathered there, and the settled cases,
+  ;; which each cost their `settle` in real time, only have to show that the
+  ;; ordered path holds once the call is properly running.
+  ;;
+  ;; Measured against the broken runtime, `settle` of zero leaked about one and
+  ;; a half to three percent of trials. A thousand of them is some fifteen
+  ;; expected leaks and a chance of seeing none in the tens of millions, which
+  ;; is what makes this a regression test rather than a second flaky one. The
+  ;; other two are thin on their own — they were written to cover the path, not
+  ;; to carry the statistics — so a run where only the first goes red is the
+  ;; expected shape of this failing, not a partial result.
+  (expect "cancelled the instant it is synced, over 1000 trials" (leaks 0 1000) 0)
+  (expect "cancelled with the call in flight, over 150 trials" (leaks 3 150) 0)
+  (expect "cancelled after the call has settled, over 50 trials" (leaks 20 50) 0)
+
+  (println "221 ok")
+  0)

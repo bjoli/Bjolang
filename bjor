@@ -16,6 +16,39 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_FILE="$SCRIPT_DIR/Bjolang.fsproj"
 COMPILER_DLL="$SCRIPT_DIR/bin/Release/net10.0/Bjolang.dll"
 
+# Every source the compiler binary is built from.
+#
+# The runtime's C# belongs here as much as the compiler's F# does:
+# `Bjolang.fsproj` has a `ProjectReference` to `BjolangRuntime.csproj` and the
+# built `BjolangRuntime.dll` is copied next to the compiler, so a change there
+# is a change to what every compiled program runs against.
+#
+# It used to list only `*.fs` at the top level, and the omission was silent in
+# the worst way: editing `BjolangRuntime/*.cs` and running a program ran the
+# *old* runtime, because nothing here called the binary stale and `bjor` builds
+# `-c Release` while a bare `dotnet build` produces Debug. A fix could be
+# applied, a test could be run, and the test could pass against code that was no
+# longer on disk.
+#
+# `obj` and `bin` are skipped because a build writes generated C# into them, so
+# including them would make the compiler stale the instant it was built.
+compiler_sources() {
+    find "$SCRIPT_DIR" -maxdepth 1 -name '*.fs' 2>/dev/null
+    find "$SCRIPT_DIR/BjolangRuntime" -name '*.cs' \
+         -not -path '*/obj/*' -not -path '*/bin/*' 2>/dev/null
+}
+
+compiler_is_stale() {
+    [ -f "$COMPILER_DLL" ] || return 0
+
+    local src
+    while read -r src; do
+        [ -n "$src" ] && [ "$src" -nt "$COMPILER_DLL" ] && return 0
+    done < <(compiler_sources)
+
+    return 1
+}
+
 if [ $# -eq 0 ]; then
     echo "Usage: bjor [options] <source.bjo> [program arguments...]"
     echo "Run 'bjor --help' for more information."
@@ -45,7 +78,7 @@ fi
 # below — which is all about deciding whether a binary is older than what it was
 # built from, and there is no binary.
 if [ "$1" = "--repl" ]; then
-    if [ ! -f "$COMPILER_DLL" ] || [ -n "$(find "$SCRIPT_DIR" -maxdepth 1 -name '*.fs' -newer "$COMPILER_DLL" 2>/dev/null)" ]; then
+    if compiler_is_stale; then
         echo "Building Bjolang compiler..."
         dotnet build "$PROJECT_FILE" -c Release -v q --nologo || exit 1
     fi
@@ -243,10 +276,14 @@ needs_compile() {
 
     # A rebuilt compiler invalidates everything it produced: a `.dll` carries
     # metadata in the compiler's own format, and the source it was built from
-    # says nothing about that.
-    for dep in "$SCRIPT_DIR"/*.fs "$COMPILER_DLL"; do
-        [ -f "$dep" ] && [ "$dep" -nt "$OUT_FILE" ] && return 0
-    done
+    # says nothing about that. The runtime's C# counts for a different reason —
+    # it is what the output *runs against* — but it invalidates the same output,
+    # so the two are asked about together. See `compiler_sources`.
+    while read -r dep; do
+        [ -n "$dep" ] && [ "$dep" -nt "$OUT_FILE" ] && return 0
+    done < <(compiler_sources)
+
+    [ -f "$COMPILER_DLL" ] && [ "$COMPILER_DLL" -nt "$OUT_FILE" ] && return 0
 
     # The standard library this program links against — but not when the file
     # being built is part of that library.
@@ -283,14 +320,8 @@ fi
 if [ $SHOULD_COMPILE -eq 1 ]; then
     # Ensure F# Bjolang compiler binary is up-to-date
     NEEDS_BUILD=0
-    if [ ! -f "$COMPILER_DLL" ]; then
+    if compiler_is_stale; then
         NEEDS_BUILD=1
-    else
-        # Check if any source F# file is newer than compiler binary
-        NEWER_COUNT=$(find "$SCRIPT_DIR" -maxdepth 1 -name "*.fs" -newer "$COMPILER_DLL" 2>/dev/null | wc -l)
-        if [ "$NEWER_COUNT" -gt 0 ]; then
-            NEEDS_BUILD=1
-        fi
     fi
 
     if [ $NEEDS_BUILD -eq 1 ]; then

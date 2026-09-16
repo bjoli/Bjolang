@@ -1154,14 +1154,44 @@ public static partial class BjolangRuntime {
     /// made is not a call that failed, and `never` is CML's word for a branch
     /// with nothing to offer this time round.
     ///
-    /// The other direction — the token firing while the call is in flight —
-    /// needs nothing here. The token firing is what cancels the task, so the
-    /// token's branch in `sync` commits first and the task's late result is
-    /// dropped by the commit protocol.
+    /// The other direction — the token firing while the call is in flight — is
+    /// why the ambient token is *not* linked into the call's own source.
+    ///
+    /// Linking it made the token's firing wake two branches at once. The task's
+    /// source was cancelled, so the call faulted and the task branch became
+    /// ready; and the ambient branch `sync` publishes became ready, from the
+    /// same cause, down a different path. Two ready branches race, first commit
+    /// wins, and a task branch that won handed the cancellation back as
+    /// `(Err TaskCanceledException)` — the representation this method exists to
+    /// be rid of. It was rare, around one sync in fifty, and a single-shot test
+    /// cannot see it.
+    ///
+    /// So the call is given the nack's token and nothing else, and cancelling a
+    /// scope now runs in a fixed order rather than a race:
+    ///
+    ///   1. the token fires;
+    ///   2. the ambient branch is the only one that can become ready — the call
+    ///      is still running, knowing nothing about any of this;
+    ///   3. it commits, and `sync` raises `Cancelled`;
+    ///   4. committing it withdraws this branch, which fires the nack;
+    ///   5. the nack cancels the call.
+    ///
+    /// The call still stops, and stops because the sync was abandoned rather
+    /// than alongside it. The cost is a few in-process continuations of latency
+    /// on work that is already logically over at step 3; the saving is the
+    /// linked source and the continuation that disposed it, per sync.
+    ///
+    /// Nothing is lost by dropping the link, because the two paths covered the
+    /// same ground: `sync` omits the ambient branch only when the token is
+    /// `RootCancel`, and `AmbientCancellation` returns `None` for that same
+    /// token, so the call that had no ambient branch never had a linked source
+    /// either. `sync/blocking` publishes the branch as well.
     ///
     /// **The gap:** `sync/blocking` from outside any scope has no ambient token,
-    /// so nothing there can be cancelled and nothing here changes. A call made
-    /// under a token that fires later behaves as described above.
+    /// so nothing there can be cancelled and nothing here changes.
+    ///
+    /// `TestFiles/221_task_event_cancel.bjo` is the regression test, and it is a
+    /// loop because one trial proves nothing about a race.
     public static IEvent<Result<Exception, T>> TaskEvent<T>(Func<CancellationToken, Task<T>> start) =>
         Cml.Guard(() => {
             var scope = Dyn.Current.Cancel;
@@ -1173,38 +1203,12 @@ public static partial class BjolangRuntime {
             if (scope is not null && !ReferenceEquals(scope, RootCancel) && scope.IsCompleted)
                 return Cml.Never<Result<Exception, T>>();
 
-            var ambient = AmbientCancellation();
-
-            Func<CancellationToken, Task<T>> scoped =
-                !ambient.CanBeCanceled
-                    // Nothing to link to, so nothing to allocate. The common
-                    // case: a program that never parameterized a token.
-                    ? start
-                    : branch => {
-                        var linked = CancellationTokenSource.CreateLinkedTokenSource(branch, ambient);
-
-                        try {
-                            var task = start(linked.Token);
-
-                            task.ContinueWith(
-                                static (_, s) => ((CancellationTokenSource)s!).Dispose(),
-                                linked,
-                                CancellationToken.None,
-                                TaskContinuationOptions.ExecuteSynchronously,
-                                TaskScheduler.Default);
-
-                            return task;
-                        } catch {
-                            // A synchronous throw from the starter is still a
-                            // result — `Cancellable` turns it into one — but
-                            // the link is this method's to clean up.
-                            linked.Dispose();
-                            throw;
-                        }
-                    };
-
+            // The nack's token and nothing else — see the note above on why the
+            // ambient one is not linked in. `Cancellable` makes that token and
+            // fires it when this branch loses, which is now the single path by
+            // which the call is stopped.
             return Cml.Wrap(
-                TaskInterop.Cancellable(scoped),
+                TaskInterop.Cancellable(start),
                 static r =>
                     r.IsError
                         ? Result<Exception, T>.Err(r.Error!.SourceException)

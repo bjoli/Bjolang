@@ -3,6 +3,63 @@
 
 What each change guarantees, and what it leaves open.
 
+* A cancelled ~task->event~ always raises, and never returns a value
+
+The rule was already written down: an ~(Err e)~ from a ~task->event~ means the
+request *failed*, and cancellation raises ~Cancelled~ instead, so that a caller
+never has to tell the two apart by looking at the exception type. It held for a
+scope cancelled *before* the sync. It did not hold for one cancelled while the
+call was in flight, about one sync in fifty.
+
+The ambient token was linked into the call's own ~CancellationTokenSource~, so
+the token firing woke two branches from a single cause: the call faulted and
+its branch became ready, and the ambient branch ~sync~ publishes became ready,
+by a different path. Two ready branches race and the first commit wins — and a
+task branch that won handed back ~(Err TaskCanceledException)~, which is exactly
+the representation the rule forbids. The comment in ~TaskEvent~ asserted the
+opposite, that "the token's branch in ~sync~ commits first", and nothing
+enforced it.
+
+The fix is to give the call the nack's token and nothing else. Cancelling a
+scope is then an ordered sequence rather than a race: the token fires, the
+ambient branch is the only one that *can* become ready because the call is
+still running, it commits, ~sync~ raises, the commit withdraws the task branch,
+and the nack cancels the call. The call still stops, and stops because the sync
+was abandoned rather than alongside it.
+
+Nothing is lost by dropping the link. ~sync~ omits the ambient branch only for
+~RootCancel~, and ~AmbientCancellation~ returns ~None~ for that same token, so a
+call with no ambient branch never had a linked source either. It is also a
+little cheaper: the linked source and the continuation that disposed it are
+gone, per sync.
+
+Direct ~#:async~ calls are untouched. They still take the ambient token as a
+trailing argument and still surface cancellation as ~TaskCanceledException~ up
+the fiber, which is what ~079_dotnet_async.bjo~'s last case pins.
+
+What it leaves open: the general rule that cancellation loses a race and never
+undoes a commit is unchanged, and should be — a rendezvous that happened
+delivered a message, and discarding it would lose data. ~task->event~ could be
+fixed locally precisely because there is no delivered message there: the result
+*was* the cancellation. Any other event that can be completed by the same token
+that cancels the scope has the same shape of bug, and there is no check that
+would find one.
+
+** The test that could not see it
+
+~079_dotnet_async.bjo~ tried this once and passed forty-nine times in fifty, so
+the bug read as flakiness in a timing test for as long as it existed.
+~221_task_event_cancel.bjo~ is the regression test and runs the cancellation a
+thousand times; against the broken runtime it reports eighteen or so leaks every
+run. A race needs a loop, and a single-shot assertion about one is a placebo.
+
+Separately, ~bjor~ decided the compiler was stale by looking at ~*.fs~ in the
+project root and nothing else, so editing ~BjolangRuntime/*.cs~ and running a
+program ran the *old* runtime — and a bare ~dotnet build~ produces Debug while
+~bjor~ runs Release, so a rebuild did not fix it either. A fix could be applied
+and a test could pass against code that was no longer on disk. The staleness
+check now covers the runtime's C# as well.
+
 * A ~def/else~ else body is an arm, not a jump
 
 ~def/else~ no longer needs an enclosing ~with-return~. Its else body produces
