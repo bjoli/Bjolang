@@ -506,8 +506,11 @@ public static partial class BjolangRuntime {
     /// mentioned. This says "I know, and I still do not want the result",
     /// routing a failure to the scheduler's unhandled-exception hook.
     ///
-    /// This is what `(ignore p)` will mean once §8.2's `Discard` trait exists.
-    /// Until then it has to be named.
+    /// This is what `(ignore p)` means: `std/prelude` implements `Discard` for
+    /// `(Promise %a)` as `(defun (ignore p) (detach p))`, so the blanket
+    /// implementation that answers `unit` is not the one a promise takes.
+    /// Naming it is still how you say it about an expression that is not a
+    /// promise handle.
     ///
     /// A fiber that stopped because it was cancelled is not reported. Being
     /// cancelled is how a worker normally ends, so reporting it would print an
