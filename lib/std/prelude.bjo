@@ -215,7 +215,7 @@
 (impl (->str Char)
   (defun (->str c) (char->string c)))
 
-;; Container formats.
+;; Container formats are further down.
 
 
 ;; ---------------------------------------------------------------------------
@@ -354,6 +354,8 @@
 (defbjouble (map-map f m)
   (#:sync (clr-map-map f m))
   (#:bjo
+    ;; (loop (:for (k v) m)
+    ;;       (:acc acc (mapping k (f k v))))
     (let ((b (mapbuilder-empty))
           (c (map-cursor m)))
       (let go ()
@@ -382,6 +384,9 @@
 (defbjouble (map-filter keep? m)
   (#:sync (clr-map-filter keep? m))
   (#:bjo
+    ;; (loop (:for (k v) m)
+    ;;       (:when (keep? k v))
+    ;;       (:acc new-map (mapping k v)))
     (let ((b (mapbuilder-empty))
           (c (map-cursor m)))
       (let go ()
@@ -397,6 +402,8 @@
 (defbjouble (map-fold f init m)
   (#:sync (clr-map-fold f init m))
   (#:bjo
+    ;; (loop (:for (k v) m)
+    ;;       (:acc acc (folding init (f acc k v))))
     (let ((c (map-cursor m)))
       (let go ((acc init))
         (if (map-cursor-done? c)
@@ -409,18 +416,23 @@
 (defbjouble (map-iter f m)
   (#:sync (clr-map-iter f m))
   (#:bjo
-    (let ((c (map-cursor m)))
-      (let go ()
-        (if (map-cursor-done? c)
-            #t
-            (let ()
-              (def (k v) (map-cursor-current c))
-              (if (f k v)
-                  (go)
-                  #f)))))))
+    ;; (loop (:for (k v) m)
+    ;;       (:acc acc (folding #t (f k v)))
+    ;;       (:break (not acc)))
+    (def c (map-cursor m))
+    (let go ()
+      (if (map-cursor-done? c)
+          #t
+          (let ()
+            (def (k v) (map-cursor-current c))
+            (if (f k v)
+                (go)
+                #f))))))
 
 (: map-for-each (-> (-?-> %k %v void) (Map %k %v) void))
 (defun (map-for-each f m)
+  ;; (loop (:for (k v) m)
+  ;;       (:do (f k v)))
   (let ((c (map-cursor m)))
     (let go ()
       (if (map-cursor-done? c)
@@ -752,50 +764,31 @@
 ;; List map.
 (: list-map (-> (-?-> %a %b) (List %a) (List %b)))
 (defun (list-map f xs)
-  (let ((b (listbuilder-empty)))
-    (let go ((rest xs))
-      (if (list-empty? rest)
-          (listbuilder->list b)
-          (let ()
-            (listbuilder-add! b (f (list-head rest)))
-            (go (list-tail rest)))))))
+  (loop (:for elem xs)
+        (:acc lst (listing (f elem)))))
 
 (: list-filter (-> (-?-> %a bool) (List %a) (List %a)))
 (defun (list-filter keep? xs)
-  (let ((b (listbuilder-empty)))
-    (let go ((rest xs))
-      (if (list-empty? rest)
-          (listbuilder->list b)
-          (let ((x (list-head rest)))
-            (when (keep? x)
-              (listbuilder-add! b x))
-            (go (list-tail rest)))))))
+  (loop (:for elem xs)
+        (:when (keep? elem))
+        (:acc acc (listing elem))))
 
 ;; List foldl.
 (: list-foldl (-> (-?-> %b %a %b) %b (List %a) %b))
 (defun (list-foldl f init xs)
-  (let go ((rest xs) (acc init))
-    (if (list-empty? rest)
-        acc
-        (go (list-tail rest) (f acc (list-head rest))))))
+  (loop (:for elem xs)
+        (:acc acc (folding init (f acc elem)))))
 
 ;; List foldr.
 (: list-foldr (-> (-?-> %a %b %b) %b (List %a) %b))
 (defun (list-foldr f init xs)
-  (let go ((rest (list-reverse xs)) (acc init))
-    (if (list-empty? rest)
-        acc
-        (go (list-tail rest) (f (list-head rest) acc)))))
+  (loop (:for elem (list-reverse xs))
+        (:acc acc (folding init (f elem acc)))))
 
 (: list-for-each (-> (-?-> %a Unit) (List %a) Unit))
 (defun (list-for-each f xs)
-  (let go ((rest xs))
-    (if (list-empty? rest)
-        unit
-        (let ()
-          (ignore (f (list-head rest)))
-          (go (list-tail rest))))))
-
+  (loop (:for elem xs)
+        (:do (f elem))))
 ;; ---------------------------------------------------------------------------
 ;; Vecs, where the callback may suspend
 ;; ---------------------------------------------------------------------------
@@ -818,35 +811,23 @@
 (defbjouble (vec-map f v)
   (#:sync (clr-vec-map f v))
   (#:bjo
-    (let ((b (vecbuilder-empty)))
-      (let go ((i 0))
-        (if (= i (vec-length v))
-            (vecbuilder->vec b)
-            (let ()
-              (vecbuilder-add! b (f (vec-ref v i)))
-              (go (+ i 1))))))))
+    (loop (:for elem v)
+          (:acc acc (vecing (f elem))))))
 
 (: vec-filter (-> (-?-> %a bool) (Vec %a) (Vec %a)))
 (defbjouble (vec-filter keep? v)
   (#:sync (clr-vec-filter keep? v))
   (#:bjo
-    (let ((b (vecbuilder-empty)))
-      (let go ((i 0))
-        (if (= i (vec-length v))
-            (vecbuilder->vec b)
-            (let ((x (vec-ref v i)))
-              (when (keep? x)
-                (vecbuilder-add! b x))
-              (go (+ i 1))))))))
+    (loop (:for elem v)
+          (:when (keep? elem))
+          (:acc acc (vecing elem)))))
 
 (: vec-fold (-> (-?-> %b %a %b) %b (Vec %a) %b))
 (defbjouble (vec-fold f init v)
   (#:sync (clr-vec-fold f init v))
   (#:bjo
-    (let go ((i 0) (acc init))
-      (if (= i (vec-length v))
-          acc
-          (go (+ i 1) (f acc (vec-ref v i)))))))
+    (loop (:for elem v)
+          (:acc acc (folding init (f acc elem))))))
 
 ;; Vec reduce.
 (: vec-reduce (-> (-?-> %a %a %a) (Vec %a) %a))
@@ -862,12 +843,8 @@
 (defbjouble (vec-for-each f v)
   (#:sync (clr-vec-for-each f v))
   (#:bjo
-    (let go ((i 0))
-      (if (= i (vec-length v))
-          unit
-          (let ()
-            (ignore (f (vec-ref v i)))
-            (go (+ i 1)))))))
+    (loop (:for elem v)
+          (:do (f elem)))))
 
 (: vec-for-each/range (-> (-?-> %a Unit) (Vec %a) int int Unit))
 (defbjouble (vec-for-each/range f v index count)
@@ -885,12 +862,9 @@
 (defbjouble (vec-iter f v)
   (#:sync (clr-vec-iter f v))
   (#:bjo
-    (let go ((i 0))
-      (if (= i (vec-length v))
-          #t
-          (if (f (vec-ref v i))
-              (go (+ i 1))
-              #f)))))
+     (loop (:for elem v)
+           (:acc acc (folding #t (f elem)))
+           (:break (not acc)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Seqs, where the callback may suspend
@@ -935,14 +909,15 @@
 
 (: map->list (-> (Map %k %v) (List (Tuple %k %v))))
 (defun (map->list m)
-  (loop (:for kvp m)
-        (:acc lst (listing kvp))))
+  {listing kvp (:for kvp m)})
 
 (: vec->map (-> (Vec (Tuple %k %v)) (Map %k %v)))
 (defun (vec->map v)
   (loop (:for kvp v)
         (:acc map (mapping kvp))))
 
+;; This can actually be faster than the loop, since list-for-each
+;; uses internal iteration.
 (: vec->list (-> (Vec %a) (List %a)))
 (defun (vec->list v)
   (def b (listbuilder-empty))
@@ -951,8 +926,7 @@
 
 (: map->vec (-> (Map %k %v) (Vec (Tuple %k %v))))
 (defun (map->vec m)
-  (loop (:for kvp m)
-        (:acc v (vecing kvp))))
+  {vecing kvp (:for kvp m)})
 
 
 ;; --------------------------------------------------------------------------
@@ -1051,13 +1025,6 @@
     (if (string-cursor-end? str cur)
         None
         (Some (string-cursor-ref str cur)))))
-
-;; (def/pattern (Ref form compare inject)
-;;   (defun (format))
-;;   (syntax-match form
-;;     ((_) (syntax-error "Ref pattern needs keys"))
-;;     ((_ keys ...)))
-
 
 (def/trait (Derefable %a)
   (type %out)
@@ -1195,12 +1162,12 @@
 
 (: string-join (-> (Vec string) string string))
 (defun (string-join parts sep)
-  (let ((b (stringbuilder-empty)))
-    (loop (:with first? #t #f)
-          (:for part parts)
-          (:do (unless first? (stringbuilder-add-string! b sep))
-               (stringbuilder-add-string! b part)))
-    (stringbuilder->string b)))
+  (def b (stringbuilder-empty))
+  (loop (:with first? #t #f)
+        (:for part parts)
+        (:do (unless first? (stringbuilder-add-string! b sep))
+             (stringbuilder-add-string! b part)))
+  (stringbuilder->string b))
 
 ;; --- Conversions ---
 ;; ToString wrappers. Each is invariant, so each round-trips through the
@@ -1310,6 +1277,8 @@
 
 (: string-for-each (-> (-> char void) string void))
 (defun (string-for-each f s)
+  ;; (loop (:for ch s)
+  ;;       (:do (f ch)))
   (let loop ((c (string-cursor-start s)))
     (unless (string-cursor-end? s c)
       (f (string-cursor-ref s c))
@@ -1333,26 +1302,26 @@
 
 (: list->string (-> (List char) string))
 (defun (list->string cs)
-  (let ((b (stringbuilder-empty)))
-    (list-for-each #(stringbuilder-add! b &1) cs)
-    (stringbuilder->string b)))
+  (def b (stringbuilder-empty))
+  (list-for-each #(stringbuilder-add! b &1) cs)
+  (stringbuilder->string b))
 
 (: string->vec (-> string (Vec char)))
 (defun (string->vec s)
-  (let ((b (vecbuilder-empty)))
-    (string-for-each #(vecbuilder-add! b &1) s)
-    (vecbuilder->vec b)))
+  (def b (vecbuilder-empty))
+  (string-for-each #(vecbuilder-add! b &1) s)
+  (vecbuilder->vec b))
 
 ;; Reverse string.
 (: string-reverse (-> string string))
 (defun (string-reverse s)
-  (let ((b (stringbuilder-empty)))
-    (let loop ((c (string-cursor-end s)))
-      (unless (string-cursor=? c (string-cursor-start s))
-        (let ((p (string-cursor-prev s c)))
-          (stringbuilder-add! b (string-cursor-ref s p))
-          (loop p))))
-    (stringbuilder->string b)))
+  (def b (stringbuilder-empty))
+  (let loop ((c (string-cursor-end s)))
+    (unless (string-cursor=? c (string-cursor-start s))
+      (let ((p (string-cursor-prev s c)))
+        (stringbuilder-add! b (string-cursor-ref s p))
+        (loop p))))
+  (stringbuilder->string b))
 
 ;; --- File operations.
 (import/extern
@@ -1400,14 +1369,14 @@
 ;; Path filename.
 (: path-filename (-> string (Option string)))
 (defun (path-filename path)
-  (let ((name (clr-file-name path)))
-    (if (string-empty? name) None (Some name))))
+  (def name (clr-file-name path))
+  (if (string-empty? name) None (Some name)))
 
 ;; File extension.
 (: path-file-extension (-> string (Option string)))
 (defun (path-file-extension path)
-  (let ((ext (clr-file-extension path)))
-    (if (string-empty? ext) None (Some ext))))
+  (def ext (clr-file-extension path))
+  (if (string-empty? ext) None (Some ext)))
 
 ;; --- Directories ---
 
@@ -1454,10 +1423,10 @@
 
 (: get-environment-variable (-> string (Option string)))
 (defun (get-environment-variable name)
-  (let ((value (clr-get-env name)))
-    (if (clr-empty? value)
-        None
-        (Some value))))
+  (def value (clr-get-env name))
+  (if (clr-empty? value)
+      None
+      (Some value)))
 
 ;; Set environment variable.
 (: set-environment-variable! (-> string string void))
@@ -1834,11 +1803,11 @@
     (list-empty? lst)))
 
 (impl (Collection (Array %a))
-      (type %content %a)
-      (defun (length arr)
-        (array-length arr))
-      (defun (empty? arr)
-        (= 0 (array-length arr))))
+  (type %content %a)
+  (defun (length arr)
+    (array-length arr))
+  (defun (empty? arr)
+    (= 0 (array-length arr))))
 
 (impl (Collection (Vec %a))
   (type %content %a)
@@ -1870,17 +1839,17 @@
     (map-empty? m)))
 
 (impl (Collection (TransientMap %k %v))
-      (type %content (%k . %v))
-      (defun (length tm)
-        (transientmap-length tm))
-      (defun (empty? tm)
-        (transientmap-empty? tm)))
+  (type %content (%k . %v))
+  (defun (length tm)
+    (transientmap-length tm))
+  (defun (empty? tm)
+    (transientmap-empty? tm)))
 (impl (Collection (MapBuilder %k %v))
-      (type %content (%k . %v))
-      (defun (length mb)
-        (mapbuilder-length mb))
-      (defun (empty? mb)
-        (= (mapbuilder-length mb) 0)))
+  (type %content (%k . %v))
+  (defun (length mb)
+    (mapbuilder-length mb))
+  (defun (empty? mb)
+    (= (mapbuilder-length mb) 0)))
 
 ;; Range collection.
 (impl (Collection Range)
@@ -1933,31 +1902,31 @@
         (go (iterable-next xs cur))))))
 
 (impl (Addable! StringBuilder)
-      (type %elem Char)
-      (defun (add! sb s)
-        (stringbuilder-add! sb s)))
+  (type %elem Char)
+  (defun (add! sb s)
+    (stringbuilder-add! sb s)))
 
 (impl (Addable! (VecBuilder %a))
-      (type %elem %a)
-      (defun (add! vb elem)
-        (vecbuilder-add! vb elem)))
+  (type %elem %a)
+  (defun (add! vb elem)
+    (vecbuilder-add! vb elem)))
 
 (impl (Addable! (TransientMap %k %v))
-      (type %elem (%k . %v))
-      (defun (add! tm tup)
-        (let (((k v) tup))
-          (transientmap-set! tm k v))))
+  (type %elem (%k . %v))
+  (defun (add! tm tup)
+    (let (((k v) tup))
+      (transientmap-set! tm k v))))
 
 (impl (Addable! (MapBuilder %k %v))
-      (type %elem (%k . %v))
-      (defun (add! mb tup)
-        (let (((k v) tup))
-          (mapbuilder-add! mb k v))))
+  (type %elem (%k . %v))
+  (defun (add! mb tup)
+    (let (((k v) tup))
+      (mapbuilder-add! mb k v))))
 
 (impl (Addable! (ListBuilder %a))
-      (type %elem %a)
-      (defun (add! lb elem)
-        (listbuilder-add! lb elem)))
+  (type %elem %a)
+  (defun (add! lb elem)
+    (listbuilder-add! lb elem)))
 
 ;; The set and ordered-collection sinks live with their types, in (std set),
 ;; (std orderedset) and (std orderedmap): `Addable!` is this module's trait,
@@ -1993,15 +1962,15 @@
     acc))
 
 (impl (Addable (Vec %a))
-      (type %elem %a)
-      (defun (add v elem)
-        (vec-add v elem)))
+  (type %elem %a)
+  (defun (add v elem)
+    (vec-add v elem)))
 
 (impl (Addable (Map %k %v))
-      (type %elem (%k . %v))
-      (defun (add m tup)
-        (let (((k v) tup))
-          (map-set m k v))))
+  (type %elem (%k . %v))
+  (defun (add m tup)
+    (let (((k v) tup))
+      (map-set m k v))))
 
 ;; As with the sinks, the set and ordered-collection impls live with their
 ;; types, in (std set), (std orderedset) and (std orderedmap).
@@ -2496,14 +2465,14 @@
 ;; formatting pure and synchronous.
 (: seq->str (-> (Seq %a) string) (where (->str %a)))
 (defun (seq->str sq)
-  (let ((sb (stringbuilder-empty)))
-    (stringbuilder-add-string! sb "(seq")
-    ;; Walk sequence.
-    (loop (:for item sq)
-          (:do (stringbuilder-add-string! sb " ")
-               (stringbuilder-add-string! sb (->str item))))
-    (stringbuilder-add-string! sb ")")
-    (stringbuilder->string sb)))
+  (def sb (stringbuilder-empty))
+  (stringbuilder-add-string! sb "(seq")
+  ;; Walk sequence.
+  (loop (:for item sq)
+        (:do (stringbuilder-add-string! sb " ")
+             (stringbuilder-add-string! sb (->str item))))
+  (stringbuilder-add-string! sb ")")
+  (stringbuilder->string sb))
 
 (impl (->str (Seq %a))
   (where (->str %a))
@@ -2519,14 +2488,14 @@
 ;; Map to str.
 (: map->str (-> (Map %k %v) string) (where (->str %k) (->str %v)))
 (defun (map->str m)
-  (let ((sb (stringbuilder-empty)))
-    (stringbuilder-add-string! sb "#map(")
-    (loop (:with first? #t #f)
-          (:for entry m)
-          (:do (unless first? (stringbuilder-add-string! sb " "))
-               (stringbuilder-add-string! sb (map-entry->str entry))))
-    (stringbuilder-add-string! sb ")")
-    (stringbuilder->string sb)))
+  (def sb (stringbuilder-empty))
+  (stringbuilder-add-string! sb "#map(")
+  (loop (:with first? #t #f)
+        (:for entry m)
+        (:do (unless first? (stringbuilder-add-string! sb " "))
+             (stringbuilder-add-string! sb (map-entry->str entry))))
+  (stringbuilder-add-string! sb ")")
+  (stringbuilder->string sb))
 
 (impl (->str (Map %k %v))
   (where (->str %k) (->str %v))

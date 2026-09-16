@@ -276,7 +276,9 @@
 ;; ---------------------------------------------------------------------------
 ;; Conversions
 ;; ---------------------------------------------------------------------------
-
+;; going through seq is lazy af. If we move it below the Iterable we can
+;; just use loop.
+;; TODO: see above.
 (: list->orderedmap (-> (List (Tuple %k %v)) (OrderedMap %k %v)))
 (defun (list->orderedmap xs) (seq->orderedmap (list->seq xs)))
 
@@ -329,14 +331,8 @@
 
 (: orderedmap-for-each (-> (-?-> %k %v void) (OrderedMap %k %v) void))
 (defun (orderedmap-for-each f m)
-  (def c (orderedmap-cursor m))
-  (let go ()
-    (cond
-      ((orderedmap-cursor-done? c) unit)
-      (else
-        (def (k v) (orderedmap-cursor-current c))
-        (f k v)
-        (go)))))
+  (loop (:for (k . v) m)
+        (:do (f k v))))
 
 (impl (Collection (OrderedMap %k %v))
   (type %content (Tuple %k %v))
@@ -360,24 +356,24 @@
 ;; The mutable sinks, one entry at a time. `Addable!` is the prelude's trait;
 ;; this module owns the types, which is what licenses the impls.
 (impl (Addable! (OrderedMapBuilder %k %v))
-      (type %elem (%k . %v))
-      (defun (add! mb tup)
-        (def (k v) tup)
-        (orderedmapbuilder-add! mb k v)))
+  (type %elem (%k . %v))
+  (defun (add! mb tup)
+    (def (k v) tup)
+    (orderedmapbuilder-add! mb k v)))
 
 (impl (Addable! (TransientOrderedMap %k %v))
-      (type %elem (%k . %v))
-      (defun (add! tm tup)
-        (def (k v) tup)
-        (transientorderedmap-set! tm k v)))
+  (type %elem (%k . %v))
+  (defun (add! tm tup)
+    (def (k v) tup)
+    (transientorderedmap-set! tm k v)))
 
 ;; And the persistent map itself. Set semantics on a duplicate key, as the
 ;; prelude's `(Addable (Map %k %v))` explains.
 (impl (Addable (OrderedMap %k %v))
-      (type %elem (%k . %v))
-      (defun (add m tup)
-        (def (k v) tup)
-        (orderedmap-set m k v)))
+  (type %elem (%k . %v))
+  (defun (add m tup)
+    (def (k v) tup)
+    (orderedmap-set m k v)))
 
 ;; Equality for ordered maps.
 (impl (Eq (OrderedMap %k %v))
@@ -386,9 +382,10 @@
     (and (= (orderedmap-length a) (orderedmap-length b))
          (= (orderedmap->list a) (orderedmap->list b))))
   (defun (eq-hash m)
-    (orderedmap-fold (fun (h k v) (hash-combine h (hash-combine (eq-hash k) (eq-hash v))))
-                     17
-                     m)))
+    (orderedmap-fold
+     (fun (h k v) (hash-combine h (hash-combine (eq-hash k) (eq-hash v))))
+     17
+     m)))
 
 (: entry->str (-> (Tuple %k %v) string) (where (->str %k) (->str %v)))
 (defun (entry->str entry)
