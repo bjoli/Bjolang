@@ -63,20 +63,31 @@ public static partial class BjolangRuntime {
     ///
     /// # What it costs
     ///
-    /// Outside a scope, nothing: the token is the root one, which has no other
-    /// half and can never fire, so the race is skipped after one reference
-    /// comparison. A single channel operation then parks one pooled op with no
-    /// `SyncState` at all — see `IDirectSyncable` — and a rendezvous allocates
+    /// `RunMainFiber` opens a scope around `main` and installs it, and `bjo`
+    /// and `spawn` hand the environment to their children, so the ambient token
+    /// is a live promise in every fiber of every program. The reference
+    /// comparison against `RootCancel` below therefore skips the race only for
+    /// code that runs outside any scope, which in practice means the REPL's
+    /// `propagate: false` session and hand-built environments.
+    ///
+    /// A single channel operation costs one object when it parks and nothing
+    /// when it does not. It has one commit point, so it parks a pooled op with
+    /// no `SyncState` (see `IDirectSyncable`) and the token rides along as a
+    /// claim on that op: one `CancelWatch`, which is both the claim and the
+    /// registration on the token. A rendezvous that commits inline allocates
     /// only the send event, 32 bytes, which a receive does not pay either.
     ///
-    /// Inside a `with-cancel` the token is live, and every `sync` builds a
-    /// `CancellableEvent` and publishes the token as a second branch: 256 bytes
-    /// a rendezvous against 32. That is the remaining gap between a scoped and
-    /// an unscoped program, and it is what turning the race into a link on the
-    /// parked op would remove.
+    /// A `choose` has branches to arbitrate between, so it keeps the published
+    /// form: a `SyncState`, a `CancellableEvent`, and one waiter on the token
+    /// whenever the branches all park. That waiter is registered on the token
+    /// and left there until the promise's amortised prune drops it, which
+    /// `IsAbandoned` makes safe.
     ///
-    /// `main` is not in a scope, which is what makes the first paragraph the
-    /// common case rather than an unreachable one.
+    /// Measured on `bench/bjolang/cmlbench.bjo`: making `sync` ignore the token
+    /// altogether takes the skewed-choose row from 171 to 129 ns/op and from
+    /// 184 to 72 B/op, and the ring rows from 121 to 90 ns/op and 72 to 32
+    /// B/op. That is the price of the race, and it is paid by every program
+    /// because every program is in a scope.
     ///
     /// EXPERIMENT: not an `async` method.
     ///
