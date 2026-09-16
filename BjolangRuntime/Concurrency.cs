@@ -237,7 +237,8 @@ public static partial class BjolangRuntime {
     /// parked rendezvous — a choose, three wraps, their mapper closures and the
     /// join — and a `sync` is the most frequent thing a program does. Here the
     /// event branch hands `onSync` straight through with no mapper at all, and
-    /// only the token branch needs a closure.
+    /// the token branch is one object: <see cref="TokenWatch"/> is the
+    /// registration on the token and the continuation both.
     ///
     /// The reason lands in <see cref="Why"/> rather than in the payload, so
     /// that the payload can stay `T` and no wrapper struct is needed. Safe
@@ -259,10 +260,58 @@ public static partial class BjolangRuntime {
         /// publish order is priority, so an event that is already available wins
         /// even though the token has fired. The rendezvous happened and throwing
         /// the value away would lose a delivered message.
+        ///
+        /// The branch is registered on the token directly rather than through
+        /// `Promise.Publish`, which would allocate a closure, its delegate and a
+        /// `Promise.Waiter` for what one object can hold. The id is still minted
+        /// from the state, so a `with-nack` interval around this sync still
+        /// covers the same range of branches.
         public void Publish(SyncState state, int eventId, System.Action<T> onSync) {
             _ev.Publish(state, state.NextEventId(), onSync);
             if (state.IsSynchronized) return;
-            _token.Join().Publish(state, state.NextEventId(), r => { Why = r.Value; onSync(default!); });
+            _token.Register(new TokenWatch(this, state, state.NextEventId(), onSync));
+        }
+
+        /// The token branch: a promise waiter that commits the sync itself.
+        ///
+        /// `Register` runs this inline when the token has already fired, and
+        /// enqueues it otherwise, so the fiber is never resumed on the thread
+        /// that called the cancel thunk.
+        private sealed class TokenWatch : PromiseWaiter {
+            private readonly CancellableEvent<T> _race;
+            private readonly SyncState _state;
+            private readonly int _eventId;
+            private readonly System.Action<T> _onSync;
+
+            internal TokenWatch(
+                CancellableEvent<T> race, SyncState state, int eventId, System.Action<T> onSync) {
+
+                _race = race;
+                _state = state;
+                _eventId = eventId;
+                _onSync = onSync;
+            }
+
+            /// Another branch won this sync, so the token may drop us at its
+            /// next prune. Without this every parked `choose` under a scope
+            /// leaves a waiter on the scope's token for as long as the scope
+            /// lives.
+            public override bool IsAbandoned => _state.IsSynchronized;
+
+            /// `TryCommit`, not `TryClaim`: this runs on a thread that may well
+            /// find the state transiently claimed by a sibling branch still
+            /// being published, and treating that as a loss would drop a
+            /// cancellation that did happen.
+            ///
+            /// The reason is only stored; the raise happens in
+            /// <see cref="SyncAwaiter{T}.GetResult"/>, on the resuming fiber's
+            /// own stack. It is written before `onSync` is dispatched, which is
+            /// the ordering the awaiter's fence publishes.
+            public override void Signal() {
+                if (!_state.TryCommit(_eventId)) return;
+                _race.Why = _race._token.Outcome.Value;
+                Scheduler.Dispatch(_onSync, default!);
+            }
         }
     }
 
