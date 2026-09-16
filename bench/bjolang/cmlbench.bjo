@@ -16,9 +16,16 @@
 ;; so the gap between the two tables is what the language costs on top of the
 ;; runtime.
 ;;
-;; The scoped ring has no C# twin: a scope is a Bjolang construct, and the row
-;; exists to price it. Its 1000 spawns are inside the timed region because they
-;; have to be inside the scope; against 1,000,000 messages that is under 0.2%.
+;; The second ring row has no C# twin: a scope is a Bjolang construct, and the
+;; row exists to price a *nested* one. Its 1000 spawns are inside the timed
+;; region because they have to be inside the scope; against 1,000,000 messages
+;; that is under 0.2%.
+;;
+;; Both ring rows run under a live cancellation token: `RunMainFiber` opens a
+;; scope around `main`, and `bjo` and `spawn` hand the environment to their
+;; children, so every `sync` anywhere in this file races a token. What the
+;; second row adds is the nested scope itself — children owned and waited for
+;; by it, a token linked to the outer one, and the close at the end.
 
 (import (std prelude))
 (import (std stopwatch))
@@ -26,7 +33,16 @@
 ;; Per-thread allocation is useless here — the work is spread over the pool — so
 ;; the process-wide counter is used instead.
 (import/extern
-  (total-allocated (: System.GC.GetTotalAllocatedBytes (-> bool long))))
+  (total-allocated (: System.GC.GetTotalAllocatedBytes (-> bool long)))
+  (gc-collect (: System.GC.Collect (-> void)))
+  (gc-wait-finalizers (: System.GC.WaitForPendingFinalizers (-> void))))
+
+;; HACK5: the C# twin's `Measured` settles the heap before each rep.
+(: settle (-> void))
+(defun (settle)
+  (gc-collect)
+  (gc-wait-finalizers)
+  (gc-collect))
 
 (: report (-> string int long long void))
 (defun (report name n ms bytes)
@@ -51,9 +67,10 @@
               (let () (sync (chan-send out m)) (go)))))))
 
 ;; Spawned with `bjo` and joined by hand, so the nodes start outside the timed
-;; region exactly as they do in the C# twin.
-(: ring-unscoped (-bjo-> int int void))
-(defbjo (ring-unscoped workers trips)
+;; region exactly as they do in the C# twin. The main scope's token is still
+;; ambient, so every `sync` here races it; this row is the C# twin plus that.
+(: ring-joined (-bjo-> int int void))
+(defbjo (ring-joined workers trips)
   (def channels (loop (:for i (range 0 workers))
                       (:acc v (vecing (make-chan)))))
   (def handles (loop (:for i (range 0 workers))
@@ -61,6 +78,7 @@
                                                      (vec-ref channels (% (+ i 1) workers))
                                                      (= i (- workers 1))
                                                      trips))))))
+  (settle)
   (def before (total-allocated #t))
   (def sw (stopwatch))
   (stopwatch-start! sw)
@@ -70,12 +88,16 @@
   (stopwatch-stop! sw)
   (report "Ring" (* workers trips) (stopwatch-ms sw) (- (total-allocated #t) before)))
 
-;; The same ring inside a `with-cancel`. Every `sync` in every node now races the
-;; scope's live token, which is the row's whole point.
-(: ring-scoped (-bjo-> int int void))
-(defbjo (ring-scoped workers trips)
+;; The same ring under a nested `with-cancel`, which is the only difference
+;; between this row and the one above: the nodes are `spawn`ed rather than
+;; `bjo`ed, the nested scope owns them and waits for them instead of a join per
+;; handle, and its token is linked to the outer one. Both rows race a live
+;; token, so what the pair prices is the nested scope's bookkeeping.
+(: ring-nested-scope (-bjo-> int int void))
+(defbjo (ring-nested-scope workers trips)
   (def channels (loop (:for i (range 0 workers))
                       (:acc v (vecing (make-chan)))))
+  (settle)
   (def before (total-allocated #t))
   (def sw (stopwatch))
   (stopwatch-start! sw)
@@ -87,7 +109,7 @@
                                  trips))))
     (sync (chan-send (vec-ref channels 0) 0)))
   (stopwatch-stop! sw)
-  (report "Ring (scoped)" (* workers trips) (stopwatch-ms sw) (- (total-allocated #t) before)))
+  (report "Ring (nested scope)" (* workers trips) (stopwatch-ms sw) (- (total-allocated #t) before)))
 
 ;; ---------------------------------------------------------------------------
 ;; 2. Spawn burst — a million fibers that do nothing.
@@ -101,6 +123,7 @@
 
 (: spawn-burst (-bjo-> int void))
 (defbjo (spawn-burst n)
+  (settle)
   (def before (total-allocated #t))
   (def sw (stopwatch))
   (stopwatch-start! sw)
@@ -140,6 +163,7 @@
   (def chs (loop (:for i (range 0 8))
                  (:acc v (vecing (make-chan)))))
   (def sender (bjo (skewed-sender (vec-ref chs 0) rounds)))
+  (settle)
   (def before (total-allocated #t))
   (def sw (stopwatch))
   (stopwatch-start! sw)
@@ -155,8 +179,8 @@
   ;; paying for tier-0 code. The warmup rows go to a port nobody reads.
   (let ((quiet (open-output-string)))
     (ignore (parameterize ((current-output-port quiet))
-              (ring-unscoped 100 100)
-              (ring-scoped 100 100)
+              (ring-joined 100 100)
+              (ring-nested-scope 100 100)
               (spawn-burst 50000)
               (skewed-choose 50000)
               (get-output-string quiet))))
@@ -165,9 +189,9 @@
   ;; why the minimum rather than the median: the skewed-choose row is bimodal on
   ;; a multi-CCD part and a median reports whichever mode won the coin toss.
   (loop (:for r (range 0 5))
-        (:do (ring-unscoped 1000 1000)))
+        (:do (ring-joined 1000 1000)))
   (loop (:for r (range 0 5))
-        (:do (ring-scoped 1000 1000)))
+        (:do (ring-nested-scope 1000 1000)))
   (loop (:for r (range 0 5))
         (:do (spawn-burst 1000000)))
   (loop (:for r (range 0 5))
