@@ -318,6 +318,7 @@ reverted before the next. `ns/op` is the skewed row unless a ring row is named.
     3. sender uses `await ch.Send(v)` directly      106     112      —
     3b. one send event per thread, not per send     173     120    118
     3a. one object for the token branch (kept)      171     152    114
+    one registration per fiber, not per park (kept) 151     112    112
     C# twin                                          88      40     57
 
 Hack 2 is the prescribed one and it measures nothing: a `choose`'s registration on
@@ -399,8 +400,9 @@ costs three times that. Whatever it is did not show up in the six places it
 should have, and `perf` is not available on this machine to look further. The
 change is not on the branch; this paragraph and the numbers are what is left of
 it. Anyone reinstating it should first make the per-park registration go away —
-which is the persistent-registration item below, and which this measurement moves
-from "the remaining token cost" to "the thing that has to happen first".
+which is the persistent-registration item below, and which this measurement moved
+from "the remaining token cost" to "the thing that has to happen first". That has
+since been done, so this is worth another attempt.
 
 **A lock-free waiter list on `Promise`.** Worth at most the 18 ns of hack 2b, and
 only part of that is the lock — the rest is the list add and the prune. Removing
@@ -409,21 +411,52 @@ filter it, and a `Complete` that runs while a prune holds the detached stack mus
 not lose those waiters. That is a lost-wake-up hazard in the cancellation path,
 which is the path with no test coverage from ordinary programs, for 18 ns.
 
-**One persistent registration per (fiber, token).** This is where the remaining
-token cost is: with the branch collapsed, making `sync` ignore the token still
-takes the skewed row from 171 to 129 and the ring from 114 to 97. A registration
-that outlived a single sync would remove both the per-park allocation and the
-per-park registration. It was not done, and the reason is what it would commit this
-runtime to: **a logical fiber identity**. There is none today — a fiber is a stack
-of nested `async Fiber` boxes, and `FiberContext.Current` is a `DynEnv` shared with
-spawned children, so a mutable "parked here" cell cannot live in it. It would need
-a second per-thread slot saved and restored by every box's `Run`, set to a fresh
-object at spawn and inherited through nested bjoroutine calls; every park would
-have to publish its parked state with a full fence, re-check the token, and race
-the signaller for the claim with an interlocked generation word; and a fiber's
-completion would have to flip the registration's `IsAbandoned`. That is a new
-runtime concept, not a local optimisation, and it is the one thing on this list
-that could actually close the gap.
+#### One persistent registration per (fiber, scope) — kept
+
+This is where the rest of the token cost was, and it is now gone. A parked single
+channel operation used to allocate a `CancelWatch` and register it on the scope's
+token every time; `FiberWatch` is the same watch, registered once and re-armed per
+park.
+
+    Ring                  124 -> 112 ns/op, 72 -> 32 B/op
+    Ring (nested scope)   110 ->  92 ns/op, 72 -> 32 B/op
+    Skewed choose(8)      171 -> 151 ns/op, 152 -> 112 B/op
+    Spawn burst             unchanged
+
+**Where the identity came from.** The obvious reading is that this needs a logical
+fiber identity the runtime does not have — a second per-thread slot saved and
+restored by every state-machine box, set at spawn, inherited through nested calls.
+It does not. `DynEnv` already has every property wanted: it is inherited through
+nested bjoroutine calls, re-captured into the box at every suspension, and
+replaced wholesale when a scope is entered. An environment carrying a cell
+therefore means "this fiber, in this scope", which is exactly the pair a
+registration on a scope's token belongs to. The one thing missing was freshness at
+spawn, and `Scope.Start` supplies it by handing the child an environment without
+the parent's cell.
+
+The cell is not exclusive, and does not need to be: a fiber that cannot claim it
+— a child spawned straight from `Bjo.Spawn`, a thunk on a `blocking` thread —
+falls back to a `CancelWatch` of its own. Correctness never depends on winning it,
+only speed does.
+
+**The three hazards.** A lost wake-up: arming is interlocked and the token is
+re-read straight after, so a cancel landing between the check and the park is seen
+by one side or the other. A stale park: a cancelled sync leaves its op on the
+channel's list pointing at the claim, so `ITakeable` carries a generation and the
+op records the one it was parked with — the fiber's next park cannot be matched
+through the last one's leftovers. A registration outliving its fiber: an idle cell
+reports itself abandoned to the token's prune and marks itself unregistered as it
+does, and the next park registers again.
+
+Publishing order is what keeps "a token firing after a commit does not undo it".
+The op is parked while the claim is only *held* — a state the channel may take and
+the token may not — so a rendezvous that commits inline is out of reach of a token
+firing in the same instant. Arming comes after, and only then is the park visible
+to the token.
+
+**What the remaining gap is.** The ring is 112 against the C# twin's 58 and the
+skewed row 151 against 88. The direct-park rewrite above is worth ~13 ns of that
+and is now unblocked, since the per-park registration it collided with is gone.
 
 ---
 

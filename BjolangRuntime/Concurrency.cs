@@ -83,11 +83,11 @@ public static partial class BjolangRuntime {
     /// and left there until the promise's amortised prune drops it, which
     /// `IsAbandoned` makes safe.
     ///
-    /// Measured on `bench/bjolang/cmlbench.bjo`: making `sync` ignore the token
-    /// altogether takes the skewed-choose row from 171 to 129 ns/op and from
-    /// 184 to 72 B/op, and the ring rows from 121 to 90 ns/op and 72 to 32
-    /// B/op. That is the price of the race, and it is paid by every program
-    /// because every program is in a scope.
+    /// The watch is not built per park. It is one registration per fiber and
+    /// scope, re-armed each time — see `FiberWatch` — so a fiber in a loop pays
+    /// for it once. What is left on `bench/bjolang/cmlbench.bjo` is the claim
+    /// itself: making `sync` ignore the token altogether takes the ring rows
+    /// from 112 to 90 ns/op and the skewed-choose row from 151 to 129.
     ///
     /// EXPERIMENT: not an `async` method.
     ///
