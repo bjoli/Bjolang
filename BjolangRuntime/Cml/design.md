@@ -296,6 +296,97 @@ could never have detected any of this: it read `PendingReceiveCount`, which call
 test was meant to prove happened on its own. It passed with the bug fully present. The
 replacement tests read `RawPendingReceiveCount`, which does not clean.
 
+### The ambient token — where the skewed-choose row's time actually goes
+
+`RunMainFiber` opens a scope around `main`, so `Dyn.Current.Cancel` is a live
+promise in every fiber of every compiled program and every `sync` races it. The
+Bjolang twin of `bench/Cml/Program.cs` was 2x the C# one on the skewed-choose row,
+and the token was the suspect. It is about half the gap, and the measurements below
+say which half.
+
+Protocol: both twins built in Release and run interleaved in one session (C#,
+Bjolang, C#, Bjolang, ...), five alternations of five reps, minimum reported, on a
+5900X (12 cores / 24 threads, two CCDs), .NET 10. Each hack applied on its own and
+reverted before the next. `ns/op` is the skewed row unless a ring row is named.
+
+    experiment                                   skewed    B/op   ring
+    baseline, before this pass                      160     184    119
+    baseline, after the heap settle (below)         171     184    121
+    1. `sync` ignores the token entirely            129      72     90
+    2. no registration in `Promise.Publish`         168     184      —
+    2b. no registration for a direct op's watch     153     152    106
+    3. sender uses `await ch.Send(v)` directly      106     112      —
+    3b. one send event per thread, not per send     173     120    118
+    3a. one object for the token branch (kept)      171     152    114
+    C# twin                                          88      40     57
+
+Hack 2 is the prescribed one and it measures nothing: a `choose`'s registration on
+the token costs less than the noise. Hack 2b is the same subtraction for the
+`CancelWatch` a single channel operation registers, and that one is worth 18 ns on
+the skewed row and 8 on the ring — the lock, the list add and the amortised prune
+together.
+
+The awaiter pool was counted rather than subtracted: a counter on
+`EventAwaiter.Rent`'s `new` fallback reports **5869 misses** over a whole suite run,
+against roughly 30 million rents. The thread-static pool is not thrashing under
+ping-pong, so there was nothing to fix there.
+
+#### What was kept
+
+**One object for a `choose`'s token branch.** `CancellableEvent.Publish` used to
+publish the token through `Promise.Publish`, which allocated a closure, its
+delegate and a `Promise.Waiter`. `TokenWatch` is a `PromiseWaiter` that holds the
+`SyncState`, the branch id and `onSync`, and commits the sync itself. 184 -> 171
+ns/op and 184 -> 152 B/op; the ring rows do not change, because a single channel
+operation never builds one.
+
+**A settled heap before each rep, and the same collector on both sides.** The
+Bjolang harness did not `GC.Collect()` before a rep and the C# one did, so a
+collection earned by the previous row landed inside the next row's timed region:
+the skewed row's median was 409 ns/op against a minimum of 160. With the settle the
+median is 190 and the minimum is unchanged, which is what the minimum was chosen
+for. Separately, `Cml.Bench.csproj` asks for server GC and the compiled Bjolang
+program got workstation GC; `bench/run.sh` now sets `DOTNET_gcServer` so the two
+tables are comparable, and both harnesses print the collector they ran under.
+
+#### What was measured and rejected
+
+**A syntactic fast path for `(sync (chan-send ch v))`.** Hack 3 — a sender that
+awaits `ch.Send(v)` directly, as the C# twin does — is worth 65 ns, which is what
+made this look like the biggest item. It is not the event object: hack 3b keeps
+every other part of the path and only stops allocating a `ChannelSendEvent` per
+send, and it costs **32 B/op and no time at all**. The 65 ns is the rest of what
+hack 3 removes: the `CancelWatch` and its registration (18 ns, hack 2b) and the
+pooled `EventAwaiter` indirection — an extra delegate hop and an interlocked
+handover per rendezvous — where the C# path stores the fiber's own resume delegate
+straight into the `PutOp`. An intrinsic that only removed the event object would
+buy the allocation and nothing else, at the price of a fast path attached to syntax
+rather than to the value: an event reaching `sync` through a variable or a `guard`
+would take the slow path. Not worth it for 32 bytes.
+
+**A lock-free waiter list on `Promise`.** Worth at most the 18 ns of hack 2b, and
+only part of that is the lock — the rest is the list add and the prune. Removing
+the `Monitor` means a Treiber push whose prune has to detach the whole stack to
+filter it, and a `Complete` that runs while a prune holds the detached stack must
+not lose those waiters. That is a lost-wake-up hazard in the cancellation path,
+which is the path with no test coverage from ordinary programs, for 18 ns.
+
+**One persistent registration per (fiber, token).** This is where the remaining
+token cost is: with the branch collapsed, making `sync` ignore the token still
+takes the skewed row from 171 to 129 and the ring from 114 to 97. A registration
+that outlived a single sync would remove both the per-park allocation and the
+per-park registration. It was not done, and the reason is what it would commit this
+runtime to: **a logical fiber identity**. There is none today — a fiber is a stack
+of nested `async Fiber` boxes, and `FiberContext.Current` is a `DynEnv` shared with
+spawned children, so a mutable "parked here" cell cannot live in it. It would need
+a second per-thread slot saved and restored by every box's `Run`, set to a fresh
+object at spawn and inherited through nested bjoroutine calls; every park would
+have to publish its parked state with a full fence, re-check the token, and race
+the signaller for the claim with an interlocked generation word; and a fiber's
+completion would have to flip the registration's `IsAbandoned`. That is a new
+runtime concept, not a local optimisation, and it is the one thing on this list
+that could actually close the gap.
+
 ---
 
 ## 5. Known issues
