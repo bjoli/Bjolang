@@ -507,11 +507,11 @@
 
 (: jb-where (-> (-> Symbol Syntax) Syntax string (List Syntax)))
 (defun (jb-where inject head trait)
-  (let ((vars (jb-head-vars head)))
-    (if (list-empty? vars)
-        Nil
-        (list #'(,(inject 'where)
-                 ,@(list-map (fun (v) #'(,(inject (string->symbol trait)) ,v)) vars))))))
+  (def vars (jb-head-vars head))
+  (if (list-empty? vars)
+      Nil
+      (list #'(,(inject 'where)
+               ,@(list-map (fun (v) #'(,(inject (string->symbol trait)) ,v)) vars)))))
 
 ;; --- markers ---------------------------------------------------------------
 
@@ -532,32 +532,31 @@
 (: jb-key (-> Syntax (List Syntax) Syntax))
 (defun (jb-key name markers)
   (let go ((ms markers))
-    (if (list-empty? ms)
-        (SKey (string->keyword (syntax->string name)))
-        (if (jb-marker=? (list-head ms) "#:key")
-            (list-head (list-tail ms))
-            (go (list-tail ms))))))
+    (cond
+      ((list-empty? ms) (SKey (string->keyword (syntax->string name))))
+      ((jb-marker=? (list-head ms) "#:key") (list-head (list-tail ms)))
+      (else (go (list-tail ms))))))
 
 ;; The fallback expression, or None if the field is required.
 (: jb-fallback (-> (List Syntax) (Option Syntax)))
 (defun (jb-fallback markers)
   (let go ((ms markers))
-    (if (list-empty? ms)
-        None
-        (let ((m (list-head ms)))
-          (cond
-            ((jb-marker=? m "#:optional") (Some (jb-sym "None")))
-            ((jb-marker=? m "#:default") (Some (list-head (list-tail ms))))
-            (else (go (list-tail ms))))))))
+    (cond
+      ((list-empty? ms) None)
+      (else
+       (def m (list-head ms))
+       (cond
+         ((jb-marker=? m "#:optional") (Some (jb-sym "None")))
+         ((jb-marker=? m "#:default") (Some (list-head (list-tail ms))))
+         (else (go (list-tail ms))))))))
 
 (: jb-optional? (-> (List Syntax) bool))
 (defun (jb-optional? markers)
   (let go ((ms markers))
-    (if (list-empty? ms)
-        #f
-        (if (jb-marker=? (list-head ms) "#:optional")
-            #t
-            (go (list-tail ms))))))
+    (cond
+      ((list-empty? ms) #f)
+      ((jb-marker=? (list-head ms) "#:optional") #t)
+      (else (go (list-tail ms))))))
 
 ;; `#:rest` — the field takes *every* value of its clause rather than one, so
 ;; `(depends (package ...) (package ...))` fills a `(List Dep)`.
@@ -573,11 +572,10 @@
 (: jb-rest? (-> (List Syntax) bool))
 (defun (jb-rest? markers)
   (let go ((ms markers))
-    (if (list-empty? ms)
-        #f
-        (if (jb-marker=? (list-head ms) "#:rest")
-            #t
-            (go (list-tail ms))))))
+    (cond
+      ((list-empty? ms) #f)
+      ((jb-marker=? (list-head ms) "#:rest") #t)
+      (else (go (list-tail ms))))))
 
 ;; `(Record #:tag package (: name ...) ...)` — the marker, if it is there, and
 ;; the fields with it taken off.
@@ -587,11 +585,11 @@
 ;; rule about capital letters.
 (: jb-tag (-> (List Syntax) (Option Syntax)))
 (defun (jb-tag body)
-  (if (list-empty? body)
-      None
-      (if (jb-marker=? (list-head body) "#:tag")
-          (Some (jb-str (list-head (list-tail body))))
-          None)))
+  (cond
+    ((list-empty? body) None)
+    ((jb-marker=? (list-head body) "#:tag")
+     (Some (jb-str (list-head (list-tail body)))))
+    (else None)))
 
 (: jb-fields (-> (List Syntax) (List Syntax)))
 (defun (jb-fields body)
@@ -603,15 +601,16 @@
 (: jb-keep (-> (List Syntax) (List Syntax)))
 (defun (jb-keep markers)
   (let go ((ms markers))
-    (if (list-empty? ms)
-        Nil
-        (let ((m (list-head ms)))
-          (cond
-            ((jb-marker=? m "#:default") (go (list-tail (list-tail ms))))
-            ((jb-marker=? m "#:key") (go (list-tail (list-tail ms))))
-            ((jb-marker=? m "#:optional") (go (list-tail ms)))
-            ((jb-marker=? m "#:rest") (go (list-tail ms)))
-            (else (Cons m (go (list-tail ms)))))))))
+    (cond
+      ((list-empty? ms) Nil)
+      (else
+       (def m (list-head ms))
+       (cond
+         ((jb-marker=? m "#:default") (go (list-tail (list-tail ms))))
+         ((jb-marker=? m "#:key") (go (list-tail (list-tail ms))))
+         ((jb-marker=? m "#:optional") (go (list-tail ms)))
+         ((jb-marker=? m "#:rest") (go (list-tail ms)))
+         (else (Cons m (go (list-tail ms)))))))))
 
 (: jb-shape string)
 (def jb-shape
@@ -648,25 +647,26 @@
 
 (: jb-enc-chain (-> (List Syntax) Syntax Syntax))
 (defun (jb-enc-chain fields acc)
-  (if (list-empty? fields)
-      #'(bjodat-entries ,acc)
-      (let* ((f (list-head fields))
-             (name (jb-field-name f))
-             (markers (jb-field-markers f))
-             (key (jb-key name markers))
-             (push #'(Cons (->bjodat (record-ref v ,name))
-                           (Cons (bjodat-key ,key) ,acc)))
-             (step (if (jb-optional? markers)
-                       #'(if (some? (record-ref v ,name)) ,push ,acc)
-                       push)))
-        #'(let ((,acc ,step))
-            ,(jb-enc-chain (list-tail fields) acc)))))
+  (cond
+    ((list-empty? fields) #'(bjodat-entries ,acc))
+    (else
+     (def f (list-head fields))
+     (def name (jb-field-name f))
+     (def markers (jb-field-markers f))
+     (def key (jb-key name markers))
+     (def push #'(Cons (->bjodat (record-ref v ,name))
+                       (Cons (bjodat-key ,key) ,acc)))
+     (def step (if (jb-optional? markers)
+                   #'(if (some? (record-ref v ,name)) ,push ,acc)
+                   push))
+     #'(let ((,acc ,step))
+         ,(jb-enc-chain (list-tail fields) acc)))))
 
 (: jb-encode (-> (List Syntax) Syntax))
 (defun (jb-encode fields)
-  (let ((acc (jb-sym "__jb-acc")))
-    #'(let ((,acc Nil))
-        ,(jb-enc-chain fields acc))))
+  (def acc (jb-sym "__jb-acc"))
+  #'(let ((,acc Nil))
+      ,(jb-enc-chain fields acc)))
 
 ;; The same, as a tagged form. An optional field that is `None` is not written,
 ;; and neither is a `#:rest` field that is empty *and* has a fallback to come
@@ -675,32 +675,33 @@
 
 (: jb-form-enc-chain (-> (List Syntax) Syntax Syntax Syntax))
 (defun (jb-form-enc-chain fields tag acc)
-  (if (list-empty? fields)
-      #'(bjodat-form-value ,tag ,acc)
-      (let* ((f (list-head fields))
-             (name (jb-field-name f))
-             (markers (jb-field-markers f))
-             (nm (jb-key-name name markers))
-             (push (if (jb-rest? markers)
-                       #'(Cons (bjodat-clause-many
-                                ,nm (bjodat-clause-values (record-ref v ,name)))
-                               ,acc)
-                       #'(Cons (bjodat-clause ,nm (->bjodat (record-ref v ,name)))
-                               ,acc)))
-             (step (cond
-                     ((jb-optional? markers)
-                      #'(if (some? (record-ref v ,name)) ,push ,acc))
-                     ((and (jb-rest? markers) (some? (jb-fallback markers)))
-                      #'(if (list-empty? (record-ref v ,name)) ,acc ,push))
-                     (else push))))
-        #'(let ((,acc ,step))
-            ,(jb-form-enc-chain (list-tail fields) tag acc)))))
+  (cond
+    ((list-empty? fields) #'(bjodat-form-value ,tag ,acc))
+    (else
+     (def f (list-head fields))
+     (def name (jb-field-name f))
+     (def markers (jb-field-markers f))
+     (def nm (jb-key-name name markers))
+     (def push (if (jb-rest? markers)
+                   #'(Cons (bjodat-clause-many
+                            ,nm (bjodat-clause-values (record-ref v ,name)))
+                           ,acc)
+                   #'(Cons (bjodat-clause ,nm (->bjodat (record-ref v ,name)))
+                           ,acc)))
+     (def step (cond
+                 ((jb-optional? markers)
+                  #'(if (some? (record-ref v ,name)) ,push ,acc))
+                 ((and (jb-rest? markers) (some? (jb-fallback markers)))
+                  #'(if (list-empty? (record-ref v ,name)) ,acc ,push))
+                 (else push)))
+     #'(let ((,acc ,step))
+         ,(jb-form-enc-chain (list-tail fields) tag acc)))))
 
 (: jb-form-encode (-> (List Syntax) Syntax Syntax))
 (defun (jb-form-encode fields tag)
-  (let ((acc (jb-sym "__jb-acc")))
-    #'(let ((,acc Nil))
-        ,(jb-form-enc-chain fields tag acc))))
+  (def acc (jb-sym "__jb-acc"))
+  #'(let ((,acc Nil))
+      ,(jb-form-enc-chain fields tag acc)))
 
 ;; --- decode ----------------------------------------------------------------
 ;;
@@ -708,19 +709,20 @@
 
 (: jb-chain (-> Syntax Syntax (List Syntax) int Syntax Syntax))
 (defun (jb-chain owner entries fields i ctor)
-  (if (list-empty? fields)
-      ctor
-      (let* ((f (list-head fields))
-             (v (jb-sym (str "__jb-v" (int->string i))))
-             (e (jb-sym (str "__jb-e" (int->string i))))
-             (markers (jb-field-markers f))
-             (key (jb-key (jb-field-name f) markers))
-             (get (match (jb-fallback markers)
-                    (None #'(bjodat-field ,owner ,entries ,key))
-                    ((Some d) #'(bjodat-field/default ,owner ,entries ,key ,d)))))
-        #'(match ,get
-            ((Err ,e) (Err ,e))
-            ((Ok ,v) ,(jb-chain owner entries (list-tail fields) (+ i 1) ctor))))))
+  (cond
+    ((list-empty? fields) ctor)
+    (else
+     (def f (list-head fields))
+     (def v (jb-sym (str "__jb-v" (int->string i))))
+     (def e (jb-sym (str "__jb-e" (int->string i))))
+     (def markers (jb-field-markers f))
+     (def key (jb-key (jb-field-name f) markers))
+     (def get (match (jb-fallback markers)
+                (None #'(bjodat-field ,owner ,entries ,key))
+                ((Some d) #'(bjodat-field/default ,owner ,entries ,key ,d))))
+     #'(match ,get
+         ((Err ,e) (Err ,e))
+         ((Ok ,v) ,(jb-chain owner entries (list-tail fields) (+ i 1) ctor))))))
 
 (: jb-ctor (-> Syntax (List Syntax) Syntax))
 (defun (jb-ctor head fields)
@@ -734,44 +736,45 @@
 
 (: jb-decode (-> Syntax (List Syntax) Syntax))
 (defun (jb-decode head fields)
-  (let ((owner (jb-str (jb-head-name head)))
-        (entries (jb-sym "__jb-entries"))
-        (e (jb-sym "__jb-e")))
-    #'(match (bjodat-map ,owner v)
-        ((Err ,e) (Err ,e))
-        ((Ok ,entries) ,(jb-chain owner entries fields 0 (jb-ctor head fields))))))
+  (def owner (jb-str (jb-head-name head)))
+  (def entries (jb-sym "__jb-entries"))
+  (def e (jb-sym "__jb-e"))
+  #'(match (bjodat-map ,owner v)
+      ((Err ,e) (Err ,e))
+      ((Ok ,entries) ,(jb-chain owner entries fields 0 (jb-ctor head fields)))))
 
 ;; The same, over the clauses of a tagged form. `jb-ctor` is shared, so both
 ;; decoders end in one constructor call written once.
 
 (: jb-form-chain (-> Syntax Syntax (List Syntax) int Syntax Syntax))
 (defun (jb-form-chain owner cs fields i ctor)
-  (if (list-empty? fields)
-      ctor
-      (let* ((f (list-head fields))
-             (v (jb-var i))
-             (e (jb-sym "__jb-e"))
-             (markers (jb-field-markers f))
-             (nm (jb-key-name (jb-field-name f) markers))
-             (get (if (jb-rest? markers)
-                      (match (jb-fallback markers)
-                        (None #'(bjodat-clause-rest ,owner ,cs ,nm))
-                        ((Some d) #'(bjodat-clause-rest/default ,owner ,cs ,nm ,d)))
-                      (match (jb-fallback markers)
-                        (None #'(bjodat-clause-field ,owner ,cs ,nm))
-                        ((Some d) #'(bjodat-clause-field/default ,owner ,cs ,nm ,d))))))
-        #'(match ,get
-            ((Err ,e) (Err ,e))
-            ((Ok ,v) ,(jb-form-chain owner cs (list-tail fields) (+ i 1) ctor))))))
+  (cond
+    ((list-empty? fields) ctor)
+    (else
+     (def f (list-head fields))
+     (def v (jb-var i))
+     (def e (jb-sym "__jb-e"))
+     (def markers (jb-field-markers f))
+     (def nm (jb-key-name (jb-field-name f) markers))
+     (def get (if (jb-rest? markers)
+                  (match (jb-fallback markers)
+                    (None #'(bjodat-clause-rest ,owner ,cs ,nm))
+                    ((Some d) #'(bjodat-clause-rest/default ,owner ,cs ,nm ,d)))
+                  (match (jb-fallback markers)
+                    (None #'(bjodat-clause-field ,owner ,cs ,nm))
+                    ((Some d) #'(bjodat-clause-field/default ,owner ,cs ,nm ,d)))))
+     #'(match ,get
+         ((Err ,e) (Err ,e))
+         ((Ok ,v) ,(jb-form-chain owner cs (list-tail fields) (+ i 1) ctor))))))
 
 (: jb-form-decode (-> Syntax Syntax (List Syntax) Syntax))
 (defun (jb-form-decode head tag fields)
-  (let ((owner (jb-str (jb-head-name head)))
-        (cs (jb-sym "__jb-clauses"))
-        (e (jb-sym "__jb-e")))
-    #'(match (bjodat-clauses ,owner ,tag v)
-        ((Err ,e) (Err ,e))
-        ((Ok ,cs) ,(jb-form-chain owner cs fields 0 (jb-ctor head fields))))))
+  (def owner (jb-str (jb-head-name head)))
+  (def cs (jb-sym "__jb-clauses"))
+  (def e (jb-sym "__jb-e"))
+  #'(match (bjodat-clauses ,owner ,tag v)
+      ((Err ,e) (Err ,e))
+      ((Ok ,cs) ,(jb-form-chain owner cs fields 0 (jb-ctor head fields)))))
 
 ;; --- decode in one pass -----------------------------------------------------
 ;;
@@ -807,13 +810,13 @@
 (: jb-key-name (-> Syntax (List Syntax) Syntax))
 (defun (jb-key-name name markers)
   (let go ((ms markers))
-    (if (list-empty? ms)
-        (SStr (syntax->string name))
-        (if (jb-marker=? (list-head ms) "#:key")
-            (match (list-head (list-tail ms))
-              ((SKey k) (SStr (keyword->string k)))
-              (other (SStr (syntax->string other))))
-            (go (list-tail ms))))))
+    (cond
+      ((list-empty? ms) (SStr (syntax->string name)))
+      ((jb-marker=? (list-head ms) "#:key")
+       (match (list-head (list-tail ms))
+         ((SKey k) (SStr (keyword->string k)))
+         (other (SStr (syntax->string other)))))
+      (else (go (list-tail ms))))))
 
 (: jb-slot-inits (-> (List Syntax) int (List Syntax)))
 (defun (jb-slot-inits fields i)
@@ -839,29 +842,30 @@
 
 (: jb-clauses (-> Syntax Syntax Syntax (List Syntax) (List Syntax) int (List Syntax)))
 (defun (jb-clauses owner paired go all fields i)
-  (if (list-empty? fields)
-      Nil
-      (let* ((f (list-head fields))
-             (markers (jb-field-markers f))
-             (name (jb-field-name f))
-             (x (jb-sym "__jb-x"))
-             (e (jb-sym "__jb-e")))
-        (Cons #'((key=? rd ,(jb-key-name name markers))
-                 (match (bjodat-read-field ,owner ,(jb-key name markers) rd)
+  (cond
+    ((list-empty? fields) Nil)
+    (else
+     (def f (list-head fields))
+     (def markers (jb-field-markers f))
+     (def name (jb-field-name f))
+     (def x (jb-sym "__jb-x"))
+     (def e (jb-sym "__jb-e"))
+     (Cons #'((key=? rd ,(jb-key-name name markers))
+              (match (bjodat-read-field ,owner ,(jb-key name markers) rd)
+                ((Err ,e) (Err ,e))
+                ((Ok ,x)
+                 (match (end-entry! rd ,owner ,paired)
                    ((Err ,e) (Err ,e))
-                   ((Ok ,x)
-                    (match (end-entry! rd ,owner ,paired)
-                      ((Err ,e) (Err ,e))
-                      ((Ok _)
-                       ;; The *first* entry under a key wins, which is what
-                       ;; `bjodat-ref` does for the tree decoder — it answers the
-                       ;; first match and stops. Without this test the one-pass
-                       ;; decoder took the last, and two decoders that disagree
-                       ;; about the same document are worse than either rule.
-                       ;; The value still has to be read to get past it.
-                       (,go ,@(jb-slot-args/hit all 0 i
-                                #'(if (some? ,(jb-slot i)) ,(jb-slot i) (Some ,x)))))))))
-              (jb-clauses owner paired go all (list-tail fields) (+ i 1))))))
+                   ((Ok _)
+                    ;; The *first* entry under a key wins, which is what
+                    ;; `bjodat-ref` does for the tree decoder — it answers the
+                    ;; first match and stops. Without this test the one-pass
+                    ;; decoder took the last, and two decoders that disagree
+                    ;; about the same document are worse than either rule.
+                    ;; The value still has to be read to get past it.
+                    (,go ,@(jb-slot-args/hit all 0 i
+                             #'(if (some? ,(jb-slot i)) ,(jb-slot i) (Some ,x)))))))))
+           (jb-clauses owner paired go all (list-tail fields) (+ i 1))))))
 
 ;; Every slot answered for, innermost first, ending in the constructor. A
 ;; required field that was never met is the one refusal; a field with a fallback
@@ -869,46 +873,47 @@
 ;; the map has closed.
 (: jb-settle (-> Syntax Syntax (List Syntax) (List Syntax) int Syntax))
 (defun (jb-settle head owner all fields i)
-  (if (list-empty? fields)
-      (jb-ctor head all)
-      (let* ((f (list-head fields))
-             (markers (jb-field-markers f))
-             (key (jb-key (jb-field-name f) markers))
-             (e (jb-sym "__jb-e"))
-             (p (jb-sym "__jb-p"))
-             (rest (jb-settle head owner all (list-tail fields) (+ i 1))))
-        (match (jb-fallback markers)
-          (None #'(match (bjodat-need-field ,(jb-slot i) ,owner ,key)
-                    ((Err ,e) (Err ,e))
-                    ((Ok ,(jb-var i)) ,rest)))
-          ((Some d) #'(let ((,(jb-var i) (match ,(jb-slot i)
-                                           ((Some ,p) ,p)
-                                           (None ,d))))
-                        ,rest))))))
+  (cond
+    ((list-empty? fields) (jb-ctor head all))
+    (else
+     (def f (list-head fields))
+     (def markers (jb-field-markers f))
+     (def key (jb-key (jb-field-name f) markers))
+     (def e (jb-sym "__jb-e"))
+     (def p (jb-sym "__jb-p"))
+     (def rest (jb-settle head owner all (list-tail fields) (+ i 1)))
+     (match (jb-fallback markers)
+       (None #'(match (bjodat-need-field ,(jb-slot i) ,owner ,key)
+                 ((Err ,e) (Err ,e))
+                 ((Ok ,(jb-var i)) ,rest)))
+       ((Some d) #'(let ((,(jb-var i) (match ,(jb-slot i)
+                                        ((Some ,p) ,p)
+                                        (None ,d))))
+                     ,rest))))))
 
 (: jb-one-pass (-> Syntax (List Syntax) Syntax))
 (defun (jb-one-pass head fields)
-  (let* ((owner (jb-str (jb-head-name head)))
-         (paired (jb-sym "__jb-paired"))
-         (go (jb-sym "__jb-go"))
-         (e (jb-sym "__jb-e")))
-    #'(match (open-map! rd ,owner)
-        ((Err ,e) (Err ,e))
-        ((Ok ,paired)
-         (let ,go (,@(jb-slot-inits fields 0))
-           (match (next-key! rd ,owner ,paired)
-             ((Err ,e) (Err ,e))
-             ((Ok #f) ,(jb-settle head owner fields fields 0))
-             ((Ok _)
-              (cond
-                ,@(jb-clauses owner paired go fields fields 0)
-                (else
-                 (match (skip-value! rd)
-                   ((Err ,e) (Err ,e))
-                   ((Ok _)
-                    (match (end-entry! rd ,owner ,paired)
-                      ((Err ,e) (Err ,e))
-                      ((Ok _) (,go ,@(jb-slot-args fields 0)))))))))))))))
+  (def owner (jb-str (jb-head-name head)))
+  (def paired (jb-sym "__jb-paired"))
+  (def go (jb-sym "__jb-go"))
+  (def e (jb-sym "__jb-e"))
+  #'(match (open-map! rd ,owner)
+      ((Err ,e) (Err ,e))
+      ((Ok ,paired)
+       (let ,go (,@(jb-slot-inits fields 0))
+         (match (next-key! rd ,owner ,paired)
+           ((Err ,e) (Err ,e))
+           ((Ok #f) ,(jb-settle head owner fields fields 0))
+           ((Ok _)
+            (cond
+              ,@(jb-clauses owner paired go fields fields 0)
+              (else
+               (match (skip-value! rd)
+                 ((Err ,e) (Err ,e))
+                 ((Ok _)
+                  (match (end-entry! rd ,owner ,paired)
+                    ((Err ,e) (Err ,e))
+                    ((Ok _) (,go ,@(jb-slot-args fields 0))))))))))))))
 
 ;; --- reading a tagged form in one pass --------------------------------------
 ;;
@@ -924,121 +929,123 @@
 
 (: jb-form-clauses (-> Syntax Syntax (List Syntax) (List Syntax) int (List Syntax)))
 (defun (jb-form-clauses owner go all fields i)
-  (if (list-empty? fields)
-      Nil
-      (let* ((f (list-head fields))
-             (markers (jb-field-markers f))
-             (nm (jb-key-name (jb-field-name f) markers))
-             (x (jb-sym "__jb-x"))
-             (e (jb-sym "__jb-e"))
-             (read (if (jb-rest? markers)
-                       #'(bjodat-read-rest ,owner ,nm rd)
-                       #'(bjodat-read-clause ,owner ,nm rd))))
-        (Cons #'((key=? rd ,nm)
-                 (match ,read
-                   ((Err ,e) (Err ,e))
-                   ((Ok ,x)
-                    ;; The first clause under a name wins, as the first entry
-                    ;; under a key does. The later one is still read, because
-                    ;; finding where it ends means parsing it.
-                    (,go ,@(jb-slot-args/hit all 0 i
-                             #'(if (some? ,(jb-slot i)) ,(jb-slot i) (Some ,x)))))))
-              (jb-form-clauses owner go all (list-tail fields) (+ i 1))))))
+  (cond
+    ((list-empty? fields) Nil)
+    (else
+     (def f (list-head fields))
+     (def markers (jb-field-markers f))
+     (def nm (jb-key-name (jb-field-name f) markers))
+     (def x (jb-sym "__jb-x"))
+     (def e (jb-sym "__jb-e"))
+     (def read (if (jb-rest? markers)
+                   #'(bjodat-read-rest ,owner ,nm rd)
+                #'(bjodat-read-clause ,owner ,nm rd)))
+  (Cons #'((key=? rd ,nm)
+              (match ,read
+                ((Err ,e) (Err ,e))
+                ((Ok ,x)
+                 ;; The first clause under a name wins, as the first entry
+                 ;; under a key does. The later one is still read, because
+                 ;; finding where it ends means parsing it.
+                 (,go ,@(jb-slot-args/hit all 0 i
+                          #'(if (some? ,(jb-slot i)) ,(jb-slot i) (Some ,x)))))))
+           (jb-form-clauses owner go all (list-tail fields) (+ i 1))))))
 
 (: jb-form-settle (-> Syntax Syntax (List Syntax) (List Syntax) int Syntax))
 (defun (jb-form-settle head owner all fields i)
-  (if (list-empty? fields)
-      (jb-ctor head all)
-      (let* ((f (list-head fields))
-             (markers (jb-field-markers f))
-             (nm (jb-key-name (jb-field-name f) markers))
-             (e (jb-sym "__jb-e"))
-             (p (jb-sym "__jb-p"))
-             (rest (jb-form-settle head owner all (list-tail fields) (+ i 1))))
-        (match (jb-fallback markers)
-          (None #'(match (bjodat-need-clause ,(jb-slot i) ,owner ,nm)
-                    ((Err ,e) (Err ,e))
-                    ((Ok ,(jb-var i)) ,rest)))
-          ((Some d) #'(let ((,(jb-var i) (match ,(jb-slot i)
-                                           ((Some ,p) ,p)
-                                           (None ,d))))
-                        ,rest))))))
+  (cond
+    ((list-empty? fields) (jb-ctor head all))
+    (else
+     (def f (list-head fields))
+     (def markers (jb-field-markers f))
+     (def nm (jb-key-name (jb-field-name f) markers))
+     (def e (jb-sym "__jb-e"))
+     (def p (jb-sym "__jb-p"))
+     (def rest (jb-form-settle head owner all (list-tail fields) (+ i 1)))
+     (match (jb-fallback markers)
+       (None #'(match (bjodat-need-clause ,(jb-slot i) ,owner ,nm)
+                 ((Err ,e) (Err ,e))
+                 ((Ok ,(jb-var i)) ,rest)))
+       ((Some d) #'(let ((,(jb-var i) (match ,(jb-slot i)
+                                        ((Some ,p) ,p)
+                                        (None ,d))))
+                     ,rest))))))
 
 (: jb-form-one-pass (-> Syntax Syntax (List Syntax) Syntax))
 (defun (jb-form-one-pass head tag fields)
-  (let* ((owner (jb-str (jb-head-name head)))
-         (go (jb-sym "__jb-go"))
-         (e (jb-sym "__jb-e")))
-    #'(match (open-form! rd ,owner ,tag)
-        ((Err ,e) (Err ,e))
-        ((Ok _)
-         (let ,go (,@(jb-slot-inits fields 0))
-           (match (next-field! rd ,owner)
-             ((Err ,e) (Err ,e))
-             ((Ok #f) ,(jb-form-settle head owner fields fields 0))
-             ((Ok _)
-              (cond
-                ,@(jb-form-clauses owner go fields fields 0)
-                (else
-                 (match (skip-clause! rd)
-                   ((Err ,e) (Err ,e))
-                   ((Ok _) (,go ,@(jb-slot-args fields 0)))))))))))))
+  (def owner (jb-str (jb-head-name head)))
+  (def go (jb-sym "__jb-go"))
+  (def e (jb-sym "__jb-e"))
+  #'(match (open-form! rd ,owner ,tag)
+      ((Err ,e) (Err ,e))
+      ((Ok _)
+       (let ,go (,@(jb-slot-inits fields 0))
+         (match (next-field! rd ,owner)
+           ((Err ,e) (Err ,e))
+           ((Ok #f) ,(jb-form-settle head owner fields fields 0))
+           ((Ok _)
+            (cond
+              ,@(jb-form-clauses owner go fields fields 0)
+              (else
+               (match (skip-clause! rd)
+                 ((Err ,e) (Err ,e))
+                 ((Ok _) (,go ,@(jb-slot-args fields 0))))))))))))
 
 ;; --- the form ---------------------------------------------------------------
 
 (: jb-expand (-> (-> Symbol Syntax) Syntax Syntax (List Syntax) Syntax))
 (defun (jb-expand inject colon head body)
-  (let* ((tag (jb-tag body))
-         (fields (jb-fields body))
-         (name (syntax->string (jb-head-name head)))
-         ;; Which of the two spellings this record is written in is settled
-         ;; once, here, and the three generated bodies agree by construction.
-         ;; A type has one encoding: a value that read as `{...}` writes back as
-         ;; `{...}`, and one that read as `(tag ...)` writes back as that.
-         (encode (match tag
-                   (None (jb-encode fields))
-                   ((Some t) (jb-form-encode fields t))))
-         (decode (match tag
-                   (None (jb-decode head fields))
-                   ((Some t) (jb-form-decode head t fields))))
-         (one-pass (match tag
-                     (None (jb-one-pass head fields))
-                     ((Some t) (jb-form-one-pass head t fields)))))
-    (let ((enc (inject (string->symbol (str name "->bjodat"))))
-          (dec (inject (string->symbol (str "bjodat->" name))))
-          (rdr (inject (string->symbol (str "bjodat-read-" name))))
-          (prs (inject (string->symbol (str "bjodat-parse-" name)))))
-      #'(begin
-          (type (,colon ,head (Record ,@(list-map jb-strip fields))))
+  (def tag (jb-tag body))
+  (def fields (jb-fields body))
+  (def name (syntax->string (jb-head-name head)))
+  ;; Which of the two spellings this record is written in is settled
+  ;; once, here, and the three generated bodies agree by construction.
+  ;; A type has one encoding: a value that read as `{...}` writes back as
+  ;; `{...}`, and one that read as `(tag ...)` writes back as that.
+  (def encode (match tag
+                (None (jb-encode fields))
+                ((Some t) (jb-form-encode fields t))))
+  (def decode (match tag
+                (None (jb-decode head fields))
+                ((Some t) (jb-form-decode head t fields))))
+  (def one-pass (match tag
+                  (None (jb-one-pass head fields))
+                  ((Some t) (jb-form-one-pass head t fields))))
+  (def enc (inject (string->symbol (str name "->bjodat"))))
+  (def dec (inject (string->symbol (str "bjodat->" name))))
+  (def rdr (inject (string->symbol (str "bjodat-read-" name))))
+  (def prs (inject (string->symbol (str "bjodat-parse-" name))))
+  #'(begin
+      (type (,colon ,head (Record ,@(list-map jb-strip fields))))
 
-          (impl (->bjodat ,head)
-            ,@(jb-where inject head "->bjodat")
-            (defun (->bjodat v) ,encode))
+      (impl (->bjodat ,head)
+        ,@(jb-where inject head "->bjodat")
+        (defun (->bjodat v) ,encode))
 
-          (impl (bjodat-> ,head)
-            ,@(jb-where inject head "bjodat->")
-            (defun (bjodat-> v) ,decode))
+      (impl (bjodat-> ,head)
+        ,@(jb-where inject head "bjodat->")
+        (defun (bjodat-> v) ,decode))
 
-          ;; The named pair. `bjodat->` alone would be ambiguous at a call site;
-          ;; this signature is what fixes the instance, once per type.
-          (: ,enc (-> ,head ,(inject 'Bjodat)) ,@(jb-where inject head "->bjodat"))
-          (defun (,enc v) (->bjodat v))
-          (: ,dec (-> ,(inject 'Bjodat) (Result string ,head)) ,@(jb-where inject head "bjodat->"))
-          (defun (,dec v) (bjodat-> v))
+      ;; The named pair. `bjodat->` alone would be ambiguous at a call site;
+      ;; this signature is what fixes the instance, once per type.
+      (: ,enc (-> ,head ,(inject 'Bjodat)) ,@(jb-where inject head "->bjodat"))
+      (defun (,enc v) (->bjodat v))
+      (: ,dec (-> ,(inject 'Bjodat) (Result string ,head)) ,@(jb-where inject head "bjodat->"))
+      (defun (,dec v) (bjodat-> v))
 
-          ;; And the one-pass pair, which reads the text itself rather than a
-          ;; map someone else built. Same record, same messages; no tree.
-          (: ,rdr (-> ,(inject 'Reader) (Result string ,head)) ,@(jb-where inject head "bjodat->"))
-          (defun (,rdr rd) ,one-pass)
-          (: ,prs (-> string (Result string ,head)) ,@(jb-where inject head "bjodat->"))
-          ;; The reader is passed by *name*, not wrapped in a `(fun (rd) ...)`.
-          ;; A lambda body is a member of its own and is sealed to the sync copy
-          ;; of whatever it calls, so the wrapped form made the suspending copy
-          ;; of this function park the thread — which the blocking lint said in
-          ;; as many words. A bare name carries an effect variable instead, and
-          ;; `parse-one-pass` declares its parameter `-?->`, so the caller's
-          ;; colour picks the copy.
-          (defun (,prs text) (parse-one-pass text ,rdr))))))
+      ;; And the one-pass pair, which reads the text itself rather than a
+      ;; map someone else built. Same record, same messages; no tree.
+      (: ,rdr (-> ,(inject 'Reader) (Result string ,head)) ,@(jb-where inject head "bjodat->"))
+      (defun (,rdr rd) ,one-pass)
+      (: ,prs (-> string (Result string ,head)) ,@(jb-where inject head "bjodat->"))
+      ;; The reader is passed by *name*, not wrapped in a `(fun (rd) ...)`.
+      ;; A lambda body is a member of its own and is sealed to the sync copy
+      ;; of whatever it calls, so the wrapped form made the suspending copy
+      ;; of this function park the thread — which the blocking lint said in
+      ;; as many words. A bare name carries an effect variable instead, and
+      ;; `parse-one-pass` declares its parameter `-?->`, so the caller's
+      ;; colour picks the copy.
+      (defun (,prs text) (parse-one-pass text ,rdr))))
 
 (def/macro (def/bjodat-type form inject compare)
   (syntax-match form

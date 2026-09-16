@@ -179,11 +179,12 @@
   (def n (stringbuilder-length sb))
   (def i (name-slot sb n))
   (def name (array-ref cache i))
-  (if (buffer=? sb name n)
-      name
-      (let ((s (stringbuilder->string sb)))
-        (array-set! cache i s)
-        s)))
+  (cond
+    ((buffer=? sb name n) name)
+    (else
+     (def s (stringbuilder->string sb))
+     (array-set! cache i s)
+     s)))
 
 ;; ---------------------------------------------------------------------------
 ;; The reader
@@ -222,11 +223,12 @@
 (defun (push! rd v)
   (def a (record-ref rd stack))
   (def n (record-ref rd top))
-  (if (< n (array-length a))
-      (array-set! a n v)
-      (let* ((bigger (array-resize a (* n 2))))
-        (array-set! bigger n v)
-        (record-set! rd (stack bigger))))
+  (cond
+    ((< n (array-length a)) (array-set! a n v))
+    (else
+     (def bigger (array-resize a (* n 2)))
+     (array-set! bigger n v)
+     (record-set! rd (stack bigger))))
   (record-set! rd (top (+ n 1))))
 
 (: harvest! (-> Reader int (Vec Bjodat)))
@@ -352,50 +354,52 @@
 (: read-escape! (-> Reader StringBuilder (Result string bool)))
 (defun (read-escape! rd sb)
   (step! rd)
-  (if (at-end? rd)
-      (Err (at rd "the document ended inside a string"))
-      (let* ((c (peek rd)))
-        (cond
-          ((char=? c #\n) (stringbuilder-add-code! sb 10) (step! rd) (Ok #t))
-          ((char=? c #\t) (stringbuilder-add-code! sb 9) (step! rd) (Ok #t))
-          ((char=? c #\r) (stringbuilder-add-code! sb 13) (step! rd) (Ok #t))
-          ((char=? c #\0) (stringbuilder-add-code! sb 0) (step! rd) (Ok #t))
-          ((char=? c #\\) (stringbuilder-add-code! sb 92) (step! rd) (Ok #t))
-          ((char=? c #\") (stringbuilder-add-code! sb 34) (step! rd) (Ok #t))
-          ((char=? c #\u) (read-unicode-escape! rd sb))
-          (else (Err (at rd (str "\\" (list->string (list c)) " is not an escape"))))))))
+  (cond
+    ((at-end? rd) (Err (at rd "the document ended inside a string")))
+    (else
+     (def c (peek rd))
+     (cond
+       ((char=? c #\n) (stringbuilder-add-code! sb 10) (step! rd) (Ok #t))
+       ((char=? c #\t) (stringbuilder-add-code! sb 9) (step! rd) (Ok #t))
+       ((char=? c #\r) (stringbuilder-add-code! sb 13) (step! rd) (Ok #t))
+       ((char=? c #\0) (stringbuilder-add-code! sb 0) (step! rd) (Ok #t))
+       ((char=? c #\\) (stringbuilder-add-code! sb 92) (step! rd) (Ok #t))
+       ((char=? c #\") (stringbuilder-add-code! sb 34) (step! rd) (Ok #t))
+       ((char=? c #\u) (read-unicode-escape! rd sb))
+       (else (Err (at rd (str "\\" (list->string (list c)) " is not an escape"))))))))
 
 (: read-unicode-escape! (-> Reader StringBuilder (Result string bool)))
 (defun (read-unicode-escape! rd sb)
   (step! rd)
   (let go ((k 0) (acc 0))
-    (if (= k 4)
-        (begin (stringbuilder-add-code! sb acc) (Ok #t))
-        (if (at-end? rd)
-            (Err (at rd "the document ended inside a \\u escape"))
-            (let* ((d (hex-digit (peek rd))))
-              (if (< d 0)
-                  (Err (at rd (str "a \\u escape wants four hex digits, and this is "
-                                   (found rd))))
-                  (begin (step! rd) (go (+ k 1) (+ (* acc 16) d)))))))))
+    (cond
+      ((= k 4) (stringbuilder-add-code! sb acc) (Ok #t))
+      ((at-end? rd) (Err (at rd "the document ended inside a \\u escape")))
+      (else
+       (def d (hex-digit (peek rd)))
+       (cond
+         ((< d 0) (Err (at rd (str "a \\u escape wants four hex digits, and this is "
+                                   (found rd)))))
+         (else (step! rd) (go (+ k 1) (+ (* acc 16) d))))))))
 
 (: read-text (-> Reader (Result string string)))
 (defun (read-text rd)
   (step! rd)
   (def sb (buffer rd))
   (let go ()
-    (if (at-end? rd)
-        (Err (at rd "the document ended inside a string"))
-        (let* ((c (held-code rd)))
-          (cond
-           ((= c 34) (step! rd) (Ok (stringbuilder->string sb)))
-           ((= c 92) (match (read-escape! rd sb)
-                       ((Err e) (Err e))
-                       ((Ok _) (go))))
-           (else
-            (stringbuilder-add-code! sb c)
-            (if (= c 10) (newline! rd) (step! rd))
-            (go)))))))
+    (cond
+     ((at-end? rd) (Err (at rd "the document ended inside a string")))
+     (else
+      (def c (held-code rd))
+      (cond
+       ((= c 34) (step! rd) (Ok (stringbuilder->string sb)))
+       ((= c 92) (match (read-escape! rd sb)
+                   ((Err e) (Err e))
+                   ((Ok _) (go))))
+       (else
+        (stringbuilder-add-code! sb c)
+        (if (= c 10) (newline! rd) (step! rd))
+        (go)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Numbers
@@ -441,42 +445,42 @@
 (: scan-exponent! (-> Reader StringBuilder (Result string bool)))
 (defun (scan-exponent! rd sb)
   (def c (held-code rd))
-  (if (not (or (= c 101) (= c 69)))
-      (Ok #f)
-      (begin
-        (stringbuilder-add-code! sb 101)
-        (step! rd)
-        ;; `s` is bound rather than read three times, and it is not only the
-        ;; calls: with a name, `(or (= s 43) (= s 45))` is emitted as a
-        ;; ternary, and with the calls inlined the operands stop being simple
-        ;; and it becomes an if/else over a temporary, to keep the short
-        ;; circuit in the right order.
-        (let* ((s (held-code rd)))
-          (when (or (= s 43) (= s 45))
-            (stringbuilder-add-code! sb s)
-            (step! rd)))
-        (if (= (take-digits! rd sb) 0)
-            (Err (at rd (str "a number needs a digit after its exponent, and this is "
-                             (found rd))))
-            (Ok #t)))))
+  (cond
+    ((not (or (= c 101) (= c 69))) (Ok #f))
+    (else
+     (stringbuilder-add-code! sb 101)
+     (step! rd)
+     ;; `s` is bound rather than read three times, and it is not only the
+     ;; calls: with a name, `(or (= s 43) (= s 45))` is emitted as a
+     ;; ternary, and with the calls inlined the operands stop being simple
+     ;; and it becomes an if/else over a temporary, to keep the short
+     ;; circuit in the right order.
+     (def s (held-code rd))
+     (when (or (= s 43) (= s 45))
+       (stringbuilder-add-code! sb s)
+       (step! rd))
+     (if (= (take-digits! rd sb) 0)
+         (Err (at rd (str "a number needs a digit after its exponent, and this is "
+                          (found rd))))
+         (Ok #t)))))
 
 ;; A digit is held. The sign, if there was one, has been stepped over already —
 ;; which is what tells `-` the symbol apart from `-1` the number, since deciding
 ;; needs a character of lookahead the reader does not have until it has moved.
 (: read-magnitude (-> Reader bool (Result string Bjodat)))
 (defun (read-magnitude rd neg)
-  (if (= (held-code rd) 48)
-      (begin
-        (step! rd)
-        (let ((c (held-code rd)))
-          (cond
-            ((or (= c 120) (= c 88)) (read-radix rd neg 16))
-            ((or (= c 98) (= c 66)) (read-radix rd neg 2))
-            (else
-             (def sb (buffer rd))
-             (stringbuilder-add-code! sb 48)
-             (finish-number rd neg sb)))))
-      (finish-number rd neg (buffer rd))))
+  (cond
+    ((= (held-code rd) 48)
+     (step! rd)
+     (def c (held-code rd))
+     (cond
+       ((or (= c 120) (= c 88)) (read-radix rd neg 16))
+       ((or (= c 98) (= c 66)) (read-radix rd neg 2))
+       (else
+        (def sb (buffer rd))
+        (stringbuilder-add-code! sb 48)
+        (finish-number rd neg sb))))
+    (else (finish-number rd neg (buffer rd)))))
 
 (: finish-number (-> Reader bool StringBuilder (Result string Bjodat)))
 (defun (finish-number rd neg sb)
@@ -487,15 +491,17 @@
      (match (scan-exponent! rd sb)
        ((Err e) (Err e))
        ((Ok exp?)
-        (if (or frac? exp?)
-            (let ((d (clr-to-double sb)))
-              (Ok (BjoFloat (if neg (- 0.0 d) d))))
-            ;; Wider than a long is still a number.
-            (match (try (clr-to-long sb) #:catch (System.OverflowException))
-              ((Ok n) (Ok (BjoInt (if neg (- 0L n) n))))
-              ((Err _)
-               (def d (clr-to-double sb))
-               (Ok (BjoFloat (if neg (- 0.0 d) d)))))))))))
+        (cond
+          ((or frac? exp?)
+           (def d (clr-to-double sb))
+           (Ok (BjoFloat (if neg (- 0.0 d) d))))
+          ;; Wider than a long is still a number.
+          (else
+           (match (try (clr-to-long sb) #:catch (System.OverflowException))
+             ((Ok n) (Ok (BjoInt (if neg (- 0L n) n))))
+             ((Err _)
+              (def d (clr-to-double sb))
+              (Ok (BjoFloat (if neg (- 0.0 d) d))))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Symbols, keywords, and what a `#` begins
@@ -543,38 +549,41 @@
 (: read-char-literal (-> Reader (Result string Bjodat)))
 (defun (read-char-literal rd)
   (step! rd)
-  (if (at-end? rd)
-      (Err (at rd "the document ended inside a character"))
-      (let* ((first (held-code rd))
-             (sb (buffer rd)))
-        (stringbuilder-add-code! sb first)
-        (step! rd)
-        ;; `n` is bound rather than inlined into the test: a name compares
-        ;; straight into the `if`, where the call needs a temporary for its
-        ;; result and then a second one for the comparison.
-        (let ((n (take-name! rd sb)))
-          (if (= n 0)
-              (Ok (BjoChar (integer->char first)))
-              (let* ((name (stringbuilder->string sb))
-                     (code (named-char name)))
-                (if (< code 0)
-                    (Err (at rd (str "#\\" name " is not a character")))
-                    (Ok (BjoChar (integer->char code))))))))))
+  (cond
+    ((at-end? rd) (Err (at rd "the document ended inside a character")))
+    (else
+     (def first (held-code rd))
+     (def sb (buffer rd))
+     (stringbuilder-add-code! sb first)
+     (step! rd)
+     ;; `n` is bound rather than inlined into the test: a name compares
+     ;; straight into the `if`, where the call needs a temporary for its
+     ;; result and then a second one for the comparison.
+     (def n (take-name! rd sb))
+     (cond
+       ((= n 0) (Ok (BjoChar (integer->char first))))
+       (else
+        (def name (stringbuilder->string sb))
+        (def code (named-char name))
+        (if (< code 0)
+            (Err (at rd (str "#\\" name " is not a character")))
+            (Ok (BjoChar (integer->char code)))))))))
 
 ;; `#t`, `#f`, `#\c`, `#:keyword`. The `#` is held.
 (: read-hash (-> Reader (Result string Bjodat)))
 (defun (read-hash rd)
   (step! rd)
-  (if (at-end? rd)
-      (Err (at rd "the document ended after '#'"))
-      (let ((c (peek rd)))
-        (cond
-          ((char=? c #\t) (step! rd) (Ok (BjoBool #t)))
-          ((char=? c #\f) (step! rd) (Ok (BjoBool #f)))
-          ((char=? c #\\) (read-char-literal rd))
-          ((char=? c #\:) (read-keyword rd))
-          (else (Err (at rd (str "'#' begins #t, #f, #\\c or #:keyword, and this is "
-                                 (found rd)))))))))
+  (cond
+    ((at-end? rd) (Err (at rd "the document ended after '#'")))
+    (else
+     (def c (peek rd))
+     (cond
+       ((char=? c #\t) (step! rd) (Ok (BjoBool #t)))
+       ((char=? c #\f) (step! rd) (Ok (BjoBool #f)))
+       ((char=? c #\\) (read-char-literal rd))
+       ((char=? c #\:) (read-keyword rd))
+       (else (Err (at rd (str "'#' begins #t, #f, #\\c or #:keyword, and this is "
+                              (found rd)))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Lists, vecs and maps
@@ -715,12 +724,13 @@
        ;; character of a symbol.
        ((char=? c #\-)
         (step! rd)
-        (if (digit-code? (held-code rd))
-            (read-magnitude rd #t)
-            (let* ((sb (buffer rd)))
-              (stringbuilder-add-code! sb 45)
-              (ignore (take-name! rd sb))
-              (Ok (BjoSym (string->symbol (cached-name (record-ref rd names) sb)))))))
+        (cond
+          ((digit-code? (held-code rd)) (read-magnitude rd #t))
+          (else
+           (def sb (buffer rd))
+           (stringbuilder-add-code! sb 45)
+           (ignore (take-name! rd sb))
+           (Ok (BjoSym (string->symbol (cached-name (record-ref rd names) sb)))))))
        (else (read-symbol rd))))))
 
 ;; ---------------------------------------------------------------------------
@@ -817,19 +827,20 @@
 (: take-key! (-> Reader string (Result string bool)))
 (defun (take-key! rd owner)
   (skip-space! rd)
-  (if (= (held-code rd) 58)
-      (begin
-        (step! rd)
-        (let ((sb (buffer rd)))
-          (if (= (take-name! rd sb) 0)
-              (Err (at rd (str owner ": a keyword needs a name after its colon, and this is "
-                               (found rd))))
-              (Ok #t))))
-      (match (read-key rd 1)
-        ((Err e) (Err e))
-        ((Ok _)
-         (stringbuilder-clear! (record-ref rd scratch))
-         (Ok #t)))))
+  (cond
+    ((= (held-code rd) 58)
+     (step! rd)
+     (def sb (buffer rd))
+     (if (= (take-name! rd sb) 0)
+         (Err (at rd (str owner ": a keyword needs a name after its colon, and this is "
+                          (found rd))))
+         (Ok #t)))
+    (else
+     (match (read-key rd 1)
+       ((Err e) (Err e))
+       ((Ok _)
+        (stringbuilder-clear! (record-ref rd scratch))
+        (Ok #t))))))
 
 ;; `#t` when a key is in the buffer and the reader stands at its value; `#f`
 ;; when the map closed.
@@ -916,18 +927,19 @@
     (else
      (step! rd)
      (skip-space! rd)
-     (let ((sb (buffer rd)))
-       (if (= (take-name! rd sb) 0)
-           (Err (at rd (str owner ": a form begins with the name of its type, and this is "
-                            (found rd))))
-           ;; The comparison the whole thing is for: the tag is matched against
-           ;; the buffer, so a form costs no string and interns nothing for its
-           ;; own name any more than it does for a field's.
-           (if (key=? rd tag)
-               (Ok #t)
-               ;; Only here, on the way to refusing, is a string built.
-               (Err (at rd (str owner ": expected (" tag " ...), and this is ("
-                                (stringbuilder->string sb) " ...)")))))))))
+     (def sb (buffer rd))
+     (cond
+       ((= (take-name! rd sb) 0)
+        (Err (at rd (str owner ": a form begins with the name of its type, and this is "
+                         (found rd)))))
+       ;; The comparison the whole thing is for: the tag is matched against
+       ;; the buffer, so a form costs no string and interns nothing for its
+       ;; own name any more than it does for a field's.
+       ((key=? rd tag) (Ok #t))
+       ;; Only here, on the way to refusing, is a string built.
+       (else
+        (Err (at rd (str owner ": expected (" tag " ...), and this is ("
+                         (stringbuilder->string sb) " ...)"))))))))
 
 ;; `#t` when a clause's field name sits in the buffer and the reader stands at
 ;; its first value; `#f` when the form closed.
@@ -943,11 +955,11 @@
     (else
      (step! rd)
      (skip-space! rd)
-     (let ((sb (buffer rd)))
-       (if (= (take-name! rd sb) 0)
-           (Err (at rd (str owner ": a clause begins with a field name, and this is "
-                            (found rd))))
-           (Ok #t))))))
+     (def sb (buffer rd))
+     (if (= (take-name! rd sb) 0)
+         (Err (at rd (str owner ": a clause begins with a field name, and this is "
+                          (found rd))))
+         (Ok #t)))))
 
 ;; The `)` that closes a clause holding one value.
 ;;

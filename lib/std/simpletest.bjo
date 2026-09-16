@@ -163,7 +163,9 @@
 
 (: fake-fs (-> (List (Tuple string string)) FakeFs))
 (defun (fake-fs entries)
-  (FakeFs (files (list-foldl (fun (m entry) (let (((path text) entry)) (map-set m path text)))
+  (FakeFs (files (list-foldl (fun (m entry)
+                               (def (path text) entry)
+                               (map-set m path text))
                              (map-empty)
                              entries))
           (writers (map-empty))))
@@ -190,9 +192,9 @@
 (: fake-fs-writer (-> FakeFs (-> string (Result Exception TextOutputPort))))
 (defun (fake-fs-writer fs)
   (fun (path)
-    (let ((w (cast TextOutputPort (StringWriter.))))
-      (record-set! fs (writers (map-set (record-ref fs writers) path w)))
-      (Ok w))))
+    (def w (cast TextOutputPort (StringWriter.)))
+    (record-set! fs (writers (map-set (record-ref fs writers) path w)))
+    (Ok w)))
 
 ;; What was written to `path`, or `None` if nothing was.
 ;;

@@ -95,13 +95,13 @@
 ;; this one names the set first, matching `set-for-each`.
 (: mutableset-for-each (-> (-?-> %a void) (MutableSet %a) void))
 (defun (mutableset-for-each f s)
-  (let ((c (mutableset-cursor s)))
-    (let go ()
-      (if (mutableset-cursor-done? c)
-          unit
-          (let ()
-            (f (mutableset-cursor-current c))
-            (go))))))
+  (def c (mutableset-cursor s))
+  (let go ()
+    (cond
+      ((mutableset-cursor-done? c) unit)
+      (else
+        (f (mutableset-cursor-current c))
+        (go)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Conversions
@@ -176,14 +176,14 @@
 ;; `#mset(a b c)`, in whatever order the table holds them.
 (: mutableset->str (-> (MutableSet %a) string) (where (->str %a)))
 (defun (mutableset->str s)
-  (let ((sb (stringbuilder-empty)))
-    (stringbuilder-add-string! sb "#mset(")
-    (loop (:with first? #t #f)
-          (:for elem s)
-          (:do (unless first? (stringbuilder-add-string! sb " "))
-               (stringbuilder-add-string! sb (->str elem))))
-    (stringbuilder-add-string! sb ")")
-    (stringbuilder->string sb)))
+  (def sb (stringbuilder-empty))
+  (stringbuilder-add-string! sb "#mset(")
+  (loop (:with first? #t #f)
+        (:for elem s)
+        (:do (unless first? (stringbuilder-add-string! sb " "))
+             (stringbuilder-add-string! sb (->str elem))))
+  (stringbuilder-add-string! sb ")")
+  (stringbuilder->string sb))
 
 (impl (->str (MutableSet %a))
   (where (->str %a))

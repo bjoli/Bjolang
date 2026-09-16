@@ -208,70 +208,70 @@
 (defbjouble (orderedmap-map f m)
   (#:sync (clr-orderedmap-map f m))
   (#:bjo
-    (let ((b (orderedmapbuilder-empty))
-          (c (orderedmap-cursor m)))
-      (let go ()
-        (if (orderedmap-cursor-done? c)
-            (orderedmapbuilder->orderedmap b)
-            (let ()
-              (def (k v) (orderedmap-cursor-current c))
-              (orderedmapbuilder-add! b k (f k v))
-              (go)))))))
+    (def b (orderedmapbuilder-empty))
+    (def c (orderedmap-cursor m))
+    (let go ()
+      (cond
+        ((orderedmap-cursor-done? c) (orderedmapbuilder->orderedmap b))
+        (else
+          (def (k v) (orderedmap-cursor-current c))
+          (orderedmapbuilder-add! b k (f k v))
+          (go))))))
 
 (: orderedmap-map-values (-> (-?-> %v %w) (OrderedMap %k %v) (OrderedMap %k %w)))
 (defbjouble (orderedmap-map-values f m)
   (#:sync (clr-orderedmap-map-values f m))
   (#:bjo
-    (let ((b (orderedmapbuilder-empty))
-          (c (orderedmap-cursor m)))
-      (let go ()
-        (if (orderedmap-cursor-done? c)
-            (orderedmapbuilder->orderedmap b)
-            (let ()
-              (def (k v) (orderedmap-cursor-current c))
-              (orderedmapbuilder-add! b k (f v))
-              (go)))))))
+    (def b (orderedmapbuilder-empty))
+    (def c (orderedmap-cursor m))
+    (let go ()
+      (cond
+        ((orderedmap-cursor-done? c) (orderedmapbuilder->orderedmap b))
+        (else
+          (def (k v) (orderedmap-cursor-current c))
+          (orderedmapbuilder-add! b k (f v))
+          (go))))))
 
 (: orderedmap-filter (-> (-?-> %k %v bool) (OrderedMap %k %v) (OrderedMap %k %v)))
 (defbjouble (orderedmap-filter keep? m)
   (#:sync (clr-orderedmap-filter keep? m))
   (#:bjo
-    (let ((b (orderedmapbuilder-empty))
-          (c (orderedmap-cursor m)))
-      (let go ()
-        (if (orderedmap-cursor-done? c)
-            (orderedmapbuilder->orderedmap b)
-            (let ()
-              (def (k v) (orderedmap-cursor-current c))
-              (when (keep? k v)
-                (orderedmapbuilder-add! b k v))
-              (go)))))))
+    (def b (orderedmapbuilder-empty))
+    (def c (orderedmap-cursor m))
+    (let go ()
+      (cond
+        ((orderedmap-cursor-done? c) (orderedmapbuilder->orderedmap b))
+        (else
+          (def (k v) (orderedmap-cursor-current c))
+          (when (keep? k v)
+            (orderedmapbuilder-add! b k v))
+          (go))))))
 
 (: orderedmap-fold (-> (-?-> %s %k %v %s) %s (OrderedMap %k %v) %s))
 (defbjouble (orderedmap-fold f init m)
   (#:sync (clr-orderedmap-fold f init m))
   (#:bjo
-    (let ((c (orderedmap-cursor m)))
-      (let go ((acc init))
-        (if (orderedmap-cursor-done? c)
-            acc
-            (let ()
-              (def (k v) (orderedmap-cursor-current c))
-              (go (f acc k v))))))))
+    (def c (orderedmap-cursor m))
+    (let go ((acc init))
+      (cond
+        ((orderedmap-cursor-done? c) acc)
+        (else
+          (def (k v) (orderedmap-cursor-current c))
+          (go (f acc k v)))))))
 
 (: orderedmap-iter (-> (-?-> %k %v bool) (OrderedMap %k %v) bool))
 (defbjouble (orderedmap-iter f m)
   (#:sync (clr-orderedmap-iter f m))
   (#:bjo
-    (let ((c (orderedmap-cursor m)))
-      (let go ()
-        (if (orderedmap-cursor-done? c)
-            #t
-            (let ()
-              (def (k v) (orderedmap-cursor-current c))
-              (if (f k v)
-                  (go)
-                  #f)))))))
+    (def c (orderedmap-cursor m))
+    (let go ()
+      (cond
+        ((orderedmap-cursor-done? c) #t)
+        (else
+          (def (k v) (orderedmap-cursor-current c))
+          (if (f k v)
+              (go)
+              #f))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Conversions
@@ -329,14 +329,14 @@
 
 (: orderedmap-for-each (-> (-?-> %k %v void) (OrderedMap %k %v) void))
 (defun (orderedmap-for-each f m)
-  (let ((c (orderedmap-cursor m)))
-    (let go ()
-      (if (orderedmap-cursor-done? c)
-          unit
-          (let ()
-            (def (k v) (orderedmap-cursor-current c))
-            (f k v)
-            (go))))))
+  (def c (orderedmap-cursor m))
+  (let go ()
+    (cond
+      ((orderedmap-cursor-done? c) unit)
+      (else
+        (def (k v) (orderedmap-cursor-current c))
+        (f k v)
+        (go)))))
 
 (impl (Collection (OrderedMap %k %v))
   (type %content (Tuple %k %v))
@@ -362,22 +362,22 @@
 (impl (Addable! (OrderedMapBuilder %k %v))
       (type %elem (%k . %v))
       (defun (add! mb tup)
-        (let (((k v) tup))
-          (orderedmapbuilder-add! mb k v))))
+        (def (k v) tup)
+        (orderedmapbuilder-add! mb k v)))
 
 (impl (Addable! (TransientOrderedMap %k %v))
       (type %elem (%k . %v))
       (defun (add! tm tup)
-        (let (((k v) tup))
-          (transientorderedmap-set! tm k v))))
+        (def (k v) tup)
+        (transientorderedmap-set! tm k v)))
 
 ;; And the persistent map itself. Set semantics on a duplicate key, as the
 ;; prelude's `(Addable (Map %k %v))` explains.
 (impl (Addable (OrderedMap %k %v))
       (type %elem (%k . %v))
       (defun (add m tup)
-        (let (((k v) tup))
-          (orderedmap-set m k v))))
+        (def (k v) tup)
+        (orderedmap-set m k v)))
 
 ;; Equality for ordered maps.
 (impl (Eq (OrderedMap %k %v))
@@ -397,14 +397,14 @@
 
 (: orderedmap->str (-> (OrderedMap %k %v) string) (where (->str %k) (->str %v)))
 (defun (orderedmap->str m)
-  (let ((sb (stringbuilder-empty)))
-    (stringbuilder-add-string! sb "#map(")
-    (loop (:with first? #t #f)
-          (:for entry m)
-          (:do (unless first? (stringbuilder-add-string! sb " "))
-               (stringbuilder-add-string! sb (entry->str entry))))
-    (stringbuilder-add-string! sb ")")
-    (stringbuilder->string sb)))
+  (def sb (stringbuilder-empty))
+  (stringbuilder-add-string! sb "#map(")
+  (loop (:with first? #t #f)
+        (:for entry m)
+        (:do (unless first? (stringbuilder-add-string! sb " "))
+             (stringbuilder-add-string! sb (entry->str entry))))
+  (stringbuilder-add-string! sb ")")
+  (stringbuilder->string sb))
 
 (impl (->str (OrderedMap %k %v))
   (where (->str %k) (->str %v))

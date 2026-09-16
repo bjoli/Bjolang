@@ -212,19 +212,19 @@
 
 (: jt-where-enc (-> (-> Symbol Syntax) Syntax (List Syntax)))
 (defun (jt-where-enc inject head)
-  (let ((vars (jt-head-vars head)))
-    (if (list-empty? vars)
-        Nil
-        (list #'(,(inject 'where)
-                 ,@(list-map (fun (v) #'(,(inject (string->symbol "->json")) ,v)) vars))))))
+  (def vars (jt-head-vars head))
+  (if (list-empty? vars)
+      Nil
+      (list #'(,(inject 'where)
+               ,@(list-map (fun (v) #'(,(inject (string->symbol "->json")) ,v)) vars)))))
 
 (: jt-where-dec (-> (-> Symbol Syntax) Syntax (List Syntax)))
 (defun (jt-where-dec inject head)
-  (let ((vars (jt-head-vars head)))
-    (if (list-empty? vars)
-        Nil
-        (list #'(,(inject 'where)
-                 ,@(list-map (fun (v) #'(,(inject (string->symbol "json->")) ,v)) vars))))))
+  (def vars (jt-head-vars head))
+  (if (list-empty? vars)
+      Nil
+      (list #'(,(inject 'where)
+               ,@(list-map (fun (v) #'(,(inject (string->symbol "json->")) ,v)) vars)))))
 
 ;; --- fields ----------------------------------------------------------------
 
@@ -236,37 +236,38 @@
 (: jt-key (-> Syntax (List Syntax) Syntax))
 (defun (jt-key name markers)
   (let go ((ms markers))
-    (if (list-empty? ms)
-        (jt-str name)
-        (if (jt-marker=? (list-head ms) "#:json")
-            (list-head (list-tail ms))
-            (go (list-tail ms))))))
+    (cond
+      ((list-empty? ms) (jt-str name))
+      ((jt-marker=? (list-head ms) "#:json") (list-head (list-tail ms)))
+      (else (go (list-tail ms))))))
 
 ;; The fallback expression, or None if the field is required. `#:optional` is
 ;; `#:default None`.
 (: jt-fallback (-> (List Syntax) (Option Syntax)))
 (defun (jt-fallback markers)
   (let go ((ms markers))
-    (if (list-empty? ms)
-        None
-        (let ((m (list-head ms)))
-          (cond
-            ((jt-marker=? m "#:optional") (Some (jt-sym "None")))
-            ((jt-marker=? m "#:default") (Some (list-head (list-tail ms))))
-            (else (go (list-tail ms))))))))
+    (cond
+      ((list-empty? ms) None)
+      (else
+       (def m (list-head ms))
+       (cond
+         ((jt-marker=? m "#:optional") (Some (jt-sym "None")))
+         ((jt-marker=? m "#:default") (Some (list-head (list-tail ms))))
+         (else (go (list-tail ms))))))))
 
 ;; strip json markers (default, json, optional)
 (: jt-keep (-> (List Syntax) (List Syntax)))
 (defun (jt-keep markers)
   (let go ((ms markers))
-    (if (list-empty? ms)
-        Nil
-        (let ((m (list-head ms)))
-          (cond
-            ((jt-marker=? m "#:default") (go (list-tail (list-tail ms))))
-            ((jt-marker=? m "#:json") (go (list-tail (list-tail ms))))
-            ((jt-marker=? m "#:optional") (go (list-tail ms)))
-            (else (Cons m (go (list-tail ms)))))))))
+    (cond
+      ((list-empty? ms) Nil)
+      (else
+       (def m (list-head ms))
+       (cond
+         ((jt-marker=? m "#:default") (go (list-tail (list-tail ms))))
+         ((jt-marker=? m "#:json") (go (list-tail (list-tail ms))))
+         ((jt-marker=? m "#:optional") (go (list-tail ms)))
+         (else (Cons m (go (list-tail ms)))))))))
 
 (: jt-shape string)
 (def jt-shape
@@ -301,28 +302,27 @@
 ;; An optional field is dropped when it is None; everything else is written.
 (: jt-put (-> Syntax Syntax Syntax))
 (defun (jt-put buf f)
-  (let ((name (jt-field-name f))
-        (markers (jt-field-markers f)))
-    (let ((write #'(transientmap-set! ,buf ,(jt-key name markers) (->json (record-ref v ,name)))))
-      (if (jt-optional? markers)
-          #'(when (some? (record-ref v ,name)) ,write)
-          write))))
+  (def name (jt-field-name f))
+  (def markers (jt-field-markers f))
+  (def write #'(transientmap-set! ,buf ,(jt-key name markers) (->json (record-ref v ,name))))
+  (if (jt-optional? markers)
+      #'(when (some? (record-ref v ,name)) ,write)
+      write))
 
 (: jt-optional? (-> (List Syntax) bool))
 (defun (jt-optional? markers)
   (let go ((ms markers))
-    (if (list-empty? ms)
-        #f
-        (if (jt-marker=? (list-head ms) "#:optional")
-            #t
-            (go (list-tail ms))))))
+    (cond
+      ((list-empty? ms) #f)
+      ((jt-marker=? (list-head ms) "#:optional") #t)
+      (else (go (list-tail ms))))))
 
 (: jt-encode (-> (List Syntax) Syntax))
 (defun (jt-encode fields)
-  (let ((buf (jt-sym "__jt-buf")))
-    #'(let ((,buf (transientmap-empty)))
-        ,@(list-map (fun (f) (jt-put buf f)) fields)
-        (JsonObj (transientmap->map ,buf)))))
+  (def buf (jt-sym "__jt-buf"))
+  #'(let ((,buf (transientmap-empty)))
+      ,@(list-map (fun (f) (jt-put buf f)) fields)
+      (JsonObj (transientmap->map ,buf))))
 
 ;; --- decode ----------------------------------------------------------------
 
@@ -330,19 +330,20 @@
 ;; Verbose. Macrology.
 (: jt-chain (-> Syntax Syntax (List Syntax) int Syntax Syntax))
 (defun (jt-chain owner m fields i ctor)
-  (if (list-empty? fields)
-      ctor
-      (let ((f (list-head fields)))
-        (let ((v (jt-sym (str "__jt-v" (int->string i))))
-              (e (jt-sym (str "__jt-e" (int->string i))))
-              (name (jt-field-name f)))
-          (let ((markers (jt-field-markers f)))
-            (let ((get (match (jt-fallback markers)
-                         (None #'(json-field ,owner ,m ,(jt-key name markers)))
-                         ((Some d) #'(json-field/default ,owner ,m ,(jt-key name markers) ,d)))))
-              #'(match ,get
-                  ((Err ,e) (Err ,e))
-                  ((Ok ,v) ,(jt-chain owner m (list-tail fields) (+ i 1) ctor)))))))))
+  (cond
+    ((list-empty? fields) ctor)
+    (else
+     (def f (list-head fields))
+     (def v (jt-sym (str "__jt-v" (int->string i))))
+     (def e (jt-sym (str "__jt-e" (int->string i))))
+     (def name (jt-field-name f))
+     (def markers (jt-field-markers f))
+     (def get (match (jt-fallback markers)
+                (None #'(json-field ,owner ,m ,(jt-key name markers)))
+                ((Some d) #'(json-field/default ,owner ,m ,(jt-key name markers) ,d))))
+     #'(match ,get
+         ((Err ,e) (Err ,e))
+         ((Ok ,v) ,(jt-chain owner m (list-tail fields) (+ i 1) ctor))))))
 
 (: jt-ctor (-> Syntax (List Syntax) Syntax))
 (defun (jt-ctor head fields)
@@ -355,37 +356,37 @@
 
 (: jt-decode (-> Syntax (List Syntax) Syntax))
 (defun (jt-decode head fields)
-  (let ((owner (jt-str (jt-head-name head)))
-        (m (jt-sym "__jt-m"))
-        (e (jt-sym "__jt-e")))
-    #'(match (json-object ,owner j)
-        ((Err ,e) (Err ,e))
-        ((Ok ,m) ,(jt-chain owner m fields 0 (jt-ctor head fields))))))
+  (def owner (jt-str (jt-head-name head)))
+  (def m (jt-sym "__jt-m"))
+  (def e (jt-sym "__jt-e"))
+  #'(match (json-object ,owner j)
+      ((Err ,e) (Err ,e))
+      ((Ok ,m) ,(jt-chain owner m fields 0 (jt-ctor head fields)))))
 
 ;; --- the form ---------------------------------------------------------------
 
 (: jt-expand (-> (-> Symbol Syntax) Syntax Syntax (List Syntax) Syntax))
 (defun (jt-expand inject colon head fields)
-  (let ((name (syntax->string (jt-head-name head))))
-    (let ((enc (inject (string->symbol (str name "->json"))))
-          (dec (inject (string->symbol (str "json->" name)))))
-      #'(begin
-          (type (,colon ,head (Record ,@(list-map jt-strip fields))))
+  (def name (syntax->string (jt-head-name head)))
+  (def enc (inject (string->symbol (str name "->json"))))
+  (def dec (inject (string->symbol (str "json->" name))))
+  #'(begin
+      (type (,colon ,head (Record ,@(list-map jt-strip fields))))
 
-          (impl (->json ,head)
-            ,@(jt-where-enc inject head)
-            (defun (->json v) ,(jt-encode fields)))
+      (impl (->json ,head)
+        ,@(jt-where-enc inject head)
+        (defun (->json v) ,(jt-encode fields)))
 
-          (impl (json-> ,head)
-            ,@(jt-where-dec inject head)
-            (defun (json-> j) ,(jt-decode head fields)))
+      (impl (json-> ,head)
+        ,@(jt-where-dec inject head)
+        (defun (json-> j) ,(jt-decode head fields)))
 
-          ;; The named pair. `json->` alone would be ambiguous at a call site;
-          ;; this signature is what fixes the instance, once per type.
-          (: ,enc (-> ,head Json) ,@(jt-where-enc inject head))
-          (defun (,enc v) (->json v))
-          (: ,dec (-> Json (Result string ,head)) ,@(jt-where-dec inject head))
-          (defun (,dec j) (json-> j))))))
+      ;; The named pair. `json->` alone would be ambiguous at a call site;
+      ;; this signature is what fixes the instance, once per type.
+      (: ,enc (-> ,head Json) ,@(jt-where-enc inject head))
+      (defun (,enc v) (->json v))
+      (: ,dec (-> Json (Result string ,head)) ,@(jt-where-dec inject head))
+      (defun (,dec j) (json-> j))))
 
 (def/macro (def/json-type form inject compare)
   (syntax-match form

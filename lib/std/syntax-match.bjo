@@ -107,19 +107,19 @@
 ;; Extracts repeated pattern before trailing ellipsis.
 (: repeated-of (-> (List Syntax) Syntax (Option Syntax)))
 (defun (repeated-of items whole)
-  (let ((count (count-ellipses items)))
-    (if (= count 0)
-        None
-        (if (> count 1)
-            (Some (syntax-error whole "A form repeats only its last pattern, so it may hold only one `...`."))
-            (match (last-of items)
-              (None None)
-              ((Some final)
-               (if (not (ellipsis? final))
-                   (Some (syntax-error whole "`...` repeats the pattern before it, so it may only come last."))
-                   (match (last-of (init-of items))
-                     (None (Some (syntax-error whole "`...` repeats the pattern before it, and this form has none.")))
-                     ((Some repeated) (Some repeated))))))))))
+  (def count (count-ellipses items))
+  (if (= count 0)
+      None
+      (if (> count 1)
+          (Some (syntax-error whole "A form repeats only its last pattern, so it may hold only one `...`."))
+          (match (last-of items)
+            (None None)
+            ((Some final)
+             (if (not (ellipsis? final))
+                 (Some (syntax-error whole "`...` repeats the pattern before it, so it may only come last."))
+                 (match (last-of (init-of items))
+                   (None (Some (syntax-error whole "`...` repeats the pattern before it, and this form has none.")))
+                   ((Some repeated) (Some repeated)))))))))
 
 ;; Items matched one for one.
 (: fixed-of (-> (List Syntax) Syntax (List Syntax)))
@@ -147,10 +147,10 @@
 (defun (uppercase-name? var)
   (match var
     ((SSym name)
-     (let ((text (symbol->string name)))
-       (if (string-empty? text)
-           #f
-           (char-upper-case? (string-cursor-ref text (string-cursor-start text))))))
+     (def text (symbol->string name))
+     (if (string-empty? text)
+         #f
+         (char-upper-case? (string-cursor-ref text (string-cursor-start text)))))
     (_ #f)))
 
 ;; Checked bound variables.
@@ -245,13 +245,13 @@
 ;; Folds ellipsis over compound.
 (: fold-over (-> (List Syntax) Syntax string Syntax Syntax Syntax))
 (defun (fold-over items whole path repeated value)
-  (let ((item (at-path "sm-item" path))
-        (inner (repeated-path items whole path)))
-    #'(all-of ,(at-path "sm-rest" path)
-              (fun (,item)
-                (match ,item
-                  (,(structural repeated inner) ,(answer (checks repeated inner) #'(Some ,value)))
-                  (_ None))))))
+  (def item (at-path "sm-item" path))
+  (def inner (repeated-path items whole path))
+  #'(all-of ,(at-path "sm-rest" path)
+            (fun (,item)
+              (match ,item
+                (,(structural repeated inner) ,(answer (checks repeated inner) #'(Some ,value)))
+                (_ None)))))
 
 ;; Item answer.
 (: answer (-> (List Syntax) Syntax Syntax))
@@ -330,10 +330,10 @@
          (let ((tests (checks p ""))
                (bindings (binds p))
                (body (single-body bodies)))
-           (let ((whole (if (list-empty? bindings) body #'(let ,(SList bindings) ,body))))
-             (if (list-empty? tests)
-                 #'(,(structural p "") ,whole)
-                 #'(,(structural p "") #:when ,(conjunction tests) ,whole))))))
+           (def whole (if (list-empty? bindings) body #'(let ,(SList bindings) ,body)))
+           (if (list-empty? tests)
+               #'(,(structural p "") ,whole)
+               #'(,(structural p "") #:when ,(conjunction tests) ,whole)))))
     (_ (syntax-error clause "A syntax-match clause is (pattern body ...)."))))
 
 ;; True if last clause covers everything.

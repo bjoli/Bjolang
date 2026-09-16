@@ -94,14 +94,14 @@
 ;; almost always wants and what the `Iterable` walk over pairs cannot give.
 (: mutablemap-for-each (-> (-?-> %k %v void) (MutableMap %k %v) void))
 (defun (mutablemap-for-each f m)
-  (let ((c (mutablemap-cursor m)))
-    (let go ()
-      (if (mutablemap-cursor-done? c)
-          unit
-          (let ()
-            (def (k v) (mutablemap-cursor-current c))
-            (f k v)
-            (go))))))
+  (def c (mutablemap-cursor m))
+  (let go ()
+    (cond
+      ((mutablemap-cursor-done? c) unit)
+      (else
+        (def (k v) (mutablemap-cursor-current c))
+        (f k v)
+        (go)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Conversions
@@ -154,8 +154,8 @@
 (impl (Addable! (MutableMap %k %v))
   (type %elem (Tuple %k %v))
   (defun (add! m pair)
-    (let (((k v) pair))
-      (mutablemap-set! m k v))))
+    (def (k v) pair)
+    (mutablemap-set! m k v)))
 
 ;; Two maps are equal when they hold the same keys with equal values.
 ;;
@@ -184,14 +184,14 @@
 ;; `#mmap(k v k v)`, the same shape `map->str` writes.
 (: mutablemap->str (-> (MutableMap %k %v) string) (where (->str %k) (->str %v)))
 (defun (mutablemap->str m)
-  (let ((sb (stringbuilder-empty)))
-    (stringbuilder-add-string! sb "#mmap(")
-    (loop (:with first? #t #f)
-          (:for entry m)
-          (:do (unless first? (stringbuilder-add-string! sb " "))
-               (stringbuilder-add-string! sb (map-entry->str entry))))
-    (stringbuilder-add-string! sb ")")
-    (stringbuilder->string sb)))
+  (def sb (stringbuilder-empty))
+  (stringbuilder-add-string! sb "#mmap(")
+  (loop (:with first? #t #f)
+        (:for entry m)
+        (:do (unless first? (stringbuilder-add-string! sb " "))
+             (stringbuilder-add-string! sb (map-entry->str entry))))
+  (stringbuilder-add-string! sb ")")
+  (stringbuilder->string sb))
 
 (impl (->str (MutableMap %k %v))
   (where (->str %k) (->str %v))

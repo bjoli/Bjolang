@@ -116,11 +116,11 @@
 (defun (refill-front! d)
   (when (and (list-empty? (record-ref d front))
              (not (list-empty? (record-ref d back))))
-    (let ((b (record-ref d back))
-          (k (/ (record-ref d size) 2)))
-      (record-set! d
-                   (front (list-reverse (drop-n k b)))
-                   (back (take-n k b))))))
+    (def b (record-ref d back))
+    (def k (/ (record-ref d size) 2))
+    (record-set! d
+                 (front (list-reverse (drop-n k b)))
+                 (back (take-n k b)))))
 
 ;; The mirror image: everything is on `front`, in order, and the rear half moves
 ;; across reversed.
@@ -128,11 +128,11 @@
 (defun (refill-back! d)
   (when (and (list-empty? (record-ref d back))
              (not (list-empty? (record-ref d front))))
-    (let ((f (record-ref d front))
-          (k (/ (record-ref d size) 2)))
-      (record-set! d
-                   (front (take-n k f))
-                   (back (list-reverse (drop-n k f)))))))
+    (def f (record-ref d front))
+    (def k (/ (record-ref d size) 2))
+    (record-set! d
+                 (front (take-n k f))
+                 (back (list-reverse (drop-n k f))))))
 
 ;; ---------------------------------------------------------------------------
 ;; The ends
@@ -255,14 +255,14 @@
 ;; `#<a b c>`, front first, each element by its own `->str`.
 (: deque->str (-> (Deque %a) string) (where (->str %a)))
 (defun (deque->str d)
-  (let ((sb (stringbuilder-empty)))
-    (stringbuilder-add-string! sb "#<")
-    (loop (:with first? #t #f)
-          (:for elem (deque->list d))
-          (:do (unless first? (stringbuilder-add-string! sb " "))
-               (stringbuilder-add-string! sb (->str elem))))
-    (stringbuilder-add-string! sb ">")
-    (stringbuilder->string sb)))
+  (def sb (stringbuilder-empty))
+  (stringbuilder-add-string! sb "#<")
+  (loop (:with first? #t #f)
+        (:for elem (deque->list d))
+        (:do (unless first? (stringbuilder-add-string! sb " "))
+             (stringbuilder-add-string! sb (->str elem))))
+  (stringbuilder-add-string! sb ">")
+  (stringbuilder->string sb))
 
 (impl (->str (Deque %a))
   (where (->str %a))

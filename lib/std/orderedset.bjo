@@ -179,50 +179,51 @@
 (defbjouble (orderedset-map f s)
   (#:sync (clr-orderedset-map f s))
   (#:bjo
-    (let ((b (orderedsetbuilder-empty))
-          (c (orderedset-cursor s)))
-      (let go ()
-        (if (orderedset-cursor-done? c)
-            (orderedsetbuilder->orderedset b)
-            (let ()
-              (orderedsetbuilder-add! b (f (orderedset-cursor-current c)))
-              (go)))))))
+    (def b (orderedsetbuilder-empty))
+    (def c (orderedset-cursor s))
+    (let go ()
+      (cond
+        ((orderedset-cursor-done? c) (orderedsetbuilder->orderedset b))
+        (else
+          (orderedsetbuilder-add! b (f (orderedset-cursor-current c)))
+          (go))))))
 
 (: orderedset-filter (-> (-?-> %a bool) (OrderedSet %a) (OrderedSet %a)))
 (defbjouble (orderedset-filter keep? s)
   (#:sync (clr-orderedset-filter keep? s))
   (#:bjo
-    (let ((b (orderedsetbuilder-empty))
-          (c (orderedset-cursor s)))
-      (let go ()
-        (if (orderedset-cursor-done? c)
-            (orderedsetbuilder->orderedset b)
-            (let ((x (orderedset-cursor-current c)))
-              (when (keep? x)
-                (orderedsetbuilder-add! b x))
-              (go)))))))
+    (def b (orderedsetbuilder-empty))
+    (def c (orderedset-cursor s))
+    (let go ()
+      (cond
+        ((orderedset-cursor-done? c) (orderedsetbuilder->orderedset b))
+        (else
+          (def x (orderedset-cursor-current c))
+          (when (keep? x)
+            (orderedsetbuilder-add! b x))
+          (go))))))
 
 (: orderedset-fold (-> (-?-> %s %a %s) %s (OrderedSet %a) %s))
 (defbjouble (orderedset-fold f init s)
   (#:sync (clr-orderedset-fold f init s))
   (#:bjo
-    (let ((c (orderedset-cursor s)))
-      (let go ((acc init))
-        (if (orderedset-cursor-done? c)
-            acc
-            (go (f acc (orderedset-cursor-current c))))))))
+    (def c (orderedset-cursor s))
+    (let go ((acc init))
+      (if (orderedset-cursor-done? c)
+          acc
+          (go (f acc (orderedset-cursor-current c)))))))
 
 (: orderedset-iter (-> (-?-> %a bool) (OrderedSet %a) bool))
 (defbjouble (orderedset-iter f s)
   (#:sync (clr-orderedset-iter f s))
   (#:bjo
-    (let ((c (orderedset-cursor s)))
-      (let go ()
-        (if (orderedset-cursor-done? c)
-            #t
-            (if (f (orderedset-cursor-current c))
-                (go)
-                #f))))))
+    (def c (orderedset-cursor s))
+    (let go ()
+      (if (orderedset-cursor-done? c)
+          #t
+          (if (f (orderedset-cursor-current c))
+              (go)
+              #f)))))
 
 (: list->orderedset (-> (List %a) (OrderedSet %a)))
 (defun (list->orderedset xs) (seq->orderedset (list->seq xs)))
@@ -260,13 +261,13 @@
 
 (: orderedset-for-each (-> (-?-> %a void) (OrderedSet %a) void))
 (defun (orderedset-for-each f s)
-  (let ((c (orderedset-cursor s)))
-    (let go ()
-      (if (orderedset-cursor-done? c)
-          unit
-          (let ()
-            (f (orderedset-cursor-current c))
-            (go))))))
+  (def c (orderedset-cursor s))
+  (let go ()
+    (cond
+      ((orderedset-cursor-done? c) unit)
+      (else
+        (f (orderedset-cursor-current c))
+        (go)))))
 
 (impl (Collection (OrderedSet %a))
   (type %content %a)
@@ -313,14 +314,14 @@
 
 (: orderedset->str (-> (OrderedSet %a) string) (where (->str %a)))
 (defun (orderedset->str s)
-  (let ((sb (stringbuilder-empty)))
-    (stringbuilder-add-string! sb "#{")
-    (loop (:with first? #t #f)
-          (:for elem s)
-          (:do (unless first? (stringbuilder-add-string! sb " "))
-               (stringbuilder-add-string! sb (->str elem))))
-    (stringbuilder-add-string! sb "}")
-    (stringbuilder->string sb)))
+  (def sb (stringbuilder-empty))
+  (stringbuilder-add-string! sb "#{")
+  (loop (:with first? #t #f)
+        (:for elem s)
+        (:do (unless first? (stringbuilder-add-string! sb " "))
+             (stringbuilder-add-string! sb (->str elem))))
+  (stringbuilder-add-string! sb "}")
+  (stringbuilder->string sb))
 
 (impl (->str (OrderedSet %a))
   (where (->str %a))

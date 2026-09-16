@@ -85,28 +85,29 @@
 ;; Pushes a new element into the array or grows it 
 (: push! (-> Reader Json void))
 (defun (push! rd v)
-  (let ((a (record-ref rd stack))
-        (n (record-ref rd top)))
-    (if (< n (array-length a))
-        (array-set! a n v)
-        (let ((bigger (array-resize a (* n 2))))
-          (array-set! bigger n v)
-          (record-set! rd (stack bigger))))
-    (record-set! rd (top (+ n 1)))))
+  (def a (record-ref rd stack))
+  (def n (record-ref rd top))
+  (cond
+    ((< n (array-length a)) (array-set! a n v))
+    (else
+     (def bigger (array-resize a (* n 2)))
+     (array-set! bigger n v)
+     (record-set! rd (stack bigger))))
+  (record-set! rd (top (+ n 1))))
 
 ;; Harvests the array, by copying it into a vec
 (: harvest! (-> Reader int (Vec Json)))
 (defun (harvest! rd mark)
-  (let ((v (subarray->vec (record-ref rd stack) mark (- (record-ref rd top) mark))))
-    (record-set! rd (top mark))
-    v))
+  (def v (subarray->vec (record-ref rd stack) mark (- (record-ref rd top) mark)))
+  (record-set! rd (top mark))
+  v)
 
 ;; The buffer, emptied and ready.
 (: buffer (-> Reader StringBuilder))
 (defun (buffer rd)
-  (let ((sb (record-ref rd scratch)))
-    (stringbuilder-clear! sb)
-    sb))
+  (def sb (record-ref rd scratch))
+  (stringbuilder-clear! sb)
+  sb)
 
 ;; `held` is the character the reader is looking at.
 (: held-code (-> Reader int))
@@ -122,8 +123,8 @@
 ;; letter from a language — answers #\nul.
 (: peek (-> Reader char))
 (defun (peek rd)
-  (let ((c (held-code rd)))
-    (if (< c 128) (integer->char c) #\nul)))
+  (def c (held-code rd))
+  (if (< c 128) (integer->char c) #\nul))
 
 ;; Counts the character being left behind, then reads the next.
 ;;
@@ -146,12 +147,12 @@
 (: skip-space! (-> Reader void))
 (defun (skip-space! rd)
   (let go ()
-    (let ((c (held-code rd)))
-      (if (or (= c 32) (= c 10) (= c 9) (= c 13))
-          (let ()
-            (if (= c 10) (newline! rd) (step! rd))
-            (go))
-          unit))))
+    (def c (held-code rd))
+    (cond
+      ((or (= c 32) (= c 10) (= c 9) (= c 13))
+       (if (= c 10) (newline! rd) (step! rd))
+       (go))
+      (else unit))))
 
 ;; ---------------------------------------------------------------------------
 ;; Refusals
@@ -166,12 +167,12 @@
 
 (: found (-> Reader string))
 (defun (found rd)
-  (let ((c (held-code rd)))
-    (cond
-      ((= c spent) "the document ended")
-      ;; Half a pair is not a character, so there is nothing to quote.
-      ((or (high-surrogate? c) (low-surrogate? c)) (str "the code unit " (int->string c)))
-      (else (str "'" (list->string (list (integer->char c))) "'")))))
+  (def c (held-code rd))
+  (cond
+    ((= c spent) "the document ended")
+    ;; Half a pair is not a character, so there is nothing to quote.
+    ((or (high-surrogate? c) (low-surrogate? c)) (str "the code unit " (int->string c)))
+    (else (str "'" (list->string (list (integer->char c))) "'"))))
 
 (: too-deep (-> Reader string string))
 (defun (too-deep rd what)
@@ -292,13 +293,14 @@
      ((high-surrogate? c)
       (step! rd)
       (def lo (held-code rd))
-      (if (low-surrogate? lo)
-          (let ()
-            (step! rd)
-            (stringbuilder-add-code! sb c)
-            (stringbuilder-add-code! sb lo)
-            (go))
-          (Err (at rd "a high surrogate has to be followed by its low surrogate"))))
+      (cond
+       ((low-surrogate? lo)
+        (step! rd)
+        (stringbuilder-add-code! sb c)
+        (stringbuilder-add-code! sb lo)
+        (go))
+       (else
+        (Err (at rd "a high surrogate has to be followed by its low surrogate")))))
      ((low-surrogate? c)
       (Err (at rd "a low surrogate with no high surrogate before it")))
      (else
@@ -319,43 +321,43 @@
 ;; whatever is in the reader is no longer a digit. Returns the number of digits taken
 (defun (take-digits! rd sb)
   (let go ((n 0))
-    (let ((c (held-code rd)))
-      ;; ascii codes for 0-9
-      (if (and (>= c 48) (<= c 57))
-          (let ()
-            (stringbuilder-add-code! sb c)
-            (step! rd)
-            (go (+ n 1)))
-          n))))
+    (def c (held-code rd))
+    ;; ascii codes for 0-9
+    (cond
+      ((and (>= c 48) (<= c 57))
+       (stringbuilder-add-code! sb c)
+       (step! rd)
+       (go (+ n 1)))
+      (else n))))
 
 ;; Answers whether what was scanned has to be read as a double.
 (: scan-exponent (-> Reader StringBuilder (Result string bool)))
 (defun (scan-exponent rd sb)
-  (if (and (not (at-end? rd)) (or (char=? (peek rd) #\e) (char=? (peek rd) #\E)))
-      (let ()
-        (stringbuilder-add! sb #\e)
-        (step! rd)
-        (when (and (not (at-end? rd)) (or (char=? (peek rd) #\+) (char=? (peek rd) #\-)))
-          (stringbuilder-add! sb (peek rd))
-          (step! rd))
-        (if (= (take-digits! rd sb) 0)
-            (Err (at rd (str "a number needs a digit after its exponent, and this is " (found rd))))
-            (Ok #t)))
-      (Ok #f)))
+  (cond
+    ((and (not (at-end? rd)) (or (char=? (peek rd) #\e) (char=? (peek rd) #\E)))
+     (stringbuilder-add! sb #\e)
+     (step! rd)
+     (when (and (not (at-end? rd)) (or (char=? (peek rd) #\+) (char=? (peek rd) #\-)))
+       (stringbuilder-add! sb (peek rd))
+       (step! rd))
+     (if (= (take-digits! rd sb) 0)
+         (Err (at rd (str "a number needs a digit after its exponent, and this is " (found rd))))
+         (Ok #t)))
+    (else (Ok #f))))
 
 (: scan-fraction (-> Reader StringBuilder (Result string bool)))
 (defun (scan-fraction rd sb)
-  (if (and (not (at-end? rd)) (char=? (peek rd) #\.))
-      (let ()
-        (stringbuilder-add! sb #\.)
-        (step! rd)
-        (if (= (take-digits! rd sb) 0)
-            (Err (at rd (str "a number needs a digit after its decimal point, and this is "
-                             (found rd))))
-            (match (scan-exponent rd sb)
-              ((Err e) (Err e))
-              ((Ok _) (Ok #t)))))
-      (scan-exponent rd sb)))
+  (cond
+    ((and (not (at-end? rd)) (char=? (peek rd) #\.))
+     (stringbuilder-add! sb #\.)
+     (step! rd)
+     (if (= (take-digits! rd sb) 0)
+         (Err (at rd (str "a number needs a digit after its decimal point, and this is "
+                          (found rd))))
+         (match (scan-exponent rd sb)
+           ((Err e) (Err e))
+           ((Ok _) (Ok #t)))))
+    (else (scan-exponent rd sb))))
 
 (: scan-number (-> Reader StringBuilder (Result string bool)))
 (defun (scan-number rd sb)
@@ -380,17 +382,17 @@
 
 (: read-number (-> Reader (Result string Json)))
 (defun (read-number rd)
-  (let ((sb (buffer rd)))
-    (match (scan-number rd sb)
-      ((Err e) (Err e))
-      ((Ok fractional?)
-       (if fractional?
-           (Ok (JsonFloat (clr-to-double sb)))
-           ;; Wider than a long is still a number, and a double is what every
-           ;; other reader answers with.
-           (match (try (clr-to-long sb) #:catch (System.OverflowException))
-             ((Ok n) (Ok (JsonInt n)))
-             ((Err _) (Ok (JsonFloat (clr-to-double sb))))))))))
+  (def sb (buffer rd))
+  (match (scan-number rd sb)
+    ((Err e) (Err e))
+    ((Ok fractional?)
+     (if fractional?
+         (Ok (JsonFloat (clr-to-double sb)))
+         ;; Wider than a long is still a number, and a double is what every
+         ;; other reader answers with.
+         (match (try (clr-to-long sb) #:catch (System.OverflowException))
+           ((Ok n) (Ok (JsonInt n)))
+           ((Err _) (Ok (JsonFloat (clr-to-double sb)))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Values
@@ -511,19 +513,19 @@
 ;; ---------------------------------------------------------------------------
 (: read-json (-> TextInputPort (Result string Json)))
 (defun (read-json port)
-  (let ((rd (reader port)))
-    ;; A byte-order mark ahead of the value is skipped, and does
-    ;; not count as a column. Opening a file strips it.
-    (when (= (held-code rd) 65279)
-      (step! rd)
-      (record-set! rd (col 1)))
-    (match (read-value rd 1)
-      ((Err e) (Err e))
-      ((Ok v)
-       (skip-space! rd)
-       (if (at-end? rd)
-           (Ok v)
-           (Err (at rd (str "the value ended here, and then there is " (found rd)))))))))
+  (def rd (reader port))
+  ;; A byte-order mark ahead of the value is skipped, and does
+  ;; not count as a column. Opening a file strips it.
+  (when (= (held-code rd) 65279)
+    (step! rd)
+    (record-set! rd (col 1)))
+  (match (read-value rd 1)
+    ((Err e) (Err e))
+    ((Ok v)
+     (skip-space! rd)
+     (if (at-end? rd)
+         (Ok v)
+         (Err (at rd (str "the value ended here, and then there is " (found rd))))))))
 
 (: parse-json (-> string (Result string Json)))
 (defun (parse-json text)

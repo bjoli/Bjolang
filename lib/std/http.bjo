@@ -149,16 +149,16 @@
 ;; talking to an address that stopped being right.
 (: make-client (-> (#:connection-seconds double) (#:redirects bool) Client))
 (defun (make-client #:connection-seconds 120.0 #:redirects #t)
-  (let ((handler (SocketsHandler.)))
-    (handler-lifetime! handler (span-seconds connection-seconds))
-    (handler-decompress! handler decompress-all)
-    (handler-redirects! handler redirects)
-    (let ((client (Client. (cast MessageHandler handler))))
-      ;; Off, on purpose. It applies to every call made through the client,
-      ;; cannot be varied per request, and arrives as a cancellation that
-      ;; cannot be told from a real one. Race a `(timeout ms)` instead.
-      (client-timeout! client no-timeout)
-      client)))
+  (def handler (SocketsHandler.))
+  (handler-lifetime! handler (span-seconds connection-seconds))
+  (handler-decompress! handler decompress-all)
+  (handler-redirects! handler redirects)
+  (def client (Client. (cast MessageHandler handler)))
+  ;; Off, on purpose. It applies to every call made through the client,
+  ;; cannot be varied per request, and arrives as a cancellation that
+  ;; cannot be told from a real one. Race a `(timeout ms)` instead.
+  (client-timeout! client no-timeout)
+  client)
 
 ;; Parameterize another one in for a proxy, a test double or a second set of
 ;; connection settings.
@@ -232,12 +232,12 @@
 
 (: full-url (-> Request string))
 (defun (full-url req)
-  (let ((base (record-ref req url))
-        (query (record-ref req query)))
-    (if (empty? query)
-        base
-        ;; A url may already carry a query, in which case ours is more of it.
-        (str base (if (string-contains? base "?") "&" "?") (encode-pairs query)))))
+  (def base (record-ref req url))
+  (def query (record-ref req query))
+  (if (empty? query)
+      base
+      ;; A url may already carry a query, in which case ours is more of it.
+      (str base (if (string-contains? base "?") "&" "?") (encode-pairs query))))
 
 ;; Attaches a body. Helper function for the header functions below
 (: attach-body! (-> Message Body (Option Content)))
@@ -254,12 +254,12 @@
 
 (: attach! (-> Message string string Content))
 (defun (attach! message text content-type)
-  (let ((content (cast Content (StringContent. text utf8))))
-    (message-content! message content)
-    ;; StringContent has already put `text/plain` there.
-    (ignore (header-remove! (cast Headers (content-headers content)) "Content-Type"))
-    (ignore (header-add! (cast Headers (content-headers content)) "Content-Type" content-type))
-    content))
+  (def content (cast Content (StringContent. text utf8)))
+  (message-content! message content)
+  ;; StringContent has already put `text/plain` there.
+  (ignore (header-remove! (cast Headers (content-headers content)) "Content-Type"))
+  (ignore (header-add! (cast Headers (content-headers content)) "Content-Type" content-type))
+  content)
 
 ;; Which end of the request a header belongs on is .NET's business, not the
 ;; caller's: `Accept` goes on the request and `Content-Type` on the content.
@@ -290,8 +290,8 @@
 
 (: web-url? (-> Url bool))
 (defun (web-url? url)
-  (let ((scheme (url-scheme url)))
-    (or (= scheme "http") (= scheme "https"))))
+  (def scheme (url-scheme url))
+  (or (= scheme "http") (= scheme "https")))
 
 (: message-of (-> Request (Result Exception Message)))
 (defun (message-of req)
@@ -358,8 +358,8 @@
 ;; business, and plenty of them are not.
 (: response-ok? (-> Response bool))
 (defun (response-ok? r)
-  (let ((code (record-ref r status)))
-    (and (>= code 200) (< code 300))))
+  (def code (record-ref r status))
+  (and (>= code 200) (< code 300)))
 
 ;; Empty over HTTP/2, which has no reason phrase. Do not parse it.
 (: response-reason (-> Response string))
@@ -410,10 +410,10 @@
 
 (: substring-after (-> string string string))
 (defun (substring-after s sep)
-  (let ((parts (string-split s sep)))
-    (if (< (length parts) 2)
-        ""
-        (vec-ref parts 1))))
+  (def parts (string-split s sep))
+  (if (< (length parts) 2)
+      ""
+      (vec-ref parts 1)))
 
 ;; charset="utf-8" is as legal as charset=utf-8, and an encoding name has
 ;; no quotes of its own to protect.
@@ -426,9 +426,9 @@
 ;; outside one, exactly as reading a file does.
 (: response-port (-> Response TextInputPort))
 (defun (response-port r)
-  (let ((body (reply-content (record-ref r raw))))
-    (cast TextInputPort
-          (Buffered. (cast TextInputPort (Reader. (body-stream body) (charset-of r)))))))
+  (def body (reply-content (record-ref r raw)))
+  (cast TextInputPort
+        (Buffered. (cast TextInputPort (Reader. (body-stream body) (charset-of r))))))
 
 (: response-text (-> Response string))
 (defun (response-text r)

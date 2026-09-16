@@ -137,14 +137,15 @@
 ;; same size randomly. 
 (: shuffle-vec (-> (Vec %a) (#:rng RandomSource) (Vec %a)))
 (defun (shuffle-vec v #:rng (parameter-ref current-random))
-  (if (< (vec-length v) 2)
-      v
-      (let ((a (make-array (vec-length v))))
-        (loop (:with i 0 (+ i 1))
-              (:for x v)
-              (:do (array-set! a i x)))
-        (clr-random-shuffle rng a)
-        (array->vec a))))
+  (cond
+    ((< (vec-length v) 2) v)
+    (else
+      (def a (make-array (vec-length v)))
+      (loop (:with i 0 (+ i 1))
+            (:for x v)
+            (:do (array-set! a i x)))
+      (clr-random-shuffle rng a)
+      (array->vec a))))
 
 ;; A string over `[A-Za-z0-9-_]`.
 ;; this is the dumb version.
@@ -173,14 +174,14 @@
 (defun (random-string/chars length alphabet #:rng (parameter-ref current-random))
   (when (= (vec-length alphabet) 0)
     (raise (cast Exception (ArgumentException. "random-string/chars was given an empty alphabet."))))
-  (let ((sb (stringbuilder-empty))
-        (top (- (vec-length alphabet) 1)))
-    (let go ((i 0))
-      (if (= i length)
-          (stringbuilder->string sb)
-          (let ()
-            (stringbuilder-add! sb (vec-ref alphabet (clr-random-range rng 0 top)))
-            (go (+ i 1)))))))
+  (def sb (stringbuilder-empty))
+  (def top (- (vec-length alphabet) 1))
+  (let go ((i 0))
+    (cond
+      ((= i length) (stringbuilder->string sb))
+      (else
+        (stringbuilder-add! sb (vec-ref alphabet (clr-random-range rng 0 top)))
+        (go (+ i 1))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Binding a source

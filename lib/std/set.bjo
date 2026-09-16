@@ -109,50 +109,51 @@
 (defbjouble (set-map f s)
   (#:sync (clr-set-map f s))
   (#:bjo
-    (let ((b (setbuilder-empty))
-          (c (set-cursor s)))
-      (let go ()
-        (if (set-cursor-done? c)
-            (setbuilder->set b)
-            (let ()
-              (setbuilder-add! b (f (set-cursor-current c)))
-              (go)))))))
+    (def b (setbuilder-empty))
+    (def c (set-cursor s))
+    (let go ()
+      (cond
+        ((set-cursor-done? c) (setbuilder->set b))
+        (else
+          (setbuilder-add! b (f (set-cursor-current c)))
+          (go))))))
 
 (: set-filter (-> (-?-> %a bool) (Set %a) (Set %a)))
 (defbjouble (set-filter keep? s)
   (#:sync (clr-set-filter keep? s))
   (#:bjo
-    (let ((b (setbuilder-empty))
-          (c (set-cursor s)))
-      (let go ()
-        (if (set-cursor-done? c)
-            (setbuilder->set b)
-            (let ((x (set-cursor-current c)))
-              (when (keep? x)
-                (setbuilder-add! b x))
-              (go)))))))
+    (def b (setbuilder-empty))
+    (def c (set-cursor s))
+    (let go ()
+      (cond
+        ((set-cursor-done? c) (setbuilder->set b))
+        (else
+          (def x (set-cursor-current c))
+          (when (keep? x)
+            (setbuilder-add! b x))
+          (go))))))
 
 (: set-fold (-> (-?-> %s %a %s) %s (Set %a) %s))
 (defbjouble (set-fold f init s)
   (#:sync (clr-set-fold f init s))
   (#:bjo
-    (let ((c (set-cursor s)))
-      (let go ((acc init))
-        (if (set-cursor-done? c)
-            acc
-            (go (f acc (set-cursor-current c))))))))
+    (def c (set-cursor s))
+    (let go ((acc init))
+      (if (set-cursor-done? c)
+          acc
+          (go (f acc (set-cursor-current c)))))))
 
 (: set-iter (-> (-?-> %a bool) (Set %a) bool))
 (defbjouble (set-iter f s)
   (#:sync (clr-set-iter f s))
   (#:bjo
-    (let ((c (set-cursor s)))
-      (let go ()
-        (if (set-cursor-done? c)
-            #t
-            (if (f (set-cursor-current c))
-                (go)
-                #f))))))
+    (def c (set-cursor s))
+    (let go ()
+      (if (set-cursor-done? c)
+          #t
+          (if (f (set-cursor-current c))
+              (go)
+              #f)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Conversions
@@ -194,13 +195,13 @@
 
 (: set-for-each (-> (-?-> %a void) (Set %a) void))
 (defun (set-for-each f s)
-  (let ((c (set-cursor s)))
-    (let go ()
-      (if (set-cursor-done? c)
-          unit
-          (let ()
-            (f (set-cursor-current c))
-            (go))))))
+  (def c (set-cursor s))
+  (let go ()
+    (cond
+      ((set-cursor-done? c) unit)
+      (else
+        (f (set-cursor-current c))
+        (go)))))
 
 (impl (Collection (Set %a))
   (type %content %a)
@@ -247,14 +248,14 @@
 
 (: set->str (-> (Set %a) string) (where (->str %a)))
 (defun (set->str s)
-  (let ((sb (stringbuilder-empty)))
-    (stringbuilder-add-string! sb "#{")
-    (loop (:with first? #t #f)
-          (:for elem s)
-          (:do (unless first? (stringbuilder-add-string! sb " "))
-               (stringbuilder-add-string! sb (->str elem))))
-    (stringbuilder-add-string! sb "}")
-    (stringbuilder->string sb)))
+  (def sb (stringbuilder-empty))
+  (stringbuilder-add-string! sb "#{")
+  (loop (:with first? #t #f)
+        (:for elem s)
+        (:do (unless first? (stringbuilder-add-string! sb " "))
+             (stringbuilder-add-string! sb (->str elem))))
+  (stringbuilder-add-string! sb "}")
+  (stringbuilder->string sb))
 
 (impl (->str (Set %a))
   (where (->str %a))

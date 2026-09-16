@@ -72,19 +72,19 @@
 ;; Reads port on a fiber into a channel.
 (: port->chan (-> (-bjo-> TextInputPort %a) TextInputPort (Tuple (Chan %a) (Promise int))))
 (defun (port->chan reader p)
-  (let ((c (make-chan)))
-    (Tuple c (bjo (port-fill c reader p)))))
+  (def c (make-chan))
+  (Tuple c (bjo (port-fill c reader p))))
 
 ;; Reader loop run on fiber.
 (: port-fill (-bjo-> (Chan %a) (-bjo-> TextInputPort %a) TextInputPort int))
 (defbjo (port-fill c reader p)
   (let go ((n 0))
-    (if (port-eof? p)
-        n
-        (let ()
-          ;; Send item.
-          (ignore (sync (chan-send c (reader p))))
-          (go (+ n 1))))))
+    (cond
+      ((port-eof? p) n)
+      (else
+        ;; Send item.
+        (ignore (sync (chan-send c (reader p))))
+        (go (+ n 1))))))
 
 ;; Gets next item or None.
 (: chan-next (-bjo-> (Chan %a) (Promise int) (Option %a)))
@@ -97,8 +97,7 @@
 (defun (file->seq reader path)
   (match (open-input-file path)
     ((Ok probe)
-     (let ()
-         ;; First we just check if the file exists
-        (close-input-port probe)
-        (Ok (file-read/seq reader path))))
+     ;; First we just check if the file exists
+     (close-input-port probe)
+     (Ok (file-read/seq reader path)))
     ((Err e) (Err e))))
