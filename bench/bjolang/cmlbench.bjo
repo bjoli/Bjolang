@@ -44,25 +44,66 @@
 (import (std stopwatch))
 
 ;; Per-thread allocation is useless here — the work is spread over the pool — so
-;; the process-wide counter is used instead.
+;; the process-wide counter is used instead. `GC.Collect` is overloaded on
+;; arity, and an extern is resolved by the signature written here, so `(-> void)`
+;; picks the no-argument one; `CollectionCount` takes the generation.
 (import/extern
   (total-allocated (: System.GC.GetTotalAllocatedBytes (-> bool long)))
   (gc-collect (: System.GC.Collect (-> void)))
-  (gc-wait-finalizers (: System.GC.WaitForPendingFinalizers (-> void))))
+  (gc-wait-finalizers (: System.GC.WaitForPendingFinalizers (-> void)))
+  (gc-count (: System.GC.CollectionCount (-> int int)))
+  (framework (: System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription #:get))
+  (processor-count (: System.Environment.ProcessorCount #:get))
+  (server-gc? (: System.Runtime.GCSettings.IsServerGC #:get)))
 
-;; HACK5: the C# twin's `Measured` settles the heap before each rep.
+(def reps 5)
+
+;; A settled heap before the mark, as in the C# twin's `Measured`, so that a row
+;; reports what it allocated rather than what the row before it left behind.
+;; Without it the gen-0 collection the previous row earned lands inside this
+;; one's timed region, which on this suite doubled the median of the
+;; skewed-choose row.
 (: settle (-> void))
 (defun (settle)
   (gc-collect)
   (gc-wait-finalizers)
   (gc-collect))
 
-(: report (-> string int long long void))
-(defun (report name n ms bytes)
-  (let ((ops (cast System.Int64 n)))
-    (println (str name "|"
-                  (->str (/ (* ms 1000000L) ops)) "|"
-                  (->str (/ bytes ops))))))
+;; One rep: elapsed milliseconds, bytes allocated, gen-0 collections.
+(: rep-ns (-> (Tuple long long int) long long))
+(defun (rep-ns r ops)
+  (match r ((Tuple ms bytes gc) (/ (* ms 1000000L) ops))))
+
+(: rep-bytes (-> (Tuple long long int) long long))
+(defun (rep-bytes r ops)
+  (match r ((Tuple ms bytes gc) (/ bytes ops))))
+
+(: rep-gc (-> (Tuple long long int) int))
+(defun (rep-gc r)
+  (match r ((Tuple ms bytes gc) gc)))
+
+;; The third of five, i.e. the median, of an already sorted list.
+(: middle (-> (List %a) %a))
+(defun (middle xs)
+  (list-head (list-tail (list-tail xs))))
+
+;; The minimum, with the median beside it, in the C# twin's layout.
+;;
+;; The minimum is the column phases are compared on — the skewed-choose row is
+;; bimodal on a multi-CCD part — and the median is printed so that a row whose
+;; two modes have moved apart is still visible. Allocation is deterministic and
+;; every rep agrees.
+(: report (-> string int (List (Tuple long long int)) void))
+(defun (report name n results)
+  (def ops (cast System.Int64 n))
+  (def nss (list-sort (list-map (fun (r) (rep-ns r ops)) results)))
+  (def bs (list-sort (list-map (fun (r) (rep-bytes r ops)) results)))
+  (def gcs (list-sort (list-map rep-gc results)))
+  (println (str (string-pad-right name 22)
+                (string-pad-left (->str (list-head nss)) 10)
+                (string-pad-left (->str (list-head bs)) 10)
+                "   (median " (->str (middle nss))
+                ", gc0 " (->str (middle gcs)) "/rep)")))
 
 ;; ---------------------------------------------------------------------------
 ;; 1. Ring — 1000 nodes, 1000 trips, a million parked rendezvous.
@@ -89,7 +130,7 @@
 ;; Spawned with `bjo` and joined by hand, so the nodes start outside the timed
 ;; region exactly as they do in the C# twin. The main scope's token is still
 ;; ambient, so every `sync` here races it; this row is the C# twin plus that.
-(: ring-joined (-bjo-> int int void))
+(: ring-joined (-bjo-> int int (Tuple long long int)))
 (defbjo (ring-joined workers trips)
   (def channels (loop (:for i (range 0 workers))
                       (:acc v (vecing (make-chan)))))
@@ -99,6 +140,7 @@
                                                      (= i (- workers 1))
                                                      trips))))))
   (settle)
+  (def gc0 (gc-count 0))
   (def before (total-allocated #t))
   (def sw (stopwatch))
   (stopwatch-start! sw)
@@ -106,18 +148,19 @@
   (loop (:for i (range 0 workers))
         (:do (ignore (sync (promise-join (vec-ref handles i))))))
   (stopwatch-stop! sw)
-  (report "Ring" (* workers trips) (stopwatch-ms sw) (- (total-allocated #t) before)))
+  (Tuple (stopwatch-ms sw) (- (total-allocated #t) before) (- (gc-count 0) gc0)))
 
 ;; The same ring under a nested `with-cancel`, which is the only difference
 ;; between this row and the one above: the nodes are `spawn`ed rather than
 ;; `bjo`ed, the nested scope owns them and waits for them instead of a join per
 ;; handle, and its token is linked to the outer one. Both rows race a live
 ;; token, so what the pair prices is the nested scope's bookkeeping.
-(: ring-nested-scope (-bjo-> int int void))
+(: ring-nested-scope (-bjo-> int int (Tuple long long int)))
 (defbjo (ring-nested-scope workers trips)
   (def channels (loop (:for i (range 0 workers))
                       (:acc v (vecing (make-chan)))))
   (settle)
+  (def gc0 (gc-count 0))
   (def before (total-allocated #t))
   (def sw (stopwatch))
   (stopwatch-start! sw)
@@ -129,7 +172,7 @@
                                  trips))))
     (spawn (send-one (vec-ref channels 0) 0)))
   (stopwatch-stop! sw)
-  (report "Ring (nested scope)" (* workers trips) (stopwatch-ms sw) (- (total-allocated #t) before)))
+  (Tuple (stopwatch-ms sw) (- (total-allocated #t) before) (- (gc-count 0) gc0)))
 
 ;; ---------------------------------------------------------------------------
 ;; 2. Spawn burst — a million fibers that do nothing.
@@ -141,9 +184,10 @@
 (: nothing (-bjo-> void))
 (defbjo (nothing) unit)
 
-(: spawn-burst (-bjo-> int void))
+(: spawn-burst (-bjo-> int (Tuple long long int)))
 (defbjo (spawn-burst n)
   (settle)
+  (def gc0 (gc-count 0))
   (def before (total-allocated #t))
   (def sw (stopwatch))
   (stopwatch-start! sw)
@@ -151,7 +195,7 @@
     (loop (:for i (range 0 n))
           (:do (spawn (nothing)))))
   (stopwatch-stop! sw)
-  (report "Spawn burst" n (stopwatch-ms sw) (- (total-allocated #t) before)))
+  (Tuple (stopwatch-ms sw) (- (total-allocated #t) before) (- (gc-count 0) gc0)))
 
 ;; ---------------------------------------------------------------------------
 ;; 3. Skewed choose — 8 branches, only the first ever fires.
@@ -178,12 +222,13 @@
   (loop (:for i (range 0 rounds))
         (:do (ignore (sync ev)))))
 
-(: skewed-choose (-bjo-> int void))
+(: skewed-choose (-bjo-> int (Tuple long long int)))
 (defbjo (skewed-choose rounds)
   (def chs (loop (:for i (range 0 8))
                  (:acc v (vecing (make-chan)))))
   (def sender (bjo (skewed-sender (vec-ref chs 0) rounds)))
   (settle)
+  (def gc0 (gc-count 0))
   (def before (total-allocated #t))
   (def sw (stopwatch))
   (stopwatch-start! sw)
@@ -193,30 +238,34 @@
   (ignore (sync (promise-join (bjo (skewed-receiver chs rounds)))))
   (ignore (sync (promise-join sender)))
   (stopwatch-stop! sw)
-  (report "Skewed choose(8)" rounds (stopwatch-ms sw) (- (total-allocated #t) before)))
+  (Tuple (stopwatch-ms sw) (- (total-allocated #t) before) (- (gc-count 0) gc0)))
 
 ;; ---------------------------------------------------------------------------
 
 (defbjo (main args)
-  ;; Warm up every path the suite uses, so the first measured rep is not the one
-  ;; paying for tier-0 code. The warmup rows go to a port nobody reads.
-  (let ((quiet (open-output-string)))
-    (ignore (parameterize ((current-output-port quiet))
-              (ring-joined 100 100)
-              (ring-nested-scope 100 100)
-              (spawn-burst 50000)
-              (skewed-choose 50000)
-              (get-output-string quiet))))
+  (println (str framework
+                ", ProcessorCount=" (->str processor-count)
+                ", ServerGC=" (->str server-gc?)))
+  (println "")
+  (println (str (string-pad-right "benchmark" 22)
+                (string-pad-left "ns/op" 10)
+                (string-pad-left "B/op" 10)
+                "   (min of " (->str reps) ")"))
 
-  ;; Five reps, and the reader takes the minimum. See bench/Cml/Program.cs for
-  ;; why the minimum rather than the median: the skewed-choose row is bimodal on
-  ;; a multi-CCD part and a median reports whichever mode won the coin toss.
-  (loop (:for r (range 0 5))
-        (:do (ring-joined 1000 1000)))
-  (loop (:for r (range 0 5))
-        (:do (ring-nested-scope 1000 1000)))
-  (loop (:for r (range 0 5))
-        (:do (spawn-burst 1000000)))
-  (loop (:for r (range 0 5))
-        (:do (skewed-choose 1000000)))
+  ;; Warm up every path the suite uses, so the first measured rep is not the one
+  ;; paying for tier-0 code. A row hands its numbers back rather than printing
+  ;; them, so a warmup rep is discarded by ignoring the result.
+  (ignore (ring-joined 100 100))
+  (ignore (ring-nested-scope 100 100))
+  (ignore (spawn-burst 50000))
+  (ignore (skewed-choose 50000))
+
+  (report "Ring" 1000000
+          (loop (:for r (range 0 reps)) (:acc l (listing (ring-joined 1000 1000)))))
+  (report "Ring (nested scope)" 1000000
+          (loop (:for r (range 0 reps)) (:acc l (listing (ring-nested-scope 1000 1000)))))
+  (report "Spawn burst" 1000000
+          (loop (:for r (range 0 reps)) (:acc l (listing (spawn-burst 1000000)))))
+  (report "Skewed choose(8)" 1000000
+          (loop (:for r (range 0 reps)) (:acc l (listing (skewed-choose 1000000)))))
   0)

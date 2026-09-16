@@ -10,11 +10,15 @@
 # templates, generics, or macros), you may redistribute such embedded portions
 # in such object code or executable form without complying with the source code
 # availability requirements or notice obligations of Section 3 of the MPL 2.0.
-# Both suites, and the minimum of each row.
 #
-# The Bjolang side prints one line per rep because it has no sorting in it; the
-# reduction to a minimum is here, so that the two suites are reduced the same
-# way. Rows come out as `name|ns/op|B/op`.
+# Both suites. Each reduces its own five reps to a minimum with the median
+# beside it, so the two tables are reduced the same way and this script only
+# runs them.
+#
+# `DOTNET_gcServer` is set for the Bjolang program because `Cml.Bench.csproj`
+# sets `ServerGarbageCollection`, and the Bjolang compiler emits a
+# runtimeconfig.json without it. Without this line the two suites run under
+# different collectors, which the header of each table now shows.
 set -e
 cd "$(dirname "$0")/.."
 
@@ -25,6 +29,4 @@ dotnet bench/Cml/bin/Release/net10.0/CmlBench.dll
 echo
 echo "=== Bjolang ==="
 dotnet bin/Release/net10.0/Bjolang.dll bench/bjolang/cmlbench.bjo >/dev/null
-dotnet bench/bjolang/cmlbench.exe | awk -F'|' '
-  { if (!($1 in ns) || $2+0 < ns[$1]) ns[$1] = $2+0; b[$1] = $3; if (!($1 in seen)) { seen[$1]=1; order[++n]=$1 } }
-  END { for (i = 1; i <= n; i++) printf "%-22s %10d %10d\n", order[i], ns[order[i]], b[order[i]] }'
+DOTNET_gcServer=1 DOTNET_gcConcurrent=1 dotnet bench/bjolang/cmlbench.exe
