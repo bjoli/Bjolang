@@ -4,10 +4,68 @@
 Known gaps, written down where they were found rather than in a commit message.
 
 
-**Make cancellation per-fiber instead of per-sync.**
+**Make cancellation per-fiber instead of per-sync.** Done — ~FiberWatch~ in
+~Concurrency.cs~, one registration per fiber and scope, re-armed per park. The
+slot lives on ~DynEnv~, which is already per-fiber-and-scope. See the B7-style
+section in ~BjolangRuntime/Cml/design.md~ for the numbers and the hazards.
 
-Today, every parked `sync` publishes a branch on the scope's token — a shared object, a waiter registration, a commit protocol, once per rendezvous. But observe: *a fiber is sequential.* It is parked on at most one thing at a time. So the scope does not need a list that grows per sync; it needs **one slot per fiber** holding "what am I currently parked on".
 
+* The CML layer: where the remaining speed is
+
+The anchor fact for all of these: ~bench/Cml/Program.cs~ uses ~Channel<T>~,
+~Cml.Choose~ and ~EventAwaiter~ out of the same assembly the language links, and
+runs the ring at 58 ns/op where the language runs it at 112. The layer is capable
+of the numbers; what costs is the seam between ~sync~ and the layer. So these are
+surgical changes, each independently measurable, and not a rewrite — ~IEvent<T>~
+stays the specification the ~Cml/Tests~ suite is written against.
+
+Everything below is unmeasured except where it says otherwise.
+
+** Delivery is a callback where a fiber wants a slot
+
+~IEvent<T>.Publish~ says "call me with the value"; a fiber wants "put the value
+here and resume me". ~EventAwaiter~ converts one into the other, at a pooled
+object, a delegate hop and an interlocked handover per rendezvous — where the C#
+path stores the fiber's resume straight into the ~PutOp~. Measured at ~13 ns, and
+tried once already: it regressed the ring badly while the per-park registration
+still existed, which it no longer does. Worth another attempt, and the first
+thing to try.
+
+** A token cannot unregister
+
+Nothing removes a waiter from a ~Promise~; it prunes amortised instead. That one
+fact is why ~FiberWatch~ needs a generation, an abandonment protocol and a
+fallback path. A cancellation token with O(1) removal — an intrusive node the
+fiber owns and unlinks when the park ends — deletes all three and is *simpler*
+than what is there now. Best value per unit of risk on this list.
+
+** A send carries a ~Unit~ it does not want
+
+~ChannelSendEvent : IEvent<Unit>~ puts ~Action<Unit>~ through the whole path, and
+~PutOp.ResumeGive~ exists only so publishing a send does not allocate a closure
+adapting it to ~Action~ (88 of that row's 128 B/op, per its own comment). A
+void-shaped send needs none of it. Allocation, not time.
+
+** Two ~Result~ types meet at every join
+
+~promise-join~ allocates a ~Wrap~ and a mapper per join to turn
+~Bjoml.Result<T>~ — which carries an ~ExceptionDispatchInfo~ — into Bjolang's
+~Result~. A promise that spoke the language's own failure type would not.
+Allocation, not time.
+
+** Event ids are minted with an interlocked increment
+
+Publishing happens on the syncing fiber's thread and nowhere else, so a
+~choose~ over eight branches pays eight atomics for a counter with one writer.
+Only the readers (~withNack~'s interval close, ~MarkSynchronized~) are on other
+threads. Measure before touching; it is a guess.
+
+** Unexplained: the direct-park rewrite regressed the ring
+
+Recorded in ~design.md~ with the six explanations that were ruled out. It wants
+~perf~, which is not installed on the development machine. Worth an afternoon
+before anyone commits to a larger redesign, because if it is structural the case
+for one gets stronger.
 
 * Source mapping (~#line~)
 
