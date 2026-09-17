@@ -13,7 +13,7 @@
 
 module Bjolang.LetRecify
 
-open Bjolang.Parser
+open Bjolang.Ast
 
 /// Every free variable of `expr`, mapped to whether *every* use of it is
 /// guarded — that is, deferred inside a lambda, a `seq`, or a `bjo`.
@@ -146,7 +146,7 @@ let rec letrecifyExpr (expr: Expr) : Expr =
         let optimizedClauses =
             clauses
             |> List.map (fun (p, g, b) ->
-                (Parser.mapPatternSteps letrecifyExpr p, Option.map letrecifyExpr g, letrecifyExpr b))
+                (Ast.mapPatternSteps letrecifyExpr p, Option.map letrecifyExpr g, letrecifyExpr b))
 
         EMatch(letrecifyExpr target, optimizedClauses, r)
 
@@ -168,7 +168,7 @@ let rec letrecifyExpr (expr: Expr) : Expr =
     | EBindElse(clauses, sequel, elseBody, r) ->
         let clauses' =
             clauses
-            |> List.map (fun (p, scrutinee) -> (Parser.mapPatternSteps letrecifyExpr p, letrecifyExpr scrutinee))
+            |> List.map (fun (p, scrutinee) -> (Ast.mapPatternSteps letrecifyExpr p, letrecifyExpr scrutinee))
 
         EBindElse(clauses', letrecifyExpr sequel, letrecifyExpr elseBody, r)
 

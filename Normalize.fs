@@ -13,7 +13,8 @@
 
 module Bjolang.Normalize
 
-open Bjolang.Parser
+open Bjolang.Ast
+open Bjolang.Hygiene
 
 /// Source-to-source rewriting of the *untyped* AST, run before `LetRecify`.
 ///
@@ -85,7 +86,7 @@ let private betaReduce
     //     ((fun (x y) (- x y)) y x)   ; (- 2 1), and naively (- 2 2)
     //
     // Which is exactly the problem `(let ((x a) (y b)) ...)` has, so it is
-    // exactly the same call: `Parser.simultaneous` freshens the parameters a
+    // exactly the same call: `Hygiene.simultaneous` freshens the parameters a
     // later argument would otherwise see, and hands back the names to bind and
     // a substitution for the body. Sharing it is the point — two
     // implementations of one rule would be one implementation and one latent
@@ -199,7 +200,7 @@ let rec private rewriteExpr (expr: Expr) : Expr =
         let clauses' =
             clauses
             |> List.map (fun (p, guard, b) ->
-                (Parser.mapPatternSteps rewriteExpr p, Option.map rewriteExpr guard, rewriteExpr b))
+                (Ast.mapPatternSteps rewriteExpr p, Option.map rewriteExpr guard, rewriteExpr b))
 
         EMatch(rewriteExpr target, clauses', r)
 
@@ -217,7 +218,7 @@ let rec private rewriteExpr (expr: Expr) : Expr =
     | EBindElse(clauses, sequel, elseBody, r) ->
         let clauses' =
             clauses
-            |> List.map (fun (p, scrutinee) -> (Parser.mapPatternSteps rewriteExpr p, rewriteExpr scrutinee))
+            |> List.map (fun (p, scrutinee) -> (Ast.mapPatternSteps rewriteExpr p, rewriteExpr scrutinee))
 
         EBindElse(clauses', rewriteExpr sequel, rewriteExpr elseBody, r)
 

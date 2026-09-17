@@ -16,7 +16,7 @@ module Bjolang.Codegen
 open System
 open System.Text
 open Bjolang.TypedAST
-open Bjolang.Parser
+open Bjolang.Ast
 
 type UnionCaseInfo = {
     ParentTypeName: string
@@ -774,11 +774,11 @@ let rec serializeTplType (implementorVar: string) (t: TplType) : string =
     | TplHole args ->
         "('" + implementorVar.TrimStart('\'') + " " + String.concat " " (List.map go args) + ")"
 
-let rec serializeFType (ft: Parser.FType) : string =
+let rec serializeFType (ft: Ast.FType) : string =
     match ft with
-    | Parser.TName(n, _) -> n
-    | Parser.TApp(n, args, _) -> $"({n} " + String.concat " " (List.map serializeFType args) + ")"
-    | Parser.TArrow(mandatory, keywords, restOpt, ret, colour, _) ->
+    | Ast.TName(n, _) -> n
+    | Ast.TApp(n, args, _) -> $"({n} " + String.concat " " (List.map serializeFType args) + ")"
+    | Ast.TArrow(mandatory, keywords, restOpt, ret, colour, _) ->
         let mandatoryStrs = mandatory |> List.map serializeFType
         let keywordStrs = keywords |> List.map (fun (n, t) -> $"(#:{n} {serializeFType t})")
         let restStrs = match restOpt with Some t -> [$"#:rest {serializeFType t}"] | None -> []
@@ -813,8 +813,8 @@ let private escapeSexpr (s: string) =
 /// keeps the round trip honest: `isSerializableTemplate` catches this, the
 /// template is simply not published, and the landing pad — always emitted —
 /// answers instead.
-let private serializableParams (args: Parser.DefunArg list) : string list =
-    let names = Parser.mandatoryNames args
+let private serializableParams (args: Ast.DefunArg list) : string list =
+    let names = Ast.mandatoryNames args
 
     if names.Length <> args.Length then
         failwith "an inline template body may not contain a local function with keyword or rest parameters"
@@ -827,29 +827,29 @@ let private serializableParams (args: Parser.DefunArg list) : string list =
 /// of mutable metavariable cells that mean nothing outside the compilation that
 /// made them, and re-inferring the body at the call site is exactly what gives
 /// the method a type its trait signature could not express.
-let rec serializeExpr (e: Parser.Expr) : string =
+let rec serializeExpr (e: Ast.Expr) : string =
     let list (parts: string list) = "(" + String.concat " " parts + ")"
 
     match e with
-    | Parser.EInt(v, _) -> v
-    | Parser.EString(v, _) -> "\"" + escapeSexpr v + "\""
-    | Parser.EChar(c, _) -> $"#\\x%X{c}"
-    | Parser.EBool(b, _) -> if b then "#t" else "#f"
-    | Parser.EResolved(n, _) -> n
-    | Parser.EQuotedSymbol(s, _) -> "'" + s
-    | Parser.EKeyword(k, _) -> "#:" + k
-    | Parser.EIdent(n, _) -> n
-    | Parser.ETuple(items, _) -> list ("Tuple" :: List.map serializeExpr items)
-    | Parser.EApp(target, args, _) -> list (serializeExpr target :: List.map serializeExpr args)
-    | Parser.ECast(t, v, _) -> list [ "cast"; serializeFType t; serializeExpr v ]
-    | Parser.EDynPack(traitName, v, _) -> list [ "dyn"; traitName; serializeExpr v ]
+    | Ast.EInt(v, _) -> v
+    | Ast.EString(v, _) -> "\"" + escapeSexpr v + "\""
+    | Ast.EChar(c, _) -> $"#\\x%X{c}"
+    | Ast.EBool(b, _) -> if b then "#t" else "#f"
+    | Ast.EResolved(n, _) -> n
+    | Ast.EQuotedSymbol(s, _) -> "'" + s
+    | Ast.EKeyword(k, _) -> "#:" + k
+    | Ast.EIdent(n, _) -> n
+    | Ast.ETuple(items, _) -> list ("Tuple" :: List.map serializeExpr items)
+    | Ast.EApp(target, args, _) -> list (serializeExpr target :: List.map serializeExpr args)
+    | Ast.ECast(t, v, _) -> list [ "cast"; serializeFType t; serializeExpr v ]
+    | Ast.EDynPack(traitName, v, _) -> list [ "dyn"; traitName; serializeExpr v ]
 
     // Round-trips as its own form: re-importing it as a plain `let` would put
     // the generalization back, which is the whole thing it exists to prevent.
-    | Parser.ELetMono(n, value, body, _) ->
+    | Ast.ELetMono(n, value, body, _) ->
         list [ "let/mono"; n; serializeExpr value; serializeExpr body ]
 
-    | Parser.ELet(n, isFun, args, ann, value, body, _) ->
+    | Ast.ELet(n, isFun, args, ann, value, body, _) ->
         let valueStr =
             if isFun then list [ "fun"; list (serializableParams args); serializeExpr value ]
             else serializeExpr value
@@ -865,7 +865,7 @@ let rec serializeExpr (e: Parser.Expr) : string =
         // `let` evaluates all its bindings simultaneously.
         list [ "let"; list [ list [ n; annotated ] ]; serializeExpr body ]
 
-    | Parser.ELetRec(bindings, body, _) ->
+    | Ast.ELetRec(bindings, body, _) ->
         // A body block: consecutive `def`/`defun` forms are collected back into
         // one mutually-recursive group by the reader.
         let defs =
@@ -876,25 +876,25 @@ let rec serializeExpr (e: Parser.Expr) : string =
 
         list ([ "let"; "()" ] @ defs @ [ serializeExpr body ])
 
-    | Parser.ELetMutable(n, _, value, body, _) ->
+    | Ast.ELetMutable(n, _, value, body, _) ->
         list [ "let"; "()"; list [ "def/mutable"; n; serializeExpr value ]; serializeExpr body ]
 
-    | Parser.ESet(n, v, _) -> list [ "set!"; n; serializeExpr v ]
-    | Parser.EIf(c, t, f, _) -> list [ "if"; serializeExpr c; serializeExpr t; serializeExpr f ]
-    | Parser.EWhen(c, b, negated, _) ->
+    | Ast.ESet(n, v, _) -> list [ "set!"; n; serializeExpr v ]
+    | Ast.EIf(c, t, f, _) -> list [ "if"; serializeExpr c; serializeExpr t; serializeExpr f ]
+    | Ast.EWhen(c, b, negated, _) ->
         list [ (if negated then "unless" else "when"); serializeExpr c; serializeExpr b ]
-    | Parser.EFun(args, body, colour, _) ->
-        let head = match colour with Parser.Suspending -> "bjoroutine" | Parser.Ordinary -> "fun"
+    | Ast.EFun(args, body, colour, _) ->
+        let head = match colour with Ast.Suspending -> "bjoroutine" | Ast.Ordinary -> "fun"
         list [ head; list args; serializeExpr body ]
-    | Parser.ERecordUpdate(n, fields, _) ->
+    | Ast.ERecordUpdate(n, fields, _) ->
         list ("record-set" :: n :: (fields |> List.map (fun (k, v) -> list [ k; serializeExpr v ])))
-    | Parser.ERecordSet(n, fields, _) ->
+    | Ast.ERecordSet(n, fields, _) ->
         list ("record-set!" :: n :: (fields |> List.map (fun (k, v) -> list [ k; serializeExpr v ])))
-    | Parser.EGetField(target, f, _) -> list [ "record-ref"; serializeExpr target; f ]
-    | Parser.EVec(items, _) -> "[" + String.concat " " (List.map serializeExpr items) + "]"
-    | Parser.EArray(items, _) -> "#[" + String.concat " " (List.map serializeExpr items) + "]"
+    | Ast.EGetField(target, f, _) -> list [ "record-ref"; serializeExpr target; f ]
+    | Ast.EVec(items, _) -> "[" + String.concat " " (List.map serializeExpr items) + "]"
+    | Ast.EArray(items, _) -> "#[" + String.concat " " (List.map serializeExpr items) + "]"
 
-    | Parser.EMatch(target, clauses, _) ->
+    | Ast.EMatch(target, clauses, _) ->
         let clauseStrs =
             clauses
             |> List.map (fun (pat, guard, body) ->
@@ -904,31 +904,31 @@ let rec serializeExpr (e: Parser.Expr) : string =
 
         list ("match" :: serializeExpr target :: clauseStrs)
 
-    | Parser.ESeq(body, _) -> list [ "seq"; serializeExpr body ]
+    | Ast.ESeq(body, _) -> list [ "seq"; serializeExpr body ]
     // The kind is written back as the surface form it came from, so the reader
     // needs nothing new: `(spawn ...)` parses to the same node it serialized
     // from.
-    | Parser.EBjo(body, kind, _) ->
+    | Ast.EBjo(body, kind, _) ->
         let head =
             match kind with
-            | Parser.SpawnScoped -> "bjo"
-            | Parser.SpawnUnit -> "spawn"
-            | Parser.SpawnDaemon -> "spawn/daemon"
-            | Parser.SpawnDetached -> "spawn/detached"
+            | Ast.SpawnScoped -> "bjo"
+            | Ast.SpawnUnit -> "spawn"
+            | Ast.SpawnDaemon -> "spawn/daemon"
+            | Ast.SpawnDetached -> "spawn/detached"
 
         list [ head; serializeExpr body ]
-    | Parser.ETaskEvent(body, _) -> list [ "task->event"; serializeExpr body ]
-    | Parser.EYield(v, _) -> list [ "yield"; serializeExpr v ]
-    | Parser.EYieldFrom(s, _) -> list [ "yield-from"; serializeExpr s ]
+    | Ast.ETaskEvent(body, _) -> list [ "task->event"; serializeExpr body ]
+    | Ast.EYield(v, _) -> list [ "yield"; serializeExpr v ]
+    | Ast.EYieldFrom(s, _) -> list [ "yield-from"; serializeExpr s ]
 
-    | Parser.EWithReturn(name, body, _) -> list [ "with-return"; name; serializeExpr body ]
+    | Ast.EWithReturn(name, body, _) -> list [ "with-return"; name; serializeExpr body ]
 
     // A guard holds the rest of the body it was written in, and the reader
     // gives it that sequel back by position rather than from the form itself.
     // So it is written out as a *body* — `begin` splices in body position, and
     // `parseBody` hands the guard whatever follows it there, which is exactly
     // the sequel that went in.
-    | Parser.EBindElse(clauses, sequel, elseBody, _) ->
+    | Ast.EBindElse(clauses, sequel, elseBody, _) ->
         let guardForm =
             match clauses with
             | [ (pat, scrutinee) ] ->
@@ -943,44 +943,44 @@ let rec serializeExpr (e: Parser.Expr) : string =
         list [ "begin"; guardForm; serializeExpr sequel ]
 
     // No reader form produces these, so none can appear in a template body.
-    | Parser.ELetTuple _ -> failwith "an inline template body may not destructure a tuple binding"
-    | Parser.EList _ -> failwith "an inline template body may not contain a bare list literal"
-    | Parser.ETryFinally _ -> failwith "an inline template body may not contain try/finally"
-    | Parser.ETryCatch _ -> failwith "an inline template body may not contain try/catch"
+    | Ast.ELetTuple _ -> failwith "an inline template body may not destructure a tuple binding"
+    | Ast.EList _ -> failwith "an inline template body may not contain a bare list literal"
+    | Ast.ETryFinally _ -> failwith "an inline template body may not contain try/finally"
+    | Ast.ETryCatch _ -> failwith "an inline template body may not contain try/catch"
 
 /// A pattern, written back as source.
 ///
 /// In this group because a pattern holds an expression: a view's step. A
 /// pattern macro is not written back, and cannot be — it expanded while the
 /// module holding this body was parsed, and what is stored is what it produced.
-and serializePattern (p: Parser.Pattern) : string =
+and serializePattern (p: Ast.Pattern) : string =
     match p with
-    | Parser.PWildcard _ -> "_"
-    | Parser.PIdent(n, _) -> n
-    | Parser.PInt(v, _) -> v
-    | Parser.PString(v, _) -> "\"" + escapeSexpr v + "\""
+    | Ast.PWildcard _ -> "_"
+    | Ast.PIdent(n, _) -> n
+    | Ast.PInt(v, _) -> v
+    | Ast.PString(v, _) -> "\"" + escapeSexpr v + "\""
     // Always the hex spelling: it round-trips through the lexer for every
     // codepoint, including ones with no name and ones that are not printable.
-    | Parser.PChar(c, _) -> $"#\\x%X{c}"
-    | Parser.PBool(b, _) -> if b then "#t" else "#f"
-    | Parser.PKeyword(k, _) -> "#:" + k
-    | Parser.PQuotedSymbol(s, _) -> "'" + s
+    | Ast.PChar(c, _) -> $"#\\x%X{c}"
+    | Ast.PBool(b, _) -> if b then "#t" else "#f"
+    | Ast.PKeyword(k, _) -> "#:" + k
+    | Ast.PQuotedSymbol(s, _) -> "'" + s
     // Always parenthesized, even with no arguments. A bare name reads back as a
     // constructor only when it happens to start with a capital, and that is not
     // something to rely on.
-    | Parser.PConstruct(n, args, _) ->
+    | Ast.PConstruct(n, args, _) ->
         "(" + String.concat " " (n :: List.map serializePattern args) + ")"
-    | Parser.PList(items, tailOpt, _) -> serializeSeqPattern "List" items tailOpt
-    | Parser.PVec(items, tailOpt, _) -> serializeSeqPattern "Vec" items tailOpt
-    | Parser.PArray(items, tailOpt, _) -> serializeSeqPattern "Array" items tailOpt
-    | Parser.PTuple(items, _) -> "(" + String.concat " " ("Tuple" :: List.map serializePattern items) + ")"
-    | Parser.PTypeTest(t, binder, _) ->
+    | Ast.PList(items, tailOpt, _) -> serializeSeqPattern "List" items tailOpt
+    | Ast.PVec(items, tailOpt, _) -> serializeSeqPattern "Vec" items tailOpt
+    | Ast.PArray(items, tailOpt, _) -> serializeSeqPattern "Array" items tailOpt
+    | Ast.PTuple(items, _) -> "(" + String.concat " " ("Tuple" :: List.map serializePattern items) + ")"
+    | Ast.PTypeTest(t, binder, _) ->
         "(:is " + String.concat " " (t :: Option.toList binder) + ")"
-    | Parser.POr(alts, _) -> "(or " + String.concat " " (List.map serializePattern alts) + ")"
-    | Parser.PAnd(alts, _) -> "(and " + String.concat " " (List.map serializePattern alts) + ")"
+    | Ast.POr(alts, _) -> "(or " + String.concat " " (List.map serializePattern alts) + ")"
+    | Ast.PAnd(alts, _) -> "(and " + String.concat " " (List.map serializePattern alts) + ")"
     // The step is written as the function it already is, so it reads back
     // without the `&` form being re-derived.
-    | Parser.PView(step, inner, _) ->
+    | Ast.PView(step, inner, _) ->
         "(:view " + serializeExpr step + " " + serializePattern inner + ")"
 
 and private serializeSeqPattern (head: string) items tailOpt =
@@ -993,7 +993,7 @@ and private serializeSeqPattern (head: string) items tailOpt =
 
 /// Can this body be written out and read back at all? A template that cannot be
 /// serialized is simply not exported; its landing pad still is.
-let isSerializableTemplate (e: Parser.Expr) : bool =
+let isSerializableTemplate (e: Ast.Expr) : bool =
     try
         serializeExpr e |> ignore
         true
@@ -3096,10 +3096,10 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
         // waits for the fiber, only cancels it, or never hears about it.
         let entryPoint =
             match kind with
-            | Parser.SpawnScoped -> "BjolangRuntime.ScopeSpawn"
-            | Parser.SpawnUnit -> "BjolangRuntime.ScopeSpawnUnit"
-            | Parser.SpawnDaemon -> "BjolangRuntime.ScopeSpawnDaemon"
-            | Parser.SpawnDetached -> "BjolangRuntime.ScopeSpawnDetached"
+            | Ast.SpawnScoped -> "BjolangRuntime.ScopeSpawn"
+            | Ast.SpawnUnit -> "BjolangRuntime.ScopeSpawnUnit"
+            | Ast.SpawnDaemon -> "BjolangRuntime.ScopeSpawnDaemon"
+            | Ast.SpawnDetached -> "BjolangRuntime.ScopeSpawnDetached"
 
         // Explicit type argument: BjoML's own docs warn that C# cannot infer the
         // result of an async lambda, and this is exactly that call. The three
@@ -4653,7 +4653,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
             | Record(fields, isStruct) ->
                 let selfType = declaredTypeName td.Name
                 let selfRef = $"%s{selfType}%s{tyArgsStr}"
-                let fieldType (f: Parser.RecordField) =
+                let fieldType (f: Ast.RecordField) =
                     typeToString (Inference.resolveTypeAnnotation ctx.Registry f.Type)
 
                 let members =

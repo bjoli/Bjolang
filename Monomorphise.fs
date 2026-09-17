@@ -13,7 +13,7 @@
 
 module Bjolang.Monomorphise
 
-open Bjolang.Parser
+open Bjolang.Ast
 open Bjolang.TypedAST
 open Bjolang.Unification
 

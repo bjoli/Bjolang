@@ -16,7 +16,7 @@ module Bjolang.Pipeline
 open System
 open System.IO
 open Bjolang.Lexer
-open Bjolang.Parser
+open Bjolang.Ast
 open Bjolang.LetRecify
 
 let unionLexerRanges (r1: Lexer.Range) (r2: Lexer.Range) : Lexer.Range =
@@ -858,7 +858,7 @@ let private isStandardLibrary (absPath: string) =
 /// macro needs that macro's module already compiled and loaded. Reading
 /// S-expressions needs no macros, so the edges can be found first.
 ///
-/// `Parser.parseDecl` is called rather than the shape being re-matched here, so
+/// `DeclParser.parseDecl` is called rather than the shape being re-matched here, so
 /// that one place decides what an import path means. An import form contains no
 /// expressions and so cannot itself contain a macro call.
 ///
@@ -869,7 +869,7 @@ let importsOf (forms: SExpr list) : (ImportSpec * Lexer.Range) list =
     |> List.collect (fun form ->
         match form with
         | SList(SAtom { Token = Lexer.Symbol "import" } :: _, _) ->
-            match Parser.parseDecl form with
+            match DeclParser.parseDecl form with
             | DImport(specs, r) -> specs |> List.map (fun s -> s, r)
             | _ -> []
         | _ -> [])
@@ -1147,7 +1147,7 @@ let wrapInModule (moduleName: string) (filePath: string) (decls: Decl list) : De
         | [] -> { Start = { Line = 1; Column = 1 }; End = { Line = 1; Column = 1 }; File = filePath }
         | first :: _ ->
             let last = List.last decls
-            unionLexerRanges (Parser.declRange first) (Parser.declRange last)
+            unionLexerRanges (Ast.declRange first) (Ast.declRange last)
     
     [ DModule(moduleName, decls, r) ]
 
@@ -1311,7 +1311,7 @@ let loadModuleGraph
                         if System.String.IsNullOrWhiteSpace declText then
                             []
                         else
-                            Lexer.tokenize absPath declText |> read |> fst |> Parser.parseModule
+                            Lexer.tokenize absPath declText |> read |> fst |> DeclParser.parseModule
 
                     // The bare spellings of the types this assembly declares.
                     //
@@ -1369,14 +1369,14 @@ let loadModuleGraph
                     let reExportedGroups =
                         meta.ReExportedTypes
                         |> List.map (fun (entry: ModuleMetadata.ReExportedType) ->
-                            entry, (Lexer.tokenize absPath entry.Decl |> read |> fst |> Parser.parseModule))
+                            entry, (Lexer.tokenize absPath entry.Decl |> read |> fst |> DeclParser.parseModule))
                         |> List.filter (fun (_, decls) -> not decls.IsEmpty)
 
                     let reExportedSpellings =
                         reExportedGroups
                         |> List.collect (fun (entry, decls) ->
                             let bare = Naming.bareTypeName entry.OriginModule
-                            let r = Parser.declRange (List.head decls)
+                            let r = Ast.declRange (List.head decls)
 
                             let cases =
                                 decls
@@ -1402,7 +1402,7 @@ let loadModuleGraph
                         |> List.groupBy (fun (entry, _) -> entry.OriginModule)
                         |> List.map (fun (originModule, group) ->
                             let decls = group |> List.collect snd
-                            DModule(originModule, decls, Parser.declRange (List.head decls)))
+                            DModule(originModule, decls, Ast.declRange (List.head decls)))
 
                     // An exported binding becomes an extern: a name with a type
                     // and no body, which is exactly what an importer can say
@@ -1421,7 +1421,7 @@ let loadModuleGraph
                             Lexer.tokenize absPath text
                             |> read
                             |> fst
-                            |> Parser.parseModule
+                            |> DeclParser.parseModule
                             |> List.map (function
                                 // The visible name is the one this module
                                 // publishes, and that is the point of parsing
@@ -1576,7 +1576,7 @@ let loadModuleGraph
                     Macro.setLocalMacros localMacros
                     Macro.setLocalPatternMacros localPatternMacros
                     Macro.setLocalHashMacros localHashMacros
-                    let parsed = Parser.parseModule forms
+                    let parsed = DeclParser.parseModule forms
                     Macro.setLocalMacros Set.empty
                     Macro.setLocalPatternMacros Set.empty
                     Macro.setLocalHashMacros Set.empty

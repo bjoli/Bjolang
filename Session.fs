@@ -38,7 +38,7 @@
 ///     imports under *this* module's modifiers. A leaked entry does not raise
 ///     an error; it makes a form read as a macro call because a different file
 ///     imported something.
-///   * `Parser.introducedNames`. Correct if leaked, but it only grows.
+///   * `Hygiene.introducedNames`. Correct if leaked, but it only grows.
 ///   * `Inference.wantedQueue` and `Inference.openLiterals`. Both empty after a
 ///     compilation that succeeded, and neither after one that threw.
 ///
@@ -62,8 +62,8 @@
 ///   * `DotNetInterop.typeCache` and `extraAssemblies`. Reflection over what
 ///     the process has loaded, which is the same answer for every compilation
 ///     in it.
-///   * `Parser.expandHook`, `Parser.patternExpandHook` and
-///     `Parser.isMacroName`. Function pointers into
+///   * `Hygiene.expandHook`, `Hygiene.patternExpandHook` and
+///     `Hygiene.isMacroName`. Function pointers into
 ///     `Macro`, installed idempotently; it is the tables behind them that are
 ///     scoped.
 ///   * `Unification.heldMetaIds` and `heldLocalMetaIds`, likewise.
@@ -92,14 +92,14 @@ let capture () : Scope =
       MetaCounter = Unification.snapshotMetaCounter ()
       Level = Unification.snapshotLevel ()
       Macros = Macro.snapshot ()
-      Introduced = Parser.snapshotIntroduced () }
+      Introduced = Hygiene.snapshotIntroduced () }
 
 let restore (scope: Scope) : unit =
     Gensym.restore scope.Gensym
     Unification.restoreMetaCounter scope.MetaCounter
     Unification.restoreLevel scope.Level
     Macro.restore scope.Macros
-    Parser.restoreIntroduced scope.Introduced
+    Hygiene.restoreIntroduced scope.Introduced
     // Not part of the scope value: the queue is either empty or garbage, and
     // there is never a reason to put a previous compilation's obligations back.
     // The same goes for the numeric literals still waiting to be settled.

@@ -16,7 +16,7 @@ module Bjolang.Macro
 open System.Collections.Generic
 open System.Reflection
 open Bjolang.Lexer
-open Bjolang.Parser
+open Bjolang.Ast
 
 /// Procedural macros with implicit-renaming hygiene.
 ///
@@ -44,7 +44,7 @@ open Bjolang.Parser
 ///   2. A free marked name that the macro's module exports resolves to
 ///      `Module_Module::name`, which no local at the call site can shadow.
 ///   3. Anything else has its mark stripped: a prelude binding, a data
-///      constructor, or — via `Parser.headName` — a special form, which is what
+///      constructor, or — via `Hygiene.headName` — a special form, which is what
 ///      lets a template write `let`, `if` and `->` unchanged. A *called* trait
 ///      method is stripped to an `EResolved` rather than to a bare name, so it
 ///      dispatches as the trait it belonged to where the template was written.
@@ -168,13 +168,13 @@ let aliasHash (newName: string) (oldName: string) : bool = aliasIn hashTable new
 /// macro that expands to a `def` is read wrongly if the answer is no.
 let isMacro (name: string) =
     let known (n: string) = table.ContainsKey n || Set.contains n localMacros
-    known name || known (Parser.headName name)
+    known name || known (Hygiene.headName name)
 
 let isPatternMacro (name: string) =
     let known (n: string) =
         patternTable.ContainsKey n || Set.contains n localPatternMacros
 
-    known name || known (Parser.headName name)
+    known name || known (Hygiene.headName name)
 
 /// Asked with the bare name, `fl` for `#fl`.
 let isHashMacro (name: string) =
@@ -260,7 +260,7 @@ let rec private ofSExpr (s: SExpr) : Syn =
 ///     expansion lands.
 ///
 /// Neither a head symbol nor a pattern's constructor needs an entry here:
-/// `Parser.headName` strips the mark wherever one is dispatched on, which is
+/// `Hygiene.headName` strips the mark wherever one is dispatched on, which is
 /// what lets a template write `let`, `if` and `(Cons a Nil)` unchanged while a
 /// call to the macro module's own helper keeps the mark that resolves it.
 let private neverRenamed (name: string) =
@@ -358,7 +358,7 @@ let private compareIdent =
 /// `bound` is what the caller already knows to be bound, and is empty
 /// everywhere an expansion lands inside an expression. Declaration position is
 /// the exception: a spliced group's binders are not inside anything, so
-/// `Parser.boundNames` collects them and hands them over — without which rule 1
+/// `Ast.boundNames` collects them and hands them over — without which rule 1
 /// could not apply to a `(begin (def x 0) (defun (f) x))` at all.
 let private resolveIntroduced
     (binding: MacroBinding)
@@ -440,7 +440,7 @@ let private expandIn
     let key =
         if tbl.ContainsKey head then Some head
         else
-            let stripped = Parser.headName head
+            let stripped = Hygiene.headName head
             if tbl.ContainsKey stripped then Some stripped else None
 
     // A macro this very module defines. Not an expansion — its transformer
@@ -489,7 +489,7 @@ let private expandIn
         // The parser has to see through these marks when it dispatches a
         // head symbol, and only these: `x__1` is a name a program may
         // define for itself.
-        Parser.noteIntroduced memo.Values
+        Hygiene.noteIntroduced memo.Values
 
         Some
             { Form = expanded
@@ -497,7 +497,7 @@ let private expandIn
 
 /// Expands one form, if its head names a macro.
 ///
-/// Installed as `Parser.expandHook`, and reached only after every special form
+/// Installed as `Hygiene.expandHook`, and reached only after every special form
 /// has failed to match — so a macro can never shadow `if`.
 let expand (form: SExpr) : Expansion option =
     match form with
@@ -506,7 +506,7 @@ let expand (form: SExpr) : Expansion option =
 
 /// Expands one *pattern*, if its head names a pattern macro.
 ///
-/// Installed as `Parser.patternExpandHook`. A bare symbol is a call too — a
+/// Installed as `Hygiene.patternExpandHook`. A bare symbol is a call too — a
 /// pattern macro may take no arguments, as `Nil` does — but only a capitalized
 /// one: a lowercase symbol in pattern position is a binder, and the table must
 /// not be able to claim one.
@@ -520,7 +520,7 @@ let expandPattern (form: SExpr) : Expansion option =
 
 /// Expands one `#name(...)` form, if `name` is a hash macro.
 ///
-/// Installed as `Parser.hashExpandHook`. The head arrives spelled `#name`, as
+/// Installed as `Hygiene.hashExpandHook`. The head arrives spelled `#name`, as
 /// the lexer made it, and the table is keyed without the `#`. Never renamed
 /// (see `neverRenamed`), so there is no mark to strip. `what` is what keeps its
 /// depth count apart from an ordinary macro of the same name at one call site.
@@ -532,10 +532,10 @@ let expandHash (form: SExpr) : Expansion option =
 
 /// Installs the expander into the parser. Idempotent.
 let install () =
-    Parser.expandHook <- expand
-    Parser.patternExpandHook <- expandPattern
-    Parser.hashExpandHook <- expandHash
-    Parser.isMacroName <- isMacro
+    Hygiene.expandHook <- expand
+    Hygiene.patternExpandHook <- expandPattern
+    Hygiene.hashExpandHook <- expandHash
+    Hygiene.isMacroName <- isMacro
 
 // ---------------------------------------------------------------------------
 // Scoping

@@ -13,7 +13,7 @@
 
 module Bjolang.AlphaRename
 
-open Bjolang.Parser
+open Bjolang.Ast
 open Bjolang.TypedAST
 
 /// Capture-avoiding renaming, over both the untyped and the typed AST.
@@ -53,19 +53,19 @@ open Bjolang.TypedAST
 // one module for renaming, whichever AST it is renaming.
 
 /// A name whose spelling is part of an interface someone else relies on.
-let isRenamable = Parser.isRenamable
+let isRenamable = Hygiene.isRenamable
 
 /// Freshens every binder in an untyped expression, and every free occurrence of
 /// a name in `roots`.
-let freshen = Parser.freshen
+let freshen = Hygiene.freshen
 
 /// Rewrites the *free* occurrences of the names in a substitution, leaving
 /// binders as they are.
-let renameFree = Parser.renameFree
+let renameFree = Hygiene.renameFree
 
 /// The same, except that a chosen set of names becomes an `EResolved` wherever
 /// it is called — a trait method a macro template wrote.
-let renameFreeResolving = Parser.renameFreeResolving
+let renameFreeResolving = Hygiene.renameFreeResolving
 
 /// Every name an untyped expression references without binding, given `bound`
 /// already in scope.
@@ -73,7 +73,7 @@ let renameFreeResolving = Parser.renameFreeResolving
 /// Used to decide which of an inline template's references have to be qualified
 /// to the module they came from: a name the body binds itself is not free, and a
 /// formal parameter is bound by the splice.
-let freeNames = Parser.freeNames
+let freeNames = Ast.freeNames
 
 // ---------------------------------------------------------------------------
 // Typed: the parameterized core

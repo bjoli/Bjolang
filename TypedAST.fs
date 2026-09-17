@@ -14,7 +14,7 @@
 module Bjolang.TypedAST
 
 open Bjolang.Lexer
-open Bjolang.Parser
+open Bjolang.Ast
 
 
 // --- MUTABLE HM TYPES (For Inference) ---
@@ -124,10 +124,10 @@ let tfun (args: HMType list) (ret: HMType) : HMType = TFun(args, ret, ESync)
 /// `resolveTypeAnnotation` needs a `TApp("-bjo->", ...)` case to read one back;
 /// until then nothing constructs a non-`ESync` arrow, so nothing writes one.
 /// The type-level effect a written colour stands for.
-let colourEffect (c: Parser.Colour) : Effect =
+let colourEffect (c: Ast.Colour) : Effect =
     match c with
-    | Parser.Ordinary -> ESync
-    | Parser.Suspending -> EAsync
+    | Ast.Ordinary -> ESync
+    | Ast.Suspending -> EAsync
 
 /// Repaint the outermost arrow of `t`.
 ///
@@ -803,7 +803,7 @@ and TExprNode =
     /// The `SpawnKind` says what the enclosing cancellation scope does about the
     /// fiber: waits for it, cancels it without waiting, or lets it go. It
     /// decides the runtime entry point the emitter names and nothing else.
-    | TBjo of TypedExpr * Parser.SpawnKind
+    | TBjo of TypedExpr * Ast.SpawnKind
     /// `(task->event (fetch url))` — the event of making an async .NET call.
     ///
     /// Deliberately *not* a `TForeignStaticCall`: the whole difference is that

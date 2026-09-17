@@ -36,7 +36,7 @@ open System
 open System.IO
 open System.Runtime.Loader
 open Bjolang.Lexer
-open Bjolang.Parser
+open Bjolang.Ast
 
 /// One entry that has been compiled and loaded.
 type private Entry =
@@ -119,29 +119,29 @@ let private readEntry (prompt: string) (continuation: string) : string option =
 
 /// The top-level names a declaration introduces.
 ///
-/// Only what an importing entry can name. `Parser.boundNames` is the neighbour
+/// Only what an importing entry can name. `Ast.boundNames` is the neighbour
 /// of this and answers a different question — it includes a `defun`'s
 /// parameters, because it exists to stop a macro's template capturing one.
-let private definedNames (decl: Parser.Decl) : string list =
+let private definedNames (decl: Ast.Decl) : string list =
     match decl with
-    | Parser.DDef(n, _, _)
-    | Parser.DDefMutable(n, _, _)
-    | Parser.DDefun(n, _, _, _, _) -> [ n ]
-    | Parser.DDefTuple(names, _, _) -> names
-    | Parser.DType(defs, _)
-    | Parser.DTypeRec(defs, _) -> defs |> List.map (fun d -> d.Name)
-    | Parser.DTrait(n, _, _, _, _, _, _, _) -> [ n ]
+    | Ast.DDef(n, _, _)
+    | Ast.DDefMutable(n, _, _)
+    | Ast.DDefun(n, _, _, _, _) -> [ n ]
+    | Ast.DDefTuple(names, _, _) -> names
+    | Ast.DType(defs, _)
+    | Ast.DTypeRec(defs, _) -> defs |> List.map (fun d -> d.Name)
+    | Ast.DTrait(n, _, _, _, _, _, _, _) -> [ n ]
     | _ -> []
 
 /// Of those, the ones an `(export ...)` demands a signature for.
 ///
 /// A type publishes its declaration and a trait its methods, so neither has a
 /// signature to be missing. A binding does.
-let private bindingNames (decl: Parser.Decl) : string list =
+let private bindingNames (decl: Ast.Decl) : string list =
     match decl with
-    | Parser.DType _
-    | Parser.DTypeRec _
-    | Parser.DTrait _ -> []
+    | Ast.DType _
+    | Ast.DTypeRec _
+    | Ast.DTrait _ -> []
     | other -> definedNames other
 
 /// Every name a later entry might write that this one answers for.
@@ -152,23 +152,23 @@ let private bindingNames (decl: Parser.Decl) : string list =
 /// `(export ...)` list, which is why this is a second function rather than one:
 /// `(export Circle)` is refused, since a case has no signature and travels with
 /// the type that declares it.
-let private providedNames (decl: Parser.Decl) : string list =
+let private providedNames (decl: Ast.Decl) : string list =
     match decl with
-    | Parser.DType(defs, _)
-    | Parser.DTypeRec(defs, _) ->
+    | Ast.DType(defs, _)
+    | Ast.DTypeRec(defs, _) ->
         defs
         |> List.collect (fun td ->
             td.Name
             :: (match td.Kind with
-                | Parser.Union cases ->
+                | Ast.Union cases ->
                     cases
                     |> List.map (function
-                        | Parser.SimpleCase(n, _) -> n
-                        | Parser.DataCase(n, _, _, _) -> n)
+                        | Ast.SimpleCase(n, _) -> n
+                        | Ast.DataCase(n, _, _, _) -> n)
                 // A record is constructed by its own name, and an opaque type
                 // and an alias offer no constructor at all.
                 | _ -> []))
-    | Parser.DTrait(name, _, _, _, signatures, _, _, _) -> name :: List.map (fun (n, _, _) -> n) signatures
+    | Ast.DTrait(name, _, _, _, signatures, _, _, _) -> name :: List.map (fun (n, _, _) -> n) signatures
     | other -> definedNames other
 
 /// Does this entry have to be linked by every entry after it?
@@ -182,17 +182,17 @@ let private providedNames (decl: Parser.Decl) : string list =
 /// The entries *before* it are a different matter and cannot be helped:
 /// `Lowering` bakes a dictionary choice into IL, so an impl written at entry 9
 /// is not in the code entry 4 already emitted.
-let private isSticky (decl: Parser.Decl) : bool =
+let private isSticky (decl: Ast.Decl) : bool =
     match decl with
-    | Parser.DImpl _
-    | Parser.DImplExtern _
-    | Parser.DInlineImpl _
-    | Parser.DTrait _ -> true
+    | Ast.DImpl _
+    | Ast.DImplExtern _
+    | Ast.DInlineImpl _
+    | Ast.DTrait _ -> true
     | _ -> false
 
 /// What the user typed, as the compiler reads it.
 ///
-/// `Parser.tryParseDeclGroup` is asked rather than the head symbol matched
+/// `DeclParser.tryParseDeclGroup` is asked rather than the head symbol matched
 /// here, so that what counts as a declaration is decided in one place. The
 /// *group* form, because a `defun` carrying its own parameter and return types
 /// declares a signature as well as a function — and an entry that already has
@@ -217,12 +217,12 @@ type private Shape =
 let private shapeOf (forms: SExpr list) : Shape =
     let asDecls (form: SExpr) =
         try
-            Parser.tryParseDeclGroup form
+            DeclParser.tryParseDeclGroup form
             |> Option.map (List.map (fun d -> d, form))
         with _ ->
             // A declaration whose *body* is malformed still reads as one. The
             // real diagnostic comes from compiling it, where it has a position.
-            Some [ Parser.DExport([], getRange form), form ]
+            Some [ Ast.DExport([], getRange form), form ]
 
     match forms with
     | [] -> Malformed "nothing to evaluate"
@@ -239,7 +239,7 @@ let private shapeOf (forms: SExpr list) : Shape =
             let signed =
                 decls
                 |> List.choose (function
-                    | Parser.DSignature(name, _, _, _), form -> Some(name, form)
+                    | Ast.DSignature(name, _, _, _), form -> Some(name, form)
                     | _ -> None)
 
             Definitions(

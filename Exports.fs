@@ -175,25 +175,25 @@ let metadata
             | TypedAST.TType(defs, _) -> defs |> List.map (fun d -> d, false)
             | TypedAST.TTypeRec(defs, _) -> defs |> List.map (fun d -> d, true)
             | _ -> [])
-        |> List.filter (fun ((td: Parser.TypeDef), _) -> List.contains (bare td.Name) exports)
-        |> List.map (fun ((td: Parser.TypeDef), isRec) ->
+        |> List.filter (fun ((td: Ast.TypeDef), _) -> List.contains (bare td.Name) exports)
+        |> List.map (fun ((td: Ast.TypeDef), isRec) ->
             if not td.IsOpaque then
                 td, isRec
             else
                 let hidden =
                     match td.Kind with
-                    | Parser.Union cases ->
+                    | Ast.Union cases ->
                         cases
                         |> List.map (function
-                            | Parser.SimpleCase(n, _)
-                            | Parser.DataCase(n, _, _, _) -> bare n)
+                            | Ast.SimpleCase(n, _)
+                            | Ast.DataCase(n, _, _, _) -> bare n)
                     // A record is taken apart by its field names and built by
                     // its own, which is already the type name and is published.
-                    | Parser.Record(fields, _) -> fields |> List.map (fun f -> f.Name)
-                    | Parser.Alias _
-                    | Parser.Opaque _ -> []
+                    | Ast.Record(fields, _) -> fields |> List.map (fun f -> f.Name)
+                    | Ast.Alias _
+                    | Ast.Opaque _ -> []
 
-                { td with Kind = Parser.Opaque hidden }, isRec)
+                { td with Kind = Ast.Opaque hidden }, isRec)
 
     /// The types that crossed under their own name.
     ///
@@ -202,7 +202,7 @@ let metadata
     /// importer can resolve the name. What it cannot resolve is a type that was
     /// not published at all.
     let exportedTypeNames =
-        typesToExport |> List.map (fun ((td: Parser.TypeDef), _) -> bare td.Name) |> Set.ofList
+        typesToExport |> List.map (fun ((td: Ast.TypeDef), _) -> bare td.Name) |> Set.ofList
 
     
     /// The traits declared *in this module*, exported or not.
@@ -358,7 +358,7 @@ let metadata
             $"%s{publishedAliasPrefix}%s{modTag}__%s{alias}"
 
     /// The aliases a body names, and what each is published as.
-    let bodyExternSubst (bound: Set<string>) (body: Parser.Expr) =
+    let bodyExternSubst (bound: Set<string>) (body: Ast.Expr) =
         AlphaRename.freeNames bound body
         |> Set.toList
         |> List.filter (fun n -> Map.containsKey n env.Registry.ClrExterns)
@@ -383,8 +383,8 @@ let metadata
         @ (exportedTraitDefaults
            |> List.collect (fun (_, decl) ->
                match decl with
-               | Parser.DDefun(_, args, body, _, _) ->
-                   let params' = Parser.mandatoryNames args
+               | Ast.DDefun(_, args, body, _, _) ->
+                   let params' = Ast.mandatoryNames args
                    bodyExternSubst (Set.ofList params') body |> Map.toList
                | _ -> []))
         |> List.distinct
@@ -538,8 +538,8 @@ let metadata
                     |> Map.toList
                     |> List.choose (fun (mName, decl) ->
                         match decl with
-                        | Parser.DDefun(_, args, body, _, _) when Codegen.isSerializableTemplate body ->
-                            let paramNames = Parser.mandatoryNames args
+                        | Ast.DDefun(_, args, body, _, _) when Codegen.isSerializableTemplate body ->
+                            let paramNames = Ast.mandatoryNames args
 
                             // Keyword and rest parameters are a calling
                             // convention, and the reader on the far side
@@ -711,14 +711,14 @@ let metadata
                 
             let serializeFType = Codegen.serializeFType
 
-            let serializeTypeDef (td: Parser.TypeDef, isRec: bool) : string =
+            let serializeTypeDef (td: Ast.TypeDef, isRec: bool) : string =
                 let quotedArgs = td.TypeArgs |> List.map (fun a -> if a.StartsWith("'") then a else "'" + a)
                 let typeArgsStr = if td.TypeArgs.IsEmpty then "" else " " + String.concat " " quotedArgs
                 let headStr = if td.TypeArgs.IsEmpty then td.Name else $"({td.Name}{typeArgsStr})"
                 let head = if isRec then "type-rec" else "type"
                 match td.Kind with
-                | Parser.Alias(ft) -> $"({head} (: {headStr} {serializeFType ft}))"
-                | Parser.Union(cases) ->
+                | Ast.Alias(ft) -> $"({head} (: {headStr} {serializeFType ft}))"
+                | Ast.Union(cases) ->
                     // `#:literal` travels with the case. It decides
                     // which constructor a quoted literal elaborates
                     // into, so a union that is unambiguous where it was
@@ -726,8 +726,8 @@ let metadata
                     // imported.
                     let serializeCase c =
                         match c with
-                        | Parser.SimpleCase(n, _) -> n
-                        | Parser.DataCase(n, args, isLiteral, _) ->
+                        | Ast.SimpleCase(n, _) -> n
+                        | Ast.DataCase(n, args, isLiteral, _) ->
                             let parts =
                                 List.map serializeFType args
                                 @ (if isLiteral then [ "#:literal" ] else [])
@@ -742,7 +742,7 @@ let metadata
                 // to an interface call. Both were silent — the type name
                 // still resolved, because an unrecognized one passes
                 // through to C# verbatim.
-                | Parser.Record(fields, isStruct) ->
+                | Ast.Record(fields, isStruct) ->
                     // `#:mutable` survives for soundness rather than for
                     // diagnostics. An importer never writes a foreign field —
                     // that is refused — but it does *construct* the record, and
@@ -750,7 +750,7 @@ let metadata
                     // value. An importer that could not see the marker would
                     // generalize the construction and hand out one cell at two
                     // types.
-                    let serializeField (f: Parser.RecordField) =
+                    let serializeField (f: Ast.RecordField) =
                         let marker = if f.Mutable then " #:mutable" else ""
                         $"(: {f.Name} {serializeFType f.Type}{marker})"
 
@@ -769,8 +769,8 @@ let metadata
                 // that would let it take one apart is.
                 //
                 // The member names are for the error message alone — see
-                // `Parser.TypeDefKind.Opaque`.
-                | Parser.Opaque(members) ->
+                // `Ast.TypeDefKind.Opaque`.
+                | Ast.Opaque(members) ->
                     $"({head} (: {headStr} (Opaque " + String.concat " " members + ")))"
 
             // The types this module re-exports: declared elsewhere, published
@@ -793,7 +793,7 @@ let metadata
                 |> List.map (fun n ->
                     let key = Inference.originalName env.Registry n
 
-                    match allTypeDeclarations |> List.tryFind (fun (_, (td: Parser.TypeDef), _) -> td.Name = key) with
+                    match allTypeDeclarations |> List.tryFind (fun (_, (td: Ast.TypeDef), _) -> td.Name = key) with
                     | Some(originModule, td, isRec) ->
                         ({ Name = n
                            Key = key
@@ -981,7 +981,7 @@ let metadata
                 for d in defs do
                     check $"the exported binding '%s{d.Name}'" (d.TypeText + " " + d.ConstraintsText)
 
-                for (td: Parser.TypeDef), _ in typesToExport do
+                for (td: Ast.TypeDef), _ in typesToExport do
                     check $"the exported type '%s{bare td.Name}'" (serializeTypeDef (td, false))
 
                 for info in externsToExport do

@@ -14,7 +14,7 @@
 module Bjolang.Inference
 
 open Bjolang.Lexer
-open Bjolang.Parser
+open Bjolang.Ast
 open Bjolang.TypedAST
 open Bjolang.Unification
 
@@ -2429,7 +2429,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         // Every rule about where `name` may be applied is a question about
         // shape, so all of them are decided here, over the body as written,
         // before a single form in it is typed.
-        Parser.checkEscapeUses name body
+        Hygiene.checkEscapeUses name body
 
         let resultType = freshMeta ()
         let label = Gensym.fresh "__ret"
@@ -6003,7 +6003,7 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
     | DTrait(traitName, implementorVar, holeArity, assocTypes, signatures, defaults, clrSpec, r) ->
         // The member constraints ride the signature list; split them off here
         // so the many readers of `(name, type)` pairs below keep their shape.
-        let memberWheres: Map<string, Parser.MemberConstraint list> =
+        let memberWheres: Map<string, Ast.MemberConstraint list> =
             signatures
             |> List.choose (fun (name, _, cs) -> if List.isEmpty cs then None else Some(name, cs))
             |> Map.ofList
@@ -6226,7 +6226,7 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
                         | None -> Set.empty
 
                     cs
-                    |> List.map (fun (mc: Parser.MemberConstraint) ->
+                    |> List.map (fun (mc: Ast.MemberConstraint) ->
                         let cTrait = originalName env.Registry mc.MCTrait
                         let cr = mc.MCRange
 
@@ -6598,7 +6598,7 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
 
                 let got =
                     ws
-                    |> List.map (fun (w: Parser.MemberConstraint) -> originalName env.Registry w.MCTrait)
+                    |> List.map (fun (w: Ast.MemberConstraint) -> originalName env.Registry w.MCTrait)
                     |> List.sort
                     |> String.concat ", "
 
@@ -7320,7 +7320,7 @@ and private checkDeclGroup
         /// What each candidate mentions. Computed once — the fixpoint below
         /// only ever re-tests membership.
         let mentions =
-            candidates |> Map.map (fun _ (_, body, _) -> Parser.freeNames Set.empty body)
+            candidates |> Map.map (fun _ (_, body, _) -> Ast.freeNames Set.empty body)
 
         /// A `defbjouble` here, or one imported from a dependency. The imported
         /// half is what makes this worth doing at all: the port surface is in
