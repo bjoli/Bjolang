@@ -791,7 +791,7 @@ let metadata
                 |> List.filter (fun n -> not (Map.containsKey n env.Bindings))
                 |> List.distinct
                 |> List.map (fun n ->
-                    let key = Inference.originalName env.Registry n
+                    let key = TypeEnv.originalName env.Registry n
 
                     match allTypeDeclarations |> List.tryFind (fun (_, (td: Ast.TypeDef), _) -> td.Name = key) with
                     | Some(originModule, td, isRec) ->

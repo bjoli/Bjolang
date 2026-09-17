@@ -315,12 +315,12 @@ and private spliceTemplate
         //    lambda first: `infer`'s `EFun` case binds each parameter to a fresh
         //    metavariable in a scope of its own, which would throw away the
         //    concrete argument types just supplied.
-        let bodyType, typedBody = Inference.infer spliceEnv freshBody
+        let bodyType, typedBody = InferExpr.infer spliceEnv freshBody
         unify ctx.Env.Registry bodyType expr.Type
 
         // Obligations raised by the body — a `bind` calling `bind` — are
         // discharged here, before anything looks at the result.
-        Inference.solvePending spliceEnv
+        Traits.solvePending spliceEnv
 
         // 4. Free names now say which module they came from.
         let qualified = AlphaRename.applyQualification tpl.Qualification typedBody

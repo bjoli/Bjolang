@@ -703,7 +703,7 @@ type BlockTarget =
 
 /// How a type constructor is spelled in published metadata.
 ///
-/// Intentionally the inverse of only part of `Inference.typeNameMap`: an entry
+/// Intentionally the inverse of only part of `Annotations.typeNameMap`: an entry
 /// added here changes what every `.dll` already on disk reads back as.
 let private shortPrimitiveName (name: string) : string =
     match name with
@@ -4654,7 +4654,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                 let selfType = declaredTypeName td.Name
                 let selfRef = $"%s{selfType}%s{tyArgsStr}"
                 let fieldType (f: Ast.RecordField) =
-                    typeToString (Inference.resolveTypeAnnotation ctx.Registry f.Type)
+                    typeToString (Annotations.resolveTypeAnnotation ctx.Registry f.Type)
 
                 let members =
                     materialized selfRef (if isStruct then ValueRecord else OpenRecord)
@@ -4774,7 +4774,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                             append ctx $"public sealed record %s{declaredTypeName n}("
                             for i, ft in List.indexed ftypes do
                                 if i > 0 then append ctx ", "
-                                append ctx (typeToString (Inference.resolveTypeAnnotation ctx.Registry ft))
+                                append ctx (typeToString (Annotations.resolveTypeAnnotation ctx.Registry ft))
                                 append ctx $" Item%d{i+1}"
                             append ctx $") : %s{declaredTypeName td.Name}%s{tyArgsStr}"
                             appendTypeBody ctx (materialized (declaredTypeName n) SealedCase)
@@ -5202,7 +5202,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                                     append ctx $"public static %s{declaredTypeName td.Name}%s{tyArgsStr} %s{declaredTypeName n}%s{tyArgsStr}("
                                     for i, ft in List.indexed ftypes do
                                         if i > 0 then append ctx ", "
-                                        append ctx (typeToString (Inference.resolveTypeAnnotation ctx.Registry ft))
+                                        append ctx (typeToString (Annotations.resolveTypeAnnotation ctx.Registry ft))
                                         append ctx $" arg{i}"
                                     let argsListStr = String.concat ", " [for i in 0 .. ftypes.Length - 1 -> $"arg{i}"]
                                     appendLine ctx $") => new %s{declaredTypeName td.Name}%s{tyArgsStr}.%s{declaredTypeName n}(%s{argsListStr});"

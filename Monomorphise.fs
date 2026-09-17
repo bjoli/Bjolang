@@ -144,7 +144,7 @@ let private copyName (name: string) (keys: string list) =
 // Spelling a ground type back as a surface type
 // ---------------------------------------------------------------------------
 
-/// The inverse of `Inference.resolveTypeAnnotation`, over ground types only.
+/// The inverse of `Annotations.resolveTypeAnnotation`, over ground types only.
 ///
 /// The copy's signature is a `DSignature`, so the substituted type has to be an
 /// `FType`; nothing else in the compiler goes in this direction, because
@@ -199,7 +199,7 @@ let private spellGround (registry: TraitRegistry) (r: Lexer.Range) (t: HMType) :
     | Some pruned ->
 
     match hmToFType r pruned with
-    | Some ft when (try settle (Inference.resolveTypeAnnotation registry ft) = pruned with _ -> false) -> Some ft
+    | Some ft when (try settle (Annotations.resolveTypeAnnotation registry ft) = pruned with _ -> false) -> Some ft
     | _ -> None
 
 // ---------------------------------------------------------------------------
@@ -233,7 +233,7 @@ let private specialiseType
     (subst: Map<string, HMType>)
     (ft: FType)
     : FType option =
-    let resolved = Inference.resolveTypeAnnotation registry ft |> substHM subst
+    let resolved = Annotations.resolveTypeAnnotation registry ft |> substHM subst
     spellGround registry r resolved
 
 // ---------------------------------------------------------------------------
@@ -291,7 +291,7 @@ let private eligible
     // A copy is only worth making for a constraint that costs a dictionary.
     constraints
     |> List.exists (fun (traitName, _) ->
-        not (isClrConstraint env.Registry (Inference.originalName env.Registry traitName)))
+        not (isClrConstraint env.Registry (TypeEnv.originalName env.Registry traitName)))
     && name <> "main"
     // A `-?->` promises a second body, and the twin is generated inside
     // `checkDeclGroup` — so it is not among the declarations read here, and a

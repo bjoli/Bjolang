@@ -236,7 +236,7 @@ let private fixPoly (eff: Effect) (p: HMType) =
 /// The suspending twin of a method that takes a callback of either colour: the
 /// callback fixed suspending, and the method's own arrow with it.
 ///
-/// `Inference.suspendingSignature` is the same repainting one step earlier, on
+/// `ForeignTyping.suspendingSignature` is the same repainting one step earlier, on
 /// the written `FType`. Both exist because a trait method has no `FType` left
 /// by the time its twin is derived — the signature was resolved when the trait
 /// was checked — and because there the outer arrow is the definer's to set.
@@ -408,7 +408,7 @@ module NumericLiteral =
     ///
     /// Integer literals like `1` aren't strictly typed as `int` right away. We leave
     /// their type ambiguous (`None`) so that they can automatically adapt when passed
-    /// to functions expecting `byte`, `long`, or `double`. See `Inference.numericLiteralType`.
+    /// to functions expecting `byte`, `long`, or `double`. See `TypeEnv.numericLiteralType`.
     let spelledType (text: string) : HMType option =
         // A decimal point or an exponent is a real number however it ends,
         // and it is asked first so that `0.5s` is a malformed double rather

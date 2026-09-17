@@ -39,7 +39,7 @@
 ///     an error; it makes a form read as a macro call because a different file
 ///     imported something.
 ///   * `Hygiene.introducedNames`. Correct if leaked, but it only grows.
-///   * `Inference.wantedQueue` and `Inference.openLiterals`. Both empty after a
+///   * `Traits.wantedQueue` and `TypeEnv.openLiterals`. Both empty after a
 ///     compilation that succeeded, and neither after one that threw.
 ///
 /// **Per process** — intentionally not cleared between runs:
@@ -103,8 +103,8 @@ let restore (scope: Scope) : unit =
     // Not part of the scope value: the queue is either empty or garbage, and
     // there is never a reason to put a previous compilation's obligations back.
     // The same goes for the numeric literals still waiting to be settled.
-    Inference.clearWanteds ()
-    Inference.clearNumericLiterals ()
+    Traits.clearWanteds ()
+    TypeEnv.clearNumericLiterals ()
 
 /// Runs `f` as though it were the first thing this process compiled, and leaves
 /// everything as it was found.
