@@ -1,0 +1,300 @@
+;; bjor/manifest.bjo
+;;
+;; What a `bjor.bjodat` says, as types.
+;;
+;;     (package
+;;       (name (bjolang http))
+;;       (version "1.2.3")
+;;       (depends
+;;         (package (name (bjolang cml)) (version (version-at-least "2.0.1")))))
+;;
+;; A manifest is a *tagged form*: the head symbol names the type and each clause
+;; names a field. That is `#:tag` in `def/bjodat-type`, and everything below is
+;; an ordinary use of it — there is no manifest-shaped special case anywhere in
+;; `(text bjodat)`, and there should not be. See `Docs/std/bjodat.org`.
+;;
+;; Two things here are decisions rather than mechanism, and both come from the
+;; language rather than from the format:
+;;
+;; **A module name is a parenthesised list of symbols.** `(std run)`,
+;; `(text json)`, `(bjolang http)` — the same spelling `import` uses, so a name
+;; in a manifest and a name in a source file are one thing written one way.
+;; That makes a package name a `(List Symbol)`, which bjodat already reads: a
+;; `(...)` is a list and a bare identifier is a symbol, so nothing had to be
+;; added to the format to carry it. A string would have been a second spelling
+;; of the same value and a thing to parse twice.
+;;
+;; **A version constraint is a tagged form of its own.** `(version-at-least
+;; "1.2")` rather than `">=1.2"`, because a constraint written inside a string
+;; is a small language smuggled past the reader — it needs its own parser, its
+;; own errors, and its own position information that the reader already has.
+;; Written as a form it is read by the reader, refused by the reader, and
+;; located by the reader.
+
+(export
+  ;; Versions
+  Version version version->string parse-version version-compare
+  ;; Constraints. A union's cases travel with it, so `AtLeast` and its
+  ;; neighbours are not named here — naming one asks for a signature it has no
+  ;; way to have.
+  VersionReq version-satisfies?
+  ;; Where a package comes from
+  Git Local Registry Source
+  ;; The manifest
+  Dep Package
+  module-name->string
+  ;; What `def/bjodat-type` generated for the two records people read.
+  bjodat-parse-Package bjodat-read-Package bjodat->Package Package->bjodat
+  bjodat-parse-Dep bjodat-read-Dep bjodat->Dep Dep->bjodat)
+
+(import (std prelude))
+(import (text bjodat))
+
+;; ---------------------------------------------------------------------------
+;; A module name
+;; ---------------------------------------------------------------------------
+;; `(List Symbol)`, with no alias over it. An alias would read the same and buy
+;; nothing: `(List Symbol)` already has both instances, so `(name (std run))`
+;; decodes with no code here at all. This is only how to show one in a message.
+
+(: module-name->string (-> (List Symbol) string))
+(defun (module-name->string m)
+  (def sb (stringbuilder-empty))
+  (stringbuilder-add! sb #\()
+  (loop (:with first #t #f)
+        (:for s m)
+        (:do (unless first (stringbuilder-add! sb #\space))
+             (stringbuilder-add-string! sb (symbol->string s))))
+  (stringbuilder-add! sb #\))
+  (stringbuilder->string sb))
+
+;; ---------------------------------------------------------------------------
+;; A version
+;; ---------------------------------------------------------------------------
+;; Three numbers. `"1.2"` is `1.2.0` and `"1"` is `1.0.0`, so a manifest may
+;; write as much as it means and no more.
+
+(type (: Version (Record (: major int) (: minor int) (: patch int))))
+
+(: version (-> int int int Version))
+(defun (version ma mi pa) (Version (major ma) (minor mi) (patch pa)))
+
+(: version->string (-> Version string))
+(defun (version->string v)
+  (str (int->string (record-ref v major)) "."
+       (int->string (record-ref v minor)) "."
+       (int->string (record-ref v patch))))
+
+(: version-shape (-> string string))
+(defun (version-shape s)
+  (str "\"" s "\" is not a version: a version is written \"1.2.3\""))
+
+(: finish-version (-> (List int) string (Result string Version)))
+(defun (finish-version out s)
+  (match (list-reverse out)
+    ((Cons a Nil) (Ok (version a 0 0)))
+    ((Cons a (Cons b Nil)) (Ok (version a b 0)))
+    ((Cons a (Cons b (Cons c Nil))) (Ok (version a b c)))
+    (_ (Err (version-shape s)))))
+
+;; Read by hand rather than by splitting on `.` and converting each piece: the
+;; split would allocate a list of strings to throw away, and the conversion
+;; would have to refuse a piece like `"1x"` all over again.
+(: parse-version (-> string (Result string Version)))
+(defun (parse-version s)
+  (def n (string-length s))
+  (if (= n 0)
+      (Err (version-shape s))
+      (let go ((i 0) (acc 0) (digits 0) (out Nil))
+        (if (= i n)
+            (if (= digits 0)
+                (Err (version-shape s))
+                (finish-version (Cons acc out) s))
+            (let ((c (string-code-ref s i)))
+              (cond
+                ((and (>= c 48) (<= c 57))
+                 (go (+ i 1) (+ (* acc 10) (- c 48)) (+ digits 1) out))
+                ((= c 46)
+                 (if (= digits 0)
+                     (Err (version-shape s))
+                     (go (+ i 1) 0 0 (Cons acc out))))
+                (else (Err (version-shape s)))))))))
+
+;; Negative when `a` is the older, zero when they are the same version.
+(: version-compare (-> Version Version int))
+(defun (version-compare a b)
+  (def d (- (record-ref a major) (record-ref b major)))
+  (if (not (= d 0))
+      d
+      (let ((e (- (record-ref a minor) (record-ref b minor))))
+        (if (not (= e 0))
+            e
+            (- (record-ref a patch) (record-ref b patch))))))
+
+;; A version is written as a string, because it is one value and not a record.
+(impl (->bjodat Version)
+  (defun (->bjodat v) (BjoStr (version->string v))))
+
+(impl (bjodat-> Version)
+  (defun (bjodat-> v)
+    (match v
+      ((BjoStr s) (parse-version s))
+      (_ (Err "expected a version, such as \"1.2.3\"")))))
+
+;; ---------------------------------------------------------------------------
+;; A version constraint
+;; ---------------------------------------------------------------------------
+;; `(version-at-least "1.2")`, `(version-at-most "2.0")`,
+;; `(version-between "1.2" "2.0")`.
+;;
+;; **All three are inclusive.** `version-between` is exactly `version-at-least`
+;; and `version-at-most` together, which is what its name says and the only
+;; rule that does not need a footnote. A half-open range would read the same
+;; and mean something the spelling does not admit to.
+
+(type
+  (: VersionReq (Union (AtLeast Version)
+                       (AtMost Version)
+                       (Between Version Version))))
+
+(: version-satisfies? (-> Version VersionReq bool))
+(defun (version-satisfies? v req)
+  (match req
+    ((AtLeast lo) (>= (version-compare v lo) 0))
+    ((AtMost hi) (<= (version-compare v hi) 0))
+    ((Between lo hi) (and (>= (version-compare v lo) 0)
+                          (<= (version-compare v hi) 0)))))
+
+(: req-shape string)
+(def req-shape
+  (str "expected a version constraint: (version-at-least \"1.2\"), "
+       "(version-at-most \"2.0\") or (version-between \"1.2\" \"2.0\")"))
+
+(: one-version (-> (List Bjodat) string (Result string Version)))
+(defun (one-version args tag)
+  (match args
+    ((Cons a Nil) (bjodat-> a))
+    (_ (Err (str "(" tag " ...) takes one version")))))
+
+;; The dispatch is a `cond` over the head symbol, written out rather than held
+;; in a table. A table would have to be built at run time and looked up per
+;; value, and there are three cases known when this is compiled.
+(impl (bjodat-> VersionReq)
+  (defun (bjodat-> v)
+    (match v
+      ((BjoList (Cons (BjoSym h) args))
+       (let ((tag (symbol->string h)))
+         (cond
+           ((= tag "version-at-least")
+            (match (one-version args tag)
+              ((Err e) (Err e))
+              ((Ok a) (Ok (AtLeast a)))))
+           ((= tag "version-at-most")
+            (match (one-version args tag)
+              ((Err e) (Err e))
+              ((Ok a) (Ok (AtMost a)))))
+           ((= tag "version-between")
+            (match args
+              ((Cons lo (Cons hi Nil))
+               (match (bjodat-> lo)
+                 ((Err e) (Err e))
+                 ((Ok l) (match (bjodat-> hi)
+                           ((Err e) (Err e))
+                           ((Ok h2) (Ok (Between l h2)))))))
+              (_ (Err "(version-between ...) takes two versions"))))
+           (else (Err (str "(" tag " ...) is not a version constraint: " req-shape))))))
+      (_ (Err req-shape)))))
+
+(impl (->bjodat VersionReq)
+  (defun (->bjodat r)
+    (match r
+      ((AtLeast a)
+       (BjoList (Cons (BjoSym (string->symbol "version-at-least"))
+                      (Cons (->bjodat a) Nil))))
+      ((AtMost a)
+       (BjoList (Cons (BjoSym (string->symbol "version-at-most"))
+                      (Cons (->bjodat a) Nil))))
+      ((Between lo hi)
+       (BjoList (Cons (BjoSym (string->symbol "version-between"))
+                      (Cons (->bjodat lo) (Cons (->bjodat hi) Nil))))))))
+
+;; ---------------------------------------------------------------------------
+;; Where a package comes from
+;; ---------------------------------------------------------------------------
+;; Three tagged records, and a union that picks between them by their tags.
+
+(def/bjodat-type
+  (: Git (Record #:tag git
+                 (: url string)
+                 (: commit (Option string) #:optional)
+                 (: branch (Option Symbol) #:optional))))
+
+(def/bjodat-type
+  (: Local (Record #:tag path (: dir string))))
+
+(def/bjodat-type
+  (: Registry (Record #:tag registry
+                      (: host string #:default "https://packages.bjolang.org"))))
+
+(type (: Source (Union (FromGit Git) (FromPath Local) (FromRegistry Registry))))
+
+;; This is the dispatch a manifest wants, and it is worth saying what it is not:
+;; it is not the reader deciding what `(git ...)` means. The reader hands over a
+;; list headed by a symbol and nothing more; the *expected type* — `Source`,
+;; here — is what turns that into a case. The same list under a field expecting
+;; a `(List Symbol)` is a module name, and neither reading is privileged.
+(impl (bjodat-> Source)
+  (defun (bjodat-> v)
+    (match v
+      ((BjoList (Cons (BjoSym h) _))
+       (let ((tag (symbol->string h)))
+         (cond
+           ((= tag "git")
+            (match (bjodat->Git v) ((Err e) (Err e)) ((Ok g) (Ok (FromGit g)))))
+           ((= tag "path")
+            (match (bjodat->Local v) ((Err e) (Err e)) ((Ok p) (Ok (FromPath p)))))
+           ((= tag "registry")
+            (match (bjodat->Registry v) ((Err e) (Err e)) ((Ok r) (Ok (FromRegistry r)))))
+           (else (Err (str "(" tag " ...) is not a source: write (git (url \"...\")), "
+                           "(path (dir \"...\")) or (registry)"))))))
+      (_ (Err "expected a source, such as (git (url \"https://...\"))")))))
+
+(impl (->bjodat Source)
+  (defun (->bjodat s)
+    (match s
+      ((FromGit g) (->bjodat g))
+      ((FromPath p) (->bjodat p))
+      ((FromRegistry r) (->bjodat r)))))
+
+;; ---------------------------------------------------------------------------
+;; The manifest
+;; ---------------------------------------------------------------------------
+;; A dependency is written `(package ...)`, under the same tag as the manifest
+;; itself, because that is what it is: a package, named and constrained rather
+;; than described. Two types sharing one tag is not a collision — which record a
+;; form decodes into is the field's to say, and `depends` says `Dep` exactly as
+;; the file's root says `Package`.
+
+(def/bjodat-type
+  (: Dep (Record #:tag package
+                 (: name (List Symbol))
+                 (: version (Option VersionReq) #:optional)
+                 (: source (Option Source) #:optional))))
+
+(def/bjodat-type
+  (: Package (Record #:tag package
+                     (: name (List Symbol))
+                     (: version Version)
+                     (: description (Option string) #:optional)
+                     (: license (Option string) #:optional)
+                     (: authors (Vec string) #:default (vec-empty))
+                     (: entry string #:default "src/main.bjo")
+                     (: targets (Vec Symbol) #:default (vec-empty))
+                     (: source (Option Source) #:optional)
+                     ;; `#:rest`: the clause holds as many packages as it holds,
+                     ;; rather than one vec of them. This is the field that made
+                     ;; `#:rest` worth having — `(depends (package ...) (package
+                     ;; ...))` is how a person writes it, and a `[...]` around
+                     ;; them would be a bracket that carries no information.
+                     (: depends (List Dep) #:rest #:default Nil)
+                     (: dev-depends (List Dep) #:rest #:default Nil))))
