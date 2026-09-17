@@ -869,9 +869,7 @@ and private inferStaticMember (env: Env) (name: string) (r: Range) : HMType * Ty
 // function defined right here.
 and private inferExternValue (env: Env) (name: string) (r: Range) : HMType * TypedExpr =
     let info = env.Registry.ClrExterns[name]
-    let where = Lexer.formatPos r
-    let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrType
-    let receiverType = TCon(info.ClrType, [])
+    let where, clrType, receiverType = externTarget info r
 
     // Named once: three of the four shapes below build a lambda over the
     // receiver, and all of them have to agree on what its type is.
@@ -961,24 +959,13 @@ and private inferExternValue (env: Env) (name: string) (r: Range) : HMType * Typ
             let argNames = paramTypes |> List.map (fun _ -> Gensym.fresh "__foreign")
             let argExprs: TypedExpr list = List.map2 identOf argNames paramTypes
 
-            let meta =
-                Some
-                    { DeclaringType = info.ClrType
-                      MethodName = info.MemberName
-                      ParameterTypes = methodParams
-                      ReturnType = retType
-                      TypeArguments = typeArgs
-                      IsStatic = not info.IsInstance
-                      Exceptions = info.Exceptions
-                      Await = false
-                      AmbientToken = false
-                      Blocking = info.IsBlocking }
+            let meta = Some(genericExternMeta info typeArgs methodParams retType)
 
             let node =
                 if info.IsInstance then
-                    TDotMethodCall(List.head argExprs, info.MemberName, List.tail argExprs, meta)
+                    foreignCallNode info.ClrType info.MemberName (Some(List.head argExprs)) (List.tail argExprs) meta
                 else
-                    TForeignStaticCall(info.ClrType, info.MemberName, argExprs, meta)
+                    foreignCallNode info.ClrType info.MemberName None argExprs meta
 
             let resultType = wrapForeignExceptions info.Exceptions retType
 
@@ -1268,9 +1255,7 @@ and private inferClassConstruct (env: Env) (name: string) (args: Expr list) (r: 
 // through a clause that could say `#:async`.
 and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Range) : HMType * TypedExpr =
     let info = env.Registry.ClrExterns[name]
-    let where = Lexer.formatPos r
-    let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrType
-    let receiverType = TCon(info.ClrType, [])
+    let where, clrType, receiverType = externTarget info r
 
     /// Splits the receiver off an instance member's argument list.
     ///
@@ -1308,10 +1293,7 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
                 $"Type Error at %s{where}: '%s{name}' reads a property, so it takes exactly one argument — the object to read it from — but was given %d{args.Length}."
 
         let memberType = DotNetInterop.resolveMemberRead where clrType info.MemberName false
-
-        match info.DeclaredType with
-        | Some declared -> unify env.Registry declared (tfun [ receiverType ] memberType)
-        | None -> ()
+        checkDeclaredExtern env.Registry info receiverType true [] memberType
 
         memberType,
         { Type = memberType
@@ -1342,14 +1324,7 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
                 failwithf
                     $"Type Error at %s{where}: '%s{name}' writes a property, so it takes %s{wanted}, but was given %d{args.Length} argument(s)."
 
-        let declaredParams =
-            match receiver with
-            | Some _ -> [ receiverType; memberType ]
-            | None -> [ memberType ]
-
-        match info.DeclaredType with
-        | Some declared -> unify env.Registry declared (tfun declaredParams TypeConstants.voidType)
-        | None -> ()
+        checkDeclaredExtern env.Registry info receiverType receiver.IsSome [ memberType ] TypeConstants.voidType
 
         let node =
             match receiver with
@@ -1398,25 +1373,12 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
         let resultType = wrapForeignExceptions info.Exceptions retType
 
         let meta =
-            Some
-                { DeclaringType = info.ClrType
-                  MethodName = info.MemberName
-                  ParameterTypes = methodParams
-                  ReturnType = retType
-                  TypeArguments = typeArgs
-                  IsStatic = not info.IsInstance
-                  Exceptions = info.Exceptions
-                  Await = false
-                  AmbientToken = false
-                  Blocking = info.IsBlocking }
+            Some(genericExternMeta info typeArgs methodParams retType)
 
         resultType,
         { Type = resultType
           Range = r
-          Node =
-            match receiver with
-            | Some recv -> TDotMethodCall(recv, info.MemberName, methodArgs, meta)
-            | None -> TForeignStaticCall(info.ClrType, info.MemberName, methodArgs, meta) }
+          Node = foreignCallNode info.ClrType info.MemberName receiver methodArgs meta }
 
     | ExternMethod ->
         let allTypedArgs = args |> List.map (infer env)
@@ -1458,19 +1420,7 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
         let coercedArgs =
             reconcileForeignArgs env.Registry (typedArgs |> List.map snd) visibleParams
 
-        // Checked against what the *caller* sees: the threaded token is not
-        // a parameter anyone writes, and a declared signature that had to
-        // mention it would be describing the emitter's work rather than the
-        // call's. The receiver is part of what the caller sees, so an
-        // instance member's declared type carries it.
-        let declaredParams =
-            match receiver with
-            | Some _ -> receiverType :: visibleParams
-            | None -> visibleParams
-
-        match info.DeclaredType with
-        | Some declared -> unify env.Registry declared (tfun declaredParams callResultType)
-        | None -> ()
+        checkDeclaredExtern env.Registry info receiverType receiver.IsSome visibleParams callResultType
 
         let retType = wrapForeignExceptions info.Exceptions callResultType
 
@@ -1486,10 +1436,7 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
         retType,
         { Type = retType
           Range = r
-          Node =
-            match receiver with
-            | Some recv -> TDotMethodCall(recv, info.MemberName, coercedArgs, meta)
-            | None -> TForeignStaticCall(resolved.DeclaringType, info.MemberName, coercedArgs, meta) }
+          Node = foreignCallNode resolved.DeclaringType info.MemberName receiver coercedArgs meta }
 
 // `(apply f pos1 ... posN coll)` — spread a collection into `f`'s `#:rest`
 // parameter.
@@ -2164,7 +2111,7 @@ and private inferTaskEvent (env: Env) (call: Expr) (r: Range) : HMType * TypedEx
         failwithf
             $"Type Error at %s{where}: '%s{name}' is imported #:uncancellable, so a losing choose branch could not stop it — the work would carry on with nobody listening, which is exactly what task->event exists to prevent. Await it directly instead, or find an overload that takes a CancellationToken."
 
-    let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrType
+    let _, clrType, receiverType = externTarget info r
     let allTypedArgs = args |> List.map (infer env)
 
     // An instance member's receiver is the first argument here as it is
@@ -2174,7 +2121,7 @@ and private inferTaskEvent (env: Env) (call: Expr) (r: Range) : HMType * TypedEx
         if info.IsInstance then
             match allTypedArgs with
             | (_, recv) :: rest ->
-                Some(reconcileForeignArgs env.Registry [ recv ] [ TCon(info.ClrType, []) ] |> List.head), rest
+                Some(reconcileForeignArgs env.Registry [ recv ] [ receiverType ] |> List.head), rest
             | [] ->
                 failwithf
                     $"Type Error at %s{where}: '%s{name}' names the instance method '%s{info.ClrType}.%s{info.MemberName}', so its first argument is the object to call it on, but it was given none."
@@ -2208,14 +2155,7 @@ and private inferTaskEvent (env: Env) (call: Expr) (r: Range) : HMType * TypedEx
     let visibleParams = resolved.ParameterTypes |> List.truncate (resolved.ParameterTypes.Length - 1)
     let coercedArgs = reconcileForeignArgs env.Registry (typedArgs |> List.map snd) visibleParams
 
-    let declaredParams =
-        match receiver with
-        | Some _ -> TCon(info.ClrType, []) :: visibleParams
-        | None -> visibleParams
-
-    match info.DeclaredType with
-    | Some declared -> unify env.Registry declared (tfun declaredParams awaited)
-    | None -> ()
+    checkDeclaredExtern env.Registry info receiverType receiver.IsSome visibleParams awaited
 
     // A non-generic `Task` carries no result, and `Result<E, void>` is not
     // a type C# has — so the event carries the unit, exactly as a `void`

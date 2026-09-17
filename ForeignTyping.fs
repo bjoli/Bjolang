@@ -260,6 +260,76 @@ let internal reconcileForeignArgs
         typedArgs
         paramTypes
 
+/// What every use of an `import/extern` alias starts from: the position its
+/// diagnostics carry, the reflected type it names, and the type an instance
+/// member's receiver has.
+///
+/// Returned as a triple rather than a record because the six forms that use an
+/// extern — as a value, applied, and as a `task->event` — each bind all three
+/// under these names and then go their own way.
+let internal externTarget (info: ClrExternInfo) (r: Range) : string * System.Type * HMType =
+    let where = Lexer.formatPos r
+    where, DotNetInterop.resolveType $" at %s{where}" info.ClrType, TCon(info.ClrType, [])
+
+/// The metadata of a *generic* `import/extern` call.
+///
+/// Reflection chose nothing here: the import already chose an overload against
+/// the declared signature and solved its type arguments. The applied form and
+/// the eta-expanded value form build this identically, which is why it is one
+/// function.
+let internal genericExternMeta
+    (info: ClrExternInfo)
+    (typeArgs: HMType list)
+    (methodParams: HMType list)
+    (retType: HMType)
+    : DotNetMethodMetadata =
+    { DeclaringType = info.ClrType
+      MethodName = info.MemberName
+      ParameterTypes = methodParams
+      ReturnType = retType
+      TypeArguments = typeArgs
+      IsStatic = not info.IsInstance
+      Exceptions = info.Exceptions
+      Await = false
+      AmbientToken = false
+      Blocking = info.IsBlocking }
+
+/// A foreign call's node: an instance member keeps its receiver, a static one
+/// names the type it was declared on.
+let internal foreignCallNode
+    (declaringType: string)
+    (memberName: string)
+    (receiver: TypedExpr option)
+    (args: TypedExpr list)
+    (meta: DotNetMethodMetadata option)
+    : TExprNode =
+    match receiver with
+    | Some recv -> TDotMethodCall(recv, memberName, args, meta)
+    | None -> TForeignStaticCall(declaringType, memberName, args, meta)
+
+/// The declared signature, enforced against the member reflection resolved.
+///
+/// Writing one down is how a reader learns what the member takes without
+/// consulting the BCL; getting it wrong is an error rather than a silently
+/// ignored comment. Checked against what the *caller* sees — a threaded token
+/// is not a parameter anyone writes, and the receiver is one, so an instance
+/// member's declared type carries it.
+let internal checkDeclaredExtern
+    (registry: TraitRegistry)
+    (info: ClrExternInfo)
+    (receiverType: HMType)
+    (hasReceiver: bool)
+    (visibleParams: HMType list)
+    (result: HMType)
+    : unit =
+    match info.DeclaredType with
+    | Some declared ->
+        let declaredParams =
+            if hasReceiver then receiverType :: visibleParams else visibleParams
+
+        unify registry declared (tfun declaredParams result)
+    | None -> ()
+
 let internal metadataOf (resolved: DotNetInterop.ResolvedCall) (exceptions: string list) : DotNetMethodMetadata =
     { DeclaringType = resolved.DeclaringType
       MethodName = resolved.Name
