@@ -987,4 +987,18 @@ and parseDeclForms (s: SExpr) : Decl list =
                 decls |> List.map (mapDeclExprs (expansion.Resolve(boundNames decls)))
             | None -> failwithf $"Unknown declaration at %s{Lexer.formatPos (getRange other)}"
 
-let parseModule (exprs: SExpr list) : Decl list = List.collect parseDeclForms exprs
+/// Parses a module's top-level forms, collecting a failure per form.
+///
+/// The forms are independent of one another, and the reader has already decided
+/// where each of them ends, so a form that fails to parse costs the
+/// declarations it would have produced and nothing else. There is no token
+/// stream left to resynchronise — this is a Lisp, and the boundaries are the
+/// parentheses.
+///
+/// What a caller gets back is therefore a partial module whenever anything was
+/// dropped. `Diagnostics.hasErrors` is what says so, and the gate in
+/// `Pipeline.runFullFrontendPipeline` is what stops the partial result from
+/// being type checked.
+let parseModule (exprs: SExpr list) : Decl list =
+    exprs
+    |> List.collect (fun form -> Diagnostics.recover "parse" (Some(getRange form)) [] (fun () -> parseDeclForms form))

@@ -1,0 +1,26 @@
+;; A declaration that fails to check, and two that call it.
+;;
+;; `broken` is a `def`, so nothing forward-declares it from a signature: without
+;; a placeholder binding it would be absent from the environment and each of the
+;; two callers would report an unknown name. That is the first failure told
+;; three times, and only the first telling is about anything the reader can fix.
+;;
+;; The checker answers it by binding the failed name to `forall a. a`, which
+;; unifies with anything, so the callers check and say nothing. What makes that
+;; safe is the phase gate: a caller checked against a placeholder can succeed
+;; against a type nobody wrote, and the build stops before any of it is emitted.
+
+;; EXPECT-ERROR: cascade_suppressed.bjo:18
+;; EXPECT-NO-ERROR: Unbound variable: broken
+
+(import (std prelude))
+
+(def broken (+ 1 "a string"))
+
+(: caller (-> int int))
+(defun (caller n) (+ n broken))
+
+(: other (-> int int))
+(defun (other n) (* n broken))
+
+(defun (main args) 0)

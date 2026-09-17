@@ -525,6 +525,14 @@ let rec private checkSuspends (registry: TraitRegistry) (decl: TDecl) : unit =
             $"'%s{name}' is defined with defbjo, but nothing in its body suspends. It is emitted as an async method and awaited at every call site, for a yield point that is not there. Define it with defun — an ordinary function is accepted where a bjoroutine is demanded — or write its signature -bjo-> if calling it is meant to be a yield point whatever the body does.\n  at %s{Lexer.formatPos r}"
     | _ -> ()
 
+/// Reports every declaration that yields where it may not, not just the first.
+///
+/// Both passes recover per declaration, and they are kept apart: the second only
+/// warns, and a declaration the first rejected is still worth asking the
+/// question of.
 let run (registry: TraitRegistry) (decls: TDecl list) : unit =
-    decls |> List.iter (checkDecl registry)
-    decls |> List.iter (checkSuspends registry)
+    decls
+    |> List.iter (fun d -> Diagnostics.recover "colour" (Some(tdeclRange d)) () (fun () -> checkDecl registry d))
+
+    decls
+    |> List.iter (fun d -> Diagnostics.recover "colour" (Some(tdeclRange d)) () (fun () -> checkSuspends registry d))

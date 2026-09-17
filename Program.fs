@@ -40,7 +40,9 @@ type CompilerOptions =
       /// File to write the batch's report to. `-` means stdout.
       Report: string option
       /// Where `-d` puts the generated C# code.
-      EmitCs: string option }
+      EmitCs: string option
+      /// Run the frontend over each input and stop, generating nothing.
+      Check: bool }
 
 let defaultOptions =
     { InputFiles = []
@@ -51,7 +53,8 @@ let defaultOptions =
       IfStale = false
       FilesFrom = None
       Report = None
-      EmitCs = None }
+      EmitCs = None
+      Check = false }
 
 let printUsage () =
     printfn "Bjolang Compiler"
@@ -67,6 +70,8 @@ let printUsage () =
     printfn "  --emit-cs <file>"
     printfn "              Under -d, write the generated C# here instead of out.cs. The AST"
     printfn "              dump goes beside it."
+    printfn "  --check     Check for errors without generating code. Reports every error"
+    printfn "              the frontend finds and writes no assembly."
     printfn "  --help      Show this help message"
     printfn ""
     printfn "Batch options:"
@@ -107,6 +112,7 @@ let rec parseArgs (args: string list) (opts: CompilerOptions) =
     | "--repl" :: rest -> parseArgs rest { opts with Repl = true }
     | "--lib" :: rest -> parseArgs rest { opts with IsLibrary = true }
     | "--batch" :: rest -> parseArgs rest { opts with Batch = true }
+    | "--check" :: rest -> parseArgs rest { opts with Check = true }
     | "--if-stale" :: rest -> parseArgs rest { opts with IfStale = true; IsLibrary = true }
     | "--files-from" :: path :: rest -> parseArgs rest { opts with FilesFrom = Some path }
     | "--report" :: path :: rest -> parseArgs rest { opts with Report = Some path }
@@ -152,10 +158,22 @@ let private run (argv: string array) =
 
         exit 1
 
+    // Both of these ask for a build product from a mode that produces none.
+    // Refused rather than ignored: silently dropping one of the two would leave
+    // whoever passed them waiting for a file that is never written.
+    if options.Check && options.EmitCs.IsSome then
+        printfn "Error: --check generates no C#, so there is nothing for --emit-cs to write."
+        exit 1
+
+    if options.Check && options.IfStale then
+        printfn "Error: --check builds nothing, so --if-stale has no .dll to judge as stale."
+        exit 1
+
     let buildOptions: Build.Options =
         { IsLibrary = options.IsLibrary
           Debug = options.Debug
-          EmitCs = options.EmitCs }
+          EmitCs = options.EmitCs
+          Check = options.Check }
 
     if options.Batch then
         Build.runBatch buildOptions options.IfStale options.Report inputFiles

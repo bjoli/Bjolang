@@ -130,5 +130,12 @@ let private checkDecl (registry: TraitRegistry) (decl: TDecl) : unit =
         e)
     |> ignore
 
+/// Reports every declaration that drops a value it should not, not just the
+/// first.
+///
+/// The declarations are independent of one another here — nothing this pass
+/// learns from one is carried into the next — so a failure costs the rest of
+/// that declaration and nothing beyond it.
 let run (registry: TraitRegistry) (decls: TDecl list) : unit =
-    decls |> List.iter (checkDecl registry)
+    decls
+    |> List.iter (fun d -> Diagnostics.recover "must-use" (Some(tdeclRange d)) () (fun () -> checkDecl registry d))

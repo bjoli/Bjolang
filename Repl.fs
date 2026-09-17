@@ -496,6 +496,11 @@ let private warnAboutShadowing (state: State) (names: string list) =
         | None -> ()
 
 let private evaluate (state: State) (text: string) : State =
+    // The collector is process-global and a prompt reuses the process, so each
+    // entry starts with an empty one. Without it the phase gates would see the
+    // entry before last's errors and refuse to check this one.
+    Diagnostics.reset ()
+
     let forms =
         try
             Lexer.tokenize "<repl>" text |> Pipeline.read |> fst

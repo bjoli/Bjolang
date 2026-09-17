@@ -1799,6 +1799,16 @@ let runFullFrontendPipeline (mainFilePath: string) =
                 decls |> List.choose (function DHashMacro(n, _) -> Some n | _ -> None)
             | _ -> [], [], []
 
+        // The parse gate. A form that failed to parse contributed no
+        // declarations, so what follows would type check a module with holes in
+        // it and report an unknown name for every use of everything that was
+        // dropped. Those reports would be about the parse error, and would not
+        // say so.
+        if Diagnostics.hasErrors () then
+            Diagnostics.report ()
+            None
+        else
+
         Diagnostics.progress "=== Step 2: Normalization ==="
         // First of the source-to-source passes, and before `LetRecify` on
         // purpose: an applied lambda reduced into a `let` chain here is one
@@ -1878,6 +1888,17 @@ let runFullFrontendPipeline (mainFilePath: string) =
         // reported on once per instantiation under a name nobody wrote.
         Exhaustiveness.run env.Registry typedAst
 
+        // The type-check gate. Everything from here down rewrites the checked
+        // tree, and a declaration that failed to check contributed none of it:
+        // `Monomorphise` reads bodies it would not find, and the placeholder
+        // bindings a failure leaves behind make the declarations after it agree
+        // with something nobody wrote. Neither is worth a second diagnostic,
+        // and neither may reach codegen.
+        if Diagnostics.hasErrors () then
+            Diagnostics.report ()
+            None
+        else
+
         Diagnostics.progress "=== Step 3.5: Monomorphisation ==="
         // Before trait inlining, and for the sake of it: a copy checked at a
         // concrete type has its trait calls resolved, so the inliner splices
@@ -1938,8 +1959,24 @@ let runFullFrontendPipeline (mainFilePath: string) =
         let uniquifiedAst = Timing.phase "alpha rename" (fun () -> AlphaRename.uniquifyProgram loopLoweredAst)
 
         Diagnostics.progress "=== Frontend pipeline complete ==="
+        // The gates above answer `None` for a program that had an error, so a
+        // program arriving here with a placeholder binding in its environment is
+        // one that got past them.
+        Diagnostics.assertNoPoison ()
+        // On the way out of every path, including this one: a compilation that
+        // succeeded still has warnings to pass on, and they are collected now
+        // rather than printed where they were raised.
+        Diagnostics.report ()
         Some (env, uniquifiedAst, dllDeps, declaredMacros, declaredPatternMacros, declaredHashMacros)
     with ex ->
-        Diagnostics.reportFailure ex
+        // Whatever ended the compilation joins what the phase gates already
+        // collected, so that one report answers for the whole of it. A bug is
+        // not a diagnostic and keeps its trace.
+        if Diagnostics.isDiagnostic ex then
+            Diagnostics.record (Diagnostics.ofException "frontend" None ex)
+        else
+            Diagnostics.reportFailure ex
+
+        Diagnostics.report ()
         None
 

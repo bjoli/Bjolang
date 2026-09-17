@@ -2921,31 +2921,105 @@ and internal checkDeclGroup
                     | _ -> bound)
             env
 
+    /// The names a declaration binds that something after it could call.
+    ///
+    /// `Ast.boundNames` answers a different question — it includes a `defun`'s
+    /// parameters, which are bound inside the body and not at module level — so
+    /// this is the module-level half of it. A type, a trait and an instance are
+    /// deliberately absent: standing in for one means inventing a declaration
+    /// rather than a binding, and `Diagnostics.poison` covers them at report
+    /// time instead.
+    let declaredNames (d: Decl) : string list =
+        match d with
+        | DDef(name, _, _)
+        | DDefMutable(name, _, _)
+        | DDefun(name, _, _, _, _) -> [ name ]
+        | DDefDouble(name, _, _, _, _) -> [ name; Naming.suspendingCopy name ]
+        | DDefTuple(names, _, _) -> names
+        | DExtern(visible, _, _, _, _) -> [ visible ]
+        | DAlias(visible, _, _) -> [ visible ]
+        | _ -> []
+
+    /// The names a failed declaration puts beyond use, whether or not one can be
+    /// bound in its place.
+    ///
+    /// Wider than `declaredNames` by a type's name and a trait's methods.
+    /// Neither can be stood in for by a binding — a type that failed to register
+    /// is not a value, and there is nothing to put in the registry that would
+    /// satisfy the declarations naming it — so these are suppressed at report
+    /// time instead of substituted for.
+    let poisonableNames (d: Decl) : string list =
+        match d with
+        | DType(typeDefs, _)
+        | DTypeRec(typeDefs, _) -> typeDefs |> List.map (fun td -> td.Name)
+        | DTrait(traitName, _, _, _, signatures, _, _, _) ->
+            traitName :: (signatures |> List.map (fun (n, _, _) -> n))
+        | _ -> declaredNames d
+
+    /// The environment a failed declaration leaves behind.
+    ///
+    /// Its name is bound to `forall a. a`, which every use site instantiates to
+    /// a fresh variable and so unifies with anything. Without it the
+    /// declarations that call it each report an unknown name, which is the
+    /// first failure told again once per caller.
+    ///
+    /// The hazard this carries: a caller checked against a placeholder can
+    /// *succeed*, and the `TDecl` it produces is built on a type nobody wrote.
+    /// That is safe only because the type-check gate in
+    /// `Pipeline.runFullFrontendPipeline` stops the build before anything is
+    /// emitted — an environment with a placeholder in it must never reach
+    /// codegen, and `Diagnostics.hasPoison` is what asserts it did not.
+    ///
+    /// A name that already has a binding keeps it. A `defun` with a written
+    /// signature was forward-declared from that signature before the group was
+    /// checked, and the signature is better information than a placeholder.
+    let poisonFailed (env: Env) (d: Decl) : Env =
+        Diagnostics.poison (poisonableNames d)
+
+        declaredNames d
+        |> List.fold
+            (fun (acc: Env) name ->
+                if Map.containsKey name acc.Bindings then
+                    acc
+                else
+                    addBinding name { Scheme = Scheme([ "a" ], [], TVar "a"); IsMutable = false } acc)
+            env
+
     let finalEnv, finalSigs, typedDecls =
         decls
         |> List.fold
             (fun (currEnv, currSigs, accDecls) d ->
+                // One declaration's failure costs that declaration. The group is
+                // checked left to right and each step reads the environment the
+                // step before it produced, so a failure keeps the previous one
+                // and contributes no `TDecl` — what it could not check, it does
+                // not claim to have checked.
                 let nextEnv, nextSigs, tDecls =
-                    match d with
-                    // Which implementation a failure came from. A method body
-                    // is short, and often nobody wrote it — `type/derive`
-                    // writes one per field, and every node a macro builds
-                    // carries the *call site's* range, so the line reported is
-                    // the derive form rather than the field that asked for the
-                    // comparison.
-                    | DImpl(traitName, target, _, _, _, _, ir) ->
-                        try
-                            checkDecl currEnv currSigs d
-                        with ex when Diagnostics.isDiagnostic ex ->
-                            let targetName =
-                                match target with
-                                | TName(n, _) -> n
-                                | TApp(n, _, _) -> n
-                                | _ -> "this type"
+                    Diagnostics.recoverWith
+                        "type check"
+                        (Some(declRange d))
+                        (fun () -> poisonFailed currEnv d, currSigs, [])
+                        (fun () ->
+                        match d with
+                        // Which implementation a failure came from. A method body
+                        // is short, and often nobody wrote it — `type/derive`
+                        // writes one per field, and every node a macro builds
+                        // carries the *call site's* range, so the line reported is
+                        // the derive form rather than the field that asked for the
+                        // comparison.
+                        | DImpl(traitName, target, _, _, _, _, ir) ->
+                            try
+                                checkDecl currEnv currSigs d
+                            with ex when Diagnostics.isDiagnostic ex ->
+                                let targetName =
+                                    match target with
+                                    | TName(n, _) -> n
+                                    | TApp(n, _, _) -> n
+                                    | _ -> "this type"
 
-                            failwithf
-                                $"%s{ex.Message}\n  in the implementation of '%s{traitName}' for '%s{targetName}' at %s{Lexer.formatPos ir}"
-                    | _ -> checkDecl currEnv currSigs d
+                                failwithf
+                                    $"%s{ex.Message}\n  in the implementation of '%s{traitName}' for '%s{targetName}' at %s{Lexer.formatPos ir}"
+                        | _ -> checkDecl currEnv currSigs d)
 
                 (nextEnv, nextSigs, tDecls @ accDecls))
             (envWithForwardDecls, combinedSigs, [])

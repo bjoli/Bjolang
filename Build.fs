@@ -34,7 +34,14 @@ type Options =
       /// vad en enstaka kompilering alltid har gjort. En batch måste säga
       /// något: två filer i samma process skriver annars över varandras dump,
       /// och den som läser den får svar om fel fil.
-      EmitCs: string option }
+      EmitCs: string option
+
+      /// Run the frontend and stop, without generating or emitting anything.
+      ///
+      /// A dependency is still built, because checking a module against an
+      /// import means reading that import's metadata and the metadata is in the
+      /// `.dll`. What is skipped is the checked file's own backend.
+      Check: bool }
 
 /// Vad `-d` skriver till när ingen har sagt något annat.
 let private defaultCsDump = "out.cs"
@@ -120,7 +127,34 @@ let compile (options: Options) (inputFilePath: string) : int =
         Diagnostics.progress $"Compiling %s{inputFilePath}"
 
         let result = Pipeline.runFullFrontendPipeline inputFilePath
+
+        // Anything the frontend collected after its own last report, printed
+        // before a line of C# is generated.
+        Diagnostics.report ()
+
+        if options.Check then
+            // The frontend is the whole of a check. Returning here is what keeps
+            // `--check` away from a C# compiler: `generateSource` is below this,
+            // and every backend is below that.
+            match result with
+            | Some _ when not (Diagnostics.hasErrors ()) -> 0
+            | _ ->
+                if Diagnostics.hasErrors () then
+                    let n = Diagnostics.count ()
+                    printfn $"""%d{n} error%s{if n = 1 then "" else "s"}."""
+
+                1
+        else
+
         match result with
+        // A phase gate answers `None`, so a checked program that still has an
+        // error recorded against it got there by a pass that carried on
+        // regardless. It fails the build rather than reaching codegen: the
+        // placeholder bindings a failed declaration leaves behind make the
+        // declarations after it check against something nobody wrote.
+        | Some _ when Diagnostics.hasErrors () ->
+            printfn "Compilation failed."
+            1
         | Some (env, typedAst, dllDeps, declaredMacros, declaredPatternMacros, declaredHashMacros) ->
             // A source file with no `main` is a library whether or not `--lib`
             // was passed: an entry point would call a method that does not
@@ -747,7 +781,10 @@ let private compileDependencyInProcess (bjoPath: string) : string =
     let exitCode =
         try
             Timing.phase "dependency build (in process)" (fun () ->
-                Session.isolated (fun () -> compile { IsLibrary = true; Debug = false; EmitCs = None } bjoPath))
+                // Never `Check`: what the importing module needs from this one
+                // is the `.dll`, and checking it would produce nothing to read.
+                Session.isolated (fun () ->
+                    compile { IsLibrary = true; Debug = false; EmitCs = None; Check = false } bjoPath))
         finally
             Diagnostics.verbose <- narrating
             inFlight.RemoveAt(inFlight.Count - 1)
@@ -878,7 +915,10 @@ let batch (options: Options) (ifStale: bool) (files: string list) : BatchResult 
     // uppstarten på. `CSharpEmit.preferInProcess` varnar för att blanda
     // backendar inom ett bygge — här blandas ingenting, valet görs före första
     // filen och gäller hela batchen.
-    if files.Length >= inProcessThreshold then
+    // Inte under `--check`, som inte lämnar ifrån sig någon assembly att
+    // generera: att förvärma Roslyn där vore att ladda in en kompilator som
+    // aldrig anropas.
+    if files.Length >= inProcessThreshold && not options.Check then
         CSharpEmit.preferInProcess ()
 
     // En gång för hela batchen. `compile` gör om det per fil, men anropet är
@@ -902,6 +942,12 @@ let batch (options: Options) (ifStale: bool) (files: string list) : BatchResult 
                 options
 
         let compileOne () =
+            // Varje fil börjar med en tom uppsamlare. Den är processglobal och
+            // en batch återanvänder processen, så utan det här är fil 3:s fel
+            // fortfarande registrerade när fil 4 bedöms — och fil 4 stoppas före
+            // kodgenereringen av något som inte står i den.
+            Diagnostics.reset ()
+
             try
                 if ifStale then
                     // Frågan är "finns en aktuell `.dll`", inte "kompilera".

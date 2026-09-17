@@ -1166,6 +1166,31 @@ type TDecl =
     | TImportExtern of ClrExternInfo list * Range
     | TImportClass of ClrClassInfo list * Range
 
+/// Where a checked declaration was written.
+///
+/// The untyped `Ast.declRange` answers the same question about the same
+/// declaration, and the whole-module checks that run after inference need it
+/// too: each reports per declaration, and a failure has to be able to say which
+/// one it was about even when the message it raised carries no location.
+let tdeclRange (decl: TDecl) : Range =
+    match decl with
+    | TImport(_, r)
+    | TAlias(_, _, r)
+    | TExport(_, r)
+    | TReExport(_, r)
+    | TModule(_, _, r)
+    | TDef(_, _, _, r)
+    | TDefTuple(_, _, _, r)
+    | TDefMutable(_, _, _, r)
+    | TDefun(_, _, _, _, _, _, _, _, r)
+    | TType(_, r)
+    | TTypeRec(_, r)
+    | TTrait(_, _, _, _, _, _, r)
+    | TImpl(_, _, _, _, _, _, _, r)
+    | TExtern(_, _, _, r)
+    | TImportExtern(_, r)
+    | TImportClass(_, r) -> r
+
 type FunMeta = {
     MandatoryCount: int
     KeywordParams: (string * HMType) list   // keyword name, type

@@ -596,5 +596,10 @@ let private checkDecl (registry: TraitRegistry) (decl: TDecl) : unit =
         e)
     |> ignore
 
+/// Reports every declaration with a match that does not cover its type, not
+/// just the first. The declarations are independent here, so a failure costs
+/// the rest of that declaration and nothing beyond it.
 let run (registry: TraitRegistry) (decls: TDecl list) : unit =
-    decls |> List.iter (checkDecl registry)
+    decls
+    |> List.iter (fun d ->
+        Diagnostics.recover "exhaustiveness" (Some(tdeclRange d)) () (fun () -> checkDecl registry d))

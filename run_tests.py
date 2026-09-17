@@ -557,6 +557,16 @@ if error_files:
                 if expected and expected not in entry["output"]:
                     return "FAIL", f"rejected, but not for the stated reason. Expected to find: {expected}"
 
+            # `EXPECT-NO-ERROR` säger vad avvisandet *inte* får skylla på. En
+            # deklaration som inte gick att kontrollera binder en platshållare,
+            # och det som anropar den ska därför tiga — ett kaskadfel är det
+            # första felet berättat en gång till, per anropare.
+            match = re.match(r'^\s*;;\s*EXPECT-NO-ERROR:\s*(.*)', line)
+            if match:
+                unwanted = match.group(1).strip()
+                if unwanted and unwanted in entry["output"]:
+                    return "FAIL", f"rejected, but also reported what it should have suppressed: {unwanted}"
+
         return "PASS", ""
 
     for bjo_file in error_files:
@@ -809,6 +819,62 @@ def run_staleness():
 
     return "staleness", s_total, s_failed, s_failures
 
+def run_check_tests():
+    # `--check` kör frontenden och stannar. Det som mäts är de två sakerna som
+    # skiljer den från ett bygge: att den inte lämnar någon artefakt efter sig,
+    # och att den säger exakt samma sak om ett trasigt program som ett bygge
+    # gör — en check som rapporterar annorlunda vore en andra sanning om
+    # programmet.
+    GOOD = Path("TestFiles/000_simple.bjo")
+    BAD = Path("TestFiles/errors/multi_type_errors.bjo")
+    c_total, c_failed = 0, 0
+    c_failures = []
+
+    def check_that(label, condition, detail=""):
+        nonlocal c_total, c_failed
+        c_total += 1
+        if not condition:
+            c_failed += 1
+            c_failures.append(f"{label}{': ' + detail if detail else ''}")
+
+    if GOOD.exists():
+        for ext in (".exe", ".dll", ".runtimeconfig.json", ".deps.json", ".pdb"):
+            GOOD.with_suffix(ext).unlink(missing_ok=True)
+
+        res = subprocess.run(["dotnet", COMPILER_DLL, "--check", str(GOOD)], capture_output=True, text=True)
+        check_that("a good file checks clean", res.returncode == 0, f"exit {res.returncode}")
+
+        produced = [ext for ext in (".exe", ".dll") if GOOD.with_suffix(ext).exists()]
+        check_that("a check writes no assembly", not produced, ", ".join(produced))
+
+        for ext in (".exe", ".dll", ".runtimeconfig.json", ".deps.json", ".pdb"):
+            GOOD.with_suffix(ext).unlink(missing_ok=True)
+
+    if BAD.exists():
+        checked = subprocess.run(["dotnet", COMPILER_DLL, "--check", str(BAD)], capture_output=True, text=True)
+        built = subprocess.run(["dotnet", COMPILER_DLL, str(BAD)], capture_output=True, text=True)
+        remove_artifacts(BAD)
+
+        check_that("a bad file is rejected by --check", checked.returncode != 0)
+
+        # Varje rad som är ett felmeddelande, i den ordning de kom. Banderoller
+        # och "Compilation failed." hör till bygget, inte till diagnostiken.
+        def diagnostics(output):
+            return [
+                line for line in output.splitlines()
+                if line.strip() and not line.startswith("===") and not line.startswith("Compiling")
+                and not line.startswith("Building imported module") and line != "Compilation failed."
+                and not re.match(r'^\d+ errors?\.$', line)
+            ]
+
+        check_that(
+            "--check says what a build says",
+            diagnostics(checked.stdout) == diagnostics(built.stdout),
+            "the two reports differ",
+        )
+
+    return "check", c_total, c_failed, c_failures
+
 # Run phases concurrently
 phases = []
 with ThreadPoolExecutor(max_workers=4) as executor:
@@ -829,12 +895,18 @@ with ThreadPoolExecutor(max_workers=4) as executor:
     print("-" * 50)
     print_color(BLUE, "Checking that a changed dependency is rebuilt...")
     phases.append(executor.submit(run_staleness))
-    
+
+    print("-" * 50)
+    print_color(BLUE, "Checking --check...")
+    phases.append(executor.submit(run_check_tests))
+
     codegen_total = codegen_failed = 0
     repl_total = repl_failed = 0
     repro_total = repro_failed = 0
     stale_total = stale_failed = 0
+    check_total = check_failed = 0
     codegen_failures, repl_failures, repro_failures, stale_failures = [], [], [], []
+    check_failures = []
     
     for future in as_completed(phases):
         name, total, failed, failures = future.result()
@@ -868,6 +940,13 @@ with ThreadPoolExecutor(max_workers=4) as executor:
             else:
                 for f in stale_failures:
                     print(f"  [{RED}FAIL{NC}] {f}")
+        elif name == "check":
+            check_total, check_failed, check_failures = total, failed, failures
+            if failed == 0:
+                print(f"  [{GREEN}PASS{NC}] --check")
+            else:
+                for f in check_failures:
+                    print(f"  [{RED}FAIL{NC}] {f}")
 
 end_time = time.time()
 duration = end_time - start_time
@@ -890,6 +969,8 @@ if repl_total > 0:
     print(f"REPL sessions:      {repl_total - repl_failed}/{repl_total} match their transcript")
 if stale_total > 0:
     print(f"Staleness:          {stale_total - stale_failed}/{stale_total} rebuilt as expected")
+if check_total > 0:
+    print(f"--check:            {check_total - check_failed}/{check_total} checks behaved")
 print(f"Total time:         {duration:.2f}s")
 print("")
 
@@ -906,8 +987,9 @@ print_failures("REPL Session Failures", repl_failures)
 print_failures("Reproducibility Failures", repro_failures)
 print_failures("Staleness Failures", stale_failures)
 print_failures("Codegen Test Failures", codegen_failures)
+print_failures("--check Failures", check_failures)
 
-if (error_failed or codegen_failed or repl_failed or repro_failed or stale_failed or warning_failed) and not compiled_failed and not run_failed:
+if (error_failed or codegen_failed or repl_failed or repro_failed or stale_failed or warning_failed or check_failed) and not compiled_failed and not run_failed:
     sys.exit(1)
     
 if compiled_failed or run_failed:
