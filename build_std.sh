@@ -114,11 +114,7 @@ echo "Building standard library..."
 # instances name. It is the first thing in the library that is not machinery for
 # other code to build on, which is why it is last.
 #
-# Commented out because `lib/bjor/manifest.bjo` does not exist: the line came in
-# with `826ceab` but the file itself was never committed, so this failed and
-# `set -e` took the rest of the build with it. `TestFiles/218_bjodat_forms.bjo`
-# imports `(bjor manifest)` and fails for the same reason. Restore both by
-# committing the file.
-# ./bjor --lib lib/bjor/manifest.bjo
+
+./bjor --lib lib/bjor/manifest.bjo
 
 echo "Standard library built successfully!"
