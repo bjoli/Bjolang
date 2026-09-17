@@ -255,39 +255,9 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
           Range = r
           Node = TString value }
 
-    // `(ret e)` — an application of an escape some enclosing `with-return` put
-    // in scope. Taken before the general application case, and before the
-    // general `EIdent` below it, because an escape is not a value and there is
-    // nothing in `Bindings` for either of them to find.
-    //
-    // Where it may *stand* was settled syntactically by `checkEscapeUses` when
-    // the block was entered, so nothing here has to ask.
     | EApp(EIdent(name, _), args, r) when Map.containsKey name env.Escapes ->
-        let info = env.Escapes[name]
+        inferEscapeCall env name args r
 
-        let typedValue =
-            match args with
-            | [] ->
-                // `(ret)` says the block produces nothing, which only a
-                // void-typed block can agree with.
-                unify env.Registry info.Result TypeConstants.unitType
-                None
-            | [ value ] ->
-                let valueType, typedValue = infer env value
-                unify env.Registry valueType info.Result
-                Some typedValue
-            | _ ->
-                failwithf
-                    $"Type Error at %s{Lexer.formatPos r}: `%s{name}` leaves its block with one value or with none, and here it was given %d{List.length args}."
-
-        // Never yields a value, so it is given a fresh metavariable: it stands
-        // wherever a value of any type was wanted and constrains nothing there.
-        let resultType = freshMeta ()
-
-        resultType,
-        { Type = resultType
-          Range = r
-          Node = TReturn(info.Label, typedValue) }
 
     | EIdent(name, r) when Map.containsKey name env.Escapes ->
         failwithf
@@ -315,67 +285,8 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
           Node = TWithReturn(label, typedBody) }
 
     | EBindElse(clauses, sequel, elseBody, r) ->
-        // Clauses bind sequentially, so the environment is threaded through
-        // them: a later scrutinee sees what an earlier pattern bound.
-        let reversedClauses, boundEnv =
-            clauses
-            |> List.fold
-                (fun (acc, envAcc) (pat, scrutinee) ->
-                    let scrutineeType, typedScrutinee = infer envAcc scrutinee
-                    let typedPat, boundVars = checkPattern inferChecked envAcc scrutineeType pat
+        inferBindElse env clauses sequel elseBody r
 
-                    let envAcc' =
-                        Map.fold
-                            (fun inner n t ->
-                                addBinding
-                                    n
-                                    { Scheme = Scheme([], [], t)
-                                      IsMutable = false }
-                                    inner)
-                            envAcc
-                            boundVars
-
-                    (({ Pattern = typedPat
-                        Scrutinee = typedScrutinee }
-                      : TBindElseClause)
-                     :: acc,
-                     envAcc'))
-                ([], env)
-
-        // The sequel is the rest of the body, so the guard's own type is the
-        // sequel's — and so is the else body's. The two are the form's arms,
-        // exactly as an `if`'s are: whichever runs produces the whole form's
-        // value. A body that means to leave an enclosing block says so with a
-        // `(ret ...)`, which is an ordinary tail-position form here.
-        //
-        // The else body is inferred in `env`, not `boundEnv`: it runs because a
-        // clause failed, so nothing a clause would have bound is in scope.
-        let sequelType, typedSequel = infer boundEnv sequel
-        let elseType, typedElse = infer env elseBody
-
-        try
-            unify env.Registry elseType sequelType
-        with ex when Diagnostics.isDiagnostic ex ->
-            let shown =
-                DotNetInterop.showTypesTogether [ prune env.Registry elseType; prune env.Registry sequelType ]
-
-            // The `void` sequel is the mistake this form invites, and it is
-            // worth naming: it is what a body written for its effects leaves
-            // behind, and the else body that "returned a value" from it was
-            // relying on the escape this form no longer performs.
-            let hint =
-                if shown[1] = "void" then
-                    "\nThe rest of the body produces nothing, so the else body may not produce anything either. If it was meant to leave the enclosing block, say so: `(ret ...)` naming an enclosing `with-return`, or `(panic! ...)`."
-                else
-                    "\nThe else body is the form's other arm, as an `if`'s is — it does not leave the enclosing block by itself. To leave one, write it: `(ret ...)` naming an enclosing `with-return`, or `(panic! ...)`."
-
-            failwithf
-                $"Type Error at %s{Lexer.formatPos typedElse.Range}: a `def/else` else body produces the value of the whole form, and here it disagrees with the rest of the body:\n  the else body:        %s{shown[0]}\n  the rest of the body: %s{shown[1]}%s{hint}"
-
-        sequelType,
-        { Type = sequelType
-          Range = r
-          Node = TBindElse(List.rev reversedClauses, typedSequel, typedElse) }
 
     // `std/eq`'s own equality primitives, refused everywhere else. See
     // `Naming.eqPrivateBindings` for why they are shut away at all.
@@ -432,236 +343,18 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         failwithf
             $"Type Error at %s{Lexer.formatPos r}: '%s{name}' is a method of the inline-only trait '%s{traitName}' and has no value form. Apply it directly, or wrap it in a lambda at a known type."
 
-    // `Class.Member` — a static field or property. This is how an enum value
-    // such as `FileMode.Open` is written, and it is why `import/class` is
-    // useful for a type that has no constructor at all.
     | EIdent(name, r) when
         not (Map.containsKey name env.Bindings)
         && not (name.EndsWith ".")
         && name.Contains "."
         && Map.containsKey (name.Substring(0, name.LastIndexOf ".")) env.Registry.ClrClasses
         ->
-        let split = name.LastIndexOf "."
-        let alias = name.Substring(0, split)
-        let memberName = name.Substring(split + 1)
-        let info = env.Registry.ClrClasses[alias]
-        let where = Lexer.formatPos r
-        let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrName
-        let memberType = DotNetInterop.resolveMemberRead where clrType memberName true
+        inferStaticMember env name r
 
-        memberType,
-        { Type = memberType
-          Range = r
-          Node = TForeignStaticGet(info.ClrName, memberName, memberType) }
 
-    // An `import/extern` name used as a *value* rather than applied.
-    //
-    // A .NET method group is not a value, so the only thing this can mean is a
-    // lambda that calls it — which needs the parameter types before there are
-    // any arguments to infer them from. That is what the declared signature is
-    // for, and why it is required here and optional everywhere else.
-    //
-    // An accessor is the exception, and needs no signature: a property has no
-    // overload set, so its type is known from the member alone. A *static*
-    // accessor read is not even a lambda — the alias names the value, exactly as
-    // `FileMode.Open` does.
-    //
-    // An ordinary binding of the same name wins. The extern registry is one flat
-    // namespace shared by every module in the compilation, so without this an
-    // alias published by some imported library would silently capture calls to a
-    // function defined right here.
     | EIdent(name, r) when Map.containsKey name env.Registry.ClrExterns && not (Map.containsKey name env.Bindings) ->
-        let info = env.Registry.ClrExterns[name]
-        let where = Lexer.formatPos r
-        let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrType
-        let receiverType = TCon(info.ClrType, [])
+        inferExternValue env name r
 
-        // Named once: three of the four shapes below build a lambda over the
-        // receiver, and all of them have to agree on what its type is.
-        let identOf (n: string) (t: HMType) : TypedExpr =
-            { Type = t
-              Range = r
-              Node = TIdent(n, []) }
-
-        match info.Kind with
-        // A static read *is* the value, re-read wherever the name stands —
-        // `TForeignStaticGet` emits the member access itself, so a property like
-        // `DateTime.Now` still means "now" at each mention.
-        | ExternGet when not info.IsInstance ->
-            let memberType = DotNetInterop.resolveMemberRead where clrType info.MemberName true
-
-            memberType,
-            { Type = memberType
-              Range = r
-              Node = TForeignStaticGet(info.ClrType, info.MemberName, memberType) }
-
-        | ExternGet ->
-            let memberType = DotNetInterop.resolveMemberRead where clrType info.MemberName false
-            let recv = Gensym.fresh "__foreign"
-
-            let body: TypedExpr =
-                { Type = memberType
-                  Range = r
-                  Node = TDotPropertyGet(identOf recv receiverType, info.MemberName, memberType) }
-
-            let funType = tfun [ receiverType ] memberType
-
-            funType,
-            { Type = funType
-              Range = r
-              Node = TLambda([ recv ], body) }
-
-        | ExternSet ->
-            let memberType = DotNetInterop.resolveMemberWrite where clrType info.MemberName (not info.IsInstance)
-            let value = Gensym.fresh "__foreign"
-            let valueExpr = identOf value memberType
-
-            let paramNames, paramTypes, node =
-                if info.IsInstance then
-                    let recv = Gensym.fresh "__foreign"
-
-                    [ recv; value ],
-                    [ receiverType; memberType ],
-                    TDotPropertySet(identOf recv receiverType, info.MemberName, valueExpr)
-                else
-                    [ value ], [ memberType ], TForeignStaticSet(info.ClrType, info.MemberName, valueExpr)
-
-            let body: TypedExpr =
-                { Type = TypeConstants.voidType
-                  Range = r
-                  Node = node }
-
-            let funType = tfun paramTypes TypeConstants.voidType
-
-            funType,
-            { Type = funType
-              Range = r
-              Node = TLambda(paramNames, body) }
-
-        | ExternMethod ->
-            // An async import is not a value either, and for a second reason on
-            // top of the method-group one: the eta-expansion would be an
-            // ordinary lambda whose body is a yield point, which is §3.1's
-            // higher-order restriction with a worse error message. Said here
-            // rather than left to `ColourCheck`, which would name a lambda the
-            // user never wrote.
-            if info.IsAsync then
-                failwithf
-                    $"Type Error at %s{where}: '%s{name}' names the async .NET method '%s{info.ClrType}.%s{info.MemberName}', and calling it is a yield point, so it cannot be used as a value — the (fun ...) it would become may not suspend. Call it directly, or wrap the call in a bjoroutine of your own and pass that."
-
-            match info.GenericTypeArgs with
-            // A generic method as a value. The eta-expansion is built from the
-            // declared signature rather than from reflection, which is where a
-            // generic import's meaning lives anyway — and the lambda is at *one*
-            // instantiation, whatever the context settles it to, because a C#
-            // delegate cannot be generic.
-            | Some _ ->
-                let paramTypes, retType, typeArgs = instantiateGenericExtern env.Registry where info
-
-                let methodParams =
-                    if info.IsInstance then List.tail paramTypes else paramTypes
-
-                let argNames = paramTypes |> List.map (fun _ -> Gensym.fresh "__foreign")
-                let argExprs: TypedExpr list = List.map2 identOf argNames paramTypes
-
-                let meta =
-                    Some
-                        { DeclaringType = info.ClrType
-                          MethodName = info.MemberName
-                          ParameterTypes = methodParams
-                          ReturnType = retType
-                          TypeArguments = typeArgs
-                          IsStatic = not info.IsInstance
-                          Exceptions = info.Exceptions
-                          Await = false
-                          AmbientToken = false
-                          Blocking = info.IsBlocking }
-
-                let node =
-                    if info.IsInstance then
-                        TDotMethodCall(List.head argExprs, info.MemberName, List.tail argExprs, meta)
-                    else
-                        TForeignStaticCall(info.ClrType, info.MemberName, argExprs, meta)
-
-                let resultType = wrapForeignExceptions info.Exceptions retType
-
-                let body: TypedExpr =
-                    { Type = resultType
-                      Range = r
-                      Node = node }
-
-                let funType = tfun paramTypes resultType
-
-                funType,
-                { Type = funType
-                  Range = r
-                  Node = TLambda(argNames, body) }
-
-            | None ->
-
-            match info.DeclaredType with
-            | Some(TFun(declaredParams, _, _)) ->
-                // The receiver of an instance member is the alias's first
-                // parameter and none of the method's, so the declared type is
-                // split before reflection sees it and rejoined afterwards.
-                let declaredReceiver, methodParamTypes =
-                    if info.IsInstance then
-                        match declaredParams with
-                        | recv :: rest -> Some recv, rest
-                        | [] ->
-                            failwithf
-                                $"Type Error at %s{where}: '%s{name}' names the instance method '%s{info.ClrType}.%s{info.MemberName}', whose receiver is its first argument, but its declared type takes none."
-                    else
-                        None, declaredParams
-
-                let resolved = resolveExternMethod where info clrType methodParamTypes
-                unifyForeignArgs env.Registry methodParamTypes resolved.ParameterTypes
-                declaredReceiver |> Option.iter (fun t -> unify env.Registry t receiverType)
-
-                let retType = wrapForeignExceptions info.Exceptions resolved.ReturnType
-                let argNames = resolved.ParameterTypes |> List.map (fun _ -> Gensym.fresh "__foreign")
-
-                // Annotated because `TypedExpr` and `TypedPattern` have the same
-                // three field names, and neither of these is in a position that
-                // says which one is meant.
-                let argExprs: TypedExpr list = List.map2 identOf argNames resolved.ParameterTypes
-
-                let paramNames, paramTypes, node =
-                    if info.IsInstance then
-                        let recv = Gensym.fresh "__foreign"
-
-                        recv :: argNames,
-                        receiverType :: resolved.ParameterTypes,
-                        TDotMethodCall(
-                            identOf recv receiverType,
-                            info.MemberName,
-                            argExprs,
-                            Some(metadataOf resolved info.Exceptions)
-                        )
-                    else
-                        argNames,
-                        resolved.ParameterTypes,
-                        TForeignStaticCall(
-                            resolved.DeclaringType,
-                            info.MemberName,
-                            argExprs,
-                            Some(metadataOf resolved info.Exceptions)
-                        )
-
-                let body: TypedExpr =
-                    { Type = retType
-                      Range = r
-                      Node = node }
-
-                let funType = tfun paramTypes retType
-
-                funType,
-                { Type = funType
-                  Range = r
-                  Node = TLambda(paramNames, body) }
-            | _ ->
-                failwithf
-                    $"Type Error at %s{where}: '%s{name}' names the .NET method '%s{info.ClrType}.%s{info.MemberName}', and a method group is not a value. To use it as one, give it a signature in its import/extern clause; otherwise call it directly."
 
     // `apply` is a form, not a function, so it has no value form either.
     //
@@ -675,34 +368,8 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
             $"Type Error at %s{Lexer.formatPos r}: 'apply' is a form, not a value, so it has no value form. Write the call out — (apply f xs) — or wrap it in a lambda over a function you name there."
 
     | EIdent(name, r) ->
-        let binding = lookup env name
-        let t, tArgs, constraints = instantiate env.Registry binding.Scheme
+        inferIdent env name r
 
-        // A name with two emitted copies is colour-polymorphic, and its
-        // *reference* has to say so, not just its call.
-        //
-        // The binding is the ordinary copy's, so its arrow is `ESync`, and
-        // handing that to a `-?->` parameter bound the parameter's cell to
-        // `ESync` before anything had decided anything: `(port->list read-line
-        // p)` from a bjoroutine chose the ordinary reader and parked on every
-        // line, silently, while `(port->list (bjoroutine (q) (read-line q)) p)`
-        // suspended. Same call, and the difference was that one of them
-        // mentioned a colour — which is the thing this design exists to avoid.
-        //
-        // So the reference gets a cell of its own instead. Meeting a parameter
-        // declared `->` binds it to `ESync` exactly as before; meeting a `-?->`
-        // chains the two and leaves both open, and `EffectGraph` grounds the
-        // chain to the colour of the member the reference is written in.
-        let t =
-            match t with
-            | TFun(args, ret, ESync) when Map.containsKey name env.Registry.DoubleDefs ->
-                TFun(args, ret, freshEffect ())
-            | other -> other
-
-        t,
-        { Type = t
-          Range = r
-          Node = TIdent(name, tArgs) }
 
     // A name the compiler wrote, in value position.
     //
@@ -736,102 +403,13 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         let t, te = infer (unshadow name env) (EApp(EIdent(name, mr), args, r))
         t, requalifyResolved name env te
 
-    // A trait method call, unless the name has been bound over.
-    //
-    // This used to dispatch on the name alone, before the environment was
-    // consulted at all, so nothing a program wrote could intercept it: a local
-    // called `next` or a parameter called `compare` was accepted, ignored, and
-    // dead — and the program's own calls to it failed on arity, against the
-    // programmer's line, naming a parameter they never wrote.
-    //
-    // `TraitMethodNames` is what distinguishes the method's own binding from a
-    // binding over it, which `Bindings` cannot: both sit there under one name.
-    // An inline trait's methods are not bound at all, hence the first half.
     | EApp(EIdent(methodName, _), args, r) when Set.contains methodName env.TraitMethodNames ->
-        let traitName = env.Registry.TraitMethods[methodName]
+        inferTraitMethodCall env methodName args r
 
-        // Every argument is positional, keywords included. A trait method's
-        // shape is fixed by its trait and no trait declares a keyword
-        // parameter, so `#:foo` here can only be the keyword *value* — which
-        // `(= k #:foo)` is, now that `Keyword` has an `Eq` implementation. A
-        // call written as though it took keyword arguments fails on arity
-        // instead, which is what it is.
-        let typedArgs = args |> List.map (infer env)
 
-        let methodType, tref = traitCallType env traitName methodName r
-        let retType = freshMeta ()
-
-        // The effect is the method's own, copied rather than chosen — the same
-        // move the ordinary application makes with `demandedEffect`. Building
-        // this arrow with `tfun` spelled it `->` unconditionally, so a trait
-        // that declared `-bjo->` met its own call site and was told an ordinary
-        // function cannot be used where a bjoroutine is expected.
-        unify
-            env.Registry
-            methodType
-            (TFun(typedArgs |> List.map fst, retType, demandedEffect env methodType))
-
-        retType,
-        { Type = retType
-          Range = r
-          Node = TTraitCall(tref, typedArgs |> List.map snd, []) }
-
-    // Record and struct construction: `(Car (brand "banana") (year 3000))`.
-    //
-    // It arrives as an ordinary application because nothing before this point
-    // knows which names are record types — and so do the arguments, `(brand
-    // "banana")` being indistinguishable from a call to `brand` until the head
-    // is known. Both are reread here, where the registry can say so. The type
-    // name is the constructor: no field set is ever searched for an owner, and
-    // two records sharing a field name are no longer in each other's way.
     | EApp(EIdent(recordTypeName, _), args, r) when Map.containsKey recordTypeName env.Registry.Records ->
-        let writtenFields =
-            args
-            |> List.map (fun arg ->
-                match arg with
-                | EApp(EIdent(fieldName, _), [ value ], _) -> fieldName, value
-                | bad ->
-                    failwithf
-                        $"Type Error at %s{Lexer.formatPos (exprRange bad)}: '%s{recordTypeName}' is a record type, so each argument is one of its fields, written (field-name value).")
+        inferRecordConstruct env recordTypeName args r
 
-        let instantiatedRecordType, expectedFields, expectedFieldsInstantiated =
-            instantiateRecord env.Registry recordTypeName
-
-        let fieldList = expectedFields |> List.map fst |> String.concat ", "
-
-        let provided =
-            (Map.empty, writtenFields)
-            ||> List.fold (fun acc (name, expr) ->
-                if Map.containsKey name acc then
-                    failwithf
-                        $"Type Error at %s{Lexer.formatPos r}: field '%s{name}' of '%s{recordTypeName}' is given twice."
-
-                let exprType, typedExpr = infer env expr
-
-                match Map.tryFind name expectedFieldsInstantiated with
-                | Some expectedType -> unify env.Registry exprType expectedType
-                | None ->
-                    failwithf
-                        $"Type Error at %s{Lexer.formatPos (exprRange expr)}: '%s{recordTypeName}' has no field '%s{name}'. Its fields are: %s{fieldList}."
-
-                Map.add name typedExpr acc)
-
-        // Declaration order, not the order the fields were written in: the
-        // constructor a record compiles to takes them positionally, so writing
-        // them out of order would otherwise silently swap two same-typed fields.
-        let orderedFields =
-            expectedFields
-            |> List.map (fun (name, _) ->
-                match Map.tryFind name provided with
-                | Some typedExpr -> name, typedExpr
-                | None ->
-                    failwithf
-                        $"Type Error at %s{Lexer.formatPos r}: '%s{recordTypeName}' is missing field '%s{name}'. Every field has to be given.")
-
-        instantiatedRecordType,
-        { Type = instantiatedRecordType
-          Range = r
-          Node = TRecordMake orderedFields }
 
     // --- Foreign .NET interop ---
     //
@@ -859,706 +437,31 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
             failwithf
                 $"Type Error at %s{where}: '%s{name}' reads a property, so it takes exactly one argument — the object to read it from — but was given %d{args.Length}."
 
-    // `(.Method target args...)` — an instance method call.
     | EApp(EIdent(name, _), args, r) when name.StartsWith "." && name.Length > 1 ->
-        let methodName = name.Substring 1
-        let where = Lexer.formatPos r
+        inferDotMethod env name args r
 
-        match args with
-        | [] ->
-            failwithf
-                $"Type Error at %s{where}: '%s{name}' calls an instance method, so its first argument is the object to call it on, but it was given none."
-        | target :: rest ->
-            let targetType, typedTarget = infer env target
-            let clrTarget = receiverClrType where name targetType
 
-            let typedArgs = rest |> List.map (infer env)
-            let argTypes = typedArgs |> List.map fst
-
-            settleLiterals argTypes
-            let resolved = DotNetInterop.resolveMethod where false clrTarget methodName argTypes
-
-            let coercedArgs =
-                reconcileForeignArgs env.Registry (typedArgs |> List.map snd) resolved.ParameterTypes
-
-            // Never exception-wrapped: `import/class` declares one signature —
-            // the constructor's — so there is nowhere to say what a method may
-            // raise, and wrapping it anyway would swallow exceptions nobody
-            // listed.
-            let retType = resolved.ReturnType
-
-            retType,
-            { Type = retType
-              Range = r
-              Node = TDotMethodCall(typedTarget, methodName, coercedArgs, Some(metadataOf resolved [])) }
-
-    // `(ClassName. args...)` — construction.
     | EApp(EIdent(name, _), args, r) when
         name.EndsWith "."
         && name.Length > 1
         && Map.containsKey (name.Substring(0, name.Length - 1)) env.Registry.ClrClasses
         ->
-        let alias = name.Substring(0, name.Length - 1)
-        let info = env.Registry.ClrClasses[alias]
-        let where = Lexer.formatPos r
-        let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrName
+        inferClassConstruct env name args r
 
-        let typedArgs = args |> List.map (infer env)
-        let argTypes = typedArgs |> List.map fst
 
-        settleLiterals argTypes
-        let resolved = DotNetInterop.resolveConstructor where clrType argTypes
-
-        let coercedArgs =
-            reconcileForeignArgs env.Registry (typedArgs |> List.map snd) resolved.ParameterTypes
-
-        // The declared signature is enforced against the overload reflection
-        // chose, rather than used in place of it. Writing one down is how a
-        // reader of the source learns what the constructor takes without
-        // consulting the BCL; getting it wrong is an error rather than a
-        // silently ignored comment.
-        match info.CtorType with
-        | Some declared -> unify env.Registry declared (tfun resolved.ParameterTypes resolved.ReturnType)
-        | None -> ()
-
-        let retType = wrapForeignExceptions info.CtorExceptions resolved.ReturnType
-
-        let meta =
-            { ClrType = resolved.DeclaringType
-              ParameterTypes = resolved.ParameterTypes
-              Exceptions = info.CtorExceptions }
-
-        retType,
-        { Type = retType
-          Range = r
-          Node = TNewObject(resolved.DeclaringType, coercedArgs, Some meta) }
-
-    // A .NET member named by `import/extern`, applied. As above, a binding of
-    // the same name shadows the alias rather than the other way round.
-    //
-    // An instance member's receiver is the first argument and is taken off the
-    // front here, so that everything below — overload selection, the threaded
-    // token, a declared signature — works in the member's own parameters. It
-    // rejoins as the receiver of a `TDotMethodCall`, which is the same node
-    // `(.Method x ...)` produces; the difference is that this one arrived
-    // through a clause that could say `#:async`.
     | EApp(EIdent(name, _), args, r) when
         Map.containsKey name env.Registry.ClrExterns && not (Map.containsKey name env.Bindings)
         ->
-        let info = env.Registry.ClrExterns[name]
-        let where = Lexer.formatPos r
-        let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrType
-        let receiverType = TCon(info.ClrType, [])
+        inferExternCall env name args r
 
-        /// Splits the receiver off an instance member's argument list.
-        ///
-        /// The receiver is reconciled like an argument rather than unified with
-        /// the declaring type, so that a subclass reaches a member declared on
-        /// its base: the upcast is written into the tree exactly as a widening
-        /// argument's is, which is also what keeps the C# that reads the
-        /// generated call resolving it the same way.
-        let takeReceiver (typedArgs: (HMType * TypedExpr) list) =
-            match typedArgs with
-            | (_, recv) :: rest ->
-                let coerced =
-                    reconcileForeignArgs env.Registry [ recv ] [ receiverType ] |> List.head
 
-                coerced, rest
-            | [] ->
-                failwithf
-                    $"Type Error at %s{where}: '%s{name}' names the instance member '%s{info.ClrType}.%s{info.MemberName}', so its first argument is the object to use it on, but it was given none."
-
-        match info.Kind with
-        // A property read. There is no overload set and no conversion to make:
-        // the member has one type, and the only thing the call site supplies is
-        // the receiver.
-        | ExternGet ->
-            let typedArgs = args |> List.map (infer env)
-
-            if not info.IsInstance then
-                failwithf
-                    $"Type Error at %s{where}: '%s{name}' reads the static property '%s{info.ClrType}.%s{info.MemberName}', so it is a value rather than a call. Write it bare, as '%s{name}'."
-
-            let receiver, rest = takeReceiver typedArgs
-
-            if not rest.IsEmpty then
-                failwithf
-                    $"Type Error at %s{where}: '%s{name}' reads a property, so it takes exactly one argument — the object to read it from — but was given %d{args.Length}."
-
-            let memberType = DotNetInterop.resolveMemberRead where clrType info.MemberName false
-
-            match info.DeclaredType with
-            | Some declared -> unify env.Registry declared (tfun [ receiverType ] memberType)
-            | None -> ()
-
-            memberType,
-            { Type = memberType
-              Range = r
-              Node = TDotPropertyGet(receiver, info.MemberName, memberType) }
-
-        // A property write. Void, like `set!`, and for the same reason: the
-        // value assigned is not what the form is for, and handing it back would
-        // make `(set-length! sb n)` usable as an expression that quietly has a
-        // value.
-        | ExternSet ->
-            let typedArgs = args |> List.map (infer env)
-            let memberType = DotNetInterop.resolveMemberWrite where clrType info.MemberName (not info.IsInstance)
-
-            let receiver, rest =
-                if info.IsInstance then
-                    let recv, rest = takeReceiver typedArgs
-                    Some recv, rest
-                else
-                    None, typedArgs
-
-            let value =
-                match rest with
-                | [ v ] -> reconcileForeignArgs env.Registry [ snd v ] [ memberType ] |> List.head
-                | _ ->
-                    let wanted = if info.IsInstance then "the object to write it on and the value" else "the value"
-
-                    failwithf
-                        $"Type Error at %s{where}: '%s{name}' writes a property, so it takes %s{wanted}, but was given %d{args.Length} argument(s)."
-
-            let declaredParams =
-                match receiver with
-                | Some _ -> [ receiverType; memberType ]
-                | None -> [ memberType ]
-
-            match info.DeclaredType with
-            | Some declared -> unify env.Registry declared (tfun declaredParams TypeConstants.voidType)
-            | None -> ()
-
-            let node =
-                match receiver with
-                | Some recv -> TDotPropertySet(recv, info.MemberName, value)
-                | None -> TForeignStaticSet(info.ClrType, info.MemberName, value)
-
-            TypeConstants.voidType,
-            { Type = TypeConstants.voidType
-              Range = r
-              Node = node }
-
-        // A generic method, applied. There is no overload to choose from the
-        // arguments here: the import already chose one, against the declared
-        // signature, and solved its type arguments. So this is an ordinary
-        // polymorphic call — instantiate, unify, done — and the only thing that
-        // makes it foreign is where the body ends up.
-        | ExternMethod when info.GenericTypeArgs.IsSome ->
-            let paramTypes, retType, typeArgs = instantiateGenericExtern env.Registry where info
-
-            if args.Length <> paramTypes.Length then
-                let what =
-                    if info.IsInstance then
-                        $"the object to use it on and %d{paramTypes.Length - 1} argument(s)"
-                    else
-                        $"%d{paramTypes.Length} argument(s)"
-
-                failwithf
-                    $"Type Error at %s{where}: '%s{name}' takes %s{what}, but was given %d{args.Length}."
-
-            let typedArgs = args |> List.map (infer env)
-
-            // Unified rather than scored. A declared signature is not a
-            // candidate to be ranked against others — it is what the alias
-            // *means* — so an argument that does not fit is a type error naming
-            // the two types, exactly as it would be for a Bjolang function.
-            List.iter2 (fun (argType, _) paramType -> unify env.Registry argType paramType) typedArgs paramTypes
-
-            let callArgs = typedArgs |> List.map snd
-
-            let receiver, methodArgs, methodParams =
-                if info.IsInstance then
-                    Some(List.head callArgs), List.tail callArgs, List.tail paramTypes
-                else
-                    None, callArgs, paramTypes
-
-            let resultType = wrapForeignExceptions info.Exceptions retType
-
-            let meta =
-                Some
-                    { DeclaringType = info.ClrType
-                      MethodName = info.MemberName
-                      ParameterTypes = methodParams
-                      ReturnType = retType
-                      TypeArguments = typeArgs
-                      IsStatic = not info.IsInstance
-                      Exceptions = info.Exceptions
-                      Await = false
-                      AmbientToken = false
-                      Blocking = info.IsBlocking }
-
-            resultType,
-            { Type = resultType
-              Range = r
-              Node =
-                match receiver with
-                | Some recv -> TDotMethodCall(recv, info.MemberName, methodArgs, meta)
-                | None -> TForeignStaticCall(info.ClrType, info.MemberName, methodArgs, meta) }
-
-        | ExternMethod ->
-            let allTypedArgs = args |> List.map (infer env)
-
-            let receiver, typedArgs =
-                if info.IsInstance then
-                    let recv, rest = takeReceiver allTypedArgs
-                    Some recv, rest
-                else
-                    None, allTypedArgs
-
-            let argTypes = typedArgs |> List.map fst
-
-            // An `#:async` import resolves against one more parameter than the
-            // call site wrote — the ambient token — and yields the task's result
-            // rather than the task, so the two paths differ in what they hand
-            // back and agree on everything after it.
-            let resolved, visibleParams, callResultType, threadsToken =
-                if info.IsAsync then
-                    resolveAsyncExtern where info clrType argTypes
-                elif info.Cancellable then
-                    // Threaded, but not awaited: the method takes a token and
-                    // hands back an ordinary value. `File.ReadLinesAsync` is the
-                    // case — a stream rather than a task, and a token in every
-                    // overload.
-                    let resolved, threads = resolveTokenThreadedExtern where info clrType argTypes
-
-                    let visible =
-                        if threads then
-                            resolved.ParameterTypes |> List.truncate (resolved.ParameterTypes.Length - 1)
-                        else
-                            resolved.ParameterTypes
-
-                    resolved, visible, resolved.ReturnType, threads
-                else
-                    let resolved = resolveExternMethod where info clrType argTypes
-                    resolved, resolved.ParameterTypes, resolved.ReturnType, false
-
-            let coercedArgs =
-                reconcileForeignArgs env.Registry (typedArgs |> List.map snd) visibleParams
-
-            // Checked against what the *caller* sees: the threaded token is not
-            // a parameter anyone writes, and a declared signature that had to
-            // mention it would be describing the emitter's work rather than the
-            // call's. The receiver is part of what the caller sees, so an
-            // instance member's declared type carries it.
-            let declaredParams =
-                match receiver with
-                | Some _ -> receiverType :: visibleParams
-                | None -> visibleParams
-
-            match info.DeclaredType with
-            | Some declared -> unify env.Registry declared (tfun declaredParams callResultType)
-            | None -> ()
-
-            let retType = wrapForeignExceptions info.Exceptions callResultType
-
-            let meta =
-                Some
-                    { metadataOf resolved info.Exceptions with
-                        ParameterTypes = visibleParams
-                        ReturnType = callResultType
-                        Await = info.IsAsync
-                        AmbientToken = threadsToken
-                        Blocking = info.IsBlocking }
-
-            retType,
-            { Type = retType
-              Range = r
-              Node =
-                match receiver with
-                | Some recv -> TDotMethodCall(recv, info.MemberName, coercedArgs, meta)
-                | None -> TForeignStaticCall(resolved.DeclaringType, info.MemberName, coercedArgs, meta) }
-
-    // `(apply f pos1 ... posN coll)` — spread a collection into `f`'s `#:rest`
-    // parameter.
-    //
-    // An intrinsic rather than a prelude binding because there is no `HMType`
-    // it could be given: how many arguments it accepts, which parameters they
-    // fill, and whether the resulting call suspends are all read off whatever
-    // `f` turns out to be.
-    //
-    // `f` has to be a bare name, and that is a real restriction rather than a
-    // simplification. Whether a parameter is a `#:rest` one is recorded in
-    // `FunMeta`, which `infer` looks up *by name*; the flat type says
-    // `(Array %a)` and an ordinary array parameter says exactly the same thing.
-    // So a computed callee — a parameter, a lambda, an element of a vec — has
-    // nothing that could distinguish the two, and spreading into a parameter
-    // that is not variadic is precisely the run-time failure this form exists
-    // to rule out. `addBinding` drops a shadowed name's `FunMeta` for the same
-    // reason, so a local `f` cannot inherit a global one's shape either.
     | EApp(EIdent("apply", _), args, r) when not (Map.containsKey "apply" env.Bindings) ->
-        let where = Lexer.formatPos r
+        inferApply env args r
 
-        let calleeExpr, callArgs =
-            match args with
-            | f :: rest -> f, rest
-            | [] ->
-                failwithf
-                    $"Type Error at %s{where}: 'apply' needs a function and a collection, as (apply f coll)."
-
-        let calleeName =
-            match calleeExpr with
-            | EIdent(n, _) when Map.containsKey n env.Bindings -> n
-            | _ ->
-                failwithf
-                    $"Type Error at %s{where}: 'apply' needs a named function as its first argument. Whether a parameter is a #:rest one belongs to a function's declaration rather than to its type, so a computed function carries nothing that says how to spread into it."
-
-        let meta =
-            match Map.tryFind calleeName env.FunMetas with
-            | Some m when m.RestParam.IsSome -> m
-            | _ ->
-                failwithf
-                    $"Type Error at %s{where}: '%s{calleeName}' has no #:rest parameter, so there is nothing for 'apply' to spread a collection into. A collection's length is not part of its type, so filling fixed parameters from one would need an arity check at run time. Call '%s{calleeName}' directly with positional arguments instead."
-
-        // Keyword arguments are passed straight through. `FunMeta` is what says
-        // which names are keywords, and it is the callee's own — the same list
-        // an ordinary call site consults.
-        let isDeclaredKw kwName =
-            meta.KeywordParams |> List.exists (fun (k, _) -> k = kwName)
-
-        let rec splitArgs positional keywords remaining =
-            match remaining with
-            | [] -> List.rev positional, List.rev keywords
-            | EKeyword(kwName, _) :: value :: rest when isDeclaredKw kwName ->
-                splitArgs positional ((kwName, value) :: keywords) rest
-            | EKeyword(kwName, kr) :: [] when isDeclaredKw kwName ->
-                failwithf $"Keyword argument '#:%s{kwName}' is missing a value at %s{Lexer.formatPos kr}"
-            | arg :: rest -> splitArgs (arg :: positional) keywords rest
-
-        let positionalExprs, keywordExprs = splitArgs [] [] callArgs
-
-        // The *last* positional argument is the collection. A syntactic rule,
-        // not an inferred one: which argument is spread has to be legible from
-        // the call site alone, and a type-directed choice would change under a
-        // signature the reader cannot see.
-        let fixedExprs, collExpr =
-            match List.rev positionalExprs with
-            | last :: revFixed -> List.rev revFixed, last
-            | [] ->
-                failwithf
-                    $"Type Error at %s{where}: 'apply' needs a collection as its last argument, after any arguments filling '%s{calleeName}'s fixed parameters."
-
-        if fixedExprs.Length < meta.MandatoryCount then
-            failwithf
-                $"Type Error at %s{where}: '%s{calleeName}' has %d{meta.MandatoryCount} fixed parameter(s) and 'apply' was given %d{fixedExprs.Length}. Every fixed parameter has to be supplied positionally, before the collection."
-
-        if fixedExprs.Length > meta.MandatoryCount then
-            failwithf
-                $"Type Error at %s{where}: '%s{calleeName}' has %d{meta.MandatoryCount} fixed parameter(s) and 'apply' was given %d{fixedExprs.Length}. Everything before the collection fills a fixed parameter, one for one, and the collection is what fills the #:rest parameter."
-
-        let targetType, typedTarget = infer env calleeExpr
-        let fixedTyped = fixedExprs |> List.map (infer env)
-
-        // A literal collection is never built. The elements go straight into
-        // the rest array, which is the very node a direct call `(f a b c)`
-        // produces — so the two spellings compile to the same call.
-        let literalItems =
-            match collExpr with
-            | EList(items, _) -> Some items
-            | EVec(items, _) -> Some items
-            | EArray(items, _) -> Some items
-            | _ -> None
-
-        let restElem, restNode =
-            match literalItems with
-            | Some items ->
-                let elemSlot = freshMeta ()
-
-                let typedItems =
-                    items
-                    |> List.map (fun item ->
-                        let itemType, typedItem = infer env item
-                        unify env.Registry itemType elemSlot
-                        typedItem)
-
-                elemSlot,
-                ({ Type = TCon("Array", [ elemSlot ])
-                   Range = r
-                   Node = TArrayMake typedItems }: TypedExpr)
-            | None ->
-                let collType, typedColl = infer env collExpr
-
-                // Named so the conversion is an ordinary typed call. Emitting it
-                // as C# text in `Codegen` instead would hide it from
-                // `containsAwait`, which walks the typed tree to decide whether
-                // the enclosing lambda has to be async.
-                let convert (fn: string) (elem: HMType) : TypedExpr =
-                    let arrayType = TCon("Array", [ elem ])
-
-                    { Type = arrayType
-                      Range = r
-                      Node =
-                        TApply(
-                            { Type = tfun [ typedColl.Type ] arrayType
-                              Range = r
-                              Node = TIdent(fn, []) },
-                            [ typedColl ],
-                            []
-                        ) }
-
-                match prune env.Registry collType with
-                // Passed through untouched: no conversion and no allocation,
-                // which is the case `apply` is actually worth having for.
-                | TCon("Array", [ elem ]) -> elem, typedColl
-                | TCon("Vec", [ elem ]) -> elem, convert "vec->array" elem
-                | TCon("List", [ elem ]) -> elem, convert "list->array" elem
-                | TMeta _ ->
-                    failwithf
-                        $"Type Error at %s{where}: 'apply' needs to know the last argument's type here to spread it, and nothing has fixed it yet. Annotate it as an Array, a Vec or a List."
-                | other ->
-                    failwithf
-                        $"Type Error at %s{where}: 'apply' can spread an Array, a Vec or a List, and the last argument is %s{DotNetInterop.showType other}."
-
-        // Each keyword slot gets a fresh metavariable rather than the type
-        // `FunMeta` recorded, for the reason the ordinary call path gives: the
-        // recorded type still carries the declaration's rigid `TVar`s, and the
-        // flat unification below is what gives the slot its real type.
-        let keywordTyped = keywordExprs |> List.map (fun (n, e) -> n, infer env e)
-
-        let kwSlots =
-            meta.KeywordParams
-            |> List.map (fun (kwName, _) ->
-                let slot = freshMeta ()
-
-                match keywordTyped |> List.tryFind (fun (n, _) -> n = kwName) with
-                | Some(_, (valType, _)) -> unify env.Registry valType slot
-                | None -> ()
-
-                slot)
-
-        let retType = freshMeta ()
-        let flatTypes = (fixedTyped |> List.map fst) @ kwSlots @ [ TCon("Array", [ restElem ]) ]
-
-        // The effect is the callee's own, copied rather than chosen. A pure `f`
-        // gives a pure node and a suspending one a suspending node, which is why
-        // there is one `apply` and not an `apply` plus an `apply/bjo`:
-        // `ColourCheck` and `Codegen` already read the effect off the callee's
-        // arrow, so neither needs to know this form exists.
-        unify env.Registry targetType (TFun(flatTypes, retType, demandedEffect env targetType))
-
-        retType,
-        { Type = retType
-          Range = r
-          Node =
-            TApply(
-                typedTarget,
-                (fixedTyped |> List.map snd) @ [ restNode ],
-                keywordTyped |> List.map (fun (n, (_, te)) -> n, te)
-            ) }
 
     | EApp(target, args, r) ->
-        let targetType, typedTarget = infer env target
+        inferGeneralApp env target args r
 
-        // Look up FunMeta if the target is a known identifier
-        let funMeta =
-            match target with
-            | EIdent(name, _) -> Map.tryFind name env.FunMetas
-            | _ -> None
-
-        let isDeclaredKw kwName =
-            match funMeta with
-            | Some meta -> meta.KeywordParams |> List.exists (fun (k, _) -> k = kwName)
-            | None -> false
-
-        /// The type the callee declares for positional argument `i`, when there
-        /// is one worth pushing into the argument.
-        ///
-        /// Only a list or vec literal asks: it is the one argument shape whose
-        /// *elements* need the expected type before they can be inferred at
-        /// all, which is what makes `(run/lines '(pipe (ls "-l")))` work
-        /// without an annotated intermediate binding.
-        ///
-        /// Only the mandatory prefix, because past it the flat parameter list
-        /// holds the keyword parameters in declaration order and then the rest
-        /// array, and neither lines up with an argument's position. And only a
-        /// parameter that is already something: an unbound metavariable is a
-        /// polymorphic parameter, `(map run/lines ...)`, which expects nothing
-        /// in particular and so has nothing to push.
-        let expectedParam (i: int) : HMType option =
-            let declared =
-                match prune env.Registry targetType with
-                | TFun(paramTys, _, _) when i < paramTys.Length ->
-                    match funMeta with
-                    | Some meta when i >= meta.MandatoryCount -> None
-                    | _ -> Some(prune env.Registry paramTys[i])
-                | _ -> None
-
-            match declared with
-            | Some(TMeta _)
-            | None -> None
-            | Some paramTy -> Some paramTy
-
-        // Separate keyword args from positional args
-        // Keyword args appear as EKeyword("name") followed by a value expr when matching a declared keyword parameter
-        let rec splitArgs positional keywords remaining =
-            match remaining with
-            | [] -> List.rev positional, List.rev keywords
-            | EKeyword(kwName, _) :: value :: rest when isDeclaredKw kwName ->
-                splitArgs positional ((kwName, value) :: keywords) rest
-            | EKeyword(kwName, kr) :: [] when isDeclaredKw kwName ->
-                failwithf $"Keyword argument '#:%s{kwName}' is missing a value at %s{Lexer.formatPos kr}"
-            | arg :: rest -> splitArgs (arg :: positional) keywords rest
-
-        let positionalExprs, keywordExprs = splitArgs [] [] args
-
-        // Positional arguments are inferred in two passes, lambdas last. A
-        // lambda's parameter types come from what the callee declares for its
-        // position, and `expectedParam` can only report that once the other
-        // arguments have pinned it: in `(vec-for-each (fun (r) ...) kept)` it is
-        // `kept` that says what `r` is, and the body cannot be inferred before
-        // then.
-        //
-        // Results are written back into their source position, because codegen
-        // emits the arguments in the order they are listed and they may have
-        // side effects.
-        let slots: (HMType * TypedExpr) option array = Array.create (List.length positionalExprs) None
-
-        /// Pin an argument to the parameter it fills, ahead of the flat
-        /// unification below, so that a later lambda argument can read its own
-        /// parameter types off the callee's arrow.
-        ///
-        /// The parameter goes first, because `unifyEffect` reads its first
-        /// argument as the expectation: the other way round an ordinary
-        /// function passed to a `-bjo->` parameter is reported as its opposite
-        /// and refused.
-        ///
-        /// A parameter still waiting on an implementor is skipped, the same
-        /// exception `unify` makes for `TFun`: in `(fold + 0 v)` the folding
-        /// function mentions `Foldable`'s associated type, which nothing knows
-        /// until `v` has been inferred.
-        let pinToParam (i: int) (argType: HMType) =
-            match expectedParam i with
-            | Some paramTy when not (awaitsImplementor env.Registry paramTy || awaitsImplementor env.Registry argType) ->
-                unify env.Registry paramTy argType
-            | _ -> ()
-
-        positionalExprs
-        |> List.iteri (fun i arg ->
-            match arg with
-            | EFun _ -> ()
-            | _ ->
-                let argType, typedArg =
-                    match arg, expectedParam i with
-                    | (EList _ | EVec _ | EArray _), Some paramTy -> inferChecked paramTy env arg
-                    | _ -> infer env arg
-
-                pinToParam i argType
-                slots[i] <- Some(argType, typedArg))
-
-        let keywordArgs = keywordExprs |> List.map (fun (kwName, value) -> kwName, infer env value)
-
-        positionalExprs
-        |> List.iteri (fun i arg ->
-            match arg with
-            | EFun _ ->
-                let inferred =
-                    match expectedParam i with
-                    | Some paramTy -> inferChecked paramTy env arg
-                    | None -> infer env arg
-
-                slots[i] <- Some inferred
-            | _ -> ())
-
-        let positionalArgs = slots |> Array.toList |> List.map Option.get
-        let retType = freshMeta ()
-
-        match funMeta with
-        | Some meta when not keywordArgs.IsEmpty || meta.RestParam.IsSome || not meta.KeywordParams.IsEmpty ->
-            // Structured call: separate mandatory, keyword, and rest args
-            let mandatoryArgs = positionalArgs |> List.take (min positionalArgs.Length meta.MandatoryCount)
-            let restArgs = positionalArgs |> List.skip (min positionalArgs.Length meta.MandatoryCount)
-
-            // Build the flat arg types for unification (mandatory + keyword in decl order + rest array)
-            //
-            // Each keyword and rest slot gets a *fresh* metavariable rather than
-            // the type recorded in `FunMeta`. The recorded type came from the
-            // declaration and still carries that declaration's rigid `TVar`s, so
-            // unifying an argument against it directly is what used to make
-            // `(: f (-> #:rest %a %a))` unusable: the first call tried to unify
-            // `int` with `'a` itself instead of with a fresh instance of it.
-            //
-            // The flat unification against `targetType` below is what gives
-            // these slots their real types. `targetType` came from `infer`, which
-            // instantiates the scheme, so its parameters are already fresh per
-            // call site. `FunMeta` is then consulted only for the call's *shape*
-            // — how many mandatory parameters there are, which keywords exist,
-            // and whether there is a rest parameter at all.
-            let kwArgTypes =
-                meta.KeywordParams |> List.map (fun (kwName, _) ->
-                    let slot = freshMeta ()
-
-                    match keywordArgs |> List.tryFind (fun (n, _) -> n = kwName) with
-                    | Some (_, (valType, _)) -> unify env.Registry valType slot
-                    | None -> ()  // keyword not provided, will use default
-
-                    slot)
-
-            // The rest arguments become *one* argument: an array. That is what
-            // the flat type says — `#:rest` resolves to a single `(Array %a)`
-            // parameter — and the typed tree has to agree with it.
-            //
-            // It used to hand `TApply` the rest arguments spread flat, N of
-            // them against a type with one parameter, and rely on C# `params`
-            // to put them back together at the call site. That works only when
-            // the callee is emitted as a real `params` method. Alias the
-            // function to a value — `(def f list)` — and the callee is a
-            // `Func<int[], SchemeList<int>>` field, delegates have no `params`
-            // semantics, and `f(1, 2, 3)` fails to compile in C# after passing
-            // the type checker. Materializing the array here makes the two
-            // spellings the same call. C# still accepts an explicit array for a
-            // `params` parameter, so the direct case is unaffected.
-            //
-            // `LoopLowering` already builds the same node for a tail call into
-            // a rest parameter.
-            let restArgTypes, restTypedArgs =
-                match meta.RestParam with
-                | Some _ ->
-                    let elemSlot = freshMeta ()
-
-                    for (rt, _) in restArgs do
-                        unify env.Registry rt elemSlot
-
-                    let arrayType = TCon("Array", [elemSlot])
-
-                    [ arrayType ],
-                    [ ({ Type = arrayType
-                         Range = r
-                         Node = TArrayMake(restArgs |> List.map snd) }: TypedExpr) ]
-                | None ->
-                    if not restArgs.IsEmpty then
-                        failwithf $"Too many arguments at %s{Lexer.formatPos r}"
-                    [], []
-
-            let allFlatTypes = (mandatoryArgs |> List.map fst) @ kwArgTypes @ restArgTypes
-            unify env.Registry targetType (TFun(allFlatTypes, retType, demandedEffect env targetType))
-
-            let typedKwArgs =
-                keywordArgs |> List.map (fun (n, (_, te)) -> (n, te))
-
-            // Positional args in TApply = mandatory + the rest array (keyword
-            // args are separate)
-            let positionalTypedArgs =
-                (mandatoryArgs |> List.map snd) @ restTypedArgs
-
-            retType,
-            { Type = retType
-              Range = r
-              Node = TApply(typedTarget, positionalTypedArgs, typedKwArgs) }
-
-        | _ ->
-            // No FunMeta or no keyword args: simple positional call
-            if not keywordArgs.IsEmpty then
-                failwithf $"Keyword arguments used on a function without keyword parameter metadata at %s{Lexer.formatPos r}"
-
-            unify
-                env.Registry
-                targetType
-                (TFun(positionalArgs |> List.map fst, retType, demandedEffect env targetType))
-
-            retType,
-            { Type = retType
-              Range = r
-              Node = TApply(typedTarget, positionalArgs |> List.map snd, []) }
 
     // Deliberately not generalized — see `ELetMono`. The value is inferred
     // first, exactly as `let` does, so the binding keeps its concrete head; only
@@ -1581,199 +484,16 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
           Node = TLet(name, false, noParams, typedVal, typedBody) }
 
     | ELet(name, isFun, args, typeAnn, value, body, r) ->
-        let inferBinding () =
-            // For a function-shaped binding `typeAnn` is the *return* type, and is
-            // already accounted for by the shape; for a value binding it is the
-            // binding's own type.
-            let shape = if isFun then Some(localFunShape env args typeAnn) else None
+        inferLet env name isFun args typeAnn value body r
 
-            let valType, typedVal, localFun =
-                match shape with
-                | Some s ->
-                    let lambda, lf = inferLocalFunBody env s args r value
-                    s.FunType, lambda, lf
-                | None ->
-                    // When the binding has a type annotation, resolve it first and
-                    // pass it down as the expected type.  For list / vec literals
-                    // this enables per-element constructor injection before any
-                    // element-level unification can fail.
-                    let t, typed =
-                        match typeAnn with
-                        | Some tAnn ->
-                            let expectedType = resolveTypeAnnotation env.Registry tAnn
-                            inferChecked expectedType env value
-                        | None -> infer env value
-
-                    match typeAnn with
-                    | Some tAnn -> unify env.Registry t (resolveTypeAnnotation env.Registry tAnn)
-                    | None -> ()
-
-                    t, typed, noParams
-
-            shape, valType, typedVal, localFun
-
-        // One level in just for the binding that is actually generalized. A
-        // value is bound monomorphically, and its cells belong in the enclosing
-        // level — if we raised it here the next sibling binding would quantify them.
-        let shape, valType, typedVal, localFun =
-            if isFun then atLevel inferBinding else inferBinding ()
-
-        // Only a *function*-shaped local binding is generalized.
-        //
-        // The value restriction would admit more — a bare lambda is a syntactic
-        // value — but C# is the limit here rather than soundness. A local
-        // binding that is not a function is emitted as an ordinary local
-        // variable, and neither a delegate nor a `SchemeList<T>` local can be
-        // generic: there is nowhere for the type parameter to be declared.
-        // Quantifying one emitted `Func<T_t__1, T_t__1> id = ...` naming a
-        // parameter the enclosing method never declared.
-        //
-        // A local `defun` is not affected: it becomes a C# local function,
-        // which may have type parameters of its own.
-        let scheme =
-            if isFun then generalizeLocal env valType
-            else Scheme([], [], valType)
-
-        let localEnv = addBinding name { Scheme = scheme; IsMutable = false } env
-
-        // Keyword and rest metadata travels with the name, or a call that
-        // passes a keyword argument — or omits an optional one — has nothing to
-        // resolve against and is checked against the flat arrow instead.
-        let localEnv =
-            match shape with
-            | Some s -> { localEnv with FunMetas = Map.add name s.Meta localEnv.FunMetas }
-            | None -> localEnv
-
-        let bodyType, typedBody = infer localEnv body
-
-        bodyType,
-        { Type = bodyType
-          Range = r
-          Node = TLet(name, isFun, localFun, typedVal, typedBody) }
 
     | ELetRec(bindings, body, r) ->
-        let bindingMetas = bindings |> List.map (fun (n, _, _, _, _) -> n, freshMeta ())
+        inferLetRec env bindings body r
 
-        // Every member's shape is read before any body is checked. Two reasons,
-        // and they are the same reason at two scales: a mutually recursive
-        // group's earlier member has already said what this one's arguments
-        // are, and a body checked against bare metavariables is fatal rather
-        // than merely imprecise for an associated type — a projection needs a
-        // concrete head and cannot be deferred into a unification. A recursive
-        // call that passes a keyword argument needs the `FunMeta` for the same
-        // reason it does at the top level.
-        let shapes =
-            bindings
-            |> List.map (fun (_, isFun, args, typeAnn, _) ->
-                if isFun then Some(localFunShape env args typeAnn) else None)
-
-        List.iter2
-            (fun shape (_, expected) ->
-                match shape with
-                | Some(s: LocalFunShape) -> unify env.Registry s.FunType expected
-                | None -> ())
-            shapes
-            bindingMetas
-
-        let withMetas (start: Env) =
-            List.fold2
-                (fun (acc: Env) shape (n, _) ->
-                    match shape with
-                    | Some(s: LocalFunShape) -> { acc with FunMetas = Map.add n s.Meta acc.FunMetas }
-                    | None -> acc)
-                start
-                shapes
-                bindingMetas
-
-        let recEnv =
-            bindingMetas
-            |> List.fold
-                (fun acc (n, t) ->
-                    addBinding
-                        n
-                        { Scheme = Scheme([], [], t)
-                          IsMutable = false }
-                        acc)
-                env
-            |> withMetas
-
-        let typedBindings =
-            List.zip3 bindings shapes bindingMetas
-            |> List.map (fun ((name, isFun, args, typeAnn, expr), shape, (_, expectedType)) ->
-                let valType, typedVal, localFun =
-                    match shape with
-                    | Some s ->
-                        let lambda, lf = inferLocalFunBody recEnv s args r expr
-                        s.FunType, lambda, lf
-                    | None ->
-                        let t, typed = infer recEnv expr
-
-                        // A value binding's annotation is its own type. A
-                        // function's is its return type, and the shape has
-                        // already unified it with the body.
-                        match typeAnn with
-                        | Some tAnn -> unify env.Registry t (resolveTypeAnnotation env.Registry tAnn)
-                        | None -> ()
-
-                        t, typed, noParams
-
-                unify env.Registry valType expectedType
-                name, isFun, localFun, typedVal)
-
-        // No own level for the group, unlike `ELet`. Each member
-        // is bound monomorphically in `recEnv` while the bodies are checked, so
-        // the cells belong to the enclosing level and `generalizeLocal` below
-        // quantifies nothing beyond what the annotations already named. A
-        // recursive local function is monomorphic; see `057_local_generalization`.
-        let finalEnv =
-            List.zip bindings bindingMetas
-            |> List.fold
-                // Function-shaped members only, for the reason `ELet` gives:
-                // anything else becomes a plain local and cannot carry a type
-                // parameter.
-                (fun acc ((_, isFun, _, _, _), (n, t)) ->
-                    addBinding
-                        n
-                        { Scheme = (if isFun then generalizeLocal recEnv t else Scheme([], [], t))
-                          IsMutable = false }
-                        acc)
-                env
-            |> withMetas
-
-        let bodyType, typedBody = infer finalEnv body
-
-        bodyType,
-        { Type = bodyType
-          Range = r
-          Node = TLetRec(typedBindings, typedBody) }
 
     | ELetMutable(name, typeAnn, value, body, r) ->
-        let valType, typedVal = infer env value
-        
-        match typeAnn with
-        | Some tAnn ->
-            let expectedType = resolveTypeAnnotation env.Registry tAnn
-            unify env.Registry valType expectedType
-        | None -> ()
+        inferLetMutable env name typeAnn value body r
 
-        // Deliberately not generalized. A mutable binding is a cell, and a
-        // *polymorphic* cell is the value restriction's classic hole: each use
-        // would instantiate a fresh variable, so a `set!` at one type and a read
-        // at another would both check and disagree about what is in there. If it
-        // can be assigned, its type has to be settled.
-        let localEnv =
-            addBinding
-                name
-                { Scheme = Scheme([], [], valType)
-                  IsMutable = true }
-                env
-
-        let bodyType, typedBody = infer localEnv body
-
-        bodyType,
-        { Type = bodyType
-          Range = r
-          Node = TLetMutable(name, typedVal, typedBody) }
 
     | ESet(name, value, r) ->
         let valType, typedVal = infer env value
@@ -1957,163 +677,16 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
           Node = TTryCatch(tBody, exceptions) }
 
     | ESeq(body, r) ->
-        let elemType = freshMeta ()
+        inferSeq env body r
 
-        // The body is run for its yields; whatever its last form evaluates to is
-        // discarded, exactly as in `when`. A sequence's *value* is its elements,
-        // so there is nothing for the body's own type to agree with.
-        let _, tBody = infer (withSeqElement elemType env) body
 
-        let seqType = TCon("Seq", [ elemType ])
-
-        seqType,
-        { Type = seqType
-          Range = r
-          Node = TSeq tBody }
-
-    // `(bjo (f x y))`. The call is checked exactly as it would be if it were
-    // written where it stands — same arguments, same arity, same overloads —
-    // and only its *result* is repackaged as a promise. Nothing about spawning
-    // changes what the call means, which is the point of the direct style.
-    //
-    // The body may be a call to a bjoroutine or to an ordinary function; both
-    // are useful and both compile to the same thing. `ColourCheck` allows a
-    // yield point in there whatever the enclosing colour, because the spawned
-    // body becomes an async lambda of its own.
-    // Only `bjo` hands the promise back. The three `spawn` forms are `Unit`,
-    // because the scope is holding the child and nothing else needs a handle —
-    // which is what keeps them out of `MustUse`'s way without giving `bjo` an
-    // exemption from it.
     | EBjo(call, kind, r) ->
-        let resultType, tCall = infer env call
+        inferBjo env call kind r
 
-        let formType =
-            match kind with
-            | SpawnScoped -> TCon("Promise", [ resultType ])
-            | SpawnUnit
-            | SpawnDaemon
-            | SpawnDetached -> TypeConstants.unitType
 
-        formType,
-        { Type = formType
-          Range = r
-          Node = TBjo(tCall, kind) }
-
-    // `(task->event (fetch url))`. The event of making an async .NET call.
-    //
-    // The operand is *not* inferred as an expression, which is the whole point
-    // of the special form: everywhere else `(fetch url)` means "await this",
-    // and here it has to mean "hand me the task, unstarted". So the call is
-    // taken apart and the pieces are re-resolved — same overload rules, same
-    // arguments, one difference in what comes out.
-    //
-    // §7.3, and the reason `Cancellable` rather than `FromTask` is the only
-    // form the language can reach: a task handed over already running cannot be
-    // withdrawn from a `choose`, so losing would drop the result and leave the
-    // work going. Here the branch owns a token, and losing cancels it.
     | ETaskEvent(call, r) ->
-        let where = Lexer.formatPos r
+        inferTaskEvent env call r
 
-        let name, args =
-            match call with
-            | EApp(EIdent(n, _), a, _) -> n, a
-            | _ ->
-                failwithf
-                    $"Type Error at %s{where}: task->event takes a call to a method imported #:async. To turn a bjoroutine into an event, spawn it and join the promise — (promise-join (bjo (f x))) — though note that losing a choose on a join stops you listening without stopping the work."
-
-        let info =
-            match Map.tryFind name env.Registry.ClrExterns with
-            | Some i when not (Map.containsKey name env.Bindings) -> i
-            | _ ->
-                failwithf
-                    $"Type Error at %s{where}: '%s{name}' is not a method imported by import/extern, so task->event has no task to make an event of. For a bjoroutine, use (promise-join (bjo (%s{name} ...))) instead."
-
-        if info.Kind <> ExternMethod then
-            failwithf
-                $"Type Error at %s{where}: '%s{name}' reads or writes the property '%s{info.ClrType}.%s{info.MemberName}', which produces no task. task->event takes a call to a method imported #:async."
-
-        if not info.IsAsync then
-            failwithf
-                $"Type Error at %s{where}: '%s{name}' names '%s{info.ClrType}.%s{info.MemberName}', which is imported without #:async, so calling it produces no task to wait for. An ordinary .NET call is made where it is written and there is nothing to race."
-
-        // The branch's own token is what makes losing mean something. Without a
-        // parameter to put it in there is no difference between this and
-        // `FromTask`, which §7.3 keeps out of the language on purpose.
-        if info.Uncancellable then
-            failwithf
-                $"Type Error at %s{where}: '%s{name}' is imported #:uncancellable, so a losing choose branch could not stop it — the work would carry on with nobody listening, which is exactly what task->event exists to prevent. Await it directly instead, or find an overload that takes a CancellationToken."
-
-        let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrType
-        let allTypedArgs = args |> List.map (infer env)
-
-        // An instance member's receiver is the first argument here as it is
-        // everywhere else. It is evaluated where the form stands, like the other
-        // operands, and only the *call* is deferred to the sync.
-        let receiver, typedArgs =
-            if info.IsInstance then
-                match allTypedArgs with
-                | (_, recv) :: rest ->
-                    Some(reconcileForeignArgs env.Registry [ recv ] [ TCon(info.ClrType, []) ] |> List.head), rest
-                | [] ->
-                    failwithf
-                        $"Type Error at %s{where}: '%s{name}' names the instance method '%s{info.ClrType}.%s{info.MemberName}', so its first argument is the object to call it on, but it was given none."
-            else
-                None, allTypedArgs
-
-        let argTypes = typedArgs |> List.map fst
-
-        if not (DotNetInterop.hasTokenOverload (not info.IsInstance) clrType info.MemberName (Some(argTypes.Length + 1))) then
-            failwithf
-                $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MemberName}' has no overload taking these %d{argTypes.Length} argument(s) and a System.Threading.CancellationToken, so this branch would have no way to stop the work it started."
-
-        let resolved =
-            resolveExternMethod where info clrType (argTypes @ [ DotNetInterop.cancellationTokenType ])
-
-        // §7.2's third rule, enforced where it bites. A `ValueTask` may be
-        // consumed exactly once, so it cannot become an event: the conversion
-        // would have to call `.AsTask()` first, which allocates the thing the
-        // `ValueTask` existed to avoid.
-        if DotNetInterop.isValueTask resolved.RawReturnType then
-            failwithf
-                $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MemberName}' returns a ValueTask, which may only be consumed once and therefore cannot become an event. Call it directly — awaiting a ValueTask is fine and is what it is for."
-
-        let awaited =
-            match DotNetInterop.awaitedResultType resolved.RawReturnType with
-            | Some t -> t
-            | None ->
-                failwithf
-                    $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MemberName}' returns %s{resolved.RawReturnType.Name}, which is not a task."
-
-        let visibleParams = resolved.ParameterTypes |> List.truncate (resolved.ParameterTypes.Length - 1)
-        let coercedArgs = reconcileForeignArgs env.Registry (typedArgs |> List.map snd) visibleParams
-
-        let declaredParams =
-            match receiver with
-            | Some _ -> TCon(info.ClrType, []) :: visibleParams
-            | None -> visibleParams
-
-        match info.DeclaredType with
-        | Some declared -> unify env.Registry declared (tfun declaredParams awaited)
-        | None -> ()
-
-        // A non-generic `Task` carries no result, and `Result<E, void>` is not
-        // a type C# has — so the event carries the unit, exactly as a `void`
-        // call's `#:exceptions` wrapper does.
-        let awaitIsVoid = awaited = TypeConstants.voidType
-        let payload = if awaitIsVoid then TypeConstants.unitType else awaited
-
-        // Failure is a value here for the same reason it is at a join: this
-        // runs at sync time, on the fiber's stack rather than on the one that
-        // completed the task, and a raise there would land in the wrong place.
-        // Cancellation arrives as one of those values — a losing branch's
-        // `Err` is a `TaskCanceledException` nobody ever looks at.
-        let eventType =
-            TCon("Event", [ TCon("Result", [ TCon("System.Exception", []); payload ]) ])
-
-        eventType,
-        { Type = eventType
-          Range = r
-          Node = TTaskEvent(receiver, resolved.DeclaringType, info.MemberName, coercedArgs, payload, awaitIsVoid) }
 
     | EYield(value, r) ->
         let elemType = currentSeqElement env "yield" r
@@ -2137,46 +710,8 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
 
 
     | EMatch(target, clauses, r) ->
-        let targetType, typedTarget = infer env target
-        let returnType = freshMeta ()
+        inferMatch env target clauses r
 
-        let typedClauses =
-            clauses
-            |> List.map (fun (pat, guard, body) ->
-                let typedPat, boundVars = checkPattern inferChecked env targetType pat
-
-                let boundEnv =
-                    Map.fold
-                        (fun acc n t ->
-                            addBinding
-                                n
-                                { Scheme = Scheme([], [], t)
-                                  IsMutable = false }
-                                acc)
-                        env
-                        boundVars
-
-                let typedGuard =
-                    match guard with
-                    | Some g ->
-                        let gType, tg = infer boundEnv g
-                        unify env.Registry gType TypeConstants.boolType
-                        Some tg
-                    | None -> None
-
-                let bodyType, typedBody = infer boundEnv body
-
-                unify env.Registry bodyType returnType
-
-                { Pattern = typedPat
-                  Guard = typedGuard
-                  Body = typedBody }
-                : TMatchClause)
-
-        returnType,
-        { Type = returnType
-          Range = r
-          Node = TMatch(typedTarget, typedClauses) }
 
     | EGetField(targetExpr, field, r) ->
         let targetType, typedTarget = infer env targetExpr
@@ -2198,92 +733,12 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
           Node = TGetField(typedTarget, field) }
 
     | ERecordUpdate(targetName, fields, r) ->
-        let targetBinding = lookup env targetName
-        let targetType, _, _ = instantiate env.Registry targetBinding.Scheme
-        
-        let recordTypeName =
-            if fields.IsEmpty then
-                failwithf $"Type Error at %s{formatPos r}: a record-set has to update at least one field."
-
-            recordTypeOfField env.Registry targetType (fst fields.Head) r
+        inferRecordUpdate env targetName fields r
 
 
-        let instantiatedRecordType, _, expectedFieldsInstantiated =
-            instantiateRecord env.Registry recordTypeName
-
-        unify env.Registry targetType instantiatedRecordType
-
-        let typedFields =
-            fields |> List.map (fun (name, expr) ->
-                let exprType, typedExpr = infer env expr
-                match Map.tryFind name expectedFieldsInstantiated with
-                | Some expectedType -> unify env.Registry exprType expectedType
-                | None -> failwithf $"Type Error: Field '%s{name}' does not belong to record '%s{recordTypeName}' at %s{Lexer.formatPos r}"
-                name, typedExpr)
-
-        targetType,
-        { Type = targetType
-          Range = r
-          Node = TRecordUpdate(targetName, typedFields) }
-
-    // `(record-set! r (field value) ...)` — the write in place.
-    //
-    // Shaped like `ERecordUpdate` above and checked like it, plus the two
-    // questions a write has that a copy does not: is this field writable, and
-    // is this module allowed to write it.
     | ERecordSet(targetName, fields, r) ->
-        let targetBinding = lookup env targetName
-        let targetType, _, _ = instantiate env.Registry targetBinding.Scheme
+        inferRecordSet env targetName fields r
 
-        // Non-empty by construction — the parser refuses a `record-set!` that
-        // names no field — so the head is safe to resolve the type from.
-        let recordTypeName = recordTypeOfField env.Registry targetType (fst fields.Head) r
-
-        let instantiatedRecordType, _, expectedFieldsInstantiated =
-            instantiateRecord env.Registry recordTypeName
-
-        unify env.Registry targetType instantiatedRecordType
-
-        // A field is writable only where it was declared. The check is on the
-        // *record's* module rather than on the binding's: a value of a foreign
-        // record type reaches here by every ordinary route — an argument, a
-        // field of something local — and none of them may write it.
-        if not (declaredHere env.CurrentModule recordTypeName) then
-            let shown = Naming.showTypeName recordTypeName
-
-            failwithf
-                $"Type Error at %s{formatPos r}: '%s{shown}' was declared in another module, so this one may not write its fields. A module that means its state to be written from outside exports functions that write it."
-
-        let mutableFields = mutableFieldsOf env.Registry recordTypeName
-
-        let typedFields =
-            fields |> List.map (fun (name, expr) ->
-                let exprType, typedExpr = infer env expr
-
-                match Map.tryFind name expectedFieldsInstantiated with
-                | Some expectedType -> unify env.Registry exprType expectedType
-                | None ->
-                    failwithf
-                        $"Type Error at %s{formatPos r}: field '%s{name}' does not belong to record '%s{Naming.showTypeName recordTypeName}'."
-
-                if not (List.contains name mutableFields) then
-                    let writable =
-                        if mutableFields.IsEmpty then "It has no mutable fields."
-                        else "Its mutable fields are: " + String.concat ", " mutableFields + "."
-
-                    failwithf
-                        $"Type Error at %s{formatPos r}: field '%s{name}' of '%s{Naming.showTypeName recordTypeName}' is not mutable, so it cannot be written in place. Declare it (: %s{name} <type> #:mutable), or use record-set for a copy. %s{writable}"
-
-                name, typedExpr)
-
-        // Void, as every other write in the language is. The value it might
-        // have handed back — the record — is the same object either way, so
-        // returning it would only invite `(def r2 (record-set! r ...))` to read
-        // as though it were a copy.
-        TypeConstants.unitType,
-        { Type = TypeConstants.unitType
-          Range = r
-          Node = TRecordSet(targetName, typedFields) }
 
     | ECast(targetTypeAnnotation, expr, r) ->
         let targetType = resolveTypeAnnotation env.Registry targetTypeAnnotation
@@ -2293,60 +748,1693 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
           Range = r
           Node = TCast(typedExpr, targetType) }
 
-    // `(dyn ->str 42)` — packing a value into a trait box.
-    //
-    // The argument's type is represented by a hole metavariable, so whatever
-    // binds it binds the implementation. The obligation is queued just like a
-    // trait method call: the hole is prevented from being generalized
-    // prematurely, and resolving it pins the box. If it remains open,
-    // projections linger and the enclosing function receives the constraint as a
-    // `_dict_` parameter like any other trait usage.
     | EDynPack(writtenTrait, valueExpr, r) ->
-        let traitName = originalName env.Registry writtenTrait
+        inferDynPack env writtenTrait valueExpr r
 
-        let info =
-            match Map.tryFind traitName env.Registry.Traits with
-            | Some i -> i
+
+// `(ret e)` — an application of an escape some enclosing `with-return` put
+// in scope. Taken before the general application case, and before the
+// general `EIdent` below it, because an escape is not a value and there is
+// nothing in `Bindings` for either of them to find.
+//
+// Where it may *stand* was settled syntactically by `checkEscapeUses` when
+// the block was entered, so nothing here has to ask.
+and private inferEscapeCall (env: Env) (name: string) (args: Expr list) (r: Range) : HMType * TypedExpr =
+    let info = env.Escapes[name]
+
+    let typedValue =
+        match args with
+        | [] ->
+            // `(ret)` says the block produces nothing, which only a
+            // void-typed block can agree with.
+            unify env.Registry info.Result TypeConstants.unitType
+            None
+        | [ value ] ->
+            let valueType, typedValue = infer env value
+            unify env.Registry valueType info.Result
+            Some typedValue
+        | _ ->
+            failwithf
+                $"Type Error at %s{Lexer.formatPos r}: `%s{name}` leaves its block with one value or with none, and here it was given %d{List.length args}."
+
+    // Never yields a value, so it is given a fresh metavariable: it stands
+    // wherever a value of any type was wanted and constrains nothing there.
+    let resultType = freshMeta ()
+
+    resultType,
+    { Type = resultType
+      Range = r
+      Node = TReturn(info.Label, typedValue) }
+
+and private inferBindElse (env: Env) (clauses: (Pattern * Expr) list) (sequel: Expr) (elseBody: Expr) (r: Range) : HMType * TypedExpr =
+    // Clauses bind sequentially, so the environment is threaded through
+    // them: a later scrutinee sees what an earlier pattern bound.
+    let reversedClauses, boundEnv =
+        clauses
+        |> List.fold
+            (fun (acc, envAcc) (pat, scrutinee) ->
+                let scrutineeType, typedScrutinee = infer envAcc scrutinee
+                let typedPat, boundVars = checkPattern inferChecked envAcc scrutineeType pat
+
+                let envAcc' =
+                    Map.fold
+                        (fun inner n t ->
+                            addBinding
+                                n
+                                { Scheme = Scheme([], [], t)
+                                  IsMutable = false }
+                                inner)
+                        envAcc
+                        boundVars
+
+                (({ Pattern = typedPat
+                    Scrutinee = typedScrutinee }
+                  : TBindElseClause)
+                 :: acc,
+                 envAcc'))
+            ([], env)
+
+    // The sequel is the rest of the body, so the guard's own type is the
+    // sequel's — and so is the else body's. The two are the form's arms,
+    // exactly as an `if`'s are: whichever runs produces the whole form's
+    // value. A body that means to leave an enclosing block says so with a
+    // `(ret ...)`, which is an ordinary tail-position form here.
+    //
+    // The else body is inferred in `env`, not `boundEnv`: it runs because a
+    // clause failed, so nothing a clause would have bound is in scope.
+    let sequelType, typedSequel = infer boundEnv sequel
+    let elseType, typedElse = infer env elseBody
+
+    try
+        unify env.Registry elseType sequelType
+    with ex when Diagnostics.isDiagnostic ex ->
+        let shown =
+            DotNetInterop.showTypesTogether [ prune env.Registry elseType; prune env.Registry sequelType ]
+
+        // The `void` sequel is the mistake this form invites, and it is
+        // worth naming: it is what a body written for its effects leaves
+        // behind, and the else body that "returned a value" from it was
+        // relying on the escape this form no longer performs.
+        let hint =
+            if shown[1] = "void" then
+                "\nThe rest of the body produces nothing, so the else body may not produce anything either. If it was meant to leave the enclosing block, say so: `(ret ...)` naming an enclosing `with-return`, or `(panic! ...)`."
+            else
+                "\nThe else body is the form's other arm, as an `if`'s is — it does not leave the enclosing block by itself. To leave one, write it: `(ret ...)` naming an enclosing `with-return`, or `(panic! ...)`."
+
+        failwithf
+            $"Type Error at %s{Lexer.formatPos typedElse.Range}: a `def/else` else body produces the value of the whole form, and here it disagrees with the rest of the body:\n  the else body:        %s{shown[0]}\n  the rest of the body: %s{shown[1]}%s{hint}"
+
+    sequelType,
+    { Type = sequelType
+      Range = r
+      Node = TBindElse(List.rev reversedClauses, typedSequel, typedElse) }
+
+// `Class.Member` — a static field or property. This is how an enum value
+// such as `FileMode.Open` is written, and it is why `import/class` is
+// useful for a type that has no constructor at all.
+and private inferStaticMember (env: Env) (name: string) (r: Range) : HMType * TypedExpr =
+    let split = name.LastIndexOf "."
+    let alias = name.Substring(0, split)
+    let memberName = name.Substring(split + 1)
+    let info = env.Registry.ClrClasses[alias]
+    let where = Lexer.formatPos r
+    let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrName
+    let memberType = DotNetInterop.resolveMemberRead where clrType memberName true
+
+    memberType,
+    { Type = memberType
+      Range = r
+      Node = TForeignStaticGet(info.ClrName, memberName, memberType) }
+
+// An `import/extern` name used as a *value* rather than applied.
+//
+// A .NET method group is not a value, so the only thing this can mean is a
+// lambda that calls it — which needs the parameter types before there are
+// any arguments to infer them from. That is what the declared signature is
+// for, and why it is required here and optional everywhere else.
+//
+// An accessor is the exception, and needs no signature: a property has no
+// overload set, so its type is known from the member alone. A *static*
+// accessor read is not even a lambda — the alias names the value, exactly as
+// `FileMode.Open` does.
+//
+// An ordinary binding of the same name wins. The extern registry is one flat
+// namespace shared by every module in the compilation, so without this an
+// alias published by some imported library would silently capture calls to a
+// function defined right here.
+and private inferExternValue (env: Env) (name: string) (r: Range) : HMType * TypedExpr =
+    let info = env.Registry.ClrExterns[name]
+    let where = Lexer.formatPos r
+    let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrType
+    let receiverType = TCon(info.ClrType, [])
+
+    // Named once: three of the four shapes below build a lambda over the
+    // receiver, and all of them have to agree on what its type is.
+    let identOf (n: string) (t: HMType) : TypedExpr =
+        { Type = t
+          Range = r
+          Node = TIdent(n, []) }
+
+    match info.Kind with
+    // A static read *is* the value, re-read wherever the name stands —
+    // `TForeignStaticGet` emits the member access itself, so a property like
+    // `DateTime.Now` still means "now" at each mention.
+    | ExternGet when not info.IsInstance ->
+        let memberType = DotNetInterop.resolveMemberRead where clrType info.MemberName true
+
+        memberType,
+        { Type = memberType
+          Range = r
+          Node = TForeignStaticGet(info.ClrType, info.MemberName, memberType) }
+
+    | ExternGet ->
+        let memberType = DotNetInterop.resolveMemberRead where clrType info.MemberName false
+        let recv = Gensym.fresh "__foreign"
+
+        let body: TypedExpr =
+            { Type = memberType
+              Range = r
+              Node = TDotPropertyGet(identOf recv receiverType, info.MemberName, memberType) }
+
+        let funType = tfun [ receiverType ] memberType
+
+        funType,
+        { Type = funType
+          Range = r
+          Node = TLambda([ recv ], body) }
+
+    | ExternSet ->
+        let memberType = DotNetInterop.resolveMemberWrite where clrType info.MemberName (not info.IsInstance)
+        let value = Gensym.fresh "__foreign"
+        let valueExpr = identOf value memberType
+
+        let paramNames, paramTypes, node =
+            if info.IsInstance then
+                let recv = Gensym.fresh "__foreign"
+
+                [ recv; value ],
+                [ receiverType; memberType ],
+                TDotPropertySet(identOf recv receiverType, info.MemberName, valueExpr)
+            else
+                [ value ], [ memberType ], TForeignStaticSet(info.ClrType, info.MemberName, valueExpr)
+
+        let body: TypedExpr =
+            { Type = TypeConstants.voidType
+              Range = r
+              Node = node }
+
+        let funType = tfun paramTypes TypeConstants.voidType
+
+        funType,
+        { Type = funType
+          Range = r
+          Node = TLambda(paramNames, body) }
+
+    | ExternMethod ->
+        // An async import is not a value either, and for a second reason on
+        // top of the method-group one: the eta-expansion would be an
+        // ordinary lambda whose body is a yield point, which is §3.1's
+        // higher-order restriction with a worse error message. Said here
+        // rather than left to `ColourCheck`, which would name a lambda the
+        // user never wrote.
+        if info.IsAsync then
+            failwithf
+                $"Type Error at %s{where}: '%s{name}' names the async .NET method '%s{info.ClrType}.%s{info.MemberName}', and calling it is a yield point, so it cannot be used as a value — the (fun ...) it would become may not suspend. Call it directly, or wrap the call in a bjoroutine of your own and pass that."
+
+        match info.GenericTypeArgs with
+        // A generic method as a value. The eta-expansion is built from the
+        // declared signature rather than from reflection, which is where a
+        // generic import's meaning lives anyway — and the lambda is at *one*
+        // instantiation, whatever the context settles it to, because a C#
+        // delegate cannot be generic.
+        | Some _ ->
+            let paramTypes, retType, typeArgs = instantiateGenericExtern env.Registry where info
+
+            let methodParams =
+                if info.IsInstance then List.tail paramTypes else paramTypes
+
+            let argNames = paramTypes |> List.map (fun _ -> Gensym.fresh "__foreign")
+            let argExprs: TypedExpr list = List.map2 identOf argNames paramTypes
+
+            let meta =
+                Some
+                    { DeclaringType = info.ClrType
+                      MethodName = info.MemberName
+                      ParameterTypes = methodParams
+                      ReturnType = retType
+                      TypeArguments = typeArgs
+                      IsStatic = not info.IsInstance
+                      Exceptions = info.Exceptions
+                      Await = false
+                      AmbientToken = false
+                      Blocking = info.IsBlocking }
+
+            let node =
+                if info.IsInstance then
+                    TDotMethodCall(List.head argExprs, info.MemberName, List.tail argExprs, meta)
+                else
+                    TForeignStaticCall(info.ClrType, info.MemberName, argExprs, meta)
+
+            let resultType = wrapForeignExceptions info.Exceptions retType
+
+            let body: TypedExpr =
+                { Type = resultType
+                  Range = r
+                  Node = node }
+
+            let funType = tfun paramTypes resultType
+
+            funType,
+            { Type = funType
+              Range = r
+              Node = TLambda(argNames, body) }
+
+        | None ->
+
+        match info.DeclaredType with
+        | Some(TFun(declaredParams, _, _)) ->
+            // The receiver of an instance member is the alias's first
+            // parameter and none of the method's, so the declared type is
+            // split before reflection sees it and rejoined afterwards.
+            let declaredReceiver, methodParamTypes =
+                if info.IsInstance then
+                    match declaredParams with
+                    | recv :: rest -> Some recv, rest
+                    | [] ->
+                        failwithf
+                            $"Type Error at %s{where}: '%s{name}' names the instance method '%s{info.ClrType}.%s{info.MemberName}', whose receiver is its first argument, but its declared type takes none."
+                else
+                    None, declaredParams
+
+            let resolved = resolveExternMethod where info clrType methodParamTypes
+            unifyForeignArgs env.Registry methodParamTypes resolved.ParameterTypes
+            declaredReceiver |> Option.iter (fun t -> unify env.Registry t receiverType)
+
+            let retType = wrapForeignExceptions info.Exceptions resolved.ReturnType
+            let argNames = resolved.ParameterTypes |> List.map (fun _ -> Gensym.fresh "__foreign")
+
+            // Annotated because `TypedExpr` and `TypedPattern` have the same
+            // three field names, and neither of these is in a position that
+            // says which one is meant.
+            let argExprs: TypedExpr list = List.map2 identOf argNames resolved.ParameterTypes
+
+            let paramNames, paramTypes, node =
+                if info.IsInstance then
+                    let recv = Gensym.fresh "__foreign"
+
+                    recv :: argNames,
+                    receiverType :: resolved.ParameterTypes,
+                    TDotMethodCall(
+                        identOf recv receiverType,
+                        info.MemberName,
+                        argExprs,
+                        Some(metadataOf resolved info.Exceptions)
+                    )
+                else
+                    argNames,
+                    resolved.ParameterTypes,
+                    TForeignStaticCall(
+                        resolved.DeclaringType,
+                        info.MemberName,
+                        argExprs,
+                        Some(metadataOf resolved info.Exceptions)
+                    )
+
+            let body: TypedExpr =
+                { Type = retType
+                  Range = r
+                  Node = node }
+
+            let funType = tfun paramTypes retType
+
+            funType,
+            { Type = funType
+              Range = r
+              Node = TLambda(paramNames, body) }
+        | _ ->
+            failwithf
+                $"Type Error at %s{where}: '%s{name}' names the .NET method '%s{info.ClrType}.%s{info.MemberName}', and a method group is not a value. To use it as one, give it a signature in its import/extern clause; otherwise call it directly."
+
+and private inferIdent (env: Env) (name: string) (r: Range) : HMType * TypedExpr =
+    let binding = lookup env name
+    let t, tArgs, constraints = instantiate env.Registry binding.Scheme
+
+    // A name with two emitted copies is colour-polymorphic, and its
+    // *reference* has to say so, not just its call.
+    //
+    // The binding is the ordinary copy's, so its arrow is `ESync`, and
+    // handing that to a `-?->` parameter bound the parameter's cell to
+    // `ESync` before anything had decided anything: `(port->list read-line
+    // p)` from a bjoroutine chose the ordinary reader and parked on every
+    // line, silently, while `(port->list (bjoroutine (q) (read-line q)) p)`
+    // suspended. Same call, and the difference was that one of them
+    // mentioned a colour — which is the thing this design exists to avoid.
+    //
+    // So the reference gets a cell of its own instead. Meeting a parameter
+    // declared `->` binds it to `ESync` exactly as before; meeting a `-?->`
+    // chains the two and leaves both open, and `EffectGraph` grounds the
+    // chain to the colour of the member the reference is written in.
+    let t =
+        match t with
+        | TFun(args, ret, ESync) when Map.containsKey name env.Registry.DoubleDefs ->
+            TFun(args, ret, freshEffect ())
+        | other -> other
+
+    t,
+    { Type = t
+      Range = r
+      Node = TIdent(name, tArgs) }
+
+// A trait method call, unless the name has been bound over.
+//
+// This used to dispatch on the name alone, before the environment was
+// consulted at all, so nothing a program wrote could intercept it: a local
+// called `next` or a parameter called `compare` was accepted, ignored, and
+// dead — and the program's own calls to it failed on arity, against the
+// programmer's line, naming a parameter they never wrote.
+//
+// `TraitMethodNames` is what distinguishes the method's own binding from a
+// binding over it, which `Bindings` cannot: both sit there under one name.
+// An inline trait's methods are not bound at all, hence the first half.
+and private inferTraitMethodCall (env: Env) (methodName: string) (args: Expr list) (r: Range) : HMType * TypedExpr =
+    let traitName = env.Registry.TraitMethods[methodName]
+
+    // Every argument is positional, keywords included. A trait method's
+    // shape is fixed by its trait and no trait declares a keyword
+    // parameter, so `#:foo` here can only be the keyword *value* — which
+    // `(= k #:foo)` is, now that `Keyword` has an `Eq` implementation. A
+    // call written as though it took keyword arguments fails on arity
+    // instead, which is what it is.
+    let typedArgs = args |> List.map (infer env)
+
+    let methodType, tref = traitCallType env traitName methodName r
+    let retType = freshMeta ()
+
+    // The effect is the method's own, copied rather than chosen — the same
+    // move the ordinary application makes with `demandedEffect`. Building
+    // this arrow with `tfun` spelled it `->` unconditionally, so a trait
+    // that declared `-bjo->` met its own call site and was told an ordinary
+    // function cannot be used where a bjoroutine is expected.
+    unify
+        env.Registry
+        methodType
+        (TFun(typedArgs |> List.map fst, retType, demandedEffect env methodType))
+
+    retType,
+    { Type = retType
+      Range = r
+      Node = TTraitCall(tref, typedArgs |> List.map snd, []) }
+
+// Record and struct construction: `(Car (brand "banana") (year 3000))`.
+//
+// It arrives as an ordinary application because nothing before this point
+// knows which names are record types — and so do the arguments, `(brand
+// "banana")` being indistinguishable from a call to `brand` until the head
+// is known. Both are reread here, where the registry can say so. The type
+// name is the constructor: no field set is ever searched for an owner, and
+// two records sharing a field name are no longer in each other's way.
+and private inferRecordConstruct (env: Env) (recordTypeName: string) (args: Expr list) (r: Range) : HMType * TypedExpr =
+    let writtenFields =
+        args
+        |> List.map (fun arg ->
+            match arg with
+            | EApp(EIdent(fieldName, _), [ value ], _) -> fieldName, value
+            | bad ->
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos (exprRange bad)}: '%s{recordTypeName}' is a record type, so each argument is one of its fields, written (field-name value).")
+
+    let instantiatedRecordType, expectedFields, expectedFieldsInstantiated =
+        instantiateRecord env.Registry recordTypeName
+
+    let fieldList = expectedFields |> List.map fst |> String.concat ", "
+
+    let provided =
+        (Map.empty, writtenFields)
+        ||> List.fold (fun acc (name, expr) ->
+            if Map.containsKey name acc then
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos r}: field '%s{name}' of '%s{recordTypeName}' is given twice."
+
+            let exprType, typedExpr = infer env expr
+
+            match Map.tryFind name expectedFieldsInstantiated with
+            | Some expectedType -> unify env.Registry exprType expectedType
             | None ->
                 failwithf
-                    $"Type Error at %s{Lexer.formatPos r}: '%s{writtenTrait}' is not a trait in scope, so (dyn %s{writtenTrait} ...) packs nothing."
+                    $"Type Error at %s{Lexer.formatPos (exprRange expr)}: '%s{recordTypeName}' has no field '%s{name}'. Its fields are: %s{fieldList}."
 
-        match info.DynSafe with
-        | Error why -> failwithf $"Type Error at %s{Lexer.formatPos r}: %s{why}"
-        | Ok() -> ()
+            Map.add name typedExpr acc)
 
-        let hole, typedValue = infer env valueExpr
+    // Declaration order, not the order the fields were written in: the
+    // constructor a record compiles to takes them positionally, so writing
+    // them out of order would otherwise silently swap two same-typed fields.
+    let orderedFields =
+        expectedFields
+        |> List.map (fun (name, _) ->
+            match Map.tryFind name provided with
+            | Some typedExpr -> name, typedExpr
+            | None ->
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos r}: '%s{recordTypeName}' is missing field '%s{name}'. Every field has to be given.")
 
-        let tref =
-            { Trait = traitName
-              Method = writtenTrait
-              Holes = [ hole ]
-              MethodType = tfun [ hole ] TypeConstants.unitType
-              MemberConstraints = []
-              Resolved = None }
+    instantiatedRecordType,
+    { Type = instantiatedRecordType
+      Range = r
+      Node = TRecordMake orderedFields }
 
-        pushWanted
-            { Trait = traitName
-              Method = writtenTrait
-              Kind = info.Kind
-              HoleArgs = [ hole, [] ]
-              Ref = tref
-              Range = r }
+// `(.Method target args...)` — an instance method call.
+and private inferDotMethod (env: Env) (name: string) (args: Expr list) (r: Range) : HMType * TypedExpr =
+    let methodName = name.Substring 1
+    let where = Lexer.formatPos r
 
-        // Associated types are never specified at packing time: they are
-        // resolved from the implementation chosen for the hole. `prune`
-        // resolves projections as soon as the hole becomes concrete, unifying
-        // with explicit annotations.
-        let dynType =
-            TCon(
-                Naming.dynTypeName traitName info.AssociatedTypes,
-                info.AssociatedTypes |> List.map (fun a -> TAssoc(traitName, a, hole))
-            )
+    match args with
+    | [] ->
+        failwithf
+            $"Type Error at %s{where}: '%s{name}' calls an instance method, so its first argument is the object to call it on, but it was given none."
+    | target :: rest ->
+        let targetType, typedTarget = infer env target
+        let clrTarget = receiverClrType where name targetType
 
-        dynType,
-        { Type = dynType
+        let typedArgs = rest |> List.map (infer env)
+        let argTypes = typedArgs |> List.map fst
+
+        settleLiterals argTypes
+        let resolved = DotNetInterop.resolveMethod where false clrTarget methodName argTypes
+
+        let coercedArgs =
+            reconcileForeignArgs env.Registry (typedArgs |> List.map snd) resolved.ParameterTypes
+
+        // Never exception-wrapped: `import/class` declares one signature —
+        // the constructor's — so there is nowhere to say what a method may
+        // raise, and wrapping it anyway would swallow exceptions nobody
+        // listed.
+        let retType = resolved.ReturnType
+
+        retType,
+        { Type = retType
           Range = r
-          Node = TDynPack(traitName, hole, typedValue) }
+          Node = TDotMethodCall(typedTarget, methodName, coercedArgs, Some(metadataOf resolved [])) }
+
+// `(ClassName. args...)` — construction.
+and private inferClassConstruct (env: Env) (name: string) (args: Expr list) (r: Range) : HMType * TypedExpr =
+    let alias = name.Substring(0, name.Length - 1)
+    let info = env.Registry.ClrClasses[alias]
+    let where = Lexer.formatPos r
+    let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrName
+
+    let typedArgs = args |> List.map (infer env)
+    let argTypes = typedArgs |> List.map fst
+
+    settleLiterals argTypes
+    let resolved = DotNetInterop.resolveConstructor where clrType argTypes
+
+    let coercedArgs =
+        reconcileForeignArgs env.Registry (typedArgs |> List.map snd) resolved.ParameterTypes
+
+    // The declared signature is enforced against the overload reflection
+    // chose, rather than used in place of it. Writing one down is how a
+    // reader of the source learns what the constructor takes without
+    // consulting the BCL; getting it wrong is an error rather than a
+    // silently ignored comment.
+    match info.CtorType with
+    | Some declared -> unify env.Registry declared (tfun resolved.ParameterTypes resolved.ReturnType)
+    | None -> ()
+
+    let retType = wrapForeignExceptions info.CtorExceptions resolved.ReturnType
+
+    let meta =
+        { ClrType = resolved.DeclaringType
+          ParameterTypes = resolved.ParameterTypes
+          Exceptions = info.CtorExceptions }
+
+    retType,
+    { Type = retType
+      Range = r
+      Node = TNewObject(resolved.DeclaringType, coercedArgs, Some meta) }
+
+// A .NET member named by `import/extern`, applied. As above, a binding of
+// the same name shadows the alias rather than the other way round.
+//
+// An instance member's receiver is the first argument and is taken off the
+// front here, so that everything below — overload selection, the threaded
+// token, a declared signature — works in the member's own parameters. It
+// rejoins as the receiver of a `TDotMethodCall`, which is the same node
+// `(.Method x ...)` produces; the difference is that this one arrived
+// through a clause that could say `#:async`.
+and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Range) : HMType * TypedExpr =
+    let info = env.Registry.ClrExterns[name]
+    let where = Lexer.formatPos r
+    let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrType
+    let receiverType = TCon(info.ClrType, [])
+
+    /// Splits the receiver off an instance member's argument list.
+    ///
+    /// The receiver is reconciled like an argument rather than unified with
+    /// the declaring type, so that a subclass reaches a member declared on
+    /// its base: the upcast is written into the tree exactly as a widening
+    /// argument's is, which is also what keeps the C# that reads the
+    /// generated call resolving it the same way.
+    let takeReceiver (typedArgs: (HMType * TypedExpr) list) =
+        match typedArgs with
+        | (_, recv) :: rest ->
+            let coerced =
+                reconcileForeignArgs env.Registry [ recv ] [ receiverType ] |> List.head
+
+            coerced, rest
+        | [] ->
+            failwithf
+                $"Type Error at %s{where}: '%s{name}' names the instance member '%s{info.ClrType}.%s{info.MemberName}', so its first argument is the object to use it on, but it was given none."
+
+    match info.Kind with
+    // A property read. There is no overload set and no conversion to make:
+    // the member has one type, and the only thing the call site supplies is
+    // the receiver.
+    | ExternGet ->
+        let typedArgs = args |> List.map (infer env)
+
+        if not info.IsInstance then
+            failwithf
+                $"Type Error at %s{where}: '%s{name}' reads the static property '%s{info.ClrType}.%s{info.MemberName}', so it is a value rather than a call. Write it bare, as '%s{name}'."
+
+        let receiver, rest = takeReceiver typedArgs
+
+        if not rest.IsEmpty then
+            failwithf
+                $"Type Error at %s{where}: '%s{name}' reads a property, so it takes exactly one argument — the object to read it from — but was given %d{args.Length}."
+
+        let memberType = DotNetInterop.resolveMemberRead where clrType info.MemberName false
+
+        match info.DeclaredType with
+        | Some declared -> unify env.Registry declared (tfun [ receiverType ] memberType)
+        | None -> ()
+
+        memberType,
+        { Type = memberType
+          Range = r
+          Node = TDotPropertyGet(receiver, info.MemberName, memberType) }
+
+    // A property write. Void, like `set!`, and for the same reason: the
+    // value assigned is not what the form is for, and handing it back would
+    // make `(set-length! sb n)` usable as an expression that quietly has a
+    // value.
+    | ExternSet ->
+        let typedArgs = args |> List.map (infer env)
+        let memberType = DotNetInterop.resolveMemberWrite where clrType info.MemberName (not info.IsInstance)
+
+        let receiver, rest =
+            if info.IsInstance then
+                let recv, rest = takeReceiver typedArgs
+                Some recv, rest
+            else
+                None, typedArgs
+
+        let value =
+            match rest with
+            | [ v ] -> reconcileForeignArgs env.Registry [ snd v ] [ memberType ] |> List.head
+            | _ ->
+                let wanted = if info.IsInstance then "the object to write it on and the value" else "the value"
+
+                failwithf
+                    $"Type Error at %s{where}: '%s{name}' writes a property, so it takes %s{wanted}, but was given %d{args.Length} argument(s)."
+
+        let declaredParams =
+            match receiver with
+            | Some _ -> [ receiverType; memberType ]
+            | None -> [ memberType ]
+
+        match info.DeclaredType with
+        | Some declared -> unify env.Registry declared (tfun declaredParams TypeConstants.voidType)
+        | None -> ()
+
+        let node =
+            match receiver with
+            | Some recv -> TDotPropertySet(recv, info.MemberName, value)
+            | None -> TForeignStaticSet(info.ClrType, info.MemberName, value)
+
+        TypeConstants.voidType,
+        { Type = TypeConstants.voidType
+          Range = r
+          Node = node }
+
+    // A generic method, applied. There is no overload to choose from the
+    // arguments here: the import already chose one, against the declared
+    // signature, and solved its type arguments. So this is an ordinary
+    // polymorphic call — instantiate, unify, done — and the only thing that
+    // makes it foreign is where the body ends up.
+    | ExternMethod when info.GenericTypeArgs.IsSome ->
+        let paramTypes, retType, typeArgs = instantiateGenericExtern env.Registry where info
+
+        if args.Length <> paramTypes.Length then
+            let what =
+                if info.IsInstance then
+                    $"the object to use it on and %d{paramTypes.Length - 1} argument(s)"
+                else
+                    $"%d{paramTypes.Length} argument(s)"
+
+            failwithf
+                $"Type Error at %s{where}: '%s{name}' takes %s{what}, but was given %d{args.Length}."
+
+        let typedArgs = args |> List.map (infer env)
+
+        // Unified rather than scored. A declared signature is not a
+        // candidate to be ranked against others — it is what the alias
+        // *means* — so an argument that does not fit is a type error naming
+        // the two types, exactly as it would be for a Bjolang function.
+        List.iter2 (fun (argType, _) paramType -> unify env.Registry argType paramType) typedArgs paramTypes
+
+        let callArgs = typedArgs |> List.map snd
+
+        let receiver, methodArgs, methodParams =
+            if info.IsInstance then
+                Some(List.head callArgs), List.tail callArgs, List.tail paramTypes
+            else
+                None, callArgs, paramTypes
+
+        let resultType = wrapForeignExceptions info.Exceptions retType
+
+        let meta =
+            Some
+                { DeclaringType = info.ClrType
+                  MethodName = info.MemberName
+                  ParameterTypes = methodParams
+                  ReturnType = retType
+                  TypeArguments = typeArgs
+                  IsStatic = not info.IsInstance
+                  Exceptions = info.Exceptions
+                  Await = false
+                  AmbientToken = false
+                  Blocking = info.IsBlocking }
+
+        resultType,
+        { Type = resultType
+          Range = r
+          Node =
+            match receiver with
+            | Some recv -> TDotMethodCall(recv, info.MemberName, methodArgs, meta)
+            | None -> TForeignStaticCall(info.ClrType, info.MemberName, methodArgs, meta) }
+
+    | ExternMethod ->
+        let allTypedArgs = args |> List.map (infer env)
+
+        let receiver, typedArgs =
+            if info.IsInstance then
+                let recv, rest = takeReceiver allTypedArgs
+                Some recv, rest
+            else
+                None, allTypedArgs
+
+        let argTypes = typedArgs |> List.map fst
+
+        // An `#:async` import resolves against one more parameter than the
+        // call site wrote — the ambient token — and yields the task's result
+        // rather than the task, so the two paths differ in what they hand
+        // back and agree on everything after it.
+        let resolved, visibleParams, callResultType, threadsToken =
+            if info.IsAsync then
+                resolveAsyncExtern where info clrType argTypes
+            elif info.Cancellable then
+                // Threaded, but not awaited: the method takes a token and
+                // hands back an ordinary value. `File.ReadLinesAsync` is the
+                // case — a stream rather than a task, and a token in every
+                // overload.
+                let resolved, threads = resolveTokenThreadedExtern where info clrType argTypes
+
+                let visible =
+                    if threads then
+                        resolved.ParameterTypes |> List.truncate (resolved.ParameterTypes.Length - 1)
+                    else
+                        resolved.ParameterTypes
+
+                resolved, visible, resolved.ReturnType, threads
+            else
+                let resolved = resolveExternMethod where info clrType argTypes
+                resolved, resolved.ParameterTypes, resolved.ReturnType, false
+
+        let coercedArgs =
+            reconcileForeignArgs env.Registry (typedArgs |> List.map snd) visibleParams
+
+        // Checked against what the *caller* sees: the threaded token is not
+        // a parameter anyone writes, and a declared signature that had to
+        // mention it would be describing the emitter's work rather than the
+        // call's. The receiver is part of what the caller sees, so an
+        // instance member's declared type carries it.
+        let declaredParams =
+            match receiver with
+            | Some _ -> receiverType :: visibleParams
+            | None -> visibleParams
+
+        match info.DeclaredType with
+        | Some declared -> unify env.Registry declared (tfun declaredParams callResultType)
+        | None -> ()
+
+        let retType = wrapForeignExceptions info.Exceptions callResultType
+
+        let meta =
+            Some
+                { metadataOf resolved info.Exceptions with
+                    ParameterTypes = visibleParams
+                    ReturnType = callResultType
+                    Await = info.IsAsync
+                    AmbientToken = threadsToken
+                    Blocking = info.IsBlocking }
+
+        retType,
+        { Type = retType
+          Range = r
+          Node =
+            match receiver with
+            | Some recv -> TDotMethodCall(recv, info.MemberName, coercedArgs, meta)
+            | None -> TForeignStaticCall(resolved.DeclaringType, info.MemberName, coercedArgs, meta) }
+
+// `(apply f pos1 ... posN coll)` — spread a collection into `f`'s `#:rest`
+// parameter.
+//
+// An intrinsic rather than a prelude binding because there is no `HMType`
+// it could be given: how many arguments it accepts, which parameters they
+// fill, and whether the resulting call suspends are all read off whatever
+// `f` turns out to be.
+//
+// `f` has to be a bare name, and that is a real restriction rather than a
+// simplification. Whether a parameter is a `#:rest` one is recorded in
+// `FunMeta`, which `infer` looks up *by name*; the flat type says
+// `(Array %a)` and an ordinary array parameter says exactly the same thing.
+// So a computed callee — a parameter, a lambda, an element of a vec — has
+// nothing that could distinguish the two, and spreading into a parameter
+// that is not variadic is precisely the run-time failure this form exists
+// to rule out. `addBinding` drops a shadowed name's `FunMeta` for the same
+// reason, so a local `f` cannot inherit a global one's shape either.
+and private inferApply (env: Env) (args: Expr list) (r: Range) : HMType * TypedExpr =
+    let where = Lexer.formatPos r
+
+    let calleeExpr, callArgs =
+        match args with
+        | f :: rest -> f, rest
+        | [] ->
+            failwithf
+                $"Type Error at %s{where}: 'apply' needs a function and a collection, as (apply f coll)."
+
+    let calleeName =
+        match calleeExpr with
+        | EIdent(n, _) when Map.containsKey n env.Bindings -> n
+        | _ ->
+            failwithf
+                $"Type Error at %s{where}: 'apply' needs a named function as its first argument. Whether a parameter is a #:rest one belongs to a function's declaration rather than to its type, so a computed function carries nothing that says how to spread into it."
+
+    let meta =
+        match Map.tryFind calleeName env.FunMetas with
+        | Some m when m.RestParam.IsSome -> m
+        | _ ->
+            failwithf
+                $"Type Error at %s{where}: '%s{calleeName}' has no #:rest parameter, so there is nothing for 'apply' to spread a collection into. A collection's length is not part of its type, so filling fixed parameters from one would need an arity check at run time. Call '%s{calleeName}' directly with positional arguments instead."
+
+    // Keyword arguments are passed straight through. `FunMeta` is what says
+    // which names are keywords, and it is the callee's own — the same list
+    // an ordinary call site consults.
+    let isDeclaredKw kwName =
+        meta.KeywordParams |> List.exists (fun (k, _) -> k = kwName)
+
+    let rec splitArgs positional keywords remaining =
+        match remaining with
+        | [] -> List.rev positional, List.rev keywords
+        | EKeyword(kwName, _) :: value :: rest when isDeclaredKw kwName ->
+            splitArgs positional ((kwName, value) :: keywords) rest
+        | EKeyword(kwName, kr) :: [] when isDeclaredKw kwName ->
+            failwithf $"Keyword argument '#:%s{kwName}' is missing a value at %s{Lexer.formatPos kr}"
+        | arg :: rest -> splitArgs (arg :: positional) keywords rest
+
+    let positionalExprs, keywordExprs = splitArgs [] [] callArgs
+
+    // The *last* positional argument is the collection. A syntactic rule,
+    // not an inferred one: which argument is spread has to be legible from
+    // the call site alone, and a type-directed choice would change under a
+    // signature the reader cannot see.
+    let fixedExprs, collExpr =
+        match List.rev positionalExprs with
+        | last :: revFixed -> List.rev revFixed, last
+        | [] ->
+            failwithf
+                $"Type Error at %s{where}: 'apply' needs a collection as its last argument, after any arguments filling '%s{calleeName}'s fixed parameters."
+
+    if fixedExprs.Length < meta.MandatoryCount then
+        failwithf
+            $"Type Error at %s{where}: '%s{calleeName}' has %d{meta.MandatoryCount} fixed parameter(s) and 'apply' was given %d{fixedExprs.Length}. Every fixed parameter has to be supplied positionally, before the collection."
+
+    if fixedExprs.Length > meta.MandatoryCount then
+        failwithf
+            $"Type Error at %s{where}: '%s{calleeName}' has %d{meta.MandatoryCount} fixed parameter(s) and 'apply' was given %d{fixedExprs.Length}. Everything before the collection fills a fixed parameter, one for one, and the collection is what fills the #:rest parameter."
+
+    let targetType, typedTarget = infer env calleeExpr
+    let fixedTyped = fixedExprs |> List.map (infer env)
+
+    // A literal collection is never built. The elements go straight into
+    // the rest array, which is the very node a direct call `(f a b c)`
+    // produces — so the two spellings compile to the same call.
+    let literalItems =
+        match collExpr with
+        | EList(items, _) -> Some items
+        | EVec(items, _) -> Some items
+        | EArray(items, _) -> Some items
+        | _ -> None
+
+    let restElem, restNode =
+        match literalItems with
+        | Some items ->
+            let elemSlot = freshMeta ()
+
+            let typedItems =
+                items
+                |> List.map (fun item ->
+                    let itemType, typedItem = infer env item
+                    unify env.Registry itemType elemSlot
+                    typedItem)
+
+            elemSlot,
+            ({ Type = TCon("Array", [ elemSlot ])
+               Range = r
+               Node = TArrayMake typedItems }: TypedExpr)
+        | None ->
+            let collType, typedColl = infer env collExpr
+
+            // Named so the conversion is an ordinary typed call. Emitting it
+            // as C# text in `Codegen` instead would hide it from
+            // `containsAwait`, which walks the typed tree to decide whether
+            // the enclosing lambda has to be async.
+            let convert (fn: string) (elem: HMType) : TypedExpr =
+                let arrayType = TCon("Array", [ elem ])
+
+                { Type = arrayType
+                  Range = r
+                  Node =
+                    TApply(
+                        { Type = tfun [ typedColl.Type ] arrayType
+                          Range = r
+                          Node = TIdent(fn, []) },
+                        [ typedColl ],
+                        []
+                    ) }
+
+            match prune env.Registry collType with
+            // Passed through untouched: no conversion and no allocation,
+            // which is the case `apply` is actually worth having for.
+            | TCon("Array", [ elem ]) -> elem, typedColl
+            | TCon("Vec", [ elem ]) -> elem, convert "vec->array" elem
+            | TCon("List", [ elem ]) -> elem, convert "list->array" elem
+            | TMeta _ ->
+                failwithf
+                    $"Type Error at %s{where}: 'apply' needs to know the last argument's type here to spread it, and nothing has fixed it yet. Annotate it as an Array, a Vec or a List."
+            | other ->
+                failwithf
+                    $"Type Error at %s{where}: 'apply' can spread an Array, a Vec or a List, and the last argument is %s{DotNetInterop.showType other}."
+
+    // Each keyword slot gets a fresh metavariable rather than the type
+    // `FunMeta` recorded, for the reason the ordinary call path gives: the
+    // recorded type still carries the declaration's rigid `TVar`s, and the
+    // flat unification below is what gives the slot its real type.
+    let keywordTyped = keywordExprs |> List.map (fun (n, e) -> n, infer env e)
+
+    let kwSlots =
+        meta.KeywordParams
+        |> List.map (fun (kwName, _) ->
+            let slot = freshMeta ()
+
+            match keywordTyped |> List.tryFind (fun (n, _) -> n = kwName) with
+            | Some(_, (valType, _)) -> unify env.Registry valType slot
+            | None -> ()
+
+            slot)
+
+    let retType = freshMeta ()
+    let flatTypes = (fixedTyped |> List.map fst) @ kwSlots @ [ TCon("Array", [ restElem ]) ]
+
+    // The effect is the callee's own, copied rather than chosen. A pure `f`
+    // gives a pure node and a suspending one a suspending node, which is why
+    // there is one `apply` and not an `apply` plus an `apply/bjo`:
+    // `ColourCheck` and `Codegen` already read the effect off the callee's
+    // arrow, so neither needs to know this form exists.
+    unify env.Registry targetType (TFun(flatTypes, retType, demandedEffect env targetType))
+
+    retType,
+    { Type = retType
+      Range = r
+      Node =
+        TApply(
+            typedTarget,
+            (fixedTyped |> List.map snd) @ [ restNode ],
+            keywordTyped |> List.map (fun (n, (_, te)) -> n, te)
+        ) }
+
+and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Range) : HMType * TypedExpr =
+    let targetType, typedTarget = infer env target
+
+    // Look up FunMeta if the target is a known identifier
+    let funMeta =
+        match target with
+        | EIdent(name, _) -> Map.tryFind name env.FunMetas
+        | _ -> None
+
+    let isDeclaredKw kwName =
+        match funMeta with
+        | Some meta -> meta.KeywordParams |> List.exists (fun (k, _) -> k = kwName)
+        | None -> false
+
+    /// The type the callee declares for positional argument `i`, when there
+    /// is one worth pushing into the argument.
+    ///
+    /// Only a list or vec literal asks: it is the one argument shape whose
+    /// *elements* need the expected type before they can be inferred at
+    /// all, which is what makes `(run/lines '(pipe (ls "-l")))` work
+    /// without an annotated intermediate binding.
+    ///
+    /// Only the mandatory prefix, because past it the flat parameter list
+    /// holds the keyword parameters in declaration order and then the rest
+    /// array, and neither lines up with an argument's position. And only a
+    /// parameter that is already something: an unbound metavariable is a
+    /// polymorphic parameter, `(map run/lines ...)`, which expects nothing
+    /// in particular and so has nothing to push.
+    let expectedParam (i: int) : HMType option =
+        let declared =
+            match prune env.Registry targetType with
+            | TFun(paramTys, _, _) when i < paramTys.Length ->
+                match funMeta with
+                | Some meta when i >= meta.MandatoryCount -> None
+                | _ -> Some(prune env.Registry paramTys[i])
+            | _ -> None
+
+        match declared with
+        | Some(TMeta _)
+        | None -> None
+        | Some paramTy -> Some paramTy
+
+    // Separate keyword args from positional args
+    // Keyword args appear as EKeyword("name") followed by a value expr when matching a declared keyword parameter
+    let rec splitArgs positional keywords remaining =
+        match remaining with
+        | [] -> List.rev positional, List.rev keywords
+        | EKeyword(kwName, _) :: value :: rest when isDeclaredKw kwName ->
+            splitArgs positional ((kwName, value) :: keywords) rest
+        | EKeyword(kwName, kr) :: [] when isDeclaredKw kwName ->
+            failwithf $"Keyword argument '#:%s{kwName}' is missing a value at %s{Lexer.formatPos kr}"
+        | arg :: rest -> splitArgs (arg :: positional) keywords rest
+
+    let positionalExprs, keywordExprs = splitArgs [] [] args
+
+    // Positional arguments are inferred in two passes, lambdas last. A
+    // lambda's parameter types come from what the callee declares for its
+    // position, and `expectedParam` can only report that once the other
+    // arguments have pinned it: in `(vec-for-each (fun (r) ...) kept)` it is
+    // `kept` that says what `r` is, and the body cannot be inferred before
+    // then.
+    //
+    // Results are written back into their source position, because codegen
+    // emits the arguments in the order they are listed and they may have
+    // side effects.
+    let slots: (HMType * TypedExpr) option array = Array.create (List.length positionalExprs) None
+
+    /// Pin an argument to the parameter it fills, ahead of the flat
+    /// unification below, so that a later lambda argument can read its own
+    /// parameter types off the callee's arrow.
+    ///
+    /// The parameter goes first, because `unifyEffect` reads its first
+    /// argument as the expectation: the other way round an ordinary
+    /// function passed to a `-bjo->` parameter is reported as its opposite
+    /// and refused.
+    ///
+    /// A parameter still waiting on an implementor is skipped, the same
+    /// exception `unify` makes for `TFun`: in `(fold + 0 v)` the folding
+    /// function mentions `Foldable`'s associated type, which nothing knows
+    /// until `v` has been inferred.
+    let pinToParam (i: int) (argType: HMType) =
+        match expectedParam i with
+        | Some paramTy when not (awaitsImplementor env.Registry paramTy || awaitsImplementor env.Registry argType) ->
+            unify env.Registry paramTy argType
+        | _ -> ()
+
+    positionalExprs
+    |> List.iteri (fun i arg ->
+        match arg with
+        | EFun _ -> ()
+        | _ ->
+            let argType, typedArg =
+                match arg, expectedParam i with
+                | (EList _ | EVec _ | EArray _), Some paramTy -> inferChecked paramTy env arg
+                | _ -> infer env arg
+
+            pinToParam i argType
+            slots[i] <- Some(argType, typedArg))
+
+    let keywordArgs = keywordExprs |> List.map (fun (kwName, value) -> kwName, infer env value)
+
+    positionalExprs
+    |> List.iteri (fun i arg ->
+        match arg with
+        | EFun _ ->
+            let inferred =
+                match expectedParam i with
+                | Some paramTy -> inferChecked paramTy env arg
+                | None -> infer env arg
+
+            slots[i] <- Some inferred
+        | _ -> ())
+
+    let positionalArgs = slots |> Array.toList |> List.map Option.get
+    let retType = freshMeta ()
+
+    match funMeta with
+    | Some meta when not keywordArgs.IsEmpty || meta.RestParam.IsSome || not meta.KeywordParams.IsEmpty ->
+        // Structured call: separate mandatory, keyword, and rest args
+        let mandatoryArgs = positionalArgs |> List.take (min positionalArgs.Length meta.MandatoryCount)
+        let restArgs = positionalArgs |> List.skip (min positionalArgs.Length meta.MandatoryCount)
+
+        // Build the flat arg types for unification (mandatory + keyword in decl order + rest array)
+        //
+        // Each keyword and rest slot gets a *fresh* metavariable rather than
+        // the type recorded in `FunMeta`. The recorded type came from the
+        // declaration and still carries that declaration's rigid `TVar`s, so
+        // unifying an argument against it directly is what used to make
+        // `(: f (-> #:rest %a %a))` unusable: the first call tried to unify
+        // `int` with `'a` itself instead of with a fresh instance of it.
+        //
+        // The flat unification against `targetType` below is what gives
+        // these slots their real types. `targetType` came from `infer`, which
+        // instantiates the scheme, so its parameters are already fresh per
+        // call site. `FunMeta` is then consulted only for the call's *shape*
+        // — how many mandatory parameters there are, which keywords exist,
+        // and whether there is a rest parameter at all.
+        let kwArgTypes =
+            meta.KeywordParams |> List.map (fun (kwName, _) ->
+                let slot = freshMeta ()
+
+                match keywordArgs |> List.tryFind (fun (n, _) -> n = kwName) with
+                | Some (_, (valType, _)) -> unify env.Registry valType slot
+                | None -> ()  // keyword not provided, will use default
+
+                slot)
+
+        // The rest arguments become *one* argument: an array. That is what
+        // the flat type says — `#:rest` resolves to a single `(Array %a)`
+        // parameter — and the typed tree has to agree with it.
+        //
+        // It used to hand `TApply` the rest arguments spread flat, N of
+        // them against a type with one parameter, and rely on C# `params`
+        // to put them back together at the call site. That works only when
+        // the callee is emitted as a real `params` method. Alias the
+        // function to a value — `(def f list)` — and the callee is a
+        // `Func<int[], SchemeList<int>>` field, delegates have no `params`
+        // semantics, and `f(1, 2, 3)` fails to compile in C# after passing
+        // the type checker. Materializing the array here makes the two
+        // spellings the same call. C# still accepts an explicit array for a
+        // `params` parameter, so the direct case is unaffected.
+        //
+        // `LoopLowering` already builds the same node for a tail call into
+        // a rest parameter.
+        let restArgTypes, restTypedArgs =
+            match meta.RestParam with
+            | Some _ ->
+                let elemSlot = freshMeta ()
+
+                for (rt, _) in restArgs do
+                    unify env.Registry rt elemSlot
+
+                let arrayType = TCon("Array", [elemSlot])
+
+                [ arrayType ],
+                [ ({ Type = arrayType
+                     Range = r
+                     Node = TArrayMake(restArgs |> List.map snd) }: TypedExpr) ]
+            | None ->
+                if not restArgs.IsEmpty then
+                    failwithf $"Too many arguments at %s{Lexer.formatPos r}"
+                [], []
+
+        let allFlatTypes = (mandatoryArgs |> List.map fst) @ kwArgTypes @ restArgTypes
+        unify env.Registry targetType (TFun(allFlatTypes, retType, demandedEffect env targetType))
+
+        let typedKwArgs =
+            keywordArgs |> List.map (fun (n, (_, te)) -> (n, te))
+
+        // Positional args in TApply = mandatory + the rest array (keyword
+        // args are separate)
+        let positionalTypedArgs =
+            (mandatoryArgs |> List.map snd) @ restTypedArgs
+
+        retType,
+        { Type = retType
+          Range = r
+          Node = TApply(typedTarget, positionalTypedArgs, typedKwArgs) }
+
+    | _ ->
+        // No FunMeta or no keyword args: simple positional call
+        if not keywordArgs.IsEmpty then
+            failwithf $"Keyword arguments used on a function without keyword parameter metadata at %s{Lexer.formatPos r}"
+
+        unify
+            env.Registry
+            targetType
+            (TFun(positionalArgs |> List.map fst, retType, demandedEffect env targetType))
+
+        retType,
+        { Type = retType
+          Range = r
+          Node = TApply(typedTarget, positionalArgs |> List.map snd, []) }
+
+and private inferLet (env: Env) (name: string) (isFun: bool) (args: DefunArg list) (typeAnn: FType option) (value: Expr) (body: Expr) (r: Range) : HMType * TypedExpr =
+    let inferBinding () =
+        // For a function-shaped binding `typeAnn` is the *return* type, and is
+        // already accounted for by the shape; for a value binding it is the
+        // binding's own type.
+        let shape = if isFun then Some(localFunShape env args typeAnn) else None
+
+        let valType, typedVal, localFun =
+            match shape with
+            | Some s ->
+                let lambda, lf = inferLocalFunBody env s args r value
+                s.FunType, lambda, lf
+            | None ->
+                // When the binding has a type annotation, resolve it first and
+                // pass it down as the expected type.  For list / vec literals
+                // this enables per-element constructor injection before any
+                // element-level unification can fail.
+                let t, typed =
+                    match typeAnn with
+                    | Some tAnn ->
+                        let expectedType = resolveTypeAnnotation env.Registry tAnn
+                        inferChecked expectedType env value
+                    | None -> infer env value
+
+                match typeAnn with
+                | Some tAnn -> unify env.Registry t (resolveTypeAnnotation env.Registry tAnn)
+                | None -> ()
+
+                t, typed, noParams
+
+        shape, valType, typedVal, localFun
+
+    // One level in just for the binding that is actually generalized. A
+    // value is bound monomorphically, and its cells belong in the enclosing
+    // level — if we raised it here the next sibling binding would quantify them.
+    let shape, valType, typedVal, localFun =
+        if isFun then atLevel inferBinding else inferBinding ()
+
+    // Only a *function*-shaped local binding is generalized.
+    //
+    // The value restriction would admit more — a bare lambda is a syntactic
+    // value — but C# is the limit here rather than soundness. A local
+    // binding that is not a function is emitted as an ordinary local
+    // variable, and neither a delegate nor a `SchemeList<T>` local can be
+    // generic: there is nowhere for the type parameter to be declared.
+    // Quantifying one emitted `Func<T_t__1, T_t__1> id = ...` naming a
+    // parameter the enclosing method never declared.
+    //
+    // A local `defun` is not affected: it becomes a C# local function,
+    // which may have type parameters of its own.
+    let scheme =
+        if isFun then generalizeLocal env valType
+        else Scheme([], [], valType)
+
+    let localEnv = addBinding name { Scheme = scheme; IsMutable = false } env
+
+    // Keyword and rest metadata travels with the name, or a call that
+    // passes a keyword argument — or omits an optional one — has nothing to
+    // resolve against and is checked against the flat arrow instead.
+    let localEnv =
+        match shape with
+        | Some s -> { localEnv with FunMetas = Map.add name s.Meta localEnv.FunMetas }
+        | None -> localEnv
+
+    let bodyType, typedBody = infer localEnv body
+
+    bodyType,
+    { Type = bodyType
+      Range = r
+      Node = TLet(name, isFun, localFun, typedVal, typedBody) }
+
+and private inferLetRec (env: Env) (bindings: (string * bool * DefunArg list * FType option * Expr) list) (body: Expr) (r: Range) : HMType * TypedExpr =
+    let bindingMetas = bindings |> List.map (fun (n, _, _, _, _) -> n, freshMeta ())
+
+    // Every member's shape is read before any body is checked. Two reasons,
+    // and they are the same reason at two scales: a mutually recursive
+    // group's earlier member has already said what this one's arguments
+    // are, and a body checked against bare metavariables is fatal rather
+    // than merely imprecise for an associated type — a projection needs a
+    // concrete head and cannot be deferred into a unification. A recursive
+    // call that passes a keyword argument needs the `FunMeta` for the same
+    // reason it does at the top level.
+    let shapes =
+        bindings
+        |> List.map (fun (_, isFun, args, typeAnn, _) ->
+            if isFun then Some(localFunShape env args typeAnn) else None)
+
+    List.iter2
+        (fun shape (_, expected) ->
+            match shape with
+            | Some(s: LocalFunShape) -> unify env.Registry s.FunType expected
+            | None -> ())
+        shapes
+        bindingMetas
+
+    let withMetas (start: Env) =
+        List.fold2
+            (fun (acc: Env) shape (n, _) ->
+                match shape with
+                | Some(s: LocalFunShape) -> { acc with FunMetas = Map.add n s.Meta acc.FunMetas }
+                | None -> acc)
+            start
+            shapes
+            bindingMetas
+
+    let recEnv =
+        bindingMetas
+        |> List.fold
+            (fun acc (n, t) ->
+                addBinding
+                    n
+                    { Scheme = Scheme([], [], t)
+                      IsMutable = false }
+                    acc)
+            env
+        |> withMetas
+
+    let typedBindings =
+        List.zip3 bindings shapes bindingMetas
+        |> List.map (fun ((name, isFun, args, typeAnn, expr), shape, (_, expectedType)) ->
+            let valType, typedVal, localFun =
+                match shape with
+                | Some s ->
+                    let lambda, lf = inferLocalFunBody recEnv s args r expr
+                    s.FunType, lambda, lf
+                | None ->
+                    let t, typed = infer recEnv expr
+
+                    // A value binding's annotation is its own type. A
+                    // function's is its return type, and the shape has
+                    // already unified it with the body.
+                    match typeAnn with
+                    | Some tAnn -> unify env.Registry t (resolveTypeAnnotation env.Registry tAnn)
+                    | None -> ()
+
+                    t, typed, noParams
+
+            unify env.Registry valType expectedType
+            name, isFun, localFun, typedVal)
+
+    // No own level for the group, unlike `ELet`. Each member
+    // is bound monomorphically in `recEnv` while the bodies are checked, so
+    // the cells belong to the enclosing level and `generalizeLocal` below
+    // quantifies nothing beyond what the annotations already named. A
+    // recursive local function is monomorphic; see `057_local_generalization`.
+    let finalEnv =
+        List.zip bindings bindingMetas
+        |> List.fold
+            // Function-shaped members only, for the reason `ELet` gives:
+            // anything else becomes a plain local and cannot carry a type
+            // parameter.
+            (fun acc ((_, isFun, _, _, _), (n, t)) ->
+                addBinding
+                    n
+                    { Scheme = (if isFun then generalizeLocal recEnv t else Scheme([], [], t))
+                      IsMutable = false }
+                    acc)
+            env
+        |> withMetas
+
+    let bodyType, typedBody = infer finalEnv body
+
+    bodyType,
+    { Type = bodyType
+      Range = r
+      Node = TLetRec(typedBindings, typedBody) }
+
+and private inferLetMutable (env: Env) (name: string) (typeAnn: FType option) (value: Expr) (body: Expr) (r: Range) : HMType * TypedExpr =
+    let valType, typedVal = infer env value
+    
+    match typeAnn with
+    | Some tAnn ->
+        let expectedType = resolveTypeAnnotation env.Registry tAnn
+        unify env.Registry valType expectedType
+    | None -> ()
+
+    // Deliberately not generalized. A mutable binding is a cell, and a
+    // *polymorphic* cell is the value restriction's classic hole: each use
+    // would instantiate a fresh variable, so a `set!` at one type and a read
+    // at another would both check and disagree about what is in there. If it
+    // can be assigned, its type has to be settled.
+    let localEnv =
+        addBinding
+            name
+            { Scheme = Scheme([], [], valType)
+              IsMutable = true }
+            env
+
+    let bodyType, typedBody = infer localEnv body
+
+    bodyType,
+    { Type = bodyType
+      Range = r
+      Node = TLetMutable(name, typedVal, typedBody) }
+
+and private inferSeq (env: Env) (body: Expr) (r: Range) : HMType * TypedExpr =
+    let elemType = freshMeta ()
+
+    // The body is run for its yields; whatever its last form evaluates to is
+    // discarded, exactly as in `when`. A sequence's *value* is its elements,
+    // so there is nothing for the body's own type to agree with.
+    let _, tBody = infer (withSeqElement elemType env) body
+
+    let seqType = TCon("Seq", [ elemType ])
+
+    seqType,
+    { Type = seqType
+      Range = r
+      Node = TSeq tBody }
+
+// `(bjo (f x y))`. The call is checked exactly as it would be if it were
+// written where it stands — same arguments, same arity, same overloads —
+// and only its *result* is repackaged as a promise. Nothing about spawning
+// changes what the call means, which is the point of the direct style.
+//
+// The body may be a call to a bjoroutine or to an ordinary function; both
+// are useful and both compile to the same thing. `ColourCheck` allows a
+// yield point in there whatever the enclosing colour, because the spawned
+// body becomes an async lambda of its own.
+// Only `bjo` hands the promise back. The three `spawn` forms are `Unit`,
+// because the scope is holding the child and nothing else needs a handle —
+// which is what keeps them out of `MustUse`'s way without giving `bjo` an
+// exemption from it.
+and private inferBjo (env: Env) (call: Expr) (kind: SpawnKind) (r: Range) : HMType * TypedExpr =
+    let resultType, tCall = infer env call
+
+    let formType =
+        match kind with
+        | SpawnScoped -> TCon("Promise", [ resultType ])
+        | SpawnUnit
+        | SpawnDaemon
+        | SpawnDetached -> TypeConstants.unitType
+
+    formType,
+    { Type = formType
+      Range = r
+      Node = TBjo(tCall, kind) }
+
+// `(task->event (fetch url))`. The event of making an async .NET call.
+//
+// The operand is *not* inferred as an expression, which is the whole point
+// of the special form: everywhere else `(fetch url)` means "await this",
+// and here it has to mean "hand me the task, unstarted". So the call is
+// taken apart and the pieces are re-resolved — same overload rules, same
+// arguments, one difference in what comes out.
+//
+// §7.3, and the reason `Cancellable` rather than `FromTask` is the only
+// form the language can reach: a task handed over already running cannot be
+// withdrawn from a `choose`, so losing would drop the result and leave the
+// work going. Here the branch owns a token, and losing cancels it.
+and private inferTaskEvent (env: Env) (call: Expr) (r: Range) : HMType * TypedExpr =
+    let where = Lexer.formatPos r
+
+    let name, args =
+        match call with
+        | EApp(EIdent(n, _), a, _) -> n, a
+        | _ ->
+            failwithf
+                $"Type Error at %s{where}: task->event takes a call to a method imported #:async. To turn a bjoroutine into an event, spawn it and join the promise — (promise-join (bjo (f x))) — though note that losing a choose on a join stops you listening without stopping the work."
+
+    let info =
+        match Map.tryFind name env.Registry.ClrExterns with
+        | Some i when not (Map.containsKey name env.Bindings) -> i
+        | _ ->
+            failwithf
+                $"Type Error at %s{where}: '%s{name}' is not a method imported by import/extern, so task->event has no task to make an event of. For a bjoroutine, use (promise-join (bjo (%s{name} ...))) instead."
+
+    if info.Kind <> ExternMethod then
+        failwithf
+            $"Type Error at %s{where}: '%s{name}' reads or writes the property '%s{info.ClrType}.%s{info.MemberName}', which produces no task. task->event takes a call to a method imported #:async."
+
+    if not info.IsAsync then
+        failwithf
+            $"Type Error at %s{where}: '%s{name}' names '%s{info.ClrType}.%s{info.MemberName}', which is imported without #:async, so calling it produces no task to wait for. An ordinary .NET call is made where it is written and there is nothing to race."
+
+    // The branch's own token is what makes losing mean something. Without a
+    // parameter to put it in there is no difference between this and
+    // `FromTask`, which §7.3 keeps out of the language on purpose.
+    if info.Uncancellable then
+        failwithf
+            $"Type Error at %s{where}: '%s{name}' is imported #:uncancellable, so a losing choose branch could not stop it — the work would carry on with nobody listening, which is exactly what task->event exists to prevent. Await it directly instead, or find an overload that takes a CancellationToken."
+
+    let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrType
+    let allTypedArgs = args |> List.map (infer env)
+
+    // An instance member's receiver is the first argument here as it is
+    // everywhere else. It is evaluated where the form stands, like the other
+    // operands, and only the *call* is deferred to the sync.
+    let receiver, typedArgs =
+        if info.IsInstance then
+            match allTypedArgs with
+            | (_, recv) :: rest ->
+                Some(reconcileForeignArgs env.Registry [ recv ] [ TCon(info.ClrType, []) ] |> List.head), rest
+            | [] ->
+                failwithf
+                    $"Type Error at %s{where}: '%s{name}' names the instance method '%s{info.ClrType}.%s{info.MemberName}', so its first argument is the object to call it on, but it was given none."
+        else
+            None, allTypedArgs
+
+    let argTypes = typedArgs |> List.map fst
+
+    if not (DotNetInterop.hasTokenOverload (not info.IsInstance) clrType info.MemberName (Some(argTypes.Length + 1))) then
+        failwithf
+            $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MemberName}' has no overload taking these %d{argTypes.Length} argument(s) and a System.Threading.CancellationToken, so this branch would have no way to stop the work it started."
+
+    let resolved =
+        resolveExternMethod where info clrType (argTypes @ [ DotNetInterop.cancellationTokenType ])
+
+    // §7.2's third rule, enforced where it bites. A `ValueTask` may be
+    // consumed exactly once, so it cannot become an event: the conversion
+    // would have to call `.AsTask()` first, which allocates the thing the
+    // `ValueTask` existed to avoid.
+    if DotNetInterop.isValueTask resolved.RawReturnType then
+        failwithf
+            $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MemberName}' returns a ValueTask, which may only be consumed once and therefore cannot become an event. Call it directly — awaiting a ValueTask is fine and is what it is for."
+
+    let awaited =
+        match DotNetInterop.awaitedResultType resolved.RawReturnType with
+        | Some t -> t
+        | None ->
+            failwithf
+                $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MemberName}' returns %s{resolved.RawReturnType.Name}, which is not a task."
+
+    let visibleParams = resolved.ParameterTypes |> List.truncate (resolved.ParameterTypes.Length - 1)
+    let coercedArgs = reconcileForeignArgs env.Registry (typedArgs |> List.map snd) visibleParams
+
+    let declaredParams =
+        match receiver with
+        | Some _ -> TCon(info.ClrType, []) :: visibleParams
+        | None -> visibleParams
+
+    match info.DeclaredType with
+    | Some declared -> unify env.Registry declared (tfun declaredParams awaited)
+    | None -> ()
+
+    // A non-generic `Task` carries no result, and `Result<E, void>` is not
+    // a type C# has — so the event carries the unit, exactly as a `void`
+    // call's `#:exceptions` wrapper does.
+    let awaitIsVoid = awaited = TypeConstants.voidType
+    let payload = if awaitIsVoid then TypeConstants.unitType else awaited
+
+    // Failure is a value here for the same reason it is at a join: this
+    // runs at sync time, on the fiber's stack rather than on the one that
+    // completed the task, and a raise there would land in the wrong place.
+    // Cancellation arrives as one of those values — a losing branch's
+    // `Err` is a `TaskCanceledException` nobody ever looks at.
+    let eventType =
+        TCon("Event", [ TCon("Result", [ TCon("System.Exception", []); payload ]) ])
+
+    eventType,
+    { Type = eventType
+      Range = r
+      Node = TTaskEvent(receiver, resolved.DeclaringType, info.MemberName, coercedArgs, payload, awaitIsVoid) }
+
+and private inferMatch (env: Env) (target: Expr) (clauses: (Pattern * Expr option * Expr) list) (r: Range) : HMType * TypedExpr =
+    let targetType, typedTarget = infer env target
+    let returnType = freshMeta ()
+
+    let typedClauses =
+        clauses
+        |> List.map (fun (pat, guard, body) ->
+            let typedPat, boundVars = checkPattern inferChecked env targetType pat
+
+            let boundEnv =
+                Map.fold
+                    (fun acc n t ->
+                        addBinding
+                            n
+                            { Scheme = Scheme([], [], t)
+                              IsMutable = false }
+                            acc)
+                    env
+                    boundVars
+
+            let typedGuard =
+                match guard with
+                | Some g ->
+                    let gType, tg = infer boundEnv g
+                    unify env.Registry gType TypeConstants.boolType
+                    Some tg
+                | None -> None
+
+            let bodyType, typedBody = infer boundEnv body
+
+            unify env.Registry bodyType returnType
+
+            { Pattern = typedPat
+              Guard = typedGuard
+              Body = typedBody }
+            : TMatchClause)
+
+    returnType,
+    { Type = returnType
+      Range = r
+      Node = TMatch(typedTarget, typedClauses) }
+
+and private inferRecordUpdate (env: Env) (targetName: string) (fields: (string * Expr) list) (r: Range) : HMType * TypedExpr =
+    let targetBinding = lookup env targetName
+    let targetType, _, _ = instantiate env.Registry targetBinding.Scheme
+    
+    let recordTypeName =
+        if fields.IsEmpty then
+            failwithf $"Type Error at %s{formatPos r}: a record-set has to update at least one field."
+
+        recordTypeOfField env.Registry targetType (fst fields.Head) r
+
+
+    let instantiatedRecordType, _, expectedFieldsInstantiated =
+        instantiateRecord env.Registry recordTypeName
+
+    unify env.Registry targetType instantiatedRecordType
+
+    let typedFields =
+        fields |> List.map (fun (name, expr) ->
+            let exprType, typedExpr = infer env expr
+            match Map.tryFind name expectedFieldsInstantiated with
+            | Some expectedType -> unify env.Registry exprType expectedType
+            | None -> failwithf $"Type Error: Field '%s{name}' does not belong to record '%s{recordTypeName}' at %s{Lexer.formatPos r}"
+            name, typedExpr)
+
+    targetType,
+    { Type = targetType
+      Range = r
+      Node = TRecordUpdate(targetName, typedFields) }
+
+// `(record-set! r (field value) ...)` — the write in place.
+//
+// Shaped like `ERecordUpdate` above and checked like it, plus the two
+// questions a write has that a copy does not: is this field writable, and
+// is this module allowed to write it.
+and private inferRecordSet (env: Env) (targetName: string) (fields: (string * Expr) list) (r: Range) : HMType * TypedExpr =
+    let targetBinding = lookup env targetName
+    let targetType, _, _ = instantiate env.Registry targetBinding.Scheme
+
+    // Non-empty by construction — the parser refuses a `record-set!` that
+    // names no field — so the head is safe to resolve the type from.
+    let recordTypeName = recordTypeOfField env.Registry targetType (fst fields.Head) r
+
+    let instantiatedRecordType, _, expectedFieldsInstantiated =
+        instantiateRecord env.Registry recordTypeName
+
+    unify env.Registry targetType instantiatedRecordType
+
+    // A field is writable only where it was declared. The check is on the
+    // *record's* module rather than on the binding's: a value of a foreign
+    // record type reaches here by every ordinary route — an argument, a
+    // field of something local — and none of them may write it.
+    if not (declaredHere env.CurrentModule recordTypeName) then
+        let shown = Naming.showTypeName recordTypeName
+
+        failwithf
+            $"Type Error at %s{formatPos r}: '%s{shown}' was declared in another module, so this one may not write its fields. A module that means its state to be written from outside exports functions that write it."
+
+    let mutableFields = mutableFieldsOf env.Registry recordTypeName
+
+    let typedFields =
+        fields |> List.map (fun (name, expr) ->
+            let exprType, typedExpr = infer env expr
+
+            match Map.tryFind name expectedFieldsInstantiated with
+            | Some expectedType -> unify env.Registry exprType expectedType
+            | None ->
+                failwithf
+                    $"Type Error at %s{formatPos r}: field '%s{name}' does not belong to record '%s{Naming.showTypeName recordTypeName}'."
+
+            if not (List.contains name mutableFields) then
+                let writable =
+                    if mutableFields.IsEmpty then "It has no mutable fields."
+                    else "Its mutable fields are: " + String.concat ", " mutableFields + "."
+
+                failwithf
+                    $"Type Error at %s{formatPos r}: field '%s{name}' of '%s{Naming.showTypeName recordTypeName}' is not mutable, so it cannot be written in place. Declare it (: %s{name} <type> #:mutable), or use record-set for a copy. %s{writable}"
+
+            name, typedExpr)
+
+    // Void, as every other write in the language is. The value it might
+    // have handed back — the record — is the same object either way, so
+    // returning it would only invite `(def r2 (record-set! r ...))` to read
+    // as though it were a copy.
+    TypeConstants.unitType,
+    { Type = TypeConstants.unitType
+      Range = r
+      Node = TRecordSet(targetName, typedFields) }
+
+// `(dyn ->str 42)` — packing a value into a trait box.
+//
+// The argument's type is represented by a hole metavariable, so whatever
+// binds it binds the implementation. The obligation is queued just like a
+// trait method call: the hole is prevented from being generalized
+// prematurely, and resolving it pins the box. If it remains open,
+// projections linger and the enclosing function receives the constraint as a
+// `_dict_` parameter like any other trait usage.
+and private inferDynPack (env: Env) (writtenTrait: string) (valueExpr: Expr) (r: Range) : HMType * TypedExpr =
+    let traitName = originalName env.Registry writtenTrait
+
+    let info =
+        match Map.tryFind traitName env.Registry.Traits with
+        | Some i -> i
+        | None ->
+            failwithf
+                $"Type Error at %s{Lexer.formatPos r}: '%s{writtenTrait}' is not a trait in scope, so (dyn %s{writtenTrait} ...) packs nothing."
+
+    match info.DynSafe with
+    | Error why -> failwithf $"Type Error at %s{Lexer.formatPos r}: %s{why}"
+    | Ok() -> ()
+
+    let hole, typedValue = infer env valueExpr
+
+    let tref =
+        { Trait = traitName
+          Method = writtenTrait
+          Holes = [ hole ]
+          MethodType = tfun [ hole ] TypeConstants.unitType
+          MemberConstraints = []
+          Resolved = None }
+
+    pushWanted
+        { Trait = traitName
+          Method = writtenTrait
+          Kind = info.Kind
+          HoleArgs = [ hole, [] ]
+          Ref = tref
+          Range = r }
+
+    // Associated types are never specified at packing time: they are
+    // resolved from the implementation chosen for the hole. `prune`
+    // resolves projections as soon as the hole becomes concrete, unifying
+    // with explicit annotations.
+    let dynType =
+        TCon(
+            Naming.dynTypeName traitName info.AssociatedTypes,
+            info.AssociatedTypes |> List.map (fun a -> TAssoc(traitName, a, hole))
+        )
+
+    dynType,
+    { Type = dynType
+      Range = r
+      Node = TDynPack(traitName, hole, typedValue) }
 
 /// Infer `expr` expecting it to have type `expected`, enabling constructor
 /// injection for list and vec literals.  For any other expression shape the
@@ -2360,6 +2448,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
 /// scope extended by the keyword parameters before it. A default may therefore
 /// name an earlier parameter and not a later one, which is the only order that
 /// can be evaluated.
+
 and private inferLocalFunBody
     (env: Env)
     (shape: LocalFunShape)
