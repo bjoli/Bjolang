@@ -177,6 +177,25 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
 
     { env with Registry = finalRegistry; Bindings = finalBindings }, List.ofSeq keyedDefs
 
+/// What a `(: name ...)` said about a name, before the definition is read.
+///
+/// `Written` is the annotation as the source spelled it, kept beside the
+/// resolved type because several checks ask about the *shape* that was written
+/// — whether it had keyword or rest parameters, whether its arrow was painted
+/// `-bjo->` — which the `HMType` no longer distinguishes. `None` for a name
+/// whose signature was manufactured rather than written, which is `main`.
+type Signature =
+    { Type: HMType
+      Written: FType option
+      Constraints: (string * string) list }
+
+/// The signatures a declaration group has read so far.
+///
+/// Threaded through `checkDecl` rather than held in `Env`, because an entry
+/// lives only until the definition it describes is checked: `checkDef` and
+/// `checkDefun` remove their own on the way out.
+type Sigs = Map<string, Signature>
+
 /// Checks a single declaration and ensures any errors raised during type checking
 /// have a source location attached.
 /// 
@@ -184,13 +203,13 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
 /// (such as parsing signatures or checking trait implementations). If an error 
 /// doesn't already have a specific source location (`needsLocation`), we attach 
 /// the location of the entire declaration to provide context to the user.
-let rec checkDecl (env: Env) (sigs: Map<string, HMType * FType option * (string * string) list>) (decl: Decl) : Env * Map<string, HMType * FType option * (string * string) list> * TDecl list =
+let rec checkDecl (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TDecl list =
     try
         checkDeclNode env sigs decl
     with ex when Diagnostics.needsLocation ex ->
         raise (Diagnostics.withLocation (declRange decl) ex)
 
-and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * (string * string) list>) (decl: Decl) : Env * Map<string, HMType * FType option * (string * string) list> * TDecl list =
+and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TDecl list =
     // What module level looks like from inside this declaration: the imports,
     // the prelude and whatever this module has defined so far. Nothing a body
     // binds gets in, because every binder inside one goes through `addBinding`,
@@ -204,7 +223,13 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
             ResolvedFunMetas = env.FunMetas }
 
     match decl with
-    | DSignature(name, ftype, constraints, _) -> env, Map.add name (resolveTypeAnnotation env.Registry ftype, Some ftype, constraints) sigs, []
+    | DSignature(name, ftype, constraints, _) ->
+        let signature =
+            { Type = resolveTypeAnnotation env.Registry ftype
+              Written = Some ftype
+              Constraints = constraints }
+
+        env, Map.add name signature sigs, []
 
     | DDef(name, expr, r) ->
         checkDef env sigs name expr r
@@ -246,7 +271,7 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
         let exprType, typedExpr = infer env expr
 
         match Map.tryFind name sigs with
-        | Some (sigType, _, _) -> unify env.Registry exprType sigType
+        | Some signature -> unify env.Registry exprType signature.Type
         | None -> ()
 
         solvePending env
@@ -362,12 +387,12 @@ and private checkDeclNode (env: Env) (sigs: Map<string, HMType * FType option * 
 /// `checkDecl`. Signatures inherited from an enclosing group stay visible, with
 /// the group's own taking precedence.
 
-and private checkDef (env: Env) (sigs: Map<string, HMType * FType option * (string * string) list>) (name: string) (expr: Expr) (r: Range) : Env * Map<string, HMType * FType option * (string * string) list> * TDecl list =
+and private checkDef (env: Env) (sigs: Sigs) (name: string) (expr: Expr) (r: Range) : Env * Sigs * TDecl list =
     // A declared signature is an expected type, so it is pushed into the
     // value rather than only checked against it afterwards — a list literal
     // needs it while its elements are being inferred, not after. The
     // annotated branch of `let` does the same.
-    let declaredType = Map.tryFind name sigs |> Option.map (fun (t, _, _) -> t)
+    let declaredType = Map.tryFind name sigs |> Option.map (fun s -> s.Type)
 
     // One level in, so that the cells born here are visibly deeper than everything
     // already in the environment — imports, prelude and the module's
@@ -422,7 +447,7 @@ and private checkDef (env: Env) (sigs: Map<string, HMType * FType option * (stri
     // accepted and then silently meant something narrower.
     let newEnv =
         match Map.tryFind name sigs with
-        | Some(_, Some(TArrow(mandatory, keywords, restOpt, _, _, _)), _) when
+        | Some { Written = Some(TArrow(mandatory, keywords, restOpt, _, _, _)) } when
             restOpt.IsSome || not keywords.IsEmpty
             ->
             let funMeta =
@@ -444,7 +469,7 @@ and private checkDef (env: Env) (sigs: Map<string, HMType * FType option * (stri
 // the suspending copy can be given the *same* one — which is most of what
 // this form buys: arity and type drift between two hand-written bodies is
 // what rots, and neither body gets to disagree with the declaration.
-and private checkDefDouble (env: Env) (sigs: Map<string, HMType * FType option * (string * string) list>) (name: string) (defunArgs: DefunArg list) (syncBody: Expr) (bjoBody: Expr) (r: Range) : Env * Map<string, HMType * FType option * (string * string) list> * TDecl list =
+and private checkDefDouble (env: Env) (sigs: Sigs) (name: string) (defunArgs: DefunArg list) (syncBody: Expr) (bjoBody: Expr) (r: Range) : Env * Sigs * TDecl list =
     let bjoName = Naming.suspendingCopy name
 
     match Map.tryFind name sigs with
@@ -465,11 +490,14 @@ and private checkDefDouble (env: Env) (sigs: Map<string, HMType * FType option *
         // the `HMType`, so there is one place that knows what repainting
         // means.
         let bjoSignature =
-            match signature with
-            | _, Some ftype, constraints ->
+            match signature.Written with
+            | Some ftype ->
                 let repainted = suspendingSignature ftype
-                resolveTypeAnnotation env.Registry repainted, Some repainted, constraints
-            | other -> other
+
+                { signature with
+                    Type = resolveTypeAnnotation env.Registry repainted
+                    Written = Some repainted }
+            | None -> signature
 
         let env, sigs, bjoDecls =
             checkDecl env (Map.add bjoName bjoSignature sigs) (DDefun(bjoName, defunArgs, bjoBody, Suspending, r))
@@ -505,8 +533,8 @@ and private checkDefDouble (env: Env) (sigs: Map<string, HMType * FType option *
         // `wantsSuspendingCopy` selects it instead, under the same name, so
         // nothing is lost by staying out of this map.
         let declaresPoly =
-            match signature with
-            | _, Some(TArrow(mandatory, keywords, restOpt, _, _, _)), _ ->
+            match signature.Written with
+            | Some(TArrow(mandatory, keywords, restOpt, _, _, _)) ->
                 mandatory @ (keywords |> List.map snd) @ (restOpt |> Option.toList)
                 |> List.exists (function
                     | TApp("-?->", _, _) -> true
@@ -522,7 +550,7 @@ and private checkDefDouble (env: Env) (sigs: Map<string, HMType * FType option *
 
         { env with Registry = registry }, Map.remove name sigs, syncDecls @ bjoDecls
 
-and private checkDefun (env: Env) (sigs: Map<string, HMType * FType option * (string * string) list>) (decl: Decl) (name: string) (defunArgs: DefunArg list) (body: Expr) (colour: Colour) (r: Range) : Env * Map<string, HMType * FType option * (string * string) list> * TDecl list =
+and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defunArgs: DefunArg list) (body: Expr) (colour: Colour) (r: Range) : Env * Sigs * TDecl list =
     // `defbjo` is the only thing that says a function may suspend. The
     // signature does not: `(: fetch (-> string string))` is what you write
     // for either colour, because an arrow says what a function takes and
@@ -538,7 +566,7 @@ and private checkDefun (env: Env) (sigs: Map<string, HMType * FType option * (st
     // Extract structured keyword/rest info from the raw FType (if available)
     let mandatoryFTypes, keywordFTypes, restFTypeOpt, retFType =
         match sigOpt with
-        | Some (_, Some (TArrow(m, kw, rest, ret, _, _)), _) -> m, kw, rest, Some ret
+        | Some { Written = Some(TArrow(m, kw, rest, ret, _, _)) } -> m, kw, rest, Some ret
         | _ -> [], [], None, None
 
     // A plain `->` says nothing about the colour, so it agrees with either
@@ -550,7 +578,7 @@ and private checkDefun (env: Env) (sigs: Map<string, HMType * FType option * (st
     // held to: a signature that claims a function suspends, over a `defun`
     // that cannot, is a contradiction rather than a decoration.
     match sigOpt with
-    | Some(_, Some(TArrow(_, _, _, _, Suspending, sr)), _) when colour = Ordinary ->
+    | Some { Written = Some(TArrow(_, _, _, _, Suspending, sr)) } when colour = Ordinary ->
         failwithf
             $"Type Error at %s{Lexer.formatPos sr}: the signature of '%s{name}' is written -bjo->, which says calling it is a yield point, but it is defined with defun. Define it with defbjo, or write the signature with ->."
     | _ -> ()
@@ -566,16 +594,16 @@ and private checkDefun (env: Env) (sigs: Map<string, HMType * FType option * (st
     let colourDeclared =
         name <> "main"
         && (match sigOpt with
-            | Some(TFun(_, _, declared), _, _) -> groundEffect declared = EAsync
+            | Some { Type = TFun(_, _, declared) } -> groundEffect declared = EAsync
             | _ -> false)
 
-    let sigHMType = sigOpt |> Option.map (fun (t, _, _) -> recolour effect t)
+    let sigHMType = sigOpt |> Option.map (fun s -> recolour effect s.Type)
 
     // Extract explicit trait constraints from the signature
     let explicitConstraints =
         match sigOpt with
-        | Some (_, _, constraints) ->
-            constraints |> List.map (fun (traitName, varName) ->
+        | Some signature ->
+            signature.Constraints |> List.map (fun (traitName, varName) ->
                 { TraitName = originalName env.Registry traitName; TargetType = TVar varName; Pins = [] })
         | None -> []
 
@@ -874,7 +902,7 @@ and private checkDefun (env: Env) (sigs: Map<string, HMType * FType option * (st
     let decl = TDefun(name, vars, mandatoryTypes, typedKeywordArgs, restArgInfo, expectedRetType, effect, typedBody, r)
     finalEnv, Map.remove name sigs, [ decl ]
 
-and private checkModule (env: Env) (sigs: Map<string, HMType * FType option * (string * string) list>) (moduleName: string) (decls: Decl list) (r: Range) : Env * Map<string, HMType * FType option * (string * string) list> * TDecl list =
+and private checkModule (env: Env) (sigs: Sigs) (moduleName: string) (decls: Decl list) (r: Range) : Env * Sigs * TDecl list =
     // Rule 5 for aliases, decided over the module as written rather than as
     // checked: an alias may appear above the definition it would collide
     // with, and by the time the fold reached it the collision would look
@@ -965,7 +993,7 @@ and private checkModule (env: Env) (sigs: Map<string, HMType * FType option * (s
 // Types, traits and constructors are refused. A type has `type` aliases of
 // its own, and a constructor follows its type: neither is a binding, so
 // neither could share one.
-and private checkAlias (env: Env) (sigs: Map<string, HMType * FType option * (string * string) list>) (newName: string) (oldName: string) (r: Range) : Env * Map<string, HMType * FType option * (string * string) list> * TDecl list =
+and private checkAlias (env: Env) (sigs: Sigs) (newName: string) (oldName: string) (r: Range) : Env * Sigs * TDecl list =
     let where = Lexer.formatPos r
 
     // Through the table first, so that aliasing a *prefixed* type or trait
@@ -1038,7 +1066,7 @@ and private checkAlias (env: Env) (sigs: Map<string, HMType * FType option * (st
 // Two passes, because a constructor signature is written in terms of the
 // alias it is declaring — `(-> string StreamWriter)` — so the alias has to
 // be a type before that signature can be resolved.
-and private checkImportClass (env: Env) (sigs: Map<string, HMType * FType option * (string * string) list>) (specs: ClassImportSpec list) (r: Range) : Env * Map<string, HMType * FType option * (string * string) list> * TDecl list =
+and private checkImportClass (env: Env) (sigs: Sigs) (specs: ClassImportSpec list) (r: Range) : Env * Sigs * TDecl list =
     let baseInfos = specs |> List.map classInfoOfSpec
 
     // The alias becomes a type alias as well as a class: that is what lets
@@ -1076,7 +1104,7 @@ and private checkImportClass (env: Env) (sigs: Map<string, HMType * FType option
     { env with Registry = finalRegistry }, sigs, [ TImportClass(infos, r) ]
 
 // `(import/extern (alias (: Clr.Type.Member type #:exceptions (E ...))) ...)`
-and private checkImportExtern (env: Env) (sigs: Map<string, HMType * FType option * (string * string) list>) (specs: ExternImportSpec list) (r: Range) : Env * Map<string, HMType * FType option * (string * string) list> * TDecl list =
+and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec list) (r: Range) : Env * Sigs * TDecl list =
     // Every target this group names, so that the note below can tell an
     // oversight from a pair.
     let importedTargets = specs |> List.map (fun s -> s.ClrTarget) |> Set.ofList
@@ -1292,7 +1320,7 @@ and private checkImportExtern (env: Env) (sigs: Map<string, HMType * FType optio
 
     { env with Registry = newRegistry }, sigs, [ TImportExtern(infos, r) ]
 
-and private checkReExport (env: Env) (sigs: Map<string, HMType * FType option * (string * string) list>) (names: string list) (r: Range) : Env * Map<string, HMType * FType option * (string * string) list> * TDecl list =
+and private checkReExport (env: Env) (sigs: Sigs) (names: string list) (r: Range) : Env * Sigs * TDecl list =
     // A re-exported name was defined elsewhere and already carries a
     // signature from there, so the local-signature rule `export` enforces
     // cannot apply. What can be checked is that the name is actually in
@@ -1347,7 +1375,7 @@ and private checkReExport (env: Env) (sigs: Map<string, HMType * FType option * 
 
     env, sigs, [ TReExport(names, r) ]
 
-and private checkExtern (env: Env) (sigs: Map<string, HMType * FType option * (string * string) list>) (name: string) (declaredOrigin: ImportAlias) (ftype: FType) (constraintPairs: (string * string) list) (r: Range) : Env * Map<string, HMType * FType option * (string * string) list> * TDecl list =
+and private checkExtern (env: Env) (sigs: Sigs) (name: string) (declaredOrigin: ImportAlias) (ftype: FType) (constraintPairs: (string * string) list) (r: Range) : Env * Sigs * TDecl list =
     // An unfilled origin module means "the module this declaration is in",
     // which is only knowable here. A filled one is a facade's: the module
     // publishing the name generated no code for it.
@@ -1412,7 +1440,7 @@ and private checkExtern (env: Env) (sigs: Map<string, HMType * FType option * (s
 
     newEnv, sigs, [ TExtern(name, origin, ftype, r) ]
 
-and private checkTrait (env: Env) (sigs: Map<string, HMType * FType option * (string * string) list>) (traitName: string) (implementorVar: string) (holeArity: int) (assocTypes: string list) (signatures: (string * FType * MemberConstraint list) list) (defaults: Decl list) (clrSpec: (string * FType list * (string * string) list) option) (r: Range) : Env * Map<string, HMType * FType option * (string * string) list> * TDecl list =
+and private checkTrait (env: Env) (sigs: Sigs) (traitName: string) (implementorVar: string) (holeArity: int) (assocTypes: string list) (signatures: (string * FType * MemberConstraint list) list) (defaults: Decl list) (clrSpec: (string * FType list * (string * string) list) option) (r: Range) : Env * Sigs * TDecl list =
     // The member constraints ride the signature list; split them off here
     // so the many readers of `(name, type)` pairs below keep their shape.
     let memberWheres: Map<string, Ast.MemberConstraint list> =
@@ -1813,7 +1841,7 @@ and private checkTrait (env: Env) (sigs: Map<string, HMType * FType option * (st
 
     finalEnv, sigs, [ TTrait(traitName, implementorVar, kind, holeArity, assocTypes, hmSignatures, r) ]
 
-and private checkImpl (env: Env) (sigs: Map<string, HMType * FType option * (string * string) list>) (traitName: string) (targetTypeExpr: FType) (assocBindings: (string * FType) list) (whereClause: (string * string) list) (implMethodWheres: (string * MemberConstraint list) list) (methods: Decl list) (r: Range) : Env * Map<string, HMType * FType option * (string * string) list> * TDecl list =
+and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExpr: FType) (assocBindings: (string * FType) list) (whereClause: (string * string) list) (implMethodWheres: (string * MemberConstraint list) list) (methods: Decl list) (r: Range) : Env * Sigs * TDecl list =
     // The trait may be written under a spelling a `prefix` produced; the
     // registries are keyed on the name the `def/trait` gave it.
     let traitName = originalName env.Registry traitName
@@ -2365,7 +2393,13 @@ and private checkImplMethod
         // Pass instantiatedSig through 'sigs'.
         // This forces DDefun to unify the expected types into the arguments
         // BEFORE inference and generalization.
-        let methodSigs = Map.add name (instantiatedSig, None, []) Map.empty
+        let methodSigs =
+            Map.add
+                name
+                { Type = instantiatedSig
+                  Written = None
+                  Constraints = [] }
+                Map.empty
 
         // Which method this is, so that the `defun`'s own recursion
         // binding is not taken for a shadow of it.
@@ -2488,7 +2522,7 @@ and private checkImplMethod
 
     | _ -> failwithf $"Only 'defun' declarations are allowed inside 'impl' at %s{Lexer.formatPos r}"
 
-and private checkImplExtern (env: Env) (sigs: Map<string, HMType * FType option * (string * string) list>) (traitName: string) (targetTypeExpr: FType) (assocBindings: (string * FType) list) (whereClause: (string * string) list) (r: Range) : Env * Map<string, HMType * FType option * (string * string) list> * TDecl list =
+and private checkImplExtern (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExpr: FType) (assocBindings: (string * FType) list) (whereClause: (string * string) list) (r: Range) : Env * Sigs * TDecl list =
     // A bodyless implementation, read back from a compiled module's
     // metadata. Only the registry needs to learn about it: the methods are
     // already compiled into the assembly that declared it, so there is
@@ -2527,9 +2561,9 @@ and private checkImplExtern (env: Env) (sigs: Map<string, HMType * FType option 
 
 and internal checkDeclGroup
     (env: Env)
-    (sigs: Map<string, HMType * FType option * (string * string) list>)
+    (sigs: Sigs)
     (decls: Decl list)
-    : Env * Map<string, HMType * FType option * (string * string) list> * TDecl list =
+    : Env * Sigs * TDecl list =
 
     /// Every `defun` whose signature declares a `-?->` parameter gets a second
     /// definition, generated from the same body and checked at the suspending
@@ -2935,14 +2969,20 @@ and internal checkDeclGroup
         decls
         |> List.collect (function
             | DSignature(name, ftype, constraints, r) ->
-                [name, (resolveSigAt r ftype, Some ftype, constraints)]
+                [ name,
+                  { Type = resolveSigAt r ftype
+                    Written = Some ftype
+                    Constraints = constraints } ]
             // An inline trait's signatures are not `HMType`s and never can be:
             // they mention the constructor variable applied. They are read as
             // templates by `DTrait` instead, and there is nothing to inject here.
             | DTrait(_, _, holeArity, _, signatures, _, _, r) when holeArity = 0 ->
                 signatures
                 |> List.map (fun (name, ftype, _) ->
-                    name, (resolveSigAt r ftype, Some ftype, []))
+                    name,
+                    { Type = resolveSigAt r ftype
+                      Written = Some ftype
+                      Constraints = [] })
             | _ -> [])
         |> Map.ofList
 
@@ -3060,15 +3100,15 @@ and internal checkDeclGroup
     let envWithForwardDecls =
         explicitSigs
         |> Map.fold
-            (fun (acc: Env) name (hmType, ftypeOpt, constraintPairs) ->
+            (fun (acc: Env) name (signature: Signature) ->
                 match Map.tryFind name declaredFunctions with
                 | None -> acc
                 | Some effect ->
 
-                    let (Scheme(vars, _, schemeType)) = generalize acc (recolour effect hmType)
+                    let (Scheme(vars, _, schemeType)) = generalize acc (recolour effect signature.Type)
 
                     let constraints =
-                        constraintPairs
+                        signature.Constraints
                         |> List.map (fun (traitName, varName) ->
                             { TraitName = originalName acc.Registry traitName; TargetType = TVar varName; Pins = [] })
 
@@ -3083,7 +3123,7 @@ and internal checkDeclGroup
                     // early: a forward call that passes a keyword argument, or
                     // omits an optional one, has nothing to resolve against
                     // without it.
-                    match ftypeOpt with
+                    match signature.Written with
                     | Some(TArrow(mandatory, keywords, restOpt, _, _, _)) ->
                         let funMeta =
                             { MandatoryCount = mandatory.Length
