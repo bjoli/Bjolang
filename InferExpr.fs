@@ -600,56 +600,11 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
           Range = r
           Node = TLetTuple(names, typedVal, typedBody) }
 
-    | EList(exprs, r) ->
-        let elementType = freshMeta ()
+    | EList(exprs, r) -> inferCollection env "List" "list" TListMake exprs r
 
-        let typedExprs =
-            exprs
-            |> List.map (fun e ->
-                let t, te = infer env e
-                joinLiteralElement env r "list" exprs elementType t
-                te)
+    | EVec(exprs, r) -> inferCollection env "Vec" "vec" TVecMake exprs r
 
-        let listType = TCon("List", [ elementType ])
-
-        listType,
-        { Type = listType
-          Range = r
-          Node = TListMake typedExprs }
-
-    | EVec(exprs, r) ->
-        let elementType = freshMeta ()
-
-        let typedExprs =
-            exprs
-            |> List.map (fun e ->
-                let t, te = infer env e
-                joinLiteralElement env r "vec" exprs elementType t
-                te)
-
-        let vecType = TCon("Vec", [ elementType ])
-
-        vecType,
-        { Type = vecType
-          Range = r
-          Node = TVecMake typedExprs }
-
-    | EArray(exprs, r) ->
-        let elementType = freshMeta ()
-
-        let typedExprs =
-            exprs
-            |> List.map (fun e ->
-                let t, te = infer env e
-                joinLiteralElement env r "array" exprs elementType t
-                te)
-
-        let arrayType = TCon("Array", [ elementType ])
-
-        arrayType,
-        { Type = arrayType
-          Range = r
-          Node = TArrayMake typedExprs }
+    | EArray(exprs, r) -> inferCollection env "Array" "array" TArrayMake exprs r
 
     | ETryFinally(body, cleanup, r) ->
         let bodyType, tBody = infer env body
@@ -759,6 +714,36 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
 //
 // Where it may *stand* was settled syntactically by `checkEscapeUses` when
 // the block was entered, so nothing here has to ask.
+/// A collection literal: `(list ...)`, `[...]` or `#[...]`.
+///
+/// One element type, joined across every element so that the diagnostic names
+/// the literal rather than the pair of elements that disagreed. `ctor` names
+/// the type, `literalName` is how that diagnostic spells the form, and
+/// `mkNode` builds the node — which is all the three literals differ by.
+and private inferCollection
+    (env: Env)
+    (ctor: string)
+    (literalName: string)
+    (mkNode: TypedExpr list -> TExprNode)
+    (exprs: Expr list)
+    (r: Range)
+    : HMType * TypedExpr =
+    let elementType = freshMeta ()
+
+    let typedExprs =
+        exprs
+        |> List.map (fun e ->
+            let t, te = infer env e
+            joinLiteralElement env r literalName exprs elementType t
+            te)
+
+    let collectionType = TCon(ctor, [ elementType ])
+
+    collectionType,
+    { Type = collectionType
+      Range = r
+      Node = mkNode typedExprs }
+
 and private inferEscapeCall (env: Env) (name: string) (args: Expr list) (r: Range) : HMType * TypedExpr =
     let info = env.Escapes[name]
 
