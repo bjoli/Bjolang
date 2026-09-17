@@ -3,6 +3,57 @@
 
 What each change guarantees, and what it leaves open.
 
+* A build writes down what it was built from, and ~bjo~ reads it
+
+Deciding whether to compile means knowing a file's whole source closure and
+every module it links. Only the compiler knows those — an ~include~ is a path
+inside a form, an import is a module path resolved against the installation —
+and until now the only thing asking was a shell script, which worked them out
+again with ~grep~ and ~awk~. That approximation was wrong in both directions.
+It followed a module import one edge deep, so editing ~eq.bjo~ left
+~prelude.dll~ claiming to be current and the next compilation linked metadata
+describing a module that no longer existed; the symptom was a SIGBUS in an
+unrelated file.
+
+So a build that succeeds now writes ~<source>.bjobuild~: the mode it produced,
+the artefact, the compiler, every source it read and every assembly it links.
+All of that is what the compilation already had — the source closure is what
+~expandIncludes~ reports and the assemblies are ~linkedAssemblies~ — so what
+changed is that they stop being thrown away.
+
+The runtime is in that list for a reason of its own. A program is compiled
+against ~BjolangRuntime~'s API and resolves it at run time from where it was
+built, so a rebuilt runtime under an unrebuilt program is a missing method at
+run time rather than a failed build.
+
+~bjo~ is the command built on it, written in Bjolang, with ~run~, ~build~,
+~check~ and ~repl~. Its staleness check is a comparison of timestamps against a
+list, and it keeps only the two questions the record cannot answer: whether the
+compiler is behind its own sources, since a stale compiler would answer as the
+compiler it used to be, and what to exec afterwards. An up-to-date ~bjo run~
+answers in about 150 ms, where starting a compiler to ask would cost about half
+a second before it did anything.
+
+What it leaves open: ~bjor~ still works the rest out for itself, and now reads
+only the mode from the record's first line. The two drivers therefore still
+hold two different answers to the same question, and the loose one is still the
+one ~build_std.sh~ runs on.
+
+* ~main~'s answer is the process's exit code
+
+The entry point's type has been ~(-> (Vec string) int)~ throughout, and a file
+that wrote a different one was refused in those terms. The ~int~ meant nothing:
+the generated ~Main~ called ~main~ and discarded what came back, so every
+Bjolang program exited 0 — including one whose ~main~ ended in ~1~ precisely to
+say it had failed.
+
+Both runtime entry points, ~RunMainSync~ and ~RunToCompletion~, already handed
+the value back. It is now returned rather than assigned to a discard.
+
+What it leaves open: a program that returned non-zero by accident now fails in
+the eyes of whatever started it. Nothing in the test suite judged by exit code,
+so nothing there changed, and ~run_tests.py~ still reads output text.
+
 * A cancelled ~task->event~ always raises, and never returns a value
 
 The rule was already written down: an ~(Err e)~ from a ~task->event~ means the

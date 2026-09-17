@@ -1,0 +1,102 @@
+#!/bin/bash
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+#
+# As a special exception to the Mozilla Public License, version 2.0, if you
+# compile your application source code and portions of this software are
+# embedded into the generated object code or executable form as a normal
+# consequence of the compilation process (such as inline functions,
+# templates, generics, or macros), you may redistribute such embedded portions
+# in such object code or executable form without complying with the source code
+# availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+# The bootstrap, and nothing else.
+#
+# `bjo` is written in Bjolang, so something that is not Bjolang has to compile
+# it the first time. That is all this does: it gets `bjo.exe` to exist and hands
+# over. Everything a user asked for — which command, what is stale, what to run
+# — is decided in `bjo.bjo`, and nothing here should grow to have an opinion
+# about it.
+#
+# The staleness rules below are the crude ones on purpose. They are about one
+# file whose dependencies are known here in full, and the moment they need to
+# know more than that, `bjo.bjo` is already able to answer it.
+
+set -e
+
+BJO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BJO_ROOT="$(cd "$BJO_DIR/.." && pwd)"
+export BJO_ROOT
+
+COMPILER_DLL="$BJO_ROOT/bin/Release/net10.0/Bjolang.dll"
+SOURCE="$BJO_DIR/bjo.bjo"
+EXE="$BJO_DIR/bjo.exe"
+
+# The compiler, if it is missing or behind its own sources. `bjo.bjo` asks this
+# again before every command it runs; asking here as well is what makes the very
+# first invocation — with no compiler and no `bjo.exe` — work at all.
+#
+# Two assemblies, each asked about the sources that produce it. The runtime's C#
+# does not produce `Bjolang.dll`: comparing it against that one is an answer
+# that never changes, because a `.cs` edit rebuilds `BjolangRuntime.dll` and
+# leaves the F# assembly alone for MSBuild to skip.
+#
+# `bin` and `obj` are skipped: a build writes generated code into them, so
+# including them would make the compiler stale the instant it was built.
+RUNTIME_DLL="$BJO_ROOT/BjolangRuntime/bin/Release/net10.0/BjolangRuntime.dll"
+
+newer_than() {
+    local assembly="$1"
+    [ -f "$assembly" ] || return 0
+
+    local src
+    while read -r src; do
+        [ -n "$src" ] && [ "$src" -nt "$assembly" ] && return 0
+    done
+
+    return 1
+}
+
+compiler_is_stale() {
+    newer_than "$COMPILER_DLL" < <(find "$BJO_ROOT" -maxdepth 1 -name '*.fs' 2>/dev/null) && return 0
+
+    newer_than "$RUNTIME_DLL" < <(find "$BJO_ROOT/BjolangRuntime" -name '*.cs' \
+                                       -not -path '*/obj/*' -not -path '*/bin/*' 2>/dev/null) && return 0
+
+    return 1
+}
+
+if compiler_is_stale; then
+    echo "Building Bjolang compiler..."
+    dotnet build "$BJO_ROOT/Bjolang.fsproj" -c Release -v q --nologo
+fi
+
+# `bjo.exe` itself, whose build record is read the same way it reads everyone
+# else's: first line is the mode, and every `source`, `dep` and `compiler` line
+# is something the binary must be newer than.
+RECORD="$BJO_DIR/bjo.bjobuild"
+
+bjo_is_stale() {
+    [ -f "$EXE" ] || return 0
+    [ -f "$RECORD" ] || return 0
+    [ "$(head -n1 "$RECORD")" = "mode release" ] || return 0
+
+    local key path
+    while read -r key path; do
+        case "$key" in
+            source|dep|compiler)
+                [ -n "$path" ] && [ "$path" -nt "$EXE" ] && return 0
+                ;;
+        esac
+    done < "$RECORD"
+
+    return 1
+}
+
+if bjo_is_stale; then
+    echo "Building bjo..."
+    dotnet "$COMPILER_DLL" "$SOURCE"
+fi
+
+exec dotnet "$EXE" "$@"

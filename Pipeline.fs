@@ -952,6 +952,18 @@ let private factsOf (bjoPath: string) : SourceFacts =
         sourceFacts[key] <- facts
         facts
 
+/// Every file `bjoPath` is made of: itself and what it pulls in with `include`,
+/// transitively.
+///
+/// The same closure the staleness check below compares against, exposed so that
+/// a finished build can write down what it was built from (`Build`'s build
+/// record). A driver outside the compiler has no other way to know — an
+/// `include` is a path in a form, and finding it means reading the file the way
+/// the compiler does. Answered from the cache above, so asking after a build
+/// costs nothing for anything the build already read.
+let sourceClosure (bjoPath: string) : string list =
+    (factsOf bjoPath).Sources |> Set.toList
+
 /// The `.dll` for an imported `.bjo`, built if there is not a current one.
 ///
 /// `(import "x.bjo")` means a compiled unit, always. Merging the source into

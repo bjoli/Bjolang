@@ -170,6 +170,10 @@ fi
 # build: `bjor` rebuilt everything it was ever asked about, and `build_std.sh`
 # rebuilt the whole standard library on every invocation, forever, with nothing
 # having changed. Recording the answer is the only way to know it.
+#
+# The record is the compiler's — it writes `<source>.bjobuild` after a build
+# that succeeded, mode on the first line, and what it was built from below.
+# `bjo` reads the whole thing; this needs only the head.
 WANTED_MODE=release
 [ $DEBUG_MODE -eq 1 ] && WANTED_MODE=debug
 MODE_FILE="${FILE%.bjo}.bjobuild"
@@ -256,9 +260,9 @@ imported_dlls() {
 needs_compile() {
     [ -z "$OUT_FILE" ] && return 0
 
-    # Built as something other than what is being asked for now — or by a bjor
-    # that did not record it, which is the same thing as not knowing.
-    [ "$(cat "$MODE_FILE" 2>/dev/null)" = "$WANTED_MODE" ] || return 0
+    # Built as something other than what is being asked for now — or by a
+    # compiler that did not record it, which is the same thing as not knowing.
+    [ "$(head -n1 "$MODE_FILE" 2>/dev/null)" = "mode $WANTED_MODE" ] || return 0
 
     collect_sources "$FILE"
 
@@ -342,11 +346,6 @@ if [ $SHOULD_COMPILE -eq 1 ]; then
     if [ $COMPILE_STATUS -ne 0 ]; then
         exit $COMPILE_STATUS
     fi
-
-    # Only after a build that succeeded. A failed one leaves whatever was there
-    # before, and recording this invocation's mode would then claim a binary
-    # that was never produced.
-    echo "$WANTED_MODE" > "$MODE_FILE"
 fi
 
 # Execute output if an executable was created

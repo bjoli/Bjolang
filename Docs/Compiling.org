@@ -49,9 +49,70 @@ Three things, in this order, and only what is out of date:
 The tests themselves are always compiled afresh, in parallel, one job per
 three-digit group.
 
+** ~bjo~
+
+The command that runs Bjolang. It is written in Bjolang; ~bjo/bjo~ is a
+bootstrap script that compiles ~bjo/bjo.bjo~ if it has to and hands over.
+
+#+BEGIN_SRC sh
+./bjo/bjo run Playground/test.bjo        # compile if needed, then run
+./bjo/bjo run Playground/test.bjo a b c  # arguments after the file go to the program
+./bjo/bjo build --lib lib/std/list.bjo   # compile to a .dll, do not run
+./bjo/bjo check src/*.bjo                # errors only; builds nothing
+./bjo/bjo repl                           # under rlwrap, where there is one
+#+END_SRC
+
+| Command | What it does                                                     |
+|---------+------------------------------------------------------------------|
+| ~run~   | Compiles if the artefact is behind, then runs it                 |
+| ~build~ | The same, without running                                        |
+| ~check~ | Reports every error the frontend finds, and writes nothing       |
+| ~repl~  | The compiler's REPL, under ~rlwrap~ when one is on PATH          |
+| ~help~  | Usage                                                            |
+
+Flags come *before* the source file — ~-d~ for a debug build, ~-c~ to compile
+whatever the timestamps say, ~--lib~ for a ~.dll~, and ~--~ to end them.
+Everything *after* the file belongs to the program, so ~bjo run prog.bjo -d~
+passes ~-d~ to ~prog~.
+
+~main~'s answer is the process's exit code, so ~bjo run~ answers with the
+program's and ~bjo check~ with the compiler's.
+
+*** The build record
+
+A build writes ~<source>.bjobuild~ beside the source: the mode it produced, the
+artefact, the compiler, every source it read, and every assembly it links —
+the runtime among them, since a program is compiled against that API and only
+resolves it at run time.
+
+#+BEGIN_SRC text
+mode release
+output /home/you/prog.exe
+compiler /home/you/bjolang/bin/Release/net10.0/Bjolang.dll
+source /home/you/prog.bjo
+source /home/you/parts/helpers.bjo
+dep /home/you/bjolang/lib/std/prelude.dll
+dep /home/you/bjolang/BjolangRuntime/bin/Release/net10.0/BjolangRuntime.dll
+#+END_SRC
+
+Deciding whether to compile is then a comparison of timestamps against that
+list, which is why ~bjo~ can answer in milliseconds where starting a compiler to
+ask would cost about half a second.
+
+The compiler writes it because the compiler is the only one that knows what is
+in it. An ~include~ is a path inside a form and an import is a module path
+resolved against the installation; a driver that works those out from the text
+— as ~bjor~ does, with ~grep~ and ~awk~ — is a second answer to a question that
+already has one, and the two can disagree. See ~Build.writeBuildRecord~.
+
+A record is written only after a build that succeeded, and never by ~--check~,
+which builds nothing.
+
 ** ~bjor~
 
-~bjor~ compiles a file and runs it:
+The shell driver ~bjo~ was written to replace. Still here, and still works —
+it reads the mode from the first line of the record above, and works the rest
+out for itself:
 
 #+BEGIN_SRC sh
 ./bjor Playground/test.bjo          # compile if needed, then run
@@ -71,15 +132,16 @@ That means the source file, every ~.bjo~ or ~.protobjo~ it imports or includes
 transitively, the standard library, and the compiler itself — a program built by
 a different compiler is stale even when nothing you wrote has changed.
 
-Two cases always recompile:
+Two cases always recompile, under ~bjo~ as well as ~bjor~:
 
 - ~-c~, which is what it is for.
 - ~-d~, because the dumps a debug build produces are a product of compiling, and
   because the binary sitting there is almost certainly an optimized one.
 
-A plain run also recompiles when it finds a ~.pdb~ beside the binary: symbols
-mean the last build was a debug build, and serving that to a command that did
-not ask for one would silently hand back the slower binary.
+Which configuration the binary *is* comes from the record's first line. It used
+to be guessed at from a ~.pdb~ beside the binary, which stopped meaning anything
+when the compiler began emitting symbols for both — so every binary looked like
+a debug build, and the standard library was rebuilt on every invocation.
 
 ** Compiler flags
 
@@ -118,9 +180,10 @@ without it.
 
 ** The REPL
 
-: ./bjor --repl
+: ./bjo/bjo repl
 
-No line editing, no completion, no history — run it under ~rlwrap~. An entry is
+No line editing, no completion, no history of its own — ~bjo repl~ runs it under
+~rlwrap~ when there is one on PATH, and says so when there is not. An entry is
 a group of declarations or one expression, compiled by the same pipeline a build
 runs and emitted as an assembly of its own. [[file:Repl.org][Repl.org]] has the semantics: what
 redefinition does, what an ~impl~ written mid-session does and does not reach,
@@ -164,8 +227,9 @@ and there is nothing the entry point could pass it.
 today, and the entry point drives the fiber to completion on the process's own
 thread; nothing else about its type changes.
 
-The generated ~Main~ builds a ~(Vec string)~ from the process arguments and
-calls ~main~ with it. This implies that the ~main~ function must strictly adhere 
+The generated ~Main~ builds a ~(Vec string)~ from the process arguments, calls
+~main~ with it, and *exits with what it answered*. A ~main~ ending in ~1~ is a
+program a shell, a test runner or ~bjo run~ sees fail. This implies that the ~main~ function must strictly adhere 
 to the expected signature; unexpected shapes will fail to compile.
 
 ** Runtime assemblies

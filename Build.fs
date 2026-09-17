@@ -54,6 +54,86 @@ let private dumpPaths (emitCs: string option) : string * string =
     | Some path -> path, Path.ChangeExtension(path, ".ast.txt")
 
 
+/// What a finished build was built from, written beside the source as
+/// `<source>.bjobuild`.
+///
+/// A driver — `bjo`, `bjor` — has to decide whether to compile at all before it
+/// starts a compiler, because starting one costs about half a second whatever
+/// the answer turns out to be. Deciding that means knowing the file's whole
+/// source closure and every module it links, and only the compiler knows those:
+/// an `include` is a path inside a form and an import is a module path resolved
+/// against the installation, so a driver that wants the same answer has to read
+/// Bjolang. `bjor` did read it, with `grep` and `awk`, and the approximation
+/// was wrong in both directions — it followed module imports only one edge deep
+/// and could not see an `include` written anywhere unusual.
+///
+/// So the build records what it read, and the driver compares timestamps.
+/// One line per fact, `key value`, keys repeating:
+///
+///     mode     release | debug — what this build produced, since the two are
+///              different code and a driver asking for one must not be handed
+///              the other
+///     output   the `.exe` or `.dll` that was produced. A file with no `main`
+///              is a library whether or not `--lib` was passed, so which one it
+///              is cannot be told from the command line
+///     compiler the compiler that produced it. A `.dll` carries metadata in the
+///              compiler's own format, so a rebuilt compiler invalidates every
+///              artefact it ever wrote
+///     source   a `.bjo` or `.protobjo` the build read, absolute
+///     dep      an assembly the output links, absolute: its modules and the
+///              runtime alike. The runtime belongs here because a program is
+///              compiled against its API and only resolves it at run time, so a
+///              rebuilt runtime is a program built against something that is no
+///              longer there — a missing method rather than a failed build
+///
+/// The mode is first and alone on its line so that reading just the head of the
+/// file answers the cheapest question.
+let private writeBuildRecord
+    (options: Options)
+    (inputFilePath: string)
+    (outputFilePath: string)
+    (linked: string list)
+    =
+    try
+        // The module half of `linked` is already transitive — a dependency's own
+        // dependencies are linked, not imported, and are added to the same set —
+        // so the sources behind it need no walk of their own here. Each
+        // contributes the closure of the `.bjo` beside it, when there is one; a
+        // runtime assembly or a prebuilt `.dll` has no source and is judged by
+        // its own timestamp.
+        let sources =
+            linked
+            |> List.collect (fun dll ->
+                let bjoPath = Path.ChangeExtension(dll, ".bjo")
+
+                if File.Exists bjoPath then
+                    Pipeline.sourceClosure bjoPath
+                else
+                    [])
+            |> List.append (Pipeline.sourceClosure inputFilePath)
+            |> List.map Path.GetFullPath
+            |> List.distinct
+            |> List.sort
+
+        let compilerPath =
+            match System.Reflection.Assembly.GetExecutingAssembly().Location with
+            | "" -> []
+            | loc -> [ $"compiler %s{Path.GetFullPath loc}" ]
+
+        let lines =
+            [ $"""mode %s{if options.Debug then "debug" else "release"}"""
+              $"output %s{Path.GetFullPath outputFilePath}" ]
+            @ compilerPath
+            @ (sources |> List.map (fun s -> $"source %s{s}"))
+            @ (linked |> List.map Path.GetFullPath |> List.distinct |> List.sort |> List.map (fun d -> $"dep %s{d}"))
+
+        File.WriteAllLines(Path.ChangeExtension(inputFilePath, ".bjobuild"), lines)
+    with ex ->
+        // A record that could not be written costs a rebuild next time and
+        // nothing else, which is not worth failing a build that succeeded.
+        Diagnostics.progress $"Could not write the build record: %s{ex.Message}"
+
+
 /// Runs `fileName args` to completion, with `env` added to its environment,
 /// and hands back what it said.
 ///
@@ -281,11 +361,17 @@ let compile (options: Options) (inputFilePath: string) : int =
             // suspend and so only the *drain* needs a fiber. Overloading the one
             // name would be ambiguous at a `main` that returns a `Fiber<T>`:
             // both would apply.
+            // What `main` answered is the process's exit code. Both runtime
+            // entry points hand the value back, and it used to be dropped here:
+            // every program exited 0, including one whose `main` ended in 1, so
+            // `(-> (Vec string) int)` was a type nothing read. Anything driving
+            // a Bjolang program — a shell, a test runner, `bjo` — asks this way
+            // and no other.
             let callMain (argExpr: string) =
                 if mainIsBjoroutine then
-                    $"        _ = Bjoml.Bjo.RunToCompletion(() => BjolangRuntime.RunMainFiber(() => %s{mainModuleClass}.main(%s{argExpr})));\n"
+                    $"        return Bjoml.Bjo.RunToCompletion(() => BjolangRuntime.RunMainFiber(() => %s{mainModuleClass}.main(%s{argExpr})));\n"
                 else
-                    $"        _ = BjolangRuntime.RunMainSync(() => %s{mainModuleClass}.main(%s{argExpr}));\n"
+                    $"        return BjolangRuntime.RunMainSync(() => %s{mainModuleClass}.main(%s{argExpr}));\n"
 
             // One call, always. `main` takes the arguments as a `(Vec string)`
             // whether or not it was written with a parameter, so there is no
@@ -301,12 +387,12 @@ let compile (options: Options) (inputFilePath: string) : int =
                 else
                     "\npublic static class BjolangEntryPoint {\n" +
                     resolverCode +
-                    "    public static void Main(string[] args) {\n" +
+                    "    public static int Main(string[] args) {\n" +
                     (if resolverCode = "" then "" else "        InstallAssemblyResolver();\n") +
-                    "        Run(args);\n" +
+                    "        return Run(args);\n" +
                     "    }\n" +
                     "    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]\n" +
-                    "    private static void Run(string[] args) {\n" +
+                    "    private static int Run(string[] args) {\n" +
                     runBody +
                     "    }\n" +
                     "}\n"
@@ -627,45 +713,57 @@ let compile (options: Options) (inputFilePath: string) : int =
                                 None
                 with _ -> None
 
-            match tryInProcessCompile () |> Option.orElseWith tryFastCompile with
-            | Some code -> code
-            | None ->
-                let projPath = Path.Combine(tmpDir, "Project.csproj")
-                let configuration = if options.Debug then "Debug" else "Release"
+            // One record for all three backends: which one produced the
+            // assembly is not something the build was built from.
+            let buildStatus =
+                match tryInProcessCompile () |> Option.orElseWith tryFastCompile with
+                | Some code -> code
+                | None ->
+                    let projPath = Path.Combine(tmpDir, "Project.csproj")
+                    let configuration = if options.Debug then "Debug" else "Release"
 
-                let exitCode, stdout, stderr =
-                    runProcess
-                        "dotnet"
-                        $"build \"%s{projPath}\" -c %s{configuration} -o \"%s{outDir}\" /p:AssemblyName=%s{assemblyName}"
-                        []
+                    let exitCode, stdout, stderr =
+                        runProcess
+                            "dotnet"
+                            $"build \"%s{projPath}\" -c %s{configuration} -o \"%s{outDir}\" /p:AssemblyName=%s{assemblyName}"
+                            []
 
-                // MSBuild's own report, which used to go straight to the
-                // console. Passed on either way: on success it is the build
-                // log, and on failure it is the only account of what went
-                // wrong.
-                if not (System.String.IsNullOrWhiteSpace stdout) then printfn "%s" (stdout.TrimEnd())
-                if not (System.String.IsNullOrWhiteSpace stderr) then printfn "%s" (stderr.TrimEnd())
+                    // MSBuild's own report, which used to go straight to the
+                    // console. Passed on either way: on success it is the build
+                    // log, and on failure it is the only account of what went
+                    // wrong.
+                    if not (System.String.IsNullOrWhiteSpace stdout) then printfn "%s" (stdout.TrimEnd())
+                    if not (System.String.IsNullOrWhiteSpace stderr) then printfn "%s" (stderr.TrimEnd())
 
-                if exitCode = 0 then
-                    let generatedDll = Path.Combine(outDir, assemblyName + ".dll")
-                    if System.IO.File.Exists(generatedDll) && Path.GetFullPath(generatedDll) <> Path.GetFullPath(outputFilePath) then
-                        if System.IO.File.Exists(outputFilePath) then System.IO.File.Delete(outputFilePath)
-                        System.IO.File.Move(generatedDll, outputFilePath)
-                    
-                    let genRuntimeConfig = Path.Combine(outDir, assemblyName + ".runtimeconfig.json")
-                    let outRuntimeConfig = Path.ChangeExtension(outputFilePath, ".runtimeconfig.json")
-                    if System.IO.File.Exists(genRuntimeConfig) && Path.GetFullPath(genRuntimeConfig) <> Path.GetFullPath(outRuntimeConfig) then
-                        if System.IO.File.Exists(outRuntimeConfig) then System.IO.File.Delete(outRuntimeConfig)
-                        System.IO.File.Move(genRuntimeConfig, outRuntimeConfig)
+                    if exitCode = 0 then
+                        let generatedDll = Path.Combine(outDir, assemblyName + ".dll")
+                        if System.IO.File.Exists(generatedDll) && Path.GetFullPath(generatedDll) <> Path.GetFullPath(outputFilePath) then
+                            if System.IO.File.Exists(outputFilePath) then System.IO.File.Delete(outputFilePath)
+                            System.IO.File.Move(generatedDll, outputFilePath)
 
-                    Diagnostics.progress $"Successfully built %s{outputFilePath}"
-                    try Directory.Delete(tmpDir, true) with | _ -> ()
-                    0
-                else
-                    printfn "C# Compilation failed."
-                    // Leave tmpDir for debugging
-                    printfn $"Temp directory: %s{tmpDir}"
-                    1
+                        let genRuntimeConfig = Path.Combine(outDir, assemblyName + ".runtimeconfig.json")
+                        let outRuntimeConfig = Path.ChangeExtension(outputFilePath, ".runtimeconfig.json")
+                        if System.IO.File.Exists(genRuntimeConfig) && Path.GetFullPath(genRuntimeConfig) <> Path.GetFullPath(outRuntimeConfig) then
+                            if System.IO.File.Exists(outRuntimeConfig) then System.IO.File.Delete(outRuntimeConfig)
+                            System.IO.File.Move(genRuntimeConfig, outRuntimeConfig)
+
+                        Diagnostics.progress $"Successfully built %s{outputFilePath}"
+                        try Directory.Delete(tmpDir, true) with | _ -> ()
+                        0
+                    else
+                        printfn "C# Compilation failed."
+                        // Leave tmpDir for debugging
+                        printfn $"Temp directory: %s{tmpDir}"
+                        1
+
+            // Only after a build that succeeded. A failed one leaves whatever
+            // was there before, and a record naming an artefact that was never
+            // produced is worse than none: the driver would compare timestamps
+            // against a file from an older build and find it current.
+            if buildStatus = 0 then
+                writeBuildRecord options inputFilePath outputFilePath linkedAssemblies
+
+            buildStatus
         | None ->
             printfn "Compilation failed."
             1
@@ -982,7 +1080,14 @@ let runBatch (options: Options) (ifStale: bool) (reportPath: string option) (fil
 
     match reportPath with
     | Some path -> writeReport path results
-    | None -> ()
+    | None ->
+        // Each file's diagnostics are captured so that a report can carry them.
+        // With no report to write they go where they would have gone had the
+        // files been compiled one at a time — otherwise a batch started from a
+        // terminal answers "1 failed" and not one word about what failed.
+        for r in results do
+            if not (System.String.IsNullOrWhiteSpace r.Output) then
+                printfn "%s" (r.Output.TrimEnd())
 
     let failed = results |> List.filter (fun r -> r.Status <> 0)
 
