@@ -246,15 +246,21 @@ let private nullaryCorrespondence =
 /// unified with nothing. No such method could be imported, which is why
 /// `read-char` was a builtin — the workaround, not the design.
 ///
-/// Only `char`, and deliberately not the whole table. The others have a .NET
-/// name a program may also write: `(import/class (SB (: System.Text.StringBuilder ...)))`
-/// is a real thing to do, and mapping the reflected type to `StringBuilder`
-/// would make the imported alias and the reflected member disagree about what
-/// they are. `char` has no such spelling — `System.Char` is a *different* type,
-/// a UTF-16 code unit rather than a scalar — so there is nothing to collide
-/// with.
+/// Only `char` and `StringCursor`, and deliberately not the whole table. The
+/// others have a .NET name a program may also write:
+/// `(import/class (SB (: System.Text.StringBuilder ...)))` is a real thing to
+/// do, and mapping the reflected type to `StringBuilder` would make the
+/// imported alias and the reflected member disagree about what they are.
+/// Neither of these two has such a spelling. `System.Char` is a *different*
+/// type from `char`, a UTF-16 code unit rather than a scalar, and
+/// `Bjolang.Runtime.StringCursor` has an internal constructor and no public
+/// members, so an alias for it could hold nothing and do nothing. Without the
+/// entry, no imported method could hand back a position in a string — which is
+/// what `(std rx)` needs in order to report where a match was found.
 let private clrToNullary =
-    dict [ "Bjolang.Runtime.BjoChar", TypeConstants.CharName ]
+    dict
+        [ "Bjolang.Runtime.BjoChar", TypeConstants.CharName
+          "Bjolang.Runtime.StringCursor", "StringCursor" ]
 
 /// A member of an interface, and whether it is reached through the type or
 /// through a value: `T.Abs(x)` against `x.CompareTo(y)`.

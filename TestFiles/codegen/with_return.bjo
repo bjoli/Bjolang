@@ -1,18 +1,26 @@
-;; What `with-return` and `def/else` compile to.
+;; What `with-return` and `def+` compile to.
 ;;
 ;; Two shapes, read off the generated C# by hand once and pinned here.
 ;;
 ;; **The tail case emits neither a slot nor a label.** When the block *is* the
-;; function's value, an escape is a plain `return`:
+;; function's value, an escape is a plain `return`, and a `def+` is the `if` /
+;; `else if` chain its arms describe:
 ;;
-;;   if (!(o is { Tag: 1, Value: var n })) { goto __else__12; }
-;;   if (n < 0) { return "negative"; }
-;;   return "positive";
-;;   __else__12: ;
-;;   return "none";
+;;   var __bound__12 = o;
+;;   if (__bound__12 is { Tag: 1, Value: var n }) {
+;;       if (n < 0) { return "negative"; }
+;;       return "positive";
+;;   }
+;;   else if (__bound__12 is { Tag: 0 }) { return "none"; }
+;;   else { throw new Exception("Match failure at ..."); }
 ;;
-;; Anywhere else the value goes to a slot and control jumps past the body. The
-;; slot is declared, and the label emitted, in the block the form stands in
+;; The final `else` is unreachable — `Exhaustiveness` has already refused a form
+;; whose arms leave a value uncovered — and is emitted for the reason a switch
+;; statement's `default:` carries one: C# cannot see that the chain always takes
+;; a branch, and without it a `def+` in return position is CS0161.
+;;
+;; Anywhere else a block's value goes to a slot and control jumps past the body.
+;; The slot is declared, and the label emitted, in the block the form stands in
 ;; rather than in one of its own: a `goto` whose label ends up in a sibling
 ;; block is CS0159. The `default!` is there because a path that falls through
 ;; without assigning is CS0165 about code no user wrote.
@@ -22,11 +30,6 @@
 ;;   __ret__20 = "small"; goto __ret_end__21;
 ;;   ...
 ;;   __ret_end__21: ;
-;;
-;; And a `def/else*` emits its else body **once**, with every failing clause
-;; jumping to it. That is the whole reason it is a node of its own rather than
-;; nested matches, which would emit the body once per clause: below there are
-;; three `goto __else` and one copy of `"missing"`.
 
 (import (std prelude))
 
@@ -34,8 +37,8 @@
 (: classify (-> (Option int) string))
 (defun (classify o)
   (with-return ret
-    (def/else ((Some n) o)
-      "none")
+    (def+ ((Some n) o)
+          (None "none"))
     (when (< n 0) (ret "negative"))
     "positive"))
 
@@ -47,14 +50,17 @@
          (when (< n 10) (ret "small"))
          "large")))
 
-;; One else body, three ways to reach it.
+;; Chained: each `def+` holds the rest of the body, so the second is generated
+;; inside the first's binding branch and the third inside the second's.
 (: triple (-> (Option int) (Option int) (Option int) string))
 (defun (triple a b c)
   (with-return ret
-    (def/else* (((Some x) a)
-                ((Some y) b)
-                ((Some z) c))
-      "missing")
+    (def+ ((Some x) a)
+          (None (ret "missing")))
+    (def+ ((Some y) b)
+          (None (ret "missing")))
+    (def+ ((Some z) c)
+          (None (ret "missing")))
     (int->string (+ x (+ y z)))))
 
 (defun (main)

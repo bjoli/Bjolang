@@ -284,8 +284,8 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
           Range = r
           Node = TWithReturn(label, typedBody) }
 
-    | EBindElse(clauses, sequel, elseBody, r) ->
-        inferBindElse env clauses sequel elseBody r
+    | EBindElse(binder, scrutinee, sequel, arms, r) ->
+        inferBindElse env binder scrutinee sequel arms r
 
 
     // `std/eq`'s own equality primitives, refused everywhere else. See
@@ -771,68 +771,83 @@ and private inferEscapeCall (env: Env) (name: string) (args: Expr list) (r: Rang
       Range = r
       Node = TReturn(info.Label, typedValue) }
 
-and private inferBindElse (env: Env) (clauses: (Pattern * Expr) list) (sequel: Expr) (elseBody: Expr) (r: Range) : HMType * TypedExpr =
-    // Clauses bind sequentially, so the environment is threaded through
-    // them: a later scrutinee sees what an earlier pattern bound.
-    let reversedClauses, boundEnv =
-        clauses
-        |> List.fold
-            (fun (acc, envAcc) (pat, scrutinee) ->
-                let scrutineeType, typedScrutinee = infer envAcc scrutinee
-                let typedPat, boundVars = checkPattern inferChecked envAcc scrutineeType pat
+and private inferBindElse
+    (env: Env)
+    (binder: Pattern)
+    (scrutinee: Expr)
+    (sequel: Expr)
+    (arms: (Pattern * Expr) list)
+    (r: Range)
+    : HMType * TypedExpr =
+    // One scrutinee, matched by the binder and by every arm, so it is inferred
+    // once and every pattern is checked against the type it has here.
+    let scrutineeType, typedScrutinee = infer env scrutinee
+    let typedBinder, boundVars = checkPattern inferChecked env scrutineeType binder
 
-                let envAcc' =
-                    Map.fold
-                        (fun inner n t ->
-                            addBinding
-                                n
-                                { Scheme = Scheme([], [], t)
-                                  IsMutable = false }
-                                inner)
-                        envAcc
-                        boundVars
+    let boundEnv =
+        Map.fold
+            (fun inner n t ->
+                addBinding
+                    n
+                    { Scheme = Scheme([], [], t)
+                      IsMutable = false }
+                    inner)
+            env
+            boundVars
 
-                (({ Pattern = typedPat
-                    Scrutinee = typedScrutinee }
-                  : TBindElseClause)
-                 :: acc,
-                 envAcc'))
-            ([], env)
-
-    // The sequel is the rest of the body, so the guard's own type is the
-    // sequel's — and so is the else body's. The two are the form's arms,
-    // exactly as an `if`'s are: whichever runs produces the whole form's
-    // value. A body that means to leave an enclosing block says so with a
-    // `(ret ...)`, which is an ordinary tail-position form here.
-    //
-    // The else body is inferred in `env`, not `boundEnv`: it runs because a
-    // clause failed, so nothing a clause would have bound is in scope.
+    // The sequel is the rest of the body, so the form's own type is the
+    // sequel's — and so is every arm's. They are the form's arms exactly as an
+    // `if`'s are: whichever runs produces the whole form's value. A body that
+    // means to leave an enclosing block says so with a `(ret ...)`, which is an
+    // ordinary tail-position form here.
     let sequelType, typedSequel = infer boundEnv sequel
-    let elseType, typedElse = infer env elseBody
 
-    try
-        unify env.Registry elseType sequelType
-    with ex when Diagnostics.isDiagnostic ex ->
-        let shown =
-            DotNetInterop.showTypesTogether [ prune env.Registry elseType; prune env.Registry sequelType ]
+    // An arm is checked in `env` and not in `boundEnv`: it runs because the
+    // binder did not match, so nothing the binder would have bound exists. What
+    // the arm's own pattern binds is in scope in that arm and nowhere else.
+    let typedArms =
+        arms
+        |> List.map (fun (armPattern, armBody) ->
+            let typedPattern, armVars = checkPattern inferChecked env scrutineeType armPattern
 
-        // The `void` sequel is the mistake this form invites, and it is
-        // worth naming: it is what a body written for its effects leaves
-        // behind, and the else body that "returned a value" from it was
-        // relying on the escape this form no longer performs.
-        let hint =
-            if shown[1] = "void" then
-                "\nThe rest of the body produces nothing, so the else body may not produce anything either. If it was meant to leave the enclosing block, say so: `(ret ...)` naming an enclosing `with-return`, or `(panic! ...)`."
-            else
-                "\nThe else body is the form's other arm, as an `if`'s is — it does not leave the enclosing block by itself. To leave one, write it: `(ret ...)` naming an enclosing `with-return`, or `(panic! ...)`."
+            let armEnv =
+                Map.fold
+                    (fun inner n t ->
+                        addBinding
+                            n
+                            { Scheme = Scheme([], [], t)
+                              IsMutable = false }
+                            inner)
+                    env
+                    armVars
 
-        failwithf
-            $"Type Error at %s{Lexer.formatPos typedElse.Range}: a `def/else` else body produces the value of the whole form, and here it disagrees with the rest of the body:\n  the else body:        %s{shown[0]}\n  the rest of the body: %s{shown[1]}%s{hint}"
+            let armType, typedBody = infer armEnv armBody
+
+            try
+                unify env.Registry armType sequelType
+            with ex when Diagnostics.isDiagnostic ex ->
+                let shown =
+                    DotNetInterop.showTypesTogether [ prune env.Registry armType; prune env.Registry sequelType ]
+
+                // The `void` sequel is the mistake this form invites, and it is
+                // worth naming: it is what a body written for its effects
+                // leaves behind, and the arm that "returned a value" from it
+                // was relying on an escape this form does not perform.
+                let hint =
+                    if shown[1] = "void" then
+                        "\nThe rest of the body produces nothing, so an arm may not produce anything either. If it was meant to leave the enclosing block, say so: `(ret ...)` naming an enclosing `with-return`, or `(panic! ...)`."
+                    else
+                        "\nAn arm produces the form's value, as an `if`'s else does — it does not leave the enclosing block by itself. To leave one, write it: `(ret ...)` naming an enclosing `with-return`, or `(panic! ...)`."
+
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos typedBody.Range}: a `def+` arm produces the value of the whole form, and here it disagrees with the rest of the body:\n  the arm:              %s{shown[0]}\n  the rest of the body: %s{shown[1]}%s{hint}"
+
+            ({ Pattern = typedPattern; Body = typedBody }: TBindElseArm))
 
     sequelType,
     { Type = sequelType
       Range = r
-      Node = TBindElse(List.rev reversedClauses, typedSequel, typedElse) }
+      Node = TBindElse(typedBinder, typedScrutinee, typedSequel, typedArms) }
 
 // `Class.Member` — a static field or property. This is how an enum value
 // such as `FileMode.Open` is written, and it is why `import/class` is

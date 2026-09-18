@@ -831,19 +831,20 @@ and TExprNode =
     /// Never yields a value, so its own type is a fresh metavariable: it stands
     /// wherever a value of any type was wanted and constrains nothing there.
     | TReturn of string * TypedExpr option
-    /// `(guard ...)` / `(guard* ...)` — clauses, the rest of the body they were
-    /// written in, and the shared else body that stands in for it.
+    /// `(def+ ...)` — the binding pattern, its scrutinee, the rest of the body
+    /// it was written in, and the arms that stand in for that body.
     ///
-    /// The else body is the form's other arm, exactly as an `if`'s is: it
-    /// produces the value of the whole form. It jumps nowhere by itself, so a
-    /// body that means to leave an enclosing block writes the `(ret ...)` that
-    /// does it, and that `ret` is an ordinary tail-position form there.
+    /// An arm is the form's other arm exactly as an `if`'s is: it produces the
+    /// value of the whole form. It jumps nowhere by itself, so a body that means
+    /// to leave an enclosing block writes the `(ret ...)` that does it, and that
+    /// `ret` is an ordinary tail-position form there.
     ///
-    /// Not desugared into `TMatch`, though a single clause would go that way
-    /// exactly: a `guard*` has one else body and many ways to reach it, and
-    /// nesting matches would emit that body once per clause. Here it is
-    /// emitted once, after the sequel, with every failing clause jumping to it.
-    | TBindElse of TBindElseClause list * TypedExpr * TypedExpr
+    /// Kept as a node rather than desugared into `TMatch`, so that the sequel
+    /// stays where it was written — after the form, in the block the form stands
+    /// in. As a match arm's body it would be generated inside a switch section,
+    /// which scopes its bindings to the section, and every `def+` in a body
+    /// would nest the whole remainder of that body one level deeper.
+    | TBindElse of TypedPattern * TypedExpr * TypedExpr * TBindElseArm list
     /// A dispatched trait method: the dictionary's type, the method, the
     /// method's type *at this call*, the dictionary, and the arguments.
     ///
@@ -978,15 +979,16 @@ and TMatchClause =
       Guard: TypedExpr option
       Body: TypedExpr }
 
-/// One clause of a `guard` or `guard*`.
+/// One arm of a `def+`: the pattern it matches the scrutinee against, and what
+/// the whole form produces when it does.
 ///
 /// There is no `Guard` field beside the pattern, unlike `TMatchClause`: a
-/// `#:when` here would be a second way to fail a clause and would read as
-/// belonging to the *form* rather than to the clause. Write the test as a
-/// pattern, or as an `if` in the body.
-and TBindElseClause =
+/// `#:when` is a second way to fail an arm, and an arm that can fail without
+/// another arm catching what it let through is what exhaustiveness exists to
+/// refuse. Write the test as a pattern, or as an `if` in the arm's body.
+and TBindElseArm =
     { Pattern: TypedPattern
-      Scrutinee: TypedExpr }
+      Body: TypedExpr }
 
 /// The parameters of a function-shaped local binding — a body-local `defun`, a
 /// named `let`, a lowered loop member.

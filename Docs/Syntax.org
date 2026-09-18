@@ -90,7 +90,7 @@ Both spellings are patterns as well, with ~...~ for the rest:
   (#[first rest ...] (int->string (array-length rest))))
 #+END_SRC
 
-The rest of an array pattern is an array of its own — a slice is a copy — where the rest of a vec pattern is a ~Vec~ sharing structure with the one it came from.
+The rest of an array pattern is an array of its own — a slice is a copy — where the rest of a vec pattern is a ~Vec~ sharing structure with the one it came from. This is going to be about a million billion times less efficient than doing the same on a list, so pick data structure wisely. 
 
 *** ~#name(...)~ — a hash macro
 ~#name(args...)~, or ~#name[args...]~, calls the hash macro ~name~: a macro in a namespace of its own, so ~#map~ and the function ~map~ are two things. The ~#~ is not part of a name — ~#name~ is a token only with the bracket right after it — and the whole reads as a list headed by that token, which the parser expands before it looks at anything else. It expands in expression position only: a pattern refuses one, and in a quoted list it is written ~,#name(...)~.
@@ -349,6 +349,60 @@ A top-level ~defun~ is promoted whether or not it has keyword parameters.
 
 A mutable binding is **not generalized**.
 A module-level one compiles to a static field initialized **in declaration order**.
+
+*** ~def+~ — a binding that may fail
+~def+~ binds a pattern, and says what the whole form produces when the pattern
+does not match:
+
+#+BEGIN_SRC scheme
+(: label (-> string string))
+(defun (label s)
+  (def+ ((Ok n) (parse-int s))
+        ((Err why) (str "refused: " why)))
+  (str "n = " (int->string n)))
+#+END_SRC
+
+The first form is the **binder**, ~(pattern scrutinee)~. Every form after it is
+an **arm**, ~(pattern body ...)~, matching the same scrutinee.
+
+What makes it a definition rather than a ~match~ is where the success path goes:
+what the binder binds scopes over **the rest of the body**, exactly as an
+internal ~def~'s name does. So the path that carries on is not indented under
+the paths that do not — which is the whole reason to write one.
+
+| | |
+|---------------------------+-------------------------------------------------|
+| the binder matches        | its bindings scope over the rest of the body, and the body's value is the form's |
+| an arm matches            | that arm's body is the form's value, and what *it* binds is in scope only there |
+| nothing matches           | refused at compile time — see exhaustiveness below |
+
+An arm produces a value; it does **not** leave the enclosing function. To leave
+one, write it: ~(ret ...)~ naming an enclosing ~with-return~, or ~(panic! ...)~.
+
+#+BEGIN_SRC scheme
+(defun (checked o)
+  (with-return ret
+    (def+ ((Some n) o)
+          (None (ret -1)))       ;; leaves the block, because it says so
+    (+ n 1)))
+#+END_SRC
+
+**The binder and the arms must cover the scrutinee's type**, as a ~match~ must,
+and the counterexample is named:
+
+: Pattern Error: this def+ does not cover every value. Blue matches neither the
+: binding pattern nor any arm, and a def+ has nowhere to send it.
+
+so a type of two cases needs no wildcard — ~Cons~ and ~Nil~ are the whole of
+~List~, and writing both is what says so.
+
+**The binder must be able to fail.** One that always matches is a ~def~, and is
+refused rather than warned about; it is almost always a constructor that was
+not in scope and so parsed as a plain variable.
+
+~def+~ must stand **directly in a body**, since a body is what gives it its
+sequel. Inside another expression there is nothing for it to bind over, and it
+says so.
 ** ~apply~ — spreading a collection into a rest parameter
 ~apply~ calls a function whose last parameter is ~#:rest~, taking the rest
 elements from a collection instead of writing them out:

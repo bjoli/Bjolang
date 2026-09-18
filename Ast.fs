@@ -287,23 +287,25 @@ and Expr =
     /// namespace*, so shadowing, unbound-name errors and nested blocks all
     /// follow the scope rules that already exist rather than new ones.
     | EWithReturn of string * Expr * Range
-    /// `(guard (pattern scrutinee) else-form ...)` and its `guard*` plural.
+    /// `(def+ (pattern scrutinee) (pattern body ...) ...)`.
     ///
-    /// Carries the clauses, **the rest of the body it was written in**, and the
-    /// else body. The sequel is what makes this a binding form: a guard's
-    /// pattern variables scope over what follows it exactly as an internal
+    /// Carries the binding pattern, its scrutinee, **the rest of the body it was
+    /// written in**, and the arms. The sequel is what makes this a binding form:
+    /// what the binder binds scopes over what follows it exactly as an internal
     /// `def`'s name does, and `parseBody` is what hands it that sequel.
     ///
-    /// Clauses bind sequentially — a later scrutinee may name what an earlier
-    /// pattern bound — and any one of them failing runs the single shared else
-    /// body, whose value becomes *this form's* value, exactly as the else arm
-    /// of an `if` does. It jumps nowhere on its own: a body that means to leave
+    /// Every arm matches the same scrutinee, so this is a `match` whose first
+    /// arm's body is the rest of the body — written the other way up, so that
+    /// the path that carries on is not indented under the paths that do not.
+    /// An arm produces the value of the whole form, exactly as the else arm of
+    /// an `if` does; it jumps nowhere on its own, and a body that means to leave
     /// an enclosing block writes the `(ret ...)` that leaves it.
     ///
-    /// Still not a `match` over the sequel, for the reason it never was: one
-    /// else body with many ways to reach it is emitted once here, where nested
-    /// matches would emit it once per clause.
-    | EBindElse of (Pattern * Expr) list * Expr * Expr * Range
+    /// The binder must be able to fail and the arms must cover the rest of the
+    /// type: a `def+` that always matches is a `def`, and `Exhaustiveness` says
+    /// so. What the binder binds is in scope in the sequel and nowhere else;
+    /// what an arm binds is in scope in that arm's body and nowhere else.
+    | EBindElse of Pattern * Expr * Expr * (Pattern * Expr) list * Range
 
 and DefunArg =
     /// A positional parameter, with the type `(: name type)` gave it if it was
@@ -694,7 +696,7 @@ let exprRange (e: Expr) : Range =
     | EYield(_, r)
     | EYieldFrom(_, r)
     | EWithReturn(_, _, r)
-    | EBindElse(_, _, _, r) -> r
+    | EBindElse(_, _, _, _, r) -> r
 
 /// Every name a pattern binds.
 let rec patternBinders (pat: Pattern) : string list =
@@ -811,10 +813,10 @@ let exprChildren (e: Expr) : Expr list =
             |> List.collect (fun (pat, guard, body) ->
                 patternSteps pat @ (Option.toList guard) @ [ body ]))
     | EWithReturn(_, b, _) -> [ b ]
-    | EBindElse(clauses, sequel, elseBody, _) ->
-        (clauses
-         |> List.collect (fun (pat, scrutinee) -> patternSteps pat @ [ scrutinee ]))
-        @ [ sequel; elseBody ]
+    | EBindElse(binder, scrutinee, sequel, arms, _) ->
+        patternSteps binder
+        @ [ scrutinee; sequel ]
+        @ (arms |> List.collect (fun (pat, body) -> patternSteps pat @ [ body ]))
 
 /// One walk over an untyped expression, calling `reference name range guarded`
 /// at every name it mentions but does not bind.
@@ -927,26 +929,25 @@ let freeNamesWith (reference: string -> Range -> bool -> unit) (guarded: bool) (
         // that already exist.
         | EWithReturn(name, body, _) -> go guarded (Set.add name bound) body
 
-        | EBindElse(clauses, sequel, elseBody, r) ->
-            // The else body runs because a clause did not match, so nothing any
-            // clause would have bound is in scope in it.
-            go guarded bound elseBody
+        | EBindElse(binder, scrutinee, sequel, arms, r) ->
+            // The scrutinee and a pattern's view steps are read in the scope the
+            // form began in, as they are in `EMatch` above.
+            for step in patternSteps binder do
+                go guarded bound step
 
-            // Clauses bind sequentially: a later scrutinee may name what an
-            // earlier pattern bound. A view's step is read in the scope the
-            // clause began in, as it is in `EMatch` above.
-            let inner =
-                clauses
-                |> List.fold
-                    (fun acc (pat, scrutinee) ->
-                        for step in patternSteps pat do
-                            go guarded acc step
+            go guarded bound scrutinee
 
-                        go guarded acc scrutinee
-                        Set.union acc (Set.ofList (patternBinders pat)))
-                    bound
+            // What the binder binds is in scope in the sequel and nowhere else.
+            go guarded (Set.union bound (Set.ofList (patternBinders binder))) sequel
 
-            go guarded inner sequel
+            // An arm runs because the binder did not match, so nothing the
+            // binder would have bound is in scope in it — only what the arm's
+            // own pattern binds, and only in that arm.
+            for (armPattern, armBody) in arms do
+                for step in patternSteps armPattern do
+                    go guarded bound step
+
+                go guarded (Set.union bound (Set.ofList (patternBinders armPattern))) armBody
 
     go guarded bound expr
 

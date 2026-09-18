@@ -1,13 +1,12 @@
-;; `with-return` and `def/else` — a named early-exit block, and a refutable
-;; binding used inside one.
+;; `with-return` and `def+` — a named early-exit block, and a refutable binding
+;; used inside one.
 ;;
-;; Every `def/else` here stands at the head of the block's own body, where the
-;; form's value *is* the block's value, so the else bodies read the same as
-;; they did when they compiled to an escape. `220_def_else_value.bjo` is where
-;; the difference shows: the else body is an arm now, and needs no block at
-;; all.
+;; Every `def+` here stands at the head of the block's own body, where the
+;; form's value *is* the block's value, so the arms read the same as they did
+;; when they compiled to an escape. `220_def_plus.bjo` is where the difference
+;; shows: an arm is the form's other arm, and needs no block at all.
 ;;
-;; `def/else` is in the `def` family and consumed by `parseBody` beside
+;; `def+` is in the `def` family and consumed by `parseBody` beside
 ;; `def/mutable`, because it *is* a definition: what its pattern binds scopes
 ;; over the rest of the body. That is `def`'s scoping and not `let`'s, which
 ;; opens a nested scope with a body of its own.
@@ -26,32 +25,36 @@
 (: blocked? (-> string bool))
 (defun (blocked? h) (= h "bad"))
 
-;; --- def/else at the head of a body, and two in sequence -------------------
+;; --- def+ at the head of a body, and three in sequence ---------------------
 ;;
-;; The second scrutinee reads `cfg`, which the first clause bound: a def/else
-;; scopes over its sequel, and the sequel is where the next one stands.
+;; The second scrutinee reads `cfg`, which the first form bound: a `def+` scopes
+;; over its sequel, and the sequel is where the next one stands. Chaining them
+;; is what replaced the plural form — and it is what lets each failure say what
+;; it was, since each has arms of its own.
 (: configure (-> (Option Cfg) (Option string) (Result string string)))
 (defun (configure cfg-opt host-opt)
   (with-return ret
-    (def/else ((Some cfg) cfg-opt)
-      (Err "no config"))
-    (def/else ((Cons first-host _) (record-ref cfg hosts))
-      (Err (str "no hosts, and the port was " (int->string (record-ref cfg port)))))
-    (def/else ((Some host) host-opt)
-      (Err "no host"))
+    (def+ ((Some cfg) cfg-opt)
+          (None (Err "no config")))
+    (def+ ((Cons first-host _) (record-ref cfg hosts))
+          (Nil (Err (str "no hosts, and the port was " (int->string (record-ref cfg port))))))
+    (def+ ((Some host) host-opt)
+          (None (Err "no host")))
     (Ok (str host "/" first-host ":" (int->string (record-ref cfg port))))))
 
-;; --- def/else* with three clauses, binding sequentially --------------------
+;; --- three scrutinees, one message -----------------------------------------
 ;;
-;; One else body, three ways to reach it. `codegen/with_return.bjo` is where the
-;; assertion that it is *emitted* once lives; this one is about behaviour.
+;; Three chained `def+`s, each with an arm that leaves the block, so whichever
+;; scrutinee is missing the answer is the same one.
 (: triple (-> (Option int) (Option int) (Option int) string))
 (defun (triple a b c)
   (with-return ret
-    (def/else* (((Some x) a)
-                ((Some y) b)
-                ((Some z) c))
-      "something was missing")
+    (def+ ((Some x) a)
+          (None (ret "something was missing")))
+    (def+ ((Some y) b)
+          (None (ret "something was missing")))
+    (def+ ((Some z) c)
+          (None (ret "something was missing")))
     (str (int->string (+ x (+ y z))))))
 
 ;; --- ret from inside a loop ------------------------------------------------
@@ -140,8 +143,8 @@
 (: classify (-> (Option int) string))
 (defun (classify o)
   (with-return ret
-    (def/else ((Some n) o)
-      "none")
+    (def+ ((Some n) o)
+          (None "none"))
     (when (< n 0) (ret "negative"))
     "positive"))
 
@@ -155,13 +158,13 @@
   (classify o))
 
 (defun (main)
-  (expect "def/else at the head of a body, twice over"
+  (expect "def+ at the head of a body, three times over"
           (match (configure (Some (Cfg (port 80) (hosts (list "a")))) (Some "h"))
             ((Ok s) s)
             ((Err e) (str "err:" e)))
           "h/a:80")
 
-  (expect "the first clause fails"
+  (expect "the first binder fails"
           (match (configure None (Some "h"))
             ((Ok s) s)
             ((Err e) (str "err:" e)))
@@ -173,18 +176,18 @@
             ((Err e) (str "err:" e)))
           "err:no hosts, and the port was 8080")
 
-  (expect "the third clause fails"
+  (expect "the third binder fails"
           (match (configure (Some (Cfg (port 80) (hosts (list "a")))) None)
             ((Ok s) s)
             ((Err e) (str "err:" e)))
           "err:no host")
 
-  (expect "def/else* with every clause matching"
+  (expect "three chained def+, all matching"
           (triple (Some 1) (Some 2) (Some 3))
           "6")
-  (expect "def/else*, first clause failing" (triple None (Some 2) (Some 3)) "something was missing")
-  (expect "def/else*, middle clause failing" (triple (Some 1) None (Some 3)) "something was missing")
-  (expect "def/else*, last clause failing" (triple (Some 1) (Some 2) None) "something was missing")
+  (expect "the first failing" (triple None (Some 2) (Some 3)) "something was missing")
+  (expect "the middle failing" (triple (Some 1) None (Some 3)) "something was missing")
+  (expect "the last failing" (triple (Some 1) (Some 2) None) "something was missing")
 
   (expect "ret from inside a loop"
           (match (first-blocked (list "a" "bad" "c"))
@@ -224,7 +227,7 @@
 
   (expect "the sync copy" (classify (Some 3)) "positive")
   (expect "the sync copy, escaping" (classify (Some -3)) "negative")
-  (expect "the sync copy, on the def/else" (classify None) "none")
+  (expect "the sync copy, on the def+" (classify None) "none")
 
   (println "219 ok")
   0)

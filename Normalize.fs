@@ -215,12 +215,18 @@ let rec private rewriteExpr (expr: Expr) : Expr =
 
     | EWithReturn(name, body, r) -> EWithReturn(name, rewriteExpr body, r)
 
-    | EBindElse(clauses, sequel, elseBody, r) ->
-        let clauses' =
-            clauses
-            |> List.map (fun (p, scrutinee) -> (Ast.mapPatternSteps rewriteExpr p, rewriteExpr scrutinee))
+    | EBindElse(binder, scrutinee, sequel, arms, r) ->
+        let arms' =
+            arms
+            |> List.map (fun (p, body) -> (Ast.mapPatternSteps rewriteExpr p, rewriteExpr body))
 
-        EBindElse(clauses', rewriteExpr sequel, rewriteExpr elseBody, r)
+        EBindElse(
+            Ast.mapPatternSteps rewriteExpr binder,
+            rewriteExpr scrutinee,
+            rewriteExpr sequel,
+            arms',
+            r
+        )
 
 /// A keyword parameter's default is an expression like any other, and is the
 /// only expression an argument list holds.

@@ -923,24 +923,20 @@ let rec serializeExpr (e: Ast.Expr) : string =
 
     | Ast.EWithReturn(name, body, _) -> list [ "with-return"; name; serializeExpr body ]
 
-    // A guard holds the rest of the body it was written in, and the reader
+    // A `def+` holds the rest of the body it was written in, and the reader
     // gives it that sequel back by position rather than from the form itself.
     // So it is written out as a *body* — `begin` splices in body position, and
-    // `parseBody` hands the guard whatever follows it there, which is exactly
+    // `parseBody` hands the form whatever follows it there, which is exactly
     // the sequel that went in.
-    | Ast.EBindElse(clauses, sequel, elseBody, _) ->
-        let guardForm =
-            match clauses with
-            | [ (pat, scrutinee) ] ->
-                list [ "def/else"; list [ serializePattern pat; serializeExpr scrutinee ]; serializeExpr elseBody ]
-            | _ ->
-                let clauseForms =
-                    clauses
-                    |> List.map (fun (pat, scrutinee) -> list [ serializePattern pat; serializeExpr scrutinee ])
+    | Ast.EBindElse(binder, scrutinee, sequel, arms, _) ->
+        let armForms =
+            arms
+            |> List.map (fun (pat, body) -> list [ serializePattern pat; serializeExpr body ])
 
-                list [ "def/else*"; list clauseForms; serializeExpr elseBody ]
+        let bindForm =
+            list ([ "def+"; list [ serializePattern binder; serializeExpr scrutinee ] ] @ armForms)
 
-        list [ "begin"; guardForm; serializeExpr sequel ]
+        list [ "begin"; bindForm; serializeExpr sequel ]
 
     // No reader form produces these, so none can appear in a template body.
     | Ast.ELetTuple _ -> failwith "an inline template body may not destructure a tuple binding"
@@ -3342,22 +3338,19 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
 
     | TReturn (label, value) -> generateEscape ctx ctx.Returns[label] value
 
-    | TBindElse (clauses, sequel, elseBody) ->
-        let elseLabel = freshName "__else"
-        let doneLabel = freshName "__else_done"
-
-        // The sequel and the else body are the form's two arms, so both are
+    | TBindElse (binder, scrutineeExpr, sequel, arms) ->
+        // The sequel and every arm are the form's arms, so all of them are
         // generated into the *same* target: whichever runs produces the value.
         //
-        // A `DeclareAndAssign` cannot be handed to two arms as it stands — the
-        // local would be declared twice, and on whichever path ran second the
-        // declaration would not be in scope — so it is split here, the way
-        // `TThrow` and `TWithReturn` already split theirs: declared once ahead
-        // of the whole construct, and assigned by each arm.
+        // A `DeclareAndAssign` cannot be handed to several arms as it stands —
+        // the local would be declared once per arm, and on whichever path ran
+        // second the declaration would not be in scope — so it is split here,
+        // the way `TThrow` and `TWithReturn` already split theirs: declared once
+        // ahead of the whole construct, and assigned by each arm.
         //
-        // `default!` is required, not cosmetic. An else body that ends in a
-        // `ret` or a `throw` never reaches an assignment, and C# calls the
-        // later read of that local CS0165 — about code no user wrote.
+        // `default!` is required, not cosmetic. An arm that ends in a `ret` or a
+        // `throw` never reaches an assignment, and C# calls the later read of
+        // that local CS0165 — about code no user wrote.
         let armTarget =
             match target with
             | DeclareAndAssign (varType, varName) ->
@@ -3366,60 +3359,54 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
                 Assign varName
             | other -> other
 
-        // Nested `if`s rather than a `switch`, because what a pattern binds has
-        // to scope over **the sequel** — and a switch section scopes its
-        // bindings to the section, which the sequel is not inside of.
-        let rec emitClauses (c: CodegenContext) (remaining: TBindElseClause list) =
-            match remaining with
-            | [] -> generateBlock c armTarget sequel
-            | clause :: rest ->
-                // The scrutinee is named first: it is read by the `is` test and
-                // again by any view's step in the `when`, and evaluating it
-                // twice would run its effects twice.
-                let scrutinee = freshName "__bound"
+        // The scrutinee is named first: it is read by the binder's `is` test,
+        // by every arm's, and again by any view's step in a `when`. Evaluating
+        // it once is also what makes the arms *arms* — they answer about the
+        // same value the binder was given.
+        let scrutinee = freshName "__bound"
 
-                emitStatement c (fun cc ->
-                    indent cc
-                    append cc $"var %s{scrutinee} = "
-                    generateExpr cc clause.Scrutinee
-                    appendLine cc ";")
+        emitStatement ctx (fun c ->
+            indent c
+            append c $"var %s{scrutinee} = "
+            generateExpr c scrutineeExpr
+            appendLine c ";")
 
-                let views = ResizeArray<ViewFragment>()
-                indent c
-                append c $"if (%s{scrutinee} is "
-                generatePattern c views clause.Pattern
-                generateClauseGuard c views None
-                appendLine c ") {"
-                withIndent c (fun inner -> emitClauses inner rest)
-                indent c
-                // Every clause that fails jumps to the *one* else body below.
-                // This is the whole reason a `guard*` is a node of its own
-                // rather than nested matches: there the body would be emitted
-                // once per clause.
-                appendLine c $"}} else goto %s{elseLabel};"
+        // An `if` / `else if` chain rather than a `switch`, because what the
+        // binder binds has to scope over **the sequel** — and a switch section
+        // scopes its bindings to the section, which the sequel is not inside of.
+        // The chain needs no label of its own: each arm is emitted once, in
+        // place, and control rejoins after the chain.
+        let emitArm (c: CodegenContext) (pattern: TypedPattern) (body: TypedExpr) (isFirst: bool) =
+            let views = ResizeArray<ViewFragment>()
+            indent c
+            append c (if isFirst then $"if (%s{scrutinee} is " else $"else if (%s{scrutinee} is ")
+            generatePattern c views pattern
+            generateClauseGuard c views None
+            appendLine c ") {"
+            withIndent c (fun inner -> generateBlock inner armTarget body)
+            indent c
+            appendLine c "}"
 
-        emitClauses ctx clauses
+        emitArm ctx binder sequel true
 
-        // Both arms now fall out of the bottom, so the sequel has to jump over
-        // the else body and the two have to meet again afterwards. The one
-        // exception is the `return` position: there each arm ends in a `return`
-        // of its own, nothing falls through, and neither label is needed.
-        let armsFallThrough =
-            match armTarget with
-            | Return -> false
-            | _ -> true
+        for arm in arms do
+            emitArm ctx arm.Pattern arm.Body false
 
-        if armsFallThrough then
-            indent ctx
-            appendLine ctx $"goto %s{doneLabel};"
+        // `Exhaustiveness` has already refused a form whose arms leave a value
+        // uncovered, so this throw is unreachable — and it is emitted anyway,
+        // for the reason a switch statement's `default:` carries one: C# cannot
+        // see that the chain always takes a branch, and without a final `else`
+        // it calls a `def+` in return position CS0161 and a target assigned in
+        // every arm unassigned.
+        indent ctx
+        appendLine ctx "else {"
+
+        withIndent ctx (fun c ->
+            indent c
+            appendLine c $"throw new Exception(\"Match failure at %s{Lexer.formatPos expr.Range}\");")
 
         indent ctx
-        appendLine ctx $"%s{elseLabel}: ;"
-        generateBlock ctx armTarget elseBody
-
-        if armsFallThrough then
-            indent ctx
-            appendLine ctx $"%s{doneLabel}: ;"
+        appendLine ctx "}"
 
     // Any node with no statement shape of its own: emit it as a C# expression
     // and let `emitTerminal` discharge the target. The `emitStatement` wrapper

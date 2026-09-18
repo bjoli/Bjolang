@@ -610,20 +610,14 @@ let rec parseExpr (s: SExpr) : Expr =
                     failwithf
                         $"Syntax error at %s{Lexer.formatPos r}: with-return needs a name for its escape. Expected: (with-return name body...). The name is required — there is no implicit `return`."
 
-            // A `guard` that got this far is one `parseBody` did not take,
-            // which means it is not in body position. It has nowhere to put its
-            // sequel there, so saying so is the only answer: silently reading
-            // it as a call would fail with "Unbound variable: guard" and name
-            // nothing the programmer did wrong.
-            // A `def/else` that got this far is one `parseBody` did not take,
+            // A `def+` that got this far is one `parseBody` did not take,
             // which means it is not in body position. It has nowhere to put its
             // sequel there, so saying so is the only answer: reading it as a
-            // call would fail with "Unbound variable: def/else" and name
+            // call would fail with "Unbound variable: def+" and name
             // nothing the programmer did wrong.
-            | "def/else"
-            | "def/else*" ->
+            | "def+" ->
                 failwithf
-                    $"Syntax error at %s{Lexer.formatPos r}: `def/else` must appear directly in a body, not inside another expression."
+                    $"Syntax error at %s{Lexer.formatPos r}: `def+` must appear directly in a body, not inside another expression."
 
             // A `seq` body is a block like any other, but it is *not* run where
             // it is written: the form evaluates to a sequence, and the body runs
@@ -1595,16 +1589,15 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         match items with
         | SList(SAtom({ Token = Symbol sym } as head) :: rest, r) :: tail when sym <> headName sym ->
             match headName sym with
-            // `def/else` and `def/else*` are here for the same reason `def` is:
-            // they are consumed by this function and never reach `parseExpr`'s
-            // chain, so a template that writes one arrives marked and would
-            // otherwise be read as a call to something named `def/else__37`.
+            // `def+` is here for the same reason `def` is: it is consumed by
+            // this function and never reaches `parseExpr`'s chain, so a template
+            // that writes one arrives marked and would otherwise be read as a
+            // call to something named `def+__37`.
             | ("def"
               | "defun"
               | "defbjo"
               | "def/mutable"
-              | "def/else"
-              | "def/else*"
+              | "def+"
               | "begin") as stripped ->
                 SList(SAtom { head with Token = Symbol stripped } :: rest, r) :: tail
             | _ -> items
@@ -1692,8 +1685,7 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         // after it — where only one was written.
         | SList(SAtom { Token = Symbol "begin" } :: inner, _) :: rest -> parseItems (inner @ rest)
 
-        // `(def/else (pattern scrutinee) else-form ...)`, and the `def/else*`
-        // plural below it.
+        // `(def+ (pattern scrutinee) (pattern body ...) ...)`.
         //
         // In the `def` family, and consumed here beside `def/mutable`, because
         // it *is* a definition: what the pattern binds scopes over the rest of
@@ -1702,52 +1694,38 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         // `parseItems rest` as its sequel rather than desugared in `parseExpr`,
         // which has no sequel to give it.
         //
-        // The name was `guard` while this was being written, and could not
+        // The first form is always the binder and everything after it is an
+        // arm, so there is nothing positional to get wrong and no `#:else`
+        // marker to disambiguate. The arms match the same scrutinee the binder
+        // does, which is what makes them checkable: together they either cover
+        // the type or `Exhaustiveness` says which value reaches nothing.
+        //
+        // The name was `guard` while the form was first written, and could not
         // stay. `guard` already means a match clause's `#:when` test all
         // through the pattern machinery — `TMatchClause.Guard`,
         // `generateClauseGuard` — and separately names CML's event combinator,
-        // which `http.bjo` calls. A third meaning, in the middle of the
-        // subsystem that already owns the first, is worse than a longer word.
+        // which `http.bjo` calls.
         //
-        // No block name to give it. The else body produces this form's value
-        // and jumps nowhere, so there is nothing for a name to name: a body
-        // that means to leave a block writes the `(ret ...)` that leaves it,
-        // and that `ret` names the block itself.
-        | SList(SAtom { Token = Symbol "def/else" } :: forms, r) :: rest ->
+        // No block name to give it. An arm produces this form's value and jumps
+        // nowhere, so there is nothing for a name to name: a body that means to
+        // leave a block writes the `(ret ...)` that leaves it, and that `ret`
+        // names the block itself.
+        | SList(SAtom { Token = Symbol "def+" } :: forms, r) :: rest ->
             match forms with
-            | SList([ pattern; scrutinee ], _) :: elseForms when not elseForms.IsEmpty ->
-                EBindElse(
-                    [ (parsePattern pattern, parseExpr scrutinee) ],
-                    parseItems rest,
-                    parseBody elseForms r,
-                    r
-                )
-            | _ ->
-                failwithf
-                    $"Syntax error at %s{Lexer.formatPos r}: expected (def/else (pattern scrutinee) else-form...)."
-
-        // `(def/else* ((p1 e1) (p2 e2) ...) else-form ...)`.
-        //
-        // No `#:else` marker. It was there to keep a bare `else` from colliding
-        // with a pattern macro or a constructor of that name — but once the
-        // clauses are one parenthesised group, what follows them is the else
-        // body and there is nothing left for a marker to disambiguate. It was
-        // paying for a collision that this shape does not have.
-        | SList(SAtom { Token = Symbol "def/else*" } :: forms, r) :: rest ->
-            match forms with
-            | SList(clauseForms, _) :: elseForms when not clauseForms.IsEmpty && not elseForms.IsEmpty ->
-                let clauses =
-                    clauseForms
+            | SList([ pattern; scrutinee ], _) :: armForms when not armForms.IsEmpty ->
+                let arms =
+                    armForms
                     |> List.map (function
-                        | SList([ pattern; scrutinee ], _) -> (parsePattern pattern, parseExpr scrutinee)
+                        | SList(armPattern :: bodyForms, ar) when not bodyForms.IsEmpty ->
+                            (parsePattern armPattern, parseBody bodyForms ar)
                         | bad ->
                             failwithf
-                                $"Syntax error at %s{Lexer.formatPos (getRange bad)}: a def/else* clause is written (pattern scrutinee).")
+                                $"Syntax error at %s{Lexer.formatPos (getRange bad)}: a def+ arm is written (pattern body ...).")
 
-                EBindElse(clauses, parseItems rest, parseBody elseForms r, r)
+                EBindElse(parsePattern pattern, parseExpr scrutinee, parseItems rest, arms, r)
             | _ ->
                 failwithf
-                    $"Syntax error at %s{Lexer.formatPos r}: expected (def/else* ((pattern scrutinee) ...) else-form...)."
+                    $"Syntax error at %s{Lexer.formatPos r}: expected (def+ (pattern scrutinee) (pattern body ...) ...). The first form binds, and every form after it is an arm for a scrutinee the binder did not match."
 
         | SList(SAtom { Token = Symbol "def/mutable" } :: SAtom { Token = Symbol name } :: [ expr ], r) :: rest ->
             ELetMutable(name, None, parseExpr expr, parseItems rest, fallbackRange)

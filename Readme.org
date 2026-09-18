@@ -166,6 +166,22 @@ Look Ma, a Monad!
       (:return (+ doubled third))))
 #+END_SRC
 
+although most do-notation cases (matching option and Result) is better handled by the built in def+ form
+
+#+BEGIN_SRC scheme
+
+;; every body supports def+. The first succeeding form
+;; swallows the rest of the body, and Err is then returned
+;; directly
+(: print-key (-> (Map Keyword string) (Result string string)))
+(defun (print-key myMap)
+  (def+ ((Result b) (try-ref myMap :key))
+        (_ (Err "Map was somehow not populated correctly")))
+  (println "b is #${b}.")
+  (Ok b))
+
+
+#+END_SRC
 *** The usual syntactic things in a modern lisp
 
 #+begin_src scheme
@@ -384,15 +400,14 @@ add #:align to columnar and tabular in (std fmt)
 
 remove the use for (bjoroutine ...) special syntax in places where the lambda is in direct argument position: (result-map #(read-line &) r) currently needs a bjoroutine.
 
-regular expressions that are compatible with our char type and string cursors
+
+extend match to support Records and Structs in a pretty way.  
 
 Extend do notation to be more usable. :traverse :and<- ( :and<- seems _very hard_ atm).
 
 Even better: do a CPS macro like goof-loop and let users define their own do clauses. 
 
 output LINE-directives a little bit better than I do now
-
-abandon c# strings, despite giving us a nice regex engine because utf16. (deferred out of necessity. This has too much of a cost.)
 
 ** Things for the stdlib
 
@@ -408,8 +423,11 @@ Turn let-bound functions that are only  ever in function position as functions r
 
 Some simple inlining.
 
+Currently the cursors api does double decoding, since going one char forward means we have to decode one whole 32bit unicode codepoint. This is sad. 
 
-Hoist the threadlocal loads of several parameter-ref in synchronous functions. Say I do 5 (parameter-ref ) in a body, since there is no parameter-set! we can hoist the environment so that we do not pay the [ThreadLocal] read cost.
+do literal hoisting of regular expressiosn.
+
+Hoist the threadlocal loads oznf several parameter-ref in synchronous functions. Say I do 5 (parameter-ref ) in a body, since there is no parameter-set! we can hoist the environment so that we do not pay the [ThreadLocal] read cost.
 
 Currently I do no CSE and no function inlining other than direct inlining of applied lambdas. 
 

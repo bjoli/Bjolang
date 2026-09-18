@@ -3,6 +3,109 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std rx)~: regular expressions, compiled while your file is
+
+Patterns are s-expressions in SRE notation, read and compiled to a .NET pattern
+by a hash macro:
+
+#+BEGIN_SRC scheme
+(def phone #rx(seq :bos (=> :area (** 3 3 :ascii-digit)) (lit "-")
+                   (=> :line (** 4 4 :ascii-digit)) :eos))
+
+(match line
+  ((Rx phone (Some m)) (rx-group m :area))
+  (_ None))
+#+END_SRC
+
+Four things follow from doing the reading at compile time rather than at
+construction.
+
+**A bad pattern is a compile error naming the sub-form.** ~'bos' is a symbol,
+and an rx that takes no argument is a keyword. Did you mean :bos?~ — pointing at
+the ~bos~, not at the whole call.
+
+**Character-set algebra costs nothing at run time.**
+~(- :ascii-alpha (in "aeiou"))~ is one flat class by the time the program
+exists, and a set that came out empty is refused here rather than becoming a
+complaint from .NET about ~[]~.
+
+**The meaning is in this repository.** The emitter writes no ~.~, ~^~, ~$~,
+~\d~, ~\w~, ~\s~ or ~\p{...}~. Each of those is .NET's decision and the Unicode
+ones move when the runtime's tables are updated; the named sets are explicit
+range tables generated from ~CharUnicodeInfo~ and checked in, so ~:alpha~ and
+~char-alphabetic?~ agree and neither drifts under a compiled program.
+
+**One atom consumes one scalar.** The engine works in UTF-16 code units, so
+~:any~ and every complemented set are emitted as an alternation that takes a
+surrogate pair as one unit. ~(rx-match? #rx(:any) "😀")~ is true and
+~(rx-match? #rx(seq :any :any) "😀")~ is false, and a cursor a match hands back
+is therefore always on a character boundary.
+
+What it leaves open. Matching is ~NonBacktracking | ExplicitCapture |
+CultureInvariant~, and the emitted pattern stays inside the subset that mode
+accepts — which refuses backreferences, lookarounds, atomic groups and
+conditionals. Those are out on purpose: they are what would tie the language to
+a backtracking engine, and nothing here can emit one. Also absent: a string
+syntax, patterns built at run time (~,x~ inside ~#rx(...)~ is reserved and says
+so), case-insensitive matching, ~bol~/~eol~ and the word boundaries. A character
+set is limited to U+0000–U+FFFF, because a .NET class cannot name a scalar above
+it; matching one as a literal is unaffected.
+
+One compiler change went with it. ~DotNetInterop.clrToNullary~ held only ~char~,
+so a .NET method returning a ~Bjolang.Runtime.StringCursor~ came back as a type
+that unified with nothing and no such method could be imported. ~StringCursor~
+is now the second entry, on the same grounds the comment there already gave for
+the first: its constructor is internal and it has no public members, so there is
+no ~import/class~ alias for it to disagree with.
+
+* ~def+~ replaces ~def/else~ and ~def/else*~, and its arms are checked
+
+A binding that may fail now names what happens when it does, as arms over the
+same scrutinee:
+
+#+BEGIN_SRC scheme
+(def+ ((Ok n) (parse-int s))
+      ((Err why) (str "refused: " why)))
+(str "n = " (int->string n))
+#+END_SRC
+
+Three things follow from arms that a single else body could not give.
+
+**An arm can bind what the failure carried.** The else body ran because *some*
+clause failed and could not say which, so nothing it carried was reachable —
+that was an error test of its own. An arm matches the scrutinee, so ~why~ is an
+ordinary binding.
+
+**The form is checked for coverage.** The binder and the arms are a match over
+one value, so ~Exhaustiveness~ asks the ordinary question and names the
+counterexample. A two-case type needs no wildcard: ~Cons~ and ~Nil~ are the
+whole of ~List~, and writing both is what says so.
+
+**A binder that cannot fail is refused.** It was a warning, and a narrow one —
+it fired for a bare variable and said nothing about a pattern irrefutable by
+construction, so ~(def/else ((Tuple n s) pair) ...)~ compiled with an else body
+nothing could reach. The question is now asked of the pattern rather than of its
+spelling, and answered with an error: a binding that cannot fail is a ~def~.
+
+~def/else*~ is gone rather than ported. Its shared else body existed so that one
+message could serve several binds, and it had no uses outside its own tests;
+what replaces it is a chain of ~def+~, which costs a message per failure and is
+the better trade — "key did not exist or wasn't dollar" was the form's
+limitation talking.
+
+The lowering follows the shape: one scrutinee named once, then an ~if~ / ~else
+if~ chain with the sequel as the first branch. No shared label and no ~goto~,
+because there is no longer one body with many ways to reach it. The final
+~else~ throws, unreachable, for the reason a switch statement's ~default:~ does:
+C# cannot see that the chain always takes a branch, and without it a ~def+~ in
+return position is CS0161.
+
+What it leaves open: an arm still cannot say *which* of several chained binders
+failed, because each ~def+~ knows only its own. And the sequel is still
+invisible at the form — what the binder binds scopes over "the rest of the
+body", and nothing on screen says how far that runs. That is what buys the flat
+indentation, and it is the one thing arms do not address.
+
 * A build writes down what it was built from, and ~bjo~ reads it
 
 Deciding whether to compile means knowing a file's whole source closure and

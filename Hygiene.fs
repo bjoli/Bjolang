@@ -311,22 +311,24 @@ let checkEscapeUses (name: string) (body: Expr) : unit =
         // other binding of it would.
         | EWithReturn(n, b, _) -> if n <> name then go barrier tail b
 
-        | EBindElse(clauses, sequel, elseBody, _) ->
-            let bound =
-                clauses
-                |> List.fold
-                    (fun acc (pat, scrutinee) ->
-                        if not acc then
-                            for step in patternSteps pat do
-                                sub step
+        | EBindElse(binder, scrutinee, sequel, arms, _) ->
+            for step in patternSteps binder do
+                sub step
 
-                            sub scrutinee
+            sub scrutinee
 
-                        acc || shadowed (patternBinders pat))
-                    false
+            // The binder's names reach the sequel only, and an arm's reach that
+            // arm's body only — so each is walked under what binds over it, and
+            // a binding of the same name there shadows this one.
+            if not (shadowed (patternBinders binder)) then
+                go barrier tail sequel
 
-            if not bound then go barrier tail sequel
-            go barrier tail elseBody
+            for (armPattern, armBody) in arms do
+                for step in patternSteps armPattern do
+                    sub step
+
+                if not (shadowed (patternBinders armPattern)) then
+                    go barrier tail armBody
 
         | _ -> List.iter sub (exprChildren e)
 
@@ -553,26 +555,24 @@ let private renameWith
             let renamed, bodySubst = bind [ name ] subst
             EWithReturn(List.head renamed, go bodySubst body, r)
 
-        | EBindElse(clauses, sequel, elseBody, r) ->
-            // Threading the substitution through the clauses in order is what
-            // makes a later scrutinee see what an earlier pattern bound.
-            let clauses', inner =
-                clauses
-                |> List.fold
-                    (fun (acc, s) (pat, scrutinee) ->
-                        // The scrutinee and the pattern's steps are evaluated
-                        // in the scope this clause began in, not under what it
-                        // binds — same rule as a match clause's view step.
-                        let scrutinee' = go s scrutinee
-                        let _, s' = bind (patternBinders pat) s
-                        ((renamePattern (go s) s' pat, scrutinee') :: acc, s'))
-                    ([], subst)
+        | EBindElse(binder, scrutinee, sequel, arms, r) ->
+            // The scrutinee is evaluated in the scope the form began in, not
+            // under what any pattern binds — same rule as a match clause's view
+            // step.
+            let scrutinee' = go subst scrutinee
+            let _, sequelSubst = bind (patternBinders binder) subst
+
+            let arms' =
+                arms
+                |> List.map (fun (armPattern, armBody) ->
+                    let _, armSubst = bind (patternBinders armPattern) subst
+                    (renamePattern (go subst) armSubst armPattern, go armSubst armBody))
 
             EBindElse(
-                List.rev clauses',
-                go inner sequel,
-                // Outside every clause's bindings, for the reason above.
-                sub elseBody,
+                renamePattern (go subst) sequelSubst binder,
+                scrutinee',
+                go sequelSubst sequel,
+                arms',
                 r
             )
 

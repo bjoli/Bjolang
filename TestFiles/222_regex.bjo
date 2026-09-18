@@ -1,0 +1,222 @@
+;; Regular expressions, in s-expression notation.
+;;
+;; `#rx(...)` is read and compiled to a .NET pattern at compile time, so what is
+;; under test here is a string this repository wrote. The `rx-pattern`
+;; assertions are the ones that matter most: the whole design rests on every
+;; character of the emitted pattern being chosen here rather than inherited from
+;; `System.Text.RegularExpressions`, and a regression to `\d` or `.` would be
+;; invisible behaviourally until the wrong input turned up.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std rx))
+
+;; Compiled once, not per evaluation: a `#rx(...)` in a loop body builds its
+;; value on every pass, the same as any other constructor call.
+(def digits #rx(+ :ascii-digit))
+(def phone #rx(seq :bos (=> :area (** 3 3 :ascii-digit))
+                   (lit "-")
+                   (=> :line (** 4 4 :ascii-digit))
+                   :eos))
+
+(defun (main)
+  ;; ---- Literals ------------------------------------------------------------
+  ;;
+  ;; A bare string is a literal sequence; `(lit ...)` says the same thing out
+  ;; loud. A single character is a literal of one.
+  (expect-true "a string literal matches itself" (rx-match? #rx("hello") "hello"))
+  (expect-true "and nothing else" (not (rx-match? #rx("hello") "hallo")))
+  (expect-true "(lit ...) is the same" (rx-match? #rx((lit "hello")) "hello"))
+  (expect-true "a character literal" (rx-match? #rx(#\q) "q"))
+
+  ;; Every literal is escaped, so a character that means something to .NET
+  ;; means nothing here.
+  (expect-true "a dot is a dot" (rx-match? #rx(".") "."))
+  (expect-true "and not any character" (not (rx-match? #rx(".") "x")))
+  (expect-true "a bracket is a bracket" (rx-match? #rx("[a-z]") "[a-z]"))
+  (expect-true "a backslash is a backslash" (rx-match? #rx("\\") "\\"))
+
+  ;; ---- Sequence and alternation -------------------------------------------
+  (expect-true "seq" (rx-match? #rx(seq "a" "b" "c") "abc"))
+  (expect-true "or takes the first that fits" (rx-match? #rx(or "cat" "dog") "dog"))
+  (expect-true "or rejects what fits neither" (not (rx-match? #rx(or "cat" "dog") "cow")))
+
+  ;; ---- Quantifiers ---------------------------------------------------------
+  (expect-true "* takes none" (rx-match? #rx((* "a")) ""))
+  (expect-true "* takes several" (rx-match? #rx((* "a")) "aaaa"))
+  (expect-true "+ needs one" (not (rx-match? #rx((+ "a")) "")))
+  (expect-true "? takes none" (rx-match? #rx((? "a")) ""))
+  (expect-true "? takes one" (rx-match? #rx((? "a")) "a"))
+  (expect-true "? takes no more" (not (rx-match? #rx((? "a")) "aa")))
+  (expect-true "** is a range" (rx-match? #rx((** 2 4 "a")) "aaa"))
+  (expect-true "** has a floor" (not (rx-match? #rx((** 2 4 "a")) "a")))
+  (expect-true "** has a ceiling" (not (rx-match? #rx((** 2 4 "a")) "aaaaa")))
+  (expect-true "= is exact" (rx-match? #rx((= 3 "a")) "aaa"))
+  (expect-true ">= has no ceiling" (rx-match? #rx((>= 2 "a")) "aaaaaa"))
+
+  ;; A lazy quantifier changes what a search settles on, not what matches.
+  (match (rx-search #rx(seq "<" (*? :any) ">") "<a><b>")
+    ((Some m) (expect "lazy stops early" (rx-text m) "<a>"))
+    (None (fail "lazy stops early")))
+  (match (rx-search #rx(seq "<" (* :any) ">") "<a><b>")
+    ((Some m) (expect "greedy runs on" (rx-text m) "<a><b>"))
+    (None (fail "greedy runs on")))
+
+  ;; ---- Character sets ------------------------------------------------------
+  (expect-true "a range" (rx-match? #rx((+ (/ #\a #\z))) "hello"))
+  (expect-true "a range excludes" (not (rx-match? #rx((+ (/ #\a #\z))) "Hello")))
+  (expect-true "ranges written as a string" (rx-match? #rx((+ (/ "az09"))) "a0z9"))
+  (expect-true "in takes members and ranges"
+               (rx-match? #rx((+ (in #\_ (/ #\a #\z) (/ #\0 #\9)))) "a_1z"))
+  (expect-true "in takes a string of members" (rx-match? #rx((+ (in "xyz"))) "zyx"))
+  (expect-true "in excludes the rest" (not (rx-match? #rx((+ (in "xyz"))) "w")))
+
+  ;; Set algebra, all of it done while this file was compiled.
+  (expect-true "complement" (rx-match? #rx((~ (/ #\a #\z))) "Q"))
+  (expect-true "complement excludes" (not (rx-match? #rx((~ (/ #\a #\z))) "q")))
+  (expect-true "difference" (rx-match? #rx((+ (- :ascii-alpha (in "aeiou")))) "xyz"))
+  (expect-true "difference excludes" (not (rx-match? #rx((+ (- :ascii-alpha (in "aeiou")))) "xez")))
+  (expect-true "intersection" (rx-match? #rx((+ (& :alpha :ascii))) "abc"))
+  (expect-true "intersection excludes" (not (rx-match? #rx((+ (& :alpha :ascii))) "å")))
+
+  ;; ---- The named sets ------------------------------------------------------
+  ;;
+  ;; `:digit` is every Unicode decimal digit, which is the SRE meaning of
+  ;; `numeric`. That is deliberate, and it is why `:ascii-digit` exists.
+  (expect-true "digit is Unicode" (rx-match? #rx((+ :digit)) "٩०"))
+  (expect-true "ascii-digit is not" (not (rx-match? #rx((+ :ascii-digit)) "٩")))
+  (expect-true "alpha is Unicode" (rx-match? #rx((+ :alpha)) "åäö"))
+  (expect-true "space" (rx-match? #rx((+ :space)) " \t"))
+  (expect-true "hex-digit" (rx-match? #rx((+ :hex-digit)) "deadBEEF01"))
+  (expect-true "hex-digit stops at g" (not (rx-match? #rx((+ :hex-digit)) "g")))
+  (expect-true "upper" (rx-match? #rx((+ :upper)) "ABC"))
+  (expect-true "lower rejects upper" (not (rx-match? #rx((+ :lower)) "ABC")))
+
+  ;; `:nonl` is `:any` without U+000A, and `:any` really does take everything —
+  ;; .NET's `.` matches `\r` but not `\n`, and neither of those rules is here.
+  (expect-true "any takes a newline" (rx-match? #rx(:any) "\n"))
+  (expect-true "nonl does not" (not (rx-match? #rx(:nonl) "\n")))
+  (expect-true "nonl takes a carriage return" (rx-match? #rx(:nonl) "\r"))
+
+  ;; ---- Astral scalars ------------------------------------------------------
+  ;;
+  ;; The alphabet is the scalar, not the UTF-16 code unit. These four are what
+  ;; keeps it that way: an emoji is one `:any`, not two, and a complemented BMP
+  ;; set still holds it.
+  (expect-true "one astral scalar is one :any" (rx-match? #rx(:any) "😀"))
+  (expect-true "and not two" (not (rx-match? #rx(seq :any :any) "😀")))
+  (expect-true "a complemented set holds it" (rx-match? #rx((~ (/ #\a #\z))) "😀"))
+  (expect-true "an astral literal matches" (rx-match? #rx("😀") "😀"))
+  (expect "counted as one scalar" (string-count "😀") 1)
+
+  ;; A cursor a match hands back sits on a character boundary, which is the
+  ;; invariant `StringCursor` is built on and the one a UTF-16 match index does
+  ;; not carry by itself.
+  (match (rx-search #rx("b") "😀b😀")
+    ((Some m)
+     (expect "a cursor lands after the pair" (substring/cursors (rx-input m) (rx-start m) (rx-end m)) "b")
+     (expect "and the text agrees" (rx-text m) "b"))
+    (None (fail "a cursor lands after the pair")))
+
+  ;; ---- Anchors -------------------------------------------------------------
+  ;;
+  ;; `rx-match` is the whole string and `rx-search` is anywhere in it, so
+  ;; `:bos`/`:eos` are only ever needed to anchor part of a search.
+  (expect-true "search finds it anywhere" (rx-search? #rx("cat") "the cat sat"))
+  (expect-true "match does not" (not (rx-match? #rx("cat") "the cat sat")))
+  (expect-true "bos anchors a search" (not (rx-search? #rx(seq :bos "cat") "the cat")))
+  (expect-true "and admits it at the front" (rx-search? #rx(seq :bos "the") "the cat"))
+  (expect-true "eos anchors the other end" (rx-search? #rx(seq "sat" :eos) "the cat sat"))
+  ;; `\z` and not `\Z`: a trailing newline is not the end of the string.
+  (expect-true "eos is not before a trailing newline"
+               (not (rx-search? #rx(seq "sat" :eos) "the cat sat\n")))
+
+  ;; ---- Captures ------------------------------------------------------------
+  (match (rx-match phone "555-1234")
+    ((Some m)
+     (expect "a named group" (option-ref-or (rx-group m :area) "?") "555")
+     (expect "the second named group" (option-ref-or (rx-group m :line) "?") "1234")
+     (expect "groups are numbered in the order they open"
+             (option-ref-or (rx-group/n m 0) "?") "555")
+     (expect "the group count" (rx-group-count m) 2)
+     (expect-true "an unknown name is None" (none? (rx-group m :nope)))
+     (expect "a group's span" (substring/cursors (rx-input m)
+                                                 (option-ref (rx-group-start m :line))
+                                                 (option-ref (rx-group-end m :line)))
+             "1234"))
+    (None (fail "a named group")))
+
+  ;; `($ ...)` captures without naming.
+  (match (rx-match #rx(seq ($ (+ :ascii-alpha)) "=" ($ (+ :ascii-digit))) "width=42")
+    ((Some m)
+     (expect "an unnamed group" (option-ref-or (rx-group/n m 0) "?") "width")
+     (expect "the next unnamed group" (option-ref-or (rx-group/n m 1) "?") "42"))
+    (None (fail "an unnamed group")))
+
+  ;; A group that took no part in the match is `None`, not "".
+  (match (rx-match #rx(seq "a" (? (=> :maybe "b"))) "a")
+    ((Some m) (expect-true "an unused group is None" (none? (rx-group m :maybe))))
+    (None (fail "an unused group is None")))
+
+  ;; ---- Searching, replacing, splitting -------------------------------------
+  (expect "every match" (vec-length (rx-matches digits "a1b22c333")) 3)
+  (expect "replace takes them all" (rx-replace #rx((+ :space)) "a  b   c" "-") "a-b-c")
+  ;; The replacement is literal: `$1` is two characters, not a substitution.
+  (expect "the replacement is literal" (rx-replace #rx("a") "a" "$1") "$1")
+  (expect "replace-with sees the match"
+          (rx-replace-with digits "a1b22" (fun (m) (str "<" (rx-text m) ">")))
+          "a<1>b<22>")
+  (expect "split" (rx-split #rx(",") "a,b,c") ["a" "b" "c"])
+  (expect "split keeps empty fields" (rx-split #rx(",") "a,,b") ["a" "" "b"])
+  ;; A pattern that can match nothing would otherwise split between every pair
+  ;; of characters.
+  (expect "an empty match is not a separator" (rx-split #rx((* ",")) "ab") ["ab"])
+
+  ;; ---- In a pattern --------------------------------------------------------
+  ;;
+  ;; `Rx` and `RxIn` expand to a view, and a view covers nothing for
+  ;; exhaustiveness — hence the last clause.
+  (expect "Rx in a match"
+          (match "555-1234"
+            ((Rx phone (Some m)) (option-ref-or (rx-group m :area) "?"))
+            (_ "no"))
+          "555")
+  (expect "Rx is the whole string"
+          (match "call 555-1234 now"
+            ((Rx phone (Some _)) "yes")
+            (_ "no"))
+          "no")
+  (expect "RxIn searches"
+          (match "a1b"
+            ((RxIn digits (Some m)) (rx-text m))
+            (_ "no"))
+          "1")
+  (expect "a clause that does not match falls through"
+          (match "abc"
+            ((RxIn digits (Some m)) (rx-text m))
+            (_ "none here"))
+          "none here")
+
+  ;; ---- What was emitted ----------------------------------------------------
+  ;;
+  ;; The pattern is asserted literally. Every escape is a `\uXXXX`, every group
+  ;; is named `gN`, and none of `.` `^` `$` `\d` `\w` `\s` `\p{` appears.
+  (expect "a literal is hex-escaped" (rx-pattern #rx("ab")) "(?:\\u0061\\u0062)")
+  (expect "a range is a class" (rx-pattern #rx((/ #\a #\z))) "[\\u0061-\\u007A]")
+  (expect "a quantifier wraps its body"
+          (rx-pattern #rx((+ (/ #\a #\z)))) "(?:[\\u0061-\\u007A]+)")
+  (expect "a group is named by number"
+          (rx-pattern #rx(($ "a"))) "(?<g0>\\u0061)")
+  (expect "anchors are \\A and \\z"
+          (rx-pattern #rx(seq :bos "a" :eos)) "(?:\\A\\u0061\\z)")
+  ;; `:any` is an alternation over the surrogate pair, which is what makes one
+  ;; atom consume one scalar.
+  (expect "any takes a surrogate pair as one"
+          (rx-pattern #rx(:any))
+          "(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF]|[\\u0000-\\uD7FF\\uE000-\\uFFFF])")
+  ;; Adjacent ranges are merged, so two spellings of one set compile alike.
+  (expect "adjacent ranges merge"
+          (rx-pattern #rx((in (/ #\a #\m) (/ #\n #\z)))) "[\\u0061-\\u007A]")
+  (expect "difference is computed here"
+          (rx-pattern #rx((- (/ #\a #\e) (in #\c)))) "[\\u0061-\\u0062\\u0064-\\u0065]")
+  0)

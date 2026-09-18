@@ -104,14 +104,15 @@ let mapChildren (f: TypedExpr -> TypedExpr) (expr: TypedExpr) : TypedExpr =
         | TMatch(target, clauses) -> TMatch(f target, List.map mapClause clauses)
         | TWithReturn(label, body) -> TWithReturn(label, f body)
         | TReturn(label, value) -> TReturn(label, Option.map f value)
-        | TBindElse(clauses, sequel, elseBody) ->
+        | TBindElse(binder, scrutinee, sequel, arms) ->
             TBindElse(
-                clauses
-                |> List.map (fun (c: TBindElseClause) ->
-                    { Pattern = mapPat c.Pattern
-                      Scrutinee = f c.Scrutinee }),
+                mapPat binder,
+                f scrutinee,
                 f sequel,
-                f elseBody
+                arms
+                |> List.map (fun (a: TBindElseArm) ->
+                    { Pattern = mapPat a.Pattern
+                      Body = f a.Body })
             )
         | TInterfaceCall(iType, mName, mType, dict, args) -> TInterfaceCall(iType, mName, mType, f dict, List.map f args)
         | TTraitCall(tref, args, kwArgs) ->

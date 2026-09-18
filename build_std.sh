@@ -93,6 +93,11 @@ echo "Building standard library..."
 ./bjor --lib lib/std/mutable/set.bjo
 ./bjor --lib lib/std/mutable/heap.bjo
 
+# `std/rx` imports `prelude` and `syntax-match`, which its `#rx` transformer is
+# written in. Its character-class tables and its pattern emitter are ordinary
+# code in the same module, so nothing else has to be built first.
+./bjor --lib lib/std/rx.bjo
+
 # `text/json` imports `prelude` and nothing else.
 ./bjor --lib lib/text/json.bjo
 

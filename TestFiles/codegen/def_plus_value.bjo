@@ -1,0 +1,37 @@
+;; A `def+` in the return position: no slot, no meeting point.
+;;
+;; Each `EXPECT-CS` is an extended regex matched against a single line of the
+;; generated C# — and against the *whole file*, which is why the case that
+;; wants a slot lives next door in `def_plus_slot.bjo` rather than here: the
+;; `EXPECT-NO-CS` lines below are the point of this file, and one function
+;; needing a slot would defeat them.
+;;
+;; The sequel and every arm are the form's arms, so all of them are generated
+;; into the same target. Here that target is the method's `return`: each arm
+;; ends in a `return` of its own and nothing falls out of the bottom.
+;;
+;; One scrutinee, named once and tested by each arm in turn — which is what an
+;; `if` / `else if` chain is, and is why no label is emitted for any of it. The
+;; final `else` throws: exhaustiveness has already refused a form that leaves a
+;; value uncovered, but C# cannot see that, and without the `else` it calls the
+;; method CS0161.
+
+(import (std prelude))
+
+;; EXPECT-CS: var __bound__[0-9]+ = o;
+;; EXPECT-CS: if \(__bound__[0-9]+ is
+;; EXPECT-CS: else if \(__bound__[0-9]+ is
+;; EXPECT-CS: return "none";
+;; EXPECT-CS: throw new Exception\("Match failure
+;; EXPECT-NO-CS: goto __else
+;; EXPECT-NO-CS: = default!;
+(: classify (-> (Option int) string))
+(defun (classify o)
+  (def+ ((Some n) o)
+        (None "none"))
+  (str "got " (int->string n)))
+
+(defun (main)
+  (println (classify (Some 1)))
+  (println (classify None))
+  0)

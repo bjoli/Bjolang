@@ -561,30 +561,62 @@ let private checkMatch (registry: TraitRegistry) (range: Range) (scrutinee: HMTy
     with Undecidable ->
         ()
 
-/// A `def/else` clause whose pattern cannot fail, which makes the else body
-/// dead code.
+/// A `def+` is a match over its scrutinee whose first arm's body is the rest of
+/// the body, so it answers the same two questions a match does: is every arm
+/// reachable, and is every value covered.
 ///
-/// Almost always a typo where a constructor name was not in scope and so parsed
-/// as a plain variable — `(def/else ((Some cfg) opts) ...)` written against a
-/// module that never imported `Some` binds a variable called `Some` to the
-/// whole option and takes the successful path every time. Warned rather than
-/// refused, because a pattern that happens to be irrefutable is legal and a
-/// generated one may well be.
-let private checkBindElse (clauses: TBindElseClause list) =
-    for clause in clauses do
-        match clause.Pattern.Node with
-        | TPIdent name ->
-            Diagnostics.warn
-                $"Pattern Warning at %s{formatPos clause.Pattern.Range}: `%s{name}` is a plain variable, so this def/else clause always matches and its else body can never run. If a constructor of that name was meant, it is not in scope here."
-        | TPWildcard ->
-            Diagnostics.warn
-                $"Pattern Warning at %s{formatPos clause.Pattern.Range}: a wildcard always matches, so this def/else clause's else body can never run."
+/// It answers one more, which is the form's own. **The binder must be able to
+/// fail.** A binder that always matches is a `def` — no arm can run, and the
+/// form's whole purpose is to say what happens when the scrutinee is not what
+/// was wanted. It is almost always a typo where a constructor name was not in
+/// scope and so parsed as a plain variable: `(def+ ((Some cfg) opts) ...)`
+/// written against a module that never imported `Some` binds a variable called
+/// `Some` to the whole option and takes the binding path every time. Refused
+/// rather than warned, because unlike a match clause there is no reading of it
+/// that does anything.
+let private checkBindElse
+    (registry: TraitRegistry)
+    (range: Range)
+    (scrutinee: HMType)
+    (binder: TypedPattern)
+    (arms: TBindElseArm list)
+    =
+    try
+        let binderRow = [ normalize binder ]
+
+        if (missing registry [ scrutinee ] [ binderRow ]).IsNone then
+            let what =
+                match binder.Node with
+                | TPIdent name -> $"`%s{name}` is a plain variable and"
+                | TPWildcard -> "a wildcard"
+                | _ -> "this pattern"
+
+            failwithf
+                $"Pattern Error at %s{formatPos binder.Range}: %s{what} always matches, so no arm of this def+ can ever run. A binding that cannot fail is a `def`. If a constructor of that name was meant, it is not in scope here."
+
+        let mutable covered: Row list = [ binderRow ]
+
+        for arm in arms do
+            let row = [ normalize arm.Pattern ]
+
+            if not (useful registry [ scrutinee ] covered row) then
+                failwithf
+                    $"Pattern Error at %s{formatPos arm.Pattern.Range}: this arm can never run — the binding pattern and the arms above it already match everything it does."
+
+            covered <- covered @ [ row ]
+
+        match missing registry [ scrutinee ] covered with
+        | Some [ witness ] ->
+            failwithf
+                $"Pattern Error at %s{formatPos range}: this def+ does not cover every value. %s{showWitness witness} matches neither the binding pattern nor any arm, and a def+ has nowhere to send it."
         | _ -> ()
+    with Undecidable ->
+        ()
 
 let rec private checkExpr (registry: TraitRegistry) (expr: TypedExpr) : unit =
     match expr.Node with
     | TMatch(target, clauses) -> checkMatch registry expr.Range target.Type clauses
-    | TBindElse(clauses, _, _) -> checkBindElse clauses
+    | TBindElse(binder, scrutinee, _, arms) -> checkBindElse registry expr.Range scrutinee.Type binder arms
     | _ -> ()
 
     TypeVisitor.children expr |> List.iter (checkExpr registry)

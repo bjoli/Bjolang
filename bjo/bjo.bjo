@@ -25,10 +25,10 @@
 ;; as parking a thread that is nobody's to yield.
 ;;
 ;; A command line is a sequence of refusals before it is a command, so most of
-;; what follows is written as guards: `def/else` binds the case that carries on
-;; and gives the other case its own arm, and `with-return` is what an arm that
-;; ends the command leaves through. The alternative is the same decisions as
-;; nesting, indented once per thing that can go wrong.
+;; what follows is written as guards: `def+` binds the case that carries on and
+;; gives every other case an arm of its own, and `with-return` is what an arm
+;; that ends the command leaves through. The alternative is the same decisions
+;; as nesting, indented once per thing that can go wrong.
 ;;
 ;; Where the failing case has nothing to say for itself — two `Option`s in a row
 ;; and no answer but `None` — it is a `(do ...)` block instead, and neither
@@ -257,8 +257,8 @@
 (: stale? (-> string string bool))
 (defun (stale? file wanted)
   ;; Never built, or built by something that did not record it.
-  (def/else ((Some rec) (read-record file))
-    #t)
+  (def+ ((Some rec) (read-record file))
+        (None #t))
   (def artefact (record-ref rec output))
 
   (or (not (= (record-ref rec mode) wanted))
@@ -319,9 +319,10 @@
 
     ;; The compiler said it succeeded and left no record. It writes one after
     ;; every build that did, so this is a compiler too old for this `bjo`.
-    (def/else ((Some built) (read-record file))
-      (println #"bjo: ${file} compiled, but left no build record.")
-      (ret (Err 1)))
+    (def+ ((Some built) (read-record file))
+          (None
+           (println #"bjo: ${file} compiled, but left no build record.")
+           (ret (Err 1))))
 
     (Ok (Tuple built #t))))
 
@@ -375,11 +376,11 @@
 ;; arm: no PATH at all, and nothing on it by that name.
 (: which (-> string (Option string)))
 (defun (which program)
-  (def/else ((Some path) (get-environment-variable "PATH"))
-    None)
-  (def/else ((Some dir) (find #(file-exists? (path-combine & program))
-                              (string-split path ":")))
-    None)
+  (def+ ((Some path) (get-environment-variable "PATH"))
+        (None None))
+  (def+ ((Some dir) (find #(file-exists? (path-combine & program))
+                          (string-split path ":")))
+        (None None))
   (Some (path-combine dir program)))
 
 ;; The compiler's REPL has no line editing of its own, so it is run under
@@ -390,9 +391,10 @@
   (with-return ret
     (unless (ensure-compiler) (ret 1))
 
-    (def/else ((Some rlwrap) (which "rlwrap"))
-      (println "bjo: no rlwrap on PATH, so the REPL has no line editing.")
-      (ret (exec "dotnet" [compiler-dll "--repl"])))
+    (def+ ((Some rlwrap) (which "rlwrap"))
+          (None
+           (println "bjo: no rlwrap on PATH, so the REPL has no line editing.")
+           (ret (exec "dotnet" [compiler-dll "--repl"]))))
 
     (exec rlwrap ["-a" "dotnet" compiler-dll "--repl"])))
 
@@ -495,10 +497,10 @@
      (with-return ret
        (when lib?
          (ret (fail "bjo run: --lib builds a library, and a library does not run.")))
-       (def/else ((Cons name args) rest)
-         (ret (fail "bjo run: no source file. Try 'bjo help'.")))
-       (def/else ((Some file) (resolve-source name))
-         (ret (fail #"bjo run: no such file '${name}'.")))
+       (def+ ((Cons name args) rest)
+             (Nil (ret (fail "bjo run: no source file. Try 'bjo help'."))))
+       (def+ ((Some file) (resolve-source name))
+             (None (ret (fail #"bjo run: no such file '${name}'."))))
        (cmd-run file args debug? force?)))
 
     ("build"
@@ -529,9 +531,8 @@
 (defun (main args)
   ;; The command comes first and is never a flag, so the flags of the command
   ;; are what follows it.
-  (def/else ((Cons command rest) (vec->list args))
-    (usage)
-    1)
+  (def+ ((Cons command rest) (vec->list args))
+        (Nil (usage) 1))
   (match (parse-flags rest)
     ((Err message) (fail message))
     ((Ok line) (dispatch command line))))
