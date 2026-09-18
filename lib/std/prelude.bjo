@@ -1259,12 +1259,16 @@
 ;; --- Traversal -------------------------------------------------------------
 
 ;; String fold.
+;; The forward walks below ask for the character and the step in one call, so
+;; that the unit at the cursor is read and bounds-checked once per character
+;; rather than twice.
 (: string-fold (-> (-> %a char %a) %a string %a))
 (defun (string-fold f init s)
   (let loop ((c (string-cursor-start s)) (acc init))
     (if (string-cursor-end? s c)
         acc
-        (loop (string-cursor-next s c) (f acc (string-cursor-ref s c))))))
+        (match (string-cursor-ref+next s c)
+          ((Tuple ch next) (loop next (f acc ch)))))))
 
 ;; String fold right.
 (: string-fold-right (-> (-> char %a %a) %a string %a))
@@ -1281,8 +1285,10 @@
   ;;       (:do (f ch)))
   (let loop ((c (string-cursor-start s)))
     (unless (string-cursor-end? s c)
-      (f (string-cursor-ref s c))
-      (loop (string-cursor-next s c)))))
+      (match (string-cursor-ref+next s c)
+        ((Tuple ch next)
+         (f ch)
+         (loop next))))))
 
 ;; String index.
 (: string-index (-> (-> char bool) string (Option StringCursor)))
@@ -1290,9 +1296,11 @@
   (let loop ((c (string-cursor-start s)))
     (if (string-cursor-end? s c)
         None
-        (if (pred (string-cursor-ref s c))
-            (Some c)
-            (loop (string-cursor-next s c))))))
+        (match (string-cursor-ref+next s c)
+          ((Tuple ch next)
+           (if (pred ch)
+               (Some c)
+               (loop next)))))))
 
 ;; --- Conversions -----------------------------------------------------------
 

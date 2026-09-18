@@ -1,0 +1,128 @@
+* std/rx — Regular Expressions
+
+Bjolang provides a built-in regular expression engine. Unlike languages that use strings for regex (like ="[a-z]+"=), Bjolang uses structural S-expressions (similar to Scheme's SRE format). This means you never have to double-escape characters, and the compiler validates your patterns at compile time.
+
+#+BEGIN_SRC scheme
+(import (std rx))
+
+(def phone #rx(seq :bos ;; beginnins of string
+                   ;; names area as between 3 and 3 ascii digits.
+                   (=> :area (** 3 3 :ascii-digit))
+                   ;; literal "-"
+                   (lit "-")
+                   ;; names line as between 4 and 4 ascii digits.
+                   (=> :line (** 4 4 :ascii-digit))
+                   ;; end of string
+                   :eos))
+
+(rx-match? phone "555-1234")              ;; #t
+(rx-search #rx((+ :digit)) "a42b")        ;; (Some <match on "42">)
+#+END_SRC
+
+** Pattern Syntax
+
+*** The Two Basic Rules
+
+1. **Keywords take no arguments**: Built-in character sets and anchors are written as keywords (e.g., =:bos=, =:digit=, =:any=).
+2. **Forms take arguments**: Operations that group or repeat patterns are written as function-like lists starting with a symbol (e.g., =(seq ...)=, =(+ ...)=, =(or ...)=).
+
+*** Structural Forms
+
+| Form                       | Description                                              |
+|----------------------------+----------------------------------------------------------|
+| ="text"= or =#\c=          | Matches exactly that text or character.                  |
+| =(lit "text")=             | Matches exactly that text.                               |
+| =(seq a b ...)=            | Matches =a=, then =b=, in sequence.                      |
+| =(or a b ...)=             | Matches =a= or =b= (alternation).                        |
+| =(* r)=, =(+ r)=, =(? r)=  | Matches zero-or-more, one-or-more, or zero-or-one of =r=.|
+| =(*? r)=, =(+? r)=, =(?? r)=| The same as above, but *lazy* (matches as little as possible). |
+| =(** least most r)=        | Matches =r= between =least= and =most= times.            |
+| =(= n r)=, =(>= n r)=      | Matches =r= exactly =n= times, or at least =n= times.    |
+| =($ r)=                    | Captures =r= into an unnamed group.                      |
+| =(=> :name r)=             | Captures =r= into a group named =:name=.                 |
+| =:bos=, =:eos=             | Matches the beginning and end of the string.             |
+| =:any=                     | Matches any single character (including newlines).       |
+| =:nonl=                    | Matches any single character *except* a newline.         |
+
+*** Character Sets
+
+Character sets define a list of valid characters to match.
+
+| Form                 | Description                                                  |
+|----------------------+--------------------------------------------------------------|
+| =(in a b ...)=       | Matches any character listed in =a=, =b=, etc.               |
+| =(/ lo hi ...)=      | Matches ranges of characters. Endpoints are taken in pairs.  |
+| =(~ a b ...)=        | **Negation:** Matches any character *not* in the given sets. |
+| =(- a b ...)=        | **Difference:** Matches characters in =a=, minus characters in =b=... |
+| =(& a b ...)=        | **Intersection:** Matches characters that are in *all* the given sets. |
+
+Example: =(/ #\a #\z #\0 #\9)= and =(/ "az09")= both represent the set of lowercase letters and digits. All set logic is processed entirely at compile time!
+
+*** Built-in Character Classes
+
+Bjolang provides several built-in Unicode character classes as keywords:
+=:alpha=, =:digit=, =:alnum=, =:upper=, =:lower=, =:space=, =:word=, =:control=, =:hex-digit=, =:alphabetic=, =:numeric=, =:alphanumeric=, =:whitespace=, =:upper-case=, =:lower-case=.
+
+*Important note on Unicode:* Sets like =:digit= include *all* Unicode decimal digits (such as ٩ and ०). If you only want the standard 0-9 characters, use the ASCII-specific versions:
+=:ascii=, =:ascii-digit=, =:ascii-alpha=, =:ascii-alnum=.
+
+** Using Regular Expressions
+
+Once you have a compiled pattern, you can use the following functions:
+
+- =(rx-match? rx s)= : Returns a =bool=, true if the *entire* string =s= matches =rx=.
+- =(rx-match rx s)= : Returns an =(Option RxMatch)= for the whole string.
+- =(rx-search? rx s)= : Returns a =bool=, true if a match is found *anywhere* in the string.
+- =(rx-search rx s)= : Returns an =(Option RxMatch)= for the leftmost match anywhere.
+- =(rx-matches rx s)= : Returns a =(Vec RxMatch)= containing every non-overlapping match.
+- =(rx-split rx s)= : Splits the string by the regex, returning a =(Vec string)=.
+- =(rx-replace rx s text)= : Replaces every match with literal =text=. (Note: No =$1= syntax is supported).
+- =(rx-replace-with rx s f)= : Replaces every match dynamically. =f= is a function of type =(-> RxMatch string)=.
+
+*** Reading a Match Object
+
+When you get an =RxMatch=, you can extract information from it:
+
+- =(rx-text m)= : The matched string text.
+- =(rx-start m)=, =(rx-end m)= : Returns a =StringCursor= to the boundaries of the match.
+- =(rx-group m :name)= : Returns an =(Option string)= containing the captured text for a named group (=None= if the group didn't match anything).
+- =(rx-group/n m n)= : Extracts a captured group by its positional index (counted from zero).
+- =(rx-group-count m)= : Returns the total number of captured groups.
+
+** Pattern Matching in =match= Statements
+
+You can use regular expressions directly inside standard =match= statements using the =Rx= and =RxIn= pattern macros:
+- =(Rx pattern pat)= matches the *whole* string against the pattern.
+- =(RxIn pattern pat)= searches for a match *anywhere* in the string.
+
+Both macros bind the resulting =RxMatch= (wrapped in an =Option=) to your subpattern:
+
+#+BEGIN_SRC scheme
+(match line
+  ((Rx phone (Some m)) (str "phone: " (option-ref-or (rx-group m :area) "?")))
+  ((RxIn #rx((+ :digit)) (Some m)) (str "a number: " (rx-text m)))
+  (_ "neither"))
+#+END_SRC
+
+*Best Practice:* Regex compilation happens inside these match branches. It is best to define your =#rx= patterns as top-level =def= bindings rather than putting =#rx(...)= directly inside the =match= clauses, so they don't get re-evaluated unnecessarily:
+
+#+BEGIN_SRC scheme
+(def digits #rx((+ :digit)))
+(match text
+  ((RxIn digits (Some m)) (rx-text m))
+  (_ "none"))
+#+END_SRC
+
+** Implementation Details & Limitations
+
+*** Robust Unicode Support
+Bjolang's regex engine ensures that patterns match complete Unicode scalars. Because .NET's underlying regex engine works in UTF-16 code units, naïve regexes often accidentally split surrogate pairs (like splitting an emoji in half). Bjolang strictly emits robust patterns that treat surrogate pairs as single cohesive atoms. 
+
+However, because .NET character classes (=[]=) cannot express scalars above U+FFFF, you cannot put an emoji inside a character set block like =(in "😀")=. You *can* match them directly as literals (e.g. ="😀"=).
+
+*** Missing Features
+Bjolang strictly uses the non-backtracking mode of =System.Text.RegularExpressions=, guaranteeing fast, predictable linear time matching (O(N) in the length of the string). To ensure linear time guarantees and engine independence, the following features are intentionally omitted:
+- **Lookarounds, Backreferences, and Conditionals**: These require heavy backtracking and are not supported.
+- **Pattern Complements**: Complementing entire patterns (like =!(pattern)=) is not supported, though you can complement *character sets* (like =(~ :digit)=).
+- **Case-Insensitive Mode**: Relies on the runtime culture tables which Bjolang explicitly avoids.
+- **Dynamic Patterns**: Patterns cannot be constructed from variables at runtime (e.g., `,x` inside `#rx(...)` is forbidden). All patterns must be statically known.

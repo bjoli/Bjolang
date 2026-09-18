@@ -207,8 +207,9 @@ Every operation takes the string *and* the cursor, because the cursor carries no
 - ~(string-cursor-end s)~ : The past-the-end cursor. Not a character position; it is the bound a traversal stops at.
 - ~(string-cursor-end? s c)~ : Whether ~c~ has reached the end.
 - ~(string-cursor-ref s c)~ : The character at ~c~. Throws at the end — guard with ~string-cursor-end?~.
-- ~(string-cursor-next s c)~ : The cursor on the next character. Steps over *all* the storage units that character occupies.
-- ~(string-cursor-prev s c)~ : The cursor on the previous character. O(1) — it decodes backwards rather than rescanning from the start.
+- ~(string-cursor-next s c)~ : The cursor on the next character. Steps over *all* the storage units that character occupies, and reads how many of them there are from the unit at ~c~ rather than decoding the character.
+- ~(string-cursor-prev s c)~ : The cursor on the previous character. O(1) — it reads the unit before ~c~ rather than rescanning from the start. ~string-cursor-ref~ is the only one of these that decodes.
+- ~(string-cursor-ref+next s c)~ : The character at ~c~ *and* the cursor after it, as a ~(Tuple char StringCursor)~. The unit at ~c~ decides both answers, so a forward walk that asks for them together reads and bounds-checks it once per character instead of twice. The tuple is a ~ValueTuple~ and does not allocate; destructure it with ~(def (ch next) ...)~ or a ~(Tuple ch next)~ pattern. Throws at the end, like ~string-cursor-ref~.
 - ~(substring/cursors s start end)~ : The text between two cursors, ~end~ exclusive.
 
 *** Comparison =(std prelude)=

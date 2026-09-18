@@ -418,6 +418,14 @@ public static partial class BjolangRuntime {
     public static Bjolang.Runtime.StringCursor stringsubcursorsubprev(string s, Bjolang.Runtime.StringCursor c) =>
         Bjolang.Runtime.StringCursor.Prev(s, c);
 
+    // `string-cursor-ref+next`: the character and the cursor after it, for the
+    // loop that wants both. One read of the unit at the cursor answers both
+    // questions, so this is cheaper than the two calls it replaces.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static (Bjolang.Runtime.BjoChar, Bjolang.Runtime.StringCursor) stringsubcursorsubrefaddnext(
+        string s, Bjolang.Runtime.StringCursor c) =>
+        Bjolang.Runtime.StringCursor.RefNext(s, c);
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static string substringdivcursors(string s, Bjolang.Runtime.StringCursor start, Bjolang.Runtime.StringCursor end) =>
         Bjolang.Runtime.StringCursor.Substring(s, start, end);

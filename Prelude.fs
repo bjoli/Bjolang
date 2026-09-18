@@ -881,6 +881,11 @@ let prelude : Env =
         "string-cursor-ref", {Scheme = Scheme([], [], makeFunType [stringType; stringCursorType] charType); IsMutable = false }
         "string-cursor-next", {Scheme = Scheme([], [], makeFunType [stringType; stringCursorType] stringCursorType); IsMutable = false }
         "string-cursor-prev", {Scheme = Scheme([], [], makeFunType [stringType; stringCursorType] stringCursorType); IsMutable = false }
+        // The character and the cursor after it, in one call. The unit at the
+        // cursor answers both questions, so a traversal that asks separately
+        // reads and bounds-checks it twice. The tuple is a `ValueTuple` and
+        // does not allocate, so this costs a destructuring and no more.
+        "string-cursor-ref+next", {Scheme = Scheme([], [], makeFunType [stringType; stringCursorType] (TTuple [charType; stringCursorType])); IsMutable = false }
         "substring/cursors", {Scheme = Scheme([], [], makeFunType [stringType; stringCursorType; stringCursorType] stringType); IsMutable = false }
         // The character count, as against `string-length`'s storage count. Two
         // names because they are two questions with two answers and two costs:

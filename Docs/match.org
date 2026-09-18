@@ -1,0 +1,154 @@
+* Pattern Matching
+
+Bjolang provides a powerful =match= expression for pattern matching and destructuring, along with a =case= form for simpler literal matching.
+
+** The =match= Form
+
+The =match= expression takes a target value and a sequence of clauses. Each clause consists of a pattern and a body to execute if the pattern matches.
+
+#+BEGIN_SRC scheme
+(match target
+  (pattern body ...)
+  (pattern #:when guard body ...)
+  (pattern body ...))
+#+END_SRC
+
+The first clause whose pattern matches the target (and whose guard, if present, evaluates to true) is chosen. The body forms are evaluated in order, and the value of the last form is the result of the =match= expression.
+
+*** Exhaustiveness
+
+Matches in Bjolang are checked for exhaustiveness. If a match does not cover all possible values of the target type, the compiler will report an error. 
+
+Note that clauses using guards (=#:when=) or views (=:view=) evaluate arbitrary code, and the compiler does not attempt to prove they cover specific cases. A match relying entirely on guards or views will need a catch-all pattern (like =_= or a binder) to be considered exhaustive.
+
+** Pattern Forms
+
+*** Literals and Wildcards
+
+Literals match exactly themselves. The wildcard =_= matches any value and ignores it.
+
+#+BEGIN_SRC scheme
+(match x
+  (42 "the answer")
+  ("hello" "a greeting")
+  (#t "true")
+  (#\x "the character x")
+  (#:foo "a keyword")
+  ('symbol "a quoted symbol")
+  (_ "anything else"))
+#+END_SRC
+
+*** Binders
+
+A bare, lowercase identifier is a binder. It matches any value and binds it to that name within the clause's body.
+
+#+BEGIN_SRC scheme
+(match x
+  (0 "zero")
+  (n #"non-zero: ${n}"))
+#+END_SRC
+
+*** Constructors
+
+A bare, capitalized identifier is a nullary constructor. To match a constructor with arguments, use a list pattern with the constructor name as the head.
+
+#+BEGIN_SRC scheme
+(match opt
+  (None "no value")
+  ((Some x) #"got ${x}"))
+#+END_SRC
+
+*** Collections
+
+Bjolang supports pattern matching on lists, vectors, arrays, and tuples.
+
+- *Lists*: =(List a b c)= matches a list of exactly three elements. You can also match empty lists using =()=, which is equivalent to =(List)=.
+- *Vectors*: =(Vec a b)= or the literal syntax =[a b]=.
+- *Arrays*: =(Array a b)= or the literal syntax =#[a b]=.
+- *Tuples*: =(Tuple a b)= or the dotted pair syntax =(a . b)=.
+
+**** The Spread Operator
+
+You can use the spread operator =...= at the end of a sequence pattern to match the remaining elements.
+
+#+BEGIN_SRC scheme
+(match lst
+  (() "empty")
+  ((List head tail ...) #"head is ${head}, rest is ${tail}"))
+
+(match vec
+  ([x y rest ...] #"first two are ${x} and ${y}"))
+#+END_SRC
+
+*** Type Tests
+
+The =:is= pattern matches if the value is of the specified type. It can optionally bind the typed value to a name.
+
+#+BEGIN_SRC scheme
+(match obj
+  ((:is System.String) "it's a string")
+  ((:is System.Int32 n) #"it's the integer ${n}"))
+#+END_SRC
+
+*** Views
+
+The =:view= pattern allows you to run a function on the matched value and match against the result.
+
+Syntax: =(:view step pattern)=
+
+The =step= can be a function or an accessor form (e.g., =(& .Property)=).
+
+#+BEGIN_SRC scheme
+(match text
+  ((:view parse-int (Some n)) #"parsed integer ${n}")
+  ((:view parse-int None) "not an integer"))
+#+END_SRC
+
+*** Logical Patterns
+
+You can combine patterns using =or= and =and=.
+
+- =(or p1 p2 ...)= matches if any of the patterns match. Because only one alternative runs, an =or= pattern alternative cannot run views or bind variables.
+- =(and p1 p2 ...)= matches if all patterns match the value. Bound names must not be duplicated among the alternatives.
+
+#+BEGIN_SRC scheme
+(match x
+  ((or 1 2 3) "one, two, or three")
+  ((and (:is int n) n) #"an integer: ${n}"))
+#+END_SRC
+
+** The =case= Form
+
+For simple dispatch against sets of literals, Bjolang provides the =case= macro. It takes a key expression and matches it against lists of literal data. It desugars into a =match= with =or= patterns.
+
+#+BEGIN_SRC scheme
+(case key
+  ((1 2 3) "small number")
+  (("a" "b") "a letter")
+  (#t "true")
+  (else "something else"))
+#+END_SRC
+
+Note that the data in a =case= clause *must* be literals (numbers, strings, characters, booleans, keywords, or quoted symbols). A bare identifier in a =case= datum list is not allowed, because in a regular =match= it would be interpreted as a catch-all binder. To match a symbol, use a quoted symbol (e.g., ='sym=).
+
+The =else= clause acts as the wildcard catch-all and must be the last clause if provided.
+
+*** Matching Keys in Maps and Collections (=Has= and =Has*=)
+
+Bjolang provides the =Has= and =Has*= pattern macros in the standard prelude for matching against any =Refable= type (such as Maps or Vectors) by key.
+
+The =Has= pattern checks if a collection contains a specific key, and if so, matches its value against a subpattern. Under the hood, it expands to a =:view= that uses =try-ref= and matches the resulting =Option=.
+
+#+BEGIN_SRC scheme
+(match my-map
+  ((Has :my-key pat) #"The value of :my-key is ${pat}")
+  (_ "Map did not contain :my-key"))
+#+END_SRC
+
+For matching multiple keys at once, you can use =Has*=, which takes pairs of keys and patterns, behaving like an =and= of multiple =Has= patterns:
+
+#+BEGIN_SRC scheme
+(match user-map
+  ((Has* ("name" n) ("age" a)) #"User ${n} is ${a} years old")
+  (_ "Missing name or age"))
+#+END_SRC

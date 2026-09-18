@@ -12,6 +12,8 @@
  */
 
 using System;
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace Bjolang.Runtime;
@@ -38,11 +40,19 @@ namespace Bjolang.Runtime;
 /// another assembly and cannot reach it.
 /// </para>
 /// <para>
-/// All decoding goes through <see cref="Rune"/>, which is what makes the
-/// migration a one-word change: <c>DecodeFromUtf16</c> becomes
-/// <c>DecodeFromUtf8</c> and every routine below is otherwise untouched. It
-/// also settles malformed input on .NET's terms — an unpaired surrogate decodes
-/// as U+FFFD and consumes one unit, so a traversal always advances and always
+/// Only <see cref="Ref"/> decodes, and it goes through <see cref="Rune"/>.
+/// Moving a cursor needs nothing but the width of a character in storage
+/// units, and that is readable from the unit the character starts at: in
+/// UTF-16 a high surrogate followed by a low one spans two units and
+/// everything else spans one, and in UTF-8 the answer is in the leading bits
+/// of the first byte. <see cref="WidthAt"/> and <see cref="WidthBefore"/> are
+/// the only places that know the encoding's shape, so the migration is a
+/// change to them and to <c>DecodeFromUtf16</c> in <see cref="Ref"/>.
+/// </para>
+/// <para>
+/// The widths agree with <c>Rune.DecodeFromUtf16</c> on malformed input,
+/// which settles it on .NET's terms: an unpaired surrogate is one unit wide
+/// and decodes as U+FFFD, so a traversal always advances and always
 /// terminates rather than throwing halfway through a string it did not write.
 /// </para>
 /// <para>
@@ -72,44 +82,107 @@ public readonly record struct StringCursor : IComparable<StringCursor>, System.N
 
     public static bool AtEnd(string s, StringCursor c) => c.Offset >= s.Length;
 
+    /// <summary>
+    /// How many storage units the character starting at <paramref name="i"/>
+    /// occupies. <paramref name="i"/> must be a character boundary inside the
+    /// string, which every cursor below the end is.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int WidthAt(string s, int i) =>
+        char.IsHighSurrogate(s[i]) && i + 1 < s.Length && char.IsLowSurrogate(s[i + 1]) ? 2 : 1;
+
+    /// <summary>
+    /// How many storage units the character ending at <paramref name="i"/>
+    /// occupies, so that a step backwards is a read of the last unit rather
+    /// than a rescan from the start. <paramref name="i"/> must be a character
+    /// boundary above zero.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int WidthBefore(string s, int i) =>
+        char.IsLowSurrogate(s[i - 1]) && i >= 2 && char.IsHighSurrogate(s[i - 2]) ? 2 : 1;
+
     /// <summary>The character at the cursor.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static BjoChar Ref(string s, StringCursor c)
     {
         if (c.Offset >= s.Length)
         {
-            throw new ArgumentOutOfRangeException(nameof(c),
-                "string-cursor-ref: the cursor is at the end of the string. Guard with (string-cursor-end? s c).");
+            ThrowPastEnd("string-cursor-ref");
+        }
+        // A unit that is no part of a pair is already the scalar, and that is
+        // the common case; the decode is left for the surrogates it is for.
+        char unit = s[c.Offset];
+        if (!char.IsSurrogate(unit))
+        {
+            return new BjoChar(unit);
         }
         Rune.DecodeFromUtf16(s.AsSpan(c.Offset), out Rune rune, out _);
         return new BjoChar((uint)rune.Value);
     }
 
     /// <summary>The cursor on the next character.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static StringCursor Next(string s, StringCursor c)
     {
         if (c.Offset >= s.Length)
         {
-            throw new ArgumentOutOfRangeException(nameof(c),
-                "string-cursor-next: the cursor is at the end of the string. Guard with (string-cursor-end? s c).");
+            ThrowPastEnd("string-cursor-next");
         }
-        Rune.DecodeFromUtf16(s.AsSpan(c.Offset), out _, out int consumed);
-        return new StringCursor(c.Offset + consumed);
+        return new StringCursor(c.Offset + WidthAt(s, c.Offset));
     }
 
-    /// <summary>
-    /// The cursor on the previous character. Decoding backwards is what makes
-    /// this O(1) rather than a rescan from the start.
-    /// </summary>
+    /// <summary>The cursor on the previous character.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static StringCursor Prev(string s, StringCursor c)
     {
         if (c.Offset <= 0)
         {
-            throw new ArgumentOutOfRangeException(nameof(c),
-                "string-cursor-prev: the cursor is at the start of the string.");
+            ThrowBeforeStart();
         }
-        Rune.DecodeLastFromUtf16(s.AsSpan(0, c.Offset), out _, out int consumed);
-        return new StringCursor(c.Offset - consumed);
+        return new StringCursor(c.Offset - WidthBefore(s, c.Offset));
     }
+
+    /// <summary>
+    /// The character at the cursor, and the cursor after it.
+    /// </summary>
+    ///
+    /// <remarks>
+    /// What a traversal asks for, and the reason it is one function: the unit
+    /// at the cursor decides both answers, so asking together costs one bounds
+    /// check and one read where <see cref="Ref"/> followed by <see cref="Next"/>
+    /// costs two of each. The tuple is a <c>ValueTuple</c> and does not
+    /// allocate.
+    /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static (BjoChar, StringCursor) RefNext(string s, StringCursor c)
+    {
+        if (c.Offset >= s.Length)
+        {
+            ThrowPastEnd("string-cursor-ref+next");
+        }
+        char unit = s[c.Offset];
+        if (!char.IsSurrogate(unit))
+        {
+            return (new BjoChar(unit), new StringCursor(c.Offset + 1));
+        }
+        Rune.DecodeFromUtf16(s.AsSpan(c.Offset), out Rune rune, out int consumed);
+        return (new BjoChar((uint)rune.Value), new StringCursor(c.Offset + consumed));
+    }
+
+    // The throws are out of line, and not inlined, so that the bodies above
+    // stay small enough for the JIT to inline them into the loop that calls
+    // them — which is every string traversal a Bjolang program writes.
+    [DoesNotReturn]
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowPastEnd(string op) =>
+        throw new ArgumentOutOfRangeException("c",
+            $"{op}: the cursor is at the end of the string. Guard with (string-cursor-end? s c).");
+
+    [DoesNotReturn]
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowBeforeStart() =>
+        throw new ArgumentOutOfRangeException("c",
+            "string-cursor-prev: the cursor is at the start of the string.");
 
     /// <summary>The text between two cursors, the second exclusive.</summary>
     public static string Substring(string s, StringCursor start, StringCursor end)
@@ -131,8 +204,7 @@ public readonly record struct StringCursor : IComparable<StringCursor>, System.N
         int n = 0;
         for (int i = 0; i < s.Length; n++)
         {
-            Rune.DecodeFromUtf16(s.AsSpan(i), out _, out int consumed);
-            i += consumed;
+            i += WidthAt(s, i);
         }
         return n;
     }

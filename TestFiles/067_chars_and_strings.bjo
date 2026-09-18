@@ -146,6 +146,17 @@
         n
         (loop (string-cursor-next s c) (+ n 1)))))
 
+;; The same walk with the fused step. `string-cursor-ref+next` answers the
+;; character and the cursor after it at once, which is what a traversal wants:
+;; the unit at the cursor decides both, so asking separately reads it twice.
+(: collect-fused (-> string (List char)))
+(defun (collect-fused s)
+  (let loop ((c (string-cursor-start s)) (acc Nil))
+    (if (string-cursor-end? s c)
+        (list-reverse acc)
+        (match (string-cursor-ref+next s c)
+          ((Tuple ch next) (loop next (cons ch acc)))))))
+
 ;; The same walk backwards, which `string-cursor-prev` makes O(1) per step.
 (: count-backwards (-> string int))
 (defun (count-backwards s)
@@ -252,6 +263,24 @@
                  (string-cursor-next "a😀b"
                    (string-cursor-next "a😀b" (string-cursor-start "a😀b"))))
                #\b)
+
+  ;; ---- ref+next, the fused step -------------------------------------------
+  ;;
+  ;; It has to answer exactly what `string-cursor-ref` and `string-cursor-next`
+  ;; answer separately, or a traversal written the short way would disagree with
+  ;; one written the long way.
+  (expect "fused walk rebuilds the string" (list->string (collect-fused "a😀b")) "a😀b")
+  (expect-int "fused walk counts characters" (list-length (collect-fused "a😀b")) 3)
+  (expect "fused walk on an empty string" (list->string (collect-fused "")) "")
+  (def (fused-char fused-next)
+    (string-cursor-ref+next "a😀b" (string-cursor-next "a😀b" (string-cursor-start "a😀b"))))
+  (expect-char "fused character is the astral one" fused-char #\😀)
+  (expect-char "fused cursor stepped over the pair" (string-cursor-ref "a😀b" fused-next) #\b)
+  (expect-bool "fused cursor is the one next gives"
+               (string-cursor=? fused-next
+                                (string-cursor-next "a😀b"
+                                  (string-cursor-next "a😀b" (string-cursor-start "a😀b"))))
+               #t)
 
   ;; ---- substring/cursors --------------------------------------------------
   (expect "substring whole"

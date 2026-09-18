@@ -1,0 +1,1150 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/rx.bjo — regular expressions in s-expression notation.
+;;
+;;     #rx(seq :bos (+ :digit) (lit "-") ($ (** 4 4 :digit)) :eos)
+;;
+;; `#rx(...)` is read, checked and compiled to a .NET pattern string at compile
+;; time; a bad pattern is a compile error pointing at the sub-form that is
+;; wrong. What the expansion evaluates is `(rx-compile "<pattern>" "<names>")`.
+;;
+;; Two spelling rules, and they are what let the reader tell the parts apart
+;; without a name table. Anything that takes no argument is a keyword — `:bos`,
+;; `:any`, `:digit`. Anything that takes one is a symbol heading a form —
+;; `(seq ...)`, `(+ ...)`, `(in ...)`. A string or a character literal is
+;; itself: a literal sequence in pattern position, the set of its characters
+;; inside `(in ...)`.
+;;
+;; The matching is `System.Text.RegularExpressions`, under
+;; `NonBacktracking | ExplicitCapture | CultureInvariant`, and the pattern this
+;; file writes stays inside the subset that mode accepts. That is not only
+;; about the linear-time guarantee: the mode refuses backreferences,
+;; lookarounds, atomic groups and conditionals, which are the constructs that
+;; would tie Bjolang to a backtracking engine for good. Nothing here can emit
+;; one, so nothing can come to depend on one.
+;;
+;; The emitted pattern never contains `.`, `^`, `$`, `\d`, `\w`, `\s` or
+;; `\p{...}`. Each of those means something .NET decides — `\d` is every
+;; Unicode decimal digit, `$` matches before a trailing newline, `.` matches
+;; `\r` but not `\n` — and the Unicode ones move when the runtime's tables are
+;; updated. Classes are written out as explicit `\uXXXX` ranges from the tables
+;; at the bottom of this file instead, so a compiled program means the same
+;; thing on every runtime and the meaning is readable here.
+;;
+;; The alphabet is the Unicode scalar, as it is for `char` and the string
+;; cursors, but .NET's regex engine works in UTF-16 code units. So `:any` and
+;; every complemented set are emitted as an alternation that takes a surrogate
+;; pair as one unit, and a match boundary can never land inside a pair. See
+;; `BjolangRuntime/BjoRegex.cs`, which checks it.
+
+(export
+  ;; The types.
+  Rx RxMatch
+
+  ;; Matching.
+  rx-match rx-match? rx-search rx-search? rx-matches
+  rx-replace rx-replace-with rx-split
+
+  ;; Reading a match.
+  rx-text rx-input rx-start rx-end
+  rx-group rx-group-start rx-group-end rx-group/n rx-group-count
+
+  ;; What `#rx(...)` expands into, and what a test reads back.
+  rx-compile rx-pattern)
+
+(import (std prelude))
+(import (std syntax-match))
+
+(import/class
+  (Rx      (: Bjolang.Runtime.BjoRegex))
+  (RxMatch (: Bjolang.Runtime.BjoMatch)))
+
+(import/extern
+  (clr-rx-compile   (: Bjolang.Runtime.BjoRegexModule.Compile          (-> string string Rx)))
+  (clr-rx-pattern   (: Bjolang.Runtime.BjoRegexModule.Pattern          (-> Rx string)))
+  (clr-rx-search    (: Bjolang.Runtime.BjoRegexModule.Search           (-> Rx string (Option RxMatch))))
+  (clr-rx-search?   (: Bjolang.Runtime.BjoRegexModule.IsSearchMatch    (-> Rx string bool)))
+  (clr-rx-whole     (: Bjolang.Runtime.BjoRegexModule.MatchWhole       (-> Rx string (Option RxMatch))))
+  (clr-rx-whole?    (: Bjolang.Runtime.BjoRegexModule.IsWholeMatch     (-> Rx string bool)))
+  (clr-rx-matches   (: Bjolang.Runtime.BjoRegexModule.Matches          (-> Rx string (Array RxMatch))))
+  (clr-rx-replace   (: Bjolang.Runtime.BjoRegexModule.Replace          (-> Rx string string string)))
+  (clr-rx-replace-with
+                    (: Bjolang.Runtime.BjoRegexModule.ReplaceWith      (-> Rx string (-> RxMatch string) string)))
+  (clr-rx-split     (: Bjolang.Runtime.BjoRegexModule.Split            (-> Rx string (Array string))))
+  (clr-rx-text      (: Bjolang.Runtime.BjoRegexModule.Text             (-> RxMatch string)))
+  (clr-rx-input     (: Bjolang.Runtime.BjoRegexModule.Input            (-> RxMatch string)))
+  (clr-rx-start     (: Bjolang.Runtime.BjoRegexModule.Start            (-> RxMatch StringCursor)))
+  (clr-rx-end       (: Bjolang.Runtime.BjoRegexModule.End              (-> RxMatch StringCursor)))
+  (clr-rx-count     (: Bjolang.Runtime.BjoRegexModule.Count            (-> RxMatch int)))
+  (clr-rx-group-text  (: Bjolang.Runtime.BjoRegexModule.GroupText      (-> RxMatch int (Option string))))
+  (clr-rx-group-start (: Bjolang.Runtime.BjoRegexModule.GroupStart     (-> RxMatch int (Option StringCursor))))
+  (clr-rx-group-end   (: Bjolang.Runtime.BjoRegexModule.GroupEnd       (-> RxMatch int (Option StringCursor))))
+  (clr-rx-index-of    (: Bjolang.Runtime.BjoRegexModule.MatchIndexOfName (-> RxMatch string int))))
+
+;; ---------------------------------------------------------------------------
+;; The runtime surface
+;; ---------------------------------------------------------------------------
+;;
+;; Wrappers rather than the `import/extern` aliases directly, because a macro
+;; template naming one of these resolves it to this module by the second
+;; renaming rule, and there has to be a def of this module to resolve to.
+
+;; Compiles a pattern. `names` is the Bjolang name of each capture group in
+;; order, comma-separated — a group `($ ...)` left unnamed contributes an empty
+;; one. Commas cannot occur in a keyword, so they cannot occur in a name.
+(: rx-compile (-> string string Rx))
+(defun (rx-compile pattern names) (clr-rx-compile pattern names))
+
+;; The .NET pattern this was compiled to. Here so a test can assert what was
+;; emitted rather than only what it matches.
+(: rx-pattern (-> Rx string))
+(defun (rx-pattern rx) (clr-rx-pattern rx))
+
+;; The leftmost match anywhere in the string.
+(: rx-search (-> Rx string (Option RxMatch)))
+(defun (rx-search rx s) (clr-rx-search rx s))
+
+(: rx-search? (-> Rx string bool))
+(defun (rx-search? rx s) (clr-rx-search? rx s))
+
+;; The match against the whole string, anchored at both ends.
+(: rx-match (-> Rx string (Option RxMatch)))
+(defun (rx-match rx s) (clr-rx-whole rx s))
+
+(: rx-match? (-> Rx string bool))
+(defun (rx-match? rx s) (clr-rx-whole? rx s))
+
+;; Every non-overlapping match, left to right.
+(: rx-matches (-> Rx string (Vec RxMatch)))
+(defun (rx-matches rx s) (array->vec (clr-rx-matches rx s)))
+
+;; Every match replaced by `replacement`, which is literal text: there is no
+;; `$1` substitution syntax, because that would be a second pattern language
+;; arriving without being decided on. Use `rx-replace-with` to build the
+;; replacement from the match.
+(: rx-replace (-> Rx string string string))
+(defun (rx-replace rx s replacement) (clr-rx-replace rx s replacement))
+
+(: rx-replace-with (-> Rx string (-> RxMatch string) string))
+(defun (rx-replace-with rx s f) (clr-rx-replace-with rx s f))
+
+;; The pieces between the matches. An empty match is not a separator, so a
+;; pattern that can match nothing does not split between every character.
+(: rx-split (-> Rx string (Vec string)))
+(defun (rx-split rx s) (array->vec (clr-rx-split rx s)))
+
+(: rx-text (-> RxMatch string))
+(defun (rx-text m) (clr-rx-text m))
+
+(: rx-input (-> RxMatch string))
+(defun (rx-input m) (clr-rx-input m))
+
+(: rx-start (-> RxMatch StringCursor))
+(defun (rx-start m) (clr-rx-start m))
+
+(: rx-end (-> RxMatch StringCursor))
+(defun (rx-end m) (clr-rx-end m))
+
+(: rx-group-count (-> RxMatch int))
+(defun (rx-group-count m) (clr-rx-count m))
+
+;; The text of the group `(=> :name ...)` named, or `None` if that group took
+;; no part in the match. An unknown name is `None` as well.
+(: rx-group (-> RxMatch Keyword (Option string)))
+(defun (rx-group m name) (clr-rx-group-text m (clr-rx-index-of m (keyword->string name))))
+
+(: rx-group-start (-> RxMatch Keyword (Option StringCursor)))
+(defun (rx-group-start m name) (clr-rx-group-start m (clr-rx-index-of m (keyword->string name))))
+
+(: rx-group-end (-> RxMatch Keyword (Option StringCursor)))
+(defun (rx-group-end m name) (clr-rx-group-end m (clr-rx-index-of m (keyword->string name))))
+
+;; The text of the nth group, counted from zero in the order the groups open.
+(: rx-group/n (-> RxMatch int (Option string)))
+(defun (rx-group/n m n) (clr-rx-group-text m n))
+
+;; ---------------------------------------------------------------------------
+;; Character sets
+;; ---------------------------------------------------------------------------
+;;
+;; A set is a sorted, disjoint list of inclusive BMP ranges, plus whether it
+;; holds every astral scalar. The flag is what keeps complement total without
+;; the range list having to describe 16 further planes: an astral scalar is a
+;; surrogate pair in UTF-16, so it is emitted as an alternation branch rather
+;; than as class members, and one branch covers all of them.
+;;
+;; The range list never contains a surrogate code point. `BjoChar` rejects
+;; those, so no set the language can write holds one, and a positive class that
+;; excludes them can never match half a pair.
+
+(type
+  (: Cset (Record (: ranges (List (Tuple int int)))
+                  (: all-astral bool))))
+
+;; U+0000–U+D7FF and U+E000–U+FFFF: the BMP without the surrogate block.
+(def bmp-universe (list (Tuple 0 55295) (Tuple 57344 65535)))
+
+(: range-lo (-> (Tuple int int) int))
+(defun (range-lo r) (match r ((Tuple lo _) lo)))
+
+(: range-hi (-> (Tuple int int) int))
+(defun (range-hi r) (match r ((Tuple _ hi) hi)))
+
+(: imin (-> int int int))
+(defun (imin a b) (if (< a b) a b))
+
+(: imax (-> int int int))
+(defun (imax a b) (if (> a b) a b))
+
+(: ranges-insert (-> (Tuple int int) (List (Tuple int int)) (List (Tuple int int))))
+(defun (ranges-insert r sorted)
+  (if (list-empty? sorted)
+      (list r)
+      (if (<= (range-lo r) (range-lo (list-head sorted)))
+          (Cons r sorted)
+          (Cons (list-head sorted) (ranges-insert r (list-tail sorted))))))
+
+;; Insertion sort: a set written by hand has a handful of ranges, and a table
+;; read out of the hex below is already ascending, so this is the best case
+;; either way.
+(: ranges-sort (-> (List (Tuple int int)) (List (Tuple int int))))
+(defun (ranges-sort rs)
+  (match rs
+    (Nil Nil)
+    ((Cons r more) (ranges-insert r (ranges-sort more)))))
+
+;; Adjacent as well as overlapping runs are merged, so that `[a-b][c-d]` with
+;; `c = b + 1` comes out as one range and two sets built differently compare
+;; the same.
+(: ranges-merge (-> (List (Tuple int int)) (List (Tuple int int))))
+(defun (ranges-merge rs)
+  (match rs
+    (Nil Nil)
+    ((Cons r Nil) (list r))
+    ((Cons a (Cons b more))
+     (if (<= (range-lo b) (+ (range-hi a) 1))
+         (ranges-merge (Cons (Tuple (range-lo a) (imax (range-hi a) (range-hi b))) more))
+         (Cons a (ranges-merge (Cons b more)))))))
+
+(: ranges-norm (-> (List (Tuple int int)) (List (Tuple int int))))
+(defun (ranges-norm rs) (ranges-merge (ranges-sort rs)))
+
+;; The parts of `lo`–`hi` that `rs` does not cover.
+(: ranges-gaps (-> int int (List (Tuple int int)) (List (Tuple int int))))
+(defun (ranges-gaps lo hi rs)
+  (match rs
+    (Nil (if (<= lo hi) (list (Tuple lo hi)) Nil))
+    ((Cons r more)
+     (def before (if (< lo (range-lo r)) (list (Tuple lo (imin hi (- (range-lo r) 1)))) Nil))
+     (list-append before (ranges-gaps (imax lo (+ (range-hi r) 1)) hi more)))))
+
+(: ranges-inter (-> (List (Tuple int int)) (List (Tuple int int)) (List (Tuple int int))))
+(defun (ranges-inter a b)
+  (if (or (list-empty? a) (list-empty? b))
+      Nil
+      (let ((x (list-head a)) (y (list-head b)))
+        (def lo (imax (range-lo x) (range-lo y)))
+        (def hi (imin (range-hi x) (range-hi y)))
+        (def rest (if (< (range-hi x) (range-hi y))
+                      (ranges-inter (list-tail a) b)
+                      (ranges-inter a (list-tail b))))
+        (if (<= lo hi) (Cons (Tuple lo hi) rest) rest))))
+
+;; Normalizing and clipping to the universe here is what lets every other
+;; operation assume both.
+(: cs-make (-> (List (Tuple int int)) bool Cset))
+(defun (cs-make rs all)
+  (Cset (ranges (ranges-inter (ranges-norm rs) bmp-universe)) (all-astral all)))
+
+(: cs-ranges (-> Cset (List (Tuple int int))))
+(defun (cs-ranges c) (record-ref c ranges))
+
+(: cs-astral? (-> Cset bool))
+(defun (cs-astral? c) (record-ref c all-astral))
+
+(: cs-union (-> Cset Cset Cset))
+(defun (cs-union a b)
+  (cs-make (list-append (cs-ranges a) (cs-ranges b))
+           (or (cs-astral? a) (cs-astral? b))))
+
+(: cs-inter (-> Cset Cset Cset))
+(defun (cs-inter a b)
+  (cs-make (ranges-inter (cs-ranges a) (cs-ranges b))
+           (and (cs-astral? a) (cs-astral? b))))
+
+(: cs-complement (-> Cset Cset))
+(defun (cs-complement a)
+  (cs-make (ranges-gaps 0 65535 (cs-ranges a)) (not (cs-astral? a))))
+
+(: cs-diff (-> Cset Cset Cset))
+(defun (cs-diff a b) (cs-inter a (cs-complement b)))
+
+(: cs-empty? (-> Cset bool))
+(defun (cs-empty? c) (and (list-empty? (cs-ranges c)) (not (cs-astral? c))))
+
+(: cs-char (-> int Cset))
+(defun (cs-char n) (cs-make (list (Tuple n n)) #f))
+
+;; ---------------------------------------------------------------------------
+;; Reading the tables
+;; ---------------------------------------------------------------------------
+;;
+;; A table is one hex string, four digits per endpoint and eight per inclusive
+;; range, rather than a list of literal tuples. Six hundred ranges written out
+;; as forms is six hundred forms for the compiler to read on every build of
+;; this module, and the answer is the same every time.
+
+(: hex-val (-> char int))
+(defun (hex-val c)
+  (def n (char->int c))
+  (cond ((and (>= n 48) (<= n 57)) (- n 48))
+        ((and (>= n 65) (<= n 70)) (+ 10 (- n 65)))
+        (else 0)))
+
+(: hex4-val (-> char char char char int))
+(defun (hex4-val a b c d)
+  (+ (* 4096 (hex-val a))
+     (+ (* 256 (hex-val b))
+        (+ (* 16 (hex-val c)) (hex-val d)))))
+
+(: hex-chunks (-> (List char) (List (Tuple int int))))
+(defun (hex-chunks cs)
+  (match cs
+    ((Cons a (Cons b (Cons c (Cons d (Cons e (Cons f (Cons g (Cons h rest))))))))
+     (Cons (Tuple (hex4-val a b c d) (hex4-val e f g h)) (hex-chunks rest)))
+    (_ Nil)))
+
+(: hex-ranges (-> string (List (Tuple int int))))
+(defun (hex-ranges text) (hex-chunks (string->list text)))
+
+(: table-set (-> string Cset))
+(defun (table-set text) (cs-make (hex-ranges text) #f))
+
+;; ---------------------------------------------------------------------------
+;; The tree
+;; ---------------------------------------------------------------------------
+
+(type
+  (: Rxn (Union
+           RxEmpty
+           (RxLit string)
+           (RxSet Cset)
+           (RxSeq (List Rxn))
+           (RxAlt (List Rxn))
+           ;; body, least, most (-1 for unbounded), greedy
+           (RxRep Rxn int int bool)
+           ;; the name the user gave, "" for `($ ...)`
+           (RxGroup string Rxn)
+           RxBos
+           RxEos)))
+
+;; ---------------------------------------------------------------------------
+;; Emitting
+;; ---------------------------------------------------------------------------
+;;
+;; Every `emit` answers a pattern that is one regex atom, so a caller may
+;; concatenate or quantify it without asking what it is made of.
+
+(def astral-pair "[\\uD800-\\uDBFF][\\uDC00-\\uDFFF]")
+
+(: hex-digit-string (-> int string))
+(defun (hex-digit-string n)
+  (def d (% n 16))
+  (char->string (if (< d 10) (int->char (+ 48 d)) (int->char (+ 55 d)))))
+
+;; `\uXXXX`, and it is written for every character rather than only the ones
+;; that need it. A whitelist of what to escape is a list that can be wrong; a
+;; hex escape is right for every scalar, and sidesteps `]`, `^`, `-`, `\` and
+;; `RegexOptions.IgnorePatternWhitespace` in one go.
+(: unit-escape (-> int string))
+(defun (unit-escape n)
+  (str "\\u" (hex-digit-string (/ n 4096)) (hex-digit-string (/ n 256))
+             (hex-digit-string (/ n 16)) (hex-digit-string n)))
+
+;; A scalar as the UTF-16 units .NET's engine will see.
+(: scalar-escape (-> int string))
+(defun (scalar-escape n)
+  (if (< n 65536)
+      (unit-escape n)
+      (let ((v (- n 65536)))
+        (str (unit-escape (+ 55296 (/ v 1024)))
+             (unit-escape (+ 56320 (% v 1024)))))))
+
+(: concat-strings (-> (List string) string))
+(defun (concat-strings parts) (list-foldl string-append "" parts))
+
+(: join-strings (-> (List string) string string))
+(defun (join-strings parts sep)
+  (match parts
+    (Nil "")
+    ((Cons p Nil) p)
+    ((Cons p more) (str p sep (join-strings more sep)))))
+
+(: class-body (-> (List (Tuple int int)) string))
+(defun (class-body rs)
+  (concat-strings
+    (list-map (fun (r)
+                (if (= (range-lo r) (range-hi r))
+                    (unit-escape (range-lo r))
+                    (str (unit-escape (range-lo r)) "-" (unit-escape (range-hi r)))))
+              rs)))
+
+(: emit-set (-> Cset string))
+(defun (emit-set c)
+  (cond
+    ((list-empty? (cs-ranges c)) (str "(?:" astral-pair ")"))
+    ((cs-astral? c) (str "(?:" astral-pair "|[" (class-body (cs-ranges c)) "])"))
+    (else (str "[" (class-body (cs-ranges c)) "]"))))
+
+(: emit-lit (-> string string))
+(defun (emit-lit text)
+  (def scalars (string->list text))
+  (def body (concat-strings (list-map (fun (c) (scalar-escape (char->int c))) scalars)))
+  ;; One BMP scalar is already an atom. Anything else — nothing, a pair, or
+  ;; several characters — has to be grouped before it can be quantified.
+  (if (and (= (list-length scalars) 1) (< (char->int (list-head scalars)) 65536))
+      body
+      (str "(?:" body ")")))
+
+(: rep-suffix (-> int int bool string))
+(defun (rep-suffix least most greedy)
+  (def core
+    (cond
+      ((and (= least 0) (= most -1)) "*")
+      ((and (= least 1) (= most -1)) "+")
+      ((and (= least 0) (= most 1)) "?")
+      ((= most -1) (str "{" (int->string least) ",}"))
+      ((= least most) (str "{" (int->string least) "}"))
+      (else (str "{" (int->string least) "," (int->string most) "}"))))
+  (if greedy core (str core "?")))
+
+;; `names` accumulates the Bjolang name of each group, most recent first. A
+;; group's number is how many were open before it, so the count is read before
+;; the body is walked and nested groups number after their parent — which is
+;; the order .NET numbers them in too.
+(: emit (-> Rxn (Box (List string)) string))
+(defun (emit node names)
+  (match node
+    (RxEmpty "(?:)")
+    ((RxLit text) (emit-lit text))
+    ((RxSet c) (emit-set c))
+    ((RxSeq parts)
+     (match parts
+       (Nil "(?:)")
+       ((Cons p Nil) (emit p names))
+       (_ (str "(?:" (concat-strings (list-map (fun (p) (emit p names)) parts)) ")"))))
+    ((RxAlt parts)
+     (match parts
+       (Nil "(?:)")
+       ((Cons p Nil) (emit p names))
+       (_ (str "(?:" (join-strings (list-map (fun (p) (emit p names)) parts) "|") ")"))))
+    ((RxRep body least most greedy)
+     (str "(?:" (emit body names) (rep-suffix least most greedy) ")"))
+    ((RxGroup name body)
+     (def n (list-length (box-ref names)))
+     (box-set! names (Cons name (box-ref names)))
+     (str "(?<g" (int->string n) ">" (emit body names) ")"))
+    (RxBos "\\A")
+    (RxEos "\\z")))
+
+;; ---------------------------------------------------------------------------
+;; Reading a set
+;; ---------------------------------------------------------------------------
+
+(: head-name (-> Syntax (Option string)))
+(defun (head-name form)
+  (match form
+    ((SList items)
+     (if (list-empty? items)
+         None
+         (match (list-head items)
+           ((SSym s) (Some (symbol->string s)))
+           (_ None))))
+    (_ None)))
+
+(: form-args (-> Syntax (List Syntax)))
+(defun (form-args form)
+  (match form
+    ((SList items) (if (list-empty? items) Nil (list-tail items)))
+    (_ Nil)))
+
+;; A character usable as a set member or a range endpoint. Astral scalars are
+;; refused here and only here: .NET's classes are written in UTF-16 units and
+;; have no way to name a scalar above U+FFFF, so a range that crossed the
+;; boundary could not be emitted at all.
+(: set-scalar (-> Syntax char int))
+(defun (set-scalar form c)
+  (def n (char->int c))
+  (if (> n 65535)
+      (ignore-int
+        (syntax-error form
+          (str "A character set is limited to U+0000..U+FFFF, and "
+               (char->string c) " is above it. Match it with (lit \"" (char->string c)
+               "\") instead.")))
+      n))
+
+;; `syntax-error` types as a `Syntax` and never returns, so a branch that owes
+;; an `int` has to discard it.
+(: ignore-int (-> Syntax int))
+(defun (ignore-int s) (ignore s) 0)
+
+(: ignore-cset (-> Syntax Cset))
+(defun (ignore-cset s) (ignore s) (cs-make Nil #f))
+
+(: chars-of (-> Syntax (List Syntax) (List int)))
+(defun (chars-of whole items)
+  (match items
+    (Nil Nil)
+    ((Cons item more)
+     (list-append
+       (match item
+         ((SChar c) (list (set-scalar item c)))
+         ((SStr text) (list-map (fun (c) (set-scalar item c)) (string->list text)))
+         (_ (list (ignore-int
+                    (syntax-error item
+                      "A range endpoint is a character or a string of them: (/ #\\a #\\z) or (/ \"az\").")))))
+       (chars-of whole more)))))
+
+;; `(/ #\a #\z #\0 #\9)` and `(/ "az09")` are the same set: the endpoints are
+;; taken in pairs however they were written.
+(: pairs->cset (-> Syntax (List int) Cset))
+(defun (pairs->cset whole ns)
+  (match ns
+    (Nil (cs-make Nil #f))
+    ((Cons lo (Cons hi more))
+     (if (> lo hi)
+         (ignore-cset
+           (syntax-error whole "A range runs upwards, and this one does not."))
+         (cs-union (cs-make (list (Tuple lo hi)) #f) (pairs->cset whole more))))
+    (_ (ignore-cset
+         (syntax-error whole "A range takes its endpoints in pairs, and this one has an odd number.")))))
+
+(: union-of (-> (List Syntax) Cset))
+(defun (union-of items)
+  (list-foldl (fun (acc item) (cs-union acc (parse-set item))) (cs-make Nil #f) items))
+
+(: parse-set (-> Syntax Cset))
+(defun (parse-set form)
+  (match form
+    ((SChar c) (cs-char (set-scalar form c)))
+    ((SStr text) (list-foldl (fun (acc c) (cs-union acc (cs-char (set-scalar form c))))
+                             (cs-make Nil #f)
+                             (string->list text)))
+    ((SKey k)
+     (match (named-class (keyword->string k))
+       ((Some c) c)
+       (None (ignore-cset
+               (syntax-error form (str "There is no character set called "
+                                       (keyword->string k) "."))))))
+    ((SList _) (parse-set-form form))
+    (_ (ignore-cset
+         (syntax-error form
+           "A character set is a character, a string, a named set like :digit, or a form like (in ...), (/ ...), (~ ...), (- ...) or (& ...).")))))
+
+(: parse-set-form (-> Syntax Cset))
+(defun (parse-set-form form)
+  (def args (form-args form))
+  (match (head-name form)
+    (None (ignore-cset (syntax-error form "A character set form is headed by a name.")))
+    ((Some name)
+     (cond
+       ((= name "in") (union-of args))
+       ((= name "or") (union-of args))
+       ((= name "/") (pairs->cset form (chars-of form args)))
+       ((= name "~") (cs-complement (union-of args)))
+       ((= name "-") (set-difference form args))
+       ((= name "&") (set-intersection form args))
+       (else (ignore-cset
+               (syntax-error form
+                 (str "'" name "' is not a character set operation. Use (in ...), (/ ...), (~ ...), (- ...) or (& ...)."))))))))
+
+(: set-difference (-> Syntax (List Syntax) Cset))
+(defun (set-difference form args)
+  (if (list-empty? args)
+      (ignore-cset (syntax-error form "(- ...) takes a set to subtract from."))
+      (cs-diff (parse-set (list-head args)) (union-of (list-tail args)))))
+
+(: set-intersection (-> Syntax (List Syntax) Cset))
+(defun (set-intersection form args)
+  (if (list-empty? args)
+      (ignore-cset (syntax-error form "(& ...) takes at least one set."))
+      (list-foldl (fun (acc item) (cs-inter acc (parse-set item)))
+                  (parse-set (list-head args))
+                  (list-tail args))))
+
+;; A set reaching pattern position has to be able to match something, and an
+;; empty one is a mistake that would otherwise be an unreadable .NET error
+;; about an empty character class.
+(: set-node (-> Syntax Cset Rxn))
+(defun (set-node form c)
+  (if (cs-empty? c)
+      (ignore-node (syntax-error form "This character set is empty, so it can never match."))
+      (RxSet c)))
+
+(: ignore-node (-> Syntax Rxn))
+(defun (ignore-node s) (ignore s) RxEmpty)
+
+;; ---------------------------------------------------------------------------
+;; Reading a pattern
+;; ---------------------------------------------------------------------------
+
+(: parse (-> Syntax Rxn))
+(defun (parse form)
+  (match form
+    ((SStr text) (RxLit text))
+    ((SChar c) (RxLit (char->string c)))
+    ((SKey k) (parse-atom form (keyword->string k)))
+    ((SList _) (parse-form form))
+    ((SSym s)
+     (ignore-node
+       (syntax-error form
+         (str "'" (symbol->string s) "' is a symbol, and an rx that takes no argument is a keyword. Did you mean :"
+              (symbol->string s) "?"))))
+    ((SPunct _)
+     (ignore-node
+       (syntax-error form
+         "An rx is built at compile time, so it cannot splice a value in. Dynamically built patterns are not supported.")))
+    (_ (ignore-node (syntax-error form "This is not an rx.")))))
+
+(: parse-atom (-> Syntax string Rxn))
+(defun (parse-atom form name)
+  (cond
+    ((= name "bos") RxBos)
+    ((= name "eos") RxEos)
+    (else
+      (match (named-class name)
+        ((Some c) (set-node form c))
+        (None
+          (ignore-node
+            (syntax-error form
+              (str "There is no rx called :" name
+                   ". The ones taking no argument are :bos :eos :any :nonl and the named sets."))))))))
+
+(: parse-all (-> (List Syntax) (List Rxn)))
+(defun (parse-all items) (list-map parse items))
+
+(: parse-form (-> Syntax Rxn))
+(defun (parse-form form)
+  (def args (form-args form))
+  (match (head-name form)
+    (None
+     (ignore-node
+       (syntax-error form
+         "An rx form is headed by a name: (seq ...), (or ...), (+ ...), (in ...) and so on.")))
+    ((Some name)
+     (cond
+       ((= name "seq") (RxSeq (parse-all args)))
+       ((= name "or") (RxAlt (parse-all args)))
+       ((= name "lit") (RxLit (literal-text form args)))
+       ((= name "*") (RxRep (one-arg form args) 0 -1 #t))
+       ((= name "+") (RxRep (one-arg form args) 1 -1 #t))
+       ((= name "?") (RxRep (one-arg form args) 0 1 #t))
+       ((= name "*?") (RxRep (one-arg form args) 0 -1 #f))
+       ((= name "+?") (RxRep (one-arg form args) 1 -1 #f))
+       ((= name "??") (RxRep (one-arg form args) 0 1 #f))
+       ((= name "**") (bounded form args))
+       ((= name "=") (exactly form args))
+       ((= name ">=") (at-least form args))
+       ((= name "$") (RxGroup "" (RxSeq (parse-all args))))
+       ((= name "=>") (named-group form args))
+       ((= name "in") (set-node form (union-of args)))
+       ((= name "/") (set-node form (pairs->cset form (chars-of form args))))
+       ((= name "~") (set-node form (cs-complement (union-of args))))
+       ((= name "-") (set-node form (set-difference form args)))
+       ((= name "&") (set-node form (set-intersection form args)))
+       (else
+         (ignore-node
+           (syntax-error form
+             (str "'" name "' is not an rx form. If you meant a set or an anchor, those are keywords: :"
+                  name "."))))))))
+
+(: one-arg (-> Syntax (List Syntax) Rxn))
+(defun (one-arg form args)
+  (match args
+    ((Cons a Nil) (parse a))
+    (_ (RxSeq (parse-all args)))))
+
+(: literal-text (-> Syntax (List Syntax) string))
+(defun (literal-text form args)
+  (match args
+    ((Cons a Nil)
+     (match a
+       ((SStr text) text)
+       ((SChar c) (char->string c))
+       (_ (ignore-string (syntax-error form "(lit ...) takes one string.")))))
+    (_ (ignore-string (syntax-error form "(lit ...) takes one string.")))))
+
+(: ignore-string (-> Syntax string))
+(defun (ignore-string s) (ignore s) "")
+
+(: count-of (-> Syntax Syntax int))
+(defun (count-of whole s)
+  (match s
+    ((SInt text) (string->int text))
+    (_ (ignore-int (syntax-error whole "A repetition count is a whole number.")))))
+
+(: bounded (-> Syntax (List Syntax) Rxn))
+(defun (bounded form args)
+  (match args
+    ((Cons lo (Cons hi rest))
+     (RxRep (one-arg form rest) (count-of form lo) (count-of form hi) #t))
+    (_ (ignore-node (syntax-error form "(** least most rx) takes two counts and a pattern.")))))
+
+(: exactly (-> Syntax (List Syntax) Rxn))
+(defun (exactly form args)
+  (match args
+    ((Cons n rest) (let ((k (count-of form n))) (RxRep (one-arg form rest) k k #t)))
+    (_ (ignore-node (syntax-error form "(= n rx) takes a count and a pattern.")))))
+
+(: at-least (-> Syntax (List Syntax) Rxn))
+(defun (at-least form args)
+  (match args
+    ((Cons n rest) (RxRep (one-arg form rest) (count-of form n) -1 #t))
+    (_ (ignore-node (syntax-error form "(>= n rx) takes a count and a pattern.")))))
+
+;; The name is a keyword for the same reason every other constant of this
+;; sublanguage is one: it is a name used as data, not a binding, and a keyword
+;; can never be mistaken for one.
+(: named-group (-> Syntax (List Syntax) Rxn))
+(defun (named-group form args)
+  (match args
+    ((Cons n rest)
+     (match n
+       ((SKey k) (RxGroup (keyword->string k) (RxSeq (parse-all rest))))
+       (_ (ignore-node
+            (syntax-error form "(=> :name rx) names its group with a keyword.")))))
+    (_ (ignore-node (syntax-error form "(=> :name rx) takes a name and a pattern.")))))
+
+;; ---------------------------------------------------------------------------
+;; The macros
+;; ---------------------------------------------------------------------------
+
+(: names-text (-> (List string) string))
+(defun (names-text names) (join-strings names ","))
+
+;; `#rx(seq a b)` reads as `(#rx seq a b)`, so the arguments are the form's own
+;; contents. One argument is the form itself, which is what makes `#rx(:digit)`
+;; and `#rx((+ :digit))` work as well as `#rx(+ :digit)`.
+(: rx-expansion (-> Syntax Syntax))
+(defun (rx-expansion form)
+  (def node (parse form))
+  (def names (make-box Nil))
+  (def pattern (emit node names))
+  #'(rx-compile ,(SStr pattern) ,(SStr (names-text (list-reverse (box-ref names))))))
+
+(def/hash-extend (rx form inject compare)
+  (match (form-args form)
+    (Nil (syntax-error form "#rx takes a pattern: #rx(seq :bos (+ :digit) :eos)."))
+    ((Cons only Nil) (rx-expansion only))
+    (items (rx-expansion (SList items)))))
+
+;; `(Rx re p)` matches `re` against the whole string, `(RxIn re p)` searches for
+;; it. Both hand the inner pattern an `(Option RxMatch)`, so a clause reads
+;; `(Rx phone (Some m))`.
+;;
+;; A view covers nothing for exhaustiveness, so a `match` using either still
+;; needs a clause that matches anything.
+(def/pattern (Rx form inject compare)
+  (syntax-match form
+    ((_ re p) #'(:view (rx-match ,re &) ,p))
+    (bad (syntax-error bad "(Rx regex pattern) matches regex against the whole string."))))
+
+(def/pattern (RxIn form inject compare)
+  (syntax-match form
+    ((_ re p) #'(:view (rx-search ,re &) ,p))
+    (bad (syntax-error bad "(RxIn regex pattern) searches the string for regex."))))
+
+;; ---------------------------------------------------------------------------
+;; The tables
+;; ---------------------------------------------------------------------------
+;;
+;; Generated from .NET's `CharUnicodeInfo`, so that `:alpha` and
+;; `char-alphabetic?` agree. Checked in rather than computed, because the answer
+;; does not change and walking the BMP on every build would cost more than
+;; reading it.
+
+(def tbl-alpha
+  (str
+    "0041005A0061007A00AA00AA00B500B500BA00BA00C000D600D800F600F802C102C602D1"
+    "02E002E402EC02EC02EE02EE0370037403760377037A037D037F037F038603860388038A"
+    "038C038C038E03A103A303F503F70481048A052F05310556055905590560058805D005EA"
+    "05EF05F20620064A066E066F067106D306D506D506E506E606EE06EF06FA06FC06FF06FF"
+    "071007100712072F074D07A507B107B107CA07EA07F407F507FA07FA08000815081A081A"
+    "0824082408280828084008580860086A087008870889088E08A008C909040939093D093D"
+    "0950095009580961097109800985098C098F0990099309A809AA09B009B209B209B609B9"
+    "09BD09BD09CE09CE09DC09DD09DF09E109F009F109FC09FC0A050A0A0A0F0A100A130A28"
+    "0A2A0A300A320A330A350A360A380A390A590A5C0A5E0A5E0A720A740A850A8D0A8F0A91"
+    "0A930AA80AAA0AB00AB20AB30AB50AB90ABD0ABD0AD00AD00AE00AE10AF90AF90B050B0C"
+    "0B0F0B100B130B280B2A0B300B320B330B350B390B3D0B3D0B5C0B5D0B5F0B610B710B71"
+    "0B830B830B850B8A0B8E0B900B920B950B990B9A0B9C0B9C0B9E0B9F0BA30BA40BA80BAA"
+    "0BAE0BB90BD00BD00C050C0C0C0E0C100C120C280C2A0C390C3D0C3D0C580C5A0C5D0C5D"
+    "0C600C610C800C800C850C8C0C8E0C900C920CA80CAA0CB30CB50CB90CBD0CBD0CDD0CDE"
+    "0CE00CE10CF10CF20D040D0C0D0E0D100D120D3A0D3D0D3D0D4E0D4E0D540D560D5F0D61"
+    "0D7A0D7F0D850D960D9A0DB10DB30DBB0DBD0DBD0DC00DC60E010E300E320E330E400E46"
+    "0E810E820E840E840E860E8A0E8C0EA30EA50EA50EA70EB00EB20EB30EBD0EBD0EC00EC4"
+    "0EC60EC60EDC0EDF0F000F000F400F470F490F6C0F880F8C1000102A103F103F10501055"
+    "105A105D1061106110651066106E107010751081108E108E10A010C510C710C710CD10CD"
+    "10D010FA10FC1248124A124D1250125612581258125A125D12601288128A128D129012B0"
+    "12B212B512B812BE12C012C012C212C512C812D612D81310131213151318135A1380138F"
+    "13A013F513F813FD1401166C166F167F1681169A16A016EA16F116F817001711171F1731"
+    "174017511760176C176E1770178017B317D717D717DC17DC1820187818801884188718A8"
+    "18AA18AA18B018F51900191E1950196D19701974198019AB19B019C91A001A161A201A54"
+    "1AA71AA71B051B331B451B4C1B831BA01BAE1BAF1BBA1BE51C001C231C4D1C4F1C5A1C7D"
+    "1C801C8A1C901CBA1CBD1CBF1CE91CEC1CEE1CF31CF51CF61CFA1CFA1D001DBF1E001F15"
+    "1F181F1D1F201F451F481F4D1F501F571F591F591F5B1F5B1F5D1F5D1F5F1F7D1F801FB4"
+    "1FB61FBC1FBE1FBE1FC21FC41FC61FCC1FD01FD31FD61FDB1FE01FEC1FF21FF41FF61FFC"
+    "20712071207F207F2090209C2102210221072107210A2113211521152119211D21242124"
+    "2126212621282128212A212D212F2139213C213F21452149214E214E218321842C002CE4"
+    "2CEB2CEE2CF22CF32D002D252D272D272D2D2D2D2D302D672D6F2D6F2D802D962DA02DA6"
+    "2DA82DAE2DB02DB62DB82DBE2DC02DC62DC82DCE2DD02DD62DD82DDE2E2F2E2F30053006"
+    "30313035303B303C30413096309D309F30A130FA30FC30FF3105312F3131318E31A031BF"
+    "31F031FF34004DBF4E00A48CA4D0A4FDA500A60CA610A61FA62AA62BA640A66EA67FA69D"
+    "A6A0A6E5A717A71FA722A788A78BA7CDA7D0A7D1A7D3A7D3A7D5A7DCA7F2A801A803A805"
+    "A807A80AA80CA822A840A873A882A8B3A8F2A8F7A8FBA8FBA8FDA8FEA90AA925A930A946"
+    "A960A97CA984A9B2A9CFA9CFA9E0A9E4A9E6A9EFA9FAA9FEAA00AA28AA40AA42AA44AA4B"
+    "AA60AA76AA7AAA7AAA7EAAAFAAB1AAB1AAB5AAB6AAB9AABDAAC0AAC0AAC2AAC2AADBAADD"
+    "AAE0AAEAAAF2AAF4AB01AB06AB09AB0EAB11AB16AB20AB26AB28AB2EAB30AB5AAB5CAB69"
+    "AB70ABE2AC00D7A3D7B0D7C6D7CBD7FBF900FA6DFA70FAD9FB00FB06FB13FB17FB1DFB1D"
+    "FB1FFB28FB2AFB36FB38FB3CFB3EFB3EFB40FB41FB43FB44FB46FBB1FBD3FD3DFD50FD8F"
+    "FD92FDC7FDF0FDFBFE70FE74FE76FEFCFF21FF3AFF41FF5AFF66FFBEFFC2FFC7FFCAFFCF"
+    "FFD2FFD7FFDAFFDC"
+  ))
+
+(def tbl-digit
+  (str
+    "003000390660066906F006F907C007C90966096F09E609EF0A660A6F0AE60AEF0B660B6F"
+    "0BE60BEF0C660C6F0CE60CEF0D660D6F0DE60DEF0E500E590ED00ED90F200F2910401049"
+    "1090109917E017E9181018191946194F19D019D91A801A891A901A991B501B591BB01BB9"
+    "1C401C491C501C59A620A629A8D0A8D9A900A909A9D0A9D9A9F0A9F9AA50AA59ABF0ABF9"
+    "FF10FF19"
+  ))
+
+(def tbl-alnum
+  (str
+    "003000390041005A0061007A00AA00AA00B500B500BA00BA00C000D600D800F600F802C1"
+    "02C602D102E002E402EC02EC02EE02EE0370037403760377037A037D037F037F03860386"
+    "0388038A038C038C038E03A103A303F503F70481048A052F053105560559055905600588"
+    "05D005EA05EF05F20620064A06600669066E066F067106D306D506D506E506E606EE06FC"
+    "06FF06FF071007100712072F074D07A507B107B107C007EA07F407F507FA07FA08000815"
+    "081A081A0824082408280828084008580860086A087008870889088E08A008C909040939"
+    "093D093D09500950095809610966096F097109800985098C098F0990099309A809AA09B0"
+    "09B209B209B609B909BD09BD09CE09CE09DC09DD09DF09E109E609F109FC09FC0A050A0A"
+    "0A0F0A100A130A280A2A0A300A320A330A350A360A380A390A590A5C0A5E0A5E0A660A6F"
+    "0A720A740A850A8D0A8F0A910A930AA80AAA0AB00AB20AB30AB50AB90ABD0ABD0AD00AD0"
+    "0AE00AE10AE60AEF0AF90AF90B050B0C0B0F0B100B130B280B2A0B300B320B330B350B39"
+    "0B3D0B3D0B5C0B5D0B5F0B610B660B6F0B710B710B830B830B850B8A0B8E0B900B920B95"
+    "0B990B9A0B9C0B9C0B9E0B9F0BA30BA40BA80BAA0BAE0BB90BD00BD00BE60BEF0C050C0C"
+    "0C0E0C100C120C280C2A0C390C3D0C3D0C580C5A0C5D0C5D0C600C610C660C6F0C800C80"
+    "0C850C8C0C8E0C900C920CA80CAA0CB30CB50CB90CBD0CBD0CDD0CDE0CE00CE10CE60CEF"
+    "0CF10CF20D040D0C0D0E0D100D120D3A0D3D0D3D0D4E0D4E0D540D560D5F0D610D660D6F"
+    "0D7A0D7F0D850D960D9A0DB10DB30DBB0DBD0DBD0DC00DC60DE60DEF0E010E300E320E33"
+    "0E400E460E500E590E810E820E840E840E860E8A0E8C0EA30EA50EA50EA70EB00EB20EB3"
+    "0EBD0EBD0EC00EC40EC60EC60ED00ED90EDC0EDF0F000F000F200F290F400F470F490F6C"
+    "0F880F8C1000102A103F104910501055105A105D1061106110651066106E107010751081"
+    "108E108E1090109910A010C510C710C710CD10CD10D010FA10FC1248124A124D12501256"
+    "12581258125A125D12601288128A128D129012B012B212B512B812BE12C012C012C212C5"
+    "12C812D612D81310131213151318135A1380138F13A013F513F813FD1401166C166F167F"
+    "1681169A16A016EA16F116F817001711171F1731174017511760176C176E1770178017B3"
+    "17D717D717DC17DC17E017E9181018191820187818801884188718A818AA18AA18B018F5"
+    "1900191E1946196D19701974198019AB19B019C919D019D91A001A161A201A541A801A89"
+    "1A901A991AA71AA71B051B331B451B4C1B501B591B831BA01BAE1BE51C001C231C401C49"
+    "1C4D1C7D1C801C8A1C901CBA1CBD1CBF1CE91CEC1CEE1CF31CF51CF61CFA1CFA1D001DBF"
+    "1E001F151F181F1D1F201F451F481F4D1F501F571F591F591F5B1F5B1F5D1F5D1F5F1F7D"
+    "1F801FB41FB61FBC1FBE1FBE1FC21FC41FC61FCC1FD01FD31FD61FDB1FE01FEC1FF21FF4"
+    "1FF61FFC20712071207F207F2090209C2102210221072107210A2113211521152119211D"
+    "212421242126212621282128212A212D212F2139213C213F21452149214E214E21832184"
+    "2C002CE42CEB2CEE2CF22CF32D002D252D272D272D2D2D2D2D302D672D6F2D6F2D802D96"
+    "2DA02DA62DA82DAE2DB02DB62DB82DBE2DC02DC62DC82DCE2DD02DD62DD82DDE2E2F2E2F"
+    "3005300630313035303B303C30413096309D309F30A130FA30FC30FF3105312F3131318E"
+    "31A031BF31F031FF34004DBF4E00A48CA4D0A4FDA500A60CA610A62BA640A66EA67FA69D"
+    "A6A0A6E5A717A71FA722A788A78BA7CDA7D0A7D1A7D3A7D3A7D5A7DCA7F2A801A803A805"
+    "A807A80AA80CA822A840A873A882A8B3A8D0A8D9A8F2A8F7A8FBA8FBA8FDA8FEA900A925"
+    "A930A946A960A97CA984A9B2A9CFA9D9A9E0A9E4A9E6A9FEAA00AA28AA40AA42AA44AA4B"
+    "AA50AA59AA60AA76AA7AAA7AAA7EAAAFAAB1AAB1AAB5AAB6AAB9AABDAAC0AAC0AAC2AAC2"
+    "AADBAADDAAE0AAEAAAF2AAF4AB01AB06AB09AB0EAB11AB16AB20AB26AB28AB2EAB30AB5A"
+    "AB5CAB69AB70ABE2ABF0ABF9AC00D7A3D7B0D7C6D7CBD7FBF900FA6DFA70FAD9FB00FB06"
+    "FB13FB17FB1DFB1DFB1FFB28FB2AFB36FB38FB3CFB3EFB3EFB40FB41FB43FB44FB46FBB1"
+    "FBD3FD3DFD50FD8FFD92FDC7FDF0FDFBFE70FE74FE76FEFCFF10FF19FF21FF3AFF41FF5A"
+    "FF66FFBEFFC2FFC7FFCAFFCFFFD2FFD7FFDAFFDC"
+  ))
+
+(def tbl-upper
+  (str
+    "0041005A00C000D600D800DE0100010001020102010401040106010601080108010A010A"
+    "010C010C010E010E0110011001120112011401140116011601180118011A011A011C011C"
+    "011E011E0120012001220122012401240126012601280128012A012A012C012C012E012E"
+    "0130013001320132013401340136013601390139013B013B013D013D013F013F01410141"
+    "014301430145014501470147014A014A014C014C014E014E015001500152015201540154"
+    "0156015601580158015A015A015C015C015E015E01600160016201620164016401660166"
+    "01680168016A016A016C016C016E016E0170017001720172017401740176017601780179"
+    "017B017B017D017D0181018201840184018601870189018B018E01910193019401960198"
+    "019C019D019F01A001A201A201A401A401A601A701A901A901AC01AC01AE01AF01B101B3"
+    "01B501B501B701B801BC01BC01C401C401C701C701CA01CA01CD01CD01CF01CF01D101D1"
+    "01D301D301D501D501D701D701D901D901DB01DB01DE01DE01E001E001E201E201E401E4"
+    "01E601E601E801E801EA01EA01EC01EC01EE01EE01F101F101F401F401F601F801FA01FA"
+    "01FC01FC01FE01FE0200020002020202020402040206020602080208020A020A020C020C"
+    "020E020E0210021002120212021402140216021602180218021A021A021C021C021E021E"
+    "0220022002220222022402240226022602280228022A022A022C022C022E022E02300230"
+    "02320232023A023B023D023E024102410243024602480248024A024A024C024C024E024E"
+    "037003700372037203760376037F037F038603860388038A038C038C038E038F039103A1"
+    "03A303AB03CF03CF03D203D403D803D803DA03DA03DC03DC03DE03DE03E003E003E203E2"
+    "03E403E403E603E603E803E803EA03EA03EC03EC03EE03EE03F403F403F703F703F903FA"
+    "03FD042F0460046004620462046404640466046604680468046A046A046C046C046E046E"
+    "0470047004720472047404740476047604780478047A047A047C047C047E047E04800480"
+    "048A048A048C048C048E048E0490049004920492049404940496049604980498049A049A"
+    "049C049C049E049E04A004A004A204A204A404A404A604A604A804A804AA04AA04AC04AC"
+    "04AE04AE04B004B004B204B204B404B404B604B604B804B804BA04BA04BC04BC04BE04BE"
+    "04C004C104C304C304C504C504C704C704C904C904CB04CB04CD04CD04D004D004D204D2"
+    "04D404D404D604D604D804D804DA04DA04DC04DC04DE04DE04E004E004E204E204E404E4"
+    "04E604E604E804E804EA04EA04EC04EC04EE04EE04F004F004F204F204F404F404F604F6"
+    "04F804F804FA04FA04FC04FC04FE04FE0500050005020502050405040506050605080508"
+    "050A050A050C050C050E050E0510051005120512051405140516051605180518051A051A"
+    "051C051C051E051E0520052005220522052405240526052605280528052A052A052C052C"
+    "052E052E0531055610A010C510C710C710CD10CD13A013F51C891C891C901CBA1CBD1CBF"
+    "1E001E001E021E021E041E041E061E061E081E081E0A1E0A1E0C1E0C1E0E1E0E1E101E10"
+    "1E121E121E141E141E161E161E181E181E1A1E1A1E1C1E1C1E1E1E1E1E201E201E221E22"
+    "1E241E241E261E261E281E281E2A1E2A1E2C1E2C1E2E1E2E1E301E301E321E321E341E34"
+    "1E361E361E381E381E3A1E3A1E3C1E3C1E3E1E3E1E401E401E421E421E441E441E461E46"
+    "1E481E481E4A1E4A1E4C1E4C1E4E1E4E1E501E501E521E521E541E541E561E561E581E58"
+    "1E5A1E5A1E5C1E5C1E5E1E5E1E601E601E621E621E641E641E661E661E681E681E6A1E6A"
+    "1E6C1E6C1E6E1E6E1E701E701E721E721E741E741E761E761E781E781E7A1E7A1E7C1E7C"
+    "1E7E1E7E1E801E801E821E821E841E841E861E861E881E881E8A1E8A1E8C1E8C1E8E1E8E"
+    "1E901E901E921E921E941E941E9E1E9E1EA01EA01EA21EA21EA41EA41EA61EA61EA81EA8"
+    "1EAA1EAA1EAC1EAC1EAE1EAE1EB01EB01EB21EB21EB41EB41EB61EB61EB81EB81EBA1EBA"
+    "1EBC1EBC1EBE1EBE1EC01EC01EC21EC21EC41EC41EC61EC61EC81EC81ECA1ECA1ECC1ECC"
+    "1ECE1ECE1ED01ED01ED21ED21ED41ED41ED61ED61ED81ED81EDA1EDA1EDC1EDC1EDE1EDE"
+    "1EE01EE01EE21EE21EE41EE41EE61EE61EE81EE81EEA1EEA1EEC1EEC1EEE1EEE1EF01EF0"
+    "1EF21EF21EF41EF41EF61EF61EF81EF81EFA1EFA1EFC1EFC1EFE1EFE1F081F0F1F181F1D"
+    "1F281F2F1F381F3F1F481F4D1F591F591F5B1F5B1F5D1F5D1F5F1F5F1F681F6F1FB81FBB"
+    "1FC81FCB1FD81FDB1FE81FEC1FF81FFB2102210221072107210B210D2110211221152115"
+    "2119211D212421242126212621282128212A212D21302133213E213F2145214521832183"
+    "2C002C2F2C602C602C622C642C672C672C692C692C6B2C6B2C6D2C702C722C722C752C75"
+    "2C7E2C802C822C822C842C842C862C862C882C882C8A2C8A2C8C2C8C2C8E2C8E2C902C90"
+    "2C922C922C942C942C962C962C982C982C9A2C9A2C9C2C9C2C9E2C9E2CA02CA02CA22CA2"
+    "2CA42CA42CA62CA62CA82CA82CAA2CAA2CAC2CAC2CAE2CAE2CB02CB02CB22CB22CB42CB4"
+    "2CB62CB62CB82CB82CBA2CBA2CBC2CBC2CBE2CBE2CC02CC02CC22CC22CC42CC42CC62CC6"
+    "2CC82CC82CCA2CCA2CCC2CCC2CCE2CCE2CD02CD02CD22CD22CD42CD42CD62CD62CD82CD8"
+    "2CDA2CDA2CDC2CDC2CDE2CDE2CE02CE02CE22CE22CEB2CEB2CED2CED2CF22CF2A640A640"
+    "A642A642A644A644A646A646A648A648A64AA64AA64CA64CA64EA64EA650A650A652A652"
+    "A654A654A656A656A658A658A65AA65AA65CA65CA65EA65EA660A660A662A662A664A664"
+    "A666A666A668A668A66AA66AA66CA66CA680A680A682A682A684A684A686A686A688A688"
+    "A68AA68AA68CA68CA68EA68EA690A690A692A692A694A694A696A696A698A698A69AA69A"
+    "A722A722A724A724A726A726A728A728A72AA72AA72CA72CA72EA72EA732A732A734A734"
+    "A736A736A738A738A73AA73AA73CA73CA73EA73EA740A740A742A742A744A744A746A746"
+    "A748A748A74AA74AA74CA74CA74EA74EA750A750A752A752A754A754A756A756A758A758"
+    "A75AA75AA75CA75CA75EA75EA760A760A762A762A764A764A766A766A768A768A76AA76A"
+    "A76CA76CA76EA76EA779A779A77BA77BA77DA77EA780A780A782A782A784A784A786A786"
+    "A78BA78BA78DA78DA790A790A792A792A796A796A798A798A79AA79AA79CA79CA79EA79E"
+    "A7A0A7A0A7A2A7A2A7A4A7A4A7A6A7A6A7A8A7A8A7AAA7AEA7B0A7B4A7B6A7B6A7B8A7B8"
+    "A7BAA7BAA7BCA7BCA7BEA7BEA7C0A7C0A7C2A7C2A7C4A7C7A7C9A7C9A7CBA7CCA7D0A7D0"
+    "A7D6A7D6A7D8A7D8A7DAA7DAA7DCA7DCA7F5A7F5FF21FF3A"
+  ))
+
+(def tbl-lower
+  (str
+    "0061007A00B500B500DF00F600F800FF0101010101030103010501050107010701090109"
+    "010B010B010D010D010F010F0111011101130113011501150117011701190119011B011B"
+    "011D011D011F011F0121012101230123012501250127012701290129012B012B012D012D"
+    "012F012F01310131013301330135013501370138013A013A013C013C013E013E01400140"
+    "01420142014401440146014601480149014B014B014D014D014F014F0151015101530153"
+    "015501550157015701590159015B015B015D015D015F015F016101610163016301650165"
+    "0167016701690169016B016B016D016D016F016F01710171017301730175017501770177"
+    "017A017A017C017C017E0180018301830185018501880188018C018D0192019201950195"
+    "0199019B019E019E01A101A101A301A301A501A501A801A801AA01AB01AD01AD01B001B0"
+    "01B401B401B601B601B901BA01BD01BF01C601C601C901C901CC01CC01CE01CE01D001D0"
+    "01D201D201D401D401D601D601D801D801DA01DA01DC01DD01DF01DF01E101E101E301E3"
+    "01E501E501E701E701E901E901EB01EB01ED01ED01EF01F001F301F301F501F501F901F9"
+    "01FB01FB01FD01FD01FF01FF0201020102030203020502050207020702090209020B020B"
+    "020D020D020F020F0211021102130213021502150217021702190219021B021B021D021D"
+    "021F021F0221022102230223022502250227022702290229022B022B022D022D022F022F"
+    "0231023102330239023C023C023F0240024202420247024702490249024B024B024D024D"
+    "024F0293029502AF037103710373037303770377037B037D0390039003AC03CE03D003D1"
+    "03D503D703D903D903DB03DB03DD03DD03DF03DF03E103E103E303E303E503E503E703E7"
+    "03E903E903EB03EB03ED03ED03EF03F303F503F503F803F803FB03FC0430045F04610461"
+    "04630463046504650467046704690469046B046B046D046D046F046F0471047104730473"
+    "047504750477047704790479047B047B047D047D047F047F04810481048B048B048D048D"
+    "048F048F0491049104930493049504950497049704990499049B049B049D049D049F049F"
+    "04A104A104A304A304A504A504A704A704A904A904AB04AB04AD04AD04AF04AF04B104B1"
+    "04B304B304B504B504B704B704B904B904BB04BB04BD04BD04BF04BF04C204C204C404C4"
+    "04C604C604C804C804CA04CA04CC04CC04CE04CF04D104D104D304D304D504D504D704D7"
+    "04D904D904DB04DB04DD04DD04DF04DF04E104E104E304E304E504E504E704E704E904E9"
+    "04EB04EB04ED04ED04EF04EF04F104F104F304F304F504F504F704F704F904F904FB04FB"
+    "04FD04FD04FF04FF0501050105030503050505050507050705090509050B050B050D050D"
+    "050F050F0511051105130513051505150517051705190519051B051B051D051D051F051F"
+    "0521052105230523052505250527052705290529052B052B052D052D052F052F05600588"
+    "10D010FA10FD10FF13F813FD1C801C881C8A1C8A1D001D2B1D6B1D771D791D9A1E011E01"
+    "1E031E031E051E051E071E071E091E091E0B1E0B1E0D1E0D1E0F1E0F1E111E111E131E13"
+    "1E151E151E171E171E191E191E1B1E1B1E1D1E1D1E1F1E1F1E211E211E231E231E251E25"
+    "1E271E271E291E291E2B1E2B1E2D1E2D1E2F1E2F1E311E311E331E331E351E351E371E37"
+    "1E391E391E3B1E3B1E3D1E3D1E3F1E3F1E411E411E431E431E451E451E471E471E491E49"
+    "1E4B1E4B1E4D1E4D1E4F1E4F1E511E511E531E531E551E551E571E571E591E591E5B1E5B"
+    "1E5D1E5D1E5F1E5F1E611E611E631E631E651E651E671E671E691E691E6B1E6B1E6D1E6D"
+    "1E6F1E6F1E711E711E731E731E751E751E771E771E791E791E7B1E7B1E7D1E7D1E7F1E7F"
+    "1E811E811E831E831E851E851E871E871E891E891E8B1E8B1E8D1E8D1E8F1E8F1E911E91"
+    "1E931E931E951E9D1E9F1E9F1EA11EA11EA31EA31EA51EA51EA71EA71EA91EA91EAB1EAB"
+    "1EAD1EAD1EAF1EAF1EB11EB11EB31EB31EB51EB51EB71EB71EB91EB91EBB1EBB1EBD1EBD"
+    "1EBF1EBF1EC11EC11EC31EC31EC51EC51EC71EC71EC91EC91ECB1ECB1ECD1ECD1ECF1ECF"
+    "1ED11ED11ED31ED31ED51ED51ED71ED71ED91ED91EDB1EDB1EDD1EDD1EDF1EDF1EE11EE1"
+    "1EE31EE31EE51EE51EE71EE71EE91EE91EEB1EEB1EED1EED1EEF1EEF1EF11EF11EF31EF3"
+    "1EF51EF51EF71EF71EF91EF91EFB1EFB1EFD1EFD1EFF1F071F101F151F201F271F301F37"
+    "1F401F451F501F571F601F671F701F7D1F801F871F901F971FA01FA71FB01FB41FB61FB7"
+    "1FBE1FBE1FC21FC41FC61FC71FD01FD31FD61FD71FE01FE71FF21FF41FF61FF7210A210A"
+    "210E210F21132113212F212F2134213421392139213C213D21462149214E214E21842184"
+    "2C302C5F2C612C612C652C662C682C682C6A2C6A2C6C2C6C2C712C712C732C742C762C7B"
+    "2C812C812C832C832C852C852C872C872C892C892C8B2C8B2C8D2C8D2C8F2C8F2C912C91"
+    "2C932C932C952C952C972C972C992C992C9B2C9B2C9D2C9D2C9F2C9F2CA12CA12CA32CA3"
+    "2CA52CA52CA72CA72CA92CA92CAB2CAB2CAD2CAD2CAF2CAF2CB12CB12CB32CB32CB52CB5"
+    "2CB72CB72CB92CB92CBB2CBB2CBD2CBD2CBF2CBF2CC12CC12CC32CC32CC52CC52CC72CC7"
+    "2CC92CC92CCB2CCB2CCD2CCD2CCF2CCF2CD12CD12CD32CD32CD52CD52CD72CD72CD92CD9"
+    "2CDB2CDB2CDD2CDD2CDF2CDF2CE12CE12CE32CE42CEC2CEC2CEE2CEE2CF32CF32D002D25"
+    "2D272D272D2D2D2DA641A641A643A643A645A645A647A647A649A649A64BA64BA64DA64D"
+    "A64FA64FA651A651A653A653A655A655A657A657A659A659A65BA65BA65DA65DA65FA65F"
+    "A661A661A663A663A665A665A667A667A669A669A66BA66BA66DA66DA681A681A683A683"
+    "A685A685A687A687A689A689A68BA68BA68DA68DA68FA68FA691A691A693A693A695A695"
+    "A697A697A699A699A69BA69BA723A723A725A725A727A727A729A729A72BA72BA72DA72D"
+    "A72FA731A733A733A735A735A737A737A739A739A73BA73BA73DA73DA73FA73FA741A741"
+    "A743A743A745A745A747A747A749A749A74BA74BA74DA74DA74FA74FA751A751A753A753"
+    "A755A755A757A757A759A759A75BA75BA75DA75DA75FA75FA761A761A763A763A765A765"
+    "A767A767A769A769A76BA76BA76DA76DA76FA76FA771A778A77AA77AA77CA77CA77FA77F"
+    "A781A781A783A783A785A785A787A787A78CA78CA78EA78EA791A791A793A795A797A797"
+    "A799A799A79BA79BA79DA79DA79FA79FA7A1A7A1A7A3A7A3A7A5A7A5A7A7A7A7A7A9A7A9"
+    "A7AFA7AFA7B5A7B5A7B7A7B7A7B9A7B9A7BBA7BBA7BDA7BDA7BFA7BFA7C1A7C1A7C3A7C3"
+    "A7C8A7C8A7CAA7CAA7CDA7CDA7D1A7D1A7D3A7D3A7D5A7D5A7D7A7D7A7D9A7D9A7DBA7DB"
+    "A7F6A7F6A7FAA7FAAB30AB5AAB60AB68AB70ABBFFB00FB06FB13FB17FF41FF5A"
+  ))
+
+(def tbl-space
+  (str
+    "0009000D002000200085008500A000A0168016802000200A20282029202F202F205F205F"
+    "30003000"
+  ))
+
+(def tbl-word
+  (str
+    "003000390041005A005F005F0061007A00AA00AA00B500B500BA00BA00C000D600D800F6"
+    "00F802C102C602D102E002E402EC02EC02EE02EE0300037403760377037A037D037F037F"
+    "038603860388038A038C038C038E03A103A303F503F7048104830487048A052F05310556"
+    "0559055905600588059105BD05BF05BF05C105C205C405C505C705C705D005EA05EF05F2"
+    "0610061A06200669066E06D306D506DC06DF06E806EA06FC06FF06FF0710074A074D07B1"
+    "07C007F507FA07FA07FD07FD0800082D0840085B0860086A087008870889088E089708E1"
+    "08E309020904093A093C093D09410948094D094D095009630966096F097109810985098C"
+    "098F0990099309A809AA09B009B209B209B609B909BC09BD09C109C409CD09CE09DC09DD"
+    "09DF09E309E609F109FC09FC09FE09FE0A010A020A050A0A0A0F0A100A130A280A2A0A30"
+    "0A320A330A350A360A380A390A3C0A3C0A410A420A470A480A4B0A4D0A510A510A590A5C"
+    "0A5E0A5E0A660A750A810A820A850A8D0A8F0A910A930AA80AAA0AB00AB20AB30AB50AB9"
+    "0ABC0ABD0AC10AC50AC70AC80ACD0ACD0AD00AD00AE00AE30AE60AEF0AF90AFF0B010B01"
+    "0B050B0C0B0F0B100B130B280B2A0B300B320B330B350B390B3C0B3D0B3F0B3F0B410B44"
+    "0B4D0B4D0B550B560B5C0B5D0B5F0B630B660B6F0B710B710B820B830B850B8A0B8E0B90"
+    "0B920B950B990B9A0B9C0B9C0B9E0B9F0BA30BA40BA80BAA0BAE0BB90BC00BC00BCD0BCD"
+    "0BD00BD00BE60BEF0C000C000C040C0C0C0E0C100C120C280C2A0C390C3C0C400C460C48"
+    "0C4A0C4D0C550C560C580C5A0C5D0C5D0C600C630C660C6F0C800C810C850C8C0C8E0C90"
+    "0C920CA80CAA0CB30CB50CB90CBC0CBD0CBF0CBF0CC60CC60CCC0CCD0CDD0CDE0CE00CE3"
+    "0CE60CEF0CF10CF20D000D010D040D0C0D0E0D100D120D3D0D410D440D4D0D4E0D540D56"
+    "0D5F0D630D660D6F0D7A0D7F0D810D810D850D960D9A0DB10DB30DBB0DBD0DBD0DC00DC6"
+    "0DCA0DCA0DD20DD40DD60DD60DE60DEF0E010E3A0E400E4E0E500E590E810E820E840E84"
+    "0E860E8A0E8C0EA30EA50EA50EA70EBD0EC00EC40EC60EC60EC80ECE0ED00ED90EDC0EDF"
+    "0F000F000F180F190F200F290F350F350F370F370F390F390F400F470F490F6C0F710F7E"
+    "0F800F840F860F970F990FBC0FC60FC61000102A102D1030103210371039103A103D1049"
+    "105010551058106110651066106E108210851086108D108E10901099109D109D10A010C5"
+    "10C710C710CD10CD10D010FA10FC1248124A124D1250125612581258125A125D12601288"
+    "128A128D129012B012B212B512B812BE12C012C012C212C512C812D612D8131013121315"
+    "1318135A135D135F1380138F13A013F513F813FD1401166C166F167F1681169A16A016EA"
+    "16F116F817001714171F1733174017531760176C176E177017721773178017B517B717BD"
+    "17C617C617C917D317D717D717DC17DD17E017E9180B180D180F181918201878188018AA"
+    "18B018F51900191E1920192219271928193219321939193B1946196D19701974198019AB"
+    "19B019C919D019D91A001A181A1B1A1B1A201A541A561A561A581A5E1A601A601A621A62"
+    "1A651A6C1A731A7C1A7F1A891A901A991AA71AA71AB01ABD1ABF1ACE1B001B031B051B34"
+    "1B361B3A1B3C1B3C1B421B421B451B4C1B501B591B6B1B731B801B811B831BA01BA21BA5"
+    "1BA81BA91BAB1BE61BE81BE91BED1BED1BEF1BF11C001C231C2C1C331C361C371C401C49"
+    "1C4D1C7D1C801C8A1C901CBA1CBD1CBF1CD01CD21CD41CE01CE21CF61CF81CFA1D001F15"
+    "1F181F1D1F201F451F481F4D1F501F571F591F591F5B1F5B1F5D1F5D1F5F1F7D1F801FB4"
+    "1FB61FBC1FBE1FBE1FC21FC41FC61FCC1FD01FD31FD61FDB1FE01FEC1FF21FF41FF61FFC"
+    "203F20402054205420712071207F207F2090209C20D020DC20E120E120E520F021022102"
+    "21072107210A2113211521152119211D212421242126212621282128212A212D212F2139"
+    "213C213F21452149214E214E218321842C002CE42CEB2CF32D002D252D272D272D2D2D2D"
+    "2D302D672D6F2D6F2D7F2D962DA02DA62DA82DAE2DB02DB62DB82DBE2DC02DC62DC82DCE"
+    "2DD02DD62DD82DDE2DE02DFF2E2F2E2F30053006302A302D30313035303B303C30413096"
+    "3099309A309D309F30A130FA30FC30FF3105312F3131318E31A031BF31F031FF34004DBF"
+    "4E00A48CA4D0A4FDA500A60CA610A62BA640A66FA674A67DA67FA6E5A6F0A6F1A717A71F"
+    "A722A788A78BA7CDA7D0A7D1A7D3A7D3A7D5A7DCA7F2A822A825A826A82CA82CA840A873"
+    "A882A8B3A8C4A8C5A8D0A8D9A8E0A8F7A8FBA8FBA8FDA92DA930A951A960A97CA980A982"
+    "A984A9B3A9B6A9B9A9BCA9BDA9CFA9D9A9E0A9FEAA00AA2EAA31AA32AA35AA36AA40AA4C"
+    "AA50AA59AA60AA76AA7AAA7AAA7CAA7CAA7EAAC2AADBAADDAAE0AAEAAAECAAEDAAF2AAF4"
+    "AAF6AAF6AB01AB06AB09AB0EAB11AB16AB20AB26AB28AB2EAB30AB5AAB5CAB69AB70ABE2"
+    "ABE5ABE5ABE8ABE8ABEDABEDABF0ABF9AC00D7A3D7B0D7C6D7CBD7FBF900FA6DFA70FAD9"
+    "FB00FB06FB13FB17FB1DFB28FB2AFB36FB38FB3CFB3EFB3EFB40FB41FB43FB44FB46FBB1"
+    "FBD3FD3DFD50FD8FFD92FDC7FDF0FDFBFE00FE0FFE20FE2FFE33FE34FE4DFE4FFE70FE74"
+    "FE76FEFCFF10FF19FF21FF3AFF3FFF3FFF41FF5AFF66FFBEFFC2FFC7FFCAFFCFFFD2FFD7"
+    "FFDAFFDC"
+  ))
+
+(def tbl-control
+  (str
+    "0000001F007F009F"
+  ))
+
+;; ---------------------------------------------------------------------------
+;; The named sets
+;; ---------------------------------------------------------------------------
+
+(def cs-alpha   (table-set tbl-alpha))
+(def cs-digit   (table-set tbl-digit))
+(def cs-alnum   (table-set tbl-alnum))
+(def cs-upper   (table-set tbl-upper))
+(def cs-lower   (table-set tbl-lower))
+(def cs-space   (table-set tbl-space))
+(def cs-word    (table-set tbl-word))
+(def cs-control (table-set tbl-control))
+
+(def cs-ascii     (cs-make (list (Tuple 0 127)) #f))
+(def cs-hex-digit (cs-make (list (Tuple 48 57) (Tuple 65 70) (Tuple 97 102)) #f))
+
+;; `:digit` is every Unicode decimal digit, which is what `numeric` means in
+;; SRE and what `char-numeric?` answers. A program that wants the ten ASCII
+;; ones usually means exactly that, so the narrowing has a name of its own
+;; rather than being spelled `(& :digit :ascii)` at every use.
+(def cs-ascii-digit (cs-inter cs-digit cs-ascii))
+(def cs-ascii-alpha (cs-inter cs-alpha cs-ascii))
+(def cs-ascii-alnum (cs-inter cs-alnum cs-ascii))
+
+;; One scalar, whatever it is. `:nonl` is the same set without U+000A, which is
+;; the only character either of them treats as a line break: the emitted
+;; pattern never uses `.`, so .NET's rule that `.` matches `\r` does not apply.
+(def cs-any  (cs-make bmp-universe #t))
+(def cs-nonl (cs-make (ranges-gaps 0 65535 (list (Tuple 10 10))) #t))
+
+(: named-class (-> string (Option Cset)))
+(defun (named-class name)
+  (cond
+    ((= name "any") (Some cs-any))
+    ((= name "nonl") (Some cs-nonl))
+    ((= name "alpha") (Some cs-alpha))
+    ((= name "alphabetic") (Some cs-alpha))
+    ((= name "digit") (Some cs-digit))
+    ((= name "numeric") (Some cs-digit))
+    ((= name "alnum") (Some cs-alnum))
+    ((= name "alphanumeric") (Some cs-alnum))
+    ((= name "upper") (Some cs-upper))
+    ((= name "upper-case") (Some cs-upper))
+    ((= name "lower") (Some cs-lower))
+    ((= name "lower-case") (Some cs-lower))
+    ((= name "space") (Some cs-space))
+    ((= name "whitespace") (Some cs-space))
+    ((= name "word") (Some cs-word))
+    ((= name "control") (Some cs-control))
+    ((= name "ascii") (Some cs-ascii))
+    ((= name "hex-digit") (Some cs-hex-digit))
+    ((= name "ascii-digit") (Some cs-ascii-digit))
+    ((= name "ascii-alpha") (Some cs-ascii-alpha))
+    ((= name "ascii-alnum") (Some cs-ascii-alnum))
+    (else None)))
