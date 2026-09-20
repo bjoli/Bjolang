@@ -447,9 +447,26 @@ it is almost always a constructor that was not in scope and so parsed as a plain
 variable.
 
 Both forms must stand **directly in a body**, since a body is what gives them
-their sequel. Inside another expression there is nothing to bind over, and at
-the top level there is no body at all — which is also why a REPL entry cannot
-take one.
+their sequel. Inside another expression there is nothing to bind over, and it
+says so.
+
+*** At the top level
+A pattern may also be written at the top level, where it has nowhere to fail:
+
+#+BEGIN_SRC scheme
+(def (Tuple host (Tuple port path)) (parse-endpoint "..."))
+(def* ((Wrap greeting) (default-greeting))
+      ((MkPair size text) (measure greeting)))
+#+END_SRC
+
+Each name becomes a definition of its own, from one evaluation of the scrutinee
+and one destructuring of it, and a later clause reads what an earlier one bound
+because module-level definitions see one another anyway.
+
+There is no body for a failure to be the value of, so **the pattern has to match
+every value** and a failure part is refused. That is the whole of the
+difference, and it is what a REPL entry gets too: an entry is a top level, so
+`(def (Tuple a b) ...)` binds at the prompt and `(def (Some x) ...)` does not.
 ** ~apply~ — spreading a collection into a rest parameter
 ~apply~ calls a function whose last parameter is ~#:rest~, taking the rest
 elements from a collection instead of writing them out:

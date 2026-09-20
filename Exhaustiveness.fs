@@ -619,6 +619,36 @@ let private checkDefMatch
     with Undecidable ->
         ()
 
+/// A top-level `def`'s pattern stands alone, so it has to match every value.
+///
+/// There is nowhere for a failure to go: what a `def` produces when its pattern
+/// does not match is the value of the body it stands in, and a declaration list
+/// is not a body. So this is the one binding pattern with no second path, and a
+/// witness here is refused rather than sent anywhere.
+let private checkDefPattern
+    (registry: TraitRegistry)
+    (range: Range)
+    (scrutinee: HMType)
+    (pattern: TypedPattern)
+    =
+    try
+        match missing registry [ scrutinee ] [ [ normalize pattern ] ] with
+        | Some [ witness ] ->
+            // A pattern that decides by running code covers nothing here, so
+            // the counterexample it produces is every value. Saying which is
+            // what keeps the message from looking like a mistake.
+            let note =
+                if runsCode pattern then
+                    "\n  A (:view ...) or a (:is ...) covers nothing: whether it matches is only known when it runs."
+                else
+                    ""
+
+            failwithf
+                $"Pattern Error at %s{formatPos range}: this def's pattern does not match every value, and at the top level there is nowhere else for one to go. %s{showWitness witness} reaches nothing. Move the binding into a body, where it can carry a failure value or a :fail clause.%s{note}"
+        | _ -> ()
+    with Undecidable ->
+        ()
+
 let rec private checkExpr (registry: TraitRegistry) (expr: TypedExpr) : unit =
     match expr.Node with
     | TMatch(target, clauses) -> checkMatch registry expr.Range target.Type clauses
@@ -628,6 +658,18 @@ let rec private checkExpr (registry: TraitRegistry) (expr: TypedExpr) : unit =
     TypeVisitor.children expr |> List.iter (checkExpr registry)
 
 let private checkDecl (registry: TraitRegistry) (decl: TDecl) : unit =
+    // A top-level destructuring is the one pattern that is not inside an
+    // expression, so it takes a walk of its own — `mapDecl` reaches
+    // expressions, and this pattern is beside one rather than in it.
+    let rec declaredPatterns (d: TDecl) =
+        match d with
+        | TDefPattern(pattern, scrutinee, _, r) -> checkDefPattern registry r scrutinee.Type pattern
+        | TModule(_, inner, _) -> inner |> List.iter declaredPatterns
+        | TImpl(_, _, _, _, _, _, methods, _) -> methods |> List.iter declaredPatterns
+        | _ -> ()
+
+    declaredPatterns decl
+
     decl
     |> TypeVisitor.mapDecl (fun e ->
         checkExpr registry e

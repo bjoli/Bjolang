@@ -1154,6 +1154,14 @@ type TDecl =
     | TModule of string * TDecl list * Range
     | TDef of string * TypedExpr * HMType * Range
     | TDefTuple of string list * TypedExpr * HMType * Range
+    /// `(def pattern scrutinee)` at the top level: the pattern, the value it
+    /// destructures, and every name it binds with the type it binds at.
+    ///
+    /// The binders are carried beside the pattern rather than read back out of
+    /// it, because that is the list the module class is emitted from — one
+    /// static field each, in this order — and a field needs a type whether or
+    /// not the pattern node it came from still has one after lowering.
+    | TDefPattern of TypedPattern * TypedExpr * (string * HMType) list * Range
     | TDefMutable of string * TypedExpr * HMType * Range
     | TDefun of string * string list * (string * HMType) list * (string * HMType * TypedExpr) list * (string * HMType) option * HMType * Effect * TypedExpr * Range
     //          name     tyArgs          mandatoryArgs           keywordArgs(name,type,default)      restArg(name,elemType)       retType  effect  body       range
@@ -1188,6 +1196,7 @@ let tdeclRange (decl: TDecl) : Range =
     | TModule(_, _, r)
     | TDef(_, _, _, r)
     | TDefTuple(_, _, _, r)
+    | TDefPattern(_, _, _, r)
     | TDefMutable(_, _, _, r)
     | TDefun(_, _, _, _, _, _, _, _, r)
     | TType(_, r)

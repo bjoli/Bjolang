@@ -217,21 +217,24 @@ exports nothing and declares no type publishes no impls either.
 
 ** A binding that may fail needs a body, and an entry is not one
 
-~(def (Some x) opt)~, ~(def (Some x) opt 0)~ and ~(def* ...)~ swallow the rest
-of the body they stand in. An entry is a top level — a list of declarations —
-so there is no sequel to hand them, and no value for a failure to become. Both
-forms are refused with a message saying so.
+An entry is a top level — a list of declarations — so a pattern in it binds
+exactly as one in a module does: every name becomes a definition, and the
+pattern has to match every value. A failure part has nothing to be the value of
+and is refused.
 
 #+begin_src scheme
-bjo> (def* ((Some x) (Some 1)))
-Syntax error: `def*` binds over the rest of the body it stands in, and the top level is not a body.
+bjo> (def* ((Tuple a b) (Tuple 1 2)))
+a b
+bjo> (def (Some x) (lookup k))
+Pattern Error: this def's pattern does not match every value, and at the top level there is nowhere else for one to go.
 bjo> (defun (f (: o (Option int))) : int (def (Some x) o 0) (+ x 1))
 f
 #+end_src
 
-Making the prompt take one means deciding what the rest of the session is: on a
-failure nothing may be bound, and the entries already compiled cannot be the
-sequel of an entry typed later. Not done; the workaround above is a function.
+The refutable case is the one people want at a prompt, and making it work means
+deciding what the rest of the session is: on a failure nothing may be bound, and
+the entries already compiled cannot be the sequel of an entry typed later. Not
+done; the workaround above is a function.
 
 ** An ambiguous definition is rejected, not defaulted
 

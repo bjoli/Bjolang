@@ -338,6 +338,31 @@ let private desugarOperator
             failwithf
                 $"'%s{op}' with %d{items.Length} operands at %s{Lexer.formatPos r} is spelled out by the prelude's %s{macro} hash macro, which is not in scope here. Import (std prelude), or nest the binary applications by hand."
 
+/// The `def` shapes that bind a name outright: a name, a name with its type,
+/// and a tuple destructuring. Everything else a `def` may bind is a pattern,
+/// and so is any `def` carrying a failure part.
+///
+/// A capitalized head is a constructor and never a tuple of names, which is
+/// what tells `(def (a b) pair)` from `(def (Some x) opt)`.
+///
+/// Read here rather than in `parseBody`, because the top level asks the same
+/// question: `DeclParser` takes the plain shapes as definitions and a pattern
+/// as one of its own.
+let isPlainDefBinder (binder: SExpr) : bool =
+    let symbol s =
+        match s with
+        | SAtom { Token = Symbol _ }
+        | SAtom { Token = Comma } -> true
+        | _ -> false
+
+    match binder with
+    | SAtom { Token = Symbol _ } -> true
+    | SList([ SAtom { Token = Colon }; SAtom { Token = Symbol _ }; _ ], _) -> true
+    | SList((SAtom { Token = Symbol head } :: _) as names, _) ->
+        List.forall symbol names
+        && (head = "Tuple" || not (System.Char.IsUpper head[0]))
+    | _ -> false
+
 let rec parseExpr (s: SExpr) : Expr =
     let r = getRange s
 
@@ -1603,27 +1628,6 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
             | _ -> items
         | _ -> items
 
-    // The `def` shapes that bind a name outright: a name, a name with its type,
-    // and a tuple destructuring. Everything else a `def` may bind is a pattern
-    // that can fail, and so is any `def` carrying a failure part.
-    //
-    // A capitalized head is a constructor and never a tuple of names, which is
-    // what tells `(def (a b) pair)` from `(def (Some x) opt)`.
-    let isPlainBinder (binder: SExpr) =
-        let symbol s =
-            match s with
-            | SAtom { Token = Symbol _ }
-            | SAtom { Token = Comma } -> true
-            | _ -> false
-
-        match binder with
-        | SAtom { Token = Symbol _ } -> true
-        | SList([ SAtom { Token = Colon }; SAtom { Token = Symbol _ }; _ ], _) -> true
-        | SList((SAtom { Token = Symbol head } :: _) as names, _) ->
-            List.forall symbol names
-            && (head = "Tuple" || not (System.Char.IsUpper head[0]))
-        | _ -> false
-
     // `(pattern body ...)`, which is what an arm is and what nothing else in
     // the form is.
     let parseFailArm (form: SExpr) =
@@ -1819,7 +1823,7 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         // cover: a pattern that is not a name, a typed name or a tuple of
         // names, or any `def` at all that carries a failure part.
         | SList(SAtom { Token = Symbol "def" } :: binder :: scrutinee :: failureForms, r) :: rest when
-            not failureForms.IsEmpty || not (isPlainBinder binder)
+            not failureForms.IsEmpty || not (isPlainDefBinder binder)
             ->
             EDefMatch(parsePattern binder, parseExpr scrutinee, parseDefFailure r failureForms, parseItems rest, r)
 

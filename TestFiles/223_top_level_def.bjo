@@ -1,0 +1,56 @@
+;; `def` and `def*` at the top level, where a pattern has nowhere to fail.
+;;
+;; The top level is a list of declarations rather than a body, so there is no
+;; sequel for a failure to become the value of — and a pattern written here has
+;; to match every value. What it binds is a definition per name, from one
+;; evaluation of the scrutinee and one destructuring of it.
+;;
+;; `220_def.bjo` is the same form in a body, where it may fail.
+
+(import (std prelude))
+(import (std simpletest))
+
+(type (: Wrapper (Union (Wrap string))))
+(type (: Pair (Union (MkPair int string))))
+
+(: counted int)
+(def/mutable counted 0)
+
+(: scrutinee (-> Wrapper))
+(defun (scrutinee)
+  (set! counted (+ counted 1))
+  (Wrap "once"))
+
+;; --- A single-case union, and a tuple the plain shape does not cover --------
+;;
+;; `(def (a b) ...)` is the tuple destructuring the parser has always taken; a
+;; nested one is a pattern, and takes this path instead.
+(def (Tuple first (Tuple second third)) (Tuple 1 (Tuple 2 3)))
+
+(def (MkPair n s) (MkPair 7 "seven"))
+
+;; --- The scrutinee is evaluated once ----------------------------------------
+(def (Wrap tag) (scrutinee))
+
+;; --- def*: the clauses are the definitions they would have been -------------
+;;
+;; Clause two reads what clause one bound, which needs no rule of its own here:
+;; module-level definitions see one another, and the initializers run in
+;; declaration order.
+(def* ((Wrap greeting) (Wrap "hello"))
+      ((MkPair size text) (MkPair (string-length greeting) greeting)))
+
+(defun (main)
+  (expect "a nested tuple pattern" (+ first (+ second third)) 6)
+  (expect "a single-case union, first field" n 7)
+  (expect "a single-case union, second field" s "seven")
+
+  (expect "the scrutinee was evaluated once" counted 1)
+  (expect "and its binding is the value it had" tag "once")
+
+  (expect "def*, the first clause" greeting "hello")
+  (expect "def*, a clause reading the one above it" size 5)
+  (expect "and the rest of it" text "hello")
+
+  (println "223 ok")
+  0)

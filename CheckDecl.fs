@@ -267,6 +267,35 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
 
         newEnv, sigs, [ TDefTuple(names, typedExpr, exprType, r) ]
 
+    | DDefPattern(pattern, expr, r) ->
+        // The same level elevation as `DDef`, and for the same reason: each
+        // binder is generalized individually below.
+        let typedPattern, typedExpr, boundVars =
+            atLevel (fun () ->
+                let exprType, typedExpr = infer env expr
+                let typedPattern, boundVars = checkPattern inferChecked env exprType pattern
+                solvePending env
+                typedPattern, typedExpr, boundVars)
+
+        // In the order the pattern writes them, which is the order the module
+        // class emits its fields in.
+        let binders =
+            patternBinders pattern
+            |> List.choose (fun n -> Map.tryFind n boundVars |> Option.map (fun t -> n, t))
+
+        let newEnv =
+            binders
+            |> List.fold
+                (fun acc (n, t) ->
+                    addBinding
+                        n
+                        { Scheme = generalize env t
+                          IsMutable = false }
+                        acc)
+                env
+
+        newEnv, sigs, [ TDefPattern(typedPattern, typedExpr, binders, r) ]
+
     | DDefMutable(name, expr, r) ->
         let exprType, typedExpr = infer env expr
 
@@ -920,6 +949,7 @@ and private checkModule (env: Env) (sigs: Sigs) (moduleName: string) (decls: Dec
                 | DMacro(n, _)
                 | DPatternMacro(n, _) -> [ n ]
                 | DDefTuple(ns, _, _) -> ns
+                | DDefPattern(pattern, _, _) -> patternBinders pattern
                 | _ -> [])
             |> Set.ofList
 
@@ -968,6 +998,8 @@ and private checkModule (env: Env) (sigs: Sigs) (moduleName: string) (decls: Dec
                 [ visible, Naming.qualifiedBinding m origin.OriginalName ]
             | DDefun(n, _, _, _, _) -> [ n, Naming.qualifiedBinding moduleName n ]
             | DDefTuple(ns, _, _) -> ns |> List.map (fun n -> n, Naming.qualifiedBinding moduleName n)
+            | DDefPattern(pattern, _, _) ->
+                patternBinders pattern |> List.map (fun n -> n, Naming.qualifiedBinding moduleName n)
             | _ -> [])
 
     let qualified =
@@ -2936,6 +2968,7 @@ and internal checkDeclGroup
         | DDefun(name, _, _, _, _) -> [ name ]
         | DDefDouble(name, _, _, _, _) -> [ name; Naming.suspendingCopy name ]
         | DDefTuple(names, _, _) -> names
+        | DDefPattern(pattern, _, _) -> patternBinders pattern
         | DExtern(visible, _, _, _, _) -> [ visible ]
         | DAlias(visible, _, _) -> [ visible ]
         | _ -> []

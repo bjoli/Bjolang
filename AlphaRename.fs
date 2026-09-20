@@ -427,6 +427,7 @@ let rec private topLevelNames (decls: TDecl list) : Set<string> =
         | TExtern(n, _, _, _) -> [ n ]
         | TDefun(n, _, _, _, _, _, _, _, _) -> [ n ]
         | TDefTuple(names, _, _, _) -> names
+        | TDefPattern(_, _, binders, _) -> binders |> List.map fst
         | _ -> [])
     |> Set.ofList
 
@@ -500,6 +501,10 @@ let rec uniquifyDeclWith (globals: Set<string>) (decl: TDecl) : TDecl =
 
     | TDef(name, value, t, r) -> TDef(name, inFunction globals Map.empty value, t, r)
     | TDefTuple(names, value, t, r) -> TDefTuple(names, inFunction globals Map.empty value, t, r)
+    // The pattern is left alone: what it binds is a module-level name, already
+    // in `globals`, and the scrutinee is the only expression here.
+    | TDefPattern(pattern, value, binders, r) ->
+        TDefPattern(pattern, inFunction globals Map.empty value, binders, r)
     | TDefMutable(name, value, t, r) -> TDefMutable(name, inFunction globals Map.empty value, t, r)
     | _ -> decl
 

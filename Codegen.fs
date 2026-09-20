@@ -1351,6 +1351,24 @@ type ViewFragment =
       Applied: TypedExpr
       Inner: TypedPattern }
 
+/// The same pattern with its binders spelled as `locals` says.
+///
+/// A top-level destructuring is what needs it. The designations a pattern emits
+/// are C# locals, and one spelled like the module field it fills would hide
+/// that field from the assignment below it.
+let rec renamePatternBinders (locals: Map<string, string>) (pat: TypedPattern) : TypedPattern =
+    let renamed name =
+        Map.tryFind name locals |> Option.defaultValue name
+
+    let node =
+        match pat.Node with
+        | TPIdent name -> TPIdent(renamed name)
+        | TPTypeTest(clrType, binder) -> TPTypeTest(clrType, Option.map renamed binder)
+        | TPAs(inner, name) -> TPAs(renamePatternBinders locals inner, renamed name)
+        | _ -> (TypeVisitor.mapPatternChildrenWith id (renamePatternBinders locals) pat).Node
+
+    { pat with Node = node }
+
 /// Translates a typed pattern into C# pattern syntax.
 ///
 /// Every view in the pattern is appended to `views` and stands in the label as
@@ -5170,7 +5188,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
         // become static fields assigned by a static constructor. That is the last
         // place an IIFE would otherwise still be required.
         //
-        // The three shapes are collected into *one* list in declaration order
+        // The four shapes are collected into *one* list in declaration order
         // rather than swept up a kind at a time, because the static constructor
         // assigns them in this order and one initializer may read a binding
         // above it. Taken kind by kind, a `def` reading a `def/mutable` declared
@@ -5179,9 +5197,10 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
         let valueDefs =
             innerDecls
             |> List.choose (function
-                | TDef(n, v, t, _) -> Some(Choice1Of3(n, v, t))
-                | TDefMutable(n, v, t, _) -> Some(Choice2Of3(n, v, t))
-                | TDefTuple(names, v, t, _) -> Some(Choice3Of3(names, v, t))
+                | TDef(n, v, t, _) -> Some(Choice1Of4(n, v, t))
+                | TDefMutable(n, v, t, _) -> Some(Choice2Of4(n, v, t))
+                | TDefTuple(names, v, t, _) -> Some(Choice3Of4(names, v, t))
+                | TDefPattern(pattern, v, binders, r) -> Some(Choice4Of4(pattern, v, binders, r))
                 | _ -> None)
 
         let className = moduleClassName name
@@ -5226,22 +5245,27 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
 
             for d in valueDefs do
                 match d with
-                | Choice1Of3(defName, _, defType) ->
+                | Choice1Of4(defName, _, defType) ->
                     indent ctx
                     appendLine ctx $"public static readonly %s{typeToString defType} %s{Prelude.moduleMemberName defName};"
-                | Choice2Of3(defName, _, defType) ->
+                | Choice2Of4(defName, _, defType) ->
                     indent ctx
                     appendLine ctx $"public static %s{typeToString defType} %s{Prelude.moduleMemberName defName};"
-                | Choice3Of3(names, _, tupleType) ->
+                | Choice3Of4(names, _, tupleType) ->
                     for name, elemType in List.zip names (tupleElemTypes tupleType) do
                         indent ctx
                         appendLine ctx $"public static readonly %s{typeToString elemType} %s{Prelude.moduleMemberName name};"
+                | Choice4Of4(_, _, binders, _) ->
+                    for name, bindType in binders do
+                        indent ctx
+                        appendLine ctx $"public static readonly %s{typeToString bindType} %s{Prelude.moduleMemberName name};"
 
             for d in innerDecls do
                 match d with
                 | TDef _
                 | TDefMutable _
-                | TDefTuple _ -> ()
+                | TDefTuple _
+                | TDefPattern _ -> ()
                 | _ -> generateDecl ctx d
 
             if not valueDefs.IsEmpty then
@@ -5251,16 +5275,55 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                 withIndent ctx (fun c ->
                     for d in valueDefs do
                         match d with
-                        | Choice1Of3(defName, defValue, _)
-                        | Choice2Of3(defName, defValue, _) ->
+                        | Choice1Of4(defName, defValue, _)
+                        | Choice2Of4(defName, defValue, _) ->
                             generateBlock c (Assign(Prelude.moduleMemberName defName)) defValue
-                        | Choice3Of3(names, defValue, _) ->
+                        | Choice3Of4(names, defValue, _) ->
                             let tmp = freshName "__tuple"
                             generateBindingValue c (DeclareAndAssign(typeToString defValue.Type, tmp)) defValue
 
                             for i, name in List.indexed names do
                                 indent c
-                                appendLine c $"%s{Prelude.moduleMemberName name} = %s{tmp}.Item%d{i + 1};")
+                                appendLine c $"%s{Prelude.moduleMemberName name} = %s{tmp}.Item%d{i + 1};"
+                        | Choice4Of4(pattern, defValue, binders, r) ->
+                            let tmp = freshName "__bound"
+                            generateBindingValue c (DeclareAndAssign(typeToString defValue.Type, tmp)) defValue
+
+                            // The pattern's designations are locals, and a
+                            // local spelled like the field it fills would hide
+                            // it. Renamed here, where both spellings are known.
+                            let locals =
+                                binders |> List.map (fun (n, _) -> n, freshName "__part") |> Map.ofList
+
+                            let views = ResizeArray<ViewFragment>()
+                            indent c
+                            append c $"if (%s{tmp} is "
+                            generatePattern c views (renamePatternBinders locals pattern)
+                            generateClauseGuard c views None
+                            appendLine c ") {"
+
+                            withIndent c (fun inner ->
+                                for name, _ in binders do
+                                    indent inner
+                                    appendLine inner $"%s{Prelude.moduleMemberName name} = %s{locals[name]};")
+
+                            indent c
+                            appendLine c "}"
+
+                            // `Exhaustiveness` has refused a pattern that can
+                            // fail, so this is the `default:` of a switch over
+                            // one case: unreachable, and emitted because C#
+                            // calls a field assigned only inside an `if`
+                            // unassigned.
+                            indent c
+                            appendLine c "else {"
+
+                            withIndent c (fun inner ->
+                                indent inner
+                                appendLine inner $"throw new Exception(\"Match failure at %s{Lexer.formatPos r}\");")
+
+                            indent c
+                            appendLine c "}")
 
                 indent ctx
                 appendLine ctx "}"
@@ -5405,6 +5468,7 @@ let generateProgram
                     | TDef (n, _, _, _) -> [ (n, (modName, n)) ]
                     | TDefMutable (n, _, _, _) -> [ (n, (modName, n)) ]
                     | TDefTuple (names, _, _, _) -> names |> List.map (fun n -> (n, (modName, n)))
+                    | TDefPattern (_, _, binders, _) -> binders |> List.map (fun (n, _) -> (n, (modName, n)))
                     | TDefun (n, _, _, _, _, _, _, _, _) -> [ (n, (modName, n)) ]
                     // When an import shares a name with a builtin, both spellings
                     // reach the call site through a `using static`. Because C# cannot

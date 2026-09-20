@@ -48,11 +48,22 @@ still runs. Where that value then goes nowhere in silence, the compiler warns
 and names the body it resolved to. Where the body carries a value, the must-use
 rule was already reporting it.
 
-What it leaves open: the top level is not a body, so neither form can stand
-there — which includes a REPL entry, where binding a pattern is a thing to want.
-Making the prompt take one means deciding what the rest of the session is, and
-on a failure nothing may be bound at all. Refused with a message saying so,
-rather than given an answer the language does not have.
+**A pattern that cannot fail may also stand at the top level.** There is no body
+there for a failure to be the value of, so that is exactly what the top level
+takes: a pattern that matches every value, and no failure part. Each name it
+binds becomes a definition of its own — one evaluation of the scrutinee, one
+destructuring — which is what `(def (a b) ...)` already did for tuples, asked of
+any pattern. A `def*` there is its clauses spliced into the declaration list,
+because with nothing able to fail its ordering *is* declaration order.
+
+A REPL entry is a top level, so it takes the same: `(def (Tuple a b) ...)` binds
+at the prompt now.
+
+What it leaves open: the refutable case at a prompt, which is the one people
+want there. It means deciding what the rest of the session is — on a failure
+nothing may be bound at all, and the entries already compiled cannot be the
+sequel of an entry typed later. Refused with a message saying so, rather than
+given an answer the language does not have.
 
 * ~(std rx)~: regular expressions, compiled while your file is
 

@@ -499,6 +499,15 @@ type Decl =
     | DModule of string * Decl list * Range
     | DDef of string * Expr * Range
     | DDefTuple of string list * Expr * Range
+    /// `(def pattern scrutinee)` at the top level, and each clause of a
+    /// top-level `def*`.
+    ///
+    /// The pattern has to match every value of the scrutinee's type, which
+    /// `Exhaustiveness` says: a failure part produces the value of the body the
+    /// form stands in, and the top level is a declaration list rather than a
+    /// body. Every binder becomes a definition of its own, so the scrutinee is
+    /// evaluated once and destructured once.
+    | DDefPattern of Pattern * Expr * Range
     | DDefMutable of string * Expr * Range
     /// `(defun (name args...) body)`, and with `Suspending`, `defbjo`.
     | DDefun of string * DefunArg list * Expr * Colour * Range
@@ -631,7 +640,8 @@ type Decl =
 /// error during declaration processing can point to the declaration itself.
 let declRange (decl: Decl) : Range =
     match decl with
-    | DDef(_, _, r) | DDefun(_, _, _, _, r) | DDefDouble(_, _, _, _, r) | DDefTuple(_, _, r) | DDefMutable(_, _, r)
+    | DDef(_, _, r) | DDefun(_, _, _, _, r) | DDefDouble(_, _, _, _, r) | DDefTuple(_, _, r) | DDefPattern(_, _, r)
+    | DDefMutable(_, _, r)
     | DSignature(_, _, _, r) | DType(_, r) | DTypeRec(_, r) | DTrait(_, _, _, _, _, _, _, r) | DImpl(_, _, _, _, _, _, r)
     | DImplExtern(_, _, _, _, r) | DInlineImpl(_, _, _, _, _, _, _, r)
     | DModule(_, _, r) | DImport(_, r) | DAlias(_, _, r) | DExport(_, r) | DReExport(_, r)
@@ -1036,6 +1046,7 @@ let rec boundNames (decls: Decl list) : Set<string> =
                     | KeywordArg(n, _) -> n
                     | RestArg n -> n))
         | DDefTuple(names, _, _) -> names
+        | DDefPattern(pattern, _, _) -> patternBinders pattern
         // Not a binder. It is renamed from the same memo as the `defun` it
         // belongs to, so leaving it out would take the pair apart: the body
         // would keep its fresh spelling and the signature would lose it.
@@ -1103,6 +1114,9 @@ let rec mapDeclExprs (f: Expr -> Expr) (d: Decl) : Decl =
     | DDef(name, e, r) -> DDef(name, f e, r)
     | DDefMutable(name, e, r) -> DDefMutable(name, f e, r)
     | DDefTuple(names, e, r) -> DDefTuple(names, f e, r)
+    // The pattern holds expressions too: a view's step, read in the scope the
+    // form stands in.
+    | DDefPattern(pattern, e, r) -> DDefPattern(mapPatternSteps f pattern, f e, r)
     | DDefun(name, args, body, colour, r) -> DDefun(name, List.map mapArg args, f body, colour, r)
     | DDefDouble(name, args, syncBody, bjoBody, r) ->
         DDefDouble(name, List.map mapArg args, f syncBody, f bjoBody, r)

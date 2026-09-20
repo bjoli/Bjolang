@@ -281,6 +281,7 @@ let declKindName (d: Decl) : string =
     | DModule _ -> "a module"
     | DDef _ -> "a definition"
     | DDefTuple _ -> "a tuple definition"
+    | DDefPattern _ -> "a destructuring definition"
     | DDefMutable _ -> "a mutable definition"
     | DDefun _ -> "a function"
     | DDefDouble _ -> "a function with a body per colour"
@@ -530,24 +531,22 @@ let rec tryParseDecl (s: SExpr) : Decl option =
     | SList(SAtom { Token = Symbol "def" } :: SList([ SAtom { Token = Colon }; SAtom { Token = Symbol name }; tType ], _) :: [ expr ], _) ->
         Some(DDef(name, parseExpr expr, r))
 
-    // A binding that may fail, written where there is nothing for it to bind
-    // over. It swallows the rest of its body, and the top level is a list of
-    // declarations rather than a body — so there is no sequel to give it, and
-    // no value for a failure to become.
+    // `(def pattern scrutinee)` — a destructuring binding. Every name the
+    // pattern binds becomes a definition of its own, and the pattern has to
+    // match every value of the scrutinee's type: a failure part produces the
+    // value of the body the form stands in, and the top level has no body.
+    // `Exhaustiveness` is what says so, once the scrutinee has a type.
+    | SList(SAtom { Token = Symbol "def" } :: binder :: [ scrutinee ], _) when not (isPlainDefBinder binder) ->
+        Some(DDefPattern(parsePattern binder, parseExpr scrutinee, r))
+
+    // A failure part, written where there is nothing for it to be the value of.
     //
-    // A REPL entry is a top level too. Binding a pattern at the prompt is a
-    // thing to want and is not what this reports on; the REPL would have to
-    // decide what the *rest of the session* is, and it does not.
-    | SList(SAtom { Token = Symbol(("def" | "def*") as head) } :: rest, _) when
-        (match head, rest with
-         | "def*", _ -> true
-         | _, _ :: _ :: _ :: _ -> true
-         | _, [ SList(SAtom { Token = Symbol caseName } :: _, _); _ ] ->
-             caseName <> "Tuple" && System.Char.IsUpper caseName[0]
-         | _ -> false)
-        ->
+    // A REPL entry is a top level too. Binding a pattern that may fail at the
+    // prompt is a thing to want and is not what this reports on; the REPL would
+    // have to decide what the *rest of the session* is, and it does not.
+    | SList(SAtom { Token = Symbol "def" } :: _ :: _ :: _ :: _, _) ->
         failwithf
-            $"Syntax error at %s{Lexer.formatPos r}: `%s{head}` binds over the rest of the body it stands in, and the top level is not a body. Put it inside a function, a `let` or a `with-return`. A REPL entry is a top level as well, so a prompt cannot take one either."
+            $"Syntax error at %s{Lexer.formatPos r}: what a `def` produces when its pattern does not match is the value of the body it stands in, and the top level is not a body. A pattern here has to match every value. A REPL entry is a top level as well, so a prompt cannot take a failure part either."
 
     | SList(SAtom { Token = Symbol "def" } :: SList(names, _) :: [ expr ], _) ->
         let rawNames =
@@ -878,6 +877,62 @@ and tryParseDeclGroup (s: SExpr) : Decl list option =
     match stripHeadMark s with
     | SList(SAtom { Token = Symbol(("defun" | "defbjo") as definer) } :: SList(SAtom { Token = Symbol name } :: args, _) :: rest, _) ->
         Some(parseDefunDecl definer name args rest (getRange s))
+
+    // `(def* (pattern scrutinee) ...)` at the top level *is* its clauses
+    // written one after another, so each one is handed back to `tryParseDecl`
+    // as the `def` it would have been.
+    //
+    // Nothing is lost by splicing here. A clause can only fail to match if it
+    // carries a failure part, which the top level refuses; with none, the
+    // ordering `def*` gives inside a body is the declaration order it has here,
+    // and a later clause reads an earlier clause's binders because module-level
+    // definitions see one another anyway.
+    | SList(SAtom { Token = Symbol "def*" } :: clauseForms, r) ->
+        if clauseForms.IsEmpty then
+            failwithf
+                $"Syntax error at %s{Lexer.formatPos r}: expected (def* (pattern scrutinee) ...). A def* clause is always parenthesised, including when there is only one."
+
+        let decls =
+            clauseForms
+            |> List.map (fun clause ->
+                let cr = getRange clause
+
+                match clause with
+                | SList((_ :: _ :: _) as clauseParts, _) ->
+                    let asDef = SList(SAtom { Token = Symbol "def"; Range = cr } :: clauseParts, cr)
+
+                    match tryParseDecl asDef with
+                    | Some d -> d
+                    | None ->
+                        failwithf
+                            $"Syntax error at %s{Lexer.formatPos cr}: a def* clause is written (pattern scrutinee)."
+                | _ ->
+                    failwithf
+                        $"Syntax error at %s{Lexer.formatPos cr}: a def* clause is written (pattern scrutinee).")
+
+        // The clauses land in one scope here as they do in a body, so a name
+        // bound by two of them is refused rather than taken from the later one.
+        let bound (d: Decl) =
+            match d with
+            | DDef(n, _, _) -> [ n ]
+            | DDefTuple(ns, _, _) -> ns
+            | DDefPattern(pattern, _, _) -> patternBinders pattern
+            | _ -> []
+
+        decls
+        |> List.collect bound
+        |> List.countBy id
+        |> List.filter (fun (_, n) -> n > 1)
+        |> List.map fst
+        |> function
+            | [] -> ()
+            | repeated ->
+                let names = String.concat ", " repeated
+
+                failwithf
+                    $"Syntax error at %s{Lexer.formatPos r}: %s{names} is bound by more than one clause of this def*, and all of them are in scope below it. Bind it once."
+
+        Some decls
 
     // `(: name #:sync ...)`, in the slot `#:opaque` uses on a type: a marker on
     // the declaration rather than any part of the shape.

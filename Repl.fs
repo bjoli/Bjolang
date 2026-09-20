@@ -128,6 +128,7 @@ let private definedNames (decl: Ast.Decl) : string list =
     | Ast.DDefMutable(n, _, _)
     | Ast.DDefun(n, _, _, _, _) -> [ n ]
     | Ast.DDefTuple(names, _, _) -> names
+    | Ast.DDefPattern(pattern, _, _) -> Ast.patternBinders pattern
     | Ast.DType(defs, _)
     | Ast.DTypeRec(defs, _) -> defs |> List.map (fun d -> d.Name)
     | Ast.DTrait(n, _, _, _, _, _, _, _) -> [ n ]

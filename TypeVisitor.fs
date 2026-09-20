@@ -180,6 +180,12 @@ let rec mapDecl (f: TypedExpr -> TypedExpr) (decl: TDecl) : TDecl =
     match decl with
     | TDef(name, value, t, r) -> TDef(name, f value, t, r)
     | TDefTuple(names, value, t, r) -> TDefTuple(names, f value, t, r)
+    | TDefPattern(pattern, value, binders, r) ->
+        // A pattern holds an expression in one place, a `(:view step p)`, and
+        // it is mapped for the reason a match clause's is: the step is code,
+        // and a pass rewriting code has to reach it.
+        let rec mapPat p = mapPatternChildrenWith f mapPat p
+        TDefPattern(mapPat pattern, f value, binders, r)
     | TDefMutable(name, value, t, r) -> TDefMutable(name, f value, t, r)
     | TDefun(name, tyArgs, args, kwArgs, restArg, retType, effect, body, r) ->
         TDefun(

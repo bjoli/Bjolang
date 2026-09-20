@@ -265,6 +265,8 @@ let rec normalizeDecl (decl: Decl) : Decl =
     match decl with
     | DDef(name, expr, r) -> DDef(name, normalizeExpr expr, r)
     | DDefTuple(names, expr, r) -> DDefTuple(names, normalizeExpr expr, r)
+    | DDefPattern(pattern, expr, r) ->
+        DDefPattern(Ast.mapPatternSteps normalizeExpr pattern, normalizeExpr expr, r)
     | DDefMutable(name, expr, r) -> DDefMutable(name, normalizeExpr expr, r)
     | DDefun(name, args, body, colour, r) ->
         let normalizedArgs =

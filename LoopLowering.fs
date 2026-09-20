@@ -546,6 +546,7 @@ let rec private lowerDeclWith (aliasFor: string -> string list) (decl: TDecl) : 
 
     | TDef(name, value, t, r) -> TDef(name, lowerExpr [] false value, t, r)
     | TDefTuple(names, value, t, r) -> TDefTuple(names, lowerExpr [] false value, t, r)
+    | TDefPattern(pattern, value, binders, r) -> TDefPattern(pattern, lowerExpr [] false value, binders, r)
     | TDefMutable(name, value, t, r) -> TDefMutable(name, lowerExpr [] false value, t, r)
     | _ -> decl
 

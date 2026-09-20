@@ -290,6 +290,8 @@ let rec letrecifyDecl (decl: Decl) : Decl =
     match decl with
     | DDef(name, expr, r) -> DDef(name, letrecifyExpr expr, r)
     | DDefTuple(names, expr, r) -> DDefTuple(names, letrecifyExpr expr, r)
+    | DDefPattern(pattern, expr, r) ->
+        DDefPattern(Ast.mapPatternSteps letrecifyExpr pattern, letrecifyExpr expr, r)
     | DDefMutable(name, expr, r) -> DDefMutable(name, letrecifyExpr expr, r)
     | DDefun(name, args, body, colour, r) ->
         let letrecifiedArgs =
