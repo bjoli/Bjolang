@@ -831,8 +831,13 @@ and TExprNode =
     /// Never yields a value, so its own type is a fresh metavariable: it stands
     /// wherever a value of any type was wanted and constrains nothing there.
     | TReturn of string * TypedExpr option
-    /// `(def+ ...)` — the binding pattern, its scrutinee, the rest of the body
-    /// it was written in, and the arms that stand in for that body.
+    /// `(def pattern scrutinee ...)` — the binding pattern, its scrutinee, the
+    /// rest of the body it was written in, and the arms that stand in for that
+    /// body when the pattern does not match.
+    ///
+    /// Every failure part is an arm by the time it gets here: a written value
+    /// is the arm no pattern refines, and a bare clause is the case the pattern
+    /// left out, rebuilt. No arms at all is a pattern that cannot fail.
     ///
     /// An arm is the form's other arm exactly as an `if`'s is: it produces the
     /// value of the whole form. It jumps nowhere by itself, so a body that means
@@ -842,9 +847,9 @@ and TExprNode =
     /// Kept as a node rather than desugared into `TMatch`, so that the sequel
     /// stays where it was written — after the form, in the block the form stands
     /// in. As a match arm's body it would be generated inside a switch section,
-    /// which scopes its bindings to the section, and every `def+` in a body
+    /// which scopes its bindings to the section, and every such `def` in a body
     /// would nest the whole remainder of that body one level deeper.
-    | TBindElse of TypedPattern * TypedExpr * TypedExpr * TBindElseArm list
+    | TDefMatch of TypedPattern * TypedExpr * TypedExpr * TDefMatchArm list
     /// A dispatched trait method: the dictionary's type, the method, the
     /// method's type *at this call*, the dictionary, and the arguments.
     ///
@@ -979,14 +984,14 @@ and TMatchClause =
       Guard: TypedExpr option
       Body: TypedExpr }
 
-/// One arm of a `def+`: the pattern it matches the scrutinee against, and what
+/// One arm of a `def`: the pattern it matches the scrutinee against, and what
 /// the whole form produces when it does.
 ///
 /// There is no `Guard` field beside the pattern, unlike `TMatchClause`: a
 /// `#:when` is a second way to fail an arm, and an arm that can fail without
 /// another arm catching what it let through is what exhaustiveness exists to
 /// refuse. Write the test as a pattern, or as an `if` in the arm's body.
-and TBindElseArm =
+and TDefMatchArm =
     { Pattern: TypedPattern
       Body: TypedExpr }
 

@@ -1,0 +1,17 @@
+;; Propagation constructs the missing case at the *body's* type, so the body has
+;; to be able to hold it.
+;;
+;; The value type is free — `(Option string)` in, `(Option int)` out — but the
+;; type constructor is not: an int body has no `None` to return.
+
+;; EXPECT-ERROR: would return None here, but this body has type int
+
+(import (std prelude))
+
+(: lookup (-> string (Option string)))
+(defun (lookup k) (if (= k "host") (Some k) None))
+
+(: size (-> string int))
+(defun (size k)
+  (def (Some found) (lookup k))
+  (string-length found))

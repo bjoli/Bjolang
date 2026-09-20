@@ -90,6 +90,34 @@ let private checkDiscard (registry: TraitRegistry) (what: string) (expr: TypedEx
         failwithf
             $"Type Error at %s{formatPos expr.Range}: this value has type %s{describe expr.Type} and is discarded.\n  %s{what}\n  Every value that is computed and then dropped has to say so: write `(ignore ...)` around it. A value that goes missing without a word is the bug this rule exists to catch."
 
+/// The refutable `def` a body ends in, if it ends in one.
+///
+/// A `def` swallows the rest of the body it stands in, so the value of such a
+/// body is the `def`'s: the sequel's when the pattern matched, and the failure
+/// part's when it did not.
+let rec private refutableDef (expr: TypedExpr) : TypedExpr option =
+    match expr.Node with
+    | TDefMatch(_, _, _, arms) when not arms.IsEmpty -> Some expr
+    | TLet(_, _, _, _, body)
+    | TLetRec(_, body)
+    | TLetTuple(_, _, body)
+    | TLetMutable(_, _, body) -> refutableDef body
+    | _ -> None
+
+/// Says where a failing `def` leaves, for a body whose value goes nowhere.
+///
+/// Nothing in the syntax announces the extent: the block a `def` leaves is the
+/// innermost body it stands in, which here is not the function, and the code
+/// after that body still runs. Only reported where the value is dropped in
+/// silence — a body carrying a value says so through `checkDiscard` instead.
+let private warnFailureDiscarded (registry: TraitRegistry) (what: string) (expr: TypedExpr) : unit =
+    if carriesNothing registry expr.Type then
+        match refutableDef expr with
+        | Some node ->
+            Diagnostics.warn
+                $"Warning at %s{formatPos node.Range}: a failing def here leaves %s{what}, not the function. Its failure value becomes that body's value and is discarded, and what follows the body still runs."
+        | None -> ()
+
 let rec private checkExpr (registry: TraitRegistry) (expr: TypedExpr) : unit =
     let descend = checkExpr registry
 
@@ -103,6 +131,7 @@ let rec private checkExpr (registry: TraitRegistry) (expr: TypedExpr) : unit =
     // which is right: `(def _ (f x))` is a discard spelled unusually, and the
     // rule is that a discard is spelled `ignore`.
     | TLet("_", false, _, value, body) ->
+        warnFailureDiscarded registry "the body it stands in" value
         checkDiscard registry "It is a form in the middle of a body, so its value is dropped." value
         descend value
         descend body
@@ -111,6 +140,7 @@ let rec private checkExpr (registry: TraitRegistry) (expr: TypedExpr) : unit =
     // nowhere to go by construction.
     | TWhen(cond, body, _) ->
         descend cond
+        warnFailureDiscarded registry "the (when ...) or (unless ...) body it stands in" body
         checkDiscard registry "A (when ...) or (unless ...) body has no branch to return to, so its value is dropped." body
         descend body
 

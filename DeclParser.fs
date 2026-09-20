@@ -530,6 +530,25 @@ let rec tryParseDecl (s: SExpr) : Decl option =
     | SList(SAtom { Token = Symbol "def" } :: SList([ SAtom { Token = Colon }; SAtom { Token = Symbol name }; tType ], _) :: [ expr ], _) ->
         Some(DDef(name, parseExpr expr, r))
 
+    // A binding that may fail, written where there is nothing for it to bind
+    // over. It swallows the rest of its body, and the top level is a list of
+    // declarations rather than a body — so there is no sequel to give it, and
+    // no value for a failure to become.
+    //
+    // A REPL entry is a top level too. Binding a pattern at the prompt is a
+    // thing to want and is not what this reports on; the REPL would have to
+    // decide what the *rest of the session* is, and it does not.
+    | SList(SAtom { Token = Symbol(("def" | "def*") as head) } :: rest, _) when
+        (match head, rest with
+         | "def*", _ -> true
+         | _, _ :: _ :: _ :: _ -> true
+         | _, [ SList(SAtom { Token = Symbol caseName } :: _, _); _ ] ->
+             caseName <> "Tuple" && System.Char.IsUpper caseName[0]
+         | _ -> false)
+        ->
+        failwithf
+            $"Syntax error at %s{Lexer.formatPos r}: `%s{head}` binds over the rest of the body it stands in, and the top level is not a body. Put it inside a function, a `let` or a `with-return`. A REPL entry is a top level as well, so a prompt cannot take one either."
+
     | SList(SAtom { Token = Symbol "def" } :: SList(names, _) :: [ expr ], _) ->
         let rawNames =
             names

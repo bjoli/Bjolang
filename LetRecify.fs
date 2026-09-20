@@ -165,16 +165,12 @@ let rec letrecifyExpr (expr: Expr) : Expr =
 
     | EWithReturn(name, body, r) -> EWithReturn(name, letrecifyExpr body, r)
 
-    | EBindElse(binder, scrutinee, sequel, arms, r) ->
-        let arms' =
-            arms
-            |> List.map (fun (p, body) -> (Ast.mapPatternSteps letrecifyExpr p, letrecifyExpr body))
-
-        EBindElse(
+    | EDefMatch(binder, scrutinee, failure, sequel, r) ->
+        EDefMatch(
             Ast.mapPatternSteps letrecifyExpr binder,
             letrecifyExpr scrutinee,
+            Ast.mapDefFailure letrecifyExpr (Ast.mapPatternSteps letrecifyExpr) failure,
             letrecifyExpr sequel,
-            arms',
             r
         )
 

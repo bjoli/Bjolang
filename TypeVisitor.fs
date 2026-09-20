@@ -104,13 +104,13 @@ let mapChildren (f: TypedExpr -> TypedExpr) (expr: TypedExpr) : TypedExpr =
         | TMatch(target, clauses) -> TMatch(f target, List.map mapClause clauses)
         | TWithReturn(label, body) -> TWithReturn(label, f body)
         | TReturn(label, value) -> TReturn(label, Option.map f value)
-        | TBindElse(binder, scrutinee, sequel, arms) ->
-            TBindElse(
+        | TDefMatch(binder, scrutinee, sequel, arms) ->
+            TDefMatch(
                 mapPat binder,
                 f scrutinee,
                 f sequel,
                 arms
-                |> List.map (fun (a: TBindElseArm) ->
+                |> List.map (fun (a: TDefMatchArm) ->
                     { Pattern = mapPat a.Pattern
                       Body = f a.Body })
             )

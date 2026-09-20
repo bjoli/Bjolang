@@ -3,6 +3,57 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~def~ and ~def*~ replace ~def+~, and a bare clause propagates
+
+The form is no longer spelled apart from the binding it is. A ~def~ takes a
+pattern and a third slot saying what the body produces when the pattern does not
+match, and ~def*~ is several of those in a row:
+
+#+BEGIN_SRC scheme
+(def pattern scrutinee)                     ;; propagate
+(def pattern scrutinee value-expr)          ;; the body evaluates to value-expr
+(def pattern scrutinee :fail (arm arm ...)) ;; the arms decide
+
+(def* clause clause ...)
+#+END_SRC
+
+~def~ is to ~def*~ what ~let~ is to ~let*~, and nothing here jumps: a failure
+value simply becomes the value of the enclosing body.
+
+**A bare clause propagates.** The case the pattern leaves out is rebuilt at the
+*body's* type — a fresh ~None~, or an ~Err~ around the payload that came in — so
+the value type is free and the error type is not. ~which~ in ~bjo.bjo~ is the
+shape this was written for: two lookups, each answering ~None~ by itself, and no
+failure written down at all.
+
+The restriction is one check over the constructors the pattern leaves
+uncovered: exactly one, belonging to ~Option~ or ~Result~. It sits where the
+general rule would — uncovered constructors mentioning only type parameters
+shared by scrutinee and body — so relaxing it later is a condition and not a
+path.
+
+**Three failure shapes, one of them new, and the third slot is never arms.** The
+pattern is unparenthesised at the head, so nothing is disambiguated by shape;
+arms go after ~:fail~, and a list of arms written without it is answered with
+the keyword rather than with a type error about a call to a list.
+
+**~def*~ short-circuits and scopes sequentially**, because it is parsed as one
+clause nested inside the next. A failing clause evaluates no later scrutinee,
+and binder names must be distinct across clauses — they share the sequel's
+scope, so shadowing there would be silent.
+
+**The extent is the innermost body, and it now says so.** A refutable ~def~ in a
+~when~ body leaves the ~when~, not the function, and the code after the ~when~
+still runs. Where that value then goes nowhere in silence, the compiler warns
+and names the body it resolved to. Where the body carries a value, the must-use
+rule was already reporting it.
+
+What it leaves open: the top level is not a body, so neither form can stand
+there — which includes a REPL entry, where binding a pattern is a thing to want.
+Making the prompt take one means deciding what the rest of the session is, and
+on a failure nothing may be bound at all. Refused with a message saying so,
+rather than given an answer the language does not have.
+
 * ~(std rx)~: regular expressions, compiled while your file is
 
 Patterns are s-expressions in SRE notation, read and compiled to a .NET pattern
@@ -58,7 +109,7 @@ is now the second entry, on the same grounds the comment there already gave for
 the first: its constructor is internal and it has no public members, so there is
 no ~import/class~ alias for it to disagree with.
 
-* ~def+~ replaces ~def/else~ and ~def/else*~, and its arms are checked
+* ~def+~ replaced ~def/else~ and ~def/else*~, and its arms were checked
 
 A binding that may fail now names what happens when it does, as arms over the
 same scrutinee:

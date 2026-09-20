@@ -118,6 +118,68 @@ let private joinLiteralElement
         failwithf
             $"Type Error at %s{Lexer.formatPos r}: nothing here says what this %s{kind} literal holds, and its elements do not agree on a type by themselves:\n  %s{shown[0]}\n  %s{shown[1]}\nA literal with a nested list among its elements stands for a union, and which union it stands for comes from the type expected where it is written. A generic parameter expects nothing in particular, so there is none: annotate the value and pass that, as in (def (: procs (List ProcList)) (list '(...)))."
 
+// ---------------------------------------------------------------------------
+// `def` propagation
+// ---------------------------------------------------------------------------
+
+/// The cases of the union `t` is, as name and payload count, or `None` when `t`
+/// is not a union at all.
+///
+/// A declared union wins over a builtin of the same name, as it does in
+/// `Exhaustiveness`: a module that defines its own `Result` propagates its own
+/// cases.
+let private unionCasesOf (registry: TraitRegistry) (t: HMType) : (string * int) list option =
+    match t with
+    | TCon(name, args) ->
+        match Map.tryFind name registry.Unions with
+        | Some(_, cases) -> Some(cases |> List.map (fun (caseName, payloads, _) -> caseName, payloads.Length))
+        | None ->
+            match name, args with
+            | "Option", [ _ ] -> Some [ "None", 0; "Some", 1 ]
+            | "Result", [ _; _ ] -> Some [ "Err", 1; "Ok", 1 ]
+            | "List", [ _ ] -> Some [ "Nil", 0; "Cons", 2 ]
+            | _ -> None
+    | _ -> None
+
+/// Whether a pattern matches every value of its type.
+let rec private alwaysMatches (pat: TypedPattern) : bool =
+    match pat.Node with
+    | TPWildcard
+    | TPIdent _ -> true
+    | TPAs(inner, _) -> alwaysMatches inner
+    | TPTuple items -> List.forall alwaysMatches items
+    | TPAnd alts -> List.forall alwaysMatches alts
+    | _ -> false
+
+/// The constructors of `t` that `binder` leaves out, as name and payload count.
+///
+/// `None` where the leftovers are not a set of constructors: a literal, a
+/// sequence pattern, a view, or a constructor whose fields are themselves
+/// refutable. Propagation needs exactly one constructor to rebuild, so `None`
+/// and a list of any length but one are refused alike — which is where the rule
+/// can later be relaxed without moving the path.
+let private uncoveredCases
+    (registry: TraitRegistry)
+    (t: HMType)
+    (binder: TypedPattern)
+    : (string * int) list option =
+    let rec covered (pat: TypedPattern) =
+        match pat.Node with
+        | TPAs(inner, _) -> covered inner
+        | TPConstruct(name, args) when List.forall alwaysMatches args -> Some name
+        | _ -> None
+
+    if alwaysMatches binder then
+        Some []
+    else
+        match covered binder, unionCasesOf registry t with
+        | Some name, Some cases -> Some(cases |> List.filter (fun (c, _) -> c <> name))
+        // A constructor pattern on a type with no cases to list is a record or
+        // a CLR class: there is one way to build one, so the pattern matches
+        // every value of it.
+        | Some _, None -> Some []
+        | None, _ -> None
+
 /// What a function-shaped local binding declares, before its body is looked at.
 ///
 /// Built first so that a recursive call *inside* the body — one that passes a
@@ -284,8 +346,8 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
           Range = r
           Node = TWithReturn(label, typedBody) }
 
-    | EBindElse(binder, scrutinee, sequel, arms, r) ->
-        inferBindElse env binder scrutinee sequel arms r
+    | EDefMatch(binder, scrutinee, failure, sequel, r) ->
+        inferDefMatch env binder scrutinee failure sequel r
 
 
     // `std/eq`'s own equality primitives, refused everywhere else. See
@@ -771,12 +833,12 @@ and private inferEscapeCall (env: Env) (name: string) (args: Expr list) (r: Rang
       Range = r
       Node = TReturn(info.Label, typedValue) }
 
-and private inferBindElse
+and private inferDefMatch
     (env: Env)
     (binder: Pattern)
     (scrutinee: Expr)
+    (failure: DefFailure)
     (sequel: Expr)
-    (arms: (Pattern * Expr) list)
     (r: Range)
     : HMType * TypedExpr =
     // One scrutinee, matched by the binder and by every arm, so it is inferred
@@ -784,44 +846,48 @@ and private inferBindElse
     let scrutineeType, typedScrutinee = infer env scrutinee
     let typedBinder, boundVars = checkPattern inferChecked env scrutineeType binder
 
-    let boundEnv =
+    let withVars vars inner =
         Map.fold
-            (fun inner n t ->
+            (fun acc n t ->
                 addBinding
                     n
                     { Scheme = Scheme([], [], t)
                       IsMutable = false }
-                    inner)
-            env
-            boundVars
+                    acc)
+            inner
+            vars
 
     // The sequel is the rest of the body, so the form's own type is the
-    // sequel's — and so is every arm's. They are the form's arms exactly as an
-    // `if`'s are: whichever runs produces the whole form's value. A body that
+    // sequel's — and so is the failure part's. Whichever runs produces the
+    // whole form's value, exactly as an `if`'s two branches do. A body that
     // means to leave an enclosing block says so with a `(ret ...)`, which is an
     // ordinary tail-position form here.
-    let sequelType, typedSequel = infer boundEnv sequel
+    let sequelType, typedSequel = infer (withVars boundVars env) sequel
 
-    // An arm is checked in `env` and not in `boundEnv`: it runs because the
-    // binder did not match, so nothing the binder would have bound exists. What
-    // the arm's own pattern binds is in scope in that arm and nowhere else.
+    // A bare clause rebuilds the case its pattern leaves out, so it is written
+    // as the arm that rebuilds it and checked as any other arm is. The name is
+    // kept for the report: a propagation that does not fit the body is a
+    // mistake about this form rather than about the arm's type.
+    let propagated =
+        match failure with
+        | FailPropagate -> propagatedArm env scrutineeType typedBinder r
+        | _ -> None
+
+    let failureArms =
+        match failure with
+        | FailArms arms -> arms
+        | FailValue value -> [ PWildcard(exprRange value), value ]
+        | FailPropagate -> propagated |> Option.map snd |> Option.toList
+
+    // The failure part is checked in `env` and not under what the binder binds:
+    // it runs because the binder did not match, so nothing the binder would
+    // have bound exists. What an arm's own pattern binds is in scope in that
+    // arm and nowhere else.
     let typedArms =
-        arms
+        failureArms
         |> List.map (fun (armPattern, armBody) ->
             let typedPattern, armVars = checkPattern inferChecked env scrutineeType armPattern
-
-            let armEnv =
-                Map.fold
-                    (fun inner n t ->
-                        addBinding
-                            n
-                            { Scheme = Scheme([], [], t)
-                              IsMutable = false }
-                            inner)
-                    env
-                    armVars
-
-            let armType, typedBody = infer armEnv armBody
+            let armType, typedBody = infer (withVars armVars env) armBody
 
             try
                 unify env.Registry armType sequelType
@@ -829,25 +895,83 @@ and private inferBindElse
                 let shown =
                     DotNetInterop.showTypesTogether [ prune env.Registry armType; prune env.Registry sequelType ]
 
-                // The `void` sequel is the mistake this form invites, and it is
-                // worth naming: it is what a body written for its effects
-                // leaves behind, and the arm that "returned a value" from it
-                // was relying on an escape this form does not perform.
-                let hint =
-                    if shown[1] = "void" then
-                        "\nThe rest of the body produces nothing, so an arm may not produce anything either. If it was meant to leave the enclosing block, say so: `(ret ...)` naming an enclosing `with-return`, or `(panic! ...)`."
-                    else
-                        "\nAn arm produces the form's value, as an `if`'s else does — it does not leave the enclosing block by itself. To leave one, write it: `(ret ...)` naming an enclosing `with-return`, or `(panic! ...)`."
+                match propagated with
+                | Some(caseName, _) ->
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos r}: `def` would return %s{Naming.showTypeName caseName} here, but this body has type %s{shown[1]}."
+                | None ->
+                    // The `void` sequel is the mistake this form invites, and
+                    // it is worth naming: it is what a body written for its
+                    // effects leaves behind, and the failure that "returned a
+                    // value" from it was relying on an escape this form does
+                    // not perform.
+                    let hint =
+                        if shown[1] = "void" then
+                            "\nThe rest of the body produces nothing, so the failure may not produce anything either. If it was meant to leave the enclosing block, say so: `(ret ...)` naming an enclosing `with-return`, or `(panic! ...)`."
+                        else
+                            "\nA failure produces the form's value, as an `if`'s else does — it does not leave the enclosing block by itself. To leave one, write it: `(ret ...)` naming an enclosing `with-return`, or `(panic! ...)`."
 
-                failwithf
-                    $"Type Error at %s{Lexer.formatPos typedBody.Range}: a `def+` arm produces the value of the whole form, and here it disagrees with the rest of the body:\n  the arm:              %s{shown[0]}\n  the rest of the body: %s{shown[1]}%s{hint}"
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos typedBody.Range}: what a `def` produces when its pattern does not match is the value of the whole form, and here it disagrees with the rest of the body:\n  the failure:          %s{shown[0]}\n  the rest of the body: %s{shown[1]}%s{hint}"
 
-            ({ Pattern = typedPattern; Body = typedBody }: TBindElseArm))
+            ({ Pattern = typedPattern; Body = typedBody }: TDefMatchArm))
 
     sequelType,
     { Type = sequelType
       Range = r
-      Node = TBindElse(typedBinder, typedScrutinee, typedSequel, typedArms) }
+      Node = TDefMatch(typedBinder, typedScrutinee, typedSequel, typedArms) }
+
+/// The arm a bare clause propagates through: the one case its pattern leaves
+/// out, matched and rebuilt.
+///
+/// `None` for a pattern that cannot fail — then there is nothing to propagate
+/// and the clause is a plain destructuring bind.
+///
+/// The case is rebuilt rather than the scrutinee returned, which is what lets
+/// the value type change: `None` is constructed fresh at the body's type, and
+/// an `Err`'s payload is carried across into a new one. Whether the body admits
+/// that is decided by unifying the arm with the sequel, as for any other arm.
+and private propagatedArm
+    (env: Env)
+    (scrutineeType: HMType)
+    (binder: TypedPattern)
+    (r: Range)
+    : (string * (Pattern * Expr)) option =
+    let settled =
+        try
+            prune env.Registry scrutineeType
+        with _ ->
+            scrutineeType
+
+    let shown = DotNetInterop.showType settled
+
+    let refuse () =
+        match settled with
+        | TCon(("Option" | "Result"), _) ->
+            failwithf
+                $"Type Error at %s{Lexer.formatPos r}: `def` propagates by rebuilding the one case its pattern leaves out, and this pattern leaves more of %s{shown} than that. Give a failure value or a :fail clause."
+        | TCon(name, _) when Map.containsKey name env.Registry.Unions ->
+            failwithf
+                $"Type Error at %s{Lexer.formatPos r}: `def` only propagates Option and Result. %s{shown} is a user union — give a failure value or a :fail clause."
+        | _ ->
+            failwithf
+                $"Type Error at %s{Lexer.formatPos r}: `def` only propagates Option and Result, and %s{shown} is neither — give a failure value or a :fail clause."
+
+    match uncoveredCases env.Registry settled binder with
+    | Some [] -> None
+    | Some [ (caseName, arity) ] ->
+        match settled with
+        | TCon(("Option" | "Result"), _) ->
+            let carried = List.init arity (fun _ -> Gensym.fresh "carried")
+
+            let rebuilt =
+                match carried with
+                | [] -> EIdent(caseName, r)
+                | _ -> EApp(EIdent(caseName, r), carried |> List.map (fun n -> EIdent(n, r)), r)
+
+            Some(caseName, (PConstruct(caseName, carried |> List.map (fun n -> PIdent(n, r)), r), rebuilt))
+        | _ -> refuse ()
+    | _ -> refuse ()
 
 // `Class.Member` — a static field or property. This is how an enum value
 // such as `FileMode.Open` is written, and it is why `import/class` is

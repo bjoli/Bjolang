@@ -923,18 +923,25 @@ let rec serializeExpr (e: Ast.Expr) : string =
 
     | Ast.EWithReturn(name, body, _) -> list [ "with-return"; name; serializeExpr body ]
 
-    // A `def+` holds the rest of the body it was written in, and the reader
+    // A `def` holds the rest of the body it was written in, and the reader
     // gives it that sequel back by position rather than from the form itself.
     // So it is written out as a *body* — `begin` splices in body position, and
     // `parseBody` hands the form whatever follows it there, which is exactly
     // the sequel that went in.
-    | Ast.EBindElse(binder, scrutinee, sequel, arms, _) ->
-        let armForms =
-            arms
-            |> List.map (fun (pat, body) -> list [ serializePattern pat; serializeExpr body ])
+    //
+    // One clause per form, which is what a `def*` was already read as: its
+    // clauses nest, so each of them writes itself back as a `def` of its own.
+    | Ast.EDefMatch(binder, scrutinee, failure, sequel, _) ->
+        let failureForms =
+            match failure with
+            | Ast.FailPropagate -> []
+            | Ast.FailValue value -> [ serializeExpr value ]
+            | Ast.FailArms arms ->
+                [ ":fail"
+                  list (arms |> List.map (fun (pat, body) -> list [ serializePattern pat; serializeExpr body ])) ]
 
         let bindForm =
-            list ([ "def+"; list [ serializePattern binder; serializeExpr scrutinee ] ] @ armForms)
+            list ([ "def"; serializePattern binder; serializeExpr scrutinee ] @ failureForms)
 
         list [ "begin"; bindForm; serializeExpr sequel ]
 
@@ -1261,7 +1268,7 @@ let rec isStatementShaped (expr: TypedExpr) : bool =
     // All three are jumps or hold one, and C# has no expression that jumps.
     | TWithReturn _
     | TReturn _
-    | TBindElse _ -> true
+    | TDefMatch _ -> true
 
     // A conditional stays `c ? t : f` as long as it yields a value and neither
     // arm needs statements. Hoisting out of an arm would evaluate it
@@ -2119,7 +2126,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     // second one to keep in step with `generateBlock`'s.
     | TWithReturn _
     | TReturn _
-    | TBindElse _ ->
+    | TDefMatch _ ->
         codegenError
             expr.Range
             "this form is a jump, and C# has no expression that jumps; it should have been hoisted into a statement"
@@ -3338,7 +3345,7 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
 
     | TReturn (label, value) -> generateEscape ctx ctx.Returns[label] value
 
-    | TBindElse (binder, scrutineeExpr, sequel, arms) ->
+    | TDefMatch (binder, scrutineeExpr, sequel, arms) ->
         // The sequel and every arm are the form's arms, so all of them are
         // generated into the *same* target: whichever runs produces the value.
         //
@@ -3376,13 +3383,25 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
         // scopes its bindings to the section, which the sequel is not inside of.
         // The chain needs no label of its own: each arm is emitted once, in
         // place, and control rejoins after the chain.
+        // A written failure value is the arm no pattern refines, and C# has no
+        // `is` spelling for one: it becomes the `else` itself.
+        let isCatchAll (pattern: TypedPattern) =
+            match pattern.Node with
+            | TPWildcard -> true
+            | _ -> false
+
         let emitArm (c: CodegenContext) (pattern: TypedPattern) (body: TypedExpr) (isFirst: bool) =
-            let views = ResizeArray<ViewFragment>()
             indent c
-            append c (if isFirst then $"if (%s{scrutinee} is " else $"else if (%s{scrutinee} is ")
-            generatePattern c views pattern
-            generateClauseGuard c views None
-            appendLine c ") {"
+
+            if not isFirst && isCatchAll pattern then
+                appendLine c "else {"
+            else
+                let views = ResizeArray<ViewFragment>()
+                append c (if isFirst then $"if (%s{scrutinee} is " else $"else if (%s{scrutinee} is ")
+                generatePattern c views pattern
+                generateClauseGuard c views None
+                appendLine c ") {"
+
             withIndent c (fun inner -> generateBlock inner armTarget body)
             indent c
             appendLine c "}"
@@ -3396,17 +3415,18 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
         // uncovered, so this throw is unreachable — and it is emitted anyway,
         // for the reason a switch statement's `default:` carries one: C# cannot
         // see that the chain always takes a branch, and without a final `else`
-        // it calls a `def+` in return position CS0161 and a target assigned in
+        // it calls a `def` in return position CS0161 and a target assigned in
         // every arm unassigned.
-        indent ctx
-        appendLine ctx "else {"
+        if not (arms |> List.exists (fun arm -> isCatchAll arm.Pattern)) then
+            indent ctx
+            appendLine ctx "else {"
 
-        withIndent ctx (fun c ->
-            indent c
-            appendLine c $"throw new Exception(\"Match failure at %s{Lexer.formatPos expr.Range}\");")
+            withIndent ctx (fun c ->
+                indent c
+                appendLine c $"throw new Exception(\"Match failure at %s{Lexer.formatPos expr.Range}\");")
 
-        indent ctx
-        appendLine ctx "}"
+            indent ctx
+            appendLine ctx "}"
 
     // Any node with no statement shape of its own: emit it as a C# expression
     // and let `emitTerminal` discharge the target. The `emitStatement` wrapper

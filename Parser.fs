@@ -610,14 +610,14 @@ let rec parseExpr (s: SExpr) : Expr =
                     failwithf
                         $"Syntax error at %s{Lexer.formatPos r}: with-return needs a name for its escape. Expected: (with-return name body...). The name is required — there is no implicit `return`."
 
-            // A `def+` that got this far is one `parseBody` did not take,
-            // which means it is not in body position. It has nowhere to put its
-            // sequel there, so saying so is the only answer: reading it as a
-            // call would fail with "Unbound variable: def+" and name
+            // A `def` or a `def*` that got this far is one `parseBody` did not
+            // take, which means it is not in body position. It has nowhere to
+            // put its sequel there, so saying so is the only answer: reading it
+            // as a call would fail with "Unbound variable: def" and name
             // nothing the programmer did wrong.
-            | "def+" ->
+            | ("def" | "def*") as head ->
                 failwithf
-                    $"Syntax error at %s{Lexer.formatPos r}: `def+` must appear directly in a body, not inside another expression."
+                    $"Syntax error at %s{Lexer.formatPos r}: `%s{head}` must appear directly in a body, not inside another expression."
 
             // A `seq` body is a block like any other, but it is *not* run where
             // it is written: the form evaluates to a sequence, and the body runs
@@ -1559,18 +1559,18 @@ and parseDefunReturn (rest: SExpr list) : FType option * SExpr list =
 
 /// A body: a sequence of forms, where a definition scopes over what follows it.
 ///
-/// Five heads are consumed *here* rather than by `parseExpr`, and are reserved
-/// in body position because of it: `def`, `defun`, `defbjo`, `def/mutable` and
-/// `begin`. The parser has no scope at parse time, so it cannot know that one
-/// of them was rebound — `(defun (begin xs) ...)` still defines a function, but
-/// it can never be *called* as `(begin xs)` inside a body, and
-/// `(let ((begin f)) (begin 1 2))` splices rather than calls.
+/// Six heads are consumed *here* rather than by `parseExpr`, and are reserved
+/// in body position because of it: `def`, `def*`, `defun`, `defbjo`,
+/// `def/mutable` and `begin`. The parser has no scope at parse time, so it
+/// cannot know that one of them was rebound — `(defun (begin xs) ...)` still
+/// defines a function, but it can never be *called* as `(begin xs)` inside a
+/// body, and `(let ((begin f)) (begin 1 2))` splices rather than calls.
 ///
-/// The same is already true of the other four, and for the same reason.
+/// The same is already true of the other five, and for the same reason.
 and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
     // The third renaming rule, for the heads this function consumes.
     //
-    // `def`, `defun`, `def/mutable`, `defbjo` and `begin` never reach
+    // `def`, `def*`, `defun`, `def/mutable`, `defbjo` and `begin` never reach
     // `parseExpr`'s special-form chain, because `parseBody` takes them first —
     // so a template that writes `(let () (def x 1) x)` needs its mark stripped
     // here or the `def` is read as a call to something named `def`.
@@ -1582,26 +1582,128 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
     // macro-written body is the whole point of the form, so leaving it out
     // would make the feature do nothing where it is most wanted.
     //
-    // Only these five, and only the head. Every other identifier keeps its
+    // Only these six, and only the head. Every other identifier keeps its
     // mark: that is what rule two resolves a macro module's own helper by, and
     // what keeps a template's binder uncapturable.
     let unmarkedHead (items: SExpr list) =
         match items with
         | SList(SAtom({ Token = Symbol sym } as head) :: rest, r) :: tail when sym <> headName sym ->
             match headName sym with
-            // `def+` is here for the same reason `def` is: it is consumed by
+            // `def*` is here for the same reason `def` is: it is consumed by
             // this function and never reaches `parseExpr`'s chain, so a template
             // that writes one arrives marked and would otherwise be read as a
-            // call to something named `def+__37`.
+            // call to something named `def*__37`.
             | ("def"
               | "defun"
               | "defbjo"
               | "def/mutable"
-              | "def+"
+              | "def*"
               | "begin") as stripped ->
                 SList(SAtom { head with Token = Symbol stripped } :: rest, r) :: tail
             | _ -> items
         | _ -> items
+
+    // The `def` shapes that bind a name outright: a name, a name with its type,
+    // and a tuple destructuring. Everything else a `def` may bind is a pattern
+    // that can fail, and so is any `def` carrying a failure part.
+    //
+    // A capitalized head is a constructor and never a tuple of names, which is
+    // what tells `(def (a b) pair)` from `(def (Some x) opt)`.
+    let isPlainBinder (binder: SExpr) =
+        let symbol s =
+            match s with
+            | SAtom { Token = Symbol _ }
+            | SAtom { Token = Comma } -> true
+            | _ -> false
+
+        match binder with
+        | SAtom { Token = Symbol _ } -> true
+        | SList([ SAtom { Token = Colon }; SAtom { Token = Symbol _ }; _ ], _) -> true
+        | SList((SAtom { Token = Symbol head } :: _) as names, _) ->
+            List.forall symbol names
+            && (head = "Tuple" || not (System.Char.IsUpper head[0]))
+        | _ -> false
+
+    // `(pattern body ...)`, which is what an arm is and what nothing else in
+    // the form is.
+    let parseFailArm (form: SExpr) =
+        match form with
+        | SList(armPattern :: bodyForms, ar) when not bodyForms.IsEmpty ->
+            (parsePattern armPattern, parseBody bodyForms ar)
+        | bad ->
+            failwithf
+                $"Syntax error at %s{Lexer.formatPos (getRange bad)}: a :fail arm is written (pattern body ...)."
+
+    // A list of lists whose heads read as patterns: the arms a reader who meant
+    // `:fail` wrote in the value slot. Checked so that the answer is the missing
+    // keyword rather than a type error about a call to a list.
+    let looksLikeArms (form: SExpr) =
+        let patternish (s: SExpr) =
+            match s with
+            | SAtom { Token = Symbol sym } -> sym = "_" || System.Char.IsUpper sym[0]
+            | SList(SAtom { Token = Symbol sym } :: _, _) -> System.Char.IsUpper sym[0]
+            | _ -> false
+
+        match form with
+        | SList((_ :: _) as arms, _) ->
+            arms
+            |> List.forall (function
+                | SList(head :: _ :: _, _) -> patternish head
+                | _ -> false)
+        | _ -> false
+
+    // What follows a clause's scrutinee: nothing, one expression, or `:fail`
+    // and its arms.
+    let parseDefFailure (r: Range) (forms: SExpr list) : DefFailure =
+        match forms with
+        | [] -> FailPropagate
+        | [ SAtom { Token = Keyword "fail" }; SList((_ :: _) as armForms, _) ] ->
+            FailArms(armForms |> List.map parseFailArm)
+        | SAtom { Token = Keyword "fail" } :: _ ->
+            failwithf
+                $"Syntax error at %s{Lexer.formatPos r}: `:fail` takes one list of arms: :fail ((pattern body ...) ...)."
+        | [ value ] when looksLikeArms value ->
+            failwithf
+                $"Syntax error at %s{Lexer.formatPos (getRange value)}: the third slot of a `def` is the value the body takes when the pattern does not match, and this is a list of arms. Arms go after `:fail`: (def pattern scrutinee :fail ((pattern body ...) ...))."
+        | [ value ] -> FailValue(parseExpr value)
+        | _ ->
+            failwithf
+                $"Syntax error at %s{Lexer.formatPos r}: expected (def pattern scrutinee), (def pattern scrutinee value) or (def pattern scrutinee :fail (arm ...))."
+
+    // The clauses of a `def*`, in source order.
+    //
+    // Every clause's binders share one scope — the sequel's — so a name bound
+    // by two of them is refused rather than shadowed.
+    let parseDefStarClauses (r: Range) (clauseForms: SExpr list) =
+        if clauseForms.IsEmpty then
+            failwithf
+                $"Syntax error at %s{Lexer.formatPos r}: expected (def* (pattern scrutinee ...) ...). A def* clause is always parenthesised, including when there is only one."
+
+        let clauses =
+            clauseForms
+            |> List.map (function
+                | SList(binder :: scrutinee :: failure, cr) ->
+                    (parsePattern binder, parseExpr scrutinee, parseDefFailure cr failure, cr)
+                | bad ->
+                    failwithf
+                        $"Syntax error at %s{Lexer.formatPos (getRange bad)}: a def* clause is written (pattern scrutinee), (pattern scrutinee value) or (pattern scrutinee :fail (arm ...)).")
+
+        clauses
+        |> List.iteri (fun i (binder, _, _, cr) ->
+            let mine = patternBinders binder |> Set.ofList
+
+            clauses
+            |> List.iteri (fun j (earlier, _, _, _) ->
+                if j < i then
+                    match patternBinders earlier |> List.filter mine.Contains with
+                    | [] -> ()
+                    | shared ->
+                        let names = String.concat ", " shared
+
+                        failwithf
+                            $"Syntax error at %s{Lexer.formatPos cr}: %s{names} is bound by clause %d{j + 1} of this def* as well, and both are in scope in the rest of the body. Bind it once."))
+
+        clauses
 
     let rec collectDefs acc remaining =
         match unmarkedHead remaining with
@@ -1685,47 +1787,41 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         // after it — where only one was written.
         | SList(SAtom { Token = Symbol "begin" } :: inner, _) :: rest -> parseItems (inner @ rest)
 
-        // `(def+ (pattern scrutinee) (pattern body ...) ...)`.
+        // `(def* (pattern scrutinee ...) ...)` — several clauses, run in source
+        // order.
         //
-        // In the `def` family, and consumed here beside `def/mutable`, because
-        // it *is* a definition: what the pattern binds scopes over the rest of
-        // this body. That is `def`'s scoping and not `let`'s — a `let` opens a
-        // nested scope with a body of its own — which is why the form is handed
+        // Nested one inside the next, so that short-circuiting and sequential
+        // scope come from the shape rather than from a rule: a clause's sequel
+        // is the clause after it, and the last one's is the rest of the body.
+        | SList(SAtom { Token = Symbol "def*" } :: clauseForms, r) :: rest ->
+            let clauses = parseDefStarClauses r clauseForms
+
+            List.foldBack
+                (fun (binder, scrutinee, failure, cr) sequel -> EDefMatch(binder, scrutinee, failure, sequel, cr))
+                clauses
+                (parseItems rest)
+
+        // `(def pattern scrutinee)`, `(def pattern scrutinee value)` and
+        // `(def pattern scrutinee :fail (arm ...))` — a binding that may fail.
+        //
+        // Consumed here beside the plain `def` shapes because it *is* one of
+        // them: what the pattern binds scopes over the rest of this body. That
+        // is `def`'s scoping and not `let`'s — a `let` opens a nested scope
+        // with a body of its own — which is why the form is handed
         // `parseItems rest` as its sequel rather than desugared in `parseExpr`,
         // which has no sequel to give it.
         //
-        // The first form is always the binder and everything after it is an
-        // arm, so there is nothing positional to get wrong and no `#:else`
-        // marker to disambiguate. The arms match the same scrutinee the binder
-        // does, which is what makes them checkable: together they either cover
-        // the type or `Exhaustiveness` says which value reaches nothing.
+        // The pattern is unparenthesised at the head, so the third slot is
+        // always the failure value and never arms; arms are written after
+        // `:fail`, where nothing is positional.
         //
-        // The name was `guard` while the form was first written, and could not
-        // stay. `guard` already means a match clause's `#:when` test all
-        // through the pattern machinery — `TMatchClause.Guard`,
-        // `generateClauseGuard` — and separately names CML's event combinator,
-        // which `http.bjo` calls.
-        //
-        // No block name to give it. An arm produces this form's value and jumps
-        // nowhere, so there is nothing for a name to name: a body that means to
-        // leave a block writes the `(ret ...)` that leaves it, and that `ret`
-        // names the block itself.
-        | SList(SAtom { Token = Symbol "def+" } :: forms, r) :: rest ->
-            match forms with
-            | SList([ pattern; scrutinee ], _) :: armForms when not armForms.IsEmpty ->
-                let arms =
-                    armForms
-                    |> List.map (function
-                        | SList(armPattern :: bodyForms, ar) when not bodyForms.IsEmpty ->
-                            (parsePattern armPattern, parseBody bodyForms ar)
-                        | bad ->
-                            failwithf
-                                $"Syntax error at %s{Lexer.formatPos (getRange bad)}: a def+ arm is written (pattern body ...).")
-
-                EBindElse(parsePattern pattern, parseExpr scrutinee, parseItems rest, arms, r)
-            | _ ->
-                failwithf
-                    $"Syntax error at %s{Lexer.formatPos r}: expected (def+ (pattern scrutinee) (pattern body ...) ...). The first form binds, and every form after it is an arm for a scrutinee the binder did not match."
+        // Reached before the plain shapes below, and only for what they do not
+        // cover: a pattern that is not a name, a typed name or a tuple of
+        // names, or any `def` at all that carries a failure part.
+        | SList(SAtom { Token = Symbol "def" } :: binder :: scrutinee :: failureForms, r) :: rest when
+            not failureForms.IsEmpty || not (isPlainBinder binder)
+            ->
+            EDefMatch(parsePattern binder, parseExpr scrutinee, parseDefFailure r failureForms, parseItems rest, r)
 
         | SList(SAtom { Token = Symbol "def/mutable" } :: SAtom { Token = Symbol name } :: [ expr ], r) :: rest ->
             ELetMutable(name, None, parseExpr expr, parseItems rest, fallbackRange)
@@ -1769,7 +1865,7 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
                 let r = getRange (List.head remaining)
 
                 failwithf
-                    $"Invalid def form at %s{Lexer.formatPos r}. Expected (def name expr), (def (: name type) expr), (def (a b ...) expr) or (defun (name args...) body)."
+                    $"Invalid def form at %s{Lexer.formatPos r}. Expected (def name expr), (def (: name type) expr), (def (a b ...) expr), (def pattern scrutinee ...) or (defun (name args...) body)."
 
             ELetRec(defs, parseItems rest, fallbackRange)
 

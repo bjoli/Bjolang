@@ -350,59 +350,106 @@ A top-level ~defun~ is promoted whether or not it has keyword parameters.
 A mutable binding is **not generalized**.
 A module-level one compiles to a static field initialized **in declaration order**.
 
-*** ~def+~ — a binding that may fail
-~def+~ binds a pattern, and says what the whole form produces when the pattern
-does not match:
+*** ~def~ and ~def*~ — a binding that may fail
+A ~def~ takes a pattern, and a third slot saying what the whole form produces
+when the pattern does not match:
+
+#+BEGIN_SRC scheme
+(def pattern scrutinee)                     ;; propagate
+(def pattern scrutinee value-expr)          ;; the body evaluates to value-expr
+(def pattern scrutinee :fail (arm arm ...)) ;; the arms decide
+
+(def* clause clause ...)                    ;; a clause is a parenthesised def
+#+END_SRC
+
+~def~ is to ~def*~ what ~let~ is to ~let*~: both swallow the rest of the body,
+~def~ takes one clause and ~def*~ takes several, run in order. An arm is
+~(pattern body ...)~ and matches the clause's own scrutinee.
+
+What makes it a definition rather than a ~match~ is where the success path goes:
+what the pattern binds scopes over **the rest of the body**, exactly as a plain
+~def~'s name does. So the path that carries on is not indented under the paths
+that do not — which is the whole reason to write one.
 
 #+BEGIN_SRC scheme
 (: label (-> string string))
 (defun (label s)
-  (def+ ((Ok n) (parse-int s))
-        ((Err why) (str "refused: " why)))
+  (def (Ok n) (parse-int s) :fail (((Err why) (str "refused: " why))))
   (str "n = " (int->string n)))
 #+END_SRC
 
-The first form is the **binder**, ~(pattern scrutinee)~. Every form after it is
-an **arm**, ~(pattern body ...)~, matching the same scrutinee.
-
-What makes it a definition rather than a ~match~ is where the success path goes:
-what the binder binds scopes over **the rest of the body**, exactly as an
-internal ~def~'s name does. So the path that carries on is not indented under
-the paths that do not — which is the whole reason to write one.
-
 | | |
 |---------------------------+-------------------------------------------------|
-| the binder matches        | its bindings scope over the rest of the body, and the body's value is the form's |
-| an arm matches            | that arm's body is the form's value, and what *it* binds is in scope only there |
-| nothing matches           | refused at compile time — see exhaustiveness below |
+| the pattern matches       | its bindings scope over the rest of the body, and the body's value is the form's |
+| it does not, and a value was written | that value is the form's value; what the pattern would have bound is not in scope in it |
+| it does not, and an arm matches | that arm's body is the form's value, and what *it* binds is in scope only there |
+| it does not, and nothing was written | the missing case is rebuilt — see propagation below |
 
-An arm produces a value; it does **not** leave the enclosing function. To leave
-one, write it: ~(ret ...)~ naming an enclosing ~with-return~, or ~(panic! ...)~.
+A failure produces a value; it does **not** leave the enclosing function. To
+leave one, write it: ~(ret ...)~ naming an enclosing ~with-return~, or
+~(panic! ...)~.
 
 #+BEGIN_SRC scheme
 (defun (checked o)
   (with-return ret
-    (def+ ((Some n) o)
-          (None (ret -1)))       ;; leaves the block, because it says so
+    (def (Some n) o (ret -1))     ;; leaves the block, because it says so
     (+ n 1)))
 #+END_SRC
 
-**The binder and the arms must cover the scrutinee's type**, as a ~match~ must,
-and the counterexample is named:
+The block a failure leaves is the **innermost enclosing body**, which is not
+always the function. One inside a ~when~ leaves the ~when~, and the code after
+the ~when~ still runs; the compiler warns where that value then goes nowhere.
 
-: Pattern Error: this def+ does not cover every value. Blue matches neither the
-: binding pattern nor any arm, and a def+ has nowhere to send it.
+**The third slot is always an expression, never arms.** The pattern is
+unparenthesised at the head, so there is no shape left to tell the two apart.
+Arms go after ~:fail~, and writing them without it says so.
 
-so a type of two cases needs no wildcard — ~Cons~ and ~Nil~ are the whole of
-~List~, and writing both is what says so.
+**A bare clause propagates**, and only ~Option~ and ~Result~ do:
 
-**The binder must be able to fail.** One that always matches is a ~def~, and is
-refused rather than warned about; it is almost always a constructor that was
-not in scope and so parsed as a plain variable.
+#+BEGIN_SRC scheme
+(: name-length (-> string (Option int)))
+(defun (name-length k)
+  (def (Some found) (lookup k))       ;; (Option string) in, (Option int) out
+  (Some (string-length found)))
+#+END_SRC
 
-~def+~ must stand **directly in a body**, since a body is what gives it its
-sequel. Inside another expression there is nothing for it to bind over, and it
-says so.
+The case the pattern leaves out is **constructed fresh at the body's type** —
+this is not the scrutinee being handed back. So the value type is free and the
+error type is not: an ~Err~ is rebuilt around the payload it carried, and the
+two error types have to be one type. Anything else is an error naming the
+restriction.
+
+**A ~def*~'s clauses are sequential and short-circuiting.** Clause /n/ sees what
+clauses 1../n/-1 bound, and a failing clause evaluates no later scrutinee. The
+names have to be distinct across clauses, since all of them land in one scope.
+
+#+BEGIN_SRC scheme
+(defun (which program)
+  (def* ((Some path) (get-environment-variable "PATH"))
+        ((Some dir) (find #(file-exists? (path-combine & program))
+                          (string-split path ":"))))
+  (Some (path-combine dir program)))
+#+END_SRC
+
+**The pattern and the ~:fail~ arms must cover the scrutinee's type**, as a
+~match~ must, and the counterexample is named:
+
+: Pattern Error: this def does not cover every value. Blue matches neither the
+: binding pattern nor any arm, and a def has nowhere to send it.
+
+The arms are checked against the type **minus the clause pattern**, so
+~((Err e) ...)~ alone is the whole of ~Result~ after ~Ok~ and no wildcard is
+needed.
+
+**A pattern carrying a failure part must be able to fail.** One that always
+matches leaves the failure unreachable, and is refused rather than warned about;
+it is almost always a constructor that was not in scope and so parsed as a plain
+variable.
+
+Both forms must stand **directly in a body**, since a body is what gives them
+their sequel. Inside another expression there is nothing to bind over, and at
+the top level there is no body at all — which is also why a REPL entry cannot
+take one.
 ** ~apply~ — spreading a collection into a rest parameter
 ~apply~ calls a function whose last parameter is ~#:rest~, taking the rest
 elements from a collection instead of writing them out:

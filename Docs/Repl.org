@@ -215,6 +215,24 @@ metadata block. It is not reported as a name the entry defined, because it is
 not one anybody wrote. The same is true of a hand-written module: a ~.bjo~ that
 exports nothing and declares no type publishes no impls either.
 
+** A binding that may fail needs a body, and an entry is not one
+
+~(def (Some x) opt)~, ~(def (Some x) opt 0)~ and ~(def* ...)~ swallow the rest
+of the body they stand in. An entry is a top level — a list of declarations —
+so there is no sequel to hand them, and no value for a failure to become. Both
+forms are refused with a message saying so.
+
+#+begin_src scheme
+bjo> (def* ((Some x) (Some 1)))
+Syntax error: `def*` binds over the rest of the body it stands in, and the top level is not a body.
+bjo> (defun (f (: o (Option int))) : int (def (Some x) o 0) (+ x 1))
+f
+#+end_src
+
+Making the prompt take one means deciding what the rest of the session is: on a
+failure nothing may be bound, and the entries already compiled cannot be the
+sequel of an entry typed later. Not done; the workaround above is a function.
+
 ** An ambiguous definition is rejected, not defaulted
 
 A top-level ~def~ at the prompt *is* a top-level ~def~ in a module, so the

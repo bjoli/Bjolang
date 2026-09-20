@@ -1,0 +1,24 @@
+;; A refutable `def` leaves the innermost body it stands in, which is not always
+;; the function.
+;;
+;; Here it is the `when` body: when the pattern does not match, the failure
+;; value becomes that body's value, a `when` discards its body's value, and
+;; `(println "after")` still runs. Nothing in the syntax announces any of it, so
+;; the compiler does.
+;;
+;; Only where the value goes in silence. A body carrying a value of its own is
+;; already refused by the must-use rule, which names the same form.
+(import (std prelude))
+
+;; EXPECT-WARNING: a failing def here leaves the (when ...) or (unless ...) body it stands in
+;; EXPECT-WARNING: what follows the body still runs
+(: report (-> (Option int) void))
+(defun (report o)
+  (when #t
+    (def (Some n) o (println "nothing to report"))
+    (println (int->string n)))
+  (println "after"))
+
+(defun (main)
+  (report None)
+  0)

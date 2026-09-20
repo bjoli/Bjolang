@@ -1,0 +1,218 @@
+;; `def` and `def*` — a binding that may fail, and several of them in a row.
+;;
+;; `def` is to `def*` what `let` is to `let*`: both swallow the rest of the
+;; body, `def` takes one clause and `def*` takes several, run in order. When a
+;; pattern does not match, what the clause says becomes the value of the
+;; enclosing body — nothing jumps anywhere.
+;;
+;; `219_with_return.bjo` covers a failure used as an escape, written out as the
+;; `(ret ...)` it is. This file covers the three failure parts themselves:
+;; nothing, a value, and `:fail` arms.
+
+(import (std prelude))
+(import (std simpletest))
+
+(type (: Fail (Union (Refused string) Timeout)))
+
+(: parse-int (-> string (Result string int)))
+(defun (parse-int s)
+  (if (= s "12") (Ok 12) (Err (str "not a number: " s))))
+
+(: lookup (-> string (Option string)))
+(defun (lookup k)
+  (if (= k "host") (Some "localhost") None))
+
+(: fetch (-> int (Result Fail string)))
+(defun (fetch k)
+  (if (= k 1) (Ok "twelve") (Err (Refused "closed"))))
+
+;; --- The plain shapes still bind -------------------------------------------
+(: plain (-> int string))
+(defun (plain n)
+  (def doubled (* n 2))
+  (def (a b) (Tuple doubled "x"))
+  (str b (int->string a)))
+
+;; --- A bare clause propagates ----------------------------------------------
+;;
+;; `None` is constructed fresh at the body's type, so `(Option string)` in and
+;; `(Option int)` out.
+(: name-length (-> string (Option int)))
+(defun (name-length k)
+  (def (Some found) (lookup k))
+  (Some (string-length found)))
+
+;; The error type is what must agree; the value type is free. The payload is
+;; carried across and `Err` rebuilt at the body's type.
+(: fetch-length (-> int (Result Fail int)))
+(defun (fetch-length k)
+  (def (Ok body) (fetch k))
+  (Ok (string-length body)))
+
+;; --- A failure value -------------------------------------------------------
+(: length-or-zero (-> string int))
+(defun (length-or-zero k)
+  (def (Some found) (lookup k) 0)
+  (string-length found))
+
+;; --- `:fail` arms ----------------------------------------------------------
+;;
+;; The arms match the clause's own scrutinee, so `(Err why)` is an ordinary
+;; pattern over it and `why` is in scope in that arm. Nothing the *clause*
+;; binds is: `errors/def_arm_sees_no_binding.bjo` is where that half lives.
+;;
+;; `Ok` is subtracted from the scrutinee's type before the arms are checked, so
+;; the two `Err` arms are the whole of what is left and no wildcard is needed.
+(: explain (-> string string))
+(defun (explain s)
+  (def (Ok n) (parse-int s)
+    :fail (((Err "not a number: zero") "a zero is not a number here")
+           ((Err why) (str "refused (" why ")"))))
+  (str "accepted " (int->string n)))
+
+;; Two arms covering a list, with no wildcard: `Cons` and `Nil` are the whole of
+;; `List`.
+(: head-or (-> (List string) string))
+(defun (head-or xs)
+  (def (Cons first _) xs :fail ((Nil "empty")))
+  (str "first = " first))
+
+;; --- def*: several clauses, in order ---------------------------------------
+;;
+;; Clause two reads what clause one bound, and each clause says for itself what
+;; a failure produces.
+(: greet (-> string string (Result string string)))
+(defun (greet key number)
+  (def* ((Some found) (lookup key) (Err "no such key"))
+        ((Ok n) (parse-int number) :fail (((Err why) (Err why)))))
+  (Ok (str found "/" (int->string n))))
+
+;; A `def*` whose clauses all propagate.
+(: both (-> string string (Option int)))
+(defun (both a b)
+  (def* ((Some x) (lookup a))
+        ((Some y) (lookup b)))
+  (Some (+ (string-length x) (string-length y))))
+
+;; --- A failing clause evaluates no later scrutinee --------------------------
+(def/mutable probes 0)
+
+(: probe (-> (Option string) (Option string)))
+(defun (probe o)
+  (set! probes (+ probes 1))
+  o)
+
+(: short-circuit (-> (Option string) (Option string) (Option int)))
+(defun (short-circuit a b)
+  (def* ((Some x) (probe a))
+        ((Some y) (probe b)))
+  (Some (+ (string-length x) (string-length y))))
+
+;; --- The block a failure leaves is the innermost body ----------------------
+;;
+;; In a lambda that is the lambda, not the function around it.
+(: measured (-> (Option string) (Option string) string))
+(defun (measured a b)
+  (def size (fun (o) (def (Some s) o 0) (string-length s)))
+  (str (int->string (size a)) "/" (int->string (size b))))
+
+;; In a `when` it is the `when`, and what follows the `when` still runs. The
+;; compiler warns about exactly this, since nothing in the syntax says so;
+;; `warnings/def_leaves_the_when.bjo` is where the warning itself is checked.
+(: trace (-> (Option string) string))
+(defun (trace o)
+  (def/mutable log "")
+  (when #t
+    (def (Some s) o (set! log (str log "missing ")))
+    (set! log (str log s " ")))
+  (set! log (str log "after"))
+  log)
+
+;; --- A conditional bind does not join a letrec group -----------------------
+;;
+;; The two local functions above it are mutually recursive and are collected
+;; into one letrec; the clause closes that group, and the `def` below it opens a
+;; new one.
+(: parity (-> string string))
+(defun (parity s)
+  (defun (even? k) (if (= k 0) #t (odd? (- k 1))))
+  (defun (odd? k) (if (= k 0) #f (even? (- k 1))))
+  (def (Ok n) (parse-int s) "unparseable")
+  (def answer (if (even? n) "even" "odd"))
+  (str s " is " answer))
+
+(defun (main)
+  (expect "a plain binding and a tuple destructuring" (plain 3) "x6")
+
+  (expect "a bare clause matching"
+          (match (name-length "host") ((Some n) n) (None -1))
+          9)
+  (expect "a bare clause propagating None"
+          (match (name-length "port") ((Some n) n) (None -1))
+          -1)
+
+  (expect "a propagated Ok"
+          (match (fetch-length 1) ((Ok n) (int->string n)) ((Err _) "err"))
+          "6")
+  (expect "a propagated Err, payload and all"
+          (match (fetch-length 2)
+            ((Ok n) (int->string n))
+            ((Err (Refused why)) (str "refused:" why))
+            ((Err Timeout) "timeout"))
+          "refused:closed")
+
+  (expect "a failure value, matching" (length-or-zero "host") 9)
+  (expect "a failure value, failing" (length-or-zero "port") 0)
+
+  (expect "an arm binding what the failure carried"
+          (explain "xx")
+          "refused (not a number: xx)")
+  (expect "a literal arm ahead of the general one"
+          (explain "zero")
+          "a zero is not a number here")
+  (expect "and the clause still binding its own" (explain "12") "accepted 12")
+
+  (expect "two arms covering a list, matching" (head-or (list "a" "b")) "first = a")
+  (expect "two arms covering a list, empty" (head-or Nil) "empty")
+
+  (expect "def*, both clauses matching"
+          (match (greet "host" "12") ((Ok s) s) ((Err e) e))
+          "localhost/12")
+  (expect "def*, the first clause failing"
+          (match (greet "port" "12") ((Ok s) s) ((Err e) e))
+          "no such key")
+  (expect "def*, the second clause failing"
+          (match (greet "host" "xx") ((Ok s) s) ((Err e) e))
+          "not a number: xx")
+
+  (expect "def*, all of it propagating"
+          (match (both "host" "host") ((Some n) n) (None -1))
+          18)
+  (expect "def*, propagating from the second clause"
+          (match (both "host" "port") ((Some n) n) (None -1))
+          -1)
+
+  (set! probes 0)
+  (ignore (short-circuit None (Some "b")))
+  (expect "a failing clause evaluates no later scrutinee" probes 1)
+
+  (set! probes 0)
+  (ignore (short-circuit (Some "a") (Some "b")))
+  (expect "and a matching one evaluates the next" probes 2)
+
+  (expect "a failure in a lambda leaves the lambda"
+          (measured (Some "abc") None)
+          "3/0")
+
+  (expect "a failure in a when leaves the when, and what follows still runs"
+          (trace None)
+          "missing after")
+  (expect "and the when runs to its end when the pattern matches"
+          (trace (Some "here"))
+          "here after")
+
+  (expect "a conditional bind between two letrec groups" (parity "12") "12 is even")
+  (expect "and its own failure value" (parity "xx") "unparseable")
+
+  (println "220 ok")
+  0)

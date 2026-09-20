@@ -215,16 +215,12 @@ let rec private rewriteExpr (expr: Expr) : Expr =
 
     | EWithReturn(name, body, r) -> EWithReturn(name, rewriteExpr body, r)
 
-    | EBindElse(binder, scrutinee, sequel, arms, r) ->
-        let arms' =
-            arms
-            |> List.map (fun (p, body) -> (Ast.mapPatternSteps rewriteExpr p, rewriteExpr body))
-
-        EBindElse(
+    | EDefMatch(binder, scrutinee, failure, sequel, r) ->
+        EDefMatch(
             Ast.mapPatternSteps rewriteExpr binder,
             rewriteExpr scrutinee,
+            Ast.mapDefFailure rewriteExpr (Ast.mapPatternSteps rewriteExpr) failure,
             rewriteExpr sequel,
-            arms',
             r
         )
 

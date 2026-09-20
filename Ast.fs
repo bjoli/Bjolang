@@ -287,25 +287,38 @@ and Expr =
     /// namespace*, so shadowing, unbound-name errors and nested blocks all
     /// follow the scope rules that already exist rather than new ones.
     | EWithReturn of string * Expr * Range
-    /// `(def+ (pattern scrutinee) (pattern body ...) ...)`.
+    /// One clause of a `(def pattern scrutinee ...)` or `(def* clause ...)`:
+    /// the binding pattern, its scrutinee, what the form produces when the
+    /// pattern does not match, and **the rest of the body it was written in**.
     ///
-    /// Carries the binding pattern, its scrutinee, **the rest of the body it was
-    /// written in**, and the arms. The sequel is what makes this a binding form:
-    /// what the binder binds scopes over what follows it exactly as an internal
-    /// `def`'s name does, and `parseBody` is what hands it that sequel.
+    /// The sequel is what makes this a binding form: what the binder binds
+    /// scopes over what follows it exactly as a plain `def`'s name does, and
+    /// `parseBody` is what hands it that sequel. On a match the sequel is the
+    /// value of the form; on a failure the failure part is, and nothing jumps
+    /// anywhere — a body that means to leave an enclosing block writes the
+    /// `(ret ...)` that leaves it.
     ///
-    /// Every arm matches the same scrutinee, so this is a `match` whose first
-    /// arm's body is the rest of the body — written the other way up, so that
-    /// the path that carries on is not indented under the paths that do not.
-    /// An arm produces the value of the whole form, exactly as the else arm of
-    /// an `if` does; it jumps nowhere on its own, and a body that means to leave
-    /// an enclosing block writes the `(ret ...)` that leaves it.
+    /// A `def*` is parsed as one of these per clause, nested in source order,
+    /// which is what gives it short-circuiting and sequential scope.
     ///
-    /// The binder must be able to fail and the arms must cover the rest of the
-    /// type: a `def+` that always matches is a `def`, and `Exhaustiveness` says
-    /// so. What the binder binds is in scope in the sequel and nowhere else;
-    /// what an arm binds is in scope in that arm's body and nowhere else.
-    | EBindElse of Pattern * Expr * Expr * (Pattern * Expr) list * Range
+    /// What the binder binds is in scope in the sequel and nowhere else; what
+    /// an arm binds is in scope in that arm's body and nowhere else.
+    | EDefMatch of Pattern * Expr * DefFailure * Expr * Range
+
+/// What a `def` clause produces when its pattern does not match.
+and DefFailure =
+    /// Nothing was written: the uncovered case is rebuilt at the body's type.
+    /// Only `Option` and `Result` may, which `InferExpr` decides once the
+    /// scrutinee has a type.
+    | FailPropagate
+    /// `(def pattern scrutinee value-expr)` — the third slot is always an
+    /// expression. What the binder would have bound is not in scope in it, so
+    /// carrying a payload out of the failure takes `:fail`.
+    | FailValue of Expr
+    /// `(def pattern scrutinee :fail (arm arm ...))`. The arms match the
+    /// clause's own scrutinee, so between them they have to cover the
+    /// scrutinee's type minus the clause pattern.
+    | FailArms of (Pattern * Expr) list
 
 and DefunArg =
     /// A positional parameter, with the type `(: name type)` gave it if it was
@@ -696,7 +709,7 @@ let exprRange (e: Expr) : Range =
     | EYield(_, r)
     | EYieldFrom(_, r)
     | EWithReturn(_, _, r)
-    | EBindElse(_, _, _, _, r) -> r
+    | EDefMatch(_, _, _, _, r) -> r
 
 /// Every name a pattern binds.
 let rec patternBinders (pat: Pattern) : string list =
@@ -766,6 +779,14 @@ let rec mapPatternSteps (f: Expr -> Expr) (pat: Pattern) : Pattern =
     | PView(step, inner, r) -> PView(f step, go inner, r)
     | leaf -> leaf
 
+/// A `def` failure part rebuilt with `onExpr` over its expressions and
+/// `onPattern` over its arm patterns.
+let mapDefFailure (onExpr: Expr -> Expr) (onPattern: Pattern -> Pattern) (failure: DefFailure) : DefFailure =
+    match failure with
+    | FailPropagate -> FailPropagate
+    | FailValue value -> FailValue(onExpr value)
+    | FailArms arms -> FailArms(arms |> List.map (fun (pat, body) -> onPattern pat, onExpr body))
+
 /// Every expression held directly inside `e`.
 ///
 /// Exhaustive on purpose: this is used to refuse a loop name outside tail
@@ -813,10 +834,13 @@ let exprChildren (e: Expr) : Expr list =
             |> List.collect (fun (pat, guard, body) ->
                 patternSteps pat @ (Option.toList guard) @ [ body ]))
     | EWithReturn(_, b, _) -> [ b ]
-    | EBindElse(binder, scrutinee, sequel, arms, _) ->
+    | EDefMatch(binder, scrutinee, failure, sequel, _) ->
         patternSteps binder
         @ [ scrutinee; sequel ]
-        @ (arms |> List.collect (fun (pat, body) -> patternSteps pat @ [ body ]))
+        @ (match failure with
+           | FailPropagate -> []
+           | FailValue value -> [ value ]
+           | FailArms arms -> arms |> List.collect (fun (pat, body) -> patternSteps pat @ [ body ]))
 
 /// One walk over an untyped expression, calling `reference name range guarded`
 /// at every name it mentions but does not bind.
@@ -929,7 +953,7 @@ let freeNamesWith (reference: string -> Range -> bool -> unit) (guarded: bool) (
         // that already exist.
         | EWithReturn(name, body, _) -> go guarded (Set.add name bound) body
 
-        | EBindElse(binder, scrutinee, sequel, arms, r) ->
+        | EDefMatch(binder, scrutinee, failure, sequel, r) ->
             // The scrutinee and a pattern's view steps are read in the scope the
             // form began in, as they are in `EMatch` above.
             for step in patternSteps binder do
@@ -940,14 +964,18 @@ let freeNamesWith (reference: string -> Range -> bool -> unit) (guarded: bool) (
             // What the binder binds is in scope in the sequel and nowhere else.
             go guarded (Set.union bound (Set.ofList (patternBinders binder))) sequel
 
-            // An arm runs because the binder did not match, so nothing the
-            // binder would have bound is in scope in it — only what the arm's
-            // own pattern binds, and only in that arm.
-            for (armPattern, armBody) in arms do
-                for step in patternSteps armPattern do
-                    go guarded bound step
+            // The failure part runs because the binder did not match, so
+            // nothing the binder would have bound is in scope in it — only what
+            // an arm's own pattern binds, and only in that arm.
+            match failure with
+            | FailPropagate -> ()
+            | FailValue value -> go guarded bound value
+            | FailArms arms ->
+                for (armPattern, armBody) in arms do
+                    for step in patternSteps armPattern do
+                        go guarded bound step
 
-                go guarded (Set.union bound (Set.ofList (patternBinders armPattern))) armBody
+                    go guarded (Set.union bound (Set.ofList (patternBinders armPattern))) armBody
 
     go guarded bound expr
 

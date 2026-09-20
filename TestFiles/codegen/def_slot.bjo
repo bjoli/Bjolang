@@ -1,9 +1,9 @@
-;; A `def+` whose value is wanted somewhere other than the method's `return`:
-;; one declaration, one assignment per arm.
+;; A refutable `def` whose value is wanted somewhere other than the method's
+;; `return`: one declaration, one assignment per arm.
 ;;
 ;; Each `EXPECT-CS` is an extended regex matched against a single line of the
-;; generated C#. `def_plus_value.bjo` is the same form in the return position,
-;; where none of this is emitted.
+;; generated C#. `def_value.bjo` is the same form in the return position, where
+;; none of this is emitted.
 ;;
 ;; The `let`'s body is a subexpression, so it is generated into a declared local
 ;; and each arm assigns it — the shape `TIf` has, with the `default!` that
@@ -13,19 +13,24 @@
 ;; arm can be written today, because `checkEscapeUses` will not let a `ret`
 ;; stand where this form's value is wanted; the assertion is that the
 ;; declaration is emitted, not that a path reaches it unassigned.
+;;
+;; The failure is a written value rather than an arm, so it is the `else`
+;; itself: C# has no `is` pattern that matches everything, and the throw below
+;; the chain is what the `else` would have been.
 
 (import (std prelude))
 
 ;; EXPECT-CS: string __hoist__[0-9]+ = default!;
 ;; EXPECT-CS: __hoist__[0-9]+ = "nothing";
-;; EXPECT-CS: else if \(__bound__[0-9]+ is
+;; EXPECT-CS: if \(__bound__[0-9]+ is
+;; EXPECT-CS: ^\s+else \{
 ;; EXPECT-NO-CS: goto __else
+;; EXPECT-NO-CS: throw new Exception\("Match failure
 (: described (-> (Option int) string))
 (defun (described o)
   (str "n is "
        (let ((zero 0))
-         (def+ ((Some n) o)
-               (None "nothing"))
+         (def (Some n) o "nothing")
          (int->string (+ n zero)))))
 
 (defun (main)
