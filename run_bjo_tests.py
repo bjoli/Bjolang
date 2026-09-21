@@ -730,6 +730,107 @@ def test_fetched_refused(work, c):
     c.says("and it says whose disk that is", result, "may not")
 
 
+# --- add, remove, update ----------------------------------------------------
+
+@test("editing the manifest")
+def test_editing(work, c):
+    origin = work / "origin"
+    release(origin, "lib", "0.1.0")
+    release(origin, "lib", "0.2.0")
+    local = make_package(work / "local", "helper", "0.1.0")
+
+    app = work / "app"
+    app.mkdir(parents=True)
+    run_bjo(app, "init")
+    before = (app / "manifest.bjodat").read_text()
+
+    # `add` with no version takes the newest release there is.
+    added = run_bjo(app, "add", "lib", "--git", str(origin))
+    c.worked("bjo add with a git source", added)
+    c.says("and it says which version it wrote", added, '(version-at-least "0.2.0")')
+    manifest = (app / "manifest.bjodat").read_text()
+    c.that("the clause is in the manifest",
+           '(package (name (lib)) (version (version-at-least "0.2.0"))' in manifest, manifest)
+    c.that("every comment the manifest had is still there",
+           all(line in manifest for line in before.splitlines() if line.strip().startswith(";;")),
+           manifest)
+    c.says("and the lock was written", added, "added (lib) 0.2.0")
+    c.that("the package was fetched",
+           (app / ".bjo" / "pkg" / "lib@0.2.0" / "src" / "core.bjo").exists())
+
+    # A second one goes into the clause that is there.
+    second = run_bjo(app, "add", "helper", "--path", "../local")
+    c.worked("bjo add with a path source", second)
+    manifest = (app / "manifest.bjodat").read_text()
+    c.that("both dependencies are in one depends clause",
+           manifest.count("(depends") == 1 + before.count("(depends"), manifest)
+    c.that("and the path dependency is in the roots file",
+           str(local / "src") in (app / ".bjo" / "roots").read_text())
+
+    # The program can use them both straight away.
+    write(app / "src" / "main.bjo",
+          '(import (std prelude))\n(import (lib core))\n'
+          '(defun (main) (println (hello)) 0)\n')
+    ran = run_bjo(app, "run")
+    c.says("what was added builds and runs", ran, "lib 0.2.0")
+
+    # Refusals.
+    again = run_bjo(app, "add", "lib", "--git", str(origin))
+    c.failed("adding the same name twice is refused", again)
+    c.says("and it says it is already there", again, "already a dependency")
+
+    for label, arguments, wanted in [
+        ("a reserved name", ["add", "std", "--path", "../local"], "part of the standard library"),
+        ("the project itself", ["add", "app", "--path", "../local"], "is this project itself"),
+        ("no source at all", ["add", "nowhere"], "where does"),
+        ("both sources", ["add", "x", "--git", "u", "--path", "d"], "two answers to the same question"),
+        ("an unknown flag", ["add", "x", "--branch", "main"], "unknown flag"),
+    ]:
+        result = run_bjo(app, *arguments)
+        c.failed(f"add with {label} is refused", result)
+        c.says(f"and {label} says why", result, wanted)
+
+    c.that("a refused add changed nothing",
+           "(name (std))" not in (app / "manifest.bjodat").read_text())
+
+    # update raises the lower bound, and only that.
+    write(app / "manifest.bjodat",
+          (app / "manifest.bjodat").read_text().replace('(version-at-least "0.2.0")',
+                                                        '(version-at-least "0.1.0")'))
+    run_bjo(app, "fetch")
+    updated = run_bjo(app, "update")
+    c.worked("bjo update", updated)
+    c.says("and it says what it raised", updated, "(lib) at least 0.2.0 (was 0.1.0)")
+    c.that("the manifest says so",
+           '(version-at-least "0.2.0")' in (app / "manifest.bjodat").read_text())
+    c.says("and the lock moved with it", updated, "(lib) 0.2.0 (was 0.1.0)")
+
+    nothing = run_bjo(app, "update")
+    c.says("a second update has nothing to do", nothing, "Nothing to update")
+
+    missing = run_bjo(app, "update", "nosuch")
+    c.failed("updating something that is not a dependency is refused", missing)
+
+    # remove takes the entry out, and the clause with the last entry.
+    removed = run_bjo(app, "remove", "lib")
+    c.worked("bjo remove", removed)
+    c.that("the entry is gone", "(name (lib))" not in
+           "".join(line for line in (app / "manifest.bjodat").read_text().splitlines()
+                   if not line.strip().startswith(";;")))
+    c.says("and the lock says so", removed, "removed (lib) 0.2.0")
+
+    run_bjo(app, "remove", "helper")
+    left = "".join(line for line in (app / "manifest.bjodat").read_text().splitlines()
+                   if not line.strip().startswith(";;"))
+    c.that("the empty depends clause goes too", "(depends" not in left, left)
+    c.that("and the manifest still parses",
+           run_bjo(app, "fetch").returncode == 0)
+
+    gone = run_bjo(app, "remove", "lib")
+    c.failed("removing something that is not there is refused", gone)
+    c.says("and it says so", gone, "is not a dependency")
+
+
 # ---------------------------------------------------------------------------
 # Running the suite
 # ---------------------------------------------------------------------------

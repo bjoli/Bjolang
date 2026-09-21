@@ -250,6 +250,9 @@ modules findable and then compile the entry.
 | Command                 | What it does                                                  |
 |-------------------------+---------------------------------------------------------------|
 | ~bjo init [name] [--lib]~ | Makes a project here. The name defaults to the directory's  |
+| ~bjo add <name> …~      | Writes a dependency into the manifest, and fetches it         |
+| ~bjo remove <name>~     | Takes one out again                                           |
+| ~bjo update [name]~     | Raises this project's lower bounds to the newest releases     |
 | ~bjo fetch [--locked]~  | Resolves, fetches, writes ~.bjo/roots~. Compiles nothing      |
 | ~bjo build [--locked]~  | ~fetch~, then compile the entry — or every module of a library |
 | ~bjo run [. args...]~   | ~build~, then run the entry                                   |
@@ -263,6 +266,42 @@ mean.
 A file named inside a project — ~bjo run src/tool.bjo~, ~bjo check src/x.bjo~ —
 is compiled against the project's packages, fetching first if it has to.
 Outside a project, every command behaves exactly as it always has.
+
+** Editing the manifest
+
+#+BEGIN_SRC sh
+bjo add bjorsec --git https://github.com/bjoli/bjorsec     # newest release
+bjo add bjorsec --git https://… --at-least 0.1.0           # a bound of your own
+bjo add mylib --path ../mylib                              # a copy on this disk
+bjo add testing --path ../testing --dev                    # into dev-depends
+bjo remove mylib
+bjo update            # every git dependency
+bjo update bjorsec    # one of them
+#+END_SRC
+
+Each of these writes ~manifest.bjodat~ and then resolves, so the manifest and
+the lock never disagree for longer than one command.
+
+*They edit the file as text.* The reader hands back a `Package`, and a value
+does not know where it was written, so a manifest rewritten from one would lose
+every comment and every line break in it — starting with the commented-out
+example ~bjo init~ leaves behind. Instead a scanner finds the few characters
+that have to change and nothing else moves; the result is parsed before it is
+kept, and a file that no longer reads is put back as it was.
+
+The layout you get is therefore the layout you had: a new dependency goes into
+the ~(depends ...)~ that is already there, indented like the entries beside it,
+and only a manifest with no such clause gets a new one at the end.
+
+~bjo add~ with a git source and no ~--at-least~ reads the repository's tags and
+writes the newest as a lower bound — that is the version you get, and it stays
+that version until you say otherwise.
+
+~bjo update~ is that "otherwise". Nothing else raises a bound: under minimal
+version selection a new release of a dependency changes nothing until a
+manifest asks for it, so a build does not drift and an update is a change you
+made, in a file you can read. It replaces the whole constraint, so a
+~version-between~ you care about is one to edit by hand.
 
 ** Turning a library you already have into a package
 

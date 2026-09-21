@@ -55,6 +55,7 @@
 (import "manifest.bjo")
 (import "project.bjo")
 (import "resolve.bjo")
+(import "edit.bjo")
 
 ;; ---------------------------------------------------------------------------
 ;; Interop
@@ -228,13 +229,15 @@
 ;; Is there anything to do before the artefact can be used?
 (: stale? (-> string string bool))
 (defun (stale? file wanted)
-  (match (read-record file)
-    (None #t)
-    ((Some rec) 
-     (def artefact (record-ref rec output))
-     (or (not (= (record-ref rec mode) wanted))
-         (not (file-exists? artefact))
-         (any? #(newer? & artefact) (record-ref rec inputs))))))
+  ;; No record at all is *stale*, not current: there is nothing that says what
+  ;; the artefact was built from, so the only safe answer is to build it. `#f`
+  ;; here makes `ensure-built` serve a record that is not there, and fail with
+  ;; an exit code and no message.
+  (def* ((Some rec) (read-record file) #t)
+        (artefact (record-ref rec output)))
+  (or (not (= (record-ref rec mode) wanted))
+      (not (file-exists? artefact))
+      (any? #(newer? & artefact) (record-ref rec inputs))))
 
 
 ;; ---------------------------------------------------------------------------
@@ -286,7 +289,10 @@
 (defun (record-as-built file)
   (match (read-record file)
     ((Some rec) (Ok (rec . #f)))
-    (None (Err 1))))
+    ;; Only reachable when `stale?` answered from a record that has gone away
+    ;; since, and the exit code alone would be a command that failed without
+    ;; saying anything at all.
+    (None (Err (fail #"bjo: the build record for ${file} went away while it was being read.")))))
 
 ;; Compiles `file` if it needs it, and answers the record the build left — which
 ;; is where the artefact's name comes from. A file with no `main` is a library
@@ -562,6 +568,13 @@
   (println "Usage:")
   (println "  bjo init [name] [--lib]                 Make a project here. The name defaults to")
   (println "                                          this directory's; --lib makes a library.")
+  (println "  bjo add <name> --git <url> [--at-least <version>] [--dev]")
+  (println "  bjo add <name> --path <dir> [--dev]     Write a dependency into the manifest and")
+  (println "                                          fetch it. With --git and no version, the")
+  (println "                                          newest release there is.")
+  (println "  bjo remove <name>                       Take a dependency out of the manifest.")
+  (println "  bjo update [name]                       Raise this project's lower bounds to the")
+  (println "                                          newest releases. Nothing else moves them.")
   (println "  bjo fetch [--locked]                    Fetch what the manifest names. Compiles nothing.")
   (println "  bjo run [-d] [-c] [args...]             Build this project and run it.")
   (println "  bjo run . [args...]                     The same, when the program takes arguments.")
@@ -614,6 +627,12 @@
               (:acc out (listing file))
               => out))))
 
+(: takes-raw-arguments? (-> string bool))
+(defun (takes-raw-arguments? command)
+  (case command
+    (("add" "remove" "update") #t)
+    (else #f)))
+
 (: dispatch #:sync (-> string Cmdline int))
 (defun (dispatch command line)
   (def* (debug? (record-ref line debug))
@@ -628,6 +647,27 @@
        (when (or debug? force? locked?)
          (ret (fail "bjo init: writes files and compiles nothing, so it takes no build flags.")))
        (cmd-init rest lib?)))
+
+    ;; The three that write `manifest.bjodat`. Each edits the file and then
+    ;; resolves, so that a manifest and the lock beside it never disagree for
+    ;; longer than one command.
+    (("add" "remove" "update")
+     (with-return ret
+       (def (Ok project) (project-here command) :fail (((Err why) (fail why))))
+       (def (Ok said)
+         (case command
+           ("add" (cmd-add project rest))
+           ("remove" (cmd-remove project rest))
+           (else (cmd-update project rest)))
+         :fail (((Err why) (fail why))))
+       (println said)
+       ;; Read again: the manifest has just been written, and the `Package` in
+       ;; hand is the one from before the edit — resolving that would fetch
+       ;; what was there a moment ago.
+       (def (Ok edited) (project-at (project-dir project)) :fail (((Err why) (fail why))))
+       (match (prepare edited #f)
+         ((Err why) (fail why))
+         ((Ok ready) 0))))
 
     ;; Resolve, fetch and write the roots file, and stop there. What `build`
     ;; does first, for a checkout that is about to be built offline or by
@@ -729,6 +769,13 @@
   ;; are what follows it.
   (def (Cons command rest) (vec->list args)
     :fail ((Nil (usage) 1)))
-  (match (parse-flags rest)
-    ((Err message) (fail message))
-    ((Ok line) (dispatch command line))))
+
+  ;; `add`, `remove` and `update` read their own arguments. Their flags come
+  ;; *after* the package name — `bjo add bjorsec --git ...` — and the parser
+  ;; below stops at the first thing that is not a flag, so it would hand them
+  ;; over as positional arguments and refuse `--git` as unknown.
+  (if (takes-raw-arguments? command)
+      (dispatch command (Cmdline (debug #f) (force #f) (lib #f) (locked #f) (rest rest)))
+      (match (parse-flags rest)
+        ((Err message) (fail message))
+        ((Ok line) (dispatch command line)))))
