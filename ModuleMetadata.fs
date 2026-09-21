@@ -66,7 +66,12 @@ open System.Text
 /// 10: `ReExportedTypes`, the types a module publishes that it did not declare.
 /// An assembly built before this offers none, and a facade built before this
 /// would have been unable to say it anyway — the form was refused.
-let currentVersion = 10
+/// 11: `Deps` names a *module* where the dependency's source belongs to a
+/// package — `(std prelude)` rather than `/home/someone/lib/std/prelude.dll`.
+/// An assembly built before this names the directories of the machine it was
+/// built on, so a package fetched into another project links against files that
+/// are not there.
+let currentVersion = 11
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {
@@ -155,6 +160,14 @@ type Metadata = {
     Version: int
     /// Assemblies to link. Transitive, and deliberately not imported: this is
     /// where the code of anything re-exported through this module lives.
+    ///
+    /// An entry is either a module name written as source writes it —
+    /// `(std prelude)` — or an absolute path. The name is used wherever the
+    /// dependency's source belongs to a package, because a path is a fact about
+    /// the machine that did the build: a library fetched into a second project
+    /// would otherwise link the first project's copy, or nothing at all. A path
+    /// is what is left for an assembly with no source and for a file under no
+    /// package, neither of which has a name to resolve.
     Deps: string list
     TypeDecls: string list
     /// The types this module re-exported: somebody else's declarations, under

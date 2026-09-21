@@ -1113,6 +1113,39 @@ and private resolveDependency (basePath: string) (spec: ImportSpec) : Result<str
                 Error
                     $"no module %s{shown}: package %s{Paths.showPackageName root.Name} at %s{root.Directory} has no %s{Paths.moduleFileName root parts}."
 
+/// How a library records one of the assemblies it links.
+///
+/// A module name where the dependency has a source under a package, so that an
+/// importer resolves it the way it resolves an import — against its own roots,
+/// in its own project. A path only where there is no name to write: a prebuilt
+/// assembly with no source beside it, or a file under no package at all.
+///
+/// The name is derived from the `.bjo`, not from the `.dll`: they share a
+/// directory and a stem, so either answers, and the source is the thing the
+/// package actually contains.
+let dependencyEntry (dllPath: string) : string =
+    let full = Path.GetFullPath dllPath
+    let bjoPath = Path.ChangeExtension(full, ".bjo")
+
+    if File.Exists bjoPath then
+        match Paths.identityOf bjoPath with
+        | Some identity -> Paths.showPackageName identity.ModuleName
+        | None -> full
+    else
+        full
+
+/// Whether a recorded dependency is a module name rather than a path.
+///
+/// A module name is written the way source writes one, and no absolute path
+/// begins with a parenthesis.
+let private isModuleEntry (entry: string) = entry.StartsWith "("
+
+/// The segments of a recorded module name.
+let private moduleEntryParts (entry: string) : string list =
+    entry.Trim([| '('; ')' |]).Split(' ')
+    |> Array.filter (fun s -> s <> "")
+    |> List.ofArray
+
 /// The one shape an entry point has: `(-> (Vec string) int)`.
 ///
 /// `main` is called by the generated entry point rather than by anything in the
@@ -1332,8 +1365,27 @@ let loadModuleGraph
                     // lives. However, we intentionally hide its internal
                     // dependencies from the current module's scope. This ensures
                     // that you can only see the things the DLL explicitly chose to export.
-                    for depPath in meta.Deps do
-                        if depPath <> "" then
+                    let linkedDeps =
+                        meta.Deps
+                        |> List.filter (fun entry -> entry <> "")
+                        |> List.map (fun entry ->
+                            // A module name is resolved exactly as an import of
+                            // it written inside this library would be — same
+                            // function, so a dependency that is behind is built
+                            // here too. There is no second rule for what a
+                            // module name means.
+                            let depPath =
+                                if isModuleEntry entry then
+                                    let spec = plainImport (ModulePath(moduleEntryParts entry))
+
+                                    match resolveDependency absPath spec with
+                                    | Ok path -> Path.GetFullPath path
+                                    | Error why ->
+                                        failwithf
+                                            $"'%s{absPath}' links the module %s{entry}, which this build cannot resolve: %s{why}"
+                                else
+                                    entry
+
                             // Skipping a missing one is what this used to do,
                             // and it produced a link that was quietly short a
                             // module: the names it re-exported were reported as
@@ -1344,8 +1396,11 @@ let loadModuleGraph
                                 failwithf
                                     $"'%s{absPath}' links '%s{depPath}', which is not there. Rebuild the library, or restore the assembly it was built against."
 
-                            dllDeps.Add(depPath) |> ignore
-                            noteAssemblyPath depPath
+                            depPath)
+
+                    for depPath in linkedDeps do
+                        dllDeps.Add(depPath) |> ignore
+                        noteAssemblyPath depPath
 
                     // Transitive, unlike the exports above: a name re-exported
                     // through this DLL is bound here, and whether calling it
@@ -1536,10 +1591,11 @@ let loadModuleGraph
                               PatternMacros = meta.PatternMacros
                               HashMacros = meta.HashMacros
                               Assembly = asm
-                              // Every entry was just checked to exist, so the
-                              // replay of this list adds the same assemblies
-                              // the first read did.
-                              Linked = absPath :: (meta.Deps |> List.filter (fun p -> p <> "")) }
+                              // The resolved paths rather than the entries: a
+                              // replay adds assemblies, and resolving a module
+                              // name again would be the same answer at more
+                              // cost.
+                              Linked = absPath :: linkedDeps }
 
                     decls, carriedDecls, [], meta.Macros, meta.PatternMacros, meta.HashMacros, Some asm
                 else

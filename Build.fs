@@ -196,7 +196,7 @@ let generateSource
     // behind it.
     let metadata =
         { Exports.metadata env typedAst declaredMacros declaredPatternMacros declaredHashMacros inputFilePath isLibrary with
-            Deps = if isLibrary then dllDeps |> List.map Path.GetFullPath else [] }
+            Deps = if isLibrary then dllDeps |> List.map Pipeline.dependencyEntry else [] }
 
     Timing.phase "codegen" (fun () -> Codegen.generateProgram env metadata dllDeps inputFilePath typedAst)
 
