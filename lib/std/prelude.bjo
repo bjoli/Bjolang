@@ -1292,10 +1292,9 @@
   ;;       (:do (f ch)))
   (let loop ((c (string-cursor-start s)))
     (unless (string-cursor-end? s c)
-      (match (string-cursor-ref+next s c)
-        ((Tuple ch next)
-         (f ch)
-         (loop next))))))
+      (def (Tuple ch next) (string-cursor-ref+next s c))
+      (f ch)
+      (loop next))))
 
 ;; String index.
 (: string-index (-> (-> char bool) string (Option StringCursor)))
@@ -1999,9 +1998,21 @@
 ;; Macros.
 (import (std syntax-match))
 
-;; `(cond (test body ...) ... (else body ...))`
+;; `(cond (test body ...) ... (:def pattern expr) ... (else body ...))`
 ;;
 ;; Cond requires else.
+;;
+;; Two clauses do not answer anything. `(:def pattern expr)` binds, and
+;; `(:do body ...)` runs something; both are reached only when every test
+;; above them has failed, and what a `:def` binds is in scope in every clause
+;; below it. They exist because the alternative is a new `(else ...)` and a
+;; new `cond` inside it for every value a later test needs — the same
+;; decisions, indented once per binding.
+;;
+;; A `:def` clause *is* a `def`: the sequel it swallows is the rest of the
+;; cond, so a refutable pattern takes the same failure part it takes anywhere
+;; else, and `(:def (Ok v) (parse s) :propagate)` makes the whole cond the
+;; `Err`.
 (def/macro (cond form inject compare)
   (syntax-match form
     ((_ clause ...) (cond-arms clause form))
@@ -2014,10 +2025,21 @@
      (syntax-error whole "cond needs a final (else ...) clause: every arm answers something, so there has to be a last answer."))
     ((Cons clause rest)
      (syntax-match clause
+       ;; Binds. The rest of the cond is the body the `def` swallows, which is
+       ;; what puts the name in scope below and nowhere else.
+       ((:def pattern expr fail ...)
+        #'(let () (def ,pattern ,expr ,@fail) ,(cond-arms rest whole)))
+       ((:def junk ...)
+        (syntax-error clause "(:def ...) binds: (:def name expr), or (:def pattern expr :propagate)."))
+       ;; Runs.
+       ((:do first body ...)
+        #'(let () ,first ,@body ,(cond-arms rest whole)))
+       ((:do)
+        (syntax-error clause "(:do ...) needs something to run."))
        ;; Else clause.
        (('else body ...) (one-form body clause))
        ((test body ...) #'(if ,test ,(one-form body clause) ,(cond-arms rest whole)))
-       (bad (syntax-error bad "A cond clause is (test body ...), or (else body ...) for the last one."))))))
+       (bad (syntax-error bad "A cond clause is (test body ...), (:def pattern expr) to bind, (:do body ...) to run something, or (else body ...) for the last one."))))))
 
 ;; Several forms as one.
 (: one-form (-> (List Syntax) Syntax Syntax))
@@ -2441,17 +2463,17 @@
 ;; inside bjoroutines. `StringBuilder` is also more efficient here.
 (: vec->str (-> (Vec %a) string) (where (->str %a)))
 (defun (vec->str v)
-  (let ((sb (stringbuilder-empty)))
-    (stringbuilder-add-string! sb "[")
-    (when (not (empty? v))
-      (stringbuilder-add-string! sb (->str (vec-ref v 0)))
-      (loop (:with i 0 (+ i 1))
-            (:for elem v)
-            (:when (> i 0))
-            (:do (stringbuilder-add-string! sb " ")
-                 (stringbuilder-add-string! sb (->str elem)))))
-    (stringbuilder-add-string! sb "]")
-    (stringbuilder->string sb)))
+  (def sb (stringbuilder-empty))
+  (stringbuilder-add-string! sb "[")
+  (when (not (empty? v))
+    (stringbuilder-add-string! sb (->str (vec-ref v 0)))
+    (loop (:with i 0 (+ i 1))
+          (:for elem v)
+          (:when (> i 0))
+          (:do (stringbuilder-add-string! sb " ")
+               (stringbuilder-add-string! sb (->str elem)))))
+  (stringbuilder-add-string! sb "]")
+  (stringbuilder->string sb))
 
 (impl (->str (Vec %a))
   (where (->str %a))
@@ -2600,14 +2622,13 @@
 ;; Any mutable fields.
 (: derive-any-mutable? (-> (List Syntax) bool))
 (defun (derive-any-mutable? fields)
-  (match fields
-    (Nil #f)
-    ((Cons f rest)
-     (if (syntax-match f
-           ((_ _ _ marker markers ...) #t)
-           (_ #f))
-         #t
-         (derive-any-mutable? rest)))))
+  (def (Cons f rest) fields
+    #f)
+  (if (syntax-match f
+        ((_ _ _ marker markers ...) #t)
+        (_ #f))
+      #t
+      (derive-any-mutable? rest)))
 
 ;; Eq record methods.
 (: derive-eq-record (-> Syntax (List Syntax) bool (List Syntax)))
@@ -2626,22 +2647,15 @@
 
 (: derive-case-name (-> Syntax Syntax))
 (defun (derive-case-name c)
-  (match c
-    ((SList items)
-     (match items
-       ((Cons head _) head)
-       (Nil c)))
-    (_ c)))
+  (def* ((SList items) c c)
+        ((Cons head _) items c))
+  head)
 
 (: derive-payload (-> Syntax (List Syntax)))
 (defun (derive-payload c)
-  (match c
-    ((SList items)
-     (match items
-       ((Cons _ rest)
-        (list-filter (fun (t) (match t ((SKey _) #f) (_ #t))) rest))
-       (Nil Nil)))
-    (_ Nil)))
+  (def* ((SList items) c Nil)
+        ((Cons _ rest) items Nil))
+  (list-filter #(match & ((SKey _) #f) (_ #t)) rest))
 
 ;; Binders.
 (: derive-binders (-> string int int (List Syntax)))
@@ -2653,12 +2667,9 @@
 
 (: derive-eq-pairs (-> (List Syntax) (List Syntax) (List Syntax)))
 (defun (derive-eq-pairs ls rs)
-  (match ls
-    (Nil Nil)
-    ((Cons l lrest)
-     (match rs
-       (Nil Nil)
-       ((Cons r rrest) (Cons #'(= ,l ,r) (derive-eq-pairs lrest rrest)))))))
+  (def* ((Cons l lrest) ls Nil)
+        ((Cons r rrest) rs Nil))
+  (Cons #'(= ,l ,r) (derive-eq-pairs lrest rrest)))
 
 ;; Union arm eq.
 (: derive-eq-union-arm (-> Syntax Syntax))
@@ -2675,15 +2686,13 @@
 ;; Hash union arms.
 (: derive-hash-union-arms (-> (List Syntax) int (List Syntax)))
 (defun (derive-hash-union-arms cases index)
-  (match cases
-    (Nil Nil)
-    ((Cons c rest)
-     (def name (derive-case-name c))
-     (def ls (derive-binders "__derived-l" 0 (list-length (derive-payload c))))
-     (def tag (SInt (int->string index)))
-     (Cons #'((,name ,@ls)
-              ,(derive-hash-fold (list-map (fun (l) #'(eq-hash ,l)) ls) tag))
-           (derive-hash-union-arms rest (+ index 1))))))
+  (def (Cons c rest) cases Nil)
+  (def name (derive-case-name c))
+  (def ls (derive-binders "__derived-l" 0 (list-length (derive-payload c))))
+  (def tag (SInt (int->string index)))
+  (Cons #'((,name ,@ls)
+           ,(derive-hash-fold (list-map (fun (l) #'(eq-hash ,l)) ls) tag))
+        (derive-hash-union-arms rest (+ index 1))))
 
 (: derive-eq-union (-> (List Syntax) (List Syntax)))
 (defun (derive-eq-union cases)
@@ -2698,14 +2707,12 @@
 ;; Ord chain.
 (: derive-ord-chain (-> (List Syntax) int Syntax))
 (defun (derive-ord-chain parts i)
-  (match parts
-    (Nil #'0)
-    ((Cons p rest)
-     (def c (derive-sym (string-append "__derived-c" (int->string i))))
-     (if (list-empty? rest)
-         p
-         #'(let ((,c ,p))
-             (if (= ,c 0) ,(derive-ord-chain rest (+ i 1)) ,c))))))
+  (def* ((Cons p rest) parts #'0)
+        (c (derive-sym (string-append "__derived-c" (int->string i)))))
+  (if (list-empty? rest)
+      p
+      #'(let ((,c ,p))
+          (if (= ,c 0) ,(derive-ord-chain rest (+ i 1)) ,c))))
 
 ;; Ord record.
 (: derive-ord-record (-> (List Syntax) (List Syntax)))
@@ -2726,21 +2733,16 @@
 ;; Index arms.
 (: derive-ord-index-arms (-> (List Syntax) int (List Syntax)))
 (defun (derive-ord-index-arms cases index)
-  (match cases
-    (Nil Nil)
-    ((Cons c rest)
-     (Cons #'((,(derive-case-name c) ,@(derive-wildcards (list-length (derive-payload c))))
-              ,(SInt (int->string index)))
-           (derive-ord-index-arms rest (+ index 1))))))
+  (def (Cons c rest) cases Nil)
+  (Cons #'((,(derive-case-name c) ,@(derive-wildcards (list-length (derive-payload c))))
+           ,(SInt (int->string index)))
+        (derive-ord-index-arms rest (+ index 1))))
 
 (: derive-ord-pairs (-> (List Syntax) (List Syntax) (List Syntax)))
 (defun (derive-ord-pairs ls rs)
-  (match ls
-    (Nil Nil)
-    ((Cons l lrest)
-     (match rs
-       (Nil Nil)
-       ((Cons r rrest) (Cons #'(compare ,l ,r) (derive-ord-pairs lrest rrest)))))))
+  (def* ((Cons l lrest) ls Nil)
+        ((Cons r rrest) rs Nil))
+  (Cons #'(compare ,l ,r) (derive-ord-pairs lrest rrest)))
 
 ;; Ord union arm.
 (: derive-ord-union-arm (-> Syntax Syntax))

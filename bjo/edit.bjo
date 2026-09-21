@@ -76,9 +76,9 @@
 (defun (trim-back text c)
   (cond
     ((string-cursor<=? c (string-cursor-start text)) c)
-    (else
-     (def before (string-cursor-prev text c))
-     (if (blank? (string-cursor-ref text before)) (trim-back text before) c))))
+    (:def before (string-cursor-prev text c))
+    ((blank? (string-cursor-ref text before)) (trim-back text before))
+    (else c)))
 
 ;; Past a string literal, the closing quote included. `\"` does not end one.
 (: skip-string (-> string StringCursor StringCursor))
@@ -236,15 +236,13 @@
   (let go ((at c) (spaces 0))
     (cond
       ((string-cursor<=? at (string-cursor-start text)) (blanks spaces))
-      (else
-       (def before (string-cursor-prev text at))
-       (def ch (string-cursor-ref text before))
-       (cond
-         ((char=? ch #\newline) (blanks spaces))
-         ((blank? ch) (go before (+ spaces 1)))
-         ;; Something that is not whitespace on this line: the entry does not
-         ;; start a line of its own, and a guess at its column would be wrong.
-         (else "    "))))))
+      (:def before (string-cursor-prev text at))
+      (:def ch (string-cursor-ref text before))
+      ((char=? ch #\newline) (blanks spaces))
+      ((blank? ch) (go before (+ spaces 1)))
+      ;; Something that is not whitespace on this line: the entry does not
+      ;; start a line of its own, and a guess at its column would be wrong.
+      (else "    "))))
 
 (: blanks (-> int string))
 (defun (blanks n)
@@ -559,13 +557,11 @@
       (match wanted
         (Nil (Ok clauses))
         ((Cons only Nil)
-         (match (parse-package-name only)
-           ((Err why) (Err why))
-           ((Ok name)
-            (match (find #(dep-named? & name) clauses)
-              (None (Err (str "bjo update: " (name->string name) " is not a dependency of "
-                              (name->string (record-ref package name)) ".")))
-              ((Some dep) (Ok (Cons dep Nil)))))))
+         (def (Ok name) (parse-package-name only) :propagate)
+         (match (find #(dep-named? & name) clauses)
+           (None (Err (str "bjo update: " (name->string name) " is not a dependency of "
+                           (name->string (record-ref package name)) ".")))
+           ((Some dep) (Ok (Cons dep Nil)))))
         (_ (Err "bjo update: takes one package name, or none for all of them."))))
 
     (def (Ok deps) chosen :propagate)

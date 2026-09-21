@@ -523,6 +523,25 @@ Standard ~if~ expressions:
     "positive")
 #+END_SRC
 
+~cond~ takes any number of arms and a final ~else~. Two of its clauses answer
+nothing: ~(:def pattern expr)~ binds and ~(:do body ...)~ runs something, both
+only when every test above them has failed, and a ~:def~ is in scope in the
+clauses below it. They are there so that a value a later test needs does not
+cost an ~(else ...)~ and a second ~cond~ inside it:
+
+#+BEGIN_SRC scheme
+(cond
+  ((string-empty? text) "empty")
+  (:def first (string-cursor-ref text (string-cursor-start text)))
+  (:do (log "looking at" first))
+  ((char-numeric? first) "number")
+  (else "word"))
+#+END_SRC
+
+A ~:def~ clause is a ~def~, and the body it swallows is the rest of the cond —
+so ~(:def (Ok v) (parse s) :propagate)~ makes the whole cond the ~Err~ when the
+parse failed. See ~def~ below.
+
 ~when~ and ~unless~ are one-armed conditionals, taking a body of any number of forms:
 #+BEGIN_SRC scheme
 (when (> x 100)

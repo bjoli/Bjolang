@@ -1,0 +1,105 @@
+;; `cond` clauses that do not answer: `(:def pattern expr)` binds and
+;; `(:do body ...)` runs, both reached only when every test above them failed.
+;;
+;; What is asserted here is the scoping (below and nowhere else), the
+;; evaluation order (a clause nobody reaches runs nothing), and that a `:def`
+;; is a `def` — the same patterns, the same failure parts, the sequel being
+;; the rest of the cond.
+
+(import (std prelude))
+(import (std simpletest))
+
+;; The shape the clauses exist for: two values, each needed by a later test,
+;; and no nesting.
+(: classify (-> string string))
+(defun (classify text)
+  (cond
+    ((string-empty? text) "empty")
+    (:def first (string-cursor-ref text (string-cursor-start text)))
+    (:def rest (string-length text))
+    ((char-numeric? first) (str "number of " (int->string rest)))
+    ((char-upper-case? first) "capital")
+    (else "word")))
+
+;; A `:def` is only reached when the tests above it failed, so the expression
+;; is not evaluated for a value the first clause answers. The counter says so.
+(: probes (Box int))
+(def probes (make-box 0))
+
+(: counted (-> int int))
+(defun (counted n)
+  (box-set! probes (+ (box-ref probes) 1))
+  n)
+
+(: after-a-test (-> bool int))
+(defun (after-a-test short?)
+  (cond
+    (short? 0)
+    (:def n (counted 7))
+    (else n)))
+
+;; A refutable pattern takes a failure part, and what it fails to is the value
+;; of the whole cond — the rest of the form being the body the `def` swallows.
+(: port-of (-> (Map string int) bool int))
+(defun (port-of settings override?)
+  (cond
+    (override? 9999)
+    (:def (Some port) (map-try-ref settings "port") 8080)
+    ((< port 1024) 0)
+    (else port)))
+
+;; ...including `:propagate`, which rebuilds the case it did not match at the
+;; type of the cond.
+(: doubled (-> (Result string int) (Result string int)))
+(defun (doubled r)
+  (cond
+    (:def (Ok n) r :propagate)
+    ((= n 0) (Ok 0))
+    (else (Ok (* n 2)))))
+
+;; `:do` runs between two tests.
+(: trace (Box string))
+(def trace (make-box ""))
+
+(: note! (-> string void))
+(defun (note! text) (box-set! trace (str (box-ref trace) text)))
+
+(: with-notes (-> int string))
+(defun (with-notes n)
+  (cond
+    ((< n 0) "negative")
+    (:do (note! "checked "))
+    ((= n 0) "zero")
+    (:do (note! "and again"))
+    (else "positive")))
+
+(defun (main)
+  (expect "a test before the bindings still answers" (classify "") "empty")
+  (expect "a binding is in scope in the tests below it" (classify "42") "number of 2")
+  (expect "and in the arms below it" (classify "Hello") "capital")
+  (expect "and the last clause sees it too" (classify "hello") "word")
+
+  (expect "a binding under a test that matched is not evaluated" (after-a-test #t) 0)
+  (expect "and nothing ran" (box-ref probes) 0)
+  (expect "a binding under a test that failed is evaluated" (after-a-test #f) 7)
+  (expect "once" (box-ref probes) 1)
+
+  (expect "a refutable :def falls to its failure value"
+          (port-of (map-empty) #f) 8080)
+  (expect "and binds when it matches"
+          (port-of (map-set (map-empty) "port" 3000) #f) 3000)
+  (expect "a clause above it still wins"
+          (port-of (map-empty) #t) 9999)
+  (expect "and a test below it sees the binding"
+          (port-of (map-set (map-empty) "port" 80) #f) 0)
+
+  (expect "a :def may propagate" (doubled (Err "no")) (Err "no"))
+  (expect "and carry on when it matches" (doubled (Ok 21)) (Ok 42))
+
+  (expect "a :do runs between the tests" (with-notes 0) "zero")
+  (expect "and only the ones that were reached" (box-ref trace) "checked ")
+  (expect "a later :do runs when the test above it failed" (with-notes 5) "positive")
+  (expect "in order" (box-ref trace) "checked checked and again")
+  (expect "and a test before them all skips them" (with-notes -1) "negative")
+  (expect "leaving the trace alone" (box-ref trace) "checked checked and again")
+  0)

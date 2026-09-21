@@ -571,6 +571,14 @@ anything or stored in a variable.
 
 - ~(cond (test body ...) ... (else body ...))~ : ~if~ at any number of arms. The
   final ~else~ is required. Every arm needs the same return type.
+- ~(:def pattern expr)~ and ~(:do body ...)~ : clauses of a ~cond~ that answer
+  nothing. A ~:def~ binds and a ~:do~ runs something; both happen only when
+  every test above them has failed, and what a ~:def~ binds is in scope in
+  every clause below it and nowhere else. A ~:def~ *is* a ~def~ — the body it
+  swallows is the rest of the cond — so it takes the same patterns and the
+  same failure parts, and ~(:def (Ok v) (parse s) :propagate)~ makes the whole
+  cond the ~Err~. A cond may not end in one: they answer nothing, so the
+  ~else~ is still the last word.
 - ~(if-let ((name expr)) then else)~ : ~then~ with ~name~ bound to what ~expr~
   answered, if it answered ~(Some ...)~, and ~else~ if it was ~None~. The
   binding is shaped like a ~let~'s, which should be changed.
@@ -593,6 +601,18 @@ anything or stored in a variable.
 (cond ((< n 0) "negative")
       ((= n 0) "zero")
       (else "positive"))
+
+;; A value a later test needs, without a nested cond to hold it
+(cond ((string-empty? text) "empty")
+      (:def first (string-cursor-ref text (string-cursor-start text)))
+      ((char-numeric? first) "number")
+      (else "word"))
+
+;; The failure part is def's, and the sequel is the rest of the cond
+(cond (override? 9999)
+      (:def (Some port) (map-try-ref settings "port") 8080)
+      ((< port 1024) 0)
+      (else port))
 
 (if-let ((half (halve n))) half 0)
 
