@@ -114,12 +114,9 @@ echo "Building standard library..."
 # written in.
 ./bjor --lib lib/text/bjodat.bjo
 
-# `bjor/manifest` is the package manifest, as types. After `text/bjodat`, whose
-# `def/bjodat-type` it is written with and whose `Bjodat` cases its hand-written
-# instances name. It is the first thing in the library that is not machinery for
-# other code to build on, which is why it is last.
-#
-
-./bjor --lib lib/bjor/manifest.bjo
+# The package manifest is no longer part of the standard library: it is
+# `bjo/manifest.bjo`, built by `bjo` along with the rest of the driver. A
+# package name that `lib/` has a directory for is reserved, so a `(bjor)` here
+# would have taken a name away from users for a module only `bjo` reads.
 
 echo "Standard library built successfully!"

@@ -1033,6 +1033,17 @@ def run_package_tests():
         check_that(f"{label} says what is missing", wanted in said, said[-300:])
         check_that(f"{label} points at the import form", ":2" in said, said[-300:])
 
+    # 4b. Ett paketnamn är inte en modul: det finns ingenting kvar att lägga till
+    # rotens katalog, så importen namnger en katalog och inte en fil.
+    package_itself = write(unresolved / "package_itself.bjo",
+                           '(import (std prelude))\n(import (up))\n(defun (main) 0)\n')
+    res = compile_with(unresolved / "roots.bjo", package_itself)
+    said = res.stdout + res.stderr
+    check_that("importing a package name is refused", res.returncode != 0, "it compiled")
+    check_that("and it says a package is not a module, and how to import one",
+               "is a package, not a module" in said and "(up name)" in said, said[-300:])
+    check_that("and it points at the import form", ":2" in said, said[-300:])
+
     # 5. Ett uttryckligt `.dll` i en import är fortfarande en assembly.
     explicit = PKG_DIR / "explicit"
     write(explicit / "prebuilt.bjo", '(import (std prelude))\n(export answer)\n(: answer (-> int))\n(defun (answer) 42)\n')
