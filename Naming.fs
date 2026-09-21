@@ -216,39 +216,46 @@ let private identSegment (s: string) =
 
 /// Determines the C# namespace for a module based on its directory path.
 ///
-/// All files in the same directory share a namespace. If the module is part of the standard
-/// library (under `lib/`), its namespace is based on its relative path to allow different
-/// installations to share the same identity. For all other files, we hash the absolute
-/// directory path to ensure uniqueness.
+/// All files in the same directory share a namespace. A file that belongs to a
+/// package is named after the package and its path below it, so the same source
+/// compiled from two different directories — a dependency fetched into two
+/// projects — is the same module with the same assembly name. For a file under
+/// no package we hash the absolute directory instead, which is unique but only
+/// on this machine.
 ///
 /// Note: This function requires an absolute file path, not just a module name.
 let moduleNamespace (path: string) : string =
     let full = IO.Path.GetFullPath path
 
-    let dir =
-        match IO.Path.GetDirectoryName full with
-        | null | "" -> IO.Path.GetPathRoot full
-        | d -> d
+    match Paths.identityOf full with
+    | Some identity ->
+        match Paths.shadowedBy identity full with
+        | Some owner ->
+            failwithf
+                "'%s' is in package %s at %s, so it is the module %s — but that name belongs to package %s at %s. One of the two packages has to give up the directory: a module name has one file."
+                full
+                (Paths.showPackageName identity.Root.Name)
+                identity.Root.Directory
+                (Paths.showPackageName identity.ModuleName)
+                (Paths.showPackageName owner.Name)
+                owner.Directory
+        | None ->
 
-    let rec libRootOf (d: string) =
-        if String.IsNullOrEmpty d then None
-        elif IO.Path.GetFileName d = "lib" && IO.Directory.Exists(IO.Path.Combine(d, "std")) then Some d
-        else libRootOf (IO.Path.GetDirectoryName d)
-
-    match libRootOf dir with
-    | Some lib ->
-        let relative = dir.Substring(lib.Length).Trim IO.Path.DirectorySeparatorChar
-
+        // The file's own name is not part of the namespace — `moduleKeyOfPath`
+        // appends it — so what is left is the package name and the directories
+        // below it.
         let segments =
-            if relative = "" then
-                [ "lib" ]
-            else
-                relative.Split IO.Path.DirectorySeparatorChar
-                |> Array.map identSegment
-                |> List.ofArray
+            identity.ModuleName
+            |> List.truncate (identity.ModuleName.Length - 1)
+            |> List.map identSegment
 
         $"""%s{moduleNamespaceRoot}.%s{String.concat "." segments}"""
     | None ->
+        let dir =
+            match IO.Path.GetDirectoryName full with
+            | null | "" -> IO.Path.GetPathRoot full
+            | d -> d
+
         let leaf =
             match IO.Path.GetFileName dir with
             | null | "" -> "root"

@@ -42,7 +42,14 @@ type CompilerOptions =
       /// Where `-d` puts the generated C# code.
       EmitCs: string option
       /// Run the frontend over each input and stop, generating nothing.
-      Check: bool }
+      Check: bool
+
+      /// The roots file `--roots` named, as it was written.
+      ///
+      /// Kept as the path rather than as the roots it loaded, because the build
+      /// record has to name the file: what a module resolves to depends on it,
+      /// and a driver comparing timestamps has to know that.
+      Roots: string option }
 
 let defaultOptions =
     { InputFiles = []
@@ -54,7 +61,8 @@ let defaultOptions =
       FilesFrom = None
       Report = None
       EmitCs = None
-      Check = false }
+      Check = false
+      Roots = None }
 
 let printUsage () =
     printfn "Bjolang Compiler"
@@ -72,6 +80,15 @@ let printUsage () =
     printfn "              dump goes beside it."
     printfn "  --check     Check for errors without generating code. Reports every error"
     printfn "              the frontend finds and writes no assembly."
+    printfn "  --roots <file>"
+    printfn "              Where the packages are. One directory per package name:"
+    printfn "                (roots (root (bjorsec) \"/proj/.bjo/pkg/bjorsec@1.2.3/src\")"
+    printfn "                       (root (myapp)   \"src\"))"
+    printfn "              A relative directory is relative to the roots file. The standard"
+    printfn "              library is always a set of roots and may not be named here."
+    printfn "              Whoever writes this file must leave it alone when its contents"
+    printfn "              have not changed: it is an input of every build made against it,"
+    printfn "              so rewriting it makes everything stale."
     printfn "  --help      Show this help message"
     printfn ""
     printfn "Batch options:"
@@ -103,6 +120,100 @@ let private readFileList (path: string) : string list =
     |> Array.filter (fun line -> line <> "" && not (line.StartsWith "#"))
     |> Array.toList
 
+/// Reads the file `--roots` named: one directory per package name.
+///
+/// Read with the compiler's own lexer and reader rather than with a parser of
+/// its own, so that a roots file is Bjolang and quoting, comments and escapes
+/// mean there what they mean everywhere else. `Paths` cannot do this itself —
+/// it is compiled before the lexer, and has to be, because `Naming` asks it
+/// what a file is called.
+///
+/// Every failure here names the line and column, because the file is written by
+/// a tool and read by a person only when something is wrong with it.
+let private loadRoots (rootsPath: string) : Paths.PackageRoot list =
+    let shape = "(roots (root (package name) \"directory\") ...)"
+    let full = Path.GetFullPath rootsPath
+
+    if not (File.Exists full) then
+        failwithf $"--roots: no such file '%s{rootsPath}'."
+
+    let baseDir = Path.GetDirectoryName full
+    let forms, _ = Lexer.tokenize full (File.ReadAllText full) |> Pipeline.read
+
+    /// With the column, unlike the compiler's diagnostics for source files: a
+    /// roots file is written by a tool, which is free to put every package on
+    /// one line, and then the line alone points at all of them.
+    let at (r: Lexer.Range) = $"%s{Lexer.formatPos r}:%d{r.Start.Column}"
+    let where (form: Ast.SExpr) = at (Ast.getRange form)
+
+    let entries =
+        match forms with
+        | [ Ast.SList(Ast.SAtom { Token = Lexer.Symbol "roots" } :: entries, _) ] -> entries
+        | form :: _ -> failwithf $"Invalid roots file at %s{where form}: expected one %s{shape} form."
+        | [] -> failwithf $"Invalid roots file '%s{full}': it is empty, and a build needs at least the %s{shape} head."
+
+    let roots =
+        entries
+        |> List.map (fun entry ->
+            match entry with
+            | Ast.SList([ Ast.SAtom { Token = Lexer.Symbol "root" }
+                          Ast.SList(nameForms, nameRange)
+                          Ast.SAtom { Token = Lexer.StringLit dir } ],
+                        _) ->
+                let name =
+                    nameForms
+                    |> List.map (function
+                        | Ast.SAtom { Token = Lexer.Symbol s } -> s
+                        | bad ->
+                            failwithf
+                                $"Invalid roots file at %s{where bad}: a package name is a list of plain symbols, as a module path is.")
+
+                if name.IsEmpty then
+                    failwithf $"Invalid roots file at %s{at nameRange}: a package name has at least one segment."
+
+                // Relative to the roots file, not to the working directory: the
+                // file is written next to the project it describes, and a
+                // driver that produced it has no idea where it will be read
+                // from.
+                let directory =
+                    if Path.IsPathRooted dir then
+                        Path.GetFullPath dir
+                    else
+                        Path.GetFullPath(Path.Combine(baseDir, dir))
+
+                if not (Directory.Exists directory) then
+                    failwithf
+                        $"Invalid roots file at %s{where entry}: package %s{Paths.showPackageName name} points at '%s{directory}', which is not a directory."
+
+                { Paths.Name = name
+                  Paths.Directory = directory.TrimEnd Path.DirectorySeparatorChar
+                  Paths.IsStandardLibrary = false },
+                entry
+            | bad -> failwithf $"Invalid roots file at %s{where bad}: a root is written (root (package name) \"directory\").")
+
+    // The standard library is a set of roots already, and a second directory
+    // for one of its names would decide `(std prelude)` by list order. Refused
+    // rather than overridden: a program that means to replace the standard
+    // library is asking for `BJOLANG_LIB`, which replaces all of it at once.
+    for (root, entry) in roots do
+        if Paths.packageRoots () |> List.exists (fun s -> s.IsStandardLibrary && s.Name = root.Name) then
+            failwithf
+                $"Invalid roots file at %s{where entry}: %s{Paths.showPackageName root.Name} is part of the standard library and cannot be given a directory here."
+
+    // A name with two directories is refused rather than resolved by order,
+    // because the loser is not silent: it is a package whose modules exist and
+    // are never reached.
+    roots
+    |> List.groupBy (fun (root, _) -> root.Name)
+    |> List.iter (fun (name, group) ->
+        if group.Length > 1 then
+            let places = group |> List.map (fun (_, entry) -> where entry) |> String.concat " and "
+
+            failwithf
+                $"Invalid roots file: %s{Paths.showPackageName name} is given a directory twice, at %s{places}. One package name, one directory.")
+
+    roots |> List.map fst
+
 let rec parseArgs (args: string list) (opts: CompilerOptions) =
     match args with
     | [] -> opts
@@ -117,6 +228,7 @@ let rec parseArgs (args: string list) (opts: CompilerOptions) =
     | "--files-from" :: path :: rest -> parseArgs rest { opts with FilesFrom = Some path }
     | "--report" :: path :: rest -> parseArgs rest { opts with Report = Some path }
     | "--emit-cs" :: path :: rest -> parseArgs rest { opts with EmitCs = Some path }
+    | "--roots" :: path :: rest -> parseArgs rest { opts with Roots = Some path }
     | "-d" :: rest
     | "--debug" :: rest -> parseArgs rest { opts with Debug = true }
     | arg :: rest when not (arg.StartsWith("-")) ->
@@ -132,6 +244,19 @@ let private run (argv: string array) =
     Build.installDependencyBackend ()
 
     let options = parseArgs (Array.toList argv) defaultOptions
+
+    // Before anything is resolved, and before the REPL, a batch or a check:
+    // every derived module name and every import goes through the registry, so
+    // installing it late would give the files read before it a different
+    // identity from the ones read after.
+    match options.Roots with
+    | Some path ->
+        try
+            Paths.setConfiguredRoots (loadRoots path)
+        with ex ->
+            printfn $"Error: %s{ex.Message}"
+            exit 1
+    | None -> ()
 
     if options.Repl then
         Repl.run ()

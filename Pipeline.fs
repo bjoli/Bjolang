@@ -846,9 +846,13 @@ let private preludePath = ModulePath [ "std"; "prelude" ]
 /// `prelude.bjo`. `prelude` imports `maths`, so giving `maths` an implicit
 /// `prelude` would be a cycle; and the rest of the library says what it depends
 /// on explicitly, which is what building it in dependency order relies on.
+/// Asked of the package the file belongs to rather than of its path, so that
+/// "the standard library is a `lib` with a `std` in it" is written in `Paths`
+/// and nowhere else.
 let private isStandardLibrary (absPath: string) =
-    let lib = Paths.libDir.TrimEnd(Path.DirectorySeparatorChar) + string Path.DirectorySeparatorChar
-    absPath.StartsWith(lib, StringComparison.Ordinal)
+    match Paths.identityOf absPath with
+    | Some identity -> identity.Root.IsStandardLibrary
+    | None -> false
 
 /// The imports a file declares, read off its S-expressions.
 ///
@@ -934,6 +938,10 @@ type private SourceFacts =
 /// filen som inkluderar den har ändrats — och den filen ligger själv i
 /// stängningen och stäms av mot `.dll`:ens tidsstämpel, så modulen döms som
 /// föråldrad och byggs om, varvid stängningen räknas om.
+/// Keyed by path and timestamp, and that stays right once packages exist: the
+/// roots are installed before the first file is read and never change again, so
+/// what a path resolved to and what it was called cannot go stale under a cache
+/// entry. The same holds for `dllCache` above.
 let private sourceFacts = System.Collections.Generic.Dictionary<string * int64, SourceFacts>()
 
 let private factsOf (bjoPath: string) : SourceFacts =
@@ -1216,6 +1224,9 @@ let loadModuleGraph
     installAssemblyResolver ()
 
     let resolvedModules = System.Collections.Generic.Dictionary<string, LoadedModule>()
+
+    /// Which file each module key belongs to, for the length of one build.
+    let claimedKeys = System.Collections.Generic.Dictionary<string, string>()
     let currentPath = System.Collections.Generic.HashSet<string>()
     let dllDeps = System.Collections.Generic.HashSet<string>()
 
@@ -1658,6 +1669,19 @@ let loadModuleGraph
             // never enter the module graph.
 
             let moduleName = Naming.moduleKeyOfPath absPath
+
+            // Two files, one identity. It is what a shadowing package produces
+            // when neither file is under the other's root, and what two
+            // directories whose names differ only in `-` against `_` produce —
+            // `identSegment` folds both to the same segment. Either way the
+            // second module's declarations would be registered under the first
+            // one's key, and the error is about names nobody wrote.
+            match claimedKeys.TryGetValue moduleName with
+            | true, other when other <> absPath ->
+                failwithf
+                    $"'%s{absPath}' and '%s{other}' are both the module %s{Naming.showTypeName moduleName}. Two files cannot share one module name: rename one, or take one of them out of the package that claims it."
+            | _ -> claimedKeys[moduleName] <- absPath
+
             resolvedModules.[absPath] <- {
                 FilePath = absPath
                 ModuleName = moduleName

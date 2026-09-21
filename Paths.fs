@@ -180,6 +180,67 @@ let findModule (parts: string list) : ModuleLookup =
 let moduleFileName (root: PackageRoot) (parts: string list) : string =
     (parts |> List.skip (min root.Name.Length parts.Length) |> String.concat "/") + ".bjo"
 
+/// What a file is called, worked out from where it is.
+type FileIdentity =
+    { /// The package the file belongs to.
+      Root: PackageRoot
+      /// The whole module name: the package name, then the path below the
+      /// package directory without the extension.
+      ModuleName: string list }
+
+/// The package a file belongs to, and the module name that gives it.
+///
+/// Derived from the path and never from how an import spelled it, so that one
+/// file is one module however it was reached — `(import "core.bjo")` and
+/// `(import (relocpkg core))` name the same assembly rather than compiling it
+/// twice under two identities.
+///
+/// The *deepest* containing root wins, which is the same rule resolution uses
+/// from the other end: a `(bjolang http)` whose directory sits inside
+/// `(bjolang)`'s owns the files under it.
+///
+/// `None` for a file under no package at all — a script somewhere in the
+/// filesystem — which keeps its hashed identity.
+let identityOf (file: string) : FileIdentity option =
+    let full = Path.GetFullPath file
+
+    packageRoots ()
+    |> List.filter (fun r -> full.StartsWith(asPrefix r.Directory, StringComparison.Ordinal))
+    |> List.sortByDescending (fun r -> r.Directory.Length)
+    |> List.tryHead
+    |> Option.map (fun r ->
+        let below = full.Substring((asPrefix r.Directory).Length)
+
+        let segments =
+            match Path.ChangeExtension(below, null) with
+            | "" -> []
+            | stripped -> stripped.Split Path.DirectorySeparatorChar |> List.ofArray
+
+        { Root = r; ModuleName = r.Name @ segments })
+
+/// The package that would answer a file's own module name, when that is not the
+/// package the file is in.
+///
+/// The one thing that can go wrong with deriving a name from a path: a file at
+/// `<(bjolang) root>/http/client.bjo` is named `(bjolang http client)`, and if
+/// a package `(bjolang http)` is also registered then that name resolves into
+/// *its* directory instead. The file would compile under a name that does not
+/// lead back to it, and the module it shadows would be linked by whoever
+/// imported the name. Checked wherever a name is derived rather than once at
+/// startup, because a root's directory may hold files nobody has looked at yet.
+let shadowedBy (identity: FileIdentity) (file: string) : PackageRoot option =
+    // Extensions are ignored: this is asked about the `.dll` beside a source as
+    // well, and `<root>/core.dll` derives `(pkg core)`, which resolves to
+    // `<root>/core.bjo` — the same module, not a shadowing.
+    let withoutExtension (p: string) = Path.ChangeExtension(Path.GetFullPath p, null)
+
+    match findModule identity.ModuleName with
+    | ModuleFile(owner, resolved) when
+        not (String.Equals(withoutExtension resolved, withoutExtension file, StringComparison.Ordinal))
+        ->
+        Some owner
+    | _ -> None
+
 /// The assemblies every compiled program links against, in link order.
 ///
 /// The concurrency runtime — fibers, promises, channels and the CML event
