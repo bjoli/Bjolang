@@ -120,13 +120,23 @@ let private standardRoots: PackageRoot list =
 /// The packages a roots file added, set once before anything is resolved.
 let mutable private configuredRoots: PackageRoot list = []
 
+/// The file they were read from, kept for the build record.
+let mutable private rootsFilePath: string option = None
+
 /// Installs the packages named by `--roots`.
 ///
 /// Called by `Program` before the first compile and never again: every cache
 /// keyed by a path — `Naming`'s derived names, `Pipeline`'s module and facts
 /// caches — would answer from a stale registry if the roots could change under
 /// them, and a compiler process serves one roots file.
-let setConfiguredRoots (roots: PackageRoot list) : unit = configuredRoots <- roots
+let setConfiguredRoots (file: string) (roots: PackageRoot list) : unit =
+    rootsFilePath <- Some(Path.GetFullPath file)
+    configuredRoots <- roots
+
+/// The roots file this process was given, which every build it makes has to
+/// record: a dependency compiled on the way to something else is built against
+/// the same packages and needs the same line in its own record.
+let rootsFile () : string option = rootsFilePath
 
 /// Every package this build knows, the standard library included.
 let packageRoots () : PackageRoot list = standardRoots @ configuredRoots

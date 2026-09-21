@@ -85,6 +85,11 @@ let private dumpPaths (emitCs: string option) : string * string =
 ///              compiled against its API and only resolves it at run time, so a
 ///              rebuilt runtime is a program built against something that is no
 ///              longer there — a missing method rather than a failed build
+///     roots    the roots file the build resolved module paths against, when
+///              one was given. It says which directory each package name means,
+///              so editing it compiles the same source against other code —
+///              and the dependency paths already in this record are the ones it
+///              chose last time, which say nothing about the change
 ///
 /// The mode is first and alone on its line so that reading just the head of the
 /// file answers the cheapest question.
@@ -120,10 +125,19 @@ let private writeBuildRecord
             | "" -> []
             | loc -> [ $"compiler %s{Path.GetFullPath loc}" ]
 
+        // Read from `Paths` rather than from the options, so that a dependency
+        // this build compiled on the way records the same file: it was resolved
+        // against the same packages, and its record decides its own staleness.
+        let rootsLine =
+            match Paths.rootsFile () with
+            | Some path -> [ $"roots %s{path}" ]
+            | None -> []
+
         let lines =
             [ $"""mode %s{if options.Debug then "debug" else "release"}"""
               $"output %s{Path.GetFullPath outputFilePath}" ]
             @ compilerPath
+            @ rootsLine
             @ (sources |> List.map (fun s -> $"source %s{s}"))
             @ (linked |> List.map Path.GetFullPath |> List.distinct |> List.sort |> List.map (fun d -> $"dep %s{d}"))
 

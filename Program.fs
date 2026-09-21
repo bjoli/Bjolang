@@ -252,7 +252,7 @@ let private run (argv: string array) =
     match options.Roots with
     | Some path ->
         try
-            Paths.setConfiguredRoots (loadRoots path)
+            Paths.setConfiguredRoots path (loadRoots path)
         with ex ->
             printfn $"Error: %s{ex.Message}"
             exit 1
