@@ -536,3 +536,52 @@ has to exist at all.
 
 Doing it for one trait and not the other is not worth it: both are one
 mechanism, ~evidence-as-comparer~, applied twice.
+
+* Packages: what the roots work left undone
+
+~--roots~ gives a package a name and a directory, and a module its identity from
+that name. These are the pieces around it that were deliberately not built at
+the same time, each with the reason it could wait.
+
+** An executable names its dependencies by absolute path
+
+~BjolangModulePaths~ in ~Build.fs~ embeds the full path of every module ~.dll~ in
+the generated resolver, so a program only runs on the machine that built it:
+copy ~app.exe~ to another host and it resolves nothing, however the packages are
+arranged there. Deferred because a resolver that searches roots at run time
+needs the roots to *be* somewhere at run time — an installed layout, or the
+paths written into the executable as a manifest — and that is a decision about
+deployment, which no part of this work had to make.
+
+** ~bjo~ has no manifest, no lock file and no fetching
+
+~bjo~ learned one thing only: that ~roots~ is an input key in a build record. It
+cannot read a dependency list, clone anything, or write the roots file it now
+understands. Deferred because the compiler had to be able to *be told* where a
+package is before anything could sensibly decide what to tell it.
+
+** Build output still lands next to the source
+
+~core.bjo~ compiles to ~core.dll~ beside it, so building the same package in two
+projects writes into the fetched copy twice, and a read-only package directory
+cannot be built at all. Deferred because moving the output means teaching
+staleness, the resolver table and the build record about a second directory, and
+none of that is needed to prove that identity no longer depends on location.
+
+** ~lib/text~ is a standard-library root of its own
+
+~(text json)~ is a package named ~text~, beside ~std~ and ~bjor~, because every
+top-level directory of ~lib~ is a root. Moving it under ~std~ would rename every
+module in it — ~BjoMod.text.json~ becomes ~BjoMod.std.text.json~ — and every
+assembly with it. Deferred as a rename with no technical content; the roots rule
+is indifferent to which of the two layouts is chosen.
+
+** A relative import still means a path
+
+~(import "core.bjo")~ resolves against the importing file's directory, as it
+always has. What changed is only what the file it finds is *called*: if that
+file is inside a package, it is the module the package names, so the two
+spellings reach one assembly. Deferred any further change — making a relative
+import illegal across a package boundary, say — because nothing yet says what a
+package boundary is worth, and a rule refusing programs that work today needs
+that.
