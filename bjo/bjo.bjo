@@ -35,7 +35,6 @@
 ;; failure is written down at all.
 
 (import (std prelude))
-(import (std monad))
 
 ;; ---------------------------------------------------------------------------
 ;; Interop
@@ -129,71 +128,19 @@
 (: compiler-dll string)
 (def compiler-dll (path-combine root "bin" "Release" "net10.0" "Bjolang.dll"))
 
-(: project-file string)
-(def project-file (path-combine root "Bjolang.fsproj"))
-
-;; The runtime lives where it is built, and is never copied next to a program:
-;; see `Paths.runtimeDir`.
-(: runtime-dll string)
-(def runtime-dll
-  (path-combine root "BjolangRuntime" "bin" "Release" "net10.0" "BjolangRuntime.dll"))
-
 
 ;; ---------------------------------------------------------------------------
 ;; The compiler binary
 ;; ---------------------------------------------------------------------------
 
-;; Files under `dir` ending in `ext`, descending into subdirectories only when
-;; `deep?`. `obj` and `bin` are never descended into: a build writes generated
-;; code there, which would make the compiler stale the instant it was built.
-(: sources-in (-> string string bool (List string)))
-(defun (sources-in dir ext deep?)
-  (with-return ret
-    (unless (directory-exists? dir) (ret Nil))
-
-    (def here (loop (:for f (directory-files dir))
-                    (:when (string-ends-with? f ext))
-                    (:acc out (listing f))))
-
-    (unless deep? (ret here))
-
-    ;; The fold starts from what this directory already found, so the deeper
-    ;; files join them rather than being appended to them afterwards.
-    (loop (:for sub (directory-subdirectories dir))
-          (:when-let (Some name) (path-filename sub))
-          (:when (not (or (= name "obj") (= name "bin"))))
-          (:acc found (folding here (list-append (sources-in sub ext #t) found)))
-          => found)))
-
-;; Is `assembly` missing, or older than anything it is built from?
-(: behind? (-> string (List string) bool))
-(defun (behind? assembly sources)
-  (or (not (file-exists? assembly))
-      (any? #(newer? & assembly) sources)))
-
-;; Brings the compiler up to date, and says whether there is one to use.
-;;
-;; This is the question the build record cannot answer. A compiler that has not
-;; been built cannot be asked anything, and one that is behind its own sources
-;; would answer as the compiler it used to be — including about artefacts it
-;; produced, which carry its metadata format and not the new one's.
-;;
-;; Two assemblies, and each is asked about the sources that produce *it*.
-;; `Bjolang.fsproj` references `BjolangRuntime.csproj`, so one `dotnet build`
-;; settles both — but the runtime's C# does not produce `Bjolang.dll`, and
-;; asking it that way is a loop with no way out: a changed `.cs` rebuilds
-;; `BjolangRuntime.dll` and leaves the F# assembly alone, since MSBuild has
-;; nothing to relink, so the answer stays "stale" for ever and every invocation
-;; builds again. `bjor` asks the same wrong question, and is saved only by
-;; asking it nowhere but inside a compile it had already decided on.
-(: ensure-compiler #:sync (-> bool))
-(defun (ensure-compiler)
-  (if (or (behind? compiler-dll (sources-in root ".fs" #f))
-          (behind? runtime-dll(sources-in (path-combine root "BjolangRuntime") ".cs" #t)))
-      #t
-      (let ()
-        (println "Building Bjolang compiler...")
-        (= 0 (exec "dotnet" ["build" project-file "-c" "Release" "-v" "q" "--nologo"])))))
+;; Is there a compiler to use at all?
+(: have-compiler? (-> bool))
+(defun (have-compiler?)
+  (cond
+    ((file-exists? compiler-dll) #t)
+    (else
+     (println "bjo: there is no compiler built here yet. Run 'bjo rebjo'.")
+     #f)))
 
 
 ;; ---------------------------------------------------------------------------
@@ -217,10 +164,12 @@
 ;; short-circuits to.
 (: split-line (-> string (Option (Tuple string string))))
 (defun (split-line line)
-  (do (:bind space (string-index #(char=? & #\space) line))
-      (:return (Tuple (substring/cursors line (string-cursor-start line) space)
-                      (substring/cursors line (string-cursor-next line space)
-                                         (string-cursor-end line))))))
+  (match (string-index #(char=? & #\space) line)
+    ((Some space)
+     (Some (Tuple (substring/cursors line (string-cursor-start line) space)
+                  (substring/cursors line (string-cursor-next line space)
+                                     (string-cursor-end line)))))
+    (None None)))
 
 ;; The keys that name a file the artefact must be newer than. What they are
 ;; called apart is nothing this has to know.
@@ -256,13 +205,13 @@
 ;; Is there anything to do before the artefact can be used?
 (: stale? (-> string string bool))
 (defun (stale? file wanted)
-  ;; Never built, or built by something that did not record it.
-  (def (Some rec) (read-record file) #t)
-  (def artefact (record-ref rec output))
-
-  (or (not (= (record-ref rec mode) wanted))
-      (not (file-exists? artefact))
-      (any? #(newer? & artefact) (record-ref rec inputs))))
+  (match (read-record file)
+    (None #t)
+    ((Some rec) 
+     (def artefact (record-ref rec output))
+     (or (not (= (record-ref rec mode) wanted))
+         (not (file-exists? artefact))
+         (any? #(newer? & artefact) (record-ref rec inputs))))))
 
 
 ;; ---------------------------------------------------------------------------
@@ -305,7 +254,7 @@
 (: ensure-built #:sync (-> string bool bool bool (Result int (Tuple BuildRecord bool))))
 (defun (ensure-built file debug? lib? force?)
   (with-return ret
-    (unless (ensure-compiler) (ret (Err 1)))
+    (unless (have-compiler?) (ret (Err 1)))
 
     ;; A debug build is never served from the record: the dumps `-d` asks for
     ;; are produced by compiling, so a cached one has nothing to show.
@@ -321,7 +270,7 @@
     (def (Some built) (read-record file)
       :fail ((None
               (println #"bjo: ${file} compiled, but left no build record.")
-              (ret (Err 1)))))
+              (Err 1))))
 
     (Ok (Tuple built #t))))
 
@@ -361,16 +310,14 @@
 ;; before it does anything, and `--batch` pays that once instead of per file.
 (: cmd-check #:sync (-> (List string) int))
 (defun (cmd-check files)
-  (with-return ret
-    (unless (ensure-compiler) (ret 1))
-
-    (def batch (match files
-                 ((Cons _ (Cons _ _)) (Cons "--batch" Nil))
-                 (_ Nil)))
-
-    (exec "dotnet"
-          (list->vec (Cons compiler-dll (Cons "--check" (list-append batch files)))))))
-
+  (if (not (have-compiler?))
+      1
+      (let ((batch (match files
+                     ((Cons _ (Cons _ _)) (Cons "--batch" Nil))
+                     (_ Nil))))
+        (exec "dotnet"
+              (list->vec (Cons compiler-dll (Cons "--check" (list-append batch files))))))))
+  
 ;; A program on PATH, if there is one. Two ways to have no answer — no PATH at
 ;; all, and nothing on it by that name — and both of them propagate.
 (: which (-> string (Option string)))
@@ -385,15 +332,12 @@
 ;; REPL rather than by a terminal rlwrap can recognise.
 (: cmd-repl #:sync (-> int))
 (defun (cmd-repl)
-  (with-return ret
-    (unless (ensure-compiler) (ret 1))
-
-    (def (Some rlwrap) (which "rlwrap")
-      :fail ((None
-              (println "bjo: no rlwrap on PATH, so the REPL has no line editing.")
-              (ret (exec "dotnet" [compiler-dll "--repl"])))))
-
-    (exec rlwrap ["-a" "dotnet" compiler-dll "--repl"])))
+  (if (not (have-compiler?))
+      1
+      (match (which "rlwrap")
+        ((Some rlwrap)   (exec rlwrap ["-a" "dotnet" compiler-dll "--repl"]))
+        (None (println "bjo: no rlwrap in PATH, so the REPL has no line editing")
+              (exec "dotnet" [compiler-dll "--repl"])))))
 
 
 ;; ---------------------------------------------------------------------------
@@ -437,6 +381,7 @@
   (println "  bjo build [-d] [-c] [--lib] <file.bjo>  Compile if it needs it, and stop.")
   (println "  bjo check <file.bjo>...                 Report errors without building anything.")
   (println "  bjo repl                                Start a REPL, under rlwrap where there is one.")
+  (println "  bjo rebjo                               Rebuild the compiler and bjo itself.")
   (println "  bjo help                                Show this message.")
   (println "")
   (println "Flags:")
@@ -447,7 +392,12 @@
   (println "  --             End of flags, for a file whose name begins with a dash.")
   (println "")
   (println "Nothing is rebuilt when the artefact is newer than everything the last")
-  (println "build read: the compiler records that, and bjo compares timestamps."))
+  (println "build read: the compiler records that, and bjo compares timestamps.")
+  (println "")
+  (println "The compiler is not one of the things bjo keeps current: it is not asked")
+  (println "whether it is behind its own sources, on the way to anything. Editing it")
+  (println "is 'bjo rebjo', which builds it and this command — and that makes every")
+  (println "artefact stale the way any other edit does."))
 
 (: fail (-> string int))
 (defun (fail message)
@@ -484,10 +434,10 @@
 
 (: dispatch #:sync (-> string Cmdline int))
 (defun (dispatch command line)
-  (def debug? (record-ref line debug))
-  (def force? (record-ref line force))
-  (def lib? (record-ref line lib))
-  (def rest (record-ref line rest))
+  (def* (debug? (record-ref line debug))
+        (force? (record-ref line force))
+        (lib? (record-ref line lib))
+        (rest (record-ref line rest)))
 
   (case command
     ("run"
@@ -520,6 +470,12 @@
        (when (or debug? force? lib?) (ret (fail "bjo repl: takes no build flags.")))
        (unless (empty? rest) (ret (fail "bjo repl: takes no arguments.")))
        (cmd-repl)))
+
+    ;; Reached only when this binary was started directly. The launcher takes
+    ;; `rebjo` before it gets here, and has to: the command rebuilds `bjo.exe`,
+    ;; which is the file this process is running from.
+    ("rebjo"
+     (fail "bjo rebjo: run it through the bjo launcher — it rebuilds this binary, which is running."))
 
     (("help" "-h" "--help") (usage) 0)
 

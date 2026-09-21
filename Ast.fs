@@ -307,9 +307,12 @@ and Expr =
 
 /// What a `def` clause produces when its pattern does not match.
 and DefFailure =
-    /// Nothing was written: the uncovered case is rebuilt at the body's type.
-    /// Only `Option` and `Result` may, which `InferExpr` decides once the
-    /// scrutinee has a type.
+    /// Nothing was written, so there is no failure path: the pattern has to
+    /// match every value, and `Exhaustiveness` refuses it where it does not.
+    | FailNone
+    /// `(def pattern scrutinee :propagate)` — every case the pattern leaves out
+    /// is rebuilt at the body's type. Which cases those are, and whether the
+    /// body can hold them, `InferExpr` decides once the scrutinee has a type.
     | FailPropagate
     /// `(def pattern scrutinee value-expr)` — the third slot is always an
     /// expression. What the binder would have bound is not in scope in it, so
@@ -793,6 +796,7 @@ let rec mapPatternSteps (f: Expr -> Expr) (pat: Pattern) : Pattern =
 /// `onPattern` over its arm patterns.
 let mapDefFailure (onExpr: Expr -> Expr) (onPattern: Pattern -> Pattern) (failure: DefFailure) : DefFailure =
     match failure with
+    | FailNone -> FailNone
     | FailPropagate -> FailPropagate
     | FailValue value -> FailValue(onExpr value)
     | FailArms arms -> FailArms(arms |> List.map (fun (pat, body) -> onPattern pat, onExpr body))
@@ -848,6 +852,7 @@ let exprChildren (e: Expr) : Expr list =
         patternSteps binder
         @ [ scrutinee; sequel ]
         @ (match failure with
+           | FailNone
            | FailPropagate -> []
            | FailValue value -> [ value ]
            | FailArms arms -> arms |> List.collect (fun (pat, body) -> patternSteps pat @ [ body ]))
@@ -978,6 +983,7 @@ let freeNamesWith (reference: string -> Range -> bool -> unit) (guarded: bool) (
             // nothing the binder would have bound is in scope in it — only what
             // an arm's own pattern binds, and only in that arm.
             match failure with
+            | FailNone
             | FailPropagate -> ()
             | FailValue value -> go guarded bound value
             | FailArms arms ->

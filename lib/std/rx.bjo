@@ -381,7 +381,7 @@
              (unit-escape (+ 56320 (% v 1024)))))))
 
 (: concat-strings (-> (List string) string))
-(defun (concat-strings parts) (list-foldl string-append "" parts))
+(defun (concat-strings parts) (list-foldl (fun (part acc) (string-append acc part)) "" parts))
 
 (: join-strings (-> (List string) string string))
 (defun (join-strings parts sep)
@@ -531,13 +531,13 @@
 
 (: union-of (-> (List Syntax) Cset))
 (defun (union-of items)
-  (list-foldl (fun (acc item) (cs-union acc (parse-set item))) (cs-make Nil #f) items))
+  (list-foldl (fun (item acc) (cs-union acc (parse-set item))) (cs-make Nil #f) items))
 
 (: parse-set (-> Syntax Cset))
 (defun (parse-set form)
   (match form
     ((SChar c) (cs-char (set-scalar form c)))
-    ((SStr text) (list-foldl (fun (acc c) (cs-union acc (cs-char (set-scalar form c))))
+    ((SStr text) (list-foldl (fun (c acc) (cs-union acc (cs-char (set-scalar form c))))
                              (cs-make Nil #f)
                              (string->list text)))
     ((SKey k)
@@ -578,7 +578,7 @@
 (defun (set-intersection form args)
   (if (list-empty? args)
       (ignore-cset (syntax-error form "(& ...) takes at least one set."))
-      (list-foldl (fun (acc item) (cs-inter acc (parse-set item)))
+      (list-foldl (fun (item acc) (cs-inter acc (parse-set item)))
                   (parse-set (list-head args))
                   (list-tail args))))
 

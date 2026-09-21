@@ -52,7 +52,7 @@ three-digit group.
 ** ~bjo~
 
 The command that runs Bjolang. It is written in Bjolang; ~bjo/bjo~ is a
-bootstrap script that compiles ~bjo/bjo.bjo~ if it has to and hands over.
+bootstrap script that compiles ~bjo/bjo.bjo~ if it is not there and hands over.
 
 #+BEGIN_SRC sh
 ./bjo/bjo run Playground/test.bjo        # compile if needed, then run
@@ -60,6 +60,7 @@ bootstrap script that compiles ~bjo/bjo.bjo~ if it has to and hands over.
 ./bjo/bjo build --lib lib/std/list.bjo   # compile to a .dll, do not run
 ./bjo/bjo check src/*.bjo                # errors only; builds nothing
 ./bjo/bjo repl                           # under rlwrap, where there is one
+./bjo/bjo rebjo                          # rebuild the compiler, and bjo with it
 #+END_SRC
 
 | Command | What it does                                                     |
@@ -68,7 +69,25 @@ bootstrap script that compiles ~bjo/bjo.bjo~ if it has to and hands over.
 | ~build~ | The same, without running                                        |
 | ~check~ | Reports every error the frontend finds, and writes nothing       |
 | ~repl~  | The compiler's REPL, under ~rlwrap~ when one is on PATH          |
+| ~rebjo~ | Builds the compiler and ~bjo.exe~                                |
 | ~help~  | Usage                                                            |
+
+*** ~rebjo~, and what is *not* kept current
+
+The compiler is not something ~bjo~ keeps up to date. Editing ~*.fs~ or the
+runtime's ~*.cs~ changes nothing until ~bjo rebjo~ is run, and then it changes
+everything: a rebuilt ~Bjolang.dll~ is newer than every artefact, and each is
+rebuilt on the next command that wants it, because the compiler is one of the
+inputs the build record names.
+
+It used to be asked on the way to every command, by both this and ~bjor~, and
+the question cost a walk of every ~.fs~ and ~.cs~ in the tree to answer "no"
+nearly every time — and when the answer was "yes", the build ran in the middle
+of whatever had been asked for. An up-to-date ~bjo build~ now answers in about
+40 ms.
+
+~rebjo~ is the one command the bootstrap script answers itself, and it has to
+be: it rebuilds ~bjo.exe~, which ~bjo.bjo~ is running from.
 
 Flags come *before* the source file — ~-d~ for a debug build, ~-c~ to compile
 whatever the timestamps say, ~--lib~ for a ~.dll~, and ~--~ to end them.

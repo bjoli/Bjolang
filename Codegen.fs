@@ -934,7 +934,8 @@ let rec serializeExpr (e: Ast.Expr) : string =
     | Ast.EDefMatch(binder, scrutinee, failure, sequel, _) ->
         let failureForms =
             match failure with
-            | Ast.FailPropagate -> []
+            | Ast.FailNone -> []
+            | Ast.FailPropagate -> [ ":propagate" ]
             | Ast.FailValue value -> [ serializeExpr value ]
             | Ast.FailArms arms ->
                 [ ":fail"

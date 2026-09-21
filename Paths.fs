@@ -69,6 +69,117 @@ let libDir: string =
 /// The installation root: the directory `lib` sits in.
 let root: string = Path.GetFullPath(Path.Combine(libDir, ".."))
 
+// ---------------------------------------------------------------------------
+// Packages
+// ---------------------------------------------------------------------------
+
+/// A package: one name, one directory, and every module under it.
+///
+/// A package owns exactly the modules under its own name — `(bjorsec)` provides
+/// `(bjorsec core)` and `(bjorsec combine parsers)` and nothing else — so a
+/// module path says which package answers it before it says which file. That is
+/// what lets a fetched dependency live anywhere: the name is stable, the
+/// directory is not.
+type PackageRoot =
+    { /// As an import spells it: `[ "std" ]`, `[ "bjolang"; "http" ]`.
+      Name: string list
+      /// Absolute, without a trailing separator.
+      Directory: string
+      /// Whether this is part of the installed standard library, which is
+      /// allowed things user code is not and gets no implicit prelude.
+      IsStandardLibrary: bool }
+
+/// A package name as source writes it, for diagnostics.
+let showPackageName (name: string list) : string =
+    "(" + String.concat " " name + ")"
+
+/// A directory path with one trailing separator, which is what containment has
+/// to compare against: `/p/src` is not a prefix of `/p/src2/m.bjo` once both
+/// carry it, and is of `/p/src/m.bjo`.
+let private asPrefix (dir: string) : string =
+    dir.TrimEnd Path.DirectorySeparatorChar + string Path.DirectorySeparatorChar
+
+/// The standard library's packages: one per top-level directory of `lib`.
+///
+/// Implicit, and present with or without a roots file — a program that names no
+/// packages at all still imports `(std prelude)`. This is the one place that
+/// knows the standard library is "a `lib` with a `std` in it"; everything else
+/// asks whether a file is under a root marked as such.
+let private standardRoots: PackageRoot list =
+    if Directory.Exists libDir then
+        Directory.GetDirectories libDir
+        |> Array.toList
+        |> List.map (fun dir ->
+            { Name = [ Path.GetFileName(dir.TrimEnd Path.DirectorySeparatorChar) ]
+              Directory = Path.GetFullPath(dir.TrimEnd Path.DirectorySeparatorChar)
+              IsStandardLibrary = true })
+        |> List.sortBy (fun r -> r.Name)
+    else
+        []
+
+/// The packages a roots file added, set once before anything is resolved.
+let mutable private configuredRoots: PackageRoot list = []
+
+/// Installs the packages named by `--roots`.
+///
+/// Called by `Program` before the first compile and never again: every cache
+/// keyed by a path — `Naming`'s derived names, `Pipeline`'s module and facts
+/// caches — would answer from a stale registry if the roots could change under
+/// them, and a compiler process serves one roots file.
+let setConfiguredRoots (roots: PackageRoot list) : unit = configuredRoots <- roots
+
+/// Every package this build knows, the standard library included.
+let packageRoots () : PackageRoot list = standardRoots @ configuredRoots
+
+/// What a module path names.
+type ModuleLookup =
+    /// The package that owns the name, and the `.bjo` it names — which may not
+    /// exist. Whether it does is the caller's question, because the answer
+    /// differs for a source module and a prebuilt assembly.
+    | ModuleFile of PackageRoot * string
+    /// No package is a proper prefix of the name. Carries the package that
+    /// would have owned it, which is what the reader has to install or name.
+    | NoPackage of string list
+    /// The name *is* a package name. A package is a directory, not a module, so
+    /// there is nothing to import under this spelling.
+    | PackageItself of PackageRoot
+
+/// The package that answers a module path, and the file it points at.
+///
+/// The longest package name that is a proper prefix wins, so a `(bjolang http)`
+/// registered beside `(bjolang)` takes `(bjolang http client)` — which is how a
+/// package can be split out of another without every importer being edited.
+let findModule (parts: string list) : ModuleLookup =
+    let isPrefix (name: string list) =
+        name.Length <= parts.Length
+        && List.forall2 (fun (a: string) b -> String.Equals(a, b, StringComparison.Ordinal)) name (List.truncate name.Length parts)
+
+    let roots = packageRoots ()
+
+    let best =
+        roots
+        |> List.filter (fun r -> r.Name.Length < parts.Length && isPrefix r.Name)
+        |> List.sortByDescending (fun r -> r.Name.Length)
+        |> List.tryHead
+
+    match best with
+    | Some r ->
+        let rest = parts |> List.skip r.Name.Length
+        ModuleFile(r, Path.GetFullPath(Path.Combine(r.Directory, Path.Combine(Array.ofList rest) + ".bjo")))
+    | None ->
+        match roots |> List.tryFind (fun r -> r.Name = parts) with
+        | Some r -> PackageItself r
+        | None ->
+            // The package that would have owned it: everything but the module's
+            // own name, which is what a reader has to register. A one-segment
+            // path names a package that provides nothing, so it is its own.
+            NoPackage(if parts.Length > 1 then parts |> List.take (parts.Length - 1) else parts)
+
+/// The path below a package a module name points at, as the diagnostic spells
+/// it: `core.bjo`, `combine/parsers.bjo`.
+let moduleFileName (root: PackageRoot) (parts: string list) : string =
+    (parts |> List.skip (min root.Name.Length parts.Length) |> String.concat "/") + ".bjo"
+
 /// The assemblies every compiled program links against, in link order.
 ///
 /// The concurrency runtime — fibers, promises, channels and the CML event

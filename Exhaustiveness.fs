@@ -575,8 +575,9 @@ let private checkMatch (registry: TraitRegistry) (range: Range) (scrutinee: HMTy
 /// than warned, because unlike a match clause there is no reading of it that
 /// does anything.
 ///
-/// A clause with no failure part has no arms here — a propagating one was given
-/// its arm during inference — and is held to covering the type by itself.
+/// A clause with no failure part has no arms here — a `:propagate` one was
+/// given an arm per leftover case during inference — and is held to covering
+/// the type by itself.
 let private checkDefMatch
     (registry: TraitRegistry)
     (range: Range)
@@ -611,7 +612,7 @@ let private checkDefMatch
         match missing registry [ scrutinee ] covered with
         | Some [ witness ] when arms.IsEmpty ->
             failwithf
-                $"Pattern Error at %s{formatPos range}: this def's pattern does not match every value. %s{showWitness witness} reaches nothing, and a def has nowhere to send it — give it a failure value or a :fail clause."
+                $"Pattern Error at %s{formatPos range}: this def's pattern does not match every value. %s{showWitness witness} reaches nothing, and a def with no failure part has nowhere to send it — give it a failure value, a :fail clause, or :propagate to rebuild the leftover cases at the body's type."
         | Some [ witness ] ->
             failwithf
                 $"Pattern Error at %s{formatPos range}: this def does not cover every value. %s{showWitness witness} matches neither the binding pattern nor any arm, and a def has nowhere to send it."
@@ -644,7 +645,7 @@ let private checkDefPattern
                     ""
 
             failwithf
-                $"Pattern Error at %s{formatPos range}: this def's pattern does not match every value, and at the top level there is nowhere else for one to go. %s{showWitness witness} reaches nothing. Move the binding into a body, where it can carry a failure value or a :fail clause.%s{note}"
+                $"Pattern Error at %s{formatPos range}: this def's pattern does not match every value, and at the top level there is nowhere else for one to go. %s{showWitness witness} reaches nothing. Move the binding into a body, where it can carry a failure value, a :fail clause or :propagate.%s{note}"
         | _ -> ()
     with Undecidable ->
         ()

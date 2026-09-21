@@ -5,9 +5,11 @@
 ;; pattern does not match, what the clause says becomes the value of the
 ;; enclosing body — nothing jumps anywhere.
 ;;
+;; A pattern that may fail needs a failure part: a value, `:fail` arms, or
+;; `:propagate`. Nothing written means the pattern has to match every value.
+;;
 ;; `219_with_return.bjo` covers a failure used as an escape, written out as the
-;; `(ret ...)` it is. This file covers the three failure parts themselves:
-;; nothing, a value, and `:fail` arms.
+;; `(ret ...)` it is. This file covers the three failure parts themselves.
 
 (import (std prelude))
 (import (std simpletest))
@@ -33,21 +35,31 @@
   (def (a b) (Tuple doubled "x"))
   (str b (int->string a)))
 
-;; --- A bare clause propagates ----------------------------------------------
+;; --- `:propagate` rebuilds the leftover cases -------------------------------
 ;;
 ;; `None` is constructed fresh at the body's type, so `(Option string)` in and
 ;; `(Option int)` out.
 (: name-length (-> string (Option int)))
 (defun (name-length k)
-  (def (Some found) (lookup k))
+  (def (Some found) (lookup k) :propagate)
   (Some (string-length found)))
 
 ;; The error type is what must agree; the value type is free. The payload is
 ;; carried across and `Err` rebuilt at the body's type.
 (: fetch-length (-> int (Result Fail int)))
 (defun (fetch-length k)
-  (def (Ok body) (fetch k))
+  (def (Ok body) (fetch k) :propagate)
   (Ok (string-length body)))
+
+;; Any union, not only `Option` and `Result`: each case the pattern leaves out
+;; is rebuilt, and unifying it with the rest of the body is what decides
+;; whether the body can hold it. Two cases left over here, both rebuilt.
+(type (: Signal (Union (Data string) Idle Closed)))
+
+(: relabel (-> Signal Signal))
+(defun (relabel s)
+  (def (Data payload) s :propagate)
+  (Data (str "<" payload ">")))
 
 ;; --- A failure value -------------------------------------------------------
 (: length-or-zero (-> string int))
@@ -90,8 +102,8 @@
 ;; A `def*` whose clauses all propagate.
 (: both (-> string string (Option int)))
 (defun (both a b)
-  (def* ((Some x) (lookup a))
-        ((Some y) (lookup b)))
+  (def* ((Some x) (lookup a) :propagate)
+        ((Some y) (lookup b) :propagate))
   (Some (+ (string-length x) (string-length y))))
 
 ;; --- A failing clause evaluates no later scrutinee --------------------------
@@ -104,8 +116,8 @@
 
 (: short-circuit (-> (Option string) (Option string) (Option int)))
 (defun (short-circuit a b)
-  (def* ((Some x) (probe a))
-        ((Some y) (probe b)))
+  (def* ((Some x) (probe a) :propagate)
+        ((Some y) (probe b) :propagate))
   (Some (+ (string-length x) (string-length y))))
 
 ;; --- The block a failure leaves is the innermost body ----------------------
@@ -160,6 +172,13 @@
             ((Err (Refused why)) (str "refused:" why))
             ((Err Timeout) "timeout"))
           "refused:closed")
+
+  (expect "a propagated case of a user union"
+          (match (relabel (Data "x")) ((Data p) p) (Idle "idle") (Closed "closed"))
+          "<x>")
+  (expect "another leftover case of the same union"
+          (match (relabel Closed) ((Data p) p) (Idle "idle") (Closed "closed"))
+          "closed")
 
   (expect "a failure value, matching" (length-or-zero "host") 9)
   (expect "a failure value, failing" (length-or-zero "port") 0)

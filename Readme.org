@@ -315,7 +315,7 @@ Lists, quasiquoted lists and vectors do not need constructors in some circumstan
 
 (: receipt (-> (List Line) (Vec Block)))
 (defun (receipt ls)
-  (def* (total (list-foldl #(+ %1 (amount-of %2)) 0.0 ls))
+  (def* (total (list-foldl #(+ %2 (amount-of %1)) 0.0 ls))
         (net (/ total 1.12))
         (vat (- total net)))
     ;; cloudberry jam gets truncated, with "..."
@@ -439,7 +439,9 @@ nullary cases should be singletons.
 
 Optimize loop for the JIT: Folding should not be a stack value. this would also help every newtype if applied to all non-recursive union types.
 
-case-of-known-constructor and dead-binding elimination would kill all allocations in loop without the jit having to do any work, this would kill the 24 bytes of allocations in cold loops. 
+case-of-known-constructor and dead-binding elimination would kill all allocations in loop without the jit having to do any work, this would kill the 24 bytes of allocations in cold loops.
+
+Make things like (summing expr) type neutral, so that it can sum doubles.
 
 Hoist the threadlocal loads oznf several parameter-ref in synchronous functions. Say I do 5 (parameter-ref ) in a body, since there is no parameter-set! we can hoist the environment so that we do not pay the [ThreadLocal] read cost.
 

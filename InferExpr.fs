@@ -155,9 +155,8 @@ let rec private alwaysMatches (pat: TypedPattern) : bool =
 ///
 /// `None` where the leftovers are not a set of constructors: a literal, a
 /// sequence pattern, a view, or a constructor whose fields are themselves
-/// refutable. Propagation needs exactly one constructor to rebuild, so `None`
-/// and a list of any length but one are refused alike — which is where the rule
-/// can later be relaxed without moving the path.
+/// refutable. `:propagate` rebuilds one constructor per leftover case, so it
+/// has nothing to build from a `None` and refuses it.
 let private uncoveredCases
     (registry: TraitRegistry)
     (t: HMType)
@@ -864,20 +863,18 @@ and private inferDefMatch
     // ordinary tail-position form here.
     let sequelType, typedSequel = infer (withVars boundVars env) sequel
 
-    // A bare clause rebuilds the case its pattern leaves out, so it is written
-    // as the arm that rebuilds it and checked as any other arm is. The name is
-    // kept for the report: a propagation that does not fit the body is a
+    // `:propagate` rebuilds every case its pattern leaves out, each written as
+    // the arm that rebuilds it and checked as any other arm is. The case name
+    // rides along for the report: a propagation that does not fit the body is a
     // mistake about this form rather than about the arm's type.
-    let propagated =
-        match failure with
-        | FailPropagate -> propagatedArm env scrutineeType typedBinder r
-        | _ -> None
-
     let failureArms =
         match failure with
-        | FailArms arms -> arms
-        | FailValue value -> [ PWildcard(exprRange value), value ]
-        | FailPropagate -> propagated |> Option.map snd |> Option.toList
+        | FailNone -> []
+        | FailArms arms -> arms |> List.map (fun (pat, body) -> None, pat, body)
+        | FailValue value -> [ None, PWildcard(exprRange value), value ]
+        | FailPropagate ->
+            propagatedArms env scrutineeType typedBinder r
+            |> List.map (fun (caseName, (pat, body)) -> Some caseName, pat, body)
 
     // The failure part is checked in `env` and not under what the binder binds:
     // it runs because the binder did not match, so nothing the binder would
@@ -885,7 +882,7 @@ and private inferDefMatch
     // arm and nowhere else.
     let typedArms =
         failureArms
-        |> List.map (fun (armPattern, armBody) ->
+        |> List.map (fun (propagated, armPattern, armBody) ->
             let typedPattern, armVars = checkPattern inferChecked env scrutineeType armPattern
             let armType, typedBody = infer (withVars armVars env) armBody
 
@@ -896,9 +893,9 @@ and private inferDefMatch
                     DotNetInterop.showTypesTogether [ prune env.Registry armType; prune env.Registry sequelType ]
 
                 match propagated with
-                | Some(caseName, _) ->
+                | Some caseName ->
                     failwithf
-                        $"Type Error at %s{Lexer.formatPos r}: `def` would return %s{Naming.showTypeName caseName} here, but this body has type %s{shown[1]}."
+                        $"Type Error at %s{Lexer.formatPos r}: `:propagate` would return %s{Naming.showTypeName caseName} here, but this body has type %s{shown[1]}."
                 | None ->
                     // The `void` sequel is the mistake this form invites, and
                     // it is worth naming: it is what a body written for its
@@ -921,22 +918,21 @@ and private inferDefMatch
       Range = r
       Node = TDefMatch(typedBinder, typedScrutinee, typedSequel, typedArms) }
 
-/// The arm a bare clause propagates through: the one case its pattern leaves
-/// out, matched and rebuilt.
+/// The arms `:propagate` stands for: every case the pattern leaves out, matched
+/// and rebuilt, one arm each.
 ///
-/// `None` for a pattern that cannot fail — then there is nothing to propagate
-/// and the clause is a plain destructuring bind.
-///
-/// The case is rebuilt rather than the scrutinee returned, which is what lets
-/// the value type change: `None` is constructed fresh at the body's type, and
-/// an `Err`'s payload is carried across into a new one. Whether the body admits
-/// that is decided by unifying the arm with the sequel, as for any other arm.
-and private propagatedArm
+/// Each case is rebuilt rather than the scrutinee handed back, which is what
+/// lets the type arguments change: `None` is constructed fresh at the body's
+/// type, and an `Err`'s payload is carried across into a new one. Whether the
+/// body admits that is decided by unifying the arm with the sequel, as for any
+/// other arm — so a type parameter the leftover case mentions is forced to be
+/// the same in scrutinee and body, and one it does not mention is free.
+and private propagatedArms
     (env: Env)
     (scrutineeType: HMType)
     (binder: TypedPattern)
     (r: Range)
-    : (string * (Pattern * Expr)) option =
+    : (string * (Pattern * Expr)) list =
     let settled =
         try
             prune env.Registry scrutineeType
@@ -945,33 +941,28 @@ and private propagatedArm
 
     let shown = DotNetInterop.showType settled
 
-    let refuse () =
-        match settled with
-        | TCon(("Option" | "Result"), _) ->
+    let rebuild (caseName: string, arity: int) =
+        if not (Map.containsKey caseName env.Bindings) then
             failwithf
-                $"Type Error at %s{Lexer.formatPos r}: `def` propagates by rebuilding the one case its pattern leaves out, and this pattern leaves more of %s{shown} than that. Give a failure value or a :fail clause."
-        | TCon(name, _) when Map.containsKey name env.Registry.Unions ->
-            failwithf
-                $"Type Error at %s{Lexer.formatPos r}: `def` only propagates Option and Result. %s{shown} is a user union — give a failure value or a :fail clause."
-        | _ ->
-            failwithf
-                $"Type Error at %s{Lexer.formatPos r}: `def` only propagates Option and Result, and %s{shown} is neither — give a failure value or a :fail clause."
+                $"Type Error at %s{Lexer.formatPos r}: `:propagate` rebuilds the cases this pattern leaves out, and %s{Naming.showTypeName caseName} of %s{shown} is not in scope here. Import it, or give a failure value or a :fail clause."
+
+        let carried = List.init arity (fun _ -> Gensym.fresh "carried")
+
+        let rebuilt =
+            match carried with
+            | [] -> EIdent(caseName, r)
+            | _ -> EApp(EIdent(caseName, r), carried |> List.map (fun n -> EIdent(n, r)), r)
+
+        (caseName, (PConstruct(caseName, carried |> List.map (fun n -> PIdent(n, r)), r), rebuilt))
 
     match uncoveredCases env.Registry settled binder with
-    | Some [] -> None
-    | Some [ (caseName, arity) ] ->
-        match settled with
-        | TCon(("Option" | "Result"), _) ->
-            let carried = List.init arity (fun _ -> Gensym.fresh "carried")
-
-            let rebuilt =
-                match carried with
-                | [] -> EIdent(caseName, r)
-                | _ -> EApp(EIdent(caseName, r), carried |> List.map (fun n -> EIdent(n, r)), r)
-
-            Some(caseName, (PConstruct(caseName, carried |> List.map (fun n -> PIdent(n, r)), r), rebuilt))
-        | _ -> refuse ()
-    | _ -> refuse ()
+    | Some [] ->
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: this pattern always matches, so the failure part of this def can never run. `:propagate` has no case to rebuild — drop it."
+    | Some cases -> cases |> List.map rebuild
+    | None ->
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: `:propagate` rebuilds whole cases of the scrutinee's type, and what this pattern leaves of %s{shown} is not a set of cases. Give a failure value or a :fail clause."
 
 // `Class.Member` — a static field or property. This is how an enum value
 // such as `FileMode.Open` is written, and it is why `import/class` is

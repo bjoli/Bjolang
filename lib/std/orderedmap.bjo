@@ -98,7 +98,7 @@
   ;; Map values.
   (clr-orderedmap-map-values (: OrderedMap.OrderedMapModule.MapValues (-> (-> %v %w) (OrderedMap %k %v) (OrderedMap %k %w))))
   (clr-orderedmap-filter     (: OrderedMap.OrderedMapModule.Filter    (-> (-> %k %v bool) (OrderedMap %k %v) (OrderedMap %k %v))))
-  (clr-orderedmap-fold       (: OrderedMap.OrderedMapModule.Fold      (-> (-> %s %k %v %s) %s (OrderedMap %k %v) %s)))
+  (clr-orderedmap-fold       (: OrderedMap.OrderedMapModule.Fold      (-> (-> %k %v %s %s) %s (OrderedMap %k %v) %s)))
   (clr-orderedmap-iter       (: OrderedMap.OrderedMapModule.Iter      (-> (-> %k %v bool) (OrderedMap %k %v) bool)))
   (orderedmap-any?       (: OrderedMap.OrderedMapModule.Exists    (-> (-> %k %v bool) (OrderedMap %k %v) bool)))
   (orderedmap-try-find   (: OrderedMap.OrderedMapModule.TryFind   (-> (-> %k %v bool) (OrderedMap %k %v) (Tuple bool %k %v))))
@@ -247,7 +247,7 @@
             (orderedmapbuilder-add! b k v))
           (go))))))
 
-(: orderedmap-fold (-> (-?-> %s %k %v %s) %s (OrderedMap %k %v) %s))
+(: orderedmap-fold (-> (-?-> %k %v %s %s) %s (OrderedMap %k %v) %s))
 (defbjouble (orderedmap-fold f init m)
   (#:sync (clr-orderedmap-fold f init m))
   (#:bjo
@@ -257,7 +257,7 @@
         ((orderedmap-cursor-done? c) acc)
         (else
           (def (k v) (orderedmap-cursor-current c))
-          (go (f acc k v)))))))
+          (go (f k v acc)))))))
 
 (: orderedmap-iter (-> (-?-> %k %v bool) (OrderedMap %k %v) bool))
 (defbjouble (orderedmap-iter f m)
@@ -383,7 +383,7 @@
          (= (orderedmap->list a) (orderedmap->list b))))
   (defun (eq-hash m)
     (orderedmap-fold
-     (fun (h k v) (hash-combine h (hash-combine (eq-hash k) (eq-hash v))))
+     (fun (k v h) (hash-combine h (hash-combine (eq-hash k) (eq-hash v))))
      17
      m)))
 

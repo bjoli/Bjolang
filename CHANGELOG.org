@@ -3,6 +3,105 @@
 
 What each change guarantees, and what it leaves open.
 
+* Every fold hands the element to its callback first
+
+~(fold f init col)~ called ~f~ with the accumulator first and the element
+second; ~list-foldr~ and ~string-fold-right~ called theirs the other way round.
+Both orders were defensible and having both was not: which one a given fold
+wanted was something you looked up rather than knew.
+
+They are now all SRFI-1's: **the element comes first and the accumulator last**,
+so the right fold's order is the left fold's order and the two differ only in
+direction.
+
+#+BEGIN_SRC scheme
+(fold (fun (x acc) (+ acc x)) 0 xs)
+(list-foldl (fun (x acc) (string-append acc x)) "" xs)
+(string-fold (fun (ch n) (+ n 1)) 0 s)
+(map-fold (fun (k v acc) (+ acc v)) 0 m)        ;; the entry first, both halves of it
+#+END_SRC
+
+Changed: ~fold~ (the ~Iterable~ method), ~list-foldl~, ~vec-fold~, ~vec-reduce~,
+~seq-fold~, ~string-fold~, ~map-fold~, ~set-fold~, ~orderedset-fold~,
+~orderedmap-fold~ and ~deque-fold~. Unchanged, because they were already this
+way: ~list-foldr~, ~string-fold-right~ and ~port-fold~.
+
+A map fold keeps handing the key and the value as two arguments rather than a
+pair, so its callback takes ~(key value acc)~. The runtime's own ~Fold~ entry
+points were flipped with it rather than wrapped, so nothing pays a delegate per
+element for the new order.
+
+What it leaves open: this is a silent break for callers whose accumulator and
+element have the *same* type — ~(fold (fun (acc x) (- acc x)) 0 xs)~ still
+compiles and now means something else. Nothing in the type system can catch
+that, and there is no deprecation window; a subtraction or a string-append fold
+wants reading. ~Collector~'s ~(collector-step c acc x)~ is a different protocol
+and keeps its shape.
+
+* A ~def~ that may fail has to say so, and ~:propagate~ is how it says "pass it on"
+
+A bare clause used to propagate. That made the quietest thing you can write —
+a pattern and a scrutinee — the one that silently added a second exit from the
+body, and it read as a plain destructuring bind right up until the types
+disagreed somewhere else.
+
+So there is no default any more. ~(def (Some x) e)~ is an error naming the value
+that reaches nothing; the pattern in a bare clause has to match every value, as
+one at the top level always has. A clause that may fail writes a failure value,
+~:fail~ arms, or the new ~:propagate~:
+
+#+BEGIN_SRC scheme
+(def pattern scrutinee)                     ;; must match every value
+(def pattern scrutinee value-expr)
+(def pattern scrutinee :fail (arm arm ...))
+(def pattern scrutinee :propagate)
+#+END_SRC
+
+~:propagate~ stands alone and takes nothing: it rebuilds every case the pattern
+left out at the *body's* type, which is what the bare clause did.
+
+**It is no longer only ~Option~ and ~Result~, and no longer only one case.** The
+rebuilt case is checked against the body like any other failure value, so the
+rule is the general one: a type argument the leftover case carries has to be the
+same on both sides, and one it does not carry is free. ~None~ carries nothing,
+so ~(Option string)~ still propagates into ~(Option int)~; an ~Err~ is rebuilt
+around its payload, so the error types still have to be one type. A three-case
+union with one case matched now passes the other two through, and a user union
+does it without being named in the compiler.
+
+~:propagate~ on a pattern that cannot fail is refused, like any other failure
+part on one. What is left over has to be *whole cases*: a nested or literal
+pattern leaves part of a case behind, there is no constructor to rebuild that
+with, and it says so rather than guessing.
+
+What it leaves open: the leftover cases are rebuilt, never the scrutinee handed
+back, so propagation still cannot widen an error type or convert one. ~From~-style
+conversion remains something to write out.
+
+* ~bjo rebjo~ builds the compiler, and nothing else does
+
+~bjo~ used to ask whether the compiler was behind its own sources on the way to
+every command it ran. Twice, in fact — once in the bootstrap script and once in
+~bjo.bjo~ — and each asking cost a walk of every ~.fs~ and every ~.cs~ in the
+tree, to be told "no" nearly every time. When the answer was "yes" it was worse:
+a ~dotnet build~ in the middle of running something else, which is not what the
+command was for.
+
+So it is a command now. ~bjo rebjo~ builds the compiler and ~bjo.exe~, and
+nothing else builds either. An up-to-date ~bjo build~ answers in about 40 ms.
+
+Programs are still rebuilt after one. That question was never this one: the
+build record names the compiler among a program's inputs, so a fresh
+~Bjolang.dll~ makes every artefact stale by timestamp exactly as an edited
+source does.
+
+~rebjo~ is answered by the bootstrap script rather than by ~bjo.bjo~, and has to
+be — it rewrites ~bjo.exe~, which ~bjo.bjo~ is running from. Reaching the
+command any other way says so instead of doing it.
+
+What it leaves open: ~bjor~ still asks the old question, and is still what
+~build_std.sh~ runs on.
+
 * ~def~ and ~def*~ replace ~def+~, and a bare clause propagates
 
 The form is no longer spelled apart from the binding it is. A ~def~ takes a

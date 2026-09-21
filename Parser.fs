@@ -1656,11 +1656,15 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
                 | _ -> false)
         | _ -> false
 
-    // What follows a clause's scrutinee: nothing, one expression, or `:fail`
-    // and its arms.
+    // What follows a clause's scrutinee: nothing, `:propagate`, one expression,
+    // or `:fail` and its arms.
     let parseDefFailure (r: Range) (forms: SExpr list) : DefFailure =
         match forms with
-        | [] -> FailPropagate
+        | [] -> FailNone
+        | [ SAtom { Token = Keyword "propagate" } ] -> FailPropagate
+        | SAtom { Token = Keyword "propagate" } :: _ ->
+            failwithf
+                $"Syntax error at %s{Lexer.formatPos r}: `:propagate` stands alone — it says the leftover cases are rebuilt at the body's type, so there is nothing to write after it."
         | [ SAtom { Token = Keyword "fail" }; SList((_ :: _) as armForms, _) ] ->
             FailArms(armForms |> List.map parseFailArm)
         | SAtom { Token = Keyword "fail" } :: _ ->
@@ -1672,7 +1676,7 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         | [ value ] -> FailValue(parseExpr value)
         | _ ->
             failwithf
-                $"Syntax error at %s{Lexer.formatPos r}: expected (def pattern scrutinee), (def pattern scrutinee value) or (def pattern scrutinee :fail (arm ...))."
+                $"Syntax error at %s{Lexer.formatPos r}: expected (def pattern scrutinee), (def pattern scrutinee value), (def pattern scrutinee :propagate) or (def pattern scrutinee :fail (arm ...))."
 
     // The clauses of a `def*`, in source order.
     //
@@ -1690,7 +1694,7 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
                     (parsePattern binder, parseExpr scrutinee, parseDefFailure cr failure, cr)
                 | bad ->
                     failwithf
-                        $"Syntax error at %s{Lexer.formatPos (getRange bad)}: a def* clause is written (pattern scrutinee), (pattern scrutinee value) or (pattern scrutinee :fail (arm ...)).")
+                        $"Syntax error at %s{Lexer.formatPos (getRange bad)}: a def* clause is written (pattern scrutinee), (pattern scrutinee value), (pattern scrutinee :propagate) or (pattern scrutinee :fail (arm ...)).")
 
         clauses
         |> List.iteri (fun i (binder, _, _, cr) ->

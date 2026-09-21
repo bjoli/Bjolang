@@ -324,6 +324,7 @@ let checkEscapeUses (name: string) (body: Expr) : unit =
                 go barrier tail sequel
 
             (match failure with
+             | FailNone
              | FailPropagate -> ()
              | FailValue value -> go barrier tail value
              | FailArms arms ->
@@ -568,6 +569,7 @@ let private renameWith
 
             let failure' =
                 match failure with
+                | FailNone -> FailNone
                 | FailPropagate -> FailPropagate
                 | FailValue value -> FailValue(go subst value)
                 | FailArms arms ->
