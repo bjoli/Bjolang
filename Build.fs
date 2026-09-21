@@ -275,12 +275,29 @@ let compile (options: Options) (inputFilePath: string) : int =
 
             let mainModuleClass = Naming.qualifiedModuleClassName inputFilePath
 
+            // Every module dependency is on disk: `Pipeline` resolved each one
+            // to a file it had just read or just built, and an import it cannot
+            // resolve is now an error there. One missing here therefore means
+            // the artefact was deleted while this build was running — reported,
+            // because dropping it silently is what produced executables that
+            // failed at run time naming an assembly nobody wrote.
+            match dllDeps |> List.filter (File.Exists >> not) with
+            | [] -> ()
+            | missing ->
+                failwithf
+                    $"""These assemblies were linked but are not there: %s{String.concat ", " missing}. Something removed them while the build was running."""
+
             // Everything this program links against, where it really lives.
             // Nothing is ever copied next to the output: an assembly has one
             // home, and a program built from it points back at that home.
+            //
+            // The runtime half is still filtered rather than checked, because
+            // the compiler already treats a missing runtime assembly as
+            // something to carry on without: `compile` registers the ones that
+            // exist and says nothing about the rest, and an installation short
+            // one of them fails when the program reaches what it needed.
             let linkedAssemblies =
-                (Paths.runtimeAssemblies @ dllDeps)
-                |> List.filter File.Exists
+                ((Paths.runtimeAssemblies |> List.filter File.Exists) @ dllDeps)
                 |> List.map Path.GetFullPath
                 |> List.distinct
 
@@ -298,7 +315,6 @@ let compile (options: Options) (inputFilePath: string) : int =
             // if multiple dependencies happen to output a file named `set.dll`.
             let moduleAssemblyPairs =
                 dllDeps
-                |> List.filter File.Exists
                 |> List.map Path.GetFullPath
                 |> List.distinct
                 |> List.map (fun path -> Naming.assemblyName path, path)

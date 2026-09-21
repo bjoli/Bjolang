@@ -1030,8 +1030,13 @@ let rec ensureLibrary (bjoPath: string) : string =
                 && (facts.Imports
                     |> List.forall (fun (spec, _) ->
                         match resolveDependency bjoPath spec with
-                        | Some dep -> File.GetLastWriteTimeUtc dep <= built
-                        | None -> true)))
+                        | Ok dep -> File.GetLastWriteTimeUtc dep <= built
+                        // An import that resolves to nothing makes the module
+                        // stale rather than current, so the compile runs and
+                        // reports it against the form that wrote it. Answering
+                        // "up to date" here would leave a broken import
+                        // undetected for as long as the stale `.dll` survives.
+                        | Error _ -> false)))
 
         if upToDate then dllPath else compileLibrary bjoPath
     finally
@@ -1041,32 +1046,64 @@ let rec ensureLibrary (bjoPath: string) : string =
         // again from `loadModuleGraph`.
         if root then walking.Clear()
 
-/// The path an import resolves to, which is always a `.dll`.
+/// The path an import resolves to, which is always an assembly, or why it
+/// resolves to nothing.
 ///
 /// Where a source file exists it is the truth, and the `.dll` beside it may be
 /// behind it — so the `.bjo` is what this looks for first, and `ensureLibrary`
 /// decides whether the built artefact is still current. A `.dll` with no source
 /// is a prebuilt library and is taken as given.
 ///
-/// A module path anchors to the installation, never to the working directory: a
-/// module import means the same file no matter where the compiler is invoked
-/// from, so the compiled standard library is the one that gets linked instead
-/// of being rebuilt from source per caller.
-and private resolveDependency (basePath: string) (spec: ImportSpec) : string option =
-    let raw =
-        match spec.Path with
-        | RelativePath p -> Path.GetFullPath(Path.Combine(Path.GetDirectoryName basePath, p))
-        | ModulePath parts ->
-            Path.GetFullPath(Path.Combine(Paths.libDir, Path.Combine(Array.ofList parts) + ".bjo"))
+/// A module path anchors to a package, never to the working directory: a module
+/// import means the same file no matter where the compiler is invoked from, so
+/// the compiled standard library is the one that gets linked instead of being
+/// rebuilt from source per caller.
+///
+/// An import that resolves to nothing used to answer with the path as written,
+/// which meant a mistyped module failed much later under a name nobody wrote —
+/// as an unbound variable, or as a missing assembly at run time. The failure is
+/// here, where the spelling that caused it is still in hand.
+and private resolveDependency (basePath: string) (spec: ImportSpec) : Result<string, string> =
+    /// The artefact a candidate source path names, if any of the three shapes
+    /// is on disk.
+    let artefactOf (raw: string) : string option =
+        let bjoPath = if raw.EndsWith ".bjo" then raw else raw + ".bjo"
+        let dllPath = Path.ChangeExtension(bjoPath, ".dll")
 
-    let bjoPath = if raw.EndsWith ".bjo" then raw else raw + ".bjo"
-    let dllPath = Path.ChangeExtension(bjoPath, ".dll")
+        if File.Exists bjoPath then Some(ensureLibrary bjoPath)
+        elif File.Exists dllPath then Some dllPath
+        // `(import "x.dll")` names an artefact outright: the two probes above
+        // looked for `x.dll.bjo` and `x.dll.dll` and found neither, and the
+        // file as written is the answer. This is the only spelling that reaches
+        // a prebuilt assembly with no source beside it.
+        elif File.Exists raw then Some raw
+        else None
 
-    if File.Exists bjoPath then Some(ensureLibrary bjoPath)
-    elif File.Exists dllPath then Some dllPath
-    // Neither is there. Answering with the path as written keeps an import that
-    // names a `.dll` outright working, and leaves the rest to fail by name.
-    else Some raw
+    match spec.Path with
+    | RelativePath p ->
+        let raw = Path.GetFullPath(Path.Combine(Path.GetDirectoryName basePath, p))
+
+        match artefactOf raw with
+        | Some artefact -> Ok artefact
+        | None -> Error $"no such file: %s{p} (looked for %s{raw})."
+    | ModulePath parts ->
+        let shown = Paths.showPackageName parts
+
+        match Paths.findModule parts with
+        | Paths.NoPackage owner ->
+            Error
+                $"no module %s{shown}: no package named %s{Paths.showPackageName owner} is known to this build."
+        | Paths.PackageItself root ->
+            let example = Paths.showPackageName (parts @ [ "name" ])
+
+            Error
+                $"no module %s{shown}: %s{shown} is a package, not a module in one. Its modules are the files under %s{root.Directory}, imported as %s{example}."
+        | Paths.ModuleFile(root, file) ->
+            match artefactOf file with
+            | Some artefact -> Ok artefact
+            | None ->
+                Error
+                    $"no module %s{shown}: package %s{Paths.showPackageName root.Name} at %s{root.Directory} has no %s{Paths.moduleFileName root parts}."
 
 /// The one shape an entry point has: `(-> (Vec string) int)`.
 ///
@@ -1285,7 +1322,17 @@ let loadModuleGraph
                     // dependencies from the current module's scope. This ensures
                     // that you can only see the things the DLL explicitly chose to export.
                     for depPath in meta.Deps do
-                        if depPath <> "" && File.Exists depPath then
+                        if depPath <> "" then
+                            // Skipping a missing one is what this used to do,
+                            // and it produced a link that was quietly short a
+                            // module: the names it re-exported were reported as
+                            // unbound in the importer, naming neither the
+                            // library that recorded the dependency nor the file
+                            // that had gone.
+                            if not (File.Exists depPath) then
+                                failwithf
+                                    $"'%s{absPath}' links '%s{depPath}', which is not there. Rebuild the library, or restore the assembly it was built against."
+
                             dllDeps.Add(depPath) |> ignore
                             noteAssemblyPath depPath
 
@@ -1478,8 +1525,10 @@ let loadModuleGraph
                               PatternMacros = meta.PatternMacros
                               HashMacros = meta.HashMacros
                               Assembly = asm
-                              Linked =
-                                absPath :: (meta.Deps |> List.filter (fun p -> p <> "" && File.Exists p)) }
+                              // Every entry was just checked to exist, so the
+                              // replay of this list adds the same assemblies
+                              // the first read did.
+                              Linked = absPath :: (meta.Deps |> List.filter (fun p -> p <> "")) }
 
                     decls, carriedDecls, [], meta.Macros, meta.PatternMacros, meta.HashMacros, Some asm
                 else
@@ -1525,9 +1574,10 @@ let loadModuleGraph
                     // the topological sort below keys on the same paths.
                     let importEdges =
                         importsOf forms
-                        |> List.choose (fun (spec, r) ->
-                            resolveDependency absPath spec
-                            |> Option.map (fun p -> Path.GetFullPath p, spec, r))
+                        |> List.map (fun (spec, r) ->
+                            match resolveDependency absPath spec with
+                            | Ok p -> Path.GetFullPath p, spec, r
+                            | Error why -> failwithf $"Import Error at %s{Lexer.formatPos r}: %s{why}")
 
                     // Dependencies are loaded *before* this module is parsed.
                     //
