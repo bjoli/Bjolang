@@ -411,17 +411,16 @@
 (: positional (-> (List string) (List string)))
 (defun (positional arguments)
   (let go ((left arguments) (out Nil))
-    (match left
-      (Nil (list-reverse out))
-      ((Cons a rest)
-       (cond
-         ;; The flags that take a value, and the value with them.
-         ((or (= a "--git") (or (= a "--path") (= a "--at-least")))
-          (match rest
-            (Nil (list-reverse out))
-            ((Cons _ more) (go more out))))
-         ((string-starts-with? a "-") (go rest out))
-         (else (go rest (Cons a out))))))))
+    (def (Cons a rest) left
+      (list-reverse out))
+    (cond
+      ;; The flags that take a value, and the value with them.
+      ((or (= a "--git") (or (= a "--path") (= a "--at-least")))
+       (match rest
+         (Nil (list-reverse out))
+         ((Cons _ more) (go more out))))
+      ((string-starts-with? a "-") (go rest out))
+      (else (go rest (Cons a out))))))
 
 (: unknown-flag (-> (List string) (Option string)))
 (defun (unknown-flag arguments)

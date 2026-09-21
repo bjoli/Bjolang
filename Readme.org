@@ -182,20 +182,19 @@ although most do-notation cases (matching option and Result) is better handled b
   (println ":key is #${b}.")
   (Ok b))
 
-;; With nothing in that slot the missing case is rebuilt at the body's
-;; type — here the Err is carried straight out, and only Option and
-;; Result may
+;; if you put :propagate in the slot where the error value is put
+;; it just propagates the error value from the match.
 (: key-length (-> (Map Keyword string) (Result string int)))
 (defun (key-length myMap)
-  (def (Ok b) (try-ref myMap :key))
+  (def (Ok b) (try-ref myMap :key) :propagate)
   (Ok (string-length b)))
 
 ;; def* is to def what let* is to let: several clauses, in order,
 ;; and a failing one evaluates no later scrutinee
 (: both-keys (-> (Map Keyword string) (Option string)))
 (defun (both-keys myMap)
-  (def* ((Some a) (map-try-ref myMap :first))
-        ((Some b) (map-try-ref myMap :second)))
+  (def* ((Some a) (map-try-ref myMap :first) :propagate)
+        ((Some b) (map-try-ref myMap :second) :propagate))
   (Some (string-append a b)))
 
 #+END_SRC

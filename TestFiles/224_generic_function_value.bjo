@@ -1,0 +1,60 @@
+;; A generic function used as a value, where nothing the receiver takes says
+;; what its type variable is.
+;;
+;; C# infers a method group's type arguments from the delegate's *parameter*
+;; types alone, so `(Parser %a)` — whose %a sits inside the reply and never in
+;; the state — cannot be converted without them being written out. Codegen
+;; writes them from the reference's own instantiation, which is why the order
+;; here is checked as well: `pick-second` is declared %a %b and answers %b.
+
+(import "224_lib.bjo")
+(import (std prelude))
+(import (std simpletest))
+
+(type (: (Outcome %a) (Union (Yes %a) (No string))))
+
+(type (: (Step %a) (-> int (Outcome %a))))
+
+(: nothing-doing (Step %a))
+(defun (nothing-doing n)
+  (No "nothing"))
+
+(: refused? (-> (Step %a) string bool))
+(defun (refused? s label)
+  (match (s 0)
+    ((Yes v) #f)
+    ((No why) #t)))
+
+(: imported-refused? (-> (Parser %a) string bool))
+(defun (imported-refused? p label)
+  (match (p "")
+    ((ReplyOk v) #f)
+    ((ReplyErr why) #t)))
+
+;; The fold's accumulator has nothing but the initial parser to take its type
+;; from, which is the shape a `choice` over a list of parsers has.
+(: first-of (-> (List (Step %a)) (Step %a)))
+(defun (first-of steps)
+  (list-foldr (fun (s acc) s) nothing-doing steps))
+
+(: run-here (-> (-> int string int) int))
+(defun (run-here f) (f 1 "b"))
+
+(: run-imported (-> (-> string int int) int))
+(defun (run-imported f) (f "a" 2))
+
+(: pick-second-imported (-> string int int))
+(def pick-second-imported pick-second)
+
+(defun (main)
+  (expect-true "a generic value of this module" (refused? nothing-doing "x"))
+  (expect-true "a generic value from an import" (imported-refused? pzero "x"))
+  (expect-true "as a fold's initial value" (refused? (first-of Nil) "x"))
+
+  ;; A local of the same name, the other way round, must keep its own meaning.
+  (defun (pick-second a b) a)
+  (expect "an imported one, type variables in order" (run-imported pick-second-imported) 2)
+  (expect "a local shadowing it" (run-here pick-second) 1)
+
+  (println "224 ok")
+  0)
