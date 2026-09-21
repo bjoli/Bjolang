@@ -290,6 +290,142 @@ def test_library_project(work, c):
     c.says("and says it is a library", ran, "is a library")
 
 
+# --- 3. path dependencies ---------------------------------------------------
+
+@test("path dependency")
+def test_path_dependency(work, c):
+    lib = make_package(work / "lib", "lib", "0.1.0")
+    app = work / "app"
+    app.mkdir(parents=True)
+    write(app / "manifest.bjodat",
+          '(package\n  (name (app))\n  (version "0.1.0")\n'
+          '  (depends (package (name (lib)) (source (path (dir "../lib"))))))\n')
+    write(app / "src" / "main.bjo",
+          '(import (std prelude))\n(import (lib core))\n'
+          '(defun (main) (println (hello)) 0)\n')
+
+    ran = run_bjo(app, "run")
+    c.worked("an app with a path dependency builds", ran)
+    c.says("and the dependency's code ran", ran, "lib 0.1.0")
+
+    roots = (app / ".bjo" / "roots").read_text()
+    c.that("the roots file names the dependency's src/",
+           str(lib / "src") in roots and "(root (lib)" in roots, roots)
+
+    # 14. The package name is not one of its modules.
+    write(app / "src" / "main.bjo",
+          '(import (std prelude))\n(import (lib))\n(defun (main) 0)\n')
+    refused = run_bjo(app, "run")
+    c.failed("importing the package name is refused", refused)
+    c.says("and the compiler says a package is not a module", refused,
+           "is a package, not a module")
+
+    # An edit to the dependency is an edit to the program that links it.
+    write(app / "src" / "main.bjo",
+          '(import (std prelude))\n(import (lib core))\n'
+          '(defun (main) (println (hello)) 0)\n')
+    run_bjo(app, "run")
+    write(lib / "src" / "core.bjo",
+          '(import (std prelude))\n(export hello)\n'
+          '(: hello (-> string))\n(defun (hello) "edited")\n')
+    edited = run_bjo(app, "run")
+    c.says("editing the dependency rebuilds what links it", edited, "edited")
+
+
+@test("dependencies refused")
+def test_dependencies_refused(work, c):
+    make_package(work / "lib", "lib", "0.1.0")
+    make_package(work / "other", "other", "0.1.0")
+
+    def app_with(name, depends, package_name="app"):
+        where = work / name
+        write(where / "manifest.bjodat",
+              f'(package\n  (name ({package_name}))\n  (version "0.1.0")\n{depends}  )\n')
+        write(where / "src" / "main.bjo",
+              '(import (std prelude))\n(defun (main) 0)\n')
+        return where
+
+    missing = app_with("no-source", '  (depends (package (name (lib))))\n')
+    result = run_bjo(missing, "build")
+    c.failed("a dependency with no source anywhere is refused", result)
+    c.says("and it says what to write", result, "no manifest says where it comes from")
+
+    itself = app_with("itself", '  (depends (package (name (app))))\n')
+    result = run_bjo(itself, "build")
+    c.failed("a dependency named like the project is refused", result)
+    c.says("and it says so", result, "is this project itself")
+
+    reserved = app_with("reserved",
+                        '  (depends (package (name (std)) (source (path (dir "../lib")))))\n')
+    result = run_bjo(reserved, "build")
+    c.failed("a dependency called (std) is refused", result)
+    c.says("and it says the name is the standard library's", result,
+           "part of the standard library")
+
+    wrong = app_with("wrong-name",
+                     '  (depends (package (name (lib)) (source (path (dir "../other")))))\n')
+    result = run_bjo(wrong, "build")
+    c.failed("a directory whose manifest has another name is refused", result)
+    c.says("and it names both", result, "says the package there is (other)")
+
+    gone = app_with("gone",
+                    '  (depends (package (name (lib)) (source (path (dir "../nowhere")))))\n')
+    result = run_bjo(gone, "build")
+    c.failed("a path source that is not a directory is refused", result)
+    c.says("and it says which directory", result, "which is not a directory")
+
+    registry = app_with("registry",
+                        '  (depends (package (name (lib)) (source (registry))))\n')
+    result = run_bjo(registry, "build")
+    c.failed("a registry source is refused", result)
+    c.says("and it says there are none", result, "there are none yet")
+
+    # Two manifests giving one name two different sources, and the root
+    # manifest settling it.
+    middle = work / "middle"
+    write(middle / "manifest.bjodat",
+          '(package\n  (name (middle))\n  (version "0.1.0")\n'
+          '  (depends (package (name (lib)) (source (path (dir "../other")))))\n  )\n')
+    write(middle / "src" / "core.bjo",
+          '(import (std prelude))\n(export middle-hello)\n'
+          '(: middle-hello (-> string))\n(defun (middle-hello) "middle")\n')
+
+    clash = app_with("clash",
+                     '  (depends (package (name (middle)) (source (path (dir "../middle"))))\n'
+                     '           (package (name (lib)) (source (path (dir "../lib")))))\n')
+    # The root manifest names lib, so the root's source wins and middle's is
+    # not consulted at all.
+    write(clash / "src" / "main.bjo",
+          '(import (std prelude))\n(import (lib core))\n(import (middle core))\n'
+          '(defun (main) (println (str (hello) " " (middle-hello))) 0)\n')
+    result = run_bjo(clash, "run")
+    c.worked("the root manifest's source wins over a dependency's", result)
+    c.says("and the root's copy is the one that is linked", result, "lib 0.1.0 middle")
+
+    # The same graph without the root naming lib: two manifests, two different
+    # directories for one name, and nothing to choose between them. Both
+    # directories hold a package called (lib), so what is refused is the
+    # disagreement rather than a name that does not match.
+    make_package(work / "libcopy", "lib", "0.2.0")
+    write(middle / "manifest.bjodat",
+          '(package\n  (name (middle))\n  (version "0.1.0")\n'
+          '  (depends (package (name (lib)) (source (path (dir "../libcopy")))))\n  )\n')
+    indirect = app_with("indirect", "")
+    write(indirect / "manifest.bjodat",
+          '(package\n  (name (app))\n  (version "0.1.0")\n'
+          '  (depends (package (name (middle)) (source (path (dir "../middle"))))\n'
+          '           (package (name (second)) (source (path (dir "../second")))))\n  )\n')
+    write(work / "second" / "manifest.bjodat",
+          '(package\n  (name (second))\n  (version "0.1.0")\n'
+          '  (depends (package (name (lib)) (source (path (dir "../lib")))))\n  )\n')
+    write(work / "second" / "src" / "core.bjo",
+          '(import (std prelude))\n(export second-hello)\n'
+          '(: second-hello (-> string))\n(defun (second-hello) "second")\n')
+    result = run_bjo(indirect, "build")
+    c.failed("two different sources for one name is refused", result)
+    c.says("and it lists both manifests", result, "is given two different sources")
+
+
 # --- 16. outside a project --------------------------------------------------
 
 @test("outside a project")

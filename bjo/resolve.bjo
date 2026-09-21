@@ -4,6 +4,28 @@
 ;; packages the compiler is given, fetches whatever that needs, and writes
 ;; `.bjo/roots`. Every command that compiles anything inside a project goes
 ;; through it, so that `bjo run` and `bjo check` see the same packages.
+;;
+;; The walk
+;; --------
+;; A manifest names dependencies; each of those has a manifest of its own that
+;; names more. The walk reads them breadth first, and a package is read once.
+;;
+;; A dependency may be written with no `source`, which means "somebody else in
+;; this graph says where this comes from". So the walk cannot simply follow
+;; edges: it keeps the dependencies whose source is still unknown in a waiting
+;; list and retries them whenever it has read another manifest. A whole pass
+;; that satisfies none of them is the end — and then a name with no source
+;; anywhere is an error naming it.
+;;
+;; Two rules decide a source when there are several:
+;;
+;;   - the root manifest wins. That is how a user overrides a source a
+;;     dependency chose: write the name in your own manifest with the source
+;;     you want, and every manifest that asked for that name gets yours.
+;;   - otherwise every source given for one name must be the same, compared as
+;;     URLs with a trailing `/` and `.git` removed. Two different ones is an
+;;     error listing both and which manifest gave each, because picking either
+;;     silently would build code the other manifest never asked for.
 
 (export
   Prepared prepared-roots-file prepared-roots prepared-dependencies
@@ -18,6 +40,43 @@
 ;; the packages it names.
 (type (: Prepared (Record (: roots-file string) (: roots (List Root)))))
 
+;; A manifest that has been read and whose dependencies have not been walked.
+;;
+;; `path-ok?` travels with it: a `(path ...)` source points at a directory on
+;; the author's disk, which is a fact about a checkout rather than about a
+;; package, so it may only be written by a manifest that was itself reached
+;; through path sources.
+(type (: Task (Record (: package Package)
+                      (: dir string)
+                      (: from string)
+                      (: path-ok? bool)
+                      (: dev? bool))))
+
+;; A dependency that has been seen and cannot be placed yet, because nothing
+;; has said where it comes from.
+(type (: Want (Record (: dep Dep)
+                      (: want-from string)
+                      (: want-dir string)
+                      (: want-path-ok? bool))))
+
+;; A source, and the manifest that gave it.
+(type (: Given (Record (: given Source) (: given-from string) (: given-root? bool))))
+
+;; Somebody's constraint on a package's version, for the check after the
+;; versions have been chosen.
+(type (: Need (Record (: need-name (List Symbol))
+                      (: need-req (Option VersionReq))
+                      (: need-from string))))
+
+;; The walk's state. Boxes rather than a threaded record: every step reads what
+;; every earlier step decided, and a name is placed once however many manifests
+;; asked for it.
+(type (: Walk (Record (: sources (Box (Map string Given)))
+                      (: placed (Box (Map string Root)))
+                      (: needs (Box (List Need)))
+                      (: own (List Symbol))
+                      (: own-from string))))
+
 (: prepared-roots-file (-> Prepared string))
 (defun (prepared-roots-file p) (record-ref p roots-file))
 
@@ -27,6 +86,271 @@
 ;; How many packages other than the project itself.
 (: prepared-dependencies (-> Prepared int))
 (defun (prepared-dependencies p) (- (length (prepared-roots p)) 1))
+
+
+;; ---------------------------------------------------------------------------
+;; Names and sources, as text
+;; ---------------------------------------------------------------------------
+
+;; A package name is the key everywhere here: two names are the same name when
+;; they are written the same, and `(a b)` is a string a map can hold.
+(: key-of (-> (List Symbol) string))
+(defun (key-of name) (name->string name))
+
+(: source-shown (-> Source string))
+(defun (source-shown s)
+  (match s
+    ((FromGit g) (str "(git (url \"" (record-ref g url) "\"))"))
+    ((FromPath p) (str "(path (dir \"" (record-ref p dir) "\"))"))
+    ((FromRegistry r) (str "(registry (host \"" (record-ref r host) "\"))"))))
+
+(: without-suffix (-> string string string))
+(defun (without-suffix s suffix)
+  (if (not (string-ends-with? s suffix))
+      s
+      (let go ((c (string-cursor-end s)) (left (string-length suffix)))
+        (if (= left 0)
+            (substring/cursors s (string-cursor-start s) c)
+            (go (string-cursor-prev s c) (- left 1))))))
+
+;; What two sources are compared as. A repository is the same repository under
+;; `…/x`, `…/x/` and `…/x.git`, and a manifest that spells it either way means
+;; the same place.
+(: source-key (-> Source string))
+(defun (source-key s)
+  (match s
+    ((FromGit g) (str "git " (without-suffix (without-suffix (record-ref g url) "/") ".git")))
+    ((FromPath p) (str "path " (record-ref p dir)))
+    ((FromRegistry r) (str "registry " (record-ref r host)))))
+
+
+;; ---------------------------------------------------------------------------
+;; Reading a dependency's manifest
+;; ---------------------------------------------------------------------------
+
+;; The manifest of a package that was found on disk, checked against the name
+;; it was asked for.
+;;
+;; A directory that answers to another name is refused rather than used: the
+;; roots file would map the name that was asked for onto these modules, and
+;; every module in it would then compile under a name its own author never
+;; wrote.
+(: package-in-directory (-> (List Symbol) string string (Result string Package)))
+(defun (package-in-directory wanted dir asked-by)
+  (def manifest-file (path-combine dir manifest-name))
+  (cond
+    ((not (directory-exists? dir))
+     (Err (str "bjo: " asked-by " wants " (name->string wanted) " from " dir
+               ", which is not a directory.")))
+    ((not (file-exists? manifest-file))
+     (Err (str "bjo: " asked-by " wants " (name->string wanted) " from " dir
+               ", which has no " manifest-name ".")))
+    (else
+     (def (Ok package) (read-package manifest-file) :propagate)
+     (if (not (= (key-of (record-ref package name)) (key-of wanted)))
+         (Err (str "bjo: " asked-by " wants " (name->string wanted) ", but "
+                   manifest-file " says the package there is "
+                   (name->string (record-ref package name)) "."))
+         (Ok package)))))
+
+
+;; ---------------------------------------------------------------------------
+;; The walk
+;; ---------------------------------------------------------------------------
+
+;; Records the source a manifest gave for a name.
+;;
+;; The root's wins and is never overwritten; anyone else's has to agree with
+;; what is already there.
+(: give-source! (-> Walk (List Symbol) Source string bool (Result string Unit)))
+(defun (give-source! walk name source from root?)
+  (def k (key-of name))
+  (def given (Given (given source) (given-from from) (given-root? root?)))
+  (match (map-try-ref (box-ref (record-ref walk sources)) k)
+    (None
+     (box-set! (record-ref walk sources)
+               (map-set (box-ref (record-ref walk sources)) k given))
+     (Ok unit))
+    ((Some already)
+     (cond
+       ;; The root said where this comes from, so nothing else is consulted.
+       ((record-ref already given-root?) (Ok unit))
+       (root?
+        (box-set! (record-ref walk sources)
+                  (map-set (box-ref (record-ref walk sources)) k given))
+        (Ok unit))
+       ((= (source-key (record-ref already given)) (source-key source)) (Ok unit))
+       (else
+        (Err (str "bjo: " (name->string name) " is given two different sources.\n"
+                  "  " (source-shown (record-ref already given))
+                  " in " (record-ref already given-from) "\n"
+                  "  " (source-shown source) " in " from "\n"
+                  "  Name it in " (record-ref walk own-from)
+                  " with the source you want: the root manifest's wins everywhere.")))))))
+
+;; What a dependency clause has to satisfy before anything is fetched for it.
+(: check-dep (-> Walk Dep string (Result string Unit)))
+(defun (check-dep walk dep from)
+  (def name (record-ref dep name))
+  (cond
+    ((empty? name) (Err (str "bjo: " from ": a dependency with no name.")))
+    ((reserved-name? name)
+     (Err (str "bjo: " from ": " (name->string name)
+               " is part of the standard library, so it cannot be a dependency."
+               " It is there already.")))
+    ((= (key-of name) (key-of (record-ref walk own)))
+     (Err (str "bjo: " from ": " (name->string name)
+               " is this project itself, so it cannot be one of its dependencies.")))
+    (else (Ok unit))))
+
+;; Every dependency of one manifest: its clauses checked, its sources recorded,
+;; and one `Want` each for the step that places them.
+(: dependencies-of (-> Walk Task (Result string (List Want))))
+(defun (dependencies-of walk task)
+  (with-return ret
+    (def package (record-ref task package))
+    (def from (record-ref task from))
+    (def clauses (if (record-ref task dev?)
+                     (list-append (record-ref package depends)
+                                  (record-ref package dev-depends))
+                     (record-ref package depends)))
+    (Ok (loop (:for dep clauses)
+              (:do
+               (match (check-dep walk dep from)
+                 ((Err why) (ret (Err why)))
+                 ((Ok u) unit))
+               (box-set! (record-ref walk needs)
+                         (Cons (Need (need-name (record-ref dep name))
+                                     (need-req (record-ref dep version))
+                                     (need-from from))
+                               (box-ref (record-ref walk needs))))
+               (match (record-ref dep source)
+                 (None unit)
+                 ((Some source)
+                  (match (give-source! walk (record-ref dep name) source from
+                                       (record-ref task dev?))
+                    ((Err why) (ret (Err why)))
+                    ((Ok u) unit)))))
+              (:acc out (listing (Want (dep dep)
+                                       (want-from from)
+                                       (want-dir (record-ref task dir))
+                                       (want-path-ok? (record-ref task path-ok?)))))
+              => out))))
+
+;; Places one dependency, now that its source is known: the package's directory
+;; is decided, its manifest read, and a task made of it.
+;;
+;; `None` when the package is already placed. A name is one directory in the
+;; roots file, so the second manifest that asks for it adds a requirement and
+;; nothing else.
+(: place #:sync (-> Walk Want Given (Result string (Option Task))))
+(defun (place walk want given)
+  (with-return ret
+    (def dep (record-ref want dep))
+    (def name (record-ref dep name))
+    (def k (key-of name))
+    (def asked-by (record-ref want want-from))
+
+    (when (some? (map-try-ref (box-ref (record-ref walk placed)) k))
+      (ret (Ok None)))
+
+    (match (record-ref given given)
+      ((FromRegistry r)
+       (Err (str "bjo: " asked-by " wants " (name->string name)
+                 " from a registry, and there are none yet."
+                 " Use a git source, or a path source for a package on this disk.")))
+
+      ((FromPath local)
+       ;; Relative to the manifest that named it, never to the working
+       ;; directory: the same manifest has to mean the same directory whoever
+       ;; runs `bjo` and from wherever.
+       (def dir (path-absolute (path-combine (record-ref want want-dir) (record-ref local dir))))
+       (unless (record-ref want want-path-ok?)
+         (ret (Err (str "bjo: " asked-by " gives " (name->string name)
+                        " a path source, " (source-shown (record-ref given given))
+                        ". A fetched package may not: the directory is on its author's"
+                        " disk and says nothing about yours."
+                        " Give " (name->string name) " a source in "
+                        (record-ref walk own-from) " instead."))))
+       (def (Ok package) (package-in-directory name dir asked-by) :propagate)
+       (def src (path-combine dir "src"))
+       (unless (directory-exists? src)
+         (ret (Err (str "bjo: " (name->string name) " at " dir " has no src/."
+                        " A package keeps its modules in src/, beside its manifest."))))
+       (box-set! (record-ref walk placed)
+                 (map-set (box-ref (record-ref walk placed)) k
+                          (Root (name name) (dir src))))
+       (Ok (Some (Task (package package)
+                       (dir dir)
+                       (from (path-combine dir manifest-name))
+                       (path-ok? #t)
+                       (dev? #f)))))
+
+      ((FromGit g)
+       (Err (str "bjo: " asked-by " wants " (name->string name)
+                 " from git, which this bjo cannot fetch yet."))))))
+
+;; The dependencies that can be placed now, and the ones that still cannot.
+(: ready-and-waiting (-> Walk (List Want) (Tuple (List Want) (List Want))))
+(defun (ready-and-waiting walk wants)
+  (def known (box-ref (record-ref walk sources)))
+  (Tuple (list-filter #(some? (map-try-ref known (key-of (record-ref (record-ref & dep) name)))) wants)
+         (list-filter #(not (some? (map-try-ref known (key-of (record-ref (record-ref & dep) name))))) wants)))
+
+;; A name nobody said where to get.
+(: no-source-message (-> Walk Want string))
+(defun (no-source-message walk want)
+  (def name (record-ref (record-ref want dep) name))
+  (str "bjo: " (record-ref want want-from) " wants " (name->string name)
+       " and no manifest says where it comes from."
+       " Give it a source: (source (git (url \"https://…\"))) to fetch it,"
+       " or (source (path (dir \"../" (name->string name) "\"))) for a copy on this disk."))
+
+;; Places every dependency that can be placed, and answers the tasks they made.
+(: place-all #:sync (-> Walk (List Want) (Result string (List Task))))
+(defun (place-all walk wants)
+  (match wants
+    (Nil (Ok Nil))
+    ((Cons want rest)
+     (def known (box-ref (record-ref walk sources)))
+     (def (Ok made)
+       (match (map-try-ref known (key-of (record-ref (record-ref want dep) name)))
+         ;; Not this pass. It stays in the waiting list, which is the caller's.
+         (None (Ok None))
+         ((Some given) (place walk want given)))
+       :propagate)
+     (def (Ok more) (place-all walk rest) :propagate)
+     (Ok (match made
+           ((Some task) (Cons task more))
+           (None more))))))
+
+;; The whole walk: read a manifest, place what it names, repeat.
+;;
+;; `waiting` holds the dependencies with no source yet. When the queue empties,
+;; the ones that have a source by now are placed and the walk goes on; a pass
+;; that places none of them ends it, and whatever is still waiting is an error.
+(: walk-graph #:sync (-> Walk (List Task) (List Want) (Result string Unit)))
+(defun (walk-graph walk tasks waiting)
+  (match tasks
+    ((Cons task rest)
+     (def (Ok found) (dependencies-of walk task) :propagate)
+     (def (Tuple ready still) (ready-and-waiting walk (list-append waiting found)))
+     (def (Ok made) (place-all walk ready) :propagate)
+     (walk-graph walk (list-append rest made) still))
+    (Nil
+     (if (empty? waiting)
+         (Ok unit)
+         (let ((split (ready-and-waiting walk waiting)))
+           (match split
+             ((Tuple Nil (Cons first _)) (Err (no-source-message walk first)))
+             ((Tuple ready still)
+              (def (Ok made) (place-all walk ready) :propagate)
+              (walk-graph walk made still))))))))
+
+
+;; ---------------------------------------------------------------------------
+;; The root package
+;; ---------------------------------------------------------------------------
 
 ;; The root package's own entry in the roots file.
 ;;
@@ -39,23 +363,51 @@
   (def src (project-src project))
   (cond
     ((empty? name)
-     (Err #"bjo: ${(project-dir project)}/${manifest-name}: the package has no name."))
+     (Err (str "bjo: " (path-combine (project-dir project) manifest-name)
+               ": the package has no name.")))
     ((reserved-name? name)
-     (Err (str #"bjo: ${(project-dir project)}/${manifest-name}: ${(name->string name)} "
-               "is part of the standard library, so a package cannot be called that.")))
+     (Err (str "bjo: " (path-combine (project-dir project) manifest-name) ": "
+               (name->string name)
+               " is part of the standard library, so a package cannot be called that.")))
     ((not (directory-exists? src))
-     (Err (str #"bjo: ${(name->string name)} has no ${src}. "
-               "A package keeps its modules in src/, beside its manifest.")))
+     (Err (str "bjo: " (name->string name) " has no " src "."
+               " A package keeps its modules in src/, beside its manifest.")))
     (else (Ok (Root (name name) (dir src))))))
+
+
+;; ---------------------------------------------------------------------------
+;; prepare
+;; ---------------------------------------------------------------------------
 
 ;; Resolves the project, fetches what that needs, and writes the roots file.
 ;;
 ;; `locked?` is `--locked`: any difference from `bjo.lock` is an error rather
-;; than an update, which is what a CI build wants.
+;; than an update, which is what a build that must be the one the lock
+;; describes wants.
 (: prepare #:sync (-> Project bool (Result string Prepared)))
 (defun (prepare project locked?)
   (def (Ok own) (root-package-root project) :propagate)
-  (def roots (Cons own Nil))
+
+  (def walk (Walk (sources (make-box (map-empty)))
+                  (placed (make-box (map-empty)))
+                  (needs (make-box Nil))
+                  (own (record-ref (project-package project) name))
+                  (own-from (path-combine (project-dir project) manifest-name))))
+
+  ;; The root task is the only one whose `dev-depends` count, and the only one
+  ;; allowed to say `(path ...)`  — which its own dependencies inherit, since a
+  ;; directory beside yours is as much yours as your own.
+  (def first-task (Task (package (project-package project))
+                        (dir (project-dir project))
+                        (from (path-combine (project-dir project) manifest-name))
+                        (path-ok? #t)
+                        (dev? #t)))
+
+  (def (Ok walked) (walk-graph walk (Cons first-task Nil) Nil) :propagate)
+
+  (def roots (Cons own (loop (:for entry (map-values (box-ref (record-ref walk placed))))
+                             (:acc out (listing entry))
+                             => out)))
   (def path (project-roots-file project))
   (ignore (write-roots path roots))
   (Ok (Prepared (roots-file path) (roots roots))))
