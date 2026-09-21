@@ -1,0 +1,131 @@
+;; bjo/lock.bjo — `bjo.lock`: the commit each git dependency resolved to.
+;;
+;;     (lock
+;;       (locked
+;;         (package (name (bjorsec)) (version "1.2.3")
+;;                  (source (git (url "https://github.com/you/bjorsec")))
+;;                  (commit "a1b2c3d4e5f6..."))))
+;;
+;; One entry per git package, sorted by name, so that a diff shows what
+;; changed and not what was reordered. Path dependencies are not here: there is
+;; nothing to pin about a directory on your own disk.
+;;
+;; An entry is written `(package ...)` under one `locked` clause, the way a
+;; manifest writes `(depends (package ...) (package ...))`: a clause holds its
+;; values, and a clause that repeated with the fields of a record spread
+;; through it is not something the reader can express. It is the same record
+;; either way — named, versioned, sourced, and pinned to a commit.
+;;
+;; The commit is the whole of the pinning. A version is a tag, a tag is a name
+;; somebody can move, and a commit is the content — so what this file protects
+;; against is a `v1.2.3` that is not the `v1.2.3` the last build read. There is
+;; no separate hash of the tree: the commit already is one.
+
+(export
+  Locked Lock
+  locked-name locked-version locked-source locked-commit
+  read-lock lock-text write-lock lock-entry-for lock-changes)
+
+(import (std prelude))
+(import (text bjodat))
+(import "manifest.bjo")
+(import "project.bjo")
+
+(def/bjodat-type
+  (: Locked (Record #:tag package
+                    (: name (List Symbol))
+                    (: version Version)
+                    (: source Source)
+                    (: commit string))))
+
+(def/bjodat-type
+  (: Lock (Record #:tag lock
+                  (: locked (List Locked) #:rest #:default Nil))))
+
+(: locked-name (-> Locked (List Symbol)))
+(defun (locked-name l) (record-ref l name))
+
+(: locked-version (-> Locked Version))
+(defun (locked-version l) (record-ref l version))
+
+(: locked-source (-> Locked Source))
+(defun (locked-source l) (record-ref l source))
+
+(: locked-commit (-> Locked string))
+(defun (locked-commit l) (record-ref l commit))
+
+;; What the last resolve wrote, or nothing at all.
+;;
+;; A missing file is an empty lock rather than an error: the first build of a
+;; checkout that has never been built has no lock, and writing one is what it
+;; is about to do.
+(: read-lock (-> string (Result string (List Locked))))
+(defun (read-lock file)
+  (if (not (file-exists? file))
+      (Ok Nil)
+      (match (bjodat-parse-Lock (file-read-text file))
+        ((Err why)
+         (Err (str "bjo: " file ": " why
+                   "\n  Delete it to resolve from the manifests again.")))
+        ((Ok lock) (Ok (record-ref lock locked))))))
+
+;; A source as a manifest writes it. The writer is the one in `(text bjodat)`,
+;; so what comes out here is what a manifest may say.
+(: source-text (-> Source string))
+(defun (source-text source) (bjodat->string (->bjodat source)))
+
+(: locked-text (-> Locked string))
+(defun (locked-text entry)
+  (str "    (package (name " (name->string (locked-name entry)) ")"
+       " (version \"" (version->string (locked-version entry)) "\")\n"
+       "             (source " (source-text (locked-source entry)) ")\n"
+       "             (commit \"" (locked-commit entry) "\"))"))
+
+;; The whole file. Sorted by name: the entry begins with it, so sorting the
+;; entries by their text sorts by name.
+(: lock-text (-> (List Locked) string))
+(defun (lock-text entries)
+  (if (empty? entries)
+      "(lock)\n"
+      (str "(lock\n  (locked\n"
+           (string-join (list->vec (list-sort (list-map locked-text entries))) "\n")
+           "))\n")))
+
+(: write-lock #:sync (-> string (List Locked) void))
+(defun (write-lock file entries)
+  (file-write-text file (lock-text entries)))
+
+(: lock-entry-for (-> (List Locked) (List Symbol) (Option Locked)))
+(defun (lock-entry-for entries name)
+  (find #(= (name->string (locked-name &)) (name->string name)) entries))
+
+;; What changed between two locks, one line each, sorted.
+;;
+;; With minimal version selection this is empty unless a manifest changed: the
+;; same manifests choose the same versions however many times they are read.
+(: lock-changes (-> (List Locked) (List Locked) (List string)))
+(defun (lock-changes before after)
+  (def added-or-changed
+    (loop (:for entry after)
+          (:let was (lock-entry-for before (locked-name entry)))
+          (:let line
+                (match was
+                  (None (Some (str "added " (name->string (locked-name entry)) " "
+                                   (version->string (locked-version entry)))))
+                  ((Some old)
+                   (if (= (version->string (locked-version old))
+                          (version->string (locked-version entry)))
+                       None
+                       (Some (str (name->string (locked-name entry)) " "
+                                  (version->string (locked-version entry))
+                                  " (was " (version->string (locked-version old)) ")"))))))
+          (:when-let (Some text) line)
+          (:acc out (listing text))
+          => out))
+  (def removed
+    (loop (:for entry before)
+          (:when (not (some? (lock-entry-for after (locked-name entry)))))
+          (:acc out (listing (str "removed " (name->string (locked-name entry)) " "
+                                  (version->string (locked-version entry)))))
+          => out))
+  (list-sort (list-append added-or-changed removed)))

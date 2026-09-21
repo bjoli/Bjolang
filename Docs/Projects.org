@@ -1,0 +1,284 @@
+* Projects, packages and dependencies
+
+A *project* is a directory with a ~manifest.bjodat~ in it. Inside one, ~bjo~
+knows what your code is called, what it needs, and where to get it; outside one
+every command works on the file it is given, exactly as it did before projects
+existed.
+
+#+BEGIN_SRC sh
+mkdir myapp && cd myapp
+bjo init            # writes the manifest, src/main.bjo, tests/ and .gitignore
+bjo run             # fetches what is missing, builds, runs
+#+END_SRC
+
+** The layout
+
+#+BEGIN_SRC text
+myapp/
+  manifest.bjodat   what the package is called and what it needs — committed
+  bjo.lock          the commit each git dependency resolved to — committed
+  src/              the package's modules: src/lexer.bjo is (myapp lexer)
+    main.bjo        the entry, for a program
+  tests/
+  .gitignore
+  .bjo/             never committed
+    roots           the package list handed to the compiler with --roots
+    git/            one bare clone per repository URL
+    pkg/            one directory per fetched version: bjorsec@1.2.3/
+    tmp/
+#+END_SRC
+
+*Every package's modules are in ~src/~.* Nothing configures that. A module's
+name is its path below the package directory, so a second layout would be a
+second answer to "which file is ~(myapp lexer)~" — and the answer has to be the
+same for the package you wrote and for one that was fetched, which nothing in a
+fetched copy can decide after the fact.
+
+A project is found by looking upward for ~manifest.bjodat~, from the current
+directory or from the file named on the command line, so every command works
+anywhere inside the tree.
+
+** The manifest
+
+#+BEGIN_SRC scheme
+(package
+  (name (myapp))
+  (version "0.1.0")
+  (description "An app")
+  (entry "src/main.bjo")
+
+  (depends
+    (package (name (bjorsec))
+             (version (version-at-least "0.1.0"))
+             (source (git (url "https://github.com/bjoli/bjorsec"))))
+    (package (name (mylib))
+             (source (path (dir "../mylib")))))
+
+  (dev-depends
+    (package (name (testing)) (source (path (dir "../testing"))))))
+#+END_SRC
+
+It is bjodat — see [[file:std/bjodat.org][~Docs/std/bjodat.org~]] — and the types
+are in ~bjo/manifest.bjo~, which is the only reader of it.
+
+- *A package name is a list of symbols*, spelled the way an import spells it:
+  ~(myapp)~, ~(bjolang http)~. A name whose first segment is a directory of the
+  installation's ~lib/~ — ~std~, ~text~ — is refused: those are the standard
+  library's, and the compiler will not give one of them a directory.
+- ~entry~ is the program to build, and defaults to ~src/main.bjo~. *If the
+  entry file does not exist the project is a library*, which is read from the
+  disk rather than declared, so a library does not have to say twice that it
+  has no program.
+- ~depends~ are dependencies; ~dev-depends~ are resolved as well, but *only for
+  the project you are building*. A dependency's ~dev-depends~ are what its
+  author needs in order to test it, and building it here runs no tests.
+- ~targets~ and ~(registry ...)~ sources are not implemented. A registry source
+  is an error that says so.
+
+** Sources: where a dependency comes from
+
+#+BEGIN_SRC scheme
+(source (path (dir "../bjorsec")))                          ; on this disk
+(source (git (url "https://github.com/bjoli/bjorsec")))     ; fetched
+#+END_SRC
+
+A *path* source is relative to the manifest that names it, never to the
+directory you are standing in. It has no version and is never locked: it is a
+directory, and what is in it is what you get.
+
+A path source may only be written by your own manifest, or by a manifest
+reached through path sources. *A package fetched from git may not use one* —
+its ~../parser~ is a directory on its author's machine and says nothing about
+yours — and doing so is an error naming the manifest that tried.
+
+A *git* source is fetched. ~commit~ and ~branch~ are refused for now, with a
+message suggesting a version tag or a path source.
+
+*** A dependency with no source
+
+#+BEGIN_SRC scheme
+(depends (package (name (bjorsec)) (version (version-at-least "0.1.0"))))
+#+END_SRC
+
+means "somebody else in this graph says where this comes from". The rules are:
+
+1. *If your own manifest gives the name a source, yours wins everywhere.* That
+   is how you replace a dependency of a dependency — with a fork, or with a
+   path source while you debug it.
+2. Otherwise every source given for that name has to be the same. URLs are
+   compared with a trailing ~/~ and ~.git~ removed, so ~…/x~, ~…/x/~ and
+   ~…/x.git~ are one repository.
+3. Two that disagree is an error listing both and the manifest that gave each.
+4. A name nobody gives a source at all is an error naming it.
+
+A fetched package's own manifest must carry the name it was asked for: a
+repository that answers to ~(y)~ when ~(x)~ was wanted is refused, because the
+roots file would otherwise file its modules under ~(x)~ and compile every one
+of them under a name its author never wrote.
+
+** Versions: minimal version selection
+
+A version is a git tag of *exactly* the form ~vX.Y.Z~. Other tags are passed
+over: a tag that is not a version is a name for something else.
+
+A git dependency must say which versions it takes. There is no default —
+"newest" would mean something different every week — and the error lists the
+tags the repository has.
+
+Each requirement becomes a *node*, a version somebody asked for:
+
+| requirement                        | node                              |
+|------------------------------------+-----------------------------------|
+| ~(version-at-least "1.2")~         | the *lowest* tag ≥ 1.2.0          |
+| ~(version-between "1.2" "2.0")~    | the lowest tag ≥ 1.2.0            |
+| ~(version-at-most "2.0")~          | the lowest tag ≥ 0.0.0            |
+
+The graph is walked from your manifest: for every node, that version's
+~manifest.bjodat~ is read out of the bare clone — without checking anything out
+— and its requirements become nodes too. Every node counts, including versions
+that are later superseded.
+
+*The chosen version of a package is the highest of its nodes.* No search, no
+backtracking.
+
+A worked example. The app needs ~a~ at least 1.0 and ~b~ at least 1.0; ~b~
+1.0.0 needs ~a~ at least 1.1; ~a~ has tags ~v1.0.0~, ~v1.1.0~ and ~v1.2.0~.
+
+#+BEGIN_SRC text
+the app's (version-at-least "1.0") on a  ->  node a 1.0.0
+the app's (version-at-least "1.0") on b  ->  node b 1.0.0
+b 1.0.0's (version-at-least "1.1") on a  ->  node a 1.1.0
+                                             -------------
+a's nodes are 1.0.0 and 1.1.0             ->  a is 1.1.0
+#+END_SRC
+
+Not 1.2.0, which nobody asked for, and not 1.0.0, which ~b~ says it cannot use.
+Remove ~b~ and the next build goes back to ~a~ 1.0.0. This is why two builds of
+the same manifests a year apart use the same code: a new release of a
+dependency changes nothing until some manifest asks for it.
+
+*An upper bound is a check, never a choice.* Once the versions are chosen,
+every constraint is tested against them, and a violated bound is an error
+naming the package, the version, and every manifest that asked for anything —
+marking the ones the chosen version breaks. An upper bound never makes the
+resolver pick a lower version: a version that is too low for one manifest does
+not work at all, while a version that is too high for another is a version its
+author has not tried.
+
+If a fetched package's manifest ~version~ disagrees with the tag it was read
+at, the tag wins.
+
+** The lock file
+
+#+BEGIN_SRC scheme
+(lock
+  (locked
+    (package (name (bjorsec)) (version "1.2.3")
+             (source (git (url "https://github.com/bjoli/bjorsec")))
+             (commit "a1b2c3d4e5f6..."))))
+#+END_SRC
+
+One entry per git package, sorted by name so that a diff shows what changed
+rather than what moved. Path dependencies are not locked. Commit it.
+
+The commit is the whole of the pinning; there is no separate hash of the tree,
+because a commit already is one.
+
+- *A version that has not changed must still be the commit the lock names.* If
+  the tag has been moved, the build *stops* — the same version naming different
+  code is the thing this file exists to prevent. If the move was meant, remove
+  that entry (or the file) and fetch again.
+- Anything else — a new package, one that is gone, a different version — writes
+  a new lock and prints what changed:
+
+#+BEGIN_SRC text
+Updated /home/you/myapp/bjo.lock:
+  (bjorsec) 1.2.3 (was 1.2.0)
+  added (http) 2.0.0
+  removed (json) 1.0.0
+#+END_SRC
+
+  With minimal version selection this only happens when a manifest changed.
+- ~--locked~ makes any difference an error instead, for a build that has to be
+  the build the lock describes. It is accepted by ~fetch~, ~build~ and ~run~.
+
+** Fetching
+
+One bare clone per repository URL, in ~.bjo/git/~, named after the URL with
+every character that is not a letter or a digit replaced by ~_~. Bare, because
+a resolve needs no working tree: the tags, a manifest at a tag and a tag's
+commit are all read out of the object database.
+
+*The network is touched as little as possible.* A repository is fetched when
+it is first cloned, when a lower bound has no tag here that satisfies it, and
+when the lock names a commit this clone has not got. Nothing else. A project
+whose dependencies are all present builds with the network unplugged.
+
+A chosen version is unpacked into ~.bjo/pkg/<name>@<version>/~ — ~git archive~
+writes a zip of the commit and the runtime unpacks it, so no third program is
+needed and the bare clone gets no working tree. The directory carries a
+~.bjo-commit~ file: one that matches is used as it stands, one that does not is
+deleted and replaced. It is unpacked beside its place and renamed into it, so a
+directory that exists is a directory that is whole.
+
+If git is needed and is not on PATH, the error says which package and which URL
+it was needed for. ~GIT_TERMINAL_PROMPT=0~ is set before any git runs: ~bjo~
+reads git's output through a pipe, and a repository that asked for a password
+would otherwise wait for ever.
+
+** The roots file
+
+~.bjo/roots~ is what the compiler is given with ~--roots~: one directory per
+package name, absolute, sorted.
+
+#+BEGIN_SRC scheme
+(roots
+  (root (bjorsec) "/home/you/myapp/.bjo/pkg/bjorsec@1.2.3/src")
+  (root (myapp) "/home/you/myapp/src"))
+#+END_SRC
+
+*It is written only when its contents change.* The compiler records it as an
+input of every build made against it, so rewriting the same bytes with a new
+timestamp would make every artefact in the project stale.
+
+~bjo~ does not compile dependencies one at a time. The compiler builds an
+imported module itself, in dependency order, so all ~bjo~ has to do is make the
+modules findable and then compile the entry.
+
+** The commands
+
+| Command                 | What it does                                                  |
+|-------------------------+---------------------------------------------------------------|
+| ~bjo init [name] [--lib]~ | Makes a project here. The name defaults to the directory's  |
+| ~bjo fetch [--locked]~  | Resolves, fetches, writes ~.bjo/roots~. Compiles nothing      |
+| ~bjo build [--locked]~  | ~fetch~, then compile the entry — or every module of a library |
+| ~bjo run [. args...]~   | ~build~, then run the entry                                   |
+| ~bjo check~             | Every module of the project, errors only                      |
+| ~bjo repl~              | The REPL, with the project's packages importable              |
+
+~bjo run .~ is the way to pass arguments to your own program: everything after
+a file belongs to the program, and ~.~ is the file when the project is what you
+mean.
+
+A file named inside a project — ~bjo run src/tool.bjo~, ~bjo check src/x.bjo~ —
+is compiled against the project's packages, fetching first if it has to.
+Outside a project, every command behaves exactly as it always has.
+
+** Turning a library you already have into a package
+
+1. Move the modules under ~src/~, so that ~src/core.bjo~ of a package called
+   ~(mylib)~ is the module ~(mylib core)~.
+2. Write a ~manifest.bjodat~ beside ~src/~ with ~(name (mylib))~ and a
+   ~(version "0.1.0")~.
+3. Change the imports *between its own modules* from relative paths to module
+   names — ~(import (mylib core))~ — or leave them as relative paths, which go
+   on working.
+4. ~bjo build~ in that directory. With no ~src/main.bjo~ it is a library, and
+   every module under ~src/~ is built.
+5. Tag a release: ~git tag -a v0.1.0 -m "..."~ and push the tag. A version that
+   is not a ~vX.Y.Z~ tag cannot be depended on.
+6. In the program that uses it, add a ~depends~ clause with a git source and a
+   ~(version-at-least "0.1.0")~, and ~bjo run~.
+
+A dependency on a package you have on disk needs no tag at all — use a path
+source while you work on both, and a git source when you publish.

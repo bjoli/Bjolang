@@ -41,6 +41,9 @@
   ;; Saying no
   fail
 
+  ;; Finding a program
+  which
+
   ;; The command
   cmd-init)
 
@@ -82,6 +85,15 @@
 (defun (parent-directory dir)
   (def up (clr-directory-name (path-absolute dir)))
   (if (clr-null-or-empty? up) None (Some up)))
+
+;; A program on PATH, if there is one. Two ways to have no answer — no PATH at
+;; all, and nothing on it by that name — and both of them propagate.
+(: which (-> string (Option string)))
+(defun (which program)
+  (def* ((Some path) (get-environment-variable "PATH") :propagate)
+        ((Some dir) (find #(file-exists? (path-combine & program))
+                          (string-split path ":")) :propagate))
+  (Some (path-combine dir program)))
 
 (: manifest-name string)
 (def manifest-name "manifest.bjodat")

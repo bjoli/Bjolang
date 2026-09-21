@@ -35,6 +35,8 @@
 (import (text bjodat))
 (import "manifest.bjo")
 (import "project.bjo")
+(import "lock.bjo")
+(import "git.bjo")
 
 ;; What a project turned out to need: the roots file to hand the compiler, and
 ;; the packages it names.
@@ -68,14 +70,35 @@
                       (: need-req (Option VersionReq))
                       (: need-from string))))
 
+;; A git package that has been chosen: everything the lock and the roots file
+;; need to say about it.
+(type (: Chosen (Record (: chosen-name (List Symbol))
+                        (: chosen-version Version)
+                        (: chosen-source Source)
+                        (: chosen-clone string))))
+
 ;; The walk's state. Boxes rather than a threaded record: every step reads what
 ;; every earlier step decided, and a name is placed once however many manifests
 ;; asked for it.
+;;
+;; A path package is placed as it is found — there is one directory and nothing
+;; to choose. A git package is not: every requirement on it makes a *node*, a
+;; version that some manifest asked for, and which of them is used is only
+;; known when the walk is over. See `chosen` below.
 (type (: Walk (Record (: sources (Box (Map string Given)))
                       (: placed (Box (Map string Root)))
                       (: needs (Box (List Need)))
+                      (: nodes (Box (Map string (List Version))))
+                      (: names (Box (Map string (List Symbol))))
+                      (: clones (Box (Map string string)))
+                      (: origins (Box (Map string Source)))
+                      (: walked (Box (Map string bool)))
+                      (: fetched (Box (Map string bool)))
                       (: own (List Symbol))
-                      (: own-from string))))
+                      (: own-from string)
+                      (: tool Tool)
+                      (: dot-bjo string)
+                      (: was-locked (List Locked)))))
 
 (: prepared-roots-file (-> Prepared string))
 (defun (prepared-roots-file p) (record-ref p roots-file))
@@ -286,9 +309,166 @@
                        (path-ok? #t)
                        (dev? #f)))))
 
-      ((FromGit g)
-       (Err (str "bjo: " asked-by " wants " (name->string name)
-                 " from git, which this bjo cannot fetch yet."))))))
+      ((FromGit source)
+       (def (Ok made) (place-git walk want source) :propagate)
+       (Ok made)))))
+
+;; A git dependency: the node this requirement makes, and the manifest at that
+;; version.
+;;
+;; The manifest is read out of the bare clone, so a version that is considered
+;; and then superseded costs a `git show` and nothing else — no checkout, no
+;; directory, no entry in the lock.
+(: place-git #:sync (-> Walk Want Git (Result string (Option Task))))
+(defun (place-git walk want source)
+  (with-return ret
+    (def dep (record-ref want dep))
+    (def name (record-ref dep name))
+    (def k (key-of name))
+    (def asked-by (record-ref want want-from))
+    (def url (record-ref source url))
+
+    ;; Refused rather than ignored: a manifest that pins a commit is asking for
+    ;; something this does not do, and building the tag instead would be a
+    ;; different program from the one it asked for.
+    (when (some? (record-ref source commit))
+      (ret (Err (str "bjo: " asked-by " pins " (name->string name)
+                     " to a commit, which bjo does not do yet."
+                     " Use a version tag, or a path source for a copy on this disk."))))
+    (when (some? (record-ref source branch))
+      (ret (Err (str "bjo: " asked-by " pins " (name->string name)
+                     " to a branch, which bjo does not do yet."
+                     " Use a version tag, or a path source for a copy on this disk."))))
+
+    (def (Ok clone) (ensure-clone (record-ref walk tool) (record-ref walk dot-bjo) url name)
+      :propagate)
+    (remember! walk k name (FromGit source) clone)
+
+    (def (Ok required) (requirement-of walk dep asked-by clone) :propagate)
+    (def (Ok version) (node-version walk clone name (lower-bound required) asked-by) :propagate)
+    (add-node! walk k version)
+
+    ;; Every node is walked once. Two manifests asking for the same version ask
+    ;; for the same manifest, and its requirements are already in hand.
+    (def node-key (str k "@" (version->string version)))
+    (when (some? (map-try-ref (box-ref (record-ref walk walked)) node-key))
+      (ret (Ok None)))
+    (box-set! (record-ref walk walked)
+              (map-set (box-ref (record-ref walk walked)) node-key #t))
+
+    (def (Ok text) (manifest-at (record-ref walk tool) clone version) :propagate)
+    (def shown (str url " " (version->tag version)))
+    (def (Ok package) (package-at-tag name text shown) :propagate)
+
+    (Ok (Some (Task (package package)
+                    (dir clone)
+                    (from shown)
+                    (path-ok? #f)
+                    (dev? #f))))))
+
+;; A manifest read at a tag, checked against the name it was asked for.
+;;
+;; A version whose manifest says another name is refused: the roots file would
+;; file these modules under the name that was asked for, and every one of them
+;; would then compile under a name its author never wrote.
+(: package-at-tag (-> (List Symbol) string string (Result string Package)))
+(defun (package-at-tag wanted text shown)
+  (match (bjodat-parse-Package text)
+    ((Err why) (Err (str "bjo: " manifest-name " at " shown ": " why)))
+    ((Ok package)
+     (if (not (= (key-of (record-ref package name)) (key-of wanted)))
+         (Err (str "bjo: " shown " was asked for as " (name->string wanted)
+                   ", but its " manifest-name " says the package there is "
+                   (name->string (record-ref package name)) "."))
+         (Ok package)))))
+
+;; What a name is called, where it comes from and where its clone is. Written
+;; down when the first requirement on it is seen, and read again when the
+;; chosen version is materialised and locked.
+(: remember! (-> Walk string (List Symbol) Source string Unit))
+(defun (remember! walk k name source clone)
+  (box-set! (record-ref walk names) (map-set (box-ref (record-ref walk names)) k name))
+  (box-set! (record-ref walk origins) (map-set (box-ref (record-ref walk origins)) k source))
+  (box-set! (record-ref walk clones) (map-set (box-ref (record-ref walk clones)) k clone))
+  unit)
+
+(: add-node! (-> Walk string Version Unit))
+(defun (add-node! walk k version)
+  (def had (match (map-try-ref (box-ref (record-ref walk nodes)) k)
+             ((Some versions) versions)
+             (None Nil)))
+  (box-set! (record-ref walk nodes)
+            (map-set (box-ref (record-ref walk nodes)) k (Cons version had)))
+  unit)
+
+;; A git dependency has to say which versions it will take.
+;;
+;; There is no default. "Whatever is newest" is a manifest that means something
+;; different every week, and "whatever is oldest" is one that never gets a
+;; fix — so the manifest says, and the tags that exist are listed here because
+;; the answer is one of them.
+(: requirement-of #:sync (-> Walk Dep string string (Result string VersionReq)))
+(defun (requirement-of walk dep asked-by clone)
+  (match (record-ref dep version)
+    ((Some req) (Ok req))
+    (None
+     (def (Ok tags) (version-tags (record-ref walk tool) clone) :propagate)
+     (Err (str "bjo: " asked-by " asks for " (name->string (record-ref dep name))
+               " from git without saying which versions it takes.\n"
+               "  Write one, as in (version (version-at-least \"0.1.0\")).\n"
+               "  The versions that repository has: " (versions-shown tags))))))
+
+(: versions-shown (-> (List Version) string))
+(defun (versions-shown versions)
+  (if (empty? versions)
+      "none — it has no vX.Y.Z tags at all."
+      (string-join (list->vec (list-map version->tag versions)) ", ")))
+
+;; The version a requirement asks for, as minimal version selection reads it:
+;; the bottom of the range, and `0.0.0` where there is no bottom.
+(: lower-bound (-> VersionReq Version))
+(defun (lower-bound req)
+  (match req
+    ((AtLeast lo) lo)
+    ((Between lo hi) lo)
+    ((AtMost hi) (version 0 0 0))))
+
+;; The node a requirement makes: the *lowest* version that satisfies it.
+;;
+;; Not the newest. A manifest that says `(version-at-least "1.2")` says it
+;; needs 1.2, not that it has been tested against everything after it — so the
+;; build uses 1.2 unless something else in the graph asks for more. That is the
+;; whole of minimal version selection, and it is why two builds of the same
+;; manifests a year apart use the same code.
+(: node-version #:sync (-> Walk string (List Symbol) Version string (Result string Version)))
+(defun (node-version walk clone name lower asked-by)
+  (def (Ok tags) (version-tags (record-ref walk tool) clone) :propagate)
+  (match (find #(>= (version-compare & lower) 0) tags)
+    ((Some found) (Ok found))
+    (None
+     ;; Only now: a lower bound nothing here satisfies is the one question the
+     ;; clone cannot answer out of what it already has.
+     (def (Ok fetched?) (fetch-once walk clone) :propagate)
+     (def (Ok after) (version-tags (record-ref walk tool) clone) :propagate)
+     (match (find #(>= (version-compare & lower) 0) after)
+       ((Some found) (Ok found))
+       (None
+        (Err (str "bjo: " asked-by " asks for " (name->string name)
+                  " at least " (version->string lower)
+                  ", and that repository has no such version.\n"
+                  "  The versions it has: " (versions-shown after))))))))
+
+;; Fetches a clone once per run. A resolve asks several questions of one
+;; repository, and a fetch that answered the first answers the rest.
+(: fetch-once #:sync (-> Walk string (Result string bool)))
+(defun (fetch-once walk clone)
+  (cond
+    ((some? (map-try-ref (box-ref (record-ref walk fetched)) clone)) (Ok #f))
+    (else
+     (box-set! (record-ref walk fetched)
+               (map-set (box-ref (record-ref walk fetched)) clone #t))
+     (def (Ok got) (fetch-tags (record-ref walk tool) clone) :propagate)
+     (Ok #t))))
 
 ;; The dependencies that can be placed now, and the ones that still cannot.
 (: ready-and-waiting (-> Walk (List Want) (Tuple (List Want) (List Want))))
@@ -376,6 +556,188 @@
 
 
 ;; ---------------------------------------------------------------------------
+;; Choosing versions
+;; ---------------------------------------------------------------------------
+
+;; The version each git package ends up at: the highest of its nodes.
+;;
+;; No search and no backtracking. Every node is a version some manifest asked
+;; for, so the highest of them is the lowest version that satisfies all of
+;; them — and since every reachable node counts, including versions that were
+;; later superseded, adding a manifest to the graph can raise a version but
+;; never lower one.
+;;
+;; A worked example. The app needs A at least 1.0 and B at least 1.0; B 1.0
+;; needs A at least 1.1; A has tags v1.0.0, v1.1.0 and v1.2.0.
+;;
+;;   the app's (version-at-least "1.0") on A  -> node A 1.0.0
+;;   the app's (version-at-least "1.0") on B  -> node B 1.0.0
+;;   B 1.0.0's (version-at-least "1.1") on A  -> node A 1.1.0
+;;
+;; A's nodes are 1.0.0 and 1.1.0, so A is 1.1.0 — not 1.2.0, which nobody
+;; asked for, and not 1.0.0, which B would not work with. Remove B and the
+;; next build uses A 1.0.0 again.
+(: choose (-> Walk (List Chosen)))
+(defun (choose walk)
+  (map-fold (fun (k versions found) (Cons (chosen-of walk k versions) found))
+            Nil
+            (box-ref (record-ref walk nodes))))
+
+(: chosen-of (-> Walk string (List Version) Chosen))
+(defun (chosen-of walk k versions)
+  (Chosen (chosen-name (map-ref (box-ref (record-ref walk names)) k))
+          (chosen-version (highest versions))
+          (chosen-source (map-ref (box-ref (record-ref walk origins)) k))
+          (chosen-clone (map-ref (box-ref (record-ref walk clones)) k))))
+
+(: highest (-> (List Version) Version))
+(defun (highest versions)
+  (list-foldl (fun (best v) (if (> (version-compare v best) 0) v best))
+              (version 0 0 0)
+              versions))
+
+;; A constraint as a manifest writes it.
+(: req-shown (-> (Option VersionReq) string))
+(defun (req-shown req)
+  (match req
+    (None "(no version)")
+    ((Some r) (bjodat->string (->bjodat r)))))
+
+;; Every upper bound, checked against the version that was chosen.
+;;
+;; An upper bound is a *check*, never a choice: it cannot make the resolver
+;; take a lower version, because a version that is too low for one manifest is
+;; a build that does not work at all, while a version that is too high for
+;; another is a build the author of that one has not tried. So the graph
+;; decides and the bounds say whether the answer is acceptable.
+(: check-bounds (-> Walk Chosen (Result string Unit)))
+(defun (check-bounds walk c)
+  (def name (record-ref c chosen-name))
+  (def picked (record-ref c chosen-version))
+  (def mine (list-filter #(= (key-of (record-ref & need-name)) (key-of name))
+                         (box-ref (record-ref walk needs))))
+  (def broken (list-filter (fun (n) (match (record-ref n need-req)
+                                      (None #f)
+                                      ((Some req) (not (version-satisfies? picked req)))))
+                           mine))
+  (if (empty? broken)
+      (Ok unit)
+      (Err (str "bjo: " (name->string name) " " (version->string picked)
+                " does not satisfy everything asked of it.\n"
+                "  What each manifest asks for:\n"
+                (string-join (list->vec (list-sort (list-map #(need-line picked &) mine))) "\n")
+                "\n  The highest version anybody asks for is the one that is used, and an"
+                " upper bound never lowers it.\n"
+                "  Raise the bound, or lower what asks for more."))))
+
+(: need-line (-> Version Need string))
+(defun (need-line picked n)
+  (def satisfied?
+    (match (record-ref n need-req)
+      (None #t)
+      ((Some req) (version-satisfies? picked req))))
+  (str "    " (req-shown (record-ref n need-req)) " in " (record-ref n need-from)
+       (if satisfied? "" (str "   <- " (version->string picked) " breaks this"))))
+
+(: check-every-bound (-> Walk (List Chosen) (Result string Unit)))
+(defun (check-every-bound walk chosen)
+  (match chosen
+    (Nil (Ok unit))
+    ((Cons c rest)
+     (def (Ok held) (check-bounds walk c) :propagate)
+     (check-every-bound walk rest))))
+
+
+;; ---------------------------------------------------------------------------
+;; The lock
+;; ---------------------------------------------------------------------------
+
+(: moved-tag-message (-> (List Symbol) Version string string string string))
+(defun (moved-tag-message name v locked-at now lock-file)
+  (str "bjo: " (name->string name) " " (version->tag v)
+       " no longer points at the commit " lock-file " names.\n"
+       "    locked  " locked-at "\n"
+       "    now     " now "\n"
+       "  A version is a tag, and a tag can be moved. Nothing was built:"
+       " the same version naming different code is what the lock exists to catch.\n"
+       "  If the move was meant, remove that entry from " lock-file " and fetch again."))
+
+;; What the lock should say about one chosen package.
+;;
+;; The check that matters is here: a package whose version has not changed must
+;; still be the commit the lock names.
+(: lock-entry #:sync (-> Walk Chosen string (Result string Locked)))
+(defun (lock-entry walk c lock-file)
+  (def name (record-ref c chosen-name))
+  (def picked (record-ref c chosen-version))
+  (def clone (record-ref c chosen-clone))
+  (def was (lock-entry-for (record-ref walk was-locked) name))
+  (def same-version?
+    (match was
+      (None #f)
+      ((Some old) (= (version->string (locked-version old)) (version->string picked)))))
+
+  ;; A commit the lock names and this clone has not got is the one thing worth
+  ;; going to the network for: it existed when the lock was written.
+  (def (Ok fetched-for-lock?)
+    (match was
+      ((Some old) (if (and same-version?
+                           (not (commit-present? (record-ref walk tool) clone (locked-commit old))))
+                      (fetch-once walk clone)
+                      (Ok #f)))
+      (None (Ok #f)))
+    :propagate)
+
+  (def (Ok commit) (tag-commit (record-ref walk tool) clone picked) :propagate)
+
+  (def was-commit (match was ((Some old) (locked-commit old)) (None "")))
+  (if (and same-version? (not (= was-commit commit)))
+      (Err (moved-tag-message name picked was-commit commit lock-file))
+      (Ok (Locked (name name) (version picked)
+                  (source (record-ref c chosen-source))
+                  (commit commit)))))
+
+(: lock-entries #:sync (-> Walk (List Chosen) string (Result string (List Locked))))
+(defun (lock-entries walk chosen lock-file)
+  (match chosen
+    (Nil (Ok Nil))
+    ((Cons c rest)
+     (def (Ok entry) (lock-entry walk c lock-file) :propagate)
+     (def (Ok more) (lock-entries walk rest lock-file) :propagate)
+     (Ok (Cons entry more)))))
+
+
+;; ---------------------------------------------------------------------------
+;; Putting the chosen versions on disk
+;; ---------------------------------------------------------------------------
+
+;; One directory per chosen version, and its `src/` in the roots file.
+(: materialise-all #:sync (-> Walk (List Chosen) (List Locked) (Result string (List Root))))
+(defun (materialise-all walk chosen entries)
+  (match chosen
+    (Nil (Ok Nil))
+    ((Cons c rest)
+     (def name (record-ref c chosen-name))
+     (def picked (record-ref c chosen-version))
+     (def (Some entry) (lock-entry-for entries name)
+       (Err (str "bjo: " (name->string name) " was chosen and not locked.")))
+     (def where (package-directory (record-ref walk dot-bjo) name picked))
+     (def (Ok put) (materialise (record-ref walk tool)
+                                (record-ref c chosen-clone)
+                                (locked-commit entry)
+                                (path-combine (record-ref walk dot-bjo) "tmp")
+                                where)
+       :propagate)
+     (def src (path-combine where "src"))
+     (def (Ok more) (materialise-all walk rest entries) :propagate)
+     (if (not (directory-exists? src))
+         (Err (str "bjo: " (name->string name) " " (version->string picked)
+                   " has no src/, so there are no modules in it."
+                   " A package keeps its modules in src/, beside its manifest."))
+         (Ok (Cons (Root (name name) (dir src)) more))))))
+
+
+;; ---------------------------------------------------------------------------
 ;; prepare
 ;; ---------------------------------------------------------------------------
 
@@ -387,16 +749,29 @@
 (: prepare #:sync (-> Project bool (Result string Prepared)))
 (defun (prepare project locked?)
   (def (Ok own) (root-package-root project) :propagate)
+  (def lock-file (project-lock-file project))
+  (def (Ok was-locked) (read-lock lock-file) :propagate)
 
   (def walk (Walk (sources (make-box (map-empty)))
                   (placed (make-box (map-empty)))
                   (needs (make-box Nil))
+                  (nodes (make-box (map-empty)))
+                  (names (make-box (map-empty)))
+                  (clones (make-box (map-empty)))
+                  (origins (make-box (map-empty)))
+                  (walked (make-box (map-empty)))
+                  (fetched (make-box (map-empty)))
                   (own (record-ref (project-package project) name))
-                  (own-from (path-combine (project-dir project) manifest-name))))
+                  (own-from (path-combine (project-dir project) manifest-name))
+                  (tool (tool-for (project-tmp project)))
+                  (dot-bjo (project-dot-bjo project))
+                  (was-locked was-locked)))
 
-  ;; The root task is the only one whose `dev-depends` count, and the only one
-  ;; allowed to say `(path ...)`  — which its own dependencies inherit, since a
-  ;; directory beside yours is as much yours as your own.
+  ;; The root task is the only one whose `dev-depends` count — a dependency's
+  ;; are what its author needs in order to test it, and building it here runs
+  ;; no tests — and the only one allowed to say `(path ...)`, which its own
+  ;; path dependencies inherit: a directory beside yours is as much yours as
+  ;; your own.
   (def first-task (Task (package (project-package project))
                         (dir (project-dir project))
                         (from (path-combine (project-dir project) manifest-name))
@@ -405,9 +780,39 @@
 
   (def (Ok walked) (walk-graph walk (Cons first-task Nil) Nil) :propagate)
 
-  (def roots (Cons own (loop (:for entry (map-values (box-ref (record-ref walk placed))))
-                             (:acc out (listing entry))
-                             => out)))
-  (def path (project-roots-file project))
-  (ignore (write-roots path roots))
-  (Ok (Prepared (roots-file path) (roots roots))))
+  (def chosen (choose walk))
+  (def (Ok bounds-held) (check-every-bound walk chosen) :propagate)
+  (def (Ok entries) (lock-entries walk chosen lock-file) :propagate)
+  (def (Ok settled) (settle-lock project locked? was-locked entries) :propagate)
+  (def (Ok fetched-roots) (materialise-all walk chosen entries) :propagate)
+
+  (def path-roots (loop (:for entry (map-values (box-ref (record-ref walk placed))))
+                        (:acc out (listing entry))
+                        => out))
+  (def roots (Cons own (list-append path-roots fetched-roots)))
+  (def roots-path (project-roots-file project))
+  (ignore (write-roots roots-path roots))
+  (Ok (Prepared (roots-file roots-path) (roots roots))))
+
+;; Writes the lock if it has to, and says what changed.
+;;
+;; With minimal version selection there is nothing to write unless a manifest
+;; changed: the same manifests choose the same versions every time. So a line
+;; printed here is a real change, and `--locked` refusing one is a build that
+;; would not have been the build the lock describes.
+(: settle-lock #:sync (-> Project bool (List Locked) (List Locked) (Result string Unit)))
+(defun (settle-lock project locked? before after)
+  (def changes (lock-changes before after))
+  (def lock-file (project-lock-file project))
+  (cond
+    ((empty? changes) (Ok unit))
+    (locked?
+     (Err (str "bjo: --locked, and the manifests no longer agree with " lock-file ":\n"
+               (string-join (list->vec (list-map #(str "    " &) changes)) "\n")
+               "\n  Run 'bjo fetch' without --locked to bring the lock up to date.")))
+    (else
+     (write-lock lock-file after)
+     (println (str "Updated " lock-file ":"))
+     (loop (:for line changes)
+           (:do (println (str "  " line))))
+     (Ok unit))))

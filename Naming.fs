@@ -355,7 +355,13 @@ let isStdModuleKey (key: string) =
 /// Generates the fully qualified C# prefix for types defined in this module.
 /// This prefix is added to internal type names to prevent collisions between types with the same name in different files.
 let private typePrefix (moduleKey: string) =
-    let flat = sanitizeIdent (moduleNameOfPath moduleKey) + "__"
+    // The `@` an escaped module name carries is dropped: it is there to make a
+    // reserved word an identifier, and a name with `__Type` after it is not a
+    // reserved word. Keeping it produced `@lock__Locked`, which is a legal
+    // declaration and an illegal *part* of one — the impl class generated
+    // beside it came out as `Trait_@lock__Locked`, which does not parse. Same
+    // reasoning as `keywordParamName` above.
+    let flat = (sanitizeIdent (moduleNameOfPath moduleKey)).TrimStart('@') + "__"
 
     if isModuleKey moduleKey then
         namespaceOfKey moduleKey + "." + flat

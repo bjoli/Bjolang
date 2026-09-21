@@ -121,6 +121,58 @@ def tag_repo(directory, tag, message="a version"):
     return git(directory, "rev-list", "-n", "1", tag).strip()
 
 
+def release(directory, name, version, depends="", body=None):
+    """The package at one version, committed and tagged `vX.Y.Z`.
+
+    Called again on the same directory to add the next version, which is what
+    a repository with a history of releases looks like.
+    """
+    directory = Path(directory)
+    fresh = not (directory / ".git").exists()
+    make_package(directory, name, version, depends=depends, body=body)
+    if fresh:
+        make_repo(directory, f"{name} {version}")
+    else:
+        git(directory, "add", "-A")
+        git(directory, "commit", "--quiet", "-m", f"{name} {version}")
+    return tag_repo(directory, f"v{version}")
+
+
+def git_depends(*clauses):
+    """A `(depends ...)` clause, one `(package ...)` per dependency.
+
+    Each clause is `(name, url, constraint)`; `url` is a directory, because
+    every repository in this suite is one on this disk.
+    """
+    written = "  (depends\n"
+    for name, url, constraint in clauses:
+        written += f'    (package (name ({name}))\n'
+        if constraint:
+            written += f'             (version {constraint})\n'
+        if url is not None:
+            written += f'             (source (git (url "{url}"))))\n'
+        else:
+            written = written.rstrip(",\n") + ")\n"
+    return written + "    )\n"
+
+
+def app_with(where, depends, name="app", uses="lib"):
+    """A project whose `main` prints `hello` from one of its dependencies.
+
+    Every fixture package exports `hello` under that one name, so a program
+    imports exactly one of them — which is enough, since what a test asks is
+    *which version* answered.
+    """
+    where = Path(where)
+    write(where / "manifest.bjodat",
+          f'(package\n  (name ({name}))\n  (version "0.1.0")\n{depends}  )\n')
+    body = '(import (std prelude))\n(defun (main) 0)\n' if uses is None else (
+        f'(import (std prelude))\n(import ({uses} core))\n'
+        '(defun (main) (println (hello)) 0)\n')
+    write(where / "src" / "main.bjo", body)
+    return where
+
+
 # ---------------------------------------------------------------------------
 # The suite
 # ---------------------------------------------------------------------------
@@ -445,6 +497,237 @@ def test_outside_a_project(work, c):
 
     checked = run_bjo(loose, "check", "one.bjo")
     c.worked("bjo check on a single file", checked)
+
+
+# --- 4. a git dependency ----------------------------------------------------
+
+@test("git dependency")
+def test_git_dependency(work, c):
+    origin = work / "origin"
+    first = release(origin, "lib", "0.1.0")
+    release(origin, "lib", "0.2.0")
+
+    app = app_with(work / "app",
+                   git_depends(("lib", origin, '(version-at-least "0.1")')))
+
+    ran = run_bjo(app, "run")
+    c.worked("an app with a git dependency builds", ran)
+    c.says("the lowest version that satisfies the constraint is used", ran, "lib 0.1.0")
+    c.that("and not the newest", "lib 0.2.0" not in said(ran), said(ran))
+
+    lock = (app / "bjo.lock").read_text()
+    c.that("the lock names the version", '(version "0.1.0")' in lock, lock)
+    c.that("the lock names the commit the tag points at", first in lock, lock)
+    c.that("the lock names the source", str(origin) in lock, lock)
+    c.says("and the change was printed", ran, "added (lib) 0.1.0")
+
+    c.that("the package was unpacked under .bjo/pkg",
+           (app / ".bjo" / "pkg" / "lib@0.1.0" / "src" / "core.bjo").exists())
+    c.that("and the clone is bare, under .bjo/git",
+           any(p.is_dir() for p in (app / ".bjo" / "git").iterdir()))
+
+    again = run_bjo(app, "build")
+    c.worked("a second build", again)
+    c.that("says nothing about the lock", "Updated" not in said(again), said(again))
+
+    # 12. Offline. Nothing above asked git for anything it had not got, so a
+    # repository that is no longer there changes nothing.
+    origin.rename(work / "origin-moved")
+    offline = run_bjo(app, "build")
+    c.worked("a build with the repository gone still works", offline)
+    (work / "origin-moved").rename(origin)
+
+    # A git dependency has to say which versions it takes.
+    vague = app_with(work / "vague", git_depends(("lib", origin, None)))
+    result = run_bjo(vague, "build")
+    c.failed("a git dependency with no version constraint is refused", result)
+    c.says("and it says what to write", result, "(version-at-least")
+    c.says("and lists the versions that exist", result, "v0.1.0, v0.2.0")
+
+    # A version nothing satisfies.
+    too_new = app_with(work / "too-new",
+                       git_depends(("lib", origin, '(version-at-least "9.0")')))
+    result = run_bjo(too_new, "build")
+    c.failed("a lower bound no tag satisfies is refused", result)
+    c.says("and lists what there is", result, "v0.1.0, v0.2.0")
+
+
+# --- 5. the diamond ---------------------------------------------------------
+
+@test("diamond")
+def test_diamond(work, c):
+    a = work / "a"
+    release(a, "a", "1.0.0")
+    release(a, "a", "1.1.0")
+    release(a, "a", "1.2.0")
+
+    b = work / "b"
+    release(b, "b", "1.0.0",
+            depends=git_depends(("a", a, '(version-at-least "1.1")')))
+
+    app = app_with(work / "app",
+                   git_depends(("a", a, '(version-at-least "1.0")'),
+                               ("b", b, '(version-at-least "1.0")')),
+                   uses="a")
+    ran = run_bjo(app, "run")
+    c.worked("a diamond builds", ran)
+    c.says("the highest version anybody asked for is used", ran, "a 1.1.0")
+    c.that("and not the newest that exists", "a 1.2.0" not in said(ran), said(ran))
+
+    lock = (app / "bjo.lock").read_text()
+    c.that("the lock has both packages", "(name (a))" in lock and "(name (b))" in lock, lock)
+    c.that("and the lock is sorted by name",
+           lock.index("(name (a))") < lock.index("(name (b))"), lock)
+
+
+# --- 6. an upper bound that the chosen version breaks -----------------------
+
+@test("upper bound")
+def test_upper_bound(work, c):
+    a = work / "a"
+    release(a, "a", "1.0.0")
+    release(a, "a", "1.2.0")
+
+    b = work / "b"
+    release(b, "b", "1.0.0",
+            depends=git_depends(("a", a, '(version-at-least "1.2")')))
+
+    app = app_with(work / "app",
+                   git_depends(("a", a, '(version-at-most "1.1")'),
+                               ("b", b, '(version-at-least "1.0")')),
+                   uses="a")
+    result = run_bjo(app, "build")
+    c.failed("a violated upper bound is refused", result)
+    c.says("and it names the package and the version", result, "(a) 1.2.0")
+    c.says("and the manifest whose bound is broken", result, str(app / "manifest.bjodat"))
+    c.says("and the manifest that asked for more", result, "v1.0.0")
+    # Written "1.1" in the manifest; a version is three numbers, and what is
+    # shown is the version rather than the text it was written as.
+    c.says("and shows both constraints", result, '(version-at-most "1.1.0")')
+
+
+# --- 7. a tag that moved ----------------------------------------------------
+
+@test("moved tag")
+def test_moved_tag(work, c):
+    origin = work / "origin"
+    release(origin, "lib", "0.1.0")
+
+    app = app_with(work / "app",
+                   git_depends(("lib", origin, '(version-at-least "0.1")')))
+    c.worked("the first build", run_bjo(app, "build"))
+    artefact = app / "src" / "main.exe"
+    artefact.unlink()
+
+    # The same version, different code. This is what the lock exists for.
+    write(origin / "src" / "core.bjo",
+          '(import (std prelude))\n(export hello)\n'
+          '(: hello (-> string))\n(defun (hello) "not what was locked")\n')
+    git(origin, "add", "-A")
+    git(origin, "commit", "--quiet", "-m", "sneaky")
+    git(origin, "tag", "-d", "v0.1.0")
+    git(origin, "tag", "-a", "v0.1.0", "-m", "moved")
+
+    # The clone has to learn about the move, which is what a fetch is for.
+    clone = next((app / ".bjo" / "git").iterdir())
+    subprocess.run(GIT + ["--git-dir", str(clone), "fetch", "--tags", "--force", "--quiet"],
+                   capture_output=True, text=True)
+
+    moved = run_bjo(app, "fetch")
+    c.failed("a tag that moved is refused", moved)
+    c.says("and it says the tag no longer points at the locked commit", moved,
+           "no longer points at the commit")
+    c.that("and nothing was built", not artefact.exists())
+
+
+# --- 8. --locked ------------------------------------------------------------
+
+@test("locked")
+def test_locked(work, c):
+    origin = work / "origin"
+    release(origin, "lib", "0.1.0")
+    release(origin, "lib", "0.2.0")
+
+    app = app_with(work / "app",
+                   git_depends(("lib", origin, '(version-at-least "0.1")')))
+    c.worked("the first build", run_bjo(app, "run"))
+
+    unchanged = run_bjo(app, "build", "--locked")
+    c.worked("--locked with nothing changed", unchanged)
+
+    # Raising the requirement is a manifest change, which is the only thing
+    # that changes what minimal version selection chooses.
+    write(app / "manifest.bjodat",
+          '(package\n  (name (app))\n  (version "0.1.0")\n' +
+          git_depends(("lib", origin, '(version-at-least "0.2")')) + "  )\n")
+
+    refused = run_bjo(app, "build", "--locked")
+    c.failed("--locked after a manifest change is refused", refused)
+    c.says("and it says what differs", refused, "lib) 0.2.0 (was 0.1.0)")
+    c.says("and how to fix it", refused, "without --locked")
+
+    updated = run_bjo(app, "run")
+    c.worked("without --locked the lock is updated", updated)
+    c.says("and the change is printed", updated, "(lib) 0.2.0 (was 0.1.0)")
+    c.says("and the new version is what runs", updated, "lib 0.2.0")
+    c.that("and the lock says so", '(version "0.2.0")' in (app / "bjo.lock").read_text())
+
+
+# --- 9, 10, 11. what a fetched package may not do ---------------------------
+
+@test("fetched packages refused")
+def test_fetched_refused(work, c):
+    one = work / "one"
+    release(one, "dup", "1.0.0")
+    two = work / "two"
+    release(two, "dup", "2.0.0")
+
+    middle = work / "middle"
+    release(middle, "middle", "1.0.0",
+            depends=git_depends(("dup", one, '(version-at-least "1.0")')))
+    other = work / "other"
+    release(other, "other", "1.0.0",
+            depends=git_depends(("dup", two, '(version-at-least "1.0")')))
+
+    # 9. Two URLs for one name.
+    clash = app_with(work / "clash",
+                     git_depends(("middle", middle, '(version-at-least "1.0")'),
+                                 ("other", other, '(version-at-least "1.0")')),
+                     uses=None)
+    result = run_bjo(clash, "build")
+    c.failed("one name from two repositories is refused", result)
+    c.says("and both sources are named", result, "is given two different sources")
+
+    # ...and the root manifest settling it.
+    settled = app_with(work / "settled",
+                       git_depends(("middle", middle, '(version-at-least "1.0")'),
+                                   ("other", other, '(version-at-least "1.0")'),
+                                   ("dup", one, '(version-at-least "1.0")')),
+                       uses="dup")
+    result = run_bjo(settled, "run")
+    c.worked("unless the root manifest gives the name a source", result)
+    c.says("and the root's repository is the one used", result, "dup 1.0.0")
+
+    # 10. A repository whose manifest has another name.
+    misnamed = work / "misnamed"
+    release(misnamed, "actually", "1.0.0")
+    wrong = app_with(work / "wrong",
+                     git_depends(("expected", misnamed, '(version-at-least "1.0")')),
+                     uses=None)
+    result = run_bjo(wrong, "build")
+    c.failed("a repository whose manifest has another name is refused", result)
+    c.says("and it names both", result, "(actually)")
+
+    # 11. A path source inside a fetched package.
+    reaching = work / "reaching"
+    release(reaching, "reaching", "1.0.0",
+            depends='  (depends (package (name (lib)) (source (path (dir "../lib")))))\n')
+    pathy = app_with(work / "pathy",
+                     git_depends(("reaching", reaching, '(version-at-least "1.0")')),
+                     uses=None)
+    result = run_bjo(pathy, "build")
+    c.failed("a path source inside a fetched package is refused", result)
+    c.says("and it says whose disk that is", result, "may not")
 
 
 # ---------------------------------------------------------------------------
