@@ -1,9 +1,21 @@
 ;; bjo — the command that runs Bjolang.
 ;;
-;; Four commands, and all of them end in the compiler: `run`, `build`, `check`,
-;; `repl`. What is here rather than in the compiler is what a compiler cannot
-;; do for itself — decide whether to start one at all, rebuild the compiler when
-;; its own sources have moved on, and hand the console to what it starts.
+;; The commands all end in the compiler: `run`, `build`, `check`, `repl`, and
+;; `init` and `fetch`, which prepare what the others compile. What is here
+;; rather than in the compiler is what a compiler cannot do for itself — decide
+;; whether to start one at all, find the project a command was run inside,
+;; fetch what its manifest names, and hand the console to what it starts.
+;;
+;; A *project* is a directory with a `manifest.bjodat`. Inside one, every
+;; command compiles against the project's `.bjo/roots`, which says which
+;; directory each package name means; outside one, every command behaves as it
+;; did before there were projects. What a project is and how its dependencies
+;; are resolved is in `project.bjo`, `resolve.bjo`, `git.bjo` and `lock.bjo` —
+;; this file is the command line and the compiler processes, and stays that.
+;;
+;; `bjo` does not compile dependencies one at a time. The compiler builds an
+;; imported module itself, in dependency order, so what `bjo` has to do is make
+;; the modules findable — the roots file — and then compile the one entry.
 ;;
 ;; Staleness is *read*, not worked out. A build writes `<source>.bjobuild`
 ;; naming the mode it produced, the artefact, the compiler, and every source and
@@ -35,6 +47,14 @@
 ;; failure is written down at all.
 
 (import (std prelude))
+;; The manifest types, for the fields this file reads out of a `Package`:
+;; `record-ref` needs the declaration, and an import of `project.bjo` alone
+;; does not bring it. `(text bjodat)` comes with them — the manifest's own
+;; instances are written against its traits.
+(import (text bjodat))
+(import "manifest.bjo")
+(import "project.bjo")
+(import "resolve.bjo")
 
 ;; ---------------------------------------------------------------------------
 ;; Interop
@@ -230,11 +250,33 @@
     ((file-exists? (str name ".bjo")) (Some (str name ".bjo")))
     (else None)))
 
-(: compile #:sync (-> string bool bool int))
-(defun (compile file debug? lib?)
+;; `--roots <file>` where there is a project, and nothing where there is not.
+;; The compiler records the file as an input of what it builds, so a build made
+;; against other packages is stale by the same comparison every other change is.
+(: roots-flags (-> (Option string) (List string)))
+(defun (roots-flags roots)
+  (match roots
+    ((Some path) (Cons "--roots" (Cons path Nil)))
+    (None Nil)))
+
+(: compile #:sync (-> string bool bool (Option string) int))
+(defun (compile file debug? lib? roots)
   (def flags (list-append (if lib? (Cons "--lib" Nil) Nil)
-                          (if debug? (Cons "-d" Nil) Nil)))
+                          (list-append (if debug? (Cons "-d" Nil) Nil)
+                                       (roots-flags roots))))
   (exec "dotnet" (list->vec (Cons compiler-dll (list-append flags (Cons file Nil))))))
+
+;; Every module of a library, in one compiler process.
+;;
+;; `--if-stale` leaves out what is current, and `--batch` pays the compiler's
+;; half-second start once rather than once per module. A library has no entry
+;; to compile *from*, so this is the only way its modules get built at all.
+(: compile-batch #:sync (-> (List string) bool (Option string) int))
+(defun (compile-batch files debug? roots)
+  (def flags (list-append (Cons "--batch" (Cons "--if-stale" Nil))
+                          (list-append (if debug? (Cons "-d" Nil) Nil)
+                                       (roots-flags roots))))
+  (exec "dotnet" (list->vec (Cons compiler-dll (list-append flags files)))))
 
 ;; The artefact as it already stands, for a file that needs no building.
 ;;
@@ -254,8 +296,8 @@
 ;; `Err` carries an exit code, so a failed compile leaves through here with the
 ;; compiler's own status rather than a made-up one. The `bool` says whether this
 ;; call is what built it.
-(: ensure-built #:sync (-> string bool bool bool (Result int (Tuple BuildRecord bool))))
-(defun (ensure-built file debug? lib? force?)
+(: ensure-built #:sync (-> string bool bool bool (Option string) (Result int (Tuple BuildRecord bool))))
+(defun (ensure-built file debug? lib? force? roots)
   (with-return ret
     (unless (have-compiler?) (ret (Err 1)))
 
@@ -265,7 +307,7 @@
     (unless (or force? debug? (stale? file wanted))
       (ret (record-as-built file)))
 
-    (def status (compile file debug? lib?))
+    (def status (compile file debug? lib? roots))
     (unless (= status 0) (ret (Err status)))
 
     ;; The compiler said it succeeded and left no record. It writes one after
@@ -284,9 +326,9 @@
 
 ;; Everything after the source file belongs to the program, which is the only
 ;; reading that lets a program have flags of its own.
-(: cmd-run #:sync (-> string (List string) bool bool int))
-(defun (cmd-run file program-args debug? force?)
-  (match (ensure-built file debug? #f force?)
+(: cmd-run #:sync (-> string (List string) bool bool (Option string) int))
+(defun (cmd-run file program-args debug? force? roots)
+  (match (ensure-built file debug? #f force? roots)
     ((Err status) status)
     ((Ok (Tuple rec _)) #:when (string-ends-with? (record-ref rec output) ".dll")
      (println #"bjo: ${file} has no main, so it builds a library: ${(record-ref rec output)}")
@@ -295,9 +337,9 @@
     ((Ok (Tuple rec _))
      (exec "dotnet" (list->vec (Cons (record-ref rec output) program-args))))))
 
-(: cmd-build #:sync (-> string bool bool bool int))
-(defun (cmd-build file debug? lib? force?)
-  (match (ensure-built file debug? lib? force?)
+(: cmd-build #:sync (-> string bool bool bool (Option string) int))
+(defun (cmd-build file debug? lib? force? roots)
+  (match (ensure-built file debug? lib? force? roots)
     ((Err status) status)
     ((Ok (Tuple rec built?))
      (def what (if built? "Built" "Up to date"))
@@ -311,15 +353,18 @@
 ;;
 ;; Many files go to one compiler process: a cold one costs about half a second
 ;; before it does anything, and `--batch` pays that once instead of per file.
-(: cmd-check #:sync (-> (List string) int))
-(defun (cmd-check files)
+(: cmd-check #:sync (-> (List string) (Option string) int))
+(defun (cmd-check files roots)
   (if (not (have-compiler?))
       1
       (let ((batch (match files
                      ((Cons _ (Cons _ _)) (Cons "--batch" Nil))
                      (_ Nil))))
         (exec "dotnet"
-              (list->vec (Cons compiler-dll (Cons "--check" (list-append batch files))))))))
+              (list->vec (Cons compiler-dll
+                               (Cons "--check"
+                                     (list-append (roots-flags roots)
+                                                  (list-append batch files)))))))))
   
 ;; A program on PATH, if there is one. Two ways to have no answer — no PATH at
 ;; all, and nothing on it by that name — and both of them propagate.
@@ -333,26 +378,170 @@
 ;; The compiler's REPL has no line editing of its own, so it is run under
 ;; `rlwrap` where there is one. `-a` forces it on: the prompt is written by the
 ;; REPL rather than by a terminal rlwrap can recognise.
-(: cmd-repl #:sync (-> int))
-(defun (cmd-repl)
+(: cmd-repl #:sync (-> (Option string) int))
+(defun (cmd-repl roots)
+  (def flags (roots-flags roots))
   (if (not (have-compiler?))
       1
       (match (which "rlwrap")
-        ((Some rlwrap)   (exec rlwrap ["-a" "dotnet" compiler-dll "--repl"]))
+        ((Some rlwrap)
+         (exec rlwrap (list->vec (Cons "-a" (Cons "dotnet" (Cons compiler-dll
+                                                                 (list-append flags (Cons "--repl" Nil))))))))
         (None (println "bjo: no rlwrap in PATH, so the REPL has no line editing")
-              (exec "dotnet" [compiler-dll "--repl"])))))
+              (exec "dotnet" (list->vec (Cons compiler-dll
+                                              (list-append flags (Cons "--repl" Nil)))))))))
+
+
+;; ---------------------------------------------------------------------------
+;; Projects
+;; ---------------------------------------------------------------------------
+
+;; The flags a command was given, and what was left after them. Declared here
+;; rather than beside the parser below it, because the project commands take
+;; one and a signature cannot name a type that has not been declared yet.
+(type
+  (: Cmdline (Record (: debug bool)
+                     (: force bool)
+                     (: lib bool)
+                     (: locked bool)
+                     (: rest (List string)))))
+
+;; The directory a file sits in, for the walk upward that finds a project.
+(: file-directory (-> string string))
+(defun (file-directory file)
+  (match (parent-directory (path-absolute file))
+    ((Some dir) dir)
+    (None (path-absolute file))))
+
+;; The project a directory is inside, if it is inside one.
+(: project-around #:sync (-> string (Result string (Option Project))))
+(defun (project-around where)
+  (match (find-project-dir where)
+    (None (Ok None))
+    ((Some dir)
+     (def (Ok project) (project-at dir) :propagate)
+     (Ok (Some project)))))
+
+;; The project a command that named no file was run in. Not finding one is an
+;; error here, because the command had nothing else to work on.
+(: project-here #:sync (-> string (Result string Project)))
+(defun (project-here command)
+  (def (Ok (Some project)) (project-around (current-directory))
+    :fail (((Ok None)
+            (Err (str #"bjo ${command}: this is not a project — there is no ${manifest-name} "
+                      "here or in any directory above. Name a file, or make a project with 'bjo init'.")))
+           ((Err why) (Err why))))
+  (Ok project))
+
+;; The roots a command compiles against, from where it was run.
+;;
+;; `None` outside a project, which is every command behaving as it did before
+;; there were projects. Inside one, the project is resolved and fetched first:
+;; a file in a project imports the project's packages whether it is reached as
+;; `src/main.bjo` or as the entry.
+(: roots-near #:sync (-> string bool (Result string (Option string))))
+(defun (roots-near where locked?)
+  (def (Ok (Some project)) (project-around where)
+    :fail (((Ok None) (Ok None))
+           ((Err why) (Err why))))
+  (def (Ok ready) (prepare project locked?) :propagate)
+  (Ok (Some (prepared-roots-file ready))))
+
+(: roots-for-file #:sync (-> string bool (Result string (Option string))))
+(defun (roots-for-file file locked?)
+  (roots-near (file-directory file) locked?))
+
+;; Builds a project, and answers the entry's build record where there is one.
+;;
+;; The entry decides the shape. A program is one compile of one file: the
+;; compiler follows its imports and builds what they name, in order. A library
+;; has no entry to follow, so every module under `src/` is named instead.
+;;
+;; `say?` is off for `run`, which has the program's own output to show and
+;; nothing to add to it.
+(: build-project #:sync (-> Project Cmdline bool (Result int (Option BuildRecord))))
+(defun (build-project project line say?)
+  (with-return ret
+    (def (Ok ready) (prepare project (record-ref line locked))
+      :fail (((Err why) (Err (fail why)))))
+    (def roots (Some (prepared-roots-file ready)))
+
+    (unless (project-has-entry? project)
+      (ret (build-library project line roots say?)))
+
+    (match (ensure-built (project-entry project)
+                         (record-ref line debug) #f (record-ref line force) roots)
+      ((Err status) (Err status))
+      ((Ok (Tuple rec built?))
+       (when say?
+         (println (str (if built? "Built" "Up to date") ": " (record-ref rec output))))
+       (Ok (Some rec))))))
+
+(: package-name-of (-> Project string))
+(defun (package-name-of project)
+  (name->string (record-ref (project-package project) name)))
+
+(: build-library #:sync (-> Project Cmdline (Option string) bool (Result int (Option BuildRecord))))
+(defun (build-library project line roots say?)
+  (with-return ret
+    (def sources (sources-under (project-src project)))
+    (when (empty? sources)
+      (ret (Err (fail #"bjo build: there are no modules under ${(project-src project)}."))))
+
+    (def status (compile-batch sources (record-ref line debug) roots))
+    (unless (= status 0) (ret (Err status)))
+
+    (when say?
+      (def n (length sources))
+      (println (str (package-name-of project) " is a library: "
+                    (int->string n) (if (= n 1) " module" " modules")
+                    " under src/, all current.")))
+    (Ok None)))
+
+(: build-and-say #:sync (-> Project Cmdline int))
+(defun (build-and-say project line)
+  (match (build-project project line #t)
+    ((Err status) status)
+    ((Ok _) 0)))
+
+;; `bjo run` on a project: build it, then start the entry's artefact.
+(: run-project #:sync (-> Project Cmdline (List string) int))
+(defun (run-project project line arguments)
+  (with-return ret
+    (unless (project-has-entry? project)
+      (ret (fail (str "bjo run: " (package-name-of project) " is a library — there is no "
+                      (record-ref (project-package project) entry)
+                      " to run. 'bjo build' builds it."))))
+
+    (match (build-project project line #f)
+      ((Err status) status)
+      ;; A project with an entry always answers with its record.
+      ((Ok None) 1)
+      ((Ok (Some rec))
+       (def out (record-ref rec output))
+       (if (string-ends-with? out ".dll")
+           (fail (str "bjo run: " (project-entry project) " has no main, so it builds a library: " out))
+           (exec "dotnet" (list->vec (Cons out arguments))))))))
+
+;; `bjo check` with no file, inside a project: everything the project holds.
+(: check-project #:sync (-> Project Cmdline int))
+(defun (check-project project line)
+  (with-return ret
+    (def (Ok ready) (prepare project (record-ref line locked))
+      :fail (((Err why) (fail why))))
+    (def sources (sources-under (project-src project)))
+    (def files (if (and (project-has-entry? project)
+                        (not (any? #(= & (project-entry project)) sources)))
+                   (Cons (project-entry project) sources)
+                   sources))
+    (when (empty? files)
+      (ret (fail #"bjo check: there are no modules under ${(project-src project)}.")))
+    (cmd-check files (Some (prepared-roots-file ready)))))
 
 
 ;; ---------------------------------------------------------------------------
 ;; The command line
 ;; ---------------------------------------------------------------------------
-
-;; The flags a command was given, and what was left after them.
-(type
-  (: Cmdline (Record (: debug bool)
-                     (: force bool)
-                     (: lib bool)
-                     (: rest (List string)))))
 
 ;; Flags come before the source file, and `--` ends them for a file whose name
 ;; begins with a dash. The first thing that is not a flag ends them too, and
@@ -360,29 +549,37 @@
 ;; to the program rather than to the compiler.
 (: parse-flags (-> (List string) (Result string Cmdline)))
 (defun (parse-flags argv)
-  (let go ((left argv) (debug #f) (force #f) (lib #f))
+  (let go ((left argv) (debug #f) (force #f) (lib #f) (locked #f))
     (match left
-      (Nil (Ok (Cmdline (debug debug) (force force) (lib lib) (rest Nil))))
+      (Nil (Ok (Cmdline (debug debug) (force force) (lib lib) (locked locked) (rest Nil))))
       ((Cons a more)
        (case a
-         ("--" (Ok (Cmdline (debug debug) (force force) (lib lib) (rest more))))
-         (("-d" "--debug") (go more #t force lib))
-         (("-c" "--compile") (go more debug #t lib))
-         ("--lib" (go more debug force #t))
+         ("--" (Ok (Cmdline (debug debug) (force force) (lib lib) (locked locked) (rest more))))
+         (("-d" "--debug") (go more #t force lib locked))
+         (("-c" "--compile") (go more debug #t lib locked))
+         ("--lib" (go more debug force #t locked))
+         ("--locked" (go more debug force lib #t))
          (else
           (if (string-starts-with? a "-")
               (Err #"bjo: unknown flag '${a}'")
-              (Ok (Cmdline (debug debug) (force force) (lib lib) (rest left))))))))))
+              (Ok (Cmdline (debug debug) (force force) (lib lib) (locked locked) (rest left))))))))))
 
 (: usage (-> void))
 (defun (usage)
   (println "bjo - the Bjolang command")
   (println "")
   (println "Usage:")
-  (println "  bjo run [-d] [-c] <file.bjo> [args...]  Compile if it needs it, then run.")
+  (println "  bjo init [name] [--lib]                 Make a project here. The name defaults to")
+  (println "                                          this directory's; --lib makes a library.")
+  (println "  bjo fetch [--locked]                    Fetch what the manifest names. Compiles nothing.")
+  (println "  bjo run [-d] [-c] [args...]             Build this project and run it.")
+  (println "  bjo run . [args...]                     The same, when the program takes arguments.")
+  (println "  bjo run [-d] [-c] <file.bjo> [args...]  Compile one file if it needs it, then run it.")
   (println "                                          Arguments after the file go to the program.")
-  (println "  bjo build [-d] [-c] [--lib] <file.bjo>  Compile if it needs it, and stop.")
-  (println "  bjo check <file.bjo>...                 Report errors without building anything.")
+  (println "  bjo build [-d] [-c] [--locked]          Build this project.")
+  (println "  bjo build [-d] [-c] [--lib] <file.bjo>  Compile one file if it needs it, and stop.")
+  (println "  bjo check [<file.bjo>...]               Report errors without building anything.")
+  (println "                                          With no file, every module of this project.")
   (println "  bjo repl                                Start a REPL, under rlwrap where there is one.")
   (println "  bjo rebjo                               Rebuild the compiler and bjo itself.")
   (println "  bjo help                                Show this message.")
@@ -392,7 +589,14 @@
   (println "                 Always recompiles, since the dumps are made by compiling.")
   (println "  -c, --compile  Compile even when nothing has changed.")
   (println "  --lib          Build a .dll. A file with no main builds one anyway.")
+  (println "  --locked       Refuse to change bjo.lock: any difference from it is an error.")
+  (println "                 For a build that must be the one the lock describes.")
   (println "  --             End of flags, for a file whose name begins with a dash.")
+  (println "")
+  (println "A project is a directory with a manifest.bjodat in it, found by looking")
+  (println "upward from where you stand. Its modules are in src/: src/lexer.bjo of a")
+  (println "package called (myapp) is the module (myapp lexer). Outside a project every")
+  (println "command works on the file it is given, as it always has.")
   (println "")
   (println "Nothing is rebuilt when the artefact is newer than everything the last")
   (println "build read: the compiler records that, and bjo compares timestamps.")
@@ -401,11 +605,6 @@
   (println "whether it is behind its own sources, on the way to anything. Editing it")
   (println "is 'bjo rebjo', which builds it and this command — and that makes every")
   (println "artefact stale the way any other edit does."))
-
-(: fail (-> string int))
-(defun (fail message)
-  (println message)
-  1)
 
 ;; Every name resolved, or the first that names nothing. Resolved here rather
 ;; than left to the compiler, so that a misspelling is reported as one by the
@@ -424,55 +623,99 @@
               (:acc out (listing file))
               => out))))
 
-;; One source file, for the commands that take exactly one.
-(: one-source (-> string (List string) (Result string string)))
-(defun (one-source command files)
-  (match files
-    (Nil (Err #"bjo ${command}: no source file. Try 'bjo help'."))
-    ((Cons name Nil)
-     (match (resolve-source name)
-       ((Some file) (Ok file))
-       (None (Err #"bjo ${command}: no such file '${name}'."))))
-    (_ (Err #"bjo ${command}: takes one source file."))))
-
 (: dispatch #:sync (-> string Cmdline int))
 (defun (dispatch command line)
   (def* (debug? (record-ref line debug))
         (force? (record-ref line force))
         (lib? (record-ref line lib))
+        (locked? (record-ref line locked))
         (rest (record-ref line rest)))
 
   (case command
+    ("init"
+     (with-return ret
+       (when (or debug? force? locked?)
+         (ret (fail "bjo init: writes files and compiles nothing, so it takes no build flags.")))
+       (cmd-init rest lib?)))
+
+    ;; Resolve, fetch and write the roots file, and stop there. What `build`
+    ;; does first, for a checkout that is about to be built offline or by
+    ;; something that is not `bjo`.
+    ("fetch"
+     (with-return ret
+       (when (or debug? force? lib?)
+         (ret (fail "bjo fetch: compiles nothing, so it takes no build flags.")))
+       (unless (empty? rest) (ret (fail "bjo fetch: takes no arguments.")))
+       (def (Ok project) (project-here "fetch") :fail (((Err why) (fail why))))
+       (def (Ok ready) (prepare project locked?) :fail (((Err why) (fail why))))
+       (println (str (package-name-of project) ": "
+                     (int->string (prepared-dependencies ready)) " dependencies ready."))
+       0))
+
     ("run"
      (with-return ret
        (when lib?
          (ret (fail "bjo run: --lib builds a library, and a library does not run.")))
+       ;; No file names this project. So does `.`, which exists only so that
+       ;; arguments can follow it: everything after the file belongs to the
+       ;; program, and a project with no file named has nothing to put them
+       ;; after.
        (def (Cons name args) rest
-         (ret (fail "bjo run: no source file. Try 'bjo help'.")))
+         :fail ((Nil (match (project-here "run")
+                       ((Err why) (fail why))
+                       ((Ok project) (run-project project line Nil))))))
+       (when (= name ".")
+         (ret (match (project-here "run")
+                ((Err why) (fail why))
+                ((Ok project) (run-project project line args)))))
        (def (Some file) (resolve-source name)
-         (ret (fail #"bjo run: no such file '${name}'.")))
-       (cmd-run file args debug? force?)))
+         (fail #"bjo run: no such file '${name}'."))
+       (def (Ok roots) (roots-for-file file locked?) :fail (((Err why) (fail why))))
+       (cmd-run file args debug? force? roots)))
 
     ("build"
-     (match (one-source "build" rest)
-       ((Err message) (fail message))
-       ((Ok file) (cmd-build file debug? lib? force?))))
+     (with-return ret
+       (def (Cons name more) rest
+         :fail ((Nil (match (project-here "build")
+                       ((Err why) (fail why))
+                       ((Ok project) (build-and-say project line))))))
+       (when (= name ".")
+         (ret (cond
+                ((not (empty? more))
+                 (fail "bjo build: '.' is the whole project, so nothing may follow it."))
+                (else (match (project-here "build")
+                        ((Err why) (fail why))
+                        ((Ok project) (build-and-say project line)))))))
+       (unless (empty? more) (ret (fail "bjo build: takes one source file.")))
+       (def (Some file) (resolve-source name)
+         (fail #"bjo build: no such file '${name}'."))
+       (def (Ok roots) (roots-for-file file locked?) :fail (((Err why) (fail why))))
+       (cmd-build file debug? lib? force? roots)))
 
     ("check"
      (with-return ret
        (when (or debug? force? lib?)
          (ret (fail "bjo check: builds nothing, so it takes no build flags.")))
        (when (empty? rest)
-         (ret (fail "bjo check: no source file. Try 'bjo help'.")))
-       (match (resolve-all "check" rest)
-         ((Err message) (fail message))
-         ((Ok resolved) (cmd-check resolved)))))
+         (ret (match (project-here "check")
+                ((Err why) (fail why))
+                ((Ok project) (check-project project line)))))
+       (def (Ok resolved) (resolve-all "check" rest)
+         :fail (((Err message) (fail message))))
+       (def (Cons first _) resolved
+         (fail "bjo check: no source file. Try 'bjo help'."))
+       (def (Ok roots) (roots-for-file first locked?) :fail (((Err why) (fail why))))
+       (cmd-check resolved roots)))
 
     ("repl"
      (with-return ret
        (when (or debug? force? lib?) (ret (fail "bjo repl: takes no build flags.")))
        (unless (empty? rest) (ret (fail "bjo repl: takes no arguments.")))
-       (cmd-repl)))
+       ;; Inside a project the prompt sees the project's packages, which is
+       ;; what makes `(import (myapp lexer))` work there.
+       (def (Ok roots) (roots-near (current-directory) locked?)
+         :fail (((Err why) (fail why))))
+       (cmd-repl roots)))
 
     ;; Reached only when this binary was started directly. The launcher takes
     ;; `rebjo` before it gets here, and has to: the command rebuilds `bjo.exe`,
@@ -485,6 +728,12 @@
     (else (fail #"bjo: '${command}' is not a command. Try 'bjo help'."))))
 
 (defun (main args)
+  ;; Before any git process is started. `(std run)` redirects a child's stdin
+  ;; in order to write to it, so a repository that wants a password would read
+  ;; from a pipe nobody writes to and wait there forever. With this set, git
+  ;; fails instead, and says what it wanted.
+  (set-environment-variable! "GIT_TERMINAL_PROMPT" "0")
+
   ;; The command comes first and is never a flag, so the flags of the command
   ;; are what follows it.
   (def (Cons command rest) (vec->list args)

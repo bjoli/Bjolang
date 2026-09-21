@@ -1,0 +1,61 @@
+;; bjo/resolve.bjo — what a project builds against.
+;;
+;; One entry point, `prepare`: it turns a project's manifest into the list of
+;; packages the compiler is given, fetches whatever that needs, and writes
+;; `.bjo/roots`. Every command that compiles anything inside a project goes
+;; through it, so that `bjo run` and `bjo check` see the same packages.
+
+(export
+  Prepared prepared-roots-file prepared-roots prepared-dependencies
+  prepare)
+
+(import (std prelude))
+(import (text bjodat))
+(import "manifest.bjo")
+(import "project.bjo")
+
+;; What a project turned out to need: the roots file to hand the compiler, and
+;; the packages it names.
+(type (: Prepared (Record (: roots-file string) (: roots (List Root)))))
+
+(: prepared-roots-file (-> Prepared string))
+(defun (prepared-roots-file p) (record-ref p roots-file))
+
+(: prepared-roots (-> Prepared (List Root)))
+(defun (prepared-roots p) (record-ref p roots))
+
+;; How many packages other than the project itself.
+(: prepared-dependencies (-> Prepared int))
+(defun (prepared-dependencies p) (- (length (prepared-roots p)) 1))
+
+;; The root package's own entry in the roots file.
+;;
+;; `src/` has to exist: the compiler refuses a roots file naming a directory
+;; that is not there, and refusing it here says which package and which
+;; directory instead of naming a file the user never wrote.
+(: root-package-root (-> Project (Result string Root)))
+(defun (root-package-root project)
+  (def name (record-ref (project-package project) name))
+  (def src (project-src project))
+  (cond
+    ((empty? name)
+     (Err #"bjo: ${(project-dir project)}/${manifest-name}: the package has no name."))
+    ((reserved-name? name)
+     (Err (str #"bjo: ${(project-dir project)}/${manifest-name}: ${(name->string name)} "
+               "is part of the standard library, so a package cannot be called that.")))
+    ((not (directory-exists? src))
+     (Err (str #"bjo: ${(name->string name)} has no ${src}. "
+               "A package keeps its modules in src/, beside its manifest.")))
+    (else (Ok (Root (name name) (dir src))))))
+
+;; Resolves the project, fetches what that needs, and writes the roots file.
+;;
+;; `locked?` is `--locked`: any difference from `bjo.lock` is an error rather
+;; than an update, which is what a CI build wants.
+(: prepare #:sync (-> Project bool (Result string Prepared)))
+(defun (prepare project locked?)
+  (def (Ok own) (root-package-root project) :propagate)
+  (def roots (Cons own Nil))
+  (def path (project-roots-file project))
+  (ignore (write-roots path roots))
+  (Ok (Prepared (roots-file path) (roots roots))))

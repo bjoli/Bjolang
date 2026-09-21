@@ -25,6 +25,10 @@
 # build nobody asked for in the middle of running something else. It is `bjo
 # rebjo` now, and only ever that.
 #
+# It does ask that about `bjo` itself, which is a different question with a
+# different cost: the answer is in `bjo.bjobuild`, which the last build wrote,
+# and reading it is a stat per entry rather than a walk.
+#
 # `rebjo` is answered here rather than in `bjo.bjo` because it rebuilds
 # `bjo.exe`, which `bjo.bjo` is running from. Nothing else about it needs bash:
 # the two commands below are the whole of the bootstrap, and a `rebjo` is the
@@ -61,9 +65,38 @@ if [ "$1" = "rebjo" ]; then
     exit 0
 fi
 
-# Missing, not stale. A file that is not there cannot be run, and answering
-# that is a question about two paths rather than about the tree.
+# Is bjo.exe behind its own sources?
+#
+# The build record beside bjo.bjo lists every source and every assembly the
+# last build read, so this covers the modules bjo imports by path — bjo.bjo,
+# project.bjo, resolve.bjo, git.bjo, lock.bjo, manifest.bjo — without anything
+# here knowing their names. It is a stat per entry over a list of a few dozen,
+# not the walk of the whole tree that asking the same about the compiler cost.
+bjo_is_stale() {
+    local record="$BJO_DIR/bjo.bjobuild"
+    [ -f "$record" ] || return 0
+
+    local key value
+    while read -r key value; do
+        case "$key" in
+            source|dep|compiler)
+                if [ -e "$value" ] && [ "$value" -nt "$EXE" ]; then
+                    return 0
+                fi
+                ;;
+        esac
+    done < "$record"
+
+    return 1
+}
+
+# The compiler is missing, not stale: a file that is not there cannot be run,
+# and answering that is a question about two paths rather than about the tree.
+# bjo itself is both, because editing it is the ordinary way to work on it.
 [ -f "$COMPILER_DLL" ] || build_compiler
-[ -f "$EXE" ] || build_bjo
+
+if [ ! -f "$EXE" ] || bjo_is_stale; then
+    build_bjo
+fi
 
 exec dotnet "$EXE" "$@"
