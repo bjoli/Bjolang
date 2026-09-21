@@ -148,6 +148,15 @@ type CodegenContext = {
     /// brought in under a modifier; an empty module means a name with no class
     /// of its own, emitted bare.
     GlobalBindings: Map<string, string * string>
+    /// The names that stand for a module function, here or imported.
+    ///
+    /// A reference to one as a value writes its type arguments out, and that is
+    /// only correct where the emitted method takes them in the order of the
+    /// binding's scheme variables. A `TDefun` does, because it is emitted from
+    /// that same list; a builtin's C# is hand-written and a local function's
+    /// type parameters are collected from its type instead, so neither belongs
+    /// here.
+    ModuleFunctions: Set<string>
     /// Where `generateExpr` may hoist statement-shaped operands to. `None` in
     /// the three contexts C# gives no statement position: optional-parameter
     /// defaults, `case ... when` guards, and switch-expression arms.
@@ -1705,7 +1714,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
         for part in parts[1..] do
             append ctx "."
             append ctx (sanitizeIdent part)
-    | TIdent (name, _) ->
+    | TIdent (name, tArgs) ->
         // Cons/Nil are now builtins backed by SchemeList, not union cases.
         match name with
         | "Nil" ->
@@ -1762,7 +1771,25 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
             | TFun _ ->
                 // A delegate-typed cast of a value or method group; Roslyn caches
                 // method-group conversions too.
-                append ctx $"(({typeToString expr.Type})({targetName}))"
+                //
+                // A generic module function has its type arguments written out.
+                // C# infers a method group's from the delegate's *parameter*
+                // types alone, so a type parameter that appears only in the
+                // return type cannot be inferred and the conversion is an error
+                // — which is every parser-combinator signature, where `%a` sits
+                // inside what the function answers and never in what it takes.
+                //
+                // Only for a module function: `tArgs` is positionally aligned
+                // with the callee's scheme variables, which is the list a
+                // `TDefun` emits its type parameters from. See
+                // `ModuleFunctions` for what that rules out.
+                let explicitTyArgs =
+                    if tArgs.IsEmpty || not (Set.contains name ctx.ModuleFunctions) then
+                        ""
+                    else
+                        "<" + (tArgs |> List.map typeToString |> String.concat ", ") + ">"
+
+                append ctx $"(({typeToString expr.Type})({targetName}%s{explicitTyArgs}))"
             | _ ->
                 append ctx targetName
 
@@ -5516,6 +5543,22 @@ let generateProgram
         )
         |> List.fold (fun acc (n, target) -> Map.add n target acc) definitions
 
+    // A trait method is left out because its reference is not a method group at
+    // all: dictionary lowering has rewritten it by the time this is read.
+    let moduleFunctions =
+        decls
+        |> collectDecls (function
+            | TModule (_, innerDecls, _) ->
+                innerDecls |> List.collect (function
+                    | TDefun (n, _, _, _, _, _, _, _, _) -> [ n ]
+                    | TExtern (visible, _, _, _) -> [ visible ]
+                    | _ -> []
+                )
+            | _ -> []
+        )
+        |> List.filter (fun n -> not (Set.contains n env.TraitMethodNames))
+        |> Set.ofList
+
     let ctx =
         { Builder = StringBuilder()
           Line = { Pending = None }
@@ -5526,6 +5569,7 @@ let generateProgram
           IndentLevel = 0
           UnionCases = unionCases
           GlobalBindings = globalBindings
+          ModuleFunctions = moduleFunctions
           Prelude = None
           Loop = None
           Returns = Map.empty
