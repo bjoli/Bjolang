@@ -553,13 +553,6 @@ needs the roots to *be* somewhere at run time — an installed layout, or the
 paths written into the executable as a manifest — and that is a decision about
 deployment, which no part of this work had to make.
 
-** ~bjo~ has no manifest, no lock file and no fetching
-
-~bjo~ learned one thing only: that ~roots~ is an input key in a build record. It
-cannot read a dependency list, clone anything, or write the roots file it now
-understands. Deferred because the compiler had to be able to *be told* where a
-package is before anything could sensibly decide what to tell it.
-
 ** Build output still lands next to the source
 
 ~core.bjo~ compiles to ~core.dll~ beside it, so building the same package in two
@@ -570,7 +563,7 @@ none of that is needed to prove that identity no longer depends on location.
 
 ** ~lib/text~ is a standard-library root of its own
 
-~(text json)~ is a package named ~text~, beside ~std~ and ~bjor~, because every
+~(text json)~ is a package named ~text~, beside ~std~, because every
 top-level directory of ~lib~ is a root. Moving it under ~std~ would rename every
 module in it — ~BjoMod.text.json~ becomes ~BjoMod.std.text.json~ — and every
 assembly with it. Deferred as a rename with no technical content; the roots rule
@@ -585,3 +578,73 @@ spellings reach one assembly. Deferred any further change — making a relative
 import illegal across a package boundary, say — because nothing yet says what a
 package boundary is worth, and a rule refusing programs that work today needs
 that.
+
+
+* Projects: what ~bjo init/fetch/build~ left undone
+
+~bjo~ reads a manifest, resolves a dependency graph, fetches git packages by
+version tag, writes ~bjo.lock~ and hands the compiler a roots file. See
+~Docs/Projects.org~. These are the pieces around that, each with why it waited.
+
+** ~bjo add~, ~bjo update~, ~bjo remove~
+
+A dependency is added by editing ~manifest.bjodat~ by hand. Deferred because
+those commands *write* the manifest, and doing that without destroying the
+user's comments and layout is its own piece of work: the bjodat reader gives a
+value, not a text with positions, so writing one back out would reformat the
+file — the commented-out example ~bjo init~ writes would be the first casualty.
+
+** No shared cache in the home directory
+
+Every project clones into its own ~.bjo/git~, so two projects that depend on
+~(bjorsec)~ clone it twice. Deferred because a shared cache is shared *state* —
+two ~bjo~ processes fetching into one clone at once — and nothing here locks
+anything yet.
+
+** Build output still lands beside the source
+
+A fetched package is built inside ~.bjo/pkg/bjorsec@1.2.3/src~, so the
+directory has to be writable and two projects that depend on one version build
+it twice. Deferred for the reason the roots work deferred it: moving the output
+means teaching staleness, the resolver table and the build record about a
+second directory.
+
+** No registries, no commit or branch pins, no pseudo-versions
+
+~(source (registry))~ is an error saying there are none; ~commit~ and ~branch~
+in a git source are refused. A dependency on an untagged commit — "the fix I
+pushed this morning" — has no spelling at all; use a path source. Deferred
+because a version is a tag here, and a pin that is not a version would need its
+own place in the lock and its own answer to "is this newer than that".
+
+** One version of a package per build
+
+If two packages need ~(json)~ and their constraints cannot both be met, the
+build is refused rather than given two copies of ~(json)~. Deferred because a
+module's identity is its package name, so two copies would be two modules
+called ~(json core)~ — and a value made by one would not be of the type the
+other declared.
+
+** No ~bjo install~, ~bjo test~, ~bjo clean~, and one entry point per package
+
+~tests/~ is a directory ~bjo init~ makes and nothing reads: a test is run with
+~bjo run tests/whatever.bjo~, which works because a file inside a project is
+compiled against the project's packages. A package builds one program, named by
+~entry~, so a repository holding both ~myapp~ and ~myapp-server~ needs two
+packages. Deferred as conventions that are cheap to add and expensive to
+change.
+
+** Nothing locks ~.bjo~ against two ~bjo~ processes
+
+Two builds of one project at the same time can both unpack ~.bjo/pkg/x@1.0.0~,
+and the second rename over the first fails. Deferred because a lock file is
+easy and the failure mode — one of the two builds stopping with an error — is
+loud rather than silent.
+
+** A version requirement on a path dependency is ignored
+
+~(package (name (mylib)) (version (version-at-least "2.0")) (source (path (dir
+"../mylib"))))~ builds against ~../mylib~ whatever its manifest says its
+version is. Deferred because a path source is an override — "use this copy" —
+and refusing it on a version would make the override conditional on the thing
+it is overriding.
