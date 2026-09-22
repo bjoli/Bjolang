@@ -1185,6 +1185,31 @@ public static class InboxModule
         Inbox<Call<TQ, TR>> inbox, TQ request, CancellationToken token) =>
         StartCall(inbox, request, token);
 
+    /// <summary>
+    /// `(inbox-try-call ib q)`. The same call, with the refusal as an answer
+    /// rather than as a fault on the task: <c>None</c> when the inbox was full
+    /// under <c>DropNewest</c> or closed, and nothing was posted.
+    ///
+    /// This is <see cref="Post{T}"/>'s bool for a call, and it exists because a
+    /// faulted task is the wrong shape for the caller who most needs to know.
+    /// A .NET callback that hands its task straight back — an HTTP middleware
+    /// is the case — never awaits it, so it cannot see the fault and cannot
+    /// turn the refusal into whatever its own protocol says "busy" is. It can
+    /// only let the exception out, and a web server that answers 500 when it
+    /// meant 503 is telling the client to give up rather than to come back.
+    ///
+    /// Under <c>DropOldest</c> the answer is <c>Some</c>: this call went in,
+    /// and it is an *older* one whose task faults. The bool from <c>Post</c>
+    /// means the same thing and means it for the same reason.
+    /// </summary>
+    public static global::BjolangRuntime.Option<Task<TR>> TryCallInbox<TQ, TR>(
+        Inbox<Call<TQ, TR>> inbox, TQ request) =>
+        TryStartCall(inbox, request, CancellationToken.None);
+
+    public static global::BjolangRuntime.Option<Task<TR>> TryCallInboxWithToken<TQ, TR>(
+        Inbox<Call<TQ, TR>> inbox, TQ request, CancellationToken token) =>
+        TryStartCall(inbox, request, token);
+
     private static Task<TR> StartCall<TQ, TR>(
         Inbox<Call<TQ, TR>> inbox, TQ request, CancellationToken token)
     {
@@ -1202,6 +1227,30 @@ public static class InboxModule
         }
 
         return call.Task;
+    }
+
+    /// The same posting, reporting the refusal instead of carrying it on a
+    /// task nobody will look at. The discard is still done, because a refused
+    /// call may already have been watched by a token and that registration is
+    /// what releases it.
+    private static global::BjolangRuntime.Option<Task<TR>> TryStartCall<TQ, TR>(
+        Inbox<Call<TQ, TR>> inbox, TQ request, CancellationToken token)
+    {
+        var call = new Call<TQ, TR>(request);
+        call.Watch(token);
+
+        if (inbox.Post(call))
+            return global::BjolangRuntime.Some(call.Task);
+
+        if (!call.Task.IsCompleted) ((IInboxItem)call).Discard(null);
+
+        // The task is faulted or cancelled and is being dropped here. Observed
+        // so that it cannot reach TaskScheduler.UnobservedTaskException, which
+        // is a process-wide event an unrelated part of the program may be
+        // watching — and under load this path is the common one.
+        _ = call.Task.Exception;
+
+        return global::BjolangRuntime.None<Task<TR>>();
     }
 
     public static TQ CallRequest<TQ, TR>(Call<TQ, TR> call) => call.Request;

@@ -187,6 +187,49 @@
           2)
 
   ;; -------------------------------------------------------------------------
+  ;; The refusal as an answer, not as a fault
+  ;; -------------------------------------------------------------------------
+  ;;
+  ;; A caller that hands its task straight to .NET — a middleware — never
+  ;; awaits it and so never sees the fault above. `inbox-try-call` is
+  ;; `inbox-post!`'s `#f` for a call, so that such a caller can say what its
+  ;; own protocol says for "busy".
+  (def tried (make-inbox 1 DropNewest))
+  (expect "a try-call into an inbox with room answers Some"
+          (match (inbox-try-call tried 7) ((Some t) "posted") (None "refused"))
+          "posted")
+  (expect "and into a full one answers None, rather than faulting a task"
+          (match (inbox-try-call tried 8) ((Some t) "posted") (None "refused"))
+          "refused")
+  (expect "a refusal is still counted" (inbox-dropped-count tried) 1)
+  (expect "and nothing but the first call is there to receive"
+          (match (recv-call tried 500) ((Some c) (call-request c)) (None -1))
+          7)
+  (expect "the inbox is empty again" (match (recv-call tried 20) ((Some c) 1) (None 0)) 0)
+
+  ;; A closed inbox refuses the same way. The distinction the faulting form
+  ;; makes — full faults, closed cancels — is one this form deliberately does
+  ;; not: the caller asked whether the item went in, and it did not.
+  (def shut (make-inbox 4 DropNewest))
+  (inbox-close! shut)
+  (expect "a try-call into a closed inbox answers None"
+          (match (inbox-try-call shut 1) ((Some t) "posted") (None "refused"))
+          "refused")
+
+  ;; With a token, and room: the call is real, and answering it completes the
+  ;; task the caller was given.
+  (def tokened (make-inbox 2 DropNewest))
+  (def live (Cancelling.))
+  (expect "a try-call with a token is an ordinary call"
+          (match (inbox-try-call/token tokened 21 (.-Token live))
+            ((Some t)
+             (match (recv-call tokened 1000)
+               ((Some c) (ignore (call-reply! c (* 2 (call-request c)))) (settled t 1000))
+               (None "nothing arrived")))
+            (None "refused"))
+          "completed")
+
+  ;; -------------------------------------------------------------------------
   ;; The observer (prompt test 11)
   ;; -------------------------------------------------------------------------
   (def observed (make-inbox 64 DropNewest))

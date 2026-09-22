@@ -125,18 +125,36 @@ lock of its own, and a fiber resumed there would run arbitrary code inside it.
 
 | Operation                    | Who calls it                               | When the inbox is full         |
 |------------------------------+--------------------------------------------+--------------------------------|
-| =inbox-post!=, =inbox-call=  | callbacks that cannot wait: events, Kestrel | the inbox's =WhenFull= decides |
+| =inbox-post!=, =inbox-call=, =inbox-try-call= | callbacks that cannot wait: events, Kestrel | the inbox's =WhenFull= decides |
 | =inbox-send=, =inbox-send/token= | callbacks that can wait, because they return a =Task= | the task waits for room |
 | =inbox-send-evt=             | fibers                                     | the event waits, and can lose a =choose= |
 
 Capacity is mandatory — =(make-inbox 1000 DropNewest)= — because an event source
 faster than its consumer must not grow memory without limit. =DropNewest=
-refuses the new item (=#f=, or a faulted =InboxFullException= for a call), which
-is right when every item matters and an HTTP server answers 503. =DropOldest=
-evicts the oldest instead, which is right when only the latest value matters: a
-progress callback under =DropNewest= keeps the ten oldest updates and loses
-100%, leaving the bar stuck at 62%. Both count what they threw away, so a
-program can say "dropped 37 progress updates".
+refuses the new item, which is right when every item matters and an HTTP server
+answers 503. =DropOldest= evicts the oldest instead, which is right when only
+the latest value matters: a progress callback under =DropNewest= keeps the ten
+oldest updates and loses 100%, leaving the bar stuck at 62%. Both count what
+they threw away, so a program can say "dropped 37 progress updates".
+
+How a refusal *reaches* the caller is the caller's choice, and there are two
+shapes because there are two kinds of caller. =inbox-post!= answers =#f= and
+=inbox-call= faults the task with =InboxFullException=; that fault is the right
+answer for anyone who awaits the task, and no answer at all for anyone who does
+not. A middleware hands its task straight back to the server and never looks at
+it, so the fault escapes as an unhandled exception and the client is told 500 —
+"this server is broken" — when the truth was 503, "this server is busy". So
+=inbox-try-call= is =inbox-post!='s =#f= for a call:
+
+#+BEGIN_SRC scheme
+(match (inbox-try-call/token requests ctx (request-aborted ctx))
+  ((Some answering) (cast Task answering))
+  (None (set-status! (response-of ctx) 503) completed-task))
+#+END_SRC
+
+=None= means nothing was posted — full under =DropNewest=, or closed — and it is
+an answer the callback has *before* it returns, which is the only moment it can
+still say anything.
 
 =inbox-send= is real backpressure rather than a policy: a .NET library pushing
 rows through a =Func<Row, Task>= gets a task that stays pending until a receiver

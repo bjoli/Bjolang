@@ -47,6 +47,7 @@
 
   ;; Request and reply.
   inbox-call inbox-call/token
+  inbox-try-call inbox-try-call/token
   call-request call-reply! call-fail! call-abandoned
 
   ;; The token an `inbox-call/token` is given: a caller's own, such as
@@ -80,6 +81,10 @@
   (clr-call          (: Bjoml.InboxModule.CallInbox          (-> (Inbox (Call %q %r)) %q (Task %r))))
   (clr-call/token    (: Bjoml.InboxModule.CallInboxWithToken
                         (-> (Inbox (Call %q %r)) %q CancellationToken (Task %r))))
+  (clr-try-call      (: Bjoml.InboxModule.TryCallInbox
+                        (-> (Inbox (Call %q %r)) %q (Option (Task %r)))))
+  (clr-try-call/token (: Bjoml.InboxModule.TryCallInboxWithToken
+                        (-> (Inbox (Call %q %r)) %q CancellationToken (Option (Task %r)))))
   (clr-call-request  (: Bjoml.InboxModule.CallRequest      (-> (Call %q %r) %q)))
   (clr-call-reply!   (: Bjoml.InboxModule.CallReply        (-> (Call %q %r) %r bool)))
   (clr-call-fail!    (: Bjoml.InboxModule.CallFail         (-> (Call %q %r) Exception bool)))
@@ -261,6 +266,30 @@
 ;;     request.
 (: inbox-call/token (-> (Inbox (Call %q %r)) %q CancellationToken (Task %r)))
 (defun (inbox-call/token ib request token) (clr-call/token ib request token))
+
+;; The same two, with the refusal as an answer rather than as a fault on the
+;; task: `None` when the inbox was full under `DropNewest` or closed, and
+;; nothing was posted.
+;;
+;; This is `inbox-post!`'s `#f` for a call, and it is here because a faulted
+;; task is the wrong shape for the caller who most needs to know. A .NET
+;; callback that hands its task straight back — an HTTP middleware is the case
+;; — never awaits it, so it cannot see the fault, and the exception goes to
+;; whatever the framework does with an unhandled one. A web server that answers
+;; 500 where it meant 503 is telling the client to give up rather than to come
+;; back:
+;;
+;;     (match (inbox-try-call/token requests ctx (request-aborted ctx))
+;;       ((Some answering) (cast Task answering))
+;;       (None (set-status! (response-of ctx) 503) completed-task))
+;;
+;; Under `DropOldest` the answer is `(Some ...)`: this call went in, and it is
+;; an *older* one whose task faults. `inbox-post!` means the same thing by `#t`.
+(: inbox-try-call (-> (Inbox (Call %q %r)) %q (Option (Task %r))))
+(defun (inbox-try-call ib request) (clr-try-call ib request))
+
+(: inbox-try-call/token (-> (Inbox (Call %q %r)) %q CancellationToken (Option (Task %r))))
+(defun (inbox-try-call/token ib request token) (clr-try-call/token ib request token))
 
 ;; What the caller asked.
 (: call-request (-> (Call %q %r) %q))

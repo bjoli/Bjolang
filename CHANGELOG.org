@@ -3,6 +3,41 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~inbox-try-call~, for the caller who cannot look at a faulted task
+
+A refusal has two shapes in ~(std inbox)~ because there are two kinds of
+caller. ~inbox-post!~ answers ~#f~; ~inbox-call~ faults its task with
+~InboxFullException~. The fault is the right answer for anyone who awaits the
+task, and no answer at all for anyone who does not — and the caller the whole
+module exists for is exactly that: a .NET callback that hands its task straight
+back and returns.
+
+An HTTP middleware is the case. It never awaits, so it never sees the fault,
+which escapes as an unhandled exception: the client is told *500* when the
+truth was *503*, and the server logs a stack trace per rejected request under
+precisely the load that filled the queue. Measured on a one-worker,
+one-slot server with six requests at once, before this: ~500 500 500 200 500
+200~, and four traces.
+
+So there is a third form, and it is ~inbox-post!~'s ~#f~ for a call:
+
+#+BEGIN_SRC scheme
+(match (inbox-try-call/token requests ctx (request-aborted ctx))
+  ((Some answering) (cast Task answering))
+  (None (set-status! (response-of ctx) 503) completed-task))
+#+END_SRC
+
+~None~ means nothing was posted — full under ~DropNewest~, or closed — and it
+is an answer the callback holds *before* it returns, which is the only moment
+it can still say anything. Under ~DropOldest~ the answer is ~(Some ...)~: this
+call went in and an older one's task faulted, which is what ~inbox-post!~
+means by ~#t~ in the same situation.
+
+What it leaves open: the distinction ~inbox-call~ draws between full (faults)
+and closed (cancels) is one this form deliberately drops — the caller asked
+whether the item went in, and it did not. A caller that needs to tell the two
+apart should ask ~inbox-closed~, or use the faulting form and await it.
+
 * A ~defbjo~ with a keyword or a rest parameter is still a ~defbjo~ to its importers
 
 An exported signature carries its colour on the arrow head, because that head is
