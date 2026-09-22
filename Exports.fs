@@ -40,7 +40,7 @@ open Bjolang
 /// mean what the same lines in a file would.
 let signatureText (env: TypedAST.Env) (name: string) (t: TypedAST.HMType) : string =
     match Map.tryFind name env.FunMetas, t with
-    | Some meta, TypedAST.TFun(argTypes, ret, _) when
+    | Some meta, TypedAST.TFun(argTypes, ret, eff) when
         not meta.KeywordParams.IsEmpty || meta.RestParam.IsSome
         ->
         let mandatory =
@@ -55,7 +55,15 @@ let signatureText (env: TypedAST.Env) (name: string) (t: TypedAST.HMType) : stri
             | Some rt -> [ $"#:rest {Codegen.serializeHMType rt}" ]
             | None -> []
 
-        "(-> "
+        // The head carries the colour, exactly as it does in the flat case
+        // below and in `Codegen.serializeFType`. It used to be written `->`
+        // outright, and the effect dropped on the floor: a `defbjo` with a
+        // keyword or a rest parameter was published as an ordinary function, so
+        // an importer's `callSuspends` said no and the call was emitted without
+        // its `await`. That is not a type error anywhere — the C# compiler is
+        // what eventually refuses it, with "cannot implicitly convert
+        // Fiber<T> to T" in a file nobody wrote.
+        "(" + TypedAST.arrowHead eff + " "
         + String.concat " " (mandatory @ keywords @ rest @ [ Codegen.serializeHMType ret ])
         + ")"
     | _ -> Codegen.serializeHMType t

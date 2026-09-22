@@ -3,6 +3,52 @@
 
 What each change guarantees, and what it leaves open.
 
+* A ~defbjo~ with a keyword or a rest parameter is still a ~defbjo~ to its importers
+
+An exported signature carries its colour on the arrow head, because that head is
+all an importing module has to read it off. The path that writes the *keyword*
+form of a signature wrote ~->~ outright and dropped the effect on the floor, so
+a suspending function with a keyword or a rest parameter was published as an
+ordinary one.
+
+Nothing said so. The importer's ~callSuspends~ answered no, the call was emitted
+without its ~await~, and what the author saw was Roslyn refusing a file nobody
+wrote:
+
+#+BEGIN_EXAMPLE
+error CS0029: Cannot implicitly convert type 'Bjoml.Fiber<Server>' to 'Server'
+#+END_EXAMPLE
+
+The same function called from its own module was fine, which is what made this
+hard to place: the shape that failed is a library's API, and only across the
+module boundary.
+
+~Exports.signatureText~ now writes ~arrowHead eff~ like every other serializer.
+Nothing about a call site changed; what changed is that the metadata says what
+the declaration said.
+
+What it leaves open: a ~.dll~ built before this carries the wrong head, and
+nothing detects that beyond the C# error it already caused. Rebuild libraries
+that export a keyword-taking bjoroutine — a compiler change makes everything
+stale anyway.
+
+* A ~(:is T name)~ that shadows an imported name compiles
+
+~uniquifyProgram~ renames a local that would shadow an enclosing one, and it
+renames the binders as well as the uses. It handled ~TPIdent~ and ~TPAs~ and not
+~TPTypeTest~ — while ~typedPatternBinders~, which decides what gets renamed,
+listed all three. So a type test's designation was renamed everywhere it was
+*read* and left alone where it was *bound*:
+
+#+BEGIN_SRC scheme
+(match (cast Object s)
+  ((:is System.String str) str)     ;; in a module that imports `str`
+  (_ ""))
+#+END_SRC
+
+became C# that binds ~str~ and returns ~str__1~. Fixed by rewriting the
+designation with the same substitution as the rest of the pattern.
+
 * A package may name types from a shared framework it declares
 
 ~Microsoft.AspNetCore.App~ and its neighbours are not part of the base runtime,

@@ -277,18 +277,36 @@ let rec private renameCore
                 |> List.map (fun c ->
                     let _, inner, innerSubst = bind (typedPatternBinders c.Pattern) scope subst
 
-                    // The two nodes that are not merely structural: `TPIdent`
-                    // and `TPAs` bind a name, and a view's step — reached
-                    // through `mapPatternChildrenWith`'s expression argument —
-                    // is evaluated in the scope the `match` sits in rather than
-                    // under the names the pattern binds.
+                    // The three nodes that are not merely structural: `TPIdent`,
+                    // `TPAs` and `TPTypeTest` bind a name, and a view's step —
+                    // reached through `mapPatternChildrenWith`'s expression
+                    // argument — is evaluated in the scope the `match` sits in
+                    // rather than under the names the pattern binds.
                     //
                     // Everything else recurses through the one traversal, so a
                     // pattern node added later cannot be silently dropped here.
+                    //
+                    // `TPTypeTest` was missing, and missing in the way that
+                    // does most damage: `typedPatternBinders` already listed its
+                    // designation, so `bind` renamed it and every *use* in the
+                    // body followed — while the pattern went on binding the old
+                    // spelling. `(match x ((:is System.String str) str) ...)` in
+                    // a module that imports `str` therefore compiled to C# that
+                    // binds `str` and reads `str__1`, and the first anyone heard
+                    // of it was CS0103 in a generated file.
                     let rec goPat (p: TypedPattern) : TypedPattern =
                         match p.Node with
                         | TPIdent n ->
                             { p with Node = TPIdent(Map.tryFind n innerSubst |> Option.defaultValue n) }
+                        | TPTypeTest(clrType, binder) ->
+                            { p with
+                                Node =
+                                    TPTypeTest(
+                                        clrType,
+                                        binder
+                                        |> Option.map (fun n ->
+                                            Map.tryFind n innerSubst |> Option.defaultValue n)
+                                    ) }
                         | TPAs(inner', n) ->
                             { p with
                                 Node = TPAs(goPat inner', Map.tryFind n innerSubst |> Option.defaultValue n) }
