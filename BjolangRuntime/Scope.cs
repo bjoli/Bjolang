@@ -1249,6 +1249,25 @@ public static partial class BjolangRuntime {
     }
 
     /// <summary>
+    /// The same, one layer down. A byte port holds a `Stream` and so holds a
+    /// handle, which is the whole of what a scope owns things for.
+    ///
+    /// The two that are deliberately NOT registered are a pipe's halves and a
+    /// `limited` view: neither opened anything, and a scope that released them
+    /// would be releasing something it did not acquire. See `BjoBytePipe`.
+    /// </summary>
+    public static Bjolang.Runtime.BjoByteInputPort OwnByteReader(Bjolang.Runtime.BjoByteInputPort port) {
+        port.Owner = RegisterPort(port);
+        return port;
+    }
+
+    /// <summary>See <see cref="OwnByteReader"/>.</summary>
+    public static Bjolang.Runtime.BjoByteOutputPort OwnByteWriter(Bjolang.Runtime.BjoByteOutputPort port) {
+        port.Owner = RegisterPort(port);
+        return port;
+    }
+
+    /// <summary>
     /// Take ownership of whatever a handler answered `open-input-file` with.
     ///
     /// A real port is already owned, by the constructor that opened it and
@@ -1320,6 +1339,32 @@ public static partial class BjolangRuntime {
         return default;
     }
 
+    /// <summary>
+    /// `close-byte-input-port!` and `close-byte-output-port!`, and the way out
+    /// of a `with-open` over either.
+    ///
+    /// Through the owner handle for the same reason the text closers are: a
+    /// direct `.Dispose` would release the handle and leave the node on the
+    /// scope's list, so a long-lived scope would collect one spent entry per
+    /// port it had already finished with. A port nothing owns — a pipe half, a
+    /// `limited` view — is disposed, which for both of those is a no-op on
+    /// anything shared.
+    /// </summary>
+    public static Unit CloseByteInput(Bjolang.Runtime.BjoByteInputPort? port) {
+        if (port is null) return default;
+        if (port.Owner is { } owned) return owned.Release();
+        port.Dispose();
+        return default;
+    }
+
+    /// <summary>See <see cref="CloseByteInput"/>.</summary>
+    public static Unit CloseByteOutput(Bjolang.Runtime.BjoByteOutputPort? port) {
+        if (port is null) return default;
+        if (port.Owner is { } owned) return owned.Release();
+        port.Dispose();
+        return default;
+    }
+
     /// `(close-owned-or-dispose x)` — the `with-open` exit, which is handed
     /// whatever the binding held: a port, or any `IDisposable` that came out of
     /// interop.
@@ -1330,6 +1375,11 @@ public static partial class BjolangRuntime {
             case null: return default;
             case System.IO.TextReader r: return CloseInput(r);
             case System.IO.TextWriter w: return CloseOutput(w);
+            // Before the `IDisposable` arm, and that ordering is the point: a
+            // byte port IS disposable, and the general arm would dispose it
+            // behind its scope's back and leave the registration standing.
+            case Bjolang.Runtime.BjoByteInputPort bi: return CloseByteInput(bi);
+            case Bjolang.Runtime.BjoByteOutputPort bo: return CloseByteOutput(bo);
             case System.IDisposable d: d.Dispose(); return default;
             default: return default;
         }

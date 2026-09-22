@@ -146,6 +146,10 @@ let rec private rewriteExpr (expr: Expr) : Expr =
     | EList(exprs, r) -> EList(List.map rewriteExpr exprs, r)
     | EVec(exprs, r) -> EVec(List.map rewriteExpr exprs, r)
     | EArray(exprs, r) -> EArray(List.map rewriteExpr exprs, r)
+    // The splice itself is not a redex and never becomes one: what it wraps is
+    // normalized, and it stays where it is so that the literal around it still
+    // sees a splice where the reader wrote one.
+    | ESplice(expr, r) -> ESplice(rewriteExpr expr, r)
     | ECast(t, e, r) -> ECast(t, rewriteExpr e, r)
     | EDynPack(traitName, e, r) -> EDynPack(traitName, rewriteExpr e, r)
 

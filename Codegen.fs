@@ -964,6 +964,13 @@ let rec serializeExpr (e: Ast.Expr) : string =
     // No reader form produces these, so none can appear in a template body.
     | Ast.ELetTuple _ -> failwith "an inline template body may not destructure a tuple binding"
     | Ast.EList _ -> failwith "an inline template body may not contain a bare list literal"
+    // `,@` is spellable only inside a quote, and a quote of a list is the
+    // `EList` refused on the line above — so this is reachable for a quoted
+    // *vec* alone. It goes the same way, and for the same reason: there is no
+    // source spelling for a splice on its own, so writing one out would produce
+    // something the reader cannot read back. `isSerializableTemplate` catches
+    // this, the template is not published, and the landing pad answers instead.
+    | Ast.ESplice _ -> failwith "an inline template body may not contain a spliced literal"
     | Ast.ETryFinally _ -> failwith "an inline template body may not contain try/finally"
     | Ast.ETryCatch _ -> failwith "an inline template body may not contain try/catch"
 

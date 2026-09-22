@@ -151,11 +151,13 @@ let desugarSyntaxQuote (parseExprFn: SExpr -> Expr) (template: SExpr) (r: Range)
 
     go template
 
-// Desugar a quoted list '(a ,x b) into (Cons 'a (Cons x (Cons 'b Nil))).
+// Desugar a quoted list `'(a ,x ,@ys b)` into the `EList` it describes.
 //
 // Symbols are literal Symbol data — '(a b c) gives three symbol values, not
-// three variable references. To splice a computed value, prefix it with `,`:
-// '(a ,x b) evaluates x and conses it between the two symbols.
+// three variable references. To place a computed value, prefix it with `,`:
+// '(a ,x b) evaluates x and puts the value between the two symbols. To place
+// the *elements* of a computed list, prefix it with `,@`: '(a ,@ys b) is the
+// list `a`, then every element of `ys`, then `b`.
 //
 // `parseExprFn` is threaded in as a parameter because this function is defined
 // before `parseExpr`; the call site passes `parseExpr` directly.
@@ -187,11 +189,11 @@ let desugarQuotedList (parseExprFn: SExpr -> Expr) (items: SExpr list) (r: Range
         // symbol and `'(ls ["-l"])` yields a list beginning with the symbol
         // `vec-literal` — a form no program wrote.
         | SList(SAtom { Token = Symbol "vec-literal" } :: vecItems, vr) ->
-            EVec(List.map quoteItem vecItems, vr)
+            collectItems "a quoted vec" (fun xs -> EVec(xs, vr)) true vecItems vr
         // `#[a b]`, likewise rewritten by the reader, and quoted as the array
-        // it was written as.
+        // it was written as. No splice: see `collectItems`.
         | SList(SAtom { Token = Symbol "array-literal" } :: arrayItems, ar) ->
-            EArray(List.map quoteItem arrayItems, ar)
+            collectItems "a quoted array" (fun xs -> EArray(xs, ar)) false arrayItems ar
         // `{...}`, likewise rewritten by the reader. A comprehension is a loop,
         // not data, so there is nothing to quote it as. The reserved head wins
         // over the symbol of the same name, which is the price of catching it.
@@ -208,26 +210,52 @@ let desugarQuotedList (parseExprFn: SExpr -> Expr) (items: SExpr list) (r: Range
         // form — and cannot be told apart from the same list written by hand,
         // so it is quoted as the list it has become. Write `,#(...)` to splice
         // the function.
-        | SList(inner, lr) -> collectItems inner lr
+        | SList(inner, lr) -> collectItems "a quoted list" (fun xs -> EList(xs, lr)) true inner lr
+        // Only reachable from the dotted-pair branch above, which is the one
+        // place a quoted item is read somewhere that is not a run of elements.
         | SAtom { Token = CommaAt } ->
             failwithf
-                $"Splicing with ,@ inside '(...) at %s{Lexer.formatPos ir}, which is not supported. A quoted list is built element by element from what is written in it, so a spliced list — whose length is only known when the program runs — has nowhere to go. Write ,x to place one element. ,@ does work inside a #' template, which builds a Syntax value rather than a list."
+                $"Unexpected ,@ at %s{Lexer.formatPos ir}. A splice puts the elements of a list where it stands, so it needs an enclosing list or vec literal to put them in, and a dotted pair has two fixed halves rather than a run of elements. Write ,x to place one value."
         | _ -> failwithf $"Unsupported item in quoted list at %s{Lexer.formatPos ir}"
 
-    and collectItems (items: SExpr list) (r: Range) : Expr =
+    /// The elements of one quoted literal, with `,` and `,@` read as the two
+    /// ways of putting a computed value into it.
+    ///
+    /// `mk` builds the literal — the three of them differ by that and by
+    /// `allowSplice` and nothing else. `what` is how a diagnostic names the
+    /// form it is inside.
+    ///
+    /// `allowSplice` is false for `#[...]` alone. A splice is lowered by
+    /// appending sequences and converting back (`InferExpr`), and there is no
+    /// `seq->array` to convert back *to*: an array has a length fixed when it
+    /// is allocated, which is the property a splice does not have. The refusal
+    /// is here rather than in inference so that it names the `,@` the reader
+    /// wrote.
+    and collectItems (what: string) (mk: Expr list -> Expr) (allowSplice: bool) (items: SExpr list) (r: Range) : Expr =
         let rec go acc remaining =
             match remaining with
-            | [] -> EList(List.rev acc, r)
-            // ,expr — unquote: evaluate and splice the expression as an element.
+            | [] -> mk (List.rev acc)
+            // ,expr — unquote: evaluate the expression and place its value as
+            // one element.
             | SAtom { Token = Comma } :: inner :: rest ->
                 go (parseExprFn inner :: acc) rest
             | SAtom { Token = Comma } :: [] ->
-                failwithf $"Unexpected , at end of quoted list at %s{Lexer.formatPos r}"
+                failwithf $"Unexpected , at end of %s{what} at %s{Lexer.formatPos r}"
+            // ,@expr — splice: evaluate the expression and place its *elements*
+            // here, in order.
+            | (SAtom { Token = CommaAt } as marker) :: inner :: rest ->
+                if not allowSplice then
+                    failwithf
+                        $"Splicing with ,@ into %s{what} at %s{Lexer.formatPos (getRange marker)}. An array's length is fixed when it is allocated and a spliced list's is not known until the program runs, so there is nowhere for the elements to go. Build a list with ,@ and convert it with list->array, or write ,x to place one element."
+
+                go (ESplice(parseExprFn inner, getRange marker) :: acc) rest
+            | SAtom { Token = CommaAt } :: [] ->
+                failwithf $"Unexpected ,@ at end of %s{what} at %s{Lexer.formatPos r}"
             | item :: rest ->
                 go (quoteItem item :: acc) rest
         go [] items
 
-    collectItems items r
+    collectItems "a quoted list" (fun xs -> EList(xs, r)) true items r
 
 /// The arithmetic and bitwise operators, which left-fold, and the comparisons,
 /// which chain.

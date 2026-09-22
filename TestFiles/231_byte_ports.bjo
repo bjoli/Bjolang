@@ -1,0 +1,555 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; Byte ports: the layer under `TextInputPort`.
+;;
+;; The property the whole design turns on is the one in the middle of this file
+;; — a branch of a `choose` that loses consumes nothing. Everything else is
+;; either ordinary reading and writing, or a consequence of that property:
+;; `peek` is a read with the cursor move left out, and `byte->text-input-port`
+;; works precisely because the bytes a peek looked at are still in the buffer.
+;;
+;; Almost every case is over `byte-pipe`, which is a port pair with nothing
+;; underneath it — no file, no network, and a refill that genuinely has to wait
+;; for a writer, which is what makes the race worth running.
+
+(import (std prelude))
+(import (std ports))
+(import (std inbox))
+(import (std simpletest))
+
+;; There is no `int->byte` or `byte->int` in the prelude, and a test that builds
+;; its own byte arrays needs both.
+(import/extern
+  (int->byte (: System.Convert.ToByte  (-> int byte)))
+  (byte->int (: System.Convert.ToInt32 (-> byte int))))
+
+;; A `Stream` somebody else owns, for `stream->byte-input-port`. The byte[]
+;; constructor gives a stream over exactly that array, so a write through a port
+;; lands somewhere this file can look at afterwards.
+(import/class
+  (MemStream (: System.IO.MemoryStream (-> (Array byte) MemStream))))
+
+;; ---------------------------------------------------------------------------
+;; Helpers
+;; ---------------------------------------------------------------------------
+
+;; Bytes as text, so that a comparison is a string comparison and a failure
+;; prints something readable. A trailing dot on every byte, so that "1.2." and
+;; "12." cannot be confused.
+(: bytes->text (-> (Array byte) string))
+(defun (bytes->text bs)
+  (let loop ((i 0) (acc ""))
+    (if (= i (array-length bs))
+        acc
+        (loop (+ i 1) (str acc (byte->string (array-ref bs i)) ".")))))
+
+(: shown (-> (Option (Array byte)) string))
+(defun (shown o)
+  (match o
+    ((Some bs) (bytes->text bs))
+    (None "none")))
+
+;; `from`, `from + 1`, ... as bytes.
+(: byte-run (-> int int (Array byte)))
+(defun (byte-run from n)
+  (def out (make-array n))
+  (let loop ((i 0))
+    (if (= i n)
+        out
+        (let ()
+          (array-set! out i (int->byte (+ from i)))
+          (loop (+ i 1))))))
+
+;; Everything left in the port, as text. Ends at `None`, so the writing side has
+;; to have been shut down or closed.
+(: drain-bytes (-> ByteInputPort string))
+(defun (drain-bytes p)
+  (let loop ((acc ""))
+    (match (read-some p)
+      ((Some bs) (loop (str acc (bytes->text bs))))
+      (None acc))))
+
+;; What a read event answered, with a failure turned back into a raise. The
+;; event's `Result` is how a broken stream reaches a branch that was parked —
+;; the CML resume path carries a value, not a raise.
+(: got (-> (Result Exception (Option (Array byte))) (Option (Array byte))))
+(defun (got r)
+  (match r
+    ((Ok bytes) bytes)
+    ((Err e) (raise e))))
+
+;; The payload that is deliberately not valid UTF-8: 0xFF is not a legal lead
+;; byte and 0x80 is a bare continuation, so a decoding layer that sneaked in
+;; anywhere would be caught here rather than somewhere subtle later.
+(: raw (Array byte))
+(def raw #[104 105 255 128 0 200])
+
+(: four (Array byte))
+(def four #[11 22 33 44])
+
+;; Where the borrowed-stream write below lands.
+(: scratch (Array byte))
+(def scratch #[0 0 0 0])
+
+;; ---------------------------------------------------------------------------
+;; A losing branch consumes nothing
+;; ---------------------------------------------------------------------------
+;;
+;; One round of the race: a `choose` between a read of four bytes and a stop
+;; signal, with a writer fiber putting the four bytes in at about the moment the
+;; stop arrives. Either branch may win.
+;;
+;; What is asserted is the same either way: the four bytes come out of the port
+;; exactly once, whole and in order. If the read branch lost after having taken
+;; them, they are gone and the drain is short; if it took them twice, the drain
+;; is long.
+;; `bjo` takes one expression, so every fiber body in this file is a named
+;; bjoroutine rather than a block written inline.
+(: write-then-flush (-bjo-> ByteOutputPort (Array byte) int))
+(defbjo (write-then-flush out bytes)
+  (write-bytes! out bytes)
+  (flush! out)
+  0)
+
+;; Whether the read branch won, and every byte that came out of the port.
+(: race-once (-bjo-> (Tuple bool string)))
+(defbjo (race-once)
+  (match (byte-pipe)
+    ((Tuple in out)
+     (def stop (make-inbox 1 DropNewest))
+
+     ;; The writer runs on a fiber of its own so that the bytes can land while
+     ;; the `choose` is parked — the case the property is about. A port whose
+     ;; buffer was already full would never publish and never race.
+     (def writer (bjo (write-then-flush out four)))
+
+     (ignore (inbox-post! stop 1))
+
+     (def first
+       (sync (choose (wrap (read-bytes-evt in 4) (fun (r) (Some (got r))))
+                     (wrap (inbox-recv stop) (fun (n) None)))))
+
+     ;; The writer has to have finished before the port may be shut down, or the
+     ;; drain would end before the bytes arrived.
+     (ignore (sync (promise-join writer)))
+     (shutdown! out)
+
+     (Tuple (match first ((Some answer) #t) (None #f))
+            (str (match first
+                   ((Some answer) (shown answer))
+                   (None ""))
+                 (drain-bytes in))))))
+
+;; How many rounds came out wrong, and how many of them the read branch won.
+;;
+;; The second number is what keeps this test honest. A race that never actually
+;; raced is green in exactly the same way as one that did, so "the read branch
+;; won sometimes and lost sometimes" is asserted rather than hoped for.
+(: race-rounds (-bjo-> int (Tuple int int)))
+(defbjo (race-rounds rounds)
+  (let loop ((i 0) (bad 0) (wins 0))
+    (if (= i rounds)
+        (Tuple bad wins)
+        (match (race-once)
+          ((Tuple read-won text)
+           (loop (+ i 1)
+                 (+ bad (if (= text "11.22.33.44.") 0 1))
+                 (+ wins (if read-won 1 0))))))))
+
+;; ---------------------------------------------------------------------------
+;; Two fibers, one port
+;; ---------------------------------------------------------------------------
+;;
+;; Every byte exactly once and none twice. Which fiber gets which byte is
+;; explicitly not promised, so what is counted is a tally per value: each fiber
+;; marks the bytes it saw, and every mark has to be exactly one.
+;;
+;; The two fibers only ever write to *distinct* slots, because a value appears
+;; once in the stream — which is the property under test, stated as the reason
+;; the test itself is safe.
+(: tally-reader (-bjo-> ByteInputPort (Array int) int))
+(defbjo (tally-reader p seen)
+  (let loop ((n 0))
+    (match (read-bytes p 1)
+      ((Some bs)
+       (def v (byte->int (array-ref bs 0)))
+       (array-set! seen v (+ 1 (array-ref seen v)))
+       (loop (+ n 1)))
+      (None n))))
+
+(: every-mark-once? (-> (Array int) int bool))
+(defun (every-mark-once? seen n)
+  (let loop ((i 1))
+    (cond
+      ((> i n) #t)
+      ((= 1 (array-ref seen i)) (loop (+ i 1)))
+      (else #f))))
+
+;; 1..10, 11..20, ... a chunk at a time, so that the two readers meet an empty
+;; buffer over and over and have to serialize on the refill rather than each
+;; taking a contiguous half of one bufferful.
+(: write-in-tens (-bjo-> ByteOutputPort int int))
+(defbjo (write-in-tens out chunks)
+  (let loop ((i 0))
+    (if (= i chunks)
+        (let () (shutdown! out) 0)
+        (let ()
+          (write-bytes! out (byte-run (+ (* i 10) 1) 10))
+          (flush! out)
+          (loop (+ i 1))))))
+
+(: wait-for-eof (-bjo-> ByteInputPort int))
+(defbjo (wait-for-eof in)
+  (sync (eof-evt in))
+  1)
+
+;; ---------------------------------------------------------------------------
+;; Ephemeral, not persistent
+;; ---------------------------------------------------------------------------
+;;
+;; One event object that has already committed three times, synced again against
+;; a sibling that becomes ready. The port is open and empty, so the read can
+;; never commit — and a *persistent* event, which is what `(task->event ...)` is,
+;; would answer with what it remembered and win every round, starving the
+;; sibling. Three sibling wins is the assertion.
+(: sibling-wins (-> (Event (Result Exception (Option (Array byte)))) int int))
+(defun (sibling-wins ev rounds)
+  (let loop ((i 0) (wins 0))
+    (if (= i rounds)
+        wins
+        (loop (+ i 1)
+              (+ wins (sync/blocking
+                        (choose (wrap ev (fun (r) 0))
+                                (wrap (timeout 20) (fun (u) 1)))))))))
+
+(defun (main)
+  ;; =========================================================================
+  ;; byte-pipe, and a round trip
+  ;; =========================================================================
+  (match (byte-pipe)
+    ((Tuple in out)
+     (write-bytes! out raw)
+     (flush! out)
+     (shutdown! out)
+     (expect "a pipe carries bytes through unchanged"
+             (shown (read-bytes in 6)) "104.105.255.128.0.200.")
+     (expect "and then it is finished" (shown (read-some in)) "none")))
+
+  ;; =========================================================================
+  ;; read-bytes of exactly n, of more than remains, and at end of input
+  ;; =========================================================================
+  (match (byte-pipe)
+    ((Tuple in out)
+     (write-bytes! out raw)
+     (flush! out)
+     (shutdown! out)
+     (expect "exactly n" (shown (read-bytes in 2)) "104.105.")
+     ;; Four are left and ten are asked for, so this comes back short.
+     (expect "a short read at end of input" (shown (read-bytes in 10)) "255.128.0.200.")
+     ;; And the *next* one is the end, which is a separate fact.
+     (expect "and the next one is None" (shown (read-bytes in 10)) "none")))
+
+  ;; =========================================================================
+  ;; read-some never yields an empty array, and yields None once
+  ;; =========================================================================
+  (match (byte-pipe)
+    ((Tuple in out)
+     (write-bytes! out #[7])
+     (flush! out)
+     (shutdown! out)
+     (expect "read-some gives what there is" (shown (read-some in)) "7.")
+     (expect "None at the end" (shown (read-some in)) "none")
+     (expect "and None again" (shown (read-some in)) "none")))
+
+  (match (byte-pipe)
+    ((Tuple in out)
+     (shutdown! out)
+     (expect "nothing written is None, not an empty array" (shown (read-some in)) "none")))
+
+  ;; =========================================================================
+  ;; Peek does not consume
+  ;; =========================================================================
+  (match (byte-pipe)
+    ((Tuple in out)
+     (write-bytes! out raw)
+     (flush! out)
+     (shutdown! out)
+     (expect "peek" (shown (peek-bytes in 0 3)) "104.105.255.")
+     (expect "peek again, at an offset" (shown (peek-bytes in 2 2)) "255.128.")
+     (expect "peek short at end of input" (shown (peek-bytes in 4 10)) "0.200.")
+     (expect "peek past the end is None" (shown (peek-bytes in 6 1)) "none")
+     ;; The cursor never moved, so the read gets the bytes the peek saw.
+     (expect "and the read gets the same bytes" (shown (read-bytes in 3)) "104.105.255.")
+     (expect "from where the cursor actually is" (shown (peek-bytes in 0 1)) "128.")))
+
+  ;; =========================================================================
+  ;; A losing branch consumes nothing
+  ;; =========================================================================
+  ;;
+  ;; Run enough times to catch a race. A single round that happened not to race
+  ;; passes just as green as one that did, so the count is what makes this worth
+  ;; anything — and what it is looking for is bytes going missing, which shows
+  ;; as a short answer.
+  (def raced
+    (match (sync/blocking (promise-join (bjo (race-rounds 300))))
+      ((Ok counts) counts)
+      ((Err e) (Tuple -1 -1))))
+
+  (match raced
+    ((Tuple bad wins)
+     (expect "a losing branch consumes nothing, over 300 rounds" bad 0)
+     ;; Both outcomes have to have happened, or the 300 rounds were 300 copies
+     ;; of the same uninteresting one.
+     (expect-true "the read branch won some of those rounds" (> wins 0))
+     (expect-true "and lost some of them" (< wins 300))))
+
+  ;; =========================================================================
+  ;; Ephemeral, not persistent
+  ;; =========================================================================
+  (match (byte-pipe)
+    ((Tuple in out)
+     (write-bytes! out #[1 2 3])
+     (flush! out)
+     (def ev (read-bytes-evt in 1))
+     (expect "one event, synced three times, reads successive bytes"
+             (str (shown (got (sync/blocking ev)))
+                  (shown (got (sync/blocking ev)))
+                  (shown (got (sync/blocking ev))))
+             "1.2.3.")
+
+     ;; The port is now empty but not finished, so that same event can never
+     ;; commit and the sibling wins every round.
+     (expect "a read event does not starve its sibling" (sibling-wins ev 3) 3)
+     (shutdown! out)))
+
+  ;; =========================================================================
+  ;; Two fibers, one port
+  ;; =========================================================================
+  (def n 60)
+  (def seen (make-array (+ n 1)))
+  (match (byte-pipe)
+    ((Tuple in out)
+     (def writer (bjo (write-in-tens out 6)))
+     (def a (bjo (tally-reader in seen)))
+     (def b (bjo (tally-reader in seen)))
+     (def na (match (sync/blocking (promise-join a)) ((Ok k) k) ((Err e) -1)))
+     (def nb (match (sync/blocking (promise-join b)) ((Ok k) k) ((Err e) -1)))
+     (ignore (sync/blocking (promise-join writer)))
+     (expect "two fibers between them see every byte" (+ na nb) n)
+     (expect-true "and none of them twice" (every-mark-once? seen n))))
+
+  ;; =========================================================================
+  ;; limited
+  ;; =========================================================================
+  (match (byte-pipe)
+    ((Tuple in out)
+     (write-bytes! out (byte-run 1 10))
+     (flush! out)
+     (shutdown! out)
+     (def head (limited in 4))
+     (expect "limited stops at its bound" (drain-bytes head) "1.2.3.4.")
+     ;; The bound reads *through* the port, so the port is positioned exactly
+     ;; where the limit ended rather than wherever a buffer happened to reach.
+     (expect "and the port is where the limit ended" (drain-bytes in) "5.6.7.8.9.10.")))
+
+  (match (byte-pipe)
+    ((Tuple in out)
+     (write-bytes! out #[1 2])
+     (flush! out)
+     (shutdown! out)
+     (expect "a bound of zero reads nothing" (drain-bytes (limited in 0)) "")
+     (expect "and takes nothing from the port" (drain-bytes in) "1.2.")))
+
+  ;; =========================================================================
+  ;; shutdown! is not close
+  ;; =========================================================================
+  (match (byte-pipe)
+    ((Tuple in out)
+     (write-bytes! out four)
+     (shutdown! out)
+     ;; The read half is untouched by the half-close, which is the whole point:
+     ;; "I have finished speaking, now answer me".
+     (expect "after shutdown! the read half still reads" (shown (read-bytes in 4)) "11.22.33.44.")
+     (expect "and then reports end of input" (shown (read-some in)) "none")
+     ;; A write after it is refused rather than silently dropped.
+     (expect "a write after shutdown! is refused"
+             (match (try (let () (write-bytes! out #[1]) "written")
+                         #:catch (System.InvalidOperationException))
+               ((Ok what) what)
+               ((Err e) "refused"))
+             "refused")
+     (shutdown! out)
+     (expect "shutdown! twice is a no-op" "ok" "ok")))
+
+  ;; Closing the write half ends the read half too, and what was already written
+  ;; is still the reader's — the close completes the pipe rather than discarding
+  ;; it. Closing the *read* half says nothing about the writer, which is the
+  ;; asymmetry that makes it a pipe.
+  (match (byte-pipe)
+    ((Tuple in out)
+     (write-bytes! out #[5 6])
+     (close-byte-output-port! out)
+     (expect "closing the write half leaves what was written" (shown (read-bytes in 2)) "5.6.")
+     (expect "and then ends the read half" (shown (read-some in)) "none")))
+
+  ;; =========================================================================
+  ;; A file round trip, and text over bytes
+  ;; =========================================================================
+  (def path "231_bytes.tmp")
+
+  (match (open-byte-output-file path)
+    ((Ok w) (with-open ((o w)) (write-bytes! o raw)))
+    ((Err e) (println "FAILURE: could not open the byte file for writing")))
+
+  (match (open-byte-input-file path)
+    ((Ok r) (with-open ((i r))
+              (expect "a file round trip, bytes that are not UTF-8 included"
+                      (shown (read-bytes i 6)) "104.105.255.128.0.200.")))
+    ((Err e) (println "FAILURE: could not reopen the byte file")))
+
+  ;; The failure is a value, exactly as `open-input-file`'s is.
+  (expect "a missing file is Err"
+          (match (open-byte-input-file "no_such_byte_file_here.bin")
+            ((Ok p) "opened")
+            ((Err (:is System.IO.FileNotFoundException _)) "not-found")
+            ((Err e) "other"))
+          "not-found")
+
+  (def text-path "231_bytes_text.tmp")
+  (file-write-text text-path "alpha\nbeta\ngamma\n")
+
+  (def the-old-way
+    (match (open-input-file text-path)
+      ((Ok r) (with-open ((i r)) (vec-fold (fun (l acc) (str acc l "|")) "" (port->lines i))))
+      ((Err e) "FAILURE")))
+
+  (def through-bytes
+    (match (open-byte-input-file text-path)
+      ((Ok r) (with-open ((i r))
+                (vec-fold (fun (l acc) (str acc l "|")) ""
+                          (port->lines (byte->text-input-port i utf8)))))
+      ((Err e) "FAILURE")))
+
+  (expect "text over bytes agrees with the old path" through-bytes the-old-way)
+  (expect "...and that is what it says it is" through-bytes "alpha|beta|gamma|")
+
+  ;; =========================================================================
+  ;; Peek, then convert, loses nothing
+  ;; =========================================================================
+  ;;
+  ;; The case this design exists for, and the one that fails against a text
+  ;; layer that reaches past the port to its `Stream`: the sniffed bytes are
+  ;; still in the buffer, and the converted reader serves the buffer first.
+  (match (open-byte-input-file text-path)
+    ((Ok r) (with-open ((i r))
+              (expect "sniff the first bytes" (shown (peek-bytes i 0 2)) "97.108.")
+              (def t (byte->text-input-port i utf8))
+              (expect "the line still includes them" (read-line t) "alpha")
+              (expect "and the reader carries on" (read-line t) "beta")))
+    ((Err e) (println "FAILURE: could not reopen the text file")))
+
+  ;; The other direction: characters into a byte port.
+  (def out-path "231_bytes_out.tmp")
+  (match (open-byte-output-file out-path)
+    ((Ok w) (with-open ((o w))
+              (def t (byte->text-output-port o utf8))
+              (write-string t "hello")
+              (write-string t " world")
+              ;; Closing the text port pushes its characters into the byte port
+              ;; *and* drains the byte port, so nothing is stranded between them.
+              (close-output-port t)))
+    ((Err e) (println "FAILURE: could not open the byte file for writing")))
+  (expect "a text port over a byte port" (file-read-text out-path) "hello world")
+
+  ;; =========================================================================
+  ;; A port over a stream somebody else handed over
+  ;; =========================================================================
+  ;;
+  ;; The pair `(std net)` and a web framework reach for, and the only way into
+  ;; this module from outside it. Owned like a file, because a `Stream` is a
+  ;; handle in every case that matters.
+  (with-open ((borrowed (stream->byte-input-port (cast Stream (MemStream. raw)))))
+    (expect "a port over a borrowed stream reads it"
+            (shown (read-bytes borrowed 6)) "104.105.255.128.0.200."))
+
+  (def sink (stream->byte-output-port (cast Stream (MemStream. scratch))))
+  (write-bytes! sink four)
+  (flush! sink)
+  (expect "a port over a borrowed stream writes to it" (bytes->text scratch) "11.22.33.44.")
+  (close-byte-output-port! sink)
+
+  ;; =========================================================================
+  ;; Errors are diagnostics, never crashes
+  ;; =========================================================================
+  (match (byte-pipe)
+    ((Tuple in out)
+     (expect "read-bytes-evt of zero is refused"
+             (match (try (read-bytes-evt in 0) #:catch (System.ArgumentOutOfRangeException))
+               ((Ok _) "built") ((Err e) "refused"))
+             "refused")
+     (expect "read-bytes-evt of a negative count is refused"
+             (match (try (read-bytes-evt in -1) #:catch (System.ArgumentOutOfRangeException))
+               ((Ok _) "built") ((Err e) "refused"))
+             "refused")
+     (expect "peek-bytes with a negative skip is refused"
+             (match (try (peek-bytes in -1 1) #:catch (System.ArgumentOutOfRangeException))
+               ((Ok _) "peeked") ((Err e) "refused"))
+             "refused")
+     (expect "peek-bytes with a negative count is refused"
+             (match (try (peek-bytes in 0 -1) #:catch (System.ArgumentOutOfRangeException))
+               ((Ok _) "peeked") ((Err e) "refused"))
+             "refused")
+     (expect "limited with a negative bound is refused"
+             (match (try (limited in -1) #:catch (System.ArgumentOutOfRangeException))
+               ((Ok _) "built") ((Err e) "refused"))
+             "refused")
+     (shutdown! out)))
+
+  (match (byte-pipe)
+    ((Tuple in out)
+     (close-byte-input-port! in)
+     (expect "reading a closed port is refused"
+             (match (try (read-some in) #:catch (System.ObjectDisposedException))
+               ((Ok _) "read") ((Err e) "refused"))
+             "refused")
+     (close-byte-output-port! out)
+     (expect "writing to a closed port is refused"
+             (match (try (let () (write-bytes! out #[1]) "written")
+                         #:catch (System.ObjectDisposedException))
+               ((Ok what) what) ((Err e) "refused"))
+             "refused")))
+
+  ;; =========================================================================
+  ;; eof-evt
+  ;; =========================================================================
+  ;;
+  ;; It says only "finished", which is what makes it the thing to wait on for
+  ;; "the other end has gone away". A read beside it is what says why.
+  (match (byte-pipe)
+    ((Tuple in out)
+     (def watcher (bjo (wait-for-eof in)))
+     (write-bytes! out #[9])
+     (flush! out)
+     (expect "the byte is there" (shown (read-bytes in 1)) "9.")
+     (shutdown! out)
+     (expect "eof-evt fires once the writer is done"
+             (match (sync/blocking (promise-join watcher)) ((Ok k) k) ((Err e) -1))
+             1)
+     (expect "and is available from then on"
+             (sync/blocking (wrap (eof-evt in) (fun (u) 1)))
+             1)))
+
+  (file-delete path)
+  (file-delete text-path)
+  (file-delete out-path)
+  0)

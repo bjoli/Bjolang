@@ -93,6 +93,38 @@ let private hasNestedSequenceLiteral (elements: Expr list) : bool =
         | EArray _ -> true
         | _ -> false)
 
+/// Whether any element of a literal is a `,@`.
+///
+/// The question both literal paths ask first, because the answer decides
+/// between the node they have always built and the appended one below. A
+/// literal with no splice in it must reach the old path untouched: that is what
+/// keeps the emitted C# for every program written before this byte for byte
+/// what it was.
+let private hasSplice (elements: Expr list) : bool =
+    elements
+    |> List.exists (function
+        | ESplice _ -> true
+        | _ -> false)
+
+/// A literal's elements grouped into the pieces it is appended from: maximal
+/// runs of ordinary elements, and one piece per splice.
+///
+/// `Choice1Of2` is a run, which becomes exactly one literal node and so goes
+/// through the ordinary element path, injection and all. `Choice2Of2` is a
+/// splice's expression and its `,@`'s own range, which is what a diagnostic
+/// about it has to point at.
+let private splicePieces (elements: Expr list) : Choice<Expr list, Expr * Range> list =
+    let rec go acc pending remaining =
+        let flush () =
+            if List.isEmpty pending then acc else Choice1Of2(List.rev pending) :: acc
+
+        match remaining with
+        | [] -> List.rev (flush ())
+        | ESplice(inner, sr) :: rest -> go (Choice2Of2(inner, sr) :: flush ()) [] rest
+        | item :: rest -> go acc (item :: pending) rest
+
+    go [] [] elements
+
 /// Join one element of a literal to the element type its siblings share.
 ///
 /// Plain unification, except for the report when it fails. A literal reaches
@@ -667,6 +699,14 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
 
     | EArray(exprs, r) -> inferCollection env "Array" "array" TArrayMake exprs r
 
+    // Only a literal's own elements are splice positions, and both paths that
+    // build one take the splices out before any element is inferred. So an
+    // `ESplice` arriving here is a `,@` the parser accepted in a place that
+    // turned out not to be a run of elements after all.
+    | ESplice(_, r) ->
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: ,@ puts the elements of a collection into the literal around it, and there is no literal around this one."
+
     | ETryFinally(body, cleanup, r) ->
         let bodyType, tBody = infer env body
         let _, tCleanup = infer env cleanup
@@ -775,12 +815,122 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
 //
 // Where it may *stand* was settled syntactically by `checkEscapeUses` when
 // the block was entered, so nothing here has to ask.
+/// The two conversions a collection is spliced through: into a `Seq` and back.
+///
+/// There is no `seq->array`, and an array's length is fixed when it is
+/// allocated, so there is nothing to convert back to. `Parser.collectItems`
+/// refuses `,@` inside `#[...]` for that reason, which is why this is an
+/// internal failure and not a diagnostic: reaching it means the parser let one
+/// through.
+and private spliceConversions (ctor: string) : string * string =
+    match ctor with
+    | "List" -> "list->seq", "seq->list"
+    | "Vec" -> "vec->seq", "seq->vec"
+    | other -> failwithf "internal: %s literals have no splice lowering" other
+
+/// A spliced literal, assembled from the pieces `splicePieces` grouped it into.
+///
+/// Every piece is already typed as a whole `(ctor elemTy)` — a run of ordinary
+/// elements as the literal node it has always been, a splice as whatever it
+/// evaluates to — so all of them are joined the same way:
+///
+///   '(a ,@xs b)  ⇒  (seq->list (seq-append (list->seq (list a))
+///                                          (seq-append (list->seq xs)
+///                                                      (list->seq (list b)))))
+///
+/// No new typed node, no `Codegen` case and no runtime addition: `seq-append`,
+/// `list->seq` and `seq->list` already have exactly these types. Nor is there
+/// an evaluation-order question to answer, because there is nothing here but
+/// call operands: C# evaluates those left to right and once each, so the
+/// elements and the spliced expressions run in written order however the
+/// appends are nested. `seq-append` is lazy, and that never shows — everything
+/// handed to it is a collection that has already been built.
+and private assembleSplicedLiteral
+    (ctor: string)
+    (elemTy: HMType)
+    (pieces: TypedExpr list)
+    (r: Range)
+    : HMType * TypedExpr =
+    let collTy = TCon(ctor, [ elemTy ])
+
+    match pieces with
+    // `'(,@xs)` is `xs`. Lists and vecs are immutable, so handing the value
+    // straight back is indistinguishable from copying it, and the round trip
+    // would only cost a walk.
+    | [ single ] -> collTy, { single with Range = r }
+    | _ ->
+        let toSeq, fromSeq = spliceConversions ctor
+        let seqTy = TCon("Seq", [ elemTy ])
+
+        let call1 (fn: string) (argTy: HMType) (retTy: HMType) (arg: TypedExpr) : TypedExpr =
+            { Type = retTy
+              Range = arg.Range
+              Node =
+                TApply(
+                    { Type = tfun [ argTy ] retTy
+                      Range = arg.Range
+                      Node = TIdent(fn, []) },
+                    [ arg ],
+                    []
+                ) }
+
+        // Right-nested, so that each append has a one-piece left operand and
+        // the whole thing is linear in the number of elements rather than
+        // quadratic in the number of pieces.
+        let appended =
+            pieces
+            |> List.map (call1 toSeq collTy seqTy)
+            |> List.reduceBack (fun left right ->
+                { Type = seqTy
+                  Range = r
+                  Node =
+                    TApply(
+                        { Type = tfun [ seqTy; seqTy ] seqTy
+                          Range = r
+                          Node = TIdent("seq-append", []) },
+                        [ left; right ],
+                        []
+                    ) })
+
+        collTy, { call1 fromSeq seqTy collTy appended with Range = r }
+
+/// The expression of a `,@`, checked against the literal it is written in.
+///
+/// A splice contributes a whole collection where its siblings contribute one
+/// element each, so what it splices has to be the enclosing literal's own type
+/// — `(List T)` in a list, `(Vec T)` in a vec. The mismatch is reported at the
+/// `,@` rather than at the literal, because the literal is not what is wrong.
+and private checkSplice
+    (env: Env)
+    (literalName: string)
+    (collTy: HMType)
+    (inner: Expr)
+    (sr: Range)
+    : TypedExpr =
+    let innerType, typedInner = inferChecked collTy env inner
+
+    try
+        unify env.Registry innerType collTy
+    with ex when Diagnostics.isDiagnostic ex ->
+        let shown =
+            DotNetInterop.showTypesTogether [ prune env.Registry collTy; prune env.Registry innerType ]
+
+        failwithf
+            $"Type Error at %s{Lexer.formatPos sr}: ,@ puts the elements of a collection into the %s{literalName} literal around it, so it has to be handed that same kind of collection:\n  expected %s{shown[0]}\n  got      %s{shown[1]}\nWrite ,x instead to place a single element."
+
+    typedInner
+
 /// A collection literal: `(list ...)`, `[...]` or `#[...]`.
 ///
 /// One element type, joined across every element so that the diagnostic names
 /// the literal rather than the pair of elements that disagreed. `ctor` names
 /// the type, `literalName` is how that diagnostic spells the form, and
 /// `mkNode` builds the node — which is all the three literals differ by.
+///
+/// This is the path a literal takes when nothing pushed a type into it. A
+/// splice fixes the element type here exactly as an ordinary element does:
+/// its own type is `(ctor elem)`, and unifying that against the literal's is
+/// the same one question asked of a whole collection instead of one value.
 and private inferCollection
     (env: Env)
     (ctor: string)
@@ -790,20 +940,28 @@ and private inferCollection
     (r: Range)
     : HMType * TypedExpr =
     let elementType = freshMeta ()
-
-    let typedExprs =
-        exprs
-        |> List.map (fun e ->
-            let t, te = infer env e
-            joinLiteralElement env r literalName exprs elementType t
-            te)
-
     let collectionType = TCon(ctor, [ elementType ])
 
-    collectionType,
-    { Type = collectionType
-      Range = r
-      Node = mkNode typedExprs }
+    let run (elements: Expr list) : TypedExpr =
+        let typedExprs =
+            elements
+            |> List.map (fun e ->
+                let t, te = infer env e
+                joinLiteralElement env r literalName exprs elementType t
+                te)
+
+        { Type = collectionType
+          Range = r
+          Node = mkNode typedExprs }
+
+    if not (hasSplice exprs) then
+        collectionType, run exprs
+    else
+        splicePieces exprs
+        |> List.map (function
+            | Choice1Of2 elements -> run elements
+            | Choice2Of2(inner, sr) -> checkSplice env literalName collectionType inner sr)
+        |> fun pieces -> assembleSplicedLiteral ctor elementType pieces r
 
 and private inferEscapeCall (env: Env) (name: string) (args: Expr list) (r: Range) : HMType * TypedExpr =
     let info = env.Escapes[name]
@@ -1651,10 +1809,13 @@ and private inferApply (env: Env) (args: Expr list) (r: Range) : HMType * TypedE
     // A literal collection is never built. The elements go straight into
     // the rest array, which is the very node a direct call `(f a b c)`
     // produces — so the two spellings compile to the same call.
+    // A spliced literal is not one: its length is not known here, so there is
+    // no fixed set of elements to lay out into the rest array. It takes the
+    // ordinary path below and is converted like any other collection.
     let literalItems =
         match collExpr with
-        | EList(items, _) -> Some items
-        | EVec(items, _) -> Some items
+        | EList(items, _) when not (hasSplice items) -> Some items
+        | EVec(items, _) when not (hasSplice items) -> Some items
         | EArray(items, _) -> Some items
         | _ -> None
 
@@ -2546,20 +2707,50 @@ and private inferLocalFunBody
       KeywordArgs = typedKeywords
       RestArg = shape.Rest }
 
+/// A collection literal whose element type the context already named.
+///
+/// This is the branch that *injects*: each ordinary element goes through
+/// `inferAndMaybeInject`, which wraps it in the union case that can hold it.
+/// Splicing changes nothing about that. A run of ordinary elements stays one
+/// literal node and is injected exactly as before; only the runs either side of
+/// a `,@` are new, and the spliced value is not injected at all — it already
+/// has the collection type, which is what `checkSplice` demands of it.
+///
+/// With no splice this builds precisely the node it built before there was such
+/// a thing, and nothing downstream can tell the two compilers apart.
+and private inferCheckedLiteral
+    (env: Env)
+    (ctor: string)
+    (literalName: string)
+    (mkNode: TypedExpr list -> TExprNode)
+    (elemTy: HMType)
+    (exprs: Expr list)
+    (r: Range)
+    : HMType * TypedExpr =
+    let collectionType = TCon(ctor, [ elemTy ])
+
+    let run (elements: Expr list) : TypedExpr =
+        { Type = collectionType
+          Range = r
+          Node = mkNode (elements |> List.map (inferAndMaybeInject elemTy env)) }
+
+    if not (hasSplice exprs) then
+        collectionType, run exprs
+    else
+        splicePieces exprs
+        |> List.map (function
+            | Choice1Of2 elements -> run elements
+            | Choice2Of2(inner, sr) -> checkSplice env literalName collectionType inner sr)
+        |> fun pieces -> assembleSplicedLiteral ctor elemTy pieces r
+
 and internal inferChecked (expected: HMType) (env: Env) (expr: Expr) : HMType * TypedExpr =
     match expr, prune env.Registry expected with
     | EList(exprs, r), TCon("List", [ elemTy ]) ->
-        let typedExprs = exprs |> List.map (inferAndMaybeInject elemTy env)
-        TCon("List", [ elemTy ]),
-        { Type = TCon("List", [ elemTy ]); Range = r; Node = TListMake typedExprs }
+        inferCheckedLiteral env "List" "list" TListMake elemTy exprs r
     | EVec(exprs, r), TCon("Vec", [ elemTy ]) ->
-        let typedExprs = exprs |> List.map (inferAndMaybeInject elemTy env)
-        TCon("Vec", [ elemTy ]),
-        { Type = TCon("Vec", [ elemTy ]); Range = r; Node = TVecMake typedExprs }
+        inferCheckedLiteral env "Vec" "vec" TVecMake elemTy exprs r
     | EArray(exprs, r), TCon("Array", [ elemTy ]) ->
-        let typedExprs = exprs |> List.map (inferAndMaybeInject elemTy env)
-        TCon("Array", [ elemTy ]),
-        { Type = TCon("Array", [ elemTy ]); Range = r; Node = TArrayMake typedExprs }
+        inferCheckedLiteral env "Array" "array" TArrayMake elemTy exprs r
 
     // A lambda whose parameters the expectation already names.
     | EFun(args, body, colour, r), TFun(paramTys, _, _) when List.length paramTys = List.length args ->

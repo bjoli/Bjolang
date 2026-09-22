@@ -262,6 +262,16 @@ and Expr =
     /// `#[1 2 3]` — a .NET array, mutable and of a fixed length. The literal
     /// spelling of what `make-array` allocates.
     | EArray of Expr list * Range
+    /// `,@xs` written as an element of a quoted list or vec: the *elements* of
+    /// `xs` go where it stands, in order.
+    ///
+    /// Not a general expression. `desugarQuotedList` is the only producer, and
+    /// the literal branches of `InferExpr` the only consumer: a splice has a
+    /// meaning only relative to the literal that encloses it, so one reaching
+    /// inference anywhere else is a program that wrote `,@` where no literal
+    /// could take it. That is a diagnostic, not a crash — but it is also why
+    /// this node never survives type checking and has no typed counterpart.
+    | ESplice of Expr * Range
     | EMatch of Expr * (Pattern * Expr option * Expr) list * Range
     | ETryFinally of Expr * Expr * Range
     /// `(try body... #:catch (E1 E2 ...))`: run the body, and catch specific .NET exception types.
@@ -713,6 +723,7 @@ let exprRange (e: Expr) : Range =
     | EList(_, r)
     | EVec(_, r)
     | EArray(_, r)
+    | ESplice(_, r)
     | EMatch(_, _, r)
     | ETryFinally(_, _, r)
     | ETryCatch(_, _, r)
@@ -829,6 +840,11 @@ let exprChildren (e: Expr) : Expr list =
     | EList(xs, _)
     | EVec(xs, _)
     | EArray(xs, _) -> xs
+    // The spliced expression is an ordinary expression in an ordinary
+    // position: it is evaluated where the literal is written, and everything a
+    // traversal wants to say about the literal's other elements it wants to say
+    // about this one too.
+    | ESplice(x, _) -> [ x ]
     | EApp(f, args, _) -> f :: args
     | ELet(_, _, _, _, v, b, _) -> [ v; b ]
     | ELetMono(_, v, b, _) -> [ v; b ]
@@ -887,6 +903,9 @@ let freeNamesWith (reference: string -> Range -> bool -> unit) (guarded: bool) (
         | EList(items, _)
         | EVec(items, _)
         | EArray(items, _) -> List.iter sub items
+        // Unguarded, and in the enclosing scope: `,@xs` reads `xs` right where
+        // the literal is built, binding nothing.
+        | ESplice(item, _) -> sub item
         | EApp(target, args, _) ->
             sub target
             List.iter sub args

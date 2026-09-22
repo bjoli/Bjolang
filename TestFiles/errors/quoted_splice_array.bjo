@@ -1,0 +1,20 @@
+;; `,@` inside `#[...]`.
+;;
+;; Lists and vecs splice by appending sequences and converting back. An array
+;; has no conversion back — there is no `seq->array`, and there is none because
+;; an array's length is fixed when it is allocated, which is exactly the
+;; property a splice does not have.
+;;
+;; So this one stays refused, and the message says *array*: quoting is not the
+;; problem, and `,@` a line away inside `(...)` or `[...]` is fine.
+
+;; EXPECT-ERROR: Splicing with ,@ into a quoted array
+;; EXPECT-ERROR: convert it with list->array
+
+(import (std prelude))
+
+(defun (main args)
+  (def (: flags (List string)) (list "-l"))
+  (def bad '(ls #["-a" ,@flags]))
+  (println (int->string (list-length bad)))
+  0)

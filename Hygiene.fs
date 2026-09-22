@@ -535,6 +535,9 @@ let private renameWith
         | EList(items, r) -> EList(List.map sub items, r)
         | EVec(items, r) -> EVec(List.map sub items, r)
         | EArray(items, r) -> EArray(List.map sub items, r)
+        // A splice binds nothing and its expression is read in the scope the
+        // literal is written in, so the substitution goes straight through.
+        | ESplice(item, r) -> ESplice(sub item, r)
 
         | EMatch(target, clauses, r) ->
             EMatch(

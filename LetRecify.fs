@@ -118,6 +118,7 @@ let rec letrecifyExpr (expr: Expr) : Expr =
     | EList(exprs, r) -> EList(List.map letrecifyExpr exprs, r)
     | EVec(exprs, r) -> EVec(List.map letrecifyExpr exprs, r)
     | EArray(exprs, r) -> EArray(List.map letrecifyExpr exprs, r)
+    | ESplice(expr, r) -> ESplice(letrecifyExpr expr, r)
     | EApp(target, args, r) -> EApp(letrecifyExpr target, List.map letrecifyExpr args, r)
     | ECast(t, e, r) -> ECast(t, letrecifyExpr e, r)
     | EDynPack(traitName, e, r) -> EDynPack(traitName, letrecifyExpr e, r)
