@@ -1163,7 +1163,7 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
 
             let typeName = spec.ClrTarget.Substring(0, split)
             let memberName = spec.ClrTarget.Substring(split + 1)
-            let clrType = DotNetInterop.resolveType $" at %s{where}" typeName
+            let clrType = DotNetInterop.resolveNamedType spec.Range typeName
 
             // Whether the member is static or an instance one is read off
             // the metadata rather than written in the clause. There is

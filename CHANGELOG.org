@@ -3,6 +3,64 @@
 
 What each change guarantees, and what it leaves open.
 
+* A package may name types from a shared framework it declares
+
+~Microsoft.AspNetCore.App~ and its neighbours are not part of the base runtime,
+and until now nothing in Bjolang could name a type out of one. A manifest says
+which it wants:
+
+#+BEGIN_SRC scheme
+(package
+  (name (shop web))
+  (frameworks "Microsoft.AspNetCore.App"))
+#+END_SRC
+
+Three sets, and keeping them apart is the whole design.
+
+- *You may name what you declare.* Writing ~Microsoft.AspNetCore.Http.HttpContext~
+  in an ~import/class~, an ~import/extern~, a ~(:is ...)~ or a type annotation is
+  checked against the declaring *package*, not the module — so a package that has
+  not declared ASP.NET is told so, by name, even when some other package in the
+  build has already loaded the assembly.
+- *You may use values that reach you.* The check is about names. A package that
+  calls a function returning an ~HttpContext~ and hands it to another function
+  taking one declares nothing, because it writes nothing.
+- *A program's runtime needs follow what its modules actually used.* Each module
+  records the frameworks its types were really resolved from, plus its imports',
+  and the executable's runtimeconfig is built from that — so a module importing
+  only the pure half of an ASP.NET library gets a runtimeconfig without ASP.NET
+  in it. With only ~Microsoft.NETCore.App~ the file is byte-for-byte what it was.
+
+Types are found lazily and by *file*: namespace guessing does not work for split
+assemblies — ~HttpContext~ lives in ~Microsoft.AspNetCore.Http.Abstractions~, not
+~Microsoft.AspNetCore.Http~ — so the first miss reads the type names out of every
+assembly in the framework with ~System.Reflection.Metadata~, loading none of
+them, and then registers the one file that has the type. Indexing
+~Microsoft.AspNetCore.App~ costs about 8 ms, once per process.
+
+A name that is nowhere gets a hint rather than a shrug:
+
+#+BEGIN_EXAMPLE
+  hint: Microsoft.AspNetCore types live in the shared framework Microsoft.AspNetCore.App.
+  Add (frameworks "Microsoft.AspNetCore.App") to the manifest of package (shop web).
+#+END_EXAMPLE
+
+Each module's build record carries one ~framework~ line per declaration, so
+*removing* ~(frameworks ...)~ recompiles the modules that used it and they fail
+with the naming error rather than staying quietly built. ~bjo~ writes the
+declarations to ~.bjo/frameworks~; a lone file can say ~--framework <name>~.
+
+What it leaves open. The framework has to be installed wherever the program
+*runs*, not only where it was built — the ~dotnet/runtime~ image does not have
+ASP.NET and ~dotnet/aspnet~ does; an unknown framework, or one not installed, is
+an error listing the ones that are. Four type names in
+~Microsoft.AspNetCore.App~ are defined in two assemblies each, so the index reads
+them shortest-assembly-name-first for a deterministic answer rather than a
+correct one, and naming such a type from ~import/extern~ gets CS0433 out of the
+C# compiler anyway, because every reference in the framework is passed to it; an
+~extern alias~ would be the fix and is not here. Visibility is per-package for
+framework type *names* and nothing else. The REPL has no framework support.
+
 * The inbox: what a .NET thread knocks on when it wants a fiber
 
 A thread that is not a fiber has no effect handlers, no parameters and no

@@ -814,7 +814,11 @@ type private CachedDll =
       Assembly: System.Reflection.Assembly
       /// Everything reading it added to the link set — itself, and the
       /// transitive dependencies its metadata named.
-      Linked: string list }
+      Linked: string list
+      /// The shared frameworks its metadata declared. Replayed with `Linked`
+      /// and for the same reason: both are per compilation, and the parse the
+      /// cache holds is not.
+      Frameworks: string list }
 
 let private dllCache = System.Collections.Generic.Dictionary<string * int64, CachedDll>()
 
@@ -1025,12 +1029,26 @@ let rec ensureLibrary (bjoPath: string) : string =
             let loc = System.Reflection.Assembly.GetExecutingAssembly().Location
             if loc <> "" && File.Exists loc then File.GetLastWriteTimeUtc loc else DateTime.MinValue
 
+        /// What the packages of this build declare. An input like the compiler
+        /// itself: a framework taken out of a manifest has to make the modules
+        /// that named types from it stale, so that they fail with the naming
+        /// error instead of quietly staying built.
+        let declarationsWritten =
+            match Frameworks.declarationFilePath () with
+            | Some path when File.Exists path -> File.GetLastWriteTimeUtc path
+            | _ -> DateTime.MinValue
+
         let upToDate =
             File.Exists dllPath
             && (let built = File.GetLastWriteTimeUtc dllPath
                 let facts = factsOf bjoPath
 
                 compilerBuilt <= built
+                && declarationsWritten <= built
+                // A declaration *removed* deletes the file rather than
+                // touching it, so the comparison above cannot see it. This one
+                // reads what the module was built under and compares the sets.
+                && not (Frameworks.declarationsChanged bjoPath)
                 && facts.Sources |> Set.forall (fun src -> File.GetLastWriteTimeUtc src <= built)
                 // The implicit prelude edge counts as much as a written one:
                 // a module that never names the prelude is still compiled
@@ -1321,6 +1339,8 @@ let loadModuleGraph
                         dllDeps.Add path |> ignore
                         noteAssemblyPath path
 
+                    Frameworks.noteImported hit.Frameworks
+
                     hit.Decls, hit.Carried, [], hit.Macros, hit.PatternMacros, hit.HashMacros, Some hit.Assembly
                 | None ->
 
@@ -1401,6 +1421,14 @@ let loadModuleGraph
                     for depPath in linkedDeps do
                         dllDeps.Add(depPath) |> ignore
                         noteAssemblyPath depPath
+
+                    // What this import was built against is what the importing
+                    // module is compiled against too — calling a function whose
+                    // signature mentions a framework type can make the emitted
+                    // C# mention it — and is part of what the importer records,
+                    // because a program linking this assembly has to load the
+                    // frameworks it uses.
+                    Frameworks.noteImported meta.Frameworks
 
                     // Transitive, unlike the exports above: a name re-exported
                     // through this DLL is bound here, and whether calling it
@@ -1595,7 +1623,8 @@ let loadModuleGraph
                               // replay adds assemblies, and resolving a module
                               // name again would be the same answer at more
                               // cost.
-                              Linked = absPath :: linkedDeps }
+                              Linked = absPath :: linkedDeps
+                              Frameworks = meta.Frameworks }
 
                     decls, carriedDecls, [], meta.Macros, meta.PatternMacros, meta.HashMacros, Some asm
                 else

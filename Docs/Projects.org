@@ -72,8 +72,63 @@ are in ~bjo/manifest.bjo~, which is the only reader of it.
 - ~depends~ are dependencies; ~dev-depends~ are resolved as well, but *only for
   the project you are building*. A dependency's ~dev-depends~ are what its
   author needs in order to test it, and building it here runs no tests.
+- ~frameworks~ names the .NET *shared frameworks* this package's modules may
+  name types from — see below. Optional, allowed in any package.
 - ~targets~ and ~(registry ...)~ sources are not implemented. A registry source
   is an error that says so.
+
+** Shared frameworks
+
+#+BEGIN_SRC scheme
+(package
+  (name (myweb))
+  (version "0.1.0")
+  (frameworks "Microsoft.AspNetCore.App"))
+#+END_SRC
+
+A shared framework is a set of assemblies the .NET *host* loads: Kestrel and
+everything else under ~Microsoft.AspNetCore.Http~ lives in one. ~Microsoft.NETCore.App~
+is always there and must not be listed; listing it is an error, because saying
+it would suggest that not saying it left it out.
+
+Three different things follow from a declaration, and keeping them apart is the
+point of it.
+
+*You may name what you declare.* Writing a framework type in source —
+~import/class~, ~import/extern~, an annotation, a ~cast~, a ~(:is T x)~ — is
+allowed only in a package that declared the framework it comes from. Otherwise:
+
+#+BEGIN_SRC
+src/admin.bjo:4: Microsoft.AspNetCore.Http.HttpContext is in the shared framework
+  Microsoft.AspNetCore.App, which package (shop admin) does not declare.
+  Add (frameworks "Microsoft.AspNetCore.App") to its manifest.
+#+END_SRC
+
+Without that rule a package could use ~HttpContext~ without declaring it, build
+in graphs that happen to contain an HTTP library, and break for everyone else.
+
+*You may use values that reach you.* The check is about *names*. A package that
+declares nothing may hold a value of a framework type it was handed, pass it
+back, and store it — so a wrapper library's users need declare nothing, which is
+the whole reason a wrapper is worth writing.
+
+*A program's runtime needs follow what its modules actually used.* Each module
+records the frameworks a type was really resolved from, plus what its imports
+recorded, and an executable's ~runtimeconfig.json~ is built from the entry
+module's set. So a package that declares ASP.NET for its HTTP modules does not
+force it on a program that imports only its router: what nothing used is not
+asked for.
+
+*The runtime has to be installed where the program runs.* A declared framework
+is checked at build time — the error names the directories it looked in and the
+frameworks that *are* installed — but the machine running the program needs it
+too. The Docker image ~dotnet/runtime~ does not have ASP.NET; ~dotnet/aspnet~
+does.
+
+~bjo~ hands this to the compiler as ~.bjo/frameworks~, written beside the roots
+file and only when its contents change: one line per declaration, the package's
+directory and the framework's name. A single-file build with no project says it
+on the command line instead, with a repeatable ~--framework~.
 
 ** Sources: where a dependency comes from
 
@@ -250,9 +305,6 @@ modules findable and then compile the entry.
 | Command                 | What it does                                                  |
 |-------------------------+---------------------------------------------------------------|
 | ~bjo init [name] [--lib]~ | Makes a project here. The name defaults to the directory's  |
-| ~bjo add <name> …~      | Writes a dependency into the manifest, and fetches it         |
-| ~bjo remove <name>~     | Takes one out again                                           |
-| ~bjo update [name]~     | Raises this project's lower bounds to the newest releases     |
 | ~bjo fetch [--locked]~  | Resolves, fetches, writes ~.bjo/roots~. Compiles nothing      |
 | ~bjo build [--locked]~  | ~fetch~, then compile the entry — or every module of a library |
 | ~bjo run [. args...]~   | ~build~, then run the entry                                   |
@@ -266,42 +318,6 @@ mean.
 A file named inside a project — ~bjo run src/tool.bjo~, ~bjo check src/x.bjo~ —
 is compiled against the project's packages, fetching first if it has to.
 Outside a project, every command behaves exactly as it always has.
-
-** Editing the manifest
-
-#+BEGIN_SRC sh
-bjo add bjorsec --git https://github.com/bjoli/bjorsec     # newest release
-bjo add bjorsec --git https://… --at-least 0.1.0           # a bound of your own
-bjo add mylib --path ../mylib                              # a copy on this disk
-bjo add testing --path ../testing --dev                    # into dev-depends
-bjo remove mylib
-bjo update            # every git dependency
-bjo update bjorsec    # one of them
-#+END_SRC
-
-Each of these writes ~manifest.bjodat~ and then resolves, so the manifest and
-the lock never disagree for longer than one command.
-
-*They edit the file as text.* The reader hands back a `Package`, and a value
-does not know where it was written, so a manifest rewritten from one would lose
-every comment and every line break in it — starting with the commented-out
-example ~bjo init~ leaves behind. Instead a scanner finds the few characters
-that have to change and nothing else moves; the result is parsed before it is
-kept, and a file that no longer reads is put back as it was.
-
-The layout you get is therefore the layout you had: a new dependency goes into
-the ~(depends ...)~ that is already there, indented like the entries beside it,
-and only a manifest with no such clause gets a new one at the end.
-
-~bjo add~ with a git source and no ~--at-least~ reads the repository's tags and
-writes the newest as a lower bound — that is the version you get, and it stays
-that version until you say otherwise.
-
-~bjo update~ is that "otherwise". Nothing else raises a bound: under minimal
-version selection a new release of a dependency changes nothing until a
-manifest asks for it, so a build does not drift and an update is a change you
-made, in a file you can read. It replaces the whole constraint, so a
-~version-between~ you care about is one to edit by hand.
 
 ** Turning a library you already have into a package
 

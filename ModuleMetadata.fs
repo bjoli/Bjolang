@@ -71,7 +71,12 @@ open System.Text
 /// An assembly built before this names the directories of the machine it was
 /// built on, so a package fetched into another project links against files that
 /// are not there.
-let currentVersion = 11
+/// 12: `Frameworks`, the shared frameworks a module actually resolved types
+/// from, plus what its own imports recorded. An executable's runtimeconfig is
+/// built from the entry module's set, so an assembly built before this would
+/// produce a program the host refuses to start — the field is positional, and
+/// a reader of an older version could not find the fields after it either.
+let currentVersion = 12
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {
@@ -206,6 +211,15 @@ type Metadata = {
     /// instantiations exist is the importer's business and not this module's,
     /// so what crosses is the body and the importer makes the copies it needs.
     ConstrainedBodies: ConstrainedBodyEntry list
+    /// The shared frameworks this module needs at run time: the ones a type was
+    /// actually resolved from while it was compiled, and the ones its imports
+    /// recorded.
+    ///
+    /// Actually resolved rather than declared, which is the whole point: a pure
+    /// router module inside a package that declares ASP.NET records nothing, so
+    /// a command-line tool importing only the router runs on a machine with no
+    /// ASP.NET runtime installed.
+    Frameworks: string list
 }
 
 let empty = {
@@ -224,6 +238,7 @@ let empty = {
     BlockingDefs = []
     DoubleDefs = []
     ConstrainedBodies = []
+    Frameworks = []
 }
 
 /// Nothing worth writing: an executable, or a library that exports nothing.
@@ -242,6 +257,10 @@ let isEmpty (m: Metadata) =
     && m.Macros.IsEmpty
     && m.PatternMacros.IsEmpty
     && m.HashMacros.IsEmpty
+    // A library that exports nothing but uses ASP.NET still has to say so: the
+    // set travels to whatever links it, and an attribute that was never emitted
+    // says nothing at all.
+    && m.Frameworks.IsEmpty
 
 
 // ---------------------------------------------------------------------------
@@ -411,6 +430,7 @@ let serialize (m: Metadata) : string =
     putList sb putStr m.BlockingDefs
     putList sb putStr m.DoubleDefs
     putList sb putConstrainedBody m.ConstrainedBodies
+    putList sb putStr m.Frameworks
     sb.ToString()
 
 /// `assemblyPath` names the dependency in the error, because the fix is to
@@ -443,6 +463,7 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
     let blockingDefs = getList getStr c
     let doubleDefs = getList getStr c
     let constrainedBodies = getList getConstrainedBody c
+    let frameworks = getList getStr c
 
     { Version = version
       Deps = deps
@@ -458,4 +479,5 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
       HashMacros = hashMacros
       BlockingDefs = blockingDefs
       DoubleDefs = doubleDefs
-      ConstrainedBodies = constrainedBodies }
+      ConstrainedBodies = constrainedBodies
+      Frameworks = frameworks }

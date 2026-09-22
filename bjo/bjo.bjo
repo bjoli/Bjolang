@@ -55,7 +55,6 @@
 (import "manifest.bjo")
 (import "project.bjo")
 (import "resolve.bjo")
-(import "edit.bjo")
 
 ;; ---------------------------------------------------------------------------
 ;; Interop
@@ -174,7 +173,20 @@
 (type
   (: BuildRecord (Record (: mode string)
                          (: output string)
-                         (: inputs (List string)))))
+                         (: inputs (List string))
+                         ;; The .NET shared frameworks the file's package
+                         ;; declared when it was built. Not a file, so not an
+                         ;; input: a declaration that is *removed* deletes the
+                         ;; declarations file, and a file that is not there is
+                         ;; newer than nothing.
+                         (: frameworks (List string))
+                         ;; The declarations file this was built against, or ""
+                         ;; where there was none. It is an input as well — a
+                         ;; rewrite is a change the timestamps can see — and
+                         ;; this is for the change they cannot: the file
+                         ;; appearing, or going away with the last declaration
+                         ;; in the whole graph.
+                         (: declaration-file string))))
 
 (: record-file (-> string string))
 (defun (record-file file) (clr-change-extension file ".bjobuild"))
@@ -200,7 +212,7 @@
 (: input-key? (-> string bool))
 (defun (input-key? key)
   (case key
-    (("source" "dep" "compiler" "roots") #t)
+    (("source" "dep" "compiler" "roots" "frameworks") #t)
     (else #f)))
 
 ;; `None` when there is no record, or when what is there names no artefact —
@@ -222,23 +234,15 @@
           ;; accumulated nowhere: the three fields here are what a decision is
           ;; made of, and they are all present.
           (:acc inputs (listing value) #:when (input-key? key))
+          (:acc frameworks (listing value) #:when (= key "framework"))
+          (:acc declarations (folding "" (if (= key "frameworks") value declarations)))
           => (if (= artefact "")
                  None
-                 (Some (BuildRecord (mode mode) (output artefact) (inputs inputs)))))))
-
-;; Is there anything to do before the artefact can be used?
-(: stale? (-> string string bool))
-(defun (stale? file wanted)
-  ;; No record at all is *stale*, not current: there is nothing that says what
-  ;; the artefact was built from, so the only safe answer is to build it. `#f`
-  ;; here makes `ensure-built` serve a record that is not there, and fail with
-  ;; an exit code and no message.
-  (def* ((Some rec) (read-record file) #t)
-        (artefact (record-ref rec output)))
-  (or (not (= (record-ref rec mode) wanted))
-      (not (file-exists? artefact))
-      (any? #(newer? & artefact) (record-ref rec inputs))))
-
+                 (Some (BuildRecord (mode mode)
+                                    (output artefact)
+                                    (inputs inputs)
+                                    (frameworks (list-sort frameworks))
+                                    (declaration-file declarations)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Compiling
@@ -256,17 +260,113 @@
 ;; `--roots <file>` where there is a project, and nothing where there is not.
 ;; The compiler records the file as an input of what it builds, so a build made
 ;; against other packages is stale by the same comparison every other change is.
-(: roots-flags (-> (Option string) (List string)))
-(defun (roots-flags roots)
-  (match roots
-    ((Some path) (Cons "--roots" (Cons path Nil)))
+;; What a compile is made against: where the packages are, and which of them
+;; declared a .NET shared framework. Carried together because every command
+;; that passes one passes the other, and two things a caller has to keep in
+;; step are two things a caller can get out of step.
+;;
+;; Both are `None` outside a project, and the second is `None` inside one where
+;; no package declared anything — which is the ordinary case, and is what keeps
+;; such a project's command line exactly what it was before frameworks existed.
+(type (: Against (Record (: roots (Option string)) (: frameworks (Option string)))))
+
+(: nothing-against Against)
+(def nothing-against (Against (roots None) (frameworks None)))
+
+(: prepared-against (-> Prepared Against))
+(defun (prepared-against ready)
+  (Against (roots (Some (prepared-roots-file ready)))
+           (frameworks (prepared-frameworks-file ready))))
+
+(: flag-for (-> string (Option string) (List string)))
+(defun (flag-for flag path)
+  (match path
+    ((Some p) (Cons flag (Cons p Nil)))
     (None Nil)))
 
-(: compile #:sync (-> string bool bool (Option string) int))
+;; The compiler records both files as inputs of what it builds, so a build made
+;; against other packages — or against another set of declarations — is stale by
+;; the same comparison every other change is.
+(: against-flags (-> Against (List string)))
+(defun (against-flags a)
+  (list-append (flag-for "--roots" (record-ref a roots))
+               (flag-for "--frameworks" (record-ref a frameworks))))
+
+;; What the frameworks file says the package holding `file` declares.
+;;
+;; The longest directory that contains the file wins, which is the rule the
+;; compiler uses to decide the same question — and has to be, because a
+;; dependency fetched into `.bjo/pkg` lives *under* the root project.
+(: declared-for (-> Against string (List string)))
+(defun (declared-for against file)
+  (match (record-ref against frameworks)
+    (None Nil)
+    ((Some path)
+     (if (not (file-exists? path))
+         Nil
+         (let ((full (path-absolute file))
+               (lines (string-split (file-read-text path) "\n")))
+           ;; Two passes rather than one: the package a file belongs to is the
+           ;; longest directory containing it, and which that is cannot be known
+           ;; until every line has been seen.
+           (def owner
+             (loop (:for line lines)
+                   (:when-let (Some (Tuple dir name)) (split-tab (string-trim line)))
+                   (:acc out (folding "" (if (and (string-starts-with? full (str dir "/"))
+                                                  (> (string-length dir) (string-length out)))
+                                             dir
+                                             out)))
+                   => out))
+           (if (= owner "")
+               Nil
+               (list-sort
+                 (loop (:for line lines)
+                       (:when-let (Some (Tuple dir name)) (split-tab (string-trim line)))
+                       (:acc out (listing name) #:when (= dir owner))
+                       => out))))))))
+
+;; A frameworks-file line: a directory, a tab, a framework name.
+(: split-tab (-> string (Option (Tuple string string))))
+(defun (split-tab line)
+  (match (string-index #(char=? & #\tab) line)
+    ((Some tab)
+     (Some (Tuple (substring/cursors line (string-cursor-start line) tab)
+                  (substring/cursors line (string-cursor-next line tab)
+                                     (string-cursor-end line)))))
+    (None None)))
+
+;; Is there anything to do before the artefact can be used?
+(: stale? (-> string string Against bool))
+(defun (stale? file wanted against)
+  ;; No record at all is *stale*, not current: there is nothing that says what
+  ;; the artefact was built from, so the only safe answer is to build it. `#f`
+  ;; here makes `ensure-built` serve a record that is not there, and fail with
+  ;; an exit code and no message.
+  (def* ((Some rec) (read-record file) #t)
+        (artefact (record-ref rec output)))
+  (or (not (= (record-ref rec mode) wanted))
+      (not (file-exists? artefact))
+      ;; A changed declaration is a changed build: what a module may *name*
+      ;; follows from it, so one built under another set has to be built again
+      ;; — and told, if it now names something it may not.
+      (not (= (record-ref rec frameworks) (declared-for against file)))
+      ;; And the same for the file itself coming or going. The last
+      ;; declaration in a graph being taken out deletes it, and a file that is
+      ;; not there is newer than nothing — while the dependency that used to
+      ;; declare it still has to be built again, which is the compiler's own
+      ;; comparison and only runs if this one sends it there.
+      (not (= (record-ref rec declaration-file)
+              (match (record-ref against frameworks)
+                ((Some path) path)
+                (None ""))))
+      (any? #(newer? & artefact) (record-ref rec inputs))))
+
+
+(: compile #:sync (-> string bool bool Against int))
 (defun (compile file debug? lib? roots)
   (def flags (list-append (if lib? (Cons "--lib" Nil) Nil)
                           (list-append (if debug? (Cons "-d" Nil) Nil)
-                                       (roots-flags roots))))
+                                       (against-flags roots))))
   (exec "dotnet" (list->vec (Cons compiler-dll (list-append flags (Cons file Nil))))))
 
 ;; Every module of a library, in one compiler process.
@@ -274,11 +374,11 @@
 ;; `--if-stale` leaves out what is current, and `--batch` pays the compiler's
 ;; half-second start once rather than once per module. A library has no entry
 ;; to compile *from*, so this is the only way its modules get built at all.
-(: compile-batch #:sync (-> (List string) bool (Option string) int))
+(: compile-batch #:sync (-> (List string) bool Against int))
 (defun (compile-batch files debug? roots)
   (def flags (list-append (Cons "--batch" (Cons "--if-stale" Nil))
                           (list-append (if debug? (Cons "-d" Nil) Nil)
-                                       (roots-flags roots))))
+                                       (against-flags roots))))
   (exec "dotnet" (list->vec (Cons compiler-dll (list-append flags files)))))
 
 ;; The artefact as it already stands, for a file that needs no building.
@@ -302,7 +402,7 @@
 ;; `Err` carries an exit code, so a failed compile leaves through here with the
 ;; compiler's own status rather than a made-up one. The `bool` says whether this
 ;; call is what built it.
-(: ensure-built #:sync (-> string bool bool bool (Option string) (Result int (Tuple BuildRecord bool))))
+(: ensure-built #:sync (-> string bool bool bool Against (Result int (Tuple BuildRecord bool))))
 (defun (ensure-built file debug? lib? force? roots)
   (with-return ret
     (unless (have-compiler?) (ret (Err 1)))
@@ -310,7 +410,7 @@
     ;; A debug build is never served from the record: the dumps `-d` asks for
     ;; are produced by compiling, so a cached one has nothing to show.
     (def wanted (if debug? "debug" "release"))
-    (unless (or force? debug? (stale? file wanted))
+    (unless (or force? debug? (stale? file wanted roots))
       (ret (record-as-built file)))
 
     (def status (compile file debug? lib? roots))
@@ -332,7 +432,7 @@
 
 ;; Everything after the source file belongs to the program, which is the only
 ;; reading that lets a program have flags of its own.
-(: cmd-run #:sync (-> string (List string) bool bool (Option string) int))
+(: cmd-run #:sync (-> string (List string) bool bool Against int))
 (defun (cmd-run file program-args debug? force? roots)
   (match (ensure-built file debug? #f force? roots)
     ((Err status) status)
@@ -343,7 +443,7 @@
     ((Ok (Tuple rec _))
      (exec "dotnet" (list->vec (Cons (record-ref rec output) program-args))))))
 
-(: cmd-build #:sync (-> string bool bool bool (Option string) int))
+(: cmd-build #:sync (-> string bool bool bool Against int))
 (defun (cmd-build file debug? lib? force? roots)
   (match (ensure-built file debug? lib? force? roots)
     ((Err status) status)
@@ -359,7 +459,7 @@
 ;;
 ;; Many files go to one compiler process: a cold one costs about half a second
 ;; before it does anything, and `--batch` pays that once instead of per file.
-(: cmd-check #:sync (-> (List string) (Option string) int))
+(: cmd-check #:sync (-> (List string) Against int))
 (defun (cmd-check files roots)
   (if (not (have-compiler?))
       1
@@ -369,15 +469,15 @@
         (exec "dotnet"
               (list->vec (Cons compiler-dll
                                (Cons "--check"
-                                     (list-append (roots-flags roots)
+                                     (list-append (against-flags roots)
                                                   (list-append batch files)))))))))
   
 ;; The compiler's REPL has no line editing of its own, so it is run under
 ;; `rlwrap` where there is one. `-a` forces it on: the prompt is written by the
 ;; REPL rather than by a terminal rlwrap can recognise.
-(: cmd-repl #:sync (-> (Option string) int))
+(: cmd-repl #:sync (-> Against int))
 (defun (cmd-repl roots)
-  (def flags (roots-flags roots))
+  (def flags (against-flags roots))
   (if (not (have-compiler?))
       1
       (match (which "rlwrap")
@@ -436,15 +536,15 @@
 ;; there were projects. Inside one, the project is resolved and fetched first:
 ;; a file in a project imports the project's packages whether it is reached as
 ;; `src/main.bjo` or as the entry.
-(: roots-near #:sync (-> string bool (Result string (Option string))))
+(: roots-near #:sync (-> string bool (Result string Against)))
 (defun (roots-near where locked?)
   (def (Ok (Some project)) (project-around where)
-    :fail (((Ok None) (Ok None))
+    :fail (((Ok None) (Ok nothing-against))
            ((Err why) (Err why))))
   (def (Ok ready) (prepare project locked?) :propagate)
-  (Ok (Some (prepared-roots-file ready))))
+  (Ok (prepared-against ready)))
 
-(: roots-for-file #:sync (-> string bool (Result string (Option string))))
+(: roots-for-file #:sync (-> string bool (Result string Against)))
 (defun (roots-for-file file locked?)
   (roots-near (file-directory file) locked?))
 
@@ -461,7 +561,7 @@
   (with-return ret
     (def (Ok ready) (prepare project (record-ref line locked))
       :fail (((Err why) (Err (fail why)))))
-    (def roots (Some (prepared-roots-file ready)))
+    (def roots (prepared-against ready))
 
     (unless (project-has-entry? project)
       (ret (build-library project line roots say?)))
@@ -478,7 +578,7 @@
 (defun (package-name-of project)
   (name->string (record-ref (project-package project) name)))
 
-(: build-library #:sync (-> Project Cmdline (Option string) bool (Result int (Option BuildRecord))))
+(: build-library #:sync (-> Project Cmdline Against bool (Result int (Option BuildRecord))))
 (defun (build-library project line roots say?)
   (with-return ret
     (def sources (sources-under (project-src project)))
@@ -533,7 +633,7 @@
                    sources))
     (when (empty? files)
       (ret (fail #"bjo check: there are no modules under ${(project-src project)}.")))
-    (cmd-check files (Some (prepared-roots-file ready)))))
+    (cmd-check files (prepared-against ready))))
 
 
 ;; ---------------------------------------------------------------------------
@@ -568,13 +668,6 @@
   (println "Usage:")
   (println "  bjo init [name] [--lib]                 Make a project here. The name defaults to")
   (println "                                          this directory's; --lib makes a library.")
-  (println "  bjo add <name> --git <url> [--at-least <version>] [--dev]")
-  (println "  bjo add <name> --path <dir> [--dev]     Write a dependency into the manifest and")
-  (println "                                          fetch it. With --git and no version, the")
-  (println "                                          newest release there is.")
-  (println "  bjo remove <name>                       Take a dependency out of the manifest.")
-  (println "  bjo update [name]                       Raise this project's lower bounds to the")
-  (println "                                          newest releases. Nothing else moves them.")
   (println "  bjo fetch [--locked]                    Fetch what the manifest names. Compiles nothing.")
   (println "  bjo run [-d] [-c] [args...]             Build this project and run it.")
   (println "  bjo run . [args...]                     The same, when the program takes arguments.")
@@ -627,12 +720,6 @@
               (:acc out (listing file))
               => out))))
 
-(: takes-raw-arguments? (-> string bool))
-(defun (takes-raw-arguments? command)
-  (case command
-    (("add" "remove" "update") #t)
-    (else #f)))
-
 (: dispatch #:sync (-> string Cmdline int))
 (defun (dispatch command line)
   (def* (debug? (record-ref line debug))
@@ -647,27 +734,6 @@
        (when (or debug? force? locked?)
          (ret (fail "bjo init: writes files and compiles nothing, so it takes no build flags.")))
        (cmd-init rest lib?)))
-
-    ;; The three that write `manifest.bjodat`. Each edits the file and then
-    ;; resolves, so that a manifest and the lock beside it never disagree for
-    ;; longer than one command.
-    (("add" "remove" "update")
-     (with-return ret
-       (def (Ok project) (project-here command) :fail (((Err why) (fail why))))
-       (def (Ok said)
-         (case command
-           ("add" (cmd-add project rest))
-           ("remove" (cmd-remove project rest))
-           (else (cmd-update project rest)))
-         :fail (((Err why) (fail why))))
-       (println said)
-       ;; Read again: the manifest has just been written, and the `Package` in
-       ;; hand is the one from before the edit — resolving that would fetch
-       ;; what was there a moment ago.
-       (def (Ok edited) (project-at (project-dir project)) :fail (((Err why) (fail why))))
-       (match (prepare edited #f)
-         ((Err why) (fail why))
-         ((Ok ready) 0))))
 
     ;; Resolve, fetch and write the roots file, and stop there. What `build`
     ;; does first, for a checkout that is about to be built offline or by
@@ -769,13 +835,6 @@
   ;; are what follows it.
   (def (Cons command rest) (vec->list args)
     :fail ((Nil (usage) 1)))
-
-  ;; `add`, `remove` and `update` read their own arguments. Their flags come
-  ;; *after* the package name — `bjo add bjorsec --git ...` — and the parser
-  ;; below stops at the first thing that is not a flag, so it would hand them
-  ;; over as positional arguments and refuse `--git` as unknown.
-  (if (takes-raw-arguments? command)
-      (dispatch command (Cmdline (debug #f) (force #f) (lib #f) (locked #f) (rest rest)))
-      (match (parse-flags rest)
-        ((Err message) (fail message))
-        ((Ok line) (dispatch command line)))))
+  (match (parse-flags rest)
+    ((Err message) (fail message))
+    ((Ok line) (dispatch command line))))

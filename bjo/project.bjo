@@ -31,6 +31,7 @@
 
   ;; The roots file
   Root root-name root-dir write-roots
+  project-frameworks-file write-frameworks
 
   ;; Sources
   sources-under
@@ -136,6 +137,11 @@
 
 (: project-roots-file (-> Project string))
 (defun (project-roots-file p) (path-combine (project-dot-bjo p) "roots"))
+
+;; Which package declared which .NET shared framework. Beside the roots file,
+;; because it answers the same kind of question about the same set of packages.
+(: project-frameworks-file (-> Project string))
+(defun (project-frameworks-file p) (path-combine (project-dot-bjo p) "frameworks"))
 
 (: project-lock-file (-> Project string))
 (defun (project-lock-file p) (path-combine (project-dir p) "bjo.lock"))
@@ -312,6 +318,88 @@
   (def current (if (file-exists? path) (file-read-text path) ""))
   (cond
     ((= current text) #f)
+    (else
+     (match (parent-directory path)
+       ((Some dir) (directory-create dir))
+       (None unit))
+     (file-write-text path text)
+     #t)))
+
+
+;; ---------------------------------------------------------------------------
+;; The frameworks file
+;; ---------------------------------------------------------------------------
+;;
+;; Which package declared which .NET shared framework, for the compiler's
+;; `--frameworks`. One line per pair, two TAB-separated fields: the package's
+;; own directory — the one its `manifest.bjodat` is in, not its `src` — and the
+;; framework's name.
+;;
+;; A package's directory rather than its module root, because that is what the
+;; compiler compares a source file against, and because a dependency fetched
+;; into `.bjo/pkg` sits *under* the root project: the innermost directory
+;; containing the file is the package the file belongs to, and it has to be the
+;; package rather than a directory inside it.
+;;
+;; The declarations are read from each root's own manifest rather than carried
+;; out of the resolver: a root's directory is `<package>/src`, its manifest is
+;; beside it, and reading a handful of small files is cheaper than a second
+;; answer to "what did this package say" that could disagree with the first.
+
+;; The package directory a root's modules live under.
+(: root-package-dir (-> Root (Option string)))
+(defun (root-package-dir r)
+  (parent-directory (root-dir r)))
+
+;; What one root's package declares, or nothing when it has no manifest to say
+;; it in — which is what a root without one means.
+(: root-frameworks (-> Root (List string)))
+(defun (root-frameworks r)
+  (match (root-package-dir r)
+    (None Nil)
+    ((Some dir)
+     (def manifest-file (path-combine dir manifest-name))
+     (if (not (file-exists? manifest-file))
+         Nil
+         (match (bjodat-parse-Package (file-read-text manifest-file))
+           ;; A manifest that does not read is not this function's to report:
+           ;; whatever is about to build against it says so, with the reason.
+           ((Err why) Nil)
+           ((Ok package) (record-ref package frameworks)))))))
+
+;; The file's text, sorted for the same reason the roots file is: a diff shows
+;; what changed rather than what was reordered.
+(: frameworks-text (-> (List Root) string))
+(defun (frameworks-text roots)
+  (def lines
+    (loop (:for r roots)
+          (:acc out (folding Nil
+                             (match (root-package-dir r)
+                               (None out)
+                               ((Some dir)
+                                (loop (:for name (root-frameworks r))
+                                      (:acc inner (folding out (Cons (str dir "\t" name) inner)))
+                                      => inner)))))
+          => out))
+  (if (empty? lines)
+      ""
+      (str (string-join (list->vec (list-sort lines)) "\n") "\n")))
+
+;; Writes the frameworks file, and answers whether the build has one at all.
+;;
+;; No package declaring anything means no file and no flag, so a project that
+;; uses no framework is compiled by exactly the command line it was before.
+;; Written only when the contents change, for the reason `write-roots` gives:
+;; the compiler records it as an input of every module built against it.
+(: write-frameworks #:sync (-> string (List Root) bool))
+(defun (write-frameworks path roots)
+  (def text (frameworks-text roots))
+  (def current (if (file-exists? path) (file-read-text path) ""))
+  (cond
+    ((= text "")
+     (when (file-exists? path) (file-delete path))
+     #f)
+    ((= current text) #t)
     (else
      (match (parent-directory path)
        ((Some dir) (directory-create dir))

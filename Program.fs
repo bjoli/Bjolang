@@ -49,7 +49,16 @@ type CompilerOptions =
       /// Kept as the path rather than as the roots it loaded, because the build
       /// record has to name the file: what a module resolves to depends on it,
       /// and a driver comparing timestamps has to know that.
-      Roots: string option }
+      Roots: string option
+
+      /// The `--frameworks` file: which package declared which .NET shared
+      /// framework, one TAB-separated pair per line. Kept as a path for the
+      /// same reason the roots file is.
+      FrameworksFile: string option
+
+      /// `--framework`, repeatable: what a file no line of that file covers may
+      /// name, which is how a single-file build declares anything at all.
+      Frameworks: string list }
 
 let defaultOptions =
     { InputFiles = []
@@ -62,7 +71,9 @@ let defaultOptions =
       Report = None
       EmitCs = None
       Check = false
-      Roots = None }
+      Roots = None
+      FrameworksFile = None
+      Frameworks = [] }
 
 let printUsage () =
     printfn "Bjolang Compiler"
@@ -89,6 +100,15 @@ let printUsage () =
     printfn "              Whoever writes this file must leave it alone when its contents"
     printfn "              have not changed: it is an input of every build made against it,"
     printfn "              so rewriting it makes everything stale."
+    printfn "  --frameworks <file>"
+    printfn "              Which package declared which .NET shared framework. One line per"
+    printfn "              pair: the package's directory, a tab, the framework's name."
+    printfn "              A module may only *name* types from a framework its own package"
+    printfn "              declares; it may use values of any type that reaches it. Written"
+    printfn "              by `bjo`, and left alone when unchanged for the reason above."
+    printfn "  --framework <name>"
+    printfn "              A shared framework for every file no --frameworks line covers,"
+    printfn "              which is all of them in a single-file build. Repeatable."
     printfn "  --help      Show this help message"
     printfn ""
     printfn "Batch options:"
@@ -214,6 +234,30 @@ let private loadRoots (rootsPath: string) : Paths.PackageRoot list =
 
     roots |> List.map fst
 
+/// Reads the file `--frameworks` named: one line per declared framework per
+/// package, as `<package directory>TAB<framework name>`.
+///
+/// Two fields and a tab rather than Bjolang, unlike the roots file: it is
+/// written by a tool and read by a tool, a package directory is a path and a
+/// framework name has no syntax of its own, and nothing here is ever edited by
+/// hand.
+let private loadFrameworks (path: string) : (string * string) list =
+    let full = Path.GetFullPath path
+
+    if not (File.Exists full) then
+        failwithf $"--frameworks: no such file '%s{path}'."
+
+    File.ReadAllLines full
+    |> Array.toList
+    |> List.mapi (fun i line -> i + 1, line)
+    |> List.filter (fun (_, line) -> line.Trim() <> "" && not (line.StartsWith "#"))
+    |> List.map (fun (lineNumber, line) ->
+        match line.Split('\t') with
+        | [| dir; name |] when dir.Trim() <> "" && name.Trim() <> "" -> dir.Trim(), name.Trim()
+        | _ ->
+            failwithf
+                $"Invalid frameworks file '%s{full}', line %d{lineNumber}: a line is a package directory, a tab, and a framework name.")
+
 let rec parseArgs (args: string list) (opts: CompilerOptions) =
     match args with
     | [] -> opts
@@ -229,6 +273,11 @@ let rec parseArgs (args: string list) (opts: CompilerOptions) =
     | "--report" :: path :: rest -> parseArgs rest { opts with Report = Some path }
     | "--emit-cs" :: path :: rest -> parseArgs rest { opts with EmitCs = Some path }
     | "--roots" :: path :: rest -> parseArgs rest { opts with Roots = Some path }
+    | "--frameworks" :: path :: rest -> parseArgs rest { opts with FrameworksFile = Some path }
+    // Repeatable, like an input file and for the same reason: a build declares
+    // as many frameworks as it declares, and the last one is not the only one.
+    | "--framework" :: name :: rest ->
+        parseArgs rest { opts with Frameworks = opts.Frameworks @ [ name ] }
     | "-d" :: rest
     | "--debug" :: rest -> parseArgs rest { opts with Debug = true }
     | arg :: rest when not (arg.StartsWith("-")) ->
@@ -257,6 +306,30 @@ let private run (argv: string array) =
             printfn $"Error: %s{ex.Message}"
             exit 1
     | None -> ()
+
+    // The same rule as the roots file, and installed at the same moment: which
+    // package declared what decides which type names a module may write, and a
+    // module read before the answer was known would be judged by another one.
+    match options.FrameworksFile with
+    | Some path ->
+        try
+            Frameworks.setDeclared path (loadFrameworks path)
+        with ex ->
+            printfn $"Error: %s{ex.Message}"
+            exit 1
+    | None -> ()
+
+    Frameworks.setGlobal options.Frameworks
+
+    // Every declared framework has to be installed, with a reference pack
+    // beside it. Said once, here, rather than as a type error on the first name
+    // that could not be found — which would name the type and not the reason.
+    try
+        for name in Frameworks.declaredHere () do
+            Frameworks.checkAvailable name
+    with ex ->
+        printfn $"%s{ex.Message}"
+        exit 1
 
     if options.Repl then
         Repl.run ()

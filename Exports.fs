@@ -1127,4 +1127,8 @@ let metadata
       HashMacros = hashMacros
       BlockingDefs = blockingDefs
       DoubleDefs = doubleDefs
-      ConstrainedBodies = constrainedBodies }
+      ConstrainedBodies = constrainedBodies
+      // The driver's to fill in, like `Deps`: which shared frameworks were
+      // resolved from is a fact about the compilation rather than about the
+      // declarations this module exports.
+      Frameworks = [] }

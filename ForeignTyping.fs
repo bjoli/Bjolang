@@ -103,6 +103,10 @@ let internal classInfoOfSpec (spec: ClassImportSpec) : ClrClassInfo =
                 | Some t -> t
                 | None -> DotNetInterop.resolveType $" at %s{where}" spec.ClrClass
 
+    // Named in source, so the package doing the naming has to have declared
+    // the framework it came out of.
+    DotNetInterop.checkNameable spec.Range spec.ClrClass clrType
+
     // The two halves of the same claim: a generic type has to be imported
     // applied, and an ordinary one cannot be.
     if clrType.IsGenericTypeDefinition && spec.TypeParams.IsEmpty then
@@ -269,7 +273,7 @@ let internal reconcileForeignArgs
 /// under these names and then go their own way.
 let internal externTarget (info: ClrExternInfo) (r: Range) : string * System.Type * HMType =
     let where = Lexer.formatPos r
-    where, DotNetInterop.resolveType $" at %s{where}" info.ClrType, TCon(info.ClrType, [])
+    where, DotNetInterop.resolveNamedType r info.ClrType, TCon(info.ClrType, [])
 
 /// The metadata of a *generic* `import/extern` call.
 ///

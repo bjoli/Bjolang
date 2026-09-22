@@ -28,7 +28,7 @@
 ;;     silently would build code the other manifest never asked for.
 
 (export
-  Prepared prepared-roots-file prepared-roots prepared-dependencies
+  Prepared prepared-roots-file prepared-frameworks-file prepared-roots prepared-dependencies
   prepare)
 
 (import (std prelude))
@@ -40,7 +40,12 @@
 
 ;; What a project turned out to need: the roots file to hand the compiler, and
 ;; the packages it names.
-(type (: Prepared (Record (: roots-file string) (: roots (List Root)))))
+;; `frameworks-file` is `None` when no package in the graph declared a .NET
+;; shared framework, which is the ordinary case: then no file is written and no
+;; flag is passed, and the build is exactly the build it was before.
+(type (: Prepared (Record (: roots-file string)
+                          (: frameworks-file (Option string))
+                          (: roots (List Root)))))
 
 ;; A manifest that has been read and whose dependencies have not been walked.
 ;;
@@ -102,6 +107,9 @@
 
 (: prepared-roots-file (-> Prepared string))
 (defun (prepared-roots-file p) (record-ref p roots-file))
+
+(: prepared-frameworks-file (-> Prepared (Option string)))
+(defun (prepared-frameworks-file p) (record-ref p frameworks-file))
 
 (: prepared-roots (-> Prepared (List Root)))
 (defun (prepared-roots p) (record-ref p roots))
@@ -793,7 +801,16 @@
   (def roots (Cons own (list-append path-roots fetched-roots)))
   (def roots-path (project-roots-file project))
   (ignore (write-roots roots-path roots))
-  (Ok (Prepared (roots-file roots-path) (roots roots))))
+
+  ;; Beside the roots file, and written by the same rule: only when its
+  ;; contents change, because the compiler records it as an input of every
+  ;; module built against it.
+  (def frameworks-path (project-frameworks-file project))
+  (def declared? (write-frameworks frameworks-path roots))
+
+  (Ok (Prepared (roots-file roots-path)
+                (frameworks-file (if declared? (Some frameworks-path) None))
+                (roots roots))))
 
 ;; Writes the lock if it has to, and says what changed.
 ;;

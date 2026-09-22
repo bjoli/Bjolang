@@ -730,105 +730,245 @@ def test_fetched_refused(work, c):
     c.says("and it says whose disk that is", result, "may not")
 
 
-# --- add, remove, update ----------------------------------------------------
+# --- shared frameworks ------------------------------------------------------
+#
+# A .NET shared framework is a directory of assemblies the *host* loads, named
+# in a manifest. What is checked here is the rule around it: a package may name
+# types only from a framework it declares, may use values of any type that
+# reaches it, and a program's runtimeconfig follows what its modules actually
+# used rather than what anything declared.
+#
+# ASP.NET is the framework these use because it is the one a .NET SDK installs
+# beside the runtime. Where it is not installed the whole group is skipped
+# rather than faked: there is nothing here that a stub could answer for.
 
-@test("editing the manifest")
-def test_editing(work, c):
-    origin = work / "origin"
-    release(origin, "lib", "0.1.0")
-    release(origin, "lib", "0.2.0")
-    local = make_package(work / "local", "helper", "0.1.0")
+ASPNET = "Microsoft.AspNetCore.App"
 
+
+def aspnet_installed():
+    """Is there an ASP.NET runtime *and* a reference pack to compile against?"""
+    dotnet = shutil.which("dotnet")
+    if not dotnet:
+        return False
+
+    root = Path(dotnet).resolve().parent
+    shared = root / "shared" / ASPNET
+    pack = root / "packs" / f"{ASPNET}.Ref"
+    return shared.is_dir() and any(shared.iterdir()) and pack.is_dir() and any(pack.iterdir())
+
+
+def runtimeconfig_of(app):
+    path = app / "src" / "main.runtimeconfig.json"
+    return path.read_text() if path.exists() else ""
+
+
+# A module that names an ASP.NET type, and one that names none. `StatusCodes`
+# is a class of integer constants, which is the smallest thing a framework can
+# be asked for: naming it is what needs declaring, and reading one proves the
+# type resolved, compiled and loaded.
+WEB_CORE = '''(import (std prelude))
+(export ok-status headers header-count)
+
+(import/extern
+  (status-ok (: Microsoft.AspNetCore.Http.StatusCodes.Status200OK int #:get)))
+
+(import/class
+  (Headers (: Microsoft.AspNetCore.Http.HeaderDictionary (-> Headers))))
+
+(: ok-status (-> int))
+(defun (ok-status) status-ok)
+
+;; A value of a framework type, for a package that does not declare the
+;; framework to hold and hand back.
+(: headers (-> Headers))
+(defun (headers) (Headers.))
+
+(: header-count (-> Headers int))
+(defun (header-count h) (.-Count h))
+'''
+
+WEB_ROUTER = '''(import (std prelude))
+(export route)
+
+(: route (-> string string))
+(defun (route path) (str "route:" path))
+'''
+
+
+@test("shared frameworks")
+def test_frameworks(work, c):
+    if not aspnet_installed():
+        c.that(f"SKIPPED: no {ASPNET} runtime or reference pack on this machine", True)
+        return
+
+    # A library that declares ASP.NET, with one module that uses it and one
+    # that does not.
+    web = work / "web"
+    write(web / "manifest.bjodat",
+          f'(package\n  (name (fwweb))\n  (version "0.1.0")\n  (frameworks "{ASPNET}"))\n')
+    write(web / "src" / "core.bjo", WEB_CORE)
+    write(web / "src" / "router.bjo", WEB_ROUTER)
+
+    # 15. Declare and use, in the package that declares it.
+    own = work / "own"
+    write(own / "manifest.bjodat",
+          f'(package\n  (name (fwown))\n  (version "0.1.0")\n  (frameworks "{ASPNET}"))\n')
+    write(own / "src" / "main.bjo",
+          '(import (std prelude))\n'
+          '(import/extern\n'
+          '  (status-ok (: Microsoft.AspNetCore.Http.StatusCodes.Status200OK int #:get)))\n'
+          '(defun (main) (println (str "status " (int->string status-ok))) 0)\n')
+
+    declared = run_bjo(own, "run")
+    c.worked("a package that declares a framework may name its types", declared)
+    c.says("and the program runs", declared, "status 200")
+    c.that("the frameworks file says which package declared what",
+           f"{own}\t{ASPNET}" in (own / ".bjo" / "frameworks").read_text(),
+           (own / ".bjo" / "frameworks").read_text())
+    c.that("and the runtimeconfig asks the host for both frameworks",
+           '"frameworks"' in runtimeconfig_of(own) and ASPNET in runtimeconfig_of(own),
+           runtimeconfig_of(own))
+    c.that("the build record says what the package declared",
+           f"framework {ASPNET}" in (own / "src" / "main.bjobuild").read_text())
+
+    # 16 and 19. A package that declares nothing, depending on one that does:
+    # it holds a framework value and passes it back without naming its type.
     app = work / "app"
-    app.mkdir(parents=True)
-    run_bjo(app, "init")
-    before = (app / "manifest.bjodat").read_text()
-
-    # `add` with no version takes the newest release there is.
-    added = run_bjo(app, "add", "lib", "--git", str(origin))
-    c.worked("bjo add with a git source", added)
-    c.says("and it says which version it wrote", added, '(version-at-least "0.2.0")')
-    manifest = (app / "manifest.bjodat").read_text()
-    c.that("the clause is in the manifest",
-           '(package (name (lib)) (version (version-at-least "0.2.0"))' in manifest, manifest)
-    c.that("every comment the manifest had is still there",
-           all(line in manifest for line in before.splitlines() if line.strip().startswith(";;")),
-           manifest)
-    c.says("and the lock was written", added, "added (lib) 0.2.0")
-    c.that("the package was fetched",
-           (app / ".bjo" / "pkg" / "lib@0.2.0" / "src" / "core.bjo").exists())
-
-    # A second one goes into the clause that is there.
-    second = run_bjo(app, "add", "helper", "--path", "../local")
-    c.worked("bjo add with a path source", second)
-    manifest = (app / "manifest.bjodat").read_text()
-    c.that("both dependencies are in one depends clause",
-           manifest.count("(depends") == 1 + before.count("(depends"), manifest)
-    c.that("and the path dependency is in the roots file",
-           str(local / "src") in (app / ".bjo" / "roots").read_text())
-
-    # The program can use them both straight away.
-    write(app / "src" / "main.bjo",
-          '(import (std prelude))\n(import (lib core))\n'
-          '(defun (main) (println (hello)) 0)\n')
-    ran = run_bjo(app, "run")
-    c.says("what was added builds and runs", ran, "lib 0.2.0")
-
-    # Refusals.
-    again = run_bjo(app, "add", "lib", "--git", str(origin))
-    c.failed("adding the same name twice is refused", again)
-    c.says("and it says it is already there", again, "already a dependency")
-
-    for label, arguments, wanted in [
-        ("a reserved name", ["add", "std", "--path", "../local"], "part of the standard library"),
-        ("the project itself", ["add", "app", "--path", "../local"], "is this project itself"),
-        ("no source at all", ["add", "nowhere"], "where does"),
-        ("both sources", ["add", "x", "--git", "u", "--path", "d"], "two answers to the same question"),
-        ("an unknown flag", ["add", "x", "--branch", "main"], "unknown flag"),
-    ]:
-        result = run_bjo(app, *arguments)
-        c.failed(f"add with {label} is refused", result)
-        c.says(f"and {label} says why", result, wanted)
-
-    c.that("a refused add changed nothing",
-           "(name (std))" not in (app / "manifest.bjodat").read_text())
-
-    # update raises the lower bound, and only that.
     write(app / "manifest.bjodat",
-          (app / "manifest.bjodat").read_text().replace('(version-at-least "0.2.0")',
-                                                        '(version-at-least "0.1.0")'))
-    run_bjo(app, "fetch")
-    updated = run_bjo(app, "update")
-    c.worked("bjo update", updated)
-    c.says("and it says what it raised", updated, "(lib) at least 0.2.0 (was 0.1.0)")
-    c.that("the manifest says so",
-           '(version-at-least "0.2.0")' in (app / "manifest.bjodat").read_text())
-    c.says("and the lock moved with it", updated, "(lib) 0.2.0 (was 0.1.0)")
+          '(package\n  (name (fwapp))\n  (version "0.1.0")\n'
+          '  (depends (package (name (fwweb)) (source (path (dir "../web"))))))\n')
+    write(app / "src" / "main.bjo",
+          '(import (std prelude))\n(import (fwweb core))\n'
+          '(defun (main)\n'
+          '  (def h (headers))\n'
+          '  (println (str "status " (int->string (ok-status))\n'
+          '                " headers " (int->string (header-count h))))\n'
+          '  0)\n')
 
-    nothing = run_bjo(app, "update")
-    c.says("a second update has nothing to do", nothing, "Nothing to update")
+    through = run_bjo(app, "run")
+    c.worked("a value of a framework type may cross a package boundary", through)
+    c.says("and the program runs", through, "status 200 headers 0")
+    c.that("the runtimeconfig takes the framework from the import's metadata",
+           ASPNET in runtimeconfig_of(app), runtimeconfig_of(app))
 
-    missing = run_bjo(app, "update", "nosuch")
-    c.failed("updating something that is not a dependency is refused", missing)
+    # 17. Only what is used: the pure module of the same package.
+    plain = work / "plain"
+    write(plain / "manifest.bjodat",
+          '(package\n  (name (fwplain))\n  (version "0.1.0")\n'
+          '  (depends (package (name (fwweb)) (source (path (dir "../web"))))))\n')
+    write(plain / "src" / "main.bjo",
+          '(import (std prelude))\n(import (fwweb router))\n'
+          '(defun (main) (println (route "/x")) 0)\n')
 
-    # remove takes the entry out, and the clause with the last entry.
-    removed = run_bjo(app, "remove", "lib")
-    c.worked("bjo remove", removed)
-    c.that("the entry is gone", "(name (lib))" not in
-           "".join(line for line in (app / "manifest.bjodat").read_text().splitlines()
-                   if not line.strip().startswith(";;")))
-    c.says("and the lock says so", removed, "removed (lib) 0.2.0")
+    router = run_bjo(plain, "run")
+    c.worked("a module of that package that uses no framework", router)
+    c.says("and it runs", router, "route:/x")
+    c.that("its program's runtimeconfig asks for no framework it does not need",
+           ASPNET not in runtimeconfig_of(plain), runtimeconfig_of(plain))
 
-    run_bjo(app, "remove", "helper")
-    left = "".join(line for line in (app / "manifest.bjodat").read_text().splitlines()
-                   if not line.strip().startswith(";;"))
-    c.that("the empty depends clause goes too", "(depends" not in left, left)
-    c.that("and the manifest still parses",
-           run_bjo(app, "fetch").returncode == 0)
+    # 18. The naming check, in a graph where the framework is already loaded:
+    # `(fwweb core)` is compiled first, so its assemblies are in the process.
+    naming = app / "src" / "main.bjo"
+    kept = naming.read_text()
+    write(naming,
+          '(import (std prelude))\n(import (fwweb core))\n'
+          '(import/class (Ctx (: Microsoft.AspNetCore.Http.HttpContext)))\n'
+          '(defun (main) (println (int->string (ok-status))) 0)\n')
 
-    gone = run_bjo(app, "remove", "lib")
-    c.failed("removing something that is not there is refused", gone)
-    c.says("and it says so", gone, "is not a dependency")
+    undeclared = run_bjo(app, "build")
+    c.failed("naming a framework type without declaring it is refused", undeclared)
+    c.says("and it names the framework", undeclared, f"is in the shared framework")
+    c.says("and the package that has to declare it", undeclared, "(fwapp) does not declare")
+    write(naming, kept)
+
+    # 20. The hint, where nothing in the graph declares the framework at all.
+    hint = work / "hint"
+    write(hint / "manifest.bjodat",
+          '(package\n  (name (fwhint))\n  (version "0.1.0"))\n')
+    write(hint / "src" / "main.bjo",
+          '(import (std prelude))\n'
+          '(import/class (Ctx (: Microsoft.AspNetCore.Http.HttpContext)))\n'
+          '(defun (main) 0)\n')
+
+    hinted = run_bjo(hint, "build")
+    c.failed("a framework type nothing declared is not found", hinted)
+    c.says("and the error says where such types live", hinted,
+           f"live in the shared framework {ASPNET}")
+
+    # 21. Frameworks that cannot be declared.
+    nope = work / "nope"
+    write(nope / "manifest.bjodat",
+          '(package\n  (name (fwnope))\n  (version "0.1.0")\n  (frameworks "Microsoft.Nope.App"))\n')
+    write(nope / "src" / "main.bjo", '(import (std prelude))\n(defun (main) 0)\n')
+
+    missing = run_bjo(nope, "build")
+    c.failed("declaring a framework that is not installed is refused", missing)
+    c.says("and it lists what is installed", missing, "Installed here:")
+
+    write(nope / "manifest.bjodat",
+          '(package\n  (name (fwnope))\n  (version "0.1.0")\n'
+          '  (frameworks "Microsoft.NETCore.App"))\n')
+    core = run_bjo(nope, "build")
+    c.failed("declaring the framework every program already has is refused", core)
+    c.says("and says why", core, "every program already has")
+
+    # 22. Staleness: the declaration removed from the library's manifest.
+    c.worked("the app builds while the library declares the framework",
+             run_bjo(app, "build"))
+    write(web / "manifest.bjodat",
+          '(package\n  (name (fwweb))\n  (version "0.1.0"))\n')
+
+    stale = run_bjo(app, "build")
+    c.failed("removing the declaration makes the module that used it fail", stale)
+    c.that("and it is not served from the last build",
+           "Up to date" not in said(stale), said(stale)[-300:])
+    c.says("the failure is about the framework type", stale, "Microsoft.AspNetCore.Http")
+
+    write(web / "manifest.bjodat",
+          f'(package\n  (name (fwweb))\n  (version "0.1.0")\n  (frameworks "{ASPNET}"))\n')
+    c.worked("and putting it back builds again", run_bjo(app, "build"))
+    c.says("and a build after that has nothing to do",
+           run_bjo(app, "build"), "Up to date")
+
+    # 23. A single file, with no project and no manifest at all.
+    lone = work / "lone"
+    lone.mkdir(parents=True, exist_ok=True)
+    write(lone / "lone.bjo",
+          '(import (std prelude))\n'
+          '(import/extern\n'
+          '  (status-ok (: Microsoft.AspNetCore.Http.StatusCodes.Status200OK int #:get)))\n'
+          '(defun (main) (println (str "lone " (int->string status-ok))) 0)\n')
+
+    compiler = ROOT / "bin" / "Release" / "net10.0" / "Bjolang.dll"
+    built = subprocess.run(["dotnet", str(compiler), "--framework", ASPNET, "lone.bjo"],
+                           cwd=str(lone), capture_output=True, text=True, timeout=600)
+    c.worked("--framework declares one for a single-file build", built)
+    if (lone / "lone.exe").exists():
+        ran = subprocess.run(["dotnet", "lone.exe"], cwd=str(lone),
+                             capture_output=True, text=True, timeout=600)
+        c.says("and the program runs", ran, "lone 200")
+
+    # 24. A project with no framework anywhere in its graph is compiled exactly
+    # as before: no file, no flag, and the runtimeconfig it always had.
+    #
+    # `plain` will not do for this, and the reason is the design: it depends on
+    # a package that *does* declare one, so the file exists and names that
+    # package — the declaration belongs to the graph, not to the program.
+    quiet = work / "quiet"
+    write(quiet / "manifest.bjodat",
+          '(package\n  (name (fwquiet))\n  (version "0.1.0"))\n')
+    write(quiet / "src" / "main.bjo",
+          '(import (std prelude))\n(defun (main) (println "quiet") 0)\n')
+
+    c.worked("a project with no framework anywhere builds", run_bjo(quiet, "build"))
+    c.that("and gets no frameworks file at all",
+           not (quiet / ".bjo" / "frameworks").exists())
+    c.that("its build record names no framework",
+           not any(line.startswith("framework")
+                   for line in (quiet / "src" / "main.bjobuild").read_text().splitlines()),
+           (quiet / "src" / "main.bjobuild").read_text())
+    c.that("and its runtimeconfig is the single-framework one it always was",
+           '"framework": {' in runtimeconfig_of(quiet), runtimeconfig_of(quiet))
 
 
 # ---------------------------------------------------------------------------

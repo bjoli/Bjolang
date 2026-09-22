@@ -506,7 +506,7 @@ let rec checkPattern
     // nobody wrote.
     | PTypeTest(typeName, binder, r) ->
         let where = Lexer.formatPos r
-        let testedClr = DotNetInterop.resolveType $" at %s{where}" typeName
+        let testedClr = DotNetInterop.resolveNamedType r typeName
         let scrutinee = prune env.Registry expectedType
 
         if DotNetInterop.isUnresolved scrutinee then
