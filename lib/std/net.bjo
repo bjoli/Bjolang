@@ -1,0 +1,240 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/net.bjo — TCP, as two byte ports.
+;;
+;; Connecting gives you a `(Tuple ByteInputPort ByteOutputPort)` and nothing
+;; else — no socket object, which is why this module is `(std net)` and not
+;; `(std socket)`. That is the whole design: a protocol written against
+;; `(std ports)` runs over TCP without knowing it is TCP, and `byte-pipe` can
+;; stand in for a network in a test.
+;;
+;; Everything you do with a connection comes from `(std ports)`: `read-some`,
+;; `read-bytes-evt`, `write-bytes!`, `flush!`, `shutdown!`, `limited`,
+;; `byte->text-input-port`. Import both.
+;;
+;;     (match (tcp-connect "127.0.0.1" 8080)
+;;       ((Ok (Tuple in out))
+;;        (write-bytes! out request)
+;;        (flush! out)
+;;        (shutdown! out)              ; a FIN: "I have finished asking"
+;;        (read-some in))              ; ...and the answer still arrives
+;;       ((Err e) ...))
+;;
+;; THE INVARIANT THE ACCEPT SIDE TURNS ON, which is the byte port's one layer
+;; out:
+;;
+;;   A connection the operating system has handed over belongs to the listener,
+;;   not to the event that asked for it. An accept never takes a connection from
+;;   the kernel — it takes one from the listener's slot, and only when it wins.
+;;
+;; So `accept-evt` is a real CML event: a branch of a `choose` that loses accepts
+;; nothing, and the connection is still there for the next acceptor.
+;;
+;; `BjolangRuntime/BjoNet.cs` is where that is done.
+
+(export
+  ;; Connecting.
+  tcp-connect
+
+  ;; Listening.
+  Listener
+  tcp-listen accept-evt accept
+  listener-closed listener-port close-listener!
+
+  ;; Who is at the other end.
+  peer-address)
+
+(import (std prelude))
+(import (std ports))
+
+(import/class
+  (Listener   (: Bjolang.Runtime.BjoTcpListener))
+  ;; Opaque, and deliberately not exported: a connection *is* its two ports, and
+  ;; a third value to pass around would be the thing this module exists not to
+  ;; have. It appears below only between the runtime and the tuple.
+  (Connection (: Bjolang.Runtime.BjoConnection))
+  (Exception  (: System.Exception)))
+
+(import/extern
+  ;; Connecting. `#:async`, so the ambient cancellation token is filled in at
+  ;; the call site and `with-deadline` works on a connect with no keyword of its
+  ;; own. `OperationCanceledException` is deliberately *not* in the list: a
+  ;; deadline is a raise, not a `Result`.
+  (clr-connect (: Bjolang.Runtime.Net.Connect (-> string int Connection) #:async
+                  #:exceptions (System.Net.Sockets.SocketException
+                                System.ArgumentOutOfRangeException)))
+
+  ;; Listening.
+  (clr-listen (: Bjolang.Runtime.Net.Listen (-> string int int Listener)
+                 #:exceptions (System.Net.Sockets.SocketException
+                               System.ArgumentOutOfRangeException)))
+  (clr-accept-evt     (: Bjolang.Runtime.Net.AcceptEvent
+                         (-> Listener (Event (Result Exception Connection)))))
+  (clr-closed-evt     (: Bjolang.Runtime.Net.ClosedEvent    (-> Listener (Event Unit))))
+  (clr-listener-port  (: Bjolang.Runtime.Net.ListenerPort   (-> Listener int)))
+  (clr-close-listener (: Bjolang.Runtime.Net.CloseListener  (-> Listener void)))
+
+  ;; A connection's two halves, and who is behind them.
+  (clr-conn-in  (: Bjolang.Runtime.Net.ConnectionInput  (-> Connection ByteInputPort)))
+  (clr-conn-out (: Bjolang.Runtime.Net.ConnectionOutput (-> Connection ByteOutputPort)))
+  (clr-peer     (: Bjolang.Runtime.Net.PeerAddress (-> ByteInputPort (Option string))))
+
+  ;; Ownership. Called from here, on the fiber, and never from inside the
+  ;; awaited connect: after an await the continuation is on a pool thread, where
+  ;; the ambient scope is not this fiber's and there would be nothing to
+  ;; register on.
+  (clr-own-connection (: BjolangRuntime.OwnConnection (-> Connection Connection)))
+  (clr-own-listener   (: BjolangRuntime.OwnListener   (-> Listener Listener))))
+
+;; ---------------------------------------------------------------------------
+;; A connection is its two ports
+;; ---------------------------------------------------------------------------
+
+;; The socket under the pair goes when **both** halves have been closed, or when
+;; the scope that owns the connection ends, whichever comes first. That is what
+;; makes the obvious spelling mean the obvious thing:
+;;
+;;     (with-open ((i in) (o out))
+;;       ...)                         ; both closed here, so the handle goes here
+;;
+;; Closing one half does not close the other — "I have finished listening, now
+;; let me answer" has to work, and it is the same fact `shutdown!` exists for.
+(: connection->ports (-> Connection (Tuple ByteInputPort ByteOutputPort)))
+(defun (connection->ports c)
+  (Tuple (clr-conn-in c) (clr-conn-out c)))
+
+;; ---------------------------------------------------------------------------
+;; Connecting
+;; ---------------------------------------------------------------------------
+
+;; Connects to `host` on `port`, and answers the two ports over it.
+;;
+;; `host` may be an address or a name. A name is resolved and its addresses are
+;; tried in order, the first that answers winning; there is no happy-eyeballs
+;; racing, and an address literal asks nothing of the resolver at all.
+;;
+;; The connection is owned by the ambient scope, so a program that forgets to
+;; close it still closes it when the scope returns. There is no `#:deadline`:
+;; `sync` watches the ambient token, so `with-deadline` already bounds this.
+;;
+;; Nagle is switched off on the socket. A byte port has a write buffer of its
+;; own and `flush!` is the program saying "send this now", so leaving Nagle on
+;; would hold a flushed small write back waiting for an ACK — exactly wrong for
+;; a request/response protocol.
+(: tcp-connect (-bjo-> string int (Result Exception (Tuple ByteInputPort ByteOutputPort))))
+(defbjo (tcp-connect host port)
+  ;; Raises here if there is no scope, before a socket exists to leak.
+  (ignore (current-scope))
+  (match (clr-connect host port)
+    ((Ok c) (Ok (connection->ports (clr-own-connection c))))
+    ((Err e) (Err e))))
+
+;; ---------------------------------------------------------------------------
+;; Listening
+;; ---------------------------------------------------------------------------
+
+;; Binds and listens. `port` may be 0, in which case the operating system picks
+;; one and `listener-port` says which.
+;;
+;; The listener is owned by the ambient scope, and what the scope does at the end
+;; is the *hard* stop — see `close-listener!` for the other one.
+;;
+;; A host name here is resolved synchronously, because binding happens once at
+;; startup. An address literal — `"127.0.0.1"`, `"0.0.0.0"`, `"::1"` — asks
+;; nothing of the resolver.
+(: tcp-listen (-> string int (#:backlog int) (Result Exception Listener)))
+(defun (tcp-listen host port #:backlog 128)
+  (ignore (current-scope))
+  (match (clr-listen host port backlog)
+    ((Ok l) (Ok (clr-own-listener l)))
+    ((Err e) (Err e))))
+
+;; The port actually bound, which is the interesting question when 0 was asked
+;; for. Still answerable after the listener is closed.
+(: listener-port (-> Listener int))
+(defun (listener-port l) (clr-listener-port l))
+
+;; A real CML event: in a `choose` that another branch wins, nothing is accepted
+;; and the connection stays for the next acceptor, exactly as a channel receive
+;; does. It is also *ephemeral* — each `sync` asks the listener a new question,
+;; so a server loop accepts successive connections rather than winning with a
+;; remembered one forever.
+;;
+;; WHY THE VALUE IS A `Result`. A listening socket can fail, and the CML resume
+;; path carries a value rather than a raise — so a failure that lands while a
+;; fiber is parked in a `choose` has to arrive as one. `promise-join`, `blocking`
+;; and the byte ports' reads all answer a `Result` for the same reason.
+;;
+;; On a closed listener it never commits. `listener-closed` is how a loop
+;; notices, exactly as `inbox-closed` is for an inbox:
+;;
+;;     (let go ()
+;;       (match (sync (choose (wrap (accept-evt l) Some)
+;;                            (wrap (listener-closed l) (fun (u) None))))
+;;         ((Some (Ok conn)) (spawn (handle conn)) (go))
+;;         ((Some (Err e))   (log (str "accept failed: " (.-Message e))) (go))
+;;         (None             'stopped)))
+(: accept-evt (-> Listener (Event (Result Exception (Tuple ByteInputPort ByteOutputPort)))))
+(defun (accept-evt l)
+  (wrap (clr-accept-evt l)
+        (fun (r) (match r
+                   ((Ok c) (Ok (connection->ports c)))
+                   ((Err e) (Err e))))))
+
+;; Fires once the listener has stopped accepting, and from then on commits
+;; immediately on every `sync`.
+(: listener-closed (-> Listener (Event Unit)))
+(defun (listener-closed l) (clr-closed-evt l))
+
+(: accept-or-raise (-> (Result Exception (Tuple ByteInputPort ByteOutputPort))
+                       (Tuple ByteInputPort ByteOutputPort)))
+(defun (accept-or-raise r)
+  (match r
+    ((Ok conn) conn)
+    ((Err e) (raise e))))
+
+;; One connection, for when there is nothing to choose between. Defined by
+;; syncing the event above: a convenience, not a second implementation. The
+;; failure is raised here, on the caller's own stack.
+;;
+;; On a closed listener this waits forever, because the event never commits.
+;; A program that may meet one uses `accept-evt` under a `choose` with
+;; `listener-closed`.
+(: accept (-> Listener (Tuple ByteInputPort ByteOutputPort)))
+(defbjouble (accept l)
+  (#:sync (accept-or-raise (sync/blocking (accept-evt l))))
+  (#:bjo  (accept-or-raise (sync (accept-evt l)))))
+
+;; Stops accepting, and says so.
+;;
+;; GRACEFUL, and that is the whole difference from letting the scope end:
+;; connections already accepted are **not** touched, because they belong to
+;; whoever is handling them and killing a request half-answered is not what
+;; "stop listening" means. That is `inbox-close!`'s meaning, one layer out.
+;;
+;; So a server drains by closing the listener, letting its handlers finish, and
+;; leaving the scope — which closes the listening socket and anything still open.
+(: close-listener! (-> Listener void))
+(defun (close-listener! l) (clr-close-listener l))
+
+;; ---------------------------------------------------------------------------
+;; Who is at the other end
+;; ---------------------------------------------------------------------------
+
+;; The peer, as the address and port it connected from, for a log line.
+;;
+;; It hangs off the input port because the tuple is fixed at two and there is
+;; nowhere else to put it. `None` for a port that is not a connection's — a
+;; file, a pipe, a `limited` view.
+(: peer-address (-> ByteInputPort (Option string)))
+(defun (peer-address p) (clr-peer p))

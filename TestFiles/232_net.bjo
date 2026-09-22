@@ -1,0 +1,587 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; TCP: a connection is two byte ports.
+;;
+;; Everything here is loopback on a port the operating system picks, so the
+;; suite needs no network and cannot collide with anything already listening.
+;;
+;; The case in the middle is the one the design is for: an accept that loses a
+;; `choose` accepts nothing, and the connection is still there afterwards. It is
+;; run two hundred times and asserts that both outcomes actually happened,
+;; because a race that never raced is green in exactly the same way as one that
+;; did.
+;;
+;; Everything a connection *does* comes from `(std ports)` — this file barely
+;; mentions `(std net)` after the connection exists, which is the point.
+
+(import (std prelude))
+(import (std ports))
+(import (std net))
+(import (std inbox))
+(import (std simpletest))
+
+(import/extern
+  (int->byte (: System.Convert.ToByte  (-> int byte)))
+  (byte->int (: System.Convert.ToInt32 (-> byte int))))
+
+;; ---------------------------------------------------------------------------
+;; Helpers
+;; ---------------------------------------------------------------------------
+
+(: bytes->text (-> (Array byte) string))
+(defun (bytes->text bs)
+  (let loop ((i 0) (acc ""))
+    (if (= i (array-length bs))
+        acc
+        (loop (+ i 1) (str acc (byte->string (array-ref bs i)) ".")))))
+
+(: shown (-> (Option (Array byte)) string))
+(defun (shown o)
+  (match o
+    ((Some bs) (bytes->text bs))
+    (None "none")))
+
+;; Everything left on the port, as text. Ends at `None`, so the other end has to
+;; have half-closed or closed.
+(: drain-bytes (-> ByteInputPort string))
+(defun (drain-bytes p)
+  (let loop ((acc ""))
+    (match (read-some p)
+      ((Some bs) (loop (str acc (bytes->text bs))))
+      (None acc))))
+
+;; `from`, `from + 1`, ... as bytes.
+(: byte-run (-> int int (Array byte)))
+(defun (byte-run from n)
+  (def out (make-array n))
+  (let loop ((i 0))
+    (if (= i n)
+        out
+        (let ()
+          (array-set! out i (int->byte (+ from i)))
+          (loop (+ i 1))))))
+
+;; The value byte `i` of the big transfer should have. 251 is prime, so a
+;; transfer that slipped by any small amount is caught rather than aliasing.
+(: pattern-at (-> int int))
+(defun (pattern-at i) (% i 251))
+
+(: patterned (-> int (Array byte)))
+(defun (patterned n)
+  (def out (make-array n))
+  (let loop ((i 0))
+    (if (= i n)
+        out
+        (let ()
+          (array-set! out i (int->byte (pattern-at i)))
+          (loop (+ i 1))))))
+
+;; What a scenario answered, with a raise turned into a line a failure can show.
+(: ran (-> (Promise string) string))
+(defun (ran p)
+  (match (sync/blocking (promise-join p))
+    ((Ok answer) answer)
+    ((Err e) (str "RAISED " (.-Message e)))))
+
+(: closing (-bjo-> ByteInputPort ByteOutputPort void))
+(defbjo (closing in out)
+  (close-byte-input-port! in)
+  (close-byte-output-port! out))
+
+;; ---------------------------------------------------------------------------
+;; The two ends
+;; ---------------------------------------------------------------------------
+
+;; Reads everything the client sent, answers `9 9`, and half-closes.
+(: echo-once (-bjo-> Listener string))
+(defbjo (echo-once l)
+  (match (accept l)
+    ((Tuple in out)
+     (def who (match (peer-address in) ((Some a) "peer") (None "nobody")))
+     (def got (drain-bytes in))
+     (write-bytes! out #[9 9])
+     (flush! out)
+     (shutdown! out)
+     (closing in out)
+     (str who ":" got))))
+
+(: client-says (-bjo-> int (Array byte) string))
+(defbjo (client-says port payload)
+  (match (tcp-connect "127.0.0.1" port)
+    ((Err e) (str "connect failed: " (.-Message e)))
+    ((Ok (Tuple in out))
+     (write-bytes! out payload)
+     (flush! out)
+     ;; A FIN, not a close: the answer still has to arrive after this.
+     (shutdown! out)
+     (def back (drain-bytes in))
+     (closing in out)
+     back)))
+
+;; Everything that arrives, straight back out again, a chunk at a time.
+(: echo-loop (-bjo-> ByteInputPort ByteOutputPort int))
+(defbjo (echo-loop in out)
+  (let go ((n 0))
+    (match (read-some in)
+      ((Some bs)
+       (write-bytes! out bs)
+       (flush! out)
+       (go (+ n (array-length bs))))
+      (None (let () (shutdown! out) n)))))
+
+(: echo-server (-bjo-> Listener int))
+(defbjo (echo-server l)
+  (match (accept l)
+    ((Tuple in out)
+     (def n (echo-loop in out))
+     (closing in out)
+     n)))
+
+;; ---------------------------------------------------------------------------
+;; A round trip, a bound port, and who is at the other end
+;; ---------------------------------------------------------------------------
+
+(: scenario-round-trip (-bjo-> string))
+(defbjo (scenario-round-trip)
+  (match (tcp-listen "127.0.0.1" 0)
+    ((Err e) (str "listen failed: " (.-Message e)))
+    ((Ok l)
+     (with-open ((listening l))
+       (def port (listener-port l))
+       (def server (bjo (echo-once l)))
+       (def answer (client-says port #[1 2 3]))
+       (str answer "|"
+            (match (sync (promise-join server))
+              ((Ok s) s)
+              ((Err e) (str "server raised " (.-Message e))))
+            "|"
+            (if (> port 0) "bound" "unbound"))))))
+
+;; ---------------------------------------------------------------------------
+;; Closing one half does not close the other
+;; ---------------------------------------------------------------------------
+;;
+;; The client reads its answer, closes the *reading* half, and then writes more.
+;; If closing one port took the socket with it, the second write would fail —
+;; which is the whole reason a connection's handle waits for both halves.
+
+(: half-closing-client (-bjo-> int string))
+(defbjo (half-closing-client port)
+  (match (tcp-connect "127.0.0.1" port)
+    ((Err e) (str "connect failed: " (.-Message e)))
+    ((Ok (Tuple in out))
+     (write-bytes! out #[1])
+     (flush! out)
+     ;; Done reading, and the socket must survive it.
+     (close-byte-input-port! in)
+     (def after
+       (match (try (let () (write-bytes! out #[2 3]) (flush! out) "wrote")
+                   #:catch (System.Exception))
+         ((Ok what) what)
+         ((Err e) (str "refused: " (.-Message e)))))
+     (shutdown! out)
+     (close-byte-output-port! out)
+     after)))
+
+(: scenario-half-closed (-bjo-> string))
+(defbjo (scenario-half-closed)
+  (match (tcp-listen "127.0.0.1" 0)
+    ((Err e) (str "listen failed: " (.-Message e)))
+    ((Ok l)
+     (with-open ((listening l))
+       (def port (listener-port l))
+       (def server (bjo (collect-once l)))
+       (def wrote (half-closing-client port))
+       (str wrote "|"
+            (match (sync (promise-join server))
+              ((Ok s) s)
+              ((Err e) (str "server raised " (.-Message e)))))))))
+
+(: collect-once (-bjo-> Listener string))
+(defbjo (collect-once l)
+  (match (accept l)
+    ((Tuple in out)
+     (def got (drain-bytes in))
+     (closing in out)
+     got)))
+
+;; ---------------------------------------------------------------------------
+;; Both directions, and enough of it to cross a buffer many times
+;; ---------------------------------------------------------------------------
+
+(: transfer-size (-> int))
+(defun (transfer-size) 262144)
+
+;; Reads until end of input, checking every byte against the pattern it should
+;; have. Answers how many arrived and how many were wrong.
+(: check-stream (-bjo-> ByteInputPort (Tuple int int)))
+(defbjo (check-stream in)
+  (let go ((seen 0) (bad 0))
+    (match (read-some in)
+      ((Some bs) (go (+ seen (array-length bs)) (+ bad (check-chunk bs seen))))
+      (None (Tuple seen bad)))))
+
+(: check-chunk (-> (Array byte) int int))
+(defun (check-chunk bs from)
+  (let go ((i 0) (bad 0))
+    (if (= i (array-length bs))
+        bad
+        (go (+ i 1)
+            (+ bad (if (= (byte->int (array-ref bs i)) (pattern-at (+ from i))) 0 1))))))
+
+(: send-all (-bjo-> ByteOutputPort (Array byte) int))
+(defbjo (send-all out payload)
+  (write-bytes! out payload)
+  (flush! out)
+  (shutdown! out)
+  (array-length payload))
+
+(: scenario-big-transfer (-bjo-> string))
+(defbjo (scenario-big-transfer)
+  (match (tcp-listen "127.0.0.1" 0)
+    ((Err e) (str "listen failed: " (.-Message e)))
+    ((Ok l)
+     (with-open ((listening l))
+       (def port (listener-port l))
+       (def server (bjo (echo-server l)))
+
+       (match (tcp-connect "127.0.0.1" port)
+         ((Err e) (str "connect failed: " (.-Message e)))
+         ((Ok (Tuple in out))
+          ;; Writing and reading really are concurrent: a quarter of a megabyte
+          ;; does not fit in any socket buffer, so a client that wrote it all
+          ;; before reading a byte would wedge against its own echo.
+          (def writer (bjo (send-all out (patterned (transfer-size)))))
+          (def checked (check-stream in))
+          (ignore (sync (promise-join writer)))
+          (closing in out)
+          (ignore (sync (promise-join server)))
+
+          (match checked
+            ((Tuple seen bad)
+             (str (if (= seen (transfer-size)) "all" (str "short:" (int->string seen)))
+                  "|"
+                  (if (= bad 0) "intact" (str "corrupt:" (int->string bad))))))))))))
+
+;; ---------------------------------------------------------------------------
+;; A losing accept consumes nothing
+;; ---------------------------------------------------------------------------
+;;
+;; A `choose` between accepting and a stop signal, with a client connecting and
+;; the stop arriving from two separate fibers so that neither order is arranged.
+;; Either branch may win.
+;;
+;; What is asserted is the same either way: the connection is accepted exactly
+;; once and carries what the client sent. If the losing branch had taken it, the
+;; accept afterwards would wait forever; if it had taken it twice, the payload
+;; would not be whole.
+
+(: connect-and-send (-bjo-> int int))
+(defbjo (connect-and-send port)
+  (match (tcp-connect "127.0.0.1" port)
+    ((Err e) 0)
+    ((Ok (Tuple in out))
+     (write-bytes! out #[11 22 33 44])
+     (flush! out)
+     (shutdown! out)
+     (closing in out)
+     1)))
+
+;; `after` is what tilts the race. Posting at once all but guarantees the stop
+;; beats a TCP connect, which tests the losing accept; waiting a beat all but
+;; guarantees the connection is there first, which tests the winning one. The
+;; rounds alternate, and the two together straddle the window where they land
+;; at the same instant — which is the case with a tentative take out at
+;; `TryCommit`, and the one worth having.
+(: post-stop (-bjo-> (Inbox int) int int))
+(defbjo (post-stop stop after)
+  (when (> after 0) (sync (timeout after)))
+  (ignore (inbox-post! stop 1))
+  0)
+
+;; `#t` when the accept branch won, and everything the connection carried.
+(: race-once (-bjo-> Listener int int (Tuple bool string)))
+(defbjo (race-once l port after)
+  (def stop (make-inbox 1 DropNewest))
+
+  ;; Both on fibers of their own, so that the connection and the stop land in
+  ;; whatever order the scheduler gives them.
+  (def caller (bjo (connect-and-send port)))
+  (def stopper (bjo (post-stop stop after)))
+
+  (def first
+    (sync (choose (wrap (accept-evt l) (fun (r) (Some r)))
+                  (wrap (inbox-recv stop) (fun (n) None)))))
+
+  ;; Whichever branch won, the connection is accepted exactly once: from the
+  ;; accept that won, or from the one after the stop that did.
+  (def conn
+    (match first
+      ((Some (Ok c)) c)
+      ((Some (Err e)) (raise e))
+      (None (accept l))))
+
+  (def carried
+    (match conn
+      ((Tuple in out)
+       (def got (drain-bytes in))
+       (closing in out)
+       got)))
+
+  (ignore (sync (promise-join caller)))
+  (ignore (sync (promise-join stopper)))
+
+  (Tuple (match first ((Some _) #t) (None #f)) carried))
+
+;; How many rounds came out wrong, and how many the accept branch won.
+(: race-rounds (-bjo-> Listener int int (Tuple int int)))
+(defbjo (race-rounds l port rounds)
+  (let loop ((i 0) (bad 0) (wins 0))
+    (if (= i rounds)
+        (Tuple bad wins)
+        (match (race-once l port (% i 2))
+          ((Tuple accepted carried)
+           (loop (+ i 1)
+                 (+ bad (if (= carried "11.22.33.44.") 0 1))
+                 (+ wins (if accepted 1 0))))))))
+
+(: scenario-race (-bjo-> string))
+(defbjo (scenario-race)
+  (match (tcp-listen "127.0.0.1" 0)
+    ((Err e) (str "listen failed: " (.-Message e)))
+    ((Ok l)
+     (with-open ((listening l))
+       (match (race-rounds l (listener-port l) 200)
+         ((Tuple bad wins)
+          (str (if (= bad 0) "whole" (str "lost:" (int->string bad)))
+               "|"
+               (cond
+                 ((= wins 0) "never-accepted")
+                 ((= wins 200) "never-stopped")
+                 (else "raced")))))))))
+
+;; ---------------------------------------------------------------------------
+;; Ephemeral, not persistent
+;; ---------------------------------------------------------------------------
+;;
+;; One accept event object, synced three times, accepting three different
+;; connections. A *persistent* event — which is what `(task->event ...)` is —
+;; would answer with the first one every time.
+
+(: scenario-ephemeral (-bjo-> string))
+(defbjo (scenario-ephemeral)
+  (match (tcp-listen "127.0.0.1" 0)
+    ((Err e) (str "listen failed: " (.-Message e)))
+    ((Ok l)
+     (with-open ((listening l))
+       (def port (listener-port l))
+       (def ev (accept-evt l))
+       (let go ((i 0) (acc ""))
+         (if (= i 3)
+             acc
+             (let ()
+               (def caller (bjo (connect-and-send port)))
+               (def got
+                 (match (sync ev)
+                   ((Err e) (str "raised " (.-Message e)))
+                   ((Ok (Tuple in out))
+                    (def text (drain-bytes in))
+                    (closing in out)
+                    text)))
+               (ignore (sync (promise-join caller)))
+               (go (+ i 1) (str acc got)))))))))
+
+;; ---------------------------------------------------------------------------
+;; Text over a socket
+;; ---------------------------------------------------------------------------
+;;
+;; The whole stack composing: `byte->text-input-port` over a connection, and a
+;; line protocol over that.
+
+(: line-server (-bjo-> Listener string))
+(defbjo (line-server l)
+  (match (accept l)
+    ((Tuple in out)
+     (def reader (byte->text-input-port in utf8))
+     (def writer (byte->text-output-port out utf8))
+     (def asked (read-line reader))
+     (writeln writer (str "hello, " asked))
+     (flush-port writer)
+     (shutdown! out)
+     (closing in out)
+     asked)))
+
+(: line-client (-bjo-> int string string))
+(defbjo (line-client port name)
+  (match (tcp-connect "127.0.0.1" port)
+    ((Err e) (str "connect failed: " (.-Message e)))
+    ((Ok (Tuple in out))
+     (def writer (byte->text-output-port out utf8))
+     (writeln writer name)
+     (flush-port writer)
+     (def reader (byte->text-input-port in utf8))
+     (def answer (read-line reader))
+     (closing in out)
+     answer)))
+
+(: scenario-text (-bjo-> string))
+(defbjo (scenario-text)
+  (match (tcp-listen "127.0.0.1" 0)
+    ((Err e) (str "listen failed: " (.-Message e)))
+    ((Ok l)
+     (with-open ((listening l))
+       (def port (listener-port l))
+       (def server (bjo (line-server l)))
+       (def answer (line-client port "world"))
+       (str answer "|"
+            (match (sync (promise-join server))
+              ((Ok s) s)
+              ((Err e) (str "server raised " (.-Message e)))))))))
+
+;; ---------------------------------------------------------------------------
+;; limited over a socket
+;; ---------------------------------------------------------------------------
+;;
+;; A length-prefixed message: one byte of length, that many bytes of message,
+;; and a trailer after it. The bound has to stop exactly at the end of the
+;; message and leave the connection positioned on the trailer.
+
+(: framed-server (-bjo-> Listener string))
+(defbjo (framed-server l)
+  (match (accept l)
+    ((Tuple in out)
+     (def n (match (read-bytes in 1)
+              ((Some bs) (byte->int (array-ref bs 0)))
+              (None 0)))
+     (def message (drain-bytes (limited in n)))
+     (def trailer (drain-bytes in))
+     (closing in out)
+     (str message "/" trailer))))
+
+(: framed-client (-bjo-> int string))
+(defbjo (framed-client port)
+  (match (tcp-connect "127.0.0.1" port)
+    ((Err e) (str "connect failed: " (.-Message e)))
+    ((Ok (Tuple in out))
+     (write-bytes! out #[4])
+     (write-bytes! out (byte-run 1 4))
+     (write-bytes! out (byte-run 100 3))
+     (flush! out)
+     (shutdown! out)
+     (closing in out)
+     "sent")))
+
+(: scenario-framed (-bjo-> string))
+(defbjo (scenario-framed)
+  (match (tcp-listen "127.0.0.1" 0)
+    ((Err e) (str "listen failed: " (.-Message e)))
+    ((Ok l)
+     (with-open ((listening l))
+       (def port (listener-port l))
+       (def server (bjo (framed-server l)))
+       (ignore (framed-client port))
+       (match (sync (promise-join server))
+         ((Ok s) s)
+         ((Err e) (str "server raised " (.-Message e))))))))
+
+;; ---------------------------------------------------------------------------
+;; Closing the listener
+;; ---------------------------------------------------------------------------
+;;
+;; `accept-evt` never commits on a closed listener — `inbox-recv`'s rule — so
+;; `listener-closed` beside it is how a loop finds out. A fiber parked in that
+;; `choose` has to come back when the listener closes.
+
+(: waiting-acceptor (-bjo-> Listener string))
+(defbjo (waiting-acceptor l)
+  (match (sync (choose (wrap (accept-evt l) (fun (r) (Some r)))
+                       (wrap (listener-closed l) (fun (u) None))))
+    (None "closed")
+    ((Some (Ok (Tuple in out))) (let () (closing in out) "accepted"))
+    ((Some (Err e)) (str "raised " (.-Message e)))))
+
+(: scenario-close-listener (-bjo-> string))
+(defbjo (scenario-close-listener)
+  (match (tcp-listen "127.0.0.1" 0)
+    ((Err e) (str "listen failed: " (.-Message e)))
+    ((Ok l)
+     (with-open ((listening l))
+       (def port (listener-port l))
+       (def acceptor (bjo (waiting-acceptor l)))
+       ;; Let it get as far as parking, then stop the listener under it.
+       (sync (timeout 50))
+       (close-listener! l)
+       (def woken (match (sync (promise-join acceptor))
+                    ((Ok s) s)
+                    ((Err e) (str "raised " (.-Message e)))))
+       ;; And it is available from then on, and the port is still answerable.
+       (def again (match (sync (choose (wrap (accept-evt l) (fun (r) "accepted"))
+                                       (wrap (listener-closed l) (fun (u) "closed"))))
+                    (s s)))
+       (str woken "|" again "|" (if (= port (listener-port l)) "same-port" "moved"))))))
+
+;; ---------------------------------------------------------------------------
+;; Connecting to nothing
+;; ---------------------------------------------------------------------------
+
+(: scenario-refused (-bjo-> string))
+(defbjo (scenario-refused)
+  ;; A port the operating system has just handed back is one nothing is on.
+  (match (tcp-listen "127.0.0.1" 0)
+    ((Err e) (str "listen failed: " (.-Message e)))
+    ((Ok l)
+     (def port (listener-port l))
+     (close-listener! l)
+     (close-owned-or-dispose l)
+     (match (tcp-connect "127.0.0.1" port)
+       ((Ok (Tuple in out)) (let () (closing in out) "connected"))
+       ((Err (:is System.Net.Sockets.SocketException _)) "refused")
+       ((Err e) (str "other: " (.-Message e)))))))
+
+(defun (main)
+  (expect "a round trip, both ways, over loopback"
+          (ran (bjo (scenario-round-trip)))
+          "9.9.|peer:1.2.3.|bound")
+
+  (expect "closing one half leaves the other working"
+          (ran (bjo (scenario-half-closed)))
+          "wrote|1.2.3.")
+
+  (expect "a quarter of a megabyte, echoed, byte for byte"
+          (ran (bjo (scenario-big-transfer)))
+          "all|intact")
+
+  (expect "a losing accept consumes nothing, over 200 rounds"
+          (ran (bjo (scenario-race)))
+          "whole|raced")
+
+  (expect "one accept event accepts successive connections"
+          (ran (bjo (scenario-ephemeral)))
+          "11.22.33.44.11.22.33.44.11.22.33.44.")
+
+  (expect "a line protocol over a connection"
+          (ran (bjo (scenario-text)))
+          "hello, world|world")
+
+  (expect "limited stops at the end of the message"
+          (ran (bjo (scenario-framed)))
+          "1.2.3.4./100.101.102.")
+
+  (expect "close-listener! wakes a parked acceptor"
+          (ran (bjo (scenario-close-listener)))
+          "closed|closed|same-port")
+
+  (expect "connecting to nothing is Err, not a raise"
+          (ran (bjo (scenario-refused)))
+          "refused")
+  0)
