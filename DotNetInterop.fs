@@ -235,7 +235,11 @@ let private nullaryCorrespondence =
           "Symbol", "BjolangRuntime.Symbol"
           "CancelReason", "BjolangRuntime.CancelReason"
           "VecCursor", "BjolangRuntime.VecCursor"
-          "SeqCursor", "BjolangRuntime.SeqCursor" ]
+          "SeqCursor", "BjolangRuntime.SeqCursor"
+          // The non-generic task, which is what `(cast Task t)` names. C# tells
+          // `Task` from `Task<T>` by arity and so does Bjolang, so the two are
+          // one name here as they are there.
+          "Task", "System.Threading.Tasks.Task" ]
 
 /// The same correspondence read backwards, for the one entry where it is
 /// unambiguous.
@@ -260,7 +264,13 @@ let private nullaryCorrespondence =
 let private clrToNullary =
     dict
         [ "Bjolang.Runtime.BjoChar", TypeConstants.CharName
-          "Bjolang.Runtime.StringCursor", "StringCursor" ]
+          "Bjolang.Runtime.StringCursor", "StringCursor"
+          // The third entry, and it earns its place the same way: a .NET method
+          // *returning* a bare `Task` — which is what every middleware delegate
+          // does — has to come back as the very type `(cast Task t)` names, or
+          // an upcast could not be written where one is required. The long
+          // spelling resolves to this same type; see `Annotations.typeNameMap`.
+          "System.Threading.Tasks.Task", "Task" ]
 
 /// A member of an interface, and whether it is reached through the type or
 /// through a value: `T.Abs(x)` against `x.CompareTo(y)`.
@@ -353,7 +363,20 @@ let private genericTypeCorrespondence =
       "BjolangRuntime+Result`2", "Result"
       "Bjoml.Promise`1", "Promise"
       "Bjoml.IEvent`1", "Event"
-      "Bjoml.Channel`1", "Chan" ]
+      "Bjoml.Channel`1", "Chan"
+      // The inbox: the queue .NET code posts into, and the request half of one
+      // whose items are calls. Here for the same reason the three above are —
+      // a signature in `(std inbox)` reads `(Inbox (Call %q %r))` rather than
+      // `(Bjoml.Inbox (Bjoml.Call %q %r))`.
+      "Bjoml.Inbox`1", "Inbox"
+      "Bjoml.Call`2", "Call"
+      // A task is a value here, not only something to await: `inbox-call` hands
+      // one back for .NET to wait on. It is in the table rather than left to
+      // its .NET name so that the generic and the bare form are ONE name — the
+      // upcast `(cast Task t)` has to name the same type the reflected
+      // `Func<HttpContext, Func<Task>, Task>` return does, or the lambda a
+      // middleware takes could not be written. See `nullaryCorrespondence`.
+      "System.Threading.Tasks.Task`1", "Task" ]
 
 let private bjolangOfClrGeneric =
     genericTypeCorrespondence |> List.map (fun (clr, bjo) -> clr, bjo) |> dict

@@ -3,6 +3,75 @@
 
 What each change guarantees, and what it leaves open.
 
+* The inbox: what a .NET thread knocks on when it wants a fiber
+
+A thread that is not a fiber has no effect handlers, no parameters and no
+cancellation scope. Kestrel's thread, a ~System.Threading.Timer~ callback, a
+~FileSystemWatcher~: each arrives from outside holding a value, and running
+Bjolang on it would be running Bjolang with none of the things that make it
+Bjolang. ~(std inbox)~ is the door they knock on instead — a bounded queue whose
+receive side is an ordinary CML event, so the handover is a rendezvous like any
+other.
+
+#+BEGIN_SRC scheme
+(def requests (make-inbox 1000 DropNewest))
+
+;; On Kestrel's thread, and the whole of what runs there.
+(use! app (fun (ctx next) (cast Task (inbox-call/token requests ctx (request-aborted ctx)))))
+
+;; An ordinary fiber, with its whole environment.
+(defbjo (worker)
+  (def c (sync (inbox-recv requests)))
+  (try (handle (call-request c))
+    #:finally (ignore (call-reply! c unit))))
+#+END_SRC
+
+*The one rule for a lambda .NET calls: it may call this module's functions and
+nothing else.* Every one of them is a plain ~defun~ that reads no parameter and
+no handler, because the caller has none. A ~(log ...)~ written there does not
+fail — it quietly goes to the default handler from inside a ~with-handler~,
+which is the sort of bug found in production. It is also why a post from a
+thread with no fiber context *enqueues* the woken receiver rather than running it
+inline: the posting thread may hold a lock, and a fiber resumed under it runs
+arbitrary code there.
+
+Three ways in, for three kinds of producer. ~inbox-post!~ and ~inbox-call~ never
+wait and let the inbox's ~WhenFull~ decide; ~inbox-send~ hands back a ~Task~ that
+stays pending until there is room, which is real backpressure rather than a
+policy; ~inbox-send-evt~ is the fiber's form, and it is an event and not that
+task because a task cannot be withdrawn — a losing ~choose~ branch would queue
+the item anyway, later, with nobody expecting it. Capacity is mandatory:
+~DropNewest~ refuses the new item, ~DropOldest~ evicts the oldest, and both count
+what they threw away.
+
+~inbox-close!~ is the graceful end, ~inbox-fail!~ the same with an exception kept
+*beside* the queue where no full policy can drop it, and ~inbox-abort!~ the hard
+stop. ~inbox-closed~ fires once the inbox is closed and empty.
+
+A ~Call~ is request and reply. With ~inbox-call/token~ the caller's token means
+two different things: *still queued*, the call is removed and its task cancelled,
+so no fiber sees a call nobody waits for; *already taken*, the task is *not*
+completed — only ~call-reply!~ and ~call-fail!~ complete it, and
+~call-abandoned~ fires instead. The reason is concrete: completing the task hands
+the ~HttpContext~ back to Kestrel, which recycles it into the next request while
+the handler is still writing into it. So a fiber that takes a ~Call~ must answer
+it, and ~#:finally~ is where that belongs.
+
+No lock in ~Bjoml.Inbox~ is ever held across a commit, a resume or a task
+completion, and one settle loop matches queued items with waiting receivers
+rather than pump and admit recursing into each other — so stack depth does not
+grow with the number of waiting producers.
+
+~(cast Task t)~ needed no change to work for the upcast a middleware signature
+wants; ~Task~ is now one name at two arities, as in C#.
+
+What it leaves open. There is no inline mode, so every hand-over costs a
+thread-pool hop even for a caller known to hold no locks. An inbox can only be
+fed by APIs taking ~Func~, ~Action~, ~IObservable<T>~ or ~IProgress<T>~ — other
+delegate types and .NET events are a separate piece of work. And a ~Task<T>~'s
+value is still not readable from Bjolang, which is the whole reason
+~inbox-call~ exists rather than an await.
+
 * Every fold hands the element to its callback first
 
 ~(fold f init col)~ called ~f~ with the accumulator first and the element

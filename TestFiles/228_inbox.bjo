@@ -1,0 +1,319 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; The inbox: capacity, the two full policies, backpressure, withdrawal, and
+;; the three ways it can end.
+;;
+;; The request/reply half, the foreign-thread cases and the observer are in
+;; `229_inbox_calls.bjo`; what is here needs no .NET beyond `Task.Run`.
+
+(import (std prelude))
+(import (std inbox))
+(import (std simpletest))
+
+(import/class
+  (Boom (: System.InvalidOperationException (-> string Boom))))
+
+(import/class
+  (Cancelling (: System.Threading.CancellationTokenSource (-> Cancelling))))
+
+;; Runs a thunk on a thread-pool thread — one with no fiber context at all,
+;; which is the whole point of an inbox.
+;;
+;; The thunk answers a `Task` and `Task.Run` unwraps it, so awaiting the outer
+;; task waits for the inner one: that is how a fiber here waits for an
+;; `inbox-send` issued off-fiber. It is also the upcast `(cast Task t)` under
+;; test — the thunk's answer is the bare `Task` this overload takes, and an
+;; `inbox-send` hands back a `(Task Unit)`.
+;;
+;; `done` is for a thunk with nothing to wait for; `Task.Run(Action)` is not
+;; reachable from here, because a Bjolang thunk is a `Func<Unit>` rather than
+;; an `Action`.
+(import/extern
+  (off-task (: System.Threading.Tasks.Task.Run (-> (-> Task) void) #:async))
+  (done     (: System.Threading.Tasks.Task.CompletedTask Task #:get)))
+
+;; ---------------------------------------------------------------------------
+;; Helpers
+;; ---------------------------------------------------------------------------
+
+;; One receive, or nothing within `ms`. Every wait in this file is bounded, so
+;; that a regression is a failure line rather than a suite that never finishes.
+(: recv-within (-bjo-> (Inbox %a) int (Option %a)))
+(defbjo (recv-within ib ms)
+  (sync (choose (wrap (inbox-recv ib) (fun (x) (Some x)))
+                (wrap (timeout ms) (fun (u) None)))))
+
+;; Receives until the inbox says it has ended, and answers what arrived, in
+;; order, and how it ended. This is the receive loop from the Readme.
+(: drain (-bjo-> (Inbox int) (Tuple string (Option Exception))))
+(defbjo (drain ib)
+  (let go ((acc ""))
+    (match (sync (choose (wrap (inbox-recv ib) (fun (x) (Ok x)))
+                         (wrap (inbox-closed ib) (fun (e) (Err e)))))
+      ((Ok x) (go (str acc (int->string x) " ")))
+      ((Err e) (Tuple acc e)))))
+
+;; How a task ended, waited for without blocking a thread. A fiber cannot
+;; `await` a task it merely holds — an `#:async` import awaits the *call* — so
+;; this watches it settle, which is all a test needs.
+(: settled (-bjo-> (Task Unit) int string))
+(defbjo (settled t ms)
+  (let go ((left ms))
+    (cond
+      ((.-IsCanceled t) "cancelled")
+      ((.-IsFaulted t) (.-Message (.-Exception t)))
+      ((.-IsCompleted t) "completed")
+      ((<= left 0) "still pending")
+      (else (begin (sync (timeout 5)) (go (- left 5)))))))
+
+(: ended (-> (Option Exception) string))
+(defun (ended e)
+  (match e
+    (None "none")
+    ((Some x) (.-Message x))))
+
+;; ---------------------------------------------------------------------------
+;; Withdrawal (prompt test 3)
+;; ---------------------------------------------------------------------------
+;;
+;; A receiver that keeps losing its `choose` to a timeout must consume nothing
+;; when it loses and must not lose an item when it wins. Posts arrive from
+;; several pool threads at once, and every one of them has to come out exactly
+;; once.
+
+(: post-off-fiber (-bjo-> (Inbox int) int void))
+(defbjo (post-off-fiber ib x)
+  (off-task (fun () (ignore (inbox-post! ib x)) done)))
+
+;; Sends 1..n, each from a pool thread, waiting for each to be accepted before
+;; making the next. On a full inbox that wait is the backpressure.
+(: send-all (-bjo-> (Inbox int) int void))
+(defbjo (send-all ib n)
+  (loop (:for i (range 1 (+ n 1)))
+        (:do (off-task (fun () (cast Task (inbox-send ib i)))))))
+
+;; Receives `n` items slowly, and answers their sum and whether they arrived in
+;; the order they were sent.
+(: consume-in-order (-bjo-> (Inbox int) int (Tuple int bool)))
+(defbjo (consume-in-order ib n)
+  (let go ((left n) (sum 0) (ordered #t) (last 0))
+    (if (= left 0)
+        (Tuple sum ordered)
+        (match (recv-within ib 5000)
+          ((Some x) (begin
+                      (sync (timeout 1))
+                      (go (- left 1) (+ sum x) (and ordered (= x (+ last 1))) x)))
+          (None (Tuple sum #f))))))
+
+;; Receives `n` items, timing out constantly so that the withdrawal path is
+;; taken over and over. Answers their sum.
+(: gather (-bjo-> (Inbox int) int int))
+(defbjo (gather ib n)
+  (let go ((left n) (sum 0))
+    (if (= left 0)
+        sum
+        (match (recv-within ib 2)
+          ((Some x) (go (- left 1) (+ sum x)))
+          (None (go left sum))))))
+
+(defbjo (main args)
+  ;; -------------------------------------------------------------------------
+  ;; Capacity and DropNewest (prompt test 4)
+  ;; -------------------------------------------------------------------------
+  (def newest (make-inbox 2 DropNewest))
+  (expect-true "the first item fits" (inbox-post! newest 1))
+  (expect-true "and so does the second" (inbox-post! newest 2))
+  (expect-true "the third is refused" (not (inbox-post! newest 3)))
+  (expect "the refusal was counted" (inbox-dropped-count newest) 1)
+  (expect "what fitted is still there, in order"
+          (str (match (recv-within newest 500) ((Some x) (int->string x)) (None "-"))
+               (match (recv-within newest 500) ((Some x) (int->string x)) (None "-")))
+          "12")
+
+  ;; -------------------------------------------------------------------------
+  ;; DropOldest (prompt test 5)
+  ;; -------------------------------------------------------------------------
+  ;;
+  ;; Only the latest value matters: a progress bar wants 100%, not the ten
+  ;; oldest updates.
+  (def oldest (make-inbox 3 DropOldest))
+  (loop (:for i (range 1 11))
+        (:do (ignore (inbox-post! oldest i))))
+  (expect "the newest three survive"
+          (str (match (recv-within oldest 500) ((Some x) (int->string x)) (None "-"))
+               (match (recv-within oldest 500) ((Some x) (int->string x)) (None "-"))
+               (match (recv-within oldest 500) ((Some x) (int->string x)) (None "-")))
+          "8910")
+  (expect "and the seven evicted were counted" (inbox-dropped-count oldest) 7)
+
+  ;; -------------------------------------------------------------------------
+  ;; Withdrawal (prompt test 3)
+  ;; -------------------------------------------------------------------------
+  (def busy (make-inbox 64 DropNewest))
+  (def posts (loop (:for i (range 1 21))
+                   (:acc out (listing (bjo (post-off-fiber busy i))))))
+  (def received (bjo (gather busy 20)))
+  (loop (:for p posts) (:do (ignore (sync (promise-join p)))))
+  (expect "every posted item was received exactly once"
+          (match (sync (promise-join received)) ((Ok v) v) ((Err e) -1))
+          210)
+  (expect "and nothing was dropped on the way" (inbox-dropped-count busy) 0)
+
+  ;; -------------------------------------------------------------------------
+  ;; inbox-send backpressure (prompt test 6)
+  ;; -------------------------------------------------------------------------
+  ;;
+  ;; A producer on a pool thread awaits each send before making the next, into
+  ;; an inbox that holds two. All hundred arrive, in order, and none is dropped.
+  (def slow (make-inbox 2 DropNewest))
+
+  (def producer (bjo (send-all slow 100)))
+  (def consumer (bjo (consume-in-order slow 100)))
+
+  (def (Tuple total in-order)
+    (match (sync (promise-join consumer))
+      ((Ok t) t)
+      ((Err e) (Tuple -1 #f))))
+
+  (ignore (sync (promise-join producer)))
+  (expect "a hundred sends all arrive" total 5050)
+  (expect-true "in the order they were sent" in-order)
+  (expect "and a waiting send never drops anything" (inbox-dropped-count slow) 0)
+
+  ;; A send whose token fires while it is waiting for room: the task is
+  ;; cancelled, and the item never enters the queue.
+  (def stopped (make-inbox 1 DropNewest))
+  (expect-true "the inbox is full" (inbox-post! stopped 1))
+  (def cancelling (Cancelling.))
+  (def cancelled-send (inbox-send/token stopped 99 (.-Token cancelling)))
+  (sync (timeout 20))
+  (.Cancel cancelling)
+  (expect "the cancelled send is cancelled" (settled cancelled-send 2000) "cancelled")
+  (expect "and what it offered is never received"
+          (str (match (recv-within stopped 500) ((Some x) (int->string x)) (None "-"))
+               (match (recv-within stopped 50) ((Some x) (int->string x)) (None "-")))
+          "1-")
+
+  ;; -------------------------------------------------------------------------
+  ;; inbox-send-evt withdrawal (prompt test 7)
+  ;; -------------------------------------------------------------------------
+  (def full (make-inbox 1 DropNewest))
+  (expect-true "the inbox is full" (inbox-post! full 1))
+
+  (expect "a send into a full inbox loses to the timeout"
+          (sync (choose (wrap (inbox-send-evt full 99) (fun (u) "sent"))
+                        (wrap (timeout 5) (fun (u) "timed out"))))
+          "timed out")
+
+  (expect "and the item it offered was never queued"
+          (str (match (recv-within full 200) ((Some x) (int->string x)) (None "-"))
+               (match (recv-within full 50) ((Some x) (int->string x)) (None "-")))
+          "1-")
+
+  (expect "with room, the same sync commits"
+          (sync (choose (wrap (inbox-send-evt full 7) (fun (u) "sent"))
+                        (wrap (timeout 500) (fun (u) "timed out"))))
+          "sent")
+  (expect "and what it offered is received"
+          (match (recv-within full 500) ((Some x) (int->string x)) (None "-"))
+          "7")
+
+  ;; -------------------------------------------------------------------------
+  ;; Closing (prompt test 8)
+  ;; -------------------------------------------------------------------------
+  (def closing (make-inbox 8 DropNewest))
+  (loop (:for i (range 1 4)) (:do (ignore (inbox-post! closing i))))
+  (inbox-close! closing)
+
+  (expect-true "a post after closing is refused" (not (inbox-post! closing 4)))
+
+  (def (Tuple drained how)
+    (match (sync (promise-join (bjo (drain closing))))
+      ((Ok t) t)
+      ((Err e) (Tuple "joined badly" None))))
+  (expect "what was queued before the close is still received" drained "1 2 3 ")
+  (expect "and then the inbox says it has ended" (ended how) "none")
+
+  ;; A sender already waiting for room when the inbox closes still gets in, and
+  ;; is received before the end.
+  (def late (make-inbox 1 DropNewest))
+  (expect-true "the inbox is full again" (inbox-post! late 1))
+  (def waiting (bjo (sync (choose (wrap (inbox-send-evt late 2) (fun (u) "in"))
+                                  (wrap (timeout 2000) (fun (u) "never got in"))))))
+  (sync (timeout 20))
+  (inbox-close! late)
+
+  (def (Tuple after-close ended-after)
+    (match (sync (promise-join (bjo (drain late))))
+      ((Ok t) t)
+      ((Err e) (Tuple "joined badly" None))))
+  (expect "the waiting sender still got in, in order" after-close "1 2 ")
+  (expect "and it was received before the end" (ended ended-after) "none")
+  (expect "the sender was told it got in"
+          (match (sync (promise-join waiting)) ((Ok v) v) ((Err e) "raised"))
+          "in")
+
+  ;; -------------------------------------------------------------------------
+  ;; Failing (prompt test 9)
+  ;; -------------------------------------------------------------------------
+  (def failing (make-inbox 8 DropNewest))
+  (ignore (inbox-post! failing 1))
+  (ignore (inbox-post! failing 2))
+  (inbox-fail! failing (cast Exception (Boom. "the source gave up")))
+
+  (def (Tuple before-failure why)
+    (match (sync (promise-join (bjo (drain failing))))
+      ((Ok t) t)
+      ((Err e) (Tuple "joined badly" None))))
+  (expect "what was queued before the failure is still received" before-failure "1 2 ")
+  (expect "and the failure is what ended it" (ended why) "the source gave up")
+
+  ;; The error is not a queued item, so a full inbox still delivers it.
+  (def brimming (make-inbox 1 DropNewest))
+  (ignore (inbox-post! brimming 1))
+  (expect-true "the inbox is full" (not (inbox-post! brimming 2)))
+  (inbox-fail! brimming (cast Exception (Boom. "even when full")))
+  (def (Tuple brim-items brim-why)
+    (match (sync (promise-join (bjo (drain brimming))))
+      ((Ok t) t)
+      ((Err e) (Tuple "joined badly" None))))
+  (expect "the full inbox drains" brim-items "1 ")
+  (expect "and still reports the failure" (ended brim-why) "even when full")
+
+  ;; -------------------------------------------------------------------------
+  ;; Aborting (prompt test 10)
+  ;; -------------------------------------------------------------------------
+  (def aborting (make-inbox 2 DropNewest))
+  (ignore (inbox-post! aborting 1))
+  (ignore (inbox-post! aborting 2))
+
+  ;; A send waiting for room, and an event sender waiting beside it.
+  (def aborted-sender
+    (bjo (sync (choose (wrap (inbox-send-evt aborting 3) (fun (u) "committed"))
+                       (wrap (timeout 2000) (fun (u) "never committed"))))))
+  (sync (timeout 20))
+  (inbox-abort! aborting)
+
+  (def (Tuple nothing-left abort-why)
+    (match (sync (promise-join (bjo (drain aborting))))
+      ((Ok t) t)
+      ((Err e) (Tuple "joined badly" None))))
+  (expect "an abort drops what was queued" nothing-left "")
+  (expect "and the inbox has ended" (ended abort-why) "none")
+  (expect "a waiting event sender never commits"
+          (match (sync (promise-join aborted-sender)) ((Ok v) v) ((Err e) "raised"))
+          "never committed")
+  (expect "and an abort is not counted as dropping" (inbox-dropped-count aborting) 0)
+
+  (println "228 ok")
+  0)

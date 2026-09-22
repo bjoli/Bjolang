@@ -41,6 +41,11 @@ let private typeNameMap =
         // Lowercase, like the other primitives. `Char` is the canonical name
         // the type carries internally, but a signature spells it `char`.
         "char", TypeConstants.charType
+        // The non-generic task is `Task`, and the long spelling is the same
+        // type rather than a second one — a signature that writes it out must
+        // still match what a .NET method returning a bare `Task` comes back as.
+        // See `DotNetInterop.clrToNullary`.
+        "System.Threading.Tasks.Task", TCon("Task", [])
     ]
 
 let rec resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType =

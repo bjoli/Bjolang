@@ -35,6 +35,11 @@ echo "Building standard library..."
 ./bjor --lib lib/std/prelude.bjo
 # `ports` imports `prelude`, so it comes last for the same reason.
 ./bjor --lib lib/std/ports.bjo
+# `inbox` imports `prelude` and nothing else. Like `run` it binds names out of
+# the runtime assembly — `Bjoml.InboxModule` and the types beside it — so a
+# change to `BjolangRuntime/Cml/Inbox.cs` has to reach the compiler before this
+# line. Rebuild the compiler after the runtime, then run this.
+./bjor --lib lib/std/inbox.bjo
 # `monad` imports `prelude` for `list-append` and `syntax-match` to write `do`
 # with. Both have to be compiled first — a macro's module is loaded into the
 # compiler along with everything it imports.

@@ -1,0 +1,283 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/inbox.bjo — the door .NET code knocks on.
+;;
+;; A thread that is not a fiber — Kestrel's, a timer's, a `FileSystemWatcher`'s
+;; — hands an item to an inbox and returns. A fiber receives it, with its own
+;; dynamic environment: its handlers, its parameters, its cancellation scope.
+;;
+;; THE RULE FOR A LAMBDA .NET CALLS. It may call the functions in this module
+;; and nothing else. Everything here that a foreign thread uses is an ordinary
+;; `defun`, not a bjoroutine, and reads neither parameters nor effect handlers —
+;; because a thread that is not a fiber has none. A `(log ...)` written in such
+;; a lambda does not fail: it quietly goes to the default handler, even inside a
+;; `with-handler`. Post the work, and do the logging in the fiber.
+;;
+;; See `BjolangRuntime/Cml/Inbox.cs` for how it is done, and the Readme's Inbox
+;; section for what to write.
+
+(export
+  ;; Making one, and the policy it needs. `WhenFull` is transparent: its two
+  ;; cases are written wherever a `make-inbox` is.
+  WhenFull
+  make-inbox
+
+  ;; Putting something in. `inbox-post!` and `inbox-send` are safe from any
+  ;; thread; `inbox-send-evt` is the fiber's form.
+  inbox-post! inbox-send inbox-send/token inbox-send-evt
+
+  ;; Taking it out, and the end of the stream.
+  inbox-recv inbox-closed
+
+  ;; Ending it.
+  inbox-close! inbox-fail! inbox-abort!
+
+  ;; What was lost, and subscribing to an `IObservable`.
+  inbox-dropped-count inbox-observer make-observer IObserver
+
+  ;; Request and reply.
+  inbox-call inbox-call/token
+  call-request call-reply! call-fail! call-abandoned
+
+  ;; The token an `inbox-call/token` is given: a caller's own, such as
+  ;; Kestrel's `RequestAborted`.
+  CancellationToken)
+
+(import (std prelude))
+
+(import/class
+  (CancellationToken (: System.Threading.CancellationToken))
+  ((IObserver %a)    (: System.IObserver)))
+
+;; `Inbox`, `Call`, `Task` and `Event` are spelled by the compiler: they are
+;; runtime types the language has a name for, like `Chan` and `Promise`. See
+;; `DotNetInterop.genericTypeCorrespondence`.
+(import/extern
+  (clr-make-inbox    (: Bjoml.InboxModule.Make            (-> int bool (Inbox %a))))
+  (clr-post          (: Bjoml.InboxModule.Post            (-> (Inbox %a) %a bool)))
+  (clr-send          (: Bjoml.InboxModule.Send            (-> (Inbox %a) %a (Task Unit))))
+  (clr-send/token    (: Bjoml.InboxModule.SendWithToken   (-> (Inbox %a) %a CancellationToken (Task Unit))))
+  (clr-send-evt      (: Bjoml.InboxModule.SendEvent       (-> (Inbox %a) %a (Event Unit))))
+  (clr-recv          (: Bjoml.InboxModule.Receive         (-> (Inbox %a) (Event %a))))
+  (clr-closed        (: Bjoml.InboxModule.Closed          (-> (Inbox %a) (Event (Option Exception)))))
+  (clr-close!        (: Bjoml.InboxModule.Close           (-> (Inbox %a) void)))
+  (clr-fail!         (: Bjoml.InboxModule.Fail            (-> (Inbox %a) Exception void)))
+  (clr-abort!        (: Bjoml.InboxModule.Abort           (-> (Inbox %a) void)))
+  (clr-dropped-count (: Bjoml.InboxModule.DroppedCount    (-> (Inbox %a) int)))
+  (clr-make-observer (: Bjoml.InboxModule.MakeObserver
+                        (-> (-> %a void) (-> Exception void) (-> void) (IObserver %a))))
+
+  (clr-call          (: Bjoml.InboxModule.CallInbox          (-> (Inbox (Call %q %r)) %q (Task %r))))
+  (clr-call/token    (: Bjoml.InboxModule.CallInboxWithToken
+                        (-> (Inbox (Call %q %r)) %q CancellationToken (Task %r))))
+  (clr-call-request  (: Bjoml.InboxModule.CallRequest      (-> (Call %q %r) %q)))
+  (clr-call-reply!   (: Bjoml.InboxModule.CallReply        (-> (Call %q %r) %r bool)))
+  (clr-call-fail!    (: Bjoml.InboxModule.CallFail         (-> (Call %q %r) Exception bool)))
+  (clr-call-abandoned (: Bjoml.InboxModule.CallAbandoned   (-> (Call %q %r) (Event Unit)))))
+
+;; ---------------------------------------------------------------------------
+;; Making one
+;; ---------------------------------------------------------------------------
+
+;; What a full inbox does to an item `inbox-post!` or `inbox-call` brings.
+;;
+;; It says nothing about `inbox-send` or `inbox-send-evt`: those wait for room
+;; and never drop anything.
+(type (: WhenFull (Union DropNewest DropOldest)))
+
+;; An inbox holding at most `capacity` queued items, with `capacity > 0`.
+;;
+;; There is no unbounded inbox and no default capacity, because an event source
+;; faster than its consumer must not grow memory without limit — a
+;; `FileSystemWatcher` during a large `git checkout` fires thousands of events.
+;; The number is yours to pick: for an HTTP server it is how many requests may
+;; wait before the answer is 503.
+(: make-inbox (-> int WhenFull (Inbox %a)))
+(defun (make-inbox capacity policy)
+  (clr-make-inbox capacity (match policy
+                             (DropNewest #f)
+                             (DropOldest #t))))
+
+;; ---------------------------------------------------------------------------
+;; Putting something in
+;; ---------------------------------------------------------------------------
+
+;; Hands `x` over without ever waiting. Safe from any thread, including one with
+;; no fiber context at all.
+;;
+;; `#t` when the item was queued or handed straight to a waiting receiver. `#f`
+;; when the inbox is closed, or full under `DropNewest`.
+(: inbox-post! (-> (Inbox %a) %a bool))
+(defun (inbox-post! ib x) (clr-post ib x))
+
+;; The same handover for a caller that can wait, because it returns a `Task`:
+;; the task completes once `x` is in. On a full inbox it stays pending until a
+;; receiver makes room, which is what makes this real backpressure — each
+;; waiting producer holds exactly one item.
+;;
+;; On a closed inbox, or an `inbox-abort!` while waiting, the task is cancelled.
+(: inbox-send (-> (Inbox %a) %a (Task Unit)))
+(defun (inbox-send ib x) (clr-send ib x))
+
+;; The same, with the caller's own token. If it fires while the send is waiting
+;; for room, the item never enters the queue and the task is cancelled.
+(: inbox-send/token (-> (Inbox %a) %a CancellationToken (Task Unit)))
+(defun (inbox-send/token ib x token) (clr-send/token ib x token))
+
+;; The fiber's form of a send, as a CML event: it commits when there is room,
+;; and in a `choose` that another branch wins, `x` is *not* queued.
+;;
+;; That is why a fiber gets an event rather than the task above. A task cannot
+;; be withdrawn, so `(task->event (inbox-send ib x))` in a losing branch would
+;; queue `x` anyway, later, with nobody expecting it.
+;;
+;; On a closed inbox it never commits. A fiber that may meet one should choose
+;; it together with `inbox-closed`.
+(: inbox-send-evt (-> (Inbox %a) %a (Event Unit)))
+(defun (inbox-send-evt ib x) (clr-send-evt ib x))
+
+;; ---------------------------------------------------------------------------
+;; Taking it out
+;; ---------------------------------------------------------------------------
+
+;; A real CML event: in a `choose` that another branch wins, nothing is
+;; consumed and the item stays for the next receiver, exactly as a channel
+;; receive does.
+;;
+;; On a closed, empty inbox it never fires. `inbox-closed` is how the end is
+;; noticed.
+(: inbox-recv (-> (Inbox %a) (Event %a)))
+(defun (inbox-recv ib) (clr-recv ib))
+
+;; Fires once the inbox is closed *and* empty, and from then on commits
+;; immediately on every `sync`. `None` after `inbox-close!` or `inbox-abort!`,
+;; and `(Some e)` after `(inbox-fail! ib e)`.
+;;
+;; The usual receive loop is
+;;
+;;   (sync (choose (wrap (inbox-recv ib) Some)
+;;                 (wrap (inbox-closed ib) (fun (_) None))))
+;;
+;; It is a separate event rather than an `Option` from `inbox-recv` so that code
+;; which never closes its inbox — an HTTP worker stopped by cancelling its scope
+;; — keeps the simple form.
+(: inbox-closed (-> (Inbox %a) (Event (Option Exception))))
+(defun (inbox-closed ib) (clr-closed ib))
+
+;; ---------------------------------------------------------------------------
+;; Ending it
+;; ---------------------------------------------------------------------------
+
+;; A graceful end. Later posts answer `#f` and later sends and calls get a
+;; cancelled task, but what is already queued stays and receivers can still take
+;; it; a sender already waiting for room still gets in. `inbox-closed` fires
+;; once all of that has been received.
+(: inbox-close! (-> (Inbox %a) void))
+(defun (inbox-close! ib) (clr-close! ib))
+
+;; The same as `inbox-close!`, but `inbox-closed` yields `(Some e)`.
+;;
+;; The error is kept beside the queue rather than in it, so no full policy can
+;; drop the one item that says what went wrong.
+(: inbox-fail! (-> (Inbox %a) Exception void))
+(defun (inbox-fail! ib e) (clr-fail! ib e))
+
+;; A hard stop: closed, and everything queued dropped. Queued calls and waiting
+;; `inbox-send` tasks are cancelled, a waiting `inbox-send-evt` never commits,
+;; and `inbox-closed` then fires with `None` — or with the earlier error, if
+;; `inbox-fail!` came first.
+(: inbox-abort! (-> (Inbox %a) void))
+(defun (inbox-abort! ib) (clr-abort! ib))
+
+;; ---------------------------------------------------------------------------
+;; What was lost
+;; ---------------------------------------------------------------------------
+
+;; How many items the two dropping policies have thrown away, so that a program
+;; can report its losses: "dropped 37 progress updates". `inbox-abort!` is not
+;; counted — that is the program stopping, not the inbox overflowing.
+(: inbox-dropped-count (-> (Inbox %a) int))
+(defun (inbox-dropped-count ib) (clr-dropped-count ib))
+
+;; ---------------------------------------------------------------------------
+;; Subscribing to an IObservable
+;; ---------------------------------------------------------------------------
+
+;; An `IObserver` made of three functions. Subscribing to an `IObservable`
+;; needs an object implementing the interface, which Bjolang cannot write, and
+;; base .NET has no `Subscribe(Action<T>)`.
+;;
+;; All three run on the observable's thread, so they follow the rule every
+;; foreign callback does: post, close or fail, and nothing else.
+(: make-observer (-> (-> %a void) (-> Exception void) (-> void) (IObserver %a)))
+(defun (make-observer on-next on-error on-completed)
+  (clr-make-observer on-next on-error on-completed))
+
+;; The inbox as an observer, for `(.Subscribe observable (inbox-observer ib))`.
+;; `OnNext` posts, so the inbox's policy applies; `OnError` fails it; and
+;; `OnCompleted` closes it.
+(: inbox-observer (-> (Inbox %a) (IObserver %a)))
+(defun (inbox-observer ib)
+  (make-observer (fun (x) (ignore (inbox-post! ib x)))
+                 (fun (e) (inbox-fail! ib e))
+                 (fun () (inbox-close! ib))))
+
+;; ---------------------------------------------------------------------------
+;; Request and reply
+;; ---------------------------------------------------------------------------
+;;
+;; A request/reply inbox is an inbox whose items are `Call`s, so capacity, the
+;; full policy, closing and receiving work exactly as they do for any other.
+;;
+;; A fiber that takes a `Call` must answer it — typically in `#:finally`, so
+;; that a raise answers it too. Otherwise the .NET caller waits forever: a
+;; browser request that never finishes.
+
+;; Posts a call and hands back the task its caller waits on. Safe from any
+;; thread. When the inbox is full the policy decides, and the task faults with a
+;; `Bjoml.InboxFullException`; when it is closed, the task is cancelled.
+(: inbox-call (-> (Inbox (Call %q %r)) %q (Task %r)))
+(defun (inbox-call ib request) (clr-call ib request))
+
+;; The same, with the caller's own `CancellationToken` — Kestrel's
+;; `RequestAborted`. What the token does depends on where the call is:
+;;
+;;   * still queued — it is removed and the task is cancelled, so no fiber ever
+;;     sees a call nobody is waiting for;
+;;   * already taken — the task is *not* completed. Only `call-reply!` and
+;;     `call-fail!` complete it, and `call-abandoned` fires instead, for the
+;;     receiver to do as it sees fit. This is what keeps an HTTP handler from
+;;     writing into a context that has already been recycled into the next
+;;     request.
+(: inbox-call/token (-> (Inbox (Call %q %r)) %q CancellationToken (Task %r)))
+(defun (inbox-call/token ib request token) (clr-call/token ib request token))
+
+;; What the caller asked.
+(: call-request (-> (Call %q %r) %q))
+(defun (call-request c) (clr-call-request c))
+
+;; Answers the call. The first completion wins and returns `#t`; a later one
+;; returns `#f` and does nothing, so a timeout and a handler can race to answer
+;; safely.
+(: call-reply! (-> (Call %q %r) %r bool))
+(defun (call-reply! c value) (clr-call-reply! c value))
+
+;; The same, with an exception for the caller to receive.
+(: call-fail! (-> (Call %q %r) Exception bool))
+(defun (call-fail! c e) (clr-call-fail! c e))
+
+;; Fires once the caller's token has fired *after* this call was taken. It never
+;; fires for a call made without a token, and never for one cancelled while it
+;; was still queued — nobody had it to be told.
+(: call-abandoned (-> (Call %q %r) (Event Unit)))
+(defun (call-abandoned c) (clr-call-abandoned c))

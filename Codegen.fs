@@ -338,6 +338,12 @@ let mapPrimitiveType (name: string) =
     | "Promise" -> "Bjoml.Promise"
     | "Event" -> "Bjoml.IEvent"
     | "Chan" -> "Bjoml.Channel"
+    // The inbox, and the request/reply pair a call is. See
+    // `DotNetInterop.genericTypeCorrespondence`, which this has to agree with.
+    | "Inbox" -> "Bjoml.Inbox"
+    | "Call" -> "Bjoml.Call"
+    // `Task` and `(Task %a)`: the same name at two arities, as in C#.
+    | "Task" -> "System.Threading.Tasks.Task"
     // A cancellation token *is* a promise of a reason, so it needs no type of
     // its own here — the whole newtype lives in the Bjolang type system, where
     // it keeps `promise-join` and `detach` off a value neither of them means
