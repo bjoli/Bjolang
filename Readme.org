@@ -79,126 +79,6 @@ slow work : gave up
 
 The whole program, report included, is in Examples/events_are_values.bjo.
 
-*** The inbox: when .NET wants to talk to a fiber
-
-Events are values, and a fiber has an environment — its handlers, its
-parameters, its cancellation scope. A .NET thread has none of that. Kestrel's
-thread, a =System.Threading.Timer= callback, a =FileSystemWatcher=: each of them
-arrives from outside, holding a value and wanting a fiber to deal with it.
-
-An inbox is the door they knock on. It is a bounded queue whose receive side is
-an ordinary CML event, so the handover is a rendezvous like any other:
-
-#+BEGIN_SRC scheme
-(import (std inbox))
-
-(def requests (make-inbox 1000 DropNewest))
-
-;; Runs on Kestrel's thread. It hands the request over and returns the task
-;; Kestrel waits on — and that is the whole of what it does.
-(use! app (fun (ctx next) (cast Task (inbox-call/token requests ctx (request-aborted ctx)))))
-
-;; An ordinary fiber, spawned by ordinary Bjolang, with its full environment.
-(defbjo (worker)
-  (def c (sync (inbox-recv requests)))
-  (try (handle (call-request c))
-    #:finally (ignore (call-reply! c unit))))
-#+END_SRC
-
-**** The one rule for a lambda .NET calls
-
-It may call the inbox's own functions, and nothing else.
-
-=inbox-post!=, =inbox-send=, =inbox-call=, =inbox-close!=, =inbox-fail!= and
-=inbox-abort!= are ordinary functions, not bjoroutines, and they read no
-parameter and no effect handler — because the thread calling them has none. A
-=(log ...)= written in such a lambda does not fail; it quietly goes to the
-default handler even though the code around it is inside a =with-handler=, and
-that is the sort of bug that is found in production. Post the value; do the work
-in the fiber.
-
-The same rule is why a post from a thread with no fiber context *enqueues* the
-woken receiver instead of running it inline: the posting thread may be holding a
-lock of its own, and a fiber resumed there would run arbitrary code inside it.
-
-**** Three ways in, for three kinds of producer
-
-| Operation                    | Who calls it                               | When the inbox is full         |
-|------------------------------+--------------------------------------------+--------------------------------|
-| =inbox-post!=, =inbox-call=, =inbox-try-call= | callbacks that cannot wait: events, Kestrel | the inbox's =WhenFull= decides |
-| =inbox-send=, =inbox-send/token= | callbacks that can wait, because they return a =Task= | the task waits for room |
-| =inbox-send-evt=             | fibers                                     | the event waits, and can lose a =choose= |
-
-Capacity is mandatory — =(make-inbox 1000 DropNewest)= — because an event source
-faster than its consumer must not grow memory without limit. =DropNewest=
-refuses the new item, which is right when every item matters and an HTTP server
-answers 503. =DropOldest= evicts the oldest instead, which is right when only
-the latest value matters: a progress callback under =DropNewest= keeps the ten
-oldest updates and loses 100%, leaving the bar stuck at 62%. Both count what
-they threw away, so a program can say "dropped 37 progress updates".
-
-How a refusal *reaches* the caller is the caller's choice, and there are two
-shapes because there are two kinds of caller. =inbox-post!= answers =#f= and
-=inbox-call= faults the task with =InboxFullException=; that fault is the right
-answer for anyone who awaits the task, and no answer at all for anyone who does
-not. A middleware hands its task straight back to the server and never looks at
-it, so the fault escapes as an unhandled exception and the client is told 500 —
-"this server is broken" — when the truth was 503, "this server is busy". So
-=inbox-try-call= is =inbox-post!='s =#f= for a call:
-
-#+BEGIN_SRC scheme
-(match (inbox-try-call/token requests ctx (request-aborted ctx))
-  ((Some answering) (cast Task answering))
-  (None (set-status! (response-of ctx) 503) completed-task))
-#+END_SRC
-
-=None= means nothing was posted — full under =DropNewest=, or closed — and it is
-an answer the callback has *before* it returns, which is the only moment it can
-still say anything.
-
-=inbox-send= is real backpressure rather than a policy: a .NET library pushing
-rows through a =Func<Row, Task>= gets a task that stays pending until a receiver
-makes room, so it slows to the consumer's pace and each waiting producer holds
-exactly one item. A fiber gets an *event* rather than that task, because a task
-cannot be withdrawn: =(task->event (inbox-send ib x))= in a losing =choose=
-branch would queue =x= anyway, later, with nobody expecting it.
-
-**** Ending it, and the receive loop
-
-=inbox-close!= is the graceful end: what is queued stays, and what was already
-waiting for room still gets in. =inbox-fail!= is the same with an exception kept
-*beside* the queue, where no full policy can drop it. =inbox-abort!= is the hard
-stop: everything queued is dropped and every waiting caller is cancelled.
-
-=inbox-closed= fires once the inbox is closed and there is nothing left, and
-commits immediately ever after, so the loop is:
-
-#+BEGIN_SRC scheme
-(sync (choose (wrap (inbox-recv ib) Some)
-              (wrap (inbox-closed ib) (fun (u) None))))
-#+END_SRC
-
-It is a separate event rather than an =Option= from =inbox-recv= so that code
-which never closes its inbox — a worker stopped by cancelling its scope — keeps
-the simple form.
-
-**** A caller that goes away
-
-With =inbox-call/token= the caller's token — Kestrel's =RequestAborted= — means
-two different things depending on where the call is when it fires.
-
-- *Still queued*: the call is removed and its task cancelled. No fiber ever sees
-  a call nobody is waiting for.
-- *Already taken*: the task is **not** completed. Only =call-reply!= and
-  =call-fail!= complete it, and =call-abandoned= fires instead, for the receiver
-  to do as it sees fit. The reason is concrete: completing the task hands the
-  =HttpContext= back to Kestrel, which recycles it into the next request — while
-  the handler is still writing the response into it.
-
-Which also means: *a fiber that takes a =Call= must answer it*, and =#:finally=
-is where that belongs, so that a raise answers it too. A call that is never
-answered is a browser request that never finishes.
-
 *** Macros
 Bjolang supports hygienic macros based on implicit-renaming. Together with syntax-match, thing brings about 90% of what syntax-case brings: An anaphoric if could look like this, for example:
 
@@ -551,6 +431,8 @@ network io by wrapping c# async in events for the cml goodness. (std http) is he
 ** Performance things
 
 Hoist regexes. This is a big one, especially for regexes in patterns.
+
+The compiler is too conservative about hoisting operators.
 
 Simple source transformations: let bound functions only ever used as function should be turned into static local functions instead of delegates/funcs. lambdas that do not escape that have simple bodies can be inlined (and removed maybe). 
 
