@@ -35,6 +35,12 @@ echo "Building standard library..."
 ./bjor --lib lib/std/prelude.bjo
 # `ports` imports `prelude`, so it comes last for the same reason.
 ./bjor --lib lib/std/ports.bjo
+# `net` imports `prelude` and `ports` — the byte ports are what a connection is
+# made of — and nothing else. Like `run` it binds names out of the runtime
+# assembly, `Bjolang.Runtime.Net` and the listener beside it, so a change to
+# `BjolangRuntime/BjoNet.cs` has to reach the compiler before this line.
+# Rebuild the compiler after the runtime, then run this.
+./bjor --lib lib/std/net.bjo
 # `inbox` imports `prelude` and nothing else. Like `run` it binds names out of
 # the runtime assembly — `Bjoml.InboxModule` and the types beside it — so a
 # change to `BjolangRuntime/Cml/Inbox.cs` has to reach the compiler before this

@@ -27,6 +27,7 @@ public static class Program
         FiberTests.RunAll();
         SpawnBatchTests.RunAll();
         BytePortTests.RunAll();
+        NetTests.RunAll();
 
         return Harness.Report();
     }

@@ -1268,6 +1268,35 @@ public static partial class BjolangRuntime {
     }
 
     /// <summary>
+    /// A connection on the ambient scope — one registration for the pair of
+    /// ports over it, because there is one handle underneath them.
+    ///
+    /// Called from Bjolang on the fiber, immediately after the connect returns,
+    /// and deliberately NOT from inside the awaited C# method: after an await
+    /// the continuation is on a pool thread and `Dyn.Current` is not the
+    /// fiber's, so the scope read there would find nothing.
+    ///
+    /// A connection a listener accepted is not registered here at all. It is the
+    /// listener's, for the same reason: an accept completes off-fiber, where
+    /// there is no scope to ask.
+    /// </summary>
+    public static Bjolang.Runtime.BjoConnection OwnConnection(Bjolang.Runtime.BjoConnection connection) {
+        connection.Owner = RegisterPort(connection);
+        return connection;
+    }
+
+    /// <summary>
+    /// A listener on the ambient scope. Releasing it is the HARD stop — the
+    /// listening socket and every connection it accepted that is still open —
+    /// where `close-listener!` only stops accepting. See
+    /// <see cref="Bjolang.Runtime.BjoTcpListener"/>.
+    /// </summary>
+    public static Bjolang.Runtime.BjoTcpListener OwnListener(Bjolang.Runtime.BjoTcpListener listener) {
+        listener.Owner = RegisterPort(listener);
+        return listener;
+    }
+
+    /// <summary>
     /// Take ownership of whatever a handler answered `open-input-file` with.
     ///
     /// A real port is already owned, by the constructor that opened it and
@@ -1365,6 +1394,22 @@ public static partial class BjolangRuntime {
         return default;
     }
 
+    /// <summary>The way out of a `with-open` over a connection or a listener.</summary>
+    public static Unit CloseConnection(Bjolang.Runtime.BjoConnection? connection) {
+        if (connection is null) return default;
+        if (connection.Owner is { } owned) return owned.Release();
+        connection.Dispose();
+        return default;
+    }
+
+    /// <summary>See <see cref="CloseConnection"/>.</summary>
+    public static Unit CloseListener(Bjolang.Runtime.BjoTcpListener? listener) {
+        if (listener is null) return default;
+        if (listener.Owner is { } owned) return owned.Release();
+        listener.Dispose();
+        return default;
+    }
+
     /// `(close-owned-or-dispose x)` — the `with-open` exit, which is handed
     /// whatever the binding held: a port, or any `IDisposable` that came out of
     /// interop.
@@ -1380,6 +1425,8 @@ public static partial class BjolangRuntime {
             // behind its scope's back and leave the registration standing.
             case Bjolang.Runtime.BjoByteInputPort bi: return CloseByteInput(bi);
             case Bjolang.Runtime.BjoByteOutputPort bo: return CloseByteOutput(bo);
+            case Bjolang.Runtime.BjoConnection c: return CloseConnection(c);
+            case Bjolang.Runtime.BjoTcpListener l: return CloseListener(l);
             case System.IDisposable d: d.Dispose(); return default;
             default: return default;
         }

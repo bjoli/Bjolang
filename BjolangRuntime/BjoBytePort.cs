@@ -78,6 +78,82 @@ public interface IHalfClosable {
 }
 
 /// <summary>
+/// One stream shared by the two halves of a connection.
+///
+/// A connection is a pair of byte ports and there is no third value — that is
+/// what lets a protocol written against `(std ports)` run over TCP without
+/// knowing it is TCP — so this is where the handle lives, behind both of them.
+///
+/// **The handle goes when both halves have been closed, or when whatever owns
+/// the connection releases it, whichever comes first.** A count of two, and it
+/// is the only rule under which `(with-open ((i in) (o out)) ...)` means what it
+/// looks like it means. The two rules it is not:
+///
+///   * *released when either half is closed* would make the pair a lie — the
+///     read half could never be closed while the write half still answered, and
+///     `shutdown!` would lose most of its point;
+///   * *released only when the scope ends* needs no counting and fails under
+///     load: a server accepting in a loop inside one long-lived scope would
+///     hold a descriptor per connection until that scope returned.
+///
+/// The peer address lives here for the same reason the stream does: there is
+/// nowhere else, and a server that cannot log who connected is not finished.
+/// </summary>
+public sealed class BjoConnection : IDisposable {
+    private readonly Stream _stream;
+    private int _halvesOpen = 2;
+    private int _disposed;
+
+    public BjoConnection(Stream stream, string? peer) {
+        ArgumentNullException.ThrowIfNull(stream);
+        _stream = stream;
+        Peer = peer;
+    }
+
+    /// <summary>
+    /// The scope registration that will close this, for a connection a fiber
+    /// made, or null for one a listener owns.
+    ///
+    /// Released rather than disposed when the second half closes, for the reason
+    /// <see cref="BjolangRuntime.CloseInput"/> gives: disposing directly would
+    /// release the handle and leave a spent node on the scope's list.
+    /// </summary>
+    public BjolangRuntime.Owned? Owner;
+
+    /// <summary>What `peer-address` answers. Null for a stream with no peer.</summary>
+    public string? Peer { get; }
+
+    public Stream Stream => _stream;
+
+    public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
+
+    /// <summary>
+    /// Whoever else has to be told when this connection is over — a listener
+    /// forgetting it from its registry of live connections. Runs exactly once.
+    /// </summary>
+    internal Action<BjoConnection>? Forget;
+
+    /// One of the two ports was closed. The second one takes the handle with it.
+    internal void HalfClosed() {
+        if (Interlocked.Decrement(ref _halvesOpen) > 0) return;
+        if (Owner is { } owned) owned.Release();
+        else Dispose();
+    }
+
+    public void Dispose() {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        Forget?.Invoke(this);
+        _stream.Dispose();
+    }
+
+    /// <summary>The reading half. Owns nothing on its own; see the class doc.</summary>
+    public BjoByteInputPort Input() => new(this);
+
+    /// <summary>The writing half.</summary>
+    public BjoByteOutputPort Output() => new(this);
+}
+
+/// <summary>
 /// A buffered byte source whose reads are CML events.
 ///
 /// **The port owns the buffer, and the buffer is the only place bytes live.**
@@ -169,14 +245,27 @@ public sealed class BjoByteInputPort : IDisposable {
     /// a pipe, a `limited` view — and set by whatever opened a real handle.</summary>
     public BjolangRuntime.Owned? Owner;
 
-    public BjoByteInputPort(Stream inner) : this(inner, DefaultBufferSize, true) { }
+    /// The connection this is one half of, or null for a port that stands
+    /// alone. When it is set, closing this port closes a half rather than the
+    /// stream — see <see cref="BjoConnection"/>.
+    private readonly BjoConnection? _connection;
 
-    public BjoByteInputPort(Stream inner, bool ownsInner) : this(inner, DefaultBufferSize, ownsInner) { }
+    public BjoByteInputPort(Stream inner) : this(inner, DefaultBufferSize, true, null) { }
+
+    public BjoByteInputPort(Stream inner, bool ownsInner) : this(inner, DefaultBufferSize, ownsInner, null) { }
 
     /// The buffer size is settable for the reason `BjoPort`'s is: every
     /// interesting bug in a buffered reader lives at a buffer boundary, and a
     /// test that cannot put the boundary where it wants cannot reach them.
-    public BjoByteInputPort(Stream inner, int bufferSize, bool ownsInner = true) {
+    public BjoByteInputPort(Stream inner, int bufferSize, bool ownsInner = true)
+        : this(inner, bufferSize, ownsInner, null) { }
+
+    /// The reading half of a connection. Owns neither the stream nor a place on
+    /// a scope: the connection owns both, and this tells it when it is closed.
+    internal BjoByteInputPort(BjoConnection connection)
+        : this(connection.Stream, DefaultBufferSize, false, connection) { }
+
+    private BjoByteInputPort(Stream inner, int bufferSize, bool ownsInner, BjoConnection? connection) {
         ArgumentNullException.ThrowIfNull(inner);
         ArgumentOutOfRangeException.ThrowIfLessThan(bufferSize, 1);
         if (!inner.CanRead)
@@ -184,8 +273,15 @@ public sealed class BjoByteInputPort : IDisposable {
 
         _inner = inner;
         _ownsInner = ownsInner;
+        _connection = connection;
         _buf = new byte[bufferSize];
     }
+
+    /// <summary>
+    /// Who is at the other end, when this port is one half of a connection.
+    /// Null for a file, a pipe or a `limited` view, which have no peer.
+    /// </summary>
+    public string? Peer => _connection?.Peer;
 
     /// The stream this port reads from, for a caller that has to hand it to a
     /// .NET API. **Not** the thing to build a text reader over — see
@@ -451,9 +547,34 @@ public sealed class BjoByteInputPort : IDisposable {
     /// again.
     /// </summary>
     private void Deliver() {
-        if (Interlocked.CompareExchange(ref _deliverState, Running, Idle) != Idle) {
-            Volatile.Write(ref _deliverState, RunningAgain);
-            return;
+        // Take ownership, or leave a note for whoever has it.
+        //
+        // THE NOTE IS A COMPARE-AND-SWAP FROM `Running`, NEVER A PLAIN WRITE,
+        // and that is the whole of this loop. A plain write is decided while
+        // the owner is still inside and can land *after* the owner has released
+        // the state to `Idle`:
+        //
+        //     U: CAS(Running, Idle) fails — reads Running, the owner is inside
+        //     T: exit CAS succeeds — the state becomes Idle, T leaves
+        //     U: writes RunningAgain — with nobody running
+        //
+        // From then on every call here sees a state that is not `Idle`, writes
+        // the note again and returns, and the port is dead: bytes in its
+        // buffer, readers parked on it, and nothing left to hand them over. A
+        // CAS from `Running` cannot do that, because a release has already
+        // moved the state out of `Running`.
+        while (true) {
+            int state = Volatile.Read(ref _deliverState);
+
+            if (state == Idle) {
+                if (Interlocked.CompareExchange(ref _deliverState, Running, Idle) == Idle) break;
+                continue;                      // someone took it first; look again
+            }
+
+            if (state == RunningAgain) return; // already told
+            if (Interlocked.CompareExchange(ref _deliverState, RunningAgain, Running) == Running) return;
+            // It moved under us — the owner released, or another thread told
+            // them first. Round again.
         }
 
         do {
@@ -912,7 +1033,10 @@ public sealed class BjoByteInputPort : IDisposable {
             Monitor.PulseAll(_lock);
         }
 
-        if (_ownsInner) _inner.Dispose();
+        // One half of a connection closes a half; the handle goes with the
+        // second one. Anything else disposes what it owns.
+        if (_connection is not null) _connection.HalfClosed();
+        else if (_ownsInner) _inner.Dispose();
     }
 }
 
@@ -941,11 +1065,21 @@ public sealed class BjoByteOutputPort : IDisposable {
     /// <summary>See <see cref="BjoPort.Owner"/>.</summary>
     public BjolangRuntime.Owned? Owner;
 
-    public BjoByteOutputPort(Stream inner) : this(inner, DefaultBufferSize, true) { }
+    /// See <see cref="BjoByteInputPort"/>'s field of the same name.
+    private readonly BjoConnection? _connection;
 
-    public BjoByteOutputPort(Stream inner, bool ownsInner) : this(inner, DefaultBufferSize, ownsInner) { }
+    public BjoByteOutputPort(Stream inner) : this(inner, DefaultBufferSize, true, null) { }
 
-    public BjoByteOutputPort(Stream inner, int bufferSize, bool ownsInner = true) {
+    public BjoByteOutputPort(Stream inner, bool ownsInner) : this(inner, DefaultBufferSize, ownsInner, null) { }
+
+    public BjoByteOutputPort(Stream inner, int bufferSize, bool ownsInner = true)
+        : this(inner, bufferSize, ownsInner, null) { }
+
+    /// The writing half of a connection. See <see cref="BjoConnection"/>.
+    internal BjoByteOutputPort(BjoConnection connection)
+        : this(connection.Stream, DefaultBufferSize, false, connection) { }
+
+    private BjoByteOutputPort(Stream inner, int bufferSize, bool ownsInner, BjoConnection? connection) {
         ArgumentNullException.ThrowIfNull(inner);
         ArgumentOutOfRangeException.ThrowIfLessThan(bufferSize, 1);
         if (!inner.CanWrite)
@@ -953,8 +1087,12 @@ public sealed class BjoByteOutputPort : IDisposable {
 
         _inner = inner;
         _ownsInner = ownsInner;
+        _connection = connection;
         _buf = new byte[bufferSize];
     }
+
+    /// <summary>See <see cref="BjoByteInputPort.Peer"/>.</summary>
+    public string? Peer => _connection?.Peer;
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
 
@@ -1101,7 +1239,11 @@ public sealed class BjoByteOutputPort : IDisposable {
             }
         } finally {
             _disposed = true;
-            if (_ownsInner) _inner.Dispose();
+            // Drained first, above, and only then is the half given up: if the
+            // reading half has already gone, this is the call that takes the
+            // handle with it.
+            if (_connection is not null) _connection.HalfClosed();
+            else if (_ownsInner) _inner.Dispose();
         }
     }
 }

@@ -403,12 +403,30 @@ public sealed class Inbox<T>
     /// </summary>
     private void Settle()
     {
-        if (Interlocked.CompareExchange(ref _settleState, Running, Idle) != Idle)
+        // Take ownership, or tell whoever has it that there is more to do,
+        // which is what keeps this from being a nested call.
+        //
+        // THE NOTE IS LEFT WITH A COMPARE-AND-SWAP, NOT A PLAIN WRITE, and that
+        // is load bearing. A plain write is decided while the owner is still
+        // inside and can land after the owner has released the state to `Idle`
+        // — leaving it set with nobody running. From then on every call here
+        // bounces off it and the inbox stops delivering for good, with items
+        // queued and receivers parked on them. A CAS from `Running` cannot
+        // clobber a release, because the release has already moved it.
+        while (true)
         {
-            // Someone is already settling. Telling them there is more to do is
-            // enough, and is what keeps this from being a nested call.
-            Volatile.Write(ref _settleState, RunningAgain);
-            return;
+            int state = Volatile.Read(ref _settleState);
+
+            if (state == Idle)
+            {
+                if (Interlocked.CompareExchange(ref _settleState, Running, Idle) == Idle) break;
+                continue;                     // someone took it first; look again
+            }
+
+            if (state == RunningAgain) return; // already told
+            if (Interlocked.CompareExchange(ref _settleState, RunningAgain, Running) == Running) return;
+            // It moved under us — the owner released, or another thread told
+            // them first. Round again.
         }
 
         do
