@@ -118,6 +118,7 @@ let rec letrecifyExpr (expr: Expr) : Expr =
     | EList(exprs, r) -> EList(List.map letrecifyExpr exprs, r)
     | EVec(exprs, r) -> EVec(List.map letrecifyExpr exprs, r)
     | EArray(exprs, r) -> EArray(List.map letrecifyExpr exprs, r)
+    | ESplice(expr, r) -> ESplice(letrecifyExpr expr, r)
     | EApp(target, args, r) -> EApp(letrecifyExpr target, List.map letrecifyExpr args, r)
     | ECast(t, e, r) -> ECast(t, letrecifyExpr e, r)
     | EDynPack(traitName, e, r) -> EDynPack(traitName, letrecifyExpr e, r)
@@ -165,16 +166,12 @@ let rec letrecifyExpr (expr: Expr) : Expr =
 
     | EWithReturn(name, body, r) -> EWithReturn(name, letrecifyExpr body, r)
 
-    | EBindElse(binder, scrutinee, sequel, arms, r) ->
-        let arms' =
-            arms
-            |> List.map (fun (p, body) -> (Ast.mapPatternSteps letrecifyExpr p, letrecifyExpr body))
-
-        EBindElse(
+    | EDefMatch(binder, scrutinee, failure, sequel, r) ->
+        EDefMatch(
             Ast.mapPatternSteps letrecifyExpr binder,
             letrecifyExpr scrutinee,
+            Ast.mapDefFailure letrecifyExpr (Ast.mapPatternSteps letrecifyExpr) failure,
             letrecifyExpr sequel,
-            arms',
             r
         )
 
@@ -294,6 +291,8 @@ let rec letrecifyDecl (decl: Decl) : Decl =
     match decl with
     | DDef(name, expr, r) -> DDef(name, letrecifyExpr expr, r)
     | DDefTuple(names, expr, r) -> DDefTuple(names, letrecifyExpr expr, r)
+    | DDefPattern(pattern, expr, r) ->
+        DDefPattern(Ast.mapPatternSteps letrecifyExpr pattern, letrecifyExpr expr, r)
     | DDefMutable(name, expr, r) -> DDefMutable(name, letrecifyExpr expr, r)
     | DDefun(name, args, body, colour, r) ->
         let letrecifiedArgs =

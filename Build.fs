@@ -85,6 +85,11 @@ let private dumpPaths (emitCs: string option) : string * string =
 ///              compiled against its API and only resolves it at run time, so a
 ///              rebuilt runtime is a program built against something that is no
 ///              longer there — a missing method rather than a failed build
+///     roots    the roots file the build resolved module paths against, when
+///              one was given. It says which directory each package name means,
+///              so editing it compiles the same source against other code —
+///              and the dependency paths already in this record are the ones it
+///              chose last time, which say nothing about the change
 ///
 /// The mode is first and alone on its line so that reading just the head of the
 /// file answers the cheapest question.
@@ -120,10 +125,38 @@ let private writeBuildRecord
             | "" -> []
             | loc -> [ $"compiler %s{Path.GetFullPath loc}" ]
 
+        // Read from `Paths` rather than from the options, so that a dependency
+        // this build compiled on the way records the same file: it was resolved
+        // against the same packages, and its record decides its own staleness.
+        let rootsLine =
+            match Paths.rootsFile () with
+            | Some path -> [ $"roots %s{path}" ]
+            | None -> []
+
+        // The same argument as the roots line, and the same file: what a
+        // package declares is an input of every module in it, so a declaration
+        // removed from a manifest makes the modules that used it stale rather
+        // than leaving them built against a framework they may no longer name.
+        let frameworksLine =
+            match Frameworks.declarationFilePath () with
+            | Some path -> [ $"frameworks %s{path}" ]
+            | None -> []
+
+        // What this module's package declared, written down so that a record
+        // says what it was built under rather than only which file said so.
+        let frameworkLines =
+            Frameworks.declaredFor inputFilePath
+            |> Set.toList
+            |> List.sort
+            |> List.map (fun name -> $"framework %s{name}")
+
         let lines =
             [ $"""mode %s{if options.Debug then "debug" else "release"}"""
               $"output %s{Path.GetFullPath outputFilePath}" ]
             @ compilerPath
+            @ rootsLine
+            @ frameworksLine
+            @ frameworkLines
             @ (sources |> List.map (fun s -> $"source %s{s}"))
             @ (linked |> List.map Path.GetFullPath |> List.distinct |> List.sort |> List.map (fun d -> $"dep %s{d}"))
 
@@ -182,7 +215,12 @@ let generateSource
     // behind it.
     let metadata =
         { Exports.metadata env typedAst declaredMacros declaredPatternMacros declaredHashMacros inputFilePath isLibrary with
-            Deps = if isLibrary then dllDeps |> List.map Path.GetFullPath else [] }
+            Deps = if isLibrary then dllDeps |> List.map Pipeline.dependencyEntry else []
+            // The shared frameworks a type was actually resolved from while
+            // this module was compiled, plus what its imports recorded. An
+            // executable publishes none — nothing imports it — and its own set
+            // goes into the runtimeconfig instead.
+            Frameworks = if isLibrary then Frameworks.usedHere () else [] }
 
     Timing.phase "codegen" (fun () -> Codegen.generateProgram env metadata dllDeps inputFilePath typedAst)
 
@@ -205,6 +243,11 @@ let compile (options: Options) (inputFilePath: string) : int =
                     DotNetInterop.registerAssemblyFile assemblyPath)
 
         Diagnostics.progress $"Compiling %s{inputFilePath}"
+
+        // Which package's framework declarations apply, and a fresh record of
+        // what this module actually used. One process compiles many modules —
+        // a batch, a dependency, a REPL entry — and each answers for itself.
+        Frameworks.startModule inputFilePath
 
         let result = Pipeline.runFullFrontendPipeline inputFilePath
 
@@ -275,14 +318,49 @@ let compile (options: Options) (inputFilePath: string) : int =
 
             let mainModuleClass = Naming.qualifiedModuleClassName inputFilePath
 
+            // Every module dependency is on disk: `Pipeline` resolved each one
+            // to a file it had just read or just built, and an import it cannot
+            // resolve is now an error there. One missing here therefore means
+            // the artefact was deleted while this build was running — reported,
+            // because dropping it silently is what produced executables that
+            // failed at run time naming an assembly nobody wrote.
+            match dllDeps |> List.filter (File.Exists >> not) with
+            | [] -> ()
+            | missing ->
+                failwithf
+                    $"""These assemblies were linked but are not there: %s{String.concat ", " missing}. Something removed them while the build was running."""
+
             // Everything this program links against, where it really lives.
             // Nothing is ever copied next to the output: an assembly has one
             // home, and a program built from it points back at that home.
+            //
+            // The runtime half is still filtered rather than checked, because
+            // the compiler already treats a missing runtime assembly as
+            // something to carry on without: `compile` registers the ones that
+            // exist and says nothing about the rest, and an installation short
+            // one of them fails when the program reaches what it needed.
             let linkedAssemblies =
-                (Paths.runtimeAssemblies @ dllDeps)
-                |> List.filter File.Exists
+                ((Paths.runtimeAssemblies |> List.filter File.Exists) @ dllDeps)
                 |> List.map Path.GetFullPath
                 |> List.distinct
+
+            // The shared frameworks this module is compiled against: what its
+            // package declared, and what its imports were built against. Kept
+            // apart from `linkedAssemblies` on purpose — these are *reference*
+            // assemblies the C# compile needs, not files the program links, and
+            // the build record has no business naming a hundred and fifty of
+            // them.
+            let compileAgainst = Frameworks.compileAgainst () |> Set.toList |> List.sort
+
+            let frameworkReferenceFiles =
+                compileAgainst
+                |> List.collect (fun framework ->
+                    match Frameworks.referenceDir framework with
+                    | Some dir -> Directory.GetFiles(dir, "*.dll") |> Array.toList
+                    | None -> [])
+                |> List.distinct
+
+
 
             // The directories the running program has to probe to find those
             // assemblies. The default load context only looks beside the
@@ -298,7 +376,6 @@ let compile (options: Options) (inputFilePath: string) : int =
             // if multiple dependencies happen to output a file named `set.dll`.
             let moduleAssemblyPairs =
                 dllDeps
-                |> List.filter File.Exists
                 |> List.map Path.GetFullPath
                 |> List.distinct
                 |> List.map (fun path -> Naming.assemblyName path, path)
@@ -429,6 +506,15 @@ let compile (options: Options) (inputFilePath: string) : int =
                     $"    <Reference Include=\"{name}\">\n      <HintPath>{dllPath}</HintPath>\n      <Private>false</Private>\n    </Reference>")
                 |> String.concat "\n"
                 
+            // MSBuild is told the *framework*, not its files: it then supplies
+            // the reference pack and writes a runtimeconfig naming it, which is
+            // the one thing this backend does for itself — the generated file
+            // is moved into place below rather than written here.
+            let frameworkReferences =
+                compileAgainst
+                |> List.map (fun name -> $"    <FrameworkReference Include=\"{name}\" />")
+                |> String.concat "\n"
+
             let csprojContent = $"""<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>{projType}</OutputType>
@@ -437,6 +523,7 @@ let compile (options: Options) (inputFilePath: string) : int =
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+{frameworkReferences}
 {dllReferences}
   </ItemGroup>
 </Project>"""
@@ -466,7 +553,33 @@ let compile (options: Options) (inputFilePath: string) : int =
                 if not isLibrary then
                     let assemblyBaseName = Path.GetFileNameWithoutExtension(targetPath)
                     let runtimeConfigPath = Path.ChangeExtension(targetPath, ".runtimeconfig.json")
-                    let runtimeConfigContent = "{\n  \"runtimeOptions\": {\n    \"tfm\": \"net10.0\",\n    \"framework\": {\n      \"name\": \"Microsoft.NETCore.App\",\n      \"version\": \"10.0.0\"\n    }\n  }\n}"
+
+                    // One framework is written the way it always was, so that
+                    // every program that needs nothing else is byte-for-byte
+                    // the file it was before shared frameworks existed. Two or
+                    // more is the plural form, which is a different key rather
+                    // than a repetition of the same one.
+                    // What the program's host has to load: the core framework,
+                    // plus whatever the entry module turned out to use — its
+                    // own resolutions and everything its imports recorded.
+                    let runtimeConfigContent =
+                        match Frameworks.usedHere () with
+                        | [] ->
+                            "{\n  \"runtimeOptions\": {\n    \"tfm\": \"net10.0\",\n    \"framework\": {\n      \"name\": \"Microsoft.NETCore.App\",\n      \"version\": \"10.0.0\"\n    }\n  }\n}"
+                        | extra ->
+                            let entry (name: string) =
+                                "      { \"name\": \"" + name + "\", \"version\": \"10.0.0\" }"
+
+                            let entries =
+                                (Frameworks.coreFramework :: extra)
+                                |> List.distinct
+                                |> List.map entry
+                                |> String.concat ",\n"
+
+                            "{\n  \"runtimeOptions\": {\n    \"tfm\": \"net10.0\",\n    \"frameworks\": [\n"
+                            + entries
+                            + "\n    ]\n  }\n}"
+
                     File.WriteAllText(runtimeConfigPath, runtimeConfigContent)
 
                     // The manifest names only the program itself. Listing a
@@ -508,7 +621,11 @@ let compile (options: Options) (inputFilePath: string) : int =
                               Target = if isLibrary then CSharpEmit.Library else CSharpEmit.Executable
                               Optimize = not options.Debug
                               EmitPdb = true
-                              References = linkedAssemblies }
+                              // The framework's reference assemblies are
+                              // references like any other here. All three
+                              // backends have to agree on the set, which is
+                              // why this is the same list csc and MSBuild get.
+                              References = linkedAssemblies @ frameworkReferenceFiles }
 
                         match CSharpEmit.emitToFile emitOptions fullCode targetPath with
                         | [] ->
@@ -588,7 +705,7 @@ let compile (options: Options) (inputFilePath: string) : int =
                                     |> String.concat " ")
                             
                             let userRefs =
-                                linkedAssemblies
+                                (linkedAssemblies @ frameworkReferenceFiles)
                                 |> List.map (fun p -> $"\"-r:{p}\"")
                                 |> String.concat " "
                                 
@@ -826,12 +943,24 @@ let private compileDependencyOutOfProcess (bjoPath: string) : string =
 
     let self = System.Reflection.Assembly.GetEntryAssembly().Location
 
+    // What this process was told about packages and frameworks, forwarded: a
+    // subprocess inherits neither, and a dependency built without them would be
+    // built against other packages and under other declarations than the module
+    // importing it.
+    let inherited =
+        (match Paths.rootsFile () with
+         | Some path -> $" --roots \"{path}\""
+         | None -> "")
+        + (match Frameworks.declarationFilePath () with
+           | Some path -> $" --frameworks \"{path}\""
+           | None -> "")
+
     let fileName, args =
         if System.String.IsNullOrEmpty self then
             // Published as a native host: the process itself is the compiler.
-            System.Environment.ProcessPath, $"--lib \"{bjoPath}\""
+            System.Environment.ProcessPath, $"--lib{inherited} \"{bjoPath}\""
         else
-            "dotnet", $"exec \"{self}\" --lib \"{bjoPath}\""
+            "dotnet", $"exec \"{self}\" --lib{inherited} \"{bjoPath}\""
 
     let exitCode, stdout, stderr =
         Timing.phase "dependency build (out of process)" (fun () ->

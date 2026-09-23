@@ -1,15 +1,15 @@
-;; `with-return` and `def+` — a named early-exit block, and a refutable binding
-;; used inside one.
+;; `with-return` and a refutable `def` — a named early-exit block, and a binding
+;; that may fail used inside one.
 ;;
-;; Every `def+` here stands at the head of the block's own body, where the
-;; form's value *is* the block's value, so the arms read the same as they did
-;; when they compiled to an escape. `220_def_plus.bjo` is where the difference
-;; shows: an arm is the form's other arm, and needs no block at all.
+;; Every refutable `def` here stands at the head of the block's own body, where
+;; the form's value *is* the block's value, so the failure parts read as an
+;; escape without being one. `220_def.bjo` is where the difference shows: a
+;; failure is the form's other arm, and needs no block at all.
 ;;
-;; `def+` is in the `def` family and consumed by `parseBody` beside
-;; `def/mutable`, because it *is* a definition: what its pattern binds scopes
-;; over the rest of the body. That is `def`'s scoping and not `let`'s, which
-;; opens a nested scope with a body of its own.
+;; A refutable `def` is consumed by `parseBody` beside `def/mutable`, because it
+;; *is* a definition: what its pattern binds scopes over the rest of the body.
+;; That is `def`'s scoping and not `let`'s, which opens a nested scope with a
+;; body of its own.
 ;;
 ;; Two lowerings are being exercised here, and which one a block gets is not
 ;; something a program can see. When the block *is* the function's value, an
@@ -25,36 +25,30 @@
 (: blocked? (-> string bool))
 (defun (blocked? h) (= h "bad"))
 
-;; --- def+ at the head of a body, and three in sequence ---------------------
+;; --- a def at the head of a body, and three in sequence --------------------
 ;;
-;; The second scrutinee reads `cfg`, which the first form bound: a `def+` scopes
-;; over its sequel, and the sequel is where the next one stands. Chaining them
-;; is what replaced the plural form — and it is what lets each failure say what
-;; it was, since each has arms of its own.
+;; The second scrutinee reads `cfg`, which the first form bound: a `def` scopes
+;; over its sequel, and the sequel is where the next one stands. Written one at
+;; a time rather than as a `def*`, so that each failure can say what it was.
 (: configure (-> (Option Cfg) (Option string) (Result string string)))
 (defun (configure cfg-opt host-opt)
   (with-return ret
-    (def+ ((Some cfg) cfg-opt)
-          (None (Err "no config")))
-    (def+ ((Cons first-host _) (record-ref cfg hosts))
-          (Nil (Err (str "no hosts, and the port was " (int->string (record-ref cfg port))))))
-    (def+ ((Some host) host-opt)
-          (None (Err "no host")))
+    (def (Some cfg) cfg-opt (Err "no config"))
+    (def (Cons first-host _) (record-ref cfg hosts)
+      (Err (str "no hosts, and the port was " (int->string (record-ref cfg port)))))
+    (def (Some host) host-opt (Err "no host"))
     (Ok (str host "/" first-host ":" (int->string (record-ref cfg port))))))
 
 ;; --- three scrutinees, one message -----------------------------------------
 ;;
-;; Three chained `def+`s, each with an arm that leaves the block, so whichever
+;; Three chained `def`s, each with a failure that leaves the block, so whichever
 ;; scrutinee is missing the answer is the same one.
 (: triple (-> (Option int) (Option int) (Option int) string))
 (defun (triple a b c)
   (with-return ret
-    (def+ ((Some x) a)
-          (None (ret "something was missing")))
-    (def+ ((Some y) b)
-          (None (ret "something was missing")))
-    (def+ ((Some z) c)
-          (None (ret "something was missing")))
+    (def (Some x) a (ret "something was missing"))
+    (def (Some y) b (ret "something was missing"))
+    (def (Some z) c (ret "something was missing"))
     (str (int->string (+ x (+ y z))))))
 
 ;; --- ret from inside a loop ------------------------------------------------
@@ -143,8 +137,7 @@
 (: classify (-> (Option int) string))
 (defun (classify o)
   (with-return ret
-    (def+ ((Some n) o)
-          (None "none"))
+    (def (Some n) o "none")
     (when (< n 0) (ret "negative"))
     "positive"))
 
@@ -158,7 +151,7 @@
   (classify o))
 
 (defun (main)
-  (expect "def+ at the head of a body, three times over"
+  (expect "a def at the head of a body, three times over"
           (match (configure (Some (Cfg (port 80) (hosts (list "a")))) (Some "h"))
             ((Ok s) s)
             ((Err e) (str "err:" e)))
@@ -182,7 +175,7 @@
             ((Err e) (str "err:" e)))
           "err:no host")
 
-  (expect "three chained def+, all matching"
+  (expect "three chained defs, all matching"
           (triple (Some 1) (Some 2) (Some 3))
           "6")
   (expect "the first failing" (triple None (Some 2) (Some 3)) "something was missing")
@@ -227,7 +220,7 @@
 
   (expect "the sync copy" (classify (Some 3)) "positive")
   (expect "the sync copy, escaping" (classify (Some -3)) "negative")
-  (expect "the sync copy, on the def+" (classify None) "none")
+  (expect "the sync copy, on the def" (classify None) "none")
 
   (println "219 ok")
   0)

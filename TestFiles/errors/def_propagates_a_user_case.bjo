@@ -1,0 +1,17 @@
+;; A user union propagates like any other, and is held to the same rule: the
+;; rebuilt case has to fit the body.
+;;
+;; `Stopped` is what this pattern leaves out, and it is built at the body's
+;; type. A body of `string` has no `Stopped` to return, so the failure has to be
+;; written instead.
+
+;; EXPECT-ERROR: Stopped here, but this body has type string
+
+(import (std prelude))
+
+(type (: State (Union (Running string) Stopped)))
+
+(: describe (-> State string))
+(defun (describe m)
+  (def (Running since) m :propagate)
+  (str "running since " since))

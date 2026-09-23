@@ -11,17 +11,28 @@
 # in such object code or executable form without complying with the source code
 # availability requirements or notice obligations of Section 3 of the MPL 2.0.
 
-# The bootstrap, and nothing else.
+# The bootstrap, and `rebjo`.
 #
 # `bjo` is written in Bjolang, so something that is not Bjolang has to compile
-# it the first time. That is all this does: it gets `bjo.exe` to exist and hands
-# over. Everything a user asked for — which command, what is stale, what to run
-# — is decided in `bjo.bjo`, and nothing here should grow to have an opinion
-# about it.
+# it the first time. That is what this does: it gets `bjo.exe` to exist and
+# hands over. Everything a user asked for — which command, what is stale, what
+# to run — is decided in `bjo.bjo`, and nothing here should grow to have an
+# opinion about it.
 #
-# The staleness rules below are the crude ones on purpose. They are about one
-# file whose dependencies are known here in full, and the moment they need to
-# know more than that, `bjo.bjo` is already able to answer it.
+# What it no longer does is ask whether the compiler is behind its own sources.
+# That question cost a walk of every `.fs` and every `.cs` in the tree on every
+# invocation, to answer "no" nearly every time — and when it was "yes", it was a
+# build nobody asked for in the middle of running something else. It is `bjo
+# rebjo` now, and only ever that.
+#
+# It does ask that about `bjo` itself, which is a different question with a
+# different cost: the answer is in `bjo.bjobuild`, which the last build wrote,
+# and reading it is a stat per entry rather than a walk.
+#
+# `rebjo` is answered here rather than in `bjo.bjo` because it rebuilds
+# `bjo.exe`, which `bjo.bjo` is running from. Nothing else about it needs bash:
+# the two commands below are the whole of the bootstrap, and a `rebjo` is the
+# bootstrap run on purpose.
 
 set -e
 
@@ -33,70 +44,59 @@ COMPILER_DLL="$BJO_ROOT/bin/Release/net10.0/Bjolang.dll"
 SOURCE="$BJO_DIR/bjo.bjo"
 EXE="$BJO_DIR/bjo.exe"
 
-# The compiler, if it is missing or behind its own sources. `bjo.bjo` asks this
-# again before every command it runs; asking here as well is what makes the very
-# first invocation — with no compiler and no `bjo.exe` — work at all.
-#
-# Two assemblies, each asked about the sources that produce it. The runtime's C#
-# does not produce `Bjolang.dll`: comparing it against that one is an answer
-# that never changes, because a `.cs` edit rebuilds `BjolangRuntime.dll` and
-# leaves the F# assembly alone for MSBuild to skip.
-#
-# `bin` and `obj` are skipped: a build writes generated code into them, so
-# including them would make the compiler stale the instant it was built.
-RUNTIME_DLL="$BJO_ROOT/BjolangRuntime/bin/Release/net10.0/BjolangRuntime.dll"
-
-newer_than() {
-    local assembly="$1"
-    [ -f "$assembly" ] || return 0
-
-    local src
-    while read -r src; do
-        [ -n "$src" ] && [ "$src" -nt "$assembly" ] && return 0
-    done
-
-    return 1
-}
-
-compiler_is_stale() {
-    newer_than "$COMPILER_DLL" < <(find "$BJO_ROOT" -maxdepth 1 -name '*.fs' 2>/dev/null) && return 0
-
-    newer_than "$RUNTIME_DLL" < <(find "$BJO_ROOT/BjolangRuntime" -name '*.cs' \
-                                       -not -path '*/obj/*' -not -path '*/bin/*' 2>/dev/null) && return 0
-
-    return 1
-}
-
-if compiler_is_stale; then
-    echo "Building Bjolang compiler..."
+build_compiler() {
+    echo "Building the Bjolang compiler..."
     dotnet build "$BJO_ROOT/Bjolang.fsproj" -c Release -v q --nologo
-fi
-
-# `bjo.exe` itself, whose build record is read the same way it reads everyone
-# else's: first line is the mode, and every `source`, `dep` and `compiler` line
-# is something the binary must be newer than.
-RECORD="$BJO_DIR/bjo.bjobuild"
-
-bjo_is_stale() {
-    [ -f "$EXE" ] || return 0
-    [ -f "$RECORD" ] || return 0
-    [ "$(head -n1 "$RECORD")" = "mode release" ] || return 0
-
-    local key path
-    while read -r key path; do
-        case "$key" in
-            source|dep|compiler)
-                [ -n "$path" ] && [ "$path" -nt "$EXE" ] && return 0
-                ;;
-        esac
-    done < "$RECORD"
-
-    return 1
 }
 
-if bjo_is_stale; then
+build_bjo() {
     echo "Building bjo..."
     dotnet "$COMPILER_DLL" "$SOURCE"
+}
+
+if [ "$1" = "rebjo" ]; then
+    if [ $# -ne 1 ]; then
+        echo "bjo rebjo: takes no arguments."
+        exit 1
+    fi
+
+    build_compiler
+    build_bjo
+    exit 0
+fi
+
+# Is bjo.exe behind its own sources?
+#
+# The build record beside bjo.bjo lists every source and every assembly the
+# last build read, so this covers the modules bjo imports by path — bjo.bjo,
+# project.bjo, resolve.bjo, git.bjo, lock.bjo, manifest.bjo — without anything
+# here knowing their names. It is a stat per entry over a list of a few dozen,
+# not the walk of the whole tree that asking the same about the compiler cost.
+bjo_is_stale() {
+    local record="$BJO_DIR/bjo.bjobuild"
+    [ -f "$record" ] || return 0
+
+    local key value
+    while read -r key value; do
+        case "$key" in
+            source|dep|compiler)
+                if [ -e "$value" ] && [ "$value" -nt "$EXE" ]; then
+                    return 0
+                fi
+                ;;
+        esac
+    done < "$record"
+
+    return 1
+}
+
+# The compiler is missing, not stale: a file that is not there cannot be run,
+# and answering that is a question about two paths rather than about the tree.
+# bjo itself is both, because editing it is the ordinary way to work on it.
+[ -f "$COMPILER_DLL" ] || build_compiler
+
+if [ ! -f "$EXE" ] || bjo_is_stale; then
+    build_bjo
 fi
 
 exec dotnet "$EXE" "$@"

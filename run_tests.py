@@ -875,6 +875,270 @@ def run_check_tests():
 
     return "check", c_total, c_failed, c_failures
 
+
+# --- Packages -----------------------------------------------------------
+#
+# Vad ett paket är: ett namn och en katalog. Det som provas här är att namnet
+# bestämmer modulens identitet och katalogen bara var filen ligger — annars kan
+# ett hämtat beroende inte byggas i två projekt, och ett delat byggcache är
+# omöjligt senare.
+
+def old_lib_namespace(path):
+    """Namnrymdsregeln som gällde före paketen, kvar bara som facit.
+
+    Kopian ligger här och inte i kompilatorn: kravet är att varje fil under
+    `lib/` får exakt samma namn som förr, och ett facit som hämtas ur det som
+    provas bevisar ingenting.
+    """
+    full = Path(path).resolve()
+    directory = full.parent
+
+    def ident_segment(s):
+        s = s.replace(".", "_").replace("-", "_")
+        cleaned = "".join(c if (c.isalnum() or c == "_") else "_" for c in s)
+        return ("_" + cleaned) if cleaned[:1].isdigit() else cleaned
+
+    lib_root = None
+    walker = directory
+    while True:
+        if walker.name == "lib" and (walker / "std").is_dir():
+            lib_root = walker
+            break
+        if walker.parent == walker:
+            break
+        walker = walker.parent
+
+    if lib_root is None:
+        return None
+
+    relative = directory.relative_to(lib_root)
+    segments = ["lib"] if str(relative) == "." else [ident_segment(p) for p in relative.parts]
+    return "BjoMod." + ".".join(segments)
+
+
+def run_package_tests():
+    PKG_DIR = (LOG_DIR / "packages").resolve()
+    p_total, p_failed = 0, 0
+    p_failures = []
+
+    def check_that(label, ok, detail=""):
+        nonlocal p_total, p_failed
+        p_total += 1
+        if not ok:
+            p_failed += 1
+            p_failures.append(f"{label}: {detail}" if detail else label)
+
+    def write(path, text):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return path
+
+    def compile_with(roots, source, *extra):
+        cmd = ["dotnet", str(COMPILER_DLL)]
+        if roots is not None:
+            cmd += ["--roots", str(roots)]
+        cmd += list(extra) + [str(source)]
+        return subprocess.run(cmd, capture_output=True, text=True)
+
+    def bjomod_strings(dll):
+        """Varje `BjoMod.…`-sträng i en assembly, som byte-jämförelse.
+
+        Assemblynamnet står i metadatan och läses riktigt med
+        `AssemblyName.GetAssemblyName`, vilket kräver .NET. Här jämförs i
+        stället alla namnsträngar assemblyn bär: är identiteten härledd ur
+        sökvägen skiljer de sig mellan två kataloger, och är den härledd ur
+        paketnamnet är de lika. Samma fråga, utan en .NET-process per test.
+        """
+        data = Path(dll).read_bytes()
+        return set(re.findall(rb"BjoMod\.[A-Za-z0-9_.]+", data))
+
+    PKG_DIR.mkdir(parents=True, exist_ok=True)
+
+    # 1. Standardbiblioteket byter inte identitet.
+    lib_checked = 0
+    for bjo in sorted(Path("lib").rglob("*.bjo")):
+        dll = bjo.with_suffix(".dll")
+        if not dll.exists():
+            continue
+        expected = old_lib_namespace(bjo) + "." + bjo.stem.replace(".", "_").replace("-", "_")
+        lib_checked += 1
+        if expected.encode() not in dll.read_bytes():
+            check_that("the standard library keeps its identity", False, f"{bjo} is no longer {expected}")
+            break
+    else:
+        check_that("the standard library keeps its identity", lib_checked > 0,
+                   "no built standard library to compare against")
+
+    # 2. Samma paket i två kataloger är samma modul.
+    core = '(import (std prelude))\n(export greet)\n(: greet (-> string string))\n(defun (greet who) (str "hello, " who))\n'
+    loud = '(import (std prelude))\n(import "core.bjo")\n(export shout)\n(: shout (-> string string))\n(defun (shout who) (str (greet who) "!"))\n'
+    app = '(import (std prelude))\n(import (relocpkg core))\n(import (relocpkg loud))\n(defun (main) (println (shout "x")) 0)\n'
+
+    built = {}
+    for where in ("a", "b"):
+        base = PKG_DIR / f"reloc{where}"
+        write(base / "src" / "core.bjo", core)
+        write(base / "src" / "loud.bjo", loud)
+        write(base / "app.bjo", app)
+        write(base / "roots.bjo", '(roots (root (relocpkg) "src"))\n')
+        res = compile_with(base / "roots.bjo", base / "app.bjo")
+        built[where] = (res, base)
+
+    if all(res.returncode == 0 for res, _ in built.values()):
+        names = {w: bjomod_strings(base / "src" / "core.dll") for w, (_, base) in built.items()}
+        check_that("a package relocated keeps its namespace and assembly name",
+                   names["a"] == names["b"],
+                   f"{sorted(names['a'] - names['b'])} against {sorted(names['b'] - names['a'])}")
+        check_that("and that name is the package's, not the directory's",
+                   b"BjoMod.relocpkg.core" in names["a"],
+                   f"got {sorted(names['a'])}")
+
+        # 3. En fil nådd på två sätt är en assembly.
+        _, base = built["a"]
+        check_that("one file reached two ways is one assembly",
+                   len(list((base / "src").glob("core*.dll"))) == 1,
+                   str(sorted(p.name for p in (base / "src").glob("*.dll"))))
+        ran = subprocess.run(["dotnet", str(base / "app.exe")], capture_output=True, text=True)
+        check_that("and the program linking it runs", ran.stdout == "hello, x!\n", ran.stdout + ran.stderr)
+
+        # 12. Metadata namnger modulen, inte sökvägen.
+        deps = (base / "src" / "loud.dll").read_bytes()
+        check_that("a library records a dependency by module name",
+                   b"(std prelude)" in deps,
+                   "no module entry in the metadata")
+        check_that("and not by the path it was built from",
+                   str((Path("lib") / "std" / "prelude.dll").resolve()).encode() not in deps,
+                   "an absolute path to the standard library survived")
+    else:
+        which = [w for w, (res, _) in built.items() if res.returncode != 0]
+        check_that("a package relocated keeps its namespace and assembly name", False,
+                   f"the package did not build in {which}: {built[which[0]][0].stdout[-400:]}")
+
+    # 4. En import som inte går att lösa upp är ett fel, på formens rad.
+    unresolved = PKG_DIR / "unresolved"
+    write(unresolved / "src" / "there.bjo", '(import (std prelude))\n(export here)\n(: here (-> int))\n(defun (here) 1)\n')
+    write(unresolved / "roots.bjo", '(roots (root (up) "src"))\n')
+    for label, body, wanted in [
+        ("an unknown package", '(import (std prelude))\n(import (nosuch core))\n(defun (main) 0)\n',
+         "no package named (nosuch)"),
+        ("a known package without the module", '(import (std prelude))\n(import (up nope))\n(defun (main) 0)\n',
+         "has no nope.bjo"),
+        ("a relative path that is not there", '(import (std prelude))\n(import "nowhere.bjo")\n(defun (main) 0)\n',
+         "no such file: nowhere.bjo"),
+    ]:
+        source = write(unresolved / f"{wanted.split()[0]}_case.bjo", body)
+        res = compile_with(unresolved / "roots.bjo", source)
+        said = res.stdout + res.stderr
+        check_that(f"{label} is refused", res.returncode != 0, "it compiled")
+        check_that(f"{label} says what is missing", wanted in said, said[-300:])
+        check_that(f"{label} points at the import form", ":2" in said, said[-300:])
+
+    # 4b. Ett paketnamn är inte en modul: det finns ingenting kvar att lägga till
+    # rotens katalog, så importen namnger en katalog och inte en fil.
+    package_itself = write(unresolved / "package_itself.bjo",
+                           '(import (std prelude))\n(import (up))\n(defun (main) 0)\n')
+    res = compile_with(unresolved / "roots.bjo", package_itself)
+    said = res.stdout + res.stderr
+    check_that("importing a package name is refused", res.returncode != 0, "it compiled")
+    check_that("and it says a package is not a module, and how to import one",
+               "is a package, not a module" in said and "(up name)" in said, said[-300:])
+    check_that("and it points at the import form", ":2" in said, said[-300:])
+
+    # 5. Ett uttryckligt `.dll` i en import är fortfarande en assembly.
+    explicit = PKG_DIR / "explicit"
+    write(explicit / "prebuilt.bjo", '(import (std prelude))\n(export answer)\n(: answer (-> int))\n(defun (answer) 42)\n')
+    lib_res = compile_with(None, explicit / "prebuilt.bjo", "--lib")
+    write(explicit / "user.bjo", '(import (std prelude))\n(import "prebuilt.dll")\n(defun (main) (println (int->string (answer))) 0)\n')
+    use_res = compile_with(None, explicit / "user.bjo")
+    ran = subprocess.run(["dotnet", str(explicit / "user.exe")], capture_output=True, text=True) \
+        if use_res.returncode == 0 else None
+    check_that("an import naming a .dll outright still links it",
+               lib_res.returncode == 0 and use_res.returncode == 0 and ran.stdout == "42\n",
+               (use_res.stdout + use_res.stderr)[-300:])
+
+    # 6. Längsta prefixet vinner.
+    prefix = PKG_DIR / "prefix"
+    write(prefix / "pa" / "b" / "c.bjo", '(import (std prelude))\n(export who)\n(: who (-> string))\n(defun (who) "pa")\n')
+    write(prefix / "pab" / "c.bjo", '(import (std prelude))\n(export who)\n(: who (-> string))\n(defun (who) "pa-b")\n')
+    write(prefix / "app.bjo", '(import (std prelude))\n(import (pa b c))\n(defun (main) (println (who)) 0)\n')
+    write(prefix / "roots.bjo", '(roots (root (pa) "pa")\n       (root (pa b) "pab"))\n')
+    res = compile_with(prefix / "roots.bjo", prefix / "app.bjo")
+    ran = subprocess.run(["dotnet", str(prefix / "app.exe")], capture_output=True, text=True) \
+        if res.returncode == 0 else None
+    check_that("(pa b c) resolves into the (pa b) root",
+               ran is not None and ran.stdout == "pa-b\n",
+               (res.stdout + res.stderr)[-300:] if ran is None else ran.stdout)
+
+    # 7. En fil som ett mer bestämt paket äger namnet på.
+    write(prefix / "shadow.bjo", '(import (std prelude))\n(import "pa/b/c.bjo")\n(defun (main) (println (who)) 0)\n')
+    res = compile_with(prefix / "roots.bjo", prefix / "shadow.bjo")
+    said = res.stdout + res.stderr
+    check_that("a shadowed file is refused", res.returncode != 0, "it compiled")
+    check_that("and the message names both packages",
+               "(pa)" in said and "(pa b)" in said and "c.bjo" in said,
+               said[-300:])
+
+    # 8. En katalog vid sidan av en rot hör inte till den.
+    sibling = PKG_DIR / "sibling"
+    write(sibling / "src2" / "m.bjo", '(import (std prelude))\n(export m)\n(: m (-> int))\n(defun (m) 1)\n')
+    write(sibling / "src" / "main.bjo", '(import (std prelude))\n(import (sib m))\n(defun (main) 0)\n')
+    write(sibling / "roots.bjo", '(roots (root (sib) "src"))\n')
+    res = compile_with(sibling / "roots.bjo", sibling / "src" / "main.bjo")
+    check_that("a root does not claim the directory beside it",
+               res.returncode != 0 and "has no m.bjo" in (res.stdout + res.stderr),
+               (res.stdout + res.stderr)[-300:])
+
+    # 9. Trasiga rotfiler.
+    broken = PKG_DIR / "broken"
+    write(broken / "src" / "m.bjo", '(import (std prelude))\n(export m)\n(: m (-> int))\n(defun (m) 1)\n')
+    write(broken / "app.bjo", '(import (std prelude))\n(defun (main) 0)\n')
+    for label, text, wanted in [
+        ("a duplicate package name", '(roots (root (a) "src") (root (a) "src"))\n', "given a directory twice"),
+        ("a standard-library name", '(roots (root (std) "src"))\n', "part of the standard library"),
+        ("a directory that is not there", '(roots (root (a) "nope"))\n', "which is not a directory"),
+    ]:
+        roots = write(broken / f"{wanted.split()[0]}.roots.bjo", text)
+        res = compile_with(roots, broken / "app.bjo")
+        check_that(f"{label} in a roots file is refused",
+                   res.returncode != 0 and wanted in (res.stdout + res.stderr),
+                   (res.stdout + res.stderr)[-200:])
+
+    # 10. Rotfilen är en indata i byggposten.
+    _, base = built["a"]
+    record = (base / "app.bjobuild")
+    check_that("a build with --roots records the roots file",
+               record.exists() and any(line.startswith("roots ") for line in record.read_text().splitlines()),
+               record.read_text()[:200] if record.exists() else "no build record")
+
+    # 11. Ett bortplockat beroende som metadatan namnger.
+    gone = PKG_DIR / "gone"
+    write(gone / "src" / "leaf.bjo", '(import (std prelude))\n(export leaf)\n(: leaf (-> int))\n(defun (leaf) 7)\n')
+    write(gone / "src" / "mid.bjo", '(import (std prelude))\n(import (gone leaf))\n(export mid)\n(: mid (-> int))\n(defun (mid) (leaf))\n')
+    write(gone / "app.bjo", '(import (std prelude))\n(import (gone mid))\n(defun (main) (println (int->string (mid))) 0)\n')
+    write(gone / "roots.bjo", '(roots (root (gone) "src"))\n')
+    first = compile_with(gone / "roots.bjo", gone / "app.bjo")
+
+    if first.returncode == 0:
+        # Bara `mid.dll` blir kvar: källan till båda är borta, så ingenting kan
+        # byggas om, och det som läses är metadatans egen dependency.
+        for leftover in ("leaf.bjo", "leaf.dll", "mid.bjo"):
+            (gone / "src" / leftover).unlink()
+        for leftover in ("app.exe", "app.bjobuild"):
+            (gone / leftover).unlink(missing_ok=True)
+
+        res = compile_with(gone / "roots.bjo", gone / "app.bjo")
+        said = res.stdout + res.stderr
+        check_that("a recorded dependency that is gone is an error", res.returncode != 0, "it compiled")
+        check_that("and the error names the library and the dependency",
+                   "mid.dll" in said and "(gone leaf)" in said,
+                   said[-300:])
+    else:
+        check_that("a recorded dependency that is gone is an error", False,
+                   f"the fixture did not build: {(first.stdout + first.stderr)[-300:]}")
+
+    return "packages", p_total, p_failed, p_failures
+
+
 # Run phases concurrently
 phases = []
 with ThreadPoolExecutor(max_workers=4) as executor:
@@ -900,6 +1164,12 @@ with ThreadPoolExecutor(max_workers=4) as executor:
     print_color(BLUE, "Checking --check...")
     phases.append(executor.submit(run_check_tests))
 
+    print("-" * 50)
+    print_color(BLUE, "Checking packages and roots...")
+    phases.append(executor.submit(run_package_tests))
+
+    package_total = package_failed = 0
+    package_failures = []
     codegen_total = codegen_failed = 0
     repl_total = repl_failed = 0
     repro_total = repro_failed = 0
@@ -947,6 +1217,13 @@ with ThreadPoolExecutor(max_workers=4) as executor:
             else:
                 for f in check_failures:
                     print(f"  [{RED}FAIL{NC}] {f}")
+        elif name == "packages":
+            package_total, package_failed, package_failures = total, failed, failures
+            if failed == 0:
+                print(f"  [{GREEN}PASS{NC}] packages and roots")
+            else:
+                for f in package_failures:
+                    print(f"  [{RED}FAIL{NC}] {f}")
 
 end_time = time.time()
 duration = end_time - start_time
@@ -971,6 +1248,8 @@ if stale_total > 0:
     print(f"Staleness:          {stale_total - stale_failed}/{stale_total} rebuilt as expected")
 if check_total > 0:
     print(f"--check:            {check_total - check_failed}/{check_total} checks behaved")
+if package_total > 0:
+    print(f"Packages:           {package_total - package_failed}/{package_total} package rules held")
 print(f"Total time:         {duration:.2f}s")
 print("")
 
@@ -988,8 +1267,9 @@ print_failures("Reproducibility Failures", repro_failures)
 print_failures("Staleness Failures", stale_failures)
 print_failures("Codegen Test Failures", codegen_failures)
 print_failures("--check Failures", check_failures)
+print_failures("Package Failures", package_failures)
 
-if (error_failed or codegen_failed or repl_failed or repro_failed or stale_failed or warning_failed or check_failed) and not compiled_failed and not run_failed:
+if (error_failed or codegen_failed or repl_failed or repro_failed or stale_failed or warning_failed or check_failed or package_failed) and not compiled_failed and not run_failed:
     sys.exit(1)
     
 if compiled_failed or run_failed:

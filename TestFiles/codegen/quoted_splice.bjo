@@ -1,0 +1,75 @@
+;; What `,@` lowers to, and what it leaves alone.
+;;
+;; A splice is appended rather than built: the written elements either side of
+;; it stay the literal node they always were, each piece is converted to a
+;; `Seq`, the pieces are joined with `seq-append`, and the result is converted
+;; back. Those three builtins already existed with exactly the types this needs,
+;; so there is no new typed node, no new case in `Codegen` and nothing new in
+;; the runtime — which is the whole argument for lowering it this way, and the
+;; only place that argument is visible is here.
+;;
+;; `230_quoted_splice.bjo` is what it means. This is what it costs.
+;;
+;; Each `EXPECT-CS` line is an extended regex matched against the output; an
+;; `EXPECT-NO-CS` line must match nothing.
+
+(export plain run-of-two spliced both-ends vec-spliced)
+
+(import (std prelude))
+
+;; --- A literal with no splice is untouched ----------------------------------
+;;
+;; The invariant this change is held to: a program written before `,@` existed
+;; has to compile to the same C# it did. The whole of `100_literal_elaboration`,
+;; `151_vec_literals` and `187_array_literals` was compared byte for byte; this
+;; keeps one example of it in the suite, where a future rewrite of the literal
+;; path will trip over it.
+;; EXPECT-CS: return SchemeList\.SchemeList\.Cons\(1, SchemeList\.SchemeList\.Cons\(2, SchemeList\.SchemeList\.Cons\(3, SchemeList\.SchemeList\.Empty<int>\(\)\)\)\);
+(: plain (-> (List int)))
+(defun (plain) '(1 2 3))
+
+;; --- A run of written elements is one node ----------------------------------
+;;
+;; Not one piece per element: the two ints before the splice are built by the
+;; same `Cons` chain they would be built by on their own, and only the join
+;; between the run and the splice is new.
+;; EXPECT-CS: listsubgtseq\(SchemeList\.SchemeList\.Cons\(1, SchemeList\.SchemeList\.Cons\(2, SchemeList\.SchemeList\.Empty<int>\(\)\)\)\)
+(: run-of-two (-> (List int) (List int)))
+(defun (run-of-two xs)
+  (def (: out (List int)) '(1 2 ,@xs))
+  out)
+
+;; --- The spliced value is passed straight in --------------------------------
+;;
+;; No copy, no wrapper, no element-by-element walk: `xs` is already a `(List
+;; int)`, which is exactly what the splice demanded of it, so it goes to
+;; `list->seq` as it stands.
+;; EXPECT-CS: seqsubgtlist\(seqsubappend\(listsubgtseq\(SchemeList\.SchemeList\.Cons\(0, SchemeList\.SchemeList\.Empty<int>\(\)\)\), listsubgtseq\(xs\)\)\)
+(: spliced (-> (List int) (List int)))
+(defun (spliced xs)
+  (def (: out (List int)) '(0 ,@xs))
+  out)
+
+;; --- Appends nest to the right ----------------------------------------------
+;;
+;; Three splices and two runs are five pieces and four appends, and every one of
+;; them has a single piece on its left. Left-nesting would re-walk the whole
+;; prefix at each step, which is quadratic in the number of pieces; that is what
+;; the `EXPECT-NO-CS` rules out.
+;; EXPECT-CS: seqsubappend\(listsubgtseq\(xs\), seqsubappend\(
+;; EXPECT-NO-CS: seqsubappend\(seqsubappend\(
+(: both-ends (-> (List int) (List int) (List int)))
+(defun (both-ends xs ys)
+  (def (: out (List int)) '(,@xs 1 ,@ys 2 ,@xs))
+  out)
+
+;; --- A vec splices through its own two conversions --------------------------
+;;
+;; `vec->seq` and `seq->vec`, which exist for the same reason `list->seq` and
+;; `seq->list` do. There is no `seq->array`, which is why `#[...]` refuses a
+;; splice outright — `errors/quoted_splice_array.bjo`.
+;; EXPECT-CS: seqsubgtvec\(seqsubappend\(vecsubgtseq\(vs\),
+(: vec-spliced (-> (Vec string) (List (Vec string))))
+(defun (vec-spliced vs)
+  (def (: out (List (Vec string))) '([,@vs "z"]))
+  out)

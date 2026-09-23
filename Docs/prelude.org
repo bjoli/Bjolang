@@ -218,7 +218,7 @@ Every operation takes the string *and* the cursor, because the cursor carries no
 Aliases for the operators, which work at ~StringCursor~ directly. The named forms exist because ~(string-cursor<? a b)~ says what it means where ~(< a b)~ on two opaque values does not.
 
 *** Traversal =(std prelude)=
-- ~(string-fold f init s)~ : Left fold; ~f~ receives ~(acc char)~.
+- ~(string-fold f init s)~ : Left fold; ~f~ receives ~(char acc)~.
 - ~(string-fold-right f init s)~ : Right fold; ~f~ receives ~(char acc)~. Walks backwards with ~string-cursor-prev~, so it is a loop rather than n stack frames.
 - ~(string-for-each f s)~ : Applies ~f~ to each character for side effects.
 - ~(string-index pred s)~ : The first character satisfying ~pred~, as ~(Some cursor)~, or ~None~. A cursor rather than an index is what makes the result usable — it can go straight to ~substring/cursors~, where an integer could not be converted back at all.
@@ -350,7 +350,7 @@ Built-in functional linked lists.
 - ~(list-reverse lst)~ : Reverses the list.
 - ~(list-map f lst)~ : Maps function ~f~ over the list.
 - ~(list-filter f lst)~ : Filters elements satisfying ~f~.
-- ~(list-foldl f init lst)~ : Left fold; ~f~ receives ~(acc item)~.
+- ~(list-foldl f init lst)~ : Left fold; ~f~ receives ~(item acc)~.
 - ~(list-foldr f init lst)~ : Right fold; ~f~ receives ~(item acc)~.
 - ~(list-for-each f lst)~ : Applies ~f~ to each element for side effects.
 - ~(list-ref lst index)~ : Gets the element at ~index~.
@@ -374,8 +374,8 @@ Persistent immutable vectors.
 - ~(vec-split vec index)~ : Splits the vector into two vectors at ~index~.
 - ~(vec-map f vec)~ : Maps ~f~ over the vector.
 - ~(vec-filter f vec)~ : Filters the vector.
-- ~(vec-fold f init vec)~ : Left fold; ~f~ receives ~(acc item)~.
-- ~(vec-reduce f vec)~ : Reduces the vector.
+- ~(vec-fold f init vec)~ : Left fold; ~f~ receives ~(item acc)~.
+- ~(vec-reduce f vec)~ : Reduces the vector; ~f~ receives ~(item acc)~, seeded with the first element.
 - ~(vec-for-each f vec)~ : Applies ~f~ for side effects.
 - ~(vec-for-each/range f vec start count)~ : Applies ~f~ over a range.
 - ~(vec-iter f vec)~ : Iterates with early exit (returns true if all elements matched).
@@ -472,7 +472,7 @@ Every callback below takes the key and the value as **two** arguments, which is
 what a walk of the trie produces anyway:
 
 #+BEGIN_SRC scheme
-(map-fold (fun (acc k v) (+ acc v)) 0 m)
+(map-fold (fun (k v acc) (+ acc v)) 0 m)
 #+END_SRC
 
 The entry survives as a ~(Tuple %k %v)~ only where a trait signature fixes the
@@ -481,7 +481,7 @@ callback reached through ~fold~ or a ~loop~ sees a pair rather than two
 arguments, and the prelude's implementations are what put the pair together:
 
 #+BEGIN_SRC scheme
-(fold (fun (acc kv) (def (_ . v) kv) (+ acc v)) 0 m)
+(fold (fun (kv acc) (def (_ . v) kv) (+ acc v)) 0 m)
 #+END_SRC
 
 The pair is also what ~map->list~, ~map->seq~, ~map-cursor-current~, ~map-find~
@@ -494,7 +494,7 @@ costs no allocation.
 - ~(map-iter f map)~ : Iterates with early exit; ~f~ receives ~(key value)~ and returns a boolean.
 - ~(map-any? f map)~ : True if ~(f key value)~ holds of any entry.
 - ~(map-find f map)~ : ~(Some entry)~ for the first entry where ~(f key value)~ holds, or ~None~. The entry is a pair: it is a value being handed back.
-- ~(map-fold f init map)~ : Folds over the map; ~f~ receives ~(acc key value)~.
+- ~(map-fold f init map)~ : Folds over the map; ~f~ receives ~(key value acc)~.
 - ~(map-filter f map)~ : Returns a new map containing only entries where ~(f key value)~ is true.
 - ~(map-map f map)~ : Returns a new map whose values are ~(f key value)~. The key is what the result is filed under, so the mapper cannot move it.
 - ~(map-map-values f map)~ : Returns a new map with each value replaced by ~(f value)~, keys untouched.
@@ -571,6 +571,14 @@ anything or stored in a variable.
 
 - ~(cond (test body ...) ... (else body ...))~ : ~if~ at any number of arms. The
   final ~else~ is required. Every arm needs the same return type.
+- ~(:def pattern expr)~ and ~(:do body ...)~ : clauses of a ~cond~ that answer
+  nothing. A ~:def~ binds and a ~:do~ runs something; both happen only when
+  every test above them has failed, and what a ~:def~ binds is in scope in
+  every clause below it and nowhere else. A ~:def~ *is* a ~def~ — the body it
+  swallows is the rest of the cond — so it takes the same patterns and the
+  same failure parts, and ~(:def (Ok v) (parse s) :propagate)~ makes the whole
+  cond the ~Err~. A cond may not end in one: they answer nothing, so the
+  ~else~ is still the last word.
 - ~(if-let ((name expr)) then else)~ : ~then~ with ~name~ bound to what ~expr~
   answered, if it answered ~(Some ...)~, and ~else~ if it was ~None~. The
   binding is shaped like a ~let~'s, which should be changed.
@@ -593,6 +601,18 @@ anything or stored in a variable.
 (cond ((< n 0) "negative")
       ((= n 0) "zero")
       (else "positive"))
+
+;; A value a later test needs, without a nested cond to hold it
+(cond ((string-empty? text) "empty")
+      (:def first (string-cursor-ref text (string-cursor-start text)))
+      ((char-numeric? first) "number")
+      (else "word"))
+
+;; The failure part is def's, and the sequel is the rest of the cond
+(cond (override? 9999)
+      (:def (Some port) (map-try-ref settings "port") 8080)
+      ((< port 1024) 0)
+      (else port))
 
 (if-let ((half (halve n))) half 0)
 
@@ -1177,7 +1197,7 @@ Lazy, demand-driven sequences.
 - ~(seq-head s)~ : Returns the first element of the sequence.
 - ~(seq-map f s)~ : Lazily maps ~f~ over the sequence.
 - ~(seq-filter f s)~ : Lazily filters elements satisfying ~f~.
-- ~(seq-fold f init s)~ : Folds over the sequence; ~f~ receives ~(acc item)~.
+- ~(seq-fold f init s)~ : Folds over the sequence; ~f~ receives ~(item acc)~.
 - ~(seq-unfold generator state)~ : Produces a sequence from ~state~ and a ~generator~ function returning ~(Some (Tuple next-item next-state))~ or ~None~.
 - ~(seq-take s n)~ : Takes the first ~n~ elements lazily.
 - ~(seq-drop s n)~ : Drops the first ~n~ elements lazily. Dropping more than the sequence holds gives the empty sequence. This is what a ~seq-tail~ would have been: a ~Seq~ has no tail to step to, so walking one element at a time is ~loop~'s job, not a combinator's.
@@ -1248,7 +1268,7 @@ These methods use long names to prevent collisions with common user variables (l
   ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~, ~(Seq %a)~, ~Range~ and ~string~. A
   string's ~%cursor~ is a ~StringCursor~ and its ~%elem~ is ~char~, so
   ~(loop (:for c "a😀b") ...)~ runs three times and hands over whole characters.
-- ~Foldable~ : ~(fold f init col)~, where ~f~ receives ~(acc item)~. Implemented
+- ~Foldable~ : ~(fold f init col)~, where ~f~ receives ~(item acc)~. Implemented
   for ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~ and ~string~. A map's ~%item~ is its
   ~(Tuple %k %v)~ pair; a string's is ~char~, so ~fold~ over one is
   ~string-fold~.

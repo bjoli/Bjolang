@@ -311,7 +311,7 @@ let checkEscapeUses (name: string) (body: Expr) : unit =
         // other binding of it would.
         | EWithReturn(n, b, _) -> if n <> name then go barrier tail b
 
-        | EBindElse(binder, scrutinee, sequel, arms, _) ->
+        | EDefMatch(binder, scrutinee, failure, sequel, _) ->
             for step in patternSteps binder do
                 sub step
 
@@ -323,12 +323,17 @@ let checkEscapeUses (name: string) (body: Expr) : unit =
             if not (shadowed (patternBinders binder)) then
                 go barrier tail sequel
 
-            for (armPattern, armBody) in arms do
-                for step in patternSteps armPattern do
-                    sub step
+            (match failure with
+             | FailNone
+             | FailPropagate -> ()
+             | FailValue value -> go barrier tail value
+             | FailArms arms ->
+                 for (armPattern, armBody) in arms do
+                     for step in patternSteps armPattern do
+                         sub step
 
-                if not (shadowed (patternBinders armPattern)) then
-                    go barrier tail armBody
+                     if not (shadowed (patternBinders armPattern)) then
+                         go barrier tail armBody)
 
         | _ -> List.iter sub (exprChildren e)
 
@@ -530,6 +535,9 @@ let private renameWith
         | EList(items, r) -> EList(List.map sub items, r)
         | EVec(items, r) -> EVec(List.map sub items, r)
         | EArray(items, r) -> EArray(List.map sub items, r)
+        // A splice binds nothing and its expression is read in the scope the
+        // literal is written in, so the substitution goes straight through.
+        | ESplice(item, r) -> ESplice(sub item, r)
 
         | EMatch(target, clauses, r) ->
             EMatch(
@@ -555,24 +563,30 @@ let private renameWith
             let renamed, bodySubst = bind [ name ] subst
             EWithReturn(List.head renamed, go bodySubst body, r)
 
-        | EBindElse(binder, scrutinee, sequel, arms, r) ->
+        | EDefMatch(binder, scrutinee, failure, sequel, r) ->
             // The scrutinee is evaluated in the scope the form began in, not
             // under what any pattern binds — same rule as a match clause's view
             // step.
             let scrutinee' = go subst scrutinee
             let _, sequelSubst = bind (patternBinders binder) subst
 
-            let arms' =
-                arms
-                |> List.map (fun (armPattern, armBody) ->
-                    let _, armSubst = bind (patternBinders armPattern) subst
-                    (renamePattern (go subst) armSubst armPattern, go armSubst armBody))
+            let failure' =
+                match failure with
+                | FailNone -> FailNone
+                | FailPropagate -> FailPropagate
+                | FailValue value -> FailValue(go subst value)
+                | FailArms arms ->
+                    arms
+                    |> List.map (fun (armPattern, armBody) ->
+                        let _, armSubst = bind (patternBinders armPattern) subst
+                        (renamePattern (go subst) armSubst armPattern, go armSubst armBody))
+                    |> FailArms
 
-            EBindElse(
+            EDefMatch(
                 renamePattern (go subst) sequelSubst binder,
                 scrutinee',
+                failure',
                 go sequelSubst sequel,
-                arms',
                 r
             )
 

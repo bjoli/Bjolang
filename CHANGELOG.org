@@ -3,6 +3,375 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~inbox-try-call~, for the caller who cannot look at a faulted task
+
+A refusal has two shapes in ~(std inbox)~ because there are two kinds of
+caller. ~inbox-post!~ answers ~#f~; ~inbox-call~ faults its task with
+~InboxFullException~. The fault is the right answer for anyone who awaits the
+task, and no answer at all for anyone who does not — and the caller the whole
+module exists for is exactly that: a .NET callback that hands its task straight
+back and returns.
+
+An HTTP middleware is the case. It never awaits, so it never sees the fault,
+which escapes as an unhandled exception: the client is told *500* when the
+truth was *503*, and the server logs a stack trace per rejected request under
+precisely the load that filled the queue. Measured on a one-worker,
+one-slot server with six requests at once, before this: ~500 500 500 200 500
+200~, and four traces.
+
+So there is a third form, and it is ~inbox-post!~'s ~#f~ for a call:
+
+#+BEGIN_SRC scheme
+(match (inbox-try-call/token requests ctx (request-aborted ctx))
+  ((Some answering) (cast Task answering))
+  (None (set-status! (response-of ctx) 503) completed-task))
+#+END_SRC
+
+~None~ means nothing was posted — full under ~DropNewest~, or closed — and it
+is an answer the callback holds *before* it returns, which is the only moment
+it can still say anything. Under ~DropOldest~ the answer is ~(Some ...)~: this
+call went in and an older one's task faulted, which is what ~inbox-post!~
+means by ~#t~ in the same situation.
+
+What it leaves open: the distinction ~inbox-call~ draws between full (faults)
+and closed (cancels) is one this form deliberately drops — the caller asked
+whether the item went in, and it did not. A caller that needs to tell the two
+apart should ask ~inbox-closed~, or use the faulting form and await it.
+
+* A ~defbjo~ with a keyword or a rest parameter is still a ~defbjo~ to its importers
+
+An exported signature carries its colour on the arrow head, because that head is
+all an importing module has to read it off. The path that writes the *keyword*
+form of a signature wrote ~->~ outright and dropped the effect on the floor, so
+a suspending function with a keyword or a rest parameter was published as an
+ordinary one.
+
+Nothing said so. The importer's ~callSuspends~ answered no, the call was emitted
+without its ~await~, and what the author saw was Roslyn refusing a file nobody
+wrote:
+
+#+BEGIN_EXAMPLE
+error CS0029: Cannot implicitly convert type 'Bjoml.Fiber<Server>' to 'Server'
+#+END_EXAMPLE
+
+The same function called from its own module was fine, which is what made this
+hard to place: the shape that failed is a library's API, and only across the
+module boundary.
+
+~Exports.signatureText~ now writes ~arrowHead eff~ like every other serializer.
+Nothing about a call site changed; what changed is that the metadata says what
+the declaration said.
+
+What it leaves open: a ~.dll~ built before this carries the wrong head, and
+nothing detects that beyond the C# error it already caused. Rebuild libraries
+that export a keyword-taking bjoroutine — a compiler change makes everything
+stale anyway.
+
+* A ~(:is T name)~ that shadows an imported name compiles
+
+~uniquifyProgram~ renames a local that would shadow an enclosing one, and it
+renames the binders as well as the uses. It handled ~TPIdent~ and ~TPAs~ and not
+~TPTypeTest~ — while ~typedPatternBinders~, which decides what gets renamed,
+listed all three. So a type test's designation was renamed everywhere it was
+*read* and left alone where it was *bound*:
+
+#+BEGIN_SRC scheme
+(match (cast Object s)
+  ((:is System.String str) str)     ;; in a module that imports `str`
+  (_ ""))
+#+END_SRC
+
+became C# that binds ~str~ and returns ~str__1~. Fixed by rewriting the
+designation with the same substitution as the rest of the pattern.
+
+* A package may name types from a shared framework it declares
+
+~Microsoft.AspNetCore.App~ and its neighbours are not part of the base runtime,
+and until now nothing in Bjolang could name a type out of one. A manifest says
+which it wants:
+
+#+BEGIN_SRC scheme
+(package
+  (name (shop web))
+  (frameworks "Microsoft.AspNetCore.App"))
+#+END_SRC
+
+Three sets, and keeping them apart is the whole design.
+
+- *You may name what you declare.* Writing ~Microsoft.AspNetCore.Http.HttpContext~
+  in an ~import/class~, an ~import/extern~, a ~(:is ...)~ or a type annotation is
+  checked against the declaring *package*, not the module — so a package that has
+  not declared ASP.NET is told so, by name, even when some other package in the
+  build has already loaded the assembly.
+- *You may use values that reach you.* The check is about names. A package that
+  calls a function returning an ~HttpContext~ and hands it to another function
+  taking one declares nothing, because it writes nothing.
+- *A program's runtime needs follow what its modules actually used.* Each module
+  records the frameworks its types were really resolved from, plus its imports',
+  and the executable's runtimeconfig is built from that — so a module importing
+  only the pure half of an ASP.NET library gets a runtimeconfig without ASP.NET
+  in it. With only ~Microsoft.NETCore.App~ the file is byte-for-byte what it was.
+
+Types are found lazily and by *file*: namespace guessing does not work for split
+assemblies — ~HttpContext~ lives in ~Microsoft.AspNetCore.Http.Abstractions~, not
+~Microsoft.AspNetCore.Http~ — so the first miss reads the type names out of every
+assembly in the framework with ~System.Reflection.Metadata~, loading none of
+them, and then registers the one file that has the type. Indexing
+~Microsoft.AspNetCore.App~ costs about 8 ms, once per process.
+
+A name that is nowhere gets a hint rather than a shrug:
+
+#+BEGIN_EXAMPLE
+  hint: Microsoft.AspNetCore types live in the shared framework Microsoft.AspNetCore.App.
+  Add (frameworks "Microsoft.AspNetCore.App") to the manifest of package (shop web).
+#+END_EXAMPLE
+
+Each module's build record carries one ~framework~ line per declaration, so
+*removing* ~(frameworks ...)~ recompiles the modules that used it and they fail
+with the naming error rather than staying quietly built. ~bjo~ writes the
+declarations to ~.bjo/frameworks~; a lone file can say ~--framework <name>~.
+
+What it leaves open. The framework has to be installed wherever the program
+*runs*, not only where it was built — the ~dotnet/runtime~ image does not have
+ASP.NET and ~dotnet/aspnet~ does; an unknown framework, or one not installed, is
+an error listing the ones that are. Four type names in
+~Microsoft.AspNetCore.App~ are defined in two assemblies each, so the index reads
+them shortest-assembly-name-first for a deterministic answer rather than a
+correct one, and naming such a type from ~import/extern~ gets CS0433 out of the
+C# compiler anyway, because every reference in the framework is passed to it; an
+~extern alias~ would be the fix and is not here. Visibility is per-package for
+framework type *names* and nothing else. The REPL has no framework support.
+
+* The inbox: what a .NET thread knocks on when it wants a fiber
+
+A thread that is not a fiber has no effect handlers, no parameters and no
+cancellation scope. Kestrel's thread, a ~System.Threading.Timer~ callback, a
+~FileSystemWatcher~: each arrives from outside holding a value, and running
+Bjolang on it would be running Bjolang with none of the things that make it
+Bjolang. ~(std inbox)~ is the door they knock on instead — a bounded queue whose
+receive side is an ordinary CML event, so the handover is a rendezvous like any
+other.
+
+#+BEGIN_SRC scheme
+(def requests (make-inbox 1000 DropNewest))
+
+;; On Kestrel's thread, and the whole of what runs there.
+(use! app (fun (ctx next) (cast Task (inbox-call/token requests ctx (request-aborted ctx)))))
+
+;; An ordinary fiber, with its whole environment.
+(defbjo (worker)
+  (def c (sync (inbox-recv requests)))
+  (try (handle (call-request c))
+    #:finally (ignore (call-reply! c unit))))
+#+END_SRC
+
+*The one rule for a lambda .NET calls: it may call this module's functions and
+nothing else.* Every one of them is a plain ~defun~ that reads no parameter and
+no handler, because the caller has none. A ~(log ...)~ written there does not
+fail — it quietly goes to the default handler from inside a ~with-handler~,
+which is the sort of bug found in production. It is also why a post from a
+thread with no fiber context *enqueues* the woken receiver rather than running it
+inline: the posting thread may hold a lock, and a fiber resumed under it runs
+arbitrary code there.
+
+Three ways in, for three kinds of producer. ~inbox-post!~ and ~inbox-call~ never
+wait and let the inbox's ~WhenFull~ decide; ~inbox-send~ hands back a ~Task~ that
+stays pending until there is room, which is real backpressure rather than a
+policy; ~inbox-send-evt~ is the fiber's form, and it is an event and not that
+task because a task cannot be withdrawn — a losing ~choose~ branch would queue
+the item anyway, later, with nobody expecting it. Capacity is mandatory:
+~DropNewest~ refuses the new item, ~DropOldest~ evicts the oldest, and both count
+what they threw away.
+
+~inbox-close!~ is the graceful end, ~inbox-fail!~ the same with an exception kept
+*beside* the queue where no full policy can drop it, and ~inbox-abort!~ the hard
+stop. ~inbox-closed~ fires once the inbox is closed and empty.
+
+A ~Call~ is request and reply. With ~inbox-call/token~ the caller's token means
+two different things: *still queued*, the call is removed and its task cancelled,
+so no fiber sees a call nobody waits for; *already taken*, the task is *not*
+completed — only ~call-reply!~ and ~call-fail!~ complete it, and
+~call-abandoned~ fires instead. The reason is concrete: completing the task hands
+the ~HttpContext~ back to Kestrel, which recycles it into the next request while
+the handler is still writing into it. So a fiber that takes a ~Call~ must answer
+it, and ~#:finally~ is where that belongs.
+
+No lock in ~Bjoml.Inbox~ is ever held across a commit, a resume or a task
+completion, and one settle loop matches queued items with waiting receivers
+rather than pump and admit recursing into each other — so stack depth does not
+grow with the number of waiting producers.
+
+~(cast Task t)~ needed no change to work for the upcast a middleware signature
+wants; ~Task~ is now one name at two arities, as in C#.
+
+What it leaves open. There is no inline mode, so every hand-over costs a
+thread-pool hop even for a caller known to hold no locks. An inbox can only be
+fed by APIs taking ~Func~, ~Action~, ~IObservable<T>~ or ~IProgress<T>~ — other
+delegate types and .NET events are a separate piece of work. And a ~Task<T>~'s
+value is still not readable from Bjolang, which is the whole reason
+~inbox-call~ exists rather than an await.
+
+* Every fold hands the element to its callback first
+
+~(fold f init col)~ called ~f~ with the accumulator first and the element
+second; ~list-foldr~ and ~string-fold-right~ called theirs the other way round.
+Both orders were defensible and having both was not: which one a given fold
+wanted was something you looked up rather than knew.
+
+They are now all SRFI-1's: **the element comes first and the accumulator last**,
+so the right fold's order is the left fold's order and the two differ only in
+direction.
+
+#+BEGIN_SRC scheme
+(fold (fun (x acc) (+ acc x)) 0 xs)
+(list-foldl (fun (x acc) (string-append acc x)) "" xs)
+(string-fold (fun (ch n) (+ n 1)) 0 s)
+(map-fold (fun (k v acc) (+ acc v)) 0 m)        ;; the entry first, both halves of it
+#+END_SRC
+
+Changed: ~fold~ (the ~Iterable~ method), ~list-foldl~, ~vec-fold~, ~vec-reduce~,
+~seq-fold~, ~string-fold~, ~map-fold~, ~set-fold~, ~orderedset-fold~,
+~orderedmap-fold~ and ~deque-fold~. Unchanged, because they were already this
+way: ~list-foldr~, ~string-fold-right~ and ~port-fold~.
+
+A map fold keeps handing the key and the value as two arguments rather than a
+pair, so its callback takes ~(key value acc)~. The runtime's own ~Fold~ entry
+points were flipped with it rather than wrapped, so nothing pays a delegate per
+element for the new order.
+
+What it leaves open: this is a silent break for callers whose accumulator and
+element have the *same* type — ~(fold (fun (acc x) (- acc x)) 0 xs)~ still
+compiles and now means something else. Nothing in the type system can catch
+that, and there is no deprecation window; a subtraction or a string-append fold
+wants reading. ~Collector~'s ~(collector-step c acc x)~ is a different protocol
+and keeps its shape.
+
+* A ~def~ that may fail has to say so, and ~:propagate~ is how it says "pass it on"
+
+A bare clause used to propagate. That made the quietest thing you can write —
+a pattern and a scrutinee — the one that silently added a second exit from the
+body, and it read as a plain destructuring bind right up until the types
+disagreed somewhere else.
+
+So there is no default any more. ~(def (Some x) e)~ is an error naming the value
+that reaches nothing; the pattern in a bare clause has to match every value, as
+one at the top level always has. A clause that may fail writes a failure value,
+~:fail~ arms, or the new ~:propagate~:
+
+#+BEGIN_SRC scheme
+(def pattern scrutinee)                     ;; must match every value
+(def pattern scrutinee value-expr)
+(def pattern scrutinee :fail (arm arm ...))
+(def pattern scrutinee :propagate)
+#+END_SRC
+
+~:propagate~ stands alone and takes nothing: it rebuilds every case the pattern
+left out at the *body's* type, which is what the bare clause did.
+
+**It is no longer only ~Option~ and ~Result~, and no longer only one case.** The
+rebuilt case is checked against the body like any other failure value, so the
+rule is the general one: a type argument the leftover case carries has to be the
+same on both sides, and one it does not carry is free. ~None~ carries nothing,
+so ~(Option string)~ still propagates into ~(Option int)~; an ~Err~ is rebuilt
+around its payload, so the error types still have to be one type. A three-case
+union with one case matched now passes the other two through, and a user union
+does it without being named in the compiler.
+
+~:propagate~ on a pattern that cannot fail is refused, like any other failure
+part on one. What is left over has to be *whole cases*: a nested or literal
+pattern leaves part of a case behind, there is no constructor to rebuild that
+with, and it says so rather than guessing.
+
+What it leaves open: the leftover cases are rebuilt, never the scrutinee handed
+back, so propagation still cannot widen an error type or convert one. ~From~-style
+conversion remains something to write out.
+
+* ~bjo rebjo~ builds the compiler, and nothing else does
+
+~bjo~ used to ask whether the compiler was behind its own sources on the way to
+every command it ran. Twice, in fact — once in the bootstrap script and once in
+~bjo.bjo~ — and each asking cost a walk of every ~.fs~ and every ~.cs~ in the
+tree, to be told "no" nearly every time. When the answer was "yes" it was worse:
+a ~dotnet build~ in the middle of running something else, which is not what the
+command was for.
+
+So it is a command now. ~bjo rebjo~ builds the compiler and ~bjo.exe~, and
+nothing else builds either. An up-to-date ~bjo build~ answers in about 40 ms.
+
+Programs are still rebuilt after one. That question was never this one: the
+build record names the compiler among a program's inputs, so a fresh
+~Bjolang.dll~ makes every artefact stale by timestamp exactly as an edited
+source does.
+
+~rebjo~ is answered by the bootstrap script rather than by ~bjo.bjo~, and has to
+be — it rewrites ~bjo.exe~, which ~bjo.bjo~ is running from. Reaching the
+command any other way says so instead of doing it.
+
+What it leaves open: ~bjor~ still asks the old question, and is still what
+~build_std.sh~ runs on.
+
+* ~def~ and ~def*~ replace ~def+~, and a bare clause propagates
+
+The form is no longer spelled apart from the binding it is. A ~def~ takes a
+pattern and a third slot saying what the body produces when the pattern does not
+match, and ~def*~ is several of those in a row:
+
+#+BEGIN_SRC scheme
+(def pattern scrutinee)                     ;; propagate
+(def pattern scrutinee value-expr)          ;; the body evaluates to value-expr
+(def pattern scrutinee :fail (arm arm ...)) ;; the arms decide
+
+(def* clause clause ...)
+#+END_SRC
+
+~def~ is to ~def*~ what ~let~ is to ~let*~, and nothing here jumps: a failure
+value simply becomes the value of the enclosing body.
+
+**A bare clause propagates.** The case the pattern leaves out is rebuilt at the
+*body's* type — a fresh ~None~, or an ~Err~ around the payload that came in — so
+the value type is free and the error type is not. ~which~ in ~bjo.bjo~ is the
+shape this was written for: two lookups, each answering ~None~ by itself, and no
+failure written down at all.
+
+The restriction is one check over the constructors the pattern leaves
+uncovered: exactly one, belonging to ~Option~ or ~Result~. It sits where the
+general rule would — uncovered constructors mentioning only type parameters
+shared by scrutinee and body — so relaxing it later is a condition and not a
+path.
+
+**Three failure shapes, one of them new, and the third slot is never arms.** The
+pattern is unparenthesised at the head, so nothing is disambiguated by shape;
+arms go after ~:fail~, and a list of arms written without it is answered with
+the keyword rather than with a type error about a call to a list.
+
+**~def*~ short-circuits and scopes sequentially**, because it is parsed as one
+clause nested inside the next. A failing clause evaluates no later scrutinee,
+and binder names must be distinct across clauses — they share the sequel's
+scope, so shadowing there would be silent.
+
+**The extent is the innermost body, and it now says so.** A refutable ~def~ in a
+~when~ body leaves the ~when~, not the function, and the code after the ~when~
+still runs. Where that value then goes nowhere in silence, the compiler warns
+and names the body it resolved to. Where the body carries a value, the must-use
+rule was already reporting it.
+
+**A pattern that cannot fail may also stand at the top level.** There is no body
+there for a failure to be the value of, so that is exactly what the top level
+takes: a pattern that matches every value, and no failure part. Each name it
+binds becomes a definition of its own — one evaluation of the scrutinee, one
+destructuring — which is what `(def (a b) ...)` already did for tuples, asked of
+any pattern. A `def*` there is its clauses spliced into the declaration list,
+because with nothing able to fail its ordering *is* declaration order.
+
+A REPL entry is a top level, so it takes the same: `(def (Tuple a b) ...)` binds
+at the prompt now.
+
+What it leaves open: the refutable case at a prompt, which is the one people
+want there. It means deciding what the rest of the session is — on a failure
+nothing may be bound at all, and the entries already compiled cannot be the
+sequel of an entry typed later. Refused with a message saying so, rather than
+given an answer the language does not have.
+
 * ~(std rx)~: regular expressions, compiled while your file is
 
 Patterns are s-expressions in SRE notation, read and compiled to a .NET pattern
@@ -58,7 +427,7 @@ is now the second entry, on the same grounds the comment there already gave for
 the first: its constructor is internal and it has no public members, so there is
 no ~import/class~ alias for it to disagree with.
 
-* ~def+~ replaces ~def/else~ and ~def/else*~, and its arms are checked
+* ~def+~ replaced ~def/else~ and ~def/else*~, and its arms were checked
 
 A binding that may fail now names what happens when it does, as arms over the
 same scrutinee:

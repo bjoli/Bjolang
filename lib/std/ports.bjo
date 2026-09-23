@@ -10,14 +10,57 @@
 ;; in such object code or executable form without complying with the source code
 ;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
 
-;; std/ports.bjo — draining and streaming a textual port.
+;; std/ports.bjo — draining and streaming a textual port, and the byte ports
+;; underneath it.
+;;
+;; `TextInputPort` names itself as a layer, and this is the thing it is a layer
+;; over. A `ByteInputPort` is a buffered byte source whose reads are CML events;
+;; `byte->text-input-port` puts a text port on top of one, reading *through* it
+;; and never past it.
+;;
+;; The invariant the byte half turns on, and the reason a read is safe inside a
+;; `choose`:
+;;
+;;   Every byte that leaves the operating system lands in the port's buffer. A
+;;   read never takes bytes from the underlying stream — it takes them from the
+;;   buffer, and only when it wins.
+;;
+;; `BjolangRuntime/BjoBytePort.cs` is where that is done.
 
 (export
   ;; Draining
   port->list port->vec port->lines
   ;; Streaming
   port->seq file->seq 
-  port->chan chan-next)
+  port->chan chan-next
+
+  ;; --- Bytes ---------------------------------------------------------------
+
+  ;; The types, and the encoding a text layer needs.
+  ByteInputPort ByteOutputPort Stream Encoding utf8
+
+  ;; Reading, as events. These are what go in a `choose`.
+  read-some-evt read-bytes-evt eof-evt
+  ;; Reading, for when there is nothing to choose between.
+  read-some read-bytes
+  ;; Looking without taking.
+  peek-bytes byte-port-eof?
+
+  ;; Writing.
+  write-bytes! flush!
+
+  ;; Closing, and the half-close.
+  close-byte-input-port! close-byte-output-port! shutdown!
+
+  ;; Composition.
+  limited byte-pipe
+
+  ;; Sources.
+  open-byte-input-file open-byte-output-file
+  stream->byte-input-port stream->byte-output-port
+
+  ;; The layer.
+  byte->text-input-port byte->text-output-port)
 
 (import (std prelude))
 
@@ -101,3 +144,307 @@
      (close-input-port probe)
      (Ok (file-read/seq reader path)))
     ((Err e) (Err e))))
+
+;; ===========================================================================
+;; Bytes
+;; ===========================================================================
+;;
+;; The layer under the text. A `ByteInputPort` owns its buffer, and a read is a
+;; cursor move inside that buffer and nothing else — which is what makes a read
+;; safe inside a `choose`, and why a refill that lands after its branch has
+;; already lost is harmless rather than data loss.
+;;
+;; The port is a class in `BjolangRuntime/BjoBytePort.cs`, the way `Inbox` is a
+;; class with `(std inbox)` over it. What is here is the typed surface.
+;;
+;; This module still imports `(std prelude)` and nothing else, so it keeps its
+;; place in `build_std.sh` above `(std inbox)`: the event vocabulary is all
+;; prelude builtins, and the runtime class is reached by `import/extern`, which
+;; is not a module dependency.
+
+(import/class
+  (ByteInputPort  (: Bjolang.Runtime.BjoByteInputPort))
+  (ByteOutputPort (: Bjolang.Runtime.BjoByteOutputPort))
+  ;; The pipe object, which exists only so that `byte-pipe` can take its two
+  ;; halves off it. Not exported: a pipe *is* its two ports.
+  (BytePipe       (: Bjolang.Runtime.BjoBytePipe))
+  (Stream         (: System.IO.Stream))
+  (Encoding       (: System.Text.Encoding)))
+
+(import/extern
+  ;; Sources. The two openers carry `#:exceptions` so that a missing file is a
+  ;; `Result` rather than a raise, exactly as `open-input-file` has it.
+  (clr-open-in   (: Bjolang.Runtime.BytePorts.OpenInput (-> string ByteInputPort)
+                    #:exceptions (System.IO.FileNotFoundException
+                                  System.IO.DirectoryNotFoundException
+                                  System.UnauthorizedAccessException)))
+  (clr-open-out  (: Bjolang.Runtime.BytePorts.OpenOutput (-> string ByteOutputPort)
+                    #:exceptions (System.IO.DirectoryNotFoundException
+                                  System.UnauthorizedAccessException)))
+  (clr-from-stream (: Bjolang.Runtime.BytePorts.FromStream (-> Stream ByteInputPort)))
+  (clr-to-stream   (: Bjolang.Runtime.BytePorts.ToStream   (-> Stream ByteOutputPort)))
+  (clr-make-pipe   (: Bjolang.Runtime.BytePorts.MakePipe   (-> BytePipe)))
+  (clr-pipe-in     (: Bjolang.Runtime.BytePorts.PipeInput  (-> BytePipe ByteInputPort)))
+  (clr-pipe-out    (: Bjolang.Runtime.BytePorts.PipeOutput (-> BytePipe ByteOutputPort)))
+  (clr-limited     (: Bjolang.Runtime.BytePorts.Limited    (-> ByteInputPort int ByteInputPort)))
+
+  ;; The events.
+  (clr-read-some-evt  (: Bjolang.Runtime.BytePorts.ReadSomeEvent
+                         (-> ByteInputPort (Event (Result Exception (Option (Array byte)))))))
+  (clr-read-bytes-evt (: Bjolang.Runtime.BytePorts.ReadBytesEvent
+                         (-> ByteInputPort int (Event (Result Exception (Option (Array byte)))))))
+  (clr-eof-evt        (: Bjolang.Runtime.BytePorts.EofEvent (-> ByteInputPort (Event Unit))))
+
+  ;; The questions that are not events, in sync/async pairs.
+  (clr-byte-eof       (: Bjolang.Runtime.BytePorts.Eof       (-> ByteInputPort bool) #:blocking))
+  (clr-byte-eof-await (: Bjolang.Runtime.BytePorts.EofAsync  (-> ByteInputPort bool) #:async))
+  (clr-peek           (: Bjolang.Runtime.BytePorts.PeekBytes
+                         (-> ByteInputPort int int (Option (Array byte))) #:blocking))
+  (clr-peek-await     (: Bjolang.Runtime.BytePorts.PeekBytesAsync
+                         (-> ByteInputPort int int (Option (Array byte))) #:async))
+
+  ;; Writing.
+  (clr-write-bytes       (: Bjolang.Runtime.BytePorts.WriteBytes
+                            (-> ByteOutputPort (Array byte) void) #:blocking))
+  (clr-write-bytes-await (: Bjolang.Runtime.BytePorts.WriteBytesAsync
+                            (-> ByteOutputPort (Array byte) void) #:async))
+  (clr-flush             (: Bjolang.Runtime.BytePorts.Flush    (-> ByteOutputPort void) #:blocking))
+  (clr-flush-await       (: Bjolang.Runtime.BytePorts.FlushAsync (-> ByteOutputPort void) #:async))
+  (clr-shutdown          (: Bjolang.Runtime.BytePorts.Shutdown (-> ByteOutputPort void) #:blocking))
+  (clr-shutdown-await    (: Bjolang.Runtime.BytePorts.ShutdownAsync (-> ByteOutputPort void) #:async))
+
+  ;; Closing.
+  (clr-close-in  (: Bjolang.Runtime.BytePorts.CloseInput  (-> ByteInputPort void)))
+  (clr-close-out (: Bjolang.Runtime.BytePorts.CloseOutput (-> ByteOutputPort void)))
+
+  ;; The text layer.
+  (clr-to-reader (: Bjolang.Runtime.BytePorts.ToTextReader (-> ByteInputPort Encoding TextInputPort)))
+  (clr-to-writer (: Bjolang.Runtime.BytePorts.ToTextWriter (-> ByteOutputPort Encoding TextOutputPort)))
+
+  ;; The encoding almost every caller wants. `System.Text.Encoding` has the rest.
+  (clr-utf8 (: System.Text.Encoding.UTF8 #:get)))
+
+(: utf8 Encoding)
+(def utf8 clr-utf8)
+
+;; ---------------------------------------------------------------------------
+;; Reading, as events
+;; ---------------------------------------------------------------------------
+;;
+;; These are what go in a `choose`, and they are real CML events: a branch that
+;; loses consumes nothing, and the bytes stay in the buffer for the next reader.
+;; They are also *ephemeral* — each `sync` asks the port a new question, so a
+;; loop over one reads successive bytes rather than winning with a remembered
+;; answer forever. That is exactly what `(task->event ...)` cannot do, which is
+;; why a read is not one.
+;;
+;; WHY THE VALUE IS A `Result`. A stream can fail, and the CML resume path
+;; carries a value rather than a raise — so a failure that lands while a fiber
+;; is parked in a `choose` has to arrive as one. `promise-join`, `blocking` and
+;; `task->event` all answer a `Result` for the same reason. `read-some` and
+;; `read-bytes` below unwrap it and raise on the fiber's own stack, which is
+;; what an ordinary read wants.
+
+;; Whatever is available, never an empty array, and `None` once there is no more.
+(: read-some-evt (-> ByteInputPort (Event (Result Exception (Option (Array byte))))))
+(defun (read-some-evt p) (clr-read-some-evt p))
+
+;; Exactly `n` bytes. At end of input the short remainder comes back as
+;; `(Some ...)` and the call after it as `None`, so the two are separate facts
+;; rather than one ambiguous answer.
+;;
+;; `n` must be at least 1.
+(: read-bytes-evt (-> ByteInputPort int (Event (Result Exception (Option (Array byte))))))
+(defun (read-bytes-evt p n) (clr-read-bytes-evt p n))
+
+;; Fires once the port is finished — cleanly, or because it failed. It says only
+;; that, which is what makes it the thing to wait on for "the other end has gone
+;; away"; a read beside it is what says which of the two happened.
+(: eof-evt (-> ByteInputPort (Event Unit)))
+(defun (eof-evt p) (clr-eof-evt p))
+
+;; ---------------------------------------------------------------------------
+;; Reading, for when there is nothing to choose between
+;; ---------------------------------------------------------------------------
+;;
+;; Defined by syncing the events above: conveniences, not a second
+;; implementation. The `defbjouble` is what picks the right kind of wait —
+;; `sync/blocking` parks the calling thread for an ordinary `defun`, `sync`
+;; suspends the fiber — and the raise happens after either of them returns, on
+;; the caller's own stack.
+
+(: byte-read-or-raise (-> (Result Exception (Option (Array byte))) (Option (Array byte))))
+(defun (byte-read-or-raise r)
+  (match r
+    ((Ok bytes) bytes)
+    ((Err e) (raise e))))
+
+;; Whatever is available, waiting for at least one byte. `None` at end of input.
+(: read-some (-> ByteInputPort (Option (Array byte))))
+(defbjouble (read-some p)
+  (#:sync (byte-read-or-raise (sync/blocking (clr-read-some-evt p))))
+  (#:bjo  (byte-read-or-raise (sync (clr-read-some-evt p)))))
+
+;; Exactly `n` bytes, or the short remainder at end of input, or `None`.
+(: read-bytes (-> ByteInputPort int (Option (Array byte))))
+(defbjouble (read-bytes p n)
+  (#:sync (byte-read-or-raise (sync/blocking (clr-read-bytes-evt p n))))
+  (#:bjo  (byte-read-or-raise (sync (clr-read-bytes-evt p n)))))
+
+;; ---------------------------------------------------------------------------
+;; Looking without taking
+;; ---------------------------------------------------------------------------
+
+;; `skip` bytes past the cursor, then `count` of them, leaving the cursor where
+;; it was. Short at end of input, and `None` when there is nothing at all beyond
+;; the skip.
+;;
+;; This is the mechanism a read is, with the cursor move left out — which is why
+;; "peek, decide, then convert to text" loses nothing: the sniffed bytes are
+;; still in the buffer, and `byte->text-input-port` reads through it.
+(: peek-bytes (-> ByteInputPort int int (Option (Array byte))))
+(defbjouble (peek-bytes p skip count)
+  (#:sync (clr-peek p skip count))
+  (#:bjo  (clr-peek-await p skip count)))
+
+;; Whether the port is at end of input.
+;;
+;; A port that *failed* is not at end of input: this raises rather than
+;; answering `#t`, or `(loop (:break (byte-port-eof? p)) ...)` would end normally
+;; on a broken connection and return a truncated result as though it were the
+;; whole thing.
+(: byte-port-eof? (-> ByteInputPort bool))
+(defbjouble (byte-port-eof? p)
+  (#:sync (clr-byte-eof p))
+  (#:bjo  (clr-byte-eof-await p)))
+
+;; ---------------------------------------------------------------------------
+;; Writing
+;; ---------------------------------------------------------------------------
+;;
+;; Buffered, so most writes are a copy. A write that fills the buffer drains it,
+;; and that is a syscall — which is why these have suspending twins at all.
+
+(: write-bytes! (-> ByteOutputPort (Array byte) void))
+(defbjouble (write-bytes! p bytes)
+  (#:sync (clr-write-bytes p bytes))
+  (#:bjo  (clr-write-bytes-await p bytes)))
+
+(: flush! (-> ByteOutputPort void))
+(defbjouble (flush! p)
+  (#:sync (clr-flush p))
+  (#:bjo  (clr-flush-await p)))
+
+;; ---------------------------------------------------------------------------
+;; Closing
+;; ---------------------------------------------------------------------------
+;;
+;; Through the owner handle, for the reason `close-input-port` is: a direct
+;; dispose would release the handle and leave the registration on the scope's
+;; list. A port nothing owns — a pipe half, a `limited` view — is disposed.
+
+(: close-byte-input-port! (-> ByteInputPort void))
+(defun (close-byte-input-port! p) (clr-close-in p))
+
+(: close-byte-output-port! (-> ByteOutputPort void))
+(defun (close-byte-output-port! p) (clr-close-out p))
+
+;; Ends the write side and leaves the read side open.
+;;
+;; A protocol needs this and `close` cannot say it: "I have finished speaking,
+;; now answer me" is a half-close, not a closed connection. Everything buffered
+;; goes out first, and a write after it is refused rather than dropped. A stream
+;; with no half-close of its own gets the flush and nothing more, which is the
+;; most that can honestly be done for a file.
+(: shutdown! (-> ByteOutputPort void))
+(defbjouble (shutdown! p)
+  (#:sync (clr-shutdown p))
+  (#:bjo  (clr-shutdown-await p)))
+
+;; ---------------------------------------------------------------------------
+;; Composition
+;; ---------------------------------------------------------------------------
+
+;; At most `n` bytes of `p`, and then end of input. Once the bound is reached,
+;; `p` itself is positioned exactly where the limit ended — the limited port
+;; reads *through* `p` rather than around it, so nothing it buffered is lost or
+;; double-counted.
+;;
+;; The result owns nothing: closing it does not close `p`.
+(: limited (-> ByteInputPort int ByteInputPort))
+(defun (limited p n) (clr-limited p n))
+
+;; A port pair with nothing underneath: what is written to the output can be
+;; read from the input.
+;;
+;; Unbounded and in memory, which is what a string port is one layer up — the GC
+;; prices it, nothing registers it on a scope, and a write never waits. Closing
+;; the output half, or `shutdown!` on it, is what the input half sees as end of
+;; input.
+(: byte-pipe (-> (Tuple ByteInputPort ByteOutputPort)))
+(defun (byte-pipe)
+  (def pipe (clr-make-pipe))
+  (Tuple (clr-pipe-in pipe) (clr-pipe-out pipe)))
+
+;; ---------------------------------------------------------------------------
+;; Sources
+;; ---------------------------------------------------------------------------
+;;
+;; A file port is owned by the ambient scope, exactly as a text one is: when the
+;; scope returns the handle is released, whether the program said so or not. The
+;; scope is read before the file is opened, so a program with nowhere to put the
+;; port fails without having opened anything.
+
+(: open-byte-input-file (-> string (Result Exception ByteInputPort)))
+(defun (open-byte-input-file path)
+  (ignore (current-scope))
+  (clr-open-in path))
+
+(: open-byte-output-file (-> string (Result Exception ByteOutputPort)))
+(defun (open-byte-output-file path)
+  (ignore (current-scope))
+  (clr-open-out path))
+
+;; A port over a `Stream` somebody else handed over — a `NetworkStream`, a
+;; request body, a `MemoryStream`. This pair is what `(std net)` and a web
+;; framework reach for, and it is the only way into this module from outside it.
+;;
+;; Owned like a file, because a `Stream` is a handle in every case that matters.
+(: stream->byte-input-port (-> Stream ByteInputPort))
+(defun (stream->byte-input-port s)
+  (ignore (current-scope))
+  (clr-from-stream s))
+
+(: stream->byte-output-port (-> Stream ByteOutputPort))
+(defun (stream->byte-output-port s)
+  (ignore (current-scope))
+  (clr-to-stream s))
+
+;; ---------------------------------------------------------------------------
+;; The layer
+;; ---------------------------------------------------------------------------
+
+;; A text port over a byte port, reading *through* it.
+;;
+;; Whatever the byte port has already buffered — from a `peek-bytes`, or from a
+;; refill that overshot — is served first, so "peek, decide, then convert" loses
+;; nothing. That is the case this exists for: sniff the first bytes of a
+;; protocol, then hand the rest to a reader.
+;;
+;; THE CONVERSION IS ONE-WAY. A text reader reads ahead, so once this has handed
+;; out its first line the byte port is somewhere past it. Going back to bytes is
+;; not supported, and interleaving byte reads with text reads on one port is not
+;; either.
+;;
+;; The byte port is not closed by closing the text port; it is owned by the
+;; scope that opened it.
+(: byte->text-input-port (-> ByteInputPort Encoding TextInputPort))
+(defun (byte->text-input-port p encoding)
+  (clr-to-reader p encoding))
+
+;; The other direction. Flushing or closing the text port pushes its characters
+;; into the byte port *and* drains the byte port, so nothing is left stranded in
+;; a buffer between the two.
+(: byte->text-output-port (-> ByteOutputPort Encoding TextOutputPort))
+(defun (byte->text-output-port p encoding)
+  (clr-to-writer p encoding))

@@ -1,0 +1,139 @@
+;; `,@` inside a quoted literal.
+;;
+;; `'(a ,@xs b)` is the list `a`, then every element of `xs`, then `b`. It is
+;; the companion of `,`: an unquote places one value, a splice places a whole
+;; collection's worth of them.
+;;
+;; The lowering is a `Seq` round trip — a run of written elements stays the one
+;; literal node it always was, and the runs are joined with `seq-append` — so
+;; there is no new typed node, nothing new in `Codegen` and nothing new in the
+;; runtime. `codegen/quoted_splice.bjo` asserts the shape of what comes out;
+;; this file is about what it means.
+;;
+;; The other `,@`, the one inside a `#'` template, is `089_syntax.bjo`.
+
+(import (std prelude))
+(import (std simpletest))
+(import "inc/splicelib.bjo")
+
+;; --- Something to look at ---------------------------------------------------
+
+(: ints (-> (List int) string))
+(defun (ints xs)
+  (list-foldl (fun (s acc) (string-append acc (string-append "|" s)))
+              ""
+              (list-map int->string xs)))
+
+;; The union a quoted literal is elaborated into, so that splicing can be shown
+;; not to disturb injection.
+(type-rec
+  (: Node (Union (NSym Symbol)
+                 (NText string)
+                 (NArgv (Vec string))
+                 (NSub (List Node))))
+  (: Nodes (Alias (List Node))))
+
+(: render (-> Node string))
+(defun (render n)
+  (match n
+    ((NSym s) (symbol->string s))
+    ((NText s) (string-append "\"" (string-append s "\"")))
+    ((NArgv v) (string-append "[" (string-append (vec-fold (fun (s acc) (string-append acc s)) "" v) "]")))
+    ((NSub inner) (string-append "(" (string-append (render-all inner) ")")))))
+
+(: render-all (-> Nodes string))
+(defun (render-all ns)
+  (match ns
+    (Nil "")
+    ((Cons x Nil) (render x))
+    ((Cons x rest) (string-append (render x) (string-append " " (render-all rest))))))
+
+;; --- Evaluation order and arity ---------------------------------------------
+;;
+;; The part a naive lowering gets wrong. Each element and each splice is one
+;; operand of an ordinary call, so every one of them runs exactly once and they
+;; run left to right — including the *splice's own expression*, which is a call
+;; like any other and not a thing the literal is allowed to consult twice.
+(: trace-of-a-literal (-> string))
+(defun (trace-of-a-literal)
+  (def/mutable trace "")
+  (defun (note tag n) (set! trace (string-append trace tag)) n)
+  (defun (touch tag xs) (set! trace (string-append trace tag)) xs)
+
+  (def (: ns (List int)) (list 7 8))
+  (def (: built (List int))
+    '(,(note "a" 1) ,@(touch "B" ns) ,(note "c" 2) ,@(touch "D" ns)))
+
+  (string-append trace (string-append "/" (ints built))))
+
+(defun (main args)
+  (def (: xs (List int)) (list 2 3))
+  (def (: empty (List int)) (list))
+
+  ;; --- 1. Plain data --------------------------------------------------------
+  (expect "splice in the middle" (ints '(1 ,@xs 4)) "|1|2|3|4")
+  (expect "splice at the front" (ints '(,@xs 4)) "|2|3|4")
+  (expect "splice at the end" (ints '(1 ,@xs)) "|1|2|3")
+  (expect "two splices" (ints '(,@xs ,@xs)) "|2|3|2|3")
+  (expect "splices around an element" (ints '(,@xs 4 ,@xs)) "|2|3|4|2|3")
+  (expect "the splice is the whole literal" (ints '(,@xs)) "|2|3")
+
+  ;; --- 2. An empty splice contributes nothing -------------------------------
+  (expect "empty splice between elements" (ints '(1 ,@empty 2)) "|1|2")
+  (expect "empty splice alone" (ints '(,@empty)) "")
+  (expect "a literal with no splice is unchanged" (ints '(1 2)) "|1|2")
+
+  ;; --- 3. Injection survives ------------------------------------------------
+  ;;
+  ;; The one that matters. `head` and `(tail)` are written, so they are
+  ;; elaborated by shape into `NSym` and `NSub`; `rest` is spliced, so it is
+  ;; not elaborated at all — it is already a `(List Node)`, which is exactly
+  ;; what the splice demands of it.
+  (def (: rest Nodes) '((ls) "x"))
+  (expect "injection either side of a splice"
+          (render-all '(pipe ,@rest (wc)))
+          "pipe (ls) \"x\" (wc)")
+  (expect "splice with nothing written beside it"
+          (render-all '(,@rest))
+          "(ls) \"x\"")
+
+  ;; --- 4. Nested ------------------------------------------------------------
+  (expect "splice inside a nested literal"
+          (render-all '(a (b ,@rest) c))
+          "a (b (ls) \"x\") c")
+
+  ;; A spliced list *of* nested nodes: every element of `rest` is itself a
+  ;; `NSub` or an `NText`, and they arrive one level down without being
+  ;; re-elaborated.
+  (def (: branches Nodes) '((a "1") (b "2")))
+  (expect "a spliced list of nested nodes"
+          (render-all '(top ,@branches))
+          "top (a \"1\") (b \"2\")")
+
+  ;; --- 6. Evaluation order and arity ----------------------------------------
+  (expect "left to right, once each" (trace-of-a-literal) "aBcD/|1|7|8|2|7|8")
+
+  ;; --- 7. Vecs --------------------------------------------------------------
+  ;;
+  ;; `[...]` inside a quote is a vec, and it splices through `vec->seq` and
+  ;; `seq->vec` the way a list does through `list->seq` and `seq->list`.
+  (def (: flags (Vec string)) ["-l" "-a"])
+  (expect "splice into a quoted vec"
+          (render-all '(ls [,@flags "-h"]))
+          "ls [-l-a-h]")
+  (expect "a quoted vec that is only a splice"
+          (render-all '(ls [,@flags]))
+          "ls [-l-a]")
+
+  ;; --- 11. Across a module boundary -----------------------------------------
+  ;;
+  ;; `decorate` splices in `inc/splicelib.bjo`, against a union declared there.
+  ;; A body with a literal in it is not published as an inline template — see
+  ;; that file — so this is the compiled method answering.
+  (expect "a spliced literal inside an imported function"
+          (show-tags (decorate '((b "x"))))
+          "head (b x) (tail)")
+  (expect "splicing what an imported function returned"
+          (show-tags '(before ,@(decorate '("y")) after))
+          "before head y (tail) after")
+  0)

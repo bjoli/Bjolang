@@ -146,6 +146,10 @@ let rec private rewriteExpr (expr: Expr) : Expr =
     | EList(exprs, r) -> EList(List.map rewriteExpr exprs, r)
     | EVec(exprs, r) -> EVec(List.map rewriteExpr exprs, r)
     | EArray(exprs, r) -> EArray(List.map rewriteExpr exprs, r)
+    // The splice itself is not a redex and never becomes one: what it wraps is
+    // normalized, and it stays where it is so that the literal around it still
+    // sees a splice where the reader wrote one.
+    | ESplice(expr, r) -> ESplice(rewriteExpr expr, r)
     | ECast(t, e, r) -> ECast(t, rewriteExpr e, r)
     | EDynPack(traitName, e, r) -> EDynPack(traitName, rewriteExpr e, r)
 
@@ -215,16 +219,12 @@ let rec private rewriteExpr (expr: Expr) : Expr =
 
     | EWithReturn(name, body, r) -> EWithReturn(name, rewriteExpr body, r)
 
-    | EBindElse(binder, scrutinee, sequel, arms, r) ->
-        let arms' =
-            arms
-            |> List.map (fun (p, body) -> (Ast.mapPatternSteps rewriteExpr p, rewriteExpr body))
-
-        EBindElse(
+    | EDefMatch(binder, scrutinee, failure, sequel, r) ->
+        EDefMatch(
             Ast.mapPatternSteps rewriteExpr binder,
             rewriteExpr scrutinee,
+            Ast.mapDefFailure rewriteExpr (Ast.mapPatternSteps rewriteExpr) failure,
             rewriteExpr sequel,
-            arms',
             r
         )
 
@@ -269,6 +269,8 @@ let rec normalizeDecl (decl: Decl) : Decl =
     match decl with
     | DDef(name, expr, r) -> DDef(name, normalizeExpr expr, r)
     | DDefTuple(names, expr, r) -> DDefTuple(names, normalizeExpr expr, r)
+    | DDefPattern(pattern, expr, r) ->
+        DDefPattern(Ast.mapPatternSteps normalizeExpr pattern, normalizeExpr expr, r)
     | DDefMutable(name, expr, r) -> DDefMutable(name, normalizeExpr expr, r)
     | DDefun(name, args, body, colour, r) ->
         let normalizedArgs =

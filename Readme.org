@@ -102,9 +102,9 @@ The main limitation is that macros cannot be used in the same module.
 *** Reader macros
  Anyone can define reader macros. They work like macros, and add nothing exciting, but you can do things like
  #+BEGIN_SRC scheme
-\#fl(compose f1 f2 f3) => (compose (compose f1 f2) f3) ;; syntactic left fold
-\#ch(char<=? #\a my-char #\m) => (and (char<=? #\a my-char) (char<=? my-char #\m)) ;; and-chain
-\#fr(cons 1 2 3 4 Nil) => (cons 1 (cons 2 (cons 3 (cons 4 Nil)))) ;; Right fold
+#fl(compose f1 f2 f3) => (compose (compose f1 f2) f3) ;; syntactic left fold
+#ch(char<=? #\a my-char #\m) => (and (char<=? #\a my-char) (char<=? my-char #\m)) ;; and-chain
+#fr(cons 1 2 3 4 Nil) => (cons 1 (cons 2 (cons 3 (cons 4 Nil)))) ;; Right fold
 
  #+END_SRC
  They could just as well be regular macros: (fl compose f1 f2 f3), but i kind of like the distinction.
@@ -166,20 +166,36 @@ Look Ma, a Monad!
       (:return (+ doubled third))))
 #+END_SRC
 
-although most do-notation cases (matching option and Result) is better handled by the built in def+ form
+although most do-notation cases (matching option and Result) is better handled by the built in ~def~ form
 
 #+BEGIN_SRC scheme
 
-;; every body supports def+. The first succeeding form
-;; swallows the rest of the body, and Err is then returned
-;; directly
+;; every body supports def and def*. The pattern that matches
+;; swallows the rest of the body; the third slot says what the
+;; body produces when it does not match
 (: print-key (-> (Map Keyword string) (Result string string)))
 (defun (print-key myMap)
-  (def+ ((Result b) (try-ref myMap :key))
-        (_ (Err "Map was somehow not populated correctly")))
-  (println "b is #${b}.")
+  (def (Ok b) (try-ref myMap :key)
+    (Err "Map was somehow not populated correctly"))
+  ;; Here we know the call above worked and that b is bound to the value
+  ;; under :key in myMap
+  (println ":key is #${b}.")
   (Ok b))
 
+;; if you put :propagate in the slot where the error value is put
+;; it just propagates the error value from the match.
+(: key-length (-> (Map Keyword string) (Result string int)))
+(defun (key-length myMap)
+  (def (Ok b) (try-ref myMap :key) :propagate)
+  (Ok (string-length b)))
+
+;; def* is to def what let* is to let: several clauses, in order,
+;; and a failing one evaluates no later scrutinee
+(: both-keys (-> (Map Keyword string) (Option string)))
+(defun (both-keys myMap)
+  (def* ((Some a) (map-try-ref myMap :first) :propagate)
+        ((Some b) (map-try-ref myMap :second) :propagate))
+  (Some (string-append a b)))
 
 #+END_SRC
 *** The usual syntactic things in a modern lisp
@@ -241,8 +257,8 @@ Bjolangs loop is based on what I learned writing goof-loop, but instead of using
 
 #+begin_src scheme
 (defun (main args)
-  (def my-vec (get-a-huge-vec))
-  (def my-list (get-an-equally-huge-list))
+  (def* (my-vec (get-a-huge-vec))
+        (my-list (get-an-equally-huge-list)))
   (loop (:for a my-vec)
         (:for b my-vec)
         (:break (= a (* b 2)))
@@ -263,7 +279,7 @@ It also supports subloops. Anything that isn't a for clause followed by a :for c
 ;;    [(1 . 1) (1 . 2) (3 . 1) (3 . 2)]
 #+end_src
 
- And the best part? It is fast.
+ And the best part? It is fast. The version with subloops has some issues where the JIT cannot 
 
  Oh, and it also has a seq version
 
@@ -298,33 +314,33 @@ Lists, quasiquoted lists and vectors do not need constructors in some circumstan
 
 (: receipt (-> (List Line) (Vec Block)))
 (defun (receipt ls)
-  (let* ((total (list-foldl (fun (acc l) (+ acc (amount-of l))) 0.0 ls))
-         (net (/ total 1.12))
-         (vat (- total net)))
+  (def* (total (list-foldl #(+ %2 (amount-of %1)) 0.0 ls))
+        (net (/ total 1.12))
+        (vat (- total net)))
     ;; cloudberry jam gets truncated, with "..."
-    [(with-fmt current-ellipsis "..."
-       ;; first print the heading.
-       [(heading ["BJOLI'S GROCERY"])
-        nl ;; Newline
-        masthead ;; formatted header
-        (rule #\=) ;; ruler with the = char
-        (joined item ls []) ;; item is a formatter for Lines
-        (rule #\-) ;; ruler with -
-        ;; labelled is a function (see receipt.bjo) that prints
-        ;; the first argument left justified and the second
-        ;; right justified
-        (labelled ["Net"] net)
-        (labelled ["VAT 12%"] vat)
-        (rule #\=)
-        ;; function that pads a value with "TOTAL" and ...
-        ;; until it fills the complete width
-        (total-line total)
-        nl ;; newline
-        ;; prints three columns, rate, net and vat
-        (vat-summary net vat)
-        nl              
-        ;; justified footer
-        footer])]))
+  [(with-fmt current-ellipsis "..."
+    ;; first print the heading.
+    [(heading ["BJOLI'S GROCERY"])
+     nl ;; Newline
+     masthead ;; formatted header
+     (rule #\=) ;; ruler with the = char
+     (joined item ls []) ;; item is a formatter for Lines
+     (rule #\-) ;; ruler with -
+     ;; labelled is a function (see receipt.bjo) that prints
+     ;; the first argument left justified and the second
+     ;; right justified
+     (labelled ["Net"] net)
+     (labelled ["VAT 12%"] vat)
+     (rule #\=)
+     ;; function that pads a value with "TOTAL" and ...
+     ;; until it fills the complete width
+     (total-line total)
+     nl ;; newline
+     ;; prints three columns, rate, net and vat
+     (vat-summary net vat)
+     nl              
+     ;; justified footer
+     footer])]))
 
 (defun (main args)
   (show (receipt basket))
@@ -414,23 +430,24 @@ network io by wrapping c# async in events for the cml goodness. (std http) is he
 
 ** Performance things
 
-Turn let-bound functions that are only  ever in function position as functions rather than delegates/Func.
+Hoist regexes. This is a big one, especially for regexes in patterns.
 
-Some simple inlining.
+The compiler is too conservative about hoisting operators.
 
 do literal hoisting of regular expressions.
 
-nullary cases should be singletons?
+
+Simple source transformations: let bound functions only ever used as function should be turned into static local functions instead of delegates/funcs. lambdas that do not escape that have simple bodies can be inlined (and removed maybe). 
+
+nullary cases should be singletons.
 
 Optimize loop for the JIT: Folding should not be a stack value. this would also help every newtype if applied to all non-recursive union types.
 
-case-of-known-constructor and dead-binding elimination would kill all allocations in loop without the jit having to do any work. 
+case-of-known-constructor and dead-binding elimination would kill all allocations in loop without the jit having to do any work, this would kill the 24 bytes of allocations in cold loops.
+
+Make things like (summing expr) type neutral, so that it can sum doubles.
 
 Hoist the threadlocal loads of several parameter-ref in synchronous functions. Say I do 5 (parameter-ref ) in a body, since there is no parameter-set! we can hoist the environment so that we do not pay the [ThreadLocal] read cost.
-
-Currently I do no CSE and no function inlining other than direct inlining of applied lambdas. 
-
-let bound lambdas that are only ever called should be a static local
 
 Unboxing small unions, say if someone call map-try-ref in a tight loop.
 

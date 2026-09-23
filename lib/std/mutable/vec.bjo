@@ -170,13 +170,14 @@
 (impl (Eq (MutableVec %a))
   (where (Eq %a))
   (defun (= a b)
-    (defun (same-from i)
-      (if (= i (mutablevec-length a))
-          #t
-          (and (= (mutablevec-ref a i) (mutablevec-ref b i))
-               (same-from (+ i 1)))))
-    (and (= (mutablevec-length a) (mutablevec-length b))
-         (same-from 0)))
+    (def len (mutablevec-length a))
+    (if (= len (mutablevec-length b))
+        (let lp ((i 0))
+          (cond
+            ((= i len) #t)
+            ((= (mutablevec-ref a i) (mutablevec-ref b i)) (lp (+ i 1)))
+            (else #f)))
+        #f))
   (defun (eq-hash xs) (unhashable "MutableVec")))
 
 ;; `#mvec(a b c)`, in order, each element by its own `->str`.

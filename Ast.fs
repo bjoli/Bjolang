@@ -262,6 +262,16 @@ and Expr =
     /// `#[1 2 3]` — a .NET array, mutable and of a fixed length. The literal
     /// spelling of what `make-array` allocates.
     | EArray of Expr list * Range
+    /// `,@xs` written as an element of a quoted list or vec: the *elements* of
+    /// `xs` go where it stands, in order.
+    ///
+    /// Not a general expression. `desugarQuotedList` is the only producer, and
+    /// the literal branches of `InferExpr` the only consumer: a splice has a
+    /// meaning only relative to the literal that encloses it, so one reaching
+    /// inference anywhere else is a program that wrote `,@` where no literal
+    /// could take it. That is a diagnostic, not a crash — but it is also why
+    /// this node never survives type checking and has no typed counterpart.
+    | ESplice of Expr * Range
     | EMatch of Expr * (Pattern * Expr option * Expr) list * Range
     | ETryFinally of Expr * Expr * Range
     /// `(try body... #:catch (E1 E2 ...))`: run the body, and catch specific .NET exception types.
@@ -287,25 +297,41 @@ and Expr =
     /// namespace*, so shadowing, unbound-name errors and nested blocks all
     /// follow the scope rules that already exist rather than new ones.
     | EWithReturn of string * Expr * Range
-    /// `(def+ (pattern scrutinee) (pattern body ...) ...)`.
+    /// One clause of a `(def pattern scrutinee ...)` or `(def* clause ...)`:
+    /// the binding pattern, its scrutinee, what the form produces when the
+    /// pattern does not match, and **the rest of the body it was written in**.
     ///
-    /// Carries the binding pattern, its scrutinee, **the rest of the body it was
-    /// written in**, and the arms. The sequel is what makes this a binding form:
-    /// what the binder binds scopes over what follows it exactly as an internal
-    /// `def`'s name does, and `parseBody` is what hands it that sequel.
+    /// The sequel is what makes this a binding form: what the binder binds
+    /// scopes over what follows it exactly as a plain `def`'s name does, and
+    /// `parseBody` is what hands it that sequel. On a match the sequel is the
+    /// value of the form; on a failure the failure part is, and nothing jumps
+    /// anywhere — a body that means to leave an enclosing block writes the
+    /// `(ret ...)` that leaves it.
     ///
-    /// Every arm matches the same scrutinee, so this is a `match` whose first
-    /// arm's body is the rest of the body — written the other way up, so that
-    /// the path that carries on is not indented under the paths that do not.
-    /// An arm produces the value of the whole form, exactly as the else arm of
-    /// an `if` does; it jumps nowhere on its own, and a body that means to leave
-    /// an enclosing block writes the `(ret ...)` that leaves it.
+    /// A `def*` is parsed as one of these per clause, nested in source order,
+    /// which is what gives it short-circuiting and sequential scope.
     ///
-    /// The binder must be able to fail and the arms must cover the rest of the
-    /// type: a `def+` that always matches is a `def`, and `Exhaustiveness` says
-    /// so. What the binder binds is in scope in the sequel and nowhere else;
-    /// what an arm binds is in scope in that arm's body and nowhere else.
-    | EBindElse of Pattern * Expr * Expr * (Pattern * Expr) list * Range
+    /// What the binder binds is in scope in the sequel and nowhere else; what
+    /// an arm binds is in scope in that arm's body and nowhere else.
+    | EDefMatch of Pattern * Expr * DefFailure * Expr * Range
+
+/// What a `def` clause produces when its pattern does not match.
+and DefFailure =
+    /// Nothing was written, so there is no failure path: the pattern has to
+    /// match every value, and `Exhaustiveness` refuses it where it does not.
+    | FailNone
+    /// `(def pattern scrutinee :propagate)` — every case the pattern leaves out
+    /// is rebuilt at the body's type. Which cases those are, and whether the
+    /// body can hold them, `InferExpr` decides once the scrutinee has a type.
+    | FailPropagate
+    /// `(def pattern scrutinee value-expr)` — the third slot is always an
+    /// expression. What the binder would have bound is not in scope in it, so
+    /// carrying a payload out of the failure takes `:fail`.
+    | FailValue of Expr
+    /// `(def pattern scrutinee :fail (arm arm ...))`. The arms match the
+    /// clause's own scrutinee, so between them they have to cover the
+    /// scrutinee's type minus the clause pattern.
+    | FailArms of (Pattern * Expr) list
 
 and DefunArg =
     /// A positional parameter, with the type `(: name type)` gave it if it was
@@ -486,6 +512,15 @@ type Decl =
     | DModule of string * Decl list * Range
     | DDef of string * Expr * Range
     | DDefTuple of string list * Expr * Range
+    /// `(def pattern scrutinee)` at the top level, and each clause of a
+    /// top-level `def*`.
+    ///
+    /// The pattern has to match every value of the scrutinee's type, which
+    /// `Exhaustiveness` says: a failure part produces the value of the body the
+    /// form stands in, and the top level is a declaration list rather than a
+    /// body. Every binder becomes a definition of its own, so the scrutinee is
+    /// evaluated once and destructured once.
+    | DDefPattern of Pattern * Expr * Range
     | DDefMutable of string * Expr * Range
     /// `(defun (name args...) body)`, and with `Suspending`, `defbjo`.
     | DDefun of string * DefunArg list * Expr * Colour * Range
@@ -618,7 +653,8 @@ type Decl =
 /// error during declaration processing can point to the declaration itself.
 let declRange (decl: Decl) : Range =
     match decl with
-    | DDef(_, _, r) | DDefun(_, _, _, _, r) | DDefDouble(_, _, _, _, r) | DDefTuple(_, _, r) | DDefMutable(_, _, r)
+    | DDef(_, _, r) | DDefun(_, _, _, _, r) | DDefDouble(_, _, _, _, r) | DDefTuple(_, _, r) | DDefPattern(_, _, r)
+    | DDefMutable(_, _, r)
     | DSignature(_, _, _, r) | DType(_, r) | DTypeRec(_, r) | DTrait(_, _, _, _, _, _, _, r) | DImpl(_, _, _, _, _, _, r)
     | DImplExtern(_, _, _, _, r) | DInlineImpl(_, _, _, _, _, _, _, r)
     | DModule(_, _, r) | DImport(_, r) | DAlias(_, _, r) | DExport(_, r) | DReExport(_, r)
@@ -687,6 +723,7 @@ let exprRange (e: Expr) : Range =
     | EList(_, r)
     | EVec(_, r)
     | EArray(_, r)
+    | ESplice(_, r)
     | EMatch(_, _, r)
     | ETryFinally(_, _, r)
     | ETryCatch(_, _, r)
@@ -696,7 +733,7 @@ let exprRange (e: Expr) : Range =
     | EYield(_, r)
     | EYieldFrom(_, r)
     | EWithReturn(_, _, r)
-    | EBindElse(_, _, _, _, r) -> r
+    | EDefMatch(_, _, _, _, r) -> r
 
 /// Every name a pattern binds.
 let rec patternBinders (pat: Pattern) : string list =
@@ -766,6 +803,15 @@ let rec mapPatternSteps (f: Expr -> Expr) (pat: Pattern) : Pattern =
     | PView(step, inner, r) -> PView(f step, go inner, r)
     | leaf -> leaf
 
+/// A `def` failure part rebuilt with `onExpr` over its expressions and
+/// `onPattern` over its arm patterns.
+let mapDefFailure (onExpr: Expr -> Expr) (onPattern: Pattern -> Pattern) (failure: DefFailure) : DefFailure =
+    match failure with
+    | FailNone -> FailNone
+    | FailPropagate -> FailPropagate
+    | FailValue value -> FailValue(onExpr value)
+    | FailArms arms -> FailArms(arms |> List.map (fun (pat, body) -> onPattern pat, onExpr body))
+
 /// Every expression held directly inside `e`.
 ///
 /// Exhaustive on purpose: this is used to refuse a loop name outside tail
@@ -794,6 +840,11 @@ let exprChildren (e: Expr) : Expr list =
     | EList(xs, _)
     | EVec(xs, _)
     | EArray(xs, _) -> xs
+    // The spliced expression is an ordinary expression in an ordinary
+    // position: it is evaluated where the literal is written, and everything a
+    // traversal wants to say about the literal's other elements it wants to say
+    // about this one too.
+    | ESplice(x, _) -> [ x ]
     | EApp(f, args, _) -> f :: args
     | ELet(_, _, _, _, v, b, _) -> [ v; b ]
     | ELetMono(_, v, b, _) -> [ v; b ]
@@ -813,10 +864,14 @@ let exprChildren (e: Expr) : Expr list =
             |> List.collect (fun (pat, guard, body) ->
                 patternSteps pat @ (Option.toList guard) @ [ body ]))
     | EWithReturn(_, b, _) -> [ b ]
-    | EBindElse(binder, scrutinee, sequel, arms, _) ->
+    | EDefMatch(binder, scrutinee, failure, sequel, _) ->
         patternSteps binder
         @ [ scrutinee; sequel ]
-        @ (arms |> List.collect (fun (pat, body) -> patternSteps pat @ [ body ]))
+        @ (match failure with
+           | FailNone
+           | FailPropagate -> []
+           | FailValue value -> [ value ]
+           | FailArms arms -> arms |> List.collect (fun (pat, body) -> patternSteps pat @ [ body ]))
 
 /// One walk over an untyped expression, calling `reference name range guarded`
 /// at every name it mentions but does not bind.
@@ -848,6 +903,9 @@ let freeNamesWith (reference: string -> Range -> bool -> unit) (guarded: bool) (
         | EList(items, _)
         | EVec(items, _)
         | EArray(items, _) -> List.iter sub items
+        // Unguarded, and in the enclosing scope: `,@xs` reads `xs` right where
+        // the literal is built, binding nothing.
+        | ESplice(item, _) -> sub item
         | EApp(target, args, _) ->
             sub target
             List.iter sub args
@@ -929,7 +987,7 @@ let freeNamesWith (reference: string -> Range -> bool -> unit) (guarded: bool) (
         // that already exist.
         | EWithReturn(name, body, _) -> go guarded (Set.add name bound) body
 
-        | EBindElse(binder, scrutinee, sequel, arms, r) ->
+        | EDefMatch(binder, scrutinee, failure, sequel, r) ->
             // The scrutinee and a pattern's view steps are read in the scope the
             // form began in, as they are in `EMatch` above.
             for step in patternSteps binder do
@@ -940,14 +998,19 @@ let freeNamesWith (reference: string -> Range -> bool -> unit) (guarded: bool) (
             // What the binder binds is in scope in the sequel and nowhere else.
             go guarded (Set.union bound (Set.ofList (patternBinders binder))) sequel
 
-            // An arm runs because the binder did not match, so nothing the
-            // binder would have bound is in scope in it — only what the arm's
-            // own pattern binds, and only in that arm.
-            for (armPattern, armBody) in arms do
-                for step in patternSteps armPattern do
-                    go guarded bound step
+            // The failure part runs because the binder did not match, so
+            // nothing the binder would have bound is in scope in it — only what
+            // an arm's own pattern binds, and only in that arm.
+            match failure with
+            | FailNone
+            | FailPropagate -> ()
+            | FailValue value -> go guarded bound value
+            | FailArms arms ->
+                for (armPattern, armBody) in arms do
+                    for step in patternSteps armPattern do
+                        go guarded bound step
 
-                go guarded (Set.union bound (Set.ofList (patternBinders armPattern))) armBody
+                    go guarded (Set.union bound (Set.ofList (patternBinders armPattern))) armBody
 
     go guarded bound expr
 
@@ -1008,6 +1071,7 @@ let rec boundNames (decls: Decl list) : Set<string> =
                     | KeywordArg(n, _) -> n
                     | RestArg n -> n))
         | DDefTuple(names, _, _) -> names
+        | DDefPattern(pattern, _, _) -> patternBinders pattern
         // Not a binder. It is renamed from the same memo as the `defun` it
         // belongs to, so leaving it out would take the pair apart: the body
         // would keep its fresh spelling and the signature would lose it.
@@ -1075,6 +1139,9 @@ let rec mapDeclExprs (f: Expr -> Expr) (d: Decl) : Decl =
     | DDef(name, e, r) -> DDef(name, f e, r)
     | DDefMutable(name, e, r) -> DDefMutable(name, f e, r)
     | DDefTuple(names, e, r) -> DDefTuple(names, f e, r)
+    // The pattern holds expressions too: a view's step, read in the scope the
+    // form stands in.
+    | DDefPattern(pattern, e, r) -> DDefPattern(mapPatternSteps f pattern, f e, r)
     | DDefun(name, args, body, colour, r) -> DDefun(name, List.map mapArg args, f body, colour, r)
     | DDefDouble(name, args, syncBody, bjoBody, r) ->
         DDefDouble(name, List.map mapArg args, f syncBody, f bjoBody, r)

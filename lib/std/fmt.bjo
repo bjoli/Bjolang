@@ -70,7 +70,7 @@
 (defun (str* ds)
   (let ((b (stringbuilder-empty)))
     (ignore
-     (fold (fun (acc d) (stringbuilder-add-string! acc (disp->string d)) acc)
+     (fold (fun (d acc) (stringbuilder-add-string! acc (disp->string d)) acc)
            b
            ds))
     (stringbuilder->string b)))
@@ -98,7 +98,7 @@
 ;; Computes column position.
 (: column-after (-> int string int))
 (defun (column-after col s)
-  (string-fold (fun (c ch) (if (char=? ch #\newline) 0 (+ c 1))) col s))
+  (string-fold (fun (ch c) (if (char=? ch #\newline) 0 (+ c 1))) col s))
 
 (: run-block (-> Sink int Block int))
 (defun (run-block out col b)
@@ -110,7 +110,7 @@
 
 (: run-blocks (-> Sink int (Vec Block) int))
 (defun (run-blocks out col bs)
-  (fold (fun (c b) (run-block out c b)) col bs))
+  (fold (fun (b c) (run-block out c b)) col bs))
 
 ;; `#:sync`, and it cannot be otherwise: the sink is stored in a `Block`'s
 ;; `BRun` case, and a stored function's colour is its type — so no `-?->` can
@@ -352,7 +352,7 @@
 (: joined/prefix (-> (-> %a Block) (List %a) (Vec Block) Block))
 (defun (joined/prefix f xs sep)
   (BRun (fun (out col)
-          (list-foldl (fun (c x) (run-block out (run-blocks out c sep) (f x)))
+          (list-foldl (fun (x c) (run-block out (run-blocks out c sep) (f x)))
                       col
                       xs))))
 
@@ -360,7 +360,7 @@
 (: joined/suffix (-> (-> %a Block) (List %a) (Vec Block) Block))
 (defun (joined/suffix f xs sep)
   (BRun (fun (out col)
-          (list-foldl (fun (c x) (run-blocks out (run-block out c (f x)) sep))
+          (list-foldl (fun (x c) (run-blocks out (run-block out c (f x)) sep))
                       col
                       xs))))
 
@@ -504,7 +504,7 @@
   (let ((b (stringbuilder-empty))
         (gap (padding 1)))
     ;; rewrite as {folding }
-    (ignore (list-foldl (fun (first? w)
+    (ignore (list-foldl (fun (w first?)
                           (unless first? (stringbuilder-add-string! b gap))
                           (stringbuilder-add-string! b w)
                           #f)
@@ -518,13 +518,13 @@
   (let ((gaps (- (list-length ws) 1)))
     (if (<= gaps 0)
         (spaced ws)
-        (let* ((text (list-foldl (fun (acc w) (+ acc (width-of w))) 0 ws))
+        (let* ((text (list-foldl (fun (w acc) (+ acc (width-of w))) 0 ws))
                (room (max (- budget text) gaps))
                (base (/ room gaps))
                (extra (% room gaps))
                (b (stringbuilder-empty)))
               ;; TODO: rewrite as a {folding ...}
-              (ignore (list-foldl (fun (i w)
+              (ignore (list-foldl (fun (w i)
                                     (when (> i 0)
                                       (stringbuilder-add-string!
                                        b
@@ -580,7 +580,7 @@
 (defun (laid-out cells widths sep cut?)
   ;; this can be rewritten using both def ... and loop.
   (BRun (fun (out col)
-          (let ((rows (vec-fold (fun (acc ls) (max acc (vec-length ls))) 0 cells)))
+          (let ((rows (vec-fold (fun (ls acc) (max acc (vec-length ls))) 0 cells)))
             (let lp ((r 0) (c (run-block out col fl)))
               (if (>= r rows)
                   c
@@ -634,7 +634,7 @@
              out
              col
              (laid-out cells
-                       (vec-map (fun (ls) (vec-fold (fun (acc l) (max acc (width-of l))) 0 ls))
+                       (vec-map (fun (ls) (vec-fold (fun (l acc) (max acc (width-of l))) 0 ls))
                                 cells)
                        sep
                        #f))))))

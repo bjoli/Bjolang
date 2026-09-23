@@ -148,6 +148,15 @@ type CodegenContext = {
     /// brought in under a modifier; an empty module means a name with no class
     /// of its own, emitted bare.
     GlobalBindings: Map<string, string * string>
+    /// The names that stand for a module function, here or imported.
+    ///
+    /// A reference to one as a value writes its type arguments out, and that is
+    /// only correct where the emitted method takes them in the order of the
+    /// binding's scheme variables. A `TDefun` does, because it is emitted from
+    /// that same list; a builtin's C# is hand-written and a local function's
+    /// type parameters are collected from its type instead, so neither belongs
+    /// here.
+    ModuleFunctions: Set<string>
     /// Where `generateExpr` may hoist statement-shaped operands to. `None` in
     /// the three contexts C# gives no statement position: optional-parameter
     /// defaults, `case ... when` guards, and switch-expression arms.
@@ -329,6 +338,12 @@ let mapPrimitiveType (name: string) =
     | "Promise" -> "Bjoml.Promise"
     | "Event" -> "Bjoml.IEvent"
     | "Chan" -> "Bjoml.Channel"
+    // The inbox, and the request/reply pair a call is. See
+    // `DotNetInterop.genericTypeCorrespondence`, which this has to agree with.
+    | "Inbox" -> "Bjoml.Inbox"
+    | "Call" -> "Bjoml.Call"
+    // `Task` and `(Task %a)`: the same name at two arities, as in C#.
+    | "Task" -> "System.Threading.Tasks.Task"
     // A cancellation token *is* a promise of a reason, so it needs no type of
     // its own here — the whole newtype lives in the Bjolang type system, where
     // it keeps `promise-join` and `detach` off a value neither of them means
@@ -923,24 +938,39 @@ let rec serializeExpr (e: Ast.Expr) : string =
 
     | Ast.EWithReturn(name, body, _) -> list [ "with-return"; name; serializeExpr body ]
 
-    // A `def+` holds the rest of the body it was written in, and the reader
+    // A `def` holds the rest of the body it was written in, and the reader
     // gives it that sequel back by position rather than from the form itself.
     // So it is written out as a *body* — `begin` splices in body position, and
     // `parseBody` hands the form whatever follows it there, which is exactly
     // the sequel that went in.
-    | Ast.EBindElse(binder, scrutinee, sequel, arms, _) ->
-        let armForms =
-            arms
-            |> List.map (fun (pat, body) -> list [ serializePattern pat; serializeExpr body ])
+    //
+    // One clause per form, which is what a `def*` was already read as: its
+    // clauses nest, so each of them writes itself back as a `def` of its own.
+    | Ast.EDefMatch(binder, scrutinee, failure, sequel, _) ->
+        let failureForms =
+            match failure with
+            | Ast.FailNone -> []
+            | Ast.FailPropagate -> [ ":propagate" ]
+            | Ast.FailValue value -> [ serializeExpr value ]
+            | Ast.FailArms arms ->
+                [ ":fail"
+                  list (arms |> List.map (fun (pat, body) -> list [ serializePattern pat; serializeExpr body ])) ]
 
         let bindForm =
-            list ([ "def+"; list [ serializePattern binder; serializeExpr scrutinee ] ] @ armForms)
+            list ([ "def"; serializePattern binder; serializeExpr scrutinee ] @ failureForms)
 
         list [ "begin"; bindForm; serializeExpr sequel ]
 
     // No reader form produces these, so none can appear in a template body.
     | Ast.ELetTuple _ -> failwith "an inline template body may not destructure a tuple binding"
     | Ast.EList _ -> failwith "an inline template body may not contain a bare list literal"
+    // `,@` is spellable only inside a quote, and a quote of a list is the
+    // `EList` refused on the line above — so this is reachable for a quoted
+    // *vec* alone. It goes the same way, and for the same reason: there is no
+    // source spelling for a splice on its own, so writing one out would produce
+    // something the reader cannot read back. `isSerializableTemplate` catches
+    // this, the template is not published, and the landing pad answers instead.
+    | Ast.ESplice _ -> failwith "an inline template body may not contain a spliced literal"
     | Ast.ETryFinally _ -> failwith "an inline template body may not contain try/finally"
     | Ast.ETryCatch _ -> failwith "an inline template body may not contain try/catch"
 
@@ -1261,7 +1291,7 @@ let rec isStatementShaped (expr: TypedExpr) : bool =
     // All three are jumps or hold one, and C# has no expression that jumps.
     | TWithReturn _
     | TReturn _
-    | TBindElse _ -> true
+    | TDefMatch _ -> true
 
     // A conditional stays `c ? t : f` as long as it yields a value and neither
     // arm needs statements. Hoisting out of an arm would evaluate it
@@ -1343,6 +1373,24 @@ type ViewFragment =
     { Name: string
       Applied: TypedExpr
       Inner: TypedPattern }
+
+/// The same pattern with its binders spelled as `locals` says.
+///
+/// A top-level destructuring is what needs it. The designations a pattern emits
+/// are C# locals, and one spelled like the module field it fills would hide
+/// that field from the assignment below it.
+let rec renamePatternBinders (locals: Map<string, string>) (pat: TypedPattern) : TypedPattern =
+    let renamed name =
+        Map.tryFind name locals |> Option.defaultValue name
+
+    let node =
+        match pat.Node with
+        | TPIdent name -> TPIdent(renamed name)
+        | TPTypeTest(clrType, binder) -> TPTypeTest(clrType, Option.map renamed binder)
+        | TPAs(inner, name) -> TPAs(renamePatternBinders locals inner, renamed name)
+        | _ -> (TypeVisitor.mapPatternChildrenWith id (renamePatternBinders locals) pat).Node
+
+    { pat with Node = node }
 
 /// Translates a typed pattern into C# pattern syntax.
 ///
@@ -1679,7 +1727,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
         for part in parts[1..] do
             append ctx "."
             append ctx (sanitizeIdent part)
-    | TIdent (name, _) ->
+    | TIdent (name, tArgs) ->
         // Cons/Nil are now builtins backed by SchemeList, not union cases.
         match name with
         | "Nil" ->
@@ -1736,7 +1784,25 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
             | TFun _ ->
                 // A delegate-typed cast of a value or method group; Roslyn caches
                 // method-group conversions too.
-                append ctx $"(({typeToString expr.Type})({targetName}))"
+                //
+                // A generic module function has its type arguments written out.
+                // C# infers a method group's from the delegate's *parameter*
+                // types alone, so a type parameter that appears only in the
+                // return type cannot be inferred and the conversion is an error
+                // — which is every parser-combinator signature, where `%a` sits
+                // inside what the function answers and never in what it takes.
+                //
+                // Only for a module function: `tArgs` is positionally aligned
+                // with the callee's scheme variables, which is the list a
+                // `TDefun` emits its type parameters from. See
+                // `ModuleFunctions` for what that rules out.
+                let explicitTyArgs =
+                    if tArgs.IsEmpty || not (Set.contains name ctx.ModuleFunctions) then
+                        ""
+                    else
+                        "<" + (tArgs |> List.map typeToString |> String.concat ", ") + ">"
+
+                append ctx $"(({typeToString expr.Type})({targetName}%s{explicitTyArgs}))"
             | _ ->
                 append ctx targetName
 
@@ -2119,7 +2185,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     // second one to keep in step with `generateBlock`'s.
     | TWithReturn _
     | TReturn _
-    | TBindElse _ ->
+    | TDefMatch _ ->
         codegenError
             expr.Range
             "this form is a jump, and C# has no expression that jumps; it should have been hoisted into a statement"
@@ -3338,7 +3404,7 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
 
     | TReturn (label, value) -> generateEscape ctx ctx.Returns[label] value
 
-    | TBindElse (binder, scrutineeExpr, sequel, arms) ->
+    | TDefMatch (binder, scrutineeExpr, sequel, arms) ->
         // The sequel and every arm are the form's arms, so all of them are
         // generated into the *same* target: whichever runs produces the value.
         //
@@ -3376,13 +3442,25 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
         // scopes its bindings to the section, which the sequel is not inside of.
         // The chain needs no label of its own: each arm is emitted once, in
         // place, and control rejoins after the chain.
+        // A written failure value is the arm no pattern refines, and C# has no
+        // `is` spelling for one: it becomes the `else` itself.
+        let isCatchAll (pattern: TypedPattern) =
+            match pattern.Node with
+            | TPWildcard -> true
+            | _ -> false
+
         let emitArm (c: CodegenContext) (pattern: TypedPattern) (body: TypedExpr) (isFirst: bool) =
-            let views = ResizeArray<ViewFragment>()
             indent c
-            append c (if isFirst then $"if (%s{scrutinee} is " else $"else if (%s{scrutinee} is ")
-            generatePattern c views pattern
-            generateClauseGuard c views None
-            appendLine c ") {"
+
+            if not isFirst && isCatchAll pattern then
+                appendLine c "else {"
+            else
+                let views = ResizeArray<ViewFragment>()
+                append c (if isFirst then $"if (%s{scrutinee} is " else $"else if (%s{scrutinee} is ")
+                generatePattern c views pattern
+                generateClauseGuard c views None
+                appendLine c ") {"
+
             withIndent c (fun inner -> generateBlock inner armTarget body)
             indent c
             appendLine c "}"
@@ -3396,17 +3474,18 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
         // uncovered, so this throw is unreachable — and it is emitted anyway,
         // for the reason a switch statement's `default:` carries one: C# cannot
         // see that the chain always takes a branch, and without a final `else`
-        // it calls a `def+` in return position CS0161 and a target assigned in
+        // it calls a `def` in return position CS0161 and a target assigned in
         // every arm unassigned.
-        indent ctx
-        appendLine ctx "else {"
+        if not (arms |> List.exists (fun arm -> isCatchAll arm.Pattern)) then
+            indent ctx
+            appendLine ctx "else {"
 
-        withIndent ctx (fun c ->
-            indent c
-            appendLine c $"throw new Exception(\"Match failure at %s{Lexer.formatPos expr.Range}\");")
+            withIndent ctx (fun c ->
+                indent c
+                appendLine c $"throw new Exception(\"Match failure at %s{Lexer.formatPos expr.Range}\");")
 
-        indent ctx
-        appendLine ctx "}"
+            indent ctx
+            appendLine ctx "}"
 
     // Any node with no statement shape of its own: emit it as a C# expression
     // and let `emitTerminal` discharge the target. The `emitStatement` wrapper
@@ -5150,7 +5229,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
         // become static fields assigned by a static constructor. That is the last
         // place an IIFE would otherwise still be required.
         //
-        // The three shapes are collected into *one* list in declaration order
+        // The four shapes are collected into *one* list in declaration order
         // rather than swept up a kind at a time, because the static constructor
         // assigns them in this order and one initializer may read a binding
         // above it. Taken kind by kind, a `def` reading a `def/mutable` declared
@@ -5159,9 +5238,10 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
         let valueDefs =
             innerDecls
             |> List.choose (function
-                | TDef(n, v, t, _) -> Some(Choice1Of3(n, v, t))
-                | TDefMutable(n, v, t, _) -> Some(Choice2Of3(n, v, t))
-                | TDefTuple(names, v, t, _) -> Some(Choice3Of3(names, v, t))
+                | TDef(n, v, t, _) -> Some(Choice1Of4(n, v, t))
+                | TDefMutable(n, v, t, _) -> Some(Choice2Of4(n, v, t))
+                | TDefTuple(names, v, t, _) -> Some(Choice3Of4(names, v, t))
+                | TDefPattern(pattern, v, binders, r) -> Some(Choice4Of4(pattern, v, binders, r))
                 | _ -> None)
 
         let className = moduleClassName name
@@ -5206,22 +5286,27 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
 
             for d in valueDefs do
                 match d with
-                | Choice1Of3(defName, _, defType) ->
+                | Choice1Of4(defName, _, defType) ->
                     indent ctx
                     appendLine ctx $"public static readonly %s{typeToString defType} %s{Prelude.moduleMemberName defName};"
-                | Choice2Of3(defName, _, defType) ->
+                | Choice2Of4(defName, _, defType) ->
                     indent ctx
                     appendLine ctx $"public static %s{typeToString defType} %s{Prelude.moduleMemberName defName};"
-                | Choice3Of3(names, _, tupleType) ->
+                | Choice3Of4(names, _, tupleType) ->
                     for name, elemType in List.zip names (tupleElemTypes tupleType) do
                         indent ctx
                         appendLine ctx $"public static readonly %s{typeToString elemType} %s{Prelude.moduleMemberName name};"
+                | Choice4Of4(_, _, binders, _) ->
+                    for name, bindType in binders do
+                        indent ctx
+                        appendLine ctx $"public static readonly %s{typeToString bindType} %s{Prelude.moduleMemberName name};"
 
             for d in innerDecls do
                 match d with
                 | TDef _
                 | TDefMutable _
-                | TDefTuple _ -> ()
+                | TDefTuple _
+                | TDefPattern _ -> ()
                 | _ -> generateDecl ctx d
 
             if not valueDefs.IsEmpty then
@@ -5231,16 +5316,55 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                 withIndent ctx (fun c ->
                     for d in valueDefs do
                         match d with
-                        | Choice1Of3(defName, defValue, _)
-                        | Choice2Of3(defName, defValue, _) ->
+                        | Choice1Of4(defName, defValue, _)
+                        | Choice2Of4(defName, defValue, _) ->
                             generateBlock c (Assign(Prelude.moduleMemberName defName)) defValue
-                        | Choice3Of3(names, defValue, _) ->
+                        | Choice3Of4(names, defValue, _) ->
                             let tmp = freshName "__tuple"
                             generateBindingValue c (DeclareAndAssign(typeToString defValue.Type, tmp)) defValue
 
                             for i, name in List.indexed names do
                                 indent c
-                                appendLine c $"%s{Prelude.moduleMemberName name} = %s{tmp}.Item%d{i + 1};")
+                                appendLine c $"%s{Prelude.moduleMemberName name} = %s{tmp}.Item%d{i + 1};"
+                        | Choice4Of4(pattern, defValue, binders, r) ->
+                            let tmp = freshName "__bound"
+                            generateBindingValue c (DeclareAndAssign(typeToString defValue.Type, tmp)) defValue
+
+                            // The pattern's designations are locals, and a
+                            // local spelled like the field it fills would hide
+                            // it. Renamed here, where both spellings are known.
+                            let locals =
+                                binders |> List.map (fun (n, _) -> n, freshName "__part") |> Map.ofList
+
+                            let views = ResizeArray<ViewFragment>()
+                            indent c
+                            append c $"if (%s{tmp} is "
+                            generatePattern c views (renamePatternBinders locals pattern)
+                            generateClauseGuard c views None
+                            appendLine c ") {"
+
+                            withIndent c (fun inner ->
+                                for name, _ in binders do
+                                    indent inner
+                                    appendLine inner $"%s{Prelude.moduleMemberName name} = %s{locals[name]};")
+
+                            indent c
+                            appendLine c "}"
+
+                            // `Exhaustiveness` has refused a pattern that can
+                            // fail, so this is the `default:` of a switch over
+                            // one case: unreachable, and emitted because C#
+                            // calls a field assigned only inside an `if`
+                            // unassigned.
+                            indent c
+                            appendLine c "else {"
+
+                            withIndent c (fun inner ->
+                                indent inner
+                                appendLine inner $"throw new Exception(\"Match failure at %s{Lexer.formatPos r}\");")
+
+                            indent c
+                            appendLine c "}")
 
                 indent ctx
                 appendLine ctx "}"
@@ -5385,6 +5509,7 @@ let generateProgram
                     | TDef (n, _, _, _) -> [ (n, (modName, n)) ]
                     | TDefMutable (n, _, _, _) -> [ (n, (modName, n)) ]
                     | TDefTuple (names, _, _, _) -> names |> List.map (fun n -> (n, (modName, n)))
+                    | TDefPattern (_, _, binders, _) -> binders |> List.map (fun (n, _) -> (n, (modName, n)))
                     | TDefun (n, _, _, _, _, _, _, _, _) -> [ (n, (modName, n)) ]
                     // When an import shares a name with a builtin, both spellings
                     // reach the call site through a `using static`. Because C# cannot
@@ -5431,6 +5556,22 @@ let generateProgram
         )
         |> List.fold (fun acc (n, target) -> Map.add n target acc) definitions
 
+    // A trait method is left out because its reference is not a method group at
+    // all: dictionary lowering has rewritten it by the time this is read.
+    let moduleFunctions =
+        decls
+        |> collectDecls (function
+            | TModule (_, innerDecls, _) ->
+                innerDecls |> List.collect (function
+                    | TDefun (n, _, _, _, _, _, _, _, _) -> [ n ]
+                    | TExtern (visible, _, _, _) -> [ visible ]
+                    | _ -> []
+                )
+            | _ -> []
+        )
+        |> List.filter (fun n -> not (Set.contains n env.TraitMethodNames))
+        |> Set.ofList
+
     let ctx =
         { Builder = StringBuilder()
           Line = { Pending = None }
@@ -5441,6 +5582,7 @@ let generateProgram
           IndentLevel = 0
           UnionCases = unionCases
           GlobalBindings = globalBindings
+          ModuleFunctions = moduleFunctions
           Prelude = None
           Loop = None
           Returns = Map.empty

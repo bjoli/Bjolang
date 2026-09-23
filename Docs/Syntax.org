@@ -350,59 +350,148 @@ A top-level ~defun~ is promoted whether or not it has keyword parameters.
 A mutable binding is **not generalized**.
 A module-level one compiles to a static field initialized **in declaration order**.
 
-*** ~def+~ — a binding that may fail
-~def+~ binds a pattern, and says what the whole form produces when the pattern
-does not match:
+*** ~def~ and ~def*~ — a binding that may fail
+A ~def~ takes a pattern, and a third slot saying what the whole form produces
+when the pattern does not match:
+
+#+BEGIN_SRC scheme
+(def pattern scrutinee)                     ;; no failure part: must match every value
+(def pattern scrutinee value-expr)          ;; the body evaluates to value-expr
+(def pattern scrutinee :fail (arm arm ...)) ;; the arms decide
+(def pattern scrutinee :propagate)          ;; the leftover cases are rebuilt
+
+(def* clause clause ...)                    ;; a clause is a parenthesised def
+#+END_SRC
+
+~def~ is to ~def*~ what ~let~ is to ~let*~: both swallow the rest of the body,
+~def~ takes one clause and ~def*~ takes several, run in order. An arm is
+~(pattern body ...)~ and matches the clause's own scrutinee.
+
+What makes it a definition rather than a ~match~ is where the success path goes:
+what the pattern binds scopes over **the rest of the body**, exactly as a plain
+~def~'s name does. So the path that carries on is not indented under the paths
+that do not — which is the whole reason to write one.
 
 #+BEGIN_SRC scheme
 (: label (-> string string))
 (defun (label s)
-  (def+ ((Ok n) (parse-int s))
-        ((Err why) (str "refused: " why)))
+  (def (Ok n) (parse-int s) :fail (((Err why) (str "refused: " why))))
   (str "n = " (int->string n)))
 #+END_SRC
 
-The first form is the **binder**, ~(pattern scrutinee)~. Every form after it is
-an **arm**, ~(pattern body ...)~, matching the same scrutinee.
-
-What makes it a definition rather than a ~match~ is where the success path goes:
-what the binder binds scopes over **the rest of the body**, exactly as an
-internal ~def~'s name does. So the path that carries on is not indented under
-the paths that do not — which is the whole reason to write one.
-
 | | |
 |---------------------------+-------------------------------------------------|
-| the binder matches        | its bindings scope over the rest of the body, and the body's value is the form's |
-| an arm matches            | that arm's body is the form's value, and what *it* binds is in scope only there |
-| nothing matches           | refused at compile time — see exhaustiveness below |
+| the pattern matches       | its bindings scope over the rest of the body, and the body's value is the form's |
+| it does not, and a value was written | that value is the form's value; what the pattern would have bound is not in scope in it |
+| it does not, and an arm matches | that arm's body is the form's value, and what *it* binds is in scope only there |
+| it does not, and ~:propagate~ was written | the case it did not match is rebuilt — see propagation below |
+| nothing was written | there is no such case: the pattern has to match every value, and it is an error where it does not |
 
-An arm produces a value; it does **not** leave the enclosing function. To leave
-one, write it: ~(ret ...)~ naming an enclosing ~with-return~, or ~(panic! ...)~.
+A failure produces a value; it does **not** leave the enclosing function. To
+leave one, write it: ~(ret ...)~ naming an enclosing ~with-return~, or
+~(panic! ...)~.
 
 #+BEGIN_SRC scheme
 (defun (checked o)
   (with-return ret
-    (def+ ((Some n) o)
-          (None (ret -1)))       ;; leaves the block, because it says so
+    (def (Some n) o (ret -1))     ;; leaves the block, because it says so
     (+ n 1)))
 #+END_SRC
 
-**The binder and the arms must cover the scrutinee's type**, as a ~match~ must,
-and the counterexample is named:
+The block a failure leaves is the **innermost enclosing body**, which is not
+always the function. One inside a ~when~ leaves the ~when~, and the code after
+the ~when~ still runs; the compiler warns where that value then goes nowhere.
 
-: Pattern Error: this def+ does not cover every value. Blue matches neither the
-: binding pattern nor any arm, and a def+ has nowhere to send it.
+**The third slot is always an expression, never arms.** The pattern is
+unparenthesised at the head, so there is no shape left to tell the two apart.
+Arms go after ~:fail~, and writing them without it says so.
 
-so a type of two cases needs no wildcard — ~Cons~ and ~Nil~ are the whole of
-~List~, and writing both is what says so.
+**A pattern that may fail needs a failure part.** Writing none says the pattern
+matches every value, and where it does not the counterexample is named and the
+form refused. There is no silent path out of a ~def~.
 
-**The binder must be able to fail.** One that always matches is a ~def~, and is
-refused rather than warned about; it is almost always a constructor that was
-not in scope and so parsed as a plain variable.
+**~:propagate~ rebuilds the cases the pattern leaves out**, and stands alone:
 
-~def+~ must stand **directly in a body**, since a body is what gives it its
-sequel. Inside another expression there is nothing for it to bind over, and it
+#+BEGIN_SRC scheme
+(: name-length (-> string (Option int)))
+(defun (name-length k)
+  (def (Some found) (lookup k) :propagate)  ;; (Option string) in, (Option int) out
+  (Some (string-length found)))
+#+END_SRC
+
+Each leftover case is **constructed fresh at the body's type** — this is not the
+scrutinee being handed back — and is then held to the body's type like any other
+failure value. That single rule is the whole restriction: a type argument the
+leftover case carries has to be the same on both sides, and one it does not
+carry is free. So ~(Option string)~ propagates into ~(Option int)~ because
+~None~ carries nothing, while an ~Err~ is rebuilt around the payload it came
+with and the two error types have to be one type.
+
+Any union works this way, not only ~Option~ and ~Result~, and a pattern may
+leave more than one case behind:
+
+#+BEGIN_SRC scheme
+(type (: Signal (Union (Data string) Idle Closed)))
+
+(: relabel (-> Signal Signal))
+(defun (relabel s)
+  (def (Data payload) s :propagate)   ;; Idle and Closed pass through
+  (Data (str "<" payload ">")))
+#+END_SRC
+
+What is left over has to be whole cases: a nested or literal pattern leaves part
+of a case behind, and there is no constructor to rebuild that with. Those take
+~:fail~.
+
+**A ~def*~'s clauses are sequential and short-circuiting.** Clause /n/ sees what
+clauses 1../n/-1 bound, and a failing clause evaluates no later scrutinee. The
+names have to be distinct across clauses, since all of them land in one scope.
+
+#+BEGIN_SRC scheme
+(defun (which program)
+  (def* ((Some path) (get-environment-variable "PATH") :propagate)
+        ((Some dir) (find #(file-exists? (path-combine & program))
+                          (string-split path ":"))
+                    :propagate))
+  (Some (path-combine dir program)))
+#+END_SRC
+
+**The pattern and the ~:fail~ arms must cover the scrutinee's type**, as a
+~match~ must, and the counterexample is named:
+
+: Pattern Error: this def does not cover every value. Blue matches neither the
+: binding pattern nor any arm, and a def has nowhere to send it.
+
+The arms are checked against the type **minus the clause pattern**, so
+~((Err e) ...)~ alone is the whole of ~Result~ after ~Ok~ and no wildcard is
+needed.
+
+**A pattern carrying a failure part must be able to fail.** One that always
+matches leaves the failure unreachable, and is refused rather than warned about;
+it is almost always a constructor that was not in scope and so parsed as a plain
+variable.
+
+Both forms must stand **directly in a body**, since a body is what gives them
+their sequel. Inside another expression there is nothing to bind over, and it
 says so.
+
+*** At the top level
+A pattern may also be written at the top level, where it has nowhere to fail:
+
+#+BEGIN_SRC scheme
+(def (Tuple host (Tuple port path)) (parse-endpoint "..."))
+(def* ((Wrap greeting) (default-greeting))
+      ((MkPair size text) (measure greeting)))
+#+END_SRC
+
+Each name becomes a definition of its own, from one evaluation of the scrutinee
+and one destructuring of it, and a later clause reads what an earlier one bound
+because module-level definitions see one another anyway.
+
+There is no body for a failure to be the value of, so **the pattern has to match
+every value** and a failure part is refused. That is the whole of the
+difference, and it is what a REPL entry gets too: an entry is a top level, so
+`(def (Tuple a b) ...)` binds at the prompt and `(def (Some x) ...)` does not.
 ** ~apply~ — spreading a collection into a rest parameter
 ~apply~ calls a function whose last parameter is ~#:rest~, taking the rest
 elements from a collection instead of writing them out:
@@ -433,6 +522,25 @@ Standard ~if~ expressions:
     "negative"
     "positive")
 #+END_SRC
+
+~cond~ takes any number of arms and a final ~else~. Two of its clauses answer
+nothing: ~(:def pattern expr)~ binds and ~(:do body ...)~ runs something, both
+only when every test above them has failed, and a ~:def~ is in scope in the
+clauses below it. They are there so that a value a later test needs does not
+cost an ~(else ...)~ and a second ~cond~ inside it:
+
+#+BEGIN_SRC scheme
+(cond
+  ((string-empty? text) "empty")
+  (:def first (string-cursor-ref text (string-cursor-start text)))
+  (:do (log "looking at" first))
+  ((char-numeric? first) "number")
+  (else "word"))
+#+END_SRC
+
+A ~:def~ clause is a ~def~, and the body it swallows is the rest of the cond —
+so ~(:def (Ok v) (parse s) :propagate)~ makes the whole cond the ~Err~ when the
+parse failed. See ~def~ below.
 
 ~when~ and ~unless~ are one-armed conditionals, taking a body of any number of forms:
 #+BEGIN_SRC scheme
@@ -683,7 +791,7 @@ Generic methods require signatures to resolve type parameters:
 (import/extern
   (set-empty (: Set.SetModule.Empty  (-> (Set %a))))
   (set-add   (: Set.SetModule.Add    (-> (Set %a) %a (Set %a))))
-  (set-fold  (: Set.SetModule.Fold   (-> (-> %s %a %s) %s (Set %a) %s))))
+  (set-fold  (: Set.SetModule.Fold   (-> (-> %a %s %s) %s (Set %a) %s))))
 #+END_SRC
 
 **** What crosses, and how
@@ -769,7 +877,7 @@ Bjolang supports generic traits and implementations. A trait is parameterised by
 #+BEGIN_SRC scheme
 (def/trait (Foldable %col)
   (type %item)
-  (: fold (-> (-> %acc %item %acc) %acc %col %acc)))
+  (: fold (-> (-> %item %acc %acc) %acc %col %acc)))
 
 (impl (Foldable (List %a))
   (type %item %a)
@@ -1075,21 +1183,21 @@ Code generation builds generic box wrappers and delegates automatically:
 
 #+BEGIN_SRC csharp
 public interface Foldable<T_col, T_item> {
-    T_acc fold<T_acc>(Func<T_acc, T_item, T_acc> arg0, T_acc arg1, T_col arg2);
+    T_acc fold<T_acc>(Func<T_item, T_acc, T_acc> arg0, T_acc arg1, T_col arg2);
 }
 public interface Foldable_Dyn<T_item> {
-    T_acc fold<T_acc>(Func<T_acc, T_item, T_acc> arg0, T_acc arg1);
+    T_acc fold<T_acc>(Func<T_item, T_acc, T_acc> arg0, T_acc arg1);
 }
 public sealed class Foldable_DynBox<T_col, T_item> : Foldable_Dyn<T_item> {
     private readonly T_col value;
     private readonly Foldable<T_col, T_item> dict;
     private Foldable_DynBox(T_col v, Foldable<T_col, T_item> d) { value = v; dict = d; }
     public static Foldable_Dyn<T_item> Make(Foldable<T_col, T_item> d, T_col v) => new Foldable_DynBox<T_col, T_item>(v, d);
-    public T_acc fold<T_acc>(Func<T_acc, T_item, T_acc> arg0, T_acc arg1) => dict.fold<T_acc>(arg0, arg1, value);
+    public T_acc fold<T_acc>(Func<T_item, T_acc, T_acc> arg0, T_acc arg1) => dict.fold<T_acc>(arg0, arg1, value);
 }
 public sealed class Foldable_DynImpl<T_item> : Foldable<Foldable_Dyn<T_item>, T_item> {
     public static readonly Foldable_DynImpl<T_item> Instance = new();
-    public T_acc fold<T_acc>(Func<T_acc, T_item, T_acc> arg0, T_acc arg1, Foldable_Dyn<T_item> arg2) => arg2.fold<T_acc>(arg0, arg1);
+    public T_acc fold<T_acc>(Func<T_item, T_acc, T_acc> arg0, T_acc arg1, Foldable_Dyn<T_item> arg2) => arg2.fold<T_acc>(arg0, arg1);
 }
 #+END_SRC
 

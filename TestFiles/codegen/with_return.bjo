@@ -1,9 +1,9 @@
-;; What `with-return` and `def+` compile to.
+;; What `with-return` and a refutable `def` compile to.
 ;;
 ;; Two shapes, read off the generated C# by hand once and pinned here.
 ;;
 ;; **The tail case emits neither a slot nor a label.** When the block *is* the
-;; function's value, an escape is a plain `return`, and a `def+` is the `if` /
+;; function's value, an escape is a plain `return`, and a `def` is the `if` /
 ;; `else if` chain its arms describe:
 ;;
 ;;   var __bound__12 = o;
@@ -17,7 +17,7 @@
 ;; The final `else` is unreachable — `Exhaustiveness` has already refused a form
 ;; whose arms leave a value uncovered — and is emitted for the reason a switch
 ;; statement's `default:` carries one: C# cannot see that the chain always takes
-;; a branch, and without it a `def+` in return position is CS0161.
+;; a branch, and without it a `def` in return position is CS0161.
 ;;
 ;; Anywhere else a block's value goes to a slot and control jumps past the body.
 ;; The slot is declared, and the label emitted, in the block the form stands in
@@ -37,8 +37,7 @@
 (: classify (-> (Option int) string))
 (defun (classify o)
   (with-return ret
-    (def+ ((Some n) o)
-          (None "none"))
+    (def (Some n) o :fail ((None "none")))
     (when (< n 0) (ret "negative"))
     "positive"))
 
@@ -50,17 +49,15 @@
          (when (< n 10) (ret "small"))
          "large")))
 
-;; Chained: each `def+` holds the rest of the body, so the second is generated
-;; inside the first's binding branch and the third inside the second's.
+;; Chained: each `def` holds the rest of the body, so the second is generated
+;; inside the first's binding branch and the third inside the second's. Written
+;; as a `def*`, which is the same nesting said once.
 (: triple (-> (Option int) (Option int) (Option int) string))
 (defun (triple a b c)
   (with-return ret
-    (def+ ((Some x) a)
-          (None (ret "missing")))
-    (def+ ((Some y) b)
-          (None (ret "missing")))
-    (def+ ((Some z) c)
-          (None (ret "missing")))
+    (def* ((Some x) a (ret "missing"))
+          ((Some y) b (ret "missing"))
+          ((Some z) c (ret "missing")))
     (int->string (+ x (+ y z)))))
 
 (defun (main)

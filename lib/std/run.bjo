@@ -23,7 +23,7 @@
   cmd
 
   ;; Running one, blocking
-  run run/string run/strings run/status
+  run run/string run/strings run/status run/output
 
   ;; A running form
   proc-input proc-output wait wait/all kill
@@ -696,6 +696,31 @@
     (match (waiting p)
       ((Err e) (Err e))
       ((Ok code) (Ok text)))))
+
+;; The output and the exit code, together.
+;;
+;; `run/string` answers the output and drops the code, which is enough for a
+;; command that is expected to work. It is not enough for one whose failure is
+;; an ordinary answer — `git show v1.0.0:manifest.bjodat` on a tag that has no
+;; manifest prints nothing and exits non-zero, and that is not the same as a
+;; tag whose manifest is empty. Both halves are here so that the caller does
+;; not have to run the thing twice to get them.
+(: run/output (-> Form (Result Exception (Tuple int string))))
+(defun (run/output form)
+  (match (run form)
+    ((Err e) (Err e))
+    ((Ok p)
+     (close-input p)
+     (blocking-result (bjo (collecting/code p))))))
+
+(: collecting/code (-> Proc (Result Exception (Tuple int string))))
+(defbjo (collecting/code p)
+  (let ((text (match (proc-output p)
+                ((Some out) (read-rest out))
+                (None ""))))
+    (match (waiting p)
+      ((Err e) (Err e))
+      ((Ok code) (Ok (Tuple code text))))))
 
 (: run/strings (-> Form (Result Exception (Vec string))))
 (defun (run/strings form)

@@ -69,6 +69,10 @@ let private checkModuleValuesAreConcrete (registry: TraitRegistry) (decls: TDecl
             | TDef(name, _, t, r) -> check "def" name t r
             | TDefMutable(name, _, t, r) -> check "def/mutable" name t r
             | TDefTuple(names, _, t, r) -> check "def" (String.concat ", " names) t r
+            // Per binder rather than over the scrutinee: each one is a field of
+            // its own, and it is the one whose type is still open that the
+            // reader has to pin down.
+            | TDefPattern(_, _, binders, r) -> for name, t in binders do check "def" name t r
             | _ -> ()
 
     go decls

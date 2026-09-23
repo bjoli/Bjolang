@@ -35,6 +35,17 @@ echo "Building standard library..."
 ./bjor --lib lib/std/prelude.bjo
 # `ports` imports `prelude`, so it comes last for the same reason.
 ./bjor --lib lib/std/ports.bjo
+# `net` imports `prelude` and `ports` — the byte ports are what a connection is
+# made of — and nothing else. Like `run` it binds names out of the runtime
+# assembly, `Bjolang.Runtime.Net` and the listener beside it, so a change to
+# `BjolangRuntime/BjoNet.cs` has to reach the compiler before this line.
+# Rebuild the compiler after the runtime, then run this.
+./bjor --lib lib/std/net.bjo
+# `inbox` imports `prelude` and nothing else. Like `run` it binds names out of
+# the runtime assembly — `Bjoml.InboxModule` and the types beside it — so a
+# change to `BjolangRuntime/Cml/Inbox.cs` has to reach the compiler before this
+# line. Rebuild the compiler after the runtime, then run this.
+./bjor --lib lib/std/inbox.bjo
 # `monad` imports `prelude` for `list-append` and `syntax-match` to write `do`
 # with. Both have to be compiled first — a macro's module is loaded into the
 # compiler along with everything it imports.
@@ -114,12 +125,9 @@ echo "Building standard library..."
 # written in.
 ./bjor --lib lib/text/bjodat.bjo
 
-# `bjor/manifest` is the package manifest, as types. After `text/bjodat`, whose
-# `def/bjodat-type` it is written with and whose `Bjodat` cases its hand-written
-# instances name. It is the first thing in the library that is not machinery for
-# other code to build on, which is why it is last.
-#
-
-./bjor --lib lib/bjor/manifest.bjo
+# The package manifest is no longer part of the standard library: it is
+# `bjo/manifest.bjo`, built by `bjo` along with the rest of the driver. A
+# package name that `lib/` has a directory for is reserved, so a `(bjor)` here
+# would have taken a name away from users for a module only `bjo` reads.
 
 echo "Standard library built successfully!"

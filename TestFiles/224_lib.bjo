@@ -1,0 +1,18 @@
+;; A generic function whose type variable appears only in what it answers, so
+;; that 224 can reference one across a module boundary as well as at home.
+(export Reply Parser pzero pick-second)
+
+(import (std prelude))
+
+(type (: (Reply %a) (Union (ReplyOk %a) (ReplyErr string))))
+
+(type (: (Parser %a) (-> string (Reply %a))))
+
+(: pzero (Parser %a))
+(defun (pzero text)
+  (ReplyErr "nothing"))
+
+;; Declared %a %b and answering %b, so a reference that writes its type
+;; arguments out in the wrong order picks the wrong one.
+(: pick-second (-> %a %b %b))
+(defun (pick-second a b) b)

@@ -633,6 +633,9 @@ module DictionaryLowering =
 
         | TDefTuple(names, value, t, r) -> TDefTuple(names, lowerExpr env Scope.Empty value, t, r)
 
+        | TDefPattern(pattern, value, binders, r) ->
+            TDefPattern(pattern, lowerExpr env Scope.Empty value, binders, r)
+
         | TDefMutable(name, value, t, r) -> TDefMutable(name, lowerExpr env Scope.Empty value, t, r)
 
         | TDefun(name, tyArgs, args, kwArgs, restArg, retType, effect, body, r) ->

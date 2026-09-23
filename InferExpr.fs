@@ -93,6 +93,38 @@ let private hasNestedSequenceLiteral (elements: Expr list) : bool =
         | EArray _ -> true
         | _ -> false)
 
+/// Whether any element of a literal is a `,@`.
+///
+/// The question both literal paths ask first, because the answer decides
+/// between the node they have always built and the appended one below. A
+/// literal with no splice in it must reach the old path untouched: that is what
+/// keeps the emitted C# for every program written before this byte for byte
+/// what it was.
+let private hasSplice (elements: Expr list) : bool =
+    elements
+    |> List.exists (function
+        | ESplice _ -> true
+        | _ -> false)
+
+/// A literal's elements grouped into the pieces it is appended from: maximal
+/// runs of ordinary elements, and one piece per splice.
+///
+/// `Choice1Of2` is a run, which becomes exactly one literal node and so goes
+/// through the ordinary element path, injection and all. `Choice2Of2` is a
+/// splice's expression and its `,@`'s own range, which is what a diagnostic
+/// about it has to point at.
+let private splicePieces (elements: Expr list) : Choice<Expr list, Expr * Range> list =
+    let rec go acc pending remaining =
+        let flush () =
+            if List.isEmpty pending then acc else Choice1Of2(List.rev pending) :: acc
+
+        match remaining with
+        | [] -> List.rev (flush ())
+        | ESplice(inner, sr) :: rest -> go (Choice2Of2(inner, sr) :: flush ()) [] rest
+        | item :: rest -> go acc (item :: pending) rest
+
+    go [] [] elements
+
 /// Join one element of a literal to the element type its siblings share.
 ///
 /// Plain unification, except for the report when it fails. A literal reaches
@@ -117,6 +149,67 @@ let private joinLiteralElement
 
         failwithf
             $"Type Error at %s{Lexer.formatPos r}: nothing here says what this %s{kind} literal holds, and its elements do not agree on a type by themselves:\n  %s{shown[0]}\n  %s{shown[1]}\nA literal with a nested list among its elements stands for a union, and which union it stands for comes from the type expected where it is written. A generic parameter expects nothing in particular, so there is none: annotate the value and pass that, as in (def (: procs (List ProcList)) (list '(...)))."
+
+// ---------------------------------------------------------------------------
+// `def` propagation
+// ---------------------------------------------------------------------------
+
+/// The cases of the union `t` is, as name and payload count, or `None` when `t`
+/// is not a union at all.
+///
+/// A declared union wins over a builtin of the same name, as it does in
+/// `Exhaustiveness`: a module that defines its own `Result` propagates its own
+/// cases.
+let private unionCasesOf (registry: TraitRegistry) (t: HMType) : (string * int) list option =
+    match t with
+    | TCon(name, args) ->
+        match Map.tryFind name registry.Unions with
+        | Some(_, cases) -> Some(cases |> List.map (fun (caseName, payloads, _) -> caseName, payloads.Length))
+        | None ->
+            match name, args with
+            | "Option", [ _ ] -> Some [ "None", 0; "Some", 1 ]
+            | "Result", [ _; _ ] -> Some [ "Err", 1; "Ok", 1 ]
+            | "List", [ _ ] -> Some [ "Nil", 0; "Cons", 2 ]
+            | _ -> None
+    | _ -> None
+
+/// Whether a pattern matches every value of its type.
+let rec private alwaysMatches (pat: TypedPattern) : bool =
+    match pat.Node with
+    | TPWildcard
+    | TPIdent _ -> true
+    | TPAs(inner, _) -> alwaysMatches inner
+    | TPTuple items -> List.forall alwaysMatches items
+    | TPAnd alts -> List.forall alwaysMatches alts
+    | _ -> false
+
+/// The constructors of `t` that `binder` leaves out, as name and payload count.
+///
+/// `None` where the leftovers are not a set of constructors: a literal, a
+/// sequence pattern, a view, or a constructor whose fields are themselves
+/// refutable. `:propagate` rebuilds one constructor per leftover case, so it
+/// has nothing to build from a `None` and refuses it.
+let private uncoveredCases
+    (registry: TraitRegistry)
+    (t: HMType)
+    (binder: TypedPattern)
+    : (string * int) list option =
+    let rec covered (pat: TypedPattern) =
+        match pat.Node with
+        | TPAs(inner, _) -> covered inner
+        | TPConstruct(name, args) when List.forall alwaysMatches args -> Some name
+        | _ -> None
+
+    if alwaysMatches binder then
+        Some []
+    else
+        match covered binder, unionCasesOf registry t with
+        | Some name, Some cases -> Some(cases |> List.filter (fun (c, _) -> c <> name))
+        // A constructor pattern on a type with no cases to list is a record or
+        // a CLR class: there is one way to build one, so the pattern matches
+        // every value of it.
+        | Some _, None -> Some []
+        | None, _ -> None
 
 /// What a function-shaped local binding declares, before its body is looked at.
 ///
@@ -284,8 +377,8 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
           Range = r
           Node = TWithReturn(label, typedBody) }
 
-    | EBindElse(binder, scrutinee, sequel, arms, r) ->
-        inferBindElse env binder scrutinee sequel arms r
+    | EDefMatch(binder, scrutinee, failure, sequel, r) ->
+        inferDefMatch env binder scrutinee failure sequel r
 
 
     // `std/eq`'s own equality primitives, refused everywhere else. See
@@ -606,6 +699,14 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
 
     | EArray(exprs, r) -> inferCollection env "Array" "array" TArrayMake exprs r
 
+    // Only a literal's own elements are splice positions, and both paths that
+    // build one take the splices out before any element is inferred. So an
+    // `ESplice` arriving here is a `,@` the parser accepted in a place that
+    // turned out not to be a run of elements after all.
+    | ESplice(_, r) ->
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: ,@ puts the elements of a collection into the literal around it, and there is no literal around this one."
+
     | ETryFinally(body, cleanup, r) ->
         let bodyType, tBody = infer env body
         let _, tCleanup = infer env cleanup
@@ -714,12 +815,122 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
 //
 // Where it may *stand* was settled syntactically by `checkEscapeUses` when
 // the block was entered, so nothing here has to ask.
+/// The two conversions a collection is spliced through: into a `Seq` and back.
+///
+/// There is no `seq->array`, and an array's length is fixed when it is
+/// allocated, so there is nothing to convert back to. `Parser.collectItems`
+/// refuses `,@` inside `#[...]` for that reason, which is why this is an
+/// internal failure and not a diagnostic: reaching it means the parser let one
+/// through.
+and private spliceConversions (ctor: string) : string * string =
+    match ctor with
+    | "List" -> "list->seq", "seq->list"
+    | "Vec" -> "vec->seq", "seq->vec"
+    | other -> failwithf "internal: %s literals have no splice lowering" other
+
+/// A spliced literal, assembled from the pieces `splicePieces` grouped it into.
+///
+/// Every piece is already typed as a whole `(ctor elemTy)` — a run of ordinary
+/// elements as the literal node it has always been, a splice as whatever it
+/// evaluates to — so all of them are joined the same way:
+///
+///   '(a ,@xs b)  ⇒  (seq->list (seq-append (list->seq (list a))
+///                                          (seq-append (list->seq xs)
+///                                                      (list->seq (list b)))))
+///
+/// No new typed node, no `Codegen` case and no runtime addition: `seq-append`,
+/// `list->seq` and `seq->list` already have exactly these types. Nor is there
+/// an evaluation-order question to answer, because there is nothing here but
+/// call operands: C# evaluates those left to right and once each, so the
+/// elements and the spliced expressions run in written order however the
+/// appends are nested. `seq-append` is lazy, and that never shows — everything
+/// handed to it is a collection that has already been built.
+and private assembleSplicedLiteral
+    (ctor: string)
+    (elemTy: HMType)
+    (pieces: TypedExpr list)
+    (r: Range)
+    : HMType * TypedExpr =
+    let collTy = TCon(ctor, [ elemTy ])
+
+    match pieces with
+    // `'(,@xs)` is `xs`. Lists and vecs are immutable, so handing the value
+    // straight back is indistinguishable from copying it, and the round trip
+    // would only cost a walk.
+    | [ single ] -> collTy, { single with Range = r }
+    | _ ->
+        let toSeq, fromSeq = spliceConversions ctor
+        let seqTy = TCon("Seq", [ elemTy ])
+
+        let call1 (fn: string) (argTy: HMType) (retTy: HMType) (arg: TypedExpr) : TypedExpr =
+            { Type = retTy
+              Range = arg.Range
+              Node =
+                TApply(
+                    { Type = tfun [ argTy ] retTy
+                      Range = arg.Range
+                      Node = TIdent(fn, []) },
+                    [ arg ],
+                    []
+                ) }
+
+        // Right-nested, so that each append has a one-piece left operand and
+        // the whole thing is linear in the number of elements rather than
+        // quadratic in the number of pieces.
+        let appended =
+            pieces
+            |> List.map (call1 toSeq collTy seqTy)
+            |> List.reduceBack (fun left right ->
+                { Type = seqTy
+                  Range = r
+                  Node =
+                    TApply(
+                        { Type = tfun [ seqTy; seqTy ] seqTy
+                          Range = r
+                          Node = TIdent("seq-append", []) },
+                        [ left; right ],
+                        []
+                    ) })
+
+        collTy, { call1 fromSeq seqTy collTy appended with Range = r }
+
+/// The expression of a `,@`, checked against the literal it is written in.
+///
+/// A splice contributes a whole collection where its siblings contribute one
+/// element each, so what it splices has to be the enclosing literal's own type
+/// — `(List T)` in a list, `(Vec T)` in a vec. The mismatch is reported at the
+/// `,@` rather than at the literal, because the literal is not what is wrong.
+and private checkSplice
+    (env: Env)
+    (literalName: string)
+    (collTy: HMType)
+    (inner: Expr)
+    (sr: Range)
+    : TypedExpr =
+    let innerType, typedInner = inferChecked collTy env inner
+
+    try
+        unify env.Registry innerType collTy
+    with ex when Diagnostics.isDiagnostic ex ->
+        let shown =
+            DotNetInterop.showTypesTogether [ prune env.Registry collTy; prune env.Registry innerType ]
+
+        failwithf
+            $"Type Error at %s{Lexer.formatPos sr}: ,@ puts the elements of a collection into the %s{literalName} literal around it, so it has to be handed that same kind of collection:\n  expected %s{shown[0]}\n  got      %s{shown[1]}\nWrite ,x instead to place a single element."
+
+    typedInner
+
 /// A collection literal: `(list ...)`, `[...]` or `#[...]`.
 ///
 /// One element type, joined across every element so that the diagnostic names
 /// the literal rather than the pair of elements that disagreed. `ctor` names
 /// the type, `literalName` is how that diagnostic spells the form, and
 /// `mkNode` builds the node — which is all the three literals differ by.
+///
+/// This is the path a literal takes when nothing pushed a type into it. A
+/// splice fixes the element type here exactly as an ordinary element does:
+/// its own type is `(ctor elem)`, and unifying that against the literal's is
+/// the same one question asked of a whole collection instead of one value.
 and private inferCollection
     (env: Env)
     (ctor: string)
@@ -729,20 +940,28 @@ and private inferCollection
     (r: Range)
     : HMType * TypedExpr =
     let elementType = freshMeta ()
-
-    let typedExprs =
-        exprs
-        |> List.map (fun e ->
-            let t, te = infer env e
-            joinLiteralElement env r literalName exprs elementType t
-            te)
-
     let collectionType = TCon(ctor, [ elementType ])
 
-    collectionType,
-    { Type = collectionType
-      Range = r
-      Node = mkNode typedExprs }
+    let run (elements: Expr list) : TypedExpr =
+        let typedExprs =
+            elements
+            |> List.map (fun e ->
+                let t, te = infer env e
+                joinLiteralElement env r literalName exprs elementType t
+                te)
+
+        { Type = collectionType
+          Range = r
+          Node = mkNode typedExprs }
+
+    if not (hasSplice exprs) then
+        collectionType, run exprs
+    else
+        splicePieces exprs
+        |> List.map (function
+            | Choice1Of2 elements -> run elements
+            | Choice2Of2(inner, sr) -> checkSplice env literalName collectionType inner sr)
+        |> fun pieces -> assembleSplicedLiteral ctor elementType pieces r
 
 and private inferEscapeCall (env: Env) (name: string) (args: Expr list) (r: Range) : HMType * TypedExpr =
     let info = env.Escapes[name]
@@ -771,12 +990,12 @@ and private inferEscapeCall (env: Env) (name: string) (args: Expr list) (r: Rang
       Range = r
       Node = TReturn(info.Label, typedValue) }
 
-and private inferBindElse
+and private inferDefMatch
     (env: Env)
     (binder: Pattern)
     (scrutinee: Expr)
+    (failure: DefFailure)
     (sequel: Expr)
-    (arms: (Pattern * Expr) list)
     (r: Range)
     : HMType * TypedExpr =
     // One scrutinee, matched by the binder and by every arm, so it is inferred
@@ -784,44 +1003,46 @@ and private inferBindElse
     let scrutineeType, typedScrutinee = infer env scrutinee
     let typedBinder, boundVars = checkPattern inferChecked env scrutineeType binder
 
-    let boundEnv =
+    let withVars vars inner =
         Map.fold
-            (fun inner n t ->
+            (fun acc n t ->
                 addBinding
                     n
                     { Scheme = Scheme([], [], t)
                       IsMutable = false }
-                    inner)
-            env
-            boundVars
+                    acc)
+            inner
+            vars
 
     // The sequel is the rest of the body, so the form's own type is the
-    // sequel's — and so is every arm's. They are the form's arms exactly as an
-    // `if`'s are: whichever runs produces the whole form's value. A body that
+    // sequel's — and so is the failure part's. Whichever runs produces the
+    // whole form's value, exactly as an `if`'s two branches do. A body that
     // means to leave an enclosing block says so with a `(ret ...)`, which is an
     // ordinary tail-position form here.
-    let sequelType, typedSequel = infer boundEnv sequel
+    let sequelType, typedSequel = infer (withVars boundVars env) sequel
 
-    // An arm is checked in `env` and not in `boundEnv`: it runs because the
-    // binder did not match, so nothing the binder would have bound exists. What
-    // the arm's own pattern binds is in scope in that arm and nowhere else.
+    // `:propagate` rebuilds every case its pattern leaves out, each written as
+    // the arm that rebuilds it and checked as any other arm is. The case name
+    // rides along for the report: a propagation that does not fit the body is a
+    // mistake about this form rather than about the arm's type.
+    let failureArms =
+        match failure with
+        | FailNone -> []
+        | FailArms arms -> arms |> List.map (fun (pat, body) -> None, pat, body)
+        | FailValue value -> [ None, PWildcard(exprRange value), value ]
+        | FailPropagate ->
+            propagatedArms env scrutineeType typedBinder r
+            |> List.map (fun (caseName, (pat, body)) -> Some caseName, pat, body)
+
+    // The failure part is checked in `env` and not under what the binder binds:
+    // it runs because the binder did not match, so nothing the binder would
+    // have bound exists. What an arm's own pattern binds is in scope in that
+    // arm and nowhere else.
     let typedArms =
-        arms
-        |> List.map (fun (armPattern, armBody) ->
+        failureArms
+        |> List.map (fun (propagated, armPattern, armBody) ->
             let typedPattern, armVars = checkPattern inferChecked env scrutineeType armPattern
-
-            let armEnv =
-                Map.fold
-                    (fun inner n t ->
-                        addBinding
-                            n
-                            { Scheme = Scheme([], [], t)
-                              IsMutable = false }
-                            inner)
-                    env
-                    armVars
-
-            let armType, typedBody = infer armEnv armBody
+            let armType, typedBody = infer (withVars armVars env) armBody
 
             try
                 unify env.Registry armType sequelType
@@ -829,25 +1050,77 @@ and private inferBindElse
                 let shown =
                     DotNetInterop.showTypesTogether [ prune env.Registry armType; prune env.Registry sequelType ]
 
-                // The `void` sequel is the mistake this form invites, and it is
-                // worth naming: it is what a body written for its effects
-                // leaves behind, and the arm that "returned a value" from it
-                // was relying on an escape this form does not perform.
-                let hint =
-                    if shown[1] = "void" then
-                        "\nThe rest of the body produces nothing, so an arm may not produce anything either. If it was meant to leave the enclosing block, say so: `(ret ...)` naming an enclosing `with-return`, or `(panic! ...)`."
-                    else
-                        "\nAn arm produces the form's value, as an `if`'s else does — it does not leave the enclosing block by itself. To leave one, write it: `(ret ...)` naming an enclosing `with-return`, or `(panic! ...)`."
+                match propagated with
+                | Some caseName ->
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos r}: `:propagate` would return %s{Naming.showTypeName caseName} here, but this body has type %s{shown[1]}."
+                | None ->
+                    // The `void` sequel is the mistake this form invites, and
+                    // it is worth naming: it is what a body written for its
+                    // effects leaves behind, and the failure that "returned a
+                    // value" from it was relying on an escape this form does
+                    // not perform.
+                    let hint =
+                        if shown[1] = "void" then
+                            "\nThe rest of the body produces nothing, so the failure may not produce anything either. If it was meant to leave the enclosing block, say so: `(ret ...)` naming an enclosing `with-return`, or `(panic! ...)`."
+                        else
+                            "\nA failure produces the form's value, as an `if`'s else does — it does not leave the enclosing block by itself. To leave one, write it: `(ret ...)` naming an enclosing `with-return`, or `(panic! ...)`."
 
-                failwithf
-                    $"Type Error at %s{Lexer.formatPos typedBody.Range}: a `def+` arm produces the value of the whole form, and here it disagrees with the rest of the body:\n  the arm:              %s{shown[0]}\n  the rest of the body: %s{shown[1]}%s{hint}"
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos typedBody.Range}: what a `def` produces when its pattern does not match is the value of the whole form, and here it disagrees with the rest of the body:\n  the failure:          %s{shown[0]}\n  the rest of the body: %s{shown[1]}%s{hint}"
 
-            ({ Pattern = typedPattern; Body = typedBody }: TBindElseArm))
+            ({ Pattern = typedPattern; Body = typedBody }: TDefMatchArm))
 
     sequelType,
     { Type = sequelType
       Range = r
-      Node = TBindElse(typedBinder, typedScrutinee, typedSequel, typedArms) }
+      Node = TDefMatch(typedBinder, typedScrutinee, typedSequel, typedArms) }
+
+/// The arms `:propagate` stands for: every case the pattern leaves out, matched
+/// and rebuilt, one arm each.
+///
+/// Each case is rebuilt rather than the scrutinee handed back, which is what
+/// lets the type arguments change: `None` is constructed fresh at the body's
+/// type, and an `Err`'s payload is carried across into a new one. Whether the
+/// body admits that is decided by unifying the arm with the sequel, as for any
+/// other arm — so a type parameter the leftover case mentions is forced to be
+/// the same in scrutinee and body, and one it does not mention is free.
+and private propagatedArms
+    (env: Env)
+    (scrutineeType: HMType)
+    (binder: TypedPattern)
+    (r: Range)
+    : (string * (Pattern * Expr)) list =
+    let settled =
+        try
+            prune env.Registry scrutineeType
+        with _ ->
+            scrutineeType
+
+    let shown = DotNetInterop.showType settled
+
+    let rebuild (caseName: string, arity: int) =
+        if not (Map.containsKey caseName env.Bindings) then
+            failwithf
+                $"Type Error at %s{Lexer.formatPos r}: `:propagate` rebuilds the cases this pattern leaves out, and %s{Naming.showTypeName caseName} of %s{shown} is not in scope here. Import it, or give a failure value or a :fail clause."
+
+        let carried = List.init arity (fun _ -> Gensym.fresh "carried")
+
+        let rebuilt =
+            match carried with
+            | [] -> EIdent(caseName, r)
+            | _ -> EApp(EIdent(caseName, r), carried |> List.map (fun n -> EIdent(n, r)), r)
+
+        (caseName, (PConstruct(caseName, carried |> List.map (fun n -> PIdent(n, r)), r), rebuilt))
+
+    match uncoveredCases env.Registry settled binder with
+    | Some [] ->
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: this pattern always matches, so the failure part of this def can never run. `:propagate` has no case to rebuild — drop it."
+    | Some cases -> cases |> List.map rebuild
+    | None ->
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: `:propagate` rebuilds whole cases of the scrutinee's type, and what this pattern leaves of %s{shown} is not a set of cases. Give a failure value or a :fail clause."
 
 // `Class.Member` — a static field or property. This is how an enum value
 // such as `FileMode.Open` is written, and it is why `import/class` is
@@ -1536,10 +1809,13 @@ and private inferApply (env: Env) (args: Expr list) (r: Range) : HMType * TypedE
     // A literal collection is never built. The elements go straight into
     // the rest array, which is the very node a direct call `(f a b c)`
     // produces — so the two spellings compile to the same call.
+    // A spliced literal is not one: its length is not known here, so there is
+    // no fixed set of elements to lay out into the rest array. It takes the
+    // ordinary path below and is converted like any other collection.
     let literalItems =
         match collExpr with
-        | EList(items, _) -> Some items
-        | EVec(items, _) -> Some items
+        | EList(items, _) when not (hasSplice items) -> Some items
+        | EVec(items, _) when not (hasSplice items) -> Some items
         | EArray(items, _) -> Some items
         | _ -> None
 
@@ -2431,20 +2707,50 @@ and private inferLocalFunBody
       KeywordArgs = typedKeywords
       RestArg = shape.Rest }
 
+/// A collection literal whose element type the context already named.
+///
+/// This is the branch that *injects*: each ordinary element goes through
+/// `inferAndMaybeInject`, which wraps it in the union case that can hold it.
+/// Splicing changes nothing about that. A run of ordinary elements stays one
+/// literal node and is injected exactly as before; only the runs either side of
+/// a `,@` are new, and the spliced value is not injected at all — it already
+/// has the collection type, which is what `checkSplice` demands of it.
+///
+/// With no splice this builds precisely the node it built before there was such
+/// a thing, and nothing downstream can tell the two compilers apart.
+and private inferCheckedLiteral
+    (env: Env)
+    (ctor: string)
+    (literalName: string)
+    (mkNode: TypedExpr list -> TExprNode)
+    (elemTy: HMType)
+    (exprs: Expr list)
+    (r: Range)
+    : HMType * TypedExpr =
+    let collectionType = TCon(ctor, [ elemTy ])
+
+    let run (elements: Expr list) : TypedExpr =
+        { Type = collectionType
+          Range = r
+          Node = mkNode (elements |> List.map (inferAndMaybeInject elemTy env)) }
+
+    if not (hasSplice exprs) then
+        collectionType, run exprs
+    else
+        splicePieces exprs
+        |> List.map (function
+            | Choice1Of2 elements -> run elements
+            | Choice2Of2(inner, sr) -> checkSplice env literalName collectionType inner sr)
+        |> fun pieces -> assembleSplicedLiteral ctor elemTy pieces r
+
 and internal inferChecked (expected: HMType) (env: Env) (expr: Expr) : HMType * TypedExpr =
     match expr, prune env.Registry expected with
     | EList(exprs, r), TCon("List", [ elemTy ]) ->
-        let typedExprs = exprs |> List.map (inferAndMaybeInject elemTy env)
-        TCon("List", [ elemTy ]),
-        { Type = TCon("List", [ elemTy ]); Range = r; Node = TListMake typedExprs }
+        inferCheckedLiteral env "List" "list" TListMake elemTy exprs r
     | EVec(exprs, r), TCon("Vec", [ elemTy ]) ->
-        let typedExprs = exprs |> List.map (inferAndMaybeInject elemTy env)
-        TCon("Vec", [ elemTy ]),
-        { Type = TCon("Vec", [ elemTy ]); Range = r; Node = TVecMake typedExprs }
+        inferCheckedLiteral env "Vec" "vec" TVecMake elemTy exprs r
     | EArray(exprs, r), TCon("Array", [ elemTy ]) ->
-        let typedExprs = exprs |> List.map (inferAndMaybeInject elemTy env)
-        TCon("Array", [ elemTy ]),
-        { Type = TCon("Array", [ elemTy ]); Range = r; Node = TArrayMake typedExprs }
+        inferCheckedLiteral env "Array" "array" TArrayMake elemTy exprs r
 
     // A lambda whose parameters the expectation already names.
     | EFun(args, body, colour, r), TFun(paramTys, _, _) when List.length paramTys = List.length args ->

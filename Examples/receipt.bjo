@@ -15,7 +15,6 @@
 ;; Everything a receipt needs is a width problem: the paper is forty columns
 ;; and not one more, the money has to line up on the right however long the
 ;; description is, and the description has to give way when it does not fit.
-(import (std prelude))
 (import (std fmt))
 
 ;; The paper, and the column the money is right-aligned in. Everything else is
@@ -71,8 +70,7 @@
 ;; trim.
 (: spread (-> (Vec Block) (Vec Block) Block))
 (defun (spread left right)
-  (captured (fun (s)
-              (each [(fitted/right (- paper (width-of s)) left) (BStr s) nl]))
+  (captured #(each [(fitted/right (- paper (width-of &)) left) (BStr &) nl])
             right))
 
 ;; A labelled amount. The money is padded to a fixed column, so every amount
@@ -142,26 +140,26 @@
 
 (: receipt (-> (List Line) (Vec Block)))
 (defun (receipt ls)
-  (let* ((total (list-foldl (fun (acc l) (+ acc (amount-of l))) 0.0 ls))
-         (net (/ total 1.12))
-         (vat (- total net)))
-    ;; One `with` over the whole receipt: a name too long for its column is cut
-    ;; and says so, wherever on the paper it appears.
-    [(with-fmt current-ellipsis "..."
-               [(heading ["BJOLI'S GROCERY"])
-                nl
-                masthead
-                (rule #\=)
-                (joined item ls [])
-                (rule #\-)
-                (labelled ["Net"] net)
-                (labelled ["VAT 12%"] vat)
-                (rule #\=)
-                (total-line total)
-                nl
-                (vat-summary net vat)
-                nl
-                footer])]))
+  (def* (total (fold #(+ &2 (amount-of &1)) ls))
+        (net (/ total 1.12))
+        (vat (- total net)))
+  ;; One `with` over the whole receipt: a name too long for its column is cut
+  ;; and says so, wherever on the paper it appears.
+  [(with-fmt current-ellipsis "..."
+             [(heading ["BJOLI'S GROCERY"])
+              nl
+              masthead
+              (rule #\=)
+              (joined item ls [])
+              (rule #\-)
+              (labelled ["Net"] net)
+              (labelled ["VAT 12%"] vat)
+              (rule #\=)
+              (total-line total)
+              nl
+              (vat-summary net vat)
+              nl
+              footer])])
 
 (defun (main args)
   (parameterize ((current-decimal-sep #\,))

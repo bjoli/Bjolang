@@ -41,11 +41,20 @@ let private typeNameMap =
         // Lowercase, like the other primitives. `Char` is the canonical name
         // the type carries internally, but a signature spells it `char`.
         "char", TypeConstants.charType
+        // The non-generic task is `Task`, and the long spelling is the same
+        // type rather than a second one — a signature that writes it out must
+        // still match what a .NET method returning a bare `Task` comes back as.
+        // See `DotNetInterop.clrToNullary`.
+        "System.Threading.Tasks.Task", TCon("Task", [])
     ]
 
+/// A .NET type written in an annotation is a type *named in source*, so it is
+/// subject to the same rule an `import/class` is: the package writing it has to
+/// have declared the shared framework it comes from. Only a dotted name can be
+/// one — everything else is a Bjolang type, an alias, or a primitive.
 let rec resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType =
     match ptype with
-    | TName(name, _) ->
+    | TName(name, nameRange) ->
         if name.StartsWith("'") then
             TVar name
         else
@@ -59,7 +68,9 @@ let rec resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType 
             | None ->
                 match Map.tryFind name typeNameMap with
                 | Some t -> t
-                | None -> TCon(name, [])
+                | None ->
+                    DotNetInterop.checkNameableAnnotation nameRange name 0
+                    TCon(name, [])
     | TApp("->", args, _) ->
         let resolvedArgs = args |> List.map (resolveTypeAnnotation registry)
         tfun (List.take (resolvedArgs.Length - 1) resolvedArgs) (List.last resolvedArgs)
@@ -182,9 +193,10 @@ let rec resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType 
         failwithf
             $"Kind Error at %s{Lexer.formatPos r}: the type variable %%%s{name.TrimStart('\'')} is applied to arguments here. Bjolang has no higher-kinded type variables: only the constructor variable of an inline trait may be written applied, and only inside that trait's own signatures. A function cannot be generic over a type constructor."
 
-    | TApp(name, args, _) ->
+    | TApp(name, args, appRange) ->
         let name = originalName registry name
         let resolvedArgs = args |> List.map (resolveTypeAnnotation registry)
+        DotNetInterop.checkNameableAnnotation appRange name resolvedArgs.Length
         match Map.tryFind name registry.Aliases with
         | Some (typeParams, t) ->
             if typeParams.Length <> resolvedArgs.Length then

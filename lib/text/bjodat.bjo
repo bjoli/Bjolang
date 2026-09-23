@@ -177,9 +177,8 @@
 (impl (->bjodat (Option %a))
   (where (->bjodat %a))
   (defun (->bjodat o)
-    (match o
-      ((Some x) (->bjodat x))
-      (None (BjoList Nil)))))
+    (def (Some x) o (BjoList Nil))
+    (->bjodat x)))
 
 (impl (bjodat-> (Option %a))
   (where (bjodat-> %a))
@@ -205,7 +204,7 @@
     (match v
       ((BjoVec items)
        ;; vec-fold is already very very fast. no need to rewrite it as a loop
-       (vec-fold (fun (acc el)
+       (vec-fold (fun (el acc)
                    (match acc
                      ((Err e) (Err e))
                      ((Ok b)
@@ -226,21 +225,14 @@
 (impl (bjodat-> (List %a))
   (where (bjodat-> %a))
   (defun (bjodat-> v)
-    (match v
-      ((BjoList items)
-       ;; this should be a loop.
-       (match (list-foldl (fun (acc el)
-                            (match acc
-                              ((Err e) (Err e))
-                              ((Ok b)
-                               (match (bjodat-> el)
-                                 ((Err e) (Err e))
-                                 ((Ok x) (Ok (Cons x b)))))))
-                          (Ok Nil)
-                          items)
-         ((Err e) (Err e))
-         ((Ok b) (Ok (list-reverse b)))))
-      (_ (Err "expected a list")))))
+    (def (BjoList items) v (Err "expected a list"))
+    (def (Ok b)(list-foldl (fun (el acc)
+                             (def* ((Ok b) acc :propagate)
+                                   ((Ok x) (bjodat-> el) :propagate))
+                             (Ok (Cons x b)))
+                           (Ok Nil)
+                           items) :propagate)
+    (Ok (list-reverse b))))
 
 ;; ---------------------------------------------------------------------------
 ;; What generated field code calls
@@ -369,13 +361,11 @@
 (: bjodat-clause-ref (-> (List Bjodat) string (Option (List Bjodat))))
 (defun (bjodat-clause-ref cs name)
   (let go ((rest cs))
-    (match rest
-      (Nil None)
-      ((Cons c more)
-       (match c
-         ((BjoList (Cons (BjoSym h) vs))
-          (if (= (symbol->string h) name) (Some vs) (go more)))
-         (_ (go more)))))))
+    (def* ((Cons c more) rest None)
+          ((BjoList (Cons (BjoSym h) vs)) c (go more)))
+    (if (= (symbol->string h) name)
+        (Some vs)
+        (go more))))
 
 ;; A clause holding exactly one value, which is every field but a `#:rest` one.
 (: bjodat-one-value (-> string string (List Bjodat) (Result string %a)) (where (bjodat-> %a)))
@@ -390,7 +380,7 @@
 ;; Every value of a clause, for a `#:rest` field.
 (: bjodat-all-values (-> string string (List Bjodat) (Result string (List %a))) (where (bjodat-> %a)))
 (defun (bjodat-all-values owner name vs)
-  (match (list-foldl (fun (acc el)
+  (match (list-foldl (fun (el acc)
                        (match acc
                          ((Err e) (Err e))
                          ((Ok b)
@@ -433,15 +423,11 @@
 
 (: bjodat-read-clause (-> string string Reader (Result string %a)) (where (bjodat-> %a)))
 (defun (bjodat-read-clause owner name rd)
-  (match (field-value rd)
-    ((Err e) (Err e))
-    ((Ok v)
-     (match (bjodat-> v)
-       ((Err e) (Err (str owner "." name ": " e)))
-       ((Ok x)
-        (match (end-clause! rd owner name)
-          ((Err e2) (Err e2))
-          ((Ok _) (Ok x))))))))
+  (def* ((Ok v) (field-value rd) :propagate)
+        ((Ok x) (bjodat-> v) :fail (((Err e) (Err (str owner "." name ": " e)))))
+        ((Ok y) (end-clause! rd owner name) :propagate))
+  (Ok x))
+
 
 (: bjodat-read-rest (-> string string Reader (Result string (List %a))) (where (bjodat-> %a)))
 (defun (bjodat-read-rest owner name rd)
@@ -543,12 +529,10 @@
   (let go ((ms markers))
     (cond
       ((list-empty? ms) None)
-      (else
-       (def m (list-head ms))
-       (cond
-         ((jb-marker=? m "#:optional") (Some (jb-sym "None")))
-         ((jb-marker=? m "#:default") (Some (list-head (list-tail ms))))
-         (else (go (list-tail ms))))))))
+      (:def m (list-head ms))
+      ((jb-marker=? m "#:optional") (Some (jb-sym "None")))
+      ((jb-marker=? m "#:default") (Some (list-head (list-tail ms))))
+      (else (go (list-tail ms))))))
 
 (: jb-optional? (-> (List Syntax) bool))
 (defun (jb-optional? markers)
@@ -603,14 +587,12 @@
   (let go ((ms markers))
     (cond
       ((list-empty? ms) Nil)
-      (else
-       (def m (list-head ms))
-       (cond
-         ((jb-marker=? m "#:default") (go (list-tail (list-tail ms))))
-         ((jb-marker=? m "#:key") (go (list-tail (list-tail ms))))
-         ((jb-marker=? m "#:optional") (go (list-tail ms)))
-         ((jb-marker=? m "#:rest") (go (list-tail ms)))
-         (else (Cons m (go (list-tail ms)))))))))
+      (:def m (list-head ms))
+      ((jb-marker=? m "#:default") (go (list-tail (list-tail ms))))
+      ((jb-marker=? m "#:key") (go (list-tail (list-tail ms))))
+      ((jb-marker=? m "#:optional") (go (list-tail ms)))
+      ((jb-marker=? m "#:rest") (go (list-tail ms)))
+      (else (Cons m (go (list-tail ms)))))))
 
 (: jb-shape string)
 (def jb-shape
@@ -835,10 +817,10 @@
 ;; The same, with slot `hit` replaced by the value just read.
 (: jb-slot-args/hit (-> (List Syntax) int int Syntax (List Syntax)))
 (defun (jb-slot-args/hit fields i hit v)
-  (if (list-empty? fields)
-      Nil
-      (Cons (if (= i hit) v (jb-slot i))
-            (jb-slot-args/hit (list-tail fields) (+ i 1) hit v))))
+  (match fields
+    (Nil Nil)
+    (_ (Cons (if (= i hit) v (jb-slot i))
+             (jb-slot-args/hit (list-tail fields) (+ i 1) hit v)))))
 
 (: jb-clauses (-> Syntax Syntax Syntax (List Syntax) (List Syntax) int (List Syntax)))
 (defun (jb-clauses owner paired go all fields i)

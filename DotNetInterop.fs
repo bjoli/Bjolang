@@ -110,6 +110,25 @@ let private searchLoaded (fullName: string) : Type option =
         with _ ->
             None)
 
+/// The shared frameworks this module is compiled against, asked at the moment
+/// of the lookup rather than cached: it is a property of the module being
+/// compiled, and one process compiles many.
+///
+/// The load is by *file*, not by name: an assembly name says nothing about
+/// which of the two `Microsoft.AspNetCore.Http` assemblies a type is in, and
+/// the compiler's own probing paths know nothing about a framework at all.
+let private searchFrameworks (fullName: string) : Type option =
+    let frameworks = Frameworks.compileAgainst ()
+
+    if Set.isEmpty frameworks then
+        None
+    else
+        match Frameworks.tryLocate frameworks fullName with
+        | None -> None
+        | Some(file, _) ->
+            registerAssemblyFile file
+            searchLoaded fullName
+
 let private resolveUncached (fullName: string) : Type option =
     match Type.GetType(fullName, false, false) with
     | null ->
@@ -123,20 +142,143 @@ let private resolveUncached (fullName: string) : Type option =
             for candidate in candidates do
                 tryLoad candidate |> ignore
 
-            searchLoaded fullName
+            match searchLoaded fullName with
+            | Some t -> Some t
+            | None -> searchFrameworks fullName
     | t -> Some t
+
+/// Names a module compiled against *these* frameworks has already failed to
+/// find.
+///
+/// The type cache is process-wide and a framework set is not, so a miss cached
+/// while compiling a module that declared nothing must not answer for one that
+/// declares ASP.NET — that would make a build depend on the order its modules
+/// were compiled in. The retry is therefore only as expensive as the framework
+/// index, and only the first time per module set.
+let private frameworkMisses = ConcurrentDictionary<string * string, bool>()
+
+let private frameworkKey (frameworks: Set<string>) = String.Join(";", Set.toList frameworks)
+
+/// Records that this module resolved a type out of a shared framework, which is
+/// what makes the framework part of what the module needs at run time.
+let private noteFramework (t: Type) : unit =
+    let location =
+        try
+            t.Assembly.Location
+        with _ ->
+            ""
+
+    match Frameworks.frameworkOfAssemblyFile location with
+    | Some framework -> Frameworks.noteUsed framework
+    | None -> ()
 
 /// The `System.Type` a fully qualified name denotes, or `None`.
 let tryResolveType (fullName: string) : Type option =
-    typeCache.GetOrAdd(fullName, resolveUncached)
+    let found =
+        match typeCache.TryGetValue fullName with
+        | true, Some t -> Some t
+        | true, None ->
+            let frameworks = Frameworks.compileAgainst ()
+
+            if Set.isEmpty frameworks then
+                None
+            else
+                let key = frameworkKey frameworks, fullName
+
+                if frameworkMisses.ContainsKey key then
+                    None
+                else
+                    match searchFrameworks fullName with
+                    | Some t ->
+                        typeCache[fullName] <- Some t
+                        Some t
+                    | None ->
+                        frameworkMisses[key] <- true
+                        None
+        | _ ->
+            let resolved = resolveUncached fullName
+            typeCache[fullName] <- resolved
+            resolved
+
+    match found with
+    | Some t -> noteFramework t
+    | None -> ()
+
+    found
 
 /// The `System.Type` a fully qualified name denotes, or a diagnostic.
 let resolveType (context: string) (fullName: string) : Type =
     match tryResolveType fullName with
     | Some t -> t
     | None ->
+        // A name that is nowhere may still be somewhere that was not declared,
+        // which is a different mistake and has a different fix.
+        let hint =
+            Frameworks.hintFor (Frameworks.declaredForCurrent ()) fullName
+            |> Option.defaultValue ""
+
         failwithf
-            $"Interop Error%s{context}: cannot find the .NET type '%s{fullName}'. Names must be fully qualified, as in System.IO.StreamWriter."
+            $"Interop Error%s{context}: cannot find the .NET type '%s{fullName}'. Names must be fully qualified, as in System.IO.StreamWriter.%s{hint}"
+
+/// The check that makes a declaration mean something: a type *named in source*
+/// has to come from a framework the naming package declared.
+///
+/// Called only where a CLR type is written down — `import/class`,
+/// `import/extern`, an annotation, a `cast`, a `(:is T x)` — and never for a
+/// type that merely arrives through another module's API. Holding a value of a
+/// framework type is fine and is what makes a wrapper library usable; writing
+/// its name is the thing that needs declaring.
+///
+/// It is keyed on the *range's* file rather than on the module being compiled,
+/// which is what makes the re-read declarations of an imported module answer to
+/// their own package: they were written there, under its manifest.
+let checkNameable (r: Lexer.Range) (fullName: string) (t: Type) : unit =
+    let location =
+        try
+            t.Assembly.Location
+        with _ ->
+            ""
+
+    match Frameworks.frameworkOfAssemblyFile location with
+    | None -> ()
+    | Some framework ->
+        if String.IsNullOrEmpty r.File then
+            ()
+        else
+            let declared = Frameworks.declaredFor r.File
+
+            if not (Set.contains framework declared) then
+                // The *package*, not the module: a framework is declared in a
+                // manifest, and a manifest belongs to a package.
+                let owner =
+                    match Paths.identityOf r.File with
+                    | Some identity -> Paths.showPackageName identity.Root.Name
+                    | None -> System.IO.Path.GetFileName r.File
+
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos r}: %s{fullName} is in the shared framework\n  %s{framework}, which package %s{owner} does not declare.\n  Add (frameworks \"%s{framework}\") to its manifest."
+
+/// `resolveType`, with the naming check. Every site that reads a type name out
+/// of source uses this; the bare one is for the compiler's own lookups.
+let resolveNamedType (r: Lexer.Range) (fullName: string) : Type =
+    let t = resolveType $" at %s{Lexer.formatPos r}" fullName
+    checkNameable r fullName t
+    t
+
+/// The same check for a name written in a type annotation, where the type may
+/// not resolve to anything .NET at all — a record this module declared, a name
+/// that is simply wrong — and where that is not this check's business.
+///
+/// `arity` is how many arguments the annotation applied it to, which is how a
+/// generic is spelled in metadata: `(System.IObserver %a)` is
+/// `System.IObserver``1`.
+let checkNameableAnnotation (r: Lexer.Range) (name: string) (arity: int) : unit =
+    if name.Contains "." && not (String.IsNullOrEmpty r.File) then
+        let clrName = if arity = 0 then name else $"%s{name}`%d{arity}"
+
+        match tryResolveType clrName with
+        | Some t -> checkNameable r name t
+        | None -> ()
 
 // ---------------------------------------------------------------------------
 // CLR interface constraints
@@ -235,7 +377,11 @@ let private nullaryCorrespondence =
           "Symbol", "BjolangRuntime.Symbol"
           "CancelReason", "BjolangRuntime.CancelReason"
           "VecCursor", "BjolangRuntime.VecCursor"
-          "SeqCursor", "BjolangRuntime.SeqCursor" ]
+          "SeqCursor", "BjolangRuntime.SeqCursor"
+          // The non-generic task, which is what `(cast Task t)` names. C# tells
+          // `Task` from `Task<T>` by arity and so does Bjolang, so the two are
+          // one name here as they are there.
+          "Task", "System.Threading.Tasks.Task" ]
 
 /// The same correspondence read backwards, for the one entry where it is
 /// unambiguous.
@@ -260,7 +406,13 @@ let private nullaryCorrespondence =
 let private clrToNullary =
     dict
         [ "Bjolang.Runtime.BjoChar", TypeConstants.CharName
-          "Bjolang.Runtime.StringCursor", "StringCursor" ]
+          "Bjolang.Runtime.StringCursor", "StringCursor"
+          // The third entry, and it earns its place the same way: a .NET method
+          // *returning* a bare `Task` — which is what every middleware delegate
+          // does — has to come back as the very type `(cast Task t)` names, or
+          // an upcast could not be written where one is required. The long
+          // spelling resolves to this same type; see `Annotations.typeNameMap`.
+          "System.Threading.Tasks.Task", "Task" ]
 
 /// A member of an interface, and whether it is reached through the type or
 /// through a value: `T.Abs(x)` against `x.CompareTo(y)`.
@@ -353,7 +505,20 @@ let private genericTypeCorrespondence =
       "BjolangRuntime+Result`2", "Result"
       "Bjoml.Promise`1", "Promise"
       "Bjoml.IEvent`1", "Event"
-      "Bjoml.Channel`1", "Chan" ]
+      "Bjoml.Channel`1", "Chan"
+      // The inbox: the queue .NET code posts into, and the request half of one
+      // whose items are calls. Here for the same reason the three above are —
+      // a signature in `(std inbox)` reads `(Inbox (Call %q %r))` rather than
+      // `(Bjoml.Inbox (Bjoml.Call %q %r))`.
+      "Bjoml.Inbox`1", "Inbox"
+      "Bjoml.Call`2", "Call"
+      // A task is a value here, not only something to await: `inbox-call` hands
+      // one back for .NET to wait on. It is in the table rather than left to
+      // its .NET name so that the generic and the bare form are ONE name — the
+      // upcast `(cast Task t)` has to name the same type the reflected
+      // `Func<HttpContext, Func<Task>, Task>` return does, or the lambda a
+      // middleware takes could not be written. See `nullaryCorrespondence`.
+      "System.Threading.Tasks.Task`1", "Task" ]
 
 let private bjolangOfClrGeneric =
     genericTypeCorrespondence |> List.map (fun (clr, bjo) -> clr, bjo) |> dict

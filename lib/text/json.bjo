@@ -229,28 +229,22 @@
   (def incomplete "a high surrogate has to be followed by \\u and its low surrogate")
   (cond
    ((or (at-end? rd) (not (char=? (peek rd) #\\))) (Err (at rd incomplete)))
-   (else
-    (step! rd)
-    (cond
-     ((or (at-end? rd) (not (char=? (peek rd) #\u))) (Err (at rd incomplete)))
-     (else
-      (step! rd)
-      (match (read-hex4 rd)
-        ((Err e) (Err e))
-        ((Ok lo)
-         (if (low-surrogate? lo)
-             (Ok (list->string (list (integer->char (scalar-of hi lo)))))
-             (Err (at rd incomplete))))))))))
+   (:do (step! rd))
+   ((or (at-end? rd) (not (char=? (peek rd) #\u))) (Err (at rd incomplete)))
+   (:do (step! rd))
+   (:def (Ok lo) (read-hex4 rd)
+     :propagate)
+   ((low-surrogate? lo) (Ok (list->string (list (integer->char (scalar-of hi lo))))))
+   (else (Err (at rd incomplete)))))
 
 (: read-unicode (-> Reader (Result string string)))
 (defun (read-unicode rd)
-  (match (read-hex4 rd)
-    ((Err e) (Err e))
-    ((Ok n)
-     (cond
-       ((low-surrogate? n) (Err (at rd "a low surrogate with no high surrogate before it")))
-       ((high-surrogate? n) (read-low-surrogate rd n))
-       (else (Ok (list->string (list (integer->char n)))))))))
+  (def (Ok n) (read-hex4 rd)
+    :propagate)
+  (cond
+    ((low-surrogate? n) (Err (at rd "a low surrogate with no high surrogate before it")))
+    ((high-surrogate? n) (read-low-surrogate rd n))
+    (else (Ok (list->string (list (integer->char n)))))))
 
 (: read-escape (-> Reader (Result string string)))
 (defun (read-escape rd)
@@ -281,11 +275,10 @@
      ((= c 34) (step! rd) (Ok (stringbuilder->string sb)))
      ((= c 92)
       (step! rd)
-      (match (read-escape rd)
-        ((Err e) (Err e))
-        ((Ok piece)
-         (stringbuilder-add-string! sb piece)
-         (go))))
+      (def (Ok piece) (read-escape rd)
+        :propagate)
+      (stringbuilder-add-string! sb piece)
+      (go))
      ((< c 32)
       (Err (at rd "a control character in a string has to be written as an escape")))
      ;; Both units, as they came. A string is UTF-16 and this is already it;
@@ -383,16 +376,15 @@
 (: read-number (-> Reader (Result string Json)))
 (defun (read-number rd)
   (def sb (buffer rd))
-  (match (scan-number rd sb)
-    ((Err e) (Err e))
-    ((Ok fractional?)
-     (if fractional?
-         (Ok (JsonFloat (clr-to-double sb)))
-         ;; Wider than a long is still a number, and a double is what every
-         ;; other reader answers with.
-         (match (try (clr-to-long sb) #:catch (System.OverflowException))
-           ((Ok n) (Ok (JsonInt n)))
-           ((Err _) (Ok (JsonFloat (clr-to-double sb)))))))))
+  (def (Ok fractional?) (scan-number rd sb)
+    :propagate)
+  (if fractional?
+      (Ok (JsonFloat (clr-to-double sb)))
+      ;; Wider than a long is still a number, and a double is what every
+      ;; other reader answers with.
+      (match (try (clr-to-long sb) #:catch (System.OverflowException))
+        ((Ok n) (Ok (JsonInt n)))
+        ((Err _) (Ok (JsonFloat (clr-to-double sb)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Values
@@ -424,72 +416,63 @@
 (defun (read-array rd depth)
   (cond
    ((> depth json-max-depth) (Err (too-deep rd "array")))
-   (else
+   (:do
     (step! rd)
-    (skip-space! rd)
-    (def mark (record-ref rd top))
-    (cond
-     ((at-end? rd) (Err (at rd "the document ended inside an array")))
-     ((char=? (peek rd) #\]) (step! rd) (Ok (JsonArr (harvest! rd mark))))
-     (else
-      (let go ()
-        (match (read-value rd (+ depth 1))
-          ((Err e) (Err e))
-          ((Ok v)
-           (push! rd v)
-           (skip-space! rd)
-           (cond
-            ((at-end? rd) (Err (at rd "the document ended inside an array")))
-            ((char=? (peek rd) #\,) (step! rd) (go))
-            ((char=? (peek rd) #\]) (step! rd) (Ok (JsonArr (harvest! rd mark))))
-            (else
-             (Err (at rd (str "an array wants ',' or ']' here, and this is "
-                              (found rd))))))))))))))
+    (skip-space! rd))
+   (:def mark (record-ref rd top))
+   ((at-end? rd) (Err (at rd "the document ended inside an array")))
+   ((char=? (peek rd) #\]) (step! rd) (Ok (JsonArr (harvest! rd mark))))
+   (else
+    (let go ()
+      (def (Ok v) (read-value rd (+ depth 1))
+        :propagate)
+      (push! rd v)
+      (skip-space! rd)
+      (cond
+        ((at-end? rd) (Err (at rd "the document ended inside an array")))
+        ((char=? (peek rd) #\,) (step! rd) (go))
+        ((char=? (peek rd) #\]) (step! rd) (Ok (JsonArr (harvest! rd mark))))
+        (else
+         (Err (at rd (str "an array wants ',' or ']' here, and this is "
+                          (found rd))))))))))
 
 ;; reads a map. On duplicate keys, the first is overwritten.
 (: read-object (-> Reader int (Result string Json)))
 (defun (read-object rd depth)
   (cond
    ((> depth json-max-depth) (Err (too-deep rd "object")))
-   (else 
+   (:do 
     (step! rd)
-    (skip-space! rd)
-    (def b (transientmap-empty))
-    (cond
-     ((at-end? rd) (Err (at rd "the document ended inside an object")))
-     ((char=? (peek rd) #\}) (step! rd) (Ok (JsonObj (transientmap->map b))))
-     (else
-      (let go ()
-        (skip-space! rd)
-        (cond
-         ((at-end? rd) (Err (at rd "the document ended inside an object")))
-         ((not (char=? (peek rd) #\"))
-          (Err (at rd (str "an object's key has to be a string, and this is " (found rd)))))
-         (else
-          (match (read-text rd)
-            ((Err e) (Err e))
-            ((Ok key)
-             (skip-space! rd)
-             (cond
-              ((or (at-end? rd) (not (char=? (peek rd) #\:)))
-                 (Err (at rd (str "an object wants ':' after a key, and this is "
-                                  (found rd)))))
-              (else 
-               (step! rd)
-               (match (read-value rd (+ depth 1))
-                 ((Err e) (Err e))
-                 ((Ok v)
-                  (transientmap-set! b key v)
-                  (skip-space! rd)
-                  (cond
-                   ((at-end? rd) (Err (at rd "the document ended inside an object")))
-                   ((char=? (peek rd) #\,) (step! rd) (go))
-                   ((char=? (peek rd) #\})
-                    (step! rd)
-                    (Ok (JsonObj (transientmap->map b))))
-                   (else
-                    (Err (at rd (str "an object wants ',' or '}' here, and this is "
-                                     (found rd))))))))))))))))))))
+    (skip-space! rd))
+   (:def b (transientmap-empty))
+   ((at-end? rd) (Err (at rd "the document ended inside an object")))
+   ((char=? (peek rd) #\}) (step! rd) (Ok (JsonObj (transientmap->map b))))
+   (else
+    (let go ()
+      (skip-space! rd)
+      (cond
+        ((at-end? rd) (Err (at rd "the document ended inside an object")))
+        ((not (char=? (peek rd) #\"))
+         (Err (at rd (str "an object's key has to be a string, and this is " (found rd)))))
+        (:def (Ok key) (read-text rd)
+              :propagate)
+        (:do (skip-space! rd))
+        ((or (at-end? rd) (not (char=? (peek rd) #\:)))
+         (Err (at rd (str "an object wants ':' after a key, and this is "
+                          (found rd)))))
+        (:do (step! rd))
+        (:def (Ok v) (read-value rd (+ depth 1))
+              :propagate)
+        (:do (transientmap-set! b key v)
+             (skip-space! rd))
+        ((at-end? rd) (Err (at rd "the document ended inside an object")))
+        ((char=? (peek rd) #\,) (step! rd) (go))
+        ((char=? (peek rd) #\})
+         (step! rd)
+         (Ok (JsonObj (transientmap->map b))))
+        (else
+         (Err (at rd (str "an object wants ',' or '}' here, and this is "
+                          (found rd))))))))))
 
 (: read-value (-> Reader int (Result string Json)))
 (defun (read-value rd depth)
@@ -519,13 +502,12 @@
   (when (= (held-code rd) 65279)
     (step! rd)
     (record-set! rd (col 1)))
-  (match (read-value rd 1)
-    ((Err e) (Err e))
-    ((Ok v)
-     (skip-space! rd)
-     (if (at-end? rd)
-         (Ok v)
-         (Err (at rd (str "the value ended here, and then there is " (found rd))))))))
+  (def (Ok v) (read-value rd 1)
+    :propagate)
+  (skip-space! rd)
+  (if (at-end? rd)
+      (Ok v)
+      (Err (at rd (str "the value ended here, and then there is " (found rd))))))
 
 (: parse-json (-> string (Result string Json)))
 (defun (parse-json text)

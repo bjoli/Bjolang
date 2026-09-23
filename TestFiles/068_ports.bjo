@@ -206,11 +206,11 @@
 
   ;; Order is preserved, and the newline is not part of a line.
   (expect "port->list order"
-          (list-foldl (fun (acc l) (string-append acc l)) ""
+          (list-foldl (fun (l acc) (string-append acc l)) ""
                       (port->list read-line (open-input-string "x\ny\nz")))
           "xyz")
   (expect "port->vec order"
-          (vec-fold (fun (acc l) (string-append acc l)) ""
+          (vec-fold (fun (l acc) (string-append acc l)) ""
                     (port->vec read-line (open-input-string "x\ny\nz")))
           "xyz")
 
@@ -231,7 +231,7 @@
 
   ;; --- Streaming ----------------------------------------------------------
   (expect "port->seq"
-          (seq-fold (fun (acc l) (string-append acc l)) ""
+          (seq-fold (fun (l acc) (string-append acc l)) ""
                     (port->seq read-line (open-input-string "x\ny\nz")))
           "xyz")
 
@@ -243,13 +243,13 @@
   ;; The port is shared, so what is left in it afterwards is the evidence.
   (def p10 (open-input-string "1\n2\n3\n4"))
   (expect "seq-take pulls only what it needs"
-          (seq-fold (fun (acc l) (string-append acc l)) "" (seq-take (port->seq read-line p10) 2))
+          (seq-fold (fun (l acc) (string-append acc l)) "" (seq-take (port->seq read-line p10) 2))
           "12")
   (expect "and the rest is still in the port" (read-line p10) "3")
 
   ;; The sequence composes with the rest of the seq library.
   (expect "port->seq through seq-map"
-          (seq-fold (fun (acc l) (string-append acc l)) ""
+          (seq-fold (fun (l acc) (string-append acc l)) ""
                     (seq-map (fun (l) (string-append l "!"))
                              (port->seq read-line (open-input-string "a\nb"))))
           "a!b!")
@@ -261,7 +261,7 @@
   ;; thrown on the first pull.
   (expect "file->seq"
           (match (file->seq read-line path)
-            ((Ok lines) (seq-fold (fun (acc l) (string-append acc (string-append l "|"))) "" lines))
+            ((Ok lines) (seq-fold (fun (l acc) (string-append acc (string-append l "|"))) "" lines))
             ((Err e) "FAILURE"))
           "first|second|third|")
 
@@ -291,7 +291,7 @@
                 ;; Walked for its effect — the count is beside the point, which
                 ;; is that the enumerator was disposed part-way through.
                 (ignore (seq-length (seq-take lines 2)))
-                (seq-fold (fun (acc l) (string-append acc l)) "" lines)))
+                (seq-fold (fun (l acc) (string-append acc l)) "" lines)))
             ((Err e) "FAILURE"))
           "firstsecondthird")
 
@@ -312,7 +312,7 @@
   ;; four-line file never reads the rest.
   (expect "file->seq is lazy in the pulling"
           (match (file->seq read-line path)
-            ((Ok lines) (seq-fold (fun (acc l) (string-append acc l)) "" (seq-take lines 2)))
+            ((Ok lines) (seq-fold (fun (l acc) (string-append acc l)) "" (seq-take lines 2)))
             ((Err e) "FAILURE"))
           "firstsecond")
 
@@ -371,7 +371,7 @@
   ;; `std/ports` that takes a reader takes it, and a port becomes a `(Seq char)`
   ;; with nothing new written.
   (expect "port->seq over read-char"
-          (seq-fold (fun (acc c) (string-append acc (char->string c))) ""
+          (seq-fold (fun (c acc) (string-append acc (char->string c))) ""
                     (port->seq read-char (open-input-string "hey")))
           "hey")
 

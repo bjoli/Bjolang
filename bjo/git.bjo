@@ -1,0 +1,277 @@
+;; bjo/git.bjo — the git a project is fetched with.
+;;
+;; One bare clone per repository URL, under `.bjo/git/`. Bare, because nothing
+;; a resolve asks for needs a working tree: the tags, a manifest at a tag and a
+;; tag's commit are all read out of the object database. A version is only ever
+;; checked out when it has been chosen, and then into `.bjo/pkg/` rather than
+;; into the clone.
+;;
+;; **The network is touched as little as possible.** A clone is made once and
+;; fetched only when this run needs something it has not got: a lower bound
+;; with no tag that satisfies it, or a commit the lock names and the clone does
+;; not hold. A project whose dependencies are all here builds with the network
+;; unplugged.
+;;
+;; Every command is run through `(std run)` rather than through `bjo`'s own
+;; `exec`, because the output is read rather than shown. That redirects stdin,
+;; which is why `bjo` sets `GIT_TERMINAL_PROMPT=0` before any of this runs: a
+;; repository asking for a password would otherwise read from a pipe nobody
+;; writes to and wait there for ever.
+
+(export
+  Tool tool-for git-on-path? tool-said
+  clone-directory ensure-clone fetch-tags
+  version-tags version->tag tag-commit commit-present? manifest-at
+  package-directory materialise)
+
+(import (std prelude))
+(import (std run))
+(import (text bjodat))
+(import "manifest.bjo")
+(import "project.bjo")
+
+(import/extern
+  (error-message (: System.Exception.Message (-> Exception string) #:get))
+  ;; `git archive --format=zip` and this are the whole of a checkout: git
+  ;; writes the tree, the runtime unpacks it. No third program — `tar` is not
+  ;; everywhere — and no working tree, index or HEAD added to the bare clone.
+  (zip-extract (: System.IO.Compression.ZipFile.ExtractToDirectory (-> string string void)
+                  #:exceptions (System.IO.IOException
+                                System.UnauthorizedAccessException
+                                System.NotSupportedException)))
+  ;; The last step of a checkout, and the reason there is one: a rename is
+  ;; atomic enough that a directory which exists is a directory that is whole.
+  (directory-move (: System.IO.Directory.Move (-> string string void)
+                     #:exceptions (System.IO.IOException
+                                   System.UnauthorizedAccessException))))
+
+;; Where git's standard error goes. One scratch file, overwritten per command:
+;; it is read only to quote git in a message about a command that failed.
+(type (: Tool (Record (: errors string))))
+
+(: tool-for #:sync (-> string Tool))
+(defun (tool-for tmp)
+  (directory-create tmp)
+  (Tool (errors (path-combine tmp "git-stderr.txt"))))
+
+(: tool-said (-> Tool string))
+(defun (tool-said g)
+  (if (file-exists? (record-ref g errors))
+      (string-trim (file-read-text (record-ref g errors)))
+      ""))
+
+;; Is there a git to run at all? Asked before the first command, so that a
+;; machine without one is told what is missing rather than what failed.
+(: git-on-path? (-> bool))
+(defun (git-on-path?) (some? (which "git")))
+
+;; Runs git, and answers its exit code and its output. A non-zero code is an
+;; ordinary answer here — "this tag has no manifest" is one — so it is not an
+;; `Err`. `Err` is git not starting at all.
+(: git-run #:sync (-> Tool (Vec string) (Result string (Tuple int string))))
+(defun (git-run g arguments)
+  (match (run/output '(errors-into-file ,(record-ref g errors) (git ,arguments)))
+    ((Err e) (Err (str "bjo: could not run git: " (error-message e))))
+    ((Ok answer) (Ok answer))))
+
+;; A command that has to work, with what git said when it did not.
+(: git-must #:sync (-> Tool (Vec string) string (Result string string)))
+(defun (git-must g arguments what)
+  (def (Ok (Tuple code out)) (git-run g arguments) :propagate)
+  (if (= code 0)
+      (Ok out)
+      (Err (str "bjo: " what " failed.\n  " (tool-said g)))))
+
+
+;; ---------------------------------------------------------------------------
+;; The bare clone
+;; ---------------------------------------------------------------------------
+
+;; One directory per URL, named after it. Every character that is not a letter
+;; or a digit becomes `_`, so the name is a name on every filesystem and two
+;; URLs that differ anywhere differ here.
+(: url->directory-name (-> string string))
+(defun (url->directory-name url)
+  (loop (:for c url)
+        (:acc out (stringing (if (or (char-alphabetic? c) (char-numeric? c)) c #\_)))
+        => out))
+
+(: clone-directory (-> string string string))
+(defun (clone-directory dot-bjo url)
+  (path-combine dot-bjo "git" (url->directory-name url)))
+
+;; The clone for a URL, made the first time it is wanted.
+;;
+;; A fresh clone brings every tag with it, so nothing fetches after one.
+(: ensure-clone #:sync (-> Tool string string (List Symbol) (Result string string)))
+(defun (ensure-clone g dot-bjo url name)
+  (def dir (clone-directory dot-bjo url))
+  (cond
+    ((directory-exists? dir) (Ok dir))
+    ((not (git-on-path?))
+     (Err (str "bjo: git is not on PATH; it is needed to fetch "
+               (name->string name) " from " url ".")))
+    (else
+     (directory-create (path-combine dot-bjo "git"))
+     (def (Ok cloned) (git-must g ["clone" "--bare" "--quiet" url dir]
+                                (str "cloning " url))
+       :propagate)
+     (Ok dir))))
+
+;; New tags, for when this run needs something the clone has not got.
+(: fetch-tags #:sync (-> Tool string (Result string Unit)))
+(defun (fetch-tags g dir)
+  (def (Ok fetched)
+    (git-must g ["--git-dir" dir "fetch" "--tags" "--force" "--quiet"]
+              (str "fetching tags into " dir))
+    :propagate)
+  (Ok unit))
+
+
+;; ---------------------------------------------------------------------------
+;; Versions, as tags
+;; ---------------------------------------------------------------------------
+
+(: version->tag (-> Version string))
+(defun (version->tag v) (str "v" (version->string v)))
+
+;; A tag as a version, if it is one.
+;;
+;; Exactly `vX.Y.Z`: the version is written back out and compared with what was
+;; read, so `v1.2` and `v1.2.3-rc1` are not versions and are passed over. A tag
+;; that is not a version is a name for something else — a branch point, a demo,
+;; a talk — and a resolver that guessed at them would install one.
+(: tag->version (-> string (Option Version)))
+(defun (tag->version tag)
+  (if (not (string-starts-with? tag "v"))
+      None
+      (let ((text (substring/cursors tag
+                                     (string-cursor-next tag (string-cursor-start tag))
+                                     (string-cursor-end tag))))
+        (match (parse-version text)
+          ((Err why) None)
+          ((Ok v) (if (= (version->string v) text) (Some v) None))))))
+
+;; Every version the clone holds, oldest first.
+(: version-tags #:sync (-> Tool string (Result string (List Version))))
+(defun (version-tags g dir)
+  (def (Ok out) (git-must g ["--git-dir" dir "tag" "--list"] (str "reading the tags of " dir))
+    :propagate)
+  (Ok (list-sort-versions
+       (loop (:for line (string-split out "\n"))
+             (:let v (tag->version (string-trim line)))
+             (:when-let (Some version) v)
+             (:acc found (listing version))
+             => found))))
+
+;; Insertion sort, oldest first. A repository has tens of tags, not thousands,
+;; and `Version` is a record with no ordering of its own.
+(: list-sort-versions (-> (List Version) (List Version)))
+(defun (list-sort-versions versions)
+  (match versions
+    (Nil Nil)
+    ((Cons v rest) (insert-version v (list-sort-versions rest)))))
+
+(: insert-version (-> Version (List Version) (List Version)))
+(defun (insert-version v sorted)
+  (match sorted
+    (Nil (Cons v Nil))
+    ((Cons head rest)
+     (if (<= (version-compare v head) 0)
+         (Cons v sorted)
+         (Cons head (insert-version v rest))))))
+
+;; The commit a version's tag points at. `^{commit}` unwraps an annotated tag,
+;; whose own object is not the commit.
+(: tag-commit #:sync (-> Tool string Version (Result string string)))
+(defun (tag-commit g dir v)
+  (def (Ok out)
+    (git-must g ["--git-dir" dir "rev-parse" (str (version->tag v) "^{commit}")]
+              (str "reading the commit of " (version->tag v)))
+    :propagate)
+  (Ok (string-trim out)))
+
+;; Is a commit in this clone? Asked about a commit the lock names, which a
+;; clone made after it was written may not have.
+(: commit-present? #:sync (-> Tool string string bool))
+(defun (commit-present? g dir commit)
+  (match (git-run g ["--git-dir" dir "cat-file" "-e" (str commit "^{commit}")])
+    ((Err why) #f)
+    ((Ok (Tuple code out)) (= code 0))))
+
+;; A version's manifest, read straight out of the object database.
+;;
+;; Nothing is checked out for this: a resolve reads one file per version, and
+;; most of the versions it reads are not the ones it ends up choosing.
+(: manifest-at #:sync (-> Tool string Version (Result string string)))
+(defun (manifest-at g dir v)
+  (def (Ok (Tuple code out))
+    (git-run g ["--git-dir" dir "show" (str (version->tag v) ":" manifest-name)])
+    :propagate)
+  (if (= code 0)
+      (Ok out)
+      (Err (str "bjo: " (version->tag v) " in " dir " has no " manifest-name
+                ", so there is no package there.\n  " (tool-said g)))))
+
+
+;; ---------------------------------------------------------------------------
+;; Putting a version on disk
+;; ---------------------------------------------------------------------------
+
+;; `.bjo/pkg/bjorsec@1.2.3`, or `.bjo/pkg/my.app@1.2.3` for a name of several
+;; segments. One directory per version, so two projects' dependencies never
+;; share one and a version that is no longer wanted can be deleted by name.
+(: package-directory (-> string (List Symbol) Version string))
+(defun (package-directory dot-bjo name v)
+  (path-combine dot-bjo "pkg"
+                (str (string-join (list->vec (list-map symbol->string name)) ".")
+                     "@" (version->string v))))
+
+;; What a materialised directory says it holds.
+(: commit-marker (-> string string))
+(defun (commit-marker dir) (path-combine dir ".bjo-commit"))
+
+(: marked-commit (-> string string))
+(defun (marked-commit dir)
+  (if (file-exists? (commit-marker dir))
+      (string-trim (file-read-text (commit-marker dir)))
+      ""))
+
+;; Puts a commit's tree at `target`.
+;;
+;; A directory already there whose `.bjo-commit` matches is used as it stands;
+;; one that does not match is deleted and replaced, because a tag that moved
+;; must not leave the old tree under the new version's name. The new tree is
+;; unpacked beside it and renamed into place, so a build never reads half of a
+;; checkout.
+(: materialise #:sync (-> Tool string string string string (Result string Unit)))
+(defun (materialise g clone commit tmp target)
+  (with-return ret
+    (when (and (directory-exists? target) (= (marked-commit target) commit))
+      (ret (Ok unit)))
+
+    (directory-create tmp)
+    (def archive (path-combine tmp (str commit ".zip")))
+    (def unpacked (path-combine tmp (str "unpack-" commit)))
+
+    (when (directory-exists? unpacked) (directory-delete-tree unpacked))
+    (when (file-exists? archive) (file-delete archive))
+
+    (def (Ok archived)
+      (git-must g ["--git-dir" clone "archive" "--format=zip" "-o" archive commit]
+                (str "writing an archive of " commit))
+      :propagate)
+
+    (def (Ok unzipped) (zip-extract archive unpacked)
+      :fail (((Err e) (Err (str "bjo: could not unpack " archive ": " (error-message e))))))
+
+    (file-write-text (commit-marker unpacked) commit)
+    (file-delete archive)
+
+    (when (directory-exists? target) (directory-delete-tree target))
+    (directory-create (path-combine target ".."))
+
+    (def (Ok moved) (directory-move unpacked target)
+      :fail (((Err e) (Err (str "bjo: could not put " commit " at " target ": "
+                                (error-message e))))))
+    (Ok unit)))

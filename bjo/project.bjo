@@ -1,0 +1,564 @@
+;; bjo/project.bjo — a project on disk, and where it is.
+;;
+;; A project is a directory with a `manifest.bjodat` in it. It is found by
+;; walking upward from where the user stood, so that every command works
+;; anywhere inside the tree rather than only at its top — the same rule git
+;; uses for `.git`, and for the same reason.
+;;
+;; The layout is fixed:
+;;
+;;     manifest.bjodat   what the package is called, and what it needs
+;;     bjo.lock          the commit each git dependency resolved to
+;;     src/              the package's modules: src/lexer.bjo is (myapp lexer)
+;;     tests/
+;;     .bjo/             roots, clones, fetched packages. Never committed.
+;;
+;; `src/` is not a setting. A module's name is its path below the package
+;; directory, so a second layout would be a second answer to "which file is
+;; (myapp lexer)" — and the answer has to be the same for a package the author
+;; wrote and one that was fetched, which nothing in the fetched copy can
+;; configure after the fact.
+
+(export
+  ;; A project
+  Project project-dir project-package
+  manifest-name find-project-dir project-at read-package
+  project-src project-dot-bjo project-tmp project-roots-file project-lock-file
+  project-entry project-has-entry?
+
+  ;; Package names
+  reserved-name? parse-package-name name->string
+
+  ;; The roots file
+  Root root-name root-dir write-roots
+  project-frameworks-file write-frameworks
+
+  ;; Sources
+  sources-under
+
+  ;; Files, made once
+  write-new parent-directory
+
+  ;; Saying no
+  fail
+
+  ;; Finding a program
+  which
+
+  ;; The command
+  cmd-init)
+
+(import (std prelude))
+;; The traits the manifest's own instances are written against. A module that
+;; decodes a `Package` names them whether or not it says so, because the
+;; generated reader calls them.
+(import (text bjodat))
+(import "manifest.bjo")
+
+(import/extern
+  (clr-directory-name (: System.IO.Path.GetDirectoryName (-> string string)))
+  (clr-null-or-empty? (: System.String.IsNullOrEmpty (-> string bool)))
+  ;; Where this executable sits, for the `lib` search below. `bjo.bjo` reads
+  ;; the same thing for `BJO_ROOT`.
+  (clr-base-dir (: System.AppContext.BaseDirectory #:get)))
+
+
+;; ---------------------------------------------------------------------------
+;; Saying no
+;; ---------------------------------------------------------------------------
+
+;; Prints a message and answers what a failed command answers, so that a guard
+;; is `(ret (fail "..."))` — one expression, and the `when` it stands in has a
+;; value to give rather than a dropped one.
+(: fail (-> string int))
+(defun (fail message)
+  (println message)
+  1)
+
+
+;; ---------------------------------------------------------------------------
+;; Paths
+;; ---------------------------------------------------------------------------
+
+;; The directory above this one, or `None` at the root of the filesystem, where
+;; `GetDirectoryName` answers null rather than looping.
+(: parent-directory (-> string (Option string)))
+(defun (parent-directory dir)
+  (def up (clr-directory-name (path-absolute dir)))
+  (if (clr-null-or-empty? up) None (Some up)))
+
+;; A program on PATH, if there is one. Two ways to have no answer — no PATH at
+;; all, and nothing on it by that name — and both of them propagate.
+(: which (-> string (Option string)))
+(defun (which program)
+  (def* ((Some path) (get-environment-variable "PATH") :propagate)
+        ((Some dir) (find #(file-exists? (path-combine & program))
+                          (string-split path ":")) :propagate))
+  (Some (path-combine dir program)))
+
+(: manifest-name string)
+(def manifest-name "manifest.bjodat")
+
+;; The project a directory is in, if it is in one.
+;;
+;; Upward rather than downward: a project is the tree under the manifest, and a
+;; command run three directories down is still run inside it.
+(: find-project-dir (-> string (Option string)))
+(defun (find-project-dir start)
+  (let go ((dir (path-absolute start)))
+    (if (file-exists? (path-combine dir manifest-name))
+        (Some dir)
+        (match (parent-directory dir)
+          ((Some up) (go up))
+          (None None)))))
+
+
+;; ---------------------------------------------------------------------------
+;; The manifest
+;; ---------------------------------------------------------------------------
+
+;; A project: the directory, and what its manifest says.
+(type (: Project (Record (: dir string) (: package Package))))
+
+(: project-dir (-> Project string))
+(defun (project-dir p) (record-ref p dir))
+
+(: project-package (-> Project Package))
+(defun (project-package p) (record-ref p package))
+
+(: project-src (-> Project string))
+(defun (project-src p) (path-combine (project-dir p) "src"))
+
+(: project-dot-bjo (-> Project string))
+(defun (project-dot-bjo p) (path-combine (project-dir p) ".bjo"))
+
+(: project-tmp (-> Project string))
+(defun (project-tmp p) (path-combine (project-dot-bjo p) "tmp"))
+
+(: project-roots-file (-> Project string))
+(defun (project-roots-file p) (path-combine (project-dot-bjo p) "roots"))
+
+;; Which package declared which .NET shared framework. Beside the roots file,
+;; because it answers the same kind of question about the same set of packages.
+(: project-frameworks-file (-> Project string))
+(defun (project-frameworks-file p) (path-combine (project-dot-bjo p) "frameworks"))
+
+(: project-lock-file (-> Project string))
+(defun (project-lock-file p) (path-combine (project-dir p) "bjo.lock"))
+
+;; What the manifest says to build. Relative to the manifest, so that a project
+;; means the same thing wherever it is checked out.
+(: project-entry (-> Project string))
+(defun (project-entry p)
+  (path-combine (project-dir p) (record-ref (project-package p) entry)))
+
+;; A package with no entry file is a library. Read from the disk rather than
+;; from a flag in the manifest: `entry` has a default, and a library would
+;; otherwise have to say twice that it has no program.
+(: project-has-entry? (-> Project bool))
+(defun (project-has-entry? p) (file-exists? (project-entry p)))
+
+;; The manifest at `file`, read into the types in `manifest.bjo`.
+;;
+;; The file name is in every message: a resolve reads the manifests of
+;; dependencies too, and "expected a version" says nothing about which one.
+(: read-package (-> string (Result string Package)))
+(defun (read-package file)
+  (if (not (file-exists? file))
+      (Err #"bjo: no manifest at ${file}.")
+      (match (bjodat-parse-Package (file-read-text file))
+        ((Err why) (Err #"bjo: ${file}: ${why}"))
+        ((Ok package) (Ok package)))))
+
+;; The project a directory holds, manifest read and nothing else checked yet.
+(: project-at (-> string (Result string Project)))
+(defun (project-at dir)
+  (def (Ok package) (read-package (path-combine dir manifest-name)) :propagate)
+  (Ok (Project (dir (path-absolute dir)) (package package))))
+
+
+;; ---------------------------------------------------------------------------
+;; Package names
+;; ---------------------------------------------------------------------------
+
+;; `(myapp lexer)`, for a message.
+(: name->string (-> (List Symbol) string))
+(defun (name->string name) (module-name->string name))
+
+;; The installed `lib`, found the way the compiler finds it: an override first,
+;; then the tree the binary is in, then the working directory, and a candidate
+;; only counts if `std` is under it. The two have to agree, because a name this
+;; one misses is a name the compiler refuses to give a directory to.
+(: lib-candidates (-> (List string)))
+(defun (lib-candidates)
+  (def from-env
+    (list-append
+      (match (get-environment-variable "BJOLANG_LIB")
+        ((Some dir) (Cons (path-absolute dir) Nil))
+        (None Nil))
+      (match (get-environment-variable "BJOLANG_HOME")
+        ((Some dir) (Cons (path-absolute (path-combine dir "lib")) Nil))
+        (None Nil))))
+  (list-append from-env
+               (list-append (ancestor-libs clr-base-dir)
+                            (ancestor-libs (current-directory)))))
+
+;; `<dir>/lib` for `dir` and every directory above it, deepest first.
+(: ancestor-libs (-> string (List string)))
+(defun (ancestor-libs start)
+  (let go ((dir (path-absolute start)))
+    (Cons (path-combine dir "lib")
+          (match (parent-directory dir)
+            ((Some up) (go up))
+            (None Nil)))))
+
+(: lib-dir (-> (Option string)))
+(defun (lib-dir)
+  (find #(directory-exists? (path-combine & "std")) (lib-candidates)))
+
+;; A name whose first segment is a directory of `lib`.
+;;
+;; Refused rather than shadowed: the compiler gives the standard library its
+;; roots whether or not a roots file was written, and refuses a roots file that
+;; names one of them. A package called `(std)` would therefore build here and
+;; fail at the compiler, one step later than the manifest that asked for it.
+(: reserved-name? (-> (List Symbol) bool))
+(defun (reserved-name? name)
+  (match name
+    (Nil #f)
+    ((Cons first _)
+     (match (lib-dir)
+       (None #f)
+       ((Some lib)
+        (def head (symbol->string first))
+        (any? #(match (path-filename &)
+                 ((Some dir-name) (= dir-name head))
+                 (None #f))
+              (directory-subdirectories lib)))))))
+
+;; The characters a name segment may be written with.
+;;
+;; A package name is read as symbols by the manifest reader and written as a
+;; module path by an import, so a segment that needs quoting anywhere is a
+;; segment that is spelled differently in two places. `init` is the only place
+;; a name is made out of a string — a directory called `my.app` has no name
+;; here, and has to be given one.
+(: name-char? (-> char bool))
+(defun (name-char? c)
+  (or (and (char>=? c #\a) (char<=? c #\z))
+      (and (char>=? c #\A) (char<=? c #\Z))
+      (and (char>=? c #\0) (char<=? c #\9))
+      (char=? c #\-)
+      (char=? c #\_)))
+
+(: valid-segment? (-> string bool))
+(defun (valid-segment? s)
+  (and (not (= s ""))
+       (let ((first (string-code-ref s 0)))
+         (not (and (>= first 48) (<= first 57))))
+       (all? name-char? (string->list s))))
+
+;; The name a command line wrote: `myapp`, or `(my app)` for several segments.
+(: parse-package-name (-> string (Result string (List Symbol))))
+(defun (parse-package-name written)
+  (def trimmed (string-trim written))
+  (def inner (if (and (string-starts-with? trimmed "(") (string-ends-with? trimmed ")"))
+                 (string-trim (substring/cursors trimmed
+                                                 (string-cursor-next trimmed (string-cursor-start trimmed))
+                                                 (string-cursor-prev trimmed (string-cursor-end trimmed))))
+                 trimmed))
+  (def segments (loop (:for part (string-split inner " "))
+                      (:acc out (listing part) #:when (not (= part "")))
+                      => out))
+  (cond
+    ((empty? segments) (Err #"bjo init: '${written}' is not a package name."))
+    ((not (all? valid-segment? segments))
+     (Err (str #"bjo init: '${written}' is not a package name. "
+               "A name is one or more words of letters, digits, '-' and '_', "
+               "written (my app) when there are several.")))
+    (else (Ok (list-map string->symbol segments)))))
+
+
+;; ---------------------------------------------------------------------------
+;; The roots file
+;; ---------------------------------------------------------------------------
+
+;; One package, and the directory its modules are in.
+(type (: Root (Record (: name (List Symbol)) (: dir string))))
+
+(: root-name (-> Root (List Symbol)))
+(defun (root-name r) (record-ref r name))
+
+(: root-dir (-> Root string))
+(defun (root-dir r) (record-ref r dir))
+
+;; A directory as a Bjolang string literal.
+(: quoted (-> string string))
+(defun (quoted s)
+  (str "\"" (string-replace (string-replace s "\\" "\\\\") "\"" "\\\"") "\""))
+
+;; The roots file, sorted, so that a diff of two builds shows what changed
+;; rather than what was reordered. The line begins with the name, so sorting
+;; the lines sorts by name.
+(: roots-text (-> (List Root) string))
+(defun (roots-text roots)
+  (def lines (list-sort (list-map #(str "  (root " (name->string (root-name &))
+                                        " " (quoted (root-dir &)) ")")
+                                  roots)))
+  (str "(roots\n" (string-join (list->vec lines) "\n") ")\n"))
+
+;; Writes the roots file, and answers whether it had to.
+;;
+;; **Only when the contents change.** The compiler records the roots file as an
+;; input of every build made against it, so rewriting the same bytes with a new
+;; timestamp makes every artefact in the project stale.
+(: write-roots #:sync (-> string (List Root) bool))
+(defun (write-roots path roots)
+  (def text (roots-text roots))
+  (def current (if (file-exists? path) (file-read-text path) ""))
+  (cond
+    ((= current text) #f)
+    (else
+     (match (parent-directory path)
+       ((Some dir) (directory-create dir))
+       (None unit))
+     (file-write-text path text)
+     #t)))
+
+
+;; ---------------------------------------------------------------------------
+;; The frameworks file
+;; ---------------------------------------------------------------------------
+;;
+;; Which package declared which .NET shared framework, for the compiler's
+;; `--frameworks`. One line per pair, two TAB-separated fields: the package's
+;; own directory — the one its `manifest.bjodat` is in, not its `src` — and the
+;; framework's name.
+;;
+;; A package's directory rather than its module root, because that is what the
+;; compiler compares a source file against, and because a dependency fetched
+;; into `.bjo/pkg` sits *under* the root project: the innermost directory
+;; containing the file is the package the file belongs to, and it has to be the
+;; package rather than a directory inside it.
+;;
+;; The declarations are read from each root's own manifest rather than carried
+;; out of the resolver: a root's directory is `<package>/src`, its manifest is
+;; beside it, and reading a handful of small files is cheaper than a second
+;; answer to "what did this package say" that could disagree with the first.
+
+;; The package directory a root's modules live under.
+(: root-package-dir (-> Root (Option string)))
+(defun (root-package-dir r)
+  (parent-directory (root-dir r)))
+
+;; What one root's package declares, or nothing when it has no manifest to say
+;; it in — which is what a root without one means.
+(: root-frameworks (-> Root (List string)))
+(defun (root-frameworks r)
+  (match (root-package-dir r)
+    (None Nil)
+    ((Some dir)
+     (def manifest-file (path-combine dir manifest-name))
+     (if (not (file-exists? manifest-file))
+         Nil
+         (match (bjodat-parse-Package (file-read-text manifest-file))
+           ;; A manifest that does not read is not this function's to report:
+           ;; whatever is about to build against it says so, with the reason.
+           ((Err why) Nil)
+           ((Ok package) (record-ref package frameworks)))))))
+
+;; The file's text, sorted for the same reason the roots file is: a diff shows
+;; what changed rather than what was reordered.
+(: frameworks-text (-> (List Root) string))
+(defun (frameworks-text roots)
+  (def lines
+    (loop (:for r roots)
+          (:acc out (folding Nil
+                             (match (root-package-dir r)
+                               (None out)
+                               ((Some dir)
+                                (loop (:for name (root-frameworks r))
+                                      (:acc inner (folding out (Cons (str dir "\t" name) inner)))
+                                      => inner)))))
+          => out))
+  (if (empty? lines)
+      ""
+      (str (string-join (list->vec (list-sort lines)) "\n") "\n")))
+
+;; Writes the frameworks file, and answers whether the build has one at all.
+;;
+;; No package declaring anything means no file and no flag, so a project that
+;; uses no framework is compiled by exactly the command line it was before.
+;; Written only when the contents change, for the reason `write-roots` gives:
+;; the compiler records it as an input of every module built against it.
+(: write-frameworks #:sync (-> string (List Root) bool))
+(defun (write-frameworks path roots)
+  (def text (frameworks-text roots))
+  (def current (if (file-exists? path) (file-read-text path) ""))
+  (cond
+    ((= text "")
+     (when (file-exists? path) (file-delete path))
+     #f)
+    ((= current text) #t)
+    (else
+     (match (parent-directory path)
+       ((Some dir) (directory-create dir))
+       (None unit))
+     (file-write-text path text)
+     #t)))
+
+
+;; ---------------------------------------------------------------------------
+;; Sources
+;; ---------------------------------------------------------------------------
+
+;; Every `.bjo` under a directory, at any depth, sorted.
+;;
+;; A library has no entry to start the compiler from, so this is the list the
+;; batch is given. Sorted only so that a failure is reported in the same order
+;; twice; the compiler builds imports on demand and does not need the order.
+(: sources-under (-> string (List string)))
+(defun (sources-under dir)
+  (list-sort (collect-sources dir)))
+
+(: collect-sources (-> string (List string)))
+(defun (collect-sources dir)
+  (if (not (directory-exists? dir))
+      Nil
+      (let ((here (loop (:for file (directory-files dir))
+                        (:acc out (listing file) #:when (string-ends-with? file ".bjo"))
+                        => out)))
+        (list-append here
+                     (loop (:for sub (directory-subdirectories dir))
+                           (:acc out (folding Nil (list-append out (collect-sources sub))))
+                           => out)))))
+
+
+;; ---------------------------------------------------------------------------
+;; init
+;; ---------------------------------------------------------------------------
+
+;; Writes a file that was not there, and says so. A file that is there is left
+;; alone: `init` in a directory someone has already written in is a command
+;; that adds what is missing, not one that replaces what is not.
+(: write-new #:sync (-> string string bool))
+(defun (write-new path contents)
+  (cond
+    ((file-exists? path) #f)
+    (else
+     (match (parent-directory path)
+       ((Some dir) (directory-create dir))
+       (None unit))
+     (file-write-text path contents)
+     #t)))
+
+(: manifest-template (-> (List Symbol) string))
+(defun (manifest-template name)
+  (str "(package\n"
+       "  (name " (name->string name) ")\n"
+       "  (version \"0.1.0\")\n"
+       "\n"
+       "  ;; What this package needs. One (package ...) clause each:\n"
+       "  ;;\n"
+       "  ;; (depends\n"
+       "  ;;   (package (name (bjorsec))\n"
+       "  ;;            (version (version-at-least \"0.1\"))\n"
+       "  ;;            (source (git (url \"https://github.com/bjoli/bjorsec\")))))\n"
+       "  ;;\n"
+       "  ;; A package on disk, instead of one to fetch:\n"
+       "  ;;\n"
+       "  ;; (depends\n"
+       "  ;;   (package (name (bjorsec)) (source (path (dir \"../bjorsec\")))))\n"
+       "  )\n"))
+
+;; The name without its parentheses, for prose. `name->string` is how an
+;; import spells a name, which is not how a greeting does.
+(: plain-name (-> (List Symbol) string))
+(defun (plain-name name)
+  (string-join (list->vec (list-map symbol->string name)) " "))
+
+(: main-template (-> (List Symbol) string))
+(defun (main-template name)
+  (str ";; " (name->string name) " — the program.\n"
+       "\n"
+       "(import (std prelude))\n"
+       "\n"
+       "(defun (main)\n"
+       "  (println \"hello from " (plain-name name) "\")\n"
+       "  0)\n"))
+
+(: core-template (-> (List Symbol) string))
+(defun (core-template name)
+  (str ";; " (name->string name) " — imported as " (name->string (list-append name (Cons (string->symbol "core") Nil))) ".\n"
+       "\n"
+       "(import (std prelude))\n"
+       "(export greet)\n"
+       "\n"
+       "(: greet (-> string string))\n"
+       "(defun (greet who) (str \"hello, \" who))\n"))
+
+;; `.bjo` holds everything fetched and everything generated, and the rest is
+;; what the compiler writes beside a source: one artefact, its debug symbols,
+;; the two files the runtime needs to start an executable, and the build record.
+(: gitignore-template string)
+(def gitignore-template
+  (str ".bjo/\n"
+       "*.dll\n"
+       "*.exe\n"
+       "*.pdb\n"
+       "*.bjobuild\n"
+       "*.runtimeconfig.json\n"
+       "*.deps.json\n"))
+
+;; Makes a project in the current directory.
+;;
+;; The name defaults to the directory's, because that is what the user already
+;; chose when they made it. It is refused rather than mangled when it is not a
+;; name: `bjo init my-app` is one word to type, and a guess at what `my.app`
+;; was meant to be is a package name nobody wrote.
+(: cmd-init (-> (List string) bool int))
+(defun (cmd-init arguments lib?)
+  (with-return ret
+    (def here (path-absolute (current-directory)))
+
+    (when (file-exists? (path-combine here manifest-name))
+      (ret (fail #"bjo init: there is already a ${manifest-name} here.")))
+
+    ;; `--lib` is read here as well as among the leading flags: flag parsing
+    ;; stops at the first thing that is not one, so `bjo init mylib --lib`
+    ;; would otherwise be a name and a second argument.
+    (def* ((None) (find #(and (string-starts-with? & "-") (not (= & "--lib"))) arguments)
+            :fail (((Some flag) (fail #"bjo init: unknown flag '${flag}'."))))
+          (library? (or lib? (any? #(= & "--lib") arguments)))
+          (names (loop (:for a arguments)
+                       (:acc out (listing a) #:when (not (string-starts-with? a "-")))
+                       => out)))
+
+    (def written
+      (match names
+        (Nil (match (path-filename here)
+               ((Some dir-name) dir-name)
+               (None "")))
+        ((Cons only Nil) only)
+        (_ "")))
+
+    (when (= written "")
+      (ret (fail "bjo init: takes one name, or none to use the directory's.")))
+
+    (def (Ok name) (parse-package-name written)
+      :fail (((Err why) (fail why))))
+
+    (when (reserved-name? name)
+      (ret (fail (str #"bjo init: ${(name->string name)} is part of the standard library, "
+                      "so a package cannot be called that. Pick another name."))))
+
+    (ignore (write-new (path-combine here manifest-name) (manifest-template name)))
+    (ignore (write-new (path-combine here ".gitignore") gitignore-template))
+    (directory-create (path-combine here "tests"))
+
+    (if library?
+        (ignore (write-new (path-combine here "src" "core.bjo") (core-template name)))
+        (ignore (write-new (path-combine here "src" "main.bjo") (main-template name))))
+
+    (println #"Created ${(name->string name)} in ${here}")
+    0))

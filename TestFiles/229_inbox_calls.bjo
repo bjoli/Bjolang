@@ -1,0 +1,332 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; The request/reply half of the inbox: a call made from a thread that is not a
+;; fiber, the fiber's own environment while it answers, the observer, and the
+;; two ways a caller can go away.
+;;
+;; What a test here can and cannot see: a `Task<T>`'s *value* is not readable
+;; from Bjolang at all — `.Result` and `.GetAwaiter` are refused, which is §7.5
+;; and is the whole reason `inbox-call` exists — so a caller here checks that
+;; its task completed, and what was answered is checked where it was computed.
+;; The value crossing back into .NET is what an HTTP response body shows.
+
+(import (std prelude))
+(import (std inbox))
+(import (std effect))
+(import (std simpletest))
+
+(import/class
+  (Cancelling (: System.Threading.CancellationTokenSource (-> Cancelling)))
+  (Boom       (: System.InvalidOperationException (-> string Boom))))
+
+(import/extern
+  (off-task (: System.Threading.Tasks.Task.Run (-> (-> Task) void) #:async))
+  (done     (: System.Threading.Tasks.Task.CompletedTask Task #:get)))
+
+;; An effect and a parameter, to be installed around the worker's spawn. A
+;; fiber answering a call from a foreign thread must still see its own.
+(defeffect Journal
+  (note (-> string void)))
+
+(def who (make-parameter "nobody"))
+
+;; ---------------------------------------------------------------------------
+;; Helpers
+;; ---------------------------------------------------------------------------
+
+;; One call, or nothing within `ms`.
+(: recv-call (-bjo-> (Inbox (Call int int)) int (Option (Call int int))))
+(defbjo (recv-call ib ms)
+  (sync (choose (wrap (inbox-recv ib) (fun (c) (Some c)))
+                (wrap (timeout ms) (fun (u) None)))))
+
+;; How a call's task ended, waited for without blocking a thread.
+(: settled (-bjo-> (Task int) int string))
+(defbjo (settled t ms)
+  (let go ((left ms))
+    (cond
+      ((.-IsCanceled t) "cancelled")
+      ((.-IsFaulted t) (.-Message (.-Exception t)))
+      ((.-IsCompleted t) "completed")
+      ((<= left 0) "still pending")
+      (else (begin (sync (timeout 1)) (go (- left 1)))))))
+
+;; Answers `n` calls by doubling the request.
+(: answer-calls (-bjo-> (Inbox (Call int int)) int void))
+(defbjo (answer-calls ib n)
+  (loop (:for i (range 0 n))
+        (:do (match (recv-call ib 5000)
+               ((Some c) (ignore (call-reply! c (* 2 (call-request c)))))
+               (None unit)))))
+
+;; The same, but reporting what the fiber's own environment said while it was
+;; answering: the parameter it was spawned under, and an effect it performed.
+(: answer-with-environment (-bjo-> (Inbox (Call int int)) (Box string) void))
+(defbjo (answer-with-environment ib seen)
+  (match (recv-call ib 5000)
+    ((Some c)
+     (note (str "answering " (int->string (call-request c))))
+     (box-set! seen (str (box-ref seen) " by " (parameter-ref who)))
+     (ignore (call-reply! c (* 2 (call-request c)))))
+    (None (box-set! seen "no call arrived"))))
+
+;; Makes a call from a pool thread and waits there for the answer.
+(: call-off-fiber (-bjo-> (Inbox (Call int int)) int void))
+(defbjo (call-off-fiber ib request)
+  (off-task (fun () (cast Task (inbox-call ib request)))))
+
+(: cancel-off-fiber (-bjo-> Cancelling void))
+(defbjo (cancel-off-fiber cts)
+  (off-task (fun () (.Cancel cts) done)))
+
+;; One round of the token-versus-receive race (prompt test 14). Answers "" when
+;; the trial came out as exactly one of the two permitted outcomes, and what
+;; went wrong otherwise.
+(: race-once (-bjo-> (Inbox (Call int int)) int bool string))
+(defbjo (race-once ib n token-first?)
+  (def cts (Cancelling.))
+  (def t (inbox-call/token ib n (.-Token cts)))
+  (def cancelling (bjo (cancel-off-fiber cts)))
+
+  ;; Two shapes, because the race has two sides and only one of them turns up
+  ;; on its own: left alone, the receive almost always wins, since the call is
+  ;; already queued and a queued item commits a receive without publishing
+  ;; anything. A pause here lets the token get there first, which is the
+  ;; cancelled-while-queued path.
+  (when token-first? (sync (timeout 2)))
+
+  (def outcome
+    ;; A live call is already queued, so a receive that can happen commits
+    ;; without waiting at all: this timeout only ever elapses when the token
+    ;; got there first, and is short for that reason.
+    (match (recv-call ib 50)
+      ;; Taken. The task may not have been cancelled behind the receiver's
+      ;; back, and only the reply may complete it.
+      ((Some c)
+       (def answered (call-reply! c 1))
+       (def how (settled t 1000))
+       (cond
+         ((not answered) "a taken call could not be answered")
+         ((= how "completed") "")
+         (else (str "a taken call ended as " how))))
+      ;; Not taken, so the token got there first and the caller was told.
+      (None
+       (let ((how (settled t 1000)))
+         (if (= how "cancelled") "" (str "an untaken call ended as " how))))))
+
+  (ignore (sync (promise-join cancelling)))
+  outcome)
+
+(: race (-bjo-> (Inbox (Call int int)) int bool string))
+(defbjo (race ib n token-first?)
+  (let go ((i 0) (bad ""))
+    (if (= i n)
+        bad
+        (go (+ i 1) (str bad (race-once ib i token-first?))))))
+
+(defbjo (main args)
+  ;; -------------------------------------------------------------------------
+  ;; A call from a foreign thread (prompt test 1)
+  ;; -------------------------------------------------------------------------
+  (def calls (make-inbox 8 DropNewest))
+  (def worker (bjo (answer-calls calls 1)))
+
+  ;; `Task.Run` runs the lambda on a pool thread, which has no fiber context at
+  ;; all, and the lambda hands back the call's task upcast to a bare `Task` —
+  ;; exactly what a .NET middleware signature wants.
+  (def caller (bjo (call-off-fiber calls 21)))
+  (expect "a call made on a pool thread is answered"
+          (match (sync (promise-join caller)) ((Ok u) "answered") ((Err e) (.-Message e)))
+          "answered")
+
+  ;; -------------------------------------------------------------------------
+  ;; The environment reaches the worker (prompt test 2)
+  ;; -------------------------------------------------------------------------
+  (def noted (make-box ""))
+  (def seen (make-box "saw nothing"))
+  (def env-calls (make-inbox 4 DropNewest))
+
+  (def env-worker
+    (with-handler ((note (fun (s) (box-set! noted s))))
+      (parameterize ((who "the worker"))
+        (bjo (answer-with-environment env-calls seen)))))
+
+  (ignore (sync (promise-join (bjo (call-off-fiber env-calls 5)))))
+  (ignore (sync (promise-join env-worker)))
+  (expect "the parameter the worker was spawned under" (box-ref seen) "saw nothing by the worker")
+  (expect "and the handler installed around it" (box-ref noted) "answering 5")
+
+  ;; -------------------------------------------------------------------------
+  ;; A full call inbox (prompt tests 4 and 5)
+  ;; -------------------------------------------------------------------------
+  (def tight (make-inbox 1 DropNewest))
+  (def queued (inbox-call tight 1))
+  (def refused (inbox-call tight 2))
+  (expect "a call into a full DropNewest inbox faults"
+          (.Contains (settled refused 1000) "inbox is full") #t)
+  (expect "and the one that fitted is still pending" (settled queued 0) "still pending")
+  (expect "the refusal was counted" (inbox-dropped-count tight) 1)
+
+  (def evicting (make-inbox 1 DropOldest))
+  (def evicted (inbox-call evicting 1))
+  (def survivor (inbox-call evicting 2))
+  (expect "the call DropOldest evicted faults"
+          (.Contains (settled evicted 1000) "inbox is full") #t)
+  (expect "and the newest one is what a receiver gets"
+          (match (recv-call evicting 500) ((Some c) (call-request c)) (None -1))
+          2)
+
+  ;; -------------------------------------------------------------------------
+  ;; The refusal as an answer, not as a fault
+  ;; -------------------------------------------------------------------------
+  ;;
+  ;; A caller that hands its task straight to .NET — a middleware — never
+  ;; awaits it and so never sees the fault above. `inbox-try-call` is
+  ;; `inbox-post!`'s `#f` for a call, so that such a caller can say what its
+  ;; own protocol says for "busy".
+  (def tried (make-inbox 1 DropNewest))
+  (expect "a try-call into an inbox with room answers Some"
+          (match (inbox-try-call tried 7) ((Some t) "posted") (None "refused"))
+          "posted")
+  (expect "and into a full one answers None, rather than faulting a task"
+          (match (inbox-try-call tried 8) ((Some t) "posted") (None "refused"))
+          "refused")
+  (expect "a refusal is still counted" (inbox-dropped-count tried) 1)
+  (expect "and nothing but the first call is there to receive"
+          (match (recv-call tried 500) ((Some c) (call-request c)) (None -1))
+          7)
+  (expect "the inbox is empty again" (match (recv-call tried 20) ((Some c) 1) (None 0)) 0)
+
+  ;; A closed inbox refuses the same way. The distinction the faulting form
+  ;; makes — full faults, closed cancels — is one this form deliberately does
+  ;; not: the caller asked whether the item went in, and it did not.
+  (def shut (make-inbox 4 DropNewest))
+  (inbox-close! shut)
+  (expect "a try-call into a closed inbox answers None"
+          (match (inbox-try-call shut 1) ((Some t) "posted") (None "refused"))
+          "refused")
+
+  ;; With a token, and room: the call is real, and answering it completes the
+  ;; task the caller was given.
+  (def tokened (make-inbox 2 DropNewest))
+  (def live (Cancelling.))
+  (expect "a try-call with a token is an ordinary call"
+          (match (inbox-try-call/token tokened 21 (.-Token live))
+            ((Some t)
+             (match (recv-call tokened 1000)
+               ((Some c) (ignore (call-reply! c (* 2 (call-request c)))) (settled t 1000))
+               (None "nothing arrived")))
+            (None "refused"))
+          "completed")
+
+  ;; -------------------------------------------------------------------------
+  ;; The observer (prompt test 11)
+  ;; -------------------------------------------------------------------------
+  (def observed (make-inbox 64 DropNewest))
+  (def obs (inbox-observer observed))
+  (def feeders (loop (:for i (range 1 6))
+                     (:acc out (listing (bjo (feed obs i))))))
+  (loop (:for p feeders) (:do (ignore (sync (promise-join p)))))
+  (expect "everything the observer was given arrives"
+          (let go ((left 5) (sum 0))
+            (if (= left 0)
+                sum
+                (match (sync (choose (wrap (inbox-recv observed) (fun (x) (Some x)))
+                                     (wrap (timeout 2000) (fun (u) None))))
+                  ((Some x) (go (- left 1) (+ sum x)))
+                  (None -1))))
+          15)
+
+  (.OnCompleted obs)
+  (expect "OnCompleted ends the inbox"
+          (match (sync (choose (wrap (inbox-closed observed) (fun (e) (Some e)))
+                               (wrap (timeout 2000) (fun (u) None))))
+            ((Some None) "ended")
+            ((Some (Some e)) (.-Message e))
+            (None "never ended"))
+          "ended")
+
+  (def failed-by-observer (make-inbox 4 DropNewest))
+  ;; One ordinary post and its receive, so that what this inbox holds is an
+  ;; `int` — an observer is only as typed as the inbox behind it — and so that
+  ;; the failure below is met by an inbox with nothing left in it.
+  (expect-true "the inbox takes an item" (inbox-post! failed-by-observer 1))
+  (expect "and gives it back"
+          (sync (choose (inbox-recv failed-by-observer)
+                        (wrap (timeout 2000) (fun (u) -1))))
+          1)
+  (.OnError (inbox-observer failed-by-observer) (cast Exception (Boom. "the source failed")))
+  (expect "OnError ends it with the error"
+          (match (sync (choose (wrap (inbox-closed failed-by-observer) (fun (e) (Some e)))
+                               (wrap (timeout 2000) (fun (u) None))))
+            ((Some None) "ended without a reason")
+            ((Some (Some e)) (.-Message e))
+            (None "never ended"))
+          "the source failed")
+
+  ;; -------------------------------------------------------------------------
+  ;; Abandoned while queued (prompt test 12)
+  ;; -------------------------------------------------------------------------
+  (def abandoned (make-inbox 8 DropNewest))
+  (def giving-up (Cancelling.))
+  (def lost (inbox-call/token abandoned 1 (.-Token giving-up)))
+  (.Cancel giving-up)
+  (def next-call (inbox-call abandoned 2))
+
+  (expect "a call cancelled before anyone had it is cancelled" (settled lost 1000) "cancelled")
+  (expect "and a receiver never sees it, only the next one"
+          (match (recv-call abandoned 500) ((Some c) (call-request c)) (None -1))
+          2)
+
+  ;; -------------------------------------------------------------------------
+  ;; Abandoned after being taken (prompt test 13)
+  ;; -------------------------------------------------------------------------
+  (def taken-inbox (make-inbox 8 DropNewest))
+  (def walking-away (Cancelling.))
+  (def in-flight (inbox-call/token taken-inbox 3 (.-Token walking-away)))
+
+  (def held (recv-call taken-inbox 500))
+  (match held
+    ((Some c)
+     (.Cancel walking-away)
+     (expect "the task of a taken call is not completed by the token"
+             (settled in-flight 0)
+             "still pending")
+     (expect "and the receiver is told it was abandoned"
+             (sync (choose (wrap (call-abandoned c) (fun (u) "abandoned"))
+                           (wrap (timeout 2000) (fun (u) "never told"))))
+             "abandoned")
+     (expect-true "the receiver may still answer" (call-reply! c 6))
+     (expect "which completes the caller's task" (settled in-flight 1000) "completed")
+     (expect-true "and a second answer does nothing" (not (call-reply! c 7))))
+    (None (fail "the call was never received")))
+
+  ;; -------------------------------------------------------------------------
+  ;; The race, many times over (prompt test 14)
+  ;; -------------------------------------------------------------------------
+  (def racing (make-inbox 8 DropNewest))
+  (expect "a token firing as a call is received comes out one way or the other"
+          (race racing 100 #f)
+          "")
+  (expect "and a token that gets there first cancels without any fiber seeing it"
+          (race racing 25 #t)
+          "")
+
+  (println "229 ok")
+  0)
+
+;; Feeding the observer from a pool thread: `OnNext` is called directly, as any
+;; `IObservable` would call it.
+(: feed (-bjo-> (IObserver int) int void))
+(defbjo (feed obs x)
+  (off-task (fun () (.OnNext obs x) done)))

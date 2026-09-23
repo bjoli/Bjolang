@@ -1,0 +1,54 @@
+;; A `def` with a failure part leaves its sequel in tail position.
+;;
+;; `(def (Ok v) e :propagate)` is a node of its own — the sequel stays in the
+;; block it was written in rather than becoming a match arm — and a pass that
+;; does not know the node puts every child of it out of tail position. When
+;; `LoopLowering` did that, a function whose body began with such a `def` and
+;; then called itself stopped being a loop and recursed for real: one stack
+;; frame per element, which `(text json)` overflowed on a large array.
+;;
+;; The depths here are far past what a stack holds, so a lost loop is a crash
+;; rather than a slow test.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: deep int)
+(def deep 300000)
+
+;; The sequel of a `:propagate`, calling itself.
+(: count-down (-> int (Result string int)))
+(defun (count-down n)
+  (def (Ok v) (if (< n 0) (Err "below zero") (Ok n)) :propagate)
+  (if (= v 0) (Ok 0) (count-down (- v 1))))
+
+;; The same, in a named let, with the answer built in the loop.
+(: sum-down (-> int (Result string int)))
+(defun (sum-down n)
+  (let go ((i n) (acc 0))
+    (def (Ok v) (if (< i 0) (Err "below zero") (Ok i)) :propagate)
+    (if (= v 0) (Ok acc) (go (- v 1) (+ acc 1)))))
+
+;; A written failure value rather than `:propagate`, and the recursion in the
+;; *arm* rather than in the sequel: an arm answers for the whole form, so it is
+;; in tail position too.
+(: stubborn (-> int int))
+(defun (stubborn n)
+  (def (Some v) (if (= n 0) (Some 0) None)
+    :fail ((None (stubborn (- n 1)))))
+  v)
+
+;; Several clauses, the last of which may fail.
+(: pairs-down (-> int (Result string int)))
+(defun (pairs-down n)
+  (def* ((Ok a) (if (< n 0) (Err "below zero") (Ok n)) :propagate)
+        ((Ok b) (Ok (- a 1)) :propagate))
+  (if (<= b 0) (Ok 0) (pairs-down b)))
+
+(defun (main)
+  (expect "a :propagate sequel that calls itself is a loop" (count-down deep) (Ok 0))
+  (expect "and it still answers the failure" (count-down -1) (Err "below zero"))
+  (expect "a named let whose body begins with one is a loop" (sum-down deep) (Ok deep))
+  (expect "an arm that calls the function is a loop too" (stubborn deep) 0)
+  (expect "and several clauses are no different" (pairs-down deep) (Ok 0))
+  0)

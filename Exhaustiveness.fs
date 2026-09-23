@@ -561,30 +561,34 @@ let private checkMatch (registry: TraitRegistry) (range: Range) (scrutinee: HMTy
     with Undecidable ->
         ()
 
-/// A `def+` is a match over its scrutinee whose first arm's body is the rest of
+/// A `def` is a match over its scrutinee whose first arm's body is the rest of
 /// the body, so it answers the same two questions a match does: is every arm
 /// reachable, and is every value covered.
 ///
-/// It answers one more, which is the form's own. **The binder must be able to
-/// fail.** A binder that always matches is a `def` — no arm can run, and the
-/// form's whole purpose is to say what happens when the scrutinee is not what
-/// was wanted. It is almost always a typo where a constructor name was not in
-/// scope and so parsed as a plain variable: `(def+ ((Some cfg) opts) ...)`
-/// written against a module that never imported `Some` binds a variable called
-/// `Some` to the whole option and takes the binding path every time. Refused
-/// rather than warned, because unlike a match clause there is no reading of it
-/// that does anything.
-let private checkBindElse
+/// A clause carrying a failure part answers one more, which is the form's own.
+/// **The pattern must be able to fail.** A pattern that always matches leaves
+/// the failure part unreachable, and the failure part is the whole reason to
+/// write one. It is almost always a typo where a constructor name was not in
+/// scope and so parsed as a plain variable: `(def (Some cfg) opts 0)` written
+/// against a module that never imported `Some` binds a variable called `Some`
+/// to the whole option and takes the binding path every time. Refused rather
+/// than warned, because unlike a match clause there is no reading of it that
+/// does anything.
+///
+/// A clause with no failure part has no arms here — a `:propagate` one was
+/// given an arm per leftover case during inference — and is held to covering
+/// the type by itself.
+let private checkDefMatch
     (registry: TraitRegistry)
     (range: Range)
     (scrutinee: HMType)
     (binder: TypedPattern)
-    (arms: TBindElseArm list)
+    (arms: TDefMatchArm list)
     =
     try
         let binderRow = [ normalize binder ]
 
-        if (missing registry [ scrutinee ] [ binderRow ]).IsNone then
+        if not arms.IsEmpty && (missing registry [ scrutinee ] [ binderRow ]).IsNone then
             let what =
                 match binder.Node with
                 | TPIdent name -> $"`%s{name}` is a plain variable and"
@@ -592,7 +596,7 @@ let private checkBindElse
                 | _ -> "this pattern"
 
             failwithf
-                $"Pattern Error at %s{formatPos binder.Range}: %s{what} always matches, so no arm of this def+ can ever run. A binding that cannot fail is a `def`. If a constructor of that name was meant, it is not in scope here."
+                $"Pattern Error at %s{formatPos binder.Range}: %s{what} always matches, so the failure part of this def can never run. A binding that cannot fail takes none. If a constructor of that name was meant, it is not in scope here."
 
         let mutable covered: Row list = [ binderRow ]
 
@@ -606,9 +610,42 @@ let private checkBindElse
             covered <- covered @ [ row ]
 
         match missing registry [ scrutinee ] covered with
+        | Some [ witness ] when arms.IsEmpty ->
+            failwithf
+                $"Pattern Error at %s{formatPos range}: this def's pattern does not match every value. %s{showWitness witness} reaches nothing, and a def with no failure part has nowhere to send it — give it a failure value, a :fail clause, or :propagate to rebuild the leftover cases at the body's type."
         | Some [ witness ] ->
             failwithf
-                $"Pattern Error at %s{formatPos range}: this def+ does not cover every value. %s{showWitness witness} matches neither the binding pattern nor any arm, and a def+ has nowhere to send it."
+                $"Pattern Error at %s{formatPos range}: this def does not cover every value. %s{showWitness witness} matches neither the binding pattern nor any arm, and a def has nowhere to send it."
+        | _ -> ()
+    with Undecidable ->
+        ()
+
+/// A top-level `def`'s pattern stands alone, so it has to match every value.
+///
+/// There is nowhere for a failure to go: what a `def` produces when its pattern
+/// does not match is the value of the body it stands in, and a declaration list
+/// is not a body. So this is the one binding pattern with no second path, and a
+/// witness here is refused rather than sent anywhere.
+let private checkDefPattern
+    (registry: TraitRegistry)
+    (range: Range)
+    (scrutinee: HMType)
+    (pattern: TypedPattern)
+    =
+    try
+        match missing registry [ scrutinee ] [ [ normalize pattern ] ] with
+        | Some [ witness ] ->
+            // A pattern that decides by running code covers nothing here, so
+            // the counterexample it produces is every value. Saying which is
+            // what keeps the message from looking like a mistake.
+            let note =
+                if runsCode pattern then
+                    "\n  A (:view ...) or a (:is ...) covers nothing: whether it matches is only known when it runs."
+                else
+                    ""
+
+            failwithf
+                $"Pattern Error at %s{formatPos range}: this def's pattern does not match every value, and at the top level there is nowhere else for one to go. %s{showWitness witness} reaches nothing. Move the binding into a body, where it can carry a failure value, a :fail clause or :propagate.%s{note}"
         | _ -> ()
     with Undecidable ->
         ()
@@ -616,12 +653,24 @@ let private checkBindElse
 let rec private checkExpr (registry: TraitRegistry) (expr: TypedExpr) : unit =
     match expr.Node with
     | TMatch(target, clauses) -> checkMatch registry expr.Range target.Type clauses
-    | TBindElse(binder, scrutinee, _, arms) -> checkBindElse registry expr.Range scrutinee.Type binder arms
+    | TDefMatch(binder, scrutinee, _, arms) -> checkDefMatch registry expr.Range scrutinee.Type binder arms
     | _ -> ()
 
     TypeVisitor.children expr |> List.iter (checkExpr registry)
 
 let private checkDecl (registry: TraitRegistry) (decl: TDecl) : unit =
+    // A top-level destructuring is the one pattern that is not inside an
+    // expression, so it takes a walk of its own — `mapDecl` reaches
+    // expressions, and this pattern is beside one rather than in it.
+    let rec declaredPatterns (d: TDecl) =
+        match d with
+        | TDefPattern(pattern, scrutinee, _, r) -> checkDefPattern registry r scrutinee.Type pattern
+        | TModule(_, inner, _) -> inner |> List.iter declaredPatterns
+        | TImpl(_, _, _, _, _, _, methods, _) -> methods |> List.iter declaredPatterns
+        | _ -> ()
+
+    declaredPatterns decl
+
     decl
     |> TypeVisitor.mapDecl (fun e ->
         checkExpr registry e

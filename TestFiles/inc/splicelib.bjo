@@ -1,0 +1,48 @@
+;; A spliced literal inside a library function's body.
+;;
+;; An exported `defun` is offered to importers twice: as a compiled method, and
+;; as an *inline template* — the untyped body, written back as source, for the
+;; importer to re-infer. `Codegen.serializeExpr` decides which bodies can make
+;; that trip, and a list literal has never been one of them: there is no reader
+;; form for an `EList`, only for the `'(...)` and `(list ...)` it came from. A
+;; splice is the same answer for the same reason, so `decorate` below is
+;; published as a method and not as a template, and the call in
+;; `230_quoted_splice.bjo` goes through it.
+;;
+;; The importing side never sees this source.
+(import (std prelude))
+
+(export Tag decorate show-tags)
+
+(type-rec
+  (: Tag (Union (TSym Symbol)
+                (TStr string)
+                (TSub (List Tag) #:literal))))
+
+;; The body this file exists for: a splice between two injected elements,
+;; compiled where the union is declared and called from where it is not.
+;;
+;; The annotated binding is not ceremony. A declared *return* type is not one of
+;; the places an expected type is pushed from — it is unified with the body
+;; afterwards, by which time the literal has already had to decide what it holds
+;; — so `'(head ...)` written directly as the body is the same error
+;; `errors/literal_no_expected_type.bjo` records. Annotating the value is the
+;; way past that, with or without a splice in it.
+(: decorate (-> (List Tag) (List Tag)))
+(defun (decorate rest)
+  (def (: decorated (List Tag)) '(head ,@rest (tail)))
+  decorated)
+
+(: show-tag (-> Tag string))
+(defun (show-tag t)
+  (match t
+    ((TSym s) (symbol->string s))
+    ((TStr s) s)
+    ((TSub inner) (string-append "(" (string-append (show-tags inner) ")")))))
+
+(: show-tags (-> (List Tag) string))
+(defun (show-tags ts)
+  (match ts
+    (Nil "")
+    ((Cons x Nil) (show-tag x))
+    ((Cons x rest) (string-append (show-tag x) (string-append " " (show-tags rest))))))

@@ -87,6 +87,7 @@
 
   ;; Results
   ok? err? result-map
+  option-value
 
   ;; Box
   Box
@@ -283,7 +284,7 @@
   ;; Map values.
   (clr-map-map-values (: Map.MapModule.MapValues (-> (-> %v %w) (Map %k %v) (Map %k %w))))
   (clr-map-filter     (: Map.MapModule.Filter    (-> (-> %k %v bool) (Map %k %v) (Map %k %v))))
-  (clr-map-fold       (: Map.MapModule.Fold      (-> (-> %s %k %v %s) %s (Map %k %v) %s)))
+  (clr-map-fold       (: Map.MapModule.Fold      (-> (-> %k %v %s %s) %s (Map %k %v) %s)))
   ;; Walk until false.
   (clr-map-iter       (: Map.MapModule.Iter      (-> (-> %k %v bool) (Map %k %v) bool)))
   (map-any?       (: Map.MapModule.Exists    (-> (-> %k %v bool) (Map %k %v) bool)))
@@ -355,7 +356,7 @@
   (#:sync (clr-map-map f m))
   (#:bjo
     ;; (loop (:for (k v) m)
-    ;;       (:acc acc (mapping k (f k v))))
+    ;;       (:acc acc (mapping (Tuple k (f k v)))))
     (let ((b (mapbuilder-empty))
           (c (map-cursor m)))
       (let go ()
@@ -386,7 +387,7 @@
   (#:bjo
     ;; (loop (:for (k v) m)
     ;;       (:when (keep? k v))
-    ;;       (:acc new-map (mapping k v)))
+    ;;       (:acc new-map (mapping (Tuple k v))))
     (let ((b (mapbuilder-empty))
           (c (map-cursor m)))
       (let go ()
@@ -398,19 +399,19 @@
                 (mapbuilder-add! b k v))
               (go)))))))
 
-(: map-fold (-> (-?-> %s %k %v %s) %s (Map %k %v) %s))
+(: map-fold (-> (-?-> %k %v %s %s) %s (Map %k %v) %s))
 (defbjouble (map-fold f init m)
   (#:sync (clr-map-fold f init m))
   (#:bjo
     ;; (loop (:for (k v) m)
-    ;;       (:acc acc (folding init (f acc k v))))
+    ;;       (:acc acc (folding init (f k v acc))))
     (let ((c (map-cursor m)))
       (let go ((acc init))
         (if (map-cursor-done? c)
             acc
             (let ()
               (def (k v) (map-cursor-current c))
-              (go (f acc k v))))))))
+              (go (f k v acc))))))))
 
 (: map-iter (-> (-?-> %k %v bool) (Map %k %v) bool))
 (defbjouble (map-iter f m)
@@ -455,7 +456,7 @@
                    a)))
   ;; Hash map.
   (defun (eq-hash m)
-    (map-fold (fun (h k v) (bitwise-xor h (hash-combine (eq-hash k) (eq-hash v)))) 0 m)))
+    (map-fold (fun (k v h) (bitwise-xor h (hash-combine (eq-hash k) (eq-hash v)))) 0 m)))
 
 
 
@@ -570,7 +571,7 @@
   (: iterable-current (-> %s %cursor %elem))
   (: iterable-next (-> %s %cursor %cursor))
   (: ->seq  (-> %s (Seq %elem)))
-  (: fold (-> (-> %acc %elem %acc) %acc %s %acc))
+  (: fold (-> (-> %elem %acc %acc) %acc %s %acc))
   (: map    (-> (-> %elem %b) %s (Seq %b)))
   (: filter (-> (-> %elem bool) %s (Seq %elem)))
   (: take (-> int %s (Seq %elem)))
@@ -592,7 +593,7 @@
           (:yield e)))
   (defun (fold f acc coll)
     (loop (:for elem coll)
-          (:acc res (folding acc (f res elem)))))
+          (:acc res (folding acc (f elem res)))))
   (defun (map f s)
     (seql (:for e s)
           (:yield (f e))))
@@ -656,7 +657,7 @@
   (defun (for-each f s)
     (loop (:for e s)
           (:do (ignore (f e)))))
-)
+  )
 
 ;; Declared before the other implementations because the inherited
 ;; `flat-map` default walks the `(Seq %b)` its callback returns, and an
@@ -774,10 +775,10 @@
         (:acc acc (listing elem))))
 
 ;; List foldl.
-(: list-foldl (-> (-?-> %b %a %b) %b (List %a) %b))
+(: list-foldl (-> (-?-> %a %b %b) %b (List %a) %b))
 (defun (list-foldl f init xs)
   (loop (:for elem xs)
-        (:acc acc (folding init (f acc elem)))))
+        (:acc acc (folding init (f elem acc)))))
 
 ;; List foldr.
 (: list-foldr (-> (-?-> %a %b %b) %b (List %a) %b))
@@ -797,7 +798,7 @@
 (import/extern
   (clr-vec-map            (: BjolangRuntime.RrbMap          (-> (-> %a %b) (Vec %a) (Vec %b))))
   (clr-vec-filter         (: BjolangRuntime.RrbFilter       (-> (-> %a bool) (Vec %a) (Vec %a))))
-  (clr-vec-fold           (: BjolangRuntime.RrbFold         (-> (-> %b %a %b) %b (Vec %a) %b)))
+  (clr-vec-fold           (: BjolangRuntime.RrbFold         (-> (-> %a %b %b) %b (Vec %a) %b)))
   (clr-vec-reduce         (: BjolangRuntime.RrbReduce       (-> (-> %a %a %a) (Vec %a) %a)))
   (clr-vec-for-each       (: BjolangRuntime.RrbForEach      (-> (-> %a Unit) (Vec %a) Unit)))
   (clr-vec-for-each/range (: BjolangRuntime.RrbForEachRange (-> (-> %a Unit) (Vec %a) int int Unit)))
@@ -822,12 +823,12 @@
           (:when (keep? elem))
           (:acc acc (vecing elem)))))
 
-(: vec-fold (-> (-?-> %b %a %b) %b (Vec %a) %b))
+(: vec-fold (-> (-?-> %a %b %b) %b (Vec %a) %b))
 (defbjouble (vec-fold f init v)
   (#:sync (clr-vec-fold f init v))
   (#:bjo
     (loop (:for elem v)
-          (:acc acc (folding init (f acc elem))))))
+          (:acc acc (folding init (f elem acc))))))
 
 ;; Vec reduce.
 (: vec-reduce (-> (-?-> %a %a %a) (Vec %a) %a))
@@ -837,7 +838,7 @@
     (let go ((i 1) (acc (vec-ref v 0)))
       (if (= i (vec-length v))
           acc
-          (go (+ i 1) (f acc (vec-ref v i)))))))
+          (go (+ i 1) (f (vec-ref v i) acc))))))
 
 (: vec-for-each (-> (-?-> %a Unit) (Vec %a) Unit))
 (defbjouble (vec-for-each f v)
@@ -862,9 +863,9 @@
 (defbjouble (vec-iter f v)
   (#:sync (clr-vec-iter f v))
   (#:bjo
-     (loop (:for elem v)
-           (:acc acc (folding #t (f elem)))
-           (:break (not acc)))))
+    (loop (:for elem v)
+          (:acc acc (folding #t (f elem)))
+          (:break (not acc)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Seqs, where the callback may suspend
@@ -874,13 +875,13 @@
 ;; builtins: their callback runs when the walker pulls, which is somewhere
 ;; else.
 
-(: seq-fold (-> (-?-> %b %a %b) %b (Seq %a) %b))
+(: seq-fold (-> (-?-> %a %b %b) %b (Seq %a) %b))
 (defun (seq-fold f init s)
   (let ((c (seq-cursor s)))
     (let go ((acc init))
       (if (seq-cursor-done? c)
           acc
-          (go (f acc (seq-cursor-current c)))))))
+          (go (f (seq-cursor-current c) acc))))))
 
 (: seq-for-each (-> (-?-> %a Unit) (Seq %a) Unit))
 (defun (seq-for-each f s)
@@ -930,7 +931,7 @@
 
 
 ;; --------------------------------------------------------------------------
-;; Results
+;; Results and options
 ;; --------------------------------------------------------------------------
 
 ;; `some?` and `none?`, for the other two-case builtin.
@@ -953,6 +954,12 @@
   (match r
     ((Ok v) (Ok (f v)))
     ((Err e) (Err e))))
+
+(: option-value (-> (Option %a) %a %a))
+(defun (option-value opt fallback)
+  (match opt
+    ((Some v) v)
+    (None fallback)))
 
 
 ;; --------------------------------------------------------------------------
@@ -1262,13 +1269,13 @@
 ;; The forward walks below ask for the character and the step in one call, so
 ;; that the unit at the cursor is read and bounds-checked once per character
 ;; rather than twice.
-(: string-fold (-> (-> %a char %a) %a string %a))
+(: string-fold (-> (-> char %a %a) %a string %a))
 (defun (string-fold f init s)
   (let loop ((c (string-cursor-start s)) (acc init))
     (if (string-cursor-end? s c)
         acc
         (match (string-cursor-ref+next s c)
-          ((Tuple ch next) (loop next (f acc ch)))))))
+          ((Tuple ch next) (loop next (f ch acc)))))))
 
 ;; String fold right.
 (: string-fold-right (-> (-> char %a %a) %a string %a))
@@ -1285,10 +1292,9 @@
   ;;       (:do (f ch)))
   (let loop ((c (string-cursor-start s)))
     (unless (string-cursor-end? s c)
-      (match (string-cursor-ref+next s c)
-        ((Tuple ch next)
-         (f ch)
-         (loop next))))))
+      (def (Tuple ch next) (string-cursor-ref+next s c))
+      (f ch)
+      (loop next))))
 
 ;; String index.
 (: string-index (-> (-> char bool) string (Option StringCursor)))
@@ -1458,12 +1464,12 @@
   ;; Concrete readers.
   (StreamReader (: System.IO.StreamReader (-> string StreamReader)
                    #:exceptions (System.IO.FileNotFoundException
-                                  System.IO.DirectoryNotFoundException
-                                  System.UnauthorizedAccessException)))
+                                 System.IO.DirectoryNotFoundException
+                                 System.UnauthorizedAccessException)))
   (StringReader (: System.IO.StringReader (-> string StringReader)))
   (StreamWriter (: System.IO.StreamWriter (-> string StreamWriter)
                    #:exceptions (System.IO.DirectoryNotFoundException
-                                  System.UnauthorizedAccessException)))
+                                 System.UnauthorizedAccessException)))
   ;; StringWriter.
   (StringWriter (: System.IO.StringWriter (-> StringWriter)))
 
@@ -1992,9 +1998,21 @@
 ;; Macros.
 (import (std syntax-match))
 
-;; `(cond (test body ...) ... (else body ...))`
+;; `(cond (test body ...) ... (:def pattern expr) ... (else body ...))`
 ;;
 ;; Cond requires else.
+;;
+;; Two clauses do not answer anything. `(:def pattern expr)` binds, and
+;; `(:do body ...)` runs something; both are reached only when every test
+;; above them has failed, and what a `:def` binds is in scope in every clause
+;; below it. They exist because the alternative is a new `(else ...)` and a
+;; new `cond` inside it for every value a later test needs — the same
+;; decisions, indented once per binding.
+;;
+;; A `:def` clause *is* a `def`: the sequel it swallows is the rest of the
+;; cond, so a refutable pattern takes the same failure part it takes anywhere
+;; else, and `(:def (Ok v) (parse s) :propagate)` makes the whole cond the
+;; `Err`.
 (def/macro (cond form inject compare)
   (syntax-match form
     ((_ clause ...) (cond-arms clause form))
@@ -2004,13 +2022,24 @@
 (defun (cond-arms clauses whole)
   (match clauses
     (Nil
-      (syntax-error whole "cond needs a final (else ...) clause: every arm answers something, so there has to be a last answer."))
+     (syntax-error whole "cond needs a final (else ...) clause: every arm answers something, so there has to be a last answer."))
     ((Cons clause rest)
      (syntax-match clause
+       ;; Binds. The rest of the cond is the body the `def` swallows, which is
+       ;; what puts the name in scope below and nowhere else.
+       ((:def pattern expr fail ...)
+        #'(let () (def ,pattern ,expr ,@fail) ,(cond-arms rest whole)))
+       ((:def junk ...)
+        (syntax-error clause "(:def ...) binds: (:def name expr), or (:def pattern expr :propagate)."))
+       ;; Runs.
+       ((:do first body ...)
+        #'(let () ,first ,@body ,(cond-arms rest whole)))
+       ((:do)
+        (syntax-error clause "(:do ...) needs something to run."))
        ;; Else clause.
        (('else body ...) (one-form body clause))
        ((test body ...) #'(if ,test ,(one-form body clause) ,(cond-arms rest whole)))
-       (bad (syntax-error bad "A cond clause is (test body ...), or (else body ...) for the last one."))))))
+       (bad (syntax-error bad "A cond clause is (test body ...), (:def pattern expr) to bind, (:do body ...) to run something, or (else body ...) for the last one."))))))
 
 ;; Several forms as one.
 (: one-form (-> (List Syntax) Syntax Syntax))
@@ -2434,17 +2463,17 @@
 ;; inside bjoroutines. `StringBuilder` is also more efficient here.
 (: vec->str (-> (Vec %a) string) (where (->str %a)))
 (defun (vec->str v)
-  (let ((sb (stringbuilder-empty)))
-    (stringbuilder-add-string! sb "[")
-    (when (not (empty? v))
-      (stringbuilder-add-string! sb (->str (vec-ref v 0)))
-      (loop (:with i 0 (+ i 1))
-            (:for elem v)
-            (:when (> i 0))
-            (:do (stringbuilder-add-string! sb " ")
-                 (stringbuilder-add-string! sb (->str elem)))))
-    (stringbuilder-add-string! sb "]")
-    (stringbuilder->string sb)))
+  (def sb (stringbuilder-empty))
+  (stringbuilder-add-string! sb "[")
+  (when (not (empty? v))
+    (stringbuilder-add-string! sb (->str (vec-ref v 0)))
+    (loop (:with i 0 (+ i 1))
+          (:for elem v)
+          (:when (> i 0))
+          (:do (stringbuilder-add-string! sb " ")
+               (stringbuilder-add-string! sb (->str elem)))))
+  (stringbuilder-add-string! sb "]")
+  (stringbuilder->string sb))
 
 (impl (->str (Vec %a))
   (where (->str %a))
@@ -2526,7 +2555,7 @@
      #'(let (,bind) ,@body))
     ((_ (bind binds ...) body ...)
      #'(let (,bind)
-        (let* (,@binds) ,@body)))))
+         (let* (,@binds) ,@body)))))
 
 ;; parameterize* behavior.
 (def/macro (parameterize* form compare inject)
@@ -2593,14 +2622,13 @@
 ;; Any mutable fields.
 (: derive-any-mutable? (-> (List Syntax) bool))
 (defun (derive-any-mutable? fields)
-  (match fields
-    (Nil #f)
-    ((Cons f rest)
-     (if (syntax-match f
-           ((_ _ _ marker markers ...) #t)
-           (_ #f))
-         #t
-         (derive-any-mutable? rest)))))
+  (def (Cons f rest) fields
+    #f)
+  (if (syntax-match f
+        ((_ _ _ marker markers ...) #t)
+        (_ #f))
+      #t
+      (derive-any-mutable? rest)))
 
 ;; Eq record methods.
 (: derive-eq-record (-> Syntax (List Syntax) bool (List Syntax)))
@@ -2619,22 +2647,15 @@
 
 (: derive-case-name (-> Syntax Syntax))
 (defun (derive-case-name c)
-  (match c
-    ((SList items)
-     (match items
-       ((Cons head _) head)
-       (Nil c)))
-    (_ c)))
+  (def* ((SList items) c c)
+        ((Cons head _) items c))
+  head)
 
 (: derive-payload (-> Syntax (List Syntax)))
 (defun (derive-payload c)
-  (match c
-    ((SList items)
-     (match items
-       ((Cons _ rest)
-        (list-filter (fun (t) (match t ((SKey _) #f) (_ #t))) rest))
-       (Nil Nil)))
-    (_ Nil)))
+  (def* ((SList items) c Nil)
+        ((Cons _ rest) items Nil))
+  (list-filter #(match & ((SKey _) #f) (_ #t)) rest))
 
 ;; Binders.
 (: derive-binders (-> string int int (List Syntax)))
@@ -2646,12 +2667,9 @@
 
 (: derive-eq-pairs (-> (List Syntax) (List Syntax) (List Syntax)))
 (defun (derive-eq-pairs ls rs)
-  (match ls
-    (Nil Nil)
-    ((Cons l lrest)
-     (match rs
-       (Nil Nil)
-       ((Cons r rrest) (Cons #'(= ,l ,r) (derive-eq-pairs lrest rrest)))))))
+  (def* ((Cons l lrest) ls Nil)
+        ((Cons r rrest) rs Nil))
+  (Cons #'(= ,l ,r) (derive-eq-pairs lrest rrest)))
 
 ;; Union arm eq.
 (: derive-eq-union-arm (-> Syntax Syntax))
@@ -2668,15 +2686,13 @@
 ;; Hash union arms.
 (: derive-hash-union-arms (-> (List Syntax) int (List Syntax)))
 (defun (derive-hash-union-arms cases index)
-  (match cases
-    (Nil Nil)
-    ((Cons c rest)
-     (def name (derive-case-name c))
-     (def ls (derive-binders "__derived-l" 0 (list-length (derive-payload c))))
-     (def tag (SInt (int->string index)))
-     (Cons #'((,name ,@ls)
-              ,(derive-hash-fold (list-map (fun (l) #'(eq-hash ,l)) ls) tag))
-           (derive-hash-union-arms rest (+ index 1))))))
+  (def (Cons c rest) cases Nil)
+  (def name (derive-case-name c))
+  (def ls (derive-binders "__derived-l" 0 (list-length (derive-payload c))))
+  (def tag (SInt (int->string index)))
+  (Cons #'((,name ,@ls)
+           ,(derive-hash-fold (list-map (fun (l) #'(eq-hash ,l)) ls) tag))
+        (derive-hash-union-arms rest (+ index 1))))
 
 (: derive-eq-union (-> (List Syntax) (List Syntax)))
 (defun (derive-eq-union cases)
@@ -2691,14 +2707,12 @@
 ;; Ord chain.
 (: derive-ord-chain (-> (List Syntax) int Syntax))
 (defun (derive-ord-chain parts i)
-  (match parts
-    (Nil #'0)
-    ((Cons p rest)
-     (def c (derive-sym (string-append "__derived-c" (int->string i))))
-     (if (list-empty? rest)
-         p
-         #'(let ((,c ,p))
-             (if (= ,c 0) ,(derive-ord-chain rest (+ i 1)) ,c))))))
+  (def* ((Cons p rest) parts #'0)
+        (c (derive-sym (string-append "__derived-c" (int->string i)))))
+  (if (list-empty? rest)
+      p
+      #'(let ((,c ,p))
+          (if (= ,c 0) ,(derive-ord-chain rest (+ i 1)) ,c))))
 
 ;; Ord record.
 (: derive-ord-record (-> (List Syntax) (List Syntax)))
@@ -2719,21 +2733,16 @@
 ;; Index arms.
 (: derive-ord-index-arms (-> (List Syntax) int (List Syntax)))
 (defun (derive-ord-index-arms cases index)
-  (match cases
-    (Nil Nil)
-    ((Cons c rest)
-     (Cons #'((,(derive-case-name c) ,@(derive-wildcards (list-length (derive-payload c))))
-              ,(SInt (int->string index)))
-           (derive-ord-index-arms rest (+ index 1))))))
+  (def (Cons c rest) cases Nil)
+  (Cons #'((,(derive-case-name c) ,@(derive-wildcards (list-length (derive-payload c))))
+           ,(SInt (int->string index)))
+        (derive-ord-index-arms rest (+ index 1))))
 
 (: derive-ord-pairs (-> (List Syntax) (List Syntax) (List Syntax)))
 (defun (derive-ord-pairs ls rs)
-  (match ls
-    (Nil Nil)
-    ((Cons l lrest)
-     (match rs
-       (Nil Nil)
-       ((Cons r rrest) (Cons #'(compare ,l ,r) (derive-ord-pairs lrest rrest)))))))
+  (def* ((Cons l lrest) ls Nil)
+        ((Cons r rrest) rs Nil))
+  (Cons #'(compare ,l ,r) (derive-ord-pairs lrest rrest)))
 
 ;; Ord union arm.
 (: derive-ord-union-arm (-> Syntax Syntax))
@@ -2803,8 +2812,8 @@
   (syntax-match typedef
     ((_ head shape)
      #'(impl (,trait ,head)
-         (where ,@(list-map (fun (v) #'(,trait ,v)) (derive-head-vars head)))
-         ,@(derive-methods trait head shape)))
+        (where ,@(list-map (fun (v) #'(,trait ,v)) (derive-head-vars head)))
+        ,@(derive-methods trait head shape)))
     (bad (syntax-error bad "a type declaration is written (: Name (Record ...))."))))
 
 (: derive-impls (-> (List Syntax) (List Syntax) (List Syntax)))

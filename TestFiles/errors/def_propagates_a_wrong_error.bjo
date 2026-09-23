@@ -1,0 +1,24 @@
+;; A propagated `Err` is rebuilt around the payload it carried, so the two error
+;; types have to be one type. No widening and no conversion: the failure that
+;; comes out is the failure that went in.
+;;
+;; The body says what its error type is before the clause is asked to fit into
+;; it. Where nothing in the body does, the mismatch is between the signature and
+;; the body instead, and is reported there.
+
+;; EXPECT-ERROR: would return Err here
+
+(import (std prelude))
+
+(type (: Fail (Union (Refused string) Timeout)))
+(type (: Other (Union Broken)))
+
+(: fetch (-> int (Result Fail string)))
+(defun (fetch k) (if (= k 1) (Ok "body") (Err Timeout)))
+
+(: size (-> int (Result Other int)))
+(defun (size k)
+  (def (Ok body) (fetch k) :propagate)
+  (if (= (string-length body) 0)
+      (Err Broken)
+      (Ok (string-length body))))

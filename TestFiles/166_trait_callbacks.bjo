@@ -57,7 +57,7 @@
 
 (: mapped-vec (-bjo-> int))
 (defbjo (mapped-vec)
-  (vec-fold (fun (acc x) (+ acc x)) 0 (fmap slow-double [1 2 3])))
+  (vec-fold (fun (x acc) (+ acc x)) 0 (fmap slow-double [1 2 3])))
 
 (: mapped-option (-bjo-> int))
 (defbjo (mapped-option)
@@ -107,12 +107,12 @@
 (impl (Over (List %a))
   (type %elem %a)
   (defun (over xs f)
-    (list-foldl string-append "" (list-map f xs))))
+    (list-foldl (fun (s acc) (string-append acc s)) "" (list-map f xs))))
 
 (impl (Over (Vec %a))
   (type %elem %a)
   (defun (over v f)
-    (vec-fold string-append "" (vec-map f v))))
+    (vec-fold (fun (s acc) (string-append acc s)) "" (vec-map f v))))
 
 ;; No implementation is known here, so the call goes through the dictionary.
 (: dispatched (-bjo-> %c (-bjo-> (assoc Over elem %c) string) string) (where (Over %c)))

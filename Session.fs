@@ -77,7 +77,14 @@ type Scope =
       /// compilation must find its way back to its own level regardless.
       Level: int
       Macros: Macro.State
-      Introduced: Set<string> }
+      Introduced: Set<string>
+      /// Which module's package declares what, and what this compilation has
+      /// resolved out of a shared framework so far. A dependency built on the
+      /// way answers for *its* package, and the outer compilation has to find
+      /// its own again afterwards — without this, a module that declared a
+      /// framework would be judged by the declarations of the last dependency
+      /// it happened to build.
+      Frameworks: Frameworks.State }
 
 /// What a compilation would find in a process that had done nothing else.
 let fresh: Scope =
@@ -85,14 +92,16 @@ let fresh: Scope =
       MetaCounter = 0
       Level = 0
       Macros = Macro.emptyState
-      Introduced = Set.empty }
+      Introduced = Set.empty
+      Frameworks = Frameworks.emptyState }
 
 let capture () : Scope =
     { Gensym = Gensym.snapshot ()
       MetaCounter = Unification.snapshotMetaCounter ()
       Level = Unification.snapshotLevel ()
       Macros = Macro.snapshot ()
-      Introduced = Hygiene.snapshotIntroduced () }
+      Introduced = Hygiene.snapshotIntroduced ()
+      Frameworks = Frameworks.snapshot () }
 
 let restore (scope: Scope) : unit =
     Gensym.restore scope.Gensym
@@ -100,6 +109,7 @@ let restore (scope: Scope) : unit =
     Unification.restoreLevel scope.Level
     Macro.restore scope.Macros
     Hygiene.restoreIntroduced scope.Introduced
+    Frameworks.restore scope.Frameworks
     // Not part of the scope value: the queue is either empty or garbage, and
     // there is never a reason to put a previous compilation's obligations back.
     // The same goes for the numeric literals still waiting to be settled.

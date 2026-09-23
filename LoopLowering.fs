@@ -249,6 +249,30 @@ let rec private lowerExpr (targets: LoopTarget list) (inTail: bool) (expr: Typed
                             Body = lowerExpr inner inTail c.Body })
                 ) }
 
+    // A `def` with a failure part answers with its sequel or with one of its
+    // arms, so each of them is in the position the form itself is in — the
+    // same rule `TMatch`'s arms follow. The scrutinee is not.
+    //
+    // Without this case the node fell to the catch-all below, which puts every
+    // child out of tail position: a function whose body began with
+    // `(def (Ok v) ... :propagate)` and then called itself lost its loop and
+    // recursed for real, one stack frame per element, where the same function
+    // written with `match` looped.
+    | TDefMatch(binder, scrutinee, sequel, arms) ->
+        let sequelScope = shadow (patternNames binder)
+
+        { expr with
+            Node =
+                TDefMatch(
+                    binder,
+                    notTail scrutinee,
+                    lowerExpr sequelScope inTail sequel,
+                    arms
+                    |> List.map (fun (a: TDefMatchArm) ->
+                        { a with
+                            Body = lowerExpr (shadow (patternNames a.Pattern)) inTail a.Body })
+                ) }
+
     | TLambda(args, b) ->
         { expr with
             Node = TLambda(args, newScope b) }
@@ -546,6 +570,7 @@ let rec private lowerDeclWith (aliasFor: string -> string list) (decl: TDecl) : 
 
     | TDef(name, value, t, r) -> TDef(name, lowerExpr [] false value, t, r)
     | TDefTuple(names, value, t, r) -> TDefTuple(names, lowerExpr [] false value, t, r)
+    | TDefPattern(pattern, value, binders, r) -> TDefPattern(pattern, lowerExpr [] false value, binders, r)
     | TDefMutable(name, value, t, r) -> TDefMutable(name, lowerExpr [] false value, t, r)
     | _ -> decl
 
