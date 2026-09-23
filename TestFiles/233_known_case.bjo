@@ -1,0 +1,45 @@
+(import (std prelude))
+(import (std simpletest))
+
+(type (: Shape (Union (circle int) (square int) empty)))
+
+(defun (main)
+  ;; A seed with an effect runs once, before the loop.
+  (def/mutable calls 0)
+  (defun (seed) (set! calls (+ calls 1)) (cast int 7))
+  (def (: nothing (List int)) (list))
+  (expect "folding over nothing keeps its seed"
+          (loop (:for x nothing) (:acc l (folding (seed) x)))
+          7)
+  (expect "and the seed was computed once" calls 1)
+
+  ;; Arguments are read where the case is built, not where it is matched.
+  (def/mutable n 1)
+  (def s (circle n))
+  (set! n 2)
+  (expect "a mutated argument is read at construction"
+          (match s ((circle r) r) (_ 0))
+          1)
+
+  ;; Arms are tried in order, and one for another case is passed over.
+  (def sq (square 3))
+  (expect "the arm for another case is skipped"
+          (match sq ((circle r) r) ((square w) (* w w)) ((empty) 0))
+          9)
+
+  ;; A guard is not decided at compile time.
+  (def c (circle 5))
+  (expect "a guard is still evaluated"
+          (match c ((circle r) #:when (> r 10) 1) ((circle r) 2) ((square _) 3) ((empty) 3))
+          2)
+
+  ;; A shadowed name is the inner binding.
+  (def e empty)
+  (expect "a shadowing binder wins"
+          (let ((e (circle 4)))
+            (match e ((circle r) r) (_ 0)))
+          4)
+  (expect "and the outer one is untouched"
+          (match e ((empty) 1) (_ 0))
+          1)
+  0)

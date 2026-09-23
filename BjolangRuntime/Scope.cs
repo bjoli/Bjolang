@@ -347,7 +347,7 @@ public static partial class BjolangRuntime {
 
             if (deadlineMs > 0)
                 _deadline = new System.Threading.Timer(
-                    static s => ((Scope)s!).Token.TrySetResult(new CancelReason.Deadline()),
+                    static s => ((Scope)s!).Token.TrySetResult(CancelReason.Deadline.Instance),
                     this,
                     deadlineMs,
                     System.Threading.Timeout.Infinite);
@@ -798,7 +798,7 @@ public static partial class BjolangRuntime {
             // Everything the scope waits for has finished. The token fires now
             // for the things it does not wait for: daemons, and any child that
             // was handed the token explicitly. A no-op if it has already fired.
-            Token.TrySetResult(new CancelReason.ScopesubEnded());
+            Token.TrySetResult(CancelReason.ScopesubEnded.Instance);
 
             // The deadline has nothing left to interrupt.
             _deadline?.Dispose();
@@ -965,7 +965,7 @@ public static partial class BjolangRuntime {
 
         var stillborn = new Promise<T>();
         stillborn.TrySetException(
-            new Bjolang.Runtime.Cancelled(new CancelReason.ScopesubEnded()));
+            new Bjolang.Runtime.Cancelled(CancelReason.ScopesubEnded.Instance));
         return stillborn;
     }
 

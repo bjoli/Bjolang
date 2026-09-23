@@ -980,12 +980,18 @@ public static partial class BjolangRuntime {
         public sealed record Requested(string Item1) : CancelReason;
 
         /// A time limit fired. What `with-deadline` raises.
-        public sealed record Deadline : CancelReason;
+        public sealed record Deadline : CancelReason {
+            /// What generated code reads for a nullary case.
+            public static readonly Deadline Instance = new();
+        }
 
         /// The scope owning the token returned normally. What `with-cancel`
         /// raises on the way out, so that a child handed the token stops rather
         /// than outliving the scope that made it.
-        public sealed record ScopesubEnded : CancelReason;
+        public sealed record ScopesubEnded : CancelReason {
+            /// What generated code reads for a nullary case.
+            public static readonly ScopesubEnded Instance = new();
+        }
 
         /// The scope body, or a sibling, threw.
         public sealed record Failed(Exception Item1) : CancelReason;

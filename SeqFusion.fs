@@ -685,17 +685,23 @@ let private tryFuse (expr: TypedExpr) : TypedExpr option =
 ///
 /// The loop's own `loopseq` and `loopenter` bindings are left alone: they *are*
 /// the use, and `tryFuse` reads the literal off them.
+///
+/// Bottom-up, because a value becomes a literal only once its own bindings have
+/// been moved: `(map f (filter p xs))` is `(let ((s <filter>)) (seq ...))`
+/// until the inner `s` is substituted, and a caller binding the whole of it
+/// would otherwise see a `let` and pass it by.
 let rec private propagate (expr: TypedExpr) : TypedExpr =
+    let expr = TypeVisitor.mapChildren propagate expr
+
     match expr.Node with
     | TLet(s, false, _, ({ Node = TSeq _ } as literal), body) when
         not (baseIs "loopseq" s)
         && not (baseIs "loopenter" s)
         && occurrences s body = 1
         ->
-        let literal' = propagate literal
         let body', _ = AlphaRename.freshenTyped [] body
-        propagate (substitute s literal' body')
-    | _ -> TypeVisitor.mapChildren propagate expr
+        substitute s literal body'
+    | _ -> expr
 
 /// Bottom-up: a fused loop is a seq literal to the loop that walks it.
 let rec private fuseExpr (expr: TypedExpr) : TypedExpr =

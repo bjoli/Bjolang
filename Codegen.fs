@@ -961,8 +961,12 @@ let rec serializeExpr (e: Ast.Expr) : string =
 
         list [ "begin"; bindForm; serializeExpr sequel ]
 
+    // `(def (a b) pair)`. Written with the `Tuple` head so that a first name
+    // starting with a capital does not read back as a constructor pattern.
+    | Ast.ELetTuple(names, value, body, _) ->
+        list [ "begin"; list [ "def"; list ("Tuple" :: names); serializeExpr value ]; serializeExpr body ]
+
     // No reader form produces these, so none can appear in a template body.
-    | Ast.ELetTuple _ -> failwith "an inline template body may not destructure a tuple binding"
     | Ast.EList _ -> failwith "an inline template body may not contain a bare list literal"
     // `,@` is spellable only inside a quote, and a quote of a list is the
     // `EList` refused on the line above — so this is reachable for a quoted
@@ -1777,7 +1781,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
                 // Enum cases with no arguments (like `None` or `True`) are treated as constant values,
                 // not function calls. Therefore, we have to enforce their types right here, because
                 // they bypass the normal function application logic (`generateApply`).
-                append ctx $"({typeStr})new {typeStr}.{declaredTypeName name}()"
+                append ctx $"({typeStr}){typeStr}.{declaredTypeName name}.Instance"
         | None ->
             let targetName = qualifiedName ctx name
             match expr.Type with
@@ -4834,8 +4838,11 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                         indent ctx
                         match c with
                         | SimpleCase (n, _) ->
+                            // One instance per closed type: every use of the
+                            // case reads it rather than allocating.
+                            let instance = $"public static readonly %s{declaredTypeName n} Instance = new();"
                             append ctx $"public sealed record %s{declaredTypeName n}() : %s{declaredTypeName td.Name}%s{tyArgsStr}"
-                            appendTypeBody ctx (materialized (declaredTypeName n) SealedCase)
+                            appendTypeBody ctx (instance :: materialized (declaredTypeName n) SealedCase)
                         | DataCase (n, ftypes, _, _) ->
                             append ctx $"public sealed record %s{declaredTypeName n}("
                             for i, ft in List.indexed ftypes do
@@ -5263,7 +5270,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                                 match c with
                                 | SimpleCase (n, _) ->
                                     indent ctx
-                                    appendLine ctx $"public static %s{declaredTypeName td.Name}%s{tyArgsStr} %s{declaredTypeName n}%s{tyArgsStr}() => new %s{declaredTypeName td.Name}%s{tyArgsStr}.%s{declaredTypeName n}();"
+                                    appendLine ctx $"public static %s{declaredTypeName td.Name}%s{tyArgsStr} %s{declaredTypeName n}%s{tyArgsStr}() => %s{declaredTypeName td.Name}%s{tyArgsStr}.%s{declaredTypeName n}.Instance;"
                                 | DataCase (n, ftypes, _, _) ->
                                     indent ctx
                                     append ctx $"public static %s{declaredTypeName td.Name}%s{tyArgsStr} %s{declaredTypeName n}%s{tyArgsStr}("

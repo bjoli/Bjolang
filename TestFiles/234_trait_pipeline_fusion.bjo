@@ -1,0 +1,26 @@
+;; Iterable defaults chained through each other. Run with BJOLANG_NO_FUSION=1
+;; too: the output must be the same, including the order of the p/m/f lines.
+
+(import (std prelude))
+(import (std simpletest))
+
+(defun (main)
+  (def v [1 2 3 4 5 6])
+
+  (expect "fold over map over filter"
+          (fold (fun (x acc) (+ acc x)) 0
+                (map (fun (x) (* x 10)) (filter (fun (x) (even? x)) v)))
+          120)
+
+  (def s (filter (fun (x) (odd? x)) v))
+  (def t (map (fun (x) (* x x)) s))
+  (expect "a pipeline split over defs" (fold (fun (x acc) (+ acc x)) 0 t) 35)
+
+  (expect "any? over a map" (any? (fun (x) (> x 20)) (map (fun (x) (* x 5)) v)) #t)
+  (expect "find over a filter" (find (fun (x) (> x 3)) (filter (fun (x) (even? x)) v)) (Some 4))
+
+  (println "interleaving:")
+  (ignore (fold (fun (x acc) (println #"f${x}") (+ acc x)) 0
+                (map (fun (x) (println #"m${x}") x)
+                     (filter (fun (x) (println #"p${x}") (odd? x)) [1 2 3]))))
+  0)

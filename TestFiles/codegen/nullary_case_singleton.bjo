@@ -1,0 +1,20 @@
+;; A nullary union case is one shared instance per closed type, not an
+;; allocation per use.
+;;
+;; EXPECT-CS: public static readonly \S*Leaf Instance = new\(\);
+;; EXPECT-CS: \S*Leaf(<[^>]*>)?\(\) => \S*Leaf\.Instance;
+;; EXPECT-CS: \S*Leaf\.Instance, x, 
+;; EXPECT-NO-CS: new \S*Leaf\(\)
+
+(import (std prelude))
+
+(export Tree insert)
+
+(type (: (Tree %a) (Union Leaf (Node (Tree %a) %a (Tree %a)))))
+
+(: insert (-> (Tree int) int (Tree int)))
+(defun (insert t x)
+  (match t
+    (Leaf (Node Leaf x Leaf))
+    ((Node l v r)
+     (if (< x v) (Node (insert l x) v r) (Node l v (insert r x))))))

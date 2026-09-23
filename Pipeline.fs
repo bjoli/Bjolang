@@ -257,7 +257,7 @@ let private constrainedBodyTemplate
         | _ -> failwithf $"Malformed constrained body in metadata for '%s{entry.Name}'."
 
     { Params = entry.Params
-      Body = Parser.parseExpr form
+      Body = LetRecify.letrecifyExpr (Parser.parseExpr form)
       Qualification = Map.ofList entry.Qualification
       OriginModule = entry.OriginModule }
 
@@ -280,7 +280,9 @@ let private inlineImplDecl (source: string) (entry: ModuleMetadata.InlineTemplat
         entry.Ctor,
         entry.OriginModule,
         entry.Params,
-        Parser.parseExpr form,
+        // The reader joins consecutive `defun`s into one group. `SeqFusion`
+        // recognizes a loop only in the split shape `LetRecify` gives it.
+        LetRecify.letrecifyExpr (Parser.parseExpr form),
         entry.Qualification,
         getRange form
     )
@@ -2096,8 +2098,12 @@ let runFullFrontendPipeline (mainFilePath: string) =
         // which is what `LoopLowering` needs in order to emit it inline.
         let fusedAst = Timing.phase "seq fusion" (fun () -> SeqFusion.run inlinedAst)
 
+        // Before dictionary lowering, which turns a match into type tests that
+        // no longer name the case they test for.
+        let simplifiedAst = Timing.phase "simplify" (fun () -> Simplify.run env fusedAst)
+
         Diagnostics.progress "=== Step 6: Dictionary Lowering ==="
-        let loweredAst = Timing.phase "dictionary lowering" (fun () -> Lowering.lowerProgram env fusedAst)
+        let loweredAst = Timing.phase "dictionary lowering" (fun () -> Lowering.lowerProgram env simplifiedAst)
 
         Diagnostics.progress "=== Step 7: Loop Lowering ==="
         let loopLoweredAst = Timing.phase "loop lowering" (fun () -> LoopLowering.lowerProgram loweredAst)
