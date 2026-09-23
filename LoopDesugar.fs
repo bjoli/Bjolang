@@ -63,7 +63,14 @@ type private LoopClause =
     /// modifier the loop form intercepts, never something the collector sees: it
     /// mentions loop variables, and construction arguments are hoisted out of
     /// the loop entirely.
-    | LAcc of string * SExpr * SExpr option * Range
+    ///
+    /// The name may be left out — `(:acc (listing x))` — in which case one is
+    /// invented. A loop that never mentions its accumulator again has nothing to
+    /// name: the value leaves through the finish block, which reads the slots
+    /// rather than the source. An invented name is a gensym, so such an
+    /// accumulator is exactly the one that cannot be read back: not by a later
+    /// clause, not by `=>`, and not by a named loop's `#:name` override.
+    | LAcc of string option * SExpr * SExpr option * Range
     /// Ends the whole loop when the condition holds, before the rest of the
     /// iteration runs. Routes through the finish block like every other exit.
     | LBreak of SExpr * Range
@@ -95,6 +102,10 @@ type private AccSlot =
       /// `:final`'s accumulator, which is not the author's and must not appear
       /// in the finish block's result.
       Hidden: bool
+      /// Whether the name above is the author's. A gensym otherwise — `:final`'s
+      /// slot and an `:acc` that gave no name — and then nothing in the source
+      /// can spell it, so a `#:name` override must not offer it either.
+      Named: bool
       /// The level whose body steps it. Every accumulator is a slot on *every*
       /// member — they are hoisted — but only one level runs its step.
       Level: int
@@ -134,6 +145,16 @@ let rec internal isLoopForm (args: SExpr list) : bool =
     // argument — still is not one, because `(g 1)` is not keyword-headed.
     | SAtom { Token = Symbol _ } :: SList(SAtom { Token = Keyword _ } :: _, _) :: _ -> true
     | _ -> false
+
+/// An `:acc` clause's trailing `#:when`, which both spellings of the clause
+/// take and neither requires.
+and private accModifier (rest: SExpr list) (r: Range) : SExpr option =
+    match rest with
+    | [] -> None
+    | [ SAtom { Token = Keyword "when" }; cond ] -> Some cond
+    | _ ->
+        failwithf
+            $"Invalid (:acc ...) at %s{Lexer.formatPos r}. Expected: (:acc [name] (collector ...) [#:when cond])"
 
 /// Reads one clause. Nothing is desugared here.
 and private parseLoopClause (s: SExpr) : LoopClause =
@@ -191,18 +212,17 @@ and private parseLoopClause (s: SExpr) : LoopClause =
             failwithf $"Invalid (:end-subloop-if ...) at %s{Lexer.formatPos r}. Expected: (:end-subloop-if cond)"
 
     | SList(SAtom { Token = Keyword "acc" } :: SAtom { Token = Symbol name } :: collector :: rest, r) ->
-        let modifier =
-            match rest with
-            | [] -> None
-            | [ SAtom { Token = Keyword "when" }; cond ] -> Some cond
-            | _ ->
-                failwithf
-                    $"Invalid (:acc ...) at %s{Lexer.formatPos r}. Expected: (:acc name (collector ...) [#:when cond])"
+        LAcc(Some name, collector, accModifier rest r, r)
 
-        LAcc(name, collector, modifier, r)
+    // The name omitted. A collector form is a list and a name is a symbol, so
+    // the two shapes are told apart by what follows `:acc` and neither has to
+    // look ahead.
+    | SList(SAtom { Token = Keyword "acc" } :: (SList _ as collector) :: rest, r) ->
+        LAcc(None, collector, accModifier rest r, r)
 
     | SList(SAtom { Token = Keyword "acc" } :: _, r) ->
-        failwithf $"Invalid (:acc ...) at %s{Lexer.formatPos r}. Expected: (:acc name (collector ...) [#:when cond])"
+        failwithf
+            $"Invalid (:acc ...) at %s{Lexer.formatPos r}. Expected: (:acc [name] (collector ...) [#:when cond]). The name is optional and only worth giving when a later clause, a => or a named loop reads the accumulator back."
 
     // Both take a condition rather than being guarded by a preceding `:when`:
     // clauses do not compose, so there is no bare `(:break)` to be reached
@@ -744,11 +764,15 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
 
                 Some
                     { Collector = Gensym.fresh "loopcol"
-                      Name = name
+                      // A clause that gave no name gets a gensym, which is what
+                      // makes such an accumulator unreadable rather than merely
+                      // unread: there is no name in the source to spell.
+                      Name = name |> Option.defaultWith (fun () -> Gensym.fresh "loopacc")
                       CollectorExpr = collectorExpr
                       StepForm = stepForm
                       Modifier = modifier
                       Hidden = false
+                      Named = name.IsSome
                       Level = level
                       Range = cr }
 
@@ -762,12 +786,19 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
                       StepForm = cond
                       Modifier = None
                       Hidden = true
+                      Named = false
                       Level = level
                       Range = cr }
 
             | _ -> None)
 
     let accNames = accInfo |> List.map (fun slot -> slot.Name)
+
+    /// The accumulators a named loop may override, which are the ones the author
+    /// can write: an `:acc` that gave no name has none to put after `#:`, and
+    /// `:final`'s is not the author's at all.
+    let overridableAccNames =
+        accInfo |> List.choose (fun slot -> if slot.Named then Some slot.Name else None)
 
     /// Every name a `:with` clause binds, at any level.
     let withVarNames =
@@ -1147,11 +1178,8 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
             match rest with
             | [] -> acc
             | EKeyword(k, kr) :: value :: tl ->
-                if not (List.contains k accNames || List.contains k overridableWithNames) then
-                    let known =
-                        (accNames |> List.filter (fun n -> not (n.StartsWith "loopfinal")))
-                        @ overridableWithNames
-                        |> String.concat ", "
+                if not (List.contains k overridableAccNames || List.contains k overridableWithNames) then
+                    let known = overridableAccNames @ overridableWithNames |> String.concat ", "
 
                     let known = if known = "" then "(none)" else known
 

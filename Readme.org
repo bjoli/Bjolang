@@ -247,7 +247,7 @@ Bjolangs loop is based on what I learned writing goof-loop, but instead of using
         (:for b my-vec)
         (:break (= a (* b 2)))
         (:when (not (= a b)))
-        (:acc acc (listing (+ a b)))))
+        (:acc (listing (+ a b)))))
 #+end_src
 
 It also supports subloops. Anything that isn't a for clause followed by a :for clause starts a subloop:
@@ -255,10 +255,10 @@ It also supports subloops. Anything that isn't a for clause followed by a :for c
 #+begin_src scheme
 (defun (main args)
   (loop (:for a '(1 2 3))
-        (:acc acclst (listing (* a a)))
+        (:acc (listing (* a a)))
         (:when (odd? a))
         (:for b [1 2])
-        (:acc accvecc (vectoring (a . b)))))
+        (:acc (vectoring (a . b)))))
 ;; => (1 4 9)
 ;;    [(1 . 1) (1 . 2) (3 . 1) (3 . 2)]
 #+end_src
@@ -400,12 +400,7 @@ add #:align to columnar and tabular in (std fmt)
 
 remove the use for (bjoroutine ...) special syntax in places where the lambda is in direct argument position: (result-map #(read-line &) r) currently needs a bjoroutine.
 
-
 extend match to support Records and Structs in a pretty way.  
-
-Extend do notation to be more usable. :traverse :and<- ( :and<- seems _very hard_ atm).
-
-Even better: do a CPS macro like goof-loop and let users define their own do clauses. 
 
 output LINE-directives a little bit better than I do now
 
@@ -423,15 +418,15 @@ Turn let-bound functions that are only  ever in function position as functions r
 
 Some simple inlining.
 
-do literal hoisting of regular expressions
+do literal hoisting of regular expressions.
 
-nullary cases should be singletons
+nullary cases should be singletons?
 
 Optimize loop for the JIT: Folding should not be a stack value. this would also help every newtype if applied to all non-recursive union types.
 
 case-of-known-constructor and dead-binding elimination would kill all allocations in loop without the jit having to do any work. 
 
-Hoist the threadlocal loads oznf several parameter-ref in synchronous functions. Say I do 5 (parameter-ref ) in a body, since there is no parameter-set! we can hoist the environment so that we do not pay the [ThreadLocal] read cost.
+Hoist the threadlocal loads of several parameter-ref in synchronous functions. Say I do 5 (parameter-ref ) in a body, since there is no parameter-set! we can hoist the environment so that we do not pay the [ThreadLocal] read cost.
 
 Currently I do no CSE and no function inlining other than direct inlining of applied lambdas. 
 
@@ -439,4 +434,3 @@ let bound lambdas that are only ever called should be a static local
 
 Unboxing small unions, say if someone call map-try-ref in a tight loop.
 
-the build in json module goes a pretty roundabout way wrt serializing. It reads between 150-380MB/s, but the serializing into records is bound to slow that down.

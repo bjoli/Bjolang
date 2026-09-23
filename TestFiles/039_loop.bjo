@@ -107,6 +107,33 @@
         (:acc best (folding 0 (if (> x best) x best)))
         => best))
 
+;; The name is optional. A loop that never reads its accumulator back has
+;; nothing to call it, and the value leaves through the finish block, which
+;; reads slots rather than source. The invented name is a gensym, so an
+;; anonymous accumulator is precisely the one nothing can mention.
+(: evens (-> (Vec int) (List int)))
+(defun (evens xs)
+  (loop (:for x xs)
+        (:acc (listing x) #:when (= 0 (% x 2)))))
+
+;; Two of them, and the result is still the tuple of finished values in
+;; declaration order.
+(: sum-and-count (-> (Vec int) (Tuple int int)))
+(defun (sum-and-count xs)
+  (loop (:for x xs)
+        (:acc (summing x))
+        (:acc (counting x))))
+
+;; Named and anonymous in one loop: naming is per clause, so the named one is
+;; still readable by a later clause and by `=>`.
+(: counted-until (-> (Vec int) int))
+(defun (counted-until xs)
+  (loop (:for x xs)
+        (:acc seen (counting x))
+        (:acc (listing x))
+        (:break (> seen 2))
+        => seen))
+
 ;; Two `listing` collectors in one function at two different element types. If a
 ;; prologue binding generalized, the element type would never pin down and
 ;; codegen would emit a type parameter that was never declared.
@@ -357,6 +384,13 @@
 
   (expect "largest" (largest (Cons 3 (Cons 9 (Cons 4 Nil)))) 9)
   (expect "largest-empty" (largest Nil) 0)
+
+  (expect "anonymous accumulator" (show (evens [1 2 3 4 5 6])) " 2 4 6")
+  (expect "anonymous accumulator, none kept" (list-length (evens [1 3 5])) 0)
+  (def (anon-sum anon-count) (sum-and-count [1 2 3 4]))
+  (expect "two anonymous accumulators sum" anon-sum 10)
+  (expect "two anonymous accumulators count" anon-count 4)
+  (expect "named beside anonymous" (counted-until [1 2 3 4 5]) 3)
 
   (def (ni ns) (both xs (Cons "a" (Cons "b" Nil))))
   (expect "both-ints" ni 4)

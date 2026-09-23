@@ -1167,13 +1167,27 @@ See `Docs/MACROS.org` for more details.
 | `(:break-let pat expr)`         | The same, but a pattern that does not match ends the loop. |
 | `(:do expr ...)`                | Executes for side-effects, discarding result.      |
 | `(:when cond)`                  | Skips the rest of the current iteration unless `cond` holds. |
-| `(:acc name (coll ...) #:when c)`| Accumulates values into `coll`; optionally gated by `#:when`. |
+| `(:acc [name] (coll ...) #:when c)`| Accumulates values into `coll`; optionally gated by `#:when`. The name is optional. |
 | `(:break cond)`                 | Immediately aborts the entire loop.                |
 | `(:final cond)`                 | Aborts the loop *after* the current iteration completes. |
 | `(:until-cancelled [tok])`      | Ends loop upon a cancellation token firing.        |
 | `(:end-subloop-if cond)`        | Exits the current loop level and resumes the enclosing one. |
 | `(:subloop)`                    | Explicitly opens a new loop level.                 |
 | `(:yield expr)`                 | Used in `(seql ...)` to produce an element.        |
+
+**** An accumulator need not be named
+The name in `(:acc name (coll ...))` may be left out, and one is invented:
+
+#+BEGIN_SRC scheme
+(loop (:for x xs)
+      (:acc (listing x) #:when (even? x)))       ;; => the list of even x
+#+END_SRC
+
+Name one when something reads it back — a later clause, a `=>`, or a named
+loop's `#:name` override. Nothing can read an anonymous one, because the name it
+is given is a gensym. Several in one loop still deliver a tuple of the finished
+values in clause order, so `(:acc (summing x)) (:acc (counting x))` answers the
+sum and the count.
 
 **** `:when-let` and `:break-let`
 A `:let` binds by destructuring and its pattern must always match, because a
