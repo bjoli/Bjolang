@@ -468,21 +468,19 @@
                (failed? (run/string '(pipe (echo "x") ,broken (cat)))))
 
   ;; ---- failure at parse time ---------------------------------------------
-  ;; The tag is read at run time, so a malformed form is a value rather than a
-  ;; type error. It is read *before anything starts*, which is what makes that
-  ;; bearable.
+  ;; The tags are matched where the form is written, so a misspelled one, a
+  ;; redirection missing an argument and a stage that is no form at all are type
+  ;; errors now — see TestFiles/errors/run_tag_bare_stage.bjo and its
+  ;; neighbours. What is left for `run` is what a type cannot say: a `#:rest`
+  ;; case may be empty, a command's words are one flat list, and the wiring
+  ;; between stages is only looked at once there is a tree to wire.
   (expect-true "an empty form is an Err"
                (failed? (run/string '())))
 
   (expect-true "a pipe with no stages is an Err"
                (failed? (run/string '(pipe))))
 
-  ;; A bare tag in stage position is a forgotten pair of parentheses far more
-  ;; often than it is a program of that name, so it is refused rather than run.
-  (expect-true "a bare tag as a stage is an Err"
-               (failed? (run/string '(pipe (echo "x") into-file "out.txt"))))
-
-  ;; ...and a string head is how you would name a program called `pipe`. This
+  ;; A string head is how you would name a program called `pipe`. This
   ;; discriminates: as a tag, `(wc -l)` would be a stage and the form would run;
   ;; as a program name, `(wc -l)` is a nested form among its arguments, which a
   ;; command's words may not contain.
@@ -493,17 +491,8 @@
           (match (run/string '(pipe (echo "tagged"))) ((Ok s) s) ((Err e) "ERR"))
           "tagged\n")
 
-  (expect-true "a number where a stage belongs is an Err"
-               (failed? (run/string '(pipe (echo "x") 7))))
-
   (expect-true "a filter followed by a word is an Err"
                (failed? (run/string '(,shout (wc -l)))))
-
-  (expect-true "a redirect with no file name is an Err"
-               (failed? (run/string '(into-file (echo "x")))))
-
-  (expect-true "a redirect with nothing to run is an Err"
-               (failed? (run/string '(into-file "out.txt"))))
 
   (expect-true "a nested form among a command's arguments is an Err"
                (failed? (run/string '(echo "x" (wc -l)))))

@@ -134,7 +134,27 @@
                  (WCmd Cmd)
                  (WFilter Filter)
                  (WForm (List Word))))
-  (: Form (Alias (List Word))))
+
+  ;; A form is one thing to run, written as a quoted literal. The head of that
+  ;; literal names its case: `pipe`, `from-file` and the four beside them carry
+  ;; `#:tag`, so the name, the number of arguments and every position are
+  ;; checked where the form is written rather than by `run` at start-up. What
+  ;; no tag names is a command, the untagged cases that keep `'(sort)` and
+  ;; `'(echo "x")` meaning what they always did. `#:rest` is why a pipeline
+  ;; takes any number of stages and why the tag is consumed rather than read as
+  ;; a word.
+  (: Form (Union (FSym Symbol)                     ;; a bare program name
+                 (FStr string)                     ;; ...written as a string
+                 (FArgv (Vec string))              ;; ...or a computed argv
+                 (FCmdValue Cmd)                   ;; a bare ,(cmd ...)
+                 (FFilter Filter)                  ;; a bare ,filter
+                 (FCmd (List Word))                ;; (echo "x")
+                 (FPipe (List Form) #:tag pipe #:rest)
+                 (FFrom string Form #:tag from-file)
+                 (FInto string Form #:tag into-file)
+                 (FAppend string Form #:tag append-to-file)
+                 (FErrInto string Form #:tag errors-into-file)
+                 (FErrAppend string Form #:tag errors-append-to-file))))
 
 (: cmd (-> string #:rest string Cmd))
 (defun (cmd program #:rest arguments)
@@ -156,15 +176,6 @@
                  (NRedirect Redirect)))
   (: Redirect (Record (: how Redirection) (: path string) (: inner Node))))
 
-(: tag->redirection (-> string (Option Redirection)))
-(defun (tag->redirection tag)
-  (cond ((= tag "from-file") (Some RFrom))
-        ((= tag "into-file") (Some RInto))
-        ((= tag "append-to-file") (Some RAppend))
-        ((= tag "errors-into-file") (Some RErrInto))
-        ((= tag "errors-append-to-file") (Some RErrAppend))
-        (else None)))
-
 (: word->text (-> Word string))
 (defun (word->text w)
   (match w
@@ -177,12 +188,6 @@
     ((WFilter f) "an unquoted filter")
     ((WForm ws) "a nested form")))
 
-(: tag? (-> string bool))
-(defun (tag? name)
-  (if (= name "pipe")
-      #t
-      (match (tag->redirection name) ((Some how) #t) (None #f))))
-
 (: command-of (-> (Vec string) (Result Exception Node)))
 (defun (command-of argv)
   (if (vec-empty? argv)
@@ -190,57 +195,52 @@
       (Ok (NCmd (Cmd (program (vec-ref argv 0))
                      (arguments (vec-slice argv 1 (- (vec-length argv) 1))))))))
 
-;; Parses a pipeline stage.
-(: parse-stage (-> Word (Result Exception Node)))
-(defun (parse-stage w)
-  (match w
-    ((WForm ws) (parse-form ws))
-    ((WFilter f) (Ok (NFilter f)))
-    ((WCmd c) (Ok (NCmd c)))
-    ;; Checks for unquoted tags.
-    ((WSym s)
-     (let ((name (symbol->string s)))
-       (if (tag? name)
-           (Err (run-error
-                 (str "`" name "` is a tag, so it needs a form of its own — as in (into-file \"out.txt\" (ls -l))")))
-           (command-of [name]))))
-    ((WStr s) (command-of [s]))
-    ((WArgv v) (command-of v))
-    (_ (Err (run-error
-             (str "expected something to run here — a program name, a form like (wc -l), an unquoted ,(cmd ...) or a filter — but found "
-                  (word->text w)))))))
+;; One form, translated to a node. Every tag was matched where the form was
+;; written, so what is left is the shape of the pipeline and the words of a
+;; command — the one part of a form the elaborator hands over as a flat list.
+(: form->node (-> Form (Result Exception Node)))
+(defun (form->node form)
+  (match form
+    ((FSym s) (command-of [(symbol->string s)]))
+    ((FStr s) (command-of [s]))
+    ((FArgv v) (command-of v))
+    ((FCmdValue c) (Ok (NCmd c)))
+    ((FFilter f) (Ok (NFilter f)))
+    ((FCmd words) (parse-words words))
+    ((FPipe forms) (parse-stages forms))
+    ((FFrom path inner) (form->redirect RFrom path inner))
+    ((FInto path inner) (form->redirect RInto path inner))
+    ((FAppend path inner) (form->redirect RAppend path inner))
+    ((FErrInto path inner) (form->redirect RErrInto path inner))
+    ((FErrAppend path inner) (form->redirect RErrAppend path inner))))
 
-(: parse-stages (-> (List Word) (Result Exception Node)))
-(defun (parse-stages ws)
-  (match ws
+(: parse-stages (-> (List Form) (Result Exception Node)))
+(defun (parse-stages forms)
+  (match forms
     (Nil (Err (run-error "(pipe ...) needs at least one thing to run")))
-    ((Cons only Nil) (parse-stage only))
-    (_ (match (parse-each ws)
+    ((Cons only Nil) (form->node only))
+    (_ (match (form->each forms)
          ((Err e) (Err e))
          ((Ok nodes) (Ok (NPipe nodes)))))))
 
-(: parse-each (-> (List Word) (Result Exception (List Node))))
-(defun (parse-each ws)
-  (match ws
+(: form->each (-> (List Form) (Result Exception (List Node))))
+(defun (form->each forms)
+  (match forms
     (Nil (Ok Nil))
-    ((Cons w rest)
-     (match (parse-stage w)
+    ((Cons form rest)
+     (match (form->node form)
        ((Err e) (Err e))
        ((Ok node)
-        (match (parse-each rest)
+        (match (form->each rest)
           ((Err e) (Err e))
           ((Ok more) (Ok (Cons node more)))))))))
 
-;; Parses redirection target.
-(: parse-redirect (-> Redirection string (List Word) (Result Exception Node)))
-(defun (parse-redirect how tag rest)
-  (match rest
-    ((Cons (WStr path) (Cons inner Nil))
-     (match (parse-stage inner)
-       ((Err e) (Err e))
-       ((Ok node) (Ok (NRedirect (Redirect (how how) (path path) (inner node)))))))
-    (_ (Err (run-error
-             (str "(" tag " ...) needs a file name and one thing to run, as in (into-file \"out.txt\" (ls \"-l\"))"))))))
+;; A redirection is its file name and the one form it wraps.
+(: form->redirect (-> Redirection string Form (Result Exception Node)))
+(defun (form->redirect how path inner)
+  (match (form->node inner)
+    ((Err e) (Err e))
+    ((Ok node) (Ok (NRedirect (Redirect (how how) (path path) (inner node)))))))
 
 ;; The words of one command, flattened. The first is the program and the rest
 ;; are its arguments, each one argument whatever it contains — nothing here
@@ -281,42 +281,39 @@
                      (word->text w)
                      ", which belongs in a (pipe ...) rather than among arguments."))))))))
 
-;; A form that is one thing already: `,(cmd ...)` and a filter both carry
-;; everything they need, so a word after one is a pipeline nobody named.
-(: only-word (-> Word (List Word) string (Result Exception Node)))
-(defun (only-word head rest what)
-  (match rest
-    (Nil (parse-stage head))
-    (_ (Err (run-error
-             (str what
-                  " is a whole stage on its own, so nothing may follow it here. To run several things in turn, name it: (pipe ...)"))))))
 
-;; Parses full form grammar.
-(: parse-form (-> Form (Result Exception Node)))
-(defun (parse-form words)
-  (match words
+
+;; A form written as a list is a command, or one thing that is a whole stage on
+;; its own: `'(,my-filter)` and `'(,(cmd ...))`. The tags were matched on the
+;; union before this runs, so a list's head is never one here — `'(sort)` and
+;; `'(echo "x")` are commands, and `'(pipe ...)` never reaches this at all.
+(: parse-words (-> (List Word) (Result Exception Node)))
+(defun (parse-words ws)
+  (match ws
     (Nil (Err (run-error "an empty form: there is nothing here to run")))
     ((Cons head rest)
      (match head
-       ((WSym s)
-        (let ((tag (symbol->string s)))
-          (if (= tag "pipe")
-              (parse-stages rest)
-              (match (tag->redirection tag)
-                ((Some how) (parse-redirect how tag rest))
-                (None (parse-command words))))))
-       ;; A string head is the way to run a program whose name is one of the
-       ;; tags: '("pipe" "-x") is the program, '(pipe ...) is the form.
-       ((WStr s) (parse-command words))
-       ((WArgv v) (parse-command words))
-       ((WCmd c) (only-word head rest "an unquoted ,(cmd ...)"))
-       ((WFilter f) (only-word head rest "a filter"))
+       ((WFilter f) (stage-alone (NFilter f) rest "a filter"))
+       ((WCmd c) (stage-alone (NCmd c) rest "an unquoted ,(cmd ...)"))
        ((WForm ws)
         (Err (run-error
               "this form begins with another form. To run several things in turn, name it: (pipe (cat \"a\") (wc -l))")))
+       ((WSym s) (parse-command ws))
+       ((WStr s) (parse-command ws))
+       ((WArgv v) (parse-command ws))
        (_ (Err (run-error
                 (str "a program name has to be a word, and this form begins with "
                      (word->text head)))))))))
+
+;; A form that is one thing already carries everything it needs, so a word
+;; after it is a pipeline nobody named.
+(: stage-alone (-> Node (List Word) string (Result Exception Node)))
+(defun (stage-alone node rest what)
+  (match rest
+    (Nil (Ok node))
+    (_ (Err (run-error
+             (str what
+                  " is a whole stage on its own, so nothing may follow it here. To run several things in turn, name it: (pipe ...)"))))))
 
 
 ;; ===========================================================================
@@ -568,7 +565,7 @@
 ;; Parses and runs form.
 (: run (-> Form (Result Exception Proc)))
 (defun (run form)
-  (match (parse-form form)
+  (match (form->node form)
     ((Err e) (Err e))
     ((Ok node)
      (match (wire node None)
