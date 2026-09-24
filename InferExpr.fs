@@ -378,7 +378,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
           Node = TWithReturn(label, typedBody) }
 
     | EDefMatch(binder, scrutinee, failure, sequel, r) ->
-        inferDefMatch env binder scrutinee failure sequel r
+        inferDefMatch infer env binder scrutinee failure sequel r
 
 
     // `std/eq`'s own equality primitives, refused everywhere else. See
@@ -560,32 +560,18 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     // first, exactly as `let` does, so the binding keeps its concrete head; only
     // the quantification is dropped.
     | ELetMono(name, value, body, r) ->
-        let valType, typedVal = infer env value
-
-        let localEnv =
-            addBinding
-                name
-                { Scheme = Scheme([], [], valType)
-                  IsMutable = false }
-                env
-
-        let bodyType, typedBody = infer localEnv body
-
-        bodyType,
-        { Type = bodyType
-          Range = r
-          Node = TLet(name, false, noParams, typedVal, typedBody) }
+        inferLetMono infer env name value body r
 
     | ELet(name, isFun, args, typeAnn, value, body, r) ->
-        inferLet env name isFun args typeAnn value body r
+        inferLet infer env name isFun args typeAnn value body r
 
 
     | ELetRec(bindings, body, r) ->
-        inferLetRec env bindings body r
+        inferLetRec infer env bindings body r
 
 
     | ELetMutable(name, typeAnn, value, body, r) ->
-        inferLetMutable env name typeAnn value body r
+        inferLetMutable infer env name typeAnn value body r
 
 
     | ESet(name, value, r) ->
@@ -604,16 +590,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
           Node = TSet(name, typedVal) }
 
     | EIf(cond, trueBranch, falseBranch, r) ->
-        let condType, tCond = infer env cond
-        unify env.Registry condType TypeConstants.boolType
-        let trueType, tTrue = infer env trueBranch
-        let falseType, tFalse = infer env falseBranch
-        unify env.Registry trueType falseType
-
-        trueType,
-        { Type = trueType
-          Range = r
-          Node = TIf(tCond, tTrue, tFalse) }
+        inferIf infer env cond trueBranch falseBranch r
 
     | EWhen(cond, body, negated, r) ->
         let condType, tCond = infer env cond
@@ -671,27 +648,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
           Node = TTupleMake(typedExprs |> List.map snd) }
 
     | ELetTuple(names, value, body, r) ->
-        let valType, typedVal = infer env value
-        let elementMetas = names |> List.map (fun _ -> freshMeta ())
-        unify env.Registry valType (TTuple elementMetas)
-
-        let localEnv =
-            List.zip names elementMetas
-            |> List.fold
-                (fun acc (n, t) ->
-                    addBinding
-                        n
-                        { Scheme = Scheme([], [], t)
-                          IsMutable = false }
-                        acc)
-                env
-
-        let bodyType, typedBody = infer localEnv body
-
-        bodyType,
-        { Type = bodyType
-          Range = r
-          Node = TLetTuple(names, typedVal, typedBody) }
+        inferLetTuple infer env names value body r
 
     | EList(exprs, r) -> inferCollection env "List" "list" TListMake exprs r
 
@@ -766,7 +723,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
 
 
     | EMatch(target, clauses, r) ->
-        inferMatch env target clauses r
+        inferMatch infer env target clauses r
 
 
     | EGetField(targetExpr, field, r) ->
@@ -991,6 +948,7 @@ and private inferEscapeCall (env: Env) (name: string) (args: Expr list) (r: Rang
       Node = TReturn(info.Label, typedValue) }
 
 and private inferDefMatch
+    (tail: Env -> Expr -> HMType * TypedExpr)
     (env: Env)
     (binder: Pattern)
     (scrutinee: Expr)
@@ -1019,7 +977,7 @@ and private inferDefMatch
     // whole form's value, exactly as an `if`'s two branches do. A body that
     // means to leave an enclosing block says so with a `(ret ...)`, which is an
     // ordinary tail-position form here.
-    let sequelType, typedSequel = infer (withVars boundVars env) sequel
+    let sequelType, typedSequel = tail (withVars boundVars env) sequel
 
     // `:propagate` rebuilds every case its pattern leaves out, each written as
     // the arm that rebuilds it and checked as any other arm is. The case name
@@ -1042,7 +1000,7 @@ and private inferDefMatch
         failureArms
         |> List.map (fun (propagated, armPattern, armBody) ->
             let typedPattern, armVars = checkPattern inferChecked env scrutineeType armPattern
-            let armType, typedBody = infer (withVars armVars env) armBody
+            let armType, typedBody = tail (withVars armVars env) armBody
 
             try
                 unify env.Registry armType sequelType
@@ -2005,6 +1963,13 @@ and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Rang
                 // signature says so, the same way `(f '(pipe …))` is a `Form`.
                 | (EList _ | EVec _ | EArray _ | EString _ | EQuotedSymbol _ | EInt _), Some paramTy ->
                     inferChecked paramTy env arg
+                // So is a form that ends in one, `(f (if c '(a) '(b)))`. Not
+                // at a parameter still waiting on an implementor, which
+                // `pinToParam` leaves alone too: a lambda in a branch would
+                // be pinned to it.
+                | (EIf _ | ELet _ | ELetMono _ | ELetRec _ | ELetMutable _ | ELetTuple _ | EMatch _ | EDefMatch _),
+                  Some paramTy when not (awaitsImplementor env.Registry paramTy) ->
+                    inferChecked paramTy env arg
                 | _ -> infer env arg
 
             pinToParam i argType
@@ -2125,7 +2090,65 @@ and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Rang
           Range = r
           Node = TApply(typedTarget, positionalArgs |> List.map snd, []) }
 
-and private inferLet (env: Env) (name: string) (isFun: bool) (args: DefunArg list) (typeAnn: FType option) (value: Expr) (body: Expr) (r: Range) : HMType * TypedExpr =
+// The forms below take `tail`, which is how their tail positions are inferred:
+// `infer`, or `inferChecked expected` when the context expects a type. The
+// expectation is what lets a literal in a branch or a body be elaborated.
+and private inferIf (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (cond: Expr) (trueBranch: Expr) (falseBranch: Expr) (r: Range) : HMType * TypedExpr =
+    let condType, tCond = infer env cond
+    unify env.Registry condType TypeConstants.boolType
+    let trueType, tTrue = tail env trueBranch
+    let falseType, tFalse = tail env falseBranch
+    unify env.Registry trueType falseType
+
+    trueType,
+    { Type = trueType
+      Range = r
+      Node = TIf(tCond, tTrue, tFalse) }
+
+// Deliberately not generalized — see `ELetMono`. The value is inferred first,
+// exactly as `let` does, so the binding keeps its concrete head; only the
+// quantification is dropped.
+and private inferLetMono (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (name: string) (value: Expr) (body: Expr) (r: Range) : HMType * TypedExpr =
+    let valType, typedVal = infer env value
+
+    let localEnv =
+        addBinding
+            name
+            { Scheme = Scheme([], [], valType)
+              IsMutable = false }
+            env
+
+    let bodyType, typedBody = tail localEnv body
+
+    bodyType,
+    { Type = bodyType
+      Range = r
+      Node = TLet(name, false, noParams, typedVal, typedBody) }
+
+and private inferLetTuple (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (names: string list) (value: Expr) (body: Expr) (r: Range) : HMType * TypedExpr =
+    let valType, typedVal = infer env value
+    let elementMetas = names |> List.map (fun _ -> freshMeta ())
+    unify env.Registry valType (TTuple elementMetas)
+
+    let localEnv =
+        List.zip names elementMetas
+        |> List.fold
+            (fun acc (n, t) ->
+                addBinding
+                    n
+                    { Scheme = Scheme([], [], t)
+                      IsMutable = false }
+                    acc)
+            env
+
+    let bodyType, typedBody = tail localEnv body
+
+    bodyType,
+    { Type = bodyType
+      Range = r
+      Node = TLetTuple(names, typedVal, typedBody) }
+
+and private inferLet (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (name: string) (isFun: bool) (args: DefunArg list) (typeAnn: FType option) (value: Expr) (body: Expr) (r: Range) : HMType * TypedExpr =
     let inferBinding () =
         // For a function-shaped binding `typeAnn` is the *return* type, and is
         // already accounted for by the shape; for a value binding it is the
@@ -2189,14 +2212,14 @@ and private inferLet (env: Env) (name: string) (isFun: bool) (args: DefunArg lis
         | Some s -> { localEnv with FunMetas = Map.add name s.Meta localEnv.FunMetas }
         | None -> localEnv
 
-    let bodyType, typedBody = infer localEnv body
+    let bodyType, typedBody = tail localEnv body
 
     bodyType,
     { Type = bodyType
       Range = r
       Node = TLet(name, isFun, localFun, typedVal, typedBody) }
 
-and private inferLetRec (env: Env) (bindings: (string * bool * DefunArg list * FType option * Expr) list) (body: Expr) (r: Range) : HMType * TypedExpr =
+and private inferLetRec (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (bindings: (string * bool * DefunArg list * FType option * Expr) list) (body: Expr) (r: Range) : HMType * TypedExpr =
     let bindingMetas = bindings |> List.map (fun (n, _, _, _, _) -> n, freshMeta ())
 
     // Every member's shape is read before any body is checked. Two reasons,
@@ -2285,21 +2308,23 @@ and private inferLetRec (env: Env) (bindings: (string * bool * DefunArg list * F
             env
         |> withMetas
 
-    let bodyType, typedBody = infer finalEnv body
+    let bodyType, typedBody = tail finalEnv body
 
     bodyType,
     { Type = bodyType
       Range = r
       Node = TLetRec(typedBindings, typedBody) }
 
-and private inferLetMutable (env: Env) (name: string) (typeAnn: FType option) (value: Expr) (body: Expr) (r: Range) : HMType * TypedExpr =
-    let valType, typedVal = infer env value
-    
-    match typeAnn with
-    | Some tAnn ->
-        let expectedType = resolveTypeAnnotation env.Registry tAnn
-        unify env.Registry valType expectedType
-    | None -> ()
+and private inferLetMutable (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (name: string) (typeAnn: FType option) (value: Expr) (body: Expr) (r: Range) : HMType * TypedExpr =
+    // An annotation is an expectation, as it is for `def`.
+    let valType, typedVal =
+        match typeAnn with
+        | Some tAnn ->
+            let expectedType = resolveTypeAnnotation env.Registry tAnn
+            let t, typed = inferChecked expectedType env value
+            unify env.Registry t expectedType
+            t, typed
+        | None -> infer env value
 
     // Deliberately not generalized. A mutable binding is a cell, and a
     // *polymorphic* cell is the value restriction's classic hole: each use
@@ -2313,7 +2338,7 @@ and private inferLetMutable (env: Env) (name: string) (typeAnn: FType option) (v
               IsMutable = true }
             env
 
-    let bodyType, typedBody = infer localEnv body
+    let bodyType, typedBody = tail localEnv body
 
     bodyType,
     { Type = bodyType
@@ -2472,7 +2497,7 @@ and private inferTaskEvent (env: Env) (call: Expr) (r: Range) : HMType * TypedEx
       Range = r
       Node = TTaskEvent(receiver, resolved.DeclaringType, info.MemberName, coercedArgs, payload, awaitIsVoid) }
 
-and private inferMatch (env: Env) (target: Expr) (clauses: (Pattern * Expr option * Expr) list) (r: Range) : HMType * TypedExpr =
+and private inferMatch (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (target: Expr) (clauses: (Pattern * Expr option * Expr) list) (r: Range) : HMType * TypedExpr =
     let targetType, typedTarget = infer env target
     let returnType = freshMeta ()
 
@@ -2500,7 +2525,7 @@ and private inferMatch (env: Env) (target: Expr) (clauses: (Pattern * Expr optio
                     Some tg
                 | None -> None
 
-            let bodyType, typedBody = infer boundEnv body
+            let bodyType, typedBody = tail boundEnv body
 
             unify env.Registry bodyType returnType
 
@@ -2691,7 +2716,8 @@ and private inferLocalFunBody
         | Some(n, t) -> bind n (TCon("Array", [ t ])) bodyEnv
         | None -> bodyEnv
 
-    let bodyType, typedBody = infer bodyEnv value
+    // The return type is the body's expectation.
+    let bodyType, typedBody = inferChecked shape.RetType bodyEnv value
     unify env.Registry bodyType shape.RetType
 
     let typedKeywords, _ =
@@ -2749,6 +2775,12 @@ and private inferCheckedLiteral
         |> fun pieces -> assembleSplicedLiteral ctor elemTy pieces r
 
 and internal inferChecked (expected: HMType) (env: Env) (expr: Expr) : HMType * TypedExpr =
+    try
+        inferCheckedNode expected env expr
+    with ex when Diagnostics.needsLocation ex ->
+        raise (Diagnostics.withLocation (exprRange expr) ex)
+
+and private inferCheckedNode (expected: HMType) (env: Env) (expr: Expr) : HMType * TypedExpr =
     match expr, prune env.Registry expected with
     | EList(exprs, r), TCon("List", [ elemTy ]) ->
         inferCheckedLiteral env "List" "list" TListMake elemTy exprs r
@@ -2772,6 +2804,21 @@ and internal inferChecked (expected: HMType) (env: Env) (expr: Expr) : HMType * 
     // A lambda whose parameters the expectation already names.
     | EFun(args, body, colour, r), TFun(paramTys, _, _) when List.length paramTys = List.length args ->
         inferLambda (Some paramTys) env args body colour r
+
+    // A form whose value is one of its tail positions passes the expectation
+    // on, so `(if c '(from a) '(from b))` and a `let` body ending in a literal
+    // are elaborated where the whole form is expected to be a union.
+    | EIf(cond, t, f, r), _ -> inferIf (inferChecked expected) env cond t f r
+    | ELetMono(name, value, body, r), _ -> inferLetMono (inferChecked expected) env name value body r
+    | ELet(name, isFun, args, typeAnn, value, body, r), _ ->
+        inferLet (inferChecked expected) env name isFun args typeAnn value body r
+    | ELetRec(bindings, body, r), _ -> inferLetRec (inferChecked expected) env bindings body r
+    | ELetMutable(name, typeAnn, value, body, r), _ ->
+        inferLetMutable (inferChecked expected) env name typeAnn value body r
+    | ELetTuple(names, value, body, r), _ -> inferLetTuple (inferChecked expected) env names value body r
+    | EMatch(target, clauses, r), _ -> inferMatch (inferChecked expected) env target clauses r
+    | EDefMatch(binder, scrutinee, failure, sequel, r), _ ->
+        inferDefMatch (inferChecked expected) env binder scrutinee failure sequel r
 
     | _ ->
         infer env expr
@@ -2975,7 +3022,7 @@ and private inferAndMaybeInject (expectedElem: HMType) (env: Env) (expr: Expr) :
                 // by its tag. A tag's arguments are the pieces of the form, and
                 // nothing about them is a special case.
                 let typed = inferAndMaybeInject payloadTy env only
-                wrapInCtor ctorName [ payloadTy ] [ typed ] typed.Range
+                wrapInCtor ctorName [ payloadTy ] [ typed ] r
             | _ ->
                 let wanted = payloads.Length
 

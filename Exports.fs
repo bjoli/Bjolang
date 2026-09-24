@@ -754,11 +754,6 @@ let metadata
                 match td.Kind with
                 | Ast.Alias(ft) -> $"({head} (: {headStr} {serializeFType ft}))"
                 | Ast.Union(cases) ->
-                    // `#:literal` travels with the case. It decides
-                    // which constructor a quoted literal elaborates
-                    // into, so a union that is unambiguous where it was
-                    // declared has to stay unambiguous where it is
-                    // imported.
                     // The markers travel with the case: `#:literal` decides
                     // which case a shape-selected literal is injected into, and
                     // `#:tag`/`#:rest` which case a tagged form selects and how

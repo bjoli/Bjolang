@@ -10,7 +10,7 @@
 - Arrays: ~#[1 2 3]~
 - Maps: ~#map(("a" 1) ("b" 2))~ — a hash macro, see below
 
-A boolean is a literal and not a name. ~true~ and ~false~ are ordinary identifiers, free for a program to use; in a quoted list they are symbols, which is how ~'(true)~ names the program of that name.
+A boolean is a literal, not a name. ~true~ and ~false~ are ordinary identifiers; in a quoted list they are symbols, so ~'(true)~ names the program of that name.
 
 *** Which number a number is
 
@@ -23,7 +23,7 @@ A number written with a suffix is that type and nothing else:
 
 A decimal point or an exponent makes it a ~double~ (~2.5~, ~1e10~). ~0x2A~ and ~0b101010~ are 42.
 
-Written *without* one, a number says nothing about its type and takes whatever surrounds it:
+Written *without* one, a number takes its type from context:
 
 #+BEGIN_SRC scheme
 (: low-bit (-> %a %a))
@@ -40,9 +40,7 @@ A string written ~#"..."~ may contain ~${expression}~ holes.
 ;; => "x is 5 and times two is 10"
 #+END_SRC
 
-It is a *reader* macro. A ~#"..."~ works unchanged wherever a call would — inside a quasiquote, a macro template, a macro's input, or another ~#"..."~.
-
-The ~str~ and ~->str~ it expands to are the reader's, not the scope's: a local binding of either name is what a hand-written call reaches, and never what a hole reaches.
+It is a *reader* macro: a ~#"..."~ works unchanged wherever a call would — quasiquote, macro template, macro input, or another ~#"..."~. The ~str~ and ~->str~ it expands to are the reader's, not the scope's, so a local binding of either name is never what a hole reaches.
 
 A hole holds an arbitrary expression, nesting and all:
 #+BEGIN_SRC scheme
@@ -51,7 +49,7 @@ A hole holds an arbitrary expression, nesting and all:
 #"brace: ${(string-append "}" "!")}"   ;; "brace: }!"
 #+END_SRC
 
-~\$~ writes a dollar that opens nothing; a ~$~ not followed by ~{~ needs no escape. Everything else escapes as it does in an ordinary string, and a ~#"..."~ may span lines.
+~\$~ writes a literal dollar; a ~$~ not followed by ~{~ needs no escape. Everything else escapes as in an ordinary string, and a ~#"..."~ may span lines.
 
 **** The conversion is ~->str~, and it is per hole
 Each hole is wrapped in ~->str~. A type of your own says how by implementing the trait:
@@ -74,7 +72,7 @@ Each hole is wrapped in ~->str~. A type of your own says how by implementing the
 (array-length ys)              ;; 3
 #+END_SRC
 
-An array literal is an *expression*, not a constant: each evaluation allocates an array of its own. Its elements are arbitrary expressions and share one type, which the elements decide unless something around them says otherwise:
+An array literal is an expression: each evaluation allocates a fresh array. Its elements are arbitrary expressions sharing one type, which they decide unless context says otherwise:
 #+BEGIN_SRC scheme
 (: names (Array string))
 (def names #[])                ;; empty, so the annotation is what says
@@ -90,10 +88,10 @@ Both spellings are patterns as well, with ~...~ for the rest:
   (#[first rest ...] (int->string (array-length rest))))
 #+END_SRC
 
-The rest of an array pattern is an array of its own — a slice is a copy — where the rest of a vec pattern is a ~Vec~ sharing structure with the one it came from. This is going to be about a million billion times less efficient than doing the same on a list, so pick data structure wisely. 
+An array pattern's rest is a copy; a vec pattern's rest shares structure with its source.
 
 *** ~#name(...)~ — a hash macro
-~#name(args...)~, or ~#name[args...]~, calls the hash macro ~name~: a macro in a namespace of its own, so ~#map~ and the function ~map~ are two things. The ~#~ is not part of a name — ~#name~ is a token only with the bracket right after it — and the whole reads as a list headed by that token, which the parser expands before it looks at anything else. It expands in expression position only: a pattern refuses one, and in a quoted list it is written ~,#name(...)~.
+~#name(args...)~ or ~#name[args...]~ calls the hash macro ~name~, a macro in a namespace of its own (so ~#map~ is not the function ~map~). ~#name~ is a token only with the bracket right after it; the parser expands it before looking at anything else. It expands in expression position only: patterns refuse one, and a quoted list writes it ~,#name(...)~.
 
 The prelude's four:
 #+BEGIN_SRC scheme
@@ -103,9 +101,9 @@ The prelude's four:
 #map(("a" 1) ["b" 2] ("c" . 3)) ;; a Map; an entry is (k v), [k v] or (k . v)
 #+END_SRC
 
-~#fl~, ~#fr~ and ~#ch~ take an operator and at least two operands, and ~#fl~ and ~#fr~ take any binary function. ~#ch~ evaluates a middle operand once and stops at the first comparison that fails, so a later operand is not evaluated at all. An arithmetic or comparison operator written with three or more operands is one of these: ~(+ a b c)~ is ~#fl(+ a b c)~ and ~(< a b c)~ is ~#ch(< a b c)~. Fewer operands the parser reads itself — ~(+)~ is ~0~, ~(*)~ is ~1~, ~(+ x)~ is ~x~, ~(- x)~ negates and ~(/ x)~ takes the reciprocal.
+~#fl~, ~#fr~ and ~#ch~ take an operator and at least two operands; ~#fl~ and ~#fr~ take any binary function. ~#ch~ evaluates a middle operand once and stops at the first failed comparison, so later operands are not evaluated. An arithmetic or comparison operator with three or more operands is one of these: ~(+ a b c)~ is ~#fl(+ a b c)~, ~(< a b c)~ is ~#ch(< a b c)~. With fewer the parser reads it itself: ~(+)~ is ~0~, ~(*)~ is ~1~, ~(+ x)~ is ~x~, ~(- x)~ negates, ~(/ x)~ reciprocates.
 
-A hash macro is written with ~def/hash-extend~ and arrives with an import, under a ~prefix~ if the import has one: ~#s/fl(...)~. See [[file:MACROS.org]].
+Define one with ~def/hash-extend~; it arrives with an import, prefixed if the import is (~#s/fl(...)~). See [[file:MACROS.org]].
 
 *** Quoted lists, and the constructors they elaborate into
 ~'(...)~ is data. A symbol inside one is a ~Symbol~ value rather than a reference, ~,x~ splices the value of an expression, and ~[...]~ is a vec:
@@ -114,7 +112,7 @@ A hash macro is written with ~def/hash-extend~ and arrives with an import, under
 '(,x ,y)          ;; (List int)    — when x, y : int
 #+END_SRC
 
-A list is homogeneous. Where a union is expected each piece is elaborated in direct contexts into the case that can hold it:
+A list is homogeneous. Where a union is expected, each piece is elaborated into the case that can hold it:
 #+BEGIN_SRC scheme
 (type-rec
   (: ProcItem (Union (ProcSym Symbol)
@@ -132,16 +130,18 @@ A list is homogeneous. Where a union is expected each piece is elaborated in dir
                  (ProcFn  my-rot-13)))
 #+END_SRC
 
-Nesting works at any depth. A literal is matched by the *head* of a case's payload: ~(...)~ wants a ~List~, ~[...]~ a ~Vec~, ~#[...]~ an ~Array~, and a string, symbol or number the type it already has. An unquoted ~,value~ has no shape and is selected by its type.
+Nesting works at any depth. A literal is matched by the *head* of a case's payload: ~(...)~ wants a ~List~, ~[...]~ a ~Vec~, ~#[...]~ an ~Array~, and a string, symbol or number the type it already has. An unquoted ~,value~ is selected by its type.
 
-A literal is elaborated wherever a union is expected, the top of a form included — an annotation and a parameter are each as good an expectation as a sibling element is:
+A literal is elaborated wherever a union is expected, the top of a form included:
 
 #+BEGIN_SRC scheme
 (def (: one Form) '(pipe (ls "-l")))    ;; the annotation says so
 (parse '(pipe (ls "-l")))               ;; and so does the parameter
+(: f (-> bool Form))
+(defun (f b) (if b '(ls) '(pwd)))       ;; and a return type, through if/let/match
 #+END_SRC
 
-Because a shape reaches only as far as a payload's head, a union carries exactly *one* case per shape — one ~List~, one ~Vec~, one ~string~ — and a grammar with two productions that are both lists cannot be written by shape at all. That is what ~#:tag~ is for.
+A union carries exactly *one* case per shape (one ~List~, one ~Vec~, one ~string~); a grammar with two list productions needs ~#:tag~.
 
 A generic parameter provides no expected type. Name the type first:
 #+BEGIN_SRC scheme
@@ -172,9 +172,9 @@ Only the payload's head is compared. Marking one settles ambiguity:
 '(sort)                     ;; (FCmd …) — and `sort` is data
 #+END_SRC
 
-The tag is matched before any shape is looked at, and it is *consumed*, so what the case declares describes the form's *arguments* rather than the whole form. A case that carries nothing is named by the symbol on its own: ~'asc~ at a union with ~(Asc #:tag asc)~ is that case. Everything else about a literal is unchanged — a head that is not a tag is still data, which is how a bare tag can sit in a union beside the ordinary commands of ~(std run)~ — and a tagged case takes no part in shape selection, so the untagged case that handles `(sort)` stays reachable beside it.
+The tag is matched before any shape and is *consumed*, so what the case declares describes the form's *arguments*, not the whole form. A case carrying nothing is named by the symbol alone: ~'asc~ at a union with ~(Asc #:tag asc)~. A head that is not a tag is still data, so a bare tag can sit beside the ordinary commands of ~(std run)~, and a tagged case takes no part in shape selection, so the untagged case handling `(sort)` stays reachable.
 
-Two cases of one union may not share a tag. And because a tag is a name rather than a shape, a tagged case is the only way a payload that is *itself* a union is reachable: ~(CWhere (Cond %row) #:tag where)~ is a sub-grammar, and no literal's shape could have selected it.
+Two cases of one union may not share a tag. A tagged case is the only way a payload that is *itself* a union is reachable: ~(CWhere (Cond %row) #:tag where)~ is a sub-grammar no literal's shape could select.
 
 **** ~#:rest~ — how many arguments a tag takes
 A tagged case takes as many arguments as it declares payload types, so ~#:rest~ says "any number": the arguments are the payload, and the case's one type is the collection they are the elements of.
@@ -189,24 +189,22 @@ A tagged case takes as many arguments as it declares payload types, so ~#:rest~ 
 '(from a b)                 ;; a type error: `from` takes 1 argument
 #+END_SRC
 
-The arguments are read as that collection, so ~,@~ splices into a tagged form exactly as it does anywhere else, and a ~#:rest~ case whose type is not a collection is refused where it is declared rather than at each use.
+The arguments are read as that collection, so ~,@~ splices into a tagged form as anywhere else; a ~#:rest~ case whose type is not a collection is refused where it is declared, not at each use.
 
 ** Identifiers
-Identifiers may contain most characters except ~_~, and may not start with a digit. 
-Examples: ~my-var~, ~+~, ~string->int~, ~empty?~
+Identifiers may contain most characters except ~_~ and may not start with a digit: ~my-var~, ~+~, ~string->int~, ~empty?~.
 
 ** Naming conventions
-Bjolang has some naming conventions, mostly taken from Scheme:
+Conventions, mostly from Scheme:
 *** Predicates
-Predicates end with ~?~. ~IsEmpty~ becomes ~empty?~. Examples: ~list-empty?~, ~eq?~.
+Predicates end with ~?~: ~IsEmpty~ becomes ~empty?~, ~list-empty?~, ~eq?~.
 *** Mutation
-Mutating procedures end with a bang (~!~). ~(vec-set vec index value)~ for immutable updates, but ~(vecbuilder-set! builder index value)~ for mutable/non-linear updates.
+Mutating procedures end with ~!~: ~(vec-set vec index value)~ updates immutably, ~(vecbuilder-set! builder index value)~ mutates.
 *** Conversions
-Conversions are denoted using ~->~. Example: ~int->string~, ~vec->vecbuilder~.
+Conversions use ~->~: ~int->string~, ~vec->vecbuilder~.
 
 ** Casing
-Variables or functions starting with a character must start with a lower case char.
-Types always start with uppercase characters. (e.g. ~List~, ~Vec~, ~Int32~, ~String~)
+Variables and functions start lower case; types start upper case (~List~, ~Vec~, ~Int32~, ~String~).
 
 ** Comments
 Line comments start with ~;;~.
@@ -255,7 +253,7 @@ An arrow in *parameter* position may be written ~-?->~, meaning the procedure ac
 (: port-fold (-> (-?-> TextInputPort %a %a) %a TextInputPort %a))
 #+END_SRC
 
-The mixed case is written by leaving ordinary ones ~->~:
+Write the mixed case by leaving ordinary arrows ~->~:
 #+BEGIN_SRC scheme
 (: index-by (-> (-> %a %k) (-?-> TextInputPort %a) TextInputPort (Map %k %a)))
 #+END_SRC
@@ -288,18 +286,18 @@ A signature declaring ~-?->~ gets two emitted bodies. Which a call means is deci
 A ~defun~ whose call graph reaches a ~defbjouble~ gets a second body too, with nothing written down.
 
 **** ~#:sync~ — no copy for this one
-The `#:sync` marker prevents the compiler from generating an async copy for a function.
+`#:sync` stops the compiler generating an async copy for a function.
 #+BEGIN_SRC scheme
 (: show #:sync (-> (Vec Block) void))
 (defun (show bs) (render (parameter-ref current-output-port) bs))
 #+END_SRC
-It seals the *call graph above it*. It suppresses a copy and nothing else. Refused on a ~defbjo~ and on a ~defbjouble~.
+It seals the *call graph above it*; it suppresses a copy and nothing else. Refused on a ~defbjo~ and on a ~defbjouble~.
 
 **** A string is built with a builder, not with a port
-To keep string formatting pure and synchronous, build strings using a ~StringBuilder~ instead of formatting into a string port using ~write-string~ (via ~stringbuilder-add-string!~ and ~(stringbuilder->string sb)~). 
+Build strings with a ~StringBuilder~ (~stringbuilder-add-string!~, ~(stringbuilder->string sb)~), not by formatting into a string port.
 
 **** What is not yet there
-A call the generated copy cannot be reached from still parks. Trait methods carry no colour at all. ~seql~ has no suspending form either.
+Trait methods carry no colour; ~seql~ has no suspending form; a call the generated copy cannot reach still parks.
 
 *** Inline Signatures
 A signature may be written inline on the ~defun~:
@@ -317,13 +315,12 @@ Parameters can take any type, including type variables and function types:
   (f (g x)))
 #+END_SRC
 
-Constraints require using a **separate signature**:
+Constraints need a **separate signature**:
 1. **Keyword or rest parameters**: The syntax does not support inline types for them.
 2. **Trait constraints**: There is no room for a ~(where ...)~ clause inline.
 3. **Partial typing**: Writing a return type while leaving a parameter untyped is an error. 
 
-Providing both an inline and separate signature is an error.
-An inline parameter type *without* a return type does not declare the signature. A separate ~(: name ...)~ is required, and they must agree:
+Providing both an inline and a separate signature is an error. An inline parameter type *without* a return type does not declare the signature: a separate ~(: name ...)~ is required, and they must agree:
 #+BEGIN_SRC scheme
 (: triple (-> int int))
 (defun (triple (: n int))        ;; agrees; a different type here is an error
@@ -338,9 +335,9 @@ A binding is generalized only when its value is a *syntactic value* (literal, la
 (array-ref cell 0)             ;;   ...and it stays int
 #+END_SRC
 
-An array literal is not a syntactic value either, for the same reason ~make-array~ is not: it allocates a cell. ~(def ys #[])~ is one array, and the first write decides what it holds.
+An array literal is not a syntactic value either — it allocates a cell: ~(def ys #[])~ is one array and the first write fixes its type.
 
-A module-level *value* compiles to a static field, which cannot be generic. ~(def bleh '())~ is refused; pin it with a signature or make it a function.
+A module-level *value* compiles to a static field, which cannot be generic: ~(def bleh '())~ is refused; pin it with a signature or make it a function.
 
 *** What generalizes *locally*
 A local ~defun~ becomes a C# local function, so it is generalized like a top-level one:
@@ -373,9 +370,7 @@ Keyword parameters with defaults, a ~#:rest~ parameter, a type written at a para
   (println (greet "world" #:greeting "hi"))) ;; hi, world
 #+END_SRC
 
-A local ~defun~ cannot have a *separate* signature. 
-Local functions with keyword or rest parameters are not eligible for tail-call loop promotion. Deep tail recursion requires a plain positional local ~defun~ or an explicit ~loop~.
-A top-level ~defun~ is promoted whether or not it has keyword parameters.
+A local ~defun~ cannot have a *separate* signature. Local functions with keyword or rest parameters are not tail-call promoted; deep tail recursion needs a plain positional local ~defun~ or an explicit ~loop~. A top-level ~defun~ is promoted regardless.
 
 *** Mutable bindings
 ~def/mutable~ declares a binding ~set!~ may write, at module level or inside a function.
@@ -389,8 +384,7 @@ A top-level ~defun~ is promoted whether or not it has keyword parameters.
   reads)
 #+END_SRC
 
-A mutable binding is **not generalized**.
-A module-level one compiles to a static field initialized **in declaration order**.
+A mutable binding is **not generalized**. A module-level one compiles to a static field initialized **in declaration order**.
 
 *** ~def~ and ~def*~ — a binding that may fail
 A ~def~ takes a pattern, and a third slot saying what the whole form produces
@@ -409,10 +403,7 @@ when the pattern does not match:
 ~def~ takes one clause and ~def*~ takes several, run in order. An arm is
 ~(pattern body ...)~ and matches the clause's own scrutinee.
 
-What makes it a definition rather than a ~match~ is where the success path goes:
-what the pattern binds scopes over **the rest of the body**, exactly as a plain
-~def~'s name does. So the path that carries on is not indented under the paths
-that do not — which is the whole reason to write one.
+What makes it a definition rather than a ~match~ is where the success path goes: the pattern's bindings scope over **the rest of the body**, exactly as a plain ~def~'s name does, so the continuing path is not indented under the paths that do not.
 
 #+BEGIN_SRC scheme
 (: label (-> string string))
@@ -445,12 +436,12 @@ always the function. One inside a ~when~ leaves the ~when~, and the code after
 the ~when~ still runs; the compiler warns where that value then goes nowhere.
 
 **The third slot is always an expression, never arms.** The pattern is
-unparenthesised at the head, so there is no shape left to tell the two apart.
-Arms go after ~:fail~, and writing them without it says so.
+unparenthesised at the head, so no shape tells them apart; arms go after
+~:fail~.
 
-**A pattern that may fail needs a failure part.** Writing none says the pattern
-matches every value, and where it does not the counterexample is named and the
-form refused. There is no silent path out of a ~def~.
+**A pattern that may fail needs a failure part.** Writing none says it matches
+every value; where it does not, the counterexample is named and the form
+refused. There is no silent path out of a ~def~.
 
 **~:propagate~ rebuilds the cases the pattern leaves out**, and stands alone:
 
@@ -461,13 +452,7 @@ form refused. There is no silent path out of a ~def~.
   (Some (string-length found)))
 #+END_SRC
 
-Each leftover case is **constructed fresh at the body's type** — this is not the
-scrutinee being handed back — and is then held to the body's type like any other
-failure value. That single rule is the whole restriction: a type argument the
-leftover case carries has to be the same on both sides, and one it does not
-carry is free. So ~(Option string)~ propagates into ~(Option int)~ because
-~None~ carries nothing, while an ~Err~ is rebuilt around the payload it came
-with and the two error types have to be one type.
+Each leftover case is **constructed fresh at the body's type** — not the scrutinee handed back — and held to the body's type like any other failure value. So a type argument the case carries must match on both sides, while one it does not carry is free: ~(Option string)~ propagates into ~(Option int)~ because ~None~ carries nothing, while an ~Err~ is rebuilt around its payload, so the two error types must be one.
 
 Any union works this way, not only ~Option~ and ~Result~, and a pattern may
 leave more than one case behind:
@@ -481,13 +466,11 @@ leave more than one case behind:
   (Data (str "<" payload ">")))
 #+END_SRC
 
-What is left over has to be whole cases: a nested or literal pattern leaves part
-of a case behind, and there is no constructor to rebuild that with. Those take
-~:fail~.
+What is left over must be whole cases: a nested or literal pattern leaves part of a case behind, which no constructor can rebuild — those take ~:fail~.
 
 **A ~def*~'s clauses are sequential and short-circuiting.** Clause /n/ sees what
-clauses 1../n/-1 bound, and a failing clause evaluates no later scrutinee. The
-names have to be distinct across clauses, since all of them land in one scope.
+clauses 1../n/-1 bound; a failing clause evaluates no later scrutinee. Names
+must be distinct across clauses, since all land in one scope.
 
 #+BEGIN_SRC scheme
 (defun (which program)
@@ -509,13 +492,11 @@ The arms are checked against the type **minus the clause pattern**, so
 needed.
 
 **A pattern carrying a failure part must be able to fail.** One that always
-matches leaves the failure unreachable, and is refused rather than warned about;
-it is almost always a constructor that was not in scope and so parsed as a plain
-variable.
+matches leaves the failure unreachable and is refused, not warned about; it is
+usually a constructor that was not in scope and parsed as a plain variable.
 
-Both forms must stand **directly in a body**, since a body is what gives them
-their sequel. Inside another expression there is nothing to bind over, and it
-says so.
+Both forms must stand **directly in a body**; inside another expression there is
+nothing to bind over, and it says so.
 
 *** At the top level
 A pattern may also be written at the top level, where it has nowhere to fail:
@@ -526,14 +507,9 @@ A pattern may also be written at the top level, where it has nowhere to fail:
       ((MkPair size text) (measure greeting)))
 #+END_SRC
 
-Each name becomes a definition of its own, from one evaluation of the scrutinee
-and one destructuring of it, and a later clause reads what an earlier one bound
-because module-level definitions see one another anyway.
+Each name becomes a definition of its own, from one evaluation and destructuring of the scrutinee, and a later clause reads what an earlier one bound.
 
-There is no body for a failure to be the value of, so **the pattern has to match
-every value** and a failure part is refused. That is the whole of the
-difference, and it is what a REPL entry gets too: an entry is a top level, so
-`(def (Tuple a b) ...)` binds at the prompt and `(def (Some x) ...)` does not.
+There is no body for a failure to be the value of, so **the pattern must match every value** and a failure part is refused. A REPL entry is a top level too: `(def (Tuple a b) ...)` binds at the prompt and `(def (Some x) ...)` does not.
 ** ~apply~ — spreading a collection into a rest parameter
 ~apply~ calls a function whose last parameter is ~#:rest~, taking the rest
 elements from a collection instead of writing them out:
@@ -548,11 +524,7 @@ The **last** argument is always the collection. Keyword arguments are passed thr
 The collection may be an ~Array~, a ~Vec~ or a ~List~. A ~Seq~ cannot be used.
 
 *** ~apply~ is a form, and its function must be named
-The callee has to be written as a *name*. 
-
-Every shape that cannot be checked is a compile error. A callee with no rest parameter, too few or too many arguments before the collection, an unsupported collection, and ~apply~ outside call position are all refused.
-
-Applying a bjoroutine is a yield point exactly where calling it directly would be.
+The callee must be written as a *name*. Every unchecked shape is a compile error: a callee with no rest parameter, too few or too many arguments before the collection, an unsupported collection, and ~apply~ outside call position are all refused. Applying a bjoroutine is a yield point exactly where calling it directly would be.
 
 *** A rest parameter is read-only
 Treat the array a ~#:rest~ parameter arrives in as read-only. With an ~Array~ collection it is passed straight through (no copy), so mutations (e.g., ~array-set!~) are visible to the caller. Copy the array first if you need to mutate.
@@ -565,11 +537,7 @@ Standard ~if~ expressions:
     "positive")
 #+END_SRC
 
-~cond~ takes any number of arms and a final ~else~. Two of its clauses answer
-nothing: ~(:def pattern expr)~ binds and ~(:do body ...)~ runs something, both
-only when every test above them has failed, and a ~:def~ is in scope in the
-clauses below it. They are there so that a value a later test needs does not
-cost an ~(else ...)~ and a second ~cond~ inside it:
+~cond~ takes any number of arms and a final ~else~. Two clauses answer nothing: ~(:def pattern expr)~ binds and ~(:do body ...)~ runs something, both only after every test above them has failed; a ~:def~ is in scope in the clauses below it:
 
 #+BEGIN_SRC scheme
 (cond
@@ -580,9 +548,7 @@ cost an ~(else ...)~ and a second ~cond~ inside it:
   (else "word"))
 #+END_SRC
 
-A ~:def~ clause is a ~def~, and the body it swallows is the rest of the cond —
-so ~(:def (Ok v) (parse s) :propagate)~ makes the whole cond the ~Err~ when the
-parse failed. See ~def~ below.
+A ~:def~ clause is a ~def~, and the body it swallows is the rest of the cond: ~(:def (Ok v) (parse s) :propagate)~ makes the whole cond the ~Err~ when the parse failed. See ~def~ below.
 
 ~when~ and ~unless~ are one-armed conditionals, taking a body of any number of forms:
 #+BEGIN_SRC scheme
@@ -717,17 +683,9 @@ Helper functions: ~some?~, ~none?~, ~option-ref~, and ~(option-ref-or opt fallba
 .NET methods, classes, and constructors are imported directly. Overloads are selected at compile time based on Bjolang arguments.
 
 **** The culture a program runs in
-A Bjolang program runs in the *invariant* culture: ~main~ installs it before the
-body starts. This matters here and nowhere else. ~double->string~ and its
-neighbours are invariant on their own, but an imported ~StringBuilder.Append~ or
-~DateTime.ToString~ formats the value itself, and .NET formats in the ambient
-culture — writing ~2,5~ where the decimal separator is a comma, and ~-100~ with
-a U+2212 MINUS SIGN where the locale says so. Installing the culture once covers
-every import rather than one binding at a time.
+A Bjolang program runs in the *invariant* culture: ~main~ installs it before the body starts. ~double->string~ and its neighbours are invariant on their own, but an imported ~StringBuilder.Append~ or ~DateTime.ToString~ formats in the ambient culture — ~2,5~ where the decimal separator is a comma, ~-100~ with a U+2212 MINUS SIGN where the locale says so. Installing it once covers every import.
 
-Only formatting. ~CurrentUICulture~ is untouched, so an exception message is in
-whatever language .NET would have used. A program that wants the user's locale
-sets ~CultureInfo.CurrentCulture~ itself.
+Only formatting: ~CurrentUICulture~ is untouched, so an exception message is in whatever language .NET would use. A program wanting the user's locale sets ~CultureInfo.CurrentCulture~ itself.
 
 *** ~import/extern~ — methods
 #+BEGIN_SRC scheme
@@ -789,11 +747,7 @@ int-max                                ;; System.Int32.MaxValue
 #+END_SRC
 
 **** ~(out T)~ — out parameters
-A parameter written ~(out T)~ in the signature is a C# ~out~ parameter, in the
-position C# has it. It is not an argument at the call site: the binding's type
-is the declared arrow with every ~(out T)~ removed, and the outs come back in
-the result. The declared result says how, in one of two forms. The compiler
-checks the declaration against the method and never picks a form itself.
+A parameter written ~(out T)~ in the signature is a C# ~out~ parameter, in C#'s position. It is not an argument at the call site: the binding's type is the declared arrow with every ~(out T)~ removed, and the outs come back in the result. The declared result says how, in one of two forms; the compiler checks it against the method and never picks a form itself.
 
 The *Option form* is for ~bool TryXyz(..., out T)~. The result is
 ~(Option T)~ for one out, or ~(Option (Tuple T1 ... Tn))~ for several. True is
@@ -829,14 +783,7 @@ nothing, and a single remaining element stands alone rather than in a ~Tuple~.
 (div-rem 17 5)                         ;; (Math.DivRem(17, 5, out int t), t) — (Tuple 3 2)
 #+END_SRC
 
-An import with outs is resolved once, at the import, against its whole
-signature, the way a generic method is. So the marker is what picks the
-overload: ~(-> int int (Tuple int int))~ names ~Math.DivRem(int, int)~, which
-returns a ~ValueTuple~, and ~(-> int int (out int) (Tuple int int))~ names
-~Math.DivRem(int, int, out int)~. For the same reason such an import can name an
-instance method of a generic .NET type by the type's plain name, as
-~Dictionary.TryGetValue~ does above; its type parameters are solved from the
-declared receiver.
+An import with outs is resolved once, at the import, against its whole signature, as a generic method is. So the marker picks the overload: ~(-> int int (Tuple int int))~ names ~Math.DivRem(int, int)~ (a ~ValueTuple~), ~(-> int int (out int) (Tuple int int))~ names ~Math.DivRem(int, int, out int)~. Such an import may also name an instance method of a generic .NET type by the type's plain name, as ~Dictionary.TryGetValue~ does above; its type parameters are solved from the declared receiver.
 
 Each of these is a compile error that names the rule and shows the C#
 signature:
@@ -1001,7 +948,7 @@ Bjolang supports generic traits and implementations. A trait is parameterised by
 #+END_SRC
 
 *** Default method bodies
-A ~def/trait~ may provide a ~defun~ as a default body for a method it declares. An implementation can override it by providing its own ~defun~.
+A ~def/trait~ may give a ~defun~ as a default body for a method it declares; an implementation may override it with its own ~defun~.
 
 #+BEGIN_SRC scheme
 (def/trait (Tagged %a)
@@ -1013,8 +960,7 @@ A ~def/trait~ may provide a ~defun~ as a default body for a method it declares. 
   (defun (tag x) "int"))          ;; label is inherited
 #+END_SRC
 
-Defaults are spliced and checked at the implementation site against its instantiation of the signature. 
-They can be used to bind overloaded .NET methods resolved per implementation:
+Defaults are spliced and checked at the implementation site against its instantiation of the signature. They can bind overloaded .NET methods resolved per implementation:
 
 #+BEGIN_SRC scheme
 (import/extern (clr-abs (: System.Math.Abs)))
@@ -1027,10 +973,10 @@ They can be used to bind overloaded .NET methods resolved per implementation:
 (impl (Magnitude double))     ;; Math.Abs(double)
 #+END_SRC
 
-Defaults are exported with the trait. If a default cannot be serialized, it is not published and importing modules must provide their own implementation, which is enforced at their ~impl~.
+Defaults are exported with the trait. If one cannot be serialized it is not published, and importers must provide their own, enforced at their ~impl~.
 
 *** Member-level where clauses
-A member of an interface trait may carry a ~(where ...)~ of its own, written after its type. Each constraint pins every associated type of the trait it names — the way a ~dyn~ type does — and a pin may name the enclosing trait's own associated type, which is what ties the two traits together:
+A member of an interface trait may carry its own ~(where ...)~, written after its type. Each constraint pins every associated type of the trait it names, as a ~dyn~ type does; a pin may name the enclosing trait's own associated type, which ties the two traits together:
 
 #+BEGIN_SRC scheme
 (def/trait (Addable! %coll)
@@ -1041,9 +987,9 @@ A member of an interface trait may carry a ~(where ...)~ of its own, written aft
   (defun (add-all! coll xs) ...))
 #+END_SRC
 
-~#:elem %elem~ says the element the source yields *is* the element the sink takes — an equation no function-level ~where~ can state, checked at every call site and reported there when it fails. Pinning to a fresh variable (~#:cursor %k~) says the association does not matter; that variable becomes one more method-level generic.
+~#:elem %elem~ says the element the source yields *is* the one the sink takes — an equation no function-level ~where~ can state, checked at every call site. A fresh pin (~#:cursor %k~) says the association does not matter and becomes one more method-level generic.
 
-The member's dictionary is a leading parameter of the method itself, supplied per call — which is exactly what an impl-level constraint could not do: an impl is one class, and a class's constraints are fixed before any call site exists. The impl-level restriction on constraints with associated types therefore stays.
+The member's dictionary is a leading parameter of the method itself, supplied per call; an impl is one class and its constraints are fixed before any call site exists, so the impl-level restriction on associated-type constraints stays.
 
 The rules:
 - a member's ~where~ constrains variables of its own signature, never the implementor;
@@ -1196,7 +1142,7 @@ Binding one to a name requires an explicit annotation:
 #+END_SRC
 
 *** A method's name is an ordinary binding
-Trait methods are dispatched by name, functioning like standard bindings that can shadow and be shadowed.
+Trait methods are dispatched by name, like bindings that can shadow and be shadowed.
 
 #+BEGIN_SRC scheme
 (defun (pick less? a b) (if (less? a b) a b))   ;; a parameter called less?
@@ -1285,7 +1231,7 @@ Boxing is strictly explicit using ~(dyn Trait expr)~. Implicit boxing is not sup
 #+END_SRC
 
 **** Dispatch via Existing Trait Call Machinery
-Method calls on dynamic types act as normal trait calls leveraging an automatically synthesized internal implementation.
+Method calls on dynamic types are normal trait calls, over an automatically synthesized implementation.
 
 #+BEGIN_SRC scheme
 (->str d)                       ; resolves to the dyn-type implementation
@@ -1347,8 +1293,7 @@ A macro is a function the compiler runs while parsing. It takes the form written
 - `,x`: splices a single syntax node.
 - `,@xs`: splices a list of syntax nodes, `(List Syntax)`.
 
-**Hygiene**: Implicit renaming ensures transformers do not accidentally capture or shadow variables from the call site. Core forms like `let`, `if`, and `->` remain safely usable in templates.
-See `Docs/MACROS.org` for more details.
+**Hygiene**: implicit renaming keeps transformers from capturing or shadowing call-site variables; core forms like `let`, `if` and `->` stay usable in templates. See `Docs/MACROS.org`.
 
 ** Monadic blocks
 `(do ...)` expands to monadic `bind` and `pure` operations. Import `(std monad)` to use it.
@@ -1399,23 +1344,17 @@ See `Docs/MACROS.org` for more details.
 | `(:yield expr)`                 | Used in `(seql ...)` to produce an element.        |
 
 **** An accumulator need not be named
-The name in `(:acc name (coll ...))` may be left out, and one is invented:
+The name in `(:acc name (coll ...))` may be omitted; one is invented:
 
 #+BEGIN_SRC scheme
 (loop (:for x xs)
       (:acc (listing x) #:when (even? x)))       ;; => the list of even x
 #+END_SRC
 
-Name one when something reads it back — a later clause, a `=>`, or a named
-loop's `#:name` override. Nothing can read an anonymous one, because the name it
-is given is a gensym. Several in one loop still deliver a tuple of the finished
-values in clause order, so `(:acc (summing x)) (:acc (counting x))` answers the
-sum and the count.
+Name it when something reads it back — a later clause, a `=>`, or a named loop's `#:name` — since an anonymous name is a gensym nothing can read. Several in one loop deliver a tuple of the finished values in clause order: `(:acc (summing x)) (:acc (counting x))` answers the sum and the count.
 
 **** `:when-let` and `:break-let`
-A `:let` binds by destructuring and its pattern must always match, because a
-pattern that could fail has nowhere to send the failure. These two are the
-versions that say where it goes.
+A `:let` binds by destructuring and its pattern must always match — a pattern that could fail has nowhere to go. These two say where it goes.
 
 #+BEGIN_SRC scheme
 (loop (:for x xs)
@@ -1427,14 +1366,9 @@ versions that say where it goes.
       (:do (handle job)))
 #+END_SRC
 
-The pattern is what says which constructor, so neither clause is about `Option`
-in particular: a `Result`, or a union of the program's own, works the same way.
-A clause above one of these has already run, so an accumulator stepped before it
-keeps what it was given — as with `:when` and `:break`.
+The pattern names the constructor, so a `Result` or the program's own union works the same way. A clause above one of these has already run, so an accumulator stepped before it keeps its value, as with `:when` and `:break`.
 
-Two clauses rather than one with a modifier, because neither edge is the
-default. A `chan-recv` that answers `None` answers it forever, so a skip where a
-break was meant is a loop that spins rather than one that stops.
+Two clauses, not one with a modifier: a `chan-recv` answering `None` answers it forever, so a skip where a break was meant spins rather than stops.
 
 **** `:until-cancelled`
 Monitors a cancellation token and exits via a `break`.
@@ -1449,7 +1383,7 @@ Monitors a cancellation token and exits via a `break`.
       (:do (handle job)))
 #+END_SRC
 
-Note: `(:until-cancelled)` checks the token once per iteration. The ambient token must remain constant while the loop runs.
+`(:until-cancelled)` checks the token once per iteration; the ambient token must stay constant while the loop runs.
 
 *** Comprehensions
 `{collector expr clause...}` provides syntactic sugar for an anonymous accumulator loop.

@@ -825,7 +825,9 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
             addBinding rn { Scheme = Scheme([], [], TCon("Array", [ bodyParamType rt ])); IsMutable = false } bodyEnv
         | _ -> bodyEnv
 
-    let bodyType, typedBody = infer bodyEnv body
+    // The return type is the body's expectation, so a literal the body ends
+    // in is elaborated against it.
+    let bodyType, typedBody = inferChecked expectedRetType bodyEnv body
     unify env.Registry bodyType expectedRetType
 
     // Type-check keyword default expressions

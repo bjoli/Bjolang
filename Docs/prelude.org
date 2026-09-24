@@ -1,12 +1,10 @@
 * Bjolang Prelude
 
-The prelude contains the default environment available to all Bjolang programs. These procedures are automatically in scope.
+The default environment of every Bjolang program. ~(std prelude)~ is linked into every module, so nothing here has to be imported — writing ~(import (std prelude))~ is allowed but redundant. (Modules under ~lib/~ are the exception: the standard library says what it depends on explicitly, since ~prelude~ itself imports ~maths~.)
 
-Nothing here has to be imported. ~(std prelude)~ is linked into every module the compiler loads, so writing ~(import (std prelude))~ is allowed but redundant. (Modules under ~lib/~ are the exception: the standard library says what it depends on explicitly, since ~prelude~ itself imports ~maths~.)
+Two halves:
 
-The prelude is nevertheless made of two halves, and it is worth knowing which is which when reading the sources:
-
-- The *builtin* environment (~Prelude.fs~, backed by ~BjolangRuntime~) holds what currently isn't written in bjolang.
+- the *builtin* environment (~Prelude.fs~, backed by ~BjolangRuntime~) holds what currently isn't written in bjolang.
 - ~lib/std/prelude.bjo~ is an ordinary Bjolang module. It holds everything that *is* just a .NET call — the string, conversion, file, path, directory, environment and port operations below — plus the traits (~->str~, ~Iterable~, ~Collector~, ~Num~) and ~print~/~println~.
 
 Sections below are marked =(std prelude)= where they live in the second.
@@ -22,7 +20,7 @@ Sections below are marked =(std prelude)= where they live in the second.
 - ~(println x)~ : Generic println utilizing the ~->str~ trait. =(std prelude)=
 - ~(newline)~ : Prints a newline character.
 
-There is no nullary ~read-line~. Standard input is a port like any other, reached through the dynamic environment: ~(read-line (parameter-ref current-input-port))~. current-input-port can be rebound with the parameterize form.
+There is no nullary ~read-line~. Standard input is a port: ~(read-line (parameter-ref current-input-port))~. current-input-port can be rebound with ~parameterize~.
 
 ** Math Operators
 Standard polymorphic math operators:
@@ -38,7 +36,7 @@ Standard polymorphic math operators:
 - ~(> a b)~
 - ~(<= a b)~
 - ~(>= a b)~
-- ~(eq? a b)~ : Pointer/Reference equality (structural for value types). About mutable cells and object identity, and not a substitute for ~=~.
+- ~(eq? a b)~ : Pointer/Reference equality (structural for value types). Object identity, and not a substitute for ~=~.
 
 ** Equality =(std eq)=
 There is one equality, ~=~, and it is a trait method:
@@ -53,20 +51,21 @@ Implementations ship for the primitive types (~int~ and its siblings, ~double~, 
 
 A generic function that compares two values acquires the constraint without being told to: ~(defun (member? x xs) ...)~ using ~=~ is inferred as ~(where (Eq %a))~.
 
-~eq-hash~ belongs to the same trait as ~=~ rather than to one of its own, because it is derived from the same choice of fields. An implementation that overrode one while inheriting the other would break every hash-based container silently, and there is no supertrait mechanism to keep two traits in step. There are no default bodies for the same reason: the only body a default could have is "ask .NET", which is wrong in exactly the case someone wrote an implementation for. ~(hash-combine a b)~ is what an ~eq-hash~ over several fields folds with.
+~eq-hash~ shares the ~=~ trait and has no default body; implement both together. ~(hash-combine a b)~ is what an ~eq-hash~ over several fields folds with.
 
-Two deliberate choices worth knowing:
+Two rules:
 
-- ~double~ uses ~Equals~ rather than ~==~, so ~(= x x)~ is true for ~NaN~. Every hash-based container assumes its keys are reflexive; IEEE's answer is the other one, and it is not available through ~=~.
-- ~=~ on a ~Map~ matches keys by lookup, so key equality there is the trie's . (FIXME)
+- ~double~ uses ~Equals~ rather than ~==~, so ~(= x x)~ is true for ~NaN~.
+- ~=~ on a ~Map~ matches keys by lookup, so key equality there is the trie's own — the ~Eq~ implementation of the key type.
 
 *** The blanket
-A type with no implementation of its own gets a default equality implementation in ~(std eq)~. 
+A type with no implementation of its own gets a default equality implementation in ~(std eq)~.
 
-Two consequences worth knowing. Nothing can opt *out*: ~(= p q)~ on two ports, or two fibers, compiles and means reference identity, and there is no negative-implementation mechanism to say otherwise. And a type with no *head constructor* is not covered at all, because resolution needs a head to look up before it can fall back to a blanket — so ~(= f g)~ on two functions is a type error saying so.
+- Nothing can opt *out*: ~(= p q)~ on two ports, or two fibers, compiles and means reference identity.
+- A type with no *head constructor* is not covered: ~(= f g)~ on two functions is a type error saying so.
 
 *** Writing one by hand
-Writing one by hand is ordinary, and is how a type says its equality is not its fields:
+A hand-written implementation is how a type says its equality is not its fields:
 
 #+BEGIN_SRC scheme
 (impl (Eq Point)
@@ -76,35 +75,13 @@ Writing one by hand is ordinary, and is how a type says its equality is not its 
                                    (eq-hash (record-ref p y)))))
 #+END_SRC
 
-The implementation *is* the type's .NET equality. A declared type with an ~Eq~
-implementation has its ~Equals~ and ~GetHashCode~ emitted as calls to it, so
-~Map~, ~Set~ and every other .NET consumer agree with ~=~ without being told
-about the trait. ~Ord~ gets the same treatment as ~IComparable<T>~: an
-implementation becomes the type's ~CompareTo~, so the ordered collections —
-and any .NET code handed the type — sort by ~compare~ rather than throwing. A
-parameterized type materializes when its implementation is unconditional; one
-with a ~(where ...)~ keeps C#'s synthesized field-wise members, which reach
-each field's own implementation anyway.
+The implementation *is* the type's .NET equality: its ~Equals~ and ~GetHashCode~ are emitted as calls to it, so ~Map~, ~Set~ and every other .NET consumer agree with ~=~. ~Ord~ becomes ~IComparable<T>~/~CompareTo~ the same way. A parameterized type materializes when its implementation is unconditional; one with a ~(where ...)~ keeps C#'s synthesized field-wise members, which reach each field's own implementation anyway.
 
-Two consequences:
-
-- An implementation written in terms of .NET equality would call itself —
-  ~Equals~ is the implementation now — which is why ~clr-equals~ is private to
-  ~(std eq)~. An implementation that wants "the field-by-field comparison,
-  plus one tweak" writes ~(structural-equals a b)~ and ~(structural-hash a)~:
-  they compare the fields directly and never consult the receiver type's own
-  ~Equals~, while each *field* still compares through its own type's equality,
-  so nested implementations are reached.
-- The implementation is compiled into the type, so it must live in the module
-  that declares the type. An ~Eq~ or ~Ord~ implementation for an imported
-  type, an ~import/class~ alias — or, in the REPL, a type from an earlier
-  entry — is refused, because ~(= a b)~ would answer through the trait while
-  the collections answer through the type, silently disagreeing. The way out
-  the message names: the declaring module, the same REPL entry, or a wrapper
-  type.
+- An implementation that wants "the field-by-field comparison, plus one tweak" writes ~(structural-equals a b)~ and ~(structural-hash a)~: they compare the fields directly and never consult the receiver type's own ~Equals~, while each *field* still compares through its own type's equality.
+- The implementation is compiled into the type, so it must live in the module that declares the type. An ~Eq~ or ~Ord~ implementation for an imported type, an ~import/class~ alias, or (in the REPL) a type from an earlier entry is refused. The way out: the declaring module, the same REPL entry, or a wrapper type.
 
 *** ~type/derive~
-Writing that out per field is what ~type/derive~ is for. It is a macro in ~(std prelude)~, and a syntactic one — where a declaration is read there is no registry to ask what a type's fields are, only the form that declares them.
+~type/derive~ writes that out per field. A macro in ~(std prelude)~, and syntactic — where a declaration is read there is no registry to ask what a type's fields are, only the form that declares them.
 
 #+BEGIN_SRC scheme
 (type/derive (Eq)
@@ -116,7 +93,7 @@ Writing that out per field is what ~type/derive~ is for. It is a macro in ~(std 
 - a type with parameters derives a *conditional* implementation, ~(impl (Eq (Box %a)) (where (Eq %a)) ...)~
 - the traits are a list: ~(Eq)~, ~(Ord)~ or ~(Eq Ord)~, each deriving its own methods from the one declaration
 
-~Ord~ reads the same declaration the same way round, and answers with a sign rather than with a ~bool~: a record or struct compares its fields in declaration order and stops at the first that decides, a union compares the case index before the payload. The case order is the declaration order the hash already seeds itself with, so ordering and hashing agree about what a union's cases are without either being told.
+~Ord~ reads the same declaration the same way round and answers a sign rather than a ~bool~: a record or struct compares its fields in declaration order and stops at the first that decides, a union compares the case index before the payload.
 
 #+BEGIN_SRC scheme
 (type/derive (Eq Ord)
@@ -125,51 +102,49 @@ Writing that out per field is what ~type/derive~ is for. It is a macro in ~(std 
 (list-sort versions)    ;; and every other thing written against Ord
 #+END_SRC
 
-Nothing here corresponds to ~eq-hash~'s refusal on a mutable field. Hashing one breaks a law — a key's hash may not change — and ordering has none to break; a sorted collection going stale under a write is the write's doing rather than the comparison's.
+Ordering has no law to break where hashing does: a sorted collection going stale under a write is the write's doing.
 
-A field whose type has no ~Eq~ is reported against the ~type/derive~ form rather than against the field: every node a macro builds carries the call site's range. The message names the type that has no implementation and the implementation that needed it.
+A field whose type has no ~Eq~ is reported against the ~type/derive~ form, naming the type that has no implementation and the implementation that needed it.
 
 ** String Operations
 - ~(string-append a b)~ : Concatenates strings ~a~ and ~b~. =(std prelude)=
 - ~(string-length s)~ : The length of ~s~ in *storage units*. O(1). In current storage units. =(std prelude)=
-- ~(string-count s)~ : The number of *characters* in ~s~. O(n), because it walks. The same emoji string counts 1.
-- ~(string-empty? s)~ : Returns true if ~s~ has no characters. Builtin rather than =(std prelude)=, so that it sits with ~list-empty?~, ~vec-empty?~ and ~map-empty?~ rather than alone in the library.
+- ~(string-count s)~ : The number of *characters* in ~s~. O(n).
+- ~(string-empty? s)~ : Returns true if ~s~ has no characters. Builtin rather than =(std prelude)=.
 
-~string-length~ and ~string-count~ are two questions with two answers and two costs, which is why neither is called ~size~. Reach for ~string-length~ to size a buffer and ~string-count~ for anything a reader would call "how long is this text".
+~string-length~ sizes a buffer; ~string-count~ is "how long is this text". Two questions, two answers, two costs, which is why neither is called ~size~.
 
-There is no ~string-ref~, and no other index-based accessor. Indexing UTF-16 by codepoint is O(n), so a loop that looks linear is quadratic; string traversal belongs to a cursor.
+There is no ~string-ref~, and no other index-based accessor. Indexing UTF-16 by codepoint is O(n); string traversal belongs to a cursor.
 
 *** Searching and rewriting =(std prelude)=
-All *ordinal*: they compare storage, not culture. .NET's one-argument overloads compare by the ambient culture instead, which makes ~"e"+U+0301~ and ~"é"~ equal in one place and different in another; nothing here should depend on where it runs. Fold the case first — ~(string-contains? (string-downcase s) needle)~ — for an insensitive answer.
+All *ordinal*: they compare storage, not culture. Fold the case first for an insensitive answer — ~(string-contains? (string-downcase s) needle)~.
 - ~(string-contains? s needle)~
 - ~(string-starts-with? s prefix)~ / ~(string-ends-with? s suffix)~
 - ~(string-replace s old new)~ : every occurrence; replacing with ~""~ deletes.
 
-The ~char~-taking overloads of these are not wrapped and cannot be: a Bjolang ~char~ is a codepoint and a C# ~char~ a UTF-16 code unit, so they are not the same type at the boundary. ~(char->string c)~ is the way across.
+The ~char~-taking overloads are not wrapped and cannot be: a Bjolang ~char~ is a codepoint and a C# ~char~ a UTF-16 code unit. ~(char->string c)~ is the way across.
 
 *** Case =(std prelude)=
 - ~(string-upcase s)~ / ~(string-downcase s)~
 
-Invariant, for the reason ~char-upcase~ is, and character for character: ß upcases to itself rather than to SS, since the expansion is a German rule and not a Unicode one. These are for normalising before a comparison; what a *reader* expects to see is the locale-dependent answer they avoid.
+Invariant, character for character: ß upcases to itself rather than to SS. These are for normalising before a comparison.
 
 *** Trimming and padding =(std prelude)=
-- ~(string-trim s)~, ~(string-trim-start s)~, ~(string-trim-end s)~ : whitespace, by ~char-whitespace?~'s definition. There is no "trim these characters" form — .NET spells it ~params char[]~.
+- ~(string-trim s)~, ~(string-trim-start s)~, ~(string-trim-end s)~ : whitespace, by ~char-whitespace?~'s definition. There is no "trim these characters" form.
 - ~(string-pad-left s width #:with #\space)~ / ~(string-pad-right s width #:with #\space)~ : to ~width~ *characters*, which is ~string-count~'s count and not ~string-length~'s. Never truncates.
 
-The pad is a ~char~, so it is a codepoint like any other and an astral one counts as the single character it is. That is why these are written in Bjolang rather than wrapping ~.PadLeft~, which counts storage units and takes a UTF-16 code unit it could not be given.
+The pad is a ~char~, so an astral one counts as the single character it is.
 
 *** Splitting and joining =(std prelude)=
-- ~(string-split s sep)~ : the fields between occurrences of ~sep~, as a ~(Vec string)~. Empty fields are kept, which is what makes the two inverses; drop them with ~(vec-filter #(not (string-empty? &1)) parts)~.
+- ~(string-split s sep)~ : the fields between occurrences of ~sep~, as a ~(Vec string)~. Empty fields are kept; drop them with ~(vec-filter #(not (string-empty? &1)) parts)~.
 - ~(string-join parts sep)~ : the elements with ~sep~ between them, through one buffer.
 
-A ~Vec~ rather than the ~(Array %a)~ .NET answers with, because an array is ~Iterable~ and nothing more — it can be walked, and not measured, mapped or folded.
+A ~Vec~ rather than the ~(Array %a)~ .NET answers with, which is ~Iterable~ and nothing more.
 
 ** Characters
-A ~char~ is a Unicode *scalar value* — a codepoint — backed by ~Bjolang.Runtime.BjoChar~, not a C# ~char~. A C# ~char~ is a 16-bit UTF-16 code unit and cannot hold an astral codepoint on its own, so every predicate here classifies by codepoint and an emoji gets a real answer rather than whatever its leading surrogate would have said.
+A ~char~ is a Unicode *scalar value* — a codepoint — backed by ~Bjolang.Runtime.BjoChar~, not a C# ~char~. Every predicate here classifies by codepoint, so an emoji gets a real answer rather than whatever its leading surrogate would have said.
 
-
-
-There is no ~char?~. Every other Scheme needs one because a value's type is a runtime question; here it is a static one, and the predicate could only ever answer true.
+There is no ~char?~: a value's type is a static question here, and the predicate could only ever answer true.
 
 *** Conversions
 - ~(char->int c)~ / ~(char->integer c)~ : The codepoint. =(std prelude)=
@@ -180,69 +155,69 @@ There is no ~char?~. Every other Scheme needs one because a value's type is a ru
 - ~(char=? a b)~, ~(char<? a b)~, ~(char>? a b)~, ~(char<=? a b)~, ~(char>=? a b)~ : Ordering by codepoint.
 - ~(char-ci=? a b)~, ~(char-ci<? a b)~, ~(char-ci>? a b)~, ~(char-ci<=? a b)~, ~(char-ci>=? a b)~ : The same, after ~char-foldcase~ on both sides.
 
-These are *binary*, where R6RS's are n-ary. The operators themselves work at ~char~ — ~BjoChar~ has the C# comparison operators — so ~(< a b c)~ chains as it does for numbers, and that is the n-ary route. A named function cannot chain: it would have to become a ~#:rest~ fold, which allocates an array and loses the short-circuit.
+These are *binary*, where R6RS's are n-ary. The operators themselves work at ~char~ — ~BjoChar~ has the C# comparison operators — so ~(< a b c)~ chains as it does for numbers.
 
 *** Case
 - ~(char-upcase c)~, ~(char-downcase c)~, ~(char-titlecase c)~, ~(char-foldcase c)~
 
-All four use the invariant culture, because R6RS specifies the locale-independent Unicode mappings — a ~char-upcase~ that answered differently in Turkey would make a program mean different things on different machines. ~char-foldcase~ is Unicode *simple* case folding, which is what a char-to-char function can express; use it rather than ~char-downcase~ when the purpose is comparison. ~char-titlecase~ differs from ~char-upcase~ only for the handful of digraphs Unicode gives a distinct titlecase form.
+All four use the invariant culture. ~char-foldcase~ is Unicode *simple* case folding; use it rather than ~char-downcase~ for comparison. ~char-titlecase~ differs from ~char-upcase~ only for the handful of digraphs Unicode gives a distinct titlecase form.
 
 *** Classification
 - ~(char-alphabetic? c)~, ~(char-numeric? c)~, ~(char-whitespace? c)~
 - ~(char-upper-case? c)~, ~(char-lower-case? c)~, ~(char-title-case? c)~
-- ~(digit-value c)~ : ~(Some n)~ for a decimal digit, ~None~ otherwise. Narrower than ~char-numeric?~ on purpose: ½ is numeric and has no digit value, so the two questions get two answers. An ~Option~ rather than -1, which would be a sentinel the type does not mention.
-- ~(char-general-category c)~ : The Unicode general category as a ~Symbol~ — ~'Lu~, ~'Ll~, ~'Nd~, ~'Zs~ and the rest. A symbol because it is a fixed enumeration meant to be compared.
+- ~(digit-value c)~ : ~(Some n)~ for a decimal digit, ~None~ otherwise. Narrower than ~char-numeric?~: ½ is numeric and has no digit value.
+- ~(char-general-category c)~ : The Unicode general category as a ~Symbol~ — ~'Lu~, ~'Ll~, ~'Nd~, ~'Zs~ and the rest.
 
 ~char-numeric?~ is the Nd/Nl/No categories, not Nd alone, so it answers true for ½ and Ⅶ.
 
 ** String Cursors
-A cursor represents a position within a string. It replaces traditional index-based access (like ~string-ref~) to ensure $O(1)$ linear traversals without the overhead of computing variable-length character offsets. A cursor is lightweight and costs as much as an ~int~.
+A cursor represents a position within a string, replacing index-based access (like ~string-ref~) for $O(1)$ linear traversal. It is lightweight and costs as much as an ~int~.
 
-*A cursor is opaque.* There are no conversion functions between cursors and indices. This opacity decouples the API from the underlying string encoding (e.g., UTF-16 vs. UTF-8). A cursor is created via ~string-cursor-start~ or ~string-cursor-end~ and moved via ~string-cursor-next~ or ~string-cursor-prev~, guaranteeing it always rests on a valid character boundary.
+*A cursor is opaque.* There are no conversion functions between cursors and indices. Created via ~string-cursor-start~ or ~string-cursor-end~ and moved via ~string-cursor-next~ or ~string-cursor-prev~, it always rests on a valid character boundary.
 
-Every operation takes the string *and* the cursor, because the cursor carries no reference to it — the same bargain ~Iterable~ strikes by passing ~s~ and ~c~ to each method. Comparing cursors from two different strings is meaningless and unchecked, exactly as it is for two ints indexing different arrays.
+Every operation takes the string *and* the cursor, because the cursor carries no reference to it — the same bargain ~Iterable~ strikes by passing ~s~ and ~c~ to each method. Comparing cursors from two different strings is meaningless and unchecked.
 
 *** Primitives
 - ~(string-cursor-start s)~ : A cursor on the first character.
-- ~(string-cursor-end s)~ : The past-the-end cursor. Not a character position; it is the bound a traversal stops at.
+- ~(string-cursor-end s)~ : The past-the-end cursor. The bound a traversal stops at.
 - ~(string-cursor-end? s c)~ : Whether ~c~ has reached the end.
 - ~(string-cursor-ref s c)~ : The character at ~c~. Throws at the end — guard with ~string-cursor-end?~.
-- ~(string-cursor-next s c)~ : The cursor on the next character. Steps over *all* the storage units that character occupies, and reads how many of them there are from the unit at ~c~ rather than decoding the character.
-- ~(string-cursor-prev s c)~ : The cursor on the previous character. O(1) — it reads the unit before ~c~ rather than rescanning from the start. ~string-cursor-ref~ is the only one of these that decodes.
-- ~(string-cursor-ref+next s c)~ : The character at ~c~ *and* the cursor after it, as a ~(Tuple char StringCursor)~. The unit at ~c~ decides both answers, so a forward walk that asks for them together reads and bounds-checks it once per character instead of twice. The tuple is a ~ValueTuple~ and does not allocate; destructure it with ~(def (ch next) ...)~ or a ~(Tuple ch next)~ pattern. Throws at the end, like ~string-cursor-ref~.
+- ~(string-cursor-next s c)~ : The cursor on the next character. Steps over *all* the storage units that character occupies.
+- ~(string-cursor-prev s c)~ : The cursor on the previous character. O(1). ~string-cursor-ref~ is the only one of these that decodes.
+- ~(string-cursor-ref+next s c)~ : The character at ~c~ *and* the cursor after it, as a ~(Tuple char StringCursor)~. A ~ValueTuple~, so it does not allocate; destructure it with ~(def (ch next) ...)~. Throws at the end, like ~string-cursor-ref~.
 - ~(substring/cursors s start end)~ : The text between two cursors, ~end~ exclusive.
 
 *** Comparison =(std prelude)=
 - ~(string-cursor=? a b)~, ~(string-cursor<? a b)~, ~(string-cursor>? a b)~, ~(string-cursor<=? a b)~, ~(string-cursor>=? a b)~
 
-Aliases for the operators, which work at ~StringCursor~ directly. The named forms exist because ~(string-cursor<? a b)~ says what it means where ~(< a b)~ on two opaque values does not.
+Aliases for the operators, which work at ~StringCursor~ directly.
 
 *** Traversal =(std prelude)=
 - ~(string-fold f init s)~ : Left fold; ~f~ receives ~(char acc)~.
 - ~(string-fold-right f init s)~ : Right fold; ~f~ receives ~(char acc)~. Walks backwards with ~string-cursor-prev~, so it is a loop rather than n stack frames.
 - ~(string-for-each f s)~ : Applies ~f~ to each character for side effects.
-- ~(string-index pred s)~ : The first character satisfying ~pred~, as ~(Some cursor)~, or ~None~. A cursor rather than an index is what makes the result usable — it can go straight to ~substring/cursors~, where an integer could not be converted back at all.
+- ~(string-index pred s)~ : The first character satisfying ~pred~, as ~(Some cursor)~, or ~None~. A cursor, so the result goes straight to ~substring/cursors~.
 
 *** Conversions =(std prelude)=
 - ~(string->list s)~ : ~(List char)~.
 - ~(list->string cs)~ : Builds a string from ~(List char)~.
-- ~(list->str xs)~ : Formats a list as ~'(1 2 3)~, each element through its own ~->str~. Constrained ~(where (->str %a))~, and what the ~->str~ implementation for lists calls. =(std prelude)=
+- ~(list->str xs)~ : Formats a list as ~'(1 2 3)~, each element through its own ~->str~. Constrained ~(where (->str %a))~. =(std prelude)=
 - ~(string->vec s)~ : ~(Vec char)~.
-- ~(string-reverse s)~ : Reverses by *character*, so a string ending in an astral character comes back with that character intact rather than with its two halves swapped.
+- ~(string-reverse s)~ : Reverses by *character*, so an astral character comes back intact.
 
-A string is also ~Iterable~, ~Foldable~ and a ~Collection~, so ~(loop (:for c s) ...)~, ~(fold f init s)~ and ~(length s)~ all work and all deal in characters. See the trait notes below.
+A string is also ~Iterable~, ~Foldable~ and a ~Collection~, so ~(loop (:for c s) ...)~, ~(fold f init s)~ and ~(length s)~ all work and all deal in characters.
 
 ** String Builders
 The accumulator behind the ~Stringing~ collector, and the same shape as the vector and list builders.
 - ~(stringbuilder-empty)~ : Creates an empty builder.
-- ~(stringbuilder-add! b c)~ : Appends a character, encoding it however the storage requires.
+- ~(stringbuilder-add! b c)~ : Appends a character.
 - ~(stringbuilder-add-string! b s)~ : Appends a string.
 - ~(stringbuilder-length b)~ : The length so far, in storage units.
 - ~(stringbuilder->string b)~ : Freezes the builder into a string.
 
 Use one — or a ~(:acc out (stringing c))~ clause — rather than ~string-append~ in a loop: appending rebuilds the whole string per element and is quadratic.
 
-Use a builder to construct strings instead of writing to ~(open-output-string)~. Since writing to a port carries an async effect (colour), using a string port would incorrectly force the formatting function to become asynchronous. A builder has no effect, ensuring the operation remains pure and synchronous. See "A string is built with a builder, not with a port" in =Docs/Syntax.org=.
+Use a builder to construct strings instead of writing to ~(open-output-string)~: writing to a port carries an effect (colour) and would force the function to become asynchronous. See "A string is built with a builder, not with a port" in =Docs/Syntax.org=.
 
 ** Conversions
 The numeric ones are =(std prelude)=; the keyword and symbol ones are builtin, since ~Keyword~, ~Symbol~ and ~char~ are not .NET types Bjolang can name.
@@ -253,21 +228,21 @@ The numeric ones are =(std prelude)=; the keyword and symbol ones are builtin, s
 - ~(string->int s)~
 - ~(string->double s)~
 
-All six are *invariant*, for the reason the string comparisons are ordinal: a decimal point is a point everywhere, so they round-trip and a number written by one machine reads on the next. .NET's own take the ambient culture, under which ~1.5~ writes as ~1,5~, ~(string->double "1.5")~ throws, and ~-100~ comes back as ~−100~ with a U+2212 MINUS SIGN. ~->str~ is invariant for the same reason, including for the types with no wrapper here. A program that wants a number in the reader's own culture sets ~CultureInfo.CurrentCulture~ and formats through .NET; see ~Todo.org~.
+All six are *invariant*, for the reason the string comparisons are ordinal: they round-trip, so a number written by one machine reads on the next. .NET's own take the ambient culture, under which ~1.5~ writes as ~1,5~, ~(string->double "1.5")~ throws, and ~-100~ comes back with a U+2212 MINUS SIGN. ~->str~ is invariant for the same reason. A program that wants a number in the reader's own culture sets ~CultureInfo.CurrentCulture~ and formats through .NET; see ~Todo.org~.
 - ~(keyword->string kw)~ : Returns the string name of a keyword.
 - ~(string->keyword s)~ : Interns a string as a ~Keyword~.
 - ~(symbol->string sym)~ : Returns the string name of a symbol.
 - ~(string->symbol s)~ : Interns a string as a ~Symbol~.
 
 ** Files =(std prelude)=
-Whole-file operations, for when the contents fit in memory. They throw as the underlying .NET methods do; wrap a call in ~try~ to get a ~Result~ instead. Reach for the ports below when the file is too large to hold, or when the handle is wanted for more than its contents.
+Whole-file operations, for when the contents fit in memory. They throw as the underlying .NET methods do; wrap a call in ~try~ to get a ~Result~ instead. Reach for the ports below when the file is too large to hold.
 - ~(file-read-text path)~ : The whole file, as one string.
 - ~(file-write-text path contents)~ : Writes ~contents~, truncating the file if it exists.
 - ~(file-append-text path contents)~ : Appends ~contents~.
 - ~(file-exists? path)~
 - ~(file-delete path)~
-- ~(file-read-lines/seq path)~ : The lines, pulled lazily. Builtin rather than =(std prelude)=, because interop cannot equate .NET's ~IEnumerable<string>~ with ~(Seq string)~.
-- ~(file-read/seq reader path)~ : The same, pulled through any ~(-> TextInputPort %a)~. Opens the file once per enumeration and disposes it, so the sequence may be walked more than once — which is what ~(std ports)~' ~file->seq~ is built on, and what a ~seql~ over an already-open port cannot do. Prefer ~file->seq~, which reports a missing file as a ~Result~ rather than throwing on the first pull.
+- ~(file-read-lines/seq path)~ : The lines, pulled lazily. Builtin rather than =(std prelude)=.
+- ~(file-read/seq reader path)~ : The same, pulled through any ~(-> TextInputPort %a)~. Opens the file once per enumeration and disposes it, so the sequence may be walked more than once — what ~(std ports)~' ~file->seq~ is built on. Prefer ~file->seq~, which reports a missing file as a ~Result~ rather than throwing on the first pull.
 
 ** Paths =(std prelude)=
 Textual operations on path strings; none of them touches the file system.
@@ -275,61 +250,54 @@ Textual operations on path strings; none of them touches the file system.
 - ~(path-combine part ...)~ : Variadic.
 - ~(path-filename path)~ : ~(Option string)~ — ~None~ for a path that ends in a separator, which names a directory.
 - ~(path-file-extension path)~ : ~(Option string)~, including the dot. A name that is nothing but a dotted suffix — ~.bashrc~ — counts as one, as it does to .NET.
-- ~(path-directory path)~ : ~(Option string)~. Builtin rather than =(std prelude)=: ~GetDirectoryName~ answers null for a root and for a bare filename, and absorbing that needs boundary code in the runtime.
+- ~(path-directory path)~ : ~(Option string)~. Builtin rather than =(std prelude)=.
 
-The three that can come up empty answer an ~Option~. .NET reports "no filename here" and "no extension" as ~""~, and neither is a path — an empty string used as one names the working directory, which is a different place from nowhere.
+The three that can come up empty answer an ~Option~; .NET reports "no filename here" and "no extension" as ~""~, and neither is a path.
 
 ** Directories =(std prelude)=
 They throw as the whole-file operations do; wrap a call in ~try~ for a ~Result~.
 - ~(directory-exists? path)~
-- ~(directory-create path)~ : Creates every missing directory along the path, and does nothing if it is already there — so it needs no guard, which would be a race anyway.
+- ~(directory-create path)~ : Creates every missing directory along the path, and does nothing if it is already there — so it needs no guard.
 - ~(directory-delete path)~ : An *empty* directory.
 - ~(directory-delete-tree path)~ : Spelled differently because it is not a mistake anything can undo.
 - ~(directory-files path)~ / ~(directory-subdirectories path)~ : Whole paths, directly in ~path~, as a ~(Vec string)~.
 
-Listing is eager: ~EnumerateFiles~ would pull lazily and comes back as an ~IEnumerable<string>~, which interop cannot equate with ~(Seq string)~. There is no pattern argument either — ~(vec-filter #(string-ends-with? &1 ".bjo") (directory-files dir))~ asks the same question in the language.
+Listing is eager and takes no pattern argument — ~(vec-filter #(string-ends-with? &1 ".bjo") (directory-files dir))~ asks the same question in the language.
 
 ** The environment =(std prelude)=
 - ~(get-environment-variable name)~ : ~(Option string)~. R7RS's name, and ~None~ where R7RS answers ~#f~.
 - ~(set-environment-variable! name value)~ : For this process and its children, not for the shell that started it. Setting a variable to the empty string removes it.
 - ~(current-directory)~ / ~(set-current-directory! path)~ : A procedure rather than a value, because it is process-wide mutable state that relative paths follow.
 
-A variable that is not set is ~None~ rather than the empty string .NET's ~null~ arrives as. What this cannot tell you is "unset" from "set to nothing": the test available at the boundary is ~String.IsNullOrEmpty~, there being no ~null~ in the language to compare against.
+A variable that is not set is ~None~ rather than the empty string .NET's ~null~ arrives as. What this cannot tell you is "unset" from "set to nothing".
 
 ** Ports =(std prelude)=
 Opening a file returns a ~Result~ because a missing file is expected; opening a string cannot fail and returns the port itself. A file port and a string port are the *same type*, so a procedure that reads or writes never learns where the text comes from or goes.
 
-- ~(open-output-string)~ : A port that collects what is written to it. Use this for capturing output in memory (e.g., redirecting ~current-output-port~ in a test harness). To build a regular string, use a ~StringBuilder~ instead, because writing to ports carries an async effect (colour).
-- ~(get-output-string port)~ : Everything written to a string port so far. The
-  port stays open and keeps collecting, so asking twice with writes in between
-  includes the earlier text. *Throws* if called on a non-string port.
+- ~(open-output-string)~ : A port that collects what is written to it. To build a regular string, use a ~StringBuilder~ instead, because writing to ports carries an effect (colour).
+- ~(get-output-string port)~ : Everything written to a string port so far. The port stays open and keeps collecting, so asking twice with writes in between includes the earlier text. *Throws* if called on a non-string port.
 
-Textual ports follow the R7RS shape. Ports directly wrap .NET streams (~TextInputPort~ is ~System.IO.TextReader~ and ~TextOutputPort~ is ~System.IO.TextWriter~). Consequently, file ports and string ports share the same type, allowing functions like ~with-open~ to dispose of either uniformly. Opening returns a ~Result~ to handle missing files, while operating throws exceptions for mid-stream device errors.
+Ports directly wrap .NET streams (~TextInputPort~ is ~System.IO.TextReader~ and ~TextOutputPort~ is ~System.IO.TextWriter~). Opening returns a ~Result~ to handle missing files, while operating throws exceptions for mid-stream device errors.
 
-Only the drains — ~port->list~, ~port->vec~, ~port->seq~, ~file->seq~ and ~port->lines~ — are in ~(std ports)~ and have to be imported. The first four take the per-item reader as their first argument; ~port->lines~ is ~port->vec~ with ~read-line~ supplied, giving a ~(Vec string)~. Opening, reading, writing and closing are here, since a program that reads a file should not need a header line to do it.
+Only the drains — ~port->list~, ~port->vec~, ~port->seq~, ~file->seq~ and ~port->lines~ — are in ~(std ports)~ and have to be imported. The first four take the per-item reader as their first argument; ~port->lines~ is ~port->vec~ with ~read-line~ supplied, giving a ~(Vec string)~. Opening, reading, writing and closing are here.
 
 - ~(open-input-file path)~ : ~(Result Exception TextInputPort)~. The ~Err~ carries the real .NET exception, so an arm can say ~(:is System.IO.FileNotFoundException e)~.
 - ~(open-input-string contents)~ : A string as an input port. Cannot fail, so no ~Result~.
 - ~(open-output-file path)~ : ~(Result Exception TextOutputPort)~, truncating the file if it exists.
-- ~(close-input-port p)~ / ~(close-output-port p)~ : Rarely needed — ~with-open~ disposes a port however the body ends. Two functions rather than one, because ~.Dispose~ needs a concrete receiver.
+- ~(close-input-port p)~ / ~(close-output-port p)~ : Rarely needed — ~with-open~ disposes a port however the body ends.
 - ~(flush-port p)~
 - ~(port-eof? p)~ : Whether the port has no more input. Asking consumes nothing.
 - ~(read-line p)~ : The next line, without its newline. *Throws at end of input* — guard with ~port-eof?~.
-- ~(read-line/opt p)~ : The next line, or ~None~ at end of input, for when the check and the read want to be one step.
+- ~(read-line/opt p)~ : The next line, or ~None~ at end of input.
 - ~(read-char p)~ : The next character. *Throws at end of input* — guard with ~port-eof?~.
 - ~(read-char/opt p)~ : The next character, or ~None~ at end of input.
 - ~(read-all p)~ : Everything remaining, as one string. Empty at end of input.
 - ~(write-string p s)~ / ~(writeln p s)~ : The port comes first, as it does for every operation here.
 - ~(write-char p c)~ : One character.
 
-~read-char~ and ~write-char~ deal in *characters* — Unicode scalars — and not in
-the UTF-16 code units a .NET port is made of. A character outside the BMP is two
-units in the text and one ~char~ to a program, so ~read-char~ puts the pair back
-together and ~write-char~ takes it apart. This is the promise walking a ~string~
-already makes, and it is what lets ~(port->seq read-char p)~ and ~(read-all p)~
-walked as a string agree about what the characters are.
+~read-char~ and ~write-char~ deal in *characters* — Unicode scalars — and not in the UTF-16 code units a .NET port is made of. A character outside the BMP is two units in the text and one ~char~ to a program. This is what lets ~(port->seq read-char p)~ and ~(read-all p)~ walked as a string agree about what the characters are.
 
-There is no ~peek-char~. Because ports are bare .NET objects without pushback buffers, they cannot safely peek ahead by a full variable-length Unicode character. Use ~port-eof?~ to check for the end of a stream, and ~read-all~ with a ~StringCursor~ when significant lookahead is required.
+There is no ~peek-char~. Use ~port-eof?~ to check for the end of a stream, and ~read-all~ with a ~StringCursor~ when significant lookahead is required.
 
 An ordinary binding wins over an ~import/extern~ alias of the same name, so a module that aliases ~System.Console.WriteLine~ as ~println~ gets the prelude's ~println~ and not the alias. Pick a name the prelude does not bind — ~console-write-line~ say.
 
@@ -346,7 +314,7 @@ Built-in functional linked lists.
 - ~(list-head lst)~ : Returns the first element.
 - ~(list-tail lst)~ : Returns the rest of the list.
 - ~(list-empty? lst)~ : Returns true if the list is empty.
-- ~(list-length lst)~ : Returns the number of elements. O(n) — a ~List~ stores no count. (There is no ~list-count~: it was the same walk under a second name.)
+- ~(list-length lst)~ : Returns the number of elements. O(n) — a ~List~ stores no count. (There is no ~list-count~.)
 - ~(list-reverse lst)~ : Reverses the list.
 - ~(list-map f lst)~ : Maps function ~f~ over the list.
 - ~(list-filter f lst)~ : Filters elements satisfying ~f~.
@@ -354,9 +322,7 @@ Built-in functional linked lists.
 - ~(list-foldr f init lst)~ : Right fold; ~f~ receives ~(item acc)~.
 - ~(list-for-each f lst)~ : Applies ~f~ to each element for side effects.
 - ~(list-ref lst index)~ : Gets the element at ~index~.
-- ~(list-append xs ys)~ : ~xs~ followed by ~ys~. Written in ~std/prelude~ rather
-  than built in, because a builtin of that name is ambiguous to C# at every call
-  site — ~,@~'s own append is monomorphic and separate for that reason.
+- ~(list-append xs ys)~ : ~xs~ followed by ~ys~. Written in ~std/prelude~ rather than built in.
 
 ** Vectors (~Vec~ / ~RrbList~)
 Persistent immutable vectors.
@@ -383,7 +349,7 @@ Persistent immutable vectors.
 - ~(vec-empty? vec)~ : Returns true if the vector has no elements. O(1), off the same stored count. Note the pair: ~vec-empty~ *constructs* an empty vector, ~vec-empty?~ *asks*.
 - ~(vec-contains vec item)~ : Checks if ~item~ is in the vector.
 - ~(vec-compact vec)~ : Compacts the vector's internal structure.
-  
+
 ** Vector Builders
 Mutable builders for efficiently constructing vectors.
 - ~(vecbuilder-empty)~ : Creates an empty builder.
@@ -414,10 +380,10 @@ The persistent trait first — ~add~ answers a new collection and touches nothin
      (where (Iterable %s #:elem %elem #:cursor %k))))
 #+END_SRC
 
-- ~(add coll elem)~ : One element; a new collection back. ~Vec~ appends at the end; ~Set~ and ~OrderedSet~ are idempotent; ~Map~ and ~OrderedMap~ take a pair, ~(add m (k . v))~, with *set* semantics — a key already there is replaced. That is what the mutable sinks below do on a duplicate, and ~add~ and ~add!~ disagreeing about one would be a trap; ~map-add~, which refuses a duplicate, keeps its own name.
+- ~(add coll elem)~ : One element; a new collection back. ~Vec~ appends at the end; ~Set~ and ~OrderedSet~ are idempotent; ~Map~ and ~OrderedMap~ take a pair, ~(add m (k . v))~, with *set* semantics — a key already there is replaced. ~map-add~, which refuses a duplicate, keeps its own name.
 - ~(add-all coll iterable)~ : Everything the source yields, folded in. ~(add-all (set-empty) some-vec)~ is how a collection changes shape.
 
-~List~ has no implementation, deliberately: a cheap add would prepend (reversing what ~add-all~ pours in), an in-order one costs O(n) per element, and a name as plain as ~add~ should not quietly mean either. Build with a ~ListBuilder~ instead.
+~List~ has no implementation: a cheap add would prepend (reversing what ~add-all~ pours in), an in-order one costs O(n) per element. Build with a ~ListBuilder~ instead.
 
 *** Addable! — the mutable sinks
 One trait over every builder and transient, so that filling a collection does not care which one it is filling:
@@ -431,22 +397,14 @@ One trait over every builder and transient, so that filling a collection does no
 #+END_SRC
 
 - ~(add! sink elem)~ : One element. For a map-shaped sink the element is a pair, ~(add! mb (k . v))~.
-- ~(add-all! sink iterable)~ : Everything an ~Iterable~ holds, in the order it yields. Generic on both sides — the source may be a ~List~, a ~Vec~, a ~Range~, a string, a ~Map~ — and the member-level ~(where ...)~ is what ties the source's element to the sink's (see *Member-level where clauses* in ~Syntax.org~). A mismatch is refused at the call.
+- ~(add-all! sink iterable)~ : Everything an ~Iterable~ holds, in the order it yields. The source may be a ~List~, a ~Vec~, a ~Range~, a string or a ~Map~; a mismatch is refused at the call (see *Member-level where clauses* in ~Syntax.org~).
 
-Implementations ship for ~VecBuilder~, ~ListBuilder~, ~StringBuilder~, ~MapBuilder~ and ~TransientMap~ in the prelude, and for the set and ordered-collection builders and transients in ~(std set)~, ~(std orderedset)~ and ~(std orderedmap)~ — each beside the type it fills.
+Implementations ship for ~VecBuilder~, ~ListBuilder~, ~StringBuilder~, ~MapBuilder~ and ~TransientMap~ in the prelude, and for the set and ordered-collection builders and transients in ~(std set)~, ~(std orderedset)~ and ~(std orderedmap)~.
 
 ** Maps (~Map~)
 High-performance immutable CHAMP (Compressed Hash-Array Mapped Prefix-tree) maps.
 
-Not builtins. ~(Map %k %v)~ is an ~import/class~ alias for ~Map.Map~ and the
-operations are ~import/extern~ bindings on ~Map.MapModule~, both living in
-=(std prelude)= — which every program imports implicitly, so a map is written
-exactly as it always was. They are in the prelude rather than a =(std map)= of
-their own because ~#map(...)~ is a hash macro of the prelude's, expanding to a
-call to ~list->map~ wherever the literal is written, and because the prelude implements
-~Iterable~, ~Collection~ and ~Collector~ for ~Map~ — a
-separate module would have to import the prelude for those while the prelude
-imported it back.
+Not builtins. ~(Map %k %v)~ is an ~import/class~ alias for ~Map.Map~ and the operations are ~import/extern~ bindings on ~Map.MapModule~, both living in =(std prelude)=. They live there rather than in a =(std map)= of their own because ~#map(...)~ expands to a call to ~list->map~, and because the prelude implements ~Iterable~, ~Collection~ and ~Collector~ for ~Map~.
 
 - ~(map-empty)~ : Returns an empty map.
 - ~(map-ref map key)~ : Returns the value for ~key~; throws if not found.
@@ -468,33 +426,26 @@ imported it back.
 
 *** Where an entry is two arguments and where it is one
 
-Every callback below takes the key and the value as **two** arguments, which is
-what a walk of the trie produces anyway:
+Every callback below takes the key and the value as **two** arguments:
 
 #+BEGIN_SRC scheme
 (map-fold (fun (k v acc) (+ acc v)) 0 m)
 #+END_SRC
 
-The entry survives as a ~(Tuple %k %v)~ only where a trait signature fixes the
-shape. ~Iterable~'s ~%elem~ and ~Foldable~'s ~%item~ are a single element, so a
-callback reached through ~fold~ or a ~loop~ sees a pair rather than two
-arguments, and the prelude's implementations are what put the pair together:
+An entry survives as a ~(Tuple %k %v)~ only where a trait signature fixes the shape: ~Iterable~'s ~%elem~ and ~Foldable~'s ~%item~ are a single element, so a callback reached through ~fold~ or a ~loop~ sees a pair.
 
 #+BEGIN_SRC scheme
 (fold (fun (kv acc) (def (_ . v) kv) (+ acc v)) 0 m)
 #+END_SRC
 
-The pair is also what ~map->list~, ~map->seq~, ~map-cursor-current~, ~map-find~
-and the ~#map(...)~ literal deal in — in every one of those an entry is a
-*value* crossing the boundary rather than an argument list. A value tuple, so it
-costs no allocation.
+The pair is also what ~map->list~, ~map->seq~, ~map-cursor-current~, ~map-find~ and the ~#map(...)~ literal deal in — a *value* crossing the boundary rather than an argument list. A value tuple, so it costs no allocation.
 
 - ~(map-merge-with f map other)~ : Merges two maps using resolver ~f~ for duplicate keys; ~f~ receives ~(key val1 val2)~ as three arguments.
 - ~(map-for-each f map)~ : Applies ~(f key value)~ to each entry for side effects.
 - ~(map-iter f map)~ : Iterates with early exit; ~f~ receives ~(key value)~ and returns a boolean.
 - ~(map-any? f map)~ : True if ~(f key value)~ holds of any entry.
-- ~(map-find f map)~ : ~(Some entry)~ for the first entry where ~(f key value)~ holds, or ~None~. The entry is a pair: it is a value being handed back.
-- ~(map-try-find f map)~ : the same as ~map-find~. It used to answer a ~(Tuple bool key value)~.
+- ~(map-find f map)~ : ~(Some entry)~ for the first entry where ~(f key value)~ holds, or ~None~. The entry is a pair.
+- ~(map-try-find f map)~ : the same as ~map-find~.
 - ~(map-fold f init map)~ : Folds over the map; ~f~ receives ~(key value acc)~.
 - ~(map-filter f map)~ : Returns a new map containing only entries where ~(f key value)~ is true.
 - ~(map-map f map)~ : Returns a new map whose values are ~(f key value)~. The key is what the result is filed under, so the mapper cannot move it.
@@ -509,14 +460,11 @@ costs no allocation.
 
 *** Builders and transients
 
-Two more ways to build a map, in the shape ~(std set)~ and =(std orderedmap)=
-use. The builder is the fast way to make a map out of nothing. You put things in it
-and call mapbuilder->map. It does not support getting or setting elements. If you add
-the same key two times, the last one is used.
+Two more ways to build a map, in the shape ~(std set)~ and =(std orderedmap)= use.
 
-The transient is the map's own interface with the writes turned inside out, and
-the fast way to make a map out of *another* map: it owns the nodes it has
-touched, so ~transientmap->map~ is O(1). The mutators answer nothing.
+The builder is the fast way to make a map out of nothing: put things in and call ~mapbuilder->map~. It supports no get or set, and a duplicate key keeps the last one.
+
+The transient is the fast way to make a map out of *another* map: it owns the nodes it has touched, so ~transientmap->map~ is O(1). The mutators answer nothing.
 
 - ~(mapbuilder-empty)~ / ~(map->mapbuilder map)~ : Creates a builder.
 - ~(mapbuilder-add! b key value)~ / ~(mapbuilder-add-all! b seq)~ : Appends.
@@ -539,23 +487,16 @@ Three libraries rather than builtins, and imported by name:
 Each collection provides three identical interfaces for different usage patterns:
 
 - the collection itself, where every write answers a new one;
-- a **builder**, shaped exactly like ~ListBuilder~ — ~empty~, ~add!~,
-  ~add-all!~, ~length~, and the conversion each way — and the fast way to make
-  one out of nothing, since appends are sorted or scattered into place in a
-  single pass at the end;
+- a **builder**, shaped exactly like ~ListBuilder~ — ~empty~, ~add!~, ~add-all!~, ~length~, and the conversion each way;
 - a **transient**, which mutates in place.
 
 ~(Set %a)~ is ~(Map %k %v)~ with the values left out. Constant time access. Unordered.
 
-~(OrderedSet %a)~ and ~(OrderedMap %k %v)~ are persistent B-trees keyed in the
-elements' natural order, by ~Comparer<T>.Default~. 
+~(OrderedSet %a)~ and ~(OrderedMap %k %v)~ are persistent B-trees keyed in the elements' natural order, by ~Comparer<T>.Default~.
 
-~(OrderedMap %k %v)~'s api is the prelude's ~map-*~ under an
-~orderedmap-~ prefix.
+~(OrderedMap %k %v)~'s api is the prelude's ~map-*~ under an ~orderedmap-~ prefix.
 
-All three implement ~Iterable~, ~Collection~ and ~->str~,
-and each publishes a collector — ~setting~, ~ordered-setting~,
-~ordered-mapping~ — so a loop can accumulate into one:
+All three implement ~Iterable~, ~Collection~ and ~->str~, and each publishes a collector — ~setting~, ~ordered-setting~, ~ordered-mapping~ — so a loop can accumulate into one:
 
 #+BEGIN_SRC scheme
 (loop (:for x (range 0 10))
@@ -565,38 +506,19 @@ and each publishes a collector — ~setting~, ~ordered-setting~,
 
 ** Control =(std prelude)=
 
-Macros, not procedures — which is what lets them take a branch that is not
-evaluated. They are written with ~syntax-match~ in ~lib/std/prelude.bjo~; see
-~Docs/MACROS.org~ for what that means, and for why they cannot be passed to
-anything or stored in a variable.
+Macros, not procedures — which is what lets them take a branch that is not evaluated. They are written with ~syntax-match~ in ~lib/std/prelude.bjo~; see ~Docs/MACROS.org~.
 
-- ~(cond (test body ...) ... (else body ...))~ : ~if~ at any number of arms. The
-  final ~else~ is required. Every arm needs the same return type.
-- ~(:def pattern expr)~ and ~(:do body ...)~ : clauses of a ~cond~ that answer
-  nothing. A ~:def~ binds and a ~:do~ runs something; both happen only when
-  every test above them has failed, and what a ~:def~ binds is in scope in
-  every clause below it and nowhere else. A ~:def~ *is* a ~def~ — the body it
-  swallows is the rest of the cond — so it takes the same patterns and the
-  same failure parts, and ~(:def (Ok v) (parse s) :propagate)~ makes the whole
-  cond the ~Err~. A cond may not end in one: they answer nothing, so the
-  ~else~ is still the last word.
-- ~(if-let ((name expr)) then else)~ : ~then~ with ~name~ bound to what ~expr~
-  answered, if it answered ~(Some ...)~, and ~else~ if it was ~None~. The
-  binding is shaped like a ~let~'s, which should be changed.
-- ~(when-let ((name expr)) body ...)~ : the body with ~name~ bound, when there
-  was something to bind. 
-- ~(some-> value step ...)~ : ~->~ that stops at the first ~None~. Each step
-  answers an ~(Option ...)~ and it unwraps every step befor going on.
-- ~(try-> value step ...)~ : the same over ~Result~, stopping at the first
-  ~Err~. Each step answers a ~(Result ...)~ and receives what the step before
-  unwrapped to, so a chain reads in the order it runs rather than inside out.
-- ~(let* ((name expr) ...) body ...)~ : sequential binding. 
-- ~(parameterize* ((param expr) ...) body ...)~ : the let* version of ~parameterize~
-- ~(with-cancel (cancel) body ...)~ : a cancellation scope that owns the fibers
-  started inside it and waits for them. See below.
+- ~(cond (test body ...) ... (else body ...))~ : ~if~ at any number of arms. The final ~else~ is required. Every arm needs the same return type.
+- ~(:def pattern expr)~ and ~(:do body ...)~ : clauses of a ~cond~ that answer nothing. A ~:def~ binds and a ~:do~ runs something; both happen only when every test above them has failed, and what a ~:def~ binds is in scope in every clause below it and nowhere else. A ~:def~ *is* a ~def~ — the body it swallows is the rest of the cond — so it takes the same patterns and the same failure parts, and ~(:def (Ok v) (parse s) :propagate)~ makes the whole cond the ~Err~. A cond may not end in one.
+- ~(if-let ((name expr)) then else)~ : ~then~ with ~name~ bound to what ~expr~ answered, if it answered ~(Some ...)~, and ~else~ if it was ~None~.
+- ~(when-let ((name expr)) body ...)~ : the body with ~name~ bound, when there was something to bind.
+- ~(some-> value step ...)~ : ~->~ that stops at the first ~None~. Each step answers an ~(Option ...)~ and it unwraps every step before going on.
+- ~(try-> value step ...)~ : the same over ~Result~, stopping at the first ~Err~. Each step answers a ~(Result ...)~ and receives what the step before unwrapped to, so a chain reads in the order it runs rather than inside out.
+- ~(let* ((name expr) ...) body ...)~ : sequential binding.
+- ~(parameterize* ((param expr) ...) body ...)~ : the let* version of ~parameterize~.
+- ~(with-cancel (cancel) body ...)~ : a cancellation scope that owns the fibers started inside it and waits for them. See below.
 - ~(with-deadline ms body ...)~ : the same scope, with a timer that cancels it.
-- ~(with-shield #:within ms body ...)~ : a scope whose token is /not/ linked to
-  its parent's, so a ~sync~ in it works after a cancellation. For cleanup.
+- ~(with-shield #:within ms body ...)~ : a scope whose token is /not/ linked to its parent's, so a ~sync~ in it works after a cancellation. For cleanup.
 
 #+BEGIN_SRC scheme
 (cond ((< n 0) "negative")
@@ -627,9 +549,7 @@ anything or stored in a variable.
 
 ** Effects =(std effect)=
 
-An /effect operation/ is a typed, named parameter holding a function.
-~with-handler~ is ~parameterize~ on that parameter, and performing an operation
-reads it and calls it *on the performer's own stack*.
+An /effect operation/ is a typed, named parameter holding a function. ~with-handler~ is ~parameterize~ on that parameter, and performing an operation reads it and calls it *on the performer's own stack*.
 
 #+BEGIN_SRC scheme
 (import (std effect))
@@ -645,79 +565,46 @@ reads it and calls it *on the performer's own stack*.
   (greet "world"))
 #+END_SRC
 
-~defeffect~ emits three definitions per operation and nothing per effect: the
-cell ~op/say~, the signature, and the wrapper ~say~. The effect name is
-documentation. There is no form that installs a whole effect at once, so a
-handler is installed one operation at a time.
+~defeffect~ emits three definitions per operation and nothing per effect: the cell ~op/say~, the signature, and the wrapper ~say~. The effect name is documentation. A handler is installed one operation at a time.
 
 *** What this is not
 
-Nothing is captured. A handler returns once — which resumes the performer with
-its value — or throws, which unwinds the performer. That rules out generators,
-backtracking and resuming an operation twice, and it rules them out *for good on
-this backend*: there is no continuation here to hold on to, and no extension of
-this design would produce one. Plan around a handler that answers once.
+Nothing is captured: a handler returns once — which resumes the performer with its value — or throws, which unwinds the performer. Plan around a handler that answers once.
 
-A handler that throws unwinds the /performer/, not the installer. Inside a
-spawned fiber that is a child failure like any other, and the enclosing scope
-reports it.
+A handler that throws unwinds the /performer/, not the installer. Inside a spawned fiber that is a child failure like any other, and the enclosing scope reports it.
 
 *** Colour
 
 An operation's colour is its declared arrow, and a handler has to match it.
 
-- ~(-> ...)~ : performable anywhere, including inside a ~defun~. Takes ~fun~
-  handlers.
-- ~(-bjo-> ...)~ : performable only from a bjoroutine. Takes ~bjoroutine~
-  handlers, or a ~defbjouble~, which has a copy of each colour.
+- ~(-> ...)~ : performable anywhere, including inside a ~defun~. Takes ~fun~ handlers.
+- ~(-bjo-> ...)~ : performable only from a bjoroutine. Takes ~bjoroutine~ handlers, or a ~defbjouble~, which has a copy of each colour.
 
-An ordinary ~fun~ is *not* lifted into a ~(-bjo-> ...)~ slot: the two arrows are
-different calling conventions rather than a subtype pair, and a lambda has no
-second copy to offer. Both mismatches are ordinary type errors —
-~with-handler~ knows nothing about colour, because the cell is a
-~(Param <the declared arrow>)~ and installing a handler is an assignment at that
-arrow.
+An ordinary ~fun~ is *not* lifted into a ~(-bjo-> ...)~ slot. Both mismatches are ordinary type errors — ~with-handler~ knows nothing about colour, because the cell is a ~(Param <the declared arrow>)~.
 
-Prefer a sync operation. Anything a ~defun~ has to be able to perform must be
-one, and an operation that needs to return something suspendable can return a
-/value/ whose own methods are colour-aware — a port, say — rather than
-suspending itself.
+Prefer a sync operation: anything a ~defun~ has to be able to perform must be one.
 
 *** ~#:default~ against ~Unhandled~
 
-Give a default when there is one sensible meaning: ~log~ writing to stderr, the
-system clock, the real filesystem. Leave it off when running with no handler
-should fail loudly — performing then raises ~Bjolang.Runtime.Unhandled~, naming
-the operation, from the default handler rather than from the runtime.
+Give a default when there is one sensible meaning: ~log~ writing to stderr, the system clock, the real filesystem. Leave it off when running with no handler should fail loudly — performing then raises ~Bjolang.Runtime.Unhandled~, naming the operation.
 
 *** ~#:cold~, and why ids are a budget
 
-Every operation spends one of the dynamic environment's 31 cheap parameter ids.
-~#:cold~ gives that claim up, for an operation its author knows is not performed
-in a loop. Without it a program with many rarely-performed effects pushes its own
-hot parameters out of the cheap slots. ~now~ and ~getenv~ are cold; ~warn~ and
-~log~ are not.
+Every operation spends one of the dynamic environment's 31 cheap parameter ids. ~#:cold~ gives that claim up, for an operation its author knows is not performed in a loop. ~now~ and ~getenv~ are cold; ~warn~ and ~log~ are not.
 
 *** ~#:adopt~, for an operation that hands back a resource
 
-~#:adopt ((op fn))~ intercepts the value returned by a handler and passes it through ~fn~ before
-returning it to the caller. This is crucial for operations that return *resources* (like files). If a test
-handler returns a fake resource (like a string port), it must be 'adopted' into the current scope so it
-gets cleaned up properly. Without this, handlers would return fake resources that never get released,
-breaking leak tests. The prelude's ~FS~ effect is the case it exists for; see the files section above.
+~#:adopt ((op fn))~ passes a handler's returned value through ~fn~ before it reaches the caller, so a handler that returns a resource has it adopted into the current scope. The prelude's ~FS~ effect is the case it exists for; see the files section above.
 
 *** Forwarding
 
-A handler runs with itself installed, so one that performs its own operation
-calls itself:
+A handler runs with itself installed, so one that performs its own operation calls itself:
 
 #+BEGIN_SRC scheme
 (with-handler ((log (fun (s) (log (str "[app] " s))))) ...)   ;; loops
 #+END_SRC
 
-The handler installed before it is ~(handler-of log)~. The bindings of a
-~with-handler~ are evaluated before any of them is installed, so it can be read
-in the binding itself:
+The handler installed before it is ~(handler-of log)~. The bindings of a ~with-handler~ are evaluated before any of them is installed, so it can be read in the binding itself:
 
 #+BEGIN_SRC scheme
 (with-handler ((log (let ((outer (handler-of log)))
@@ -725,16 +612,11 @@ in the binding itself:
   ...)
 #+END_SRC
 
-The same applies to a fake that wants to fall through: ~open-input-file/raw~ is
-the real filesystem by name, and ~(handler-of open-input-file)~ is whatever was
-installed before.
+The same applies to a fake that wants to fall through: ~open-input-file/raw~ is the real filesystem by name, and ~(handler-of open-input-file)~ is whatever was installed before.
 
 *** The cell is found by spelling
 
-~with-handler~ and ~handler-of~ derive the cell from the operation's written
-name: ~log~ binds ~op/log~. That is a convention, not a binding, so an operation
-imported under a prefix or a rename has no cell of that spelling and
-~with-handler~ cannot find it. The fallback is the expansion itself:
+~with-handler~ and ~handler-of~ derive the cell from the operation's written name: ~log~ binds ~op/log~. That is a convention, not a binding, so an operation imported under a prefix or a rename has no cell of that spelling and ~with-handler~ cannot find it. The fallback is the expansion itself:
 
 #+BEGIN_SRC scheme
 (parameterize ((p:op/log collect)) ...)
@@ -742,16 +624,13 @@ imported under a prefix or a rename has no cell of that spelling and
 
 ~op/log~ is an ordinary exported binding and follows every rename.
 
-The same convention is why a macro that writes a ~with-handler~ has to ~inject~
-the operation name: a template renames ~log~, and a renamed ~log~ derives a cell
-nothing declares.
+The same convention is why a macro that writes a ~with-handler~ has to ~inject~ the operation name: a template renames ~log~, and a renamed ~log~ derives a cell nothing declares.
 
 #+BEGIN_SRC scheme
 (with-handler ((,(inject (string->symbol "log")) collect)) ...)
 #+END_SRC
 
-A name taken from the macro's own input is already unrenamed.
-~std/simpletest~'s ~with-fake-fs~ is the worked example.
+A name taken from the macro's own input is already unrenamed. ~std/simpletest~'s ~with-fake-fs~ is the worked example.
 
 *** A handler frame is not a scope
 
@@ -764,75 +643,36 @@ A scope waits for its children; ~with-handler~ does not.
   (report buf))              ;; reads while the child is still filling buf
 #+END_SRC
 
-The child does not lose the handler — a spawn takes the environment as it stood
-at the spawn — so the read is *early*, not empty. **A handler that collects must
-enclose the scope that owns the performers.** Put the ~with-handler~ outside the
-~with-cancel~ and read after both have returned.
+The child does not lose the handler — a spawn takes the environment as it stood at the spawn — so the read is *early*, not empty. **A handler that collects must enclose the scope that owns the performers.**
 
 *** The test for what is an effect
 
-If the thing installed is a /value/ the caller reads, it is a parameter. If it is
-a /behaviour/ the caller decides — with a default worth naming, a possible abort,
-and a signature worth checking — it is an effect.
+If the thing installed is a /value/ the caller reads, it is a parameter. If it is a /behaviour/ the caller decides — with a default worth naming, a possible abort, and a signature worth checking — it is an effect.
 
-By that test errors stay ~try~/~raise~, state stays ~parameterize~ and
-~def/mutable~, the three standard ports stay parameters, and ~random~ stays the
-parameter ~(std random)~ already has: it is swappable, it has no abort case, and
-an effect would put a wrapper function over a read that is already one.
+By that test errors stay ~try~/~raise~, state stays ~parameterize~ and ~def/mutable~, the three standard ports stay parameters, and ~random~ stays a parameter.
 
 *** The operations the prelude performs
 
-Exported from ~(std prelude)~, so performing one needs no import; installing a
-handler needs ~(import (std effect))~ for ~with-handler~, since a macro is not a
-binding and cannot be re-exported.
+Exported from ~(std prelude)~, so performing one needs no import; installing a handler needs ~(import (std effect))~ for ~with-handler~.
 
-- ~(warn s)~ : something is wrong and carrying on is the default. The case a
-  plain exception cannot express — the same library call can be a line on stderr
-  in one program and a raise in another. Default: a line on the error port.
-- ~(log s)~ : a line of diagnostics. Default: a line on the error port. The
-  natural logarithm in ~(std maths)~ was renamed ~loge~ to leave this name free,
-  since a prelude export and a ~(std maths)~ export of one name would make
-  importing both an ambiguity rather than a choice.
-- ~(now)~ : milliseconds on a monotonic clock, with an unspecified origin — only
-  differences mean anything. ~(std stopwatch)~ performs it rather than holding a
-  clock, so a test can install one and assert an exact elapsed time. Cold.
+- ~(warn s)~ : something is wrong and carrying on is the default. Default: a line on the error port.
+- ~(log s)~ : a line of diagnostics. Default: a line on the error port. The natural logarithm in ~(std maths)~ was renamed ~loge~ to leave this name free.
+- ~(now)~ : milliseconds on a monotonic clock, with an unspecified origin — only differences mean anything. Cold.
 - ~(getenv name)~ : ~(Option string)~ from the process environment. Cold.
 
-Both diagnostic operations are sync on purpose: a plain ~defun~ has to be able to
-say something. A handler that wants to send a line down a channel pushes it onto
-a mutable queue rather than ~sync~ing.
+Both diagnostic operations are sync on purpose: a plain ~defun~ has to be able to say something. A handler that wants to send a line down a channel pushes it onto a mutable queue rather than ~sync~ing.
 
 ** Testing =(std simpletest)=
 
-- ~(expect label actual wanted)~ / ~(expect-true label ok)~ / ~(fail label)~ :
-  the assertions. A line beginning ~FAILURE:~ is what the runner looks for.
-- ~(with-test "name" body ...)~ : run a body under ~(with-deadline ...)~. The
-  test gets a timeout that names it, a fiber it spawned is waited for, resources
-  it opened are released, and several failures are reported together. It also
-  asserts the body left nothing open, read before the scope closes.
-  ~#:within ms~ overrides the deadline; ~#:open-ok~ turns off the leak check,
-  for the tests whose subject /is/ release-at-close.
-- ~(with-fake-fs ((path contents) ...) body ...)~ : install both halves of the
-  ~FS~ effect out of a map. A path written inside it reads back afterwards, and
-  a write to a seeded path replaces the seed. ~(fake-fs-written fs path)~ reads
-  back what was written, and works after the port is closed.
+- ~(expect label actual wanted)~ / ~(expect-true label ok)~ / ~(fail label)~ : the assertions. A line beginning ~FAILURE:~ is what the runner looks for.
+- ~(with-test "name" body ...)~ : run a body under ~(with-deadline ...)~. The test gets a timeout that names it, a fiber it spawned is waited for, resources it opened are released, and several failures are reported together. It also asserts the body left nothing open. ~#:within ms~ overrides the deadline; ~#:open-ok~ turns off the leak check.
+- ~(with-fake-fs ((path contents) ...) body ...)~ : install both halves of the ~FS~ effect out of a map. A path written inside it reads back afterwards, and a write to a seeded path replaces the seed. ~(fake-fs-written fs path)~ reads back what was written, and works after the port is closed.
 
-~with-fake-fs~ is a handler frame, not a scope, so the extent rule applies. A
-fiber spawned inside it keeps the fake — a spawn takes the environment as it
-stood at the spawn — but nothing waits for it, so the body's assertions and
-~with-test~'s leak check run before it is done. Spawn inside a ~with-scope~ of
-your own inside it.
+~with-fake-fs~ is a handler frame, not a scope: a fiber spawned inside it keeps the fake, but nothing waits for it, so the body's assertions and ~with-test~'s leak check run before it is done. Spawn inside a ~with-scope~ of your own inside it.
 
 ** Waiting from an ordinary function =(std prelude)=
 
-~sync~ is a yield point, so only a ~defbjo~ may write it. A program whose ~main~
-is a plain ~defun~ therefore cannot take a value off a channel, join a promise,
-or wait for a timeout — all three are events, and getting a value out of an
-event means syncing it.
-
-~(sync/blocking ev)~ is the way out. It takes any event and parks the *calling
-thread* rather than suspending a fiber, so ordinary code can reach the whole
-concurrent vocabulary:
+~sync~ is a yield point, so only a ~defbjo~ may write it. A plain ~defun~ therefore cannot take a value off a channel, join a promise, or wait for a timeout. ~(sync/blocking ev)~ takes any event and parks the *calling thread* rather than suspending a fiber:
 
 #+BEGIN_SRC scheme
 (sync/blocking (chan-recv ch))
@@ -841,49 +681,23 @@ concurrent vocabulary:
                        (wrap (timeout 1000) (fun (u) TimedOut))))
 #+END_SRC
 
-No fiber is spawned: the event is published with a continuation that hands the
-value over and wakes the parked thread, which is why this is a primitive rather
-than something spelled ~(sync)~ inside a ~bjo~ — the spawning version costs a
-fiber per value, and on a channel in a loop that is a fiber per element.
+No fiber is spawned. It is the mirror of ~blocking~, which carries a thread-parking call *into* fiber-land; this carries an event *out*.
 
-It is the mirror of ~blocking~, which carries a thread-parking call *into*
-fiber-land; this carries an event *out*.
+*Do not call it from inside a bjoroutine.* It parks the thread it is called on, and inside a fiber that thread belongs to the pool. There the answer is ~sync~.
 
-*Do not call it from inside a bjoroutine.* It parks the thread it is called on,
-and inside a fiber that thread belongs to the pool — which is what the events
-being waited for need in order to fire. There the answer is ~sync~.
-
-*Nothing withdraws it once parked.* A wait that might not end needs its own way
-out composed in first, as in the ~choose~ above. Building an event is pure, so
-that composition costs nothing and happens before the thread ever parks.
+*Nothing withdraws it once parked.* A wait that might not end needs its own way out composed in first, as in the ~choose~ above.
 
 ** Getting work off the fiber pool =(std prelude)=
 
-Two functions, same shape, and the thread pool is what cannot tell them apart.
-To the pool, a worker parked on a syscall and a worker halfway through resizing
-an image look identical — both are "not coming back soon" — but the programs are
-different, and only one of them is helped by moving the work to another pool
-thread.
-
-- ~(blocking thunk)~ : for work that *parks a thread*. ~File.ReadAllText~,
-  ~Console.ReadLine~, ~Monitor.Enter~. It goes to ~Task.Run~, so the thread that
-  parks is one the pool can grow to replace, and the fiber suspends on the
-  *result* rather than on the work.
-- ~(spawn/thread thunk)~ : for work that *uses a core*. An image resize, a
-  compression pass, a search over a big structure. It gets a thread of its own,
-  because for compute ~Task.Run~ buys nothing at all — the same pool, the same
-  core, a different worker holding it.
+- ~(blocking thunk)~ : for work that *parks a thread*. ~File.ReadAllText~, ~Console.ReadLine~, ~Monitor.Enter~. It goes to ~Task.Run~, so the thread that parks is one the pool can grow to replace.
+- ~(spawn/thread thunk)~ : for work that *uses a core*. An image resize, a compression pass, a search over a big structure. It gets a thread of its own, because for compute ~Task.Run~ buys nothing at all.
 
 #+BEGIN_SRC scheme
 (sync (blocking     #(file-read-text path)))     ;; (Result Exception string)
 (sync (spawn/thread #(resize image 2048)))       ;; (Result Exception Image)
 #+END_SRC
 
-*~spawn/thread~ is a function, not one of the ~spawn~ special forms*, despite
-the name. It takes a thunk, so it is ~(sync (spawn/thread #(crunch data)))~ and
-never ~(spawn/thread (crunch data))~ — the second is an ordinary application and
-a type error. The four spawn forms decide *who owns* a fiber; this decides
-*where work runs*, which is a different axis and composes with all four:
+*~spawn/thread~ is a function, not one of the ~spawn~ special forms*, despite the name. It takes a thunk, so it is ~(sync (spawn/thread #(crunch data)))~ and never ~(spawn/thread (crunch data))~. The four spawn forms decide *who owns* a fiber; this decides *where work runs*:
 
 #+BEGIN_SRC scheme
 ;; not cancelled, not waited for, and off the pool
@@ -893,27 +707,15 @@ a type error. The four spawn forms decide *who owns* a fiber; this decides
   (ignore (sync (spawn/thread #(crunch data)))))
 #+END_SRC
 
-A dedicated thread is not free: about a megabyte of stack, created and destroyed
-per call. It is worth it for work measured in tens of milliseconds and a loss for
-work measured in microseconds. A handful of compute-bound fibers on the pool is
-fine and is what a pool is for; this is for when there are more of them than
-cores and fibers that care about latency are queued behind them.
+A dedicated thread is not free: about a megabyte of stack, created and destroyed per call. It is worth it for work measured in tens of milliseconds and a loss for work measured in microseconds.
 
-*Neither is cancellable*, and neither can be: a thunk is arbitrary code with no
-yield point to interrupt. What *is* cancellable is the wait — ~sync~ consults
-the ambient token as usual, so a cancelled scope stops waiting while the work
-carries on to the end. The scope will not wait for it either; a scope waits for
-fibers, and neither of these is one.
+*Neither is cancellable*: a thunk is arbitrary code with no yield point to interrupt. What *is* cancellable is the wait — ~sync~ consults the ambient token as usual, so a cancelled scope stops waiting while the work carries on to the end. The scope will not wait for it either; a scope waits for fibers, and neither of these is one.
 
-Both are guarded, so each ~sync~ starts a fresh run rather than replaying the
-first one's answer. Failure is a value in both, as everywhere else that resolves
-at sync time.
+Both are guarded, so each ~sync~ starts a fresh run rather than replaying the first one's answer. Failure is a value in both.
 
 ** Cancellation scopes =(std prelude)=
 
-A scope owns the fibers started inside it. ~spawn~ and ~bjo~ put a fiber in the
-current scope, and the scope does not return until every one of them has
-finished. So this
+A scope owns the fibers started inside it. ~spawn~ and ~bjo~ put a fiber in the current scope, and the scope does not return until every one of them has finished. So this
 
 #+BEGIN_SRC scheme
 (with-cancel (cancel)
@@ -921,8 +723,7 @@ finished. So this
   (spawn (process b)))
 #+END_SRC
 
-runs both and waits for both, and when the form returns the work is over.
-Stopping early is what the cancel thunk is for:
+runs both and waits for both, and when the form returns the work is over. Stopping early is what the cancel thunk is for:
 
 #+BEGIN_SRC scheme
 (with-cancel (cancel)
@@ -933,79 +734,42 @@ Stopping early is what the cancel thunk is for:
 
 *** ~main~ is a scope
 
-There is always one. ~main~ runs inside an ordinary scope — the same one
-~with-cancel~ opens, with no special-cased token and no separate code path — so
-the rule is the rule one level up: *when ~main~ returns, the work it started is
-over.* A top-level ~spawn~ is waited for, a top-level ~open-input-file~ is
-closed, and a failure anywhere is reported.
+There is always one. ~main~ runs inside an ordinary scope — the same one ~with-cancel~ opens — so *when ~main~ returns, the work it started is over*: a top-level ~spawn~ is waited for, a top-level ~open-input-file~ is closed, and a failure anywhere is reported.
 
-This automatic tracking isn't completely free. Keeping track of cancellation adds a small
-overhead (a ~CancelWatch~) to every paused ~sync~ operation, and slightly more
-overhead to ~choose~ operations. The figures are in ~bench/BASELINE.md~.
+This automatic tracking isn't completely free. Keeping track of cancellation adds a small overhead (a ~CancelWatch~) to every paused ~sync~ operation, and slightly more overhead to ~choose~ operations. The figures are in ~bench/BASELINE.md~.
 
-~spawn~, ~bjo~, ~spawn/daemon~ and ~own!~ all *raise* when there is no ambient
-scope. After the above that leaves two places: module-level initialisation,
-which runs before ~main~, and a callback arriving from .NET on a foreign thread.
-Both are answered by ~in-scope~ below.
+~spawn~, ~bjo~, ~spawn/daemon~ and ~own!~ all *raise* when there is no ambient scope. That leaves two places: module-level initialisation, which runs before ~main~, and a callback arriving from .NET on a foreign thread. Both are answered by ~in-scope~ below.
 
 *** What is not prevented
 
-- A fiber in a pure loop with no ~sync~ never observes cancellation. There is no
-  preemption; a scope asks, it does not interrupt.
-- Two fibers waiting on each other is still a deadlock — now a scope that never
-  closes. ~with-deadline~ is the form to reach for by default, precisely because
-  it turns that into a failure with a place attached.
+- A fiber in a pure loop with no ~sync~ never observes cancellation. There is no preemption; a scope asks, it does not interrupt.
+- Two fibers waiting on each other is still a deadlock — now a scope that never closes. ~with-deadline~ turns that into a failure with a place attached.
 - A release that blocks blocks the close, for the same reason.
 
 *** The forms
 
-- ~(with-scope body ...)~ : a scope with no cancel thunk. The plain form, and
-  the one to put around resources.
-- ~(with-cancel (cancel) body ...)~ : makes a token linked to the ambient one,
-  installs it as ~current-cancel~ for the body, waits for the children, and
-  fires the token on the way out — ~Scope-Ended~ normally, ~(Failed e)~ when the
-  body is leaving with an exception. The binding is restored either way, and
-  ~cancel~ is bound to the thunk.
-- ~(with-deadline ms body ...)~ : the same, with a timer that fires ~Deadline~
-  after ~ms~. The timer belongs to the scope rather than to a fiber racing it: a
-  watcher fiber would be waiting for a token the scope does not fire until its
-  children are done, and its children would include the watcher.
-- ~(with-shield #:within ms body ...)~ : a scope whose token is *not* linked to
-  its parent's. ~#:within~ is optional and defaults to thirty seconds.
+- ~(with-scope body ...)~ : a scope with no cancel thunk. The one to put around resources.
+- ~(with-cancel (cancel) body ...)~ : makes a token linked to the ambient one, installs it as ~current-cancel~ for the body, waits for the children, and fires the token on the way out — ~Scope-Ended~ normally, ~(Failed e)~ when the body is leaving with an exception. The binding is restored either way, and ~cancel~ is bound to the thunk.
+- ~(with-deadline ms body ...)~ : the same, with a timer that fires ~Deadline~ after ~ms~.
+- ~(with-shield #:within ms body ...)~ : a scope whose token is *not* linked to its parent's. ~#:within~ is optional and defaults to thirty seconds.
 
 *** The order on the way out
 
-Wait, then cancel. The token fires *first* only when the body is leaving
-abnormally — an exception is on its way out, or the body called ~cancel~ itself.
-That is what keeps both shapes above writable.
+Wait, then cancel. The token fires *first* only when the body is leaving abnormally — an exception is on its way out, or the body called ~cancel~ itself.
 
-The cost is accepted and worth knowing: a scope whose children never end, and
-which never calls ~cancel~, /hangs/ rather than returning. A hang says where it
-is. A scope that returned while its children ran on says nothing at all. A child
-that is meant to run until the scope ends is a ~spawn/daemon~.
+A scope whose children never end, and which never calls ~cancel~, /hangs/ rather than returning. A child that is meant to run until the scope ends is a ~spawn/daemon~.
 
 *** A child that fails
 
-The scope fires its token, waits for every remaining child, and only then
-propagates — in that order. Reporting the failure straight away would let the
-caller carry on while sockets were still tearing down. Several failures at once
-are reported together as one ~System.AggregateException~.
+The scope fires its token, waits for every remaining child, and only then propagates — in that order. Several failures at once are reported together as one ~System.AggregateException~.
 
-A child that stopped because it was *cancelled* has not failed. Being cancelled
-is how a worker normally ends, and the record that it happened is the scope's
-token.
+A child that stopped because it was *cancelled* has not failed. Being cancelled is how a worker normally ends.
 
-~bjo~ is the exception, and deliberately: it hands back the promise, so its
-failure is the caller's to read and the scope does not raise it a second time.
-~spawn~ hands nothing back, so nobody else could be watching and the scope is
-what reports it.
+~bjo~ is the exception: it hands back the promise, so its failure is the caller's to read and the scope does not raise it a second time. ~spawn~ hands nothing back, so the scope reports it.
 
 *** Shielding cleanup
 
-Every ~sync~ consults the ambient token, so once a scope has been cancelled
-every ~sync~ in it raises ~Cancelled~ — including the ones in the code trying to
-tidy up. Inside a shield the ambient token is a fresh one that has not fired, so
-a ~sync~ works again:
+Every ~sync~ consults the ambient token, so once a scope has been cancelled every ~sync~ in it raises ~Cancelled~ — including the ones in the code trying to tidy up. Inside a shield the ambient token is a fresh one that has not fired, so a ~sync~ works again:
 
 #+BEGIN_SRC scheme
 (with-shield #:within (seconds 5)
@@ -1013,29 +777,15 @@ a ~sync~ works again:
   (spawn (flush-buffer b)))
 #+END_SRC
 
-It is the same object as any other scope with one flag different, which is why
-~(current-cancel)~ inside a shield also reads as "not cancelled": a hand-written
-~until-cancelled~ agrees with what ~sync~ is doing instead of contradicting it.
+~(current-cancel)~ inside a shield also reads as "not cancelled", agreeing with what ~sync~ is doing instead of contradicting it.
 
-~until-cancelled~ itself is for a token that is *not* the ambient one, and that
-is a rule rather than a preference. ~sync~ already watches the ambient token, so
-handing it to ~until-cancelled~ as well puts two waiters on one promise; they are
-woken as two independent pool work items, and whichever commits first decides
-whether the sync answers ~None~ or raises. It is deterministic when the token has
-already fired, which is what makes the mistake easy to miss.
-The deadline is not optional, because a shield is unreachable from outside by
-construction and one without a deadline would make the program impossible to
-kill.
+~until-cancelled~ is for a token that is *not* the ambient one. ~sync~ already watches the ambient token, so handing it to ~until-cancelled~ as well puts two waiters on one promise, and whichever commits first decides whether the sync answers ~None~ or raises.
 
-Naming ~Cancelled~ in a ~#:catch~ is a compile error, and the message points
-here. A broad handler that swallows a cancellation and carries on is the classic
-bug in every language that made cancellation an exception.
+Naming ~Cancelled~ in a ~#:catch~ is a compile error.
 
 *** What a scope owns besides fibers
 
-Use scopes to track resources that the Garbage Collector doesn't know how to manage
-automatically: OS file handles, network permits, subscriptions, or state that needs to be manually
-restored. *Do not use scopes to manage memory* — that is the GC's job.
+Use scopes to track resources that the Garbage Collector doesn't know how to manage automatically: OS file handles, network permits, subscriptions, or state that needs to be manually restored. *Do not use scopes to manage memory* — that is the GC's job.
 
 #+BEGIN_SRC scheme
 (with-scope
@@ -1046,79 +796,41 @@ restored. *Do not use scopes to manage memory* — that is the GC's job.
 
 - ~(current-scope)~ : the ambient scope as a value. Raises when there is none.
 - ~(own! thunk)~ : register a release, newest first. Answers an ~Owned~.
-- ~(release! owned)~ : run it now and unlink. A second call is a no-op, and so
-  is one that lost the race with the scope's own pass — the thunk runs exactly
-  once either way.
-- ~(own-disposable x)~ : ~.Dispose~ on the ambient scope, answering ~x~. A form,
-  so ~.Dispose~ resolves at the call site the way ~with-open~ resolves it.
+- ~(release! owned)~ : run it now and unlink. A second call is a no-op, and so is one that lost the race with the scope's own pass — the thunk runs exactly once either way.
+- ~(own-disposable x)~ : ~.Dispose~ on the ambient scope, answering ~x~. A form, so ~.Dispose~ resolves at the call site the way ~with-open~ resolves it.
 - ~(in-scope s body ...)~ : run the body with ~s~ as the ambient scope.
 - ~(scope-cancel! s reason)~ : what the cancel thunk does, on a scope value.
 
-~Owned~ is opaque, and more so than ~Scope~: no ~Eq~, no ~Ord~, no ~->str~, no
-fields. The only thing to do with one is ~release!~ it.
+~Owned~ is opaque, and more so than ~Scope~: no ~Eq~, no ~Ord~, no ~->str~, no fields. The only thing to do with one is ~release!~ it.
 
-*The ordering at close is fixed.* Body finishes or fails → on failure the token
-fires → every owned fiber lands → the token fires → releases run newest-first,
-under a shield → failures aggregate, body first, then children, then releases.
-Cleanup functions (releases) run in a protected state ("under a shield"). Because the scope is
-technically already cancelling, this shield ensures the cleanup code itself doesn't get interrupted
-while doing its job.
+*The ordering at close is fixed.* Body finishes or fails → on failure the token fires → every owned fiber lands → the token fires → releases run newest-first, under a shield → failures aggregate, body first, then children, then releases. Cleanup functions (releases) run in a protected state ("under a shield"), so they are not interrupted while doing their job.
 
-*A release is a plain thunk.* ~(-> void)~, no suspension, no deadline, run on
-the closer's stack. Cleanup functions cannot be interrupted or cancelled. Because of this, if your
-cleanup function freezes or blocks, it will freeze the entire scope's closing process.
-A release that throws is recorded and the walk carries
-on.
+*A release is a plain thunk.* ~(-> void)~, no suspension, no deadline, run on the closer's stack, so a cleanup function cannot be interrupted or cancelled. If it freezes or blocks, it freezes the whole close. A release that throws is recorded and the walk carries on.
 
-*A closing scope ignores ~spawn~ and a finished one refuses ~own!~.* The
-consequences differ: a fiber that was never started leaks nothing, but a
-resource that was opened and then not registered is a leak with nobody to
-release it. They also differ in *when*: a spawn is refused as soon as closing
-begins, because the drain has been declared complete; an ~own!~ only once the
-releases have run, because until then there is still somebody to release it.
-That is what makes ~(with-scope (spawn (fetch-into "a.txt")))~ work — the child
-opens its file during the drain.
+*A closing scope ignores ~spawn~ and a finished one refuses ~own!~.* A fiber that was never started leaks nothing, but a resource opened and then not registered is a leak with nobody to release it. A spawn is refused as soon as closing begins; an ~own!~ only once the releases have run. That is what makes ~(with-scope (spawn (fetch-into "a.txt")))~ work — the child opens its file during the drain.
 
-*Fibers are not scopes.* A file opened inside ~(spawn ...)~ or ~(bjo ...)~
-belongs to the enclosing scope and outlives the fiber. A scope per spawn would
-be an allocation per spawn. For many short-lived resources under one long-lived
-scope, open a *child scope per unit of work* rather than ~own!~/~release!~ into
-the parent: the parent then holds a count and not a list, and closing is a drain
-rather than a walk.
+*Fibers are not scopes.* A file opened inside ~(spawn ...)~ or ~(bjo ...)~ belongs to the enclosing scope and outlives the fiber. For many short-lived resources under one long-lived scope, open a *child scope per unit of work* rather than ~own!~/~release!~ into the parent.
 
-A handle returned out of the block that owned it is dangling. Nothing checks
-that; what makes it harmless is that there is nothing to read off it.
+A handle returned out of the block that owned it is dangling. Nothing checks that; what makes it harmless is that there is nothing to read off it.
 
 *** Files, and the ~FS~ effect
 
-~open-input-file~ and ~open-output-file~ are *effect operations*. With no handler
-they are ~open-input-file/raw~ and ~open-output-file/raw~, which open the real
-file and register it on the ambient scope before the caller can lose it.
+~open-input-file~ and ~open-output-file~ are *effect operations*. With no handler they are ~open-input-file/raw~ and ~open-output-file/raw~, which open the real file and register it on the ambient scope before the caller can lose it.
 
 - A file port is owned. When its scope returns it is closed, said or not.
 - A *string* port is not. It is memory.
-- The three standard ports are not. ~close-output-port~ on one flushes and stops
-  — nothing in the language can take stdout away from the rest of the program.
-- ~(call-with-input-file path proc)~ and ~(call-with-output-file path proc)~ open,
-  hand the port over, and close however the body ends. ~proc~ is ~-?->~, so
-  either colour works.
-- ~close-input-port~, ~close-output-port~ and ~with-open~ all go through the
-  owner handle. A direct ~.Dispose~ would close the stream and leave the
-  registration on the list.
+- The three standard ports are not. ~close-output-port~ on one flushes and stops.
+- ~(call-with-input-file path proc)~ and ~(call-with-output-file path proc)~ open, hand the port over, and close however the body ends. ~proc~ is ~-?->~, so either colour works.
+- ~close-input-port~, ~close-output-port~ and ~with-open~ all go through the owner handle. A direct ~.Dispose~ would close the stream and leave the registration on the list.
 - ~open-input-file/raw~ *bypasses the handler*. The ~/raw~ says so.
 
-A port that arrives *through the effect* is adopted: a real one is already
-owned, and one a handler built with ~open-input-string~ is registered on the
-scope the perform happened in. So a leak test over a fake filesystem means what
-it means over a real one. A port made *directly* with ~open-input-string~ is
-still unowned.
+A port that arrives *through the effect* is adopted: a real one is already owned, and one a handler built with ~open-input-string~ is registered on the scope the perform happened in. A port made *directly* with ~open-input-string~ is still unowned.
 
 ~std/simpletest~ has ~with-fake-fs~, which installs both halves out of a map.
 
 *** Calling back from .NET
 
-A handler arriving on a foreign thread has no ambient scope, so a ~spawn~ or an
-~own!~ in it raises. Capture the scope where you register, and re-enter it:
+A handler arriving on a foreign thread has no ambient scope, so a ~spawn~ or an ~own!~ in it raises. Capture the scope where you register, and re-enter it:
 
 #+BEGIN_SRC scheme
 (def home (current-scope))
@@ -1127,46 +839,22 @@ A handler arriving on a foreign thread has no ambient scope, so a ~spawn~ or an
 
 *** Odds and ends
 
-All four forms are macros over ~scope-open!~, ~scope-push!~, ~scope-canceller~,
-~scope-close!~, ~try~ and ~raise~ — nothing the parser knows about, so the
-import modifiers reach them like any other binding.
+All four forms are macros over ~scope-open!~, ~scope-push!~, ~scope-canceller~, ~scope-close!~, ~try~ and ~raise~. All four *suspend*, so they can only be written inside a bjoroutine. ~in-scope~ does not.
 
-All four *suspend*, because waiting is the whole of what they do. They can only
-be written inside a bjoroutine. ~in-scope~ does not: it installs a scope
-somebody else is waiting for.
-
-A bare ~(parameterize ((current-cancel t)) ...)~ stays legal, and is the
-deliberate airlock for a token that must outlive its creator — a daemon whose
-token lives in a registry. It binds the token without changing which scope a
-~spawn~ enlists in.
+A bare ~(parameterize ((current-cancel t)) ...)~ stays legal: it binds the token without changing which scope a ~spawn~ enlists in.
 
 ** Starting a fiber =(special forms)=
 
 Four forms, differing only in what the enclosing scope does about the fiber.
 
-- ~(spawn (f x))~ : a child of the current scope. The scope waits for it and
-  reports its failure. Answers ~Unit~, so it needs no ~ignore~. This is the
-  common one.
-- ~(bjo (f x))~ : the same child, answering its ~(Promise %a)~. The scope waits
-  for it but the *failure is yours*, because you are holding the promise. There
-  is no ~MustUse~ exemption for it: join it, race it, or say ~ignore~.
-- ~(spawn/daemon (f x))~ : cancelled by the scope, but not waited for. A
-  heartbeat, a logger, a metrics pump — work that should not hold the scope open
-  and should not outlive it either. Its failure is reported, not propagated,
-  because by then there is nobody to propagate it to.
-- ~(spawn/detached (f x))~ : genuinely outside. Neither the scope nor the token
-  is inherited, so nothing waits for it and nothing cancels it. Rare, and the
-  name is meant to look uncomfortable.
+- ~(spawn (f x))~ : a child of the current scope. The scope waits for it and reports its failure. Answers ~Unit~, so it needs no ~ignore~.
+- ~(bjo (f x))~ : the same child, answering its ~(Promise %a)~. The scope waits for it but the *failure is yours*. Join it, race it, or say ~ignore~.
+- ~(spawn/daemon (f x))~ : cancelled by the scope, but not waited for. Its failure is reported, not propagated.
+- ~(spawn/detached (f x))~ : genuinely outside. Neither the scope nor the token is inherited.
 
-In all four the operands are evaluated where the form is written and only the
-call happens in the new fiber, so ~(spawn (handle (next-job!)))~ runs
-~next-job!~ here.
+In all four the operands are evaluated where the form is written and only the call happens in the new fiber, so ~(spawn (handle (next-job!)))~ runs ~next-job!~ here.
 
-Spawning into a scope that has already started closing does nothing at all: no
-fiber, no error, and the spawning code carries on. The scope is unwinding, so
-one more error on the way out would be noise rather than information. ~bjo~ has
-to answer *something*, and answers a promise that has already failed with
-~Cancelled~.
+Spawning into a scope that has already started closing does nothing at all: no fiber, no error, and the spawning code carries on. ~bjo~ has to answer *something*, and answers a promise that has already failed with ~Cancelled~.
 
 ** Options (~Option~)
 Optional value type representing presence (~Some~) or absence (~None~).
@@ -1178,18 +866,12 @@ Optional value type representing presence (~Some~) or absence (~None~).
 - ~(option-ref-or opt default-val)~ : Returns the unwrapped value, or ~default-val~ if ~None~.
 
 ** Results (~Result~)
-An answer or the error that stopped it: ~(Ok val)~ or ~(Err e)~. A ~Result~ is
-must-use like every other value — it has to be handled, or handed to ~ignore~.
+An answer or the error that stopped it: ~(Ok val)~ or ~(Err e)~. A ~Result~ is must-use like every other value — it has to be handled, or handed to ~ignore~.
 - ~(ok? r)~ : Returns true if ~r~ is ~Ok~.
 - ~(err? r)~ : Returns true if ~r~ is ~Err~.
-- ~(result-map f r)~ : ~(Ok (f v))~ for an ~Ok~, and the ~Err~ untouched
-  otherwise. ~f~ answers a plain value; a step that answers a ~Result~ of its
-  own belongs in a ~try->~ chain instead.
+- ~(result-map f r)~ : ~(Ok (f v))~ for an ~Ok~, and the ~Err~ untouched otherwise. ~f~ answers a plain value; a step that answers a ~Result~ of its own belongs in a ~try->~ chain instead.
 
-~f~ is declared ~-?->~, so it may be either colour — but a lambda's colour is
-the keyword it was written with. A step that waits has to be a ~(bjoroutine
-(x) ...)~; written ~(fun (x) ...)~ the same call selects the blocking copy and
-parks the fiber's thread, which the colour lint reports.
+~f~ is declared ~-?->~, so it may be either colour. A step that waits has to be a ~(bjoroutine (x) ...)~; written ~(fun (x) ...)~ the same call selects the blocking copy and parks the fiber's thread.
 
 ** Sequences (~Seq~)
 Lazy, demand-driven sequences.
@@ -1201,7 +883,7 @@ Lazy, demand-driven sequences.
 - ~(seq-fold f init s)~ : Folds over the sequence; ~f~ receives ~(item acc)~.
 - ~(seq-unfold generator state)~ : Produces a sequence from ~state~ and a ~generator~ function returning ~(Some (Tuple next-item next-state))~ or ~None~.
 - ~(seq-take s n)~ : Takes the first ~n~ elements lazily.
-- ~(seq-drop s n)~ : Drops the first ~n~ elements lazily. Dropping more than the sequence holds gives the empty sequence. This is what a ~seq-tail~ would have been: a ~Seq~ has no tail to step to, so walking one element at a time is ~loop~'s job, not a combinator's.
+- ~(seq-drop s n)~ : Drops the first ~n~ elements lazily. Dropping more than the sequence holds gives the empty sequence. This is what a ~seq-tail~ would have been: a ~Seq~ has no tail to step to.
 - ~(seq-append s1 s2)~ : Lazily concatenates two sequences.
 - ~(seq-for-each f s)~ : Applies ~f~ to each element for side effects.
 - ~(seq-length s)~ : Consumes the sequence and returns the count.
@@ -1212,39 +894,22 @@ Lazy, demand-driven sequences.
 - ~(seq->vec s)~ : Consumes a sequence into a vector.
 
 ** Monads =(std monad)=
-The ~Monad~ trait, its instances, and the ~(do ...)~ block, none of which is in
-the prelude: a file that wants one writes ~(import (std monad))~.
+The ~Monad~ trait, its instances, and the ~(do ...)~ block, none of which is in the prelude: a file that wants one writes ~(import (std monad))~.
 
-- ~(pure x)~ : ~x~ in the monad. It mentions its constructor only in its
-  *result*, so nothing about the call says which instance is meant — the
-  expected type does, and where there is none the compiler asks for an
-  annotation.
+- ~(pure x)~ : ~x~ in the monad. It mentions its constructor only in its *result*, so nothing about the call says which instance is meant — the expected type does, and where there is none the compiler asks for an annotation.
 - ~(bind m k)~ : ~m~'s value handed to ~k~, which answers the next ~m~.
-- ~(do clause ...)~ : the block, which is ~bind~ and ~pure~ written in
-  sequence. See ~Docs/Syntax.org~ for the clauses.
+- ~(do clause ...)~ : the block, which is ~bind~ and ~pure~ written in sequence. See ~Docs/Syntax.org~ for the clauses.
 
-Implemented for ~(List %a)~ — where ~bind~ is a concat-map, so a block over one
-multiplies out — ~(Option %a)~ and ~(Result %e %a)~, both of which
-short-circuit. The last is what makes a block of fallible steps read as the
-happy path: ~%e~ is fixed by the implementation, so the error type is written
-once in the signature and never in the block.
+Implemented for ~(List %a)~ — where ~bind~ is a concat-map, so a block over one multiplies out — ~(Option %a)~ and ~(Result %e %a)~, both of which short-circuit. The last is what makes a block of fallible steps read as the happy path: ~%e~ is fixed by the implementation, so the error type is written once in the signature and never in the block.
 
-~Monad~ is *inline-only*: ~%m~ is a type constructor, which no C# interface can
-abstract over, so every call is resolved statically and spliced. Two
-consequences follow. A method may not be used at a type that is still a
-variable — no function generic in its monad — and whether a block is a loop
-depends on the instance: ~bind~ mentioning its continuation once means the
-lambda is substituted away, and mentioning it twice means it survives.
+~Monad~ is *inline-only*: ~%m~ is a type constructor, which no C# interface can abstract over, so every call is resolved statically and spliced. A method may not be used at a type that is still a variable — no function generic in its monad — and whether a block is a loop depends on the instance.
 
 Promises and Events do not implement ~Monad~ because concurrency uses direct-style yielding. A call to a ~defbjo~ is the yield point, and suspending inside ~bind~'s continuation would result in a lambda that cannot suspend. Use ~bjo~, ~sync~, and ~with-cancel~ for asynchronous sequencing.
 
 ** Walking a collection
-The protocol ~(loop ...)~ is built on, and the one ~Iterable~ declares. It is
-written out here because a program may use it directly, but it is not what a
-program normally reaches for: ~loop~, ~fold~ and the comprehensions are.
+The protocol ~(loop ...)~ is built on, and the one ~Iterable~ declares. A program may use it directly, but normally reaches for ~loop~, ~fold~ and the comprehensions.
 
-The sequence is passed to every method, so a cursor need carry nothing — a
-~Vec~'s is a bare ~int~ rather than a pair, and costs no allocation per step.
+The sequence is passed to every method, so a cursor need carry nothing — a ~Vec~'s is a bare ~int~ rather than a pair.
 - ~(iterable-start s)~ : A cursor at the beginning.
 - ~(iterable-done? s c)~ : Whether the walk is over.
 - ~(iterable-current s c)~ : The element at the cursor.
@@ -1253,40 +918,9 @@ The sequence is passed to every method, so a cursor need carry nothing — a
 These methods use long names to prevent collisions with common user variables (like ~next~, ~start~, and ~current~). They are intended to be called by the compiler rather than directly in user code.
 
 ** Traits
-- ~->str~ : Trait for string representation with method ~(->str x)~. Implemented for ~string~, ~int~, ~double~, ~byte~, ~long~, ~char~, ~Keyword~ and ~Symbol~. A ~char~ prints as itself, not as ~#\a~: ~->str~ is what ~display~ and ~print~ are built on, and those write text rather than a reread-able datum.
-
-  A list prints as ~'(1 2 3)~, through a *conditional* implementation:
-  ~(impl (->str (List %a)) (where (->str %a)) ...)~. The where clause is
-  what makes each element print through its own implementation rather than
-  through the blanket, and it is why ~->str~ over a list of a type you have
-  implemented ~->str~ for prints your version.
-
-  Anything with no implementation of its own falls to the blanket, which is
-  ~Object.ToString~.
-- ~Iterable~ : ~(iterable-start s)~, ~(iterable-done? s c)~,
-  ~(iterable-current s c)~ and ~(iterable-next s c)~ —
-  how to walk a collection, and what a ~(:for ...)~ clause uses. Implemented for
-  ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~, ~(Seq %a)~, ~Range~ and ~string~. A
-  string's ~%cursor~ is a ~StringCursor~ and its ~%elem~ is ~char~, so
-  ~(loop (:for c "a😀b") ...)~ runs three times and hands over whole characters.
-- ~Foldable~ : ~(fold f init col)~, where ~f~ receives ~(item acc)~. Implemented
-  for ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~ and ~string~. A map's ~%item~ is its
-  ~(Tuple %k %v)~ pair; a string's is ~char~, so ~fold~ over one is
-  ~string-fold~.
-- ~Collection~ : ~(length c)~, ~(empty? c)~ and ~(->seq c)~ — what a collection
-  can be *asked*, as opposed to walked (~Iterable~) or consumed (~Foldable~).
-  The associated ~%content~ is the element type, and for a ~(Map %k %v)~ that is
-  the pair. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~, ~Range~,
-  ~(Seq %a)~ and ~string~; not for ~(Array %a)~, which has no ~->seq~ to give.
-  Note that ~length~ is O(1) only where the collection stores a count
-  (~Vec~, ~Map~, and ~Range~, which computes it): a ~List~ walks, a ~Seq~
-  walks *and* consumes an effectful source, and a ~string~ walks because its
-  ~%content~ is ~char~ and so ~length~ must be ~string-count~ rather than
-  ~string-length~.
+- ~->str~ : Trait for string representation with method ~(->str x)~. Implemented for ~string~, ~int~, ~double~, ~byte~, ~long~, ~char~, ~Keyword~ and ~Symbol~. A ~char~ prints as itself, not as ~#\a~. A list prints as ~'(1 2 3)~, through a *conditional* implementation, ~(impl (->str (List %a)) (where (->str %a)) ...)~. Anything with no implementation of its own falls to the blanket, which is ~Object.ToString~.
+- ~Iterable~ : ~(iterable-start s)~, ~(iterable-done? s c)~, ~(iterable-current s c)~ and ~(iterable-next s c)~ — how to walk a collection, and what a ~(:for ...)~ clause uses. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~, ~(Seq %a)~, ~Range~ and ~string~. A string's ~%cursor~ is a ~StringCursor~ and its ~%elem~ is ~char~, so ~(loop (:for c "a😀b") ...)~ runs three times and hands over whole characters.
+- ~Foldable~ : ~(fold f init col)~, where ~f~ receives ~(item acc)~. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~ and ~string~. A map's ~%item~ is its ~(Tuple %k %v)~ pair; a string's is ~char~, so ~fold~ over one is ~string-fold~.
+- ~Collection~ : ~(length c)~, ~(empty? c)~ and ~(->seq c)~ — what a collection can be *asked*, as opposed to walked (~Iterable~) or consumed (~Foldable~). The associated ~%content~ is the element type, and for a ~(Map %k %v)~ that is the pair. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~, ~Range~, ~(Seq %a)~ and ~string~; not for ~(Array %a)~, which has no ~->seq~ to give. ~length~ is O(1) only where the collection stores a count (~Vec~, ~Map~, and ~Range~): a ~List~ walks, a ~Seq~ walks *and* consumes an effectful source, and a ~string~ walks because its ~%content~ is ~char~ and so ~length~ must be ~string-count~ rather than ~string-length~.
 - ~Monad~ : ~(pure x)~ and ~(bind m k)~ — in ~(std monad)~ rather than here.
-  See the section above.
-- ~Collector~ : ~(collector-init c)~, ~(collector-step c acc x)~ and
-  ~(collector-finish c acc)~ — the
-  accumulators an ~:acc~ clause names. The stock ones are ~listing~, ~vecing~,
-  ~mapping~, ~stringing~, ~summing~, ~counting~ and ~folding~; ~stringing~
-  collects ~char~ into a ~string~ through a ~StringBuilder~.
+- ~Collector~ : ~(collector-init c)~, ~(collector-step c acc x)~ and ~(collector-finish c acc)~ — the accumulators an ~:acc~ clause names. The stock ones are ~listing~, ~vecing~, ~mapping~, ~stringing~, ~summing~, ~counting~ and ~folding~; ~stringing~ collects ~char~ into a ~string~ through a ~StringBuilder~.

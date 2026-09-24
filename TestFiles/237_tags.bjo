@@ -67,6 +67,25 @@
     ((CAsc) "asc")
     ((CParam p) (string-append "param:" (render-prm p)))))
 
+;; A return type is an expectation, so a body that ends in a literal is
+;; elaborated against it — through an `if`, a `let` and a `match` as well.
+(: from-t (-> Q))
+(defun (from-t) '(from t))
+
+(: pick (-> bool Q))
+(defun (pick b) (if b '(from a) 'asc))
+
+(: via-let (-> Q))
+(defun (via-let)
+  (let ((name "out"))
+    '(into ,name (from t))))
+
+(: via-match (-> (Option Symbol) Q))
+(defun (via-match o)
+  (match o
+    ((Some s) '(from ,s))
+    (None '(select))))
+
 (defun (main args)
   ;; --- the arities a tag can have -----------------------------------------
   ;;
@@ -131,4 +150,20 @@
   (def (: annotated Q) '(from t))
   (expect "an annotated binding" (render annotated) "from t")
   (expect "through a call" (render '(from t)) "from t")
+
+  ;; A tail position passes the expectation on: a return type, the branches of
+  ;; an `if`, a `let` body, a `match` arm, and the value of a `def/mutable`.
+  (expect "a return value" (render (from-t)) "from t")
+  (expect "an if, then" (render (pick #t)) "from a")
+  (expect "an if, else" (render (pick #f)) "asc")
+  (expect "a let body" (render (via-let)) "into out from t")
+  (expect "a match arm" (render (via-match (Some 'u))) "from u")
+  (expect "another match arm" (render (via-match None)) "select()")
+  (expect "an if in argument position" (render (if (vec-empty? args) '(from x) '(from y))) "from x")
+
+  (defun (local) : Q '(from l))
+  (expect "a local function's body" (render (local)) "from l")
+
+  (def/mutable (: cell Q) '(from m))
+  (expect "an annotated def/mutable" (render cell) "from m")
   0)
