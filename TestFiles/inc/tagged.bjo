@@ -1,0 +1,40 @@
+;; A union whose cases a quoted literal finds by tag, published from a library.
+;;
+;; Both markers have to travel with the type into the metadata, or the importing
+;; side would read the same literal as the declaring one does not: without
+;; `#:tag` a tagged form would fall to the untagged case, and without `#:rest`
+;; a rest case's arguments would have to be one bracketed argument.
+
+(import (std prelude))
+
+(export Q Item render-q)
+
+(type-rec
+  (: Item (Union (ISym Symbol) (ISub (List Item))))
+  ;; An untagged case for a list, so a head that names no tag is still data —
+  ;; the shape the tag has to be told apart from.
+  (: Q (Union (CPlain (List Item))
+              (CFrom Symbol #:tag from)
+              (CSelect (List Item) #:tag select #:rest)
+              (CEsc #:tag esc))))
+
+(: render-item (-> Item string))
+(defun (render-item i)
+  (match i
+    ((ISym s) (symbol->string s))
+    ((ISub xs) (string-append "(" (string-append (render-items xs) ")")))))
+
+(: render-items (-> (List Item) string))
+(defun (render-items xs)
+  (match xs
+    (Nil "")
+    ((Cons x Nil) (render-item x))
+    ((Cons x rest) (string-append (render-item x) (string-append " " (render-items rest))))))
+
+(: render-q (-> Q string))
+(defun (render-q q)
+  (match q
+    ((CPlain xs) (string-append "plain(" (string-append (render-items xs) ")")))
+    ((CFrom t) (string-append "from " (symbol->string t)))
+    ((CSelect xs) (string-append "select(" (string-append (render-items xs) ")")))
+    ((CEsc) "esc")))

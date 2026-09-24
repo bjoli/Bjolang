@@ -1,0 +1,134 @@
+;; `#:tag` and `#:rest`: a quoted literal selected by the name its head carries.
+;;
+;; A literal is otherwise selected by its *shape*, and a shape only reaches as
+;; far as a payload's head constructor — so a union can carry exactly one case
+;; per shape and the tags of `(std run)` have to be data, checked at run time.
+;; `#:tag name` names the case a form selects, which makes the number of cases a
+;; literal can reach a thing the declaration decides, and `#:rest` says a tag's
+;; arguments are its payload rather than a fixed list of positions.
+;;
+;; The tagging is matched before any shape is looked at and consumes the head
+;; symbol, so the payload describes the *arguments*. A tagged case takes no part
+;; in shape selection, which is what keeps the untagged cases below reachable.
+
+(import (std prelude))
+(import (std simpletest))
+(import "inc/tagged.bjo")
+
+(type-rec
+  (: Item (Union (ISym Symbol) (IStr string) (ISub (List Item))))
+  ;; `,x` has no shape of its own, so what selects a case for it is its *type*.
+  (: Prm (Union (PrInt int) (PrStr string)))
+  (: Q (Union (CSym Symbol)                          ;; untagged: a bare symbol
+              (CStr string)                          ;; untagged: a string
+              (CPlain (List Item))                   ;; untagged: a list of its own
+              (CSelect (Vec Item) #:tag select #:rest)
+              (CFrom Symbol #:tag from)              ;; one declared argument
+              (CInto string Q #:tag into)            ;; two, one of them the union
+              (CAsc #:tag asc)                       ;; nothing at all
+              (CParam Prm #:tag param))))            ;; an argument chosen by type
+
+(: render-prm (-> Prm string))
+(defun (render-prm p)
+  (match p
+    ((PrInt n) (string-append "int " (int->string n)))
+    ((PrStr s) (string-append "str " s))))
+
+(: render-item (-> Item string))
+(defun (render-item i)
+  (match i
+    ((ISym s) (symbol->string s))
+    ((IStr s) (string-append "\"" (string-append s "\"")))
+    ((ISub xs) (string-append "(" (string-append (render-items xs) ")")))))
+
+(: render-items (-> (List Item) string))
+(defun (render-items xs)
+  (match xs
+    (Nil "")
+    ((Cons x Nil) (render-item x))
+    ((Cons x rest) (string-append (render-item x) (string-append " " (render-items rest))))))
+
+(: render-vec (-> (Vec Item) string))
+(defun (render-vec xs)
+  (vec-fold
+    (fun (x acc) (if (string-empty? acc) (render-item x) (string-append acc (string-append " " (render-item x)))))
+    ""
+    xs))
+
+(: render (-> Q string))
+(defun (render q)
+  (match q
+    ((CSym s) (string-append "sym:" (symbol->string s)))
+    ((CStr s) (string-append "str:" s))
+    ((CPlain xs) (string-append "plain(" (string-append (render-items xs) ")")))
+    ((CSelect xs) (string-append "select(" (string-append (render-vec xs) ")")))
+    ((CFrom t) (string-append "from " (symbol->string t)))
+    ((CInto p inner) (string-append "into " (string-append p (string-append " " (render inner)))))
+    ((CAsc) "asc")
+    ((CParam p) (string-append "param:" (render-prm p)))))
+
+(defun (main args)
+  ;; --- the arities a tag can have -----------------------------------------
+  ;;
+  ;; `#:rest`: the arguments are the payload, so there may be any number of
+  ;; them, including none.
+  (expect "rest, several arguments" (render '(select a "b" (c d))) "select(a \"b\" (c d))")
+  (expect "rest, none" (render '(select)) "select()")
+
+  ;; One declared argument, two declared arguments. The second of `into` is the
+  ;; union itself, which no shape could have reached: a union's head is never
+  ;; the shape of a literal, so before tags a case like this one was dead.
+  (expect "one argument" (render '(from users)) "from users")
+  (expect "two arguments, one the union" (render '(into "out.txt" (from t))) "into out.txt from t")
+
+  ;; A case that carries nothing is named by the symbol alone.
+  (expect "no payload" (render 'asc) "asc")
+
+  ;; --- what a tag does not take over ---------------------------------------
+  ;;
+  ;; A head that names no tag is not an error while the union has an untagged
+  ;; case for the shape: `'(plain a "b")` is that case, and the head comes back
+  ;; as one more element of it — data, exactly as `(std run)` reads a program
+  ;; name. That is the trade a tag makes: checked when the head is a tag, kept
+  ;; as written when it is not.
+  (expect "a head that is not a tag" (render '(plain a "b")) "plain(plain a \"b\")")
+  (expect "an untagged scalar case" (render "hello") "str:hello")
+  (expect "an untagged symbol case" (render 'x) "sym:x")
+
+  ;; --- the same, out of a compiled module ----------------------------------
+  ;;
+  ;; Both markers are in the metadata, so an importing module reads a tagged
+  ;; form the way the declaring one does.
+  (expect "imported tag, rest" (render-q '(select a (b c))) "select(a (b c))")
+  (expect "imported tag, one argument" (render-q '(from users)) "from users")
+  (expect "imported tag, nothing" (render-q 'esc) "esc")
+  (expect "imported untagged case" (render-q '(plain a)) "plain(plain a)")
+
+  ;; --- splices --------------------------------------------------------------
+  ;;
+  ;; A rest case's arguments are wrapped back up in the collection node they
+  ;; describe, which is the node `,@` is lowered against.
+  (def (: parts (Vec Item)) [(ISym 'a) (ISym 'b)])
+  (expect "a splice among the arguments" (render '(select ,@parts "z")) "select(a b \"z\")")
+  (expect "a splice alone" (render '(select ,@parts)) "select(a b)")
+
+  ;; --- a tag's argument chosen by type --------------------------------------
+  ;;
+  ;; An argument is elaborated exactly as an element of a literal is, so `,x` —
+  ;; which has no shape to be read — is selected by its type. An unannotated
+  ;; `(def n 3)` would not do: its type is still open until the enclosing
+  ;; declaration ends, and an open type matches every case at once. The
+  ;; annotation is what decides it.
+  (def (: amount int) 7)
+  (def label "ada")
+  (expect "an argument by type, int" (render '(param ,amount)) "param:int 7")
+  (expect "an argument by type, string" (render '(param ,label)) "param:str ada")
+
+  ;; --- where the expectation comes from ------------------------------------
+  ;;
+  ;; An annotation, and the parameter of a function: the same literal is a `Q`
+  ;; in both because that is what the position says it is.
+  (def (: annotated Q) '(from t))
+  (expect "an annotated binding" (render annotated) "from t")
+  (expect "through a call" (render '(from t)) "from t")
+  0)

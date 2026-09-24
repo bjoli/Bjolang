@@ -140,12 +140,42 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
             // this union could carry this payload?".
             let mutable caseTable = []
 
+            // A tag names the case a tagged form selects, and there is no
+            // second question to ask when it is ambiguous, so two cases of one
+            // union may not share one.
+            let mutable tagsSeen: Map<string, Range> = Map.empty
+
             for case in cases do
-                let caseName, resolvedArgs, isLiteral =
+                let caseName, resolvedArgs, markers, caseRange =
                     match case with
-                    | SimpleCase(n, _) -> n, [], false
-                    | DataCase(n, types, marked, _) ->
-                        n, types |> List.map (resolveTypeAnnotation finalRegistry), marked
+                    | SimpleCase(n, cr) -> n, [], noCaseMarkers, cr
+                    | DataCase(n, types, m, cr) ->
+                        let resolved = types |> List.map (resolveTypeAnnotation finalRegistry)
+
+                        // `#:rest` says a tag's arguments are its payload, so
+                        // the case's one type is the collection they are the
+                        // elements of. There is no element type to read off a
+                        // scalar, and saying so here is a great deal better than
+                        // one type error at every use.
+                        if m.IsRest then
+                            match resolved with
+                            | [ TCon(("List" | "Vec" | "Array"), [ _ ]) ] -> ()
+                            | [ other ] ->
+                                failwithf
+                                    $"#:rest on the union case %s{Naming.showTypeName n} at %s{Lexer.formatPos cr}: the tag's arguments are its payload, so the case's one type is the collection of them — (List T), (Vec T) or (Array T) — and it is '%s{DotNetInterop.showType other}'."
+                            | _ -> ()
+
+                        n, resolved, m, cr
+
+                match markers.Tag with
+                | Some tag ->
+                    match Map.tryFind tag tagsSeen with
+                    | Some first ->
+                        failwithf
+                            $"Tag Error at %s{Lexer.formatPos caseRange}: the tag `%s{tag}` is already on a case of %s{Naming.showTypeName td.Name} at %s{Lexer.formatPos first}, and a tag selects one case. Give this one a name of its own."
+                    | None -> tagsSeen <- Map.add tag caseRange tagsSeen
+                | None -> ()
+
                 let schemeArgs = tArgs
                 let consScheme =
                     if resolvedArgs.IsEmpty then
@@ -153,7 +183,7 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
                     else
                         Scheme(schemeArgs, [], tfun resolvedArgs parentType)
                 finalBindings <- Map.add caseName { Scheme = consScheme; IsMutable = false } finalBindings
-                caseTable <- caseTable @ [ (caseName, resolvedArgs, isLiteral) ]
+                caseTable <- caseTable @ [ (caseName, resolvedArgs, markers) ]
 
             finalRegistry <- { finalRegistry with Unions = Map.add td.Name (tArgs, caseTable) finalRegistry.Unions }
 

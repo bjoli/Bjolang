@@ -1471,17 +1471,19 @@ type TraitRegistry =
       /// unification, and none of these three want to disturb it.
       MutableRecordFields: Map<string, string list>
       /// Union type name -> (type parameters, cases as (caseName, payload
-      /// types, isLiteral)).
+      /// types, markers)).
       ///
       /// `registerTypeDefs` otherwise registers each case as an ordinary
       /// constructor binding and throws the union structure away. Literal
       /// elaboration needs it back: given an expected type and a payload, it
       /// has to ask which case of that union could carry the payload.
       ///
-      /// `isLiteral` records a `#:literal` marker on the case, which
-      /// designates it as the injection target when two cases of the same
-      /// union carry the same payload type.
-      Unions: Map<string, string list * (string * HMType list * bool) list>
+      /// The markers are what a quoted literal is selected by. `#:literal`
+      /// designates the injection target when two cases of the same union
+      /// carry the same payload type; `#:tag` names a case that a tagged form
+      /// selects by its head symbol, and such a case takes no part in shape
+      /// selection; `#:rest` says a tagged case's arguments are its payload.
+      Unions: Map<string, string list * (string * HMType list * CaseMarkers) list>
       /// Classes brought in by `import/class`, keyed by alias.
       ///
       /// Each one is *also* registered in `Aliases`, so that a signature may
@@ -1633,13 +1635,15 @@ type TraitRegistry =
         | Some (typeParams, cases) ->
             let matching =
                 cases
-                |> List.choose (fun (caseName, payloadTypes, isLiteral) ->
+                |> List.choose (fun (caseName, payloadTypes, markers) ->
                     match payloadTypes with
                     | [ single ] ->
                         let substituted = withTypeArgs typeParams typeArgs single
 
-                        if matches substituted payload then
-                            Some(caseName, [ substituted ], isLiteral)
+                        // A tagged case is reached by its tag and never by a
+                        // payload's type, so it is not a candidate here either.
+                        if matches substituted payload && markers.Tag.IsNone then
+                            Some(caseName, [ substituted ], markers)
                         else
                             None
                     // A nullary case carries nothing, and a multi-field case
@@ -1649,7 +1653,7 @@ type TraitRegistry =
             match matching with
             | [ (name, payloads, _) ] -> [ (name, payloads) ]
             | many ->
-                match many |> List.filter (fun (_, _, isLiteral) -> isLiteral) with
+                match many |> List.filter (fun (_, _, markers) -> markers.IsLiteral) with
                 | [ (name, payloads, _) ] -> [ (name, payloads) ]
                 | _ -> many |> List.map (fun (name, payloads, _) -> (name, payloads))
 
@@ -1700,13 +1704,17 @@ type TraitRegistry =
         | Some (typeParams, cases) ->
             let matching =
                 cases
-                |> List.choose (fun (caseName, payloadTypes, isLiteral) ->
+                |> List.choose (fun (caseName, payloadTypes, markers) ->
                     match payloadTypes with
                     | [ single ] ->
                         let substituted = withTypeArgs typeParams typeArgs single
 
-                        if headMatches substituted then
-                            Some(caseName, substituted, isLiteral)
+                        // Tagged cases are excluded, and that exclusion is what
+                        // makes `#:tag` additive: `(FPipe (List Form) #:tag
+                        // pipe)` beside `(FCmd (List Word))` would otherwise be
+                        // an ambiguity for every untagged list.
+                        if headMatches substituted && markers.Tag.IsNone then
+                            Some(caseName, substituted, markers)
                         else
                             None
                     | _ -> None)
@@ -1714,9 +1722,39 @@ type TraitRegistry =
             match matching with
             | [ (name, payload, _) ] -> [ (name, payload) ]
             | many ->
-                match many |> List.filter (fun (_, _, isLiteral) -> isLiteral) with
+                match many |> List.filter (fun (_, _, markers) -> markers.IsLiteral) with
                 | [ (name, payload, _) ] -> [ (name, payload) ]
                 | _ -> many |> List.map (fun (name, payload, _) -> (name, payload))
+
+    /// The case of `unionName` tagged `tag`, with the union's type arguments
+    /// substituted into its payload, and whether its arguments are a rest list.
+    ///
+    /// This is what a tagged form is looked up by, and it is asked before any
+    /// shape is. A tag is a name the *declaration* chose, so the number of cases
+    /// a literal can reach stops being the handful of shapes the compiler knows
+    /// — which is what lets one union carry several cases with a single payload
+    /// head, and a case whose payload is a union of its own.
+    member this.CaseByTag
+        (unionName: string)
+        (typeArgs: HMType list)
+        (tag: string)
+        : (string * HMType list * bool) option =
+        match Map.tryFind unionName this.Unions with
+        | None -> None
+        | Some(typeParams, cases) ->
+            cases
+            |> List.tryPick (fun (caseName, payloadTypes, markers) ->
+                if markers.Tag = Some tag then
+                    Some(caseName, payloadTypes |> List.map (withTypeArgs typeParams typeArgs), markers.IsRest)
+                else
+                    None)
+
+    /// The tags of `unionName`, in declaration order, for a diagnostic that has
+    /// to say which names were on offer.
+    member this.UnionTags (unionName: string) : string list =
+        match Map.tryFind unionName this.Unions with
+        | None -> []
+        | Some(_, cases) -> cases |> List.choose (fun (_, _, markers) -> markers.Tag)
 
     member this.ResolveAssociatedType (traitName: string) (assocName: string) (implType: HMType) : HMType option =
         // Pattern-match a stored generic type against a concrete type to build

@@ -197,8 +197,24 @@ its type. So a union declared like this
 is written without its constructors, at any depth, and is still an ordinary
 union to ~match~ on. Nothing about the type says so — the expected type at the
 literal is what decides, so ~inventory~ needs its signature. ~(std run)~'s shell
-notation, ~(run/lines '(pipe (ls "-l") ,my-filter))~, is one of these. See
+notation, ~(run/lines '(pipe (ls "-l") ,my-rot-13))~, is one of these. See
 *Quoted lists* in [[file:Syntax.org][Syntax.org]].
+
+A shape reaches only as far as a case's payload head, so two clauses that are
+both lists are one question no literal can answer. ~#:tag~ answers it by name
+instead — the case declares the name its form is written under, and ~#:rest~
+says the form's arguments are its payload:
+
+#+BEGIN_SRC scheme
+(type (: Form (Union (FPipe (List Form) #:tag pipe #:rest)
+                     (FCmd (List Word)))))
+
+'(pipe (cat "a") (wc -l))                  ;; (FPipe (list …))
+'(cat "a")                                 ;; (FCmd …) — `cat` names no tag
+#+END_SRC
+
+A misspelled tag is a type error that lists the tags, where ~(std run)~ reads
+its tags at run time and can only answer ~Err~.
 
 ** A DSL on top of it: ~(std fmt)~
 

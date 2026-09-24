@@ -134,6 +134,15 @@ A list is homogeneous. Where a union is expected each piece is elaborated in dir
 
 Nesting works at any depth. A literal is matched by the *head* of a case's payload: ~(...)~ wants a ~List~, ~[...]~ a ~Vec~, ~#[...]~ an ~Array~, and a string, symbol or number the type it already has. An unquoted ~,value~ has no shape and is selected by its type.
 
+A literal is elaborated wherever a union is expected, the top of a form included — an annotation and a parameter are each as good an expectation as a sibling element is:
+
+#+BEGIN_SRC scheme
+(def (: one Form) '(pipe (ls "-l")))    ;; the annotation says so
+(parse '(pipe (ls "-l")))               ;; and so does the parameter
+#+END_SRC
+
+Because a shape reaches only as far as a payload's head, a union carries exactly *one* case per shape — one ~List~, one ~Vec~, one ~string~ — and a grammar with two productions that are both lists cannot be written by shape at all. That is what ~#:tag~ is for.
+
 A generic parameter provides no expected type. Name the type first:
 #+BEGIN_SRC scheme
 (def (: procs (List ProcList)) (list '(pipe (ls))))
@@ -148,6 +157,39 @@ Only the payload's head is compared. Marking one settles ambiguity:
                  (Sub (List Item) #:literal)   ;; nested (...) means this
                  (Args (List string)))))       ;; written out by hand
 #+END_SRC
+
+**** ~#:tag name~ — which case a form names
+~#:tag~ puts a name on a case, and a quoted list whose head is that name *is* that case:
+
+#+BEGIN_SRC scheme
+(type-rec
+  (: Form (Union (FPipe (List Form) #:tag pipe #:rest)
+                 (FInto string Form #:tag into-file)
+                 (FCmd (List Word)))))         ;; not tagged: shape decides
+
+'(pipe (cat "a") (wc -l))   ;; (FPipe (list …))
+'(into-file "o" (ls))       ;; (FInto "o" …)
+'(sort)                     ;; (FCmd …) — and `sort` is data
+#+END_SRC
+
+The tag is matched before any shape is looked at, and it is *consumed*, so what the case declares describes the form's *arguments* rather than the whole form. A case that carries nothing is named by the symbol on its own: ~'asc~ at a union with ~(Asc #:tag asc)~ is that case. Everything else about a literal is unchanged — a head that is not a tag is still data, which is how a bare tag can sit in a union beside the ordinary commands of ~(std run)~ — and a tagged case takes no part in shape selection, so the untagged case that handles `(sort)` stays reachable beside it.
+
+Two cases of one union may not share a tag. And because a tag is a name rather than a shape, a tagged case is the only way a payload that is *itself* a union is reachable: ~(CWhere (Cond %row) #:tag where)~ is a sub-grammar, and no literal's shape could have selected it.
+
+**** ~#:rest~ — how many arguments a tag takes
+A tagged case takes as many arguments as it declares payload types, so ~#:rest~ says "any number": the arguments are the payload, and the case's one type is the collection they are the elements of.
+
+#+BEGIN_SRC scheme
+(type (: Q (Union (CSelect (Vec Col) #:tag select #:rest)
+                  (CFrom Symbol #:tag from))))
+
+'(select id name email)     ;; (CSelect [(Col id) (Col name) (Col email)])
+'(select)                   ;; (CSelect [])
+'(from users)               ;; (CFrom 'users)
+'(from a b)                 ;; a type error: `from` takes 1 argument
+#+END_SRC
+
+The arguments are read as that collection, so ~,@~ splices into a tagged form exactly as it does anywhere else, and a ~#:rest~ case whose type is not a collection is refused where it is declared rather than at each use.
 
 ** Identifiers
 Identifiers may contain most characters except ~_~, and may not start with a digit. 

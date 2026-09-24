@@ -759,13 +759,23 @@ let metadata
                     // into, so a union that is unambiguous where it was
                     // declared has to stay unambiguous where it is
                     // imported.
+                    // The markers travel with the case: `#:literal` decides
+                    // which case a shape-selected literal is injected into, and
+                    // `#:tag`/`#:rest` which case a tagged form selects and how
+                    // many arguments it takes. A union that is unambiguous
+                    // where it was declared has to stay unambiguous where it is
+                    // imported.
                     let serializeCase c =
                         match c with
                         | Ast.SimpleCase(n, _) -> n
-                        | Ast.DataCase(n, args, isLiteral, _) ->
+                        | Ast.DataCase(n, args, markers, _) ->
                             let parts =
                                 List.map serializeFType args
-                                @ (if isLiteral then [ "#:literal" ] else [])
+                                @ (if markers.IsLiteral then [ "#:literal" ] else [])
+                                @ (match markers.Tag with
+                                   | Some tag -> [ "#:tag"; tag ]
+                                   | None -> [])
+                                @ (if markers.IsRest then [ "#:rest" ] else [])
 
                             $"({n} " + String.concat " " parts + ")"
                     $"({head} (: {headStr} (Union\n  " + String.concat "\n  " (List.map serializeCase cases) + ")))"

@@ -148,44 +148,60 @@ let rec parseType (s: SExpr) : FType =
 let parseUnionCase (s: SExpr) : UnionCase =
     let r = getRange s
 
-    // `#:literal` marks the *case*, and is not one of its types, so it is taken
-    // off here rather than by giving `parseType` a keyword case. A keyword is
-    // not a type anywhere else, and admitting one there would make
-    // `(-> #:literal int)` parse too.
-    let takeMarkers (name: string) (items: SExpr list) =
-        let markers, types =
-            items
-            |> List.partition (function
-                | SAtom { Token = Keyword _ } -> true
-                | _ -> false)
-
-        for marker in markers do
-            match marker with
-            | SAtom { Token = Keyword "literal" } -> ()
+    // Markers are read in one pass over the case rather than partitioned out of
+    // it, because `#:tag` takes the item after it: partitioning would leave the
+    // tag's name among the payload types, where `parseType` would read it as a
+    // type. A keyword is not a type anywhere else, and admitting one there
+    // would make `(-> #:literal int)` parse too.
+    let takeMarkers (name: string) (items: SExpr list) : SExpr list * CaseMarkers =
+        let rec go (types: SExpr list) (markers: CaseMarkers) (rest: SExpr list) =
+            match rest with
+            | [] -> List.rev types, markers
+            | SAtom { Token = Keyword "literal" } :: tl -> go types { markers with IsLiteral = true } tl
+            | SAtom { Token = Keyword "rest" } :: tl -> go types { markers with IsRest = true } tl
+            | SAtom { Token = Keyword "tag" } :: SAtom { Token = Symbol tag } :: tl ->
+                match markers.Tag with
+                | Some written ->
+                    failwithf
+                        $"#:tag on the union case %s{name} at %s{Lexer.formatPos r}: the case is already tagged #:tag %s{written}, and a case carries one name."
+                | None -> go types { markers with Tag = Some tag } tl
+            | SAtom { Token = Keyword "tag" } :: _ ->
+                failwithf
+                    $"#:tag on the union case %s{name} at %s{Lexer.formatPos r} takes the name of the tag, as in (CFrom TableRef #:tag from)."
             // Named separately from the unknown markers because it is a thing
             // someone may reasonably expect to work: a record field can be
             // mutable and a case payload cannot. A payload is positional and
             // unnamed, so there would be nothing for a write to name.
-            | SAtom { Token = Keyword "mutable" } ->
+            | SAtom { Token = Keyword "mutable" } :: _ ->
                 failwithf
                     $"#:mutable on the union case %s{name} at %s{Lexer.formatPos r}: a case payload is positional, so there is no field name for a write to use. Give the case a Record that has the mutable field instead."
-            | SAtom { Token = Keyword bad } ->
+            | SAtom { Token = Keyword bad } :: _ ->
                 failwithf
-                    $"Unknown marker #:%s{bad} on the union case %s{name} at %s{Lexer.formatPos r}. The only one is #:literal, which names this case as the one a quoted literal is injected into."
-            | _ -> ()
+                    $"Unknown marker #:%s{bad} on the union case %s{name} at %s{Lexer.formatPos r}. A case takes #:literal, #:tag name and #:rest."
+            | item :: tl -> go (item :: types) markers tl
 
-        if not markers.IsEmpty && types.IsEmpty then
+        let types, markers = go [] noCaseMarkers items
+
+        if markers.IsRest && types.Length <> 1 then
+            failwithf
+                $"#:rest on the union case %s{name} at %s{Lexer.formatPos r}: the tag's arguments are its payload, so the case declares exactly one type — the type every argument is checked against."
+
+        if markers.IsRest && markers.Tag.IsNone then
+            failwithf
+                $"#:rest on the union case %s{name} at %s{Lexer.formatPos r} says that a *tag's* arguments are its payload. An untagged case's payload already describes the whole literal, so (List T) is how a case of many is written."
+
+        if markers.IsLiteral && types.IsEmpty then
             failwithf
                 $"#:literal on %s{name} at %s{Lexer.formatPos r} marks a case that carries nothing. It says which case a literal is injected into, so it belongs on one with a payload."
 
-        types, not markers.IsEmpty
+        types, markers
 
     match s with
     | SAtom { Token = Symbol name } -> SimpleCase(name, r)
     | SList([ SAtom { Token = Symbol name } ], _) -> SimpleCase(name, r)
     | SList(SAtom { Token = Symbol name } :: tTypes, _) ->
-        let types, isLiteral = takeMarkers name tTypes
-        DataCase(name, List.map parseType types, isLiteral, r)
+        let types, markers = takeMarkers name tTypes
+        DataCase(name, List.map parseType types, markers, r)
     | _ ->
         printfn $"%A{s}"
         failwithf $"Invalid union case at %s{Lexer.formatPos r}"

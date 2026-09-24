@@ -3,6 +3,47 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~#:tag~ and ~#:rest~: a quoted literal can name the case it means
+
+A union case may be marked ~#:tag name~, and then a quoted list whose head is
+that name *is* that case — the tag is consumed, so what the case declares
+describes the form's arguments. ~#:rest~ on such a case says its arguments are
+its payload, any number of them. Both markers are in ~Docs/Syntax.org~ under
+~#:tag~.
+
+Selection for a quoted literal used to go by the payload's *head* constructor
+and nothing else, so a union carried one case per shape and a grammar with two
+productions that are both lists could not be written at all. That is why
+~(std run)~'s tags are symbols read at run time, and why its documentation has
+to say that a misspelled one is an ~Err~ rather than a type error. A tag is a
+name the declaration chooses, so how many cases a literal can reach is now the
+declaration's to decide.
+
+Three consequences are not just more cases:
+- A case whose payload is itself a union is reachable. No shape could ever
+  select one — a union's head is never ~List~ or ~string~ — so a clause taking a
+  sub-grammar was dead as far as a literal was concerned.
+- A case may declare several payload types, which a literal could not build
+  before.
+- The head symbol stops being data. ~'(from users)~ used to be a ~Symbol~
+  element beside the payload; now it is the case.
+
+Two more came with it, and each stands on its own:
+- A literal written where a union is expected is elaborated at the *top* of a
+  form and not only in an element position, so ~(f 'x)~ and
+  ~(def (: x T) 'hello)~ behave the way ~Docs/Syntax.org~ always said they did
+  and were type errors before.
+- A tagged case takes no part in shape selection, which is what leaves every
+  program written before this meaning what it did: the untagged case for a list
+  still takes the literals it always took.
+
+Left open: a tag is looked up in the expected type, so a literal still cannot be
+inferred from its own head and a generic parameter still expects nothing. A tag
+lives in the head of a list, so a vec- or array-shaped clause is still selected
+by shape, and arguments are positional with no labels. The payload types of a
+tagged case are substituted with the union's type arguments but not instantiated
+per use, so two positions sharing one declared variable are not tied together.
+
 * ~(out T)~: .NET out parameters in ~import/extern~
 
 An ~import/extern~ signature may declare a parameter ~(out T)~ where C# has an

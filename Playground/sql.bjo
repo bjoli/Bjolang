@@ -1,0 +1,266 @@
+;; Playground/sql.bjo — SQL written as a quoted literal.
+;;
+;; A syntax experiment, and nothing else: no driver, no connection, nothing
+;; executed. What is here is the language a query is written in, and the
+;; renderer that turns a checked query into SQL text.
+;;
+;;   (def (: q (Select UserTerm User))
+;;     '(select id name (from users) (where (= id ,n)) (order-by (asc name))))
+;;
+;; A table is a record. A query's *type* carries two things: the vocabulary its
+;; terms are drawn from — `UserTerm`, one union per table, a case per column
+;; tagged with the column's name and a case per clause — and the row it answers
+;; with, `User`. Written where such a `Select` is expected, a quoted literal is
+;; elaborated term by term: a column name becomes a case because that case
+;; carries the name as its tag, and a clause is the case its head names. A
+;; misspelled column or clause is a type error naming the ones that exist, and
+;; an unquoted `,value` is a parameter whose shape the expected type decided.
+;;
+;; What is *not* checked, and why — all three are one missing piece, that
+;; nothing in the type system can look a *name* up in a *record*:
+;; - Nothing ties a column's value type to the parameter beside it. `(= id ,n)`
+;;   asks that `n` fit a parameter shape, not that it be the column's own type,
+;;   so `(= id ,"three")` is caught but `(= name ,3)` is not.
+;; - Nothing checks that a projection lines up with the row type in order or in
+;;   completeness. With no row polymorphism the row is a record of its own
+;;   (`UserName`), and keeping the two in step is the driver's job.
+;; - `is-null` is accepted on a column that cannot be null.
+;; Tags give a name a case; a record's fields are not cases.
+
+(import (std prelude))
+
+;; ---------------------------------------------------------------------------
+;; The schema
+;; ---------------------------------------------------------------------------
+
+(type (: User (Record (: id int) (: name string) (: email (Option string)))))
+;; A projection that is not the whole table is a record of its own.
+(type (: UserName (Record (: id int) (: name string))))
+(type (: Order (Record (: id int) (: account int) (: cents int))))
+
+;; ---------------------------------------------------------------------------
+;; The vocabulary of a query
+;; ---------------------------------------------------------------------------
+;;
+;; One union per table, holding the two things a query says about it: a column,
+;; tagged with its own name and carrying nothing (the name *is* the tag, and the
+;; SQL text is what matching on the case gives), and a clause, whose arguments
+;; the case declares. `def/db-table` would write this union from the record
+;; above; it is written out here so that what such a macro would owe is
+;; readable.
+
+;; A parameter. `,n` has no shape of its own, so it is selected by its *type*:
+;; what the position expects is `SqlParam`, and an `int` is the case that holds
+;; one.
+(type (: SqlParam (Union (PInt int) (PStr string) (PNull))))
+
+(type-rec
+  (: UserTerm (Union (TUserId #:tag id)
+                     (TUserName #:tag name)
+                     (TUserEmail #:tag email)
+                     ;; A clause. `from` takes one declared argument, so
+                     ;; `(from users)` is this case with `users` in it — where
+                     ;; without a tag it would be a list of two symbols and
+                     ;; `from` would be misspelled for free.
+                     (TFrom Symbol #:tag from)
+                     ;; A clause whose payload is a union of its own: the
+                     ;; sub-grammar a `where` takes. No literal's shape could
+                     ;; select this case — a union's head is never a `List` —
+                     ;; so a tag is the only way in, and the only way a
+                     ;; condition language nests inside a query at all.
+                     (TWhere UserWhere #:tag where)
+                     ;; `#:rest`: the arguments are the payload, as many as are
+                     ;; written.
+                     (TOrderBy (List UserOrder) #:tag order-by #:rest)
+                     (TLimit int #:tag limit)))
+
+  (: UserOrder (Union (UAsc UserTerm #:tag asc)
+                      (UDesc UserTerm #:tag desc)))
+
+  (: UserWhere (Union (WIsNull UserTerm #:tag is-null)
+                      (WNotNull UserTerm #:tag not-null)
+                      (WEq UserTerm SqlParam #:tag =)
+                      (WAnd (List UserWhere) #:tag and #:rest))))
+
+;; One more table, so that the vocabulary being part of the query's type is
+;; visible: `OrderTerm` has no case tagged `name`, and `UserTerm` none tagged
+;; `cents`.
+(type-rec
+  (: OrderTerm (Union (TOrderId #:tag id)
+                      (TOrderAccount #:tag account)
+                      (TOrderCents #:tag cents)
+                      (TFromOrder Symbol #:tag from)
+                      (TWhereOrder OrderWhere #:tag where)))
+
+  (: OrderWhere (Union (OAtLeast OrderTerm SqlParam #:tag >=)
+                       (OAnd (List OrderWhere) #:tag and #:rest))))
+
+;; A query, and the row it answers with. `%term` is the vocabulary it is written
+;; in, so a query of `Order` cannot name a column of `User`.
+(type (: (Select %term %row) (Union (SSelect (List %term) #:tag select #:rest))))
+
+;; ---------------------------------------------------------------------------
+;; Rendering
+;; ---------------------------------------------------------------------------
+;;
+;; `param->sql` writes the parameter out rather than a placeholder, which is
+;; what makes the printed statement one you could paste somewhere — and it is
+;; where the parameter's *type* is used, since the three cases hold three
+;; different things.
+
+(: join (-> (List string) string string))
+(defun (join parts sep) (string-join (list->vec parts) sep))
+
+;; A clause's SQL is appended after a space, and a projection may be empty.
+(: spaced (-> string string))
+(defun (spaced s) (if (string-empty? s) "" (string-append " " s)))
+
+(: param->sql (-> SqlParam string))
+(defun (param->sql p)
+  (match p
+    ((PInt n) (int->string n))
+    ((PStr s) (string-append "'" (string-append s "'")))
+    ((PNull) "NULL")))
+
+;; Which terms are columns and which are clauses. The projection is the columns
+;; and the clauses follow, in the order the literal was written in — which is
+;; the one thing here that no type decided.
+(: user-column? (-> UserTerm bool))
+(defun (user-column? t)
+  (match t
+    ((TFrom _) #f)
+    ((TWhere _) #f)
+    ((TOrderBy _) #f)
+    ((TLimit _) #f)
+    (_ #t)))
+
+(: user-clause? (-> UserTerm bool))
+(defun (user-clause? t) (not (user-column? t)))
+
+(: user-term->sql (-> UserTerm string))
+(defun (user-term->sql t)
+  (match t
+    ((TUserId) "id")
+    ((TUserName) "name")
+    ((TUserEmail) "email")
+    ((TFrom tbl) (string-append "FROM " (symbol->string tbl)))
+    ((TWhere w) (string-append "WHERE " (user-where->sql w)))
+    ((TOrderBy keys) (string-append "ORDER BY " (join (list-map user-order->sql keys) ", ")))
+    ((TLimit n) (string-append "LIMIT " (int->string n)))))
+
+(: user-where->sql (-> UserWhere string))
+(defun (user-where->sql w)
+  (match w
+    ((WIsNull c) (string-append (user-term->sql c) " IS NULL"))
+    ((WNotNull c) (string-append (user-term->sql c) " IS NOT NULL"))
+    ((WEq c p) (string-append (user-term->sql c) (string-append " = " (param->sql p))))
+    ((WAnd ws) (string-append "(" (string-append (join (list-map user-where->sql ws) " AND ") ")")))))
+
+(: user-order->sql (-> UserOrder string))
+(defun (user-order->sql k)
+  (match k
+    ((UAsc c) (user-term->sql c))
+    ((UDesc c) (string-append (user-term->sql c) " DESC"))))
+
+(: user-select->sql (-> (Select UserTerm User) string))
+(defun (user-select->sql q)
+  (match q
+    ((SSelect terms)
+     (string-append
+       "SELECT"
+       (string-append
+         (spaced (join (list-map user-term->sql (list-filter user-column? terms)) ", "))
+         (spaced (join (list-map user-term->sql (list-filter user-clause? terms)) " ")))))))
+
+;; The other table's, so that the two vocabularies are visibly two.
+(: order-column? (-> OrderTerm bool))
+(defun (order-column? t)
+  (match t
+    ((TFromOrder _) #f)
+    ((TWhereOrder _) #f)
+    (_ #t)))
+
+(: order-clause? (-> OrderTerm bool))
+(defun (order-clause? t) (not (order-column? t)))
+
+(: order-term->sql (-> OrderTerm string))
+(defun (order-term->sql t)
+  (match t
+    ((TOrderId) "id")
+    ((TOrderAccount) "account")
+    ((TOrderCents) "cents")
+    ((TFromOrder tbl) (string-append "FROM " (symbol->string tbl)))
+    ((TWhereOrder w) (string-append "WHERE " (order-where->sql w)))))
+
+(: order-where->sql (-> OrderWhere string))
+(defun (order-where->sql w)
+  (match w
+    ((OAtLeast c p) (string-append (order-term->sql c) (string-append " >= " (param->sql p))))
+    ((OAnd ws) (string-append "(" (string-append (join (list-map order-where->sql ws) " AND ") ")")))))
+
+(: order-select->sql (-> (Select OrderTerm Order) string))
+(defun (order-select->sql q)
+  (match q
+    ((SSelect terms)
+     (string-append
+       "SELECT"
+       (string-append
+         (spaced (join (list-map order-term->sql (list-filter order-column? terms)) ", "))
+         (spaced (join (list-map order-term->sql (list-filter order-clause? terms)) " ")))))))
+
+;; ---------------------------------------------------------------------------
+;; Writing queries
+;; ---------------------------------------------------------------------------
+
+(: show (-> (Select UserTerm User) string))
+(defun (show q) (user-select->sql q))
+
+(defun (main args)
+  ;; `n`'s type has to be *decided* for `,n` to be injected by it. An
+  ;; unannotated `(def n 3)` is still an open numeric literal until the enclosing
+  ;; declaration ends, and an open type matches every case of `SqlParam` at
+  ;; once — so it is the annotation that picks `PInt`. Written out directly, `,3`
+  ;; needs no annotation: a literal has a shape, and a shape selects a case.
+  (def (: n int) 3)
+  (def who "ada")
+
+  ;; The whole of it. Every piece here is checked against the term union: the
+  ;; projection, the clause, the order keys, the limit.
+  (println (show '(select id name (from users) (where (= name ,who)) (order-by (asc name)) (limit 10))))
+
+  ;; `#:rest` reads any number of terms: three columns, or none.
+  (println (show '(select id name email (from users))))
+  (println (show '(select (from users))))
+
+  ;; A parameter picked by its type: `n` is an `int`, so the literal's expected
+  ;; type at that position made it a `PInt`. Nothing in the query says `int` —
+  ;; the type of the expression does.
+  (println (show '(select id (from users) (where (= id ,n)))))
+
+  ;; The same parameter written out: a literal, so it is selected by its shape
+  ;; and no annotation is wanted anywhere.
+  (println (show '(select id (from users) (where (= id ,3)))))
+
+  ;; NULL is written rather than implied: `email` is an `(Option string)`, and
+  ;; no case of `SqlParam` holds one, so a value there would be the header's
+  ;; first bullet made visible.
+  (println (show '(select id (from users) (where (is-null email)))))
+
+  ;; Two conditions: a rest clause inside a rest clause.
+  (println (show '(select id (from users) (where (and (not-null email) (= id ,n))))))
+
+  ;; A splice among the arguments, because the arguments of a `#:rest` clause
+  ;; *are* its payload and so are the list node `,@` lowers against.
+  (def (: extra (List UserTerm)) (list TUserEmail))
+  (println (show '(select id ,@extra (from users))))
+
+  ;; The other table. Its vocabulary is what the literal is checked against, so
+  ;; a column of `User` in an `Order` query is a type error naming the columns
+  ;; that exist.
+  (println (order-select->sql '(select id cents (from orders) (where (>= cents ,n)))))
+
+  ;; And the query's type is the row it answers with: this is the shape a driver
+  ;; would hand back, one record per row, with the projection the literal named.
+  (def (: names (List UserName)) (list (UserName (id 1) (name "ada"))))
+  (println (string-append "rows: " (int->string (list-length names))))
+  0)

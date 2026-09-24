@@ -1999,7 +1999,12 @@ and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Rang
         | _ ->
             let argType, typedArg =
                 match arg, expectedParam i with
-                | (EList _ | EVec _ | EArray _), Some paramTy -> inferChecked paramTy env arg
+                // A literal is checked against the type its position expects
+                // rather than inferred on its own, so a union the parameter
+                // names can elaborate it: `(f 'x)` is a `T` because the
+                // signature says so, the same way `(f '(pipe …))` is a `Form`.
+                | (EList _ | EVec _ | EArray _ | EString _ | EQuotedSymbol _ | EInt _), Some paramTy ->
+                    inferChecked paramTy env arg
                 | _ -> infer env arg
 
             pinToParam i argType
@@ -2752,6 +2757,18 @@ and internal inferChecked (expected: HMType) (env: Env) (expr: Expr) : HMType * 
     | EArray(exprs, r), TCon("Array", [ elemTy ]) ->
         inferCheckedLiteral env "Array" "array" TArrayMake elemTy exprs r
 
+    // A literal written where a union is expected is elaborated into a case of
+    // it, at the top level exactly as in an element position: `(f '(pipe …))`
+    // and `(def (: x Form) '(pipe …))` are the same question as `(list '(pipe
+    // …))` is. Only the nodes `literalPayloadHeads` can name a shape for are
+    // routed here, because the type-directed path below asks this function the
+    // same question again and would otherwise come straight back.
+    | (EList _ | EVec _ | EArray _ | EString _ | EQuotedSymbol _ | EInt _), TCon(unionName, _) when
+        Map.containsKey unionName env.Registry.Unions
+        ->
+        let typed = inferAndMaybeInject expected env expr
+        typed.Type, typed
+
     // A lambda whose parameters the expectation already names.
     | EFun(args, body, colour, r), TFun(paramTys, _, _) when List.length paramTys = List.length args ->
         inferLambda (Some paramTys) env args body colour r
@@ -2804,16 +2821,24 @@ and private inferLambda
 /// Check one element of a literal against the type its position expects,
 /// injecting a union constructor around it where the expectation is a union.
 ///
-/// Two ways to pick that constructor, and which applies is decided by the
-/// element:
+/// Three ways to pick that constructor, in this order, and which applies is
+/// decided by the element:
 ///
-/// *Shape* first. A literal — a nested list, a string, a symbol, a number —
-/// selects by what it is written as, against the *head* of each case's payload.
-/// This has to happen before the element is inferred, because for a nested
-/// heterogeneous literal inferring is what fails. The chosen payload is then
-/// pushed back down through `inferChecked`, which calls this function again for
-/// each of that literal's own elements. Recursion terminates because the
-/// expression strictly shrinks; mutually recursive unions need nothing extra,
+/// *Tag* first. A quoted list whose head symbol names one of the union's
+/// `#:tag` cases is that case, and the tag is *consumed*: what the case
+/// declares describes its arguments, not the whole form. A case that carries
+/// nothing is named by the symbol alone, which is what lets `(select id name)`
+/// read its columns as names. A tag is the only thing that can tell two cases
+/// with one payload head apart, so it is asked before the shape is.
+///
+/// *Shape* next. A literal — a nested list, a string, a symbol, a number —
+/// selects by what it is written as, against the *head* of each case's
+/// payload. This has to happen before the element is inferred, because for a
+/// nested heterogeneous literal inferring is what fails. The chosen payload is
+/// then pushed back down through `inferChecked`, which calls this function
+/// again for each of that literal's own elements. Recursion terminates because
+/// the expression strictly shrinks — a tag consumes the head, a shape
+/// consumes the literal — and mutually recursive unions need nothing extra,
 /// since every step is a fresh lookup in `Registry.Unions`.
 ///
 /// *Type* otherwise. An unquoted `,value` has no shape to be read — a
@@ -2823,44 +2848,44 @@ and private inferLambda
 and private inferAndMaybeInject (expectedElem: HMType) (env: Env) (expr: Expr) : TypedExpr =
     let pe = prune env.Registry expectedElem
 
-    /// The typed constructor application, around an already typed payload.
-    let wrapInCtor (ctorName: string) (payloadTy: HMType) (payload: TypedExpr) : TypedExpr =
-        let ctorType = tfun [ payloadTy ] pe
-        let ctorExpr: TypedExpr = { Type = ctorType; Range = payload.Range; Node = TIdent(ctorName, []) }
-        { Type = pe; Range = payload.Range; Node = TApply(ctorExpr, [ payload ], []) }
+    /// The typed constructor application, around already typed payloads.
+    let wrapInCtor (ctorName: string) (payloadTys: HMType list) (args: TypedExpr list) (r: Range) : TypedExpr =
+        let ctorType = tfun payloadTys pe
+        let ctorExpr: TypedExpr = { Type = ctorType; Range = r; Node = TIdent(ctorName, []) }
+        { Type = pe; Range = r; Node = TApply(ctorExpr, args, []) }
 
-    match pe, literalPayloadHeads expr with
-    | TCon(unionName, typeArgs), Some heads when Map.containsKey unionName env.Registry.Unions ->
-        // The literal's own range, not the range of whatever list it is written
-        // in: the constructor that cannot be chosen is this one's.
-        let reportAt () = Lexer.formatPos (exprRange expr)
-        let shape = literalShapeName expr
-        // Shown by key, like every other type name in a diagnostic: which
-        // module's union this is may be the whole of what the reader is
-        // missing.
-        let shownUnion = Naming.showTypeName unionName
+    // The literal's own range, not the range of whatever list it is written
+    // in: the constructor that cannot be chosen is this one's.
+    let r = exprRange expr
+    let reportAt () = Lexer.formatPos r
+    let shape = literalShapeName expr
+    // Shown by key, like every other type name in a diagnostic: which module's
+    // union this is may be the whole of what the reader is missing.
+    let shown unionName = Naming.showTypeName unionName
 
-        match env.Registry.CasesByPayloadShape unionName typeArgs heads with
-        | [ (ctorName, payloadTy) ] ->
-            let payloadType, typedPayload = inferChecked payloadTy env expr
-            unify env.Registry payloadType payloadTy
-            wrapInCtor ctorName payloadTy typedPayload
-        | [] ->
-            failwithf
-                $"Type Error at %s{reportAt ()}: no case of the union %s{shownUnion} carries a %s{shape}, so this literal cannot be one. A literal written where a union is expected is elaborated into the case that holds it, and %s{shownUnion} has %s{describeUnionCases env.Registry unionName}."
-        | many ->
-            let names = many |> List.map (fst >> Naming.showTypeName) |> orList
+    /// The tag this literal names, if any. A tagged form is a quoted list whose
+    /// head is a symbol; a case that carries nothing is named by a symbol on
+    /// its own.
+    let tagOf (expr: Expr) : string option =
+        match expr with
+        | EList(EQuotedSymbol(tag, _) :: _, _) -> Some tag
+        | EQuotedSymbol(tag, _) -> Some tag
+        | _ -> None
 
-            failwithf
-                $"Type Error at %s{reportAt ()}: this %s{shape} literal could be injected into %s{names}, and nothing here says which. They are all cases of %s{shownUnion} that carry a %s{shape}, and only the payload's head constructor is compared against the literal — never its arguments — so the literal itself cannot tell them apart. Mark the case a literal means with #:literal where %s{shownUnion} is declared, or write the constructor around it here."
-    | _ ->
-        // Type-directed. The element is inferred first, and `CandidateCases`
-        // then asked — speculatively, so it may not bind anything — whether one
-        // constructor's payload matches what came back.
-        //
-        // `inferChecked` rather than `infer`, because the expectation is worth
-        // pushing even when it names no union: at `(List ProcList)` the element
-        // is a list of its own, and its elements are what the unions are at.
+    /// What a tagged case's payload describes: everything after the tag.
+    let tailOf (expr: Expr) : Expr list =
+        match expr with
+        | EList(_ :: tail, _) -> tail
+        | _ -> []
+
+    /// The type-directed path. The element is inferred first, and
+    /// `CandidateCases` then asked — speculatively, so it may not bind anything
+    /// — whether one constructor's payload matches what came back.
+    ///
+    /// `inferChecked` rather than `infer`, because the expectation is worth
+    /// pushing even when it names no union: at `(List ProcList)` the element is
+    /// a list of its own, and its elements are what the unions are at.
+    let typeDirected () : TypedExpr =
         let elemTy, te = inferChecked pe env expr
         let pg = prune env.Registry elemTy
 
@@ -2872,7 +2897,7 @@ and private inferAndMaybeInject (expectedElem: HMType) (env: Env) (expr: Expr) :
                 // against it — which resolves any metavariable left on either
                 // side — and wrap.
                 unify env.Registry elemTy payloadTy
-                wrapInCtor ctorName payloadTy te
+                wrapInCtor ctorName [ payloadTy ] [ te ] te.Range
             | _ ->
                 // Zero or ambiguous matches — unify directly and let the type
                 // error (if any) be reported normally.
@@ -2881,6 +2906,120 @@ and private inferAndMaybeInject (expectedElem: HMType) (env: Env) (expr: Expr) :
         | _ ->
             unify env.Registry elemTy expectedElem
             te
+
+    /// The shape-directed path, and the reports it can end in. `headTag` is the
+    /// head symbol this literal carried when it named no case: a misspelled tag
+    /// is by far the likeliest reason to be here with nothing on offer, so it
+    /// is worth saying so rather than only naming the shapes.
+    let shaped (unionName: string) (typeArgs: HMType list) (heads: string list) (headTag: string option) : TypedExpr =
+        match env.Registry.CasesByPayloadShape unionName typeArgs heads with
+        | [ (ctorName, payloadTy) ] ->
+            let payloadType, typedPayload = inferChecked payloadTy env expr
+            unify env.Registry payloadType payloadTy
+            wrapInCtor ctorName [ payloadTy ] [ typedPayload ] typedPayload.Range
+        | [] ->
+            let tags = env.Registry.UnionTags unionName
+
+            match headTag with
+            | Some tag when not tags.IsEmpty ->
+                failwithf
+                    $"Type Error at %s{reportAt ()}: `%s{tag}` is not a tag of the union %s{shown unionName} and no case of it carries a %s{shape}, so this literal cannot be one. Its tags are %s{orList tags}."
+            | _ ->
+                failwithf
+                    $"Type Error at %s{reportAt ()}: no case of the union %s{shown unionName} carries a %s{shape}, so this literal cannot be one. A literal written where a union is expected is elaborated into the case that holds it, and %s{shown unionName} has %s{describeUnionCases env.Registry unionName}."
+        | many ->
+            let names = many |> List.map (fst >> Naming.showTypeName) |> orList
+
+            failwithf
+                $"Type Error at %s{reportAt ()}: this %s{shape} literal could be injected into %s{names}, and nothing here says which. They are all cases of %s{shown unionName} that carry a %s{shape}, and only the payload's head constructor is compared against the literal — never its arguments — so the literal itself cannot tell them apart. Mark the case a literal means with #:literal where %s{shown unionName} is declared, or write the constructor around it here."
+
+    /// A tagged form, with the case already looked up.
+    let tagged (ctorName: string) (payloads: HMType list) (isRest: bool) : TypedExpr =
+        let tail = tailOf expr
+
+        if isRest then
+            // The arguments *are* the payload, so they are wrapped back up in
+            // the collection node they describe. That is the node `,@` is
+            // lowered against and the node the elements are elaborated in, so a
+            // splice inside a tagged form needs nothing of its own. What the
+            // tag's arguments are read as does not change the case's type: it
+            // is the collection, and that is what they are checked against.
+            match payloads with
+            | [ payloadTy ] ->
+                let node =
+                    match prune env.Registry payloadTy with
+                    | TCon("Vec", _) -> EVec(tail, r)
+                    | TCon("Array", _) -> EArray(tail, r)
+                    | _ -> EList(tail, r)
+
+                let payloadType, typedPayload = inferChecked payloadTy env node
+                unify env.Registry payloadType payloadTy
+                wrapInCtor ctorName [ payloadTy ] [ typedPayload ] r
+            | _ ->
+                // Refused where the case is declared: a bug in this file rather
+                // than in the program.
+                failwithf $"internal: the #:rest case %s{ctorName} declares no single payload type"
+        else
+            match payloads, tail with
+            | [], [] ->
+                // A case that carries nothing: the tag is the whole value, and
+                // it is an ordinary reference to the constructor the
+                // declaration registered.
+                let ctorTy, ctorExpr = inferIdent env ctorName r
+                unify env.Registry ctorTy pe
+                { ctorExpr with Range = r }
+            | [ payloadTy ], [ only ] ->
+                // `inferAndMaybeInject` rather than `inferChecked`: an argument
+                // is elaborated exactly as an element of a literal is, so an
+                // unquoted `,value` is selected by its *type* and a nested form
+                // by its tag. A tag's arguments are the pieces of the form, and
+                // nothing about them is a special case.
+                let typed = inferAndMaybeInject payloadTy env only
+                wrapInCtor ctorName [ payloadTy ] [ typed ] typed.Range
+            | _ ->
+                let wanted = payloads.Length
+
+                if wanted <> tail.Length then
+                    let want =
+                        if wanted = 0 then "no argument"
+                        elif wanted = 1 then "1 argument"
+                        else $"%d{wanted} arguments"
+
+                    let got =
+                        match expr with
+                        | EQuotedSymbol _ ->
+                            "a bare symbol here, and a case that carries nothing is the one a bare symbol names"
+                        | _ when tail.IsEmpty -> "no argument"
+                        | _ when tail.Length = 1 -> "1 argument"
+                        | _ -> $"%d{tail.Length} arguments"
+
+                    failwithf
+                        $"Type Error at %s{reportAt ()}: `%s{Naming.showTypeName ctorName}` takes %s{want}, and this form has %s{got}."
+
+                let typedArgs =
+                    List.map2 (fun (payloadTy: HMType) (arg: Expr) -> inferAndMaybeInject payloadTy env arg) payloads tail
+
+                wrapInCtor ctorName payloads typedArgs r
+
+    match pe with
+    | TCon(unionName, typeArgs) when Map.containsKey unionName env.Registry.Unions ->
+        match tagOf expr with
+        | Some tag ->
+            match env.Registry.CaseByTag unionName typeArgs tag with
+            | Some(ctorName, payloads, isRest) -> tagged ctorName payloads isRest
+            // A head symbol that is not a tag is only wrong if nothing else can
+            // hold the literal: a union with an untagged case for a list — how
+            // `(std run)` writes a plain command — takes it as data, and that is
+            // what keeps a program that named no case meaning what it did.
+            | None ->
+                match literalPayloadHeads expr with
+                | Some heads -> shaped unionName typeArgs heads (Some tag)
+                | None -> typeDirected ()
+        | None ->
+            match literalPayloadHeads expr with
+            | Some heads -> shaped unionName typeArgs heads None
+            | None -> typeDirected ()
+    | _ -> typeDirected ()
 
 // --- DECLARATION CHECKING ---
 
