@@ -1,0 +1,113 @@
+;; `(out T)` in an import/extern signature: a .NET method's out parameters come
+;; back as part of the binding's result instead of as arguments.
+;;
+;; Two forms, and the declared result says which. `(Option ...)` over a method
+;; returning bool is `Some` of the outs on true and `None` on false; anything
+;; else is the method's return value followed by the outs.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std mutable map))
+(import "235_lib.bjo")
+
+(import/class
+  ((Dict %k %v) (: System.Collections.Generic.Dictionary))
+  ((KeyValuePair %k %v) (: System.Collections.Generic.KeyValuePair)))
+
+(import/extern
+  ;; The Option form, over a non-generic static method with overloads.
+  (parse-int (: System.Int32.TryParse (-> string (out int) (Option int))))
+  ;; The Option form, over an instance method of a generic type, whose out is
+  ;; a reference type left null on a miss.
+  (dict-try-get (: System.Collections.Generic.Dictionary.TryGetValue
+                   (-> (Dict %k %v) %k (out %v) (Option %v))))
+  ;; The same method group imported twice: the overload without the out,
+  ;; which returns a ValueTuple on .NET 6+ …
+  (div-rem-pair (: System.Math.DivRem (-> int int (Tuple int int))))
+  ;; … and the one with it, in the tuple form: the quotient, then the out.
+  (div-rem (: System.Math.DivRem (-> int int (out int) (Tuple int int))))
+  ;; A void method with two outs, and a generic static factory to get a value
+  ;; to call it on.
+  (make-kv (: System.Collections.Generic.KeyValuePair.Create (-> %k %v (KeyValuePair %k %v))))
+  (kv-parts (: System.Collections.Generic.KeyValuePair.Deconstruct
+               (-> (KeyValuePair %k %v) (out %k) (out %v) (Tuple %k %v))))
+  ;; A declared exception wraps the whole result.
+  (parse-guarded (: System.Int32.TryParse (-> string (out int) (Option int))
+                    #:exceptions (System.FormatException))))
+
+(: describe (-> (Option string) string))
+(defun (describe found)
+  (match found
+    ((Some s) (string-append "found " s))
+    (None "missing")))
+
+;; Written generically so that the out type is a type parameter in the C#.
+(: lookup (-> (Dict %k %v) %k (Option %v)))
+(defun (lookup d k) (dict-try-get d k))
+
+;; Both colours. A `-?->` parameter makes a suspending twin of the whole body,
+;; so every out call in it is emitted twice, once around awaits.
+(: bump (-bjo-> int int))
+(defbjo (bump x) (+ x 1))
+
+(: parse-each (-> (-?-> string string) (List string) (List (Tuple (Option int) (Tuple string int)))))
+(defun (parse-each f texts)
+  (loop (:for t texts)
+        (:acc out (listing (let ((text (f t)))
+                             (Tuple (parse-int text) (kv-parts (make-kv text (string-length text)))))))))
+
+(: parse-suspending (-> string (Tuple (Option int) (Tuple string int) int)))
+(defbjo (parse-suspending text)
+  (def n (bump 1))
+  (def (k v) (kv-parts (make-kv text (bump n))))
+  (Tuple (parse-int (string-append text k)) (Tuple k v) (div-rem-first (bump 9) (bump 2))))
+
+(: div-rem-first (-> int int int))
+(defun (div-rem-first a b)
+  (def (q r) (div-rem a b))
+  (+ q r))
+
+(defbjo (main args)
+  (expect "ordinary copy" (parse-each (fun (s) s) (list "3" "x"))
+          (list (Tuple (Some 3) (Tuple "3" 1)) (Tuple None (Tuple "x" 1))))
+  (expect "suspending copy" (parse-each (bjoroutine (s) (string-append s "0")) (list "3"))
+          (list (Tuple (Some 30) (Tuple "30" 2))))
+  (expect "in a bjoroutine" (parse-suspending "1") (Tuple (Some 11) (Tuple "1" 3) 4))
+
+  (expect "TryParse hit" (parse-int "42") (Some 42))
+  (expect "TryParse miss" (parse-int "forty-two") None)
+
+  ;; Two out calls in one expression: each declares its own local.
+  (expect "two in one statement"
+          (Tuple (parse-int "1") (parse-int "x"))
+          (Tuple (Some 1) None))
+
+  (def d (mutablemap))
+  (mutablemap-set! d "a" "apple")
+  (expect "TryGetValue hit" (describe (dict-try-get d "a")) "found apple")
+  (expect "TryGetValue miss is None" (describe (dict-try-get d "b")) "missing")
+  (expect "generic caller, hit" (lookup d "a") (Some "apple"))
+  (expect "generic caller, miss" (lookup d "zzz") None)
+
+  (expect "DivRem without the out" (div-rem-pair 17 5) (Tuple 3 2))
+  (expect "DivRem with the out" (div-rem 17 5) (Tuple 3 2))
+
+  (def kv (make-kv "k" 7))
+  (expect "void method, two outs" (kv-parts kv) (Tuple "k" 7))
+  (def (key value) (kv-parts kv))
+  (expect "void method, destructured" (string-append key (->str value)) "k7")
+  (expect "void method as an operand" (list (kv-parts kv) (kv-parts (make-kv "j" 1)))
+          (list (Tuple "k" 7) (Tuple "j" 1)))
+
+  (expect "guarded hit" (parse-guarded "5") (Ok (Some 5)))
+  (expect "guarded miss" (parse-guarded "no") (Ok None))
+
+  (expect "imported: TryParse" (lib-parse-int "8") (Some 8))
+  (expect "imported: TryGetValue" (Tuple (lib-dict-try-get d "a") (lib-dict-try-get d "q"))
+          (Tuple (Some "apple") None))
+  (expect "imported: DivRem" (lib-div-rem 7 2) (Tuple 3 1))
+  (expect "imported: Deconstruct" (lib-kv-parts kv) (Tuple "k" 7))
+
+  ;; As a value: the eta-expansion is a lambda over the in-parameters.
+  (expect "as a value" (list-map parse-int (list "1" "q")) (list (Some 1) None))
+  0)

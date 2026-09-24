@@ -746,6 +746,79 @@ Reported as a lint warning in a bjoroutine. The fix is to wrap it with ~blocking
 int-max                                ;; System.Int32.MaxValue
 #+END_SRC
 
+**** ~(out T)~ — out parameters
+A parameter written ~(out T)~ in the signature is a C# ~out~ parameter, in the
+position C# has it. It is not an argument at the call site: the binding's type
+is the declared arrow with every ~(out T)~ removed, and the outs come back in
+the result. The declared result says how, in one of two forms. The compiler
+checks the declaration against the method and never picks a form itself.
+
+The *Option form* is for ~bool TryXyz(..., out T)~. The result is
+~(Option T)~ for one out, or ~(Option (Tuple T1 ... Tn))~ for several. True is
+~Some~ of the outs and false is ~None~; the outs are only read when the call
+returned true, so what a method leaves in them on false never reaches Bjolang.
+#+BEGIN_SRC scheme
+(import/class
+  ((Dict %k %v) (: System.Collections.Generic.Dictionary)))
+
+(import/extern
+  (parse-int    (: System.Int32.TryParse (-> string (out int) (Option int))))
+  (dict-try-get (: System.Collections.Generic.Dictionary.TryGetValue
+                   (-> (Dict %k %v) %k (out %v) (Option %v)))))
+
+(parse-int "42")                       ;; int.TryParse("42", out int t) ? Some(t) : None<int>()
+(dict-try-get d "missing")             ;; None, never the null TryGetValue leaves in its out
+#+END_SRC
+
+The *tuple form* is for everything else. The result is the method's return
+value followed by the outs, in C# parameter order. A ~void~ return contributes
+nothing, and a single remaining element stands alone rather than in a ~Tuple~.
+#+BEGIN_SRC scheme
+(import/class
+  ((KeyValuePair %k %v) (: System.Collections.Generic.KeyValuePair)))
+
+(import/extern
+  ;; int Math.DivRem(int a, int b, out int result)
+  (div-rem  (: System.Math.DivRem (-> int int (out int) (Tuple int int))))
+  ;; void KeyValuePair<K,V>.Deconstruct(out K key, out V value)
+  (kv-parts (: System.Collections.Generic.KeyValuePair.Deconstruct
+               (-> (KeyValuePair %k %v) (out %k) (out %v) (Tuple %k %v)))))
+
+(div-rem 17 5)                         ;; (Math.DivRem(17, 5, out int t), t) — (Tuple 3 2)
+#+END_SRC
+
+An import with outs is resolved once, at the import, against its whole
+signature, the way a generic method is. So the marker is what picks the
+overload: ~(-> int int (Tuple int int))~ names ~Math.DivRem(int, int)~, which
+returns a ~ValueTuple~, and ~(-> int int (out int) (Tuple int int))~ names
+~Math.DivRem(int, int, out int)~. For the same reason such an import can name an
+instance method of a generic .NET type by the type's plain name, as
+~Dictionary.TryGetValue~ does above; its type parameters are solved from the
+declared receiver.
+
+Each of these is a compile error that names the rule and shows the C#
+signature:
+- ~(out T)~ is allowed only directly as a parameter of an ~import/extern~
+  signature: not in another signature, not inside another type, not as the
+  result, and not as a keyword or rest parameter.
+- ~(out T)~ matches only an ~out~ parameter. A ~ref~ or ~in~ parameter never
+  matches.
+- ~ref~, ~in~ and pointer parameters are not supported. A method with one needs a
+  C# shim that takes and returns plain values (~Socket.ReceiveMessageFrom~ is
+  such a method).
+- Every out parameter must be declared, in its C# position. A method with outs
+  imported without them has no callable overload, and the error lists them.
+- The Option form needs a method that returns ~bool~.
+- An out that is garbage on false forces the Option form. An out marked
+  ~[MaybeNullWhen(false)]~ or ~[NotNullWhen(true)]~ holds nothing usable when the
+  method returns false, so the tuple form, which would read it anyway, is
+  refused.
+- The declared result must be exactly what the form produces: the same types,
+  in the same order, in the same number. It is checked, never rewritten.
+- Out parameters cannot be ~#:async~ or ~#:cancellable~. ~#:blocking~ and
+  ~#:exceptions~ combine with them as with any call.
+- Constructors with out parameters are not supported.
+
 **** Which overload a call means
 Overload resolution picks the best fit (exact match > numeric widening > reference upcast > box). Arguments fit via conversion or by context if type is unknown. Ambiguities or no matches result in compile errors.
 

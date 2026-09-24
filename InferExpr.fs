@@ -1239,7 +1239,7 @@ and private inferExternValue (env: Env) (name: string) (r: Range) : HMType * Typ
         // instantiation, whatever the context settles it to, because a C#
         // delegate cannot be generic.
         | Some _ ->
-            let paramTypes, retType, typeArgs = instantiateGenericExtern env.Registry where info
+            let paramTypes, retType, typeArgs, outs = instantiateGenericExtern env.Registry where info
 
             let methodParams =
                 if info.IsInstance then List.tail paramTypes else paramTypes
@@ -1247,7 +1247,7 @@ and private inferExternValue (env: Env) (name: string) (r: Range) : HMType * Typ
             let argNames = paramTypes |> List.map (fun _ -> Gensym.fresh "__foreign")
             let argExprs: TypedExpr list = List.map2 identOf argNames paramTypes
 
-            let meta = Some(genericExternMeta info typeArgs methodParams retType)
+            let meta = Some(genericExternMeta info typeArgs outs methodParams retType)
 
             let node =
                 if info.IsInstance then
@@ -1630,7 +1630,7 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
     // polymorphic call — instantiate, unify, done — and the only thing that
     // makes it foreign is where the body ends up.
     | ExternMethod when info.GenericTypeArgs.IsSome ->
-        let paramTypes, retType, typeArgs = instantiateGenericExtern env.Registry where info
+        let paramTypes, retType, typeArgs, outs = instantiateGenericExtern env.Registry where info
 
         if args.Length <> paramTypes.Length then
             let what =
@@ -1661,7 +1661,7 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
         let resultType = wrapForeignExceptions info.Exceptions retType
 
         let meta =
-            Some(genericExternMeta info typeArgs methodParams retType)
+            Some(genericExternMeta info typeArgs outs methodParams retType)
 
         resultType,
         { Type = resultType

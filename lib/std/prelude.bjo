@@ -276,7 +276,8 @@
   ;; Merge with function.
   (map-merge-with (: Map.MapModule.MergeWith   (-> (-> %k %v %v %v) (Map %k %v) (Map %k %v) (Map %k %v))))
 
-  (map-try-ref/pair (: Map.MapModule.TryGetValue (-> (Map %k %v) %k (Tuple bool %v))))
+  ;; Lookup value.
+  (map-try-ref    (: Map.MapModule.TryGetValue (-> (Map %k %v) %k (out %v) (Option %v))))
 
   ;; --- Walking ---
   ;; Walk map.
@@ -288,7 +289,7 @@
   ;; Walk until false.
   (clr-map-iter       (: Map.MapModule.Iter      (-> (-> %k %v bool) (Map %k %v) bool)))
   (map-any?       (: Map.MapModule.Exists    (-> (-> %k %v bool) (Map %k %v) bool)))
-  (map-try-find   (: Map.MapModule.TryFind   (-> (-> %k %v bool) (Map %k %v) (Tuple bool %k %v))))
+  (map-try-find   (: Map.MapModule.TryFind   (-> (-> %k %v bool) (Map %k %v) (out %k) (out %v) (Option (Tuple %k %v)))))
 
   (seq->map (: Map.MapModule.FromEnumerable (-> (Seq (Tuple %k %v)) (Map %k %v))))
   (map->seq (: Map.MapModule.AsEnumerable   (-> (Map %k %v) (Seq (Tuple %k %v)))))
@@ -323,28 +324,15 @@
   (transientmap-length      (: Map.TransientMapModule.Count          (-> (TransientMap %k %v) int)))
   (transientmap-empty?      (: Map.TransientMapModule.IsEmpty        (-> (TransientMap %k %v) bool)))
   (transientmap-filter!     (: Map.TransientMapModule.FilterInPlace  (-> (-> %k %v bool) (TransientMap %k %v) void)))
-  (transientmap-try-ref/pair (: Map.TransientMapModule.TryGetValue   (-> (TransientMap %k %v) %k (Tuple bool %v)))))
-
-;; Lookup value.
-(: map-try-ref (-> (Map %k %v) %k (Option %v)))
-(defun (map-try-ref m key)
-  (def (found value) (map-try-ref/pair m key))
-  (if found (Some value) None))
-
-(: transientmap-try-ref (-> (TransientMap %k %v) %k (Option %v)))
-(defun (transientmap-try-ref m key)
-  (def (found value) (transientmap-try-ref/pair m key))
-  (if found (Some value) None))
+  (transientmap-try-ref     (: Map.TransientMapModule.TryGetValue    (-> (TransientMap %k %v) %k (out %v) (Option %v)))))
 
 
 (: map-has-key? (-> (Map %k %v) %k bool))
 (defun (map-has-key? m key) (map-contains? m key))
 
-;; Find first.
+;; Find first. The same as `map-try-find`.
 (: map-find (-> (-> %k %v bool) (Map %k %v) (Option (Tuple %k %v))))
-(defun (map-find pred m)
-  (def (found k v) (map-try-find pred m))
-  (if found (Some (Tuple k v)) None))
+(defun (map-find pred m) (map-try-find pred m))
 
 
 ;; ---------------------------------------------------------------------------

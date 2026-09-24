@@ -629,9 +629,36 @@ let metadata
             // whichever member of the set this module happened to use.
             let serializeExtern (info: TypedAST.ClrExternInfo) =
                 let typeStr =
-                    match info.DeclaredType with
-                    | Some t -> " " + Codegen.serializeHMType t
-                    | None -> ""
+                    match info.DeclaredType, info.Outs with
+                    // The binding's type has no outs, so they are put back
+                    // where the method has them: after the receiver, at
+                    // their C# positions.
+                    | Some(TypedAST.TFun(bindingParams, result, _)), Some outs ->
+                        let receiver, inParams =
+                            if info.IsInstance then
+                                [ List.head bindingParams ], List.tail bindingParams
+                            else
+                                [], bindingParams
+
+                        let count = inParams.Length + outs.Positions.Length
+
+                        let rec place i ins (outList: (int * TypedAST.HMType) list) =
+                            if i = count then
+                                []
+                            else
+                                match outList with
+                                | (pos, t) :: rest when pos = i ->
+                                    $"(out %s{Codegen.serializeHMType t})" :: place (i + 1) ins rest
+                                | _ ->
+                                    match ins with
+                                    | t :: rest -> Codegen.serializeHMType t :: place (i + 1) rest outList
+                                    | [] -> []
+
+                        let methodParams = place 0 inParams (List.zip outs.Positions outs.Types)
+                        let parts = (receiver |> List.map Codegen.serializeHMType) @ methodParams @ [ Codegen.serializeHMType result ]
+                        " (-> " + String.concat " " parts + ")"
+                    | Some t, _ -> " " + Codegen.serializeHMType t
+                    | None, _ -> ""
 
                 let exceptionStr =
                     if info.Exceptions.IsEmpty then ""

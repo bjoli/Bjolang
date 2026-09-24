@@ -273,7 +273,12 @@ let internal reconcileForeignArgs
 /// under these names and then go their own way.
 let internal externTarget (info: ClrExternInfo) (r: Range) : string * System.Type * HMType =
     let where = Lexer.formatPos r
-    where, DotNetInterop.resolveNamedType r info.ClrType, TCon(info.ClrType, [])
+    let clrType =
+        match info.Outs with
+        | Some _ -> DotNetInterop.resolveNamedTypeOrGeneric r info.ClrType info.MemberName
+        | None -> DotNetInterop.resolveNamedType r info.ClrType
+
+    where, clrType, TCon(info.ClrType, [])
 
 /// The metadata of a *generic* `import/extern` call.
 ///
@@ -284,14 +289,23 @@ let internal externTarget (info: ClrExternInfo) (r: Range) : string * System.Typ
 let internal genericExternMeta
     (info: ClrExternInfo)
     (typeArgs: HMType list)
+    (outs: ExternOuts option)
     (methodParams: HMType list)
     (retType: HMType)
     : DotNetMethodMetadata =
+    // With outs, `retType` is the binding's result, and the metadata carries
+    // the method's own answer.
+    let methodReturn =
+        match outs with
+        | Some o -> o.MethodReturn
+        | None -> retType
+
     { DeclaringType = info.ClrType
       MethodName = info.MemberName
       ParameterTypes = methodParams
-      ReturnType = retType
+      ReturnType = methodReturn
       TypeArguments = typeArgs
+      Outs = outs
       IsStatic = not info.IsInstance
       Exceptions = info.Exceptions
       Await = false
@@ -344,6 +358,7 @@ let internal metadataOf (resolved: DotNetInterop.ResolvedCall) (exceptions: stri
       // import fills this in from its declared signature instead — see
       // `instantiateGenericExtern`.
       TypeArguments = []
+      Outs = None
       IsStatic = resolved.IsStatic
       Exceptions = exceptions
       // Ordinary calls, which are all of them but an `#:async` import's. The
@@ -375,12 +390,28 @@ let internal instantiateGenericExtern (registry: TraitRegistry) (where: string) 
                 $"Type Error at %s{where}: '%s{info.Alias}' names the generic method '%s{info.ClrType}.%s{info.MemberName}' and has no declared signature. A generic method's type arguments come from the signature, so it is the one kind of import that cannot do without one."
 
     let typeArgs = Option.defaultValue [] info.GenericTypeArgs
-    let packed = TTuple(declared :: typeArgs)
+
+    // An out import's out types and method return are in the same variables,
+    // and are packed for the same reason.
+    let outTypes, outReturn =
+        match info.Outs with
+        | Some o -> o.Types, [ o.MethodReturn ]
+        | None -> [], []
+
+    let packed = TTuple [ declared; TTuple typeArgs; TTuple outTypes; TTuple outReturn ]
     let vars = freeTVars registry packed |> List.distinct
     let instantiated, _, _ = instantiate registry (Scheme(vars, [], packed))
 
     match instantiated with
-    | TTuple(TFun(paramTypes, retType, _) :: instantiatedArgs) -> paramTypes, retType, instantiatedArgs
+    | TTuple [ TFun(paramTypes, retType, _); TTuple instantiatedArgs; TTuple instantiatedOuts; TTuple instantiatedReturn ] ->
+        let outs =
+            info.Outs
+            |> Option.map (fun o ->
+                { o with
+                    Types = instantiatedOuts
+                    MethodReturn = List.head instantiatedReturn })
+
+        paramTypes, retType, instantiatedArgs, outs
     | _ ->
         failwithf
             $"Type Error at %s{where}: the declared signature of '%s{info.Alias}' is not a function type, so it cannot name a method."

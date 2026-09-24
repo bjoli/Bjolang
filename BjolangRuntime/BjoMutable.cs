@@ -11,6 +11,7 @@
  * availability requirements or notice obligations of Section 3 of the MPL 2.0.
  */
 
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 
 namespace Bjolang.Runtime;
@@ -23,15 +24,14 @@ namespace Bjolang.Runtime;
 // collection unchanged.
 //
 // A module rather than `import/extern` straight onto the BCL type, because
-// three things the interop cannot reach are needed to use one at all:
-// `import/class` declares no constructor for a generic class, an accessor
-// import takes no index so there is no indexer, and a method with an `out`
-// parameter is filtered out of overload resolution. Everything below is one of
-// those three or a one-line forward.
+// two things the interop cannot reach are needed to use one at all:
+// `import/class` declares no constructor for a generic class, and an accessor
+// import takes no index so there is no indexer. Everything below is one of
+// those two or a one-line forward.
 //
-// A partial answer is a tuple rather than an `out`, which is the convention the
-// rest of the runtime's interfaces follow: an `out` is a C# idiom, while a
-// tuple is a value in any language.
+// A partial answer is `bool TryXyz(..., out ...)`, the outs marked
+// `[MaybeNullWhen(false)]`, as in the rest of the runtime's interfaces.
+// Bjolang imports it with `(out T)` and gets an `Option`.
 //
 // Equality is .NET's throughout — `EqualityComparer<T>.Default` for the
 // dictionary and the set, `Comparer<P>.Default` for the heap's priorities.
@@ -67,8 +67,17 @@ public static class MutableVecModule {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static T Get<T>(List<T> xs, int index) => xs[index];
 
-    public static (bool found, T value) TryGet<T>(List<T> xs, int index) =>
-        index >= 0 && index < xs.Count ? (true, xs[index]) : (false, default!);
+    public static bool TryGet<T>(List<T> xs, int index, [MaybeNullWhen(false)] out T value)
+    {
+        if (index >= 0 && index < xs.Count)
+        {
+            value = xs[index];
+            return true;
+        }
+
+        value = default;
+        return false;
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void Set<T>(List<T> xs, int index, T value) => xs[index] = value;
@@ -90,15 +99,19 @@ public static class MutableVecModule {
     public static int RemoveWhere<T>(List<T> xs, Func<T, bool> predicate) =>
         xs.RemoveAll(new Predicate<T>(predicate.Invoke));
 
-    /// The last element, removed. The pair's first field is false when the list
-    /// was empty, which is the case a stack-shaped caller has to test anyway.
-    public static (bool found, T value) TryPopBack<T>(List<T> xs) {
-        if (xs.Count == 0) return (false, default!);
+    /// The last element, removed. False when the list was empty, which is the
+    /// case a stack-shaped caller has to test anyway.
+    public static bool TryPopBack<T>(List<T> xs, [MaybeNullWhen(false)] out T value) {
+        if (xs.Count == 0)
+        {
+            value = default;
+            return false;
+        }
 
         var last = xs.Count - 1;
-        var value = xs[last];
+        value = xs[last];
         xs.RemoveAt(last);
-        return (true, value);
+        return true;
     }
 
     public static void Clear<T>(List<T> xs) => xs.Clear();
@@ -150,8 +163,9 @@ public static class MutableMapModule {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static V Get<K, V>(Dictionary<K, V> map, K key) where K : notnull => map[key];
 
-    public static (bool found, V value) TryGet<K, V>(Dictionary<K, V> map, K key) where K : notnull =>
-        map.TryGetValue(key, out var value) ? (true, value) : (false, default!);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool TryGet<K, V>(Dictionary<K, V> map, K key, [MaybeNullWhen(false)] out V value) where K : notnull =>
+        map.TryGetValue(key, out value);
 
     public static V GetOr<K, V>(Dictionary<K, V> map, K key, V fallback) where K : notnull =>
         map.TryGetValue(key, out var value) ? value : fallback;
@@ -320,11 +334,17 @@ public static class MutableHeapModule {
     public static void AddRange<T, P>(PriorityQueue<T, P> heap, IEnumerable<(T element, P priority)> items) =>
         heap.EnqueueRange(items);
 
-    public static (bool found, T element, P priority) TryPeek<T, P>(PriorityQueue<T, P> heap) =>
-        heap.TryPeek(out var element, out var priority) ? (true, element, priority) : (false, default!, default!);
+    public static bool TryPeek<T, P>(
+        PriorityQueue<T, P> heap,
+        [MaybeNullWhen(false)] out T element,
+        [MaybeNullWhen(false)] out P priority) =>
+        heap.TryPeek(out element, out priority);
 
-    public static (bool found, T element, P priority) TryPop<T, P>(PriorityQueue<T, P> heap) =>
-        heap.TryDequeue(out var element, out var priority) ? (true, element, priority) : (false, default!, default!);
+    public static bool TryPop<T, P>(
+        PriorityQueue<T, P> heap,
+        [MaybeNullWhen(false)] out T element,
+        [MaybeNullWhen(false)] out P priority) =>
+        heap.TryDequeue(out element, out priority);
 
     /// Pushes and pops as one operation, answering what came off — which may be
     /// the element just pushed. The count never grows, so this is how a heap is

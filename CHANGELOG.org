@@ -3,6 +3,35 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(out T)~: .NET out parameters in ~import/extern~
+
+An ~import/extern~ signature may declare a parameter ~(out T)~ where C# has an
+~out~ parameter. It is not an argument; the outs come back in the result, as
+~(Option ...)~ for a ~bool TryXyz~ method or as the return value followed by the
+outs otherwise. Both forms, and the rules the declaration is checked against,
+are in ~Docs/Syntax.org~ under ~(out T)~.
+
+Before this, no method with an ~out~ parameter could be imported, and the
+runtime answered its partial lookups with ~(bool, T)~ tuples that the standard
+library wrapped into ~Option~ by hand. On a miss such a tuple carried
+~default(T)~, which is ~null~ for a reference type, so a value Bjolang does not
+have reached Bjolang code. The runtime now answers with ~bool TryXyz(..., out
+...)~, the outs marked ~[MaybeNullWhen(false)]~, and the library imports those
+with the Option form: the out is read only when the call returned true.
+
+What changed for a program:
+- ~map-try-find~ answers ~(Option (Tuple %k %v))~ rather than
+  ~(Tuple bool %k %v)~. It is now the same as ~map-find~.
+- Every other exported lookup keeps its type. ~map-try-ref~, ~orderedmap-min~,
+  ~mutableheap-pop!~ and their neighbours are now the import itself, so a call
+  compiles to the runtime call and a conditional, with no wrapper in between.
+- A method whose overloads all take ~out~ or ~ref~ parameters now says so, and
+  says how to declare the out or that a ~ref~ needs a C# shim.
+
+Left open: ~ref~, ~in~, pointer and span parameters, and constructors with
+outs. Only an import with outs can name an instance method of a generic .NET
+type by the type's plain name.
+
 * ~inbox-try-call~, for the caller who cannot look at a faulted task
 
 A refusal has two shapes in ~(std inbox)~ because there are two kinds of

@@ -92,6 +92,12 @@ let rec resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType 
     | TApp("-?->", args, _) ->
         let resolvedArgs = args |> List.map (resolveTypeAnnotation registry)
         TFun(List.take (resolvedArgs.Length - 1) resolvedArgs, List.last resolvedArgs, EPoly)
+    // `(out T)`: the parser lets it through as a parameter of any arrow, and
+    // only `import/extern` takes it off before resolving the rest. So reaching
+    // here means an arrow of some other signature.
+    | TApp("out", _, r) ->
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: (out T) marks an out parameter of a .NET method, and only an import/extern signature describes one. A Bjolang function returns what it produces."
     | TArrow(mandatory, keywords, restOpt, ret, colour, _) ->
         let mandatoryTypes = mandatory |> List.map (resolveTypeAnnotation registry)
         let keywordTypes = keywords |> List.map (fun (_, t) -> resolveTypeAnnotation registry t)

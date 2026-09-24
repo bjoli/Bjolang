@@ -1121,6 +1121,18 @@ and private checkImportClass (env: Env) (sigs: Sigs) (specs: ClassImportSpec lis
                     LocalTypes = reg.LocalTypes |> Set.add info.Alias |> Set.add info.ClrName })
             env.Registry
 
+    for spec in specs do
+        match spec.ConstructorType with
+        | Some(TArrow(mandatory, _, _, _, _, _)) when
+            mandatory
+            |> List.exists (function
+                | TApp("out", _, _) -> true
+                | _ -> false)
+            ->
+            failwithf
+                $"Type Error at %s{Lexer.formatPos spec.Range}: constructors with out parameters are not supported. '%s{spec.ClrClass}' is imported with (out T) in its constructor signature; wrap the constructor in a C# factory method that returns the outs, or import such a method with import/extern."
+        | _ -> ()
+
     let infos =
         List.map2
             (fun (info: ClrClassInfo) (spec: ClassImportSpec) ->
@@ -1163,7 +1175,28 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
 
             let typeName = spec.ClrTarget.Substring(0, split)
             let memberName = spec.ClrTarget.Substring(split + 1)
-            let clrType = DotNetInterop.resolveNamedType spec.Range typeName
+
+            // `(out T)` parameters. Such an import is resolved here against its
+            // whole signature, and may name an instance method of a generic
+            // type by the type's plain name.
+            let declaresOuts =
+                match spec.ExplicitType with
+                | Some(TArrow(mandatory, _, _, _, _, _)) ->
+                    mandatory
+                    |> List.exists (function
+                        | TApp("out", _, _) -> true
+                        | _ -> false)
+                | _ -> false
+
+            if declaresOuts && kind <> ExternMethod then
+                failwithf
+                    $"Syntax error at %s{where}: (out T) marks an out parameter of a method, and #:get and #:set name a property or field."
+
+            let clrType =
+                if declaresOuts then
+                    DotNetInterop.resolveNamedTypeOrGeneric spec.Range typeName memberName
+                else
+                    DotNetInterop.resolveNamedType spec.Range typeName
 
             // Whether the member is static or an instance one is read off
             // the metadata rather than written in the clause. There is
@@ -1211,6 +1244,14 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
             | ExternSet -> DotNetInterop.resolveMemberWrite where clrType memberName (not isInstance) |> ignore
             | ExternMethod ->
                 checkExceptionTypes where spec.Exceptions
+
+                // An awaited call's outs would be written after the await, and
+                // C# forbids out parameters on an async method anyway. A
+                // threaded token changes the parameter list the outs are
+                // positioned in. `#:blocking` emits nothing, so it combines.
+                if declaresOuts && (spec.IsAsync || spec.Cancellable) then
+                    failwithf
+                        $"Type Error at %s{where}: out parameters cannot be async: '%s{clrType.FullName}.%s{memberName}' declares (out T) parameters and is imported #:async or #:cancellable. A method with out parameters is synchronous in C#; import it without those flags."
 
                 // Both of these are arity-independent, so they can be
                 // answered here rather than at the first call — which is the
@@ -1272,8 +1313,50 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
                     failwithf
                         $"Type Error at %s{where}: '%s{clrType.FullName}.%s{memberName}' is imported #:cancellable, but no overload of it takes a System.Threading.CancellationToken. There is nothing to thread."
 
+            // The binding's type, the type arguments, and the outs of an out
+            // import. It is resolved here, like a generic method, whether or
+            // not the method is generic: the declaration is what picks the
+            // overload, and the call site has no outs to pick it by.
+            let outImport =
+                match spec.ExplicitType with
+                | Some(TArrow(mandatory, keywords, restOpt, ret, _, _)) when declaresOuts ->
+                    if not keywords.IsEmpty || restOpt.IsSome then
+                        failwithf
+                            $"Type Error at %s{where}: '%s{spec.Alias}' declares (out T) parameters and keyword or rest parameters. A .NET method's parameters are positional, so an out import lists them in C# order."
+
+                    let items =
+                        mandatory
+                        |> List.map (function
+                            | TApp("out", [ inner ], _) -> resolveTypeAnnotation env.Registry inner, true
+                            | other -> resolveTypeAnnotation env.Registry other, false)
+
+                    let receiver, methodItems =
+                        if not isInstance then
+                            None, items
+                        else
+                            match items with
+                            | (_, true) :: _ ->
+                                failwithf
+                                    $"Type Error at %s{where}: '%s{spec.Alias}' names the instance method '%s{clrType.FullName}.%s{memberName}', whose first argument is its receiver, and declares that as (out T). The receiver is read, never written."
+                            | (recv, false) :: rest -> Some recv, rest
+                            | [] ->
+                                failwithf
+                                    $"Type Error at %s{where}: '%s{spec.Alias}' names the instance method '%s{clrType.FullName}.%s{memberName}', whose receiver is its first argument, but its declared type takes none."
+
+                    let result = resolveTypeAnnotation env.Registry ret
+
+                    let resolved =
+                        DotNetInterop.resolveOutMethod where (not isInstance) clrType memberName receiver methodItems result
+
+                    let bindingParams = (Option.toList receiver) @ resolved.ParameterTypes
+
+                    Some(TFun(bindingParams, result, ESync), resolved.TypeArguments, resolved.Outs)
+                | _ -> None
+
             let declaredType =
-                spec.ExplicitType |> Option.map (resolveTypeAnnotation env.Registry)
+                match outImport with
+                | Some(binding, _, _) -> Some binding
+                | None -> spec.ExplicitType |> Option.map (resolveTypeAnnotation env.Registry)
 
             // A member whose overloads are *all* generic definitions is
             // resolved here, once, against the signature — and a member with
@@ -1282,7 +1365,9 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
             // name gets is a property of the .NET method group rather than
             // of anything written in the clause.
             let genericTypeArgs, declaredType =
-                if kind <> ExternMethod
+                if outImport.IsSome then
+                    outImport |> Option.map (fun (_, typeArgs, _) -> typeArgs), declaredType
+                elif kind <> ExternMethod
                    || not (DotNetInterop.isGenericOnlyMethod (not isInstance) clrType memberName) then
                     None, declaredType
                 else
@@ -1334,12 +1419,19 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
                             $"Type Error at %s{where}: '%s{clrType.FullName}.%s{memberName}' is generic, so this import needs a declared signature — that is where its type arguments come from. Write one, as in (: %s{spec.ClrTarget} (-> (Set %%a) %%a (Set %%a)))."
 
             { Alias = spec.Alias
-              ClrType = clrType.FullName
+              // A generic definition by the name it was written with, which
+              // is what `externTarget` and the published clause read back.
+              ClrType =
+                if clrType.IsGenericTypeDefinition then
+                    DotNetInterop.clrTypeName clrType
+                else
+                    clrType.FullName
               MemberName = memberName
               Kind = kind
               IsInstance = isInstance
               DeclaredType = declaredType
               GenericTypeArgs = genericTypeArgs
+              Outs = outImport |> Option.map (fun (_, _, outs) -> outs)
               Exceptions = spec.Exceptions
               IsAsync = spec.IsAsync
               Uncancellable = spec.Uncancellable

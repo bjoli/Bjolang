@@ -79,13 +79,16 @@
   (orderedmap-merge      (: OrderedMap.OrderedMapModule.Merge       (-> (OrderedMap %k %v) (OrderedMap %k %v) (OrderedMap %k %v))))
   (orderedmap-merge-with (: OrderedMap.OrderedMapModule.MergeWith   (-> (-> %k %v %v %v) (OrderedMap %k %v) (OrderedMap %k %v) (OrderedMap %k %v))))
 
-  (orderedmap-try-ref/pair (: OrderedMap.OrderedMapModule.TryGetValue (-> (OrderedMap %k %v) %k (Tuple bool %v))))
+  ;; Try ref, answering Option.
+  (orderedmap-try-ref (: OrderedMap.OrderedMapModule.TryGetValue (-> (OrderedMap %k %v) %k (out %v) (Option %v))))
 
   ;; --- Order ---
-  (orderedmap-try-min         (: OrderedMap.OrderedMapModule.TryGetMin         (-> (OrderedMap %k %v) (Tuple bool %k %v))))
-  (orderedmap-try-max         (: OrderedMap.OrderedMapModule.TryGetMax         (-> (OrderedMap %k %v) (Tuple bool %k %v))))
-  (orderedmap-try-successor   (: OrderedMap.OrderedMapModule.TryGetSuccessor   (-> (OrderedMap %k %v) %k (Tuple bool %k %v))))
-  (orderedmap-try-predecessor (: OrderedMap.OrderedMapModule.TryGetPredecessor (-> (OrderedMap %k %v) %k (Tuple bool %k %v))))
+  ;; Min entry as Option.
+  (orderedmap-min         (: OrderedMap.OrderedMapModule.TryGetMin         (-> (OrderedMap %k %v) (out %k) (out %v) (Option (Tuple %k %v)))))
+  (orderedmap-max         (: OrderedMap.OrderedMapModule.TryGetMax         (-> (OrderedMap %k %v) (out %k) (out %v) (Option (Tuple %k %v)))))
+  ;; Successor entry.
+  (orderedmap-successor   (: OrderedMap.OrderedMapModule.TryGetSuccessor   (-> (OrderedMap %k %v) %k (out %k) (out %v) (Option (Tuple %k %v)))))
+  (orderedmap-predecessor (: OrderedMap.OrderedMapModule.TryGetPredecessor (-> (OrderedMap %k %v) %k (out %k) (out %v) (Option (Tuple %k %v)))))
 
   ;; Range walks.
   (orderedmap-range (: OrderedMap.OrderedMapModule.Range (-> (OrderedMap %k %v) %k %k (Seq (Tuple %k %v)))))
@@ -101,7 +104,8 @@
   (clr-orderedmap-fold       (: OrderedMap.OrderedMapModule.Fold      (-> (-> %k %v %s %s) %s (OrderedMap %k %v) %s)))
   (clr-orderedmap-iter       (: OrderedMap.OrderedMapModule.Iter      (-> (-> %k %v bool) (OrderedMap %k %v) bool)))
   (orderedmap-any?       (: OrderedMap.OrderedMapModule.Exists    (-> (-> %k %v bool) (OrderedMap %k %v) bool)))
-  (orderedmap-try-find   (: OrderedMap.OrderedMapModule.TryFind   (-> (-> %k %v bool) (OrderedMap %k %v) (Tuple bool %k %v))))
+  ;; Find entry satisfying pred.
+  (orderedmap-find       (: OrderedMap.OrderedMapModule.TryFind   (-> (-> %k %v bool) (OrderedMap %k %v) (out %k) (out %v) (Option (Tuple %k %v)))))
 
   (seq->orderedmap (: OrderedMap.OrderedMapModule.FromEnumerable (-> (Seq (Tuple %k %v)) (OrderedMap %k %v))))
   (orderedmap->seq (: OrderedMap.OrderedMapModule.AsEnumerable   (-> (OrderedMap %k %v) (Seq (Tuple %k %v)))))
@@ -109,12 +113,6 @@
   (orderedmap-cursor         (: OrderedMap.OrderedMapModule.Cursor        (-> (OrderedMap %k %v) (OrderedMapCursor %k %v))))
   (orderedmap-cursor-done?   (: OrderedMap.OrderedMapModule.CursorDone    (-> (OrderedMapCursor %k %v) bool)))
   (orderedmap-cursor-current (: OrderedMap.OrderedMapModule.CursorCurrent (-> (OrderedMapCursor %k %v) (Tuple %k %v)))))
-
-;; Try ref, answering Option.
-(: orderedmap-try-ref (-> (OrderedMap %k %v) %k (Option %v)))
-(defun (orderedmap-try-ref m key)
-  (def (found value) (orderedmap-try-ref/pair m key))
-  (if found (Some value) None))
 
 ;; Alias for contains?.
 (: orderedmap-has-key? (-> (OrderedMap %k %v) %k bool))
@@ -138,34 +136,6 @@
     ((SList (Cons _ (Cons key (Cons p Nil))))
      #'(:view (orderedmap-try-ref & ,key) (Some ,p)))
     (_ (syntax-error form "(om-has key p) matches a map that has key, p matching the value."))))
-
-;; Min entry as Option.
-(: orderedmap-min (-> (OrderedMap %k %v) (Option (Tuple %k %v))))
-(defun (orderedmap-min m)
-  (def (found key value) (orderedmap-try-min m))
-  (if found (Some (Tuple key value)) None))
-
-(: orderedmap-max (-> (OrderedMap %k %v) (Option (Tuple %k %v))))
-(defun (orderedmap-max m)
-  (def (found key value) (orderedmap-try-max m))
-  (if found (Some (Tuple key value)) None))
-
-;; Successor entry.
-(: orderedmap-successor (-> (OrderedMap %k %v) %k (Option (Tuple %k %v))))
-(defun (orderedmap-successor m key)
-  (def (found k v) (orderedmap-try-successor m key))
-  (if found (Some (Tuple k v)) None))
-
-(: orderedmap-predecessor (-> (OrderedMap %k %v) %k (Option (Tuple %k %v))))
-(defun (orderedmap-predecessor m key)
-  (def (found k v) (orderedmap-try-predecessor m key))
-  (if found (Some (Tuple k v)) None))
-
-;; Find entry satisfying pred.
-(: orderedmap-find (-> (-> %k %v bool) (OrderedMap %k %v) (Option (Tuple %k %v))))
-(defun (orderedmap-find pred m)
-  (def (found k v) (orderedmap-try-find pred m))
-  (if found (Some (Tuple k v)) None))
 
 ;; ---------------------------------------------------------------------------
 ;; Builders and transients
@@ -193,12 +163,7 @@
   (transientorderedmap-length      (: OrderedMap.TransientOrderedMapModule.Count          (-> (TransientOrderedMap %k %v) int)))
   (transientorderedmap-empty?      (: OrderedMap.TransientOrderedMapModule.IsEmpty        (-> (TransientOrderedMap %k %v) bool)))
   (transientorderedmap-filter!     (: OrderedMap.TransientOrderedMapModule.FilterInPlace  (-> (-> %k %v bool) (TransientOrderedMap %k %v) void)))
-  (transientorderedmap-try-ref/pair (: OrderedMap.TransientOrderedMapModule.TryGetValue   (-> (TransientOrderedMap %k %v) %k (Tuple bool %v)))))
-
-(: transientorderedmap-try-ref (-> (TransientOrderedMap %k %v) %k (Option %v)))
-(defun (transientorderedmap-try-ref m key)
-  (def (found value) (transientorderedmap-try-ref/pair m key))
-  (if found (Some value) None))
+  (transientorderedmap-try-ref     (: OrderedMap.TransientOrderedMapModule.TryGetValue    (-> (TransientOrderedMap %k %v) %k (out %v) (Option %v)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Ordered maps, where the callback may suspend

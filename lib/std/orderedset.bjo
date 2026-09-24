@@ -78,10 +78,12 @@
   (orderedset-symmetric-difference (: OrderedSet.OrderedSetModule.SymmetricExcept (-> (OrderedSet %a) (OrderedSet %a) (OrderedSet %a))))
 
   ;; --- Order ---
-  (orderedset-try-min         (: OrderedSet.OrderedSetModule.TryGetMin         (-> (OrderedSet %a) (Tuple bool %a))))
-  (orderedset-try-max         (: OrderedSet.OrderedSetModule.TryGetMax         (-> (OrderedSet %a) (Tuple bool %a))))
-  (orderedset-try-successor   (: OrderedSet.OrderedSetModule.TryGetSuccessor   (-> (OrderedSet %a) %a (Tuple bool %a))))
-  (orderedset-try-predecessor (: OrderedSet.OrderedSetModule.TryGetPredecessor (-> (OrderedSet %a) %a (Tuple bool %a))))
+  ;; Partial answers as Options.
+  (orderedset-min         (: OrderedSet.OrderedSetModule.TryGetMin         (-> (OrderedSet %a) (out %a) (Option %a))))
+  (orderedset-max         (: OrderedSet.OrderedSetModule.TryGetMax         (-> (OrderedSet %a) (out %a) (Option %a))))
+  ;; Successor.
+  (orderedset-successor   (: OrderedSet.OrderedSetModule.TryGetSuccessor   (-> (OrderedSet %a) %a (out %a) (Option %a))))
+  (orderedset-predecessor (: OrderedSet.OrderedSetModule.TryGetPredecessor (-> (OrderedSet %a) %a (out %a) (Option %a))))
 
   ;; Range walks.
   (orderedset-range (: OrderedSet.OrderedSetModule.Range (-> (OrderedSet %a) %a %a (Seq %a))))
@@ -94,7 +96,7 @@
   (clr-orderedset-fold   (: OrderedSet.OrderedSetModule.Fold       (-> (-> %a %s %s) %s (OrderedSet %a) %s)))
   (clr-orderedset-iter   (: OrderedSet.OrderedSetModule.Iter       (-> (-> %a bool) (OrderedSet %a) bool)))
   (orderedset-any?       (: OrderedSet.OrderedSetModule.Exists     (-> (-> %a bool) (OrderedSet %a) bool)))
-  (orderedset-try-find   (: OrderedSet.OrderedSetModule.TryFindKey (-> (-> %a bool) (OrderedSet %a) (Tuple bool %a))))
+  (orderedset-find       (: OrderedSet.OrderedSetModule.TryFindKey (-> (-> %a bool) (OrderedSet %a) (out %a) (Option %a))))
 
   (seq->orderedset (: OrderedSet.OrderedSetModule.FromEnumerable (-> (Seq %a) (OrderedSet %a))))
   (orderedset->seq (: OrderedSet.OrderedSetModule.AsEnumerable   (-> (OrderedSet %a) (Seq %a))))
@@ -102,33 +104,6 @@
   (orderedset-cursor         (: OrderedSet.OrderedSetModule.Cursor        (-> (OrderedSet %a) (OrderedSetCursor %a))))
   (orderedset-cursor-done?   (: OrderedSet.OrderedSetModule.CursorDone    (-> (OrderedSetCursor %a) bool)))
   (orderedset-cursor-current (: OrderedSet.OrderedSetModule.CursorCurrent (-> (OrderedSetCursor %a) %a))))
-
-;; Partial answers as Options.
-(: orderedset-min (-> (OrderedSet %a) (Option %a)))
-(defun (orderedset-min s)
-  (def (found key) (orderedset-try-min s))
-  (if found (Some key) None))
-
-(: orderedset-max (-> (OrderedSet %a) (Option %a)))
-(defun (orderedset-max s)
-  (def (found key) (orderedset-try-max s))
-  (if found (Some key) None))
-
-;; Successor.
-(: orderedset-successor (-> (OrderedSet %a) %a (Option %a)))
-(defun (orderedset-successor s key)
-  (def (found next) (orderedset-try-successor s key))
-  (if found (Some next) None))
-
-(: orderedset-predecessor (-> (OrderedSet %a) %a (Option %a)))
-(defun (orderedset-predecessor s key)
-  (def (found prev) (orderedset-try-predecessor s key))
-  (if found (Some prev) None))
-
-(: orderedset-find (-> (-> %a bool) (OrderedSet %a) (Option %a)))
-(defun (orderedset-find pred s)
-  (def (found key) (orderedset-try-find pred s))
-  (if found (Some key) None))
 
 ;; ---------------------------------------------------------------------------
 ;; Builders and transients
@@ -154,18 +129,8 @@
   (transientorderedset-empty?      (: OrderedSet.TransientOrderedSetModule.IsEmpty        (-> (TransientOrderedSet %a) bool)))
   (transientorderedset-filter!     (: OrderedSet.TransientOrderedSetModule.FilterInPlace  (-> (-> %a bool) (TransientOrderedSet %a) void)))
 
-  (transientorderedset-try-min     (: OrderedSet.TransientOrderedSetModule.TryGetMin      (-> (TransientOrderedSet %a) (Tuple bool %a))))
-  (transientorderedset-try-max     (: OrderedSet.TransientOrderedSetModule.TryGetMax      (-> (TransientOrderedSet %a) (Tuple bool %a)))))
-
-(: transientorderedset-min (-> (TransientOrderedSet %a) (Option %a)))
-(defun (transientorderedset-min s)
-  (def (found key) (transientorderedset-try-min s))
-  (if found (Some key) None))
-
-(: transientorderedset-max (-> (TransientOrderedSet %a) (Option %a)))
-(defun (transientorderedset-max s)
-  (def (found key) (transientorderedset-try-max s))
-  (if found (Some key) None))
+  (transientorderedset-min         (: OrderedSet.TransientOrderedSetModule.TryGetMin      (-> (TransientOrderedSet %a) (out %a) (Option %a))))
+  (transientorderedset-max         (: OrderedSet.TransientOrderedSetModule.TryGetMax      (-> (TransientOrderedSet %a) (out %a) (Option %a)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Conversions

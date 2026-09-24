@@ -45,6 +45,16 @@ let parseDynType (parseInner: SExpr -> FType) (traitExpr: SExpr) (assocItems: SE
 
     TApp("dyn", TName(traitName, r) :: assocs assocItems, r)
 
+/// `(out T)` anywhere but directly as a parameter of an arrow.
+///
+/// The marker says that a .NET method writes this parameter rather than reads
+/// it, so it only means something as one of the method's own parameters. Only
+/// an `import/extern` signature can use it; `Annotations.resolveTypeAnnotation`
+/// refuses the arrows of every other signature.
+let private rejectOutMarker (r: Range) : 'a =
+    failwithf
+        $"Syntax error at %s{Lexer.formatPos r}: (out T) marks an out parameter of a .NET method, so it may only stand directly as a parameter of an import/extern signature — not inside another type, not as a result, and not as a keyword or rest parameter."
+
 let parseArrowType (colour: Colour) (items: SExpr list) (r: Range) : FType =
     if items.IsEmpty then failwithf $"Arrow type must have at least a return type at %s{Lexer.formatPos r}"
     let returnTypeExpr = List.last items
@@ -53,6 +63,7 @@ let parseArrowType (colour: Colour) (items: SExpr list) (r: Range) : FType =
     let rec parseArrowTypeInner (s: SExpr) : FType =
         let r = getRange s
         match stripTypeMark s with
+        | SList(SAtom { Token = Symbol "out" } :: _, _) -> rejectOutMarker r
         | SAtom { Token = QuotedSymbol sym } -> TName("'" + sym, r)
         | SAtom { Token = Symbol sym }
         | SAtom { Token = TypeVar sym } -> TName(sym, r)
@@ -79,6 +90,15 @@ let parseArrowType (colour: Colour) (items: SExpr list) (r: Range) : FType =
                 $"Syntax error at %s{Lexer.formatPos (getRange returnTypeExpr)}: -?-> says that a *parameter* may be given a function of either colour, and this is the return type. A function that hands one back has to have decided which it is building, and saying otherwise needs an effect variable with a name of its own, which does not exist yet."
         | _ -> parseArrowTypeInner returnTypeExpr
 
+    // A mandatory parameter is the one place `(out T)` is read, and its type
+    // goes through `parseArrowTypeInner`, which refuses a nested marker.
+    let parseParameter (s: SExpr) : FType =
+        match stripTypeMark s with
+        | SList([ SAtom { Token = Symbol "out" }; inner ], _) -> TApp("out", [ parseArrowTypeInner inner ], getRange s)
+        | SList(SAtom { Token = Symbol "out" } :: _, _) ->
+            failwithf $"Syntax error at %s{Lexer.formatPos (getRange s)}: (out T) takes exactly one type."
+        | _ -> parseArrowTypeInner s
+
     let rec collectArgs mandatory keywords argItems =
         match argItems with
         | [] -> TArrow(List.rev mandatory, List.rev keywords, None, parseReturnType (), colour, r)
@@ -89,7 +109,7 @@ let parseArrowType (colour: Colour) (items: SExpr list) (r: Range) : FType =
         | SList(SAtom { Token = Keyword name } :: [ typeExpr ], _) :: rest ->
             collectArgs mandatory ((name, parseArrowTypeInner typeExpr) :: keywords) rest
         | item :: rest when keywords.IsEmpty ->
-            collectArgs (parseArrowTypeInner item :: mandatory) keywords rest
+            collectArgs (parseParameter item :: mandatory) keywords rest
         | _ -> failwithf $"Mandatory types must come before keyword/rest types in arrow type at %s{Lexer.formatPos r}"
 
     collectArgs [] [] argItems
@@ -118,6 +138,7 @@ let rec parseType (s: SExpr) : FType =
             $"Syntax error at %s{Lexer.formatPos r}: -?-> says that a *parameter* may be given a function of either colour, and this arrow is not a parameter.\n  As the type of a definition it would say nothing: a defun is already colour-polymorphic, and a copy of it is made for each colour actually used. If what you need is two different *bodies* rather than two copies of one — because the two halves call different .NET methods — that is defbjouble.\n  As a record field, a let annotation or a return type it would need an effect variable with a name of its own, which does not exist yet."
     | SList(SAtom { Token = Symbol "dyn" } :: traitExpr :: assocItems, _) ->
         parseDynType parseType traitExpr assocItems r
+    | SList(SAtom { Token = Symbol "out" } :: _, _) -> rejectOutMarker r
     | SList(SAtom { Token = Symbol name } :: typeArgs, _) -> TApp(name, List.map parseType typeArgs, r)
     // `(%m %a)` — a type variable applied to arguments. See `parseArrowTypeInner`.
     | SList(SAtom { Token = QuotedSymbol sym } :: typeArgs, _) ->

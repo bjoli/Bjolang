@@ -1260,8 +1260,19 @@ let private calleeDeclaresKeywords (target: TypedExpr) (args: TypedExpr list) : 
 /// A node whose operands merely *contain* something statement-shaped is not
 /// itself statement-shaped: those operands are hoisted individually, which keeps
 /// the node an expression.
+/// A call to a void method whose value is its outs. A void call cannot be an
+/// operand of a C# tuple, so the call is a statement and the outs are read
+/// after it. A guarded one already has a lambda body to put the statement in.
+let private isVoidOutCall (meta: DotNetMethodMetadata) : bool =
+    meta.Exceptions.IsEmpty
+    && (match meta.Outs with
+        | Some outs -> outs.Form = OutTuple && not outs.KeepsReturn
+        | None -> false)
+
 let rec isStatementShaped (expr: TypedExpr) : bool =
     match expr.Node with
+    | TForeignStaticCall(_, _, _, Some meta)
+    | TDotMethodCall(_, _, _, Some meta) when isVoidOutCall meta -> true
     | TLet _
     | TLetRec _
     | TLetTuple _
@@ -1826,6 +1837,12 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     // instance method, so the `await`, the `ConfigureAwait(false)` and the
     // ambient token all have to be available here too; the comments on
     // `TForeignStaticCall` below explain why each is not optional.
+    | TDotMethodCall (target, methodName, args, Some meta) when meta.Outs.IsSome ->
+        generateOutCall ctx expr (Some target) "" methodName args meta meta.Outs.Value |> ignore
+
+    | TForeignStaticCall (clrType, methodName, args, Some meta) when meta.Outs.IsSome ->
+        generateOutCall ctx expr None clrType methodName args meta meta.Outs.Value |> ignore
+
     | TDotMethodCall (target, methodName, args, meta) ->
         let exceptions =
             meta |> Option.map (fun m -> m.Exceptions) |> Option.defaultValue []
@@ -2376,6 +2393,125 @@ and private generateGuarded
             appendLine c ";"
             indent c
             appendLine c (okOf tmp))
+
+/// A call with out parameters, emitted as the value its form builds.
+///
+/// Each out is declared at its C# position with its type written, so that an
+/// overload differing only in an out type is still the one resolved. The names
+/// are fresh because an out variable stays in scope for the rest of the
+/// enclosing block, where a second such call may declare its own. The Option
+/// form reads the outs only in its true branch.
+///
+/// The void tuple form writes only the call, as a statement, and the caller
+/// reads the returned value after it.
+and private generateOutCall
+    (ctx: CodegenContext)
+    (expr: TypedExpr)
+    (receiver: TypedExpr option)
+    (clrType: string)
+    (methodName: string)
+    (args: TypedExpr list)
+    (meta: DotNetMethodMetadata)
+    (outs: ExternOuts)
+    : string =
+
+    let methodName = methodName + foreignTypeArguments (Some meta)
+    let names = outs.Types |> List.map (fun _ -> freshName "__out")
+
+    let outValue =
+        match names with
+        | [ n ] -> n
+        | ns -> "(" + String.concat ", " ns + ")"
+
+    let outType =
+        match outs.Types with
+        | [ t ] -> typeToString t
+        | ts -> typeToString (TTuple ts)
+
+    let outAt = List.zip outs.Positions (List.zip outs.Types names) |> Map.ofList
+    let total = args.Length + names.Length
+
+    let writeArgs (c: CodegenContext) (argEmitters: (CodegenContext -> unit) list) =
+        let mutable remaining = argEmitters
+
+        for i in 0 .. total - 1 do
+            if i > 0 then append c ", "
+
+            match Map.tryFind i outAt with
+            | Some(t, n) -> append c $"out %s{typeToString t} %s{n}"
+            | None ->
+                (List.head remaining) c
+                remaining <- List.tail remaining
+
+    let writeValue (c: CodegenContext) (writeCall: CodegenContext -> unit) =
+        match outs.Form with
+        | OutOption ->
+            append c "("
+            writeCall c
+            append c $" ? BjolangRuntime.Some<%s{outType}>(%s{outValue}) : BjolangRuntime.None<%s{outType}>())"
+        | OutTuple when outs.KeepsReturn ->
+            append c "("
+            writeCall c
+            append c (", " + String.concat ", " names + ")")
+        | OutTuple -> writeCall c
+
+    let operands = Option.toList receiver @ args
+
+    if meta.Exceptions.IsEmpty then
+        let emitters = prepareOperands ctx operands
+
+        let writeCall (c: CodegenContext) =
+            match receiver with
+            | Some target ->
+                emitReceiver c target emitters.Head
+                append c $".%s{methodName}("
+                writeArgs c emitters.Tail
+            | None ->
+                append c $"%s{clrType}.%s{methodName}("
+                writeArgs c emitters
+
+            append c ")"
+
+        writeValue ctx writeCall
+    else
+        // As `generateGuarded`: the arguments are evaluated before the `try`.
+        let temps = operands |> List.map (fun a -> freshName "__farg", a)
+
+        let prologue (c: CodegenContext) =
+            for tmp, arg in temps do
+                generateBindingValue c (DeclareAndAssign(typeToString arg.Type, tmp)) arg
+
+        let tempEmitters =
+            temps |> List.map (fun (tmp, _) -> fun (c: CodegenContext) -> append c tmp)
+
+        let writeCall (c: CodegenContext) =
+            match receiver with
+            | Some _ ->
+                append c $"%s{fst temps.Head}.%s{methodName}("
+                writeArgs c tempEmitters.Tail
+            | None ->
+                append c $"%s{clrType}.%s{methodName}("
+                writeArgs c tempEmitters
+
+            append c ")"
+
+        emitGuard ctx expr false meta.Exceptions prologue (fun c okOf ->
+            indent c
+
+            if outs.Form = OutTuple && not outs.KeepsReturn then
+                writeCall c
+                appendLine c ";"
+                indent c
+                appendLine c (okOf outValue)
+            else
+                let tmp = freshName "__ok"
+                append c $"var %s{tmp} = "
+                writeValue c writeCall
+                appendLine c ";"
+                indent c
+                appendLine c (okOf tmp))
+
+    outValue
 
 /// Fully qualifies a module-level binding.
 and private qualifiedName (ctx: CodegenContext) (name: string) =
@@ -3112,6 +3248,27 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
     | TForeignStaticSet (clrType, memberName, value) ->
         generateBindingValue ctx (Assign $"%s{clrType}.%s{memberName}") value
         dischargeVoid ctx target
+
+    // A void method with outs: the call is a statement, and the outs it wrote
+    // are the value.
+    | TDotMethodCall (_, _, _, Some meta)
+    | TForeignStaticCall (_, _, _, Some meta) when isVoidOutCall meta ->
+        let value = ref ""
+
+        emitStatement ctx (fun c ->
+            indent c
+
+            value.Value <-
+                match expr.Node with
+                | TDotMethodCall (receiver, methodName, args, _) ->
+                    generateOutCall c expr (Some receiver) "" methodName args meta meta.Outs.Value
+                | TForeignStaticCall (clrType, methodName, args, _) ->
+                    generateOutCall c expr None clrType methodName args meta meta.Outs.Value
+                | _ -> ""
+
+            appendLine c ";")
+
+        emitTerminal ctx target expr.Type (fun c -> append c value.Value)
 
     // `(bjo (f x y))` — spawn.
     //

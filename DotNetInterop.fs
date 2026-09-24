@@ -265,6 +265,31 @@ let resolveNamedType (r: Lexer.Range) (fullName: string) : Type =
     checkNameable r fullName t
     t
 
+/// The declaring type of `memberName`: the plain name if it has a method of
+/// that name, else a generic definition of that name that does. Only an import
+/// with out parameters can name an instance method of a generic type, and it
+/// writes the type's plain name. Both are asked because a name may be both:
+/// `System.Collections.Generic.KeyValuePair` is a static class, and
+/// ``KeyValuePair`2`` the struct.
+let resolveNamedTypeOrGeneric (r: Lexer.Range) (fullName: string) (memberName: string) : Type =
+    let hasMethod (t: Type) =
+        t.GetMethods(BindingFlags.Public ||| BindingFlags.Static ||| BindingFlags.Instance)
+        |> Array.exists (fun m -> m.Name = memberName)
+
+    let generic () =
+        [ 1..8 ]
+        |> List.tryPick (fun n ->
+            tryResolveType $"%s{fullName}`%d{n}" |> Option.filter hasMethod)
+
+    match tryResolveType fullName with
+    | Some t when hasMethod t -> resolveNamedType r fullName
+    | _ ->
+        match generic () with
+        | Some t ->
+            checkNameable r fullName t
+            t
+        | None -> resolveNamedType r fullName
+
 /// The same check for a name written in a type annotation, where the type may
 /// not resolve to anything .NET at all — a record this module declared, a name
 /// that is simply wrong — and where that is not this check's business.
@@ -824,6 +849,97 @@ let private instanceFlags = BindingFlags.Public ||| BindingFlags.Instance
 let private staticFlags = BindingFlags.Public ||| BindingFlags.Static
 
 // ---------------------------------------------------------------------------
+// C# signatures, for diagnostics
+// ---------------------------------------------------------------------------
+
+/// A type as C# source spells it, short: `int`, `Dictionary<TKey, TValue>`.
+let rec csharpTypeName (t: Type) : string =
+    if t.IsByRef || t.IsPointer then
+        csharpTypeName (t.GetElementType()) + (if t.IsPointer then "*" else "")
+    elif t.IsArray then
+        csharpTypeName (t.GetElementType()) + "[]"
+    elif t.IsGenericParameter then
+        t.Name
+    elif t.IsGenericType then
+        let baseName =
+            match t.Name.IndexOf '`' with
+            | -1 -> t.Name
+            | i -> t.Name.Substring(0, i)
+
+        let args = t.GetGenericArguments() |> Array.map csharpTypeName |> String.concat ", "
+        $"%s{baseName}<%s{args}>"
+    else
+        match t.FullName with
+        | "System.Void" -> "void"
+        | "System.Boolean" -> "bool"
+        | "System.Int32" -> "int"
+        | "System.Int64" -> "long"
+        | "System.Int16" -> "short"
+        | "System.UInt16" -> "ushort"
+        | "System.UInt32" -> "uint"
+        | "System.UInt64" -> "ulong"
+        | "System.Byte" -> "byte"
+        | "System.SByte" -> "sbyte"
+        | "System.Double" -> "double"
+        | "System.Single" -> "float"
+        | "System.Char" -> "char"
+        | "System.String" -> "string"
+        | "System.Object" -> "object"
+        | _ -> t.Name
+
+/// `out`, `ref`, `in` or nothing, as C# writes a parameter's passing mode.
+let private parameterMode (p: ParameterInfo) : string =
+    if not p.ParameterType.IsByRef then ""
+    elif p.IsOut then "out "
+    elif p.IsIn then "in "
+    else "ref "
+
+/// A method's C# signature, e.g. `bool Int32.TryParse(string s, out int result)`.
+let csharpSignature (m: MethodBase) : string =
+    let ps =
+        m.GetParameters()
+        |> Array.map (fun p -> $"%s{parameterMode p}%s{csharpTypeName p.ParameterType} %s{p.Name}")
+        |> String.concat ", "
+
+    let typeArgs =
+        if m.IsGenericMethodDefinition then
+            "<" + (m.GetGenericArguments() |> Array.map (fun a -> a.Name) |> String.concat ", ") + ">"
+        else
+            ""
+
+    let owner = csharpTypeName m.DeclaringType
+
+    match m with
+    | :? MethodInfo as mi -> $"%s{csharpTypeName mi.ReturnType} %s{owner}.%s{m.Name}%s{typeArgs}(%s{ps})"
+    | _ -> $"%s{owner}(%s{ps})"
+
+/// Why methods of this name are missing from the callable ones, if they are:
+/// a byref parameter excludes a method from resolution by argument types.
+let private byrefNote (methods: MethodBase seq) : string =
+    let excluded =
+        methods
+        |> Seq.filter (fun m -> m.GetParameters() |> Array.exists (fun p -> p.ParameterType.IsByRef || p.ParameterType.IsPointer))
+        |> List.ofSeq
+
+    if excluded.IsEmpty then
+        ""
+    else
+        let hasRef =
+            excluded
+            |> List.exists (fun m ->
+                m.GetParameters() |> Array.exists (fun p -> p.ParameterType.IsByRef && not p.IsOut || p.ParameterType.IsPointer))
+
+        let shown = excluded |> List.map (fun m -> "    " + csharpSignature m) |> String.concat "\n"
+
+        let advice =
+            if hasRef then
+                "An out parameter is imported by declaring it (out T) in the signature. ref, in and pointer parameters are not supported: a method with one needs a C# shim that takes and returns plain values (Socket.ReceiveMessageFrom is such a method)."
+            else
+                "An out parameter is imported by declaring it (out T) in the signature, in the position C# has it."
+
+        $"\n  These overloads have byref parameters and are not considered:\n%s{shown}\n  %s{advice}"
+
+// ---------------------------------------------------------------------------
 // Generic methods
 // ---------------------------------------------------------------------------
 //
@@ -933,7 +1049,13 @@ let resolveGenericMethod
     let candidates = genericMethods t name flags
 
     if candidates.IsEmpty then
-        failwithf $"Type Error at %s{where}: '%s{t.FullName}' has no generic method named '%s{name}'."
+        let note =
+            t.GetMethods flags
+            |> Seq.filter (fun m -> m.Name = name && m.IsGenericMethodDefinition)
+            |> Seq.cast<MethodBase>
+            |> byrefNote
+
+        failwithf $"Type Error at %s{where}: '%s{t.FullName}' has no generic method named '%s{name}'.%s{note}"
 
     /// How many of a method's parameters a call is obliged to pass.
     ///
@@ -1050,6 +1172,299 @@ let resolveGenericMethod
 
         failwithf
             $"Type Error at %s{where}: '%s{t.FullName}.%s{name}' is ambiguous — the declared signature fits more than one of its overloads:\n%s{shapes}"
+
+// ---------------------------------------------------------------------------
+// Out parameters
+// ---------------------------------------------------------------------------
+//
+// An import that declares `(out T)` is resolved here, once, against its whole
+// declared signature — the same discipline as a generic method, and for the
+// same reason: the declaration is the only thing that says which overload is
+// meant. `Math.DivRem(int, int)` and `Math.DivRem(int, int, out int)` share a
+// name and differ only in the out, so resolution by the call's arguments could
+// not tell them apart.
+
+/// What an out import resolves to.
+type ResolvedOutMethod =
+    { /// The method's own type parameters, solved. Empty for a non-generic one.
+      TypeArguments: HMType list
+      /// The parameters that are not outs, receiver excluded, as declared.
+      ParameterTypes: HMType list
+      /// Out types as declared.
+      Outs: ExternOuts }
+
+/// `[MaybeNullWhen(false)]` or `[NotNullWhen(true)]`: the out holds nothing
+/// usable when the method returns false.
+let private isGarbageOnFalse (p: ParameterInfo) : bool =
+    p.GetCustomAttributesData()
+    |> Seq.exists (fun a ->
+        let flag =
+            if a.ConstructorArguments.Count = 1 then
+                match a.ConstructorArguments[0].Value with
+                | :? bool as b -> Some b
+                | _ -> None
+            else
+                None
+
+        match a.AttributeType.FullName, flag with
+        | "System.Diagnostics.CodeAnalysis.MaybeNullWhenAttribute", Some false -> true
+        | "System.Diagnostics.CodeAnalysis.NotNullWhenAttribute", Some true -> true
+        | _ -> false)
+
+/// Resolves an import whose signature declares `(out T)` parameters.
+///
+/// `declaredParams` are the method's own parameters in C# order, receiver
+/// excluded, each flagged when it was declared `(out T)`. `declaredReceiver`
+/// is the receiver's declared type for an instance method.
+let resolveOutMethod
+    (where: string)
+    (isStatic: bool)
+    (t: Type)
+    (name: string)
+    (declaredReceiver: HMType option)
+    (declaredParams: (HMType * bool) list)
+    (declaredResult: HMType)
+    : ResolvedOutMethod =
+
+    let fail (m: MethodBase) (reason: string) : 'a =
+        failwithf $"Type Error at %s{where}: %s{reason}\n  C# signature: %s{csharpSignature m}"
+
+    if t.IsGenericTypeDefinition && isStatic then
+        failwithf
+            $"Type Error at %s{where}: '%s{name}' is a static method of the generic type '%s{csharpTypeName t}', which import/extern cannot name. Only an instance method of a generic type is reachable, through its receiver."
+
+    let flags = if isStatic then staticFlags else instanceFlags
+
+    let candidates =
+        t.GetMethods flags |> Array.filter (fun m -> m.Name = name) |> List.ofArray
+
+    if candidates.IsEmpty then
+        let kind = if isStatic then "static" else "instance"
+        failwithf $"Type Error at %s{where}: '%s{t.FullName}' has no public %s{kind} method named '%s{name}'."
+
+    let declaredCount = declaredParams.Length
+
+    /// Rules 2, 3 and 4: the declared outs line up with the method's out
+    /// parameters, one for one.
+    let shapeOf (m: MethodInfo) : Result<unit, string> =
+        let ps = m.GetParameters()
+
+        if ps.Length <> declaredCount then
+            Error
+                $"Every out parameter must be declared: the method takes %d{ps.Length} parameter(s), outs included, and the declaration has %d{declaredCount}."
+        else
+            List.zip (List.ofArray ps) declaredParams
+            |> List.indexed
+            |> List.tryPick (fun (i, (p, (_, declaredOut))) ->
+                let byref = p.ParameterType.IsByRef
+                let isOut = byref && p.IsOut
+
+                if p.ParameterType.IsPointer then
+                    Some $"Ref parameters are not supported: parameter %d{i + 1} '%s{p.Name}' is a pointer. A method with one needs a C# shim."
+                elif byref && not isOut && declaredOut then
+                    Some
+                        $"(out T) matches only an out parameter: parameter %d{i + 1} '%s{p.Name}' is %s{(parameterMode p).Trim()}, not out."
+                elif byref && not isOut then
+                    Some
+                        $"Ref parameters are not supported: parameter %d{i + 1} '%s{p.Name}' is %s{(parameterMode p).Trim()}. A method with a ref or in parameter needs a C# shim that takes and returns plain values (Socket.ReceiveMessageFrom is such a method)."
+                elif isOut && not declaredOut then
+                    Some
+                        $"Every out parameter must be declared: parameter %d{i + 1} '%s{p.Name}' is out, and the declaration has an ordinary parameter there. Write (out %s{showType (mapClrType (p.ParameterType.GetElementType()))}) in its place."
+                elif declaredOut && not isOut then
+                    Some
+                        $"(out T) matches only an out parameter: parameter %d{i + 1} '%s{p.Name}' is an ordinary one."
+                else
+                    None)
+            |> function
+                | Some reason -> Error reason
+                | None -> Ok()
+
+    let typeLevelParams =
+        if t.IsGenericTypeDefinition then
+            t.GetGenericArguments() |> Array.map (fun p -> "'" + p.Name) |> Set.ofArray
+        else
+            Set.empty
+
+    let solveAll typeParams solution pairs =
+        pairs
+        |> List.fold
+            (fun acc (fromMethod, declared) -> acc |> Option.bind (fun s -> solveTypeParams typeParams s fromMethod declared))
+            (Some solution)
+
+    let parameterMismatch = "The declared parameter types"
+
+    let showTogether (a: HMType) (b: HMType) =
+        match showTypesTogether [ a; b ] with
+        | [ x; y ] -> x, y
+        | _ -> showType a, showType b
+
+    /// Rules 5, 6 and 7, and the types: everything but the shape.
+    let attempt (m: MethodInfo) : Result<ResolvedOutMethod, string> =
+        let ps = m.GetParameters()
+
+        let typeParams =
+            if m.IsGenericMethodDefinition then
+                m.GetGenericArguments()
+                |> Array.map (fun p -> "'" + p.Name)
+                |> Set.ofArray
+                |> Set.union typeLevelParams
+            else
+                typeLevelParams
+
+        let paramPairs =
+            List.zip (List.ofArray ps) declaredParams
+            |> List.map (fun (p, (declared, _)) ->
+                let own =
+                    if p.ParameterType.IsByRef then p.ParameterType.GetElementType() else p.ParameterType
+
+                mapClrType own, declared)
+
+        let receiverPairs =
+            match declaredReceiver with
+            | Some recv -> [ mapClrType t, recv ]
+            | None -> []
+
+        match solveAll typeParams Map.empty (receiverPairs @ paramPairs) with
+        | None ->
+            let own =
+                (receiverPairs @ paramPairs) |> List.map fst
+
+            let declared = (receiverPairs @ paramPairs) |> List.map snd
+
+            let shownOwn, shownDeclared =
+                showTogether (TTuple own) (TTuple declared)
+
+            Error $"%s{parameterMismatch} %s{shownDeclared} do not match the method's %s{shownOwn}."
+        | Some solution ->
+            let outIndices =
+                ps
+                |> Array.indexed
+                |> Array.filter (fun (_, p) -> p.ParameterType.IsByRef)
+                |> Array.map fst
+                |> List.ofArray
+
+            let outOwn =
+                outIndices |> List.map (fun i -> mapClrType (ps[i].ParameterType.GetElementType()))
+
+            let outDeclared = outIndices |> List.map (fun i -> fst declaredParams[i])
+            let methodReturn = mapClrType m.ReturnType
+            let returnsVoid = m.ReturnType = typeof<Void>
+            let returnsBool = m.ReturnType = typeof<bool>
+
+            let bundle (items: HMType list) =
+                match items with
+                | [ one ] -> one
+                | many -> TTuple many
+
+            let tupleElements = (if returnsVoid then [] else [ methodReturn ]) @ outOwn
+
+            let declaresOption =
+                match declaredResult with
+                | TCon("Option", [ _ ]) -> true
+                | _ -> false
+
+            let form, expected =
+                if declaresOption && returnsBool then
+                    OutOption, TCon("Option", [ bundle outOwn ])
+                else
+                    OutTuple, bundle tupleElements
+
+            let garbage =
+                outIndices |> List.filter (fun i -> isGarbageOnFalse ps[i])
+
+            match solveAll typeParams solution [ expected, declaredResult ] with
+            | None when declaresOption && not returnsBool ->
+                Error
+                    $"The Option form needs a bool return: the declared result %s{showType declaredResult} is the Option form, and the method returns %s{csharpTypeName m.ReturnType}. Declare the tuple form, %s{showType (bundle tupleElements)}."
+            | None ->
+                let formName = if form = OutOption then "Option" else "tuple"
+                let shownExpected, shownDeclared = showTogether expected declaredResult
+
+                Error
+                    $"The declared result must be exactly what the form produces: the %s{formName} form of this method produces %s{shownExpected}, and the declaration says %s{shownDeclared}. The result is checked, never rewritten."
+            | Some _ when form = OutTuple && not garbage.IsEmpty ->
+                let names = garbage |> List.map (fun i -> $"'%s{ps[i].Name}'") |> String.concat ", "
+                let optionShape = showType (TCon("Option", [ bundle outDeclared ]))
+
+                Error
+                    $"An out that is garbage on false forces the Option form: %s{names} is marked [MaybeNullWhen(false)] or [NotNullWhen(true)], so it holds nothing usable when the method returns false. Declare the result as %s{optionShape}."
+            | Some solution ->
+                let methodTypeArgs =
+                    if m.IsGenericMethodDefinition then
+                        m.GetGenericArguments() |> Array.map (fun p -> Map.tryFind ("'" + p.Name) solution) |> List.ofArray
+                    else
+                        []
+
+                match methodTypeArgs |> List.tryFindIndex Option.isNone with
+                | Some i ->
+                    let unpinned = m.GetGenericArguments().[i].Name
+
+                    Error
+                        $"The declared signature never mentions the method's type parameter %s{unpinned}, so nothing says what to call it at."
+                | None ->
+                    let inTypes =
+                        declaredParams |> List.filter (fun (_, isOut) -> not isOut) |> List.map fst
+
+                    Ok
+                        { TypeArguments = methodTypeArgs |> List.map Option.get
+                          ParameterTypes = inTypes
+                          Outs =
+                            { Positions = outIndices
+                              Types = outDeclared
+                              Form = form
+                              KeepsReturn = form = OutTuple && not returnsVoid
+                              MethodReturn = substTypeVars solution methodReturn } }
+
+    let shaped =
+        candidates |> List.map (fun m -> m, shapeOf m)
+
+    let fitting =
+        shaped |> List.choose (fun (m, s) -> match s with Ok() -> Some m | Error _ -> None)
+
+    let listReasons (items: (MethodInfo * string) list) =
+        items
+        |> List.map (fun (m, reason) -> $"    %s{csharpSignature m}\n      %s{reason}")
+        |> String.concat "\n"
+
+    match fitting with
+    | [] ->
+        match shaped with
+        | [ (m, Error reason) ] -> fail m reason
+        | _ ->
+            let reasons =
+                shaped |> List.choose (fun (m, s) -> match s with Error r -> Some(m, r) | Ok() -> None)
+
+            failwithf
+                $"Type Error at %s{where}: no overload of '%s{csharpTypeName t}.%s{name}' has out parameters where the declaration puts them:\n%s{listReasons reasons}"
+    | _ ->
+        let attempts = fitting |> List.map (fun m -> m, attempt m)
+
+        match attempts |> List.choose (fun (m, a) -> match a with Ok r -> Some(m, r) | Error _ -> None) with
+        | [ (_, resolved) ] -> resolved
+        | [] ->
+            // An overload whose parameters fit is the one the declaration
+            // meant, and its own reason is the answer.
+            let paramsFit =
+                attempts
+                |> List.filter (fun (_, a) ->
+                    match a with
+                    | Error reason -> not (reason.StartsWith parameterMismatch)
+                    | Ok _ -> false)
+
+            match attempts, paramsFit with
+            | [ (m, Error reason) ], _
+            | _, [ (m, Error reason) ] -> fail m reason
+            | _ ->
+                let reasons =
+                    attempts |> List.choose (fun (m, a) -> match a with Error r -> Some(m, r) | Ok _ -> None)
+
+                failwithf
+                    $"Type Error at %s{where}: no overload of '%s{csharpTypeName t}.%s{name}' fits the declared signature:\n%s{listReasons reasons}"
+        | several ->
+            let shown = several |> List.map (fun (m, _) -> "    " + csharpSignature m) |> String.concat "\n"
+
+            failwithf
+                $"Type Error at %s{where}: '%s{csharpTypeName t}.%s{name}' is ambiguous — the declared signature fits more than one overload:\n%s{shown}"
 
 // ---------------------------------------------------------------------------
 // Overload resolution
@@ -1292,13 +1707,28 @@ let resolveMethod
     rejectSyncOverAsync where t name
     let candidates = callableMethods t name (memberFlags isStatic)
 
+    let note () =
+        t.GetMethods(memberFlags isStatic)
+        |> Seq.filter (fun m -> m.Name = name)
+        |> Seq.cast<MethodBase>
+        |> byrefNote
+
     if candidates.IsEmpty then
         let kind = if isStatic then "static" else "instance"
 
-        failwithf
-            $"Type Error at %s{where}: '%s{t.FullName}' has no public %s{kind} method named '%s{name}'."
+        match note () with
+        | "" -> failwithf $"Type Error at %s{where}: '%s{t.FullName}' has no public %s{kind} method named '%s{name}'."
+        | n ->
+            failwithf
+                $"Type Error at %s{where}: every public %s{kind} method named '%s{name}' on '%s{t.FullName}' has an out or ref parameter, so none can be called from its arguments alone.%s{n}"
 
-    let ps, m = selectOverload (describeMethod t name) where candidates argTypes
+    let ps, m =
+        try
+            selectOverload (describeMethod t name) where candidates argTypes
+        with ex ->
+            match note () with
+            | "" -> raise ex
+            | n -> failwith (ex.Message.TrimEnd() + n)
 
     { ParameterTypes = ps |> Array.map (fun p -> mapClrType p.ParameterType) |> Array.toList
       ReturnType = mapClrType m.ReturnType
@@ -1397,7 +1827,12 @@ let resolveConstructor (where: string) (targetType: Type) (argTypes: HMType list
         failwithf $"Type Error at %s{where}: '%s{targetType.FullName}' has no public constructor."
 
     let ps, _ =
-        selectOverload $"the constructor of '%s{targetType.FullName}'" where candidates argTypes
+        try
+            selectOverload $"the constructor of '%s{targetType.FullName}'" where candidates argTypes
+        with ex ->
+            match targetType.GetConstructors instanceFlags |> Seq.cast<MethodBase> |> byrefNote with
+            | "" -> raise ex
+            | n -> failwith (ex.Message.TrimEnd() + n + "\n  Constructors with out parameters are not supported.")
 
     { ParameterTypes = ps |> Array.map (fun p -> mapClrType p.ParameterType) |> Array.toList
       ReturnType = mapClrType targetType

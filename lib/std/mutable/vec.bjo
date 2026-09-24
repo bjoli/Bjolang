@@ -82,21 +82,10 @@
   (mutablevec->seq          (: Bjolang.Runtime.MutableVecModule.AsEnumerable (-> (MutableVec %a) (Seq %a))))
   (seq->mutablevec          (: Bjolang.Runtime.MutableVecModule.FromEnumerable (-> (Seq %a) (MutableVec %a))))
 
-  ;; The partial answers, as pairs. Each is wrapped in an `Option` below.
-  (clr-mutablevec-try-ref   (: Bjolang.Runtime.MutableVecModule.TryGet     (-> (MutableVec %a) int (Tuple bool %a))))
-  (clr-mutablevec-pop!      (: Bjolang.Runtime.MutableVecModule.TryPopBack (-> (MutableVec %a) (Tuple bool %a)))))
-
-(: mutablevec-try-ref (-> (MutableVec %a) int (Option %a)))
-(defun (mutablevec-try-ref xs index)
-  (def (found value) (clr-mutablevec-try-ref xs index))
-  (if found (Some value) None))
-
-;; The last element, removed. `None` leaves the vector as it was, so a
-;; stack-shaped loop can pop until it stops.
-(: mutablevec-pop! (-> (MutableVec %a) (Option %a)))
-(defun (mutablevec-pop! xs)
-  (def (found value) (clr-mutablevec-pop! xs))
-  (if found (Some value) None))
+  (mutablevec-try-ref       (: Bjolang.Runtime.MutableVecModule.TryGet     (-> (MutableVec %a) int (out %a) (Option %a))))
+  ;; The last element, removed. `None` leaves the vector as it was, so a
+  ;; stack-shaped loop can pop until it stops.
+  (mutablevec-pop!          (: Bjolang.Runtime.MutableVecModule.TryPopBack (-> (MutableVec %a) (out %a) (Option %a)))))
 
 ;; Sorted by the element's own `Ord`. `mutablevec-sort-by!` takes the comparison
 ;; directly, for an order that is not the type's.

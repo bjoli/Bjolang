@@ -1,0 +1,73 @@
+;; The collections' partial answers. The runtime answers each with
+;; `bool TryXyz(..., out ...)` and the library imports it with `(out T)`, so a
+;; miss is `None` and the out it left as default is never read — which matters
+;; most where the value type is a reference type, whose default is null.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std set))
+(import (std orderedmap))
+(import (std orderedset))
+(import (std mutable vec))
+(import (std mutable map))
+(import (std mutable heap))
+
+(defun (main args)
+  ;; Map, with string values.
+  (def m (list->map (list (Tuple 1 "one") (Tuple 2 "two"))))
+  (expect "map-try-ref hit" (map-try-ref m 1) (Some "one"))
+  (expect "map-try-ref miss" (map-try-ref m 3) None)
+  (expect "map-try-find hit" (map-try-find (fun (k v) (= v "two")) m) (Some (Tuple 2 "two")))
+  (expect "map-try-find miss" (map-try-find (fun (k v) (= k 9)) m) None)
+  (expect "map-find agrees" (map-find (fun (k v) (= k 1)) m) (map-try-find (fun (k v) (= k 1)) m))
+  (def tm (map->transientmap m))
+  (expect "transientmap-try-ref hit" (transientmap-try-ref tm 2) (Some "two"))
+  (expect "transientmap-try-ref miss" (transientmap-try-ref tm 0) None)
+  ;; Through the trait.
+  (expect "try-ref on a map" (try-ref m 2) (Some "two"))
+
+  ;; Ordered map.
+  (def om (list->orderedmap (list (Tuple 5 "five") (Tuple 1 "one") (Tuple 3 "three"))))
+  (expect "orderedmap-min" (orderedmap-min om) (Some (Tuple 1 "one")))
+  (expect "orderedmap-max" (orderedmap-max om) (Some (Tuple 5 "five")))
+  (expect "orderedmap-min of empty" (orderedmap-min (orderedmap-remove (orderedmap-remove (orderedmap-remove om 1) 3) 5)) None)
+  (expect "orderedmap-successor" (orderedmap-successor om 1) (Some (Tuple 3 "three")))
+  (expect "orderedmap-successor past the end" (orderedmap-successor om 5) None)
+  (expect "orderedmap-predecessor" (orderedmap-predecessor om 3) (Some (Tuple 1 "one")))
+  (expect "orderedmap-find" (orderedmap-find (fun (k v) (> k 2)) om) (Some (Tuple 3 "three")))
+  (expect "orderedmap-find miss" (orderedmap-find (fun (k v) (> k 9)) om) None)
+  (expect "orderedmap-try-ref miss" (orderedmap-try-ref om 2) None)
+
+  ;; Ordered set and set, with strings.
+  (def os (list->orderedset (list "b" "a" "c")))
+  (expect "orderedset-min" (orderedset-min os) (Some "a"))
+  (expect "orderedset-max" (orderedset-max os) (Some "c"))
+  (expect "orderedset-successor" (orderedset-successor os "c") None)
+  (expect "orderedset-predecessor" (orderedset-predecessor os "b") (Some "a"))
+  (expect "orderedset-find miss" (orderedset-find (fun (s) (= s "z")) os) None)
+  (def tos (orderedset->transientorderedset os))
+  (expect "transientorderedset-max" (transientorderedset-max tos) (Some "c"))
+  (expect "set-find hit" (set-find (fun (s) (= s "x")) (list->set (list "x" "y"))) (Some "x"))
+  (expect "set-find miss" (set-find (fun (s) (= s "q")) (list->set (list "x" "y"))) None)
+
+  ;; Mutable collections.
+  (def v (list->mutablevec (list "p" "q")))
+  (expect "mutablevec-try-ref out of range" (mutablevec-try-ref v 5) None)
+  (expect "mutablevec-pop!" (mutablevec-pop! v) (Some "q"))
+  (expect "mutablevec-pop! again" (mutablevec-pop! v) (Some "p"))
+  (expect "mutablevec-pop! empty" (mutablevec-pop! v) None)
+
+  (def mm (mutablemap))
+  (mutablemap-set! mm "k" "v")
+  (expect "mutablemap-try-ref miss" (mutablemap-try-ref mm "nope") None)
+  (expect "mutablemap-try-ref hit" (mutablemap-try-ref mm "k") (Some "v"))
+
+  ;; A priority queue drains in priority order, then answers None.
+  (def h (list->mutableheap (list (Tuple "c" 3) (Tuple "a" 1) (Tuple "b" 2))))
+  (expect "mutableheap-peek" (mutableheap-peek h) (Some (Tuple "a" 1)))
+  (expect "pop 1" (mutableheap-pop! h) (Some (Tuple "a" 1)))
+  (expect "pop 2" (mutableheap-pop! h) (Some (Tuple "b" 2)))
+  (expect "pop 3" (mutableheap-pop! h) (Some (Tuple "c" 3)))
+  (expect "pop empty" (mutableheap-pop! h) None)
+  (expect "peek empty" (mutableheap-peek h) None)
+  0)

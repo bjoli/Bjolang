@@ -582,6 +582,32 @@ type ClrExternKind =
     /// alias's last argument.
     | ExternSet
 
+/// How the out parameters of an `import/extern` come back. The declared result
+/// says which, and the import checks it against the method.
+type ExternOutForm =
+    /// `bool TryXyz(..., out T)`: `Some` of the outs when the call returned
+    /// true, `None` otherwise. The outs are read only on true.
+    | OutOption
+    /// The method's return value, unless void, followed by the outs in C#
+    /// parameter order. A single element stands alone; several make a tuple.
+    | OutTuple
+
+/// The `(out T)` parameters of an `import/extern`.
+type ExternOuts =
+    { /// Indices among the method's own parameters, receiver excluded. The
+      /// other parameters are the call's arguments, in order.
+      Positions: int list
+      /// One per position. In `ClrExternInfo` these are written in the
+      /// declared signature's variables; in `DotNetMethodMetadata` they are
+      /// instantiated at the call.
+      Types: HMType list
+      Form: ExternOutForm
+      /// The C# return value is an element of the result. Only the tuple form
+      /// with a non-void method has it.
+      KeepsReturn: bool
+      /// The method's own return type, in the same variables as `Types`.
+      MethodReturn: HMType }
+
 /// A .NET member bound as a first-class Bjolang function by `import/extern`.
 type ClrExternInfo =
     { Alias: string
@@ -638,7 +664,13 @@ type ClrExternInfo =
       /// per call site from its argument types instead. A call then instantiates
       /// the signature and these together, so the metavariables the arguments
       /// unify with are the very ones that end up between the brackets.
-      GenericTypeArgs: HMType list option }
+      ///
+      /// An import with `(out T)` parameters is resolved the same way, generic
+      /// or not, so it always has this — empty for a non-generic method.
+      GenericTypeArgs: HMType list option
+      /// The `(out T)` parameters. `DeclaredType` is then the binding's type:
+      /// the declared arrow without them, answering the declared result.
+      Outs: ExternOuts option }
 
 /// The overload the type checker selected, carried to the code generator.
 ///
@@ -682,7 +714,11 @@ type DotNetMethodMetadata =
       /// and generated code that resolves it a second time has to arrive at the
       /// same answer. It also covers the calls C# could not infer at all — a
       /// nullary `Empty<T>()`, whose argument comes from the context.
-      TypeArguments: HMType list }
+      TypeArguments: HMType list
+      /// The out parameters the emitter declares and passes between the
+      /// arguments. With these, `ReturnType` is still the method's own, and
+      /// the call's value is what `Form` builds from it and the outs.
+      Outs: ExternOuts option }
 
 type DotNetConstructorMetadata =
     { ClrType: string

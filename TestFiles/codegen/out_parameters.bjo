@@ -1,0 +1,50 @@
+;; What a call with `(out T)` parameters compiles to.
+;;
+;; The Option form is a conditional over the call, reading the out only on the
+;; true branch, and allocating nothing: `Option<T>` is a struct.
+;;
+;;   (System.Int32.TryParse(s, out int __out__7) ? BjolangRuntime.Some<int>(__out__7) : BjolangRuntime.None<int>())
+;;
+;; The tuple form of a method that returns a value puts the call first, so the
+;; out is assigned before the tuple reads it:
+;;
+;;   (System.Math.DivRem(a, b, out int __out__8), __out__8)
+;;
+;; A void method cannot be an operand, so its call is a statement and the value
+;; is read after it.
+;;
+;;   kv.Deconstruct(out string __out__9, out int __out__10);
+;;
+;; EXPECT-CS: \(System\.Int32\.TryParse\(s, out int (__out__\d+)\) \? BjolangRuntime\.Some<int>\(\1\) : BjolangRuntime\.None<int>\(\)\)
+;; EXPECT-CS: \(System\.Math\.DivRem\(a, b, out int (__out__\d+)\), \1\)
+;; EXPECT-CS: ^\s*kv\.Deconstruct\(out string (__out__\d+), out int (__out__\d+)\);
+;; EXPECT-CS: d\.TryGetValue\(k, out T_v __out__\d+\)
+(export parse div-rem-pair parts lookup)
+
+(import (std prelude))
+
+(import/class
+  ((Dict %k %v) (: System.Collections.Generic.Dictionary))
+  ((KeyValuePair %k %v) (: System.Collections.Generic.KeyValuePair)))
+
+(import/extern
+  (parse-int (: System.Int32.TryParse (-> string (out int) (Option int))))
+  (div-rem (: System.Math.DivRem (-> int int (out int) (Tuple int int))))
+  (dict-try-get (: System.Collections.Generic.Dictionary.TryGetValue
+                   (-> (Dict %k %v) %k (out %v) (Option %v))))
+  (kv-parts (: System.Collections.Generic.KeyValuePair.Deconstruct
+               (-> (KeyValuePair %k %v) (out %k) (out %v) (Tuple %k %v)))))
+
+(: parse (-> string (Option int)))
+(defun (parse s) (parse-int s))
+
+(: div-rem-pair (-> int int (Tuple int int)))
+(defun (div-rem-pair a b) (div-rem a b))
+
+(: parts (-> (KeyValuePair string int) string))
+(defun (parts kv)
+  (def (k v) (kv-parts kv))
+  (string-append k (->str v)))
+
+(: lookup (-> (Dict %k %v) %k (Option %v)))
+(defun (lookup d k) (dict-try-get d k))
