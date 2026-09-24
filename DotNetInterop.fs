@@ -1614,6 +1614,16 @@ type ResolvedCall =
 /// arguments is a whole inference problem of its own, and a non-goal here.
 /// Leaving it in the candidate list would let it win an overload contest and
 /// then fail in generated C#.
+/// A method re-declared with `new` in a derived class — `SqliteConnection`'s
+/// `CreateCommand` hides `DbConnection`'s — is reflected twice, with the same
+/// parameters. C# calls the most derived, so only that one is a candidate.
+let private withoutHidden (methods: MethodInfo list) : MethodInfo list =
+    let rec depth (d: Type) = if isNull d then 0 else 1 + depth d.BaseType
+
+    methods
+    |> List.groupBy (fun m -> m.GetParameters() |> Array.map (fun p -> p.ParameterType) |> Array.toList)
+    |> List.map (fun (_, same) -> same |> List.maxBy (fun m -> depth m.DeclaringType))
+
 let private callableMethods (t: Type) (name: string) (flags: BindingFlags) =
     t.GetMethods flags
     |> Array.filter (fun m ->
@@ -1621,6 +1631,7 @@ let private callableMethods (t: Type) (name: string) (flags: BindingFlags) =
         && not m.IsGenericMethodDefinition
         && not (m.GetParameters() |> Array.exists (fun p -> p.ParameterType.IsByRef || p.ParameterType.IsPointer)))
     |> Array.toList
+    |> withoutHidden
     |> List.map (fun m -> m.GetParameters(), m)
 
 let private describeMethod (t: Type) (name: string) = $"'%s{t.FullName}.%s{name}'"
@@ -1645,13 +1656,29 @@ let hasStaticMethod (t: Type) (name: string) : bool =
 let hasInstanceMethod (t: Type) (name: string) : bool =
     t.GetMethods instanceFlags |> Array.exists (fun m -> m.Name = name)
 
+/// The public property of this name, or null. `Type.GetProperty` throws when a
+/// derived class re-declares one with `new` — `SqliteCommand.Parameters` hides
+/// `DbCommand.Parameters` with a narrower type — and C# means the most derived
+/// one, so that is the one answered. Indexers are not properties here.
+let findProperty (t: Type) (name: string) (flags: BindingFlags) : PropertyInfo =
+    let candidates =
+        t.GetProperties flags
+        |> Array.filter (fun p -> p.Name = name && p.GetIndexParameters().Length = 0)
+
+    let rec depth (d: Type) = if isNull d then 0 else 1 + depth d.BaseType
+
+    match candidates with
+    | [||] -> null
+    | [| only |] -> only
+    | several -> several |> Array.maxBy (fun p -> depth p.DeclaringType)
+
 /// Does the type have a public property or field of this name?
 ///
 /// The two are one question because they are read and written identically in
 /// C#, so `#:get` and `#:set` do not make the caller say which they meant.
 let hasMember (isStatic: bool) (t: Type) (name: string) : bool =
     let flags = memberFlags isStatic
-    not (isNull (t.GetProperty(name, flags))) || not (isNull (t.GetField(name, flags)))
+    not (isNull (findProperty t name flags)) || not (isNull (t.GetField(name, flags)))
 
 /// Is this type a task of some kind?
 let private isTaskType (t: Type) =
@@ -1856,7 +1883,7 @@ let resolveMemberRead (where: string) (declaringType: Type) (name: string) (isSt
     let flags = memberFlags isStatic
     let kind = if isStatic then "static" else "instance"
 
-    match declaringType.GetProperty(name, flags) with
+    match findProperty declaringType name flags with
     | null ->
         match declaringType.GetField(name, flags) with
         | null ->
@@ -1878,7 +1905,7 @@ let resolveMemberRead (where: string) (declaringType: Type) (name: string) (isSt
 let resolveMemberWrite (where: string) (declaringType: Type) (name: string) (isStatic: bool) : HMType =
     let flags = memberFlags isStatic
 
-    match declaringType.GetProperty(name, flags) with
+    match findProperty declaringType name flags with
     | null ->
         match declaringType.GetField(name, flags) with
         | null ->

@@ -17,6 +17,7 @@ bjo run             # fetches what is missing, builds, runs
 myapp/
   manifest.bjodat   what the package is called and what it needs — committed
   bjo.lock          the commit each git dependency resolved to — committed
+  packages.lock.json  what each NuGet package resolved to — committed
   src/              the package's modules: src/lexer.bjo is (myapp lexer)
     main.bjo        the entry, for a program
   tests/
@@ -25,6 +26,7 @@ myapp/
     roots           the package list handed to the compiler with --roots
     git/            one bare clone per repository URL
     pkg/            one directory per fetched version: bjorsec@1.2.3/
+    nuget/root/     the generated project NuGet packages are restored with
     tmp/
 #+END_SRC
 
@@ -74,6 +76,8 @@ are in ~bjo/manifest.bjo~, which is the only reader of it.
   author needs in order to test it, and building it here runs no tests.
 - ~frameworks~ names the .NET *shared frameworks* this package's modules may
   name types from — see below. Optional, allowed in any package.
+- ~packages~ names the *NuGet packages* the project uses — see below. Optional,
+  and for now only allowed in the project being built.
 - ~targets~ and ~(registry ...)~ sources are not implemented. A registry source
   is an error that says so.
 
@@ -129,6 +133,88 @@ does.
 file and only when its contents change: one line per declaration, the package's
 directory and the framework's name. A single-file build with no project says it
 on the command line instead, with a repeatable ~--framework~.
+
+** NuGet packages
+
+#+BEGIN_SRC scheme
+(package
+  (name (shop))
+  (version "0.1.0")
+  (packages (nuget (id "Npgsql") (version "9.0.3"))))
+#+END_SRC
+
+A package's types are then used like any other .NET type, through
+~import/class~ and ~import/extern~:
+
+#+BEGIN_SRC scheme
+(import/class
+  (Builder (: Npgsql.NpgsqlConnectionStringBuilder (-> string Builder))))
+(import/extern
+  (csb-database (: Npgsql.NpgsqlConnectionStringBuilder.Database (-> Builder string) #:get)))
+
+(println (csb-database (Builder. "Host=localhost;Database=shop")))   ;; shop
+#+END_SRC
+
+*A version means what NuGet says it means.* It is passed to NuGet exactly as
+written, and ~bjo~ never reads it: ~"9.0.3"~ is 9.0.3 or newer (NuGet takes the
+lowest version it can find), ~"[9.0.3]"~ is exactly 9.0.3, and ranges and
+floating versions work as described in [[https://learn.microsoft.com/en-us/nuget/concepts/package-versioning#version-ranges][NuGet's
+documentation on version ranges]]. A package listed twice is an error; ids are
+compared the way NuGet compares them, ignoring case.
+
+*The packages are resolved by the .NET SDK*, so building a project that names
+any needs the SDK's ~dotnet~ command. ~bjo~ writes a small project to
+~.bjo/nuget/root/~ and runs NuGet's restore and MSBuild's reference resolution
+on it: which of a package's files a program compiles against and which it runs
+with depends on the target framework and on the shared frameworks the program
+uses — ASP.NET already contains some packages, and its copy wins — and the SDK
+already knows how to decide that. Your ~NuGet.config~ and ~global.json~ are
+found as usual, by looking upward from the project. A ~Directory.Build.props~,
+~Directory.Build.targets~ or ~Directory.Packages.props~ in a directory above
+the project is not used.
+
+*A dependency may declare packages too*, and they are part of every build that
+uses it: a library wrapping Microsoft.Data.Sqlite declares it, and a program
+using the library declares nothing. Each such dependency gets a generated
+project of its own in ~.bjo/nuget/packages/~, which the root project
+references, so NuGet resolves versions across all of them by its own rules. A
+package the project being built declares itself is a direct dependency, and its
+version wins.
+
+*Native libraries are loaded from the package.* A package with native files —
+~runtimes/linux-x64/native/libe_sqlite3.so~ — has one per runtime identifier,
+and the one for the machine building the program is picked: the RID .NET
+reports, then the portable ~linux-x64~, ~linux~, ~unix~ and ~any~ (with the
+~-musl~ variants first on musl, and ~win-~ and ~osx-~ likewise). The built
+program's entry point installs a resolver that answers a ~DllImport~ of
+~e_sqlite3~ with that file, where it lies in the NuGet cache. A package's
+managed assembly for that RID, when it has one, replaces its portable one.
+
+*~packages.lock.json~ records what each package resolved to*, including the
+packages they depend on. It is written at the project root, beside the
+manifest, and it should be committed. ~bjo build --locked~ refuses to change
+it: if the manifest no longer matches the lock file, the build fails with
+NuGet's ~NU1004~ instead of updating it, which is what a CI build wants.
+
+*The restore is skipped when nothing has changed.* ~bjo~ remembers the
+packages, the frameworks, the target framework and the lock file it last
+restored with, so a build with nothing to do starts no ~dotnet~ process. It
+restores again when one of those changes, or when a package file it resolved
+to is gone, for example because the NuGet cache was cleared. A project that
+names no packages never runs ~dotnet~ for this at all.
+
+~.bjo/~ is generated and should not be committed. ~bjo init~'s ~.gitignore~
+already leaves it out.
+
+Current limitations:
+- *The built program only runs on the machine that built it.* It loads the
+  package assemblies and native libraries from the NuGet cache, where the
+  restore left them, and nothing copies them next to the program until there
+  is a ~bjo publish~. That is also why the native files are picked for the
+  building machine's RID.
+- *The compiler loads the package assemblies into its own process* to read
+  their types. A package assembly with the same name as one the compiler
+  already uses, in another version, may not load.
 
 ** Sources: where a dependency comes from
 
@@ -255,7 +341,8 @@ Updated /home/you/myapp/bjo.lock:
 
   With minimal version selection this only happens when a manifest changed.
 - ~--locked~ makes any difference an error instead, for a build that has to be
-  the build the lock describes. It is accepted by ~fetch~, ~build~ and ~run~.
+  the build the lock describes. It is accepted by ~fetch~, ~build~ and ~run~,
+  and applies to ~packages.lock.json~ as well — see NuGet packages above.
 
 ** Fetching
 
@@ -305,7 +392,7 @@ modules findable and then compile the entry.
 | Command                 | What it does                                                  |
 |-------------------------+---------------------------------------------------------------|
 | ~bjo init [name] [--lib]~ | Makes a project here. The name defaults to the directory's  |
-| ~bjo fetch [--locked]~  | Resolves, fetches, writes ~.bjo/roots~. Compiles nothing      |
+| ~bjo fetch [--locked]~  | Resolves, fetches, restores NuGet packages, writes ~.bjo/roots~. Compiles nothing |
 | ~bjo build [--locked]~  | ~fetch~, then compile the entry — or every module of a library |
 | ~bjo run [. args...]~   | ~build~, then run the entry                                   |
 | ~bjo check~             | Every module of the project, errors only                      |

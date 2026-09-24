@@ -581,7 +581,7 @@ let private evaluate (state: State) (text: string) : State =
             Build.generateSource env typedAst dllDeps declaredMacros declaredPatternMacros declaredHashMacros sourcePath true
 
         let references =
-            (Paths.runtimeAssemblies @ dllDeps)
+            (Paths.runtimeAssemblies @ dllDeps @ NuGetRefs.compileReferences ())
             |> List.filter File.Exists
             |> List.map Path.GetFullPath
             |> List.distinct
@@ -711,6 +711,11 @@ let run () : int =
     for assemblyPath in Paths.runtimeAssemblies do
         if File.Exists assemblyPath then
             DotNetInterop.registerAssemblyFile assemblyPath
+
+    for assemblyPath in NuGetRefs.runtimeAssemblies () do
+        DotNetInterop.registerAssemblyFile assemblyPath
+
+    NuGetRefs.installNativeResolver ()
 
     // `BJOLANG_REPL_DIR` keeps the entries where they can be read. What an
     // entry becomes is the whole of what this module decides, so being able to

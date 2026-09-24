@@ -25,6 +25,7 @@ is also test 12.
 """
 
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -57,9 +58,11 @@ GIT = ["git", "-c", "user.name=bjo tests", "-c", "user.email=bjo@example.invalid
 # Running things
 # ---------------------------------------------------------------------------
 
-def run_bjo(where, *args, timeout=600):
-    """`bjo` in a directory, with its output captured."""
-    return subprocess.run([str(BJO), *args], cwd=str(where),
+def run_bjo(where, *args, timeout=600, env=None):
+    """`bjo` in a directory, with its output captured. `env` is added to this
+    process's environment."""
+    full_env = None if env is None else {**os.environ, **env}
+    return subprocess.run([str(BJO), *args], cwd=str(where), env=full_env,
                           capture_output=True, text=True, timeout=timeout)
 
 
@@ -969,6 +972,344 @@ def test_frameworks(work, c):
            (quiet / "src" / "main.bjobuild").read_text())
     c.that("and its runtimeconfig is the single-framework one it always was",
            '"framework": {' in runtimeconfig_of(quiet), runtimeconfig_of(quiet))
+
+
+# ---------------------------------------------------------------------------
+# NuGet packages
+# ---------------------------------------------------------------------------
+#
+# Offline: the packages are made here with `dotnet pack` into a folder feed,
+# and every project gets a NuGet.config that clears the sources and names only
+# that folder. They are restored into a package cache of their own
+# (`NUGET_PACKAGES`), so a test package never reaches the user's cache and a
+# rebuilt one is never shadowed by an old copy there.
+#
+# `BJO_TEST_ONLINE=1` adds two tests that fetch Npgsql from nuget.org.
+
+GREETER = "Bjo.TestGreeter"
+NATIVE = "Bjo.TestNative"
+
+GREETER_CS = '''namespace BjoTest {
+    public static class Greeter {
+        public static string Hello(string who) => "hello, " + who + " from VERSION";
+    }
+}
+'''
+
+GREETER_MAIN = '''(import (std prelude))
+
+(import/extern
+  (hello (: BjoTest.Greeter.Hello (-> string string))))
+
+(defun (main) (println (hello "bjo")) 0)
+'''
+
+
+def pack(src, feed, package_id, version, code, items=""):
+    """A package `package_id` `version` in the folder feed."""
+    project = src / f"{package_id}-{version}"
+    write(project / f"{package_id}.csproj",
+          '<Project Sdk="Microsoft.NET.Sdk">\n'
+          '  <PropertyGroup>\n'
+          '    <TargetFramework>net8.0</TargetFramework>\n'
+          f'    <PackageId>{package_id}</PackageId>\n'
+          f'    <Version>{version}</Version>\n'
+          '    <Authors>bjo tests</Authors>\n'
+          '  </PropertyGroup>\n'
+          f'  <ItemGroup>{items}</ItemGroup>\n'
+          '</Project>\n')
+    write(project / "Code.cs", code)
+    result = subprocess.run(
+        ["dotnet", "pack", str(project), "-o", str(feed), "-nologo",
+         "-p:ImportDirectoryBuildProps=false", "-p:ImportDirectoryBuildTargets=false",
+         "-p:ImportDirectoryPackagesProps=false"],
+        capture_output=True, text=True, timeout=600)
+    if result.returncode != 0:
+        raise RuntimeError(f"dotnet pack {package_id} {version}: {said(result)[-800:]}")
+
+
+NATIVE_CS = '''namespace BjoTest {
+    public static class Native {
+        [System.Runtime.InteropServices.DllImport("bjonative")]
+        private static extern int bjo_answer();
+        public static int Answer() => bjo_answer();
+    }
+}
+'''
+
+
+def native_rid():
+    """The portable RID NuGet packages are published for, on this machine."""
+    arch = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}.get(
+        platform.machine().lower(), platform.machine().lower())
+    system = {"Linux": "linux", "Darwin": "osx", "Windows": "win"}.get(platform.system(), "linux")
+    return f"{system}-{arch}"
+
+
+def make_feed(work):
+    """The folder feed, and the environment every NuGet test runs bjo with.
+
+    `Bjo.TestNative` calls into a native library it carries for this machine's
+    RID, beside a decoy for another RID. With a C compiler the library is real
+    and answers 42; without one it is a placeholder, and only the build is
+    tested.
+    """
+    feed = work / "feed"
+    src = work / "feed-src"
+    feed.mkdir(parents=True, exist_ok=True)
+    for version in ("1.0.0", "1.1.0"):
+        pack(src, feed, GREETER, version, GREETER_CS.replace("VERSION", version))
+    rid = native_rid()
+    suffix = {"linux": ".so", "osx": ".dylib", "win": ".dll"}[rid.split("-")[0]]
+    prefix = "" if suffix == ".dll" else "lib"
+    native_file = src / f"{prefix}bjonative{suffix}"
+    c_source = write(src / "bjonative.c", "int bjo_answer(void) { return 42; }\n")
+    compiler = shutil.which("cc")
+    real = compiler is not None and subprocess.run(
+        [compiler, "-shared", "-fPIC", "-o", str(native_file), str(c_source)],
+        capture_output=True).returncode == 0
+    if not real:
+        write(native_file, "not really a library\n")
+    decoy = write(src / "decoy" / "libbjonative.so", "the wrong platform\n")
+    decoy_rid = "linux-arm" if rid != "linux-arm" else "linux-x64"
+    pack(src, feed, NATIVE, "1.0.0", NATIVE_CS,
+         items=f'<None Include="{native_file}" Pack="true" PackagePath="runtimes/{rid}/native/" />'
+               f'<None Include="{decoy}" Pack="true" PackagePath="runtimes/{decoy_rid}/native/" />')
+    return feed, {"NUGET_PACKAGES": str(work / "nuget-cache")}, real
+
+
+def nuget_config(directory, feed):
+    write(Path(directory) / "NuGet.config",
+          '<?xml version="1.0" encoding="utf-8"?>\n<configuration>\n  <packageSources>\n'
+          f'    <clear />\n    <add key="local" value="{feed}" />\n'
+          '  </packageSources>\n</configuration>\n')
+
+
+def nuget_app(directory, feed, packages, name="ngapp", main=GREETER_MAIN, extra=""):
+    """A project whose manifest names `packages`, as (id, version) pairs."""
+    clauses = " ".join(f'(nuget (id "{i}") (version "{v}"))' for i, v in packages)
+    manifest = f'(package\n  (name ({name}))\n  (version "0.1.0")\n{extra}'
+    if packages:
+        manifest += f"  (packages {clauses})\n"
+    write(Path(directory) / "manifest.bjodat", manifest + "  )\n")
+    write(Path(directory) / "src" / "main.bjo", main)
+    nuget_config(directory, feed)
+    return Path(directory)
+
+
+def restore_mark(app):
+    """When the last restore ran, or None if none ever did.
+
+    A shim `dotnet` on PATH cannot show this: .NET's `Process.Start` looks in
+    the running host's own directory before PATH, so bjo's children never reach
+    it. Every restore truncates the file MSBuild's stderr goes to, so its
+    modification time changes exactly when a restore runs.
+    """
+    marker = Path(app) / ".bjo" / "nuget" / "root" / "msbuild-stderr.txt"
+    return marker.stat().st_mtime_ns if marker.exists() else None
+
+
+@test("nuget packages")
+def test_nuget(work, c):
+    if not shutil.which("dotnet"):
+        c.that("SKIPPED: no dotnet on PATH", True)
+        return
+
+    feed, env, real_native = make_feed(work)
+
+    # 1. No packages: nothing is restored, and nothing needs a dotnet. The
+    # launcher is started by absolute path, with a PATH that has no dotnet on
+    # it; `fetch` prepares the project without compiling it.
+    plain = nuget_app(work / "plain", feed, [],
+                      main='(import (std prelude))\n(defun (main) (println "plain") 0)\n')
+    empty = work / "empty-path"
+    empty.mkdir(exist_ok=True)
+    dotnet = shutil.which("dotnet")
+    no_path = {**os.environ, **env, "PATH": str(empty), "BJO_ROOT": str(ROOT)}
+    fetched = subprocess.run([dotnet, str(ROOT / "bjo" / "bjo.exe"), "fetch"], cwd=str(plain),
+                             capture_output=True, text=True, timeout=600, env=no_path)
+    c.worked("a project with no packages is prepared with no dotnet on PATH", fetched)
+    c.says("a project with no packages builds and runs", run_bjo(plain, "run", env=env), "plain")
+    c.that("and has no .bjo/nuget", not (plain / ".bjo" / "nuget").exists())
+
+    # 2. A package's type, used from Bjolang.
+    app = nuget_app(work / "app", feed, [(GREETER, "1.0.0")])
+    built = run_bjo(app, "build", env=env)
+    c.worked("a project with a package builds", built)
+    exe = app / "src" / "main.exe"
+    if exe.exists():
+        ran = subprocess.run(["dotnet", str(exe)], cwd=str(work), capture_output=True,
+                             text=True, timeout=600)
+        c.says("and runs from another directory", ran, "hello, bjo from 1.0.0")
+    runtime = app / ".bjo" / "nuget" / "root" / "runtime.txt"
+    c.that("runtime.txt names the package's assembly",
+           runtime.exists() and "Bjo.TestGreeter.dll" in runtime.read_text())
+
+    # 3. The lock file, and a warm build that starts no restore.
+    lock = app / "packages.lock.json"
+    c.that("packages.lock.json is written at the project root", lock.exists())
+    c.that("and names the package", lock.exists() and GREETER in lock.read_text())
+    restored = restore_mark(app)
+    again = run_bjo(app, "build", env=env)
+    c.says("an unchanged second build is up to date", again, "Up to date")
+    c.that("and starts no restore", restore_mark(app) == restored)
+
+    # A cleared package cache is a restore to redo, not a build that fails.
+    shutil.rmtree(work / "nuget-cache")
+    c.says("a cleared package cache is restored again",
+           run_bjo(app, "run", env=env), "hello, bjo from 1.0.0")
+    c.that("with a restore", restore_mark(app) != restored)
+
+    # 4. --locked, after the manifest asks for another version.
+    nuget_app(app, feed, [(GREETER, "1.1.0")])
+    locked = run_bjo(app, "build", "--locked", env=env)
+    c.failed("--locked refuses a lock file the manifest no longer matches", locked)
+    c.says("with NuGet's code", locked, "NU1004")
+    c.says("and the hint", locked, "without --locked")
+    updated = run_bjo(app, "run", env=env)
+    c.says("without --locked the lock is updated and the new version runs",
+           updated, "hello, bjo from 1.1.0")
+    c.that("and the lock says 1.1.0", '"resolved": "1.1.0"' in lock.read_text())
+    c.worked("--locked accepts a lock that matches", run_bjo(app, "build", "--locked", env=env))
+
+    # Removing the packages makes the program stale, although no file it read
+    # is newer.
+    nuget_app(app, feed, [], main='(import (std prelude))\n(defun (main) (println "none") 0)\n')
+    c.says("taking the packages out rebuilds the program", run_bjo(app, "run", env=env), "none")
+    nuget_app(app, feed, [(GREETER, "1.1.0")], main=GREETER_MAIN)
+    c.says("and putting them back rebuilds it again",
+           run_bjo(app, "run", env=env), "hello, bjo from 1.1.0")
+
+    # 5. A package that does not exist.
+    unknown = nuget_app(work / "unknown", feed, [("Bjo.DoesNotExist", "1.0.0")])
+    missing = run_bjo(unknown, "build", env=env)
+    c.failed("an unknown package is refused", missing)
+    c.says("with NuGet's code", missing, "NU1101")
+    c.says("and the hint", missing, "Check the package name and version")
+
+    # 6. Native assets: the library for this machine's RID is loaded, from the
+    # package cache, by a program started from another directory.
+    native_main = '''(import (std prelude))
+
+(import/extern
+  (answer (: BjoTest.Native.Answer (-> int))))
+
+(defun (main) (println #"answer ${(answer)}") 0)
+'''
+    native = nuget_app(work / "native", feed, [(NATIVE, "1.0.0")], main=native_main)
+    native_built = run_bjo(native, "build", env=env)
+    c.worked("a package with native assets builds", native_built)
+    listed = native / ".bjo" / "nuget" / "root" / "native.txt"
+    c.that("native.txt lists every RID's asset",
+           listed.exists() and native_rid() in listed.read_text() and "linux-arm" in listed.read_text())
+    native_exe = native / "src" / "main.exe"
+    if real_native and native_exe.exists():
+        ran = subprocess.run(["dotnet", str(native_exe)], cwd=str(work), capture_output=True,
+                             text=True, timeout=600)
+        c.says("and the program calls into this machine's native library", ran, "answer 42")
+    elif not real_native:
+        c.that("SKIPPED calling the native library: no C compiler", True)
+
+    # 7. A dependency that declares packages. Its package reaches the build,
+    # and a declaration of the same package in the project itself wins.
+    lib = work / "nglib"
+    write(lib / "manifest.bjodat",
+          '(package\n  (name (nglib))\n  (version "0.1.0")\n'
+          f'  (packages (nuget (id "{GREETER}") (version "1.0.0"))))\n')
+    write(lib / "src" / "core.bjo",
+          '(import (std prelude))\n(export greet)\n'
+          '(import/extern (hello (: BjoTest.Greeter.Hello (-> string string))))\n'
+          '(: greet (-> string))\n(defun (greet) (hello "lib"))\n')
+    user_main = '(import (std prelude))\n(import (nglib core))\n(defun (main) (println (greet)) 0)\n'
+    depends = '  (depends (package (name (nglib)) (source (path (dir "../nglib")))))\n'
+    user = nuget_app(work / "user", feed, [], main=user_main, extra=depends)
+    c.says("a dependency's packages reach the program", run_bjo(user, "run", env=env),
+           "hello, lib from 1.0.0")
+    c.that("through a generated project of its own",
+           (user / ".bjo" / "nuget" / "packages" / "nglib" / "BjoPackage.nglib.csproj").exists())
+    user_lock = user / "packages.lock.json"
+    c.that("and the lock file names the package",
+           user_lock.exists() and GREETER in user_lock.read_text())
+    nuget_app(user, feed, [(GREETER, "1.1.0")], main=user_main, extra=depends)
+    c.says("the project's own declaration of the package wins",
+           run_bjo(user, "run", env=env), "hello, lib from 1.1.0")
+
+    # A dependency listing a package twice is refused, naming its manifest.
+    write(lib / "manifest.bjodat",
+          '(package\n  (name (nglib))\n  (version "0.1.0")\n'
+          f'  (packages (nuget (id "{GREETER}") (version "1.0.0"))'
+          f' (nuget (id "{GREETER.lower()}") (version "1.0.0"))))\n')
+    dup_dep = run_bjo(user, "build", env=env)
+    c.failed("a dependency listing a package twice is refused", dup_dep)
+    c.says("naming its manifest", dup_dep, str(lib / "manifest.bjodat"))
+
+    # The same package twice.
+    twice = nuget_app(work / "twice", feed, [(GREETER, "1.0.0"), ("bjo.testgreeter", "1.1.0")])
+    dup = run_bjo(twice, "build", env=env)
+    c.failed("a package listed twice is refused", dup)
+    c.says("and it says so", dup, "listed twice")
+
+    # Packages, and no dotnet on PATH.
+    fresh = nuget_app(work / "no-dotnet", feed, [(GREETER, "1.0.0")])
+    no_sdk = subprocess.run([dotnet, str(ROOT / "bjo" / "bjo.exe"), "build"],
+                            cwd=str(fresh), capture_output=True, text=True, timeout=600,
+                            env=no_path)
+    c.failed("packages without a dotnet on PATH are refused", no_sdk)
+    c.says("and the error says what is missing", no_sdk, "needs the .NET SDK's 'dotnet' command")
+
+    # 8. A Directory.Packages.props above the project turns on central package
+    # management, which refuses a Version on a PackageReference. The generated
+    # project does not import it.
+    central = work / "central"
+    write(central / "Directory.Packages.props",
+          '<Project>\n  <PropertyGroup>\n'
+          '    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>\n'
+          '  </PropertyGroup>\n</Project>\n')
+    write(central / "Directory.Build.props",
+          '<Project>\n  <PropertyGroup>\n'
+          '    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>\n'
+          '  </PropertyGroup>\n</Project>\n')
+    inside = nuget_app(central / "app", feed, [(GREETER, "1.0.0")])
+    c.says("a Directory.Packages.props above the project does not break the restore",
+           run_bjo(inside, "run", env=env), "hello, bjo from 1.0.0")
+
+    if os.environ.get("BJO_TEST_ONLINE") != "1":
+        c.that("SKIPPED online tests: set BJO_TEST_ONLINE=1 to fetch Npgsql", True)
+        return
+
+    # 9. Online: the Npgsql program.
+    npgsql_main = '''(import (std prelude))
+
+(import/class
+  (Builder (: Npgsql.NpgsqlConnectionStringBuilder (-> string Builder))))
+
+(import/extern
+  (csb-database (: Npgsql.NpgsqlConnectionStringBuilder.Database (-> Builder string) #:get)))
+
+(defun (main)
+  (println (csb-database (Builder. "Host=localhost;Database=shop")))
+  0)
+'''
+    shop = work / "shop"
+    write(shop / "manifest.bjodat",
+          '(package\n  (name (shop))\n  (version "0.1.0")\n'
+          '  (packages (nuget (id "Npgsql") (version "9.0.3"))))\n')
+    write(shop / "src" / "main.bjo", npgsql_main)
+    c.says("online: the Npgsql program runs", run_bjo(shop, "run"), "shop")
+
+    # 10. Online: a shared framework that already has a package's dependency.
+    logging = "Microsoft.Extensions.Logging.Abstractions.dll"
+    shop_runtime = shop / ".bjo" / "nuget" / "root" / "runtime.txt"
+    c.that("without ASP.NET, Npgsql brings Logging.Abstractions",
+           logging in shop_runtime.read_text(), shop_runtime.read_text())
+    if aspnet_installed():
+        write(shop / "manifest.bjodat",
+              '(package\n  (name (shop))\n  (version "0.1.0")\n'
+              f'  (frameworks "{ASPNET}")\n'
+              '  (packages (nuget (id "Npgsql") (version "9.0.3"))))\n')
+        c.says("online: with ASP.NET the program still runs", run_bjo(shop, "run"), "shop")
+        c.that("and the framework's Logging.Abstractions wins over the package's",
+               logging not in shop_runtime.read_text(), shop_runtime.read_text())
 
 
 # ---------------------------------------------------------------------------

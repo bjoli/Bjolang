@@ -58,7 +58,11 @@ type CompilerOptions =
 
       /// `--framework`, repeatable: what a file no line of that file covers may
       /// name, which is how a single-file build declares anything at all.
-      Frameworks: string list }
+      Frameworks: string list
+
+      /// `--nuget`: the directory holding the restored packages' lists. See
+      /// `NuGetRefs`.
+      NuGet: string option }
 
 let defaultOptions =
     { InputFiles = []
@@ -73,7 +77,8 @@ let defaultOptions =
       Check = false
       Roots = None
       FrameworksFile = None
-      Frameworks = [] }
+      Frameworks = []
+      NuGet = None }
 
 let printUsage () =
     printfn "Bjolang Compiler"
@@ -109,6 +114,12 @@ let printUsage () =
     printfn "  --framework <name>"
     printfn "              A shared framework for every file no --frameworks line covers,"
     printfn "              which is all of them in a single-file build. Repeatable."
+    printfn "  --nuget <dir>"
+    printfn "              Restored NuGet packages: <dir>/compile.txt lists the assemblies"
+    printfn "              the C# compile references, <dir>/runtime.txt the ones the type"
+    printfn "              checker loads and the program resolves at run time. One path"
+    printfn "              per line. Written by `bjo`, which restores the packages the"
+    printfn "              manifest names."
     printfn "  --help      Show this help message"
     printfn ""
     printfn "Batch options:"
@@ -274,6 +285,7 @@ let rec parseArgs (args: string list) (opts: CompilerOptions) =
     | "--emit-cs" :: path :: rest -> parseArgs rest { opts with EmitCs = Some path }
     | "--roots" :: path :: rest -> parseArgs rest { opts with Roots = Some path }
     | "--frameworks" :: path :: rest -> parseArgs rest { opts with FrameworksFile = Some path }
+    | "--nuget" :: dir :: rest -> parseArgs rest { opts with NuGet = Some dir }
     // Repeatable, like an input file and for the same reason: a build declares
     // as many frameworks as it declares, and the last one is not the only one.
     | "--framework" :: name :: rest ->
@@ -320,6 +332,15 @@ let private run (argv: string array) =
     | None -> ()
 
     Frameworks.setGlobal options.Frameworks
+
+    match options.NuGet with
+    | Some dir ->
+        try
+            NuGetRefs.load dir
+        with ex ->
+            printfn $"Error: %s{ex.Message}"
+            exit 1
+    | None -> ()
 
     // Every declared framework has to be installed, with a reference pack
     // beside it. Said once, here, rather than as a type error on the first name

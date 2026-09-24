@@ -404,6 +404,24 @@ let private isModuleQualified (name: string) = Naming.isModuleQualified name
 /// the generated entry point.
 let moduleClassName = Naming.moduleClassName
 
+/// The module class names that more than one module linked into the file being
+/// generated has — `core_Module` for `(bjosql core)` and `(bjosqlite core)` —
+/// mapped to nothing: a reference to one of them has to name its namespace,
+/// since `using` both makes the bare name ambiguous. Set per file.
+let mutable private ambiguousModuleClasses: Set<string> = Set.empty
+
+/// The C# spelling of a module class given as `Namespace.Class` or `Class`.
+let private moduleClassReference (qualified: string) =
+    let bare =
+        match qualified.LastIndexOf '.' with
+        | -1 -> qualified
+        | i -> qualified.Substring(i + 1)
+
+    if qualified.Contains '.' && Set.contains bare ambiguousModuleClasses then
+        "global::" + qualified
+    else
+        sanitizeIdent bare
+
 /// The C# spelling of a Bjolang type parameter.
 let typeParamName = Naming.typeParamName
 
@@ -2519,12 +2537,18 @@ and private qualifiedName (ctx: CodegenContext) (name: string) =
     // If the binding is a standard built-in (from `BjolangRuntime`), we emit its name directly without any class qualification.
     | Some("", member') -> sanitizeIdent (Naming.emittedTypeName member')
     | Some(modName, member') ->
-        $"%s{moduleClassName modName}.%s{Prelude.moduleMemberName (Naming.emittedTypeName member')}"
+        let cls =
+            if Naming.isModuleKey modName then
+                moduleClassReference $"%s{Naming.namespaceOfKey modName}.%s{moduleClassName modName}"
+            else
+                moduleClassName modName
+
+        $"%s{cls}.%s{Prelude.moduleMemberName (Naming.emittedTypeName member')}"
     | None ->
         // Handle inline macro expansions: if the name is formatted as `Class::name`, we split it and qualify the method call with the class name.
         match name.LastIndexOf "::" with
         | i when i > 0 && isModuleQualified name ->
-            let cls = sanitizeIdent (name.Substring(0, i))
+            let cls = moduleClassReference (name.Substring(0, i))
             $"%s{cls}.%s{Prelude.moduleMemberName (name.Substring(i + 2))}"
         | _ -> sanitizeIdent (Naming.emittedTypeName name)
 
@@ -2796,10 +2820,38 @@ and private generateApply
                 // whose parameters have no written types contributes nothing to
                 // inference, so a call whose arguments are *all* lambdas is as
                 // blind as one with no arguments at all. That is what
-                // `(make-parameter (fun (s) ...))` is.
+                // `(make-parameter (fun (s) ...))` is. The same holds for one
+                // lambda among other arguments, when its parameters' types are
+                // found in none of theirs — `(make-table "t" cols (fun (c) ...))`
+                // — while `(list-map (fun (n) ...) xs)` is inferred from `xs`.
+                let isLambda (a: TypedExpr) = match a.Node with TLambda _ -> true | _ -> false
+
+                let rec bare (t: HMType) =
+                    match t with
+                    | TMeta { Value = Some v } -> bare v
+                    | TCon(n, ts) -> TCon(n, List.map bare ts)
+                    | TTuple ts -> TTuple(List.map bare ts)
+                    | TFun(ps, r, e) -> TFun(List.map bare ps, bare r, e)
+                    | other -> other
+
+                let rec occursIn (t: HMType) (within: HMType) =
+                    let t = bare t
+                    let within = bare within
+                    t = within
+                    || (match within with
+                        | TCon(_, ts) | TTuple ts -> ts |> List.exists (occursIn t)
+                        | TFun(ps, r, _) -> ps |> List.exists (occursIn t) || occursIn t r
+                        | _ -> false)
+
+                let others = args |> List.filter (isLambda >> not) |> List.map (fun a -> a.Type)
+
                 let onlyLambdas =
-                    not args.IsEmpty
-                    && args |> List.forall (fun a -> match a.Node with TLambda _ -> true | _ -> false)
+                    args
+                    |> List.exists (fun a ->
+                        isLambda a
+                        && (match a.Type with
+                            | TFun(ps, _, _) -> ps |> List.exists (fun p -> not (others |> List.exists (occursIn p)))
+                            | _ -> false))
 
                 let uninferable =
                     Set.contains (Naming.writtenName name) ctx.Registry.ReturnOnlyGenerics
@@ -5776,6 +5828,13 @@ let generateProgram
         modulePaths
         |> List.map (fun path -> $"%s{Naming.moduleNamespace path}.%s{moduleClassName path}")
         |> List.distinct
+
+    ambiguousModuleClasses <-
+        moduleUsings
+        |> List.countBy (fun q -> q.Substring(q.LastIndexOf '.' + 1))
+        |> List.filter (fun (_, n) -> n > 1)
+        |> List.map fst
+        |> Set.ofList
 
     for ns in namespaceUsings do
         appendLine ctx $"using %s{ns};"

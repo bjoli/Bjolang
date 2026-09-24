@@ -252,14 +252,42 @@ let rec buildEvidence
                 // itself, not the head's arguments.
                 BlanketCtor, [ resolved ]
 
-        let constraints =
+        let selected =
             match implFor env.Registry traitName resolved with
-            | Some(target, subst) ->
-                target.Constraints
-                |> List.map (fun c -> c.TraitName, substTypeVars subst c.TargetType)
+            | Some found -> found
             | None ->
                 failwithf
                     $"Type Error at %s{Lexer.formatPos range}: no implementation of trait '%s{traitName}' for '%s{Naming.showTypeName typeName}', needed %s{describe}."
+
+        let constraints =
+            let target, subst = selected
+
+            target.Constraints
+            |> List.map (fun c -> c.TraitName, substTypeVars subst c.TargetType)
+
+        // An impl whose target is not all distinct variables — `(Array byte)`,
+        // `(Pair %a %a)` — is a class over the variables it does have, as
+        // `Codegen` declares it: `ToSql_Array`, with none.
+        let classTyArgs =
+            let target, subst = selected
+            // In the order `Codegen.collectTypeVars` gives the class's.
+            let rec varsOf (t: HMType) =
+                match t with
+                | TVar v -> [ v ]
+                | TCon(_, args) | TTuple args -> args |> List.collect varsOf
+                | TFun(args, ret, _) -> (args |> List.collect varsOf) @ varsOf ret
+                | _ -> []
+
+            let vars = target.FixedPrefix |> List.collect varsOf |> List.distinct
+
+            let allDistinctVars =
+                target.FixedPrefix |> List.forall (function TVar _ -> true | _ -> false)
+                && vars.Length = target.FixedPrefix.Length
+
+            if not hasSpecific || allDistinctVars then
+                classTyArgs
+            else
+                vars |> List.map (fun v -> Map.tryFind v subst |> Option.defaultValue (TVar v))
 
         if constraints.IsEmpty then
             { Type = dictType

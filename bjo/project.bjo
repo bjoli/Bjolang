@@ -30,8 +30,11 @@
   reserved-name? parse-package-name name->string
 
   ;; The roots file
-  Root root-name root-dir write-roots
+  Root root-name root-dir write-roots root-package-dir root-package
   project-frameworks-file write-frameworks
+
+  ;; NuGet
+  project-nuget-dir project-nuget-lock-file target-framework
 
   ;; Sources
   sources-under
@@ -142,6 +145,21 @@
 ;; because it answers the same kind of question about the same set of packages.
 (: project-frameworks-file (-> Project string))
 (defun (project-frameworks-file p) (path-combine (project-dot-bjo p) "frameworks"))
+
+;; The generated project the root package's NuGet packages are restored with.
+;; `root/` because a later dependency with packages gets a directory of its own.
+(: project-nuget-dir (-> Project string))
+(defun (project-nuget-dir p) (path-combine (project-dot-bjo p) "nuget" "root"))
+
+;; The NuGet lock file. At the project root, beside the manifest, and committed.
+(: project-nuget-lock-file (-> Project string))
+(defun (project-nuget-lock-file p) (path-combine (project-dir p) "packages.lock.json"))
+
+;; The target framework the compiler is built for and compiles programs for.
+;; The compiler's own directory is named after it, and a restore has to resolve
+;; packages for it.
+(: target-framework string)
+(def target-framework "net10.0")
 
 (: project-lock-file (-> Project string))
 (defun (project-lock-file p) (path-combine (project-dir p) "bjo.lock"))
@@ -351,21 +369,27 @@
 (defun (root-package-dir r)
   (parent-directory (root-dir r)))
 
+;; The manifest of the package a root belongs to, or `None` when it has none.
+;;
+;; A manifest that does not read is also `None`. It is not this function's to
+;; report: whatever is about to build against it says so, with the reason.
+(: root-package (-> Root (Option Package)))
+(defun (root-package r)
+  (def* ((Some dir) (root-package-dir r) :propagate)
+        (manifest-file (path-combine dir manifest-name)))
+  (if (not (file-exists? manifest-file))
+      None
+      (match (bjodat-parse-Package (file-read-text manifest-file))
+        ((Err _) None)
+        ((Ok package) (Some package)))))
+
 ;; What one root's package declares, or nothing when it has no manifest to say
 ;; it in — which is what a root without one means.
 (: root-frameworks (-> Root (List string)))
 (defun (root-frameworks r)
-  (match (root-package-dir r)
+  (match (root-package r)
     (None Nil)
-    ((Some dir)
-     (def manifest-file (path-combine dir manifest-name))
-     (if (not (file-exists? manifest-file))
-         Nil
-         (match (bjodat-parse-Package (file-read-text manifest-file))
-           ;; A manifest that does not read is not this function's to report:
-           ;; whatever is about to build against it says so, with the reason.
-           ((Err why) Nil)
-           ((Ok package) (record-ref package frameworks)))))))
+    ((Some package) (record-ref package frameworks))))
 
 ;; The file's text, sorted for the same reason the roots file is: a diff shows
 ;; what changed rather than what was reordered.

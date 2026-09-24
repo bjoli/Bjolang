@@ -174,7 +174,7 @@ Only the payload's head is compared. Marking one settles ambiguity:
 
 The tag is matched before any shape and is *consumed*, so what the case declares describes the form's *arguments*, not the whole form. A case carrying nothing is named by the symbol alone: ~'asc~ at a union with ~(Asc #:tag asc)~. A head that is not a tag is still data, so a bare tag can sit beside the ordinary commands of ~(std run)~, and a tagged case takes no part in shape selection, so the untagged case handling `(sort)` stays reachable.
 
-Two cases of one union may not share a tag. A tagged case is the only way a payload that is *itself* a union is reachable: ~(CWhere (Cond %row) #:tag where)~ is a sub-grammar no literal's shape could select.
+Two cases of one union may not share a tag. No literal's shape can select a payload that is *itself* a union, so a tag is how one is reached: ~(CWhere (Cond %row) #:tag where)~ is a sub-grammar. The other way is an untagged case, below.
 
 **** ~#:rest~ — how many arguments a tag takes
 A tagged case takes as many arguments as it declares payload types, so ~#:rest~ says "any number": the arguments are the payload, and the case's one type is the collection they are the elements of.
@@ -190,6 +190,29 @@ A tagged case takes as many arguments as it declares payload types, so ~#:rest~ 
 #+END_SRC
 
 The arguments are read as that collection, so ~,@~ splices into a tagged form as anywhere else; a ~#:rest~ case whose type is not a collection is refused where it is declared, not at each use.
+
+**** Delegation — a tag found through an untagged case
+An untagged case with one payload that is itself a union passes on the tags it does not have: a tag that is not a tag of the expected union is looked up in that union, and the literal is its case wrapped in the carrying one.
+
+#+BEGIN_SRC scheme
+(type-rec
+  (: (Cond %leaf) (Union (And (List (Cond %leaf)) #:tag and #:rest)
+                         (Not (Cond %leaf) #:tag not)
+                         (Leaf %leaf))))          ;; untagged, carries a union
+
+(type (: UserTest (Union (TId int #:tag id) (TName string #:tag name))))
+
+;; at (Cond UserTest):
+'(id 3)                          ;; (Leaf (TId 3))
+'(and (id 3) (not (name "x")))   ;; (And (list (Leaf (TId 3)) (Not (Leaf (TName "x")))))
+#+END_SRC
+
+This is what lets a frame like ~Cond~ be written once, generic over its leaves, instead of repeating ~and~ and ~not~ in every union that needs them.
+
+- The expected union's own tags come first, so a tag it has is never passed on.
+- Delegation is tried before shape, like any tag, and works through as many levels as there are. A union already on the way down is not entered again, so a recursive union cannot loop.
+- Two untagged cases whose unions both have the tag is an ambiguity, reported rather than decided by order.
+- An unquoted ~,value~ of the leaf's type is still wrapped by its type: ~Leaf~ is the one case whose payload it matches.
 
 ** Identifiers
 Identifiers may contain most characters except ~_~ and may not start with a digit: ~my-var~, ~+~, ~string->int~, ~empty?~.

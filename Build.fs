@@ -150,6 +150,15 @@ let private writeBuildRecord
             |> List.sort
             |> List.map (fun name -> $"framework %s{name}")
 
+        // The `--nuget` directory, so that a driver can tell when a build moves
+        // to or from having packages, and its two lists as inputs, so that a
+        // changed restore makes the build stale.
+        let nugetLines =
+            match NuGetRefs.directory () with
+            | Some dir when NuGetRefs.appliesTo inputFilePath ->
+                $"nuget %s{dir}" :: (NuGetRefs.listFiles () |> List.map (fun f -> $"nuget-list %s{f}"))
+            | None -> []
+
         let lines =
             [ $"""mode %s{if options.Debug then "debug" else "release"}"""
               $"output %s{Path.GetFullPath outputFilePath}" ]
@@ -157,6 +166,7 @@ let private writeBuildRecord
             @ rootsLine
             @ frameworksLine
             @ frameworkLines
+            @ nugetLines
             @ (sources |> List.map (fun s -> $"source %s{s}"))
             @ (linked |> List.map Path.GetFullPath |> List.distinct |> List.sort |> List.map (fun d -> $"dep %s{d}"))
 
@@ -224,23 +234,32 @@ let generateSource
 
     Timing.phase "codegen" (fun () -> Codegen.generateProgram env metadata dllDeps inputFilePath typedAst)
 
+/// Makes the runtime assemblies and the NuGet packages' runtime assemblies
+/// reflectable, which has to happen *before* anything is type-checked.
+///
+/// `Type.GetType` searches the core library and the compiler's own assembly,
+/// neither of which knows about Bjoml — so without this,
+/// `(import/class (Chan (: Bjoml.Channel)))` fails at the import with "cannot
+/// find the .NET type", and the concurrency runtime is linkable but not
+/// nameable. `registerAssemblyFile` is idempotent and swallows nothing: an
+/// assembly that is present but unloadable is a real problem and says so.
+///
+/// A package is loaded from its runtime assembly rather than the one the C#
+/// compile references, because `Assembly.LoadFrom` refuses reference
+/// assemblies.
+let private loadReferencedAssemblies () =
+    Timing.phase "load runtime assemblies" (fun () ->
+        for assemblyPath in Paths.runtimeAssemblies do
+            if File.Exists assemblyPath then
+                DotNetInterop.registerAssemblyFile assemblyPath
+
+        for assemblyPath in NuGetRefs.runtimeAssemblies () do
+            DotNetInterop.registerAssemblyFile assemblyPath)
+
 /// Compiles `inputFilePath`. Answers a process exit code.
 let compile (options: Options) (inputFilePath: string) : int =
     try
-        // The runtime assemblies are made reflectable *before* anything is
-        // type-checked.
-        //
-        // `Type.GetType` searches the core library and the compiler's own
-        // assembly, neither of which knows about Bjoml — so without this,
-        // `(import/class (Chan (: Bjoml.Channel)))` fails at the import with
-        // "cannot find the .NET type", and the concurrency runtime is
-        // linkable but not nameable. `registerAssemblyFile` is idempotent and
-        // swallows nothing: a runtime assembly that is present but unloadable
-        // is a real problem and says so.
-        Timing.phase "load runtime assemblies" (fun () ->
-            for assemblyPath in Paths.runtimeAssemblies do
-                if File.Exists assemblyPath then
-                    DotNetInterop.registerAssemblyFile assemblyPath)
+        loadReferencedAssemblies ()
 
         Diagnostics.progress $"Compiling %s{inputFilePath}"
 
@@ -360,7 +379,10 @@ let compile (options: Options) (inputFilePath: string) : int =
                     | None -> [])
                 |> List.distinct
 
-
+            // The NuGet packages' compile assets. Like the framework's, these
+            // are references only: the running program loads the packages'
+            // runtime assemblies through the resolver below.
+            let packageReferenceFiles = NuGetRefs.compileReferences ()
 
             // The directories the running program has to probe to find those
             // assemblies. The default load context only looks beside the
@@ -380,8 +402,38 @@ let compile (options: Options) (inputFilePath: string) : int =
                 |> List.distinct
                 |> List.map (fun path -> Naming.assemblyName path, path)
 
+            // A package assembly lives in the NuGet cache, in a directory of
+            // its own, so it is found by name like a module rather than by
+            // probing.
+            let resolvedByName = moduleAssemblyPairs @ NuGetRefs.runtimeByName ()
+
+            // A package's native libraries, for the running program's
+            // `DllImport`s. The default probing looks beside the program and
+            // beside the importing assembly, and the files are in neither.
+            let nativeLibraries = NuGetRefs.nativeLibraries ()
+
+            let nativeResolverCode =
+                if nativeLibraries.IsEmpty then ""
+                else
+                    let literals items =
+                        items
+                        |> List.map (fun (s: string) -> "@\"" + s.Replace("\"", "\"\"") + "\"")
+                        |> String.concat ", "
+
+                    // The same reduction as `NuGetRefs.nativeKey`.
+                    "        var nativeKeys = new string[] { " + literals (nativeLibraries |> List.map fst) + " };\n" +
+                    "        var nativePaths = new string[] { " + literals (nativeLibraries |> List.map snd) + " };\n" +
+                    "        System.Runtime.Loader.AssemblyLoadContext.Default.ResolvingUnmanagedDll += (assembly, name) => {\n" +
+                    "            var key = System.Text.RegularExpressions.Regex.Replace(System.IO.Path.GetFileName(name), @\"(\\.dll|\\.dylib|\\.so(\\.[0-9]+)*)$\", \"\");\n" +
+                    "            if (key.StartsWith(\"lib\", System.StringComparison.Ordinal)) key = key.Substring(3);\n" +
+                    "            for (int i = 0; i < nativeKeys.Length; i++) {\n" +
+                    "                if (nativeKeys[i] == key) return System.Runtime.InteropServices.NativeLibrary.Load(nativePaths[i]);\n" +
+                    "            }\n" +
+                    "            return System.IntPtr.Zero;\n" +
+                    "        };\n"
+
             let resolverCode =
-                if isLibrary || (probeDirs.IsEmpty && moduleAssemblyPairs.IsEmpty) then ""
+                if isLibrary || (probeDirs.IsEmpty && resolvedByName.IsEmpty && nativeLibraries.IsEmpty) then ""
                 else
                     let literals items =
                         items
@@ -389,8 +441,8 @@ let compile (options: Options) (inputFilePath: string) : int =
                         |> String.concat ", "
 
                     let dirLiterals = literals probeDirs
-                    let nameLiterals = literals (moduleAssemblyPairs |> List.map fst)
-                    let pathLiterals = literals (moduleAssemblyPairs |> List.map snd)
+                    let nameLiterals = literals (resolvedByName |> List.map fst)
+                    let pathLiterals = literals (resolvedByName |> List.map snd)
                     let rootPrefix = Naming.moduleNamespaceRoot + "."
 
                     "    private static readonly string[] BjolangProbeDirs = new string[] { " + dirLiterals + " };\n" +
@@ -414,6 +466,7 @@ let compile (options: Options) (inputFilePath: string) : int =
                     "            }\n" +
                     "            return null;\n" +
                     "        };\n" +
+                    nativeResolverCode +
                     "    }\n"
 
             // `Main` itself must not touch a single type from a linked
@@ -505,6 +558,13 @@ let compile (options: Options) (inputFilePath: string) : int =
 
                     $"    <Reference Include=\"{name}\">\n      <HintPath>{dllPath}</HintPath>\n      <Private>false</Private>\n    </Reference>")
                 |> String.concat "\n"
+
+            let packageReferences =
+                packageReferenceFiles
+                |> List.map (fun dllPath ->
+                    let name = Path.GetFileNameWithoutExtension dllPath
+                    $"    <Reference Include=\"{name}\">\n      <HintPath>{dllPath}</HintPath>\n      <Private>false</Private>\n    </Reference>")
+                |> String.concat "\n"
                 
             // MSBuild is told the *framework*, not its files: it then supplies
             // the reference pack and writes a runtimeconfig naming it, which is
@@ -525,6 +585,7 @@ let compile (options: Options) (inputFilePath: string) : int =
   <ItemGroup>
 {frameworkReferences}
 {dllReferences}
+{packageReferences}
   </ItemGroup>
 </Project>"""
             File.WriteAllText(Path.Combine(tmpDir, "Project.csproj"), csprojContent)
@@ -625,7 +686,7 @@ let compile (options: Options) (inputFilePath: string) : int =
                               // references like any other here. All three
                               // backends have to agree on the set, which is
                               // why this is the same list csc and MSBuild get.
-                              References = linkedAssemblies @ frameworkReferenceFiles }
+                              References = linkedAssemblies @ frameworkReferenceFiles @ packageReferenceFiles }
 
                         match CSharpEmit.emitToFile emitOptions fullCode targetPath with
                         | [] ->
@@ -705,7 +766,7 @@ let compile (options: Options) (inputFilePath: string) : int =
                                     |> String.concat " ")
                             
                             let userRefs =
-                                (linkedAssemblies @ frameworkReferenceFiles)
+                                (linkedAssemblies @ frameworkReferenceFiles @ packageReferenceFiles)
                                 |> List.map (fun p -> $"\"-r:{p}\"")
                                 |> String.concat " "
                                 
@@ -954,6 +1015,9 @@ let private compileDependencyOutOfProcess (bjoPath: string) : string =
         + (match Frameworks.declarationFilePath () with
            | Some path -> $" --frameworks \"{path}\""
            | None -> "")
+        + (match NuGetRefs.directory () with
+           | Some dir -> $" --nuget \"{dir}\""
+           | None -> "")
 
     let fileName, args =
         if System.String.IsNullOrEmpty self then
@@ -1150,10 +1214,7 @@ let batch (options: Options) (ifStale: bool) (files: string list) : BatchResult 
 
     // En gång för hela batchen. `compile` gör om det per fil, men anropet är
     // idempotent och det som kostar är första varvet.
-    Timing.phase "load runtime assemblies" (fun () ->
-        for assemblyPath in Paths.runtimeAssemblies do
-            if File.Exists assemblyPath then
-                DotNetInterop.registerAssemblyFile assemblyPath)
+    loadReferencedAssemblies ()
 
     files
     |> List.map (fun file ->

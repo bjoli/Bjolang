@@ -42,6 +42,7 @@
   Git Local Registry Source
   ;; The manifest
   Dep Package
+  NuGetPackage nuget-id nuget-version
   module-name->string
   ;; What `def/bjodat-type` generated for the two records people read.
   bjodat-parse-Package bjodat-read-Package bjodat->Package Package->bjodat
@@ -281,6 +282,23 @@
                  (: version (Option VersionReq) #:optional)
                  (: source (Option Source) #:optional))))
 
+;; A NuGet package: `(nuget (id "Npgsql") (version "9.0.3"))`.
+;;
+;; The version is NuGet's, passed to `PackageReference` as written: "9.0.3"
+;; means 9.0.3 or newer, "[9.0.3]" exactly that, and ranges and floating
+;; versions mean what NuGet says they mean. It is a string rather than a
+;; `Version` because bjo never reads it.
+(def/bjodat-type
+  (: NuGetPackage (Record #:tag nuget
+                          (: id string)
+                          (: version string))))
+
+(: nuget-id (-> NuGetPackage string))
+(defun (nuget-id p) (record-ref p id))
+
+(: nuget-version (-> NuGetPackage string))
+(defun (nuget-version p) (record-ref p version))
+
 (def/bjodat-type
   (: Package (Record #:tag package
                      (: name (List Symbol))
@@ -303,6 +321,10 @@
                      ;; clause holds as many names as it holds, and a `[...]`
                      ;; around them would be a bracket carrying no information.
                      (: frameworks (List string) #:rest #:default Nil)
+                     ;; NuGet packages the project's modules may use through
+                     ;; `import/extern` and `import/class`. Only the root
+                     ;; project may declare any, for now.
+                     (: packages (List NuGetPackage) #:rest #:default Nil)
                      (: source (Option Source) #:optional)
                      ;; `#:rest`: the clause holds as many packages as it holds,
                      ;; rather than one vec of them. This is the field that made

@@ -146,7 +146,7 @@
     (None (path-absolute (path-combine clr-base-dir "..")))))
 
 (: compiler-dll string)
-(def compiler-dll (path-combine root "bin" "Release" "net10.0" "Bjolang.dll"))
+(def compiler-dll (path-combine root "bin" "Release" target-framework "Bjolang.dll"))
 
 
 ;; ---------------------------------------------------------------------------
@@ -186,7 +186,12 @@
                          ;; this is for the change they cannot: the file
                          ;; appearing, or going away with the last declaration
                          ;; in the whole graph.
-                         (: declaration-file string))))
+                         (: declaration-file string)
+                         ;; The `--nuget` directory it was built with, or "".
+                         ;; Compared for the same reason as `declaration-file`:
+                         ;; packages removed from the manifest leave no file
+                         ;; that a timestamp could show.
+                         (: nuget string))))
 
 (: record-file (-> string string))
 (defun (record-file file) (clr-change-extension file ".bjobuild"))
@@ -212,7 +217,7 @@
 (: input-key? (-> string bool))
 (defun (input-key? key)
   (case key
-    (("source" "dep" "compiler" "roots" "frameworks") #t)
+    (("source" "dep" "compiler" "roots" "frameworks" "nuget-list") #t)
     (else #f)))
 
 ;; `None` when there is no record, or when what is there names no artefact —
@@ -236,13 +241,15 @@
           (:acc inputs (listing value) #:when (input-key? key))
           (:acc frameworks (listing value) #:when (= key "framework"))
           (:acc declarations (folding "" (if (= key "frameworks") value declarations)))
+          (:acc nuget (folding "" (if (= key "nuget") value nuget)))
           => (if (= artefact "")
                  None
                  (Some (BuildRecord (mode mode)
                                     (output artefact)
                                     (inputs inputs)
                                     (frameworks (list-sort frameworks))
-                                    (declaration-file declarations)))))))
+                                    (declaration-file declarations)
+                                    (nuget nuget)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Compiling
@@ -268,15 +275,21 @@
 ;; Both are `None` outside a project, and the second is `None` inside one where
 ;; no package declared anything — which is the ordinary case, and is what keeps
 ;; such a project's command line exactly what it was before frameworks existed.
-(type (: Against (Record (: roots (Option string)) (: frameworks (Option string)))))
+;;
+;; `nuget` is the directory of the restored NuGet packages, and `None` unless
+;; the manifest names some.
+(type (: Against (Record (: roots (Option string))
+                         (: frameworks (Option string))
+                         (: nuget (Option string)))))
 
 (: nothing-against Against)
-(def nothing-against (Against (roots None) (frameworks None)))
+(def nothing-against (Against (roots None) (frameworks None) (nuget None)))
 
 (: prepared-against (-> Prepared Against))
 (defun (prepared-against ready)
   (Against (roots (Some (prepared-roots-file ready)))
-           (frameworks (prepared-frameworks-file ready))))
+           (frameworks (prepared-frameworks-file ready))
+           (nuget (prepared-nuget-dir ready))))
 
 (: flag-for (-> string (Option string) (List string)))
 (defun (flag-for flag path)
@@ -290,7 +303,8 @@
 (: against-flags (-> Against (List string)))
 (defun (against-flags a)
   (list-append (flag-for "--roots" (record-ref a roots))
-               (flag-for "--frameworks" (record-ref a frameworks))))
+               (list-append (flag-for "--frameworks" (record-ref a frameworks))
+                            (flag-for "--nuget" (record-ref a nuget)))))
 
 ;; What the frameworks file says the package holding `file` declares.
 ;;
@@ -358,6 +372,11 @@
       (not (= (record-ref rec declaration-file)
               (match (record-ref against frameworks)
                 ((Some path) path)
+                (None ""))))
+      ;; Packages added to or removed from the manifest.
+      (not (= (record-ref rec nuget)
+              (match (record-ref against nuget)
+                ((Some dir) (path-absolute dir))
                 (None ""))))
       (any? #(newer? & artefact) (record-ref rec inputs))))
 
@@ -686,8 +705,9 @@
   (println "                 Always recompiles, since the dumps are made by compiling.")
   (println "  -c, --compile  Compile even when nothing has changed.")
   (println "  --lib          Build a .dll. A file with no main builds one anyway.")
-  (println "  --locked       Refuse to change bjo.lock: any difference from it is an error.")
-  (println "                 For a build that must be the one the lock describes.")
+  (println "  --locked       Refuse to change bjo.lock or packages.lock.json: any difference")
+  (println "                 from them is an error. For a build that must be the one the")
+  (println "                 locks describe.")
   (println "  --             End of flags, for a file whose name begins with a dash.")
   (println "")
   (println "A project is a directory with a manifest.bjodat in it, found by looking")

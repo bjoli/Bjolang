@@ -28,7 +28,8 @@
 ;;     silently would build code the other manifest never asked for.
 
 (export
-  Prepared prepared-roots-file prepared-frameworks-file prepared-roots prepared-dependencies
+  Prepared prepared-roots-file prepared-frameworks-file prepared-nuget-dir
+  prepared-roots prepared-dependencies
   prepare)
 
 (import (std prelude))
@@ -37,14 +38,18 @@
 (import "project.bjo")
 (import "lock.bjo")
 (import "git.bjo")
+(import "nuget.bjo")
 
 ;; What a project turned out to need: the roots file to hand the compiler, and
 ;; the packages it names.
 ;; `frameworks-file` is `None` when no package in the graph declared a .NET
 ;; shared framework, which is the ordinary case: then no file is written and no
 ;; flag is passed, and the build is exactly the build it was before.
+;; `nuget-dir` is `None` the same way, when the manifest names no NuGet
+;; packages.
 (type (: Prepared (Record (: roots-file string)
                           (: frameworks-file (Option string))
+                          (: nuget-dir (Option string))
                           (: roots (List Root)))))
 
 ;; A manifest that has been read and whose dependencies have not been walked.
@@ -110,6 +115,9 @@
 
 (: prepared-frameworks-file (-> Prepared (Option string)))
 (defun (prepared-frameworks-file p) (record-ref p frameworks-file))
+
+(: prepared-nuget-dir (-> Prepared (Option string)))
+(defun (prepared-nuget-dir p) (record-ref p nuget-dir))
 
 (: prepared-roots (-> Prepared (List Root)))
 (defun (prepared-roots p) (record-ref p roots))
@@ -808,8 +816,11 @@
   (def frameworks-path (project-frameworks-file project))
   (def declared? (write-frameworks frameworks-path roots))
 
+  (def (Ok nuget-dir) (restore-packages project roots locked?) :propagate)
+
   (Ok (Prepared (roots-file roots-path)
                 (frameworks-file (if declared? (Some frameworks-path) None))
+                (nuget-dir nuget-dir)
                 (roots roots))))
 
 ;; Writes the lock if it has to, and says what changed.

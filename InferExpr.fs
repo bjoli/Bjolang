@@ -2961,16 +2961,49 @@ and private inferAndMaybeInject (expectedElem: HMType) (env: Env) (expr: Expr) :
     let shaped (unionName: string) (typeArgs: HMType list) (heads: string list) (headTag: string option) : TypedExpr =
         match env.Registry.CasesByPayloadShape unionName typeArgs heads with
         | [ (ctorName, payloadTy) ] ->
-            let payloadType, typedPayload = inferChecked payloadTy env expr
-            unify env.Registry payloadType payloadTy
-            wrapInCtor ctorName [ payloadTy ] [ typedPayload ] typedPayload.Range
-        | [] ->
+            let elaborate () =
+                let payloadType, typedPayload = inferChecked payloadTy env expr
+                unify env.Registry payloadType payloadTy
+                wrapInCtor ctorName [ payloadTy ] [ typedPayload ] typedPayload.Range
+
             let tags = env.Registry.UnionTags unionName
 
             match headTag with
+            // The head was not a tag, so the list was taken as data. If that
+            // fails, a misspelled tag is the likelier mistake than the data,
+            // so the error says the list was not read as a tagged form. Only
+            // the innermost such literal adds the note.
             | Some tag when not tags.IsEmpty ->
+                try
+                    elaborate ()
+                with ex when Diagnostics.isDiagnostic ex && not (ex.Message.Contains "\n  note: ") ->
+                    raise (
+                        System.Exception(
+                            ex.Message
+                            + $"\n  note: `%s{tag}` is not a tag of %s{shown unionName} either, so this list was read as %s{Naming.showTypeName ctorName}. The tags of %s{shown unionName} are %s{orList tags}."
+                        )
+                    )
+            | _ -> elaborate ()
+        | [] ->
+            let tags = env.Registry.UnionTags unionName
+
+            // The tags a case hands on to, one level down, which are as much
+            // on offer as the union's own.
+            let delegated =
+                env.Registry.DelegateUnions unionName typeArgs
+                |> List.choose (fun (caseName, inner) ->
+                    match env.Registry.UnionTags inner with
+                    | [] -> None
+                    | innerTags ->
+                        Some $" Through %s{Naming.showTypeName caseName}, those of %s{shown inner}: %s{orList innerTags}.")
+                |> String.concat ""
+
+            match headTag with
+            | Some tag when not tags.IsEmpty || delegated <> "" ->
+                let own = if tags.IsEmpty then "It has no tags of its own." else $"Its tags are %s{orList tags}."
+
                 failwithf
-                    $"Type Error at %s{reportAt ()}: `%s{tag}` is not a tag of the union %s{shown unionName} and no case of it carries a %s{shape}, so this literal cannot be one. Its tags are %s{orList tags}."
+                    $"Type Error at %s{reportAt ()}: `%s{tag}` is not a tag of the union %s{shown unionName} and no case of it carries a %s{shape}, so this literal cannot be one. %s{own}%s{delegated}"
             | _ ->
                 failwithf
                     $"Type Error at %s{reportAt ()}: no case of the union %s{shown unionName} carries a %s{shape}, so this literal cannot be one. A literal written where a union is expected is elaborated into the case that holds it, and %s{shown unionName} has %s{describeUnionCases env.Registry unionName}."
@@ -3054,14 +3087,28 @@ and private inferAndMaybeInject (expectedElem: HMType) (env: Env) (expr: Expr) :
         | Some tag ->
             match env.Registry.CaseByTag unionName typeArgs tag with
             | Some(ctorName, payloads, isRest) -> tagged ctorName payloads isRest
-            // A head symbol that is not a tag is only wrong if nothing else can
-            // hold the literal: a union with an untagged case for a list — how
-            // `(std run)` writes a plain command — takes it as data, and that is
-            // what keeps a program that named no case meaning what it did.
             | None ->
-                match literalPayloadHeads expr with
-                | Some heads -> shaped unionName typeArgs heads (Some tag)
-                | None -> typeDirected ()
+                // A tag of a union that an untagged case carries: the literal
+                // is that union's case, wrapped in this one. See
+                // `TagDelegates`.
+                match env.Registry.TagDelegates unionName typeArgs tag with
+                | [ (ctorName, payloadTy) ] ->
+                    let inner = inferAndMaybeInject payloadTy env expr
+                    wrapInCtor ctorName [ payloadTy ] [ inner ] r
+                | (_ :: _ :: _) as many ->
+                    let names = many |> List.map (fun (c, _) -> Naming.showTypeName c) |> orList
+
+                    failwithf
+                        $"Type Error at %s{reportAt ()}: `%s{tag}` is not a tag of %s{shown unionName}, and more than one of its cases carries a union that has it: %s{names}. Nothing here says which is meant. Tag the case on %s{shown unionName} itself, or write the constructor around the literal."
+                // A head symbol that is not a tag is only wrong if nothing else
+                // can hold the literal: a union with an untagged case for a
+                // list — how `(std run)` writes a plain command — takes it as
+                // data, and that is what keeps a program that named no case
+                // meaning what it did.
+                | [] ->
+                    match literalPayloadHeads expr with
+                    | Some heads -> shaped unionName typeArgs heads (Some tag)
+                    | None -> typeDirected ()
         | None ->
             match literalPayloadHeads expr with
             | Some heads -> shaped unionName typeArgs heads None

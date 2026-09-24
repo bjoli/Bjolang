@@ -1040,6 +1040,16 @@ let rec ensureLibrary (bjoPath: string) : string =
             | Some path when File.Exists path -> File.GetLastWriteTimeUtc path
             | _ -> DateTime.MinValue
 
+        // The restored NuGet packages, for the same reason.
+        let packagesWritten =
+            if NuGetRefs.appliesTo bjoPath then
+                NuGetRefs.listFiles ()
+                |> List.filter File.Exists
+                |> List.map File.GetLastWriteTimeUtc
+                |> List.fold max DateTime.MinValue
+            else
+                DateTime.MinValue
+
         let upToDate =
             File.Exists dllPath
             && (let built = File.GetLastWriteTimeUtc dllPath
@@ -1047,6 +1057,8 @@ let rec ensureLibrary (bjoPath: string) : string =
 
                 compilerBuilt <= built
                 && declarationsWritten <= built
+                && packagesWritten <= built
+                && not (NuGetRefs.changedSince bjoPath)
                 // A declaration *removed* deletes the file rather than
                 // touching it, so the comparison above cannot see it. This one
                 // reads what the module was built under and compares the sets.

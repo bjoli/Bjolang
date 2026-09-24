@@ -1,0 +1,18 @@
+;; A member a derived .NET class re-declares with `new` is reflected twice,
+;; once for each class. C# calls the derived one, and so does an import:
+;; `Exception.GetType` hides `Object.GetType`.
+
+(import (std prelude))
+(import (std simpletest))
+
+(import/class
+  (InvalidOp (: System.InvalidOperationException (-> string InvalidOp)))
+  (Type (: System.Type)))
+
+(import/extern
+  (type-of (: System.InvalidOperationException.GetType (-> InvalidOp Type)))
+  (type-name (: System.Type.Name (-> Type string) #:get)))
+
+(defun (main)
+  (expect "the method, not an ambiguity" (type-name (type-of (InvalidOp. "x"))) "InvalidOperationException")
+  0)

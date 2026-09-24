@@ -1,0 +1,23 @@
+;; A generic call whose type arguments only a lambda argument mentions. C#
+;; infers nothing from an untyped lambda's parameters, so the call has to
+;; spell its type arguments even though it has other arguments.
+
+(import (std prelude))
+(import (std simpletest))
+
+(type (: Colour (Union Red Green)))
+
+(type (: (Namer %a) (Record (: label string) (: name-of (-> %a string)))))
+
+(: make-namer (-> string (-> %a string) (Namer %a)))
+(defun (make-namer label f) (Namer (label label) (name-of f)))
+
+(: colours (Namer Colour))
+(def colours (make-namer "colours" (fun (c) (match c ((Red) "red") ((Green) "green")))))
+
+(defun (main)
+  (expect "the lambda's type came from the signature"
+          ((record-ref colours name-of) Green) "green")
+  ;; And a lambda whose parameter another argument fixes still reads as before.
+  (expect "list-map" (list-map (fun (n) (* n 2)) (list 1 2)) (list 2 4))
+  0)

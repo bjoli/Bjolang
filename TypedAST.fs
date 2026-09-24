@@ -1749,6 +1749,74 @@ type TraitRegistry =
                 else
                     None)
 
+    /// The untagged cases of `unionName` that a tag not found in it is handed
+    /// on to: each carries one payload that is itself a union offering `tag`,
+    /// directly or through a case of its own like this one.
+    ///
+    /// No literal can reach such a case by its shape, since a union's head is
+    /// never `List`, `string` or the like. Delegation is what makes it
+    /// reachable: `(Leaf %test)` in a generic `(Cond %test)` takes every tag of
+    /// the column tests a table supplies, so the table does not have to repeat
+    /// `and`, `or` and `not` to sit beside them.
+    ///
+    /// More than one answer is an ambiguity for the caller to report. A union
+    /// already on the path is not entered again, which is what stops a
+    /// recursive union from delegating to itself.
+    member this.TagDelegates (unionName: string) (typeArgs: HMType list) (tag: string) : (string * HMType) list =
+        let rec deref t =
+            match t with
+            | TMeta { Value = Some inner } -> deref inner
+            | _ -> t
+
+        let rec offers (visited: Set<string>) (name: string) (args: HMType list) : bool =
+            (this.CaseByTag name args tag).IsSome || not (delegates visited name args).IsEmpty
+
+        and delegates (visited: Set<string>) (name: string) (args: HMType list) : (string * HMType) list =
+            if Set.contains name visited then
+                []
+            else
+                let visited = Set.add name visited
+
+                match Map.tryFind name this.Unions with
+                | None -> []
+                | Some(typeParams, cases) ->
+                    cases
+                    |> List.choose (fun (caseName, payloadTypes, markers) ->
+                        match payloadTypes with
+                        | [ single ] when markers.Tag.IsNone ->
+                            match deref (withTypeArgs typeParams args single) with
+                            | TCon(inner, innerArgs) as payload when
+                                Map.containsKey inner this.Unions && offers visited inner innerArgs
+                                ->
+                                Some(caseName, payload)
+                            | _ -> None
+                        | _ -> None)
+
+        delegates Set.empty unionName typeArgs
+
+    /// The untagged single-payload cases of `unionName` whose payload is a
+    /// union, with that union's name: where a tag not found here is looked
+    /// for, one level down. For a diagnostic that has to say which names were
+    /// on offer.
+    member this.DelegateUnions (unionName: string) (typeArgs: HMType list) : (string * string) list =
+        let rec deref t =
+            match t with
+            | TMeta { Value = Some inner } -> deref inner
+            | _ -> t
+
+        match Map.tryFind unionName this.Unions with
+        | None -> []
+        | Some(typeParams, cases) ->
+            cases
+            |> List.choose (fun (caseName, payloadTypes, markers) ->
+                match payloadTypes with
+                | [ single ] when markers.Tag.IsNone ->
+                    match deref (withTypeArgs typeParams typeArgs single) with
+                    | TCon(inner, _) when Map.containsKey inner this.Unions && inner <> unionName ->
+                        Some(caseName, inner)
+                    | _ -> None
+                | _ -> None)
+
     /// The tags of `unionName`, in declaration order, for a diagnostic that has
     /// to say which names were on offer.
     member this.UnionTags (unionName: string) : string list =

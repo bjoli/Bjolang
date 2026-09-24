@@ -1,0 +1,20 @@
+;; A generic union whose untagged case carries a union of the importer's
+;; choosing. Delegation reads only the union's structure, which the metadata
+;; already carries, so an importing module finds the leaf's tags through `Leaf`
+;; exactly as the declaring module would.
+
+(import (std prelude))
+
+(export Cond render-cond)
+
+(type-rec
+  (: (Cond %leaf) (Union (And (List (Cond %leaf)) #:tag and #:rest)
+                         (Not (Cond %leaf) #:tag not)
+                         (Leaf %leaf))))
+
+(: render-cond (-> (-> %leaf string) (Cond %leaf) string))
+(defun (render-cond leaf c)
+  (match c
+    ((And cs) (str "and(" (string-join (list->vec (list-map #(render-cond leaf &) cs)) " ") ")"))
+    ((Not c) (str "not(" (render-cond leaf c) ")"))
+    ((Leaf l) (leaf l))))

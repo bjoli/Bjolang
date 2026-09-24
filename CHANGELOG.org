@@ -3,6 +3,103 @@
 
 What each change guarantees, and what it leaves open.
 
+* Four backend fixes found by writing bjosql and bjosqlite
+
+- *A generic call whose type arguments only a lambda argument mentions* now
+  writes them out: ~(make-namer "x" (fun (c) ...))~ was C#'s CS0411. Calls where
+  another argument fixes the lambda's parameters, like ~(list-map (fun (n) ...)
+  xs)~, are emitted as before. Test: ~239_lambda_type_args.bjo~.
+- *Two linked modules with the same name*, such as ~(bjosql core)~ and
+  ~(bjosqlite core)~, or ~(bjoweb core)~ and ~(bjorsec core)~, made a qualified
+  reference to either ~core_Module~ ambiguous in C#. A module-qualified name now
+  includes its namespace, and the namespace is written out only where the class
+  name is ambiguous in the file. Test: ~240_same_basename_qualified.bjo~.
+- *A .NET member re-declared with ~new~*, such as ~SqliteCommand.Parameters~,
+  ~SqliteConnection.CreateCommand~ or ~Exception.GetType~, was reported as
+  ambiguous, or crashed the compiler for a property. As in C#, the most derived
+  member is the one used. Test: ~241_hidden_members.bjo~.
+- *An impl at a type with fixed arguments*, ~(impl (ToSql (Array byte)))~, is a
+  class with no type parameters. Its dictionary was written ~ToSql_Array<byte>~
+  wherever it was built in another module's specialised body. Test:
+  ~242_impl_fixed_args.bjo~.
+
+Also documented in ~Docs/MACROS.org~: a type or constructor name that a
+transformer builds for the caller has to be built with ~inject~.
+
+Not fixed: a union case with the same name as its union, such as ~(type (:
+(Select %c) (Union (Select ...))))~, still fails in the C# compile (CS0542)
+instead of being reported by the front end.
+
+* Tag delegation: a tag found through an untagged case
+
+An untagged case whose one payload is a union now passes on the tags the
+expected union does not have. With ~(Leaf %leaf)~ in a generic ~(Cond %leaf)~,
+~'(id 3)~ at ~(Cond UserTest)~ is ~(Leaf (TId 3))~. A frame such as a condition
+language can be written once, generic over its leaves, rather than repeated in
+every union that needs ~and~ and ~not~. Documented in ~Docs/Syntax.org~ under
+Delegation.
+
+What it guarantees:
+- A tag of the expected union itself always wins.
+- It works through any number of levels, and a union already on the path is not
+  entered again.
+- Two cases offering the tag is an error naming both.
+- It needs no metadata of its own, so it works across modules.
+
+What it changes: a delegated tag is looked up before shape, as a direct tag is.
+Before, no literal could reach a case whose payload is a union, so the only
+programs that change are ones where a literal's head happened to be a tag of
+such a union and an untagged list or symbol case took it as data. None of the
+tests or the standard library have one.
+
+Two diagnostics came with it:
+- A tag that is not found lists the tags on offer through delegating cases as
+  well as the union's own.
+- When a list whose head is not a tag is taken as data by an untagged list case
+  and then fails, the error has a note saying the head is not a tag either, and
+  which tags there are. ~(select (id) (form users))~ used to report only that
+  ~form~ is not a column.
+
+* NuGet packages: ~(packages ...)~ in the manifest
+
+A project's manifest may name NuGet packages, ~(packages (nuget (id "Npgsql")
+(version "9.0.3")))~, and its modules may then use their types through
+~import/class~ and ~import/extern~. ~bjo~ restores them with the .NET SDK and
+hands the compiler the result with a new ~--nuget <dir>~ flag: the type checker
+loads the packages' runtime assemblies, the C# compile references their compile
+assemblies (all three backends), and the executable's assembly resolver finds
+the runtime assemblies by name. Documented in ~Docs/Projects.org~ under NuGet
+packages.
+
+What it guarantees:
+- A version is NuGet's, passed through as written; ~bjo~ never interprets one.
+- ~packages.lock.json~ is written at the project root and should be
+  committed. ~bjo build --locked~ fails with ~NU1004~ rather than change it.
+- What a package contributes is decided by the SDK's own resolution, including
+  conflicts with the shared frameworks in ~(frameworks ...)~: with ASP.NET
+  declared, its copy of a package it contains wins.
+- A project with no packages starts no ~dotnet~ for them and builds exactly as
+  before, and a build whose packages, frameworks and lock file have not changed
+  does not run the restore again. The standard library's artefacts never depend
+  on a project's packages.
+- Removing the packages from the manifest makes the program stale, although no
+  file it read changed.
+- A ~Directory.Build.props~, ~Directory.Build.targets~ or
+  ~Directory.Packages.props~ above the project does not affect the restore.
+- A dependency may declare packages. Each gets a generated project that the
+  root project references, so NuGet resolves versions across the graph, and the
+  project's own declaration of a package wins.
+- Native assets work. The ones for the building machine's RID are picked, with
+  the portable RIDs as fallback (Fedora's .NET reports ~fedora.43-x64~), and the
+  executable's entry point installs a ~ResolvingUnmanagedDll~ handler that
+  loads them from the NuGet cache. The REPL installs the same in its own
+  process. Microsoft.Data.Sqlite works.
+
+Left open: the built executable loads the packages from the NuGet cache, so it
+runs only on the machine that built it until there is a ~bjo publish~; and the
+compiler loads package assemblies into its own process with ~Assembly.LoadFrom~
+rather than a ~MetadataLoadContext~.
+
 * ~#:tag~ and ~#:rest~: a quoted literal can name the case it means
 
 A union case may be marked ~#:tag name~, and then a quoted list whose head is

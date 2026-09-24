@@ -1,0 +1,22 @@
+;; For 242_impl_fixed_args.bjo: a trait, an impl at `(Array byte)`, and a
+;; constrained function that takes its dictionary from the caller. `measure` is
+;; not exported, so `total` is emitted into the caller's module, and the
+;; evidence for `measure` is built there.
+
+(export Size size total)
+(import (std prelude))
+
+(def/trait (Size %a)
+  (: size (-> %a int)))
+
+(impl (Size (Array byte)) (defun (size b) (array-length b)))
+
+(impl (Size (Option %a))
+  (where (Size %a))
+  (defun (size o) (match o ((Some x) (size x)) (None 0))))
+
+(: measure (-> %a int) (where (Size %a)))
+(defun (measure x) (size x))
+
+(: total (-> %a %a int) (where (Size %a)))
+(defun (total x y) (+ (measure x) (measure y)))

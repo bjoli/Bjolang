@@ -288,8 +288,18 @@ let qualifiedModuleClassName (path: string) =
 /// identifier is not good enough: it would bind to the local. `Codegen` rewrites
 /// `::` to `.` and recognizes the `_Module` prefix as a qualification rather
 /// than a trait implementation's method.
+///
+/// A module key is qualified with its namespace as well — `BjoMod.bjosql.core_Module`
+/// — because two packages may each have a `core`, and the class name alone
+/// cannot say which. `Codegen` writes the namespace out only where it has to.
 let qualifiedBinding (moduleName: string) (name: string) =
-    $"%s{moduleClassName moduleName}::%s{name}"
+    let cls =
+        if isModuleKey moduleName then
+            $"%s{namespaceOfKey moduleName}.%s{moduleClassName moduleName}"
+        else
+            moduleClassName moduleName
+
+    $"%s{cls}::%s{name}"
 
 /// The types that belong to no module.
 ///

@@ -1,0 +1,394 @@
+;; bjo/nuget.bjo — the NuGet packages a project's manifest names.
+;;
+;;     (package
+;;       (name (shop))
+;;       (version "0.1.0")
+;;       (packages (nuget (id "Npgsql") (version "9.0.3"))))
+;;
+;; The packages are resolved by the .NET SDK rather than here. Which files of a
+;; package a program compiles against and which it runs with depends on the
+;; target framework, on the shared frameworks the program also uses (ASP.NET
+;; already contains some packages, and its copy has to win), on `_._`
+;; placeholders and on runtime-specific assets. MSBuild already knows all of
+;; that, so `bjo` generates a small project in `.bjo/nuget/root/`, runs the
+;; SDK's own restore and reference resolution on it, and has a target of its own
+;; write the results into three files beside it:
+;;
+;;   compile.txt   the package assemblies the C# compile references
+;;   runtime.txt   the package assemblies the program loads, and the type
+;;                 checker reflects over
+;;   native.txt    runtime-specific assets, for every runtime identifier: one
+;;                 line each of package, asset type, RID and path. The compiler
+;;                 picks the ones for the machine it runs on.
+;;
+;; A dependency that declares packages gets a generated project of its own in
+;; `.bjo/nuget/packages/`, which the root project references. NuGet then
+;; resolves versions across all of them, and the root's own declaration of a
+;; package wins over a dependency's.
+;;
+;; The compiler is given the directory with `--nuget`. The lists are written
+;; only when their contents change, because the compiler records them as inputs
+;; of every module it builds against them.
+;;
+;; Starting MSBuild costs a couple of seconds, so it is skipped when nothing it
+;; depends on has changed. A stamp file holds a hash of the generated project —
+;; which spells out the packages, the frameworks and the target framework — and
+;; of `packages.lock.json`, and the lists have to name files that are still
+;; there: a cleared NuGet cache is a restore to redo. A project that names no
+;; packages starts no `dotnet` at all.
+
+(export restore-packages)
+
+(import (std prelude))
+(import (std run))
+(import (text bjodat))
+(import "manifest.bjo")
+(import "project.bjo")
+
+(import/class (Encoding (: System.Text.Encoding)))
+
+(import/extern
+  (error-message (: System.Exception.Message (-> Exception string) #:get))
+  (utf8 (: System.Text.Encoding.UTF8 #:get))
+  (encode (: System.Text.Encoding.GetBytes (-> Encoding string (Array byte))))
+  (sha256 (: System.Security.Cryptography.SHA256.HashData (-> (Array byte) (Array byte))))
+  (hex (: System.Convert.ToHexString (-> (Array byte) string)))
+  (index-of (: System.String.IndexOf (-> string string int)))
+  (substring-from (: System.String.Substring (-> string int string))))
+
+
+;; ---------------------------------------------------------------------------
+;; The generated project
+;; ---------------------------------------------------------------------------
+
+(: xml-escape (-> string string))
+(defun (xml-escape s)
+  (string-replace
+    (string-replace (string-replace (string-replace s "&" "&amp;") "<" "&lt;") ">" "&gt;")
+    "\"" "&quot;"))
+
+;; The target that writes the three lists.
+;;
+;; A package's compile assets are the `ReferencePath` items with a
+;; `NuGetPackageId`. The shared frameworks' reference assemblies carry one too
+;; (`Microsoft.NETCore.App.Ref`), so those are told apart by their
+;; `FrameworkReferenceName`. Runtime assets are the `.dll`s among
+;; `ReferenceCopyLocalPaths` that go in the output directory itself: that
+;; leaves out symbols, documentation, satellite resource assemblies and
+;; runtime-specific files, which all go in a subdirectory or are not `.dll`s.
+;; Both filter on `NuGetPackageId` as well, which leaves out the generated
+;; projects of dependencies: those are never built, and have nothing to offer.
+;;
+;; Runtime-specific assets are `RuntimeTargetsCopyLocalItems`, one per runtime
+;; identifier a package has files for, with the RID and whether it is `native`
+;; or `runtime` (managed) as metadata. `NativeCopyLocalItems` are native files
+;; that are the same everywhere, and have no RID.
+(: resolve-target string)
+(def resolve-target
+  (str "  <Target Name=\"BjoResolve\" DependsOnTargets=\"ResolveReferences\">\n"
+       "    <ItemGroup>\n"
+       "      <_BjoCompile Include=\"@(ReferencePath)\" Condition=\"'%(ReferencePath.NuGetPackageId)' != '' and '%(ReferencePath.FrameworkReferenceName)' == ''\" />\n"
+       "      <_BjoRuntime Include=\"@(ReferenceCopyLocalPaths)\" Condition=\"'%(ReferenceCopyLocalPaths.NuGetPackageId)' != '' and '%(ReferenceCopyLocalPaths.Extension)' == '.dll' and '%(ReferenceCopyLocalPaths.DestinationSubDirectory)' == ''\" />\n"
+       "      <_BjoNative Include=\"@(NativeCopyLocalItems);@(RuntimeTargetsCopyLocalItems)\" />\n"
+       "    </ItemGroup>\n"
+       "    <WriteLinesToFile File=\"$(MSBuildProjectDirectory)/compile.txt\" Lines=\"@(_BjoCompile->'%(FullPath)')\" Overwrite=\"true\" WriteOnlyWhenDifferent=\"true\" />\n"
+       "    <WriteLinesToFile File=\"$(MSBuildProjectDirectory)/runtime.txt\" Lines=\"@(_BjoRuntime->'%(FullPath)')\" Overwrite=\"true\" WriteOnlyWhenDifferent=\"true\" />\n"
+       "    <WriteLinesToFile File=\"$(MSBuildProjectDirectory)/native.txt\" Lines=\"@(_BjoNative->'%(NuGetPackageId)&#9;%(AssetType)&#9;%(RuntimeIdentifier)&#9;%(FullPath)')\" Overwrite=\"true\" WriteOnlyWhenDifferent=\"true\" />\n"
+       "  </Target>\n"))
+
+(: item-lines (-> (List NuGetPackage) (List string) string))
+(defun (item-lines packages frameworks)
+  (def package-lines
+    (list-map #(str "    <PackageReference Include=\"" (xml-escape (nuget-id &))
+                    "\" Version=\"" (xml-escape (nuget-version &)) "\" />\n")
+              packages))
+  (def framework-lines
+    (list-map #(str "    <FrameworkReference Include=\"" (xml-escape &) "\" />\n") frameworks))
+  (str (string-join (list->vec package-lines) "")
+       (string-join (list->vec framework-lines) "")))
+
+;; `Root.csproj`. A library with no sources; `CopyLocalLockFileAssemblies` is
+;; what puts a library's package runtime assets in `ReferenceCopyLocalPaths`.
+;; The shared frameworks are referenced so that the SDK's conflict resolution
+;; drops a package assembly the framework already provides. `references` are
+;; the generated projects of the dependencies that declare packages.
+(: csproj-text (-> (List NuGetPackage) (List string) (List string) string string))
+(defun (csproj-text packages frameworks references lock-file)
+  (def reference-lines
+    (list-map #(str "    <ProjectReference Include=\"" (xml-escape &) "\" />\n") references))
+  (str "<!-- Generated by bjo from manifest.bjodat. Do not edit. -->\n"
+       "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
+       "  <PropertyGroup>\n"
+       "    <TargetFramework>" target-framework "</TargetFramework>\n"
+       "    <OutputType>Library</OutputType>\n"
+       "    <EnableDefaultItems>false</EnableDefaultItems>\n"
+       "    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>\n"
+       "    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>\n"
+       "    <NuGetLockFilePath>" (xml-escape lock-file) "</NuGetLockFilePath>\n"
+       "  </PropertyGroup>\n"
+       "  <ItemGroup>\n"
+       (item-lines packages frameworks)
+       (string-join (list->vec reference-lines) "")
+       "  </ItemGroup>\n"
+       resolve-target
+       "</Project>\n"))
+
+;; The generated project of a dependency: its packages and frameworks, which
+;; reach the root project through its `ProjectReference`. Never built — the
+;; restore is run with `BuildProjectReferences=false`.
+(: dependency-csproj-text (-> string (List NuGetPackage) (List string) string))
+(defun (dependency-csproj-text manifest packages frameworks)
+  (str "<!-- Generated by bjo from " (xml-escape manifest) ". Do not edit. -->\n"
+       "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
+       "  <PropertyGroup>\n"
+       "    <TargetFramework>" target-framework "</TargetFramework>\n"
+       "    <OutputType>Library</OutputType>\n"
+       "    <EnableDefaultItems>false</EnableDefaultItems>\n"
+       "  </PropertyGroup>\n"
+       "  <ItemGroup>\n"
+       (item-lines packages frameworks)
+       "  </ItemGroup>\n"
+       "</Project>\n"))
+
+;; Writes `path` unless it already says `text`.
+(: write-if-changed #:sync (-> string string void))
+(defun (write-if-changed path text)
+  (unless (and (file-exists? path) (= (file-read-text path) text))
+    (file-write-text path text)))
+
+
+;; ---------------------------------------------------------------------------
+;; Skipping the restore
+;; ---------------------------------------------------------------------------
+
+(: stamp-of (-> string string string))
+(defun (stamp-of csproj lock-file)
+  (def lock (if (file-exists? lock-file) (file-read-text lock-file) ""))
+  (hex (sha256 (encode utf8 (str csproj "\n--- packages.lock.json\n" lock)))))
+
+;; The paths in a list file, or `None` when there is no such file.
+(: listed (-> string (Option (List string))))
+(defun (listed file)
+  (if (not (file-exists? file))
+      None
+      (Some (loop (:for line (string-split (file-read-text file) "\n"))
+                  (:let path (string-trim line))
+                  (:acc out (listing path) #:when (not (= path "")))
+                  => out))))
+
+(: list-current? (-> string bool))
+(defun (list-current? file)
+  (match (listed file)
+    (None #f)
+    ((Some paths) (all? file-exists? paths))))
+
+;; The same for `native.txt`, whose path is the last of four fields.
+(: native-current? (-> string bool))
+(defun (native-current? file)
+  (match (listed file)
+    (None #f)
+    ((Some lines)
+     (all? (fun (line)
+             (def fields (string-split line "\t"))
+             (and (= (vec-length fields) 4) (file-exists? (vec-ref fields 3))))
+           lines))))
+
+;; Is the last restore still the answer?
+(: restore-current? (-> string string bool))
+(defun (restore-current? dir stamp)
+  (def stamp-file (path-combine dir "stamp"))
+  (and (file-exists? stamp-file)
+       (= (string-trim (file-read-text stamp-file)) stamp)
+       (list-current? (path-combine dir "compile.txt"))
+       (list-current? (path-combine dir "runtime.txt"))
+       (native-current? (path-combine dir "native.txt"))))
+
+
+;; ---------------------------------------------------------------------------
+;; Running MSBuild
+;; ---------------------------------------------------------------------------
+
+;; Runs the restore and the resolve target, and answers the exit code and
+;; everything MSBuild said.
+;;
+;; The `Directory.*` imports are turned off because a project is often inside a
+;; repository that has them, and they would apply to the generated project: a
+;; `Directory.Packages.props` turns on central package management, which
+;; refuses a `Version` on a `PackageReference`, and a `Directory.Build.props`
+;; can change the target framework. `NuGet.config` and `global.json` are still
+;; found by walking up from the generated project, which reaches the user's.
+(: run-msbuild #:sync (-> string bool (Result string (Tuple int string))))
+(defun (run-msbuild dir locked?)
+  (def errors (path-combine dir "msbuild-stderr.txt"))
+  (def arguments
+    (list->vec
+      (list-append
+        (list "msbuild" (path-combine dir "Root.csproj") "-restore" "-t:BjoResolve" "-nologo"
+              "-p:BuildProjectReferences=false"
+              "-p:ImportDirectoryBuildProps=false"
+              "-p:ImportDirectoryBuildTargets=false"
+              "-p:ImportDirectoryPackagesProps=false")
+        (if locked? (list "-p:RestoreLockedMode=true") Nil))))
+  (set-environment-variable! "DOTNET_NOLOGO" "1")
+  (match (run/output '(errors-into-file ,errors (dotnet ,arguments)))
+    ((Err e) (Err (str "bjo: could not run dotnet: " (error-message e))))
+    ((Ok (Tuple code out))
+     (def said (if (file-exists? errors) (file-read-text errors) ""))
+     (Ok (Tuple code (string-trim (str out "\n" said)))))))
+
+;; Every distinct `NUxxxx: message` MSBuild reported with `code`, from the code
+;; to the end of the line.
+(: messages-with (-> string string (List string)))
+(defun (messages-with output code)
+  (def found
+    (loop (:for line (string-split output "\n"))
+          (:let at (index-of line (str code ": ")))
+          (:acc out (listing (string-trim (substring-from line at))) #:when (>= at 0))
+          => out))
+  (loop (:for m found)
+        (:acc out (folding Nil (if (any? #(= & m) out) out (Cons m out))))
+        => (list-reverse out)))
+
+;; What a failed restore is reported as. A NuGet error is quoted with its code
+;; and a hint about what usually causes it; anything else is MSBuild's own
+;; output, which is the only account there is.
+(: explain (-> string string string (Option string)))
+(defun (explain output code hint)
+  (match (messages-with output code)
+    (Nil None)
+    (found (Some (str (string-join (list->vec (list-map #(str "  " &) found)) "\n")
+                      "\n  hint: " hint)))))
+
+(: failure-message (-> string bool string string))
+(defun (failure-message output locked? lock-file)
+  (def not-found "Check the package name and version, and the NuGet sources in your NuGet.config.")
+  (def explained
+    (loop (:for answer (list (explain output "NU1101" not-found)
+                             (explain output "NU1102" not-found)
+                             (explain output "NU1301"
+                                      "The first restore of a package needs network access, or a local feed in NuGet.config.")
+                             (explain output "NU1004"
+                                      (if locked?
+                                          (str "Run 'bjo build' without --locked to update " lock-file ".")
+                                          (str lock-file " does not match the manifest.")))))
+          (:when-let (Some text) answer)
+          (:acc out (listing text))
+          => out))
+  (if (empty? explained)
+      (str "bjo: restoring the NuGet packages failed. MSBuild said:\n" output)
+      (str "bjo: restoring the NuGet packages failed:\n"
+           (string-join (list->vec explained) "\n"))))
+
+;; ---------------------------------------------------------------------------
+;; restore-packages
+;; ---------------------------------------------------------------------------
+
+;; A package of the build that declares NuGet packages: its manifest, and what
+;; the manifest says.
+(type (: Declaring (Record (: name (List Symbol)) (: manifest string) (: package Package))))
+
+;; The dependencies that declare packages. The project being built is not one
+;; of them: its packages go in the root project itself.
+(: declaring-dependencies (-> Project (List Root) (List Declaring)))
+(defun (declaring-dependencies project roots)
+  (def own (path-absolute (project-dir project)))
+  (loop (:for r roots)
+        (:when-let (Some dir) (root-package-dir r))
+        (:when (not (= (path-absolute dir) own)))
+        (:when-let (Some package) (root-package r))
+        (:when (not (empty? (record-ref package packages))))
+        (:acc out (listing (Declaring (name (root-name r))
+                                      (manifest (path-combine dir manifest-name))
+                                      (package package))))
+        => out))
+
+;; Where a dependency's generated project goes. The file name becomes the
+;; project's name in the lock file, and is prefixed so that it cannot be taken
+;; for a NuGet package of the same name.
+(: dependency-csproj-file (-> Project (List Symbol) string))
+(defun (dependency-csproj-file project name)
+  (def slug (string-join (list->vec (list-map symbol->string name)) "."))
+  (path-combine (project-dot-bjo project) "nuget" "packages" slug
+                (str "BjoPackage." slug ".csproj")))
+
+(: duplicate-id (-> (List NuGetPackage) (Option string)))
+(defun (duplicate-id packages)
+  ;; NuGet ids are case-insensitive, so `npgsql` and `Npgsql` are one.
+  (def ids (list-sort (list-map #(string-downcase (nuget-id &)) packages)))
+  (let go ((left ids))
+    (match left
+      ((Cons a (Cons b more)) (if (= a b) (Some a) (go (Cons b more))))
+      (_ None))))
+
+(: duplicate-in (-> string Package (Option string)))
+(defun (duplicate-in manifest package)
+  (match (duplicate-id (record-ref package packages))
+    ((Some id) (Some (str "bjo: " manifest ": the NuGet package " id
+                          " is listed twice under (packages ...).")))
+    (None None)))
+
+;; Restores the NuGet packages of the build, and answers the directory to hand
+;; the compiler with `--nuget` — or `None` when no manifest names any.
+;;
+;; `roots` are every package of the build: a dependency's packages are the
+;; build's packages too.
+(: restore-packages #:sync (-> Project (List Root) bool (Result string (Option string))))
+(defun (restore-packages project roots locked?)
+  (with-return ret
+    (def package (project-package project))
+    (def packages (record-ref package packages))
+    (def deps (declaring-dependencies project roots))
+    (when (and (empty? packages) (empty? deps)) (ret (Ok None)))
+
+    (def own-manifest (path-combine (project-dir project) manifest-name))
+    (def duplicates
+      (loop (:for message (Cons (duplicate-in own-manifest package)
+                                (list-map #(duplicate-in (record-ref & manifest) (record-ref & package))
+                                          deps)))
+            (:when-let (Some text) message)
+            (:acc out (listing text))
+            => out))
+    (match duplicates
+      ((Cons text _) (ret (Err text)))
+      (Nil unit))
+
+    (def dir (project-nuget-dir project))
+    (def lock-file (project-nuget-lock-file project))
+    (def dep-files (list-map #(dependency-csproj-file project (record-ref & name)) deps))
+    (def dep-texts
+      (list-map #(dependency-csproj-text (record-ref & manifest)
+                                         (record-ref (record-ref & package) packages)
+                                         (record-ref (record-ref & package) frameworks))
+                deps))
+    (def csproj (csproj-text packages (record-ref package frameworks) (list-sort dep-files) lock-file))
+    ;; Everything the restore reads that `bjo` wrote, in an order that does not
+    ;; depend on the order of the roots.
+    (def generated
+      (string-join (list->vec (Cons csproj (list-sort (loop (:for file dep-files)
+                                                            (:for text dep-texts)
+                                                            (:acc out (listing (str file "\n" text)))
+                                                            => out))))
+                   "\n"))
+
+    (when (restore-current? dir (stamp-of generated lock-file))
+      (ret (Ok (Some dir))))
+
+    (unless (some? (which "dotnet"))
+      (ret (Err (str "bjo: the build names NuGet packages, and restoring them needs the "
+                     ".NET SDK's 'dotnet' command, which is not on PATH."))))
+
+    (directory-create dir)
+    (write-if-changed (path-combine dir "Root.csproj") csproj)
+    (loop (:for file dep-files)
+          (:for text dep-texts)
+          (:do (match (parent-directory file)
+                 ((Some parent) (directory-create parent))
+                 (None unit))
+               (write-if-changed file text)))
+    (def (Ok (Tuple code output)) (run-msbuild dir locked?) :propagate)
+    (unless (= code 0)
+      (ret (Err (failure-message output locked? lock-file))))
+
+    ;; After the restore, which may have written the lock file.
+    (file-write-text (path-combine dir "stamp") (stamp-of generated lock-file))
+    (Ok (Some dir))))
