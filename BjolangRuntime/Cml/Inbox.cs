@@ -159,15 +159,56 @@ public sealed class Inbox<T>
 
             // Outside the lock: TryCommit fires the losing branches' nacks
             // inline, and the resume below runs the fiber itself.
-            if (r.State.TryCommit(r.EventId))
-            {
-                InboxWake.Resume(r.OnSync, item);
-                return Deposit.Done;
-            }
+            if (HandTo(r, item) != HandOver.Lost) return Deposit.Done;
 
             // That receiver's block was won elsewhere. Nothing was consumed;
             // try the next one.
         }
+    }
+
+    private enum HandOver
+    {
+        /// The receiver has it.
+        Delivered,
+        /// The receiver's block was won elsewhere; the item is still to place.
+        Lost,
+        /// A call whose caller went away first. Its task is cancelled, and
+        /// there is nothing to place.
+        Dead,
+    }
+
+    /// <summary>
+    /// Hand an item straight to a receiver taken off the list, without queueing
+    /// it. A call is marked taken first, as <see cref="TryDequeueLiveLocked"/>
+    /// marks one taken from the queue, because the caller's token tells
+    /// "still queued" from "taken" by that mark alone. A call handed over
+    /// unmarked would be cancelled when the token fired, under a fiber that
+    /// was already answering it, and <c>call-abandoned</c> would never fire.
+    /// </summary>
+    private HandOver HandTo(RecvNode r, T item)
+    {
+        var call = item as IInboxItem;
+
+        if (call is not null && !call.TryTake())
+        {
+            // The caller went away before this could be handed over. The
+            // receiver was not committed, so it goes back to waiting, and an
+            // item queued meanwhile may be its.
+            lock (_gate) { PushReceiverFrontLocked(r); }
+            Settle();
+            return HandOver.Dead;
+        }
+
+        if (r.State.TryCommit(r.EventId))
+        {
+            InboxWake.Resume(r.OnSync, item);
+            return HandOver.Delivered;
+        }
+
+        // Untake fails when the token fired in between, and then it has
+        // cancelled the call itself.
+        if (call is not null && !call.Untake()) return HandOver.Dead;
+        return HandOver.Lost;
     }
 
     /// <summary>
@@ -228,11 +269,7 @@ public sealed class Inbox<T>
                 return true;
             }
 
-            if (r.State.TryCommit(r.EventId))
-            {
-                InboxWake.Resume(r.OnSync, item);
-                return true;
-            }
+            if (HandTo(r, item) != HandOver.Lost) return true;
         }
     }
 

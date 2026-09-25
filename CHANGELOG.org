@@ -3,6 +3,28 @@
 
 What each change guarantees, and what it leaves open.
 
+* A call handed to a waiting receiver is taken
+
+A ~Call~ made with a token (~inbox-call/token~, ~inbox-try-call/token~) is
+either still queued or taken, and the token does different things to each: a
+queued call is cancelled, and a taken one is left pending while
+~call-abandoned~ fires for the receiver. A call was marked taken only when a
+receive took it from the queue. A call that found a receiver already waiting
+was handed straight over and never marked. When its token fired, the call was
+cancelled as though still queued, under a receiver that was answering it, and
+~call-abandoned~ never fired.
+
+In a web server the idle workers are all waiting, so this was the usual path.
+A client that went away mid-request made Kestrel finish the request and recycle
+its ~HttpContext~ while the handler could still be using it. The handler never
+heard that the client had gone.
+
+~inbox-post!~ and ~inbox-send~ now mark a call taken before handing it to a
+waiting receiver, and mark it queued again when that receiver's ~choose~ was
+won elsewhere, as a receive from the queue does. A call whose token fired
+before it could be handed over is not handed over. Tested in
+~229_inbox_calls.bjo~.
+
 * ~utf8~ writes no byte order mark
 
 ~utf8~ in ~(std ports)~ was ~System.Text.Encoding.UTF8~, which starts every

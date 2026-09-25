@@ -312,6 +312,33 @@
     (None (fail "the call was never received")))
 
   ;; -------------------------------------------------------------------------
+  ;; Abandoned after being handed to a receiver that was already waiting
+  ;; -------------------------------------------------------------------------
+  ;; A call that finds a receiver waiting is handed straight over, not queued,
+  ;; and has to be marked taken on that path too. Otherwise the token takes it
+  ;; for a queued call: it cancels the task under the receiver and never tells
+  ;; it. A web server's idle workers are all waiting, so this is the usual path.
+  (def waiting-inbox (make-inbox 8 DropNewest))
+  (def waiting-receiver (bjo (recv-call waiting-inbox 2000)))
+  ;; Long enough for the receiver to be parked on the inbox.
+  (ignore (sync (timeout 50)))
+  (def leaving (Cancelling.))
+  (def handed (inbox-call/token waiting-inbox 4 (.-Token leaving)))
+  (match (sync (promise-join waiting-receiver))
+    ((Ok (Some c))
+     (.Cancel leaving)
+     (expect "a call handed to a waiting receiver is not completed by the token"
+             (settled handed 0)
+             "still pending")
+     (expect "and that receiver is told it was abandoned"
+             (sync (choose (wrap (call-abandoned c) (fun (u) "abandoned"))
+                           (wrap (timeout 2000) (fun (u) "never told"))))
+             "abandoned")
+     (expect-true "it may still answer" (call-reply! c 8))
+     (expect "which completes the caller's task" (settled handed 1000) "completed"))
+    (_ (fail "the waiting receiver never got the call")))
+
+  ;; -------------------------------------------------------------------------
   ;; The race, many times over (prompt test 14)
   ;; -------------------------------------------------------------------------
   (def racing (make-inbox 8 DropNewest))
