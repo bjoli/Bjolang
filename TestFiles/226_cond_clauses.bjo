@@ -44,9 +44,18 @@
 (defun (port-of settings override?)
   (cond
     (override? 9999)
-    (:def (Some port) (map-try-ref settings "port") 8080)
+    (:def (Some port) (map-try-ref settings "port") :leave-with 8080)
     ((< port 1024) 0)
     (else port)))
+
+;; `:default` never answers: the name is bound either way and the clauses below
+;; decide.
+(: port-class (-> (Map string int) string))
+(defun (port-class settings)
+  (cond
+    (:def (Some port) (map-try-ref settings "port") :default 8080)
+    ((< port 1024) "privileged")
+    (else (str "user " (int->string port)))))
 
 ;; ...including `:propagate`, which rebuilds the case it did not match at the
 ;; type of the cond.
@@ -73,6 +82,19 @@
     (:do (note! "and again"))
     (else "positive")))
 
+;; `:match` is a test that binds: it answers on a match, and falls through to
+;; the next clause when the pattern or the guard fails.
+(: listen-port (-> (Map string string) bool int))
+(defun (listen-port env override?)
+  (cond
+    (override? 9999)
+    (:match (Some text) (map-try-ref env "PORT") #:when (not (string-empty? text))
+     (string->int text))
+    (:match (Some port) (map-try-ref env "FALLBACK_PORT")
+     (note! "fallback ")
+     (string->int port))
+    (else 8080)))
+
 (defun (main)
   (expect "a test before the bindings still answers" (classify "") "empty")
   (expect "a binding is in scope in the tests below it" (classify "42") "number of 2")
@@ -93,6 +115,11 @@
   (expect "and a test below it sees the binding"
           (port-of (map-set (map-empty) "port" 80) #f) 0)
 
+  (expect "a :def with :default carries on when it fails"
+          (port-class (map-empty)) "user 8080")
+  (expect "and uses the value when it matches"
+          (port-class (map-set (map-empty) "port" 80)) "privileged")
+
   (expect "a :def may propagate" (doubled (Err "no")) (Err "no"))
   (expect "and carry on when it matches" (doubled (Ok 21)) (Ok 42))
 
@@ -102,4 +129,13 @@
   (expect "in order" (box-ref trace) "checked checked and again")
   (expect "and a test before them all skips them" (with-notes -1) "negative")
   (expect "leaving the trace alone" (box-ref trace) "checked checked and again")
+
+  (def env (map-set (map-set (map-empty) "PORT" "3000") "FALLBACK_PORT" "4000"))
+  (expect "a :match answers when it matches" (listen-port env #f) 3000)
+  (expect "a clause above it still wins" (listen-port env #t) 9999)
+  (expect "a failed guard falls through to the next clause"
+          (listen-port (map-set env "PORT" "") #f) 4000)
+  (expect "a body may have several forms"
+          (box-ref trace) "checked checked and againfallback ")
+  (expect "a failed pattern falls through too" (listen-port (map-empty) #f) 8080)
   0)

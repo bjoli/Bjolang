@@ -349,14 +349,19 @@ and DefFailure =
     /// is rebuilt at the body's type. Which cases those are, and whether the
     /// body can hold them, `InferExpr` decides once the scrutinee has a type.
     | FailPropagate
-    /// `(def pattern scrutinee value-expr)` — the third slot is always an
-    /// expression. What the binder would have bound is not in scope in it, so
-    /// carrying a payload out of the failure takes `:fail`.
-    | FailValue of Expr
-    /// `(def pattern scrutinee :fail (arm arm ...))`. The arms match the
-    /// clause's own scrutinee, so between them they have to cover the
-    /// scrutinee's type minus the clause pattern.
-    | FailArms of (Pattern * Expr) list
+    /// `(def pattern scrutinee :leave-with value)`. What the binder would have
+    /// bound is not in scope in it, so carrying a payload out of the failure
+    /// takes `:leave`.
+    | FailLeaveWith of Expr
+    /// `(def pattern scrutinee :leave arm ...)`. The arms match the clause's
+    /// own scrutinee, so between them they have to cover the scrutinee's type
+    /// minus the clause pattern.
+    | FailLeave of (Pattern * Expr) list
+    /// `(def pattern scrutinee :default value)`, which the parser writes as
+    /// `(def x (begin (def pattern scrutinee <this>) x))`, x being the
+    /// pattern's one binder. So it leaves like `FailLeaveWith`, and the form it
+    /// leaves is the one that gives x its value. Kept apart for the reports.
+    | FailDefault of Expr
 
 and DefunArg =
     /// A positional parameter, with the type `(: name type)` gave it if it was
@@ -834,8 +839,9 @@ let mapDefFailure (onExpr: Expr -> Expr) (onPattern: Pattern -> Pattern) (failur
     match failure with
     | FailNone -> FailNone
     | FailPropagate -> FailPropagate
-    | FailValue value -> FailValue(onExpr value)
-    | FailArms arms -> FailArms(arms |> List.map (fun (pat, body) -> onPattern pat, onExpr body))
+    | FailLeaveWith value -> FailLeaveWith(onExpr value)
+    | FailDefault value -> FailDefault(onExpr value)
+    | FailLeave arms -> FailLeave(arms |> List.map (fun (pat, body) -> onPattern pat, onExpr body))
 
 /// Every expression held directly inside `e`.
 ///
@@ -895,8 +901,9 @@ let exprChildren (e: Expr) : Expr list =
         @ (match failure with
            | FailNone
            | FailPropagate -> []
-           | FailValue value -> [ value ]
-           | FailArms arms -> arms |> List.collect (fun (pat, body) -> patternSteps pat @ [ body ]))
+           | FailLeaveWith value
+           | FailDefault value -> [ value ]
+           | FailLeave arms -> arms |> List.collect (fun (pat, body) -> patternSteps pat @ [ body ]))
 
 /// One walk over an untyped expression, calling `reference name range guarded`
 /// at every name it mentions but does not bind.
@@ -1029,8 +1036,9 @@ let freeNamesWith (reference: string -> Range -> bool -> unit) (guarded: bool) (
             match failure with
             | FailNone
             | FailPropagate -> ()
-            | FailValue value -> go guarded bound value
-            | FailArms arms ->
+            | FailLeaveWith value
+            | FailDefault value -> go guarded bound value
+            | FailLeave arms ->
                 for (armPattern, armBody) in arms do
                     for step in patternSteps armPattern do
                         go guarded bound step

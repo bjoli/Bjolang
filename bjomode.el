@@ -25,6 +25,7 @@
 ;;; Code:
 
 (require 'lisp-mode)
+(require 'seq)
 
 ;; Bound by `calculate-lisp-indent' around the call to `lisp-indent-function',
 ;; and not declared anywhere public. `scheme.el' reads it the same way.
@@ -90,8 +91,8 @@
     ;; The name and the collector, then the body.
     (let/mono . 2)
     ;; `(def pattern scrutinee)', and the failure part the refutable shapes add
-    ;; after it: `(def pattern scrutinee value)', `(def pattern scrutinee
-    ;; :fail (arm ...))' and `(def pattern scrutinee :propagate)'.
+    ;; after it, such as `(def pattern scrutinee :leave-with value)' or
+    ;; `(def pattern scrutinee :leave arm ...)'.
     ;;
     ;; `defun' rather than a count, because the count differs by shape and the
     ;; indentation does not: a failure part comes after a pattern and a
@@ -127,12 +128,113 @@ begins with `def', which the rule below would otherwise read as a
 definition and indent its clauses two spaces in."
   nil)
 
+(defconst bjo--failure-keyword-re
+  "#?:\\(?:leave-with\\|leave\\|propagate\\|default\\)\\_>"
+  "A keyword that starts a `def' clause's failure part, in either spelling.")
+
+(defun bjo--column-at (pos)
+  "The column of POS."
+  (save-excursion (goto-char pos) (current-column)))
+
+(defun bjo--clause-elements (open limit)
+  "The pattern and what follows it, for the `def' clause opening at OPEN.
+
+A list of start positions up to LIMIT, the pattern's first. Nil
+when the list at OPEN is not a clause: a `def', a `cond' `:def',
+or a parenthesised clause of a `def*'."
+  (save-excursion
+    (goto-char open)
+    (let ((head-is-def (looking-at "(\\s-*:?def\\_>"))
+          (in-def-star (let ((parent (nth 1 (syntax-ppss open))))
+                         (and parent
+                              (save-excursion
+                                (goto-char parent)
+                                (looking-at "(\\s-*def\\*\\_>"))))))
+      (when (or head-is-def (and in-def-star (eq (char-after open) ?\()))
+        (goto-char (1+ open))
+        (let ((starts nil))
+          (condition-case nil
+              (while (progn (forward-comment (buffer-size)) (< (point) limit))
+                (push (point) starts)
+                (forward-sexp 1))
+            (scan-error nil))
+          (setq starts (nreverse starts))
+          ;; A `def' and a `:def' have their head before the pattern; a
+          ;; `def*' clause starts with it. The `def*' head itself is no clause.
+          (cond (head-is-def (cdr starts))
+                ((and in-def-star
+                      (save-excursion
+                        (goto-char (car starts))
+                        (looking-at "def\\*\\_>")))
+                 nil)
+                (t starts)))))))
+
+(defun bjo--failure-indent (indent-point state)
+  "The column for the line at INDENT-POINT in a `def' clause's failure part.
+
+A failure keyword lines up under the clause's pattern, and the
+arms after `:leave' under the first arm. Nil for any other line,
+which indents as it would anyway."
+  (let ((open (elt state 1)))
+    (when open
+      (save-excursion
+        (goto-char indent-point)
+        (skip-chars-forward " \t")
+        (let* ((here (point))
+               (elements (bjo--clause-elements open (1+ here))))
+          (when (cdr elements)
+            (let ((leave (seq-find (lambda (p)
+                                     (and (< p here)
+                                          (save-excursion
+                                            (goto-char p)
+                                            (looking-at "#?:leave\\_>"))))
+                                   elements)))
+              (cond
+               ((looking-at bjo--failure-keyword-re)
+                (bjo--column-at (car elements)))
+               (leave
+                (let ((first-arm (seq-find (lambda (p) (> p leave)) elements)))
+                  (bjo--column-at (if (and first-arm (< first-arm here))
+                                      first-arm
+                                    leave))))))))))))
+
+;; `calculate-lisp-indent' asks `lisp-indent-function' only about a line whose
+;; previous form starts on the list's first line. The second arm after a
+;; `:leave' follows one that does not, so the failure part is decided here,
+;; ahead of it, and in `bjo-mode' buffers only. TAB, `indent-region' and
+;; `indent-sexp' all come through this function.
+;;
+;; Inside a clause the answer is (COLUMN START) rather than a column:
+;; `lisp-indent-region' reuses a plain column for every following line at the
+;; same depth without asking again, and in a clause the next line may be a
+;; failure keyword or an arm that indents differently.
+(defun bjo--calculate-indent (calculate &rest args)
+  "Answer the failure part's column, or call CALCULATE with ARGS."
+  (if (not (derived-mode-p 'bjo-mode))
+      (apply calculate args)
+    (let* ((state (save-excursion (beginning-of-line) (syntax-ppss)))
+           (open (nth 1 state))
+           (in-clause (and open
+                           (bjo--clause-elements open (save-excursion
+                                                        (beginning-of-line)
+                                                        (point)))))
+           (indent (or (save-excursion
+                         (beginning-of-line)
+                         (bjo--failure-indent (point) state))
+                       (apply calculate args))))
+      (if (and in-clause (integerp indent))
+          (list indent open)
+        indent))))
+
+(advice-add 'calculate-lisp-indent :around #'bjo--calculate-indent)
+
 (defun bjo-indent-function (indent-point state)
   "Indent a Bjolang form at INDENT-POINT, given parser STATE.
 
 A form whose head has a `bjo-indent-function' property indents by
 it; one whose head begins with `def' indents its body; everything
-else aligns under its first argument."
+else aligns under its first argument. A `def' clause's failure part
+is not decided here; see `bjo--calculate-indent'."
   (let ((normal-indent (current-column)))
     (goto-char (1+ (elt state 1)))
     (parse-partial-sexp (point) calculate-lisp-indent-last-sexp 0 t)
@@ -219,9 +321,10 @@ else aligns under its first argument."
 ;; to, and the only thing that says so is the part that says what it evaluates
 ;; to *instead*:
 ;;
-;;   (def pattern scrutinee value)
-;;   (def pattern scrutinee :fail ((pattern body ...) ...))
+;;   (def pattern scrutinee :leave-with value)
+;;   (def pattern scrutinee :leave (pattern body ...) ...)
 ;;   (def pattern scrutinee :propagate)
+;;   (def pattern scrutinee :default value)
 ;;
 ;; and the same in each clause of a `(def* clause ...)'. The part is small next
 ;; to the binding it hangs off, so the failure gets a background of its own, and
@@ -249,7 +352,7 @@ clause.")
 (defvar bjo--failure-resume nil
   "Where point goes once a `def' form's failure parts are fontified.
 The head's own position, so that the search resumes inside the
-form and a `def' written in a `:fail' arm is found in its turn.")
+form and a `def' written in a `:leave' arm is found in its turn.")
 
 (defun bjo--skip-blanks (limit)
   "Move past whitespace and comments, stopping at LIMIT."
@@ -270,17 +373,16 @@ whole of `(def name value)' and of a clause whose pattern cannot fail."
         (forward-sexp 2)
         (bjo--skip-blanks limit)
         (when (< (point) limit)
-          (let ((beg (point)))
-            ;; `:fail' and the arms after it are one part: the keyword is the
-            ;; only thing that says the list is arms rather than a value.
-            ;; `:propagate' stands alone and is taken by the `forward-sexp'
-            ;; below like any other single form.
-            (when (looking-at ":fail\\_>")
-              (goto-char (match-end 0))
-              (bjo--skip-blanks limit))
-            (forward-sexp 1)
-            (when (<= (point) limit)
-              (cons beg (point))))))
+          ;; Everything after the scrutinee is the failure part: a keyword
+          ;; alone, a keyword and its value, or `:leave' and its arms.
+          (let ((beg (point))
+                (end nil))
+            (while (progn (bjo--skip-blanks limit) (< (point) limit))
+              (forward-sexp 1)
+              (when (<= (point) limit)
+                (setq end (point))))
+            (when end
+              (cons beg end)))))
     (scan-error nil)))
 
 (defun bjo--form-failures (start)
@@ -426,15 +528,16 @@ is how font-lock is told the region moved."
     ;; %a, %elem — a type variable.
     ("%[[:alnum:]_-]+" . font-lock-type-face)
 
-    ;; (def pattern scrutinee ...) and (def* clause ...) — the head, and then
-    ;; the failure part of every clause that has one, found by scanning from
-    ;; here. `defun', `defbjo' and `def/mutable' are other heads and are matched
-    ;; by the rules above: `\_>' is what keeps `def' from standing for them.
+    ;; (def pattern scrutinee ...), (def* clause ...) and a `cond' clause
+    ;; (:def pattern scrutinee ...) — the head, and then the failure part of
+    ;; every clause that has one, found by scanning from here. `defun', `defbjo'
+    ;; and `def/mutable' are other heads and are matched by the rules above:
+    ;; `\_>' is what keeps `def' from standing for them.
     ;;
     ;; Last in the list, and appended rather than overriding, so that a failure
     ;; part keeps every colour the rules above gave what is inside it and gains
     ;; only the background.
-    ("(\\(def\\*?\\)\\_>"
+    ("(\\(def\\*?\\|:def\\)\\_>"
      (1 font-lock-keyword-face)
      (bjo-match-failure (bjo--failures-ahead) (goto-char bjo--failure-resume)
                         (0 'bjo-failure append))))
@@ -451,7 +554,7 @@ is how font-lock is told the region moved."
   (setq-local font-lock-defaults '(bjo-font-lock-keywords))
   ;; A failure part runs over as many lines as it needs, and font-lock works a
   ;; line at a time: this is what marks one as a unit, so that editing a line in
-  ;; the middle of a `:fail' redraws the whole of it. `bjo-extend-region' is the
+  ;; the middle of a `:leave' redraws the whole of it. `bjo-extend-region' is the
   ;; other half, for a region that begins in a form nothing has fontified yet.
   (setq-local font-lock-multiline t)
   (add-hook 'font-lock-extend-region-functions #'bjo-extend-region nil t)

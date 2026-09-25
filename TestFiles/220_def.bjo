@@ -5,11 +5,12 @@
 ;; pattern does not match, what the clause says becomes the value of the
 ;; enclosing body — nothing jumps anywhere.
 ;;
-;; A pattern that may fail needs a failure part: a value, `:fail` arms, or
-;; `:propagate`. Nothing written means the pattern has to match every value.
+;; A pattern that may fail needs a failure part: `:leave-with`, `:leave`,
+;; `:default` or `:propagate`. Nothing written means the pattern has to match
+;; every value.
 ;;
 ;; `219_with_return.bjo` covers a failure used as an escape, written out as the
-;; `(ret ...)` it is. This file covers the three failure parts themselves.
+;; `(ret ...)` it is. This file covers the failure parts themselves.
 
 (import (std prelude))
 (import (std simpletest))
@@ -64,10 +65,10 @@
 ;; --- A failure value -------------------------------------------------------
 (: length-or-zero (-> string int))
 (defun (length-or-zero k)
-  (def (Some found) (lookup k) 0)
+  (def (Some found) (lookup k) :leave-with 0)
   (string-length found))
 
-;; --- `:fail` arms ----------------------------------------------------------
+;; --- `:leave` arms ---------------------------------------------------------
 ;;
 ;; The arms match the clause's own scrutinee, so `(Err why)` is an ordinary
 ;; pattern over it and `why` is in scope in that arm. Nothing the *clause*
@@ -78,15 +79,15 @@
 (: explain (-> string string))
 (defun (explain s)
   (def (Ok n) (parse-int s)
-    :fail (((Err "not a number: zero") "a zero is not a number here")
-           ((Err why) (str "refused (" why ")"))))
+    :leave ((Err "not a number: zero") "a zero is not a number here")
+           ((Err why) (str "refused (" why ")")))
   (str "accepted " (int->string n)))
 
 ;; Two arms covering a list, with no wildcard: `Cons` and `Nil` are the whole of
 ;; `List`.
 (: head-or (-> (List string) string))
 (defun (head-or xs)
-  (def (Cons first _) xs :fail ((Nil "empty")))
+  (def (Cons first _) xs :leave (Nil "empty"))
   (str "first = " first))
 
 ;; --- def*: several clauses, in order ---------------------------------------
@@ -95,8 +96,8 @@
 ;; a failure produces.
 (: greet (-> string string (Result string string)))
 (defun (greet key number)
-  (def* ((Some found) (lookup key) (Err "no such key"))
-        ((Ok n) (parse-int number) :fail (((Err why) (Err why)))))
+  (def* ((Some found) (lookup key) :leave-with (Err "no such key"))
+        ((Ok n) (parse-int number) :leave ((Err why) (Err why))))
   (Ok (str found "/" (int->string n))))
 
 ;; A `def*` whose clauses all propagate.
@@ -125,7 +126,7 @@
 ;; In a lambda that is the lambda, not the function around it.
 (: measured (-> (Option string) (Option string) string))
 (defun (measured a b)
-  (def size (fun (o) (def (Some s) o 0) (string-length s)))
+  (def size (fun (o) (def (Some s) o :leave-with 0) (string-length s)))
   (str (int->string (size a)) "/" (int->string (size b))))
 
 ;; In a `when` it is the `when`, and what follows the `when` still runs. The
@@ -135,7 +136,7 @@
 (defun (trace o)
   (def/mutable log "")
   (when #t
-    (def (Some s) o (set! log (str log "missing ")))
+    (def (Some s) o :leave-with (set! log (str log "missing ")))
     (set! log (str log s " ")))
   (set! log (str log "after"))
   log)
@@ -149,12 +150,77 @@
 (defun (parity s)
   (defun (even? k) (if (= k 0) #t (odd? (- k 1))))
   (defun (odd? k) (if (= k 0) #f (even? (- k 1))))
-  (def (Ok n) (parse-int s) "unparseable")
+  (def (Ok n) (parse-int s) :leave-with "unparseable")
   (def answer (if (even? n) "even" "odd"))
   (str s " is " answer))
 
+;; --- `:default` binds the one name and carries on --------------------------
+;;
+;; The value has the binder's type, not the scrutinee's, and the rest of the
+;; body runs either way.
+(: port-of (-> string int))
+(defun (port-of k)
+  (def (Some found) (lookup k) :default "8080")
+  (+ 1 (string-length found)))
+
+;; Reaching past the outer case: `n` is the int inside `(Ok (Some n))`.
+(: inner-or-zero (-> (Result string (Option int)) int))
+(defun (inner-or-zero r)
+  (def (Ok (Some n)) r :default 0)
+  (* n 10))
+
+;; The value is evaluated only when the pattern fails.
+(def/mutable defaults-made 0)
+
+(: made-default (-> string))
+(defun (made-default)
+  (set! defaults-made (+ defaults-made 1))
+  "made")
+
+(: default-once (-> (Option string) string))
+(defun (default-once o)
+  (def (Some s) o :default (made-default))
+  s)
+
+;; In a def*, a defaulted clause never short-circuits, and the clauses after
+;; it see the name.
+(: defaulted-then-parsed (-> string (Result string int)))
+(defun (defaulted-then-parsed key)
+  (def* ((Some found) (lookup key) :default "12")
+        ((Ok n) (parse-int found) :propagate))
+  (Ok (+ n (string-length found))))
+
+;; What `:default` stands for, written out: a name bound by a def around a
+;; def whose pattern binds the same name. The two are one C# scope.
+(: rebound (-> (Option int) int))
+(defun (rebound o)
+  (def n (begin (def (Some n) o :leave-with 0) (+ n 1)))
+  n)
+
+;; At the top level, where no failure part that leaves is allowed.
+(def (Some top-host) (lookup "host") :default "nowhere")
+(def (Some top-port) (lookup "port") :default "8080")
+
 (defun (main)
   (expect "a plain binding and a tuple destructuring" (plain 3) "x6")
+
+  (expect ":default, matching" (port-of "host") 10)
+  (expect ":default, failing, and the body carries on" (port-of "port") 5)
+  (expect ":default inside a nested pattern, matching" (inner-or-zero (Ok (Some 4))) 40)
+  (expect ":default inside a nested pattern, inner case failing" (inner-or-zero (Ok None)) 0)
+  (expect ":default inside a nested pattern, outer case failing" (inner-or-zero (Err "no")) 0)
+  (set! defaults-made 0)
+  (expect ":default, not evaluated on a match" (default-once (Some "given")) "given")
+  (expect "so nothing was made" defaults-made 0)
+  (expect ":default, evaluated on a failure" (default-once None) "made")
+  (expect "once" defaults-made 1)
+  (expect ":default in a def*, then a clause reading it"
+          (match (defaulted-then-parsed "port") ((Ok n) n) ((Err _) -1))
+          14)
+  (expect "a def's binder named as the def around it, matching" (rebound (Some 4)) 5)
+  (expect "a def's binder named as the def around it, failing" (rebound None) 0)
+  (expect ":default at the top level, matching" top-host "localhost")
+  (expect ":default at the top level, failing" top-port "8080")
 
   (expect "a bare clause matching"
           (match (name-length "host") ((Some n) n) (None -1))

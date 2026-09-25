@@ -33,10 +33,10 @@
 (: configure (-> (Option Cfg) (Option string) (Result string string)))
 (defun (configure cfg-opt host-opt)
   (with-return ret
-    (def (Some cfg) cfg-opt (Err "no config"))
+    (def (Some cfg) cfg-opt :leave-with (Err "no config"))
     (def (Cons first-host _) (record-ref cfg hosts)
-      (Err (str "no hosts, and the port was " (int->string (record-ref cfg port)))))
-    (def (Some host) host-opt (Err "no host"))
+      :leave-with (Err (str "no hosts, and the port was " (int->string (record-ref cfg port)))))
+    (def (Some host) host-opt :leave-with (Err "no host"))
     (Ok (str host "/" first-host ":" (int->string (record-ref cfg port))))))
 
 ;; --- three scrutinees, one message -----------------------------------------
@@ -46,9 +46,9 @@
 (: triple (-> (Option int) (Option int) (Option int) string))
 (defun (triple a b c)
   (with-return ret
-    (def (Some x) a (ret "something was missing"))
-    (def (Some y) b (ret "something was missing"))
-    (def (Some z) c (ret "something was missing"))
+    (def (Some x) a :leave-with (ret "something was missing"))
+    (def (Some y) b :leave-with (ret "something was missing"))
+    (def (Some z) c :leave-with (ret "something was missing"))
     (str (int->string (+ x (+ y z))))))
 
 ;; --- ret from inside a loop ------------------------------------------------
@@ -137,7 +137,7 @@
 (: classify (-> (Option int) string))
 (defun (classify o)
   (with-return ret
-    (def (Some n) o "none")
+    (def (Some n) o :leave-with "none")
     (when (< n 0) (ret "negative"))
     "positive"))
 

@@ -552,7 +552,7 @@
     ;; stops at the first thing that is not one, so `bjo init mylib --lib`
     ;; would otherwise be a name and a second argument.
     (def* ((None) (find #(and (string-starts-with? & "-") (not (= & "--lib"))) arguments)
-            :fail (((Some flag) (fail #"bjo init: unknown flag '${flag}'."))))
+            :leave ((Some flag) (fail #"bjo init: unknown flag '${flag}'.")))
           (library? (or lib? (any? #(= & "--lib") arguments)))
           (names (loop (:for a arguments)
                        (:acc out (listing a) #:when (not (string-starts-with? a "-")))
@@ -570,7 +570,7 @@
       (ret (fail "bjo init: takes one name, or none to use the directory's.")))
 
     (def (Ok name) (parse-package-name written)
-      :fail (((Err why) (fail why))))
+      :leave ((Err why) (fail why)))
 
     (when (reserved-name? name)
       (ret (fail (str #"bjo init: ${(name->string name)} is part of the standard library, "

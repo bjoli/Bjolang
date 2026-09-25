@@ -219,22 +219,23 @@ exports nothing and declares no type publishes no impls either.
 
 An entry is a top level — a list of declarations — so a pattern in it binds
 exactly as one in a module does: every name becomes a definition, and the
-pattern has to match every value. A failure part has nothing to be the value of
-and is refused.
+pattern has to match every value. A failure part that leaves has nothing to be
+the value of and is refused. ~:default~ never leaves, so it is taken.
 
 #+begin_src scheme
 bjo> (def* ((Tuple a b) (Tuple 1 2)))
 a b
 bjo> (def (Some x) (lookup k))
 Pattern Error: this def's pattern does not match every value, and at the top level there is nowhere else for one to go.
-bjo> (defun (f (: o (Option int))) : int (def (Some x) o 0) (+ x 1))
+bjo> (def (Some x) (lookup k) :default 0)
+x
+bjo> (defun (f (: o (Option int))) : int (def (Some x) o :leave-with 0) (+ x 1))
 f
 #+end_src
 
-The refutable case is the one people want at a prompt, and making it work means
-deciding what the rest of the session is: on a failure nothing may be bound, and
-the entries already compiled cannot be the sequel of an entry typed later. Not
-done; the workaround above is a function.
+Leaving at a prompt means deciding what the rest of the session is: on a
+failure nothing may be bound, and the entries already compiled cannot be the
+sequel of an entry typed later. Not done; the workaround above is a function.
 
 ** An ambiguous definition is rejected, not defaulted
 

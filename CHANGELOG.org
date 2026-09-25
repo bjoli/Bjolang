@@ -3,6 +3,50 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~def~ failure parts are named, and ~:default~ is new
+
+Every failure part of a ~def~, ~def*~ clause or ~cond~ ~:def~ now starts with a
+keyword. Where a failure goes has not changed.
+
+| Before                      | Now                           |
+|-----------------------------+-------------------------------|
+| ~(def p e value)~           | ~(def p e :leave-with value)~ |
+| ~(def p e :fail (arm ...))~ | ~(def p e :leave arm ...)~    |
+| ~(def p e :propagate)~      | unchanged                     |
+| —                           | ~(def p e :default value)~    |
+
+- *A bare value is an error.* It read as a default and meant leaving the body.
+  The error shows both ~:leave-with~ and ~:default~ and says what each does.
+- *~:leave~* comes last, and its arms are not wrapped in a list. ~:fail~ is
+  gone, not an alias.
+- *~:default value~* binds the pattern's one name to ~value~ when the pattern
+  does not match, and the next form runs either way. The value has the name's
+  type and is evaluated only on failure. A pattern binding no name or several
+  is an error, and so is one that cannot fail. It is allowed at the top level
+  and in the REPL, since it never leaves. In a ~def*~ it never short-circuits.
+
+Migration is mechanical: every bare value becomes ~:leave-with value~, every
+~:fail (arms)~ becomes ~:leave arms~. All of ~bjo/~, ~lib/~ and ~TestFiles/~ are
+converted. Tested in ~220_def.bjo~, ~226_cond_clauses.bjo~ and the ~def_*~ files
+in ~TestFiles/errors/~.
+
+Also fixed: a name bound by a ~def~'s pattern was not renamed when it collided
+with another local in the same C# method, such as ~(def n (begin (def (Some n)
+o :leave-with 0) n))~, which failed with CS0128. ~:default~ is written that way.
+
+* ~(:match pattern expr body ...)~ in ~cond~
+
+A ~cond~ clause that answers when ~expr~ matches ~pattern~ and an optional
+~#:when guard~ holds, and falls through to the next clause otherwise. It is the
+bracketed counterpart of ~:def~: what it binds is in scope in its guard and
+body only, and a failed match means "next clause", not a value for the rest
+of the ~cond~. It covers what Haskell's pattern guards and Rust's ~if let~ do,
+without an exit that is not visible where it is written.
+
+It expands to one ~match~ whose fallback arm is the rest of the ~cond~, so
+nothing is duplicated. Tested in ~226_cond_clauses.bjo~ and
+~errors/cond_match_scope.bjo~.
+
 * Four backend fixes found by writing bjosql and bjosqlite
 
 - *A generic call whose type arguments only a lambda argument mentions* now

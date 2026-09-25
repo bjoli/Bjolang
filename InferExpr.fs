@@ -986,8 +986,9 @@ and private inferDefMatch
     let failureArms =
         match failure with
         | FailNone -> []
-        | FailArms arms -> arms |> List.map (fun (pat, body) -> None, pat, body)
-        | FailValue value -> [ None, PWildcard(exprRange value), value ]
+        | FailLeave arms -> arms |> List.map (fun (pat, body) -> None, pat, body)
+        | FailLeaveWith value
+        | FailDefault value -> [ None, PWildcard(exprRange value), value ]
         | FailPropagate ->
             propagatedArms env scrutineeType typedBinder r
             |> List.map (fun (caseName, (pat, body)) -> Some caseName, pat, body)
@@ -1008,11 +1009,14 @@ and private inferDefMatch
                 let shown =
                     DotNetInterop.showTypesTogether [ prune env.Registry armType; prune env.Registry sequelType ]
 
-                match propagated with
-                | Some caseName ->
+                match propagated, failure, sequel with
+                | Some caseName, _, _ ->
                     failwithf
                         $"Type Error at %s{Lexer.formatPos r}: `:propagate` would return %s{Naming.showTypeName caseName} here, but this body has type %s{shown[1]}."
-                | None ->
+                | None, FailDefault _, EIdent(name, _) ->
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos typedBody.Range}: `:default` gives %s{name} its value, so it has %s{name}'s type:\n  the default: %s{shown[0]}\n  %s{name}: %s{shown[1]}"
+                | None, _, _ ->
                     // The `void` sequel is the mistake this form invites, and
                     // it is worth naming: it is what a body written for its
                     // effects leaves behind, and the failure that "returned a
@@ -1060,7 +1064,7 @@ and private propagatedArms
     let rebuild (caseName: string, arity: int) =
         if not (Map.containsKey caseName env.Bindings) then
             failwithf
-                $"Type Error at %s{Lexer.formatPos r}: `:propagate` rebuilds the cases this pattern leaves out, and %s{Naming.showTypeName caseName} of %s{shown} is not in scope here. Import it, or give a failure value or a :fail clause."
+                $"Type Error at %s{Lexer.formatPos r}: `:propagate` rebuilds the cases this pattern leaves out, and %s{Naming.showTypeName caseName} of %s{shown} is not in scope here. Import it, or use :leave-with or :leave."
 
         let carried = List.init arity (fun _ -> Gensym.fresh "carried")
 
@@ -1078,7 +1082,7 @@ and private propagatedArms
     | Some cases -> cases |> List.map rebuild
     | None ->
         failwithf
-            $"Type Error at %s{Lexer.formatPos r}: `:propagate` rebuilds whole cases of the scrutinee's type, and what this pattern leaves of %s{shown} is not a set of cases. Give a failure value or a :fail clause."
+            $"Type Error at %s{Lexer.formatPos r}: `:propagate` rebuilds whole cases of the scrutinee's type, and what this pattern leaves of %s{shown} is not a set of cases. Use :leave-with or :leave."
 
 // `Class.Member` — a static field or property. This is how an enum value
 // such as `FileMode.Open` is written, and it is why `import/class` is

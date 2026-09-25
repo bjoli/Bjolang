@@ -326,8 +326,9 @@ let checkEscapeUses (name: string) (body: Expr) : unit =
             (match failure with
              | FailNone
              | FailPropagate -> ()
-             | FailValue value -> go barrier tail value
-             | FailArms arms ->
+             | FailLeaveWith value
+             | FailDefault value -> go barrier tail value
+             | FailLeave arms ->
                  for (armPattern, armBody) in arms do
                      for step in patternSteps armPattern do
                          sub step
@@ -574,13 +575,14 @@ let private renameWith
                 match failure with
                 | FailNone -> FailNone
                 | FailPropagate -> FailPropagate
-                | FailValue value -> FailValue(go subst value)
-                | FailArms arms ->
+                | FailLeaveWith value -> FailLeaveWith(go subst value)
+                | FailDefault value -> FailDefault(go subst value)
+                | FailLeave arms ->
                     arms
                     |> List.map (fun (armPattern, armBody) ->
                         let _, armSubst = bind (patternBinders armPattern) subst
                         (renamePattern (go subst) armSubst armPattern, go armSubst armBody))
-                    |> FailArms
+                    |> FailLeave
 
             EDefMatch(
                 renamePattern (go subst) sequelSubst binder,

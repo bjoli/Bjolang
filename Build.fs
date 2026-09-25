@@ -157,7 +157,7 @@ let private writeBuildRecord
             match NuGetRefs.directory () with
             | Some dir when NuGetRefs.appliesTo inputFilePath ->
                 $"nuget %s{dir}" :: (NuGetRefs.listFiles () |> List.map (fun f -> $"nuget-list %s{f}"))
-            | None -> []
+            | _ -> []
 
         let lines =
             [ $"""mode %s{if options.Debug then "debug" else "release"}"""

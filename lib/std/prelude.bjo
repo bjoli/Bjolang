@@ -1992,6 +1992,11 @@
 ;;
 ;; Cond requires else.
 ;;
+;; `(:match pattern expr body ...)`, with an optional `#:when guard` after
+;; `expr`, is a test that binds: it answers when `expr` matches and the guard
+;; holds, and falls through to the next clause otherwise. What it binds is in
+;; scope in its guard and body only.
+;;
 ;; Two clauses do not answer anything. `(:def pattern expr)` binds, and
 ;; `(:do body ...)` runs something; both are reached only when every test
 ;; above them has failed, and what a `:def` binds is in scope in every clause
@@ -2001,8 +2006,8 @@
 ;;
 ;; A `:def` clause *is* a `def`: the sequel it swallows is the rest of the
 ;; cond, so a refutable pattern takes the same failure part it takes anywhere
-;; else, and `(:def (Ok v) (parse s) :propagate)` makes the whole cond the
-;; `Err`.
+;; else: `(:def (Ok v) (parse s) :propagate)` makes the whole cond the `Err`,
+;; and `(:def (Some n) (lookup k) :default 0)` binds `n` and never answers.
 (def/macro (cond form inject compare)
   (syntax-match form
     ((_ clause ...) (cond-arms clause form))
@@ -2020,7 +2025,21 @@
        ((:def pattern expr fail ...)
         #'(let () (def ,pattern ,expr ,@fail) ,(cond-arms rest whole)))
        ((:def junk ...)
-        (syntax-error clause "(:def ...) binds: (:def name expr), or (:def pattern expr :propagate)."))
+        (syntax-error clause "(:def ...) binds: (:def name expr), or (:def pattern expr failure-part), such as :default value or :propagate."))
+       ;; Answers when `expr` matches, and falls through to the next clause
+       ;; when it does not. Unlike `:def` it swallows nothing: what it binds
+       ;; is in scope in its guard and body only. The rest of the cond is the
+       ;; fallback arm, so it is written once.
+       ((:match pattern expr #:when guard body ...)
+        #'(match ,expr
+            (,pattern #:when ,guard ,(one-form body clause))
+            (,(SSym (string->symbol "_")) ,(cond-arms rest whole))))
+       ((:match pattern expr body ...)
+        #'(match ,expr
+            (,pattern ,(one-form body clause))
+            (,(SSym (string->symbol "_")) ,(cond-arms rest whole))))
+       ((:match junk ...)
+        (syntax-error clause "(:match ...) is (:match pattern expr body ...), or (:match pattern expr #:when guard body ...)."))
        ;; Runs.
        ((:do first body ...)
         #'(let () ,first ,@body ,(cond-arms rest whole)))
@@ -2029,7 +2048,7 @@
        ;; Else clause.
        (('else body ...) (one-form body clause))
        ((test body ...) #'(if ,test ,(one-form body clause) ,(cond-arms rest whole)))
-       (bad (syntax-error bad "A cond clause is (test body ...), (:def pattern expr) to bind, (:do body ...) to run something, or (else body ...) for the last one."))))))
+       (bad (syntax-error bad "A cond clause is (test body ...), (:match pattern expr body ...) to answer on a match, (:def pattern expr) to bind, (:do body ...) to run something, or (else body ...) for the last one."))))))
 
 ;; Several forms as one.
 (: one-form (-> (List Syntax) Syntax Syntax))
@@ -2613,7 +2632,7 @@
 (: derive-any-mutable? (-> (List Syntax) bool))
 (defun (derive-any-mutable? fields)
   (def (Cons f rest) fields
-    #f)
+    :leave-with #f)
   (if (syntax-match f
         ((_ _ _ marker markers ...) #t)
         (_ #f))
@@ -2637,14 +2656,14 @@
 
 (: derive-case-name (-> Syntax Syntax))
 (defun (derive-case-name c)
-  (def* ((SList items) c c)
-        ((Cons head _) items c))
+  (def* ((SList items) c :leave-with c)
+        ((Cons head _) items :leave-with c))
   head)
 
 (: derive-payload (-> Syntax (List Syntax)))
 (defun (derive-payload c)
-  (def* ((SList items) c Nil)
-        ((Cons _ rest) items Nil))
+  (def* ((SList items) c :leave-with Nil)
+        ((Cons _ rest) items :leave-with Nil))
   (list-filter #(match & ((SKey _) #f) (_ #t)) rest))
 
 ;; Binders.
@@ -2657,8 +2676,8 @@
 
 (: derive-eq-pairs (-> (List Syntax) (List Syntax) (List Syntax)))
 (defun (derive-eq-pairs ls rs)
-  (def* ((Cons l lrest) ls Nil)
-        ((Cons r rrest) rs Nil))
+  (def* ((Cons l lrest) ls :leave-with Nil)
+        ((Cons r rrest) rs :leave-with Nil))
   (Cons #'(= ,l ,r) (derive-eq-pairs lrest rrest)))
 
 ;; Union arm eq.
@@ -2676,7 +2695,7 @@
 ;; Hash union arms.
 (: derive-hash-union-arms (-> (List Syntax) int (List Syntax)))
 (defun (derive-hash-union-arms cases index)
-  (def (Cons c rest) cases Nil)
+  (def (Cons c rest) cases :leave-with Nil)
   (def name (derive-case-name c))
   (def ls (derive-binders "__derived-l" 0 (list-length (derive-payload c))))
   (def tag (SInt (int->string index)))
@@ -2697,7 +2716,7 @@
 ;; Ord chain.
 (: derive-ord-chain (-> (List Syntax) int Syntax))
 (defun (derive-ord-chain parts i)
-  (def* ((Cons p rest) parts #'0)
+  (def* ((Cons p rest) parts :leave-with #'0)
         (c (derive-sym (string-append "__derived-c" (int->string i)))))
   (if (list-empty? rest)
       p
@@ -2723,15 +2742,15 @@
 ;; Index arms.
 (: derive-ord-index-arms (-> (List Syntax) int (List Syntax)))
 (defun (derive-ord-index-arms cases index)
-  (def (Cons c rest) cases Nil)
+  (def (Cons c rest) cases :leave-with Nil)
   (Cons #'((,(derive-case-name c) ,@(derive-wildcards (list-length (derive-payload c))))
            ,(SInt (int->string index)))
         (derive-ord-index-arms rest (+ index 1))))
 
 (: derive-ord-pairs (-> (List Syntax) (List Syntax) (List Syntax)))
 (defun (derive-ord-pairs ls rs)
-  (def* ((Cons l lrest) ls Nil)
-        ((Cons r rrest) rs Nil))
+  (def* ((Cons l lrest) ls :leave-with Nil)
+        ((Cons r rrest) rs :leave-with Nil))
   (Cons #'(compare ,l ,r) (derive-ord-pairs lrest rrest)))
 
 ;; Ord union arm.

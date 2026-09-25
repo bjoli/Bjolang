@@ -391,6 +391,13 @@ let isPlainDefBinder (binder: SExpr) : bool =
         && (head = "Tuple" || not (System.Char.IsUpper head[0]))
     | _ -> false
 
+/// A `def` clause as `parseDefTail` reads it.
+type DefTail =
+    /// A pattern, its scrutinee and what happens when it does not match.
+    | Leaves of Pattern * Expr * DefFailure
+    /// `:default`: the pattern's one binder and the expression it is bound to.
+    | Defaults of string * Expr
+
 let rec parseExpr (s: SExpr) : Expr =
     let r = getRange s
 
@@ -1656,55 +1663,12 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
             | _ -> items
         | _ -> items
 
-    // `(pattern body ...)`, which is what an arm is and what nothing else in
-    // the form is.
-    let parseFailArm (form: SExpr) =
-        match form with
-        | SList(armPattern :: bodyForms, ar) when not bodyForms.IsEmpty ->
-            (parsePattern armPattern, parseBody bodyForms ar)
-        | bad ->
-            failwithf
-                $"Syntax error at %s{Lexer.formatPos (getRange bad)}: a :fail arm is written (pattern body ...)."
-
-    // A list of lists whose heads read as patterns: the arms a reader who meant
-    // `:fail` wrote in the value slot. Checked so that the answer is the missing
-    // keyword rather than a type error about a call to a list.
-    let looksLikeArms (form: SExpr) =
-        let patternish (s: SExpr) =
-            match s with
-            | SAtom { Token = Symbol sym } -> sym = "_" || System.Char.IsUpper sym[0]
-            | SList(SAtom { Token = Symbol sym } :: _, _) -> System.Char.IsUpper sym[0]
-            | _ -> false
-
-        match form with
-        | SList((_ :: _) as arms, _) ->
-            arms
-            |> List.forall (function
-                | SList(head :: _ :: _, _) -> patternish head
-                | _ -> false)
-        | _ -> false
-
-    // What follows a clause's scrutinee: nothing, `:propagate`, one expression,
-    // or `:fail` and its arms.
-    let parseDefFailure (r: Range) (forms: SExpr list) : DefFailure =
-        match forms with
-        | [] -> FailNone
-        | [ SAtom { Token = Keyword "propagate" } ] -> FailPropagate
-        | SAtom { Token = Keyword "propagate" } :: _ ->
-            failwithf
-                $"Syntax error at %s{Lexer.formatPos r}: `:propagate` stands alone — it says the leftover cases are rebuilt at the body's type, so there is nothing to write after it."
-        | [ SAtom { Token = Keyword "fail" }; SList((_ :: _) as armForms, _) ] ->
-            FailArms(armForms |> List.map parseFailArm)
-        | SAtom { Token = Keyword "fail" } :: _ ->
-            failwithf
-                $"Syntax error at %s{Lexer.formatPos r}: `:fail` takes one list of arms: :fail ((pattern body ...) ...)."
-        | [ value ] when looksLikeArms value ->
-            failwithf
-                $"Syntax error at %s{Lexer.formatPos (getRange value)}: the third slot of a `def` is the value the body takes when the pattern does not match, and this is a list of arms. Arms go after `:fail`: (def pattern scrutinee :fail ((pattern body ...) ...))."
-        | [ value ] -> FailValue(parseExpr value)
-        | _ ->
-            failwithf
-                $"Syntax error at %s{Lexer.formatPos r}: expected (def pattern scrutinee), (def pattern scrutinee value), (def pattern scrutinee :propagate) or (def pattern scrutinee :fail (arm ...))."
+    // A clause in front of its sequel: the rest of the body is what its
+    // binders scope over.
+    let bindDefTail (tail: DefTail) (sequel: Expr) (r: Range) =
+        match tail with
+        | Leaves(pattern, scrutinee, failure) -> EDefMatch(pattern, scrutinee, failure, sequel, r)
+        | Defaults(name, bound) -> ELet(name, false, [], None, bound, sequel, r)
 
     // The clauses of a `def*`, in source order.
     //
@@ -1719,19 +1683,26 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
             clauseForms
             |> List.map (function
                 | SList(binder :: scrutinee :: failure, cr) ->
-                    (parsePattern binder, parseExpr scrutinee, parseDefFailure cr failure, cr)
+                    let tail = parseDefTail cr binder scrutinee failure
+
+                    let binders =
+                        match tail with
+                        | Leaves(pattern, _, _) -> patternBinders pattern
+                        | Defaults(name, _) -> [ name ]
+
+                    (tail, binders, cr)
                 | bad ->
                     failwithf
-                        $"Syntax error at %s{Lexer.formatPos (getRange bad)}: a def* clause is written (pattern scrutinee), (pattern scrutinee value), (pattern scrutinee :propagate) or (pattern scrutinee :fail (arm ...)).")
+                        $"Syntax error at %s{Lexer.formatPos (getRange bad)}: a def* clause is written (pattern scrutinee), followed by a failure part if the pattern can fail.")
 
         clauses
-        |> List.iteri (fun i (binder, _, _, cr) ->
-            let mine = patternBinders binder |> Set.ofList
+        |> List.iteri (fun i (_, binders, cr) ->
+            let mine = Set.ofList binders
 
             clauses
-            |> List.iteri (fun j (earlier, _, _, _) ->
+            |> List.iteri (fun j (_, earlier, _) ->
                 if j < i then
-                    match patternBinders earlier |> List.filter mine.Contains with
+                    match earlier |> List.filter mine.Contains with
                     | [] -> ()
                     | shared ->
                         let names = String.concat ", " shared
@@ -1832,13 +1803,10 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         | SList(SAtom { Token = Symbol "def*" } :: clauseForms, r) :: rest ->
             let clauses = parseDefStarClauses r clauseForms
 
-            List.foldBack
-                (fun (binder, scrutinee, failure, cr) sequel -> EDefMatch(binder, scrutinee, failure, sequel, cr))
-                clauses
-                (parseItems rest)
+            List.foldBack (fun (tail, _, cr) sequel -> bindDefTail tail sequel cr) clauses (parseItems rest)
 
-        // `(def pattern scrutinee)`, `(def pattern scrutinee value)` and
-        // `(def pattern scrutinee :fail (arm ...))` — a binding that may fail.
+        // `(def pattern scrutinee)` and `(def pattern scrutinee failure-part)`
+        // — a binding that may fail.
         //
         // Consumed here beside the plain `def` shapes because it *is* one of
         // them: what the pattern binds scopes over the rest of this body. That
@@ -1847,17 +1815,13 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         // `parseItems rest` as its sequel rather than desugared in `parseExpr`,
         // which has no sequel to give it.
         //
-        // The pattern is unparenthesised at the head, so the third slot is
-        // always the failure value and never arms; arms are written after
-        // `:fail`, where nothing is positional.
-        //
         // Reached before the plain shapes below, and only for what they do not
         // cover: a pattern that is not a name, a typed name or a tuple of
         // names, or any `def` at all that carries a failure part.
         | SList(SAtom { Token = Symbol "def" } :: binder :: scrutinee :: failureForms, r) :: rest when
             not failureForms.IsEmpty || not (isPlainDefBinder binder)
             ->
-            EDefMatch(parsePattern binder, parseExpr scrutinee, parseDefFailure r failureForms, parseItems rest, r)
+            bindDefTail (parseDefTail r binder scrutinee failureForms) (parseItems rest) r
 
         | SList(SAtom { Token = Symbol "def/mutable" } :: SAtom { Token = Symbol name } :: [ expr ], r) :: rest ->
             ELetMutable(name, None, parseExpr expr, parseItems rest, fallbackRange)
@@ -1925,6 +1889,90 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         | expr :: rest -> ELet("_", false, [], None, parseExpr expr, parseItems rest, fallbackRange)
 
     parseItems exprs
+
+/// A `def` clause from its binder on: `(def binder scrutinee failure-part ...)`.
+///
+/// The failure part is nothing, `:propagate`, `:leave-with value`,
+/// `:leave arm ...` or `:default value`. `:leave` comes last, so every form
+/// after it is an arm.
+and parseDefTail (r: Range) (binder: SExpr) (scrutinee: SExpr) (forms: SExpr list) : DefTail =
+    let pattern = parsePattern binder
+
+    let leaves failure =
+        Leaves(pattern, parseExpr scrutinee, failure)
+
+    let arm (form: SExpr) =
+        match form with
+        | SList(armPattern :: bodyForms, ar) when not bodyForms.IsEmpty ->
+            (parsePattern armPattern, parseBody bodyForms ar)
+        | bad ->
+            failwithf
+                $"Syntax error at %s{Lexer.formatPos (getRange bad)}: what follows :leave is arms, each written (pattern body ...), and :leave comes last in the def."
+
+    // A list of lists whose heads read as patterns: arms written where the
+    // failure part's keyword was left out.
+    let looksLikeArms (form: SExpr) =
+        let patternish (s: SExpr) =
+            match s with
+            | SAtom { Token = Symbol sym } -> sym = "_" || System.Char.IsUpper sym[0]
+            | SList(SAtom { Token = Symbol sym } :: _, _) -> System.Char.IsUpper sym[0]
+            | _ -> false
+
+        match form with
+        | SList((_ :: _) as arms, _) ->
+            arms
+            |> List.forall (function
+                | SList(head :: _ :: _, _) -> patternish head
+                | _ -> false)
+        | _ -> false
+
+    let binders = patternBinders pattern |> List.distinct
+
+    let failureParts =
+        "(def pattern scrutinee :leave-with value), (def pattern scrutinee :leave arm ...), (def pattern scrutinee :default value) or (def pattern scrutinee :propagate)"
+
+    match forms with
+    | [] -> leaves FailNone
+    | [ SAtom { Token = Keyword "propagate" } ] -> leaves FailPropagate
+    | SAtom { Token = Keyword "propagate" } :: _ ->
+        failwithf
+            $"Syntax error at %s{Lexer.formatPos r}: `:propagate` stands alone — it says the leftover cases are rebuilt at the body's type, so there is nothing to write after it."
+    | [ SAtom { Token = Keyword "leave-with" }; value ] -> leaves (FailLeaveWith(parseExpr value))
+    | SAtom { Token = Keyword "leave-with" } :: _ ->
+        failwithf
+            $"Syntax error at %s{Lexer.formatPos r}: `:leave-with` takes one value, the body's value when the pattern does not match."
+    | [ SAtom { Token = Keyword "leave" } ] ->
+        failwithf
+            $"Syntax error at %s{Lexer.formatPos r}: `:leave` takes at least one arm: (def pattern scrutinee :leave (pattern body ...) ...)."
+    | SAtom { Token = Keyword "leave" } :: armForms -> leaves (FailLeave(List.map arm armForms))
+    | [ SAtom { Token = Keyword "default" }; value ] ->
+        if binders.Length <> 1 then
+            failwithf
+                $"Syntax error at %s{Lexer.formatPos r}: `:default` gives the pattern's one name a value, and this pattern binds %d{binders.Length}. Use a match, or :leave to decide the body's value from what did not match."
+
+        let name = binders.Head
+
+        let bound =
+            EDefMatch(pattern, parseExpr scrutinee, FailDefault(parseExpr value), EIdent(name, getRange binder), r)
+
+        Defaults(name, bound)
+    | SAtom { Token = Keyword "default" } :: _ ->
+        failwithf
+            $"Syntax error at %s{Lexer.formatPos r}: `:default` takes one value, the pattern's name's value when the pattern does not match."
+    | SAtom { Token = Keyword other } :: _ ->
+        failwithf $"Syntax error at %s{Lexer.formatPos r}: `:%s{other}` is not a failure part. Expected %s{failureParts}."
+    | [ value ] when looksLikeArms value ->
+        failwithf
+            $"Syntax error at %s{Lexer.formatPos (getRange value)}: this is a list of arms, and arms follow :leave without a list around them: (def pattern scrutinee :leave (pattern body ...) ...)."
+    | [ _ ] ->
+        let asDefault =
+            match binders with
+            | [ name ] -> $"\n  :default value      binds %s{name} to value and carries on"
+            | _ -> ""
+
+        failwithf
+            $"Syntax error at %s{Lexer.formatPos r}: a def's failure part starts with a keyword.\n  :leave-with value   leaves the body with value%s{asDefault}"
+    | _ -> failwithf $"Syntax error at %s{Lexer.formatPos r}: expected (def pattern scrutinee), %s{failureParts}."
 
 /// What `LoopDesugar` reads its clauses' expressions and patterns with.
 ///

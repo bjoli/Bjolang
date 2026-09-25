@@ -410,47 +410,50 @@ A local ~defun~ cannot have a *separate* signature. Local functions with keyword
 A mutable binding is **not generalized**. A module-level one compiles to a static field initialized **in declaration order**.
 
 *** ~def~ and ~def*~ — a binding that may fail
-A ~def~ takes a pattern, and a third slot saying what the whole form produces
-when the pattern does not match:
+A ~def~ takes a pattern, and a failure part saying what happens when the
+pattern does not match. Every failure part starts with a keyword:
 
 #+BEGIN_SRC scheme
-(def pattern scrutinee)                     ;; no failure part: must match every value
-(def pattern scrutinee value-expr)          ;; the body evaluates to value-expr
-(def pattern scrutinee :fail (arm arm ...)) ;; the arms decide
-(def pattern scrutinee :propagate)          ;; the leftover cases are rebuilt
+(def pattern scrutinee)                    ;; no failure part: must match every value
+(def pattern scrutinee :leave-with value)  ;; the body's value is value
+(def pattern scrutinee :leave arm ...)     ;; the arms decide the body's value
+(def pattern scrutinee :propagate)         ;; the leftover cases are rebuilt
+(def pattern scrutinee :default value)     ;; the pattern's one name is value
 
-(def* clause clause ...)                    ;; a clause is a parenthesised def
+(def* clause clause ...)                   ;; a clause is a parenthesised def
 #+END_SRC
 
 ~def~ is to ~def*~ what ~let~ is to ~let*~: both swallow the rest of the body,
 ~def~ takes one clause and ~def*~ takes several, run in order. An arm is
-~(pattern body ...)~ and matches the clause's own scrutinee.
+~(pattern body ...)~ and matches the clause's own scrutinee. ~:leave~ comes
+last, so everything after it is arms.
 
 What makes it a definition rather than a ~match~ is where the success path goes: the pattern's bindings scope over **the rest of the body**, exactly as a plain ~def~'s name does, so the continuing path is not indented under the paths that do not.
 
 #+BEGIN_SRC scheme
 (: label (-> string string))
 (defun (label s)
-  (def (Ok n) (parse-int s) :fail (((Err why) (str "refused: " why))))
+  (def (Ok n) (parse-int s) :leave ((Err why) (str "refused: " why)))
   (str "n = " (int->string n)))
 #+END_SRC
 
 | | |
 |---------------------------+-------------------------------------------------|
 | the pattern matches       | its bindings scope over the rest of the body, and the body's value is the form's |
-| it does not, and a value was written | that value is the form's value; what the pattern would have bound is not in scope in it |
-| it does not, and an arm matches | that arm's body is the form's value, and what *it* binds is in scope only there |
+| it does not, and ~:leave-with~ was written | that value is the form's value; what the pattern would have bound is not in scope in it |
+| it does not, and a ~:leave~ arm matches | that arm's body is the form's value, and what *it* binds is in scope only there |
 | it does not, and ~:propagate~ was written | the case it did not match is rebuilt — see propagation below |
+| it does not, and ~:default~ was written | the pattern's one name is bound to the default, and the rest of the body runs — see below |
 | nothing was written | there is no such case: the pattern has to match every value, and it is an error where it does not |
 
-A failure produces a value; it does **not** leave the enclosing function. To
-leave one, write it: ~(ret ...)~ naming an enclosing ~with-return~, or
+~:leave~, ~:leave-with~ and ~:propagate~ produce a value for the body; they do
+**not** leave the enclosing function. To leave one, write it: ~(ret ...)~ naming an enclosing ~with-return~, or
 ~(panic! ...)~.
 
 #+BEGIN_SRC scheme
 (defun (checked o)
   (with-return ret
-    (def (Some n) o (ret -1))     ;; leaves the block, because it says so
+    (def (Some n) o :leave-with (ret -1))  ;; leaves the block, because it says so
     (+ n 1)))
 #+END_SRC
 
@@ -458,9 +461,29 @@ The block a failure leaves is the **innermost enclosing body**, which is not
 always the function. One inside a ~when~ leaves the ~when~, and the code after
 the ~when~ still runs; the compiler warns where that value then goes nowhere.
 
-**The third slot is always an expression, never arms.** The pattern is
-unparenthesised at the head, so no shape tells them apart; arms go after
-~:fail~.
+**A bare value after the scrutinee is an error.** It reads as a default and
+would mean leaving the body, so the error asks which was meant:
+
+: Syntax error at app.bjo:12: a def's failure part starts with a keyword.
+:   :leave-with value   leaves the body with value
+:   :default value      binds port to value and carries on
+
+**~:default~ binds and carries on.** It never leaves: when the pattern does not
+match, its one name is bound to the value, and the next form runs either way.
+
+#+BEGIN_SRC scheme
+(def (Some port) (lookup cfg "port") :default 8080)   ;; port : int
+(+ port 1)                                             ;; always runs
+#+END_SRC
+
+- The pattern must bind **exactly one name**, and the value has that name's
+  type, not the scrutinee's. For several names, use a ~match~ or ~:leave~.
+- The value is **evaluated only when the pattern fails**.
+- It earns its keep when the pattern reaches further in than ~Option~, such as
+  ~(def (Ok (Config (port p))) (load) :default 80)~. For a plain ~Option~,
+  ~(option-value e 8080)~ does the same.
+- In a ~def*~ a ~:default~ clause never short-circuits, and later clauses see
+  the name.
 
 **A pattern that may fail needs a failure part.** Writing none says it matches
 every value; where it does not, the counterexample is named and the form
@@ -489,7 +512,7 @@ leave more than one case behind:
   (Data (str "<" payload ">")))
 #+END_SRC
 
-What is left over must be whole cases: a nested or literal pattern leaves part of a case behind, which no constructor can rebuild — those take ~:fail~.
+What is left over must be whole cases: a nested or literal pattern leaves part of a case behind, which no constructor can rebuild — those take ~:leave~.
 
 **A ~def*~'s clauses are sequential and short-circuiting.** Clause /n/ sees what
 clauses 1../n/-1 bound; a failing clause evaluates no later scrutinee. Names
@@ -504,7 +527,7 @@ must be distinct across clauses, since all land in one scope.
   (Some (path-combine dir program)))
 #+END_SRC
 
-**The pattern and the ~:fail~ arms must cover the scrutinee's type**, as a
+**The pattern and the ~:leave~ arms must cover the scrutinee's type**, as a
 ~match~ must, and the counterexample is named:
 
 : Pattern Error: this def does not cover every value. Blue matches neither the
@@ -532,7 +555,7 @@ A pattern may also be written at the top level, where it has nowhere to fail:
 
 Each name becomes a definition of its own, from one evaluation and destructuring of the scrutinee, and a later clause reads what an earlier one bound.
 
-There is no body for a failure to be the value of, so **the pattern must match every value** and a failure part is refused. A REPL entry is a top level too: `(def (Tuple a b) ...)` binds at the prompt and `(def (Some x) ...)` does not.
+There is no body for a failure to be the value of, so **the pattern must match every value**, and a failure part that leaves is refused. ~:default~ never leaves, so it is allowed: ~(def (Some port) (lookup cfg "port") :default 8080)~ defines ~port~, and the default is evaluated once, when the module initialises and the pattern fails. A REPL entry is a top level too: `(def (Tuple a b) ...)` binds at the prompt and `(def (Some x) ...)` does not, unless it has a ~:default~.
 ** ~apply~ — spreading a collection into a rest parameter
 ~apply~ calls a function whose last parameter is ~#:rest~, taking the rest
 elements from a collection instead of writing them out:
@@ -571,7 +594,20 @@ Standard ~if~ expressions:
   (else "word"))
 #+END_SRC
 
-A ~:def~ clause is a ~def~, and the body it swallows is the rest of the cond: ~(:def (Ok v) (parse s) :propagate)~ makes the whole cond the ~Err~ when the parse failed. See ~def~ below.
+A ~:def~ clause is a ~def~, and the body it swallows is the rest of the cond, so it takes the same failure parts: ~(:def (Ok v) (parse s) :propagate)~ makes the whole cond the ~Err~ when the parse failed, ~(:def (Some n) e :leave-with 0)~ makes it ~0~, and ~(:def (Some n) e :default 0)~ binds ~n~ either way and never answers. See ~def~ below.
+
+~(:match pattern expr body ...)~ is a test that binds. It answers when ~expr~ matches ~pattern~, and an optional ~#:when guard~ after ~expr~ must hold as well, as in a ~match~ arm. When the pattern or the guard fails, the cond goes on to the next clause. What the pattern binds is in scope in the guard and the body only. Unlike ~:def~, nothing below the clause depends on it matching:
+
+#+BEGIN_SRC scheme
+(cond
+  (override? 9999)
+  (:match (Some text) (map-try-ref env "PORT") #:when (not (string-empty? text))
+   (string->int text))
+  (:match (Some text) (map-try-ref env "FALLBACK_PORT") (string->int text))
+  (else 8080))
+#+END_SRC
+
+A ~:match~ whose pattern always matches and that has no guard leaves every clause below it unreachable. It is refused as a ~match~ clause that can never run.
 
 ~when~ and ~unless~ are one-armed conditionals, taking a body of any number of forms:
 #+BEGIN_SRC scheme

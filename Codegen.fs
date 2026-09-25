@@ -969,10 +969,12 @@ let rec serializeExpr (e: Ast.Expr) : string =
             match failure with
             | Ast.FailNone -> []
             | Ast.FailPropagate -> [ ":propagate" ]
-            | Ast.FailValue value -> [ serializeExpr value ]
-            | Ast.FailArms arms ->
-                [ ":fail"
-                  list (arms |> List.map (fun (pat, body) -> list [ serializePattern pat; serializeExpr body ])) ]
+            // The `def` of the binder that `:default` became is written out
+            // beside it, so what is left of the form here leaves with the value.
+            | Ast.FailLeaveWith value
+            | Ast.FailDefault value -> [ ":leave-with"; serializeExpr value ]
+            | Ast.FailLeave arms ->
+                ":leave" :: (arms |> List.map (fun (pat, body) -> list [ serializePattern pat; serializeExpr body ]))
 
         let bindForm =
             list ([ "def"; serializePattern binder; serializeExpr scrutinee ] @ failureForms)

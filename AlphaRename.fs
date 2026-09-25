@@ -231,6 +231,33 @@ let rec private renameCore
     let sub e = renameCore freshenBinder scope subst e
     let reference n = Map.tryFind n subst |> Option.defaultValue n
 
+    // A pattern with its binders spelled as `innerSubst` says.
+    //
+    // The three nodes that are not merely structural: `TPIdent`, `TPAs` and
+    // `TPTypeTest` bind a name, and a view's step — reached through
+    // `mapPatternChildrenWith`'s expression argument — is evaluated in the
+    // scope the pattern sits in rather than under the names it binds.
+    //
+    // Everything else recurses through the one traversal, so a pattern node
+    // added later cannot be silently dropped here.
+    //
+    // `TPTypeTest` was missing, and missing in the way that does most damage:
+    // `typedPatternBinders` already listed its designation, so `bind` renamed
+    // it and every *use* in the body followed — while the pattern went on
+    // binding the old spelling. `(match x ((:is System.String str) str) ...)`
+    // in a module that imports `str` therefore compiled to C# that binds `str`
+    // and reads `str__1`, and the first anyone heard of it was CS0103 in a
+    // generated file.
+    let rec renamePattern (innerSubst: Map<string, string>) (p: TypedPattern) : TypedPattern =
+        let spelled n =
+            Map.tryFind n innerSubst |> Option.defaultValue n
+
+        match p.Node with
+        | TPIdent n -> { p with Node = TPIdent(spelled n) }
+        | TPTypeTest(clrType, binder) -> { p with Node = TPTypeTest(clrType, Option.map spelled binder) }
+        | TPAs(inner', n) -> { p with Node = TPAs(renamePattern innerSubst inner', spelled n) }
+        | _ -> TypeVisitor.mapPatternChildrenWith sub (renamePattern innerSubst) p
+
     let node =
         match expr.Node with
         | TIdent(n, tArgs) -> TIdent(reference n, tArgs)
@@ -277,44 +304,26 @@ let rec private renameCore
                 |> List.map (fun c ->
                     let _, inner, innerSubst = bind (typedPatternBinders c.Pattern) scope subst
 
-                    // The three nodes that are not merely structural: `TPIdent`,
-                    // `TPAs` and `TPTypeTest` bind a name, and a view's step —
-                    // reached through `mapPatternChildrenWith`'s expression
-                    // argument — is evaluated in the scope the `match` sits in
-                    // rather than under the names the pattern binds.
-                    //
-                    // Everything else recurses through the one traversal, so a
-                    // pattern node added later cannot be silently dropped here.
-                    //
-                    // `TPTypeTest` was missing, and missing in the way that
-                    // does most damage: `typedPatternBinders` already listed its
-                    // designation, so `bind` renamed it and every *use* in the
-                    // body followed — while the pattern went on binding the old
-                    // spelling. `(match x ((:is System.String str) str) ...)` in
-                    // a module that imports `str` therefore compiled to C# that
-                    // binds `str` and reads `str__1`, and the first anyone heard
-                    // of it was CS0103 in a generated file.
-                    let rec goPat (p: TypedPattern) : TypedPattern =
-                        match p.Node with
-                        | TPIdent n ->
-                            { p with Node = TPIdent(Map.tryFind n innerSubst |> Option.defaultValue n) }
-                        | TPTypeTest(clrType, binder) ->
-                            { p with
-                                Node =
-                                    TPTypeTest(
-                                        clrType,
-                                        binder
-                                        |> Option.map (fun n ->
-                                            Map.tryFind n innerSubst |> Option.defaultValue n)
-                                    ) }
-                        | TPAs(inner', n) ->
-                            { p with
-                                Node = TPAs(goPat inner', Map.tryFind n innerSubst |> Option.defaultValue n) }
-                        | _ -> TypeVisitor.mapPatternChildrenWith sub goPat p
-
-                    { Pattern = goPat c.Pattern
+                    { Pattern = renamePattern innerSubst c.Pattern
                       Guard = Option.map (renameCore freshenBinder inner innerSubst) c.Guard
                       Body = renameCore freshenBinder inner innerSubst c.Body })
+            )
+
+        // A match whose first clause's body is the sequel, and renamed as one:
+        // the binder's names over the sequel, each arm's over its body.
+        | TDefMatch(binder, scrutinee, sequel, arms) ->
+            let _, sequelScope, sequelSubst = bind (typedPatternBinders binder) scope subst
+
+            TDefMatch(
+                renamePattern sequelSubst binder,
+                sub scrutinee,
+                renameCore freshenBinder sequelScope sequelSubst sequel,
+                arms
+                |> List.map (fun arm ->
+                    let _, inner, innerSubst = bind (typedPatternBinders arm.Pattern) scope subst
+
+                    { Pattern = renamePattern innerSubst arm.Pattern
+                      Body = renameCore freshenBinder inner innerSubst arm.Body })
             )
 
         | TLoop(members, bodyOpt) ->

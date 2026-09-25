@@ -509,7 +509,8 @@ All three implement ~Iterable~, ~Collection~ and ~->str~, and each publishes a c
 Macros, not procedures — which is what lets them take a branch that is not evaluated. They are written with ~syntax-match~ in ~lib/std/prelude.bjo~; see ~Docs/MACROS.org~.
 
 - ~(cond (test body ...) ... (else body ...))~ : ~if~ at any number of arms. The final ~else~ is required. Every arm needs the same return type.
-- ~(:def pattern expr)~ and ~(:do body ...)~ : clauses of a ~cond~ that answer nothing. A ~:def~ binds and a ~:do~ runs something; both happen only when every test above them has failed, and what a ~:def~ binds is in scope in every clause below it and nowhere else. A ~:def~ *is* a ~def~ — the body it swallows is the rest of the cond — so it takes the same patterns and the same failure parts, and ~(:def (Ok v) (parse s) :propagate)~ makes the whole cond the ~Err~. A cond may not end in one.
+- ~(:def pattern expr)~ and ~(:do body ...)~ : clauses of a ~cond~ that answer nothing. A ~:def~ binds and a ~:do~ runs something; both happen only when every test above them has failed, and what a ~:def~ binds is in scope in every clause below it and nowhere else. A ~:def~ *is* a ~def~ — the body it swallows is the rest of the cond — so it takes the same patterns and the same failure parts: ~(:def (Ok v) (parse s) :propagate)~ makes the whole cond the ~Err~, and ~(:def (Some n) e :default 0)~ binds ~n~ either way and never answers. A cond may not end in one.
+- ~(:match pattern expr body ...)~ : a clause of a ~cond~ that answers when ~expr~ matches ~pattern~ and an optional ~#:when guard~ after ~expr~ holds, and falls through to the next clause otherwise. What it binds is in scope in its guard and body only.
 - ~(if-let ((name expr)) then else)~ : ~then~ with ~name~ bound to what ~expr~ answered, if it answered ~(Some ...)~, and ~else~ if it was ~None~.
 - ~(when-let ((name expr)) body ...)~ : the body with ~name~ bound, when there was something to bind.
 - ~(some-> value step ...)~ : ~->~ that stops at the first ~None~. Each step answers an ~(Option ...)~ and it unwraps every step before going on.
@@ -531,9 +532,10 @@ Macros, not procedures — which is what lets them take a branch that is not eva
       ((char-numeric? first) "number")
       (else "word"))
 
-;; The failure part is def's, and the sequel is the rest of the cond
+;; The failure part is def's, and the sequel is the rest of the cond.
+;; :default binds port either way; :leave-with 8080 would answer 8080.
 (cond (override? 9999)
-      (:def (Some port) (map-try-ref settings "port") 8080)
+      (:def (Some port) (map-try-ref settings "port") :default 8080)
       ((< port 1024) 0)
       (else port))
 

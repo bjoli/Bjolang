@@ -1,6 +1,6 @@
 * Bjolang - a language
 
-I think we have all had the thought: all programming languages suck in at least one way. Not all of us think it is a big deal, but some of us feel the urge to try our wings at designing a language. This is my 95% vibe coded try. Not really meant for real use, but to see if my thoughts made any sense.
+I think we have all had the thought: all programming languages suck in at least one way. Not all of us think it is a big deal, but some of us feel the urge to try our wings at designing a language. This is my 95% vibe coded try. Not really meant for real use, but to see if my thoughts made any sense. And, oh, it sucks in at least one way. 
 
 * Elevator pitch
 Bjolang is a scheme-inspired eager language with local HM type inference that bjompiles to constipated c#. Traits instead of classes. Never worry about two-way-interop with c# ever again! Fast immutable bjollections. Rrb tree! A champ map! A  b-tree bjordered map! Sets based on the previous 2! (and of course a linked list). Tail-resumptive effects: Fearlessly mock production code! 
@@ -41,9 +41,9 @@ But here is the part that is actually worth waking up for. "within" is a deadlin
 
 (: report (-> string (Option string) void))
 (defun (report what answer)
-  (println (match answer
-             ((Some v) #"${what}: ${v}")
-             (None     #"${what}: gave up"))))
+  (def (Some v) answer
+       #:default "gave up")
+  (println "{what}: ${v}"))
 
 (defbjo (main args)
   (def kitchen (make-chan))
@@ -117,7 +117,7 @@ The main limitation is that macros cannot be used in the same module.
 (match (thing :> Object)
   ((:is System.String s) (string-length s))
   ((:is Exception e)     (.-Message e))
-  ([a b [1 2]] "an array of three subarrays where the last is [1 2]")
+  ([a b [1 2]]           "an array of three subarrays where the last is [1 2]")
   (_                     "no idea"))
 
 (try (risky-thing)
@@ -175,19 +175,19 @@ although most do-notation cases (matching option and Result) is better handled b
 ;; body produces when it does not match
 (: print-key (-> (Map Keyword string) (Result string string)))
 (defun (print-key myMap)
-  (def (Ok b) (try-ref myMap :key)
-    (Err "Map was somehow not populated correctly"))
+  (def (Some b) (try-ref myMap :key)
+       :leave-with (Err "Map was somehow not populated correctly"))
   ;; Here we know the call above worked and that b is bound to the value
-  ;; under :key in myMap
+  ;; under :key in myMap, otherwise 
   (println ":key is #${b}.")
   (Ok b))
 
 ;; if you put :propagate in the slot where the error value is put
 ;; it just propagates the error value from the match.
-(: key-length (-> (Map Keyword string) (Result string int)))
+(: key-length (-> (Map Keyword string) (Option int)))
 (defun (key-length myMap)
-  (def (Ok b) (try-ref myMap :key) :propagate)
-  (Ok (string-length b)))
+  (def (Some b) (try-ref myMap :key) :propagate)
+  (Some (string-length b)))
 
 ;; def* is to def what let* is to let: several clauses, in order,
 ;; and a failing one evaluates no later scrutinee
@@ -383,7 +383,7 @@ The same machinery gives (std run) its shell notation, have a look at [[file:Exa
 * License
 
 MPL-2.0 with a linking exception. The exception says that what the bjompiler
-embeds into your program — inlined functions, monomorphised generics, whatever a
+embeds into your bjoogram — inlined functions, monobjorphised generics, whatever a
 macro expanded to — does not drag section 3's source-availability obligation
 into your executable. See [[file:LICENSE]].
 

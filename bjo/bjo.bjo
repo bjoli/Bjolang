@@ -356,7 +356,7 @@
   ;; the artefact was built from, so the only safe answer is to build it. `#f`
   ;; here makes `ensure-built` serve a record that is not there, and fail with
   ;; an exit code and no message.
-  (def* ((Some rec) (read-record file) #t)
+  (def* ((Some rec) (read-record file) :leave-with #t)
         (artefact (record-ref rec output)))
   (or (not (= (record-ref rec mode) wanted))
       (not (file-exists? artefact))
@@ -438,9 +438,9 @@
     ;; The compiler said it succeeded and left no record. It writes one after
     ;; every build that did, so this is a compiler too old for this `bjo`.
     (def (Some built) (read-record file)
-      :fail ((None
+      :leave (None
               (println #"bjo: ${file} compiled, but left no build record.")
-              (Err 1))))
+              (Err 1)))
 
     (Ok (Tuple built #t))))
 
@@ -543,10 +543,10 @@
 (: project-here #:sync (-> string (Result string Project)))
 (defun (project-here command)
   (def (Ok (Some project)) (project-around (current-directory))
-    :fail (((Ok None)
+    :leave ((Ok None)
             (Err (str #"bjo ${command}: this is not a project — there is no ${manifest-name} "
                       "here or in any directory above. Name a file, or make a project with 'bjo init'.")))
-           ((Err why) (Err why))))
+           ((Err why) (Err why)))
   (Ok project))
 
 ;; The roots a command compiles against, from where it was run.
@@ -558,8 +558,8 @@
 (: roots-near #:sync (-> string bool (Result string Against)))
 (defun (roots-near where locked?)
   (def (Ok (Some project)) (project-around where)
-    :fail (((Ok None) (Ok nothing-against))
-           ((Err why) (Err why))))
+    :leave ((Ok None) (Ok nothing-against))
+           ((Err why) (Err why)))
   (def (Ok ready) (prepare project locked?) :propagate)
   (Ok (prepared-against ready)))
 
@@ -579,7 +579,7 @@
 (defun (build-project project line say?)
   (with-return ret
     (def (Ok ready) (prepare project (record-ref line locked))
-      :fail (((Err why) (Err (fail why)))))
+      :leave ((Err why) (Err (fail why))))
     (def roots (prepared-against ready))
 
     (unless (project-has-entry? project)
@@ -644,7 +644,7 @@
 (defun (check-project project line)
   (with-return ret
     (def (Ok ready) (prepare project (record-ref line locked))
-      :fail (((Err why) (fail why))))
+      :leave ((Err why) (fail why)))
     (def sources (sources-under (project-src project)))
     (def files (if (and (project-has-entry? project)
                         (not (any? #(= & (project-entry project)) sources)))
@@ -763,8 +763,8 @@
        (when (or debug? force? lib?)
          (ret (fail "bjo fetch: compiles nothing, so it takes no build flags.")))
        (unless (empty? rest) (ret (fail "bjo fetch: takes no arguments.")))
-       (def (Ok project) (project-here "fetch") :fail (((Err why) (fail why))))
-       (def (Ok ready) (prepare project locked?) :fail (((Err why) (fail why))))
+       (def (Ok project) (project-here "fetch") :leave ((Err why) (fail why)))
+       (def (Ok ready) (prepare project locked?) :leave ((Err why) (fail why)))
        (println (str (package-name-of project) ": "
                      (int->string (prepared-dependencies ready)) " dependencies ready."))
        0))
@@ -778,24 +778,24 @@
        ;; program, and a project with no file named has nothing to put them
        ;; after.
        (def (Cons name args) rest
-         :fail ((Nil (match (project-here "run")
+         :leave (Nil (match (project-here "run")
                        ((Err why) (fail why))
-                       ((Ok project) (run-project project line Nil))))))
+                       ((Ok project) (run-project project line Nil)))))
        (when (= name ".")
          (ret (match (project-here "run")
                 ((Err why) (fail why))
                 ((Ok project) (run-project project line args)))))
        (def (Some file) (resolve-source name)
-         (fail #"bjo run: no such file '${name}'."))
-       (def (Ok roots) (roots-for-file file locked?) :fail (((Err why) (fail why))))
+         :leave-with (fail #"bjo run: no such file '${name}'."))
+       (def (Ok roots) (roots-for-file file locked?) :leave ((Err why) (fail why)))
        (cmd-run file args debug? force? roots)))
 
     ("build"
      (with-return ret
        (def (Cons name more) rest
-         :fail ((Nil (match (project-here "build")
+         :leave (Nil (match (project-here "build")
                        ((Err why) (fail why))
-                       ((Ok project) (build-and-say project line))))))
+                       ((Ok project) (build-and-say project line)))))
        (when (= name ".")
          (ret (cond
                 ((not (empty? more))
@@ -805,8 +805,8 @@
                         ((Ok project) (build-and-say project line)))))))
        (unless (empty? more) (ret (fail "bjo build: takes one source file.")))
        (def (Some file) (resolve-source name)
-         (fail #"bjo build: no such file '${name}'."))
-       (def (Ok roots) (roots-for-file file locked?) :fail (((Err why) (fail why))))
+         :leave-with (fail #"bjo build: no such file '${name}'."))
+       (def (Ok roots) (roots-for-file file locked?) :leave ((Err why) (fail why)))
        (cmd-build file debug? lib? force? roots)))
 
     ("check"
@@ -818,10 +818,10 @@
                 ((Err why) (fail why))
                 ((Ok project) (check-project project line)))))
        (def (Ok resolved) (resolve-all "check" rest)
-         :fail (((Err message) (fail message))))
+         :leave ((Err message) (fail message)))
        (def (Cons first _) resolved
-         (fail "bjo check: no source file. Try 'bjo help'."))
-       (def (Ok roots) (roots-for-file first locked?) :fail (((Err why) (fail why))))
+         :leave-with (fail "bjo check: no source file. Try 'bjo help'."))
+       (def (Ok roots) (roots-for-file first locked?) :leave ((Err why) (fail why)))
        (cmd-check resolved roots)))
 
     ("repl"
@@ -831,7 +831,7 @@
        ;; Inside a project the prompt sees the project's packages, which is
        ;; what makes `(import (myapp lexer))` work there.
        (def (Ok roots) (roots-near (current-directory) locked?)
-         :fail (((Err why) (fail why))))
+         :leave ((Err why) (fail why)))
        (cmd-repl roots)))
 
     ;; Reached only when this binary was started directly. The launcher takes
@@ -854,7 +854,7 @@
   ;; The command comes first and is never a flag, so the flags of the command
   ;; are what follows it.
   (def (Cons command rest) (vec->list args)
-    :fail ((Nil (usage) 1)))
+    :leave (Nil (usage) 1))
   (match (parse-flags rest)
     ((Err message) (fail message))
     ((Ok line) (dispatch command line))))

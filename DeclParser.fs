@@ -539,14 +539,21 @@ let rec tryParseDecl (s: SExpr) : Decl option =
     | SList(SAtom { Token = Symbol "def" } :: binder :: [ scrutinee ], _) when not (isPlainDefBinder binder) ->
         Some(DDefPattern(parsePattern binder, parseExpr scrutinee, r))
 
-    // A failure part, written where there is nothing for it to be the value of.
+    // `:default` never leaves, so it needs no body: the pattern's one name
+    // becomes a definition like any other.
+    | SList(SAtom { Token = Symbol "def" } :: binder :: scrutinee :: ([ SAtom { Token = Keyword "default" }; _ ] as forms), _) ->
+        match parseDefTail r binder scrutinee forms with
+        | Defaults(name, bound) -> Some(DDef(name, bound, r))
+        | Leaves _ -> failwith "internal error: :default read as a failure part that leaves"
+
+    // A failure part that leaves, written where there is no body to leave.
     //
     // A REPL entry is a top level too. Binding a pattern that may fail at the
     // prompt is a thing to want and is not what this reports on; the REPL would
     // have to decide what the *rest of the session* is, and it does not.
     | SList(SAtom { Token = Symbol "def" } :: _ :: _ :: _ :: _, _) ->
         failwithf
-            $"Syntax error at %s{Lexer.formatPos r}: what a `def` produces when its pattern does not match is the value of the body it stands in, and the top level is not a body. A pattern here has to match every value. A REPL entry is a top level as well, so a prompt cannot take a failure part either."
+            $"Syntax error at %s{Lexer.formatPos r}: a failure part that leaves gives the value of the body the `def` stands in, and the top level is not a body. Here a pattern has to match every value, or take `:default value` for its one name. A REPL entry is a top level as well."
 
     | SList(SAtom { Token = Symbol "def" } :: SList(names, _) :: [ expr ], _) ->
         let rawNames =
