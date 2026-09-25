@@ -46,6 +46,9 @@
   ;; Connecting.
   tcp-connect
 
+  ;; A connection somebody else made.
+  stream->ports
+
   ;; Listening.
   Listener
   tcp-listen accept-evt accept
@@ -62,7 +65,7 @@
   ;; Opaque, and deliberately not exported: a connection *is* its two ports, and
   ;; a third value to pass around would be the thing this module exists not to
   ;; have. It appears below only between the runtime and the tuple.
-  (Connection (: Bjolang.Runtime.BjoConnection))
+  (Connection (: Bjolang.Runtime.BjoConnection (-> Stream string Connection)))
   (Exception  (: System.Exception)))
 
 (import/extern
@@ -138,6 +141,25 @@
   (match (clr-connect host port)
     ((Ok c) (Ok (connection->ports (clr-own-connection c))))
     ((Err e) (Err e))))
+
+;; ---------------------------------------------------------------------------
+;; A connection somebody else made
+;; ---------------------------------------------------------------------------
+
+;; The two ports over a duplex `Stream` that something other than this module
+;; connected: the stream an HTTP server hands over after `101 Switching
+;; Protocols`, or a `NetworkStream`.
+;;
+;; `stream->byte-input-port` and `stream->byte-output-port` each own the stream
+;; they wrap, so the first half closed would take the stream from the other.
+;; This shares it the way `tcp-connect` does: the stream is disposed when both
+;; halves have been closed, or when the ambient scope ends.
+;;
+;; `peer` is what `peer-address` answers for the input port; `""` means `None`.
+(: stream->ports (-> Stream (#:peer string) (Tuple ByteInputPort ByteOutputPort)))
+(defun (stream->ports s #:peer "")
+  (ignore (current-scope))
+  (connection->ports (clr-own-connection (Connection. s peer))))
 
 ;; ---------------------------------------------------------------------------
 ;; Listening
@@ -235,6 +257,9 @@
 ;;
 ;; It hangs off the input port because the tuple is fixed at two and there is
 ;; nowhere else to put it. `None` for a port that is not a connection's — a
-;; file, a pipe, a `limited` view.
+;; file, a pipe, a `limited` view — and for a `stream->ports` given no peer.
 (: peer-address (-> ByteInputPort (Option string)))
-(defun (peer-address p) (clr-peer p))
+(defun (peer-address p)
+  (match (clr-peer p)
+    ((Some "") None)
+    (found found)))

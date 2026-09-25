@@ -30,9 +30,15 @@
 (import (std inbox))
 (import (std simpletest))
 
+(import/class
+  (TcpClient    (: System.Net.Sockets.TcpClient (-> string int TcpClient)))
+  (MemoryStream (: System.IO.MemoryStream (-> MemoryStream))))
+
 (import/extern
   (int->byte (: System.Convert.ToByte  (-> int byte)))
-  (byte->int (: System.Convert.ToInt32 (-> byte int))))
+  (byte->int (: System.Convert.ToInt32 (-> byte int)))
+  (client-stream (: System.Net.Sockets.TcpClient.GetStream
+                    (-> TcpClient System.Net.Sockets.NetworkStream))))
 
 ;; ---------------------------------------------------------------------------
 ;; Helpers
@@ -531,6 +537,52 @@
        (str woken "|" again "|" (if (= port (listener-port l)) "same-port" "moved"))))))
 
 ;; ---------------------------------------------------------------------------
+;; A stream somebody else connected
+;; ---------------------------------------------------------------------------
+;;
+;; A `NetworkStream` from .NET's own `TcpClient`, adopted with `stream->ports`.
+;; The client closes its reading half and then writes again, which only works
+;; if the two ports share the stream rather than each owning it.
+
+(: adopted-client (-bjo-> int string))
+(defbjo (adopted-client port)
+  (def client (TcpClient. "127.0.0.1" port))
+  (match (stream->ports (cast Stream (client-stream client)) #:peer "adopted")
+    ((Tuple in out)
+     (def who (match (peer-address in) ((Some a) a) (None "none")))
+     (write-bytes! out #[1])
+     (flush! out)
+     (close-byte-input-port! in)
+     (def after
+       (match (try (let () (write-bytes! out #[2 3]) (flush! out) "wrote")
+                   #:catch (System.Exception))
+         ((Ok what) what)
+         ((Err e) (str "refused: " (.-Message e)))))
+     (shutdown! out)
+     (close-byte-output-port! out)
+     (str who "|" after))))
+
+(: scenario-stream-ports (-bjo-> string))
+(defbjo (scenario-stream-ports)
+  (match (tcp-listen "127.0.0.1" 0)
+    ((Err e) (str "listen failed: " (.-Message e)))
+    ((Ok l)
+     (with-open ((listening l))
+       (def server (bjo (collect-once l)))
+       (def said (adopted-client (listener-port l)))
+       ;; No peer given, so there is nobody to report.
+       (def anonymous
+         (match (stream->ports (cast Stream (MemoryStream.)))
+           ((Tuple in out)
+            (def who (match (peer-address in) ((Some a) a) (None "none")))
+            (closing in out)
+            who)))
+       (str said "|" anonymous "|"
+            (match (sync (promise-join server))
+              ((Ok s) s)
+              ((Err e) (str "server raised " (.-Message e)))))))))
+
+;; ---------------------------------------------------------------------------
 ;; Connecting to nothing
 ;; ---------------------------------------------------------------------------
 
@@ -580,6 +632,10 @@
   (expect "close-listener! wakes a parked acceptor"
           (ran (bjo (scenario-close-listener)))
           "closed|closed|same-port")
+
+  (expect "stream->ports shares one stream between its two halves"
+          (ran (bjo (scenario-stream-ports)))
+          "adopted|wrote|none|1.2.3.")
 
   (expect "connecting to nothing is Err, not a raise"
           (ran (bjo (scenario-refused)))

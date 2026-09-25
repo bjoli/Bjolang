@@ -3,6 +3,24 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~stream->ports~ in ~(std net)~
+
+~(stream->ports s #:peer "")~ makes the two ports over a duplex ~Stream~ that
+something else connected — the stream an HTTP server hands over after ~101~, or
+a ~NetworkStream~. The stream is shared the way ~tcp-connect~ shares its socket:
+disposed when both halves are closed or the ambient scope ends, where
+~stream->byte-input-port~ and ~stream->byte-output-port~ would each own it and
+the first close would take it from the other. ~peer~ is what ~peer-address~
+answers; ~""~, the default, answers ~None~.
+
+It is what the ~(net websocket)~ package (github.com/bjoli/websocket) runs on
+under ~bjoweb~. Tested in ~232_net.bjo~, over .NET's own ~TcpClient~.
+
+Found on the way and not fixed here: closing a byte output port over a stream
+that refuses synchronous I/O — Kestrel's — raises from ~Dispose~, which flushes
+the stream synchronously. Calling ~shutdown!~ first flushes asynchronously and
+leaves the close nothing to do.
+
 * ~def~ failure parts are named, and ~:default~ is new
 
 Every failure part of a ~def~, ~def*~ clause or ~cond~ ~:def~ now starts with a
