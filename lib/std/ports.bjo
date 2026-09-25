@@ -223,8 +223,11 @@
   (clr-to-writer (: Bjolang.Runtime.BytePorts.ToTextWriter (-> ByteOutputPort Encoding TextOutputPort)))
 
   ;; The encoding almost every caller wants. `System.Text.Encoding` has the rest.
-  (clr-utf8 (: System.Text.Encoding.UTF8 #:get)))
+  (clr-utf8 (: Bjolang.Runtime.BytePorts.Utf8 #:get)))
 
+;; UTF-8 that never writes a byte order mark, and that `byte->text-input-port`
+;; reads past one with. Not `System.Text.Encoding.UTF8`, which starts every text
+;; port over bytes with one.
 (: utf8 Encoding)
 (def utf8 clr-utf8)
 
@@ -448,6 +451,9 @@
 ;;
 ;; The byte port is not closed by closing the text port; it is owned by the
 ;; scope that opened it.
+;;
+;; With a UTF-8 encoding, one leading byte order mark is skipped, whether or not
+;; the encoding writes one.
 (: byte->text-input-port (-> ByteInputPort Encoding TextInputPort))
 (defun (byte->text-input-port p encoding)
   (clr-to-reader p encoding))

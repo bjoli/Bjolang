@@ -3,6 +3,24 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~utf8~ writes no byte order mark
+
+~utf8~ in ~(std ports)~ was ~System.Text.Encoding.UTF8~, which starts every
+text port over bytes with a byte order mark: ~(write-string t "a")~ through
+~byte->text-output-port~ wrote four bytes. Browsers skip it; ~curl~ shows it,
+and Python's ~json.loads~ refuses JSON text that starts with it. The JSON RFC
+forbids adding one to JSON sent over a network.
+
+- *~utf8~ never writes one.* It is ~UTF8Encoding(false)~, the encoding .NET
+  itself uses when none is given.
+- *~byte->text-input-port~ skips one* leading byte order mark with any UTF-8
+  encoding, whether or not that encoding writes one. It did so before only
+  because ~Encoding.UTF8~ writes one.
+
+This is what OCaml's Uutf, Python's ~utf-8~ and Haskell's ~utf8~ do: a BOM is
+never written unless asked for, and one is dropped when reading. Tested in
+~231_byte_ports.bjo~.
+
 * Closing a byte output port writes only what is pending
 
 Closing a byte output port used to flush the stream under it every time, with a

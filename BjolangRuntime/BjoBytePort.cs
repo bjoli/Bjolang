@@ -1720,13 +1720,35 @@ public static class BytePorts {
     // --- The text layer -----------------------------------------------------
 
     /// <summary>
+    /// `utf8` in `(std ports)`: UTF-8 that never writes a byte order mark.
+    /// `Encoding.UTF8` writes one at the start of every text port over bytes,
+    /// which a peer that is not a browser reads as three bytes of junk before
+    /// the text. A text input port still skips one; see
+    /// <see cref="ToTextReader"/>.
+    /// </summary>
+    public static Encoding Utf8 { get; } = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
+    /// <summary>
     /// A text reader over the byte port, reading THROUGH it rather than past it.
     /// See <see cref="BjoByteInputPort.AsStream"/> for why that distinction is
     /// the whole of this function.
     /// </summary>
     public static TextReader ToTextReader(BjoByteInputPort port, Encoding encoding) {
         ArgumentNullException.ThrowIfNull(encoding);
-        return new BjoPort(new StreamReader(port.AsStream(), encoding, detectEncodingFromByteOrderMarks: false));
+        return new BjoPort(new StreamReader(port.AsStream(), Decoding(encoding), detectEncodingFromByteOrderMarks: false));
+    }
+
+    /// `StreamReader` skips a leading byte order mark only when its encoding
+    /// writes one. A UTF-8 that does not is swapped for one that does, with the
+    /// same decoder fallback, so that reading skips a BOM whichever UTF-8 the
+    /// caller passed. The two differ only in what they write.
+    private static Encoding Decoding(Encoding encoding) {
+        if (encoding is not UTF8Encoding || encoding.Preamble.Length > 0) return encoding;
+
+        // Cloned because a constructed encoding is read-only.
+        var withBom = (Encoding)new UTF8Encoding(encoderShouldEmitUTF8Identifier: true).Clone();
+        withBom.DecoderFallback = encoding.DecoderFallback;
+        return withBom;
     }
 
     /// <summary>

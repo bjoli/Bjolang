@@ -515,6 +515,23 @@
     ((Err e) (println "FAILURE: could not open the byte file for writing")))
   (expect "a text port over a byte port" (file-read-text out-path) "hello world")
 
+  ;; `utf8` writes no byte order mark, and reading with it skips one: 239 187
+  ;; 191 is U+FEFF in UTF-8.
+  (match (byte-pipe)
+    ((Tuple in out)
+     (def t (byte->text-output-port out utf8))
+     (write-string t "a")
+     (close-output-port t)
+     (close-byte-output-port! out)
+     (expect "utf8 writes no byte order mark" (drain-bytes in) "97.")))
+
+  (match (byte-pipe)
+    ((Tuple in out)
+     (write-bytes! out #[239 187 191 104 105])
+     (close-byte-output-port! out)
+     (expect "reading utf8 skips a byte order mark"
+             (read-line (byte->text-input-port in utf8)) "hi")))
+
   ;; =========================================================================
   ;; A port over a stream somebody else handed over
   ;; =========================================================================
