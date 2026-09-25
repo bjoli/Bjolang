@@ -213,6 +213,14 @@
   (sync (eof-evt in))
   1)
 
+;; No `flush!`, so the close on the fiber is what writes the bytes.
+(: write-then-close (-bjo-> ByteOutputPort (Array byte) int))
+(defbjo (write-then-close out bytes)
+  (write-bytes! out bytes)
+  (close-byte-output-port! out)
+  (close-byte-output-port! out)
+  0)
+
 ;; ---------------------------------------------------------------------------
 ;; Ephemeral, not persistent
 ;; ---------------------------------------------------------------------------
@@ -403,6 +411,42 @@
      (expect "and then ends the read half" (shown (read-some in)) "none")))
 
   ;; =========================================================================
+  ;; Closing on a fiber
+  ;; =========================================================================
+  ;;
+  ;; There the close suspends while it writes what the port still holds, and a
+  ;; second close is a no-op. It lets go of a pipe half, which the reader sees
+  ;; as end of input, and of an owned port's registration on its scope.
+  (match (byte-pipe)
+    ((Tuple in out)
+     (expect "a close on a fiber, twice"
+             (match (sync/blocking (promise-join (bjo (write-then-close out four))))
+               ((Ok k) k)
+               ((Err e) -1))
+             0)
+     (expect "writes what the port held, then ends the read half"
+             (drain-bytes in) "11.22.33.44.")))
+
+  (def fiber-path "231_bytes_fiber.tmp")
+  (def owned-before (scope-owned-count (current-scope)))
+  (match (open-byte-output-file fiber-path)
+    ((Ok w)
+     (expect "a close on a fiber of an owned port"
+             (match (sync/blocking (promise-join (bjo (write-then-close w raw))))
+               ((Ok k) k)
+               ((Err e) -1))
+             0)
+     (expect "releases its registration"
+             (- (scope-owned-count (current-scope)) owned-before) 0))
+    ((Err e) (println "FAILURE: could not open the byte file for writing")))
+
+  (match (open-byte-input-file fiber-path)
+    ((Ok r) (with-open ((i r))
+              (expect "and the file has everything"
+                      (shown (read-bytes i 6)) "104.105.255.128.0.200.")))
+    ((Err e) (println "FAILURE: could not reopen the byte file")))
+
+  ;; =========================================================================
   ;; A file round trip, and text over bytes
   ;; =========================================================================
   (def path "231_bytes.tmp")
@@ -552,4 +596,5 @@
   (file-delete path)
   (file-delete text-path)
   (file-delete out-path)
+  (file-delete fiber-path)
   0)

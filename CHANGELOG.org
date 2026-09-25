@@ -3,6 +3,33 @@
 
 What each change guarantees, and what it leaves open.
 
+* Closing a byte output port writes only what is pending
+
+Closing a byte output port used to flush the stream under it every time, with a
+blocking call, even when nothing had been written. A stream that refuses
+blocking I/O, as Kestrel's do, made every such close raise.
+
+- *A close writes only what is pending*: bytes still in the port's buffer, or
+  bytes the stream was given since its last flush. After ~flush!~ a close does
+  no I/O, so ~with-open~ and a scope's release are safe over such a stream.
+- *~close-byte-output-port!~ suspends on a fiber.* It is a ~defbjouble~ now,
+  like ~flush!~ and ~shutdown!~: the pending bytes are written asynchronously
+  and then the port is released. The port is released even when that write
+  fails or the fiber is cancelled, and the failure is raised afterwards.
+- *A text port over a byte port* closes without I/O after an asynchronous
+  flush as well. ~StreamWriter.Dispose~ always flushes its stream, and that
+  flush now reaches the stream under the byte port only when something is
+  pending.
+
+Still open: a port closed by ~with-open~ or released by its scope while bytes
+are pending, over a stream that refuses blocking I/O. A release cannot suspend,
+so the write is blocking and raises. The failure is reported, and the handle
+is released anyway. ~flush!~ first, or close with ~close-byte-output-port!~ on
+the fiber.
+
+Tested in ~BjolangRuntime/Cml/Tests~, over a stream that refuses blocking I/O
+the way Kestrel's do, and in ~231_byte_ports.bjo~.
+
 * ~stream->ports~ in ~(std net)~
 
 ~(stream->ports s #:peer "")~ makes the two ports over a duplex ~Stream~ that
@@ -16,10 +43,9 @@ answers; ~""~, the default, answers ~None~.
 It is what the ~(net websocket)~ package (github.com/bjoli/websocket) runs on
 under ~bjoweb~. Tested in ~232_net.bjo~, over .NET's own ~TcpClient~.
 
-Found on the way and not fixed here: closing a byte output port over a stream
-that refuses synchronous I/O — Kestrel's — raises from ~Dispose~, which flushes
-the stream synchronously. Calling ~shutdown!~ first flushes asynchronously and
-leaves the close nothing to do.
+Found on the way: closing a byte output port over a stream that refuses
+synchronous I/O, as Kestrel's do, raised from ~Dispose~, which flushed the
+stream synchronously. Fixed in the entry above.
 
 * ~def~ failure parts are named, and ~:default~ is new
 

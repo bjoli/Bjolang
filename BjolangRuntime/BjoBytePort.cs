@@ -1051,8 +1051,16 @@ public sealed class BjoByteInputPort : IDisposable {
 /// write to concurrently is a program that has not said what it means; the
 /// reading side is where the design is, because that is where a `choose` can
 /// take a read away.
+///
+/// # Closing
+///
+/// A close writes only what is pending: bytes in the buffer, or bytes the
+/// stream has been given since its last flush. Some streams refuse blocking
+/// I/O (Kestrel's do), and a close is blocking, because a scope's release
+/// cannot suspend. After `flush!` a close does no I/O at all, and
+/// <see cref="DisposeAsync"/> is the close that suspends instead.
 /// </summary>
-public sealed class BjoByteOutputPort : IDisposable {
+public sealed class BjoByteOutputPort : IDisposable, IAsyncDisposable {
     private const int DefaultBufferSize = 4096;
 
     private readonly Stream _inner;
@@ -1061,6 +1069,13 @@ public sealed class BjoByteOutputPort : IDisposable {
     private int _len;
     private bool _disposed;
     private bool _writeClosed;
+
+    /// Bytes have reached `_inner` since it was last flushed. Set before the
+    /// write rather than after, because a write that fails partway may already
+    /// have handed some of them over.
+    private bool _unflushed;
+
+    private bool HasPending => _len > 0 || _unflushed;
 
     /// <summary>See <see cref="BjoPort.Owner"/>.</summary>
     public BjolangRuntime.Owned? Owner;
@@ -1149,6 +1164,7 @@ public sealed class BjoByteOutputPort : IDisposable {
         if (_len == 0) return;
         int n = _len;
         _len = 0;
+        _unflushed = true;
         _inner.Write(_buf, 0, n);
     }
 
@@ -1156,6 +1172,7 @@ public sealed class BjoByteOutputPort : IDisposable {
         if (_len == 0) return;
         int n = _len;
         _len = 0;
+        _unflushed = true;
         await _inner.WriteAsync(_buf.AsMemory(0, n), cancel).ConfigureAwait(false);
     }
 
@@ -1165,12 +1182,22 @@ public sealed class BjoByteOutputPort : IDisposable {
         ThrowIfDisposed();
         DrainSync();
         _inner.Flush();
+        _unflushed = false;
     }
 
     public async ValueTask FlushValueAsync(CancellationToken cancel = default) {
         ThrowIfDisposed();
         await DrainAsync(cancel).ConfigureAwait(false);
         await _inner.FlushAsync(cancel).ConfigureAwait(false);
+        _unflushed = false;
+    }
+
+    /// A flush that does no I/O when nothing is pending. A text writer over
+    /// this port uses it, because `StreamWriter.Dispose` always flushes its
+    /// stream, and closing the text writer after an asynchronous flush must not
+    /// block.
+    internal void FlushPending() {
+        if (HasPending) Flush();
     }
 
     // --- The half-close -----------------------------------------------------
@@ -1192,6 +1219,7 @@ public sealed class BjoByteOutputPort : IDisposable {
 
         DrainSync();
         _inner.Flush();
+        _unflushed = false;
         _writeClosed = true;
 
         switch (_inner) {
@@ -1213,6 +1241,7 @@ public sealed class BjoByteOutputPort : IDisposable {
 
         await DrainAsync(cancel).ConfigureAwait(false);
         await _inner.FlushAsync(cancel).ConfigureAwait(false);
+        _unflushed = false;
         _writeClosed = true;
 
         switch (_inner) {
@@ -1227,15 +1256,53 @@ public sealed class BjoByteOutputPort : IDisposable {
 
     // --- Closing ------------------------------------------------------------
 
+    /// <summary>
+    /// Everything pending goes out, suspending rather than blocking, so that
+    /// the <see cref="Dispose"/> after it has nothing to write.
+    ///
+    /// A failure or a cancellation drops what was pending before it is
+    /// rethrown. Otherwise `Dispose` would retry it with a blocking write, on a
+    /// stream that has just failed or for a fiber that was told to stop.
+    /// </summary>
+    internal async ValueTask SettleAsync(CancellationToken cancel) {
+        if (_disposed || _writeClosed || !HasPending) return;
+
+        try {
+            await DrainAsync(cancel).ConfigureAwait(false);
+            await _inner.FlushAsync(cancel).ConfigureAwait(false);
+            _unflushed = false;
+        } catch {
+            _len = 0;
+            _unflushed = false;
+            throw;
+        }
+    }
+
+    /// The close that suspends. The handle is released even when the flush
+    /// fails. A port its scope owns is closed with
+    /// <see cref="BjolangRuntime.CloseByteOutputAsync"/> instead, which
+    /// releases the registration too.
+    public async ValueTask DisposeAsync() {
+        try {
+            await SettleAsync(CancellationToken.None).ConfigureAwait(false);
+        } finally {
+            Dispose();
+        }
+    }
+
     public void Dispose() {
         if (_disposed) return;
 
         try {
             // Held bytes go out before the handle does, and `_disposed` is set
             // only afterwards so that the drain is not refused by its own guard.
-            if (!_writeClosed) {
+            // With nothing pending there is no I/O at all, which is what makes
+            // a close after `flush!` safe over a stream that refuses blocking
+            // I/O.
+            if (!_writeClosed && HasPending) {
                 DrainSync();
                 _inner.Flush();
+                _unflushed = false;
             }
         } finally {
             _disposed = true;
@@ -1647,6 +1714,9 @@ public static class BytePorts {
 
     public static Unit CloseOutput(BjoByteOutputPort port) => BjolangRuntime.CloseByteOutput(port);
 
+    public static ValueTask<Unit> CloseOutputAsync(BjoByteOutputPort port, CancellationToken cancel = default) =>
+        BjolangRuntime.CloseByteOutputAsync(port, cancel);
+
     // --- The text layer -----------------------------------------------------
 
     /// <summary>
@@ -1700,8 +1770,10 @@ public static class BytePorts {
         }
 
         /// The port's, so that closing the text writer reaches the stream under
-        /// the byte port rather than stopping in its buffer.
-        public override void Flush() => _port.Flush();
+        /// the byte port rather than stopping in its buffer. Only when something
+        /// is pending, because `StreamWriter.Dispose` calls this even after an
+        /// asynchronous flush has written everything.
+        public override void Flush() => _port.FlushPending();
 
         public override Task FlushAsync(CancellationToken cancel) => _port.FlushValueAsync(cancel).AsTask();
 

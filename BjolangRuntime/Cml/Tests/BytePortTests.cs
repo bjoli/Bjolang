@@ -13,7 +13,8 @@
 
 // The four claims about `BjoByteInputPort` that Bjolang cannot check from the
 // outside, each of them about WHICH PATH was taken rather than about what came
-// back.
+// back. After them, the claims about closing a `BjoByteOutputPort` over a
+// stream that refuses blocking I/O, which .NET itself has none of.
 //
 // `TestFiles/231_byte_ports.bjo` covers the behaviour: reads, peeks, the
 // half-close, the text layer, and the racy form of "a losing branch consumes
@@ -23,6 +24,7 @@
 
 using System;
 using System.IO;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using static Bjoml.Tests.Harness;
@@ -40,6 +42,15 @@ public static class BytePortTests
         Run("a losing branch consumes nothing", LoserConsumesNothing);
         Run("at most one refill is ever in flight", OneRefillAtATime);
         Run("a cancelled wait does not cancel the refill", CancelledWaitKeepsTheBytes);
+
+        Section("Closing a byte output port over a stream that refuses blocking I/O");
+        Run("a close after a flush does no I/O", CloseAfterFlushDoesNoIo);
+        Run("a close with nothing written does no I/O", CloseOfNothingDoesNoIo);
+        Run("an asynchronous close writes what is pending", AsyncCloseWritesPending);
+        Run("a blocking close with bytes pending raises and still lets go", BlockingCloseStillReleases);
+        Run("an asynchronous close that fails still lets go", FailedAsyncCloseStillReleases);
+        Run("a cancelled asynchronous close drops the bytes and lets go", CancelledAsyncCloseReleases);
+        Run("a text port over a byte port closes without blocking after a flush", TextOverBytesCloses);
     }
 
     // -----------------------------------------------------------------------
@@ -350,5 +361,213 @@ public static class BytePortTests
         AssertEqual("7.8.9", Show(buf), "the bytes after a cancelled wait");
 
         port.Dispose();
+    }
+
+    // -----------------------------------------------------------------------
+    // Closing an output port
+    // -----------------------------------------------------------------------
+
+    /// A stream that refuses blocking I/O the way Kestrel's do, and counts
+    /// every attempt at it. The asynchronous calls yield first, so that they
+    /// complete on another thread as a socket's would.
+    private sealed class AsyncOnlyStream : Stream
+    {
+        private readonly MemoryStream _written = new();
+        private int _blockingCalls;
+        private int _flushes;
+
+        /// Every asynchronous write and flush fails, as they do once the peer
+        /// has gone.
+        public bool Broken;
+
+        public int BlockingCalls => Volatile.Read(ref _blockingCalls);
+        public int Flushes => Volatile.Read(ref _flushes);
+        public bool Disposed { get; private set; }
+
+        public byte[] Written
+        {
+            get { lock (_written) return _written.ToArray(); }
+        }
+
+        private InvalidOperationException Refuse()
+        {
+            Interlocked.Increment(ref _blockingCalls);
+            return new InvalidOperationException("Synchronous operations are disallowed.");
+        }
+
+        public override void Write(byte[] buffer, int offset, int count) => throw Refuse();
+        public override void Write(ReadOnlySpan<byte> buffer) => throw Refuse();
+        public override void Flush() => throw Refuse();
+
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancel = default)
+        {
+            await Task.Yield();
+            cancel.ThrowIfCancellationRequested();
+            if (Broken) throw new IOException("the peer has gone");
+            lock (_written) _written.Write(buffer.Span);
+        }
+
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancel) =>
+            WriteAsync(buffer.AsMemory(offset, count), cancel).AsTask();
+
+        public override async Task FlushAsync(CancellationToken cancel)
+        {
+            await Task.Yield();
+            cancel.ThrowIfCancellationRequested();
+            if (Broken) throw new IOException("the peer has gone");
+            Interlocked.Increment(ref _flushes);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            Disposed = true;
+            base.Dispose(disposing);
+        }
+
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+    }
+
+    private static void Wait(ValueTask task) => task.AsTask().GetAwaiter().GetResult();
+
+    private static void Wait<T>(ValueTask<T> task) => task.AsTask().GetAwaiter().GetResult();
+
+    /// `flush!` on a fiber, then a close: the close has nothing left to write,
+    /// so it must not touch the stream beyond disposing it.
+    private static void CloseAfterFlushDoesNoIo()
+    {
+        var stream = new AsyncOnlyStream();
+        var port = new BjoByteOutputPort(stream);
+
+        Wait(port.WriteAsync(new byte[] { 1, 2, 3 }));
+        Wait(port.FlushValueAsync());
+        port.Dispose();
+
+        AssertEqual(0, stream.BlockingCalls, "blocking calls on the stream");
+        AssertEqual("1.2.3", Show(stream.Written), "what the stream got");
+        Assert(stream.Disposed, "the close did not let go of the stream");
+    }
+
+    private static void CloseOfNothingDoesNoIo()
+    {
+        var stream = new AsyncOnlyStream();
+        new BjoByteOutputPort(stream).Dispose();
+
+        AssertEqual(0, stream.BlockingCalls, "blocking calls on the stream");
+        AssertEqual(0, stream.Flushes, "flushes of a stream nothing was written to");
+        Assert(stream.Disposed, "the close did not let go of the stream");
+    }
+
+    /// Both ways in: the one `close-byte-output-port!` takes on a fiber, and
+    /// `DisposeAsync`. A second close is a no-op either way.
+    private static void AsyncCloseWritesPending()
+    {
+        var first = new AsyncOnlyStream();
+        var port = new BjoByteOutputPort(first);
+        port.Write(new byte[] { 4, 5, 6 });
+
+        Wait(BjolangRuntime.CloseByteOutputAsync(port));
+        Wait(BjolangRuntime.CloseByteOutputAsync(port));
+
+        AssertEqual(0, first.BlockingCalls, "blocking calls on the stream");
+        AssertEqual("4.5.6", Show(first.Written), "what the stream got");
+        AssertEqual(1, first.Flushes, "flushes");
+        Assert(first.Disposed, "the close did not let go of the stream");
+
+        var second = new AsyncOnlyStream();
+        var other = new BjoByteOutputPort(second);
+        other.Write(new byte[] { 7 });
+
+        Wait(other.DisposeAsync());
+        Wait(other.DisposeAsync());
+
+        AssertEqual(0, second.BlockingCalls, "blocking calls through DisposeAsync");
+        AssertEqual("7", Show(second.Written), "what DisposeAsync wrote");
+        Assert(second.Disposed, "DisposeAsync did not let go of the stream");
+    }
+
+    /// What a scope's release does to a port with bytes still in it. It cannot
+    /// suspend, so the write is blocking and the stream refuses it. The
+    /// refusal is reported, and the stream is let go of anyway.
+    private static void BlockingCloseStillReleases()
+    {
+        var stream = new AsyncOnlyStream();
+        var port = new BjoByteOutputPort(stream);
+        port.Write(new byte[] { 8 });
+
+        try
+        {
+            port.Dispose();
+            throw new AssertionException("a blocking close with bytes pending did not report the refusal");
+        }
+        catch (InvalidOperationException) { /* as it should */ }
+
+        Assert(stream.Disposed, "the refused close kept the stream");
+
+        port.Dispose();
+        AssertEqual(1, stream.BlockingCalls, "blocking calls after a second close");
+    }
+
+    /// A failed write is not retried, least of all with a blocking one.
+    private static void FailedAsyncCloseStillReleases()
+    {
+        var stream = new AsyncOnlyStream { Broken = true };
+        var port = new BjoByteOutputPort(stream);
+        port.Write(new byte[] { 9 });
+
+        try
+        {
+            Wait(BjolangRuntime.CloseByteOutputAsync(port));
+            throw new AssertionException("the failed write was not reported");
+        }
+        catch (IOException) { /* as it should */ }
+
+        AssertEqual(0, stream.BlockingCalls, "blocking calls after the failed write");
+        Assert(stream.Disposed, "the failed close kept the stream");
+    }
+
+    /// A close in a fiber that has been told to stop.
+    private static void CancelledAsyncCloseReleases()
+    {
+        var stream = new AsyncOnlyStream();
+        var port = new BjoByteOutputPort(stream);
+        port.Write(new byte[] { 10 });
+
+        using var cancel = new CancellationTokenSource();
+        cancel.Cancel();
+
+        try
+        {
+            Wait(BjolangRuntime.CloseByteOutputAsync(port, cancel.Token));
+            throw new AssertionException("the cancelled close did not raise");
+        }
+        catch (OperationCanceledException) { /* as it should */ }
+
+        AssertEqual(0, stream.BlockingCalls, "blocking calls after the cancelled close");
+        AssertEqual("", Show(stream.Written), "what the cancelled close wrote");
+        Assert(stream.Disposed, "the cancelled close kept the stream");
+    }
+
+    /// `StreamWriter.Dispose` flushes its stream even with nothing to write,
+    /// and that flush reaches the byte port.
+    private static void TextOverBytesCloses()
+    {
+        var stream = new AsyncOnlyStream();
+        var port = new BjoByteOutputPort(stream);
+        var text = (BjoWriter)BytePorts.ToTextWriter(port, new UTF8Encoding(false));
+
+        Wait(text.WriteValueAsync("hello"));
+        Wait(text.FlushValueAsync());
+        text.Dispose();
+        port.Dispose();
+
+        AssertEqual(0, stream.BlockingCalls, "blocking calls on the stream");
+        AssertEqual("hello", Encoding.UTF8.GetString(stream.Written), "what the stream got");
     }
 }

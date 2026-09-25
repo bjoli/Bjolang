@@ -216,6 +216,7 @@
   ;; Closing.
   (clr-close-in  (: Bjolang.Runtime.BytePorts.CloseInput  (-> ByteInputPort void)))
   (clr-close-out (: Bjolang.Runtime.BytePorts.CloseOutput (-> ByteOutputPort void)))
+  (clr-close-out-await (: Bjolang.Runtime.BytePorts.CloseOutputAsync (-> ByteOutputPort void) #:async))
 
   ;; The text layer.
   (clr-to-reader (: Bjolang.Runtime.BytePorts.ToTextReader (-> ByteInputPort Encoding TextInputPort)))
@@ -346,8 +347,17 @@
 (: close-byte-input-port! (-> ByteInputPort void))
 (defun (close-byte-input-port! p) (clr-close-in p))
 
+;; What is still buffered, or written but not yet flushed, goes out first. On a
+;; fiber that write suspends, so the close works over a stream that refuses
+;; blocking I/O, as Kestrel's do. The port is closed even when the write fails
+;; or the fiber is cancelled, and the failure is raised afterwards.
+;;
+;; `with-open` and a scope ending close with a blocking write. After `flush!`
+;; there is nothing left to write, so they do no I/O.
 (: close-byte-output-port! (-> ByteOutputPort void))
-(defun (close-byte-output-port! p) (clr-close-out p))
+(defbjouble (close-byte-output-port! p)
+  (#:sync (clr-close-out p))
+  (#:bjo  (clr-close-out-await p)))
 
 ;; Ends the write side and leaves the read side open.
 ;;

@@ -1394,6 +1394,25 @@ public static partial class BjolangRuntime {
         return default;
     }
 
+    /// <summary>
+    /// `close-byte-output-port!` on a fiber. The pending bytes are written
+    /// asynchronously first, so the release after it does no I/O. The release
+    /// happens even when that write fails or is cancelled.
+    ///
+    /// Releases through the port's own owner handle, so it does not need the
+    /// ambient scope. `Dyn.Current` is not the fiber's after the await.
+    /// </summary>
+    public static async System.Threading.Tasks.ValueTask<Unit> CloseByteOutputAsync(
+        Bjolang.Runtime.BjoByteOutputPort? port, System.Threading.CancellationToken cancel = default) {
+        if (port is null) return default;
+        try {
+            await port.SettleAsync(cancel).ConfigureAwait(false);
+        } finally {
+            CloseByteOutput(port);
+        }
+        return default;
+    }
+
     /// <summary>The way out of a `with-open` over a connection or a listener.</summary>
     public static Unit CloseConnection(Bjolang.Runtime.BjoConnection? connection) {
         if (connection is null) return default;
