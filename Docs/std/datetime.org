@@ -150,8 +150,9 @@ corrected. To measure how long something takes, use the prelude's
 
 ** Accessors and arithmetic
 
-- ~->year~, ~->month~ (1–12), ~->day~ (1–31), ~->wday~ (0 is Sunday),
-  ~->yday~ (1–366): anything ~HasDate~.
+- ~->year~, ~->month~ (1–12), ~->day~ (1–31), ~->weekday~ (1 is Monday, 7
+  is Sunday, as in ISO 8601), ~->yday~ (1–366): anything ~HasDate~. On a
+  moment they read its local date.
 - ~->hours~, ~->minutes~, ~->seconds~, ~->milliseconds~ (0–999),
   ~->nanoseconds~ (the whole fraction of the second): anything ~HasTime~.
 - ~+years~, ~+months~, ~+weeks~, ~+days~ and their ~-~ twins take an ~int~,
@@ -324,6 +325,11 @@ Values are written as ISO text here for short.
   passed; ~hours-between~ is for elapsed time. ~(months-between 2026-01-31
   2026-02-28)~ is 0, although ~(+months 2026-01-31 1)~ is 2026-02-28. In
   return, swapping the arguments only flips the sign.
+- *~->weekday~ counts as ISO 8601 does, Monday 1 to Sunday 7,* as the text
+  this module reads and writes is ISO 8601. It is not called ~->wday~: C's
+  ~tm_wday~, Ruby's ~wday~ and Racket Gregor's ~->wday~ count Sunday as 0, so
+  ~(= (->wday d) 0)~ written from habit would compile and never be true. For
+  Sunday as 0, write ~(% (->weekday d) 7)~.
 - *A moment's ~=~ compares every field, and ~compare~ orders by instant, then
   local time, then zone id,* so the two agree. 12:00+02:00[Europe/Stockholm]
   and 10:00+00:00[UTC] are one instant and two values; a sorted set keeps both,

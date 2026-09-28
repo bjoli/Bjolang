@@ -106,7 +106,7 @@
   current-clock system-clock fixed-clock manual-clock clock-advance!
   clock-timezone now now/moment today
   ;; Accessors
-  ->year ->month ->day ->wday ->yday
+  ->year ->month ->day ->weekday ->yday
   ->hours ->minutes ->seconds ->milliseconds ->nanoseconds
   ;; Arithmetic
   +years +months +weeks +days -years -months -weeks -days -date-period
@@ -610,9 +610,9 @@
 (: ->day (-> %a int) (where (HasDate %a)))
 (defun (->day x) (clr-date-day (struct-ref (->date x) v)))
 
-;; 0 is Sunday. Day number 0, 0001-01-01, was a Monday.
-(: ->wday (-> %a int) (where (HasDate %a)))
-(defun (->wday x) (% (+ (clr-date-day-number (struct-ref (->date x) v)) 1) 7))
+;; ISO 8601: 1 is Monday, 7 is Sunday. Day number 0, 0001-01-01, was a Monday.
+(: ->weekday (-> %a int) (where (HasDate %a)))
+(defun (->weekday x) (+ (% (clr-date-day-number (struct-ref (->date x) v)) 7) 1))
 
 (: ->yday (-> %a int) (where (HasDate %a)))
 (defun (->yday x) (clr-date-day-of-year (struct-ref (->date x) v)))
@@ -1404,9 +1404,10 @@
 ;; IMF-fixdate (RFC 9110): Sun, 25 Oct 2026 01:30:00 GMT. The two obsolete
 ;; forms, RFC 850 and asctime, are not read.
 
+;; Numbered as ->weekday numbers them.
 (: day-name (-> int string))
 (defun (day-name n)
-  (match n (0 "Sun") (1 "Mon") (2 "Tue") (3 "Wed") (4 "Thu") (5 "Fri") (_ "Sat")))
+  (match n (1 "Mon") (2 "Tue") (3 "Wed") (4 "Thu") (5 "Fri") (6 "Sat") (_ "Sun")))
 
 (: month-name (-> int string))
 (defun (month-name n)
@@ -1418,9 +1419,10 @@
 (: instant->http-date (-> Instant string))
 (defun (instant->http-date i)
   (def t (instant-ticks i))
-  (def c (clr-date-from-day-number (int-of (/ t ticks-per-day))))
+  (def d (day-number->date (/ t ticks-per-day)))
+  (def c (struct-ref d v))
   (def tod (% t ticks-per-day))
-  (str (day-name (int-of (% (+ (long-of (clr-date-day-number c)) 1L) 7L))) ", "
+  (str (day-name (->weekday d)) ", "
        (pad (long-of (clr-date-day c)) 2) " " (month-name (clr-date-month c)) " "
        (pad (long-of (clr-date-year c)) 4) " "
        (pad (/ tod ticks-per-hour) 2) ":" (pad (% (/ tod ticks-per-minute) 60L) 2) ":"
@@ -1451,7 +1453,7 @@
 ;; The day name must be the date's own.
 (: http-date->instant (-> string (Option Instant)))
 (defun (http-date->instant s)
-  (def* ((Some (Tuple wday cs1)) (read-chars (string->list s) 3) :propagate)
+  (def* ((Some (Tuple dname cs1)) (read-chars (string->list s) 3) :propagate)
         ((Some cs2) (skip-string cs1 ", ") :propagate)
         ((Some (Tuple d cs3)) (read-fixed cs2 2) :propagate)
         ((Some cs4) (skip-char cs3 #\space) :propagate)
@@ -1468,7 +1470,7 @@
   (def m (month-number mon))
   (if (and (list-empty? cs14) (valid-date? y m d) (valid-time? h mi sec 0))
       (let ((day (long-of (clr-date-day-number (ClrDate. y m d)))))
-        (if (= (day-name (int-of (% (+ day 1L) 7L))) wday)
+        (if (= (day-name (->weekday (day-number->date day))) dname)
             (Some (Instant (ticks (+ (* day ticks-per-day) (time-of-day-ticks h mi sec 0)))))
             None))
       None))

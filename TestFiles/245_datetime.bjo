@@ -57,7 +57,10 @@
   (expect "->year" (->year dt) 2026)
   (expect "->month" (->month dt) 10)
   (expect "->day" (->day dt) 25)
-  (expect "->wday, a Sunday" (->wday dt) 0)
+  (expect "->weekday, a Sunday is 7" (->weekday dt) 7)
+  (expect "a Monday is 1" (->weekday (the (date 2026 10 26))) 1)
+  (expect "the first day was a Monday" (->weekday (the (date 1 1 1))) 1)
+  (expect "the last a Friday" (->weekday (the (date 9999 12 31))) 5)
   (expect "->yday" (->yday dt) 298)
   (expect "->hours" (->hours dt) 2)
   (expect "->minutes" (->minutes dt) 30)
@@ -204,6 +207,14 @@
   (expect "reads back" (the (http-date->instant "Sun, 25 Oct 2026 01:30:00 GMT")) i)
   (expect-true "with its own day name only"
                (none? (http-date->instant "Mon, 25 Oct 2026 01:30:00 GMT")))
+  (def monday (the (iso8601->instant "2026-10-19T00:00:00Z")))
+  (expect "a week of day names"
+          (list-map (fun (n) (instant->http-date (+hours monday (* n 24L))))
+                    (list 0L 1L 2L 3L 4L 5L 6L))
+          (list "Mon, 19 Oct 2026 00:00:00 GMT" "Tue, 20 Oct 2026 00:00:00 GMT"
+                "Wed, 21 Oct 2026 00:00:00 GMT" "Thu, 22 Oct 2026 00:00:00 GMT"
+                "Fri, 23 Oct 2026 00:00:00 GMT" "Sat, 24 Oct 2026 00:00:00 GMT"
+                "Sun, 25 Oct 2026 00:00:00 GMT"))
   (expect-true "not RFC 850" (none? (http-date->instant "Sunday, 25-Oct-26 01:30:00 GMT")))
   (expect-true "not asctime" (none? (http-date->instant "Sun Oct 25 01:30:00 2026"))))
 
@@ -231,6 +242,10 @@
              "2011-12-31T12:00:00+14:00[Pacific/Apia]")
      (expect "or to the first time after it" (->str (datetime->moment skipped apia later))
              "2011-12-31T00:00:00+14:00[Pacific/Apia]")
+     (expect "a moment's weekday is its local one: Saturday"
+             (->weekday (datetime->moment skipped apia later)) 6)
+     (expect "while UTC was still on Friday"
+             (->weekday (instant->utc-datetime (->instant (datetime->moment skipped apia later)))) 5)
      (expect "the minute before it is untouched"
              (->str (datetime->moment (the (datetime 2011 12 29 #:hours 23 #:minutes 59)) apia earlier))
              "2011-12-29T23:59:00-10:00[Pacific/Apia]")

@@ -3,6 +3,20 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std datetime)~ numbers weekdays as ISO 8601: ~->weekday~, Monday 1 to Sunday 7
+
+~->wday~ counted from Sunday as 0, as C and .NET do, while everything else in
+the module follows ISO 8601, where the week starts on Monday and Sunday is 7.
+It is replaced by ~->weekday~, which counts the ISO way; ~(% (->weekday d) 7)~
+gives the old numbering. The new name is on purpose: under the old one, a
+check such as ~(= (->wday d) 0)~ would still compile and would never be true,
+while now it fails to compile. The HTTP date code uses the same numbering.
+
+Tested in ~245_datetime.bjo~: a Sunday is 7 and a Monday 1, 0001-01-01 was a
+Monday and 9999-12-31 a Friday, a moment's weekday is its local one (the first
+moment of Samoa's 2011-12-31 is a Saturday there and a Friday in UTC), and a
+week of HTTP dates carries the day names Mon to Sun.
+
 * Every duration can be negated, printed and read back
 
 A ~Duration~ built by ~duration~ or read by ~iso8601->duration~ stayed within
