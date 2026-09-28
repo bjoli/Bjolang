@@ -1,0 +1,20 @@
+;; A call to a constrained function at a type with no implementation is one
+;; error, at the call.
+;;
+;; The specialiser used to make a copy of `double-area` at int before the call
+;; was reported. The copy's check failed on the missing implementation, and it
+;; warned against the definition that it could not specialise, so the one
+;; mistake was reported twice, the first time at the wrong line.
+
+;; EXPECT-ERROR: no implementation of trait 'Shape' for 'System.Int32', needed to call 'double-area'
+;; EXPECT-NO-ERROR: could not specialise
+
+(def/trait (Shape %a)
+  (: area (-> %a int)))
+
+(: double-area (-> %a int) (where (Shape %a)))
+(defun (double-area x) (* 2 (area x)))
+
+(defun (main)
+  (println (double-area 3))
+  0)

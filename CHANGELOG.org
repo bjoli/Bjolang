@@ -3,6 +3,19 @@
 
 What each change guarantees, and what it leaves open.
 
+* A call to a constrained function with no implementation is one error
+
+A call such as ~(double-area 3)~, where ~double-area~ requires ~(Shape %a)~ and
+~int~ has no ~Shape~, is an error that dictionary lowering reports at the call.
+The specialiser ran first and made a copy of ~double-area~ at ~int~, and the
+copy's check failed on the same missing implementation. So the one mistake was
+reported twice, first as a warning at the callee's definition, which for an
+imported function is ~lib.dll:1~.
+
+~Monomorphise~ now asks for no copy of an instantiation where a constraint, or
+a constraint of the implementation that would discharge it, has no
+implementation. Tested in ~errors/constraint_without_impl_no_copy.bjo~.
+
 * A library's bodies may use its ~#:opaque~ types where they land
 
 A body a library publishes is checked again in the module that uses it: an
