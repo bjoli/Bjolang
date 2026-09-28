@@ -1,0 +1,22 @@
+;; A definition that takes its name over from one that parks does not park by
+;; its name.
+;;
+;; Which imported names park was decided by name alone, so a bjoroutine calling
+;; this module's `read-all`, or an import's plain `read-line`, was told it held
+;; its thread, because the prelude's `read-all` and `read-line` do.
+;; `247_own_def_over_defbjouble.bjo` is the half that runs.
+(import (std prelude))
+(import "../inc/plain_read_line.bjo")
+
+;; EXPECT-NO-WARNING: calling 'read-all'
+;; EXPECT-NO-WARNING: calling 'read-line'
+
+(: read-all (-> string string))
+(defun (read-all s) (string-append s "!"))
+
+(: shout (-bjo-> string string))
+(defbjo (shout s) (string-append (read-all s) (read-line s)))
+
+(defbjo (main)
+  (println (shout "a"))
+  0)

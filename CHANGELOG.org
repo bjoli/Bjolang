@@ -3,6 +3,35 @@
 
 What each change guarantees, and what it leaves open.
 
+* A definition takes its name over from a ~defbjouble~, in a bjoroutine too
+
+Which names have a suspending copy, and which park a thread, was decided by
+name alone. A module that defined its own ~read-all~, or imported a plain
+~read-line~ from another module, still had the prelude's entries for those
+names, so:
+
+- a bjoroutine's call to it was pointed at the prelude's ~read-all__bjo~,
+  and the C# compile failed;
+- so did the call inside the suspending copy a ~defun~ was given for calling
+  it, which is how it first showed: a ~void~ function called as a statement;
+- a bare reference to it, passed on in a bjoroutine, was the prelude's copy
+  too;
+- a library that exported its own ~read-all~ published it as a pair, so its
+  importers failed the same way;
+- the blocking lint said a bjoroutine calling it parked its thread.
+
+A module's own definitions now drop the imports' entries for their names, as
+they already dropped the import-table entries, and a module's own
+~defbjouble~ keeps its pair. An imported claim holds only while the name ends
+up bound to the definition the claim is about, so an import that takes a name
+over from the prelude takes it over here as well. The imported pairs are no
+longer joined into the registry a second time after inference, which put
+back what the module had taken over.
+
+Tested in ~247_own_def_over_defbjouble.bjo~ and
+~warnings/own_def_over_blocking.bjo~, both of which fail the C# compile
+without the fix.
+
 * ~(std datetime)~ reads text without allocating, and writes it into one buffer
 
 The readers turned their input into a list of characters, one cell per

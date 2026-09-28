@@ -1014,6 +1014,18 @@ and private checkModule (env: Env) (sigs: Sigs) (moduleName: string) (decls: Dec
             | _ -> [])
         |> Set.ofList
 
+    // The same goes for an import's `defbjouble`: `DoubleDefs` is keyed by
+    // name, so the prelude's entry for `read-all` would make this module's own
+    // `read-all` look like one too, and a suspending body's call to it would be
+    // pointed at the prelude's `read-all__bjo`. A `defbjouble` of this
+    // module's keeps the entry, as checking it registers its own pair.
+    //
+    // And for `BlockingNames`, keyed by name as well: the blocking lint would
+    // report this module's `read-all` as parking because the prelude's does.
+    // Whether an own definition parks is for the call graph to find out.
+    let ownDoubles =
+        decls |> List.choose (function DDefDouble(n, _, _, _, _) -> Some n | _ -> None) |> Set.ofList
+
     let env =
         if ownDefinitions.IsEmpty then
             env
@@ -1024,7 +1036,12 @@ and private checkModule (env: Env) (sigs: Sigs) (moduleName: string) (decls: Dec
                         ImportAliases =
                             env.Registry.ImportAliases
                             |> Map.filter (fun name alias ->
-                                not (alias.Kind = AliasDef && Set.contains name ownDefinitions)) } }
+                                not (alias.Kind = AliasDef && Set.contains name ownDefinitions))
+                        DoubleDefs =
+                            env.Registry.DoubleDefs
+                            |> Map.filter (fun name _ ->
+                                Set.contains name ownDoubles || not (Set.contains name ownDefinitions))
+                        BlockingNames = Set.difference env.Registry.BlockingNames ownDefinitions } }
 
     let finalEnv, finalSigs, typedDecls =
         checkDeclGroup { env with CurrentModule = moduleName } sigs decls

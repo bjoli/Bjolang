@@ -1,0 +1,45 @@
+;; A definition takes its name over from a prelude `defbjouble`, in a
+;; bjoroutine too.
+;;
+;; Which names have a suspending copy was decided by name alone, so this
+;; module's `read-all` and `write-string`, and an import's plain `read-line`,
+;; counted as the prelude's. A bjoroutine's call to one was pointed at the
+;; prelude's suspending copy, and so was the call inside the copy a `defun` was
+;; given for calling one, and a bare reference passed on in a bjoroutine: each
+;; failed the C# compile. `warnings/own_def_over_blocking.bjo` is the blocking
+;; lint's half.
+(import (std prelude))
+(import (std simpletest))
+(import "inc/plain_read_line.bjo")
+
+(: read-all (-> string string))
+(defun (read-all s) (string-append s "!"))
+
+(: heard (Box (List string)))
+(def heard (make-box '()))
+
+;; Called for its effect alone, which is the shape that gave its caller a
+;; suspending copy.
+(: write-string (-> string void))
+(defun (write-string s) (box-set! heard (Cons s (box-ref heard))))
+
+(: say-twice (-> string void))
+(defun (say-twice s)
+  (write-string s)
+  (write-string s))
+
+(: shout (-bjo-> string string))
+(defbjo (shout s) (read-all s))
+
+(: ask (-bjo-> string string))
+(defbjo (ask s) (read-line s))
+
+(defbjo (main)
+  (expect "a bjoroutine calls this module's read-all" (shout "a") "a!")
+  (say-twice "b")
+  (expect "a defun calling this module's write-string, from a bjoroutine"
+          (box-ref heard) (list "b" "b"))
+  (expect "a bare reference, passed on in a bjoroutine"
+          (list-map read-all (list "c" "d")) (list "c!" "d!"))
+  (expect "an import's plain read-line, from a bjoroutine" (ask "e") "e?")
+  0)

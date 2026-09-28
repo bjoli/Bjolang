@@ -1277,8 +1277,8 @@ let loadModuleGraph
     (mainFilePath: string)
     : Decl list
       * string list
-      * Set<string>
-      * Set<string>
+      * Set<string * (string * string)>
+      * Set<string * (string * string)>
       * Map<string, TypedAST.InlineTemplate> =
     // Unconditionally, not only when something publishes a macro: the expander
     // is also what reports a macro used in the module that defines it.
@@ -1302,12 +1302,17 @@ let loadModuleGraph
     /// fact about a binding's *body*, and there is no declaration form that says
     /// one. Under the names the origin published — a module that renamed the
     /// import is resolved back through `ImportAliases` when the set is asked.
-    let blockingDefs = System.Collections.Generic.HashSet<string>()
+    /// Each with where it was defined, for the reason `doubleDefs` below is.
+    let blockingDefs = System.Collections.Generic.HashSet<string * (string * string)>()
 
     /// Imported definitions written with `defbjouble`, under the names their
     /// origin published. The suspending copy is an ordinary imported binding
     /// like any other; what this adds is that the two are a pair.
-    let doubleDefs = System.Collections.Generic.HashSet<string>()
+    ///
+    /// Each with the module that defined it and its name there, the origin
+    /// `checkExtern` records for the binding: another import may take the name
+    /// over with a plain definition, and then the name is no longer a pair.
+    let doubleDefs = System.Collections.Generic.HashSet<string * (string * string)>()
 
     /// The bodies of imported constrained generics, under the names their
     /// origin published — which is what an importer's `DExtern` points back to
@@ -1444,14 +1449,23 @@ let loadModuleGraph
                     // frameworks it uses.
                     Frameworks.noteImported meta.Frameworks
 
+                    // Where a name this DLL publishes was defined, as its
+                    // extern's origin says: a facade's entry names the module
+                    // it passes the name on from.
+                    let originOf (name: string) =
+                        meta.Defs
+                        |> List.tryFind (fun d -> d.Name = name)
+                        |> Option.bind (fun d -> d.Origin)
+                        |> Option.defaultValue (Naming.moduleKeyOfPath absPath, name)
+
                     // Transitive, unlike the exports above: a name re-exported
                     // through this DLL is bound here, and whether calling it
                     // parks a thread is a fact about the body it still reaches.
                     for name in meta.BlockingDefs do
-                        blockingDefs.Add name |> ignore
+                        blockingDefs.Add((name, originOf name)) |> ignore
 
                     for name in meta.DoubleDefs do
-                        doubleDefs.Add name |> ignore
+                        doubleDefs.Add((name, originOf name)) |> ignore
 
                     // Transitive for the same reason `BlockingDefs` is: a name
                     // re-exported through this DLL is bound here, and the body
@@ -1975,6 +1989,30 @@ let private qualifyInlineTemplates (moduleOf: Map<string, string * string>) (env
     { env with
         Registry = { env.Registry with InlineMethods = qualified } }
 
+/// What each name an import binds ends up bound to, before inference: the
+/// origin of the last extern for it, in the order the modules are checked,
+/// which is the entry `checkExtern` leaves in `ImportAliases`. The module
+/// being compiled is last and imports nothing of its own, so it is left out.
+let private importOrigins (decls: Decl list) : Map<string, string * string> =
+    let dependencies = decls |> List.truncate (max 0 (List.length decls - 1))
+
+    dependencies
+    |> List.fold
+        (fun acc d ->
+            match d with
+            | DModule(moduleName, inner, _) ->
+                inner
+                |> List.fold
+                    (fun acc d ->
+                        match d with
+                        | DExtern(visible, origin, _, _, _) ->
+                            let m = if origin.OriginModule = "" then moduleName else origin.OriginModule
+                            Map.add visible (m, origin.OriginalName) acc
+                        | _ -> acc)
+                    acc
+            | _ -> acc)
+        Map.empty
+
 let runFullFrontendPipeline (mainFilePath: string) =
     try
         Diagnostics.progress "=== Step 1: Parsing & Module Resolution ==="
@@ -2025,37 +2063,56 @@ let runFullFrontendPipeline (mainFilePath: string) =
         //
         // The twin's name is derived rather than published — one function
         // decides it on both sides, so the two cannot drift.
+        //
+        // A claim an import makes about a name — that it is a pair, or that it
+        // parks — holds only while the name ends up bound to what the claim is
+        // about: a later import's plain `read-line` takes the name over from
+        // the prelude's, and a call to it is neither to be pointed at the
+        // prelude's `read-line__bjo` nor reported as parking.
+        let origins = importOrigins parsedModuleDecls
+
+        let stillBound (name: string, origin: string * string) =
+            match Map.tryFind name origins with
+            | Some bound -> bound = origin
+            | None -> true
+
         let importedDoublePairs =
             importedDoubles
-            |> Seq.map (fun name -> name, Naming.suspendingCopy name)
+            |> Seq.filter stillBound
+            |> Seq.map (fun (name, _) -> name, Naming.suspendingCopy name)
             |> Map.ofSeq
 
+        // Which of the dependencies' exports park a thread goes in here too,
+        // joined to what the builtins say about themselves. Nothing in
+        // inference reads it, but `checkModule` drops the names this module
+        // takes over with definitions of its own, as it drops their
+        // `DoubleDefs` entries: a claim about an import's body is not one about
+        // this module's.
         let startEnv =
             { Prelude.prelude with
                 Registry =
                     { Prelude.prelude.Registry with
                         DoubleDefs =
                             importedDoublePairs
-                            |> Map.fold (fun acc k v -> Map.add k v acc) Prelude.prelude.Registry.DoubleDefs } }
+                            |> Map.fold (fun acc k v -> Map.add k v acc) Prelude.prelude.Registry.DoubleDefs
+                        BlockingNames =
+                            importedBlocking
+                            |> Set.filter stillBound
+                            |> Set.map fst
+                            |> Set.union Prelude.prelude.Registry.BlockingNames } }
 
         let env, typedAst =
             Timing.phase "type check" (fun () -> Inference.checkProgram startEnv letrecifiedDecls)
 
-        // What the dependencies said about their own bodies, joined to what the
-        // builtins say about themselves. Added after inference because nothing
-        // in inference reads it — the claim is about a call's cost, not its
-        // type — and the passes that do all run below.
+        // The dependencies' constrained bodies, added after inference because
+        // nothing in inference reads a body's source, and `Monomorphise` below
+        // is the only thing that does. The pairs and the blocking names came in
+        // with `startEnv` and are not joined again: that would put back the
+        // names this module took over.
         let env =
             { env with
                 Registry =
                     { env.Registry with
-                        BlockingNames = Set.union env.Registry.BlockingNames importedBlocking
-                        DoubleDefs =
-                            importedDoublePairs
-                            |> Map.fold (fun acc k v -> Map.add k v acc) env.Registry.DoubleDefs
-                        // Added here rather than before inference for the same
-                        // reason: nothing in inference reads a body's source,
-                        // and `Monomorphise` below is the only thing that does.
                         ConstrainedBodies =
                             importedBodies
                             |> Map.fold (fun acc k v -> Map.add k v acc) env.Registry.ConstrainedBodies } }
