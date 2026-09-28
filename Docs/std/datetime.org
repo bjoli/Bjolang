@@ -332,8 +332,9 @@ The mistakes are compile errors, with the list of the fields there are:
 
 *** Reading
 
-~(text->date s format)~ reads a text with the format that wrote it, and
-answers an ~(Option Date)~. It takes ~#:names~ as the writers do.
+Each writer has a reader, which reads a text with the format that wrote it
+and answers an ~Option~: ~(text->date s format)~, ~(text->time s format)~
+and ~(text->datetime s format)~. Each takes ~#:names~ as the writers do.
 
 #+BEGIN_SRC scheme
 (text->date "2026-10-25" '((year 4) "-" (month 2) "-" (day 2)))   ;; 2026-10-25
@@ -342,6 +343,9 @@ answers an ~(Option Date)~. It takes ~#:names~ as the writers do.
 (text->date "25.X.MMXXVI" '(day "." (roman month) "." (roman year)))
 (text->date "2026-10" '((year 4) "-" (month 2)))                  ;; 2026-10-01
 (text->date "2026-W43" '((week-year 4) "-W" (week 2)))            ;; 2026-10-19
+(text->time "1:05 PM" '(hours12 ":" (minutes 2) " " am-pm))       ;; 13:05:00
+(text->datetime "2026-10-25 02:30"
+                '((year 4) "-" (month 2) "-" (day 2) " " (hours 2) ":" (minutes 2)))
 #+END_SRC
 
 The parts are read in order, and the whole text has to be used. Text that
@@ -354,10 +358,23 @@ does not fit is ~None~, never an exception.
   ~week-year~, 3 for ~yday~, 1 for ~weekday~, and 2 for the others. A number
   takes as many digits as there are, up to its most, and never gives one
   back.
-- A name matches its table's own spelling, case included: ~oktober~, not
-  ~Oktober~. When two names match, the longer one is read.
+- A name, and ~am-pm~, matches its table's own spelling, case included:
+  ~oktober~, not ~Oktober~, and ~PM~, not ~pm~. When two names match, the
+  longer one is read.
 - A Roman numeral is read only in the form it is written: ~MCM~, not
   ~MDCCCC~, and ~IV~, not ~IIII~.
+- ~(fraction n)~ is exactly ~n~ digits, and digits past the seventh are read
+  and dropped. A bare ~fraction~ is ISO 8601's: nothing, or a point or a
+  comma and at least one digit.
+
+The fields read make the time:
+
+- ~hours~, or ~hours12~ and ~am-pm~, where 12 AM is the hour 00 and 12 PM
+  the hour 12. Minutes, seconds and the fraction left out are 0.
+- ~am-pm~ beside ~hours~ has to agree with it, and two fractions have to
+  agree to the fewer digits of the two.
+- A datetime is a date and a time, and without any time field it is
+  midnight.
 
 The fields read make the date:
 
@@ -385,12 +402,17 @@ used to read, whatever the text, with a message that names the part:
   field of the other kind may stand beside a date its own kind makes, and is
   checked against it: ~'((year 4) "-" (month 2) "-" (day 2) " W" (week 2))~
   reads.
+- *A time without hours.* A time's format needs ~hours~, or ~hours12~ with
+  ~am-pm~, and so does a datetime's that has minutes, seconds, a fraction or
+  ~am-pm~.
+- *~hours12~ without ~am-pm~*: 1:05 could be either.
 - *A text that reads two ways.* A part that can be of more than one length
-  (a number without a width or with a width below its most digits, or a
-  Roman numeral) followed by a part that can begin with a character it could
-  also take. ~'(year month day)~ reads ~2026110~ as January 10 or as
-  November 0, so it is refused. ~'((year 4) (month 2) (day 2))~ reads, and
-  so does ~'(year "-" month "-" day)~.
+  (a number without a width or with a width below its most digits, a Roman
+  numeral, or a bare fraction) followed by a part that can begin with a
+  character it could also take. ~'(year month day)~ reads ~2026110~ as
+  January 10 or as November 0, so it is refused. ~'((year 4) (month 2) (day
+  2))~ reads, and so does ~'(year "-" month "-" day)~. A bare fraction takes
+  a point and the digits after it, so a digit or a point may not follow it.
 - *A names table without twelve months or seven weekdays*, when the format
   reads a name from it, as when it writes one.
 

@@ -3,6 +3,30 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std datetime)~ reads times and datetimes with formats of your own
+
+~(text->time s format)~ and ~(text->datetime s format)~ read what
+~time->text~ and ~datetime->text~ write, with the rules ~text->date~ has.
+
+A time is ~hours~, or ~hours12~ with ~am-pm~, where 12 AM is the hour 00 and
+12 PM the hour 12; minutes, seconds and the fraction left out are 0, and a
+datetime without any time field is midnight. ~(fraction n)~ reads exactly
+~n~ digits, dropping those past the seventh, and a bare ~fraction~ reads
+ISO 8601's: nothing, or a point or a comma and at least one digit. ~am-pm~ is
+matched exactly, as names are, and has to agree with ~hours~ beside it.
+
+A time's format without hours, a datetime's with minutes, seconds, a
+fraction or ~am-pm~ but no hours, and ~hours12~ without ~am-pm~ raise an
+~ArgumentException~ when used to read. A bare fraction can be of more than
+one length, so a digit, a point or a comma after it is refused as a text
+that reads two ways.
+
+Tested in ~245_datetime.bjo~ (31 checks: no 24:00 and no leap second, the
+twelve-hour clock at 12 AM, 12 PM, 0 and 13, ~am-pm~'s case and Swedish
+words, ~am-pm~ against ~hours~, both kinds of fraction, two fractions that
+agree and disagree, a datetime with and without its time, and each refused
+format).
+
 * ~(std datetime)~ reads dates with formats of your own
 
 ~(text->date s format)~ reads a text with the format ~date->text~ wrote it
