@@ -302,7 +302,17 @@
                 "Fri, 23 Oct 2026 00:00:00 GMT" "Sat, 24 Oct 2026 00:00:00 GMT"
                 "Sun, 25 Oct 2026 00:00:00 GMT"))
   (expect-true "not RFC 850" (none? (http-date->instant "Sunday, 25-Oct-26 01:30:00 GMT")))
-  (expect-true "not asctime" (none? (http-date->instant "Sun Oct 25 01:30:00 2026"))))
+  (expect-true "not asctime" (none? (http-date->instant "Sun Oct 25 01:30:00 2026")))
+  (expect-true "a character outside the BMP is one character, and not a digit"
+               (none? (iso8601->date "2026-10-2😀")))
+  (expect-true "nor a day name" (none? (http-date->instant "😀un, 25 Oct 2026 01:30:00 GMT")))
+  (def longest (Period (calendar (date-period #:years -2147483648 #:months -2147483648
+                                             #:weeks -2147483648 #:days -2147483648))
+                       (exact (duration-negate (the (iso8601->duration "PT256204778H48M5.4775807S"))))))
+  (expect "the longest period prints"
+          (->str longest)
+          "P-2147483648Y-2147483648M-2147483648W-2147483648DT-256204778H-48M-5.4775807S")
+  (expect "and reads back" (the (iso8601->period (->str longest))) longest))
 
 (: zones (-> void))
 (defun (zones)
@@ -415,6 +425,13 @@
   (expect "a moment reads back"
           (->str (the (iso8601->moment "2026-10-25T02:30:00+01:00[Europe/Stockholm]")))
           "2026-10-25T02:30:00+01:00[Europe/Stockholm]")
+  (match (timezone "America/Argentina/ComodRivadavia")
+    ((Some long-id)
+     (def far (instant->moment (the (iso8601->instant "2026-10-25T01:30:00.1234567Z")) long-id))
+     (expect "a long zone id prints in full"
+             (->str far) "2026-10-24T22:30:00.1234567-03:00[America/Argentina/ComodRivadavia]")
+     (expect "and reads back" (->str (the (iso8601->moment (->str far)))) (->str far)))
+    (None (fail "no America/Argentina/ComodRivadavia")))
   (expect-true "either offset in an overlap"
                (some? (iso8601->moment "2026-10-25T02:30:00+02:00[Europe/Stockholm]")))
   (expect-true "not an offset July does not have"

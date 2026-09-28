@@ -38,7 +38,10 @@
   (TimeZoneInfo (: System.TimeZoneInfo))
   (OverflowException (: System.OverflowException (-> string OverflowException)))
   (ArgumentException (: System.ArgumentException (-> string ArgumentException)))
-  (ClrLock (: System.Threading.Lock (-> ClrLock))))
+  (ClrLock (: System.Threading.Lock (-> ClrLock)))
+  ;; A .NET StringBuilder of its own, because the prelude's cannot be given a
+  ;; capacity, and it takes a UTF-16 unit, which a digit is.
+  (TextBuilder (: System.Text.StringBuilder (-> int TextBuilder))))
 
 ;; A body an importer may copy (a trait method here, or a constrained
 ;; function) names .NET members through these aliases rather than through
@@ -80,7 +83,10 @@
   (clr-provider-system (: System.TimeProvider.System #:get))
   (clr-provider-utc-now (: System.TimeProvider.GetUtcNow (-> TimeProvider ClrDateTimeOffset)))
   (clr-provider-local-zone (: System.TimeProvider.LocalTimeZone (-> TimeProvider TimeZoneInfo) #:get))
-  (clr-dto-utc-ticks (: System.DateTimeOffset.UtcTicks (-> ClrDateTimeOffset long) #:get)))
+  (clr-dto-utc-ticks (: System.DateTimeOffset.UtcTicks (-> ClrDateTimeOffset long) #:get))
+  (clr-add-unit (: System.Text.StringBuilder.Append (-> TextBuilder System.Char TextBuilder)))
+  (clr-add-text (: System.Text.StringBuilder.Append (-> TextBuilder string TextBuilder)))
+  (clr-builder-text (: System.Text.StringBuilder.ToString (-> TextBuilder string))))
 
 (export
   ;; Types
@@ -497,7 +503,7 @@
   (defun (compare a b) (compare (instant-ticks a) (instant-ticks b))))
 
 (impl (->str Instant)
-  (defun (->str i) (str (ticks->iso-datetime (instant-ticks i)) "Z")))
+  (defun (->str i) (ticks->iso-instant (instant-ticks i))))
 
 (: instant->utc-datetime (-> Instant DateTime))
 (defun (instant->utc-datetime i) (ticks->datetime (instant-ticks i)))
@@ -582,16 +588,10 @@
               (weeks (- (record-ref p weeks))) (days (- (record-ref p days)))))
 
 (impl (->str DatePeriod)
-  (defun (->str p)
-    (def parts (date-period->iso p))
-    (if (string-empty? parts) "P0D" (str "P" parts))))
+  (defun (->str p) (date-period->string p)))
 
 (impl (->str Period)
-  (defun (->str p)
-    (def dates (date-period->iso (record-ref p calendar)))
-    (def t (duration-ticks (record-ref p exact)))
-    (def times (if (= t 0L) "" (str "T" (time-parts->iso (abs t) (if (< t 0L) "-" "")))))
-    (if (and (string-empty? dates) (string-empty? times)) "P0D" (str "P" dates times))))
+  (defun (->str p) (period->string p)))
 
 
 ;; ===========================================================================
@@ -1016,10 +1016,7 @@
           (else (compare (timezone-id (struct-ref a zone)) (timezone-id (struct-ref b zone)))))))
 
 (impl (->str Moment)
-  (defun (->str m)
-    (str (ticks->iso-datetime (moment-local-ticks m))
-         (offset->iso (moment-offset-ticks m))
-         "[" (timezone-id (struct-ref m zone)) "]")))
+  (defun (->str m) (moment->string m)))
 
 (impl (->str Gap)
   (defun (->str g) (match g (GapPush "GapPush") (GapNextValid "GapNextValid"))))
@@ -1105,80 +1102,218 @@
 ;; ===========================================================================
 ;; Writing ISO 8601
 ;; ===========================================================================
+;;
+;; A writer appends to one StringBuilder sized for its text, a digit at a time,
+;; so writing a value allocates the builder and the string, not a string per
+;; field.
 
-(: pad (-> long int string))
-(defun (pad n width) (string-pad-left (long->string n) width #:with #\0))
+(: new-text (-> int TextBuilder))
+(defun (new-text capacity) (TextBuilder. capacity))
 
-(: date->string (-> ClrDate string))
-(defun (date->string c)
-  (str (pad (long-of (clr-date-year c)) 4) "-" (pad (long-of (clr-date-month c)) 2)
-       "-" (pad (long-of (clr-date-day c)) 2)))
+(: text-of (-> TextBuilder string))
+(defun (text-of sb) (clr-builder-text sb))
+
+(: add-text! (-> TextBuilder string void))
+(defun (add-text! sb s) (ignore (clr-add-text sb s)))
+
+(: add-digit! (-> TextBuilder long void))
+(defun (add-digit! sb d) (ignore (clr-add-unit sb (cast System.Char (+ 48 (int-of d))))))
+
+;; The number of decimal digits in n >= 0, 0 having one.
+(: digit-count (-> long int))
+(defun (digit-count n) (if (< n 10L) 1 (+ 1 (digit-count (/ n 10L)))))
+
+;; The largest power of ten not above n >= 0, or 1.
+(: top-power (-> long long))
+(defun (top-power n) (if (< n 10L) 1L (* 10L (top-power (/ n 10L)))))
+
+;; n >= 0 in decimal, with zeros in front up to width digits.
+(: add-padded! (-> TextBuilder long int void))
+(defun (add-padded! sb n width)
+  (let zeros ((k (digit-count n)))
+    (when (< k width)
+      (add-digit! sb 0L)
+      (zeros (+ k 1))))
+  (let digits ((p (top-power n)))
+    (when (> p 0L)
+      (add-digit! sb (% (/ n p) 10L))
+      (digits (/ p 10L)))))
+
+(: add-date! (-> TextBuilder ClrDate void))
+(defun (add-date! sb c)
+  (add-padded! sb (long-of (clr-date-year c)) 4)
+  (add-text! sb "-")
+  (add-padded! sb (long-of (clr-date-month c)) 2)
+  (add-text! sb "-")
+  (add-padded! sb (long-of (clr-date-day c)) 2))
 
 ;; ".5" for half a second: up to seven digits, without trailing zeros, and
 ;; nothing for a whole second.
-(: fraction->string (-> long string))
-(defun (fraction->string f)
-  (if (= f 0L)
-      ""
-      (let loop ((f f) (width 7))
-        (if (= (% f 10L) 0L)
-            (loop (/ f 10L) (- width 1))
-            (str "." (pad f width))))))
+(: add-fraction! (-> TextBuilder long void))
+(defun (add-fraction! sb f)
+  (unless (= f 0L)
+    (let loop ((f f) (width 7))
+      (if (= (% f 10L) 0L)
+          (loop (/ f 10L) (- width 1))
+          (begin
+            (add-text! sb ".")
+            (add-padded! sb f width))))))
+
+;; hh:mm:ss of a tick count within a day.
+(: add-clock! (-> TextBuilder long void))
+(defun (add-clock! sb t)
+  (add-padded! sb (/ t ticks-per-hour) 2)
+  (add-text! sb ":")
+  (add-padded! sb (% (/ t ticks-per-minute) 60L) 2)
+  (add-text! sb ":")
+  (add-padded! sb (% (/ t ticks-per-second) 60L) 2))
+
+(: add-time-of-day! (-> TextBuilder long void))
+(defun (add-time-of-day! sb t)
+  (add-clock! sb t)
+  (add-fraction! sb (% t ticks-per-second)))
+
+(: add-datetime! (-> TextBuilder long void))
+(defun (add-datetime! sb t)
+  (add-date! sb (clr-date-from-day-number (int-of (/ t ticks-per-day))))
+  (add-text! sb "T")
+  (add-time-of-day! sb (% t ticks-per-day)))
+
+;; ±hh:mm, and :ss when there are seconds.
+(: add-offset! (-> TextBuilder long void))
+(defun (add-offset! sb o)
+  (def a (abs o))
+  (def s (% (/ a ticks-per-second) 60L))
+  (add-text! sb (if (< o 0L) "-" "+"))
+  (add-padded! sb (/ a ticks-per-hour) 2)
+  (add-text! sb ":")
+  (add-padded! sb (% (/ a ticks-per-minute) 60L) 2)
+  (unless (= s 0L)
+    (add-text! sb ":")
+    (add-padded! sb s 2)))
+
+(: date->string (-> ClrDate string))
+(defun (date->string c)
+  (def sb (new-text 10))
+  (add-date! sb c)
+  (text-of sb))
 
 (: time-of-day->string (-> long string))
 (defun (time-of-day->string t)
-  (str (pad (/ t ticks-per-hour) 2) ":" (pad (% (/ t ticks-per-minute) 60L) 2)
-       ":" (pad (% (/ t ticks-per-second) 60L) 2) (fraction->string (% t ticks-per-second))))
+  (def sb (new-text 16))
+  (add-time-of-day! sb t)
+  (text-of sb))
 
 (: ticks->iso-datetime (-> long string))
 (defun (ticks->iso-datetime t)
-  (str (date->string (clr-date-from-day-number (int-of (/ t ticks-per-day))))
-       "T" (time-of-day->string (% t ticks-per-day))))
+  (def sb (new-text 27))
+  (add-datetime! sb t)
+  (text-of sb))
 
-(: offset->iso (-> long string))
-(defun (offset->iso o)
-  (def a (abs o))
-  (def s (% (/ a ticks-per-second) 60L))
-  (str (if (< o 0L) "-" "+") (pad (/ a ticks-per-hour) 2) ":"
-       (pad (% (/ a ticks-per-minute) 60L) 2)
-       (if (= s 0L) "" (str ":" (pad s 2)))))
+(: ticks->iso-instant (-> long string))
+(defun (ticks->iso-instant t)
+  (def sb (new-text 28))
+  (add-datetime! sb t)
+  (add-text! sb "Z")
+  (text-of sb))
 
-(: amount (-> long string string))
-(defun (amount n unit) (if (= n 0L) "" (str (long->string n) unit)))
+;; 38 characters hold the longest local time and offset, and the brackets.
+(: moment->string (-> Moment string))
+(defun (moment->string m)
+  (def id (timezone-id (struct-ref m zone)))
+  (def sb (new-text (+ 38 (string-length id))))
+  (add-datetime! sb (moment-local-ticks m))
+  (add-offset! sb (moment-offset-ticks m))
+  (add-text! sb "[")
+  (add-text! sb id)
+  (add-text! sb "]")
+  (text-of sb))
+
+;; n and its unit, with a minus when n is negative, and nothing for 0.
+(: add-amount! (-> TextBuilder long string void))
+(defun (add-amount! sb n unit)
+  (unless (= n 0L)
+    (when (< n 0L) (add-text! sb "-"))
+    (add-padded! sb (abs n) 1)
+    (add-text! sb unit)))
 
 ;; The time components of a non-negative tick count, each prefixed by sign.
-(: time-parts->iso (-> long string string))
-(defun (time-parts->iso a sign)
+(: add-time-parts! (-> TextBuilder long string void))
+(defun (add-time-parts! sb a sign)
   (def h (/ a ticks-per-hour))
   (def m (% (/ a ticks-per-minute) 60L))
   (def s (% (/ a ticks-per-second) 60L))
   (def f (% a ticks-per-second))
-  (str (if (= h 0L) "" (str sign (long->string h) "H"))
-       (if (= m 0L) "" (str sign (long->string m) "M"))
-       (if (and (= s 0L) (= f 0L)) "" (str sign (long->string s) (fraction->string f) "S"))))
+  (unless (= h 0L)
+    (add-text! sb sign)
+    (add-padded! sb h 1)
+    (add-text! sb "H"))
+  (unless (= m 0L)
+    (add-text! sb sign)
+    (add-padded! sb m 1)
+    (add-text! sb "M"))
+  (unless (and (= s 0L) (= f 0L))
+    (add-text! sb sign)
+    (add-padded! sb s 1)
+    (add-fraction! sb f)
+    (add-text! sb "S")))
 
 ;; PT26H30M, with one leading sign: -PT1H30M.
 (: duration->iso (-> long string))
 (defun (duration->iso t)
   (if (= t 0L)
       "PT0S"
-      (str (if (< t 0L) "-" "") "PT" (time-parts->iso (abs t) ""))))
+      (let ((sb (new-text 32)))
+        (when (< t 0L) (add-text! sb "-"))
+        (add-text! sb "PT")
+        (add-time-parts! sb (abs t) "")
+        (text-of sb))))
 
 ;; Each component carries its own sign, since a period may mix them: P1M-3D.
-(: date-period->iso (-> DatePeriod string))
-(defun (date-period->iso p)
-  (str (amount (long-of (record-ref p years)) "Y")
-       (amount (long-of (record-ref p months)) "M")
-       (amount (long-of (record-ref p weeks)) "W")
-       (amount (long-of (record-ref p days)) "D")))
+(: add-date-parts! (-> TextBuilder DatePeriod void))
+(defun (add-date-parts! sb p)
+  (add-amount! sb (long-of (record-ref p years)) "Y")
+  (add-amount! sb (long-of (record-ref p months)) "M")
+  (add-amount! sb (long-of (record-ref p weeks)) "W")
+  (add-amount! sb (long-of (record-ref p days)) "D"))
+
+(: date-period-zero? (-> DatePeriod bool))
+(defun (date-period-zero? p)
+  (and (= (record-ref p years) 0) (= (record-ref p months) 0)
+       (= (record-ref p weeks) 0) (= (record-ref p days) 0)))
+
+(: date-period->string (-> DatePeriod string))
+(defun (date-period->string p)
+  (if (date-period-zero? p)
+      "P0D"
+      (let ((sb (new-text 48)))
+        (add-text! sb "P")
+        (add-date-parts! sb p)
+        (text-of sb))))
+
+;; P1DT3H. A negative exact part signs each of its components: P1DT-3H.
+(: period->string (-> Period string))
+(defun (period->string p)
+  (def dates (record-ref p calendar))
+  (def t (duration-ticks (record-ref p exact)))
+  (if (and (date-period-zero? dates) (= t 0L))
+      "P0D"
+      (let ((sb (new-text 80)))
+        (add-text! sb "P")
+        (add-date-parts! sb dates)
+        (unless (= t 0L)
+          (add-text! sb "T")
+          (add-time-parts! sb (abs t) (if (< t 0L) "-" "")))
+        (text-of sb))))
 
 
 ;; ===========================================================================
 ;; Reading ISO 8601
 ;; ===========================================================================
 ;;
-;; Each reader takes the characters left and answers what it read with the
-;; characters after it, or None. Only the extended format is read
+;; Each reader takes the string and a cursor into it, and answers what it read
+;; with the cursor after it, or None. Option and Tuple are structs, so reading
+;; allocates nothing but a moment's zone id. Only the extended format is read
 ;; (2026-10-25T02:30:00, not 20261025T023000), with an upper-case T and Z.
 
 (: ascii-digit (-> char int))
@@ -1186,241 +1321,248 @@
   (def n (char->int c))
   (if (and (>= n 48) (<= n 57)) (- n 48) -1))
 
-(: next-digit (-> (List char) int))
-(defun (next-digit cs)
-  (if (list-empty? cs) -1 (ascii-digit (list-head cs))))
+(: next-digit (-> string StringCursor int))
+(defun (next-digit s c)
+  (if (string-cursor-end? s c) -1 (ascii-digit (string-cursor-ref s c))))
 
-(: skip-char (-> (List char) char (Option (List char))))
-(defun (skip-char cs c)
-  (if (and (not (list-empty? cs)) (char=? (list-head cs) c))
-      (Some (list-tail cs))
-      None))
+(: starts-with-char? (-> string StringCursor char bool))
+(defun (starts-with-char? s c ch)
+  (and (not (string-cursor-end? s c)) (char=? (string-cursor-ref s c) ch)))
 
-(: starts-with-char? (-> (List char) char bool))
-(defun (starts-with-char? cs c)
-  (and (not (list-empty? cs)) (char=? (list-head cs) c)))
+(: skip-char (-> string StringCursor char (Option StringCursor)))
+(defun (skip-char s c ch)
+  (if (starts-with-char? s c ch) (Some (string-cursor-next s c)) None))
 
 ;; Exactly n digits.
-(: read-fixed (-> (List char) int (Option (Tuple int (List char)))))
-(defun (read-fixed cs n)
-  (let loop ((cs cs) (left n) (acc 0))
-    (cond ((= left 0) (Some (Tuple acc cs)))
-          ((< (next-digit cs) 0) None)
-          (else (loop (list-tail cs) (- left 1) (+ (* acc 10) (next-digit cs)))))))
+(: read-fixed (-> string StringCursor int (Option (Tuple int StringCursor))))
+(defun (read-fixed s c n)
+  (let loop ((c c) (left n) (acc 0))
+    (def d (next-digit s c))
+    (cond ((= left 0) (Some (Tuple acc c)))
+          ((< d 0) None)
+          (else (loop (string-cursor-next s c) (- left 1) (+ (* acc 10) d))))))
 
 ;; One or more digits, or None past long's range.
-(: read-number (-> (List char) (Option (Tuple long (List char)))))
-(defun (read-number cs)
-  (let loop ((cs cs) (count 0) (acc 0L))
-    (def d (long-of (next-digit cs)))
-    (cond ((< d 0L) (if (= count 0) None (Some (Tuple acc cs))))
+(: read-number (-> string StringCursor (Option (Tuple long StringCursor))))
+(defun (read-number s c)
+  (let loop ((c c) (count 0) (acc 0L))
+    (def d (long-of (next-digit s c)))
+    (cond ((< d 0L) (if (= count 0) None (Some (Tuple acc c))))
           ((> acc (/ (- long-max d) 10L)) None)
-          (else (loop (list-tail cs) (+ count 1) (+ (* acc 10L) d))))))
+          (else (loop (string-cursor-next s c) (+ count 1) (+ (* acc 10L) d))))))
 
 ;; The digits after a decimal point or comma, as ticks. Digits past the
 ;; seventh are read and dropped, as a tick holds no less than 100 ns.
-(: read-fraction (-> (List char) (Option (Tuple long (List char)))))
-(defun (read-fraction cs)
-  (let loop ((cs cs) (count 0) (acc 0L))
-    (def d (long-of (next-digit cs)))
+(: read-fraction (-> string StringCursor (Option (Tuple long StringCursor))))
+(defun (read-fraction s c)
+  (let loop ((c c) (count 0) (acc 0L))
+    (def d (long-of (next-digit s c)))
     (cond ((>= d 0L)
-           (loop (list-tail cs) (+ count 1) (if (< count 7) (+ (* acc 10L) d) acc)))
+           (loop (string-cursor-next s c) (+ count 1) (if (< count 7) (+ (* acc 10L) d) acc)))
           ((= count 0) None)
-          (else (Some (Tuple (scale-fraction acc count) cs))))))
+          (else (Some (Tuple (scale-fraction acc count) c))))))
 
 (: scale-fraction (-> long int long))
 (defun (scale-fraction f digits)
   (if (>= digits 7) f (scale-fraction (* f 10L) (+ digits 1))))
 
 ;; An optional fraction: nothing, or a separator and at least one digit.
-(: read-optional-fraction (-> (List char) (Option (Tuple long (List char)))))
-(defun (read-optional-fraction cs)
-  (if (or (starts-with-char? cs #\.) (starts-with-char? cs #\,))
-      (read-fraction (list-tail cs))
-      (Some (Tuple 0L cs))))
+(: read-optional-fraction (-> string StringCursor (Option (Tuple long StringCursor))))
+(defun (read-optional-fraction s c)
+  (if (or (starts-with-char? s c #\.) (starts-with-char? s c #\,))
+      (read-fraction s (string-cursor-next s c))
+      (Some (Tuple 0L c))))
 
 ;; YYYY-MM-DD, as a day number.
-(: read-date (-> (List char) (Option (Tuple long (List char)))))
-(defun (read-date cs)
-  (def* ((Some (Tuple y cs1)) (read-fixed cs 4) :propagate)
-        ((Some cs2) (skip-char cs1 #\-) :propagate)
-        ((Some (Tuple m cs3)) (read-fixed cs2 2) :propagate)
-        ((Some cs4) (skip-char cs3 #\-) :propagate)
-        ((Some (Tuple d cs5)) (read-fixed cs4 2) :propagate))
+(: read-date (-> string StringCursor (Option (Tuple long StringCursor))))
+(defun (read-date s c)
+  (def* ((Some (Tuple y c1)) (read-fixed s c 4) :propagate)
+        ((Some c2) (skip-char s c1 #\-) :propagate)
+        ((Some (Tuple m c3)) (read-fixed s c2 2) :propagate)
+        ((Some c4) (skip-char s c3 #\-) :propagate)
+        ((Some (Tuple d c5)) (read-fixed s c4 2) :propagate))
   (if (valid-date? y m d)
-      (Some (Tuple (long-of (clr-date-day-number (ClrDate. y m d))) cs5))
+      (Some (Tuple (long-of (clr-date-day-number (ClrDate. y m d))) c5))
       None))
 
 ;; hh:mm, hh:mm:ss or hh:mm:ss.fff, as ticks since midnight. No leap second.
-(: read-time (-> (List char) (Option (Tuple long (List char)))))
-(defun (read-time cs)
-  (def* ((Some (Tuple h cs1)) (read-fixed cs 2) :propagate)
-        ((Some cs2) (skip-char cs1 #\:) :propagate)
-        ((Some (Tuple m cs3)) (read-fixed cs2 2) :propagate))
+(: read-time (-> string StringCursor (Option (Tuple long StringCursor))))
+(defun (read-time s c)
+  (def* ((Some (Tuple h c1)) (read-fixed s c 2) :propagate)
+        ((Some c2) (skip-char s c1 #\:) :propagate)
+        ((Some (Tuple m c3)) (read-fixed s c2 2) :propagate))
   (cond ((not (and (< h 24) (< m 60))) None)
-        ((not (starts-with-char? cs3 #\:)) (Some (Tuple (time-of-day-ticks h m 0 0) cs3)))
-        (:def (Some (Tuple s cs4)) (read-fixed (list-tail cs3) 2) :propagate)
-        (:def (Some (Tuple f cs5)) (read-optional-fraction cs4) :propagate)
-        ((>= s 60) None)
-        (else (Some (Tuple (+ (time-of-day-ticks h m s 0) f) cs5)))))
+        ((not (starts-with-char? s c3 #\:)) (Some (Tuple (time-of-day-ticks h m 0 0) c3)))
+        (:def (Some (Tuple sec c4)) (read-fixed s (string-cursor-next s c3) 2) :propagate)
+        (:def (Some (Tuple f c5)) (read-optional-fraction s c4) :propagate)
+        ((>= sec 60) None)
+        (else (Some (Tuple (+ (time-of-day-ticks h m sec 0) f) c5)))))
 
 ;; A date, T, and a time, as local ticks.
-(: read-datetime (-> (List char) (Option (Tuple long (List char)))))
-(defun (read-datetime cs)
-  (def* ((Some (Tuple day cs1)) (read-date cs) :propagate)
-        ((Some cs2) (skip-char cs1 #\T) :propagate)
-        ((Some (Tuple t cs3)) (read-time cs2) :propagate))
-  (Some (Tuple (+ (* day ticks-per-day) t) cs3)))
+(: read-datetime (-> string StringCursor (Option (Tuple long StringCursor))))
+(defun (read-datetime s c)
+  (def* ((Some (Tuple day c1)) (read-date s c) :propagate)
+        ((Some c2) (skip-char s c1 #\T) :propagate)
+        ((Some (Tuple t c3)) (read-time s c2) :propagate))
+  (Some (Tuple (+ (* day ticks-per-day) t) c3)))
 
 ;; Z, or ±hh:mm with an optional :ss, as ticks.
-(: read-offset (-> (List char) (Option (Tuple long (List char)))))
-(defun (read-offset cs)
-  (cond ((starts-with-char? cs #\Z) (Some (Tuple 0L (list-tail cs))))
-        ((starts-with-char? cs #\+) (read-hhmm (list-tail cs) 1L))
-        ((starts-with-char? cs #\-) (read-hhmm (list-tail cs) -1L))
+(: read-offset (-> string StringCursor (Option (Tuple long StringCursor))))
+(defun (read-offset s c)
+  (cond ((starts-with-char? s c #\Z) (Some (Tuple 0L (string-cursor-next s c))))
+        ((starts-with-char? s c #\+) (read-hhmm s (string-cursor-next s c) 1L))
+        ((starts-with-char? s c #\-) (read-hhmm s (string-cursor-next s c) -1L))
         (else None)))
 
-(: read-hhmm (-> (List char) long (Option (Tuple long (List char)))))
-(defun (read-hhmm cs sign)
-  (def* ((Some (Tuple h cs1)) (read-fixed cs 2) :propagate)
-        ((Some cs2) (skip-char cs1 #\:) :propagate)
-        ((Some (Tuple m cs3)) (read-fixed cs2 2) :propagate))
+(: read-hhmm (-> string StringCursor long (Option (Tuple long StringCursor))))
+(defun (read-hhmm s c sign)
+  (def* ((Some (Tuple h c1)) (read-fixed s c 2) :propagate)
+        ((Some c2) (skip-char s c1 #\:) :propagate)
+        ((Some (Tuple m c3)) (read-fixed s c2 2) :propagate))
   (cond ((not (and (< h 24) (< m 60))) None)
-        ((not (starts-with-char? cs3 #\:))
-         (Some (Tuple (* sign (time-of-day-ticks h m 0 0)) cs3)))
-        (:def (Some (Tuple s cs4)) (read-fixed (list-tail cs3) 2) :propagate)
-        ((>= s 60) None)
-        (else (Some (Tuple (* sign (time-of-day-ticks h m s 0)) cs4)))))
+        ((not (starts-with-char? s c3 #\:))
+         (Some (Tuple (* sign (time-of-day-ticks h m 0 0)) c3)))
+        (:def (Some (Tuple sec c4)) (read-fixed s (string-cursor-next s c3) 2) :propagate)
+        ((>= sec 60) None)
+        (else (Some (Tuple (* sign (time-of-day-ticks h m sec 0)) c4)))))
 
-;; The characters up to c, and those after it.
-(: read-until (-> (List char) char (Option (Tuple string (List char)))))
-(defun (read-until cs c)
-  (let loop ((cs cs) (taken '()))
-    (cond ((list-empty? cs) None)
-          ((char=? (list-head cs) c) (Some (Tuple (list->string (list-reverse taken)) (list-tail cs))))
-          (else (loop (list-tail cs) (Cons (list-head cs) taken))))))
+;; The text up to the character ch, and the cursor after ch.
+(: read-until (-> string StringCursor char (Option (Tuple string StringCursor))))
+(defun (read-until s c ch)
+  (let loop ((e c))
+    (cond ((string-cursor-end? s e) None)
+          ((char=? (string-cursor-ref s e) ch)
+           (Some (Tuple (substring/cursors s c e) (string-cursor-next s e))))
+          (else (loop (string-cursor-next s e))))))
 
-;; A reader's value when it used every character.
-(: whole (-> (Option (Tuple %a (List char))) (Option %a)))
-(defun (whole r)
+;; A reader's value when it read to the end of s.
+(: whole (-> string (Option (Tuple %a StringCursor)) (Option %a)))
+(defun (whole s r)
   (match r
-    ((Some (Tuple v rest)) (if (list-empty? rest) (Some v) None))
+    ((Some (Tuple v rest)) (if (string-cursor-end? s rest) (Some v) None))
     (None None)))
 
 (: iso8601->date (-> string (Option Date)))
 (defun (iso8601->date s)
-  (def (Some day) (whole (read-date (string->list s))) :propagate)
+  (def (Some day) (whole s (read-date s (string-cursor-start s))) :propagate)
   (Some (day-number->date day)))
 
 (: iso8601->time (-> string (Option Time)))
 (defun (iso8601->time s)
-  (def (Some t) (whole (read-time (string->list s))) :propagate)
+  (def (Some t) (whole s (read-time s (string-cursor-start s))) :propagate)
   (Some (Time (v (ClrTime. t)))))
 
 (: iso8601->datetime (-> string (Option DateTime)))
 (defun (iso8601->datetime s)
-  (def (Some t) (whole (read-datetime (string->list s))) :propagate)
+  (def (Some t) (whole s (read-datetime s (string-cursor-start s))) :propagate)
   (Some (ticks->datetime t)))
 
 ;; Any offset, converted to UTC.
 (: iso8601->instant (-> string (Option Instant)))
 (defun (iso8601->instant s)
-  (def* ((Some (Tuple l cs)) (read-datetime (string->list s)) :propagate)
-        ((Some o) (whole (read-offset cs)) :propagate))
+  (def* ((Some (Tuple l c)) (read-datetime s (string-cursor-start s)) :propagate)
+        ((Some o) (whole s (read-offset s c)) :propagate))
   (if (in-calendar? (- l o)) (Some (Instant (ticks (- l o)))) None))
 
 ;; The offset has to be one the zone has at that local time, so an overlap
 ;; reads either way and a gap reads neither.
 (: iso8601->moment (-> string (Option Moment)))
 (defun (iso8601->moment s)
-  (def* ((Some (Tuple l cs1)) (read-datetime (string->list s)) :propagate)
-        ((Some (Tuple o cs2)) (read-offset cs1) :propagate)
-        ((Some cs3) (skip-char cs2 #\[) :propagate)
-        ((Some id) (whole (read-until cs3 #\])) :propagate)
+  (def* ((Some (Tuple l c1)) (read-datetime s (string-cursor-start s)) :propagate)
+        ((Some (Tuple o c2)) (read-offset s c1) :propagate)
+        ((Some c3) (skip-char s c2 #\[) :propagate)
+        ((Some id) (whole s (read-until s c3 #\])) :propagate)
         ((Some z) (timezone id) :propagate))
   (if (and (in-calendar? (- l o)) (= (offset-at (struct-ref z tz) (- l o)) o))
       (Some (Moment (local (ticks->datetime l)) (offset (ticks->duration o)) (zone z)))
       None))
 
 ;; An optional sign: -1 for a minus, 1 otherwise.
-(: read-sign (-> (List char) (Tuple long (List char))))
-(defun (read-sign cs)
-  (cond ((starts-with-char? cs #\-) (Tuple -1L (list-tail cs)))
-        ((starts-with-char? cs #\+) (Tuple 1L (list-tail cs)))
-        (else (Tuple 1L cs))))
+(: read-sign (-> string StringCursor (Tuple long StringCursor)))
+(defun (read-sign s c)
+  (cond ((starts-with-char? s c #\-) (Tuple -1L (string-cursor-next s c)))
+        ((starts-with-char? s c #\+) (Tuple 1L (string-cursor-next s c)))
+        (else (Tuple 1L c))))
+
+;; A unit's place in P1Y2M3W4D, or -1.
+(: date-unit (-> string StringCursor int))
+(defun (date-unit s c)
+  (cond ((starts-with-char? s c #\Y) 0)
+        ((starts-with-char? s c #\M) 1)
+        ((starts-with-char? s c #\W) 2)
+        ((starts-with-char? s c #\D) 3)
+        (else -1)))
+
+;; A unit's place in T1H2M3S, or -1.
+(: time-unit (-> string StringCursor int))
+(defun (time-unit s c)
+  (cond ((starts-with-char? s c #\H) 0)
+        ((starts-with-char? s c #\M) 1)
+        ((starts-with-char? s c #\S) 2)
+        (else -1)))
 
 ;; The date components of a period, each optional and in the order Y M W D,
 ;; each with its own sign, which multiplies with the period's. Stops at T or
-;; at the end.
-(: read-date-parts (-> (List char) long (Option (Tuple (Tuple DatePeriod int) (List char)))))
-(defun (read-date-parts cs sign)
-  (let loop ((cs cs) (units (list #\Y #\M #\W #\D)) (p (date-period)) (count 0))
-    (if (or (list-empty? cs) (starts-with-char? cs #\T))
-        (Some (Tuple (Tuple p count) cs))
-        (let ((signed (read-sign cs)))
-          (def (Tuple own cs1) signed)
-          (def (Some (Tuple n cs2)) (read-number cs1) :propagate)
+;; at the end. next is the place of the first unit still allowed.
+(: read-date-parts (-> string StringCursor long (Option (Tuple (Tuple DatePeriod int) StringCursor))))
+(defun (read-date-parts s c sign)
+  (let loop ((c c) (next 0) (p (date-period)) (count 0))
+    (if (or (string-cursor-end? s c) (starts-with-char? s c #\T))
+        (Some (Tuple (Tuple p count) c))
+        (let ((signed (read-sign s c)))
+          (def (Tuple own c1) signed)
+          (def (Some (Tuple n c2)) (read-number s c1) :propagate)
           (def value (* (* sign own) n))
-          (def (Some rest-units) (units-after units cs2) :propagate)
-          (if (or (> value 2147483647L) (< value -2147483648L))
+          (def unit (date-unit s c2))
+          (if (or (< unit next) (> value 2147483647L) (< value -2147483648L))
               None
-              (loop (list-tail cs2) rest-units
-                    (set-date-part p (list-head cs2) (int-of value)) (+ count 1)))))))
+              (loop (string-cursor-next s c2) (+ unit 1)
+                    (set-date-part p unit (int-of value)) (+ count 1)))))))
 
-;; The units still allowed after the one cs starts with, or None when it is
-;; not one of them.
-(: units-after (-> (List char) (List char) (Option (List char))))
-(defun (units-after units cs)
-  (cond ((list-empty? cs) None)
-        ((list-empty? units) None)
-        ((char=? (list-head units) (list-head cs)) (Some (list-tail units)))
-        (else (units-after (list-tail units) cs))))
-
-(: set-date-part (-> DatePeriod char int DatePeriod))
+(: set-date-part (-> DatePeriod int int DatePeriod))
 (defun (set-date-part p unit n)
-  (cond ((char=? unit #\Y) (record-set p (years n)))
-        ((char=? unit #\M) (record-set p (months n)))
-        ((char=? unit #\W) (record-set p (weeks n)))
+  (cond ((= unit 0) (record-set p (years n)))
+        ((= unit 1) (record-set p (months n)))
+        ((= unit 2) (record-set p (weeks n)))
         (else (record-set p (days n)))))
 
 ;; The time components after T, in the order H M S, as ticks. Only seconds
 ;; take a fraction.
-(: read-time-parts (-> (List char) long (Option (Tuple (Tuple long int) (List char)))))
-(defun (read-time-parts cs sign)
-  (let loop ((cs cs) (units (list #\H #\M #\S)) (total 0L) (count 0))
-    (if (list-empty? cs)
-        (Some (Tuple (Tuple total count) cs))
-        (let ((signed (read-sign cs)))
-          (def (Tuple own cs1) signed)
-          (def (Some (Tuple n cs2)) (read-number cs1) :propagate)
-          (def (Some (Tuple f cs3)) (read-optional-fraction cs2) :propagate)
-          (def (Some rest-units) (units-after units cs3) :propagate)
-          (def unit (list-head cs3))
-          (def per (cond ((char=? unit #\H) ticks-per-hour)
-                         ((char=? unit #\M) ticks-per-minute)
+(: read-time-parts (-> string StringCursor long (Option (Tuple (Tuple long int) StringCursor))))
+(defun (read-time-parts s c sign)
+  (let loop ((c c) (next 0) (total 0L) (count 0))
+    (if (string-cursor-end? s c)
+        (Some (Tuple (Tuple total count) c))
+        (let ((signed (read-sign s c)))
+          (def (Tuple own c1) signed)
+          (def* ((Some (Tuple n c2)) (read-number s c1) :propagate)
+                ((Some (Tuple f c3)) (read-optional-fraction s c2) :propagate))
+          (def unit (time-unit s c3))
+          (def per (cond ((= unit 0) ticks-per-hour)
+                         ((= unit 1) ticks-per-minute)
                          (else ticks-per-second)))
-          (def* ((Some whole-ticks) (checked-mul n per) :propagate)
-                ((Some magnitude) (checked-add whole-ticks f) :propagate)
-                ((Some next) (checked-add total (* (* sign own) magnitude)) :propagate))
-          (if (and (> f 0L) (not (char=? unit #\S)))
-              None
-              (loop (list-tail cs3) rest-units next (+ count 1)))))))
+          (cond ((< unit next) None)
+                ((and (> f 0L) (not (= unit 2))) None)
+                (:def (Some whole-ticks) (checked-mul n per) :propagate)
+                (:def (Some magnitude) (checked-add whole-ticks f) :propagate)
+                (:def (Some sum) (checked-add total (* (* sign own) magnitude)) :propagate)
+                (else (loop (string-cursor-next s c3) (+ unit 1) sum (+ count 1))))))))
 
 ;; [sign] P [date parts] [T time parts]: the date period, the ticks, and
-;; whether each part was there.
-(type (: PeriodText (Record (: dates DatePeriod) (: date-count int)
+;; whether each part was there. A struct, so reading one allocates nothing.
+(type (: PeriodText (Struct (: dates DatePeriod) (: date-count int)
                             (: ticks long) (: time-count int) (: has-t bool))))
 
 (: read-period-text (-> string (Option PeriodText)))
 (defun (read-period-text s)
-  (def (Tuple sign cs0) (read-sign (string->list s)))
-  (def* ((Some cs1) (skip-char cs0 #\P) :propagate)
-        ((Some (Tuple (Tuple dates date-count) cs2)) (read-date-parts cs1 sign) :propagate))
-  (if (list-empty? cs2)
+  (def (Tuple sign c0) (read-sign s (string-cursor-start s)))
+  (def* ((Some c1) (skip-char s c0 #\P) :propagate)
+        ((Some (Tuple (Tuple dates date-count) c2)) (read-date-parts s c1 sign) :propagate))
+  (if (string-cursor-end? s c2)
       (Some (PeriodText (dates dates) (date-count date-count) (ticks 0L) (time-count 0)
                         (has-t #f)))
-      (let ((after-t (list-tail cs2)))
-        (def (Some (Tuple (Tuple t time-count) cs3)) (read-time-parts after-t sign) :propagate)
+      (let ((after-t (string-cursor-next s c2)))
+        (def (Some (Tuple (Tuple t time-count) c3)) (read-time-parts s after-t sign) :propagate)
         (Some (PeriodText (dates dates) (date-count date-count) (ticks t)
                           (time-count time-count) (has-t #t))))))
 
@@ -1473,56 +1615,66 @@
   (def t (instant-ticks i))
   (def d (day-number->date (/ t ticks-per-day)))
   (def c (struct-ref d v))
-  (def tod (% t ticks-per-day))
-  (str (day-name (->weekday d)) ", "
-       (pad (long-of (clr-date-day c)) 2) " " (month-name (clr-date-month c)) " "
-       (pad (long-of (clr-date-year c)) 4) " "
-       (pad (/ tod ticks-per-hour) 2) ":" (pad (% (/ tod ticks-per-minute) 60L) 2) ":"
-       (pad (% (/ tod ticks-per-second) 60L) 2) " GMT"))
+  (def sb (new-text 29))
+  (add-text! sb (day-name (->weekday d)))
+  (add-text! sb ", ")
+  (add-padded! sb (long-of (clr-date-day c)) 2)
+  (add-text! sb " ")
+  (add-text! sb (month-name (clr-date-month c)))
+  (add-text! sb " ")
+  (add-padded! sb (long-of (clr-date-year c)) 4)
+  (add-text! sb " ")
+  (add-clock! sb (% t ticks-per-day))
+  (add-text! sb " GMT")
+  (text-of sb))
 
-;; The first n characters as a string.
-(: read-chars (-> (List char) int (Option (Tuple string (List char)))))
-(defun (read-chars cs n)
-  (let loop ((cs cs) (left n) (taken '()))
-    (cond ((= left 0) (Some (Tuple (list->string (list-reverse taken)) cs)))
-          ((list-empty? cs) None)
-          (else (loop (list-tail cs) (- left 1) (Cons (list-head cs) taken))))))
+;; The cursor n characters on, or None when s ends first.
+(: skip-chars (-> string StringCursor int (Option StringCursor)))
+(defun (skip-chars s c n)
+  (cond ((= n 0) (Some c))
+        ((string-cursor-end? s c) None)
+        (else (skip-chars s (string-cursor-next s c) (- n 1)))))
 
-(: skip-string (-> (List char) string (Option (List char))))
-(defun (skip-string cs s)
-  (let loop ((cs cs) (want (string->list s)))
-    (cond ((list-empty? want) (Some cs))
-          ((starts-with-char? cs (list-head want)) (loop (list-tail cs) (list-tail want)))
+;; The cursor after the text want, when s has it at c.
+(: skip-string (-> string StringCursor string (Option StringCursor)))
+(defun (skip-string s c want)
+  (let loop ((c c) (w (string-cursor-start want)))
+    (cond ((string-cursor-end? want w) (Some c))
+          ((starts-with-char? s c (string-cursor-ref want w))
+           (loop (string-cursor-next s c) (string-cursor-next want w)))
           (else None))))
 
-(: month-number (-> string int))
-(defun (month-number name)
+;; A month's name, as its number.
+(: read-month (-> string StringCursor (Option (Tuple int StringCursor))))
+(defun (read-month s c)
   (let loop ((m 1))
-    (cond ((> m 12) 0)
-          ((= (month-name m) name) m)
-          (else (loop (+ m 1))))))
+    (if (> m 12)
+        None
+        (match (skip-string s c (month-name m))
+          ((Some after) (Some (Tuple m after)))
+          (None (loop (+ m 1)))))))
 
-;; The day name must be the date's own.
+;; The day name must be the date's own, so it is checked once the date is read.
 (: http-date->instant (-> string (Option Instant)))
 (defun (http-date->instant s)
-  (def* ((Some (Tuple dname cs1)) (read-chars (string->list s) 3) :propagate)
-        ((Some cs2) (skip-string cs1 ", ") :propagate)
-        ((Some (Tuple d cs3)) (read-fixed cs2 2) :propagate)
-        ((Some cs4) (skip-char cs3 #\space) :propagate)
-        ((Some (Tuple mon cs5)) (read-chars cs4 3) :propagate)
-        ((Some cs6) (skip-char cs5 #\space) :propagate)
-        ((Some (Tuple y cs7)) (read-fixed cs6 4) :propagate)
-        ((Some cs8) (skip-char cs7 #\space) :propagate)
-        ((Some (Tuple h cs9)) (read-fixed cs8 2) :propagate)
-        ((Some cs10) (skip-char cs9 #\:) :propagate)
-        ((Some (Tuple mi cs11)) (read-fixed cs10 2) :propagate)
-        ((Some cs12) (skip-char cs11 #\:) :propagate)
-        ((Some (Tuple sec cs13)) (read-fixed cs12 2) :propagate)
-        ((Some cs14) (skip-string cs13 " GMT") :propagate))
-  (def m (month-number mon))
-  (if (and (list-empty? cs14) (valid-date? y m d) (valid-time? h mi sec 0))
+  (def c0 (string-cursor-start s))
+  (def* ((Some c1) (skip-chars s c0 3) :propagate)
+        ((Some c2) (skip-string s c1 ", ") :propagate)
+        ((Some (Tuple d c3)) (read-fixed s c2 2) :propagate)
+        ((Some c4) (skip-char s c3 #\space) :propagate)
+        ((Some (Tuple m c5)) (read-month s c4) :propagate)
+        ((Some c6) (skip-char s c5 #\space) :propagate)
+        ((Some (Tuple y c7)) (read-fixed s c6 4) :propagate)
+        ((Some c8) (skip-char s c7 #\space) :propagate)
+        ((Some (Tuple h c9)) (read-fixed s c8 2) :propagate)
+        ((Some c10) (skip-char s c9 #\:) :propagate)
+        ((Some (Tuple mi c11)) (read-fixed s c10 2) :propagate)
+        ((Some c12) (skip-char s c11 #\:) :propagate)
+        ((Some (Tuple sec c13)) (read-fixed s c12 2) :propagate)
+        ((Some c14) (skip-string s c13 " GMT") :propagate))
+  (if (and (string-cursor-end? s c14) (valid-date? y m d) (valid-time? h mi sec 0))
       (let ((day (long-of (clr-date-day-number (ClrDate. y m d)))))
-        (if (= (day-name (->weekday (day-number->date day))) dname)
+        (if (some? (skip-string s c0 (day-name (->weekday (day-number->date day)))))
             (Some (Instant (ticks (+ (* day ticks-per-day) (time-of-day-ticks h mi sec 0)))))
             None))
       None))

@@ -3,6 +3,30 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std datetime)~ reads text without allocating, and writes it into one buffer
+
+The readers turned their input into a list of characters, one cell per
+character, and the writers joined a dozen small strings per value. Reading an
+instant cost 640 bytes and writing one 1288.
+
+The readers walk the string with a ~StringCursor~, and answer through
+~Option~ and ~Tuple~, which are structs, so they allocate nothing but a
+moment's zone id. The writers append digits one at a time into a single .NET
+~StringBuilder~ sized for the text. Measured on one machine, per call:
+
+| Operation            | Before          | After         |
+|----------------------+-----------------+---------------|
+| ~iso8601->instant~   | 165 ns, 640 B   | 51 ns, 0 B    |
+| ~http-date->instant~ | 475 ns, 1824 B  | 124 ns, 0 B   |
+| ~->str~ of an Instant | 231 ns, 1288 B | 87 ns, 192 B  |
+| ~->str~ of a Moment  | 371 ns, 1736 B  | 155 ns, 296 B |
+
+What is read and written did not change: a program that prints random values
+of every type, reads them back, and runs every reader on edge cases and on
+random mutations of those texts printed the same 108 670 lines before and
+after. ~245_datetime.bjo~ adds a character outside the BMP, the longest
+period, and a zone id longer than the builder's first guess.
+
 * A system clock can be in a zone of its own: ~system-clock-in~
 
 ~system-clock~ is always in the machine's zone, and no other clock read the
