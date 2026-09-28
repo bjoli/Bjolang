@@ -1,0 +1,30 @@
+;; An imported definition takes its name over from the prelude, and the call
+;; reaches the imported one.
+;;
+;; Inference always chose the import. The exporting module published the wrong
+;; origin, though: the prelude's entry for the name was still in its import
+;; table, so its metadata said its own `list-append` lived in the prelude, and
+;; the call here was emitted as `prelude_Module.listsubappend`. At the prelude's
+;; own type that compiled and quietly ran the wrong function; at any other type
+;; the C# compile failed.
+;;
+;; Two imports binding one name at one type are the same hazard one level down:
+;; both modules are a `using static` in the generated C#, so a bare call reaches
+;; both. The later import wins, as it does in inference.
+(import (std prelude))
+(import (std simpletest))
+(import "inc/prelude_shadow.bjo")
+(import "inc/prelude_shadow_b.bjo")
+
+(defun (main)
+  (expect "the module's own calls" (inside) (list 2 1))
+
+  (expect "an import over a prelude definition, at the prelude's type"
+          (list-append (list 1) (list 2)) (list 2 1))
+  (expect "and in value position"
+          (let ((f list-append)) (f (list 1) (list 2))) (list 2 1))
+
+  (expect "an import over an effect operation" (now "Stockholm") "noon in Stockholm")
+
+  (expect "two imports of one name at one type: the later wins" (twice 1) 200)
+  0)

@@ -997,6 +997,35 @@ and private checkModule (env: Env) (sigs: Sigs) (moduleName: string) (decls: Dec
                 failwithf
                     $"Alias Error: '%s{name}' is aliased more than once, at %s{positions}. Two aliases producing one name is an error, not a shadowing."
 
+    // A module's own definition takes its name over from an import (rule 1 of
+    // MODULES.org), so the import's entry in `ImportAliases` is dropped. Left
+    // in place, it goes on saying that the name lives in the imported module:
+    // the export metadata then publishes this module's definition with the
+    // import as its origin, and an importer calling it reaches the other one.
+    let ownDefinitions =
+        decls
+        |> List.collect (function
+            | DDef(n, _, _)
+            | DDefMutable(n, _, _)
+            | DDefun(n, _, _, _, _) -> [ n ]
+            | DDefDouble(n, _, _, _, _) -> [ n; Naming.suspendingCopy n ]
+            | DDefTuple(ns, _, _) -> ns
+            | DDefPattern(pattern, _, _) -> patternBinders pattern
+            | _ -> [])
+        |> Set.ofList
+
+    let env =
+        if ownDefinitions.IsEmpty then
+            env
+        else
+            { env with
+                Registry =
+                    { env.Registry with
+                        ImportAliases =
+                            env.Registry.ImportAliases
+                            |> Map.filter (fun name alias ->
+                                not (alias.Kind = AliasDef && Set.contains name ownDefinitions)) } }
+
     let finalEnv, finalSigs, typedDecls =
         checkDeclGroup { env with CurrentModule = moduleName } sigs decls
 

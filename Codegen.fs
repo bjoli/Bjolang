@@ -5712,13 +5712,41 @@ let generateProgram
         // `main__SList`. The two sets merge rather than compete.
         |> List.fold (fun acc (n, info) -> Map.add n info acc) builtinUnionCases
 
+    // The names more than one module binds. Every module is a `using static` at
+    // the call site, so a bare identifier reaches all of them at once: C# merges
+    // the method groups and either resolves the call to whichever overload fits
+    // best — not necessarily the binding inference chose — or reports an
+    // ambiguity. A module is counted by where the binding really lives, so a
+    // facade passing on another module's name is not a second binder.
+    let contested =
+        decls
+        |> collectDecls (function
+            | TModule (modName, innerDecls, _) ->
+                innerDecls |> List.collect (function
+                    | TDef (n, _, _, _)
+                    | TDefMutable (n, _, _, _)
+                    | TDefun (n, _, _, _, _, _, _, _, _) -> [ (n, modName) ]
+                    | TDefTuple (names, _, _, _) -> names |> List.map (fun n -> (n, modName))
+                    | TDefPattern (_, _, binders, _) -> binders |> List.map (fun (n, _) -> (n, modName))
+                    | TExtern (visible, origin, _, _) -> [ (visible, origin.OriginModule) ]
+                    | _ -> [])
+            | _ -> [])
+        |> List.distinct
+        |> List.countBy fst
+        |> List.filter (fun (_, count) -> count > 1)
+        |> List.map fst
+        |> Set.ofList
+
     // Where each top-level name is emitted from, and under what member name.
     //
     // A plain import is deliberately absent: it resolves through the
     // `using static` for its module, as it always has. What is here is what a
     // bare identifier cannot express — a name whose spelling differs from the
     // member it stands for, which is every alias and every import brought in
-    // under a modifier.
+    // under a modifier, and a name another module binds as well.
+    //
+    // Later entries win, as a later import wins in inference: both read the
+    // modules in the same order.
     let definitions =
         decls
         |> collectDecls (function
@@ -5729,7 +5757,8 @@ let generateProgram
                     | TDefTuple (names, _, _, _) -> names |> List.map (fun n -> (n, (modName, n)))
                     | TDefPattern (_, _, binders, _) -> binders |> List.map (fun (n, _) -> (n, (modName, n)))
                     | TDefun (n, _, _, _, _, _, _, _, _) -> [ (n, (modName, n)) ]
-                    // When an import shares a name with a builtin, both spellings
+                    // When an import shares a name with a builtin, or with a
+                    // binding of another module (`contested` above), both spellings
                     // reach the call site through a `using static`. Because C# cannot
                     // resolve ambiguous static imports, we must explicitly qualify
                     // the method with its class name to prevent a CS0411 compiler error.
@@ -5738,7 +5767,9 @@ let generateProgram
                     // moved: the branch below reads "differs from what a bare
                     // identifier would find", and for these a bare identifier
                     // finds the wrong thing even when nothing differs.
-                    | TExtern (visible, origin, _, _) when Set.contains visible builtinBindings ->
+                    | TExtern (visible, origin, _, _) when
+                        Set.contains visible builtinBindings || Set.contains visible contested
+                        ->
                         [ (visible, (origin.OriginModule, origin.OriginalName)) ]
                     // An import whose spelling or whose home differs from what a
                     // bare identifier would find: a modifier renamed it, or the

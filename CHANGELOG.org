@@ -3,6 +3,28 @@
 
 What each change guarantees, and what it leaves open.
 
+* An imported definition takes its name over from the prelude
+
+An import shadows a name the prelude also exports, and inference always agreed.
+Code generation did not. A module that defined its own ~list-append~ still had
+the prelude's entry for that name in its import table, so its metadata said the
+definition lived in the prelude. An importer's call was then emitted as
+~prelude_Module.listsubappend~: at the prelude's own type it compiled and ran
+the prelude's function, and at any other type the C# compile failed. A module
+exporting ~now~ could not be used at all, since the prelude's ~Clock~ effect
+exports one too.
+
+- *A module's own definition drops the import's entry* for that name before the
+  module is checked, so the metadata publishes no foreign origin for it. The
+  same stale entry made an ~(:alias ...)~ of the name, and the blocking lint,
+  look at the import instead of the definition.
+- *A name that more than one module binds is always qualified* in the generated
+  C#, to the module inference chose. Each module is a ~using static~, so a bare
+  call reached all of them: two imports of one name at one type were a CS0121
+  ambiguity rather than the later import winning, as MODULES.org says it does.
+
+Tested in ~243_imported_def_shadow.bjo~.
+
 * A call handed to a waiting receiver is taken
 
 A ~Call~ made with a token (~inbox-call/token~, ~inbox-try-call/token~) is
