@@ -5,6 +5,14 @@
 (import (std simpletest))
 (import (std datetime))
 
+;; .NET's own ISO weeks, to check the module's against.
+(import/class
+  (ClrDateTime (: System.DateTime (-> int int int ClrDateTime))))
+
+(import/extern
+  (clr-iso-week (: System.Globalization.ISOWeek.GetWeekOfYear (-> ClrDateTime int)))
+  (clr-iso-year (: System.Globalization.ISOWeek.GetYear (-> ClrDateTime int))))
+
 (: the (-> (Option %a) %a))
 (defun (the o)
   (match o
@@ -70,6 +78,61 @@
   (expect "->date" (->str (->date dt)) "2026-10-25")
   (expect "->time" (->str (->time dt)) "02:30:15.1234567")
   (expect "->datetime" (->datetime dt) dt))
+
+;; How many of the days from start disagree with .NET's ISOWeek, or do not
+;; come back from week-date.
+(: week-mismatches (-> Date int int))
+(defun (week-mismatches start days)
+  (let loop ((i 0) (bad 0))
+    (if (= i days)
+        bad
+        (let* ((d (+days start i))
+               (c (ClrDateTime. (->year d) (->month d) (->day d))))
+          (loop (+ i 1)
+                (if (and (= (->week d) (clr-iso-week c))
+                         (= (->week-year d) (clr-iso-year c))
+                         (= (week-date (->week-year d) (->week d) (->weekday d)) (Some d)))
+                    bad
+                    (+ bad 1)))))))
+
+(: long-years (-> int int int))
+(defun (long-years from to)
+  (let loop ((y from) (n 0))
+    (if (> y to) n (loop (+ y 1) (if (= (weeks-in-year y) 53) (+ n 1) n)))))
+
+(: weeks (-> void))
+(defun (weeks)
+  (def sunday (the (date 2026 10 25)))
+  (expect "->week" (->week sunday) 43)
+  (expect "->week-year" (->week-year sunday) 2026)
+  (def new-year (the (date 2027 1 1)))
+  (expect "2027-01-01, a Friday, is in week 53" (->week new-year) 53)
+  (expect "of 2026" (->week-year new-year) 2026)
+  (def early (the (date 2025 12 29)))
+  (expect "2025-12-29, a Monday, is in week 1" (->week early) 1)
+  (expect "of 2026" (->week-year early) 2026)
+  (expect "2026 has 53 weeks" (weeks-in-year 2026) 53)
+  (expect "2027 has 52" (weeks-in-year 2027) 52)
+  (expect "a leap year starting on a Wednesday has 53" (weeks-in-year 2020) 53)
+  (expect "71 years in 400 have 53 weeks" (long-years 2000 2399) 71)
+  (expect "week-date" (->str (the (week-date 2026 43 7))) "2026-10-25")
+  (expect "week 53 of 2026 ends in 2027" (->str (the (week-date 2026 53 5))) "2027-01-01")
+  (expect "week 1 of 2026 starts in 2025" (->str (the (week-date 2026 1 1))) "2025-12-29")
+  (expect-true "2027 has no week 53" (none? (week-date 2027 53 1)))
+  (expect-true "no week 0" (none? (week-date 2026 0 1)))
+  (expect-true "no day 0" (none? (week-date 2026 1 0)))
+  (expect-true "no day 8" (none? (week-date 2026 1 8)))
+  (expect-true "no year 0" (none? (week-date 0 1 1)))
+  (expect "the first day is day 1 of week 1 of year 1" (->str (the (week-date 1 1 1))) "0001-01-01")
+  (expect "the last day is day 5 of week 52 of 9999" (->str (the (week-date 9999 52 5))) "9999-12-31")
+  (expect-true "whose day 6 is past the range" (none? (week-date 9999 52 6)))
+  (expect-true "weeks-in-year of year 0 raises" (raises? (fun () (weeks-in-year 0))))
+  (expect-true "and of 10000" (raises? (fun () (weeks-in-year 10000))))
+  ;; The Gregorian calendar repeats every 400 years, 20 871 weeks exactly.
+  (expect "every day of 400 years agrees with .NET"
+          (week-mismatches (the (date 2000 1 1)) 146097) 0)
+  (expect "and of the range's first ten" (week-mismatches (the (date 1 1 1)) 3652) 0)
+  (expect "and last ten" (week-mismatches (the (date 9990 1 1)) 3652) 0))
 
 (: arithmetic (-> void))
 (defun (arithmetic)
@@ -422,6 +485,7 @@
 (defbjo (main)
   (construction)
   (accessors)
+  (weeks)
   (arithmetic)
   (differences)
   (instants)

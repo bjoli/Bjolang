@@ -107,6 +107,7 @@
   clock-timezone now now/moment today
   ;; Accessors
   ->year ->month ->day ->weekday ->yday
+  ->week ->week-year weeks-in-year week-date
   ->hours ->minutes ->seconds ->milliseconds ->nanoseconds
   ;; Arithmetic
   +years +months +weeks +days -years -months -weeks -days -date-period
@@ -616,6 +617,40 @@
 
 (: ->yday (-> %a int) (where (HasDate %a)))
 (defun (->yday x) (clr-date-day-of-year (struct-ref (->date x) v)))
+
+;; ISO 8601 weeks run Monday to Sunday, and a week belongs to the year its
+;; Thursday is in, so week 1 holds the year's first Thursday. n - n mod 7 is
+;; the Monday, as day number 0 was one. Every date in range has its Thursday
+;; in range, since 0001-01-01 was a Monday and 9999-12-31 a Friday.
+(: ->week (-> %a int) (where (HasDate %a)))
+(defun (->week x)
+  (def n (clr-date-day-number (struct-ref (->date x) v)))
+  (+ (/ (- (clr-date-day-of-year (clr-date-from-day-number (+ (- n (% n 7)) 3))) 1) 7) 1))
+
+;; The year ->week counts in. It is not always ->year: 2027-01-01 is in week
+;; 53 of 2026.
+(: ->week-year (-> %a int) (where (HasDate %a)))
+(defun (->week-year x)
+  (def n (clr-date-day-number (struct-ref (->date x) v)))
+  (clr-date-year (clr-date-from-day-number (+ (- n (% n 7)) 3))))
+
+;; 52 or 53. December 28 is always in its year's last week.
+(: weeks-in-year (-> int int))
+(defun (weeks-in-year y)
+  (if (and (>= y 1) (<= y 9999))
+      (->week (Date (v (ClrDate. y 12 28))))
+      (range-error (str "year " (->str y) " is outside 1 to 9999"))))
+
+;; Day d (1 is Monday) of week w of week-year y. Week 1 starts on the Monday
+;; on or before January 4.
+(: week-date (-> int int int (Option Date)))
+(defun (week-date y w d)
+  (if (and (>= y 1) (<= y 9999) (>= w 1) (<= w (weeks-in-year y)) (>= d 1) (<= d 7))
+      (let* ((jan4 (long-of (clr-date-day-number (ClrDate. y 1 4))))
+             (n (+ (- jan4 (% jan4 7L)) (long-of (+ (* (- w 1) 7) (- d 1))))))
+        ;; The last week of 9999 ends in 10000.
+        (if (<= n max-day-number) (Some (day-number->date n)) None))
+      None))
 
 (: ->hours (-> %a int) (where (HasTime %a)))
 (defun (->hours x) (clr-time-hour (struct-ref (->time x) v)))

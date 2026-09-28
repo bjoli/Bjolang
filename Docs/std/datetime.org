@@ -172,6 +172,23 @@ hours is 22:00, and whole days drop out: 12:00 plus ~(duration #:days 3
 #:hours 2)~ is 14:00, as is 12:00 plus 50 hours. Nothing is refused, so to
 know how many midnights were crossed, add to a ~DateTime~ instead.
 
+** Weeks
+
+ISO 8601 weeks, as most of Europe numbers them: a week runs Monday to Sunday,
+and week 1 is the week with the year's first Thursday.
+
+- ~(->week x)~ (1–53) and ~(->week-year x)~ : anything ~HasDate~.
+- ~(weeks-in-year y)~ : 52 or 53. Raises outside the years 1 to 9999.
+- ~(week-date y w d)~ : ~(Option Date)~, day ~d~ (1 is Monday) of week ~w~ of
+  week-year ~y~. ~(week-date 2026 43 1)~ is 2026-10-19. ~None~ for a week the
+  year does not have, such as week 53 of 2027.
+
+A week belongs to the year its Thursday is in, so up to three days at the start
+of January can be in the last week of the year before, and up to three at the
+end of December in week 1 of the next: 2027-01-01 is in week 53 of 2026, and
+2025-12-29 in week 1 of 2026. That year is ~->week-year~, and it is the one to
+print beside ~->week~.
+
 ** Differences
 
 Whole units, toward zero, from the first argument to the second.
@@ -210,7 +227,8 @@ an ~Option~:
 | ~iso8601->period~      | ~P1DT3H~                                        |
 
 Only the extended format is read (~2026-10-25~, not ~20261025~), with an upper
-case ~T~ and ~Z~. A fraction of a second has up to seven digits written, and
+case ~T~ and ~Z~. Week dates, ~2026-W43-7~, and ordinal dates, ~2026-298~,
+are not read. A fraction of a second has up to seven digits written, and
 more are read and dropped. A moment's offset has to be one its zone has at that
 local time, so ~2026-07-01T12:00:00+01:00[Europe/Stockholm]~ is ~None~ (July
 is +02:00), and so is any local time in a gap. A duration has no days, since a
@@ -330,6 +348,11 @@ Values are written as ISO text here for short.
   ~tm_wday~, Ruby's ~wday~ and Racket Gregor's ~->wday~ count Sunday as 0, so
   ~(= (->wday d) 0)~ written from habit would compile and never be true. For
   Sunday as 0, write ~(% (->weekday d) 7)~.
+- *A week number comes with a year of its own, ~->week-year~.* Printed beside
+  ~->year~, 2027-01-01 would be week 53 of 2027, a week 2027 does not have,
+  and 2025-12-29 week 1 of 2025, a year early. The two are separate functions
+  rather than one pair, since "which week is it" usually wants the number
+  only; the two years differ in at most three days at either end of a year.
 - *A moment's ~=~ compares every field, and ~compare~ orders by instant, then
   local time, then zone id,* so the two agree. 12:00+02:00[Europe/Stockholm]
   and 10:00+00:00[UTC] are one instant and two values; a sorted set keeps both,
