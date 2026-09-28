@@ -140,15 +140,20 @@
                (raises? (fun () (+seconds (the (unix-seconds->instant 253402300799L)) 1))))
   (expect "the last instant" (->str (+milliseconds (the (unix-seconds->instant 253402300799L)) 999))
           "9999-12-31T23:59:59.999Z")
-  ;; long's maximum in ticks, negated, and one tick further: long's minimum.
+  ;; long's maximum in ticks. Its negation is the shortest duration, one tick
+  ;; above long's minimum, which TimeSpan could reach by adding but which has
+  ;; no negation of its own.
   (def longest (duration #:milliseconds 922337203685477L #:nanoseconds 580700L))
-  (expect "the longest duration" (duration->milliseconds longest) 922337203685477L)
-  (expect-true "and one tick more raises"
+  (def shortest (duration-negate longest))
+  (expect "the longest duration" (->str longest) "PT256204778H48M5.4775807S")
+  (expect "the shortest" (->str shortest) "-PT256204778H48M5.4775807S")
+  (expect "which reads back" (the (iso8601->duration (->str shortest))) shortest)
+  (expect-true "one tick more raises"
                (raises? (fun () (+duration longest (duration #:nanoseconds 100L)))))
-  (expect-true "the most negative duration has no negation"
-               (raises? (fun () (duration-negate
-                                  (+duration (duration-negate longest)
-                                             (duration #:nanoseconds -100L))))))
+  (expect-true "and one tick less, rather than reaching long's minimum"
+               (raises? (fun () (+duration shortest (duration #:nanoseconds -100L)))))
+  (expect-true "as does -duration past it"
+               (raises? (fun () (-duration shortest (duration #:nanoseconds 100L)))))
   (expect "a local time on the first day resolves in UTC"
           (->str (datetime->moment (the (datetime 1 1 1)) utc earlier))
           "0001-01-01T00:00:00+00:00[UTC]")

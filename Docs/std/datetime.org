@@ -239,7 +239,13 @@ Nothing is clamped or wrapped silently, apart from the month-end rule and the
 wrap at midnight above. The checks come before the arithmetic, since C#
 arithmetic wraps where it overflows: ~(+hours i n)~ with an ~n~ above about 256
 million would multiply past a ~long~ and could wrap back into range, so ~n~ is
-checked first. A ~Duration~ holds about ±29 227 years.
+checked first.
+
+A ~Duration~ holds ±(2^63 − 1) ticks, about ±29 227 years, from
+~-PT256204778H48M5.4775807S~ to ~PT256204778H48M5.4775807S~. A ~TimeSpan~ goes
+one tick further on the negative side, to a value with no negation; a sum
+that would reach it raises instead, so every duration can be negated, printed
+and read back.
 
 Near the two ends of the range, a local time and its instant cannot both fit:
 0001-01-01T00:00 in Tokyo is an instant on the day before, and the instant
@@ -367,6 +373,7 @@ Values are written as ISO text here for short.
 ** Also exported
 
 ~date+date-period~, ~datetime+date-period~, ~moment+date-period~,
-~datetime+duration~, ~instant+duration~ and ~moment+duration~ are the trait
-methods at one type. An importing module copies the trait methods' bodies into
-its own code, and those bodies call these, so the compiler exports them too.
+~datetime+duration~, ~instant+duration~, ~moment+duration~ and
+~duration+duration~ are the trait methods at one type. An importing module
+copies the trait methods' bodies into its own code, and those bodies call
+these, so the compiler exports them too.

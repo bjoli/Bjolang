@@ -57,7 +57,6 @@
   (clr-time-nanosecond (: System.TimeOnly.Nanosecond (-> ClrTime int) #:get))
   (clr-datetime-subtract (: System.DateTime.Subtract (-> ClrDateTime ClrDateTime ClrTimeSpan)))
   (clr-timespan-from-ticks (: System.TimeSpan.FromTicks (-> long ClrTimeSpan)))
-  (clr-timespan-add (: System.TimeSpan.Add (-> ClrTimeSpan ClrTimeSpan ClrTimeSpan)))
   (clr-timespan-negate (: System.TimeSpan.Negate (-> ClrTimeSpan ClrTimeSpan)))
   (clr-date-day-number (: System.DateOnly.DayNumber (-> ClrDate int) #:get))
   (clr-date-year (: System.DateOnly.Year (-> ClrDate int) #:get))
@@ -182,7 +181,9 @@
 (: unix-epoch-ticks long)
 (def unix-epoch-ticks 621355968000000000L)
 
-;; A Duration built here stays within ±long-max ticks, about ±29 227 years.
+;; Every Duration stays within ±long-max ticks, about ±29 227 years. Leaving
+;; out long's minimum gives every duration a negation, so each one prints and
+;; reads back.
 (: long-max long)
 (def long-max 9223372036854775807L)
 
@@ -537,10 +538,15 @@
 ;; Duration
 ;; ===========================================================================
 
-;; (+hours (duration #:minutes 30) 1) is PT1H30M. TimeSpan.Add raises an
-;; OverflowException past TimeSpan's range, as this module does.
+;; Checked here rather than by TimeSpan.Add, which lets a sum reach -2^63
+;; ticks: the one TimeSpan with no negation, which could not be printed or
+;; read back.
+(: duration+duration (-> Duration Duration Duration))
+(defun (duration+duration a b) (ticks->duration (plus-ticks (duration-ticks a) (duration-ticks b))))
+
+;; (+hours (duration #:minutes 30) 1) is PT1H30M.
 (impl (TimeArith Duration)
-  (defun (+duration a b) (Duration (v (clr-timespan-add (struct-ref a v) (struct-ref b v))))))
+  (defun (+duration a b) (duration+duration a b)))
 
 (impl (Ord Duration)
   (defun (compare a b) (compare (duration-ticks a) (duration-ticks b))))
@@ -561,7 +567,7 @@
 (: duration->milliseconds (-> Duration long))
 (defun (duration->milliseconds d) (/ (duration-ticks d) ticks-per-millisecond))
 
-;; TimeSpan.Negate raises for the one duration with no positive twin.
+;; Never raises, as no duration reaches -2^63 ticks.
 (: duration-negate (-> Duration Duration))
 (defun (duration-negate d) (Duration (v (clr-timespan-negate (struct-ref d v)))))
 

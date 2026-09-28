@@ -3,6 +3,22 @@
 
 What each change guarantees, and what it leaves open.
 
+* Every duration can be negated, printed and read back
+
+A ~Duration~ built by ~duration~ or read by ~iso8601->duration~ stayed within
+±(2^63 − 1) ticks, but adding two was ~TimeSpan.Add~, which goes one tick
+further to −2^63: the one ~TimeSpan~ with no negation. A sum could land there,
+and then ~->str~ raised ("Negating the minimum value of a twos complement
+number is invalid"), inside a ~Period~ too, and so did ~duration-negate~ and
+~-duration~.
+
+~+duration~ on two durations checks the sum against ±(2^63 − 1) and raises the
+module's own ~OverflowException~ at either end, so no duration reaches −2^63.
+It is ~duration+duration~, exported beside the other trait methods at one type
+because the impl's copied body calls it. Tested in ~245_datetime.bjo~: the
+longest and shortest durations print and read back, and one tick past either
+raises.
+
 * ~(std clr-ord)~ no longer names the .NET time types
 
 ~(std clr-ord)~ exported the names ~DateTime~, ~DateTimeOffset~, ~TimeSpan~,
