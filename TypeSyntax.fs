@@ -309,7 +309,7 @@ let parseTypeDef (s: SExpr) : TypeDef =
                 | SAtom { Token = Keyword "opaque" } -> ()
                 | SAtom { Token = Keyword bad } ->
                     failwithf
-                        $"Unknown marker #:%s{bad} on the type definition at %s{Lexer.formatPos r}. The only one is #:opaque, which exports the type's name without its representation."
+                        $"Unknown marker #:%s{bad} on the type definition at %s{Lexer.formatPos r}. The only one is #:opaque, which keeps the type's representation to its own module."
                 | _ -> ()
 
             SList(colon :: items, sr), not markers.IsEmpty
@@ -362,28 +362,6 @@ let parseTypeDef (s: SExpr) : TypeDef =
           TypeArgs = typeArgs
           Kind = Union(List.map parseUnionCase cases)
           IsOpaque = isOpaque
-          Range = r }
-    // A head with no body. Not a shape source writes: it is what `Exports`
-    // publishes an `#:opaque` type as, read back here by the ordinary parser
-    // because metadata *is* Bjolang source text.
-    | SList([ SAtom { Token = Colon }
-              head
-              SList(SAtom { Token = Symbol "Opaque" } :: members, _) ],
-            _) ->
-        let name, typeArgs = parseTypeDefHead head
-
-        let memberNames =
-            members
-            |> List.map (function
-                | SAtom { Token = Symbol m } -> m
-                | bad ->
-                    failwithf
-                        $"Invalid hidden member name in an Opaque type at %s{Lexer.formatPos (getRange bad)}")
-
-        { Name = name
-          TypeArgs = typeArgs
-          Kind = Opaque memberNames
-          IsOpaque = true
           Range = r }
     // Explicit Alias: (: head (Alias aliasType))
     | SList([ SAtom { Token = Colon }

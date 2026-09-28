@@ -183,10 +183,17 @@ let private returnOnlyGenerics (env: Env) : Set<string> =
 /// about what was written, and a generated copy would report the same thing
 /// twice under a name nobody wrote; `ReturnOnlyGenerics` is already settled for
 /// every name a copy could mention.
+///
+/// A failure raises rather than being collected, through `Diagnostics.speculate`.
+/// `checkDeclGroup` collects each declaration's failure and poisons its name, so
+/// that a program's errors are reported together. A generated declaration that
+/// fails is not the program's error, and its caller falls back to the code the
+/// copy was made from, which it can only do if it sees the failure.
 let checkAddendum (initialEnv: Env) (decls: Decl list) : Env * TDecl list =
-    let env, _, typedDecls = checkDeclGroup initialEnv Map.empty decls
-    solvePending env
-    env, typedDecls
+    Diagnostics.speculate (fun () ->
+        let env, _, typedDecls = checkDeclGroup initialEnv Map.empty decls
+        solvePending env
+        env, typedDecls)
 
 let checkProgram (initialEnv: Env) (program: Decl list) : Env * TDecl list =
     let finalEnv, _, typedDecls = checkDeclGroup initialEnv Map.empty program

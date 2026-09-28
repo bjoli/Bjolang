@@ -98,10 +98,6 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
                     | DataCase(n, types, marked, r) ->
                         DataCase(key n, types |> List.map (qualifyFTypeNames finalRegistry), marked, r))
                 |> Union
-            // Left as written. A hidden member is a name in a diagnostic and
-            // nothing else, so keying it would only make the message harder to
-            // read than the source the reader is looking at.
-            | Opaque members -> Opaque members
 
         let td = { td with Name = name; Kind = keyedKind }
         keyedDefs.Add td
@@ -187,22 +183,26 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
 
             finalRegistry <- { finalRegistry with Unions = Map.add td.Name (tArgs, caseTable) finalRegistry.Unions }
 
-        // A head and nothing else, which is what an `#:opaque` export arrives
-        // as. `LocalTypes` and the name's spelling were registered by the
-        // pre-pass above, so the type is nameable, unifiable and a legal impl
-        // target; deliberately absent are the `Records`, `Unions` and
-        // constructor bindings that would let anything take it apart.
-        //
-        // Note what this costs the importer nothing to know: the member names
-        // go into `HiddenMembers` so that a use of one reports the type it
-        // belongs to rather than "no such constructor".
-        | Opaque members ->
+        // An `#:opaque` type is registered in full wherever it is read, so that
+        // the bodies its module published check where they are spliced. What
+        // may *use* the representation is its scope, which is the declaring
+        // module's code: `env.CurrentModule` is that module here, whether this
+        // is its own compilation or an importer reading its metadata.
+        if td.IsOpaque then
+            let caseKeys =
+                match td.Kind with
+                | Union cases ->
+                    cases
+                    |> List.map (function
+                        | SimpleCase(n, _)
+                        | DataCase(n, _, _, _) -> n)
+                | _ -> []
+
             finalRegistry <-
                 { finalRegistry with
-                    OpaqueTypes = Set.add td.Name finalRegistry.OpaqueTypes
-                    HiddenMembers =
-                        members
-                        |> List.fold (fun acc m -> Map.add m td.Name acc) finalRegistry.HiddenMembers }
+                    OpaqueTypes = Map.add td.Name [ ScopeModule env.CurrentModule ] finalRegistry.OpaqueTypes
+                    OpaqueCases =
+                        caseKeys |> List.fold (fun acc c -> Map.add c td.Name acc) finalRegistry.OpaqueCases }
 
 
     { env with Registry = finalRegistry; Bindings = finalBindings }, List.ofSeq keyedDefs

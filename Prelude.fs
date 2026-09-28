@@ -315,8 +315,8 @@ let emptyRegistry : TraitRegistry =
       ClrClasses = Map.empty
       ClrExterns = Map.empty
 
-      OpaqueTypes = Set.empty
-      HiddenMembers = Map.empty
+      OpaqueTypes = Map.empty
+      OpaqueCases = Map.empty
       BlockingNames = blockingBuiltins
       DoubleDefs = Map.empty
       GeneratedCopies = Set.empty

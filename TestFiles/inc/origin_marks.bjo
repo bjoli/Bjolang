@@ -1,0 +1,22 @@
+;; A library whose published body holds another module's code, for
+;; `244_opaque_bodies.bjo` and `warnings/opaque_bodies_splice.bjo`.
+;;
+;; `box-of` expands here into `sealed_box`'s construction of a `Coin`, which
+;; only `sealed_box`'s code may do. `coin-weight` is published for importers to
+;; specialise, so the published body has to say which part of it is whose.
+(import (std prelude))
+(import "sealed_box.bjo")
+
+(export Weighed weigh coin-weight)
+
+(def/trait (Weighed %a)
+  (: weigh (-> %a int)))
+
+(impl (Weighed int)
+  (defun (weigh n) n))
+
+(impl (Weighed string)
+  (defun (weigh s) (string-length s)))
+
+(: coin-weight (-> %a Coin) (where (Weighed %a)))
+(defun (coin-weight x) (box-of (weigh x)))

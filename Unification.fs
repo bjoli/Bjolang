@@ -96,15 +96,10 @@ let restoreLevel (n: int) : unit = currentLevel <- n
 
 /// A binding, or the reason there is none.
 ///
-/// The opaque arms are the whole of what an `#:opaque` type needs on the
-/// expression side. A hidden constructor is simply never bound, so calling one
-/// arrives here as an unbound variable like any typo. Saying which type it
-/// belongs to is the difference between "this name does not exist" and "this
-/// name is not yours to write".
-///
-/// Two arms rather than one because a record is constructed by its own type
-/// name, and a type name — unlike a hidden case — does have a spelling
-/// registered, so it reaches this point already resolved to its key.
+/// A record is constructed by its type name, which is no binding, so an
+/// `#:opaque` record's key used as a value arrives here like any typo. Saying
+/// which type it is makes the difference between "this name does not exist"
+/// and "this name is not yours to write".
 let lookup (env: Env) (name: string) : Binding =
     match Map.tryFind name env.Bindings with
     | Some scheme -> scheme
@@ -113,15 +108,10 @@ let lookup (env: Env) (name: string) : Binding =
         // a reader has written or can correct.
         let shown = Naming.emittedTypeName name
 
-        if Set.contains name env.Registry.OpaqueTypes then
-            failwithf
-                $"Unbound variable: %s{shown}. %s{Naming.showTypeName name} is exported #:opaque, so its fields did not cross the module boundary and it cannot be constructed here. The module that declares it exports the functions that build one."
+        if Map.containsKey name env.Registry.OpaqueTypes then
+            failwithf $"Unbound variable: %s{shown}. %s{opaqueTypeNote env.Registry name}"
         else
-            match Map.tryFind name env.Registry.HiddenMembers with
-            | Some typeKey ->
-                failwithf
-                    $"Unbound variable: %s{shown}. It belongs to %s{Naming.showTypeName typeKey}, which is exported #:opaque: the type's name crosses the module boundary and its representation does not, so a value of it can be held and passed on but not built here."
-            | None -> failwithf $"Unbound variable: %s{shown}"
+            failwithf $"Unbound variable: %s{shown}"
 
 /// Introduce `name`, shadowing whatever it named before.
 ///

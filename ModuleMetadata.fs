@@ -76,7 +76,11 @@ open System.Text
 /// built from the entry module's set, so an assembly built before this would
 /// produce a program the host refuses to start — the field is positional, and
 /// a reader of an older version could not find the fields after it either.
-let currentVersion = 12
+/// 13: an `#:opaque` type is published whole, `#:opaque` included, rather than
+/// as an `(Opaque ...)` head, and a published body marks the code another
+/// module wrote with `(%origin "key" ...)`. A reader of 12 would register the
+/// representation as visible to all code, and read a marker as a call.
+let currentVersion = 13
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {

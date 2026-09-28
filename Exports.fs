@@ -170,13 +170,13 @@ let metadata
             | _ -> [])
         |> Set.ofList
 
-    /// The types that cross, and in what state.
+    /// The types that cross.
     ///
     /// A type is published only if it is named in an `(export ...)`, so the
     /// export list is the whole truth about a module's surface. One marked
-    /// `#:opaque` is reduced to its head here — the single place where the
-    /// decision is made, so that the members cannot reach the metadata by some
-    /// other route.
+    /// `#:opaque` is published whole, marker included: the bodies this module
+    /// publishes have to check where they are spliced, and the importer is what
+    /// keeps the representation to this module's code.
     let typesToExport =
         ownModuleDecls
         |> TypedAST.collectDecls (function
@@ -184,24 +184,6 @@ let metadata
             | TypedAST.TTypeRec(defs, _) -> defs |> List.map (fun d -> d, true)
             | _ -> [])
         |> List.filter (fun ((td: Ast.TypeDef), _) -> List.contains (bare td.Name) exports)
-        |> List.map (fun ((td: Ast.TypeDef), isRec) ->
-            if not td.IsOpaque then
-                td, isRec
-            else
-                let hidden =
-                    match td.Kind with
-                    | Ast.Union cases ->
-                        cases
-                        |> List.map (function
-                            | Ast.SimpleCase(n, _)
-                            | Ast.DataCase(n, _, _, _) -> bare n)
-                    // A record is taken apart by its field names and built by
-                    // its own, which is already the type name and is published.
-                    | Ast.Record(fields, _) -> fields |> List.map (fun f -> f.Name)
-                    | Ast.Alias _
-                    | Ast.Opaque _ -> []
-
-                { td with Kind = Ast.Opaque hidden }, isRec)
 
     /// The types that crossed under their own name.
     ///
@@ -562,8 +544,13 @@ let metadata
                                         (bodyExternSubst (Set.ofList paramNames) body)
                                         body
 
+                                // Read back as this module's code, by
+                                // `Ast.readOrigins`, whatever module the trait
+                                // itself came from.
+                                let home = Naming.moduleKeyOfPath inputFilePath
+
                                 Some
-                                    $"(defun (%s{mName} %s{paramsStr}) %s{Codegen.serializeExpr body})"
+                                    $"(defun (%s{mName} %s{paramsStr}) %s{Codegen.serializeExprFrom home body})"
                         | _ -> None)
 
                 // The .NET interface the trait stands for, if it does. It has
@@ -744,13 +731,23 @@ let metadata
                        Origin = originOf name }
                     : ModuleMetadata.ExportedDef))
                 
-            let serializeFType = Codegen.serializeFType
+            // A field or payload type is written as the type it resolves to,
+            // as a signature is. Written as source had it, an `import/class`
+            // alias is a name only this module has, and a record holding a
+            // `ClrDate` would hold something else wherever it is read.
+            let serializeFType (ft: Ast.FType) =
+                try
+                    Codegen.serializeHMType (Annotations.resolveTypeAnnotation env.Registry ft)
+                with _ ->
+                    Codegen.serializeFType ft
 
             let serializeTypeDef (td: Ast.TypeDef, isRec: bool) : string =
                 let quotedArgs = td.TypeArgs |> List.map (fun a -> if a.StartsWith("'") then a else "'" + a)
                 let typeArgsStr = if td.TypeArgs.IsEmpty then "" else " " + String.concat " " quotedArgs
                 let headStr = if td.TypeArgs.IsEmpty then td.Name else $"({td.Name}{typeArgsStr})"
                 let head = if isRec then "type-rec" else "type"
+                // An alias cannot be opaque, so only the two below write it.
+                let opaqueStr = if td.IsOpaque then " #:opaque" else ""
                 match td.Kind with
                 | Ast.Alias(ft) -> $"({head} (: {headStr} {serializeFType ft}))"
                 | Ast.Union(cases) ->
@@ -773,7 +770,7 @@ let metadata
                                 @ (if markers.IsRest then [ "#:rest" ] else [])
 
                             $"({n} " + String.concat " " parts + ")"
-                    $"({head} (: {headStr} (Union\n  " + String.concat "\n  " (List.map serializeCase cases) + ")))"
+                    $"({head} (: {headStr}{opaqueStr} (Union\n  " + String.concat "\n  " (List.map serializeCase cases) + ")))"
                 // A record's *fields* are the part worth publishing.
                 // Without them an importer knows the name and nothing
                 // else: `record-ref` on the type fails with "unknown
@@ -800,18 +797,9 @@ let metadata
                     // reference one would emit the wrong C#.
                     let tag = if isStruct then "Struct" else "Record"
 
-                    $"({head} (: {headStr} ({tag}\n  "
+                    $"({head} (: {headStr}{opaqueStr} ({tag}\n  "
                     + String.concat "\n  " (List.map serializeField fields)
                     + ")))"
-                // The head of an `#:opaque` type, and the names of the members
-                // that stayed behind. The type arguments are still here, so the
-                // importer knows the arity and can write `(Crate int)`; nothing
-                // that would let it take one apart is.
-                //
-                // The member names are for the error message alone — see
-                // `Ast.TypeDefKind.Opaque`.
-                | Ast.Opaque(members) ->
-                    $"({head} (: {headStr} (Opaque " + String.concat " " members + ")))"
 
             // The types this module re-exports: declared elsewhere, published
             // here under the key their own module gave them.
@@ -820,9 +808,9 @@ let metadata
             // this module *declares*, the leak check below reads it as such,
             // and a declaration published under this module's key would be the
             // second copy the whole design is against. What goes out is the
-            // origin's declaration exactly as the origin wrote it, which is
-            // also how `#:opaque` survives the trip without a rule of its own:
-            // an opaque type arrived here as a head, and a head is what leaves.
+            // origin's declaration exactly as the origin wrote it, `#:opaque`
+            // included, and the importer registers it as the origin's, so its
+            // representation stays the origin module's code and not this one's.
             //
             // A binding of the same name wins. `re-export` was a binding's form
             // first, so a module that has both meant the binding.
@@ -1012,7 +1000,7 @@ let metadata
                     for (key, name) in withheld do
                         if mentions key text then
                             failwithf
-                                "Export Error: %s names the type '%s', which this module declares and does not export. A type crosses a module boundary only when it is named in an (export ...), so an importer has no way to resolve this. Write (export %s), or (export %s) with the declaration marked #:opaque to publish the name without its representation."
+                                "Export Error: %s names the type '%s', which this module declares and does not export. A type crosses a module boundary only when it is named in an (export ...), so an importer has no way to resolve this. Write (export %s), or (export %s) with the declaration marked #:opaque to keep its representation to this module's code."
                                 what
                                 name
                                 name
@@ -1021,8 +1009,12 @@ let metadata
                 for d in defs do
                     check $"the exported binding '%s{d.Name}'" (d.TypeText + " " + d.ConstraintsText)
 
+                // An opaque type's representation may name types this module
+                // keeps: only this module's code may use it, and a type name
+                // in metadata is a key, which resolves to itself.
                 for (td: Ast.TypeDef), _ in typesToExport do
-                    check $"the exported type '%s{bare td.Name}'" (serializeTypeDef (td, false))
+                    if not td.IsOpaque then
+                        check $"the exported type '%s{bare td.Name}'" (serializeTypeDef (td, false))
 
                 for info in externsToExport do
                     check $"the exported foreign import '%s{info.Alias}'" (serializeExtern info)
@@ -1054,7 +1046,7 @@ let metadata
                    Ctor = ctor
                    OriginModule = tpl.OriginModule
                    Params = tpl.Params
-                   Body = Codegen.serializeExpr body
+                   Body = Codegen.serializeExprFrom tpl.OriginModule body
                    Qualification = tpl.Qualification |> Map.toList }
                 : ModuleMetadata.InlineTemplateEntry))
         else []
@@ -1071,7 +1063,7 @@ let metadata
                 ({ Name = name
                    OriginModule = tpl.OriginModule
                    Params = tpl.Params
-                   Body = Codegen.serializeExpr body
+                   Body = Codegen.serializeExprFrom tpl.OriginModule body
                    Qualification = tpl.Qualification |> Map.toList }
                 : ModuleMetadata.ConstrainedBodyEntry))
         else []

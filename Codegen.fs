@@ -832,12 +832,6 @@ let rec serializeFType (ft: Ast.FType) : string =
 let private escapeSexpr (s: string) =
     s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\t", "\\t")
 
-/// Writes an untyped expression as source the reader accepts again.
-///
-/// The *untyped* expression is what an inline template stores: `HMType` is full
-/// of mutable metavariable cells that mean nothing outside the compilation that
-/// made them, and re-inferring the body at the call site is exactly what gives
-/// the method a type its trait signature could not express.
 /// A local function's parameters, refused if they are anything a `(fun ...)`
 /// cannot say.
 ///
@@ -854,13 +848,23 @@ let private serializableParams (args: Ast.DefunArg list) : string list =
 
     names
 
-/// Writes an untyped expression as source the reader accepts again.
-///
-/// The *untyped* expression is what an inline template stores: `HMType` is full
-/// of mutable metavariable cells that mean nothing outside the compilation that
-/// made them, and re-inferring the body at the call site is exactly what gives
-/// the method a type its trait signature could not express.
-let rec serializeExpr (e: Ast.Expr) : string =
+/// A published body's code is marked with the module that wrote it where that
+/// is not the module of its surroundings, so that `Ast.readOrigins` can give it
+/// back the same access to `#:opaque` representations it had where it was
+/// written. `cur` is the surroundings' module, and `""` writes no markers.
+let private marked (cur: string) (own: string) (text: string) =
+    if cur <> "" && own <> "" && own <> cur then
+        $"(%s{Ast.originMarker} \"%s{escapeSexpr own}\" %s{text})"
+    else
+        text
+
+let private within (cur: string) (own: string) = if cur = "" || own = "" then cur else own
+
+let rec private serializeExprAt (cur: string) (e: Ast.Expr) : string =
+    let own = (Ast.exprRange e).Module
+    marked cur own (serializeExprNode (within cur own) e)
+
+and private serializeExprNode (here: string) (e: Ast.Expr) : string =
     let list (parts: string list) = "(" + String.concat " " parts + ")"
 
     match e with
@@ -872,20 +876,20 @@ let rec serializeExpr (e: Ast.Expr) : string =
     | Ast.EQuotedSymbol(s, _) -> "'" + s
     | Ast.EKeyword(k, _) -> "#:" + k
     | Ast.EIdent(n, _) -> n
-    | Ast.ETuple(items, _) -> list ("Tuple" :: List.map serializeExpr items)
-    | Ast.EApp(target, args, _) -> list (serializeExpr target :: List.map serializeExpr args)
-    | Ast.ECast(t, v, _) -> list [ "cast"; serializeFType t; serializeExpr v ]
-    | Ast.EDynPack(traitName, v, _) -> list [ "dyn"; traitName; serializeExpr v ]
+    | Ast.ETuple(items, _) -> list ("Tuple" :: List.map (serializeExprAt here) items)
+    | Ast.EApp(target, args, _) -> list (serializeExprAt here target :: List.map (serializeExprAt here) args)
+    | Ast.ECast(t, v, _) -> list [ "cast"; serializeFType t; serializeExprAt here v ]
+    | Ast.EDynPack(traitName, v, _) -> list [ "dyn"; traitName; serializeExprAt here v ]
 
     // Round-trips as its own form: re-importing it as a plain `let` would put
     // the generalization back, which is the whole thing it exists to prevent.
     | Ast.ELetMono(n, value, body, _) ->
-        list [ "let/mono"; n; serializeExpr value; serializeExpr body ]
+        list [ "let/mono"; n; serializeExprAt here value; serializeExprAt here body ]
 
     | Ast.ELet(n, isFun, args, ann, value, body, _) ->
         let valueStr =
-            if isFun then list [ "fun"; list (serializableParams args); serializeExpr value ]
-            else serializeExpr value
+            if isFun then list [ "fun"; list (serializableParams args); serializeExprAt here value ]
+            else serializeExprAt here value
 
         let annotated =
             match ann with
@@ -896,7 +900,7 @@ let rec serializeExpr (e: Ast.Expr) : string =
         // if we grouped multiple bindings into a single `let`, the variables
         // would shadow each other incorrectly when parsed back, because a single
         // `let` evaluates all its bindings simultaneously.
-        list [ "let"; list [ list [ n; annotated ] ]; serializeExpr body ]
+        list [ "let"; list [ list [ n; annotated ] ]; serializeExprAt here body ]
 
     | Ast.ELetRec(bindings, body, _) ->
         // A body block: consecutive `def`/`defun` forms are collected back into
@@ -904,40 +908,40 @@ let rec serializeExpr (e: Ast.Expr) : string =
         let defs =
             bindings
             |> List.map (fun (n, isFun, args, _, value) ->
-                if isFun then list [ "defun"; list (n :: serializableParams args); serializeExpr value ]
-                else list [ "def"; n; serializeExpr value ])
+                if isFun then list [ "defun"; list (n :: serializableParams args); serializeExprAt here value ]
+                else list [ "def"; n; serializeExprAt here value ])
 
-        list ([ "let"; "()" ] @ defs @ [ serializeExpr body ])
+        list ([ "let"; "()" ] @ defs @ [ serializeExprAt here body ])
 
     | Ast.ELetMutable(n, _, value, body, _) ->
-        list [ "let"; "()"; list [ "def/mutable"; n; serializeExpr value ]; serializeExpr body ]
+        list [ "let"; "()"; list [ "def/mutable"; n; serializeExprAt here value ]; serializeExprAt here body ]
 
-    | Ast.ESet(n, v, _) -> list [ "set!"; n; serializeExpr v ]
-    | Ast.EIf(c, t, f, _) -> list [ "if"; serializeExpr c; serializeExpr t; serializeExpr f ]
+    | Ast.ESet(n, v, _) -> list [ "set!"; n; serializeExprAt here v ]
+    | Ast.EIf(c, t, f, _) -> list [ "if"; serializeExprAt here c; serializeExprAt here t; serializeExprAt here f ]
     | Ast.EWhen(c, b, negated, _) ->
-        list [ (if negated then "unless" else "when"); serializeExpr c; serializeExpr b ]
+        list [ (if negated then "unless" else "when"); serializeExprAt here c; serializeExprAt here b ]
     | Ast.EFun(args, body, colour, _) ->
         let head = match colour with Ast.Suspending -> "bjoroutine" | Ast.Ordinary -> "fun"
-        list [ head; list args; serializeExpr body ]
+        list [ head; list args; serializeExprAt here body ]
     | Ast.ERecordUpdate(n, fields, _) ->
-        list ("record-set" :: n :: (fields |> List.map (fun (k, v) -> list [ k; serializeExpr v ])))
+        list ("record-set" :: n :: (fields |> List.map (fun (k, v) -> list [ k; serializeExprAt here v ])))
     | Ast.ERecordSet(n, fields, _) ->
-        list ("record-set!" :: n :: (fields |> List.map (fun (k, v) -> list [ k; serializeExpr v ])))
-    | Ast.EGetField(target, f, _) -> list [ "record-ref"; serializeExpr target; f ]
-    | Ast.EVec(items, _) -> "[" + String.concat " " (List.map serializeExpr items) + "]"
-    | Ast.EArray(items, _) -> "#[" + String.concat " " (List.map serializeExpr items) + "]"
+        list ("record-set!" :: n :: (fields |> List.map (fun (k, v) -> list [ k; serializeExprAt here v ])))
+    | Ast.EGetField(target, f, _) -> list [ "record-ref"; serializeExprAt here target; f ]
+    | Ast.EVec(items, _) -> "[" + String.concat " " (List.map (serializeExprAt here) items) + "]"
+    | Ast.EArray(items, _) -> "#[" + String.concat " " (List.map (serializeExprAt here) items) + "]"
 
     | Ast.EMatch(target, clauses, _) ->
         let clauseStrs =
             clauses
             |> List.map (fun (pat, guard, body) ->
                 match guard with
-                | Some g -> list [ serializePattern pat; "#:when"; serializeExpr g; serializeExpr body ]
-                | None -> list [ serializePattern pat; serializeExpr body ])
+                | Some g -> list [ serializePatternAt here pat; "#:when"; serializeExprAt here g; serializeExprAt here body ]
+                | None -> list [ serializePatternAt here pat; serializeExprAt here body ])
 
-        list ("match" :: serializeExpr target :: clauseStrs)
+        list ("match" :: serializeExprAt here target :: clauseStrs)
 
-    | Ast.ESeq(body, _) -> list [ "seq"; serializeExpr body ]
+    | Ast.ESeq(body, _) -> list [ "seq"; serializeExprAt here body ]
     // The kind is written back as the surface form it came from, so the reader
     // needs nothing new: `(spawn ...)` parses to the same node it serialized
     // from.
@@ -949,12 +953,12 @@ let rec serializeExpr (e: Ast.Expr) : string =
             | Ast.SpawnDaemon -> "spawn/daemon"
             | Ast.SpawnDetached -> "spawn/detached"
 
-        list [ head; serializeExpr body ]
-    | Ast.ETaskEvent(body, _) -> list [ "task->event"; serializeExpr body ]
-    | Ast.EYield(v, _) -> list [ "yield"; serializeExpr v ]
-    | Ast.EYieldFrom(s, _) -> list [ "yield-from"; serializeExpr s ]
+        list [ head; serializeExprAt here body ]
+    | Ast.ETaskEvent(body, _) -> list [ "task->event"; serializeExprAt here body ]
+    | Ast.EYield(v, _) -> list [ "yield"; serializeExprAt here v ]
+    | Ast.EYieldFrom(s, _) -> list [ "yield-from"; serializeExprAt here s ]
 
-    | Ast.EWithReturn(name, body, _) -> list [ "with-return"; name; serializeExpr body ]
+    | Ast.EWithReturn(name, body, _) -> list [ "with-return"; name; serializeExprAt here body ]
 
     // A `def` holds the rest of the body it was written in, and the reader
     // gives it that sequel back by position rather than from the form itself.
@@ -972,19 +976,19 @@ let rec serializeExpr (e: Ast.Expr) : string =
             // The `def` of the binder that `:default` became is written out
             // beside it, so what is left of the form here leaves with the value.
             | Ast.FailLeaveWith value
-            | Ast.FailDefault value -> [ ":leave-with"; serializeExpr value ]
+            | Ast.FailDefault value -> [ ":leave-with"; serializeExprAt here value ]
             | Ast.FailLeave arms ->
-                ":leave" :: (arms |> List.map (fun (pat, body) -> list [ serializePattern pat; serializeExpr body ]))
+                ":leave" :: (arms |> List.map (fun (pat, body) -> list [ serializePatternAt here pat; serializeExprAt here body ]))
 
         let bindForm =
-            list ([ "def"; serializePattern binder; serializeExpr scrutinee ] @ failureForms)
+            list ([ "def"; serializePatternAt here binder; serializeExprAt here scrutinee ] @ failureForms)
 
-        list [ "begin"; bindForm; serializeExpr sequel ]
+        list [ "begin"; bindForm; serializeExprAt here sequel ]
 
     // `(def (a b) pair)`. Written with the `Tuple` head so that a first name
     // starting with a capital does not read back as a constructor pattern.
     | Ast.ELetTuple(names, value, body, _) ->
-        list [ "begin"; list [ "def"; list ("Tuple" :: names); serializeExpr value ]; serializeExpr body ]
+        list [ "begin"; list [ "def"; list ("Tuple" :: names); serializeExprAt here value ]; serializeExprAt here body ]
 
     // No reader form produces these, so none can appear in a template body.
     | Ast.EList _ -> failwith "an inline template body may not contain a bare list literal"
@@ -1003,7 +1007,11 @@ let rec serializeExpr (e: Ast.Expr) : string =
 /// In this group because a pattern holds an expression: a view's step. A
 /// pattern macro is not written back, and cannot be — it expanded while the
 /// module holding this body was parsed, and what is stored is what it produced.
-and serializePattern (p: Ast.Pattern) : string =
+and private serializePatternAt (cur: string) (p: Ast.Pattern) : string =
+    let own = (Ast.patternRange p).Module
+    marked cur own (serializePatternNode (within cur own) p)
+
+and private serializePatternNode (here: string) (p: Ast.Pattern) : string =
     match p with
     | Ast.PWildcard _ -> "_"
     | Ast.PIdent(n, _) -> n
@@ -1019,27 +1027,42 @@ and serializePattern (p: Ast.Pattern) : string =
     // constructor only when it happens to start with a capital, and that is not
     // something to rely on.
     | Ast.PConstruct(n, args, _) ->
-        "(" + String.concat " " (n :: List.map serializePattern args) + ")"
-    | Ast.PList(items, tailOpt, _) -> serializeSeqPattern "List" items tailOpt
-    | Ast.PVec(items, tailOpt, _) -> serializeSeqPattern "Vec" items tailOpt
-    | Ast.PArray(items, tailOpt, _) -> serializeSeqPattern "Array" items tailOpt
-    | Ast.PTuple(items, _) -> "(" + String.concat " " ("Tuple" :: List.map serializePattern items) + ")"
+        "(" + String.concat " " (n :: List.map (serializePatternAt here) args) + ")"
+    | Ast.PList(items, tailOpt, _) -> serializeSeqPattern here "List" items tailOpt
+    | Ast.PVec(items, tailOpt, _) -> serializeSeqPattern here "Vec" items tailOpt
+    | Ast.PArray(items, tailOpt, _) -> serializeSeqPattern here "Array" items tailOpt
+    | Ast.PTuple(items, _) -> "(" + String.concat " " ("Tuple" :: List.map (serializePatternAt here) items) + ")"
     | Ast.PTypeTest(t, binder, _) ->
         "(:is " + String.concat " " (t :: Option.toList binder) + ")"
-    | Ast.POr(alts, _) -> "(or " + String.concat " " (List.map serializePattern alts) + ")"
-    | Ast.PAnd(alts, _) -> "(and " + String.concat " " (List.map serializePattern alts) + ")"
+    | Ast.POr(alts, _) -> "(or " + String.concat " " (List.map (serializePatternAt here) alts) + ")"
+    | Ast.PAnd(alts, _) -> "(and " + String.concat " " (List.map (serializePatternAt here) alts) + ")"
     // The step is written as the function it already is, so it reads back
     // without the `&` form being re-derived.
     | Ast.PView(step, inner, _) ->
-        "(:view " + serializeExpr step + " " + serializePattern inner + ")"
+        "(:view " + serializeExprAt here step + " " + serializePatternAt here inner + ")"
 
-and private serializeSeqPattern (head: string) items tailOpt =
-    let itemStrs = items |> List.map serializePattern
+and private serializeSeqPattern (here: string) (head: string) items tailOpt =
+    let itemStrs = items |> List.map (serializePatternAt here)
     let tailStrs =
         match tailOpt with
-        | Some t -> [ serializePattern t; "..." ]
+        | Some t -> [ serializePatternAt here t; "..." ]
         | None -> []
     "(" + String.concat " " (head :: (itemStrs @ tailStrs)) + ")"
+
+/// Writes an untyped expression as source the reader accepts again.
+///
+/// The *untyped* expression is what an inline template stores: `HMType` is full
+/// of mutable metavariable cells that mean nothing outside the compilation that
+/// made them, and re-inferring the body at the call site is exactly what gives
+/// the method a type its trait signature could not express.
+let serializeExpr (e: Ast.Expr) : string = serializeExprAt "" e
+
+/// The same, for a body published in metadata, which the importer reads back
+/// with `Ast.readOrigins home`.
+let serializeExprFrom (home: string) (e: Ast.Expr) : string = serializeExprAt home e
+
+/// A pattern, written back as source.
+let serializePattern (p: Ast.Pattern) : string = serializePatternAt "" p
 
 /// Can this body be written out and read back at all? A template that cannot be
 /// serialized is simply not exported; its landing pad still is.
@@ -5066,15 +5089,10 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                 indent ctx
                 appendLine ctx "}"
             | Alias _ -> ()
-            // An opaque declaration is never one of this module's own: it is
-            // how an `#:opaque` type arrives from a dependency, whose assembly
-            // already holds the emitted class. Emitting one here would be a
-            // second type of the same name.
-            | Opaque _ -> ()
 
         // Whatever is emitted next is scaffolding until it says otherwise, as
-        // after a method. An `Alias` and an `Opaque` emit nothing at all, so
-        // this is also what drops the request they never took up.
+        // after a method. An `Alias` emits nothing at all, so this is also what
+        // drops the request it never took up.
         hiddenDirective ctx
 
     // An inline trait emits nothing at all. There is no valid C# interface for

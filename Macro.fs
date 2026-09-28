@@ -185,7 +185,7 @@ let isHashMacro (name: string) =
 // ---------------------------------------------------------------------------
 
 let private toSrcRange (r: Range) =
-    SrcRange(r.File, r.Start.Line, r.Start.Column, r.End.Line, r.End.Column)
+    SrcRange(r.File, r.Start.Line, r.Start.Column, r.End.Line, r.End.Column, r.Module)
 
 let private ofSrcRange (sr: SrcRange) (fallback: Range) =
     if sr.IsUnset then
@@ -193,7 +193,8 @@ let private ofSrcRange (sr: SrcRange) (fallback: Range) =
     else
         { Start = { Line = sr.StartLine; Column = sr.StartColumn }
           End = { Line = sr.EndLine; Column = sr.EndColumn }
-          File = sr.File }
+          File = sr.File
+          Module = if isNull sr.Module then "" else sr.Module }
 
 /// The spelling of a punctuation token, and back again.
 ///
@@ -277,9 +278,14 @@ let private neverRenamed (name: string) =
 ///
 /// A node whose range is unset was built by the transformer, and gets the call
 /// site's — a constructed node reports where the macro was written, which is
-/// the only place a reader can act on.
-let rec private toSExpr (memo: Dictionary<string, string>) (callSite: Range) (node: Syn) : SExpr =
-    let r = ofSrcRange node.Range callSite
+/// the only place a reader can act on. Its code is the macro module's, though,
+/// unless `inject` handed it to the call site.
+let rec private toSExpr (memo: Dictionary<string, string>) (macroModule: string) (callSite: Range) (node: Syn) : SExpr =
+    let r =
+        if node.Range.IsUnset && node.Origin = Origin.Template then
+            { callSite with Module = macroModule }
+        else
+            ofSrcRange node.Range callSite
     let atom t = SAtom { Token = t; Range = r }
 
     match node with
@@ -319,7 +325,7 @@ let rec private toSExpr (memo: Dictionary<string, string>) (callSite: Range) (no
         match Map.tryFind p.Item1 punctToken with
         | Some t -> atom t
         | None -> failwithf $"A macro produced the punctuation '%s{p.Item1}' at %s{Lexer.formatPos r}, which does not read."
-    | :? Syn.SList as l -> SList(l.Item1 |> Seq.map (toSExpr memo callSite) |> List.ofSeq, r)
+    | :? Syn.SList as l -> SList(l.Item1 |> Seq.map (toSExpr memo macroModule callSite) |> List.ofSeq, r)
     | _ -> failwithf $"A macro produced a syntax node the compiler does not know at %s{Lexer.formatPos r}."
 
 // ---------------------------------------------------------------------------
@@ -484,7 +490,7 @@ let private expandIn
                     $"The %s{what} '%s{binding.Name}' failed at %s{Lexer.formatPos callSite}: %s{inner.Message}"
 
         let memo = Dictionary<string, string>()
-        let expanded = toSExpr memo callSite result
+        let expanded = toSExpr memo binding.ModuleName callSite result
 
         // The parser has to see through these marks when it dispatches a
         // head symbol, and only these: `x__1` is a name a program may

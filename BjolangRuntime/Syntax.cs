@@ -49,12 +49,17 @@ public enum SyntaxOrigin
 /// <c>File</c> is carried because <c>include</c> splices files together, so a
 /// line number alone is ambiguous.
 /// </remarks>
+/// <param name="Module">The key of the module whose code this is. It survives a
+/// transformer so that a piece of the call site keeps its module when it lands
+/// inside an expansion, which is what decides whether it may use an
+/// <c>#:opaque</c> type's representation.</param>
 public readonly record struct SrcRange(
     string? File,
     int StartLine,
     int StartColumn,
     int EndLine,
-    int EndColumn)
+    int EndColumn,
+    string? Module = null)
 {
     /// A range nothing has filled in yet. The expander replaces these with the
     /// macro call's own range, which is what makes a constructed node report

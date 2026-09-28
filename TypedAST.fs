@@ -1370,6 +1370,20 @@ let private withTypeArgs (typeParams: string list) (typeArgs: HMType list) (payl
 
     go payload
 
+/// Code that may use an `#:opaque` type's representation, by the key of the
+/// module that wrote it.
+///
+/// A scope is stored with the type rather than the declaring module being
+/// assumed, so that a type can later name more of its code than its own module:
+/// a companion module, or a whole package.
+type AccessScope =
+    /// The module with this key.
+    | ScopeModule of string
+    /// The module with this key and every module under it: `BjoMod.std` is the
+    /// standard library, `BjoMod.std.datetime` is `(std datetime)` together with
+    /// `(std datetime clr)`.
+    | ScopeTree of string
+
 type TraitRegistry =
     { LocalTraits: Set<string>
       LocalTypes: Set<string>
@@ -1494,25 +1508,23 @@ type TraitRegistry =
       /// name they were bound to.
       ClrExterns: Map<string, ClrExternInfo>
 
-      /// Type keys whose name arrived without their representation — an
-      /// `#:opaque` export, read back from a dependency's metadata.
+      /// `#:opaque` type key -> the code that may use its representation.
       ///
-      /// Only ever holds *imported* types. Inside the module that declares one
-      /// the body is fully visible, so nothing is entered here for it.
-      ///
-      /// Nothing is enforced against this set: an opaque type registers no
-      /// constructor, no `Records` entry and no `Unions` entry, so every use of
-      /// its representation already fails on the ordinary path. It is read to
-      /// say *why* the lookup failed.
-      OpaqueTypes: Set<string>
+      /// Every opaque type the compilation knows is here, the module's own and
+      /// imported ones alike: an importer registers the representation like any
+      /// other, so that a body the declaring module published — an inline
+      /// template, a constrained generic — can be checked where it lands. Every
+      /// construction, field access, pattern and exhaustiveness check on one
+      /// asks `TypeEnv.representationVisible` with the module of the code doing
+      /// it.
+      OpaqueTypes: Map<string, AccessScope list>
 
-      /// Constructor or field name -> the opaque type key it belongs to.
+      /// Case key of an `#:opaque` union -> the type key it belongs to.
       ///
-      /// Diagnostics only, and it has to be a map from the member rather than
-      /// from the type because that is the direction the failing lookups run:
-      /// a pattern has a constructor name and no type, and `record-ref` has a
-      /// field name and often no resolved target yet.
-      HiddenMembers: Map<string, string>
+      /// A case is a binding like any constructor, and a reference to one has
+      /// no type to ask about until it is looked up, so this is the direction
+      /// the check needs.
+      OpaqueCases: Map<string, string>
 
       /// Names whose call parks the thread it runs on.
       ///
@@ -2223,6 +2235,45 @@ let dynSafety
         Error
             $"'%s{traitName}' cannot be boxed: %s{why}. A boxable method mentions the implementor exactly once, as one of its own parameters — which is why (-> %s{written} %s{written} bool) and (-> %s{written} %s{written}) are not."
     | None -> Ok()
+
+/// The key of the module whose code `r` is.
+///
+/// Read off the range rather than off `env.CurrentModule`, because a body is
+/// not all one module's code: a macro expansion holds the macro module's code
+/// and the call site's side by side, and a library body checked where it is
+/// spliced is the library's code inside another module. A range no module was
+/// assigned to, which only the REPL produces, is the code being checked.
+let codeModule (env: Env) (r: Range) : string =
+    if r.Module <> "" then r.Module else env.CurrentModule
+
+let private covers (moduleKey: string) (scope: AccessScope) =
+    match scope with
+    | ScopeModule key -> moduleKey = key
+    | ScopeTree key -> moduleKey = key || moduleKey.StartsWith(key + ".")
+
+/// Whether the code of `moduleKey` may use the representation of the type
+/// `typeKey`: construct it, read or write its fields, match its cases, and be
+/// told which cases there are. A type that is not `#:opaque` is visible to all
+/// code.
+let representationVisible (registry: TraitRegistry) (moduleKey: string) (typeKey: string) : bool =
+    match Map.tryFind typeKey registry.OpaqueTypes with
+    | None -> true
+    | Some scopes -> List.exists (covers moduleKey) scopes
+
+/// Why the representation of `typeKey` is not visible here, to follow the
+/// sentence that says what was refused.
+let opaqueTypeNote (registry: TraitRegistry) (typeKey: string) : string =
+    let whose =
+        match Map.tryFind typeKey registry.OpaqueTypes |> Option.defaultValue [] with
+        | [] -> "its own module"
+        | scopes ->
+            scopes
+            |> List.map (function
+                | ScopeModule key -> Naming.moduleNameOfPath key
+                | ScopeTree key -> $"every module under %s{key}")
+            |> String.concat " and "
+
+    $"%s{Naming.showTypeName typeKey} is exported #:opaque, so its representation is visible only to the code of %s{whose}. A value of it can be held and passed on here, and built and taken apart through the functions that module exports."
 
 /// Every type variable a template mentions, in order of first appearance.
 let templateVarsOf (tpl: TplType) : string list =

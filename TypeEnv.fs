@@ -30,32 +30,9 @@ open Bjolang.Unification
 let originalName (registry: TraitRegistry) (name: string) : string =
     match Map.tryFind name registry.ImportAliases with
     | Some alias when alias.Kind <> AliasDef && alias.Kind <> AliasMacro -> alias.OriginalName
-    | _ -> name
-
-/// What to add to a lookup that has just failed, when the name is a member of
-/// an imported `#:opaque` type.
-///
-/// A hidden constructor or field is registered nowhere, so every use of one
-/// fails on the ordinary path — as a constructor that does not exist, a
-/// variable that is not bound, a field no record has. That is the correct
-/// refusal and the wrong explanation, and this is the only thing that stands
-/// between the two. Empty for a name that is genuinely unknown, so a caller can
-/// append it unconditionally.
-let hiddenMemberNote (registry: TraitRegistry) (name: string) : string =
-    match Map.tryFind name registry.HiddenMembers with
-    | Some typeKey ->
-        $" '%s{name}' belongs to %s{Naming.showTypeName typeKey}, which is exported #:opaque: the type's name crosses the module boundary and its representation does not, so a value of it can be held and passed on but not taken apart here."
-    | None -> ""
-
-/// The same, for a type whose representation did not cross — reached when the
-/// *type* is known and the member name is not the thing that failed.
-let opaqueTypeNote (registry: TraitRegistry) (typeName: string) : string =
-    if Set.contains typeName registry.OpaqueTypes then
-        $" %s{Naming.showTypeName typeName} is exported #:opaque, so its fields did not cross the module boundary."
-    else
-        ""
-
-/// Walk a typed expression body for the trait constraints its enclosing function
+        | _ -> name
+    
+    /// Walk a typed expression body for the trait constraints its enclosing function
 /// must carry. Returns a list of TraitConstraints (TraitName, TargetType as TVar).
 /// Constraints arise from trait method calls on type variables, or from calling 
 /// constrained functions with type variables.
@@ -575,12 +552,18 @@ let rec checkPattern
         // name the union declared, which is what codegen emits a case class for.
         let name = originalName env.Registry name
 
+        match Map.tryFind name env.Registry.OpaqueCases with
+        | Some typeKey when not (representationVisible env.Registry (codeModule env r) typeKey) ->
+            failwithf
+                $"Pattern Error: the constructor '%s{Naming.showTypeName name}' at %s{Lexer.formatPos r} is a case of %s{Naming.showTypeName typeKey}, which cannot be taken apart here. %s{opaqueTypeNote env.Registry typeKey}"
+        | _ -> ()
+
         let binding = 
             match Map.tryFind name env.Bindings with
             | Some b -> b
             | None ->
                 failwithf
-                    $"Pattern Error: Unknown constructor '%s{name}' at %s{Lexer.formatPos r}.%s{hiddenMemberNote env.Registry name}"
+                    $"Pattern Error: Unknown constructor '%s{name}' at %s{Lexer.formatPos r}."
 
         let consType, _, _ = instantiate env.Registry binding.Scheme
 

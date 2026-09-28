@@ -22,7 +22,7 @@ open Bjolang.LetRecify
 let unionLexerRanges (r1: Lexer.Range) (r2: Lexer.Range) : Lexer.Range =
     // The two ranges can come from different files once `include` is involved.
     // The opening one wins: it is where the form the caller is describing began.
-    { Start = r1.Start; End = r2.End; File = r1.File }
+    { r1 with End = r2.End }
 
 /// `&` as a spelling of `&1` inside `#(...)`.
 /// 
@@ -253,7 +253,7 @@ let private constrainedBodyTemplate
     : TypedAST.InlineTemplate =
     let form =
         match Lexer.tokenize source entry.Body |> read |> fst with
-        | [ form ] -> form
+        | [ form ] -> readOrigins entry.OriginModule form
         | _ -> failwithf $"Malformed constrained body in metadata for '%s{entry.Name}'."
 
     { Params = entry.Params
@@ -269,7 +269,7 @@ let private constrainedBodyTemplate
 let private inlineImplDecl (source: string) (entry: ModuleMetadata.InlineTemplateEntry) : Decl =
     let form =
         match Lexer.tokenize source entry.Body |> read |> fst with
-        | [ form ] -> form
+        | [ form ] -> readOrigins entry.OriginModule form
         | _ ->
             failwithf
                 $"Malformed inline template body in metadata for '%s{entry.TraitName}.%s{entry.MethodName}'."
@@ -383,11 +383,6 @@ let private surfaceOf
                      | DataCase(n, _, _, _) -> bare n, n)
              // A record is constructed by its own name.
              | Record _ -> [ bare td.Name, td.Name ]
-             // An opaque type offers no constructor, not even the record one
-             // that shares its name — which is why the name is in `Types` and
-             // absent here. Its hidden members are held for diagnostics and are
-             // not part of any surface.
-             | Opaque _
              | Alias _ -> []))
         @ (decls
            |> List.choose (function
@@ -914,7 +909,8 @@ let private withImplicitPrelude (absPath: string) (forms: SExpr list) : SExpr li
         let r =
             { Start = { Line = 1; Column = 1 }
               End = { Line = 1; Column = 1 }
-              File = absPath }
+              File = absPath
+              Module = Naming.moduleKeyOfPath absPath }
 
         let sym name = SAtom { Token = Lexer.Symbol name; Range = r }
         SList([ sym "import"; SList([ sym "std"; sym "prelude" ], r) ], r) :: forms
@@ -1266,7 +1262,11 @@ let wrapInModule (moduleName: string) (filePath: string) (decls: Decl list) : De
     // Find the first and last range to represent the module range
     let r = 
         match decls with
-        | [] -> { Start = { Line = 1; Column = 1 }; End = { Line = 1; Column = 1 }; File = filePath }
+        | [] ->
+            { Start = { Line = 1; Column = 1 }
+              End = { Line = 1; Column = 1 }
+              File = filePath
+              Module = moduleName }
         | first :: _ ->
             let last = List.last decls
             unionLexerRanges (Ast.declRange first) (Ast.declRange last)
@@ -1478,7 +1478,14 @@ let loadModuleGraph
                         if System.String.IsNullOrWhiteSpace declText then
                             []
                         else
-                            Lexer.tokenize absPath declText |> read |> fst |> DeclParser.parseModule
+                            // A trait's default bodies are in here, and are
+                            // code: they are spliced at every impl that leaves
+                            // the method out.
+                            Lexer.tokenize absPath declText
+                            |> read
+                            |> fst
+                            |> List.map (readOrigins (Naming.moduleKeyOfPath absPath))
+                            |> DeclParser.parseModule
 
                     // The bare spellings of the types this assembly declares.
                     //
@@ -1660,6 +1667,10 @@ let loadModuleGraph
                     // includes are spliced: an included file's forms land in
                     // this module, so this module's one import covers them.
                     let forms = withImplicitPrelude absPath forms
+
+                    // After the includes, so that an included file's code is
+                    // this module's.
+                    let forms = forms |> List.map (stampModule (Naming.moduleKeyOfPath absPath))
 
                     // Which of this module's own names are macros. Read off the
                     // S-expressions, like the imports: a `def/macro` is

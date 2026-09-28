@@ -3,6 +3,54 @@
 
 What each change guarantees, and what it leaves open.
 
+* A library's bodies may use its ~#:opaque~ types where they land
+
+A body a library publishes is checked again in the module that uses it: an
+impl's inline template where it is spliced, a constrained generic where a copy
+is specialised, a macro template where it expands. When that body built, read
+or matched one of the library's own ~#:opaque~ types, the check failed, because
+opacity was the importer never seeing the representation at all:
+
+- a specialised copy that read a field crashed the compiler ("Poisoned") after
+  reporting a type error at ~lib.dll:1~, a line nobody wrote;
+- an inlined impl that built one fell back to a call, with a warning at every
+  use site in the importing module.
+
+So a library had to route every use of its own representation through small
+helper functions to keep its generic code specialisable.
+
+- *Opacity is decided by whose code it is.* Every range now carries the key of
+  the module whose code it is (~Lexer.Range.Module~): the module's own forms,
+  the files it includes, a published body's module when an importer reads it
+  back, and a macro's module for what its template wrote, while the pieces
+  written at the call site keep theirs. Construction, field access, patterns,
+  exhaustiveness and literal elaboration ask whether that module may see the
+  representation. A piece of the call site inside a macro expansion is
+  therefore refused, although it lands inside code that is allowed.
+- *The representation is published.* An ~#:opaque~ type is published whole,
+  ~#:opaque~ included, and registered in every importer like any other.
+  Each type carries an access scope, the code that may use it. Today that is
+  always the declaring module. It is stored rather than assumed, so that a type
+  can later name more of its code, such as a companion module or a package.
+- *A published body keeps who wrote what.* A part of it another module wrote,
+  such as a macro's expansion, is marked ~(%origin "module-key" ...)~, so that
+  it keeps that module's access where the body is read back.
+- *A failed copy falls back again.* Checking a specialised copy used to report
+  its errors as the program's and poison its name, so the specialiser's own
+  fallback to the dictionary call never ran. The check is now all or nothing
+  (~Diagnostics.speculate~): a copy that does not check is dropped with a
+  warning, and the call keeps its dictionary.
+- *Published field types are resolved.* A record field or union payload is
+  published as the type it resolves to, as a signature is. Written as source had
+  it, a field of an ~import/class~ alias type that the library does not export
+  meant nothing in the importer, so an inlined body that built one failed there.
+
+The metadata version is 13; everything built against an older one has to be
+rebuilt. The error messages for a refused use name the type, the module that
+may use it, and say what was refused rather than calling the name unbound.
+Tested in ~244_opaque_bodies.bjo~, ~codegen/opaque_bodies.bjo~,
+~warnings/opaque_bodies_splice.bjo~ and ~errors/opaque_macro_argument.bjo~.
+
 * An imported definition takes its name over from the prelude
 
 An import shadows a name the prelude also exports, and inference always agreed.

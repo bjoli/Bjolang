@@ -598,27 +598,39 @@ let internal declaredHere (moduleName: string) (recordTypeName: string) : bool =
 /// stand when exactly one record type declares the name: silently picking one of
 /// several is how a field name shared by two records used to make one of them
 /// unreachable.
+///
+/// `codeModule` is the module whose code the access is, and `verb` what it does
+/// to the field ("read", "updated", "written"). An `#:opaque` record whose
+/// representation that code may not see is refused when the type is known, and
+/// is no candidate for the fallback, so that its field names cannot make a
+/// field of a visible record ambiguous.
 let internal recordTypeOfField
     (registry: TraitRegistry)
+    (codeModule: string)
+    (verb: string)
     (targetType: HMType)
     (field: string)
     (r: Range)
     : string =
+    let visible (typeKey: string) = representationVisible registry codeModule typeKey
+
+    let refuse (typeKey: string) =
+        failwithf
+            $"Type Error at %s{formatPos r}: '%s{field}' cannot be %s{verb} here. %s{opaqueTypeNote registry typeKey}"
 
     match prune registry targetType with
-    | TCon(name, _) when Map.containsKey name registry.Records -> name
-    // Answered here rather than by the fallback below, which would go looking
-    // for another owner of the field name and report that none has it. The type
-    // is known; what is missing is its fields, and they are missing on purpose.
-    | TCon(name, _) when Set.contains name registry.OpaqueTypes ->
-        failwithf
-            $"Type Error at %s{formatPos r}: '%s{field}' cannot be read here.%s{opaqueTypeNote registry name}"
+    | TCon(name, _) when Map.containsKey name registry.Records ->
+        if not (visible name) then refuse name
+        name
     | _ ->
-        match Map.tryFind field registry.RecordFields |> Option.defaultValue [] with
+        let owners = Map.tryFind field registry.RecordFields |> Option.defaultValue []
+
+        match owners |> List.filter visible with
         | [ only ] -> only
         | [] ->
-            failwithf
-                $"Type Error at %s{formatPos r}: no record or struct type has a field named '%s{field}'.%s{hiddenMemberNote registry field}"
+            match owners with
+            | hidden :: _ -> refuse hidden
+            | [] -> failwithf $"Type Error at %s{formatPos r}: no record or struct type has a field named '%s{field}'."
         | many ->
             let owners = String.concat ", " many
 

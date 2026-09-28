@@ -392,8 +392,8 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     // these primitives outside std/eq that is not that loop waiting to happen.
     | EIdent(name, r) when
         Set.contains name Naming.eqPrivateBindings
-        // Extract the simple module name from the fully-qualified `CurrentModule` key.
-        && Naming.moduleNameOfPath env.CurrentModule <> Naming.eqModuleName
+        // The module whose code the reference is, by its simple name.
+        && Naming.moduleNameOfPath (codeModule env r) <> Naming.eqModuleName
         ->
         failwithf
             $"Type Error at %s{Lexer.formatPos r}: '%s{name}' is private to std/eq. It is .NET's equality, and a type's own `Eq` implementation is what .NET equality is made *of* — writing one in terms of the other is a loop. Use structural-equals and structural-hash for the field-by-field comparison, compare the fields yourself, or derive."
@@ -500,7 +500,11 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         inferTraitMethodCall env methodName args r
 
 
-    | EApp(EIdent(recordTypeName, _), args, r) when Map.containsKey recordTypeName env.Registry.Records ->
+    | EApp(EIdent(recordTypeName, hr), args, r) when Map.containsKey recordTypeName env.Registry.Records ->
+        if not (representationVisible env.Registry (codeModule env hr) recordTypeName) then
+            failwithf
+                $"Type Error at %s{Lexer.formatPos r}: '%s{Naming.showTypeName recordTypeName}' cannot be constructed here. %s{opaqueTypeNote env.Registry recordTypeName}"
+
         inferRecordConstruct env recordTypeName args r
 
 
@@ -728,7 +732,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
 
     | EGetField(targetExpr, field, r) ->
         let targetType, typedTarget = infer env targetExpr
-        let recordTypeName = recordTypeOfField env.Registry targetType field r
+        let recordTypeName = recordTypeOfField env.Registry (codeModule env r) "read" targetType field r
 
         let instantiatedRecordType, _, expectedFieldsInstantiated =
             instantiateRecord env.Registry recordTypeName
@@ -1298,6 +1302,14 @@ and private inferExternValue (env: Env) (name: string) (r: Range) : HMType * Typ
                 $"Type Error at %s{where}: '%s{name}' names the .NET method '%s{info.ClrType}.%s{info.MemberName}', and a method group is not a value. To use it as one, give it a signature in its import/extern clause; otherwise call it directly."
 
 and private inferIdent (env: Env) (name: string) (r: Range) : HMType * TypedExpr =
+    // A case is referred to by name whether it is built bare or applied, and
+    // an application infers its head here, so this covers both.
+    match Map.tryFind name env.Registry.OpaqueCases with
+    | Some typeKey when not (representationVisible env.Registry (codeModule env r) typeKey) ->
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: '%s{Naming.showTypeName name}' is a case of %s{Naming.showTypeName typeKey}, which cannot be built here. %s{opaqueTypeNote env.Registry typeKey}"
+    | _ -> ()
+
     let binding = lookup env name
     let t, tArgs, constraints = instantiate env.Registry binding.Scheme
 
@@ -2551,7 +2563,7 @@ and private inferRecordUpdate (env: Env) (targetName: string) (fields: (string *
         if fields.IsEmpty then
             failwithf $"Type Error at %s{formatPos r}: a record-set has to update at least one field."
 
-        recordTypeOfField env.Registry targetType (fst fields.Head) r
+        recordTypeOfField env.Registry (codeModule env r) "updated" targetType (fst fields.Head) r
 
 
     let instantiatedRecordType, _, expectedFieldsInstantiated =
@@ -2583,7 +2595,8 @@ and private inferRecordSet (env: Env) (targetName: string) (fields: (string * Ex
 
     // Non-empty by construction — the parser refuses a `record-set!` that
     // names no field — so the head is safe to resolve the type from.
-    let recordTypeName = recordTypeOfField env.Registry targetType (fst fields.Head) r
+    let recordTypeName =
+        recordTypeOfField env.Registry (codeModule env r) "written" targetType (fst fields.Head) r
 
     let instantiatedRecordType, _, expectedFieldsInstantiated =
         instantiateRecord env.Registry recordTypeName
@@ -2593,8 +2606,10 @@ and private inferRecordSet (env: Env) (targetName: string) (fields: (string * Ex
     // A field is writable only where it was declared. The check is on the
     // *record's* module rather than on the binding's: a value of a foreign
     // record type reaches here by every ordinary route — an argument, a
-    // field of something local — and none of them may write it.
-    if not (declaredHere env.CurrentModule recordTypeName) then
+    // field of something local — and none of them may write it. The writing
+    // code's module is the range's, so a body its module published writes its
+    // own fields wherever it is spliced.
+    if not (declaredHere (codeModule env r) recordTypeName) then
         let shown = Naming.showTypeName recordTypeName
 
         failwithf
@@ -2897,6 +2912,24 @@ and private inferLambda
 /// nothing else — so it is inferred first and matched against the payloads
 /// afterwards.
 and private inferAndMaybeInject (expectedElem: HMType) (env: Env) (expr: Expr) : TypedExpr =
+    // A literal is elaborated into a case the way a constructor call builds
+    // one, so an `#:opaque` union whose representation this code may not use is
+    // taken out of the registry here. Every lookup below, delegation included,
+    // then finds no cases for it, and the literal is checked as the value it is
+    // written as and refused there, as it was when the cases did not cross.
+    let env =
+        let hidden =
+            env.Registry.OpaqueTypes
+            |> Map.filter (fun key _ -> not (representationVisible env.Registry (codeModule env (exprRange expr)) key))
+
+        if hidden.IsEmpty then
+            env
+        else
+            { env with
+                Registry =
+                    { env.Registry with
+                        Unions = hidden |> Map.fold (fun acc key _ -> Map.remove key acc) env.Registry.Unions } }
+
     let pe = prune env.Registry expectedElem
 
     /// The typed constructor application, around already typed payloads.

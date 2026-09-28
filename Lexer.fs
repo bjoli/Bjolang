@@ -22,7 +22,18 @@ module Lexer =
     /// `File` is the source the range came from. It matters because `include`
     /// splices one file's forms into another, so a line number on its own is
     /// ambiguous.
-    type Range = { Start: Position; End: Position; File: string }
+    ///
+    /// `Module` is the key of the module whose code this is, which `File` does
+    /// not say: an included file's code is the including module's, a macro
+    /// template's code is the macro module's although its range is the call
+    /// site's, and a library body read back from metadata has the `.dll` as its
+    /// file. Access to an `#:opaque` type's representation is decided by it.
+    /// Empty until a form is assigned to a module (`Ast.stampModule`).
+    type Range =
+        { Start: Position
+          End: Position
+          File: string
+          Module: string }
 
     let private fileLabel (file: string) =
         if String.IsNullOrEmpty file then "<unknown>" else IO.Path.GetFileName file
@@ -223,7 +234,8 @@ module Lexer =
                     let range =
                         { Start = { Line = line; Column = col }
                           End = { Line = endLine; Column = endCol }
-                          File = file }
+                          File = file
+                          Module = "" }
 
                     loop (pos + len) endLine endCol ({ Token = t; Range = range } :: tokens)
 
@@ -315,7 +327,8 @@ module Lexer =
                     let range =
                         { Start = { Line = line; Column = col }
                           End = { Line = endLine; Column = endCol }
-                          File = file }
+                          File = file
+                          Module = "" }
 
                     loop
                         nextPos
@@ -616,7 +629,8 @@ module Lexer =
         let range =
             { Start = { Line = line; Column = col }
               End = { Line = l; Column = c }
-              File = file }
+              File = file
+              Module = "" }
 
         // The synthesized tokens all carry the whole form's range: `str` and
         // `->str` were written by nobody, and the nearest true thing to say

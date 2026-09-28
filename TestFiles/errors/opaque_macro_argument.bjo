@@ -1,0 +1,17 @@
+;; Access to an `#:opaque` representation is decided per expression, by the
+;; module whose code it is.
+;;
+;; `box-of` expands here into `sealed_box`'s construction of a `Coin`, which is
+;; allowed: the template is `sealed_box`'s code. The argument written inside the
+;; call is this module's code, although it lands inside that construction, so
+;; its read of the field is refused.
+
+;; EXPECT-ERROR: 'ore' cannot be read here
+;; EXPECT-ERROR: sealed_box/Coin is exported #:opaque
+
+(import (std prelude))
+(import "../inc/sealed_box.bjo")
+
+(defun (main args)
+  (println (coin-value (box-of (struct-ref (coin 1) ore))))
+  0)

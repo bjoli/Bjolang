@@ -25,6 +25,38 @@ let getRange =
     | SAtom t -> t.Range
     | SList(_, r) -> r
 
+/// The form with every range in it marked as the code of `moduleKey`.
+///
+/// Applied to a module's forms once its includes are spliced and before they
+/// are parsed, so an included file's code is the including module's.
+let rec stampModule (moduleKey: string) (s: SExpr) : SExpr =
+    match s with
+    | SAtom t -> SAtom { t with Range = { t.Range with Module = moduleKey } }
+    | SList(items, r) -> SList(items |> List.map (stampModule moduleKey), { r with Module = moduleKey })
+
+/// The marker `Codegen.serializeExprFrom` writes around a published body's
+/// node whose code belongs to another module than its surroundings.
+///
+/// `%origin` reads as the quoted symbol `origin`, as a type variable does. No
+/// body that type-checked applies a quoted symbol, so no published body has
+/// this shape of its own.
+let originMarker = "%origin"
+
+/// A body read back from metadata, with each range marked as the code of the
+/// module that wrote it: `home`, except inside a `(%origin "key" form)`
+/// marker, which says `form` is the code of `key`.
+///
+/// Only for metadata. Source never has its markers honoured, so no module can
+/// claim that its own code was written by another.
+let rec readOrigins (home: string) (s: SExpr) : SExpr =
+    match s with
+    | SList([ SAtom { Token = Lexer.QuotedSymbol marker }; SAtom { Token = Lexer.StringLit key }; inner ], _) when
+        "%" + marker = originMarker
+        ->
+        readOrigins key inner
+    | SAtom t -> SAtom { t with Range = { t.Range with Module = home } }
+    | SList(items, r) -> SList(items |> List.map (readOrigins home), { r with Module = home })
+
 // --- AST Types ---
 // Every node carries a Range to enable #line emission.
 
@@ -146,29 +178,19 @@ type TypeDefKind =
     | Union of UnionCase list
     /// A record, and whether it is a *value* type (struct).
     | Record of RecordField list * bool
-    /// A head with no body: what an `#:opaque` type is published as, and the
-    /// only shape a module ever reads back for one.
-    ///
-    /// It carries the names of the members that did *not* cross — the union's
-    /// cases, or the record's fields — and carries them for diagnostics alone.
-    /// Nothing is registered under them, so a use resolves to nothing whether
-    /// they are listed or not; listing them is what lets the failure say which
-    /// type the name belongs to instead of claiming there is no such name. No
-    /// secret is spent on it: the emitted C# members are public either way.
-    | Opaque of string list
 
 type TypeDef =
     { Name: string
       TypeArgs: string list
       Kind: TypeDefKind
-      /// `#:opaque` on the declaration: the type name crosses the module
-      /// boundary and its representation does not.
+      /// `#:opaque` on the declaration: only the declaring module's code may
+      /// use the representation.
       ///
-      /// Separate from `Kind = Opaque` because the two are the same fact on
-      /// opposite sides of the boundary. Inside the declaring module the body
-      /// is fully visible and `Kind` is the `Union` or `Record` as written —
-      /// this flag is what tells `Exports` to publish a head instead. `Kind =
-      /// Opaque` is what an importer reads back, and implies the flag.
+      /// The representation itself is published and registered like any
+      /// other, so that a body the module published can be checked where it is
+      /// spliced; `Registry.OpaqueTypes` is where the access is decided. No
+      /// secret is spent on publishing it: the emitted C# members are public
+      /// either way.
       IsOpaque: bool
       Range: Range }
 
@@ -723,6 +745,27 @@ type ParseFns =
     { Expr: SExpr -> Expr
       Pattern: SExpr -> Pattern }
 
+/// A pattern's own range.
+let patternRange (p: Pattern) : Range =
+    match p with
+    | PWildcard r
+    | PIdent(_, r)
+    | PInt(_, r)
+    | PString(_, r)
+    | PChar(_, r)
+    | PBool(_, r)
+    | PKeyword(_, r)
+    | PQuotedSymbol(_, r)
+    | PList(_, _, r)
+    | PVec(_, _, r)
+    | PArray(_, _, r)
+    | PTuple(_, r)
+    | PConstruct(_, _, r)
+    | PTypeTest(_, _, r)
+    | PView(_, _, r)
+    | POr(_, r)
+    | PAnd(_, r) -> r
+
 /// An expression's own range.
 let exprRange (e: Expr) : Range =
     match e with
@@ -1125,11 +1168,8 @@ let rec boundNames (decls: Decl list) : Set<string> =
                         |> List.map (function
                             | SimpleCase(n, _) -> n
                             | DataCase(n, _, _, _) -> n)
-                    // An opaque type's members are not bound here either: the
-                    // whole of what it publishes is a name.
                     | Alias _
-                    | Record _
-                    | Opaque _ -> []))
+                    | Record _ -> []))
         | DTrait(name, _, _, _, signatures, defaults, _, _) ->
             (name :: (signatures |> List.map (fun (n, _, _) -> n))) @ Set.toList (boundNames defaults)
         | DImpl(_, _, _, _, _, methods, _) -> Set.toList (boundNames methods)

@@ -1,0 +1,80 @@
+;; A library whose published bodies use the representation of its own
+;; `#:opaque` types, for `244_opaque_bodies.bjo` and the tests beside it.
+;;
+;; Each body is checked again in the module that calls it: `double-coin` and
+;; `sealed-tag` are specialised there, the `HasCoin int` and `Mint int`
+;; implementations are inlined there, and `box-of` expands there. All of them
+;; are this module's code wherever they land, so they may build, read and match
+;; what the importing module's own code may not.
+(import (std prelude))
+(import (std syntax-match))
+
+(export Coin Sealed Span
+        coin coin-value
+        HasCoin ->coin double-coin
+        Mint mint sealed-tag
+        HasSpan ->span span-ticks
+        box-of)
+
+(type (: Coin #:opaque (Struct (: ore int))))
+(type (: Sealed #:opaque (Union (Open int) Shut)))
+
+;; A field whose type is an `import/class` alias this module keeps. The
+;; declaration is published with the type the alias stands for, since the alias
+;; means nothing where it is read.
+(import/class (ClrTimeSpan (: System.TimeSpan)))
+
+(import/extern
+  (clr-span-of-ticks (: System.TimeSpan.FromTicks (-> long ClrTimeSpan)))
+  (clr-span-ticks (: System.TimeSpan.Ticks (-> ClrTimeSpan long) #:get)))
+
+(type (: Span #:opaque (Struct (: span ClrTimeSpan))))
+
+(def/trait (HasSpan %a)
+  (: ->span (-> %a Span)))
+
+(impl (HasSpan long)
+  (defun (->span t) (Span (span (clr-span-of-ticks t)))))
+
+(: span-ticks (-> %a long) (where (HasSpan %a)))
+(defun (span-ticks x) (clr-span-ticks (struct-ref (->span x) span)))
+
+(: coin (-> int Coin))
+(defun (coin n) (Coin (ore n)))
+
+(: coin-value (-> Coin int))
+(defun (coin-value c) (struct-ref c ore))
+
+(def/trait (HasCoin %a)
+  (: ->coin (-> %a Coin)))
+
+(impl (HasCoin Coin)
+  (defun (->coin c) c))
+
+;; Builds one, in a body that is inlined where it is called.
+(impl (HasCoin int)
+  (defun (->coin n) (Coin (ore n))))
+
+;; Reads the field, in a body that is specialised where it is called.
+(: double-coin (-> %a int) (where (HasCoin %a)))
+(defun (double-coin x) (* 2 (struct-ref (->coin x) ore)))
+
+(def/trait (Mint %a)
+  (: mint (-> %a Sealed)))
+
+(impl (Mint int)
+  (defun (mint n) (if (> n 0) (Open n) Shut)))
+
+;; Matches the cases, in a body that is specialised where it is called.
+(: sealed-tag (-> %a int) (where (Mint %a)))
+(defun (sealed-tag x)
+  (match (mint x)
+    ((Open n) n)
+    (Shut -1)))
+
+;; The template's construction is this module's code; the argument is the
+;; call site's.
+(def/macro (box-of form inject compare)
+  (syntax-match form
+    ((_ n) #'(Coin (ore ,n)))
+    (bad (syntax-error bad "box-of takes one argument: (box-of n)"))))

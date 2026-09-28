@@ -346,6 +346,47 @@ module Diagnostics =
     let recover (phase: string) (where: Lexer.Range option) (fallback: 'a) (f: unit -> 'a) : 'a =
         recoverWith phase where (fun () -> fallback) f
 
+    /// Runs `f` as an attempt its caller may abandon. An error `f` collected,
+    /// and a name it poisoned, are taken back out, and the first error is raised
+    /// instead.
+    ///
+    /// For code the compiler generates on its own account, such as a
+    /// monomorphised copy. Such code failing is not the program's error, and the
+    /// caller has a correct answer to fall back to. Collected as usual, the
+    /// failure would fail the build over an optimisation and name a line nobody
+    /// wrote. Warnings go with a failed attempt, since they describe code that
+    /// will not exist; a successful attempt keeps them.
+    let speculate (f: unit -> 'a) : 'a =
+        let collectedBefore = collected.Count
+        let poisonedBefore = System.Collections.Generic.HashSet<string>(poisoned.Keys)
+
+        let rollback () =
+            collected.RemoveRange(collectedBefore, collected.Count - collectedBefore)
+            reported <- min reported collectedBefore
+
+            for name in List.ofSeq poisoned.Keys do
+                if not (poisonedBefore.Contains name) then
+                    poisoned.Remove name |> ignore
+
+        let result =
+            try
+                f ()
+            with _ ->
+                rollback ()
+                reraise ()
+
+        let firstError =
+            collected |> Seq.skip collectedBefore |> Seq.tryFind (fun d -> d.Severity = Error)
+
+        match firstError with
+        | Some d ->
+            rollback ()
+            raise (System.Exception(render d))
+        | None when poisoned.Count > poisonedBefore.Count ->
+            rollback ()
+            failwith "a generated declaration failed to check"
+        | None -> result
+
     let progress (message: string) = if verbose then printfn "%s" message
 
     /// Records something the compiler accepted and suspects was not meant.

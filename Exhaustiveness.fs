@@ -95,7 +95,8 @@ type private Head =
 let private nowhere =
     { Start = { Line = 0; Column = 0 }
       End = { Line = 0; Column = 0 }
-      File = "" }
+      File = ""
+      Module = "" }
 
 let private wildcard (t: HMType) : TypedPattern =
     { Type = t; Range = nowhere; Node = TPWildcard }
@@ -650,10 +651,26 @@ let private checkDefPattern
     with Undecidable ->
         ()
 
+/// The registry as the code at `range` sees it: an `#:opaque` union whose
+/// representation that code may not use has no cases, so a match on one is
+/// open and needs a fallback, as a match on a type from outside the language is.
+///
+/// Code no module was assigned to, which only the REPL produces, sees all.
+let private seenFrom (registry: TraitRegistry) (range: Range) : TraitRegistry =
+    let hidden =
+        registry.OpaqueTypes
+        |> Map.filter (fun key _ -> range.Module <> "" && not (representationVisible registry range.Module key))
+
+    if hidden.IsEmpty then
+        registry
+    else
+        { registry with Unions = hidden |> Map.fold (fun acc key _ -> Map.remove key acc) registry.Unions }
+
 let rec private checkExpr (registry: TraitRegistry) (expr: TypedExpr) : unit =
     match expr.Node with
-    | TMatch(target, clauses) -> checkMatch registry expr.Range target.Type clauses
-    | TDefMatch(binder, scrutinee, _, arms) -> checkDefMatch registry expr.Range scrutinee.Type binder arms
+    | TMatch(target, clauses) -> checkMatch (seenFrom registry expr.Range) expr.Range target.Type clauses
+    | TDefMatch(binder, scrutinee, _, arms) ->
+        checkDefMatch (seenFrom registry expr.Range) expr.Range scrutinee.Type binder arms
     | _ -> ()
 
     TypeVisitor.children expr |> List.iter (checkExpr registry)
@@ -664,7 +681,7 @@ let private checkDecl (registry: TraitRegistry) (decl: TDecl) : unit =
     // expressions, and this pattern is beside one rather than in it.
     let rec declaredPatterns (d: TDecl) =
         match d with
-        | TDefPattern(pattern, scrutinee, _, r) -> checkDefPattern registry r scrutinee.Type pattern
+        | TDefPattern(pattern, scrutinee, _, r) -> checkDefPattern (seenFrom registry r) r scrutinee.Type pattern
         | TModule(_, inner, _) -> inner |> List.iter declaredPatterns
         | TImpl(_, _, _, _, _, _, methods, _) -> methods |> List.iter declaredPatterns
         | _ -> ()

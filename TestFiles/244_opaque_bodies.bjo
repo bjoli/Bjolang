@@ -1,0 +1,25 @@
+;; Bodies an `#:opaque` type's module published, used from another module.
+;;
+;; Each of them is checked again here, where it is spliced or specialised, and
+;; each is `sealed_box`'s code, so it may use the representation this module's
+;; own code may not. They used to fail that check: an importer never saw the
+;; representation, so a specialised copy was refused (and crashed the compiler),
+;; and an inlined impl fell back to a call with a warning at every use.
+;;
+;; `warnings/opaque_bodies_splice.bjo` pins that nothing falls back, and
+;; `codegen/opaque_bodies.bjo` that the copies are made.
+(import (std prelude))
+(import (std simpletest))
+(import "inc/sealed_box.bjo")
+(import "inc/origin_marks.bjo")
+
+(defun (main)
+  (expect "a specialised copy reads the field" (double-coin (coin 21)) 42)
+  (expect "through an inlined impl that builds one" (double-coin 5) 10)
+  (expect "a specialised copy matches the cases" (sealed-tag 7) 7)
+  (expect "and the other one" (sealed-tag 0) -1)
+  (expect "a macro template builds one here" (coin-value (box-of 3)) 3)
+  (expect "a copy of a body holding a third module's code"
+          (coin-value (coin-weight "four")) 4)
+  (expect "a field whose type is a .NET alias the library keeps" (span-ticks 42L) 42L)
+  0)
