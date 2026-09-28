@@ -3,6 +3,42 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std datetime)~ reads instants and moments with formats of your own
+
+~(text->instant s format)~, ~(text->moment s format)~ and
+~(text->moment/resolver s format resolver)~ read what ~instant->text~ and
+~moment->text~ write, so every writer now has a reader.
+
+- An instant is its ~unix~ or ~unix-ms~ time, or a date and a time, which are
+  UTC's unless the format has an ~offset~. That is the writer's own rule, so
+  ~'((year 4) "-" (month 2) "-" (day 2) "T" (hours 2) ":" (minutes 2) ":"
+  (seconds 2) offset)~ reads RFC 3339 both with ~Z~ and with an offset.
+- A moment needs a ~zone~ in its format, and a zone is never guessed: a text
+  with an offset and no zone is read as an instant and put in a zone with
+  ~instant->moment~. An offset read beside the zone has to be one the zone
+  has then, so both offsets of Stockholm's 2026-10-25 02:30 read and a July
+  +01:00 does not. Without an offset, a gap or an overlap is ~None~, and
+  ~text->moment/resolver~ resolves it as ~datetime->moment~ does, but answers
+  ~None~ where that raises, at the ends of the range.
+- ~unix~ reads an optional minus and up to 12 digits, ~unix-ms~ up to 15, and
+  outside the years 1 to 9999 either is ~None~. ~offset~ reads ~Z~ or
+  ±hh:mm with optional seconds, and ~zone~ the longest run of an IANA id's
+  characters, looked up with ~timezone~.
+
+A moment's format without ~zone~, and a Unix time beside any other field of
+the instant but a moment's zone, raise an ~ArgumentException~ when used to
+read: ~'(unix " " zone)~ reads, ~'(unix " " (year 4))~ does not. ~zone~,
+~unix~ and ~offset~ join the parts that can be of more than one length, so
+~'(zone unix)~ is refused as a text that reads two ways.
+
+Tested in ~245_datetime.bjo~ (34 checks: RFC 3339 with ~Z~, an offset and
+offset seconds, UTC without an offset, Unix time at both ends of the range
+and one past each end in seconds and milliseconds, both offsets of the
+overlap and an offset Stockholm does not have, the overlap and the gap
+without an offset and resolved, a zone the machine does not know, a Unix
+time placed in a zone, the ends of the range in New York and Stockholm, a
+moment written and read back, and each refused format).
+
 * ~(std datetime)~ reads times and datetimes with formats of your own
 
 ~(text->time s format)~ and ~(text->datetime s format)~ read what

@@ -333,8 +333,10 @@ The mistakes are compile errors, with the list of the fields there are:
 *** Reading
 
 Each writer has a reader, which reads a text with the format that wrote it
-and answers an ~Option~: ~(text->date s format)~, ~(text->time s format)~
-and ~(text->datetime s format)~. Each takes ~#:names~ as the writers do.
+and answers an ~Option~: ~(text->date s format)~, ~(text->time s format)~,
+~(text->datetime s format)~, ~(text->instant s format)~,
+~(text->moment s format)~, and ~(text->moment/resolver s format resolver)~.
+Each takes ~#:names~ as the writers do.
 
 #+BEGIN_SRC scheme
 (text->date "2026-10-25" '((year 4) "-" (month 2) "-" (day 2)))   ;; 2026-10-25
@@ -346,6 +348,12 @@ and ~(text->datetime s format)~. Each takes ~#:names~ as the writers do.
 (text->time "1:05 PM" '(hours12 ":" (minutes 2) " " am-pm))       ;; 13:05:00
 (text->datetime "2026-10-25 02:30"
                 '((year 4) "-" (month 2) "-" (day 2) " " (hours 2) ":" (minutes 2)))
+(text->instant "2026-10-25T02:30:00+01:00"
+               '((year 4) "-" (month 2) "-" (day 2) "T" (hours 2) ":" (minutes 2) ":"
+                 (seconds 2) offset))                             ;; 2026-10-25T01:30:00Z
+(text->instant "@1792891800" '("@" unix))                         ;; 2026-10-25T01:30:00Z
+(text->moment "2026-10-25 12:30 Europe/Stockholm"
+              '((year 4) "-" (month 2) "-" (day 2) " " (hours 2) ":" (minutes 2) " " zone))
 #+END_SRC
 
 The parts are read in order, and the whole text has to be used. Text that
@@ -366,15 +374,13 @@ does not fit is ~None~, never an exception.
 - ~(fraction n)~ is exactly ~n~ digits, and digits past the seventh are read
   and dropped. A bare ~fraction~ is ISO 8601's: nothing, or a point or a
   comma and at least one digit.
-
-The fields read make the time:
-
-- ~hours~, or ~hours12~ and ~am-pm~, where 12 AM is the hour 00 and 12 PM
-  the hour 12. Minutes, seconds and the fraction left out are 0.
-- ~am-pm~ beside ~hours~ has to agree with it, and two fractions have to
-  agree to the fewer digits of the two.
-- A datetime is a date and a time, and without any time field it is
-  midnight.
+- ~unix~ is an optional minus and up to 12 digits, and ~unix-ms~ up to 15. A
+  time outside the years 1 to 9999 is ~None~, as ~unix-seconds->instant~
+  answers.
+- ~offset~ is ~Z~, or ~+hh:mm~ or ~-hh:mm~ with an optional ~:ss~.
+- ~zone~ is the longest run of the characters an IANA id is made of (ASCII
+  letters and digits, ~/~, ~_~, ~-~ and ~+~), and an id the machine does not
+  know is ~None~.
 
 The fields read make the date:
 
@@ -389,6 +395,35 @@ The fields read make the date:
   not the date's, a ~week~ or ~yday~ beside a calendar date that says
   another, or a Roman year beside a numeric one that says another, is
   ~None~. So is a value no date has: February 30, week 53 of 2027, year 0.
+
+The time:
+
+- ~hours~, or ~hours12~ and ~am-pm~, where 12 AM is the hour 00 and 12 PM
+  the hour 12. Minutes, seconds and the fraction left out are 0.
+- ~am-pm~ beside ~hours~ has to agree with it, and two fractions have to
+  agree to the fewer digits of the two.
+- A datetime is a date and a time, and without any time field it is
+  midnight.
+
+The instant and the moment:
+
+- An instant is its Unix time, or a date and a time. Those are UTC's, as
+  ~instant->text~ writes them, unless the format has an ~offset~, and then
+  they are the local time at that offset: the inverse of the writer, and no
+  guess at a zone.
+- A moment is in the zone it reads, and a Unix time is put in that zone. A
+  local time with an ~offset~ has to be at an offset the zone has then, as
+  ~iso8601->moment~ demands: in Stockholm, 2026-07-01 12:00+01:00 is ~None~,
+  as July is +02:00, and 2026-10-25 02:30 reads at +02:00 and at +01:00, as
+  the clocks go back that night. A local time without an offset is ~None~ in
+  a gap or an overlap, as ~datetime->moment/opt~ answers, and
+  ~text->moment/resolver~ finds it as ~datetime->moment~ does.
+- A local time whose instant is outside the range, such as 0001-01-01 00:00
+  in Stockholm, is ~None~, and so is a Unix time whose local time is, such
+  as the first second in New York.
+- A text with an offset and no zone, as RFC 3339 writes, is read with
+  ~text->instant~ and put in a zone with ~instant->moment~: two steps, and no
+  zone is guessed.
 
 Some formats cannot be read. Each raises an ~ArgumentException~ when it is
 used to read, whatever the text, with a message that names the part:
@@ -406,13 +441,21 @@ used to read, whatever the text, with a message that names the part:
   ~am-pm~, and so does a datetime's that has minutes, seconds, a fraction or
   ~am-pm~.
 - *~hours12~ without ~am-pm~*: 1:05 could be either.
+- *A moment without a zone.* ~text->moment~'s format needs ~zone~.
+- *A Unix time beside another field of the instant.* ~unix~ or ~unix-ms~
+  says the whole instant, and a second field could say another, so a format
+  that reads one has no other field but text and, for a moment, ~zone~.
+  ~'(unix " " zone)~ reads, and ~'(unix " " (year 4))~ and
+  ~'(unix " " unix-ms)~ are refused.
 - *A text that reads two ways.* A part that can be of more than one length
   (a number without a width or with a width below its most digits, a Roman
-  numeral, or a bare fraction) followed by a part that can begin with a
-  character it could also take. ~'(year month day)~ reads ~2026110~ as
-  January 10 or as November 0, so it is refused. ~'((year 4) (month 2) (day
-  2))~ reads, and so does ~'(year "-" month "-" day)~. A bare fraction takes
-  a point and the digits after it, so a digit or a point may not follow it.
+  numeral, a bare fraction, ~unix~, ~zone~, or an ~offset~, which may have
+  seconds) followed by a part that can begin with a character it could also
+  take. ~'(year month day)~ reads ~2026110~ as January 10 or as November 0,
+  so it is refused. ~'((year 4) (month 2) (day 2))~ reads, and so does
+  ~'(year "-" month "-" day)~. A bare fraction takes a point and the digits
+  after it, a zone the characters of an id, and an offset a colon, so none
+  of those may follow them: ~'(offset "[" zone "]")~ reads.
 - *A names table without twelve months or seven weekdays*, when the format
   reads a name from it, as when it writes one.
 
@@ -571,6 +614,21 @@ Values are written as ISO text here for short.
   (week 2))~, ~2026-W01~ would be January 1, the Thursday of week 1, and
   ~2026-W43~ nothing. Such a format is refused whatever the text, so the
   mix-up shows the first time the format is used.
+- *~text->moment~ never guesses a zone.* RFC 3339's
+  ~2026-10-25T02:30:00+01:00~ has an offset, and +01:00 is Stockholm's,
+  Paris's, Lagos's and a dozen others'; a day later the first two are still
+  at +01:00 and Lagos too, but in March they part. A moment read in a guessed
+  zone would do its calendar arithmetic by the wrong rules, a month later
+  and silently. So a moment's format needs ~zone~, and a text without one is
+  an instant, which ~instant->moment~ puts in a zone the program names. A
+  text's offset is not a zone either: it is checked against the zone read,
+  as ~iso8601->moment~ checks it.
+- *An instant's fields are UTC's unless its format has an offset.* That is
+  what ~instant->text~ writes, so the two are inverses, and it is the one
+  reading that needs no zone: a program that stores UTC text writes and reads
+  it with one format. A text in some local time without an offset is a
+  ~DateTime~, and becomes an instant only through a zone the program names,
+  with ~datetime->moment~.
 - *A moment's ~=~ compares every field, and ~compare~ orders by instant, then
   local time, then zone id,* so the two agree. 12:00+02:00[Europe/Stockholm]
   and 10:00+00:00[UTC] are one instant and two values; a sorted set keeps both,

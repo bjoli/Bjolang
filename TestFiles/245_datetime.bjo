@@ -395,6 +395,101 @@
                (refused? (fun () (text->time "13.55" '((hours 2) fraction (seconds 2))))))
   (expect-true "and a point" (refused? (fun () (text->time "13.5." '((hours 2) fraction "."))))))
 
+(: read-instant (-> string (List InstantPart) string))
+(defun (read-instant s format)
+  (match (text->instant s format)
+    ((Some i) (->str i))
+    (None "None")))
+
+(: read-moment (-> string (List MomentPart) string))
+(defun (read-moment s format)
+  (match (text->moment s format)
+    ((Some m) (->str m))
+    (None "None")))
+
+(: read-moment/resolver (-> string (List MomentPart) Resolver string))
+(defun (read-moment/resolver s format r)
+  (match (text->moment/resolver s format r)
+    ((Some m) (->str m))
+    (None "None")))
+
+(: reading-instants (-> void))
+(defun (reading-instants)
+  (def (: rfc3339 (List InstantPart))
+    '((year 4) "-" (month 2) "-" (day 2) "T" (hours 2) ":" (minutes 2) ":" (seconds 2) offset))
+  (expect "RFC 3339 with Z" (read-instant "2026-10-25T01:30:00Z" rfc3339) "2026-10-25T01:30:00Z")
+  (expect "and with an offset" (read-instant "2026-10-25T02:30:00+01:00" rfc3339)
+          "2026-10-25T01:30:00Z")
+  (expect "and one with seconds" (read-instant "2026-10-25T02:30:00+01:00:30" rfc3339)
+          "2026-10-25T01:29:30Z")
+  (expect "without an offset the fields are UTC's"
+          (read-instant "2026-10-25 02:30" '((year 4) "-" (month 2) "-" (day 2) " " (hours 2) ":" (minutes 2)))
+          "2026-10-25T02:30:00Z")
+  (expect "an instant before year 1 is None" (read-instant "0001-01-01T00:30:00+01:00" rfc3339) "None")
+  (expect "Unix time" (read-instant "@1792891800" '("@" unix)) "2026-10-25T01:30:00Z")
+  (expect "the first second" (read-instant "-62135596800" '(unix)) "0001-01-01T00:00:00Z")
+  (expect "and the one before it" (read-instant "-62135596801" '(unix)) "None")
+  (expect "the last second" (read-instant "253402300799" '(unix)) "9999-12-31T23:59:59Z")
+  (expect "and the one after it" (read-instant "253402300800" '(unix)) "None")
+  (expect "the first millisecond" (read-instant "-62135596800000" '(unix-ms)) "0001-01-01T00:00:00Z")
+  (expect "and the one before it" (read-instant "-62135596800001" '(unix-ms)) "None")
+  (expect "the last millisecond" (read-instant "253402300799999" '(unix-ms)) "9999-12-31T23:59:59.999Z")
+  (expect "and the one after it" (read-instant "253402300800000" '(unix-ms)) "None")
+  (expect "a minus alone is not a number" (read-instant "-" '(unix)) "None")
+  (expect-true "Unix time says the whole instant"
+               (refused? (fun () (text->instant "1792891800 2026" '(unix " " (year 4))))))
+  (expect-true "and so one kind of it is read"
+               (refused? (fun () (text->instant "1 1000" '(unix " " unix-ms)))))
+  (expect-true "an offset's seconds follow a colon"
+               (refused? (fun () (text->instant "2026 02 Z:" '((year 4) " " (hours 2) " " offset ":")))))
+  (match (timezone "Europe/Stockholm")
+    ((Some z)
+     (def (: full (List MomentPart))
+       '((year 4) "-" (month 2) "-" (day 2) "T" (hours 2) ":" (minutes 2) ":" (seconds 2) offset
+         "[" zone "]"))
+     (def (: local (List MomentPart))
+       '((year 4) "-" (month 2) "-" (day 2) " " (hours 2) ":" (minutes 2) " " zone))
+     (expect "02:30 in the overlap, the first time"
+             (read-moment "2026-10-25T02:30:00+02:00[Europe/Stockholm]" full)
+             "2026-10-25T02:30:00+02:00[Europe/Stockholm]")
+     (expect "and the second" (read-moment "2026-10-25T02:30:00+01:00[Europe/Stockholm]" full)
+             "2026-10-25T02:30:00+01:00[Europe/Stockholm]")
+     (expect "an offset the zone does not have then"
+             (read-moment "2026-07-01T12:00:00+01:00[Europe/Stockholm]" full) "None")
+     (expect "without an offset, a time of day" (read-moment "2026-10-25 12:30 Europe/Stockholm" local)
+             "2026-10-25T12:30:00+01:00[Europe/Stockholm]")
+     (expect "but not one the zone has twice" (read-moment "2026-10-25 02:30 Europe/Stockholm" local)
+             "None")
+     (expect "unless a resolver says which"
+             (read-moment/resolver "2026-10-25 02:30 Europe/Stockholm" local later)
+             "2026-10-25T02:30:00+01:00[Europe/Stockholm]")
+     (expect "nor one it skips" (read-moment "2026-03-29 02:30 Europe/Stockholm" local) "None")
+     (expect "which a resolver pushes on"
+             (read-moment/resolver "2026-03-29 02:30 Europe/Stockholm" local earlier)
+             "2026-03-29T03:30:00+02:00[Europe/Stockholm]")
+     (expect "a zone the machine does not know" (read-moment "2026-10-25 12:30 Mars/Olympus_Mons" local)
+             "None")
+     (expect "Unix time in a zone" (read-moment "1792891800 Europe/Stockholm" '(unix " " zone))
+             "2026-10-25T02:30:00+01:00[Europe/Stockholm]")
+     (expect "the local time of the first second is before year 1 in New York"
+             (read-moment "-62135596800 America/New_York" '(unix " " zone)) "None")
+     (expect "and so a resolver answers None, where datetime->moment raises"
+             (read-moment/resolver "0001-01-01 00:00 Europe/Stockholm" local earlier) "None")
+     (expect "a moment written is read back"
+             (read-moment (moment->text (datetime->moment (the (datetime 2026 10 25 #:hours 2 #:minutes 30))
+                                                          z later)
+                                        full)
+                          full)
+             "2026-10-25T02:30:00+01:00[Europe/Stockholm]")
+     (expect-true "a moment needs a zone, which is never guessed"
+                  (refused? (fun () (text->moment "2026-10-25T02:30:00+01:00"
+                                                  '((year 4) "-" (month 2) "-" (day 2) "T" (hours 2)
+                                                    ":" (minutes 2) ":" (seconds 2) offset)))))
+     (expect-true "a zone takes letters, digits and signs"
+                  (refused? (fun () (text->moment "Europe/Stockholm1792891800" '(zone unix)))))
+     (expect-true "and a slash" (refused? (fun () (text->moment "x" '((year 4) " " (hours 2) " " zone "/"))))))
+    (None (fail "no Europe/Stockholm"))))
+
 (: arithmetic (-> void))
 (defun (arithmetic)
   (expect "+months clamps to February's end"
@@ -813,6 +908,7 @@
   (own-text)
   (reading-dates)
   (reading-times)
+  (reading-instants)
   (arithmetic)
   (differences)
   (zone-differences)
