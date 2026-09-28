@@ -31,7 +31,7 @@ as adding a calendar day to an instant.
 | ~Instant~    | a point on the global timeline                      | a ~long~ of UTC ticks            |
 | ~TimeZone~   | an IANA zone, such as ~Europe/Stockholm~            | ~TimeZoneInfo~                   |
 | ~Moment~     | a local datetime, its UTC offset, and its zone      | a struct of the three            |
-| ~Duration~   | exact elapsed time                                  | ~TimeSpan~                       |
+| ~Duration~   | a fixed length of time: hours, not calendar days    | ~TimeSpan~                       |
 | ~DatePeriod~ | calendar amounts: years, months, weeks, days        | a struct of four ~int~            |
 | ~Period~     | a date period and a duration: "1 day and 3 hours"   | a struct of the two              |
 | ~Clock~      | where ~now~ comes from, and its zone                | the system clock, a fixed or a manual one |
@@ -138,7 +138,9 @@ separate current zone.
 - ~(manual-clock instant zone)~ : stands still until ~(clock-advance! clock
   duration)~ moves it. A negative duration steps it back, as a corrected wall
   clock does. Advancing the system clock or a fixed one raises an
-  ~ArgumentException~.
+  ~ArgumentException~. The clock takes a lock to advance and to answer ~now~,
+  so fibers on several threads may share one: every advance counts, and the
+  next ~now~ sees it.
 
 Everything else in the module is pure.
 
@@ -163,7 +165,11 @@ corrected. To measure how long something takes, use the prelude's
 Month arithmetic clamps to the end of the month: 2026-01-31 plus a month is
 2026-02-28, and 2024-01-31 plus a month is 2024-02-29. A period is applied
 largest unit first: years, then months, then weeks and days, then the duration.
-Time-of-day arithmetic wraps at midnight: 23:00 plus two hours is 01:00.
+Time-of-day arithmetic wraps at midnight, modulo 24 hours, as ~TimeOnly~ and
+java.time's ~LocalTime~ do. 23:00 plus two hours is 01:00, 01:00 minus three
+hours is 22:00, and whole days drop out: 12:00 plus ~(duration #:days 3
+#:hours 2)~ is 14:00, as is 12:00 plus 50 hours. Nothing is refused, so to
+know how many midnights were crossed, add to a ~DateTime~ instead.
 
 ** Differences
 
@@ -173,8 +179,12 @@ Whole units, toward zero, from the first argument to the second.
   two dates only, and the two may be different types: ~(days-between some-date
   some-moment)~ works.
 - ~hours-between~, ~minutes-between~, ~seconds-between~,
-  ~milliseconds-between~ measure elapsed time, and both arguments have one type
-  (~Timeline~).
+  ~milliseconds-between~ measure a length of time, and both arguments have one
+  type (~Timeline~). Between moments or instants it is the time that passed.
+  Between two ~DateTime~ values it is the difference on their local clock,
+  which is the time that passed only when no change of offset lies between
+  them: 2026-10-25 00:00 to 2026-10-26 00:00 is 24 hours as datetimes, and 25
+  as Stockholm moments.
 
 ** Instants
 
@@ -241,13 +251,21 @@ Near the two ends of the range, a local time and its instant cannot both fit:
 
 - *100 ns.* A tick is the finest unit.
 - *Years 1 to 9999*, and the proleptic Gregorian calendar throughout.
-- *The zone data is the machine's.* .NET reads the IANA database from the
-  operating system (~/usr/share/zoneinfo~ on Linux). A slim container image may
-  have none, and then ~(timezone "Europe/Stockholm")~ is ~None~.
+- *The zone data is the machine's.* On Linux and macOS, .NET reads the IANA
+  database from the operating system (~/usr/share/zoneinfo~ on Linux). A slim
+  container image may have none, and then ~(timezone "Europe/Stockholm")~ is
+  ~None~. On Windows, .NET maps an IANA id onto Windows' own zone data, which
+  keeps little history, so dates before the 2000s may get today's rules
+  (Brussels' 1914 gap is not there).
 - *Offsets are whole minutes.* Before standard time, a zone used local mean
   time, with an offset in seconds: Stockholm's was +1:12:12. .NET keeps whole
   minutes only, so a moment before about 1900 can be up to a minute off the tz
   database.
+- *Offsets stop at ±14:00.* .NET caps them there. Nine zones had local mean
+  time beyond it: Alaska's before 1867 (Sitka's +14:58:47 reads as +14:00),
+  and Manila, Guam, Saipan and Palau before 1845 (Manila's −15:56:08 reads as
+  −14:00, so the day it skipped is 22 hours and 3 minutes long rather than
+  24). Those moments are off by up to two hours.
 - *No leap seconds*, no other calendars, no localized names, no custom formats.
 
 ** How a local time finds its offset
@@ -260,6 +278,11 @@ in the tz database comes close: its two closest changes, in Freetown in 1939,
 are 95 hours apart. When a lookup answers with a third offset, that becomes a
 candidate too, which catches most layouts with two changes in 48 hours, though
 not every one.
+
+How far a change jumps does not matter, only that every offset is under a day,
+so the two lookups land on either side of it. Samoa skipped 2011-12-30
+entirely, going from −10:00 to +14:00, and that day is a gap here; Alaska had
+1867-10-18 twice, and that day is an overlap. Both are in the tests.
 
 .NET's own ~IsInvalidTime~ and ~IsAmbiguousTime~ are not used. They miss the
 gaps and overlaps that a change of *standard* time leaves: Brussels went from

@@ -3,6 +3,32 @@
 
 What each change guarantees, and what it leaves open.
 
+* A manual clock counts every advance
+
+~clock-advance!~ read the manual clock's instant and wrote it back with nothing
+between two threads doing the same, so steps were lost: eight threads
+advancing one clock 10 000 ms each ended between 27 and 42 seconds in rather
+than at 80. A ~now~ on another thread had no promise of seeing an advance
+either. The clock now holds a ~System.Threading.Lock~ and takes it to advance
+and to answer ~now~, so every advance counts and the next ~now~ sees it.
+Tested in ~245_datetime.bjo~ with those eight threads.
+
+Also in ~(std datetime)~, from a review of the first version:
+
+- *Changes of a whole day are tested.* Samoa skipped 2011-12-30 and it is a
+  gap; Alaska had 1867-10-18 twice and it is an overlap. The offset search
+  finds a jump of any size, as long as every offset is under a day.
+- *Time-of-day arithmetic is documented as modulo 24 hours*, with tests: whole
+  days drop out, so 12:00 plus 3 days and 2 hours is 14:00, and 01:00 minus 3
+  hours is 22:00.
+- *A ~Duration~ is described as a fixed length of time.* Between two
+  ~DateTime~ values it is the difference on the local clock, which is the time
+  that passed only when no change of offset lies between them.
+- *Two more limits are documented.* .NET caps offsets at ±14:00, so nine zones
+  before 1845 or 1867 (Alaska, Manila, Guam, Saipan, Palau) are off by up to
+  two hours; and on Windows, IANA ids map onto Windows' own zone data, which
+  keeps little history.
+
 * ~(std datetime)~ reads its clock from ~current-clock~
 
 The functions that read the time took the clock as an argument, ~(now clock)~,

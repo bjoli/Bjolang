@@ -37,7 +37,8 @@
   (TimeProvider (: System.TimeProvider))
   (TimeZoneInfo (: System.TimeZoneInfo))
   (OverflowException (: System.OverflowException (-> string OverflowException)))
-  (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
+  (ArgumentException (: System.ArgumentException (-> string ArgumentException)))
+  (ClrLock (: System.Threading.Lock (-> ClrLock))))
 
 ;; A body an importer may copy (a trait method here, or a constrained
 ;; function) names .NET members through these aliases rather than through
@@ -76,6 +77,8 @@
   (clr-tz-id (: System.TimeZoneInfo.Id (-> TimeZoneInfo string) #:get))
   (clr-tz-has-iana-id (: System.TimeZoneInfo.HasIanaId (-> TimeZoneInfo bool) #:get))
   (clr-tz-utc-offset (: System.TimeZoneInfo.GetUtcOffset (-> TimeZoneInfo ClrDateTime ClrTimeSpan)))
+  (clr-lock-enter (: System.Threading.Lock.Enter (-> ClrLock void)))
+  (clr-lock-exit (: System.Threading.Lock.Exit (-> ClrLock void)))
   (clr-provider-system (: System.TimeProvider.System #:get))
   (clr-provider-utc-now (: System.TimeProvider.GetUtcNow (-> TimeProvider ClrDateTimeOffset)))
   (clr-provider-local-zone (: System.TimeProvider.LocalTimeZone (-> TimeProvider TimeZoneInfo) #:get))
@@ -140,7 +143,7 @@
 ;; A clock carries its own zone, which is where today is.
 (type (: Clock #:opaque (Union (SystemClock TimeProvider)
                                (FixedClock Instant TimeZone)
-                               (ManualClock (Box Instant) TimeZone))))
+                               (ManualClock (Box Instant) ClrLock TimeZone))))
 
 ;; Any mix of amounts is a valid period, so these are transparent. Structs,
 ;; so that the one +days builds is not an allocation.
@@ -998,17 +1001,20 @@
 (: fixed-clock (-> Instant TimeZone Clock))
 (defun (fixed-clock i z) (FixedClock i z))
 
-;; Stands still until clock-advance! moves it.
+;; Stands still until clock-advance! moves it. Its instant is read and written
+;; under its lock, because a test may advance it while fibers on other threads
+;; read it: the lock makes an advance whole, and visible to the next read.
 (: manual-clock (-> Instant TimeZone Clock))
-(defun (manual-clock i z) (ManualClock (make-box i) z))
+(defun (manual-clock i z) (ManualClock (make-box i) (ClrLock.) z))
 
 ;; A negative duration steps the clock back, as a corrected wall clock does.
-;; Two fibers advancing one clock at once can lose a step, as each reads the
-;; instant before writing it back.
 (: clock-advance! (-> Clock Duration void))
 (defun (clock-advance! c d)
   (match c
-    ((ManualClock cell z) (box-set! cell (instant+duration (box-ref cell) d)))
+    ((ManualClock cell lock z)
+     (clr-lock-enter lock)
+     (try (box-set! cell (instant+duration (box-ref cell) d))
+       #:finally (clr-lock-exit lock)))
     (_ (raise (cast Exception
                     (ArgumentException.
                       "(std datetime): clock-advance! moves a manual clock, and this is the system clock or a fixed one."))))))
@@ -1018,14 +1024,16 @@
   (match clock
     ((SystemClock p) (TimeZone (tz (clr-provider-local-zone p))))
     ((FixedClock i z) z)
-    ((ManualClock cell z) z)))
+    ((ManualClock cell lock z) z)))
 
 (: now (-> (#:clock Clock) Instant))
 (defun (now #:clock (parameter-ref current-clock))
   (match clock
     ((SystemClock p) (Instant (ticks (clr-dto-utc-ticks (clr-provider-utc-now p)))))
     ((FixedClock i z) i)
-    ((ManualClock cell z) (box-ref cell))))
+    ((ManualClock cell lock z)
+     (clr-lock-enter lock)
+     (try (box-ref cell) #:finally (clr-lock-exit lock)))))
 
 (: now/moment (-> (#:clock Clock) (#:tz TimeZone) Moment))
 (defun (now/moment #:clock (parameter-ref current-clock) #:tz (clock-timezone #:clock clock))

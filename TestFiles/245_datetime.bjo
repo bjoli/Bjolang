@@ -77,6 +77,10 @@
   (expect "+years from Feb 29" (->str (+years (the (date 2024 2 29)) 1)) "2025-02-28")
   (expect "a time wraps at midnight" (->str (+hours (the (time 23 0)) 2)) "01:00:00")
   (expect "and backwards" (->str (-minutes (the (time 0 10)) 20)) "23:50:00")
+  (expect "whole days drop out" (->str (+duration (the (time 12 0)) (duration #:days 3 #:hours 2)))
+          "14:00:00")
+  (expect "as do hours past a day" (->str (+hours (the (time 12 0)) 50)) "14:00:00")
+  (expect "back past midnight" (->str (-hours (the (time 1 0)) 3)) "22:00:00")
   (expect "+weeks" (->str (+weeks (the (date 2026 1 1)) 2)) "2026-01-15")
   (expect "a period, largest unit first"
           (->str (+period (the (datetime 2026 1 31 #:hours 10))
@@ -206,8 +210,32 @@
   (expect "is the zone named UTC" (the (timezone "UTC")) utc)
   (expect "a resolver prints" (->str earlier) "(resolver GapPush OverlapEarlier)")
   (match (timezone "Europe/Stockholm")
-    ((Some z) (stockholm z))
+    ((Some z) (stockholm z) (whole-days))
     (None (fail "the IANA time zone database was not found: (timezone \"Europe/Stockholm\") is None. Install tzdata."))))
+
+;; Changes of a whole day. Samoa skipped 2011-12-30 to move west of the date
+;; line, and Alaska had 1867-10-18 twice when it moved east of it. .NET caps an
+;; offset at ±14:00, so Sitka's +14:58:47 reads as +14:00 here.
+(: whole-days (-> void))
+(defun (whole-days)
+  (match (Tuple (timezone "Pacific/Apia") (timezone "America/Sitka"))
+    ((Tuple (Some apia) (Some sitka))
+     (def skipped (the (datetime 2011 12 30 #:hours 12)))
+     (expect-true "a day Samoa skipped" (none? (datetime->moment/opt skipped apia)))
+     (expect "pushed a whole day" (->str (datetime->moment skipped apia earlier))
+             "2011-12-31T12:00:00+14:00[Pacific/Apia]")
+     (expect "or to the first time after it" (->str (datetime->moment skipped apia later))
+             "2011-12-31T00:00:00+14:00[Pacific/Apia]")
+     (expect "the minute before it is untouched"
+             (->str (datetime->moment (the (datetime 2011 12 29 #:hours 23 #:minutes 59)) apia earlier))
+             "2011-12-29T23:59:00-10:00[Pacific/Apia]")
+     (def twice (the (datetime 1867 10 18 #:hours 20)))
+     (expect-true "a day Alaska had twice" (none? (datetime->moment/opt twice sitka)))
+     (expect "the first time" (->str (datetime->moment twice sitka earlier))
+             "1867-10-18T20:00:00+14:00[America/Sitka]")
+     (expect "the second" (->str (datetime->moment twice sitka later))
+             "1867-10-18T20:00:00-09:01[America/Sitka]"))
+    (_ (fail "no Pacific/Apia or America/Sitka"))))
 
 (: local (-> TimeZone int int int int int Resolver Moment))
 (defun (local z y mo d h mi r)
@@ -349,7 +377,29 @@
              "0001-01-02T00:00:00"))
     (_ (fail "no Asia/Tokyo or America/New_York"))))
 
-(defun (main)
+;; Eight threads advance one manual clock ten thousand steps each. Two that read
+;; the same instant before either wrote would lose a step, which the clock's
+;; lock is there to prevent.
+(: step-clock (-> Clock int void))
+(defun (step-clock c n)
+  (let loop ((i 0))
+    (when (< i n)
+      (clock-advance! c (duration #:milliseconds 1L))
+      (loop (+ i 1)))))
+
+(: stepping (-bjo-> Clock void))
+(defbjo (stepping c)
+  (ignore (sync (spawn/thread (fun () (step-clock c 10000))))))
+
+(: concurrency (-bjo-> void))
+(defbjo (concurrency)
+  (def c (manual-clock (the (unix-seconds->instant 0L)) utc))
+  (with-scope
+    (spawn (stepping c)) (spawn (stepping c)) (spawn (stepping c)) (spawn (stepping c))
+    (spawn (stepping c)) (spawn (stepping c)) (spawn (stepping c)) (spawn (stepping c)))
+  (expect "every thread's advances count" (->str (now #:clock c)) "1970-01-01T00:01:20Z"))
+
+(defbjo (main)
   (construction)
   (accessors)
   (arithmetic)
@@ -358,4 +408,5 @@
   (edges)
   (text)
   (zones)
+  (concurrency)
   0)
