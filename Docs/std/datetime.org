@@ -51,6 +51,7 @@ traits. A new function, such as a ~->quarter~, never needs a new instance.
 | ~HasTime~    | ~(->time x)~                       |      | ✓    | ✓        | ✓      |         |          |
 | ~HasInstant~ | ~(->instant x)~                    |      |      |          | ✓      | ✓       |          |
 | ~DateArith~  | ~(+date-period x p)~               | ✓    |      | ✓        | ✓      |         |          |
+| ~DateDiff~   | ~(->date-in-zone-of b a)~          | ✓    |      | ✓        | ✓      |         |          |
 | ~TimeArith~  | ~(+duration x d)~                  |      | ✓    | ✓        | ✓      | ✓       | ✓        |
 | ~Timeline~   | ~(duration-between a b)~, ~b - a~  |      |      | ✓        | ✓      | ✓       |          |
 
@@ -194,8 +195,12 @@ print beside ~->week~.
 Whole units, toward zero, from the first argument to the second.
 
 - ~days-between~, ~weeks-between~, ~months-between~, ~years-between~ read the
-  two dates only, and the two may be different types: ~(days-between some-date
-  some-moment)~ works.
+  two dates only, of two values of one type (~DateDiff~). Between two moments
+  in different zones, the second is read in the first one's zone, as java.time
+  does: 2026-10-25T20:00Z is the 25th in New York and the 26th in Tokyo, and
+  those two moments are 0 days apart. So across zones, swapping the arguments
+  also swaps the zone the dates are read in. To mix types, say which date:
+  ~(days-between some-date (->date some-moment))~.
 - ~hours-between~, ~minutes-between~, ~seconds-between~,
   ~milliseconds-between~ measure a length of time, and both arguments have one
   type (~Timeline~). Between moments or instants it is the time that passed.
@@ -342,7 +347,12 @@ Values are written as ISO text here for short.
   ~(days-between 2026-01-01T23:00 2026-01-02T01:00)~ is 1, although two hours
   passed; ~hours-between~ is for elapsed time. ~(months-between 2026-01-31
   2026-02-28)~ is 0, although ~(+months 2026-01-31 1)~ is 2026-02-28. In
-  return, swapping the arguments only flips the sign.
+  return, swapping two dates only flips the sign.
+- *Two moments are compared in one zone, the first one's.* Read each in its
+  own zone, one instant would be a day apart from itself in New York and in
+  Tokyo. Both arguments have one type for the same reason: a date against a
+  moment would read the moment's local date without saying so, and ~(->date
+  m)~ says it.
 - *~->weekday~ counts as ISO 8601 does, Monday 1 to Sunday 7,* as the text
   this module reads and writes is ISO 8601. It is not called ~->wday~: C's
   ~tm_wday~, Ruby's ~wday~ and Racket Gregor's ~->wday~ count Sunday as 0, so

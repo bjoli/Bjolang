@@ -167,7 +167,7 @@
   (def early-next (the (datetime 2026 1 2 #:hours 1)))
   (expect "days-between reads dates" (days-between late early-next) 1)
   (expect "hours-between reads the clock" (hours-between late early-next) 2L)
-  (expect "a date and a datetime" (days-between (the (date 2026 1 1)) early-next) 1)
+  (expect "a date and a datetime's date" (days-between (the (date 2026 1 1)) (->date early-next)) 1)
   (expect "months-between: not yet a month"
           (months-between (the (date 2026 1 31)) (the (date 2026 2 28))) 0)
   (expect "and the same backwards"
@@ -176,6 +176,27 @@
   (expect "years-between" (years-between (the (date 2024 2 29)) (the (date 2026 2 28))) 1)
   (expect "weeks-between" (weeks-between (the (date 2026 1 1)) (the (date 2026 1 20))) 2)
   (expect "minutes-between" (minutes-between late early-next) 120L))
+
+;; A calendar difference between moments reads the second in the first one's
+;; zone, so one instant is the same day in Tokyo and in New York.
+(: zone-differences (-> void))
+(defun (zone-differences)
+  (match (Tuple (timezone "Asia/Tokyo") (timezone "America/New_York"))
+    ((Tuple (Some tokyo) (Some ny))
+     (def i (the (iso8601->instant "2026-10-25T20:00:00Z")))
+     (expect "one instant in two zones is 0 days apart"
+             (days-between (instant->moment i ny) (instant->moment i tokyo)) 0)
+     (expect "either way round"
+             (days-between (instant->moment i tokyo) (instant->moment i ny)) 0)
+     (expect "though its two local dates are a day apart"
+             (days-between (->date (instant->moment i ny)) (->date (instant->moment i tokyo))) 1)
+     ;; 2026-01-31 10:00 in New York, and 2026-03-01 01:00 in Tokyo, which is
+     ;; 2026-02-28 11:00 in New York.
+     (def a (instant->moment (the (iso8601->instant "2026-01-31T15:00:00Z")) ny))
+     (def b (instant->moment (the (iso8601->instant "2026-02-28T16:00:00Z")) tokyo))
+     (expect "months-between reads b on New York's 2026-02-28" (months-between a b) 0)
+     (expect "where Tokyo's 2026-03-01 would give 1" (months-between (->date a) (->date b)) 1))
+    (_ (fail "no Asia/Tokyo or America/New_York"))))
 
 (: instants (-> void))
 (defun (instants)
@@ -488,6 +509,7 @@
   (weeks)
   (arithmetic)
   (differences)
+  (zone-differences)
   (instants)
   (edges)
   (text)

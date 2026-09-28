@@ -3,6 +3,24 @@
 
 What each change guarantees, and what it leaves open.
 
+* Calendar differences between moments read both in one zone
+
+~days-between~ and the other calendar differences read each argument's own
+local date, so one instant as a New York moment and as a Tokyo moment was a
+day apart from itself: 2026-10-25T20:00Z is the 25th in one and the 26th in
+the other. The second argument is now read in the first one's zone, as
+java.time does, through a new trait ~DateDiff~ on ~Date~, ~DateTime~ and
+~Moment~. Across zones, swapping the arguments swaps the zone too.
+
+The two arguments now have one type. ~(days-between some-date some-moment)~
+compiled and read the moment's local date without saying so; it is a type
+error, and ~(days-between some-date (->date some-moment))~ says it.
+
+Tested in ~245_datetime.bjo~ (one instant in New York and Tokyo is 0 days
+apart either way round, and a ~months-between~ that reads New York's
+2026-02-28 rather than Tokyo's 2026-03-01) and in
+~errors/datetime_days_between_date_and_moment.bjo~.
+
 * ~(std datetime)~ has ISO week numbers
 
 ~(->week x)~ is the ISO 8601 week, 1 to 53, of anything with a date, and

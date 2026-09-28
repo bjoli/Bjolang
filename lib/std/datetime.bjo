@@ -89,7 +89,8 @@
   DatePeriod Period Gap Overlap Resolver
   ;; Traits
   HasDate ->date HasTime ->time HasInstant ->instant
-  DateArith +date-period TimeArith +duration Timeline duration-between
+  DateArith +date-period DateDiff ->date-in-zone-of
+  TimeArith +duration Timeline duration-between
   ;; Construction
   date time datetime date+time->datetime ->datetime
   duration date-period period
@@ -345,6 +346,12 @@
 (def/trait (DateArith %a)
   (: +date-period (-> %a DatePeriod %a)))
 
+;; The date of b where a is, which calendar differences compare with a's own:
+;; a moment b is first moved into a's zone, so two moments of one instant are
+;; the same day wherever they are.
+(def/trait (DateDiff %a)
+  (: ->date-in-zone-of (-> %a %a Date)))
+
 (def/trait (TimeArith %a)
   (: +duration (-> %a Duration %a)))
 
@@ -401,6 +408,9 @@
 (impl (DateArith Date)
   (defun (+date-period d p) (date+date-period d p)))
 
+(impl (DateDiff Date)
+  (defun (->date-in-zone-of b a) b))
+
 (impl (Ord Date)
   (defun (compare a b)
     (compare (clr-date-day-number (struct-ref a v)) (clr-date-day-number (struct-ref b v)))))
@@ -452,6 +462,9 @@
 
 (impl (DateArith DateTime)
   (defun (+date-period dt p) (datetime+date-period dt p)))
+
+(impl (DateDiff DateTime)
+  (defun (->date-in-zone-of b a) (->date b)))
 
 (impl (TimeArith DateTime)
   (defun (+duration dt d) (datetime+duration dt d)))
@@ -743,21 +756,21 @@
 ;; ===========================================================================
 
 ;; Calendar differences read the dates only: 23:00 to 01:00 the next day is
-;; one day.
-(: days-between (-> %a %b int) (where (HasDate %a) (HasDate %b)))
+;; one day. Both arguments have one type, and b's date is read where a is.
+(: days-between (-> %a %a int) (where (HasDate %a) (DateDiff %a)))
 (defun (days-between a b)
-  (- (clr-date-day-number (struct-ref (->date b) v))
+  (- (clr-date-day-number (struct-ref (->date-in-zone-of b a) v))
      (clr-date-day-number (struct-ref (->date a) v))))
 
-(: weeks-between (-> %a %b int) (where (HasDate %a) (HasDate %b)))
+(: weeks-between (-> %a %a int) (where (HasDate %a) (DateDiff %a)))
 (defun (weeks-between a b) (/ (days-between a b) 7))
 
 ;; A month counts once the day of the month is reached, as in java.time, so
 ;; swapping the arguments only flips the sign: 2026-01-31 to 2026-02-28 is 0.
-(: months-between (-> %a %b int) (where (HasDate %a) (HasDate %b)))
+(: months-between (-> %a %a int) (where (HasDate %a) (DateDiff %a)))
 (defun (months-between a b)
   (def x (struct-ref (->date a) v))
-  (def y (struct-ref (->date b) v))
+  (def y (struct-ref (->date-in-zone-of b a) v))
   (def months (- (+ (* (clr-date-year y) 12) (clr-date-month y))
                  (+ (* (clr-date-year x) 12) (clr-date-month x))))
   (def days (- (clr-date-day y) (clr-date-day x)))
@@ -765,7 +778,7 @@
         ((and (< months 0) (> days 0)) (+ months 1))
         (else months)))
 
-(: years-between (-> %a %b int) (where (HasDate %a) (HasDate %b)))
+(: years-between (-> %a %a int) (where (HasDate %a) (DateDiff %a)))
 (defun (years-between a b) (/ (months-between a b) 12))
 
 (: hours-between (-> %a %a long) (where (Timeline %a)))
@@ -976,6 +989,13 @@
 
 (impl (DateArith Moment)
   (defun (+date-period m p) (moment+date-period m p)))
+
+;; Near either end of the calendar, the move can raise as instant->moment does.
+(impl (DateDiff Moment)
+  (defun (->date-in-zone-of b a)
+    (if (= (->timezone b) (->timezone a))
+        (->date b)
+        (->date (adjust-timezone b (->timezone a))))))
 
 (impl (TimeArith Moment)
   (defun (+duration m d) (moment+duration m d)))
