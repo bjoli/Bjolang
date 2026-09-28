@@ -53,7 +53,6 @@ traits. A new function, such as a ~->quarter~, never needs a new instance.
 | ~DateArith~  | ~(+date-period x p)~               | ✓    |      | ✓        | ✓      |         |          |
 | ~DateDiff~   | ~(->date-in-zone-of b a)~          | ✓    |      | ✓        | ✓      |         |          |
 | ~TimeArith~  | ~(+duration x d)~                  |      | ✓    | ✓        | ✓      | ✓       | ✓        |
-| ~Timeline~   | ~(duration-between a b)~, ~b - a~  |      |      | ✓        | ✓      | ✓       |          |
 
 Every type has ~=~ and ~->str~; all but ~TimeZone~, the periods and the
 resolvers also have ~compare~. A ~TimeZone~ is equal to another by its id.
@@ -201,13 +200,14 @@ Whole units, toward zero, from the first argument to the second.
   those two moments are 0 days apart. So across zones, swapping the arguments
   also swaps the zone the dates are read in. To mix types, say which date:
   ~(days-between some-date (->date some-moment))~.
-- ~hours-between~, ~minutes-between~, ~seconds-between~,
-  ~milliseconds-between~ measure a length of time, and both arguments have one
-  type (~Timeline~). Between moments or instants it is the time that passed.
-  Between two ~DateTime~ values it is the difference on their local clock,
-  which is the time that passed only when no change of offset lies between
-  them: 2026-10-25 00:00 to 2026-10-26 00:00 is 24 hours as datetimes, and 25
-  as Stockholm moments.
+- ~duration-between~, ~hours-between~, ~minutes-between~, ~seconds-between~,
+  ~milliseconds-between~ measure the time that passed, between two things
+  with an instant (~HasInstant~): moments, instants, or one of each.
+  2026-10-25 00:00 to 2026-10-26 00:00 is 25 hours as Stockholm moments, as
+  the clocks went back that night. Two ~DateTime~ values have no instant and
+  do not compile. Their wall-clock difference, which is not the time that
+  passed across a change of offset, is spelled out by reading both as UTC:
+  ~(hours-between (utc-datetime->instant a) (utc-datetime->instant b))~ is 24.
 
 ** Instants
 
@@ -335,14 +335,15 @@ Values are written as ISO text here for short.
   40 days" is fine, since months differ in length), so there is nothing to
   protect, and ~(record-ref p months)~ works. Equality is field by field:
   ~(= (date-period #:weeks 1) (date-period #:days 7))~ is ~#f~.
-- *~Timeline~ is a trait of its own.* Exact differences must accept a
-  ~DateTime~ or anything with an instant, and a ~where~ clause cannot say "A or
-  B". Making ~DateTime~ ~HasInstant~ would let ~(->instant some-datetime)~
-  compile, and it would have to guess a zone. Both arguments have one type, so
-  ~(hours-between some-moment some-instant)~ is a compile error; write
-  ~(->instant some-moment)~. On ~DateTime~ it counts local hours: 2026-10-25
-  00:00 to 2026-10-26 00:00 is 24 hours as datetimes and 25 as Stockholm
-  moments.
+- *Elapsed time is measured between instants only.* ~(hours-between a b)~ on
+  two ~DateTime~ values would answer the wall-clock difference: 24 hours for
+  2026-10-25 00:00 to 2026-10-26 00:00, where 25 passed in Stockholm. Stored
+  local times look like timestamps, so that answer would be taken for the time
+  that passed, and code generic over "anything with a duration between" could
+  not tell the two apart. So it does not compile, as in NodaTime, and the
+  wall-clock reading is written out as a reading in UTC. ~DateTime~ is not
+  ~HasInstant~ either, since ~(->instant some-datetime)~ would have to guess a
+  zone.
 - *Calendar differences read dates only, and count months as java.time does.*
   ~(days-between 2026-01-01T23:00 2026-01-02T01:00)~ is 1, although two hours
   passed; ~hours-between~ is for elapsed time. ~(months-between 2026-01-31

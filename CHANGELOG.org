@@ -3,6 +3,26 @@
 
 What each change guarantees, and what it leaves open.
 
+* Elapsed time is measured between instants only
+
+~hours-between~ and the other exact differences took two values of one
+~Timeline~ type, and on two ~DateTime~ values they answered the wall-clock
+difference: 2026-10-25 00:00 to 2026-10-26 00:00 was 24 hours, where 25
+passed in Stockholm. Stored local times look like timestamps, so the answer
+was easy to take for the time that passed, and code generic over ~Timeline~
+could not tell which it had.
+
+The ~Timeline~ trait is gone. ~duration-between~, ~hours-between~,
+~minutes-between~, ~seconds-between~ and ~milliseconds-between~ take any two
+~HasInstant~ values, so a moment and an instant now mix, and two ~DateTime~
+values are a compile error. The wall-clock difference is still there, written
+as a reading in UTC: ~(hours-between (utc-datetime->instant a)
+(utc-datetime->instant b))~.
+
+Tested in ~245_datetime.bjo~ (25 hours between Stockholm moments, a moment
+against an instant, and 24 on the wall clock read as UTC) and in
+~errors/datetime_hours_between_datetimes.bjo~.
+
 * Calendar differences between moments read both in one zone
 
 ~days-between~ and the other calendar differences read each argument's own

@@ -55,7 +55,6 @@
   (clr-time-millisecond (: System.TimeOnly.Millisecond (-> ClrTime int) #:get))
   (clr-time-microsecond (: System.TimeOnly.Microsecond (-> ClrTime int) #:get))
   (clr-time-nanosecond (: System.TimeOnly.Nanosecond (-> ClrTime int) #:get))
-  (clr-datetime-subtract (: System.DateTime.Subtract (-> ClrDateTime ClrDateTime ClrTimeSpan)))
   (clr-timespan-from-ticks (: System.TimeSpan.FromTicks (-> long ClrTimeSpan)))
   (clr-timespan-negate (: System.TimeSpan.Negate (-> ClrTimeSpan ClrTimeSpan)))
   (clr-date-day-number (: System.DateOnly.DayNumber (-> ClrDate int) #:get))
@@ -90,7 +89,7 @@
   ;; Traits
   HasDate ->date HasTime ->time HasInstant ->instant
   DateArith +date-period DateDiff ->date-in-zone-of
-  TimeArith +duration Timeline duration-between
+  TimeArith +duration
   ;; Construction
   date time datetime date+time->datetime ->datetime
   duration date-period period
@@ -119,7 +118,7 @@
   duration-negate
   ;; Differences
   years-between months-between weeks-between days-between
-  hours-between minutes-between seconds-between milliseconds-between
+  duration-between hours-between minutes-between seconds-between milliseconds-between
   ;; Text
   iso8601->date iso8601->time iso8601->datetime iso8601->instant iso8601->moment
   iso8601->duration iso8601->date-period iso8601->period
@@ -355,11 +354,6 @@
 (def/trait (TimeArith %a)
   (: +duration (-> %a Duration %a)))
 
-;; Exact elapsed time from the first argument to the second: on the local
-;; timeline for a DateTime, and between instants for everything with one.
-(def/trait (Timeline %a)
-  (: duration-between (-> %a %a Duration)))
-
 
 ;; ===========================================================================
 ;; Date
@@ -469,10 +463,6 @@
 (impl (TimeArith DateTime)
   (defun (+duration dt d) (datetime+duration dt d)))
 
-(impl (Timeline DateTime)
-  (defun (duration-between a b)
-    (Duration (v (clr-datetime-subtract (struct-ref b v) (struct-ref a v))))))
-
 (impl (Ord DateTime)
   (defun (compare a b) (compare (datetime-ticks a) (datetime-ticks b))))
 
@@ -501,11 +491,6 @@
 
 (impl (TimeArith Instant)
   (defun (+duration i d) (instant+duration i d)))
-
-;; Two instants are less than 10 000 years apart, so the difference fits.
-(impl (Timeline Instant)
-  (defun (duration-between a b)
-    (Duration (v (clr-timespan-from-ticks (- (struct-ref b ticks) (struct-ref a ticks)))))))
 
 (impl (Ord Instant)
   (defun (compare a b) (compare (instant-ticks a) (instant-ticks b))))
@@ -781,16 +766,24 @@
 (: years-between (-> %a %a int) (where (HasDate %a) (DateDiff %a)))
 (defun (years-between a b) (/ (months-between a b) 12))
 
-(: hours-between (-> %a %a long) (where (Timeline %a)))
+;; The time that passed from a to b, between their instants, so a moment and
+;; an instant mix, and a DateTime, which has no instant, does not compile. Two
+;; instants are less than 10 000 years apart, so the difference fits.
+(: duration-between (-> %a %b Duration) (where (HasInstant %a) (HasInstant %b)))
+(defun (duration-between a b)
+  (Duration (v (clr-timespan-from-ticks (- (struct-ref (->instant b) ticks)
+                                           (struct-ref (->instant a) ticks))))))
+
+(: hours-between (-> %a %b long) (where (HasInstant %a) (HasInstant %b)))
 (defun (hours-between a b) (duration->hours (duration-between a b)))
 
-(: minutes-between (-> %a %a long) (where (Timeline %a)))
+(: minutes-between (-> %a %b long) (where (HasInstant %a) (HasInstant %b)))
 (defun (minutes-between a b) (duration->minutes (duration-between a b)))
 
-(: seconds-between (-> %a %a long) (where (Timeline %a)))
+(: seconds-between (-> %a %b long) (where (HasInstant %a) (HasInstant %b)))
 (defun (seconds-between a b) (duration->seconds (duration-between a b)))
 
-(: milliseconds-between (-> %a %a long) (where (Timeline %a)))
+(: milliseconds-between (-> %a %b long) (where (HasInstant %a) (HasInstant %b)))
 (defun (milliseconds-between a b) (duration->milliseconds (duration-between a b)))
 
 
@@ -999,9 +992,6 @@
 
 (impl (TimeArith Moment)
   (defun (+duration m d) (moment+duration m d)))
-
-(impl (Timeline Moment)
-  (defun (duration-between a b) (duration-between (->instant a) (->instant b))))
 
 ;; Every field, so 12:00+02:00[Europe/Stockholm] and 10:00+00:00[UTC] are two
 ;; values although they are one instant.

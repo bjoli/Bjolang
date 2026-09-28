@@ -166,7 +166,8 @@
   (def late (the (datetime 2026 1 1 #:hours 23)))
   (def early-next (the (datetime 2026 1 2 #:hours 1)))
   (expect "days-between reads dates" (days-between late early-next) 1)
-  (expect "hours-between reads the clock" (hours-between late early-next) 2L)
+  (expect "a wall-clock difference, read as UTC"
+          (hours-between (utc-datetime->instant late) (utc-datetime->instant early-next)) 2L)
   (expect "a date and a datetime's date" (days-between (the (date 2026 1 1)) (->date early-next)) 1)
   (expect "months-between: not yet a month"
           (months-between (the (date 2026 1 31)) (the (date 2026 2 28))) 0)
@@ -175,7 +176,8 @@
   (expect "two months" (months-between (the (date 2026 1 31)) (the (date 2026 3 31))) 2)
   (expect "years-between" (years-between (the (date 2024 2 29)) (the (date 2026 2 28))) 1)
   (expect "weeks-between" (weeks-between (the (date 2026 1 1)) (the (date 2026 1 20))) 2)
-  (expect "minutes-between" (minutes-between late early-next) 120L))
+  (expect "minutes-between"
+          (minutes-between (utc-datetime->instant late) (utc-datetime->instant early-next)) 120L))
 
 ;; A calendar difference between moments reads the second in the first one's
 ;; zone, so one instant is the same day in Tokyo and in New York.
@@ -393,8 +395,12 @@
   (def midnight (local z 2026 10 25 0 0 earlier))
   (def next-midnight (local z 2026 10 26 0 0 earlier))
   (expect "a day with 25 hours" (hours-between midnight next-midnight) 25L)
-  (expect "as datetimes, 24"
-          (hours-between (->datetime midnight) (->datetime next-midnight)) 24L)
+  (expect "a moment and an instant mix"
+          (hours-between midnight (->instant next-midnight)) 25L)
+  (expect "the wall clock says 24, read as UTC"
+          (hours-between (utc-datetime->instant (->datetime midnight))
+                         (utc-datetime->instant (->datetime next-midnight)))
+          24L)
 
   (def in-sthlm (local z 2026 7 1 12 0 earlier))
   (def in-utc (adjust-timezone in-sthlm utc))
