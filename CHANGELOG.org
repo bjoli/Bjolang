@@ -3,6 +3,31 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std datetime)~ reads its clock from ~current-clock~
+
+The functions that read the time took the clock as an argument, ~(now clock)~,
+so every function between ~main~ and a timestamp had to pass one along, and a
+test could only fix the time for code that took a clock.
+
+- *~#:clock~, defaulting to ~current-clock~.* ~now~, ~now/moment~, ~today~ and
+  ~clock-timezone~ take ~#:clock~, which defaults to the parameter
+  ~current-clock~ read at that call. The parameter starts as ~system-clock~, so
+  ~(now)~ is the time, and ~(parameterize ((current-clock c)) ...)~ fixes it for
+  everything inside that names no clock of its own.
+- *The zone travels with the clock.* ~now/moment~ and ~today~ take ~#:tz~,
+  defaulting to the clock's zone, in place of ~now/zone~ and ~today/zone~.
+  There is no current-zone parameter, so a fixed clock fixes ~today~ too,
+  wherever the test runs.
+- *A manual clock for tests.* ~(manual-clock instant zone)~ stands still until
+  ~(clock-advance! clock duration)~ moves it, backwards too for a negative
+  duration. Advancing the system clock or a fixed one raises an
+  ~ArgumentException~.
+
+Everything else is pure, as before. A program written against the first
+version replaces ~(now clock)~ with ~(now #:clock clock)~ or ~(now)~, and
+~(now/zone clock z)~ with ~(now/moment #:clock clock #:tz z)~. Tested in
+~245_datetime.bjo~.
+
 * The prelude's clock effect is ~monotonic-ms~
 
 The prelude's ~Clock~ effect had one operation, ~(now)~: milliseconds on a

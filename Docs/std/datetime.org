@@ -9,7 +9,7 @@
   (def meeting (datetime->moment noon stockholm (resolver GapPush OverlapEarlier)))
   (println (+days meeting 1))     ;; 2026-10-25T12:00:00+01:00[Europe/Stockholm]
   (println (+hours meeting 24))   ;; 2026-10-25T11:00:00+01:00[Europe/Stockholm]
-  (println (now system-clock))    ;; 2026-09-28T10:59:20.3067129Z
+  (println (now))                 ;; 2026-09-28T10:59:20.3067129Z
   0)
 #+END_SRC
 
@@ -17,8 +17,9 @@ The clocks go back on the night between, so a calendar day later and 24 hours
 later are two different times.
 
 One model for time, the one java.time, NodaTime and Racket's Gregor share, plus
-two ideas from OCaml's Ptime: the clock is an argument, and the types refuse
-operations that mean nothing, such as adding a calendar day to an instant.
+two ideas from OCaml's Ptime: the clock is an argument (with a default that a
+program can rebind), and the types refuse operations that mean nothing, such
+as adding a calendar day to an instant.
 
 ** The types
 
@@ -33,7 +34,7 @@ operations that mean nothing, such as adding a calendar day to an instant.
 | ~Duration~   | exact elapsed time                                  | ~TimeSpan~                       |
 | ~DatePeriod~ | calendar amounts: years, months, weeks, days        | a struct of four ~int~            |
 | ~Period~     | a date period and a duration: "1 day and 3 hours"   | a struct of the two              |
-| ~Clock~      | where ~now~ comes from                              | the system clock, or a fixed one |
+| ~Clock~      | where ~now~ comes from, and its zone                | the system clock, a fixed or a manual one |
 
 Each value type is a struct with one field (a ~Moment~ has three), so a
 ~Date~ costs what a ~DateOnly~ costs. No .NET time type appears in a public
@@ -112,16 +113,34 @@ the same zone.
 
 ** The clock
 
-Only these read the time, and each takes the clock as an argument:
+Only these read the time. Each takes ~#:clock~, which defaults to the value of
+the parameter ~current-clock~ at that call:
 
-- ~(now clock)~ : an ~Instant~.
-- ~(now/zone clock z)~ : a ~Moment~ in ~z~.
-- ~(today clock)~ : the date in the clock's own zone.
-- ~(today/zone clock z)~ : the date in ~z~.
+- ~(now)~ : an ~Instant~.
+- ~(now/moment)~ : a ~Moment~ in the clock's zone, or in ~#:tz~.
+- ~(today)~ : the date in the clock's zone, or in ~#:tz~.
+- ~(clock-timezone)~ : the clock's zone.
 
-~system-clock~ reads ~TimeProvider.System~, and its zone is the machine's.
-~(fixed-clock instant zone)~ always answers the same, which is what a test
-wants. ~(clock-timezone clock)~ is the zone ~today~ uses.
+#+BEGIN_SRC scheme
+(now)                                      ;; the current clock
+(now #:clock some-clock)                   ;; this one
+(today #:tz (option-value (timezone "Asia/Tokyo") utc))
+(parameterize ((current-clock test-clock))
+  (handle-request req))                    ;; every (now) inside reads test-clock
+#+END_SRC
+
+A clock carries its own zone, which is where ~today~ is, and there is no
+separate current zone.
+
+- ~system-clock~ : ~TimeProvider.System~, in the machine's zone. The value
+  ~current-clock~ starts with.
+- ~(fixed-clock instant zone)~ : always the same instant.
+- ~(manual-clock instant zone)~ : stands still until ~(clock-advance! clock
+  duration)~ moves it. A negative duration steps it back, as a corrected wall
+  clock does. Advancing the system clock or a fixed one raises an
+  ~ArgumentException~.
+
+Everything else in the module is pure.
 
 This is the wall clock, and it can step backwards when the machine's time is
 corrected. To measure how long something takes, use the prelude's
@@ -290,13 +309,32 @@ Values are written as ISO text here for short.
   Constructors and readers answer ~None~, since bad input is expected there.
 - *Calendar units take ~int~, clock units take ~long~.* No date is two billion
   days away, but an ~int~ of seconds runs out at 68 years.
-- *~now/zone~ answers a ~Moment~.* An ~Instant~ has no zone, so "now in
+- *~now/moment~ answers a ~Moment~.* An ~Instant~ has no zone, so "now in
   Stockholm" cannot be one.
-- *The clock is an argument, not an effect.* A function that reads the time
-  says so in its signature, by taking a ~Clock~, and a test hands it a
-  ~fixed-clock~. The prelude's one clock effect, ~monotonic-ms~, is another
-  clock: it counts milliseconds from an unspecified start and has no time of
-  day, so the two share no name.
+- *The clock is a keyword argument, defaulting to a parameter read at each
+  call.* A test binds ~current-clock~ around code it did not write:
+  ~(parameterize ((current-clock (fixed-clock t z))) (render-invoice order))~
+  makes every ~(now)~ and ~(today)~ inside answer ~t~, however deep, with no
+  clock passed down through every function between. A binding lasts only
+  inside its ~parameterize~ and the fibers started there, so one test cannot
+  leave a fake clock behind for the next, as it could with a global clock set
+  and reset. It is a parameter rather than an effect by the prelude's rule: a
+  clock is a value the caller reads, as a random source is. The cost: a
+  function that calls ~(now)~ without ~#:clock~ does not say in its signature
+  that it reads the time.
+- *The zone travels with the clock.* There is no current-zone parameter, so a
+  test that fixes the clock fixes ~today~ too: under a fixed clock in
+  Stockholm, ~(today)~ is Stockholm's date, whether the test runs in Stockholm
+  or on a build machine set to UTC. With a zone parameter of its own, a test
+  could fix the instant and still get the machine's date. ~#:tz~ asks about
+  another zone, so there are no ~/zone~ twins.
+- *A manual clock is a ~Clock~, not a type of its own.* So ~clock-advance!~ on
+  a fixed clock is an error when it runs rather than when it compiles. In
+  return, a manual clock goes wherever a clock does, ~current-clock~ and
+  ~#:clock~ included, with no conversion.
+- *The prelude's ~monotonic-ms~ is another clock.* It counts milliseconds from
+  an unspecified start, has no time of day, and never steps back, which is
+  what measuring an interval needs. The two share no name.
 - *~(std clr-ord)~ also exports ~DateTime~*, for ~System.DateTime~. In a module
   that imports both, the later import decides what a bare ~DateTime~ means.
 

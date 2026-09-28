@@ -1,6 +1,6 @@
 ;; (std datetime): the cases its design requires, in Europe/Stockholm, and the
-;; edges of its range. Nothing here reads the machine's own zone or clock,
-;; except the one check that the system clock answers at all.
+;; edges of its range. Nothing here depends on the machine's own zone or
+;; clock; the system clock is only checked to answer.
 (import (std prelude))
 (import (std simpletest))
 (import (std datetime))
@@ -14,6 +14,14 @@
 (: raises? (-> (-> %a) bool))
 (defun (raises? thunk)
   (err? (try (thunk) #:catch (System.OverflowException))))
+
+(: refused? (-> (-> %a) bool))
+(defun (refused? thunk)
+  (err? (try (thunk) #:catch (System.ArgumentException))))
+
+;; Names no clock, so it reads whichever is current where it is called.
+(: stamp (-> string))
+(defun (stamp) (->str (now)))
 
 (: earlier Resolver)
 (def earlier (resolver GapPush OverlapEarlier))
@@ -276,15 +284,43 @@
   (expect-true "not a local time in a gap"
                (none? (iso8601->moment "2026-03-29T02:30:00+01:00[Europe/Stockholm]")))
 
-  (def clock (fixed-clock (->instant (local z 2026 12 31 23 30 earlier)) z))
-  (expect "a fixed clock's now" (->str (now clock)) "2026-12-31T22:30:00Z")
-  (expect "its today" (->str (today clock)) "2026-12-31")
-  (expect "today in UTC" (->str (today/zone clock utc)) "2026-12-31")
-  (expect "now/zone" (->str (now/zone clock utc)) "2026-12-31T22:30:00+00:00[UTC]")
-  (expect "clock-timezone" (clock-timezone clock) z)
+  (def half-past (->instant (local z 2026 12 31 23 30 earlier)))
+  (def clock (fixed-clock half-past z))
+  (expect "a fixed clock's now" (->str (now #:clock clock)) "2026-12-31T22:30:00Z")
+  (expect "its today, in its zone" (->str (today #:clock clock)) "2026-12-31")
+  (expect "now/moment, in its zone" (->str (now/moment #:clock clock))
+          "2026-12-31T23:30:00+01:00[Europe/Stockholm]")
+  (expect "now/moment elsewhere" (->str (now/moment #:clock clock #:tz utc))
+          "2026-12-31T22:30:00+00:00[UTC]")
+  (expect "clock-timezone" (clock-timezone #:clock clock) z)
+
+  (expect "the current clock reaches a call that names none"
+          (parameterize ((current-clock clock)) (stamp)) "2026-12-31T22:30:00Z")
+  (expect "and today"
+          (parameterize ((current-clock clock)) (->str (today))) "2026-12-31")
+  (expect "and the zone" (parameterize ((current-clock clock)) (clock-timezone)) z)
+  (expect-true "outside it, the system clock again" (not (= (now) half-past)))
+
+  (def manual (manual-clock half-past z))
+  (expect "a manual clock stands still" (now #:clock manual) half-past)
+  (clock-advance! manual (duration #:minutes 45))
+  (expect "until it is advanced" (->str (now #:clock manual)) "2026-12-31T23:15:00Z")
+  (expect "and today moves past midnight in its zone" (->str (today #:clock manual)) "2027-01-01")
+  (expect "but not yet in UTC" (->str (today #:clock manual #:tz utc)) "2026-12-31")
+  (clock-advance! manual (duration #:hours -1))
+  (expect "a negative duration steps it back" (->str (now #:clock manual)) "2026-12-31T22:15:00Z")
+  (expect-true "a fixed clock does not move"
+               (refused? (fun () (clock-advance! clock (duration #:hours 1)))))
+  (expect-true "nor does the system clock"
+               (refused? (fun () (clock-advance! system-clock (duration #:hours 1)))))
+  (expect-true "a manual clock past 9999 raises"
+               (raises? (fun () (clock-advance! (manual-clock (the (unix-seconds->instant 253402300799L)) utc)
+                                                (duration #:seconds 1)))))
+
   (expect-true "the system clock answers"
-               (less? (the (iso8601->instant "2026-01-01T00:00:00Z")) (now system-clock)))
-  (expect-true "and has a zone" (not (string-empty? (timezone-id (clock-timezone system-clock)))))
+               (less? (the (iso8601->instant "2026-01-01T00:00:00Z")) (now #:clock system-clock)))
+  (expect-true "and has a zone"
+               (not (string-empty? (timezone-id (clock-timezone #:clock system-clock)))))
 
   ;; Brussels changed its standard offset on 1914-11-08, leaving a gap that
   ;; .NET's own IsInvalidTime does not see.

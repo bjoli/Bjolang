@@ -36,7 +36,8 @@
   (ClrDateTimeOffset (: System.DateTimeOffset))
   (TimeProvider (: System.TimeProvider))
   (TimeZoneInfo (: System.TimeZoneInfo))
-  (OverflowException (: System.OverflowException (-> string OverflowException))))
+  (OverflowException (: System.OverflowException (-> string OverflowException)))
+  (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
 
 ;; A body an importer may copy (a trait method here, or a constrained
 ;; function) names .NET members through these aliases rather than through
@@ -100,7 +101,8 @@
   instant->unix-seconds unix-seconds->instant
   instant->unix-milliseconds unix-milliseconds->instant
   ;; The clock
-  system-clock fixed-clock clock-timezone now now/zone today today/zone
+  current-clock system-clock fixed-clock manual-clock clock-advance!
+  clock-timezone now now/moment today
   ;; Accessors
   ->year ->month ->day ->wday ->yday
   ->hours ->minutes ->seconds ->milliseconds ->nanoseconds
@@ -135,7 +137,10 @@
 (type (: TimeZone #:opaque (Struct (: tz TimeZoneInfo))))
 (type (: Duration #:opaque (Struct (: v ClrTimeSpan))))
 (type (: Moment #:opaque (Struct (: local DateTime) (: offset Duration) (: zone TimeZone))))
-(type (: Clock #:opaque (Union (SystemClock TimeProvider) (FixedClock Instant TimeZone))))
+;; A clock carries its own zone, which is where today is.
+(type (: Clock #:opaque (Union (SystemClock TimeProvider)
+                               (FixedClock Instant TimeZone)
+                               (ManualClock (Box Instant) TimeZone))))
 
 ;; Any mix of amounts is a valid period, so these are transparent. Structs,
 ;; so that the one +days builds is not an allocation.
@@ -976,35 +981,59 @@
 ;; The clock
 ;; ===========================================================================
 
-;; The system clock reads TimeProvider.System; a fixed clock always answers
-;; the same instant, and has a zone of its own for today.
+;; The functions that read the time take #:clock, defaulting to the value of
+;; current-clock at the call, so a program that binds the parameter changes no
+;; call site. They are the only functions here that are not pure.
+
+;; The system clock reads TimeProvider.System, and its zone is the machine's.
 (: system-clock Clock)
 (def system-clock (SystemClock clr-provider-system))
 
+;; After system-clock, which is its first value: a module's values are
+;; initialised in the order they are written.
+(: current-clock (Param Clock))
+(def current-clock (make-parameter system-clock))
+
+;; Always the same instant.
 (: fixed-clock (-> Instant TimeZone Clock))
 (defun (fixed-clock i z) (FixedClock i z))
 
-;; The machine's zone, for the system clock.
-(: clock-timezone (-> Clock TimeZone))
-(defun (clock-timezone c)
+;; Stands still until clock-advance! moves it.
+(: manual-clock (-> Instant TimeZone Clock))
+(defun (manual-clock i z) (ManualClock (make-box i) z))
+
+;; A negative duration steps the clock back, as a corrected wall clock does.
+;; Two fibers advancing one clock at once can lose a step, as each reads the
+;; instant before writing it back.
+(: clock-advance! (-> Clock Duration void))
+(defun (clock-advance! c d)
   (match c
+    ((ManualClock cell z) (box-set! cell (instant+duration (box-ref cell) d)))
+    (_ (raise (cast Exception
+                    (ArgumentException.
+                      "(std datetime): clock-advance! moves a manual clock, and this is the system clock or a fixed one."))))))
+
+(: clock-timezone (-> (#:clock Clock) TimeZone))
+(defun (clock-timezone #:clock (parameter-ref current-clock))
+  (match clock
     ((SystemClock p) (TimeZone (tz (clr-provider-local-zone p))))
-    ((FixedClock i z) z)))
+    ((FixedClock i z) z)
+    ((ManualClock cell z) z)))
 
-(: now (-> Clock Instant))
-(defun (now c)
-  (match c
+(: now (-> (#:clock Clock) Instant))
+(defun (now #:clock (parameter-ref current-clock))
+  (match clock
     ((SystemClock p) (Instant (ticks (clr-dto-utc-ticks (clr-provider-utc-now p)))))
-    ((FixedClock i z) i)))
+    ((FixedClock i z) i)
+    ((ManualClock cell z) (box-ref cell))))
 
-(: now/zone (-> Clock TimeZone Moment))
-(defun (now/zone c z) (instant->moment (now c) z))
+(: now/moment (-> (#:clock Clock) (#:tz TimeZone) Moment))
+(defun (now/moment #:clock (parameter-ref current-clock) #:tz (clock-timezone #:clock clock))
+  (instant->moment (now #:clock clock) tz))
 
-(: today (-> Clock Date))
-(defun (today c) (->date (now/zone c (clock-timezone c))))
-
-(: today/zone (-> Clock TimeZone Date))
-(defun (today/zone c z) (->date (now/zone c z)))
+(: today (-> (#:clock Clock) (#:tz TimeZone) Date))
+(defun (today #:clock (parameter-ref current-clock) #:tz (clock-timezone #:clock clock))
+  (->date (now/moment #:clock clock #:tz tz)))
 
 
 ;; ===========================================================================
