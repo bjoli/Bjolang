@@ -459,6 +459,17 @@
                (less? (the (iso8601->instant "2026-01-01T00:00:00Z")) (now #:clock system-clock)))
   (expect-true "and has a zone"
                (not (string-empty? (timezone-id (clock-timezone #:clock system-clock)))))
+  (def zoned (system-clock-in z))
+  (expect "a system clock in a zone of its own" (clock-timezone #:clock zoned) z)
+  (expect "which now/moment answers in" (->timezone (now/moment #:clock zoned)) z)
+  (expect "and which a binding of current-clock carries"
+          (parameterize ((current-clock zoned)) (clock-timezone)) z)
+  (def before (now #:clock system-clock))
+  (def reading (now #:clock zoned))
+  (expect-true "it reads the system's time"
+               (and (not (less? reading before)) (not (less? (now #:clock system-clock) reading))))
+  (expect-true "and is not advanced either"
+               (refused? (fun () (clock-advance! zoned (duration #:hours 1)))))
 
   ;; Brussels changed its standard offset on 1914-11-08, leaving a gap that
   ;; .NET's own IsInvalidTime does not see.

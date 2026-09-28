@@ -103,7 +103,7 @@
   instant->unix-seconds unix-seconds->instant
   instant->unix-milliseconds unix-milliseconds->instant
   ;; The clock
-  current-clock system-clock fixed-clock manual-clock clock-advance!
+  current-clock system-clock system-clock-in fixed-clock manual-clock clock-advance!
   clock-timezone now now/moment today
   ;; Accessors
   ->year ->month ->day ->weekday ->yday
@@ -140,8 +140,9 @@
 (type (: TimeZone #:opaque (Struct (: tz TimeZoneInfo))))
 (type (: Duration #:opaque (Struct (: v ClrTimeSpan))))
 (type (: Moment #:opaque (Struct (: local DateTime) (: offset Duration) (: zone TimeZone))))
-;; A clock carries its own zone, which is where today is.
-(type (: Clock #:opaque (Union (SystemClock TimeProvider)
+;; A clock carries its own zone, which is where today is. A system clock with
+;; no zone of its own is in the machine's.
+(type (: Clock #:opaque (Union (SystemClock TimeProvider (Option TimeZone))
                                (FixedClock Instant TimeZone)
                                (ManualClock (Box Instant) ClrLock TimeZone))))
 
@@ -1041,7 +1042,12 @@
 
 ;; The system clock reads TimeProvider.System, and its zone is the machine's.
 (: system-clock Clock)
-(def system-clock (SystemClock clr-provider-system))
+(def system-clock (SystemClock clr-provider-system None))
+
+;; The system's time in zone z, so that a program on a machine set to UTC can
+;; bind current-clock once and have (today) be z's date everywhere.
+(: system-clock-in (-> TimeZone Clock))
+(defun (system-clock-in z) (SystemClock clr-provider-system (Some z)))
 
 ;; After system-clock, which is its first value: a module's values are
 ;; initialised in the order they are written.
@@ -1073,14 +1079,15 @@
 (: clock-timezone (-> (#:clock Clock) TimeZone))
 (defun (clock-timezone #:clock (parameter-ref current-clock))
   (match clock
-    ((SystemClock p) (TimeZone (tz (clr-provider-local-zone p))))
+    ((SystemClock p (Some z)) z)
+    ((SystemClock p None) (TimeZone (tz (clr-provider-local-zone p))))
     ((FixedClock i z) z)
     ((ManualClock cell lock z) z)))
 
 (: now (-> (#:clock Clock) Instant))
 (defun (now #:clock (parameter-ref current-clock))
   (match clock
-    ((SystemClock p) (Instant (ticks (clr-dto-utc-ticks (clr-provider-utc-now p)))))
+    ((SystemClock p z) (Instant (ticks (clr-dto-utc-ticks (clr-provider-utc-now p)))))
     ((FixedClock i z) i)
     ((ManualClock cell lock z)
      (clr-lock-enter lock)

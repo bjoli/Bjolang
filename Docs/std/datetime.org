@@ -77,7 +77,11 @@ holds 100 ns.
 ** Zones and moments
 
 - ~(timezone "Europe/Stockholm")~ : ~(Option TimeZone)~. IANA ids only, so a
-  Windows id such as ~"W. Europe Standard Time"~ is ~None~.
+  Windows id such as ~"W. Europe Standard Time"~ is ~None~, and so is every id
+  on a machine without zone data (see Limits). Stop there rather than fall
+  back to ~utc~: ~(option-value (timezone "Europe/Stockholm") utc)~ would put
+  every date and time in UTC without a word, on exactly the machines that
+  lack the data.
 - ~utc~, ~(timezone-id z)~, and ~(timezone-offset-at z instant)~, a ~Duration~.
 - ~(instant->moment i z)~ : the moment ~i~ is in ~z~. Always one answer.
 - ~(datetime->moment dt z resolver)~ : a local time can be missing from a zone
@@ -124,7 +128,7 @@ the parameter ~current-clock~ at that call:
 #+BEGIN_SRC scheme
 (now)                                      ;; the current clock
 (now #:clock some-clock)                   ;; this one
-(today #:tz (option-value (timezone "Asia/Tokyo") utc))
+(today #:tz tokyo)                         ;; the date in Tokyo
 (parameterize ((current-clock test-clock))
   (handle-request req))                    ;; every (now) inside reads test-clock
 #+END_SRC
@@ -134,6 +138,18 @@ separate current zone.
 
 - ~system-clock~ : ~TimeProvider.System~, in the machine's zone. The value
   ~current-clock~ starts with.
+- ~(system-clock-in zone)~ : the same time, in ~zone~. A machine set to UTC,
+  as most containers are, would otherwise make ~(today)~ UTC's date, which in
+  Stockholm is still yesterday until 01:00, or 02:00 in summer. A program
+  binds it once, around everything it runs, and the fibers it starts inherit
+  it:
+
+  #+BEGIN_SRC scheme
+  (defun (main)
+    (def (Some stockholm) (timezone "Europe/Stockholm") :leave-with 1)
+    (parameterize ((current-clock (system-clock-in stockholm)))
+      (serve)))
+  #+END_SRC
 - ~(fixed-clock instant zone)~ : always the same instant.
 - ~(manual-clock instant zone)~ : stands still until ~(clock-advance! clock
   duration)~ moves it. A negative duration steps it back, as a corrected wall
