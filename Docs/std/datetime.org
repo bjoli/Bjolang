@@ -330,7 +330,71 @@ The mistakes are compile errors, with the list of the fields there are:
 (datetime->text some-moment '(year))        ;; a type error: write (->datetime some-moment)
 #+END_SRC
 
-Text of your own is written, not read: no reader takes a format yet.
+*** Reading
+
+~(text->date s format)~ reads a text with the format that wrote it, and
+answers an ~(Option Date)~. It takes ~#:names~ as the writers do.
+
+#+BEGIN_SRC scheme
+(text->date "2026-10-25" '((year 4) "-" (month 2) "-" (day 2)))   ;; 2026-10-25
+(text->date "Sunday, 25 October 2026"
+            '(weekday-name ", " day " " month-name " " year))    ;; 2026-10-25
+(text->date "25.X.MMXXVI" '(day "." (roman month) "." (roman year)))
+(text->date "2026-10" '((year 4) "-" (month 2)))                  ;; 2026-10-01
+(text->date "2026-W43" '((week-year 4) "-W" (week 2)))            ;; 2026-10-19
+#+END_SRC
+
+The parts are read in order, and the whole text has to be used. Text that
+does not fit is ~None~, never an exception.
+
+- Text and characters match exactly, case included.
+- A number is ASCII digits only. Without a width it is one digit up to the
+  field's most; with ~(field w)~ it is at least ~w~, and at most ~w~ or the
+  field's most, whichever is more. The most digits are 4 for ~year~ and
+  ~week-year~, 3 for ~yday~, 1 for ~weekday~, and 2 for the others. A number
+  takes as many digits as there are, up to its most, and never gives one
+  back.
+- A name matches its table's own spelling, case included: ~oktober~, not
+  ~Oktober~. When two names match, the longer one is read.
+- A Roman numeral is read only in the form it is written: ~MCM~, not
+  ~MDCCCC~, and ~IV~, not ~IIII~.
+
+The fields read make the date:
+
+- year, month and day; or year and ~yday~, the ordinal date 2026-298; or
+  ~week-year~, ~week~ and ~weekday~, the week date 2026-W43-7.
+- A field the format leaves out is its first value: no ~day~ is the 1st, and
+  no ~weekday~ is Monday. So what HTML's ~<input type="month">~ sends,
+  ~2026-10~, reads with ~'((year 4) "-" (month 2))~ as 2026-10-01, and what
+  its ~<input type="week">~ sends, ~2026-W43~, reads with
+  ~'((week-year 4) "-W" (week 2))~ as that week's Monday, 2026-10-19.
+- Every other field read has to be the date's own. A weekday name that is
+  not the date's, a ~week~ or ~yday~ beside a calendar date that says
+  another, or a Roman year beside a numeric one that says another, is
+  ~None~. So is a value no date has: February 30, week 53 of 2027, year 0.
+
+Some formats cannot be read. Each raises an ~ArgumentException~ when it is
+used to read, whatever the text, with a message that names the part:
+
+- *A date without a year.* A date's format needs ~year~, ~(roman year)~ or
+  ~week-year~: ~'(month "/" day)~ cannot say which year.
+- *A field without its own kind of year.* Month, day and ~yday~ count within
+  ~year~, and ~week~ within ~week-year~. ~'((year 4) "-W" (week 2))~ would
+  read ~2026-W43~ as nothing, and ~2026-W01~ as January 1, which is that
+  week's Thursday; it is refused, and a week is read with ~week-year~. A
+  field of the other kind may stand beside a date its own kind makes, and is
+  checked against it: ~'((year 4) "-" (month 2) "-" (day 2) " W" (week 2))~
+  reads.
+- *A text that reads two ways.* A part that can be of more than one length
+  (a number without a width or with a width below its most digits, or a
+  Roman numeral) followed by a part that can begin with a character it could
+  also take. ~'(year month day)~ reads ~2026110~ as January 10 or as
+  November 0, so it is refused. ~'((year 4) (month 2) (day 2))~ reads, and
+  so does ~'(year "-" month "-" day)~.
+- *A names table without twelve months or seven weekdays*, when the format
+  reads a name from it, as when it writes one.
+
+Writing has none of these limits: a format that cannot read can still write.
 
 ** Range and errors
 
@@ -382,8 +446,7 @@ Near the two ends of the range, a local time and its instant cannot both fit:
   −14:00, so the day it skipped is 22 hours and 3 minutes long rather than
   24). Those moments are off by up to two hours.
 - *No leap seconds*, and no other calendars. Names come in English and
-  Swedish, or from a ~DateNames~ of your own, and formats of your own are
-  written but not read.
+  Swedish, or from a ~DateNames~ of your own.
 
 ** How a local time finds its offset
 
@@ -463,6 +526,29 @@ Values are written as ISO text here for short.
   a date's format a compile error. A moment's date is written with
   ~(date->text (->date m) ...)~, which says whose date it is, as a calendar
   difference asks for ~->date~ too.
+- *A format that could read a text two ways is refused, not read greedily.*
+  With ~'(year month day)~, January 11 and November 1 of 2026 are both
+  written ~2026111~, so no reader can tell which was meant. Read greedily,
+  ~2026110~, which the same format writes for January 10, would be November
+  0, and ~None~. Trying every split instead would still have to pick one of
+  the two dates. So the format is refused when it is used to read, and the
+  message says what reads one way: a width, or text between the parts. The
+  cost: a format that is fine for the dates a program has, such as
+  ~'(year month day)~ for dates whose month and day both have two digits,
+  is refused anyway.
+- *A field left out is its first value, rather than refused.* HTML's month
+  input sends ~2026-10~ and its week input ~2026-W43~, and a text without a
+  day means the month itself; reading it as the 1st, and a week as its
+  Monday, gives a ~Date~ that stands for it with no second function. The
+  cost: that ~Date~ is the month's first day, not a month, and written back
+  with a format that has a day it says ~01~.
+- *Month, day and ~yday~ count within ~year~, and ~week~ within
+  ~week-year~.* The two years differ in up to three days at each end of a
+  year, so a format that mixes them up is right most of the year and wrong
+  near New Year, as Java's ~YYYY-MM-dd~ is. Read with ~'((year 4) "-W"
+  (week 2))~, ~2026-W01~ would be January 1, the Thursday of week 1, and
+  ~2026-W43~ nothing. Such a format is refused whatever the text, so the
+  mix-up shows the first time the format is used.
 - *A moment's ~=~ compares every field, and ~compare~ orders by instant, then
   local time, then zone id,* so the two agree. 12:00+02:00[Europe/Stockholm]
   and 10:00+00:00[UTC] are one instant and two values; a sorted set keeps both,

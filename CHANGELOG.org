@@ -3,6 +3,39 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std datetime)~ reads dates with formats of your own
+
+~(text->date s format)~ reads a text with the format ~date->text~ wrote it
+with, and answers an ~(Option Date)~; it takes ~#:names~ as the writers do.
+
+#+BEGIN_SRC scheme
+(text->date "Sunday, 25 October 2026" '(weekday-name ", " day " " month-name " " year))
+(text->date "2026-W43" '((week-year 4) "-W" (week 2)))    ;; 2026-10-19, the Monday
+#+END_SRC
+
+Numbers are ASCII digits, from their width (or one) up to their most digits,
+read greedily. Names match exactly, case included, the longest when two do.
+Roman numerals are read only as they are written, so ~MDCCCC~ is not 1900.
+The date is made from year, month and day, from year and ~yday~, or from
+~week-year~, ~week~ and ~weekday~, and a field left out is its first value,
+which reads HTML's month and week inputs. Every other field read has to be
+the date's own: a wrong weekday name is ~None~. Text that does not fit is
+~None~, never an exception.
+
+A format that cannot be read raises an ~ArgumentException~ when used to
+read, whatever the text: a date without a year; month, day or ~yday~ with
+~week-year~ in place of ~year~, or ~week~ with ~year~ in place of
+~week-year~, since ~'((year 4) "-W" (week 2))~ would read ~2026-W01~ as
+January 1, a Thursday; and a part of more than one length followed by a part
+that can begin with a character it could take, as in ~'(year month day)~,
+where ~2026111~ is January 11 and November 1 both.
+
+Tested in ~245_datetime.bjo~ (53 checks: widths and none, ASCII digits only,
+the whole text, names in English and Swedish, the longest name, Roman years
+and a numeral in another form, a Roman and a numeric year that agree and
+disagree, ordinal and week dates, HTML's month and week inputs, fields
+checked against the date, and each refused format).
+
 * ~(std datetime)~ writes Unix time and instants with formats of your own
 
 ~(->unix x)~ is the Unix time in seconds of an instant or a moment, as a

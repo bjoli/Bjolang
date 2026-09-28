@@ -143,6 +143,7 @@
   ;; Text of your own
   DateNumber RomanNumber DatePart TimePart DateTimePart MomentPart InstantPart DateNames
   date->text time->text datetime->text moment->text instant->text
+  text->date
   english-names swedish-names current-date-names)
 
 
@@ -1817,13 +1818,17 @@
         (else (argument-error (str "(" tag " ...) takes one width, and was given "
                                    (->str (list-length ws)) ".")))))
 
-;; The i:th name, counting from 1, of a table that must have count of them.
-(: name-at (-> (Vec string) int int string string))
-(defun (name-at names count i what)
+;; A table of names, which must have count of them.
+(: full-table (-> (Vec string) int string (Vec string)))
+(defun (full-table names count what)
   (if (= (vec-length names) count)
-      (vec-ref names (- i 1))
+      names
       (argument-error (str "a DateNames has " (->str count) " " what ", and this one has "
                            (->str (vec-length names)) "."))))
+
+;; The i:th name, counting from 1, of a table that must have count of them.
+(: name-at (-> (Vec string) int int string string))
+(defun (name-at names count i what) (vec-ref (full-table names count what) (- i 1)))
 
 ;; MMXXVI. Numerals stop at MMMCMXCIX, and a larger year goes on adding Ms,
 ;; 4000 being MMMM, since nothing else is standard.
@@ -1983,3 +1988,459 @@
       (add-instant-part! sb i names (list-head ps))
       (loop (list-tail ps))))
   (text-of sb))
+
+
+;; ===========================================================================
+;; Reading text of your own
+;; ===========================================================================
+;;
+;; A reader sees each part of a format as a Field, whichever union it came
+;; from, so one reader serves every format. It checks the format first, so a
+;; format that cannot be read raises whatever the text, and then walks the
+;; text: the parts in order, and the whole text used. The fields read so far
+;; are kept in a Seen, a struct, and put together at the end, so reading
+;; allocates nothing but a zone id.
+
+;; What a part reads.
+(type (: FieldKind (Union FText FChar
+                          FYear FMonth FDay FWeekday FYday FWeek FWeekYear
+                          FRomanYear FRomanMonth FRomanDay
+                          FMonthName FMonthAbbr FWeekdayName FWeekdayAbbr)))
+
+;; A part as a reader sees it: its width, 0 for none, and its text or
+;; character when it is one.
+(type (: Field (Struct (: kind FieldKind) (: width int) (: text string) (: ch char))))
+
+(: field (-> FieldKind int Field))
+(defun (field k w) (Field (kind k) (width w) (text "") (ch #\nul)))
+
+(: text-field (-> string Field))
+(defun (text-field s) (Field (kind FText) (width 0) (text s) (ch #\nul)))
+
+(: char-field (-> char Field))
+(defun (char-field c) (Field (kind FChar) (width 0) (text "") (ch c)))
+
+(: date-number-field (-> DateNumber Field))
+(defun (date-number-field n)
+  (match n
+    ((NumYear w) (field FYear (part-width w "year")))
+    ((NumMonth w) (field FMonth (part-width w "month")))
+    ((NumDay w) (field FDay (part-width w "day")))
+    ((NumWeekday w) (field FWeekday (part-width w "weekday")))
+    ((NumYday w) (field FYday (part-width w "yday")))
+    ((NumWeek w) (field FWeek (part-width w "week")))
+    ((NumWeekYear w) (field FWeekYear (part-width w "week-year")))))
+
+(: date-part-field (-> DatePart Field))
+(defun (date-part-field p)
+  (match p
+    ((DateNum n) (date-number-field n))
+    ((DateRoman RomanYear) (field FRomanYear 0))
+    ((DateRoman RomanMonth) (field FRomanMonth 0))
+    ((DateRoman RomanDay) (field FRomanDay 0))
+    (MonthName (field FMonthName 0))
+    (MonthAbbr (field FMonthAbbr 0))
+    (WeekdayName (field FWeekdayName 0))
+    (WeekdayAbbr (field FWeekdayAbbr 0))
+    ((DateText s) (text-field s))
+    ((DateChar c) (char-field c))))
+
+;; Each format union's parts as Fields. A trait rather than a function
+;; argument, so that each reader is compiled for its own union.
+(def/trait (FormatPart %p)
+  (: part-field (-> %p Field)))
+
+(impl (FormatPart DatePart)
+  (defun (part-field p) (date-part-field p)))
+
+;; The most digits a number reads, and 0 for a field that is not a number.
+(: kind-most (-> FieldKind int))
+(defun (kind-most k)
+  (match k
+    (FYear 4)
+    (FWeekYear 4)
+    (FYday 3)
+    (FMonth 2)
+    (FDay 2)
+    (FWeek 2)
+    (FWeekday 1)
+    (_ 0)))
+
+(: with-width (-> string int string))
+(defun (with-width name w) (if (> w 0) (str "(" name " " (->str w) ")") name))
+
+;; A part as a format writes it, for a message.
+(: field-name (-> Field string))
+(defun (field-name f)
+  (def w (struct-ref f width))
+  (match (struct-ref f kind)
+    (FText (str "the text \"" (struct-ref f text) "\""))
+    (FChar (str "the character " (char->string (struct-ref f ch))))
+    (FYear (with-width "year" w))
+    (FMonth (with-width "month" w))
+    (FDay (with-width "day" w))
+    (FWeekday (with-width "weekday" w))
+    (FYday (with-width "yday" w))
+    (FWeek (with-width "week" w))
+    (FWeekYear (with-width "week-year" w))
+    (FRomanYear "(roman year)")
+    (FRomanMonth "(roman month)")
+    (FRomanDay "(roman day)")
+    (FMonthName "month-name")
+    (FMonthAbbr "month-abbr")
+    (FWeekdayName "weekday-name")
+    (FWeekdayAbbr "weekday-abbr")))
+
+;; The kinds of field a format has, one bit per kind that the checks below
+;; tell apart.
+(: b-year int)
+(def b-year 1)
+;; month, day and yday, by number, numeral or name: the fields within a year.
+(: b-in-year int)
+(def b-in-year 2)
+(: b-week-year int)
+(def b-week-year 4)
+(: b-week int)
+(def b-week 8)
+(: b-weekday int)
+(def b-weekday 16)
+
+(: field-bits (-> FieldKind int))
+(defun (field-bits k)
+  (match k
+    (FText 0)
+    (FChar 0)
+    (FYear b-year)
+    (FRomanYear b-year)
+    (FMonth b-in-year)
+    (FDay b-in-year)
+    (FYday b-in-year)
+    (FRomanMonth b-in-year)
+    (FRomanDay b-in-year)
+    (FMonthName b-in-year)
+    (FMonthAbbr b-in-year)
+    (FWeekYear b-week-year)
+    (FWeek b-week)
+    (FWeekday b-weekday)
+    (FWeekdayName b-weekday)
+    (FWeekdayAbbr b-weekday)))
+
+(: has? (-> int int bool))
+(defun (has? bits b) (> (bitwise-and bits b) 0))
+
+;; The characters a part can go on taking once it has begun, as bits: a
+;; part of one fixed length takes none.
+(: t-digits int)
+(def t-digits 1)
+(: t-roman int)
+(def t-roman 2)
+
+(: roman-value (-> char int))
+(defun (roman-value c)
+  (cond ((char=? c #\I) 1)
+        ((char=? c #\V) 5)
+        ((char=? c #\X) 10)
+        ((char=? c #\L) 50)
+        ((char=? c #\C) 100)
+        ((char=? c #\D) 500)
+        ((char=? c #\M) 1000)
+        (else 0)))
+
+(: takes? (-> int char bool))
+(defun (takes? taken c)
+  (or (and (has? taken t-digits) (>= (ascii-digit c) 0))
+      (and (has? taken t-roman) (> (roman-value c) 0))))
+
+;; A number reads from its width, or 1, up to its most digits or its width,
+;; so it has one length only when its width is at least its most.
+(: field-takes (-> Field int))
+(defun (field-takes f)
+  (def k (struct-ref f kind))
+  (def most (kind-most k))
+  (if (> most 0)
+      (if (< (max (struct-ref f width) 1) most) t-digits 0)
+      (match k
+        (FRomanYear t-roman)
+        (FRomanMonth t-roman)
+        (FRomanDay t-roman)
+        (_ 0))))
+
+(: can-be-empty? (-> Field bool))
+(defun (can-be-empty? f)
+  (match (struct-ref f kind)
+    (FText (string-empty? (struct-ref f text)))
+    (_ #f)))
+
+(: first-char (-> string char))
+(defun (first-char s) (string-cursor-ref s (string-cursor-start s)))
+
+(: any-name-starts? (-> (Vec string) int bool))
+(defun (any-name-starts? table taken)
+  (let loop ((i 0))
+    (and (< i (vec-length table))
+         (or (let ((name (vec-ref table i)))
+               (and (not (string-empty? name)) (takes? taken (first-char name))))
+             (loop (+ i 1))))))
+
+;; The table a name reads from, which must be whole.
+(: name-table (-> DateNames FieldKind (Vec string)))
+(defun (name-table names k)
+  (match k
+    (FMonthName (full-table (record-ref names months) 12 "months"))
+    (FMonthAbbr (full-table (record-ref names months-short) 12 "months"))
+    (FWeekdayName (full-table (record-ref names weekdays) 7 "weekdays"))
+    (_ (full-table (record-ref names weekdays-short) 7 "weekdays"))))
+
+(: name-kind? (-> FieldKind bool))
+(defun (name-kind? k)
+  (match k
+    (FMonthName #t)
+    (FMonthAbbr #t)
+    (FWeekdayName #t)
+    (FWeekdayAbbr #t)
+    (_ #f)))
+
+;; Whether a part can begin with a character in taken. Digits and Roman
+;; letters are each one class, so one of them stands for all.
+(: starts-within? (-> Field DateNames int bool))
+(defun (starts-within? f names taken)
+  (def k (struct-ref f kind))
+  (cond ((> (kind-most k) 0) (takes? taken #\0))
+        ((name-kind? k) (any-name-starts? (name-table names k) taken))
+        (else
+         (match k
+           (FText (and (not (string-empty? (struct-ref f text)))
+                       (takes? taken (first-char (struct-ref f text)))))
+           (FChar (takes? taken (struct-ref f ch)))
+           (_ (takes? taken #\M))))))
+
+(: two-readings-error (-> Field Field %a))
+(defun (two-readings-error before after)
+  (def most (kind-most (struct-ref before kind)))
+  (argument-error
+    (str (field-name before) " can be of more than one length, and " (field-name after)
+         " after it can begin with a character " (field-name before)
+         " could also take, so a text could be read two ways. "
+         (if (> most 0)
+             (str "A width of " (->str most) ", or text between the two, reads one way.")
+             "Text between the two reads one way."))))
+
+;; The kinds of field a format has, as bits, once it is known that no text
+;; can be read with it two ways: no part that can be of more than one length
+;; is followed by a part that can begin with a character it could also take.
+;; A part that can be empty passes what could be taken on to the next.
+(: format-bits (-> (List %p) DateNames int) (where (FormatPart %p)))
+(defun (format-bits parts names)
+  (let loop ((ps parts) (bits 0) (taken 0) (before (text-field "")))
+    (if (list-empty? ps)
+        bits
+        (let ((f (part-field (list-head ps))))
+          (def k (struct-ref f kind))
+          (when (name-kind? k) (ignore (name-table names k)))
+          (when (and (> taken 0) (starts-within? f names taken))
+            (two-readings-error before f))
+          (def own (field-takes f))
+          (loop (list-tail ps)
+                (bitwise-ior bits (field-bits k))
+                (if (can-be-empty? f) (bitwise-ior taken own) own)
+                (if (> own 0) f before))))))
+
+;; The fields read so far, each -1 until it is read.
+(type (: Seen (Struct (: year int) (: month int) (: day int) (: weekday int) (: yday int)
+                      (: week int) (: week-year int))))
+
+(: unseen Seen)
+(def unseen
+  (Seen (year -1) (month -1) (day -1) (weekday -1) (yday -1) (week -1) (week-year -1)))
+
+;; From least to most ASCII digits, as many as there are. The value stops
+;; growing at eighteen digits, which no field reaches.
+(: read-digits (-> string StringCursor int int (Option (Tuple long StringCursor))))
+(defun (read-digits s c least most)
+  (let loop ((c c) (count 0) (acc 0L))
+    (def d (next-digit s c))
+    (if (or (= count most) (< d 0))
+        (if (>= count least) (Some (Tuple acc c)) None)
+        (loop (string-cursor-next s c) (+ count 1)
+              (if (>= acc 100000000000000000L) acc (+ (* acc 10L) (long-of d)))))))
+
+;; The cursor after n's numeral as add-roman! writes it, when s has it at c.
+(: skip-roman (-> string StringCursor int (Option StringCursor)))
+(defun (skip-roman s c n)
+  (let loop ((c c) (n n) (steps roman-steps))
+    (if (list-empty? steps)
+        (Some c)
+        (match (list-head steps)
+          ((Tuple value numeral)
+           (cond ((< n value) (loop c n (list-tail steps)))
+                 (:def (Some after) (skip-string s c numeral) :propagate)
+                 (else (loop after (- n value) steps))))))))
+
+;; A run of Roman letters, read only as add-roman! writes its value: MCM,
+;; not MDCCCC, and IV, not IIII. The value stops growing past 100 000, and
+;; is None there, as no field reaches it.
+(: read-roman (-> string StringCursor (Option (Tuple long StringCursor))))
+(defun (read-roman s c)
+  (let loop ((e c) (total 0) (prev 0))
+    (def v (if (string-cursor-end? s e) 0 (roman-value (string-cursor-ref s e))))
+    (cond ((> v 0)
+           (loop (string-cursor-next s e)
+                 (cond ((> total 100000) total)
+                       ((> v prev) (+ total (- v (* 2 prev))))
+                       (else (+ total v)))
+                 v))
+          ((or (< total 1) (> total 100000)) None)
+          (:def (Some after) (skip-roman s c total) :propagate)
+          ((string-cursor=? after e) (Some (Tuple (long-of total) e)))
+          (else None))))
+
+;; The number, from 1, of the longest name in the table that s has at c.
+(: read-name (-> string StringCursor (Vec string) (Option (Tuple long StringCursor))))
+(defun (read-name s c table)
+  (let loop ((i 0) (best 0) (best-end c))
+    (if (= i (vec-length table))
+        (if (= best 0) None (Some (Tuple (long-of best) best-end)))
+        (match (skip-string s c (vec-ref table i))
+          ((Some e) (if (or (= best 0) (string-cursor>? e best-end))
+                        (loop (+ i 1) (+ i 1) e)
+                        (loop (+ i 1) best best-end)))
+          (None (loop (+ i 1) best best-end))))))
+
+(: zero-after (-> (Option StringCursor) (Option (Tuple long StringCursor))))
+(defun (zero-after r)
+  (match r
+    ((Some c) (Some (Tuple 0L c)))
+    (None None)))
+
+;; What one part reads at c, as a number, and the cursor after it. Text and
+;; characters read as 0.
+(: read-value (-> string StringCursor DateNames Field (Option (Tuple long StringCursor))))
+(defun (read-value s c names f)
+  (def k (struct-ref f kind))
+  (def w (struct-ref f width))
+  (def most (kind-most k))
+  (cond ((> most 0) (read-digits s c (max w 1) (max w most)))
+        ((name-kind? k) (read-name s c (name-table names k)))
+        (else
+         (match k
+           (FText (zero-after (skip-string s c (struct-ref f text))))
+           (FChar (zero-after (skip-char s c (struct-ref f ch))))
+           (_ (read-roman s c))))))
+
+;; Whether a field read as old, or not read when -1, agrees with v.
+(: agrees? (-> int int bool))
+(defun (agrees? old v) (or (< old 0) (= old v)))
+
+;; next, the fields with one more read as n, when a field read before as old
+;; agrees with it.
+(: put-if (-> int int Seen (Option Seen)))
+(defun (put-if old n next) (if (agrees? old n) (Some next) None))
+
+;; seen with a field of kind k read as v, or None when it was read before as
+;; something else. A value too large for any field stays too large.
+(: put-value (-> Seen FieldKind long (Option Seen)))
+(defun (put-value seen k v)
+  (def n (if (> v 1000000000L) 1000000000 (int-of v)))
+  (match k
+    (FText (Some seen))
+    (FChar (Some seen))
+    (FYear (put-if (struct-ref seen year) n (record-set seen (year n))))
+    (FRomanYear (put-if (struct-ref seen year) n (record-set seen (year n))))
+    (FMonth (put-if (struct-ref seen month) n (record-set seen (month n))))
+    (FRomanMonth (put-if (struct-ref seen month) n (record-set seen (month n))))
+    (FMonthName (put-if (struct-ref seen month) n (record-set seen (month n))))
+    (FMonthAbbr (put-if (struct-ref seen month) n (record-set seen (month n))))
+    (FDay (put-if (struct-ref seen day) n (record-set seen (day n))))
+    (FRomanDay (put-if (struct-ref seen day) n (record-set seen (day n))))
+    (FWeekday (put-if (struct-ref seen weekday) n (record-set seen (weekday n))))
+    (FWeekdayName (put-if (struct-ref seen weekday) n (record-set seen (weekday n))))
+    (FWeekdayAbbr (put-if (struct-ref seen weekday) n (record-set seen (weekday n))))
+    (FYday (put-if (struct-ref seen yday) n (record-set seen (yday n))))
+    (FWeek (put-if (struct-ref seen week) n (record-set seen (week n))))
+    (FWeekYear (put-if (struct-ref seen week-year) n (record-set seen (week-year n))))))
+
+;; The fields of a text in a format's parts, when the text has every part
+;; and nothing after.
+(: read-format (-> string (List %p) DateNames (Option Seen)) (where (FormatPart %p)))
+(defun (read-format s parts names)
+  (let loop ((ps parts) (c (string-cursor-start s)) (seen unseen))
+    (if (list-empty? ps)
+        (if (string-cursor-end? s c) (Some seen) None)
+        (let ((f (part-field (list-head ps))))
+          (def* ((Some (Tuple v c1)) (read-value s c names f) :propagate)
+                ((Some seen1) (put-value seen (struct-ref f kind) v) :propagate))
+          (loop (list-tail ps) c1 seen1)))))
+
+;; A date needs its largest unit. Month, day and yday count within year,
+;; and week within week-year; either may be read beside a date the other
+;; kind of year makes, and is checked against it.
+(: check-date-bits (-> int void))
+(defun (check-date-bits bits)
+  (def year? (has? bits b-year))
+  (def week-year? (has? bits b-week-year))
+  (def in-year? (has? bits b-in-year))
+  (def week? (has? bits b-week))
+  (unless (or year? week-year?)
+    (argument-error "a format read as a date needs year, (roman year) or week-year."))
+  (when (and in-year? (not year?) (not week?))
+    (argument-error
+      "month, day and yday count within year, and this format has week-year instead: write year, or read a week date with week-year and week."))
+  (when (and week? (not week-year?) (not in-year?))
+    (argument-error
+      "week counts within week-year, and this format has year instead: write week-year, or read a calendar date with year, month and day.")))
+
+(: first-value (-> int int))
+(defun (first-value n) (if (< n 0) 1 n))
+
+(: calendar-day (-> int int int (Option long)))
+(defun (calendar-day y m d)
+  (if (valid-date? y m d) (Some (long-of (clr-date-day-number (ClrDate. y m d)))) None))
+
+(: ordinal-day (-> int int (Option long)))
+(defun (ordinal-day y yd)
+  (if (and (>= y 1) (<= y 9999) (>= yd 1) (<= yd (clr-date-day-of-year (ClrDate. y 12 31))))
+      (Some (+ (long-of (clr-date-day-number (ClrDate. y 1 1))) (long-of (- yd 1))))
+      None))
+
+;; The day the date fields make: year, month and day; year and yday; or
+;; week-year, week and weekday. A field left out is its first value.
+(: seen-day-number (-> Seen (Option long)))
+(defun (seen-day-number seen)
+  (def y (struct-ref seen year))
+  (def m (struct-ref seen month))
+  (def d (struct-ref seen day))
+  (def yd (struct-ref seen yday))
+  (def wy (struct-ref seen week-year))
+  (cond ((and (>= y 0) (or (>= m 0) (>= d 0))) (calendar-day y (first-value m) (first-value d)))
+        ((and (>= y 0) (>= yd 0)) (ordinal-day y yd))
+        ((>= wy 0)
+         (match (week-date wy (first-value (struct-ref seen week))
+                           (first-value (struct-ref seen weekday)))
+           ((Some date) (Some (day-number date)))
+           (None None)))
+        ((>= y 0) (calendar-day y 1 1))
+        (else None)))
+
+;; Whether every date field read is the date's own.
+(: date-agrees? (-> Seen Date bool))
+(defun (date-agrees? seen d)
+  (and (agrees? (struct-ref seen year) (->year d))
+       (agrees? (struct-ref seen month) (->month d))
+       (agrees? (struct-ref seen day) (->day d))
+       (agrees? (struct-ref seen weekday) (->weekday d))
+       (agrees? (struct-ref seen yday) (->yday d))
+       (agrees? (struct-ref seen week) (->week d))
+       (agrees? (struct-ref seen week-year) (->week-year d))))
+
+(: seen->date (-> Seen (Option Date)))
+(defun (seen->date seen)
+  (def (Some n) (seen-day-number seen) :propagate)
+  (def d (day-number->date n))
+  (if (date-agrees? seen d) (Some d) None))
+
+;; The reader of date->text's formats.
+(: text->date (-> string (List DatePart) (#:names DateNames) (Option Date)))
+(defun (text->date s parts #:names (parameter-ref current-date-names))
+  (check-date-bits (format-bits parts names))
+  (def (Some seen) (read-format s parts names) :propagate)
+  (seen->date seen))
