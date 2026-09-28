@@ -1,0 +1,1431 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/datetime.bjo — dates, times, instants, zones and durations.
+;;
+;; Every value lies between 0001-01-01T00:00 and 9999-12-31T23:59:59.9999999,
+;; at a precision of 100 ns. A result outside that range raises an
+;; OverflowException from a function that returns the value itself, and is None
+;; from a constructor, a parser or an `/opt` function. Nothing is clamped
+;; silently, except month arithmetic landing past the end of a month
+;; (2026-01-31 + 1 month = 2026-02-28) and time-of-day arithmetic, which wraps
+;; at midnight.
+;;
+;; Text is formatted and parsed here, digit by digit, rather than by .NET, so
+;; no culture is involved.
+;;
+;; See Docs/std/datetime.org.
+
+(import (std prelude))
+
+(import/class
+  (ClrDate (: System.DateOnly (-> int int int ClrDate)))
+  (ClrTime (: System.TimeOnly (-> long ClrTime)))
+  (ClrDateTime (: System.DateTime (-> long DateTimeKind ClrDateTime)))
+  (DateTimeKind (: System.DateTimeKind))
+  (ClrTimeSpan (: System.TimeSpan (-> long ClrTimeSpan)))
+  (ClrDateTimeOffset (: System.DateTimeOffset))
+  (TimeProvider (: System.TimeProvider))
+  (TimeZoneInfo (: System.TimeZoneInfo))
+  (OverflowException (: System.OverflowException (-> string OverflowException))))
+
+;; A body an importer may copy (a trait method here, or a constrained
+;; function) names .NET members through these aliases rather than through
+;; helpers of this module: an alias travels under a name nobody can write,
+;; while a helper would be exported under its own.
+(import/extern
+  (clr-date-from-day-number (: System.DateOnly.FromDayNumber (-> int ClrDate)))
+  (clr-date-from-datetime (: System.DateOnly.FromDateTime (-> ClrDateTime ClrDate)))
+  (clr-time-from-datetime (: System.TimeOnly.FromDateTime (-> ClrDateTime ClrTime)))
+  (clr-time-add (: System.TimeOnly.Add (-> ClrTime ClrTimeSpan ClrTime)))
+  (clr-time-hour (: System.TimeOnly.Hour (-> ClrTime int) #:get))
+  (clr-time-minute (: System.TimeOnly.Minute (-> ClrTime int) #:get))
+  (clr-time-second (: System.TimeOnly.Second (-> ClrTime int) #:get))
+  (clr-time-millisecond (: System.TimeOnly.Millisecond (-> ClrTime int) #:get))
+  (clr-time-microsecond (: System.TimeOnly.Microsecond (-> ClrTime int) #:get))
+  (clr-time-nanosecond (: System.TimeOnly.Nanosecond (-> ClrTime int) #:get))
+  (clr-datetime-subtract (: System.DateTime.Subtract (-> ClrDateTime ClrDateTime ClrTimeSpan)))
+  (clr-timespan-from-ticks (: System.TimeSpan.FromTicks (-> long ClrTimeSpan)))
+  (clr-timespan-add (: System.TimeSpan.Add (-> ClrTimeSpan ClrTimeSpan ClrTimeSpan)))
+  (clr-timespan-negate (: System.TimeSpan.Negate (-> ClrTimeSpan ClrTimeSpan)))
+  (clr-date-day-number (: System.DateOnly.DayNumber (-> ClrDate int) #:get))
+  (clr-date-year (: System.DateOnly.Year (-> ClrDate int) #:get))
+  (clr-date-month (: System.DateOnly.Month (-> ClrDate int) #:get))
+  (clr-date-day (: System.DateOnly.Day (-> ClrDate int) #:get))
+  (clr-date-day-of-year (: System.DateOnly.DayOfYear (-> ClrDate int) #:get))
+  (clr-date-add-months (: System.DateOnly.AddMonths (-> ClrDate int ClrDate)))
+  (clr-date-add-years (: System.DateOnly.AddYears (-> ClrDate int ClrDate)))
+  (clr-days-in-month (: System.DateTime.DaysInMonth (-> int int int)))
+  (clr-time-ticks (: System.TimeOnly.Ticks (-> ClrTime long) #:get))
+  (clr-datetime-ticks (: System.DateTime.Ticks (-> ClrDateTime long) #:get))
+  (clr-timespan-ticks (: System.TimeSpan.Ticks (-> ClrTimeSpan long) #:get))
+  (clr-tz-try-find
+    (: System.TimeZoneInfo.TryFindSystemTimeZoneById
+       (-> string (out TimeZoneInfo) (Option TimeZoneInfo))))
+  (clr-tz-utc (: System.TimeZoneInfo.Utc #:get))
+  (clr-tz-id (: System.TimeZoneInfo.Id (-> TimeZoneInfo string) #:get))
+  (clr-tz-has-iana-id (: System.TimeZoneInfo.HasIanaId (-> TimeZoneInfo bool) #:get))
+  (clr-tz-utc-offset (: System.TimeZoneInfo.GetUtcOffset (-> TimeZoneInfo ClrDateTime ClrTimeSpan)))
+  (clr-provider-system (: System.TimeProvider.System #:get))
+  (clr-provider-utc-now (: System.TimeProvider.GetUtcNow (-> TimeProvider ClrDateTimeOffset)))
+  (clr-provider-local-zone (: System.TimeProvider.LocalTimeZone (-> TimeProvider TimeZoneInfo) #:get))
+  (clr-dto-utc-ticks (: System.DateTimeOffset.UtcTicks (-> ClrDateTimeOffset long) #:get)))
+
+(export
+  ;; Types
+  Date Time DateTime Instant TimeZone Moment Duration Clock
+  DatePeriod Period Gap Overlap Resolver
+  ;; Traits
+  HasDate ->date HasTime ->time HasInstant ->instant
+  DateArith +date-period TimeArith +duration Timeline duration-between
+  ;; Construction
+  date time datetime date+time->datetime ->datetime
+  duration date-period period
+  ;; Zones and moments
+  timezone utc timezone-id timezone-offset-at
+  resolver datetime->moment datetime->moment/opt instant->moment
+  +date-period/resolver -date-period/resolver
+  ->utc-offset ->timezone adjust-timezone
+  ;; Instants
+  instant->utc-datetime utc-datetime->instant
+  instant->unix-seconds unix-seconds->instant
+  instant->unix-milliseconds unix-milliseconds->instant
+  ;; The clock
+  system-clock fixed-clock clock-timezone now now/zone today today/zone
+  ;; Accessors
+  ->year ->month ->day ->wday ->yday
+  ->hours ->minutes ->seconds ->milliseconds ->nanoseconds
+  ;; Arithmetic
+  +years +months +weeks +days -years -months -weeks -days -date-period
+  +hours +minutes +seconds +milliseconds
+  -hours -minutes -seconds -milliseconds -duration
+  +period -period
+  duration->hours duration->minutes duration->seconds duration->milliseconds
+  duration-negate
+  ;; Differences
+  years-between months-between weeks-between days-between
+  hours-between minutes-between seconds-between milliseconds-between
+  ;; Text
+  iso8601->date iso8601->time iso8601->datetime iso8601->instant iso8601->moment
+  iso8601->duration iso8601->date-period iso8601->period
+  instant->http-date http-date->instant)
+
+
+;; ===========================================================================
+;; Types
+;; ===========================================================================
+
+;; The value types are opaque so that every value comes from a function that
+;; checked it: a Moment's offset is always one its zone has at that time.
+(type (: Date #:opaque (Struct (: v ClrDate))))
+(type (: Time #:opaque (Struct (: v ClrTime))))
+;; Kind is always Unspecified.
+(type (: DateTime #:opaque (Struct (: v ClrDateTime))))
+;; UTC ticks, not a UTC DateTime, because DateTime equality ignores Kind.
+(type (: Instant #:opaque (Struct (: ticks long))))
+(type (: TimeZone #:opaque (Struct (: tz TimeZoneInfo))))
+(type (: Duration #:opaque (Struct (: v ClrTimeSpan))))
+(type (: Moment #:opaque (Struct (: local DateTime) (: offset Duration) (: zone TimeZone))))
+(type (: Clock #:opaque (Union (SystemClock TimeProvider) (FixedClock Instant TimeZone))))
+
+;; Any mix of amounts is a valid period, so these are transparent. Structs,
+;; so that the one +days builds is not an allocation.
+(type (: DatePeriod (Struct (: years int) (: months int) (: weeks int) (: days int))))
+(type (: Period (Struct (: calendar DatePeriod) (: exact Duration))))
+
+;; What datetime->moment does with a local time that a zone skips (a gap) or
+;; has twice (an overlap).
+(type (: Gap (Union GapPush GapNextValid)))
+(type (: Overlap (Union OverlapEarlier OverlapLater)))
+(type (: Resolver (Record (: gap Gap) (: overlap Overlap))))
+
+
+;; ===========================================================================
+;; Ranges
+;; ===========================================================================
+
+(: ticks-per-day long)
+(def ticks-per-day 864000000000L)
+(: ticks-per-hour long)
+(def ticks-per-hour 36000000000L)
+(: ticks-per-minute long)
+(def ticks-per-minute 600000000L)
+(: ticks-per-second long)
+(def ticks-per-second 10000000L)
+(: ticks-per-millisecond long)
+(def ticks-per-millisecond 10000L)
+
+;; 9999-12-31T23:59:59.9999999 in ticks, and 9999-12-31 as a day number.
+(: max-ticks long)
+(def max-ticks 3155378975999999999L)
+(: max-day-number long)
+(def max-day-number 3652058L)
+
+;; 1970-01-01T00:00Z in ticks.
+(: unix-epoch-ticks long)
+(def unix-epoch-ticks 621355968000000000L)
+
+;; A Duration built here stays within ±long-max ticks, about ±29 227 years.
+(: long-max long)
+(def long-max 9223372036854775807L)
+
+(: long-of (-> int long))
+(defun (long-of n) (cast System.Int64 n))
+
+(: int-of (-> long int))
+(defun (int-of n) (cast System.Int32 n))
+
+(: range-error (-> string %a))
+(defun (range-error what)
+  (raise (cast Exception (OverflowException. (str "(std datetime): " what)))))
+
+(: calendar-error (-> string %a))
+(defun (calendar-error what)
+  (range-error (str what " is outside 0001-01-01T00:00 to 9999-12-31T23:59:59.9999999")))
+
+(: duration-error (-> %a))
+(defun (duration-error)
+  (range-error "a duration is outside ±29 227 years (±9 223 372 036 854 775 807 ticks)"))
+
+(: in-calendar? (-> long bool))
+(defun (in-calendar? t) (and (>= t 0L) (<= t max-ticks)))
+
+;; n × unit for a positive unit, or None past the range of a Duration.
+(: checked-mul (-> long long (Option long)))
+(defun (checked-mul n unit)
+  (def limit (/ long-max unit))
+  (if (or (> n limit) (< n (- limit))) None (Some (* n unit))))
+
+;; a + b, or None past the range of a Duration.
+(: checked-add (-> long long (Option long)))
+(defun (checked-add a b)
+  (if (if (> b 0L) (> a (- long-max b)) (< a (- (- long-max) b)))
+      None
+      (Some (+ a b))))
+
+(: units->ticks (-> long long long))
+(defun (units->ticks n unit)
+  (match (checked-mul n unit)
+    ((Some t) t)
+    (None (duration-error))))
+
+(: plus-ticks (-> long long long))
+(defun (plus-ticks a b)
+  (match (checked-add a b)
+    ((Some t) t)
+    (None (duration-error))))
+
+;; A tick count moved by a duration, for DateTime and Instant. The sum can
+;; wrap only above long's maximum, and then it lands below zero, so the one
+;; range check catches it.
+(: shift-ticks (-> long long string long))
+(defun (shift-ticks t d what)
+  (def moved (+ t d))
+  (if (in-calendar? moved) moved (calendar-error what)))
+
+
+;; ===========================================================================
+;; Construction
+;; ===========================================================================
+
+(: ticks->datetime (-> long DateTime))
+(defun (ticks->datetime t) (DateTime (v (ClrDateTime. t DateTimeKind.Unspecified))))
+
+(: datetime-ticks (-> DateTime long))
+(defun (datetime-ticks dt) (clr-datetime-ticks (struct-ref dt v)))
+
+(: ticks->duration (-> long Duration))
+(defun (ticks->duration t) (Duration (v (ClrTimeSpan. t))))
+
+(: duration-ticks (-> Duration long))
+(defun (duration-ticks d) (clr-timespan-ticks (struct-ref d v)))
+
+(: day-number (-> Date long))
+(defun (day-number d) (long-of (clr-date-day-number (struct-ref d v))))
+
+(: day-number->date (-> long Date))
+(defun (day-number->date n) (Date (v (clr-date-from-day-number (int-of n)))))
+
+(: valid-date? (-> int int int bool))
+(defun (valid-date? y m d)
+  (and (>= y 1) (<= y 9999) (>= m 1) (<= m 12) (>= d 1) (<= d (clr-days-in-month y m))))
+
+(: valid-time? (-> int int int int bool))
+(defun (valid-time? h m s ns)
+  (and (>= h 0) (< h 24) (>= m 0) (< m 60) (>= s 0) (< s 60)
+       (>= ns 0) (< ns 1000000000)))
+
+;; Nanoseconds are cut to the 100 ns a tick holds.
+(: time-of-day-ticks (-> int int int int long))
+(defun (time-of-day-ticks h m s ns)
+  (+ (+ (* (long-of h) ticks-per-hour) (* (long-of m) ticks-per-minute))
+     (+ (* (long-of s) ticks-per-second) (long-of (/ ns 100)))))
+
+(: date (-> int int int (Option Date)))
+(defun (date y m d)
+  (if (valid-date? y m d) (Some (Date (v (ClrDate. y m d)))) None))
+
+(: time (-> int int (#:seconds int) (#:nanoseconds int) (Option Time)))
+(defun (time h m #:seconds 0 #:nanoseconds 0)
+  (if (valid-time? h m seconds nanoseconds)
+      (Some (Time (v (ClrTime. (time-of-day-ticks h m seconds nanoseconds)))))
+      None))
+
+(: datetime (-> int int int (#:hours int) (#:minutes int) (#:seconds int)
+                (#:nanoseconds int) (Option DateTime)))
+(defun (datetime y mo d #:hours 0 #:minutes 0 #:seconds 0 #:nanoseconds 0)
+  (if (and (valid-date? y mo d) (valid-time? hours minutes seconds nanoseconds))
+      (Some (ticks->datetime
+              (+ (* (long-of (clr-date-day-number (ClrDate. y mo d))) ticks-per-day)
+                 (time-of-day-ticks hours minutes seconds nanoseconds))))
+      None))
+
+(: date+time->datetime (-> Date Time DateTime))
+(defun (date+time->datetime d t)
+  (ticks->datetime (+ (* (day-number d) ticks-per-day) (clr-time-ticks (struct-ref t v)))))
+
+(: duration (-> (#:days long) (#:hours long) (#:minutes long) (#:seconds long)
+                (#:milliseconds long) (#:nanoseconds long) Duration))
+(defun (duration #:days 0L #:hours 0L #:minutes 0L #:seconds 0L #:milliseconds 0L
+                 #:nanoseconds 0L)
+  (ticks->duration
+    (plus-ticks (plus-ticks (plus-ticks (units->ticks days ticks-per-day)
+                                        (units->ticks hours ticks-per-hour))
+                            (plus-ticks (units->ticks minutes ticks-per-minute)
+                                        (units->ticks seconds ticks-per-second)))
+                (plus-ticks (units->ticks milliseconds ticks-per-millisecond)
+                            (/ nanoseconds 100L)))))
+
+(: date-period (-> (#:years int) (#:months int) (#:weeks int) (#:days int) DatePeriod))
+(defun (date-period #:years 0 #:months 0 #:weeks 0 #:days 0)
+  (DatePeriod (years years) (months months) (weeks weeks) (days days)))
+
+(: period (-> (#:years int) (#:months int) (#:weeks int) (#:days int)
+              (#:hours long) (#:minutes long) (#:seconds long)
+              (#:milliseconds long) (#:nanoseconds long) Period))
+(defun (period #:years 0 #:months 0 #:weeks 0 #:days 0
+               #:hours 0L #:minutes 0L #:seconds 0L #:milliseconds 0L #:nanoseconds 0L)
+  (Period (calendar (DatePeriod (years years) (months months) (weeks weeks) (days days)))
+          (exact (duration #:hours hours #:minutes minutes #:seconds seconds
+                           #:milliseconds milliseconds #:nanoseconds nanoseconds))))
+
+
+;; ===========================================================================
+;; Traits
+;; ===========================================================================
+
+(def/trait (HasDate %a)
+  (: ->date (-> %a Date)))
+
+(def/trait (HasTime %a)
+  (: ->time (-> %a Time)))
+
+(def/trait (HasInstant %a)
+  (: ->instant (-> %a Instant)))
+
+(def/trait (DateArith %a)
+  (: +date-period (-> %a DatePeriod %a)))
+
+(def/trait (TimeArith %a)
+  (: +duration (-> %a Duration %a)))
+
+;; Exact elapsed time from the first argument to the second: on the local
+;; timeline for a DateTime, and between instants for everything with one.
+(def/trait (Timeline %a)
+  (: duration-between (-> %a %a Duration)))
+
+
+;; ===========================================================================
+;; Date
+;; ===========================================================================
+
+;; Each step is checked before .NET takes it, because DateOnly would throw its
+;; own error, and because weeks × 7 overflows an int.
+(: plus-years (-> ClrDate int ClrDate))
+(defun (plus-years c n)
+  (def y (+ (long-of (clr-date-year c)) (long-of n)))
+  (cond ((= n 0) c)
+        ((and (>= y 1L) (<= y 9999L)) (clr-date-add-years c n))
+        (else (calendar-error "a date plus years"))))
+
+;; Months are counted from year 0, so year 1 January is month 12.
+(: plus-months (-> ClrDate int ClrDate))
+(defun (plus-months c n)
+  (def m (+ (+ (* (long-of (clr-date-year c)) 12L) (long-of (- (clr-date-month c) 1)))
+            (long-of n)))
+  (cond ((= n 0) c)
+        ((and (>= m 12L) (<= m 119999L)) (clr-date-add-months c n))
+        (else (calendar-error "a date plus months"))))
+
+(: plus-days (-> ClrDate long ClrDate))
+(defun (plus-days c n)
+  (def dn (+ (long-of (clr-date-day-number c)) n))
+  (cond ((= n 0L) c)
+        ((and (>= dn 0L) (<= dn max-day-number)) (clr-date-from-day-number (int-of dn)))
+        (else (calendar-error "a date plus days"))))
+
+;; Largest unit first: years, then months, then weeks and days together.
+(: clr-date-plus-period (-> ClrDate DatePeriod ClrDate))
+(defun (clr-date-plus-period c p)
+  (plus-days (plus-months (plus-years c (record-ref p years)) (record-ref p months))
+             (+ (* (long-of (record-ref p weeks)) 7L) (long-of (record-ref p days)))))
+
+;; This and the other `type+unit` functions are the trait methods at one type.
+;; They are exported because the impls' bodies, which importers copy, call
+;; them.
+(: date+date-period (-> Date DatePeriod Date))
+(defun (date+date-period d p) (Date (v (clr-date-plus-period (struct-ref d v) p))))
+
+(impl (HasDate Date)
+  (defun (->date d) d))
+
+(impl (DateArith Date)
+  (defun (+date-period d p) (date+date-period d p)))
+
+(impl (Ord Date)
+  (defun (compare a b)
+    (compare (clr-date-day-number (struct-ref a v)) (clr-date-day-number (struct-ref b v)))))
+
+(impl (->str Date)
+  (defun (->str d) (date->string (struct-ref d v))))
+
+
+;; ===========================================================================
+;; Time
+;; ===========================================================================
+
+(impl (HasTime Time)
+  (defun (->time t) t))
+
+;; Wraps at midnight, as TimeOnly.Add does.
+(impl (TimeArith Time)
+  (defun (+duration t d) (Time (v (clr-time-add (struct-ref t v) (struct-ref d v))))))
+
+(impl (Ord Time)
+  (defun (compare a b)
+    (compare (clr-time-ticks (struct-ref a v)) (clr-time-ticks (struct-ref b v)))))
+
+(impl (->str Time)
+  (defun (->str t) (time-of-day->string (clr-time-ticks (struct-ref t v)))))
+
+
+;; ===========================================================================
+;; DateTime
+;; ===========================================================================
+
+(impl (HasDate DateTime)
+  (defun (->date dt) (Date (v (clr-date-from-datetime (struct-ref dt v))))))
+
+(impl (HasTime DateTime)
+  (defun (->time dt) (Time (v (clr-time-from-datetime (struct-ref dt v))))))
+
+(: datetime+date-period (-> DateTime DatePeriod DateTime))
+(defun (datetime+date-period dt p)
+  (def t (datetime-ticks dt))
+  (def day (clr-date-plus-period (clr-date-from-day-number (int-of (/ t ticks-per-day))) p))
+  (ticks->datetime (+ (* (long-of (clr-date-day-number day)) ticks-per-day)
+                      (% t ticks-per-day))))
+
+(: datetime+duration (-> DateTime Duration DateTime))
+(defun (datetime+duration dt d)
+  (ticks->datetime (shift-ticks (datetime-ticks dt) (duration-ticks d)
+                                "a datetime plus a duration")))
+
+(impl (DateArith DateTime)
+  (defun (+date-period dt p) (datetime+date-period dt p)))
+
+(impl (TimeArith DateTime)
+  (defun (+duration dt d) (datetime+duration dt d)))
+
+(impl (Timeline DateTime)
+  (defun (duration-between a b)
+    (Duration (v (clr-datetime-subtract (struct-ref b v) (struct-ref a v))))))
+
+(impl (Ord DateTime)
+  (defun (compare a b) (compare (datetime-ticks a) (datetime-ticks b))))
+
+(impl (->str DateTime)
+  (defun (->str dt) (ticks->iso-datetime (datetime-ticks dt))))
+
+
+;; ===========================================================================
+;; Instant
+;; ===========================================================================
+
+(: instant-ticks (-> Instant long))
+(defun (instant-ticks i) (struct-ref i ticks))
+
+(: ticks->instant (-> long string Instant))
+(defun (ticks->instant t what)
+  (if (in-calendar? t) (Instant (ticks t)) (calendar-error what)))
+
+(: instant+duration (-> Instant Duration Instant))
+(defun (instant+duration i d)
+  (Instant (ticks (shift-ticks (instant-ticks i) (duration-ticks d)
+                               "an instant plus a duration"))))
+
+(impl (HasInstant Instant)
+  (defun (->instant i) i))
+
+(impl (TimeArith Instant)
+  (defun (+duration i d) (instant+duration i d)))
+
+;; Two instants are less than 10 000 years apart, so the difference fits.
+(impl (Timeline Instant)
+  (defun (duration-between a b)
+    (Duration (v (clr-timespan-from-ticks (- (struct-ref b ticks) (struct-ref a ticks)))))))
+
+(impl (Ord Instant)
+  (defun (compare a b) (compare (instant-ticks a) (instant-ticks b))))
+
+(impl (->str Instant)
+  (defun (->str i) (str (ticks->iso-datetime (instant-ticks i)) "Z")))
+
+(: instant->utc-datetime (-> Instant DateTime))
+(defun (instant->utc-datetime i) (ticks->datetime (instant-ticks i)))
+
+(: utc-datetime->instant (-> DateTime Instant))
+(defun (utc-datetime->instant dt) (Instant (ticks (datetime-ticks dt))))
+
+;; Rounds toward the past, so the second before 1970 is -1 rather than 0.
+(: floor-div (-> long long long))
+(defun (floor-div a b)
+  (def q (/ a b))
+  (if (< (% a b) 0L) (- q 1L) q))
+
+(: instant->unix-seconds (-> Instant long))
+(defun (instant->unix-seconds i)
+  (floor-div (- (instant-ticks i) unix-epoch-ticks) ticks-per-second))
+
+(: instant->unix-milliseconds (-> Instant long))
+(defun (instant->unix-milliseconds i)
+  (floor-div (- (instant-ticks i) unix-epoch-ticks) ticks-per-millisecond))
+
+;; The bounds are 0001-01-01T00:00Z and the last whole unit of 9999, so the
+;; multiplication cannot overflow.
+(: unix-seconds->instant (-> long (Option Instant)))
+(defun (unix-seconds->instant s)
+  (if (and (>= s -62135596800L) (<= s 253402300799L))
+      (Some (Instant (ticks (+ (* s ticks-per-second) unix-epoch-ticks))))
+      None))
+
+(: unix-milliseconds->instant (-> long (Option Instant)))
+(defun (unix-milliseconds->instant ms)
+  (if (and (>= ms -62135596800000L) (<= ms 253402300799999L))
+      (Some (Instant (ticks (+ (* ms ticks-per-millisecond) unix-epoch-ticks))))
+      None))
+
+
+;; ===========================================================================
+;; Duration
+;; ===========================================================================
+
+;; (+hours (duration #:minutes 30) 1) is PT1H30M. TimeSpan.Add raises an
+;; OverflowException past TimeSpan's range, as this module does.
+(impl (TimeArith Duration)
+  (defun (+duration a b) (Duration (v (clr-timespan-add (struct-ref a v) (struct-ref b v))))))
+
+(impl (Ord Duration)
+  (defun (compare a b) (compare (duration-ticks a) (duration-ticks b))))
+
+(impl (->str Duration)
+  (defun (->str d) (duration->iso (duration-ticks d))))
+
+;; Whole units, toward zero.
+(: duration->hours (-> Duration long))
+(defun (duration->hours d) (/ (duration-ticks d) ticks-per-hour))
+
+(: duration->minutes (-> Duration long))
+(defun (duration->minutes d) (/ (duration-ticks d) ticks-per-minute))
+
+(: duration->seconds (-> Duration long))
+(defun (duration->seconds d) (/ (duration-ticks d) ticks-per-second))
+
+(: duration->milliseconds (-> Duration long))
+(defun (duration->milliseconds d) (/ (duration-ticks d) ticks-per-millisecond))
+
+;; TimeSpan.Negate raises for the one duration with no positive twin.
+(: duration-negate (-> Duration Duration))
+(defun (duration-negate d) (Duration (v (clr-timespan-negate (struct-ref d v)))))
+
+
+;; ===========================================================================
+;; Periods
+;; ===========================================================================
+
+(: date-period-negate (-> DatePeriod DatePeriod))
+(defun (date-period-negate p)
+  (DatePeriod (years (- (record-ref p years))) (months (- (record-ref p months)))
+              (weeks (- (record-ref p weeks))) (days (- (record-ref p days)))))
+
+(impl (->str DatePeriod)
+  (defun (->str p)
+    (def parts (date-period->iso p))
+    (if (string-empty? parts) "P0D" (str "P" parts))))
+
+(impl (->str Period)
+  (defun (->str p)
+    (def dates (date-period->iso (record-ref p calendar)))
+    (def t (duration-ticks (record-ref p exact)))
+    (def times (if (= t 0L) "" (str "T" (time-parts->iso (abs t) (if (< t 0L) "-" "")))))
+    (if (and (string-empty? dates) (string-empty? times)) "P0D" (str "P" dates times))))
+
+
+;; ===========================================================================
+;; Accessors and arithmetic
+;; ===========================================================================
+
+(: ->datetime (-> %a DateTime) (where (HasDate %a) (HasTime %a)))
+(defun (->datetime x) (date+time->datetime (->date x) (->time x)))
+
+(: ->year (-> %a int) (where (HasDate %a)))
+(defun (->year x) (clr-date-year (struct-ref (->date x) v)))
+
+(: ->month (-> %a int) (where (HasDate %a)))
+(defun (->month x) (clr-date-month (struct-ref (->date x) v)))
+
+(: ->day (-> %a int) (where (HasDate %a)))
+(defun (->day x) (clr-date-day (struct-ref (->date x) v)))
+
+;; 0 is Sunday. Day number 0, 0001-01-01, was a Monday.
+(: ->wday (-> %a int) (where (HasDate %a)))
+(defun (->wday x) (% (+ (clr-date-day-number (struct-ref (->date x) v)) 1) 7))
+
+(: ->yday (-> %a int) (where (HasDate %a)))
+(defun (->yday x) (clr-date-day-of-year (struct-ref (->date x) v)))
+
+(: ->hours (-> %a int) (where (HasTime %a)))
+(defun (->hours x) (clr-time-hour (struct-ref (->time x) v)))
+
+(: ->minutes (-> %a int) (where (HasTime %a)))
+(defun (->minutes x) (clr-time-minute (struct-ref (->time x) v)))
+
+(: ->seconds (-> %a int) (where (HasTime %a)))
+(defun (->seconds x) (clr-time-second (struct-ref (->time x) v)))
+
+(: ->milliseconds (-> %a int) (where (HasTime %a)))
+(defun (->milliseconds x) (clr-time-millisecond (struct-ref (->time x) v)))
+
+;; The whole fraction of the second, so always a multiple of 100.
+(: ->nanoseconds (-> %a int) (where (HasTime %a)))
+(defun (->nanoseconds x)
+  (def t (struct-ref (->time x) v))
+  (+ (* (clr-time-millisecond t) 1000000)
+     (+ (* (clr-time-microsecond t) 1000) (clr-time-nanosecond t))))
+
+(: +years (-> %a int %a) (where (DateArith %a)))
+(defun (+years x n) (+date-period x (DatePeriod (years n) (months 0) (weeks 0) (days 0))))
+
+(: +months (-> %a int %a) (where (DateArith %a)))
+(defun (+months x n) (+date-period x (DatePeriod (years 0) (months n) (weeks 0) (days 0))))
+
+(: +weeks (-> %a int %a) (where (DateArith %a)))
+(defun (+weeks x n) (+date-period x (DatePeriod (years 0) (months 0) (weeks n) (days 0))))
+
+(: +days (-> %a int %a) (where (DateArith %a)))
+(defun (+days x n) (+date-period x (DatePeriod (years 0) (months 0) (weeks 0) (days n))))
+
+(: -years (-> %a int %a) (where (DateArith %a)))
+(defun (-years x n) (+years x (- n)))
+
+(: -months (-> %a int %a) (where (DateArith %a)))
+(defun (-months x n) (+months x (- n)))
+
+(: -weeks (-> %a int %a) (where (DateArith %a)))
+(defun (-weeks x n) (+weeks x (- n)))
+
+(: -days (-> %a int %a) (where (DateArith %a)))
+(defun (-days x n) (+days x (- n)))
+
+(: -date-period (-> %a DatePeriod %a) (where (DateArith %a)))
+(defun (-date-period x p)
+  (+date-period x (DatePeriod (years (- (record-ref p years))) (months (- (record-ref p months)))
+                              (weeks (- (record-ref p weeks))) (days (- (record-ref p days))))))
+
+(: +hours (-> %a long %a) (where (TimeArith %a)))
+(defun (+hours x n) (+duration x (duration #:hours n)))
+
+(: +minutes (-> %a long %a) (where (TimeArith %a)))
+(defun (+minutes x n) (+duration x (duration #:minutes n)))
+
+(: +seconds (-> %a long %a) (where (TimeArith %a)))
+(defun (+seconds x n) (+duration x (duration #:seconds n)))
+
+(: +milliseconds (-> %a long %a) (where (TimeArith %a)))
+(defun (+milliseconds x n) (+duration x (duration #:milliseconds n)))
+
+;; Negated after the range check, so long's minimum is refused rather than
+;; wrapped back to itself.
+(: -hours (-> %a long %a) (where (TimeArith %a)))
+(defun (-hours x n) (+duration x (duration-negate (duration #:hours n))))
+
+(: -minutes (-> %a long %a) (where (TimeArith %a)))
+(defun (-minutes x n) (+duration x (duration-negate (duration #:minutes n))))
+
+(: -seconds (-> %a long %a) (where (TimeArith %a)))
+(defun (-seconds x n) (+duration x (duration-negate (duration #:seconds n))))
+
+(: -milliseconds (-> %a long %a) (where (TimeArith %a)))
+(defun (-milliseconds x n) (+duration x (duration-negate (duration #:milliseconds n))))
+
+(: -duration (-> %a Duration %a) (where (TimeArith %a)))
+(defun (-duration x d) (+duration x (duration-negate d)))
+
+(: +period (-> %a Period %a) (where (DateArith %a) (TimeArith %a)))
+(defun (+period x p)
+  (+duration (+date-period x (record-ref p calendar)) (record-ref p exact)))
+
+(: -period (-> %a Period %a) (where (DateArith %a) (TimeArith %a)))
+(defun (-period x p)
+  (-duration (-date-period x (record-ref p calendar)) (record-ref p exact)))
+
+
+;; ===========================================================================
+;; Differences
+;; ===========================================================================
+
+;; Calendar differences read the dates only: 23:00 to 01:00 the next day is
+;; one day.
+(: days-between (-> %a %b int) (where (HasDate %a) (HasDate %b)))
+(defun (days-between a b)
+  (- (clr-date-day-number (struct-ref (->date b) v))
+     (clr-date-day-number (struct-ref (->date a) v))))
+
+(: weeks-between (-> %a %b int) (where (HasDate %a) (HasDate %b)))
+(defun (weeks-between a b) (/ (days-between a b) 7))
+
+;; A month counts once the day of the month is reached, as in java.time, so
+;; swapping the arguments only flips the sign: 2026-01-31 to 2026-02-28 is 0.
+(: months-between (-> %a %b int) (where (HasDate %a) (HasDate %b)))
+(defun (months-between a b)
+  (def x (struct-ref (->date a) v))
+  (def y (struct-ref (->date b) v))
+  (def months (- (+ (* (clr-date-year y) 12) (clr-date-month y))
+                 (+ (* (clr-date-year x) 12) (clr-date-month x))))
+  (def days (- (clr-date-day y) (clr-date-day x)))
+  (cond ((and (> months 0) (< days 0)) (- months 1))
+        ((and (< months 0) (> days 0)) (+ months 1))
+        (else months)))
+
+(: years-between (-> %a %b int) (where (HasDate %a) (HasDate %b)))
+(defun (years-between a b) (/ (months-between a b) 12))
+
+(: hours-between (-> %a %a long) (where (Timeline %a)))
+(defun (hours-between a b) (duration->hours (duration-between a b)))
+
+(: minutes-between (-> %a %a long) (where (Timeline %a)))
+(defun (minutes-between a b) (duration->minutes (duration-between a b)))
+
+(: seconds-between (-> %a %a long) (where (Timeline %a)))
+(defun (seconds-between a b) (duration->seconds (duration-between a b)))
+
+(: milliseconds-between (-> %a %a long) (where (Timeline %a)))
+(defun (milliseconds-between a b) (duration->milliseconds (duration-between a b)))
+
+
+;; ===========================================================================
+;; Zones
+;; ===========================================================================
+
+(: utc TimeZone)
+(def utc (TimeZone (tz clr-tz-utc)))
+
+;; IANA ids only: .NET would also take a Windows id such as "W. Europe
+;; Standard Time", which HasIanaId refuses.
+(: timezone (-> string (Option TimeZone)))
+(defun (timezone id)
+  (match (clr-tz-try-find id)
+    ((Some z) (if (clr-tz-has-iana-id z) (Some (TimeZone (tz z))) None))
+    (None None)))
+
+(: timezone-id (-> TimeZone string))
+(defun (timezone-id z) (clr-tz-id (struct-ref z tz)))
+
+(impl (Eq TimeZone)
+  (defun (= a b) (= (timezone-id a) (timezone-id b)))
+  (defun (eq-hash z) (eq-hash (timezone-id z))))
+
+(impl (->str TimeZone)
+  (defun (->str z) (timezone-id z)))
+
+;; The offset in z at the UTC tick count u, in ticks. u is clamped into the
+;; calendar, because local-fit looks a day past a local time on the first or
+;; last day; no zone changes offset within a day of either end, so the answer
+;; is the same.
+(: offset-at (-> TimeZoneInfo long long))
+(defun (offset-at z u)
+  (def clamped (if (< u 0L) 0L (if (> u max-ticks) max-ticks u)))
+  (clr-timespan-ticks (clr-tz-utc-offset z (ClrDateTime. clamped DateTimeKind.Utc))))
+
+(: timezone-offset-at (-> TimeZone Instant Duration))
+(defun (timezone-offset-at z i) (ticks->duration (offset-at (struct-ref z tz) (instant-ticks i))))
+
+;; Where a local time lands in a zone: at one offset, or two in an overlap
+;; (the larger first, since its instant is the earlier), or in a gap between
+;; the offset before and the offset after.
+(type (: Fit (Union (Fits long long) (Skipped long long))))
+
+(: member-long? (-> long (List long) bool))
+(defun (member-long? x xs)
+  (and (not (list-empty? xs))
+       (or (= x (list-head xs)) (member-long? x (list-tail xs)))))
+
+;; An offset o fits the local tick count l when the zone has offset o at the
+;; instant l - o. The candidates are the offsets a day either side of l, which
+;; is every offset in reach while a zone changes offset at most once in 48 h:
+;; the tz database's closest two changes are 95 h apart. When a lookup answers
+;; with a third offset it becomes a candidate too, which catches most layouts
+;; with two changes in 48 h, but not all.
+(: local-fit (-> TimeZoneInfo long Fit))
+(defun (local-fit z l)
+  (def before (offset-at z (- l ticks-per-day)))
+  (def after (offset-at z (+ l ticks-per-day)))
+  (def at-before (offset-at z (- l before)))
+  (if (and (= before after) (= at-before before))
+      (Fits before before)
+      (let* ((at-after (offset-at z (- l after)))
+             (candidates (list-foldl (fun (o seen) (if (member-long? o seen) seen (Cons o seen)))
+                                     '() (list before after at-before at-after)))
+             (fits (list-filter (fun (o) (= (offset-at z (- l o)) o)) candidates)))
+        (if (list-empty? fits)
+            (Skipped before at-before)
+            (Fits (list-foldl max (list-head fits) fits) (list-foldl min (list-head fits) fits))))))
+
+;; The first instant at offset `after`, by bisection between an instant still
+;; before the change and one after it.
+(: change-ticks (-> TimeZoneInfo long long long long))
+(defun (change-ticks z lo hi after)
+  (if (<= (- hi lo) 1L)
+      hi
+      (let ((mid (+ lo (/ (- hi lo) 2L))))
+        (if (= (offset-at z mid) after)
+            (change-ticks z lo mid after)
+            (change-ticks z mid hi after)))))
+
+
+;; ===========================================================================
+;; Moments
+;; ===========================================================================
+
+(: moment-local-ticks (-> Moment long))
+(defun (moment-local-ticks m) (datetime-ticks (struct-ref m local)))
+
+(: moment-offset-ticks (-> Moment long))
+(defun (moment-offset-ticks m) (duration-ticks (struct-ref m offset)))
+
+(: moment-instant-ticks (-> Moment long))
+(defun (moment-instant-ticks m) (- (moment-local-ticks m) (moment-offset-ticks m)))
+
+;; A moment from a local time and an offset that fits it. Near either end of
+;; the calendar the instant can fall outside it: 0001-01-01T00:00 in Tokyo is
+;; the day before.
+(: fitted-moment (-> long long TimeZone Moment))
+(defun (fitted-moment l o z)
+  (if (in-calendar? (- l o))
+      (Moment (local (ticks->datetime l)) (offset (ticks->duration o)) (zone z))
+      (calendar-error "the instant of a local time")))
+
+(: instant->moment (-> Instant TimeZone Moment))
+(defun (instant->moment i z)
+  (def u (instant-ticks i))
+  (def o (offset-at (struct-ref z tz) u))
+  (if (in-calendar? (+ u o))
+      (Moment (local (ticks->datetime (+ u o))) (offset (ticks->duration o)) (zone z))
+      (calendar-error "the local time of an instant")))
+
+(: resolver (-> Gap Overlap Resolver))
+(defun (resolver g o) (Resolver (gap g) (overlap o)))
+
+;; GapPush moves the local time forward by the length of the gap: the instant
+;; it names at the offset before the gap, read at the offset after it.
+(: resolve-local (-> long TimeZone Resolver Moment))
+(defun (resolve-local l z r)
+  (match (local-fit (struct-ref z tz) l)
+    ((Fits earlier later)
+     (fitted-moment l (match (record-ref r overlap)
+                        (OverlapEarlier earlier)
+                        (OverlapLater later))
+                    z))
+    ((Skipped before after)
+     (match (record-ref r gap)
+       (GapPush (instant->moment (ticks->instant (- l before) "the instant of a local time") z))
+       (GapNextValid
+        (instant->moment (Instant (ticks (change-ticks (struct-ref z tz) (- l after) (- l before) after)))
+                         z))))))
+
+(: datetime->moment (-> DateTime TimeZone Resolver Moment))
+(defun (datetime->moment dt z r) (resolve-local (datetime-ticks dt) z r))
+
+(: datetime->moment/opt (-> DateTime TimeZone (Option Moment)))
+(defun (datetime->moment/opt dt z)
+  (def l (datetime-ticks dt))
+  (match (local-fit (struct-ref z tz) l)
+    ((Fits earlier later)
+     (if (and (= earlier later) (in-calendar? (- l earlier)))
+         (Some (Moment (local dt) (offset (ticks->duration earlier)) (zone z)))
+         None))
+    (_ None)))
+
+(: +date-period/resolver (-> Moment DatePeriod Resolver Moment))
+(defun (+date-period/resolver m p r)
+  (datetime->moment (datetime+date-period (struct-ref m local) p) (struct-ref m zone) r))
+
+(: -date-period/resolver (-> Moment DatePeriod Resolver Moment))
+(defun (-date-period/resolver m p r) (+date-period/resolver m (date-period-negate p) r))
+
+;; Date arithmetic on a moment keeps its offset through an overlap if that
+;; offset still fits, takes the earlier one if not, and pushes forward through
+;; a gap.
+(: moment+date-period (-> Moment DatePeriod Moment))
+(defun (moment+date-period m p)
+  (def l (datetime-ticks (datetime+date-period (struct-ref m local) p)))
+  (def z (struct-ref m zone))
+  (def kept (moment-offset-ticks m))
+  (match (local-fit (struct-ref z tz) l)
+    ((Fits earlier later)
+     (fitted-moment l (if (or (= kept earlier) (= kept later)) kept earlier) z))
+    ((Skipped before after)
+     (instant->moment (ticks->instant (- l before) "the instant of a local time") z))))
+
+(: ->utc-offset (-> Moment Duration))
+(defun (->utc-offset m) (struct-ref m offset))
+
+(: ->timezone (-> Moment TimeZone))
+(defun (->timezone m) (struct-ref m zone))
+
+(: adjust-timezone (-> Moment TimeZone Moment))
+(defun (adjust-timezone m z)
+  (instant->moment (Instant (ticks (moment-instant-ticks m))) z))
+
+;; Exact: through the instant, and back into the same zone.
+(: moment+duration (-> Moment Duration Moment))
+(defun (moment+duration m d)
+  (instant->moment
+    (Instant (ticks (shift-ticks (moment-instant-ticks m) (duration-ticks d)
+                                 "a moment plus a duration")))
+    (struct-ref m zone)))
+
+(impl (HasDate Moment)
+  (defun (->date m) (->date (struct-ref m local))))
+
+(impl (HasTime Moment)
+  (defun (->time m) (->time (struct-ref m local))))
+
+(impl (HasInstant Moment)
+  (defun (->instant m)
+    (Instant (ticks (- (clr-datetime-ticks (struct-ref (struct-ref m local) v))
+                       (clr-timespan-ticks (struct-ref (struct-ref m offset) v)))))))
+
+(impl (DateArith Moment)
+  (defun (+date-period m p) (moment+date-period m p)))
+
+(impl (TimeArith Moment)
+  (defun (+duration m d) (moment+duration m d)))
+
+(impl (Timeline Moment)
+  (defun (duration-between a b) (duration-between (->instant a) (->instant b))))
+
+;; Every field, so 12:00+02:00[Europe/Stockholm] and 10:00+00:00[UTC] are two
+;; values although they are one instant.
+(impl (Eq Moment)
+  (defun (= a b)
+    (and (= (moment-local-ticks a) (moment-local-ticks b))
+         (= (moment-offset-ticks a) (moment-offset-ticks b))
+         (= (struct-ref a zone) (struct-ref b zone))))
+  (defun (eq-hash m)
+    (hash-combine (eq-hash (moment-local-ticks m))
+                  (hash-combine (eq-hash (moment-offset-ticks m)) (eq-hash (struct-ref m zone))))))
+
+;; By instant, then local time, then zone id, so that compare is 0 exactly
+;; when = holds.
+(impl (Ord Moment)
+  (defun (compare a b)
+    (def by-instant (compare (moment-instant-ticks a) (moment-instant-ticks b)))
+    (def by-local (compare (moment-local-ticks a) (moment-local-ticks b)))
+    (cond ((not (= by-instant 0)) by-instant)
+          ((not (= by-local 0)) by-local)
+          (else (compare (timezone-id (struct-ref a zone)) (timezone-id (struct-ref b zone)))))))
+
+(impl (->str Moment)
+  (defun (->str m)
+    (str (ticks->iso-datetime (moment-local-ticks m))
+         (offset->iso (moment-offset-ticks m))
+         "[" (timezone-id (struct-ref m zone)) "]")))
+
+(impl (->str Gap)
+  (defun (->str g) (match g (GapPush "GapPush") (GapNextValid "GapNextValid"))))
+
+(impl (->str Overlap)
+  (defun (->str o) (match o (OverlapEarlier "OverlapEarlier") (OverlapLater "OverlapLater"))))
+
+(impl (->str Resolver)
+  (defun (->str r)
+    (str "(resolver " (->str (record-ref r gap)) " " (->str (record-ref r overlap)) ")")))
+
+
+;; ===========================================================================
+;; The clock
+;; ===========================================================================
+
+;; The system clock reads TimeProvider.System; a fixed clock always answers
+;; the same instant, and has a zone of its own for today.
+(: system-clock Clock)
+(def system-clock (SystemClock clr-provider-system))
+
+(: fixed-clock (-> Instant TimeZone Clock))
+(defun (fixed-clock i z) (FixedClock i z))
+
+;; The machine's zone, for the system clock.
+(: clock-timezone (-> Clock TimeZone))
+(defun (clock-timezone c)
+  (match c
+    ((SystemClock p) (TimeZone (tz (clr-provider-local-zone p))))
+    ((FixedClock i z) z)))
+
+(: now (-> Clock Instant))
+(defun (now c)
+  (match c
+    ((SystemClock p) (Instant (ticks (clr-dto-utc-ticks (clr-provider-utc-now p)))))
+    ((FixedClock i z) i)))
+
+(: now/zone (-> Clock TimeZone Moment))
+(defun (now/zone c z) (instant->moment (now c) z))
+
+(: today (-> Clock Date))
+(defun (today c) (->date (now/zone c (clock-timezone c))))
+
+(: today/zone (-> Clock TimeZone Date))
+(defun (today/zone c z) (->date (now/zone c z)))
+
+
+;; ===========================================================================
+;; Writing ISO 8601
+;; ===========================================================================
+
+(: pad (-> long int string))
+(defun (pad n width) (string-pad-left (long->string n) width #:with #\0))
+
+(: date->string (-> ClrDate string))
+(defun (date->string c)
+  (str (pad (long-of (clr-date-year c)) 4) "-" (pad (long-of (clr-date-month c)) 2)
+       "-" (pad (long-of (clr-date-day c)) 2)))
+
+;; ".5" for half a second: up to seven digits, without trailing zeros, and
+;; nothing for a whole second.
+(: fraction->string (-> long string))
+(defun (fraction->string f)
+  (if (= f 0L)
+      ""
+      (let loop ((f f) (width 7))
+        (if (= (% f 10L) 0L)
+            (loop (/ f 10L) (- width 1))
+            (str "." (pad f width))))))
+
+(: time-of-day->string (-> long string))
+(defun (time-of-day->string t)
+  (str (pad (/ t ticks-per-hour) 2) ":" (pad (% (/ t ticks-per-minute) 60L) 2)
+       ":" (pad (% (/ t ticks-per-second) 60L) 2) (fraction->string (% t ticks-per-second))))
+
+(: ticks->iso-datetime (-> long string))
+(defun (ticks->iso-datetime t)
+  (str (date->string (clr-date-from-day-number (int-of (/ t ticks-per-day))))
+       "T" (time-of-day->string (% t ticks-per-day))))
+
+(: offset->iso (-> long string))
+(defun (offset->iso o)
+  (def a (abs o))
+  (def s (% (/ a ticks-per-second) 60L))
+  (str (if (< o 0L) "-" "+") (pad (/ a ticks-per-hour) 2) ":"
+       (pad (% (/ a ticks-per-minute) 60L) 2)
+       (if (= s 0L) "" (str ":" (pad s 2)))))
+
+(: amount (-> long string string))
+(defun (amount n unit) (if (= n 0L) "" (str (long->string n) unit)))
+
+;; The time components of a non-negative tick count, each prefixed by sign.
+(: time-parts->iso (-> long string string))
+(defun (time-parts->iso a sign)
+  (def h (/ a ticks-per-hour))
+  (def m (% (/ a ticks-per-minute) 60L))
+  (def s (% (/ a ticks-per-second) 60L))
+  (def f (% a ticks-per-second))
+  (str (if (= h 0L) "" (str sign (long->string h) "H"))
+       (if (= m 0L) "" (str sign (long->string m) "M"))
+       (if (and (= s 0L) (= f 0L)) "" (str sign (long->string s) (fraction->string f) "S"))))
+
+;; PT26H30M, with one leading sign: -PT1H30M.
+(: duration->iso (-> long string))
+(defun (duration->iso t)
+  (if (= t 0L)
+      "PT0S"
+      (str (if (< t 0L) "-" "") "PT" (time-parts->iso (abs t) ""))))
+
+;; Each component carries its own sign, since a period may mix them: P1M-3D.
+(: date-period->iso (-> DatePeriod string))
+(defun (date-period->iso p)
+  (str (amount (long-of (record-ref p years)) "Y")
+       (amount (long-of (record-ref p months)) "M")
+       (amount (long-of (record-ref p weeks)) "W")
+       (amount (long-of (record-ref p days)) "D")))
+
+
+;; ===========================================================================
+;; Reading ISO 8601
+;; ===========================================================================
+;;
+;; Each reader takes the characters left and answers what it read with the
+;; characters after it, or None. Only the extended format is read
+;; (2026-10-25T02:30:00, not 20261025T023000), with an upper-case T and Z.
+
+(: ascii-digit (-> char int))
+(defun (ascii-digit c)
+  (def n (char->int c))
+  (if (and (>= n 48) (<= n 57)) (- n 48) -1))
+
+(: next-digit (-> (List char) int))
+(defun (next-digit cs)
+  (if (list-empty? cs) -1 (ascii-digit (list-head cs))))
+
+(: skip-char (-> (List char) char (Option (List char))))
+(defun (skip-char cs c)
+  (if (and (not (list-empty? cs)) (char=? (list-head cs) c))
+      (Some (list-tail cs))
+      None))
+
+(: starts-with-char? (-> (List char) char bool))
+(defun (starts-with-char? cs c)
+  (and (not (list-empty? cs)) (char=? (list-head cs) c)))
+
+;; Exactly n digits.
+(: read-fixed (-> (List char) int (Option (Tuple int (List char)))))
+(defun (read-fixed cs n)
+  (let loop ((cs cs) (left n) (acc 0))
+    (cond ((= left 0) (Some (Tuple acc cs)))
+          ((< (next-digit cs) 0) None)
+          (else (loop (list-tail cs) (- left 1) (+ (* acc 10) (next-digit cs)))))))
+
+;; One or more digits, or None past long's range.
+(: read-number (-> (List char) (Option (Tuple long (List char)))))
+(defun (read-number cs)
+  (let loop ((cs cs) (count 0) (acc 0L))
+    (def d (long-of (next-digit cs)))
+    (cond ((< d 0L) (if (= count 0) None (Some (Tuple acc cs))))
+          ((> acc (/ (- long-max d) 10L)) None)
+          (else (loop (list-tail cs) (+ count 1) (+ (* acc 10L) d))))))
+
+;; The digits after a decimal point or comma, as ticks. Digits past the
+;; seventh are read and dropped, as a tick holds no less than 100 ns.
+(: read-fraction (-> (List char) (Option (Tuple long (List char)))))
+(defun (read-fraction cs)
+  (let loop ((cs cs) (count 0) (acc 0L))
+    (def d (long-of (next-digit cs)))
+    (cond ((>= d 0L)
+           (loop (list-tail cs) (+ count 1) (if (< count 7) (+ (* acc 10L) d) acc)))
+          ((= count 0) None)
+          (else (Some (Tuple (scale-fraction acc count) cs))))))
+
+(: scale-fraction (-> long int long))
+(defun (scale-fraction f digits)
+  (if (>= digits 7) f (scale-fraction (* f 10L) (+ digits 1))))
+
+;; An optional fraction: nothing, or a separator and at least one digit.
+(: read-optional-fraction (-> (List char) (Option (Tuple long (List char)))))
+(defun (read-optional-fraction cs)
+  (if (or (starts-with-char? cs #\.) (starts-with-char? cs #\,))
+      (read-fraction (list-tail cs))
+      (Some (Tuple 0L cs))))
+
+;; YYYY-MM-DD, as a day number.
+(: read-date (-> (List char) (Option (Tuple long (List char)))))
+(defun (read-date cs)
+  (def* ((Some (Tuple y cs1)) (read-fixed cs 4) :propagate)
+        ((Some cs2) (skip-char cs1 #\-) :propagate)
+        ((Some (Tuple m cs3)) (read-fixed cs2 2) :propagate)
+        ((Some cs4) (skip-char cs3 #\-) :propagate)
+        ((Some (Tuple d cs5)) (read-fixed cs4 2) :propagate))
+  (if (valid-date? y m d)
+      (Some (Tuple (long-of (clr-date-day-number (ClrDate. y m d))) cs5))
+      None))
+
+;; hh:mm, hh:mm:ss or hh:mm:ss.fff, as ticks since midnight. No leap second.
+(: read-time (-> (List char) (Option (Tuple long (List char)))))
+(defun (read-time cs)
+  (def* ((Some (Tuple h cs1)) (read-fixed cs 2) :propagate)
+        ((Some cs2) (skip-char cs1 #\:) :propagate)
+        ((Some (Tuple m cs3)) (read-fixed cs2 2) :propagate))
+  (cond ((not (and (< h 24) (< m 60))) None)
+        ((not (starts-with-char? cs3 #\:)) (Some (Tuple (time-of-day-ticks h m 0 0) cs3)))
+        (:def (Some (Tuple s cs4)) (read-fixed (list-tail cs3) 2) :propagate)
+        (:def (Some (Tuple f cs5)) (read-optional-fraction cs4) :propagate)
+        ((>= s 60) None)
+        (else (Some (Tuple (+ (time-of-day-ticks h m s 0) f) cs5)))))
+
+;; A date, T, and a time, as local ticks.
+(: read-datetime (-> (List char) (Option (Tuple long (List char)))))
+(defun (read-datetime cs)
+  (def* ((Some (Tuple day cs1)) (read-date cs) :propagate)
+        ((Some cs2) (skip-char cs1 #\T) :propagate)
+        ((Some (Tuple t cs3)) (read-time cs2) :propagate))
+  (Some (Tuple (+ (* day ticks-per-day) t) cs3)))
+
+;; Z, or ±hh:mm with an optional :ss, as ticks.
+(: read-offset (-> (List char) (Option (Tuple long (List char)))))
+(defun (read-offset cs)
+  (cond ((starts-with-char? cs #\Z) (Some (Tuple 0L (list-tail cs))))
+        ((starts-with-char? cs #\+) (read-hhmm (list-tail cs) 1L))
+        ((starts-with-char? cs #\-) (read-hhmm (list-tail cs) -1L))
+        (else None)))
+
+(: read-hhmm (-> (List char) long (Option (Tuple long (List char)))))
+(defun (read-hhmm cs sign)
+  (def* ((Some (Tuple h cs1)) (read-fixed cs 2) :propagate)
+        ((Some cs2) (skip-char cs1 #\:) :propagate)
+        ((Some (Tuple m cs3)) (read-fixed cs2 2) :propagate))
+  (cond ((not (and (< h 24) (< m 60))) None)
+        ((not (starts-with-char? cs3 #\:))
+         (Some (Tuple (* sign (time-of-day-ticks h m 0 0)) cs3)))
+        (:def (Some (Tuple s cs4)) (read-fixed (list-tail cs3) 2) :propagate)
+        ((>= s 60) None)
+        (else (Some (Tuple (* sign (time-of-day-ticks h m s 0)) cs4)))))
+
+;; The characters up to c, and those after it.
+(: read-until (-> (List char) char (Option (Tuple string (List char)))))
+(defun (read-until cs c)
+  (let loop ((cs cs) (taken '()))
+    (cond ((list-empty? cs) None)
+          ((char=? (list-head cs) c) (Some (Tuple (list->string (list-reverse taken)) (list-tail cs))))
+          (else (loop (list-tail cs) (Cons (list-head cs) taken))))))
+
+;; A reader's value when it used every character.
+(: whole (-> (Option (Tuple %a (List char))) (Option %a)))
+(defun (whole r)
+  (match r
+    ((Some (Tuple v rest)) (if (list-empty? rest) (Some v) None))
+    (None None)))
+
+(: iso8601->date (-> string (Option Date)))
+(defun (iso8601->date s)
+  (def (Some day) (whole (read-date (string->list s))) :propagate)
+  (Some (day-number->date day)))
+
+(: iso8601->time (-> string (Option Time)))
+(defun (iso8601->time s)
+  (def (Some t) (whole (read-time (string->list s))) :propagate)
+  (Some (Time (v (ClrTime. t)))))
+
+(: iso8601->datetime (-> string (Option DateTime)))
+(defun (iso8601->datetime s)
+  (def (Some t) (whole (read-datetime (string->list s))) :propagate)
+  (Some (ticks->datetime t)))
+
+;; Any offset, converted to UTC.
+(: iso8601->instant (-> string (Option Instant)))
+(defun (iso8601->instant s)
+  (def* ((Some (Tuple l cs)) (read-datetime (string->list s)) :propagate)
+        ((Some o) (whole (read-offset cs)) :propagate))
+  (if (in-calendar? (- l o)) (Some (Instant (ticks (- l o)))) None))
+
+;; The offset has to be one the zone has at that local time, so an overlap
+;; reads either way and a gap reads neither.
+(: iso8601->moment (-> string (Option Moment)))
+(defun (iso8601->moment s)
+  (def* ((Some (Tuple l cs1)) (read-datetime (string->list s)) :propagate)
+        ((Some (Tuple o cs2)) (read-offset cs1) :propagate)
+        ((Some cs3) (skip-char cs2 #\[) :propagate)
+        ((Some id) (whole (read-until cs3 #\])) :propagate)
+        ((Some z) (timezone id) :propagate))
+  (if (and (in-calendar? (- l o)) (= (offset-at (struct-ref z tz) (- l o)) o))
+      (Some (Moment (local (ticks->datetime l)) (offset (ticks->duration o)) (zone z)))
+      None))
+
+;; An optional sign: -1 for a minus, 1 otherwise.
+(: read-sign (-> (List char) (Tuple long (List char))))
+(defun (read-sign cs)
+  (cond ((starts-with-char? cs #\-) (Tuple -1L (list-tail cs)))
+        ((starts-with-char? cs #\+) (Tuple 1L (list-tail cs)))
+        (else (Tuple 1L cs))))
+
+;; The date components of a period, each optional and in the order Y M W D,
+;; each with its own sign, which multiplies with the period's. Stops at T or
+;; at the end.
+(: read-date-parts (-> (List char) long (Option (Tuple (Tuple DatePeriod int) (List char)))))
+(defun (read-date-parts cs sign)
+  (let loop ((cs cs) (units (list #\Y #\M #\W #\D)) (p (date-period)) (count 0))
+    (if (or (list-empty? cs) (starts-with-char? cs #\T))
+        (Some (Tuple (Tuple p count) cs))
+        (let ((signed (read-sign cs)))
+          (def (Tuple own cs1) signed)
+          (def (Some (Tuple n cs2)) (read-number cs1) :propagate)
+          (def value (* (* sign own) n))
+          (def (Some rest-units) (units-after units cs2) :propagate)
+          (if (or (> value 2147483647L) (< value -2147483648L))
+              None
+              (loop (list-tail cs2) rest-units
+                    (set-date-part p (list-head cs2) (int-of value)) (+ count 1)))))))
+
+;; The units still allowed after the one cs starts with, or None when it is
+;; not one of them.
+(: units-after (-> (List char) (List char) (Option (List char))))
+(defun (units-after units cs)
+  (cond ((list-empty? cs) None)
+        ((list-empty? units) None)
+        ((char=? (list-head units) (list-head cs)) (Some (list-tail units)))
+        (else (units-after (list-tail units) cs))))
+
+(: set-date-part (-> DatePeriod char int DatePeriod))
+(defun (set-date-part p unit n)
+  (cond ((char=? unit #\Y) (record-set p (years n)))
+        ((char=? unit #\M) (record-set p (months n)))
+        ((char=? unit #\W) (record-set p (weeks n)))
+        (else (record-set p (days n)))))
+
+;; The time components after T, in the order H M S, as ticks. Only seconds
+;; take a fraction.
+(: read-time-parts (-> (List char) long (Option (Tuple (Tuple long int) (List char)))))
+(defun (read-time-parts cs sign)
+  (let loop ((cs cs) (units (list #\H #\M #\S)) (total 0L) (count 0))
+    (if (list-empty? cs)
+        (Some (Tuple (Tuple total count) cs))
+        (let ((signed (read-sign cs)))
+          (def (Tuple own cs1) signed)
+          (def (Some (Tuple n cs2)) (read-number cs1) :propagate)
+          (def (Some (Tuple f cs3)) (read-optional-fraction cs2) :propagate)
+          (def (Some rest-units) (units-after units cs3) :propagate)
+          (def unit (list-head cs3))
+          (def per (cond ((char=? unit #\H) ticks-per-hour)
+                         ((char=? unit #\M) ticks-per-minute)
+                         (else ticks-per-second)))
+          (def* ((Some whole-ticks) (checked-mul n per) :propagate)
+                ((Some magnitude) (checked-add whole-ticks f) :propagate)
+                ((Some next) (checked-add total (* (* sign own) magnitude)) :propagate))
+          (if (and (> f 0L) (not (char=? unit #\S)))
+              None
+              (loop (list-tail cs3) rest-units next (+ count 1)))))))
+
+;; [sign] P [date parts] [T time parts]: the date period, the ticks, and
+;; whether each part was there.
+(type (: PeriodText (Record (: dates DatePeriod) (: date-count int)
+                            (: ticks long) (: time-count int) (: has-t bool))))
+
+(: read-period-text (-> string (Option PeriodText)))
+(defun (read-period-text s)
+  (def (Tuple sign cs0) (read-sign (string->list s)))
+  (def* ((Some cs1) (skip-char cs0 #\P) :propagate)
+        ((Some (Tuple (Tuple dates date-count) cs2)) (read-date-parts cs1 sign) :propagate))
+  (if (list-empty? cs2)
+      (Some (PeriodText (dates dates) (date-count date-count) (ticks 0L) (time-count 0)
+                        (has-t #f)))
+      (let ((after-t (list-tail cs2)))
+        (def (Some (Tuple (Tuple t time-count) cs3)) (read-time-parts after-t sign) :propagate)
+        (Some (PeriodText (dates dates) (date-count date-count) (ticks t)
+                          (time-count time-count) (has-t #t))))))
+
+;; PT26H30M. Days are a calendar amount, so P1D is not a duration.
+(: iso8601->duration (-> string (Option Duration)))
+(defun (iso8601->duration s)
+  (def (Some p) (read-period-text s) :propagate)
+  (if (and (= (record-ref p date-count) 0) (> (record-ref p time-count) 0))
+      (Some (ticks->duration (record-ref p ticks)))
+      None))
+
+(: iso8601->date-period (-> string (Option DatePeriod)))
+(defun (iso8601->date-period s)
+  (def (Some p) (read-period-text s) :propagate)
+  (if (and (> (record-ref p date-count) 0) (not (record-ref p has-t)))
+      (Some (record-ref p dates))
+      None))
+
+;; P1DT3H. A T needs a time part after it.
+(: iso8601->period (-> string (Option Period)))
+(defun (iso8601->period s)
+  (def (Some p) (read-period-text s) :propagate)
+  (if (and (> (+ (record-ref p date-count) (record-ref p time-count)) 0)
+           (or (not (record-ref p has-t)) (> (record-ref p time-count) 0)))
+      (Some (Period (calendar (record-ref p dates)) (exact (ticks->duration (record-ref p ticks)))))
+      None))
+
+
+;; ===========================================================================
+;; HTTP dates
+;; ===========================================================================
+;;
+;; IMF-fixdate (RFC 9110): Sun, 25 Oct 2026 01:30:00 GMT. The two obsolete
+;; forms, RFC 850 and asctime, are not read.
+
+(: day-name (-> int string))
+(defun (day-name n)
+  (match n (0 "Sun") (1 "Mon") (2 "Tue") (3 "Wed") (4 "Thu") (5 "Fri") (_ "Sat")))
+
+(: month-name (-> int string))
+(defun (month-name n)
+  (match n
+    (1 "Jan") (2 "Feb") (3 "Mar") (4 "Apr") (5 "May") (6 "Jun")
+    (7 "Jul") (8 "Aug") (9 "Sep") (10 "Oct") (11 "Nov") (_ "Dec")))
+
+;; The fraction of a second is dropped, as the format has none.
+(: instant->http-date (-> Instant string))
+(defun (instant->http-date i)
+  (def t (instant-ticks i))
+  (def c (clr-date-from-day-number (int-of (/ t ticks-per-day))))
+  (def tod (% t ticks-per-day))
+  (str (day-name (int-of (% (+ (long-of (clr-date-day-number c)) 1L) 7L))) ", "
+       (pad (long-of (clr-date-day c)) 2) " " (month-name (clr-date-month c)) " "
+       (pad (long-of (clr-date-year c)) 4) " "
+       (pad (/ tod ticks-per-hour) 2) ":" (pad (% (/ tod ticks-per-minute) 60L) 2) ":"
+       (pad (% (/ tod ticks-per-second) 60L) 2) " GMT"))
+
+;; The first n characters as a string.
+(: read-chars (-> (List char) int (Option (Tuple string (List char)))))
+(defun (read-chars cs n)
+  (let loop ((cs cs) (left n) (taken '()))
+    (cond ((= left 0) (Some (Tuple (list->string (list-reverse taken)) cs)))
+          ((list-empty? cs) None)
+          (else (loop (list-tail cs) (- left 1) (Cons (list-head cs) taken))))))
+
+(: skip-string (-> (List char) string (Option (List char))))
+(defun (skip-string cs s)
+  (let loop ((cs cs) (want (string->list s)))
+    (cond ((list-empty? want) (Some cs))
+          ((starts-with-char? cs (list-head want)) (loop (list-tail cs) (list-tail want)))
+          (else None))))
+
+(: month-number (-> string int))
+(defun (month-number name)
+  (let loop ((m 1))
+    (cond ((> m 12) 0)
+          ((= (month-name m) name) m)
+          (else (loop (+ m 1))))))
+
+;; The day name must be the date's own.
+(: http-date->instant (-> string (Option Instant)))
+(defun (http-date->instant s)
+  (def* ((Some (Tuple wday cs1)) (read-chars (string->list s) 3) :propagate)
+        ((Some cs2) (skip-string cs1 ", ") :propagate)
+        ((Some (Tuple d cs3)) (read-fixed cs2 2) :propagate)
+        ((Some cs4) (skip-char cs3 #\space) :propagate)
+        ((Some (Tuple mon cs5)) (read-chars cs4 3) :propagate)
+        ((Some cs6) (skip-char cs5 #\space) :propagate)
+        ((Some (Tuple y cs7)) (read-fixed cs6 4) :propagate)
+        ((Some cs8) (skip-char cs7 #\space) :propagate)
+        ((Some (Tuple h cs9)) (read-fixed cs8 2) :propagate)
+        ((Some cs10) (skip-char cs9 #\:) :propagate)
+        ((Some (Tuple mi cs11)) (read-fixed cs10 2) :propagate)
+        ((Some cs12) (skip-char cs11 #\:) :propagate)
+        ((Some (Tuple sec cs13)) (read-fixed cs12 2) :propagate)
+        ((Some cs14) (skip-string cs13 " GMT") :propagate))
+  (def m (month-number mon))
+  (if (and (list-empty? cs14) (valid-date? y m d) (valid-time? h mi sec 0))
+      (let ((day (long-of (clr-date-day-number (ClrDate. y m d)))))
+        (if (= (day-name (int-of (% (+ day 1L) 7L))) wday)
+            (Some (Instant (ticks (+ (* day ticks-per-day) (time-of-day-ticks h mi sec 0)))))
+            None))
+      None))

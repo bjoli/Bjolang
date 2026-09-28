@@ -3,6 +3,43 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std datetime)~: dates, times, instants and zones
+
+One model for time in place of the .NET types imported one by one: ~Date~,
+~Time~, ~DateTime~, ~Instant~, ~TimeZone~, ~Moment~ (a local time with its
+offset and zone), ~Duration~, ~DatePeriod~, ~Period~ and ~Clock~. The model is
+the one java.time, NodaTime and Racket's Gregor share. See
+~Docs/std/datetime.org~.
+
+- *The types refuse what means nothing.* Six one-method traits (~HasDate~,
+  ~HasTime~, ~HasInstant~, ~DateArith~, ~TimeArith~, ~Timeline~) decide what
+  each type can do, so ~(+days some-instant 1)~ and ~(+hours some-date 2)~ are
+  compile errors: a day on an instant needs a zone, and a date has no hours.
+- *Every value was checked.* The value types are opaque single-field structs
+  over ~DateOnly~, ~TimeOnly~, ~DateTime~, a ~long~ of UTC ticks, ~TimeZoneInfo~
+  and ~TimeSpan~, and cost what those cost. A moment's offset is always one its
+  zone has at that time. No .NET time type is in a public signature.
+- *Gaps and overlaps are the caller's choice.* ~datetime->moment~ takes a
+  resolver (~GapPush~ or ~GapNextValid~, ~OverlapEarlier~ or ~OverlapLater~),
+  and ~datetime->moment/opt~ refuses both. A local time finds its offsets from
+  ~GetUtcOffset~ on instants alone, since .NET's ~IsInvalidTime~ misses the gap
+  a change of standard time leaves (Brussels, 1914-11-08).
+- *The clock is an argument.* ~now~, ~today~, ~now/zone~ and ~today/zone~ take
+  a ~Clock~, ~system-clock~ or ~(fixed-clock instant zone)~, and nothing else
+  reads the time. Importing the module hides the prelude's ~(now)~ there.
+- *Nothing leaves the range quietly.* Every value lies in the years 1 to 9999.
+  A result outside raises an ~OverflowException~, or is ~None~ from a
+  constructor, a reader or an ~/opt~ function, and the checks come before any
+  arithmetic that could wrap. The lookups a day either side of a local time are
+  clamped to the range, since 0001-01-01 minus a day is not a ~DateTime~.
+- *ISO 8601 both ways*, and IMF-fixdate for HTTP, written and read digit by
+  digit with no culture involved.
+
+Tested in ~245_datetime.bjo~, which covers the required Stockholm cases and the
+edges of the range and prints a ~FAILURE~ naming the tz database when the
+machine has none, and in ~errors/datetime_days_on_instant.bjo~ and
+~errors/datetime_hours_on_date.bjo~.
+
 * A call to a constrained function with no implementation is one error
 
 A call such as ~(double-area 3)~, where ~double-area~ requires ~(Shape %a)~ and

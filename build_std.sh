@@ -55,6 +55,10 @@ echo "Building standard library..."
 ./bjor --lib lib/std/stopwatch.bjo
 # `fmt` imports `prelude` and nothing else.
 ./bjor --lib lib/std/fmt.bjo
+# `datetime` imports `prelude` and nothing else. Its clock reads
+# `TimeProvider.System` directly rather than through the prelude's `Clock`
+# effect, which it has no use for.
+./bjor --lib lib/std/datetime.bjo
 # `run` imports `prelude` and `syntax-match`, the latter because `with-run` is
 # written with it. It also binds `BjoPipe` and `BjoProc` out of the runtime
 # assembly, so a change to `BjolangRuntime/BjoProcess.cs` has to reach the

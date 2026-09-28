@@ -1,0 +1,310 @@
+* std/datetime — dates, times, instants and zones
+
+#+BEGIN_SRC scheme
+(import (std datetime))
+
+(defun (main)
+  (def (Some stockholm) (timezone "Europe/Stockholm") :leave-with 1)
+  (def (Some noon) (datetime 2026 10 24 #:hours 12) :leave-with 1)
+  (def meeting (datetime->moment noon stockholm (resolver GapPush OverlapEarlier)))
+  (println (+days meeting 1))     ;; 2026-10-25T12:00:00+01:00[Europe/Stockholm]
+  (println (+hours meeting 24))   ;; 2026-10-25T11:00:00+01:00[Europe/Stockholm]
+  (println (now system-clock))    ;; 2026-09-28T10:59:20.3067129Z
+  0)
+#+END_SRC
+
+The clocks go back on the night between, so a calendar day later and 24 hours
+later are two different times.
+
+One model for time, the one java.time, NodaTime and Racket's Gregor share, plus
+two ideas from OCaml's Ptime: the clock is an argument, and the types refuse
+operations that mean nothing, such as adding a calendar day to an instant.
+
+** The types
+
+| Type         | What it is                                          | Built on                         |
+|--------------+-----------------------------------------------------+----------------------------------|
+| ~Date~       | a calendar date, no zone                            | ~DateOnly~                       |
+| ~Time~       | a time of day, no zone                              | ~TimeOnly~                       |
+| ~DateTime~   | a date and a time, no zone                          | ~DateTime~, Kind always Unspecified |
+| ~Instant~    | a point on the global timeline                      | a ~long~ of UTC ticks            |
+| ~TimeZone~   | an IANA zone, such as ~Europe/Stockholm~            | ~TimeZoneInfo~                   |
+| ~Moment~     | a local datetime, its UTC offset, and its zone      | a struct of the three            |
+| ~Duration~   | exact elapsed time                                  | ~TimeSpan~                       |
+| ~DatePeriod~ | calendar amounts: years, months, weeks, days        | a struct of four ~int~            |
+| ~Period~     | a date period and a duration: "1 day and 3 hours"   | a struct of the two              |
+| ~Clock~      | where ~now~ comes from                              | the system clock, or a fixed one |
+
+Each value type is a struct with one field (a ~Moment~ has three), so a
+~Date~ costs what a ~DateOnly~ costs. No .NET time type appears in a public
+signature.
+
+** Traits
+
+Each trait has one method, and everything else is a generic function over the
+traits. A new function, such as a ~->quarter~, never needs a new instance.
+
+| Trait        | Method                             | Date | Time | DateTime | Moment | Instant | Duration |
+|--------------+------------------------------------+------+------+----------+--------+---------+----------|
+| ~HasDate~    | ~(->date x)~                       | ✓    |      | ✓        | ✓      |         |          |
+| ~HasTime~    | ~(->time x)~                       |      | ✓    | ✓        | ✓      |         |          |
+| ~HasInstant~ | ~(->instant x)~                    |      |      |          | ✓      | ✓       |          |
+| ~DateArith~  | ~(+date-period x p)~               | ✓    |      | ✓        | ✓      |         |          |
+| ~TimeArith~  | ~(+duration x d)~                  |      | ✓    | ✓        | ✓      | ✓       | ✓        |
+| ~Timeline~   | ~(duration-between a b)~, ~b - a~  |      |      | ✓        | ✓      | ✓       |          |
+
+Every type has ~=~ and ~->str~; all but ~TimeZone~, the periods and the
+resolvers also have ~compare~. A ~TimeZone~ is equal to another by its id.
+
+** Construction
+
+Bad input is ~None~.
+
+- ~(date y m d)~ : ~(Option Date)~. ~(date 2026 2 30)~ is ~None~.
+- ~(time h m #:seconds 0 #:nanoseconds 0)~ : ~(Option Time)~.
+- ~(datetime y m d #:hours 0 #:minutes 0 #:seconds 0 #:nanoseconds 0)~ :
+  ~(Option DateTime)~.
+- ~(date+time->datetime d t)~, and ~(->datetime x)~ for anything with both.
+- ~(duration #:days #:hours #:minutes #:seconds #:milliseconds #:nanoseconds)~ :
+  every keyword a ~long~, defaulting to 0. A day here is exactly 24 hours.
+- ~(date-period #:years #:months #:weeks #:days)~, every keyword an ~int~.
+- ~(period ...)~ : the keywords of both. ~(period #:days 1 #:hours 3)~.
+
+Nanoseconds are cut to the 100 ns a tick holds: ~(time 1 2 #:nanoseconds 150)~
+holds 100 ns.
+
+** Zones and moments
+
+- ~(timezone "Europe/Stockholm")~ : ~(Option TimeZone)~. IANA ids only, so a
+  Windows id such as ~"W. Europe Standard Time"~ is ~None~.
+- ~utc~, ~(timezone-id z)~, and ~(timezone-offset-at z instant)~, a ~Duration~.
+- ~(instant->moment i z)~ : the moment ~i~ is in ~z~. Always one answer.
+- ~(datetime->moment dt z resolver)~ : a local time can be missing from a zone
+  (a gap, when the clocks go forward) or happen twice (an overlap, when they go
+  back), so the resolver says what to do with each:
+
+  #+BEGIN_SRC scheme
+  (resolver GapPush OverlapEarlier)
+  #+END_SRC
+
+  | ~GapPush~        | forward by the length of the gap: 02:30 in a one-hour gap is 03:30 |
+  | ~GapNextValid~   | the first time after the gap: 03:00                           |
+  | ~OverlapEarlier~ | the first of the two, at the larger offset                    |
+  | ~OverlapLater~   | the second                                                    |
+
+  In Stockholm, 2026-10-25 02:30 happens twice: ~OverlapEarlier~ gives
+  ~+02:00~ (00:30Z) and ~OverlapLater~ ~+01:00~ (01:30Z). 2026-03-29 02:30
+  never happens: ~GapPush~ gives 03:30+02:00 and ~GapNextValid~ 03:00+02:00.
+- ~(datetime->moment/opt dt z)~ : ~None~ on a gap or an overlap.
+- ~(->utc-offset m)~, ~(->timezone m)~, and ~(adjust-timezone m z)~, the same
+  instant in another zone.
+
+Date arithmetic on a moment works on the local time and then finds the offset
+again, since a trait method cannot take a resolver. Through an overlap it keeps
+the moment's own offset if that still fits, and takes the earlier one if not.
+Through a gap it pushes forward. So 2026-10-24 02:30+02:00 plus a day is
+2026-10-25 02:30+02:00, and 2026-10-26 02:30+01:00 minus a day is
+2026-10-25 02:30+01:00. ~(+date-period/resolver m p resolver)~ and
+~-date-period/resolver~ take a resolver of their own.
+
+Duration arithmetic on a moment is exact: through the instant, and back into
+the same zone.
+
+** The clock
+
+Only these read the time, and each takes the clock as an argument:
+
+- ~(now clock)~ : an ~Instant~.
+- ~(now/zone clock z)~ : a ~Moment~ in ~z~.
+- ~(today clock)~ : the date in the clock's own zone.
+- ~(today/zone clock z)~ : the date in ~z~.
+
+~system-clock~ reads ~TimeProvider.System~, and its zone is the machine's.
+~(fixed-clock instant zone)~ always answers the same, which is what a test
+wants. ~(clock-timezone clock)~ is the zone ~today~ uses.
+
+** Accessors and arithmetic
+
+- ~->year~, ~->month~ (1–12), ~->day~ (1–31), ~->wday~ (0 is Sunday),
+  ~->yday~ (1–366): anything ~HasDate~.
+- ~->hours~, ~->minutes~, ~->seconds~, ~->milliseconds~ (0–999),
+  ~->nanoseconds~ (the whole fraction of the second): anything ~HasTime~.
+- ~+years~, ~+months~, ~+weeks~, ~+days~ and their ~-~ twins take an ~int~,
+  and ~-date-period~ a ~DatePeriod~: anything ~DateArith~.
+- ~+hours~, ~+minutes~, ~+seconds~, ~+milliseconds~ and their ~-~ twins take a
+  ~long~, and ~-duration~ a ~Duration~: anything ~TimeArith~.
+- ~+period~ and ~-period~: anything with both.
+- ~duration->hours~, ~duration->minutes~, ~duration->seconds~,
+  ~duration->milliseconds~, toward zero; ~duration-negate~.
+
+Month arithmetic clamps to the end of the month: 2026-01-31 plus a month is
+2026-02-28, and 2024-01-31 plus a month is 2024-02-29. A period is applied
+largest unit first: years, then months, then weeks and days, then the duration.
+Time-of-day arithmetic wraps at midnight: 23:00 plus two hours is 01:00.
+
+** Differences
+
+Whole units, toward zero, from the first argument to the second.
+
+- ~days-between~, ~weeks-between~, ~months-between~, ~years-between~ read the
+  two dates only, and the two may be different types: ~(days-between some-date
+  some-moment)~ works.
+- ~hours-between~, ~minutes-between~, ~seconds-between~,
+  ~milliseconds-between~ measure elapsed time, and both arguments have one type
+  (~Timeline~).
+
+** Instants
+
+- ~(instant->utc-datetime i)~ and ~(utc-datetime->instant dt)~.
+- ~(instant->unix-seconds i)~ and ~(instant->unix-milliseconds i)~, rounded
+  toward the past: half a second before 1970 is -1.
+- ~(unix-seconds->instant s)~ and ~(unix-milliseconds->instant ms)~ : ~None~
+  outside the years 1 to 9999.
+
+** Text
+
+~->str~ writes ISO 8601 for every type, and a reader for each reads it back as
+an ~Option~:
+
+| ~iso8601->date~        | ~2026-10-25~                                    |
+| ~iso8601->time~        | ~02:30~, ~02:30:00~, ~02:30:00.5~, ~02:30:00,5~ |
+| ~iso8601->datetime~    | ~2026-10-25T02:30:00~                           |
+| ~iso8601->instant~     | ~2026-10-25T01:30:00Z~, or any offset, converted to UTC |
+| ~iso8601->moment~      | ~2026-10-25T02:30:00+01:00[Europe/Stockholm]~   |
+| ~iso8601->duration~    | ~PT26H30M~, ~-PT1.5S~                           |
+| ~iso8601->date-period~ | ~P1Y2M3W4D~, ~P1M-3D~                           |
+| ~iso8601->period~      | ~P1DT3H~                                        |
+
+Only the extended format is read (~2026-10-25~, not ~20261025~), with an upper
+case ~T~ and ~Z~. A fraction of a second has up to seven digits written, and
+more are read and dropped. A moment's offset has to be one its zone has at that
+local time, so ~2026-07-01T12:00:00+01:00[Europe/Stockholm]~ is ~None~ (July
+is +02:00), and so is any local time in a gap. A duration has no days, since a
+day is a calendar amount: ~P1D~ is a ~DatePeriod~.
+
+~(instant->http-date i)~ writes an IMF-fixdate (RFC 9110),
+~Sun, 25 Oct 2026 01:30:00 GMT~, and ~(http-date->instant s)~ reads one. The day
+name has to be the date's own. The two obsolete forms, RFC 850 and asctime, are
+not read.
+
+The digits are written and read by this module, not by .NET, so no culture is
+involved and nothing depends on the machine's locale.
+
+** Range and errors
+
+Every value lies between 0001-01-01T00:00 and 9999-12-31T23:59:59.9999999. A
+function that returns the value itself raises a ~System.OverflowException~ when
+the result would be outside; a constructor, a reader or an ~/opt~ function
+answers ~None~.
+
+#+BEGIN_SRC scheme
+(-days (date 1 1 1) 1)        ;; raises
+(date 0 12 31)                ;; None
+#+END_SRC
+
+Nothing is clamped or wrapped silently, apart from the month-end rule and the
+wrap at midnight above. The checks come before the arithmetic, since C#
+arithmetic wraps where it overflows: ~(+hours i n)~ with an ~n~ above about 256
+million would multiply past a ~long~ and could wrap back into range, so ~n~ is
+checked first. A ~Duration~ holds about ±29 227 years.
+
+Near the two ends of the range, a local time and its instant cannot both fit:
+0001-01-01T00:00 in Tokyo is an instant on the day before, and the instant
+0001-01-01T00:00Z is a local time on the day before in New York. There,
+~datetime->moment~ and ~instant->moment~ raise and ~datetime->moment/opt~ is
+~None~. This is not a gap, so no resolver moves it.
+
+** Limits
+
+- *100 ns.* A tick is the finest unit.
+- *Years 1 to 9999*, and the proleptic Gregorian calendar throughout.
+- *The zone data is the machine's.* .NET reads the IANA database from the
+  operating system (~/usr/share/zoneinfo~ on Linux). A slim container image may
+  have none, and then ~(timezone "Europe/Stockholm")~ is ~None~.
+- *Offsets are whole minutes.* Before standard time, a zone used local mean
+  time, with an offset in seconds: Stockholm's was +1:12:12. .NET keeps whole
+  minutes only, so a moment before about 1900 can be up to a minute off the tz
+  database.
+- *No leap seconds*, no other calendars, no localized names, no custom formats.
+
+** How a local time finds its offset
+
+An offset ~o~ fits a local time ~l~ when the zone has offset ~o~ at the instant
+~l - o~. The candidates are the offsets a day before and a day after ~l~, read
+as instants. No offset exceeds 16 hours, so those two cover every offset in
+reach, as long as the zone changes its offset at most once in 48 hours. Nothing
+in the tz database comes close: its two closest changes, in Freetown in 1939,
+are 95 hours apart. When a lookup answers with a third offset, that becomes a
+candidate too, which catches most layouts with two changes in 48 hours, though
+not every one.
+
+.NET's own ~IsInvalidTime~ and ~IsAmbiguousTime~ are not used. They miss the
+gaps and overlaps that a change of *standard* time leaves: Brussels went from
++00:00 to +01:00 on 1914-11-08, and .NET calls 00:30 that night an ordinary
+time. Here it is a gap.
+
+** Why it is built this way
+
+Each of these rules something out, and the example is what it rules out.
+Values are written as ISO text here for short.
+
+- *An instant is a ~long~ of UTC ticks, not a UTC ~DateTime~.* ~DateTime.Equals~
+  ignores the Kind, so a ~DateTime~ saying 12:00 local time compares equal to
+  12:00 UTC although the two are hours apart. A ~long~ has no Kind to get
+  wrong. The cost: the range check on every addition is this module's.
+- *The value types are opaque.* Nobody can build a moment whose offset its zone
+  never has, such as ~2026-07-01T12:00+01:00[Europe/Stockholm]~ (July is
+  +02:00). Every moment comes from a function that checked it.
+- *Periods are transparent.* Any mix of numbers is a valid period ("1 month and
+  40 days" is fine, since months differ in length), so there is nothing to
+  protect, and ~(record-ref p months)~ works. Equality is field by field:
+  ~(= (date-period #:weeks 1) (date-period #:days 7))~ is ~#f~.
+- *~Timeline~ is a trait of its own.* Exact differences must accept a
+  ~DateTime~ or anything with an instant, and a ~where~ clause cannot say "A or
+  B". Making ~DateTime~ ~HasInstant~ would let ~(->instant some-datetime)~
+  compile, and it would have to guess a zone. Both arguments have one type, so
+  ~(hours-between some-moment some-instant)~ is a compile error; write
+  ~(->instant some-moment)~. On ~DateTime~ it counts local hours: 2026-10-25
+  00:00 to 2026-10-26 00:00 is 24 hours as datetimes and 25 as Stockholm
+  moments.
+- *Calendar differences read dates only, and count months as java.time does.*
+  ~(days-between 2026-01-01T23:00 2026-01-02T01:00)~ is 1, although two hours
+  passed; ~hours-between~ is for elapsed time. ~(months-between 2026-01-31
+  2026-02-28)~ is 0, although ~(+months 2026-01-31 1)~ is 2026-02-28. In
+  return, swapping the arguments only flips the sign.
+- *A moment's ~=~ compares every field, and ~compare~ orders by instant, then
+  local time, then zone id,* so the two agree. 12:00+02:00[Europe/Stockholm]
+  and 10:00+00:00[UTC] are one instant and two values; a sorted set keeps both,
+  side by side. For "the same instant", compare ~(->instant a)~ and
+  ~(->instant b)~.
+- *The resolvers are a closed set.* A resolver of your own ("on a gap, go back
+  to the last valid time") needs a new case here. In return, no resolver can
+  produce a moment at a local time or in a zone that was not asked for, and
+  ~/opt~ covers "refuse".
+- *Leaving the range raises.* ~(+days (date 9999 12 31) 1)~ raises rather than
+  answering an ~Option~, which would force a ~match~ after every addition.
+  Constructors and readers answer ~None~, since bad input is expected there.
+- *Calendar units take ~int~, clock units take ~long~.* No date is two billion
+  days away, but an ~int~ of seconds runs out at 68 years.
+- *~now/zone~ answers a ~Moment~.* An ~Instant~ has no zone, so "now in
+  Stockholm" cannot be one.
+- *Importing ~(std datetime)~ hides the prelude's ~(now)~* (monotonic
+  milliseconds, the ~Clock~ effect) in that module. ~(std stopwatch)~ goes on
+  working, since its calls are its own. A module that wants both renames one:
+
+  #+BEGIN_SRC scheme
+  (import (rename (std datetime) (now instant-now)))
+
+  (now)                        ;; the prelude's milliseconds
+  (instant-now system-clock)   ;; an Instant
+  #+END_SRC
+
+- *~(std clr-ord)~ also exports ~DateTime~*, for ~System.DateTime~. In a module
+  that imports both, the later import decides what a bare ~DateTime~ means.
+
+** Also exported
+
+~date+date-period~, ~datetime+date-period~, ~moment+date-period~,
+~datetime+duration~, ~instant+duration~ and ~moment+duration~ are the trait
+methods at one type. An importing module copies the trait methods' bodies into
+its own code, and those bodies call these, so the compiler exports them too.
