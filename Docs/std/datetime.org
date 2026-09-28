@@ -123,6 +123,10 @@ Only these read the time, and each takes the clock as an argument:
 ~(fixed-clock instant zone)~ always answers the same, which is what a test
 wants. ~(clock-timezone clock)~ is the zone ~today~ uses.
 
+This is the wall clock, and it can step backwards when the machine's time is
+corrected. To measure how long something takes, use the prelude's
+~(monotonic-ms)~ or ~(std stopwatch)~ instead, whose clock only moves forward.
+
 ** Accessors and arithmetic
 
 - ~->year~, ~->month~ (1–12), ~->day~ (1–31), ~->wday~ (0 is Sunday),
@@ -288,17 +292,11 @@ Values are written as ISO text here for short.
   days away, but an ~int~ of seconds runs out at 68 years.
 - *~now/zone~ answers a ~Moment~.* An ~Instant~ has no zone, so "now in
   Stockholm" cannot be one.
-- *Importing ~(std datetime)~ hides the prelude's ~(now)~* (monotonic
-  milliseconds, the ~Clock~ effect) in that module. ~(std stopwatch)~ goes on
-  working, since its calls are its own. A module that wants both renames one:
-
-  #+BEGIN_SRC scheme
-  (import (rename (std datetime) (now instant-now)))
-
-  (now)                        ;; the prelude's milliseconds
-  (instant-now system-clock)   ;; an Instant
-  #+END_SRC
-
+- *The clock is an argument, not an effect.* A function that reads the time
+  says so in its signature, by taking a ~Clock~, and a test hands it a
+  ~fixed-clock~. The prelude's one clock effect, ~monotonic-ms~, is another
+  clock: it counts milliseconds from an unspecified start and has no time of
+  day, so the two share no name.
 - *~(std clr-ord)~ also exports ~DateTime~*, for ~System.DateTime~. In a module
   that imports both, the later import decides what a bare ~DateTime~ means.
 

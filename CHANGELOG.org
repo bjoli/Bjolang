@@ -3,6 +3,26 @@
 
 What each change guarantees, and what it leaves open.
 
+* The prelude's clock effect is ~monotonic-ms~
+
+The prelude's ~Clock~ effect had one operation, ~(now)~: milliseconds on a
+monotonic clock from an unspecified start, which ~(std stopwatch)~ measures
+with. ~(std datetime)~ also has a ~now~, ~(now clock)~, which answers an
+~Instant~ on the wall clock. So ~(now)~ meant a count of milliseconds in one
+module and ~(now clock)~ a point in time in the next, and importing
+~(std datetime)~ hid the prelude's ~now~.
+
+The effect is ~MonotonicClock~ and its operation ~(monotonic-ms)~, with the
+same default, and a test installs a fake as ~(with-handler ((monotonic-ms
+...)) ...)~. Only the name changed: the two clocks stay apart, because the wall
+clock can step backwards when the machine's time is corrected, and a stopwatch
+reading it could then report a negative elapsed time.
+
+A program that performed ~(now)~ or installed a handler for it has to use the
+new name. ~210_prelude_effects.bjo~ does so; ~243_imported_def_shadow.bjo~ now
+shadows ~getenv~ where it shadowed ~now~, so that it still takes a name over
+from the prelude.
+
 * ~(std datetime)~: dates, times, instants and zones
 
 One model for time in place of the .NET types imported one by one: ~Date~,

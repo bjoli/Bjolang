@@ -148,7 +148,7 @@
   ;; parameter `with-handler` binds, and is exported for that reason.
   warn op/warn
   log op/log
-  now op/now
+  monotonic-ms op/monotonic-ms
   getenv op/getenv
 
   promise-join/sync panic!)
@@ -1748,21 +1748,24 @@
   #:default ((warn (fun (s) (writeln (parameter-ref current-error-port) s)))
              (log (fun (s) (writeln (parameter-ref current-error-port) s)))))
 
-;; (now) - milliseconds on a monotonic clock, for measuring an interval.
+;; (monotonic-ms) - milliseconds on a monotonic clock, for measuring an interval.
 ;;
 ;; An effect rather than a parameter because std/stopwatch performs it, and
 ;; library code that times something should not have to know which parameter a
 ;; test put the clock in.
+;;
+;; Not called `now`: the time of day is (std datetime)'s `(now clock)`, an
+;; Instant on the wall clock, which can step backwards where this one cannot.
 ;;
 ;; Cold, as in using a cold parameter since it is not necessarily used within a loop,
 ;; but at the end of it. 
 (import/extern
   (clock-ms (: BjolangRuntime.ClockMs (-> long))))
 
-(defeffect Clock
-  (now (-> long))
-  #:default ((now clock-ms))
-  #:cold (now))
+(defeffect MonotonicClock
+  (monotonic-ms (-> long))
+  #:default ((monotonic-ms clock-ms))
+  #:cold (monotonic-ms))
 
 ;; (getenv "HOME") - the process environment, as an effect so that a test can
 ;; answer for it without writing to the real one.

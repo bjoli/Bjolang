@@ -14,7 +14,7 @@
 public static partial class BjolangRuntime {
 
     /// <summary>
-    /// The default handler for the prelude's `now`: milliseconds on a
+    /// The default handler for the prelude's `monotonic-ms`: milliseconds on a
     /// monotonic clock.
     ///
     /// Monotonic rather than wall-clock, because what reads it is

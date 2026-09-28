@@ -20,11 +20,11 @@
 
 (export Stopwatch stopwatch stopwatch-start! stopwatch-stop! stopwatch-ms time-it get-memory-usage )
 
-;; A stopwatch reads the clock through the prelude's `now` effect rather than
-;; holding a `System.Diagnostics.Stopwatch`, so that a test can install a clock
-;; and get an exact elapsed time instead of a real one.
+;; A stopwatch reads the clock through the prelude's `monotonic-ms` effect
+;; rather than holding a `System.Diagnostics.Stopwatch`, so that a test can
+;; install a clock and get an exact elapsed time instead of a real one.
 ;;
-;; `started` is the `now` reading the watch was last started at, or -1 when it
+;; `started` is the reading the watch was last started at, or -1 when it
 ;; is not running; `elapsed` is what earlier runs added up to. Both mutable,
 ;; because a stopwatch is a thing that is started and stopped rather than a
 ;; value that is replaced.
@@ -42,13 +42,13 @@
 (: stopwatch-start! (-> Stopwatch void))
 (defun (stopwatch-start! sw)
   (unless (running? sw)
-    (record-set! sw (started (now)))))
+    (record-set! sw (started (monotonic-ms)))))
 
 (: stopwatch-stop! (-> Stopwatch void))
 (defun (stopwatch-stop! sw)
   (when (running? sw)
     (record-set! sw
-                 (elapsed (+ (record-ref sw elapsed) (- (now) (record-ref sw started))))
+                 (elapsed (+ (record-ref sw elapsed) (- (monotonic-ms) (record-ref sw started))))
                  (started -1L))))
 
 ;; The reading while running includes the segment in progress, so a watch can be
@@ -56,7 +56,7 @@
 (: stopwatch-ms (-> Stopwatch long))
 (defun (stopwatch-ms sw)
   (if (running? sw)
-      (+ (record-ref sw elapsed) (- (now) (record-ref sw started)))
+      (+ (record-ref sw elapsed) (- (monotonic-ms) (record-ref sw started)))
       (record-ref sw elapsed)))
 
 ;; `(ref sw 'ms)` — the elapsed time under the name of a unit.

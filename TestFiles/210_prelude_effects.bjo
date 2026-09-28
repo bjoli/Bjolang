@@ -10,7 +10,8 @@
 ;; in such object code or executable form without complying with the source code
 ;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
 
-;; The effects the standard library performs: `warn`, `log`, `now`, `getenv`.
+;; The effects the standard library performs: `warn`, `log`, `monotonic-ms`,
+;; `getenv`.
 ;;
 ;; Each has a default, so a program that installs nothing behaves as it did
 ;; before there was an effect at all. What the handler buys is in each section.
@@ -105,14 +106,14 @@
       (log "tagged")))
   (expect "a binding reads the handler it is about to replace" (box-ref inline) "[[app] tagged]")
 
-  ;; --- now, and the stopwatch over it --------------------------------------
+  ;; --- monotonic-ms, and the stopwatch over it -----------------------------
   ;;
-  ;; `std/stopwatch` performs `now`; it does not name a parameter and does not
-  ;; hold a clock. So installing one here decides what it measures, and the
-  ;; elapsed time is exact rather than approximate.
+  ;; `std/stopwatch` performs `monotonic-ms`; it does not name a parameter and
+  ;; does not hold a clock. So installing one here decides what it measures,
+  ;; and the elapsed time is exact rather than approximate.
   (def clock (make-box (list 1000L 1250L)))
   (def measured
-    (with-handler ((now (ticking clock)))
+    (with-handler ((monotonic-ms (ticking clock)))
       (let ((sw (stopwatch)))
         (stopwatch-start! sw)
         (stopwatch-stop! sw)
@@ -122,7 +123,7 @@
   ;; Two intervals on one watch add up, which is what `elapsed` is for.
   (def clock2 (make-box (list 0L 10L 100L 130L)))
   (def summed
-    (with-handler ((now (ticking clock2)))
+    (with-handler ((monotonic-ms (ticking clock2)))
       (let ((sw (stopwatch)))
         (stopwatch-start! sw)
         (stopwatch-stop! sw)
@@ -134,7 +135,7 @@
   ;; `(ref sw 'ms)` reads the same number.
   (def clock3 (make-box (list 0L 7000L)))
   (def named
-    (with-handler ((now (ticking clock3)))
+    (with-handler ((monotonic-ms (ticking clock3)))
       (let ((sw (stopwatch)))
         (stopwatch-start! sw)
         (stopwatch-stop! sw)

@@ -56,8 +56,8 @@ echo "Building standard library..."
 # `fmt` imports `prelude` and nothing else.
 ./bjor --lib lib/std/fmt.bjo
 # `datetime` imports `prelude` and nothing else. Its clock reads
-# `TimeProvider.System` directly rather than through the prelude's `Clock`
-# effect, which it has no use for.
+# `TimeProvider.System` directly: the prelude's `monotonic-ms` effect measures
+# intervals and has no time of day.
 ./bjor --lib lib/std/datetime.bjo
 # `run` imports `prelude` and `syntax-match`, the latter because `with-run` is
 # written with it. It also binds `BjoPipe` and `BjoProc` out of the runtime
