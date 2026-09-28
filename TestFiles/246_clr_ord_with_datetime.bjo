@@ -1,0 +1,33 @@
+;; `(std clr-ord)` and `(std datetime)` in one module.
+;;
+;; clr-ord orders `System.DateTime` without exporting a name for it, so the bare
+;; `DateTime` here is (std datetime)'s, whichever module is imported last, and
+;; the .NET type is reached by its full name or an alias of this module's.
+(import (std prelude))
+(import (std simpletest))
+(import (std datetime))
+(import (std clr-ord))
+
+(import/class
+  (ClrDateTime (: System.DateTime (-> int int int ClrDateTime))))
+
+(import/extern
+  (clr-year (: System.DateTime.Year (-> ClrDateTime int) #:get)))
+
+;; The full .NET name, and clr-ord's implementation found through it.
+(: earliest-year (-> (List System.DateTime) int))
+(defun (earliest-year ds)
+  (match (list-min ds)
+    ((Some d) (clr-year d))
+    (None -1)))
+
+(: local-text (-> DateTime string))
+(defun (local-text dt) (->str dt))
+
+(defun (main)
+  (expect "the .NET type is still ordered"
+          (earliest-year (list (ClrDateTime. 2021 1 1) (ClrDateTime. 2019 6 5))) 2019)
+  (match (datetime 2026 10 25 #:hours 2 #:minutes 30)
+    ((Some dt) (expect "and DateTime is (std datetime)'s" (local-text dt) "2026-10-25T02:30:00"))
+    (None (fail "a datetime")))
+  0)
