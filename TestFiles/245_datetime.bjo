@@ -202,8 +202,30 @@
      (expect "the same local time an hour later"
              (moment->text (datetime->moment overlap z later) rfc3339) "2026-10-25T02:30:00+01:00")
      (expect "and its zone" (moment->text (datetime->moment overlap z later) '(zone))
-             "Europe/Stockholm"))
-    (None (fail "no Europe/Stockholm"))))
+             "Europe/Stockholm")
+     (expect "a moment's Unix time is its instant's"
+             (moment->text (datetime->moment overlap z earlier) '(unix " " unix-ms " " zone))
+             "1792888200 1792888200000 Europe/Stockholm")
+     (expect "an hour later"
+             (->unix (datetime->moment overlap z later)) 1792891800L))
+    (None (fail "no Europe/Stockholm")))
+
+  (def (: stamp (List InstantPart))
+    '((year 4) "-" (month 2) "-" (day 2) "T" (hours 2) ":" (minutes 2) ":" (seconds 2) offset))
+  (def i (the (iso8601->instant "2026-10-25T01:30:00Z")))
+  (expect "an instant is written in UTC, and its offset is Z" (instant->text i stamp)
+          "2026-10-25T01:30:00Z")
+  (expect "as ->str writes it" (instant->text i stamp) (->str i))
+  (expect "Unix time" (instant->text i '("@" unix " " unix-ms)) "@1792891800 1792891800000")
+  (expect "before 1970, toward the past"
+          (instant->text (the (iso8601->instant "1969-12-31T23:59:59.5Z")) '(unix " " unix-ms))
+          "-1 -500")
+  (expect "the first instant"
+          (instant->text (the (iso8601->instant "0001-01-01T00:00:00Z")) '(unix " " unix-ms))
+          "-62135596800 -62135596800000")
+  (expect "the last"
+          (instant->text (the (iso8601->instant "9999-12-31T23:59:59.9999999Z")) '(unix " " unix-ms))
+          "253402300799 253402300799999"))
 
 (: arithmetic (-> void))
 (defun (arithmetic)
@@ -280,6 +302,14 @@
   (expect "unix milliseconds" (instant->unix-milliseconds (+seconds epoch 2)) 2000L)
   (expect-true "no instant before year 1" (none? (unix-seconds->instant -62135596801L)))
   (expect-true "nor after 9999" (none? (unix-milliseconds->instant 253402300800000L)))
+  (expect "->unix of the epoch" (->unix epoch) 0L)
+  (expect "->unix rounds toward the past" (->unix (-milliseconds epoch 500)) -1L)
+  (expect "->unix of the first instant" (->unix (the (iso8601->instant "0001-01-01T00:00:00Z")))
+          -62135596800L)
+  (expect "and of the last whole second"
+          (->unix (the (iso8601->instant "9999-12-31T23:59:59.9999999Z"))) 253402300799L)
+  (expect "->unix of a moment is its instant's"
+          (->unix (instant->moment (-milliseconds epoch 500) utc)) -1L)
   (expect "instant->utc-datetime" (->str (instant->utc-datetime epoch)) "1970-01-01T00:00:00")
   (expect "and back" (utc-datetime->instant (instant->utc-datetime epoch)) epoch)
   (expect "duration-between instants"

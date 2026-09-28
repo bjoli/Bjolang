@@ -3,6 +3,27 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std datetime)~ writes Unix time and instants with formats of your own
+
+~(->unix x)~ is the Unix time in seconds of an instant or a moment, as a
+~long~, rounded toward the past as ~instant->unix-seconds~ rounds: half a
+second before 1970 is -1. The four functions that were there keep their
+names.
+
+A moment's format has two more fields, ~unix~ and ~unix-ms~, rounded the same
+way. An instant has a format of its own, ~InstantPart~: the fields of a
+~DateTimePart~, ~offset~, ~unix~ and ~unix-ms~. ~(instant->text i format)~
+writes the date and time in UTC, and the offset as ~Z~, so the format
+~'((year 4) "-" (month 2) "-" (day 2) "T" (hours 2) ":" (minutes 2) ":"
+(seconds 2) offset)~ writes what ~->str~ writes for a whole second. Writing
+an instant's time of day used to mean ~(datetime->text (instant->utc-datetime
+i) ...)~, which could not write the ~Z~.
+
+Tested in ~245_datetime.bjo~ (~->unix~ at the epoch, half a second before it,
+the first and the last second of the range, on an instant and on a moment;
+~unix~ and ~unix-ms~ written for both, negative ones included; an instant
+written as ~->str~ writes it) and in ~errors/datetime_text_zone_in_instant.bjo~.
+
 * ~(std datetime)~ writes formats of your own, Roman years included
 
 A format is a quoted list of field names, strings and characters, which the

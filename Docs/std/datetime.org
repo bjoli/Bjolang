@@ -230,6 +230,9 @@ Whole units, toward zero, from the first argument to the second.
 - ~(instant->utc-datetime i)~ and ~(utc-datetime->instant dt)~.
 - ~(instant->unix-seconds i)~ and ~(instant->unix-milliseconds i)~, rounded
   toward the past: half a second before 1970 is -1.
+- ~(->unix x)~ : the Unix time in seconds of anything ~HasInstant~, an
+  instant or a moment, rounded the same way. ~(->unix some-moment)~ is its
+  instant's, whatever its zone.
 - ~(unix-seconds->instant s)~ and ~(unix-milliseconds->instant ms)~ : ~None~
   outside the years 1 to 9999.
 
@@ -278,10 +281,10 @@ written as it stands.
 #+END_SRC
 
 - ~(date->text d format)~ for a ~Date~, ~(time->text t format)~ for a ~Time~,
-  ~(datetime->text dt format)~ for a ~DateTime~, and ~(moment->text m format)~
-  for a ~Moment~. Each takes ~#:names~, defaulting to the parameter
-  ~current-date-names~, which starts as ~english-names~; ~swedish-names~ is
-  the other one provided.
+  ~(datetime->text dt format)~ for a ~DateTime~, ~(moment->text m format)~
+  for a ~Moment~, and ~(instant->text i format)~ for an ~Instant~. Each takes
+  ~#:names~, defaulting to the parameter ~current-date-names~, which starts
+  as ~english-names~; ~swedish-names~ is the other one provided.
 - A number after a field's name is a width, filled with zeros: ~(month 2)~ is
   ~03~. Without one, a number takes the digits it needs, and ~day~ and
   ~(day)~ are the same.
@@ -291,7 +294,16 @@ written as it stands.
 | ~DatePart~     | ~year~, ~month~, ~day~, ~weekday~ (1 is Monday), ~yday~, ~week~, ~week-year~; ~(roman year)~, ~(roman month)~, ~(roman day)~; ~month-name~, ~month-abbr~, ~weekday-name~, ~weekday-abbr~ |
 | ~TimePart~     | ~hours~, ~hours12~ (12 for midnight's and noon's hour), ~minutes~, ~seconds~, ~fraction~, ~am-pm~ |
 | ~DateTimePart~ | both of those                                                       |
-| ~MomentPart~   | both, and ~offset~ (~+01:00~) and ~zone~ (~Europe/Stockholm~)          |
+| ~MomentPart~   | both, ~offset~ (~+01:00~), ~zone~ (~Europe/Stockholm~), and ~unix~ and ~unix-ms~ |
+| ~InstantPart~  | the fields of a ~DateTimePart~, ~offset~, ~unix~ and ~unix-ms~       |
+
+- An instant is written in UTC, and its ~offset~ is ~Z~, so
+  ~'((year 4) "-" (month 2) "-" (day 2) "T" (hours 2) ":" (minutes 2) ":"
+  (seconds 2) offset)~ writes what ~->str~ writes for a whole second:
+  ~2026-10-25T01:30:00Z~. An instant has no ~zone~ to write.
+- ~unix~ is the Unix time in seconds and ~unix-ms~ in milliseconds, both
+  rounded toward the past, as ~instant->unix-seconds~ rounds: half a second
+  before 1970 is ~-1~ and ~-500~. A moment's is its instant's.
 
 - ~(fraction n)~ is ~n~ digits of the second's fraction, cut rather than
   rounded, and zeros past the seventh: ~(fraction 9)~ is nanoseconds. A bare

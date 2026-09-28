@@ -118,7 +118,7 @@
   ;; Instants
   instant->utc-datetime utc-datetime->instant
   instant->unix-seconds unix-seconds->instant
-  instant->unix-milliseconds unix-milliseconds->instant
+  instant->unix-milliseconds unix-milliseconds->instant ->unix
   ;; The clock
   current-clock system-clock system-clock-in fixed-clock manual-clock clock-advance!
   clock-timezone now now/moment today
@@ -141,8 +141,8 @@
   iso8601->duration iso8601->date-period iso8601->period
   instant->http-date http-date->instant
   ;; Text of your own
-  DateNumber RomanNumber DatePart TimePart DateTimePart MomentPart DateNames
-  date->text time->text datetime->text moment->text
+  DateNumber RomanNumber DatePart TimePart DateTimePart MomentPart InstantPart DateNames
+  date->text time->text datetime->text moment->text instant->text
   english-names swedish-names current-date-names)
 
 
@@ -553,6 +553,11 @@
   (if (and (>= ms -62135596800000L) (<= ms 253402300799999L))
       (Some (Instant (ticks (+ (* ms ticks-per-millisecond) unix-epoch-ticks))))
       None))
+
+;; Unix seconds of an instant or a moment, rounded as instant->unix-seconds
+;; rounds, which it calls because an importer copies this body.
+(: ->unix (-> %a long) (where (HasInstant %a)))
+(defun (->unix x) (instant->unix-seconds (->instant x)))
 
 
 ;; ===========================================================================
@@ -1749,13 +1754,23 @@
                              (DateTimeText string)
                              (DateTimeChar char))))
 
-;; A date and a time, the offset as ISO 8601 writes it (+02:00), and the
-;; zone's id.
+;; A date and a time, the offset as ISO 8601 writes it (+02:00), the zone's
+;; id, and the Unix time in seconds or milliseconds, rounded toward the past.
 (type (: MomentPart (Union (MomentDateTime DateTimePart)
                            (MomentOffset #:tag offset)
                            (MomentZone #:tag zone)
+                           (MomentUnix #:tag unix)
+                           (MomentUnixMs #:tag unix-ms)
                            (MomentText string)
                            (MomentChar char))))
+
+;; A date and a time in UTC, whose offset is written Z, and the Unix time.
+(type (: InstantPart (Union (InstantDateTime DateTimePart)
+                            (InstantOffset #:tag offset)
+                            (InstantUnix #:tag unix)
+                            (InstantUnixMs #:tag unix-ms)
+                            (InstantText string)
+                            (InstantChar char))))
 
 ;; Twelve months from January and seven weekdays from Monday, and what am-pm
 ;; writes. A table of other lengths raises when a name is taken from it.
@@ -1891,14 +1906,34 @@
     ((DateTimeText s) (add-text! sb s))
     ((DateTimeChar c) (add-text! sb (char->string c)))))
 
+;; n in decimal, with a minus when it is negative.
+(: add-signed! (-> TextBuilder long void))
+(defun (add-signed! sb n)
+  (when (< n 0L) (add-text! sb "-"))
+  (add-padded! sb (abs n) 1))
+
 (: add-moment-part! (-> TextBuilder Moment DateNames MomentPart void))
 (defun (add-moment-part! sb m names p)
   (match p
     ((MomentDateTime dtp) (add-datetime-part! sb (moment-local-ticks m) names dtp))
     (MomentOffset (add-offset! sb (moment-offset-ticks m)))
     (MomentZone (add-text! sb (timezone-id (struct-ref m zone))))
+    (MomentUnix
+     (add-signed! sb (instant->unix-seconds (Instant (ticks (moment-instant-ticks m))))))
+    (MomentUnixMs
+     (add-signed! sb (instant->unix-milliseconds (Instant (ticks (moment-instant-ticks m))))))
     ((MomentText s) (add-text! sb s))
     ((MomentChar c) (add-text! sb (char->string c)))))
+
+(: add-instant-part! (-> TextBuilder Instant DateNames InstantPart void))
+(defun (add-instant-part! sb i names p)
+  (match p
+    ((InstantDateTime dtp) (add-datetime-part! sb (instant-ticks i) names dtp))
+    (InstantOffset (add-text! sb "Z"))
+    (InstantUnix (add-signed! sb (instant->unix-seconds i)))
+    (InstantUnixMs (add-signed! sb (instant->unix-milliseconds i)))
+    ((InstantText s) (add-text! sb s))
+    ((InstantChar c) (add-text! sb (char->string c)))))
 
 ;; One function per type rather than one over the traits, so a moment's date
 ;; is written with (date->text (->date m) ...), which says whose date it is.
@@ -1935,5 +1970,16 @@
   (let loop ((ps parts))
     (unless (list-empty? ps)
       (add-moment-part! sb m names (list-head ps))
+      (loop (list-tail ps))))
+  (text-of sb))
+
+;; The date and time are UTC's, so the format that writes a moment's local
+;; time writes the instant as ->str does.
+(: instant->text (-> Instant (List InstantPart) (#:names DateNames) string))
+(defun (instant->text i parts #:names (parameter-ref current-date-names))
+  (def sb (new-text 48))
+  (let loop ((ps parts))
+    (unless (list-empty? ps)
+      (add-instant-part! sb i names (list-head ps))
       (loop (list-tail ps))))
   (text-of sb))
