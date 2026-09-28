@@ -3,6 +3,46 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std datetime)~ reads back what it writes, and allocates nothing doing it
+
+What a writer writes with a format that can be read, the reader of the same
+type reads back with that format: the value, or what the format keeps of it,
+such as the minute when it has no seconds. ~245_datetime.bjo~ checks this for
+3000 seeded values in each of 23 formats, 69 000 round trips over every type,
+across the whole range and in Stockholm, New York, Kathmandu (+05:45) and
+Chatham (+12:45).
+
+Outside the tests, a mutation run wrote random values with 32 formats,
+changed each text at random (a character replaced, inserted, deleted, swapped
+with the next, or the rest cut off, with digits, signs, letters and a
+character outside the BMP), and fed 160 370 texts to every reader with every
+format: 5 933 690 calls, 77 194 answered ~Some~, 5 856 496 ~None~, none
+raised, and every value answered came back when written and read again.
+
+Reading measured 1219 ns for an RFC 3339 instant at first. The fields read
+are kept in a struct, which held a reference, the zone, so .NET cleared every
+copy of it a function might make on each call: 5.6 KB of stack each time a
+field was stored. The zone is now kept as the span of text its id was read
+from and looked up once at the end, so the struct holds no reference. Per
+call, on one machine:
+
+| Operation                                  | Time    | Allocated |
+|--------------------------------------------+---------+-----------|
+| ~iso8601->instant~                         | 51 ns   | 0 B       |
+| ~text->instant~, RFC 3339 with a fraction  | 591 ns  | 0 B       |
+| ~iso8601->date~                            | 27 ns   | 0 B       |
+| ~text->date~, ~(year 4) "-" (month 2) ...~ | 252 ns  | 0 B       |
+| ~text->date~, with names                   | 432 ns  | 0 B       |
+| ~iso8601->moment~                          | 211 ns  | 56 B      |
+| ~text->moment~, with offset and zone       | 951 ns  | 56 B      |
+| ~->str~ of an instant                      | 86 ns   | 192 B     |
+| ~instant->text~, RFC 3339                  | 188 ns  | 232 B     |
+
+A reader walks its format part by part and checks it on every call, about a
+third of the time, so the ISO 8601 readers stay the fast path.
+
+Tested in ~245_datetime.bjo~ (23 round-trip checks, and a zone read twice).
+
 * ~(std datetime)~ reads instants and moments with formats of your own
 
 ~(text->instant s format)~, ~(text->moment s format)~ and

@@ -471,6 +471,12 @@
              "None")
      (expect "Unix time in a zone" (read-moment "1792891800 Europe/Stockholm" '(unix " " zone))
              "2026-10-25T02:30:00+01:00[Europe/Stockholm]")
+     (expect "a zone read twice is one zone"
+             (read-moment "Europe/Stockholm 1792891800 Europe/Stockholm" '(zone " " unix " " zone))
+             "2026-10-25T02:30:00+01:00[Europe/Stockholm]")
+     (expect "or the text is None"
+             (read-moment "Europe/Stockholm 1792891800 Europe/Paris" '(zone " " unix " " zone))
+             "None")
      (expect "the local time of the first second is before year 1 in New York"
              (read-moment "-62135596800 America/New_York" '(unix " " zone)) "None")
      (expect "and so a resolver answers None, where datetime->moment raises"
@@ -489,6 +495,164 @@
                   (refused? (fun () (text->moment "Europe/Stockholm1792891800" '(zone unix)))))
      (expect-true "and a slash" (refused? (fun () (text->moment "x" '((year 4) " " (hours 2) " " zone "/"))))))
     (None (fail "no Europe/Stockholm"))))
+
+;; A seeded 64-bit LCG, read from its high bits, so every run makes the same
+;; values.
+(: next-seed (-> long long))
+(defun (next-seed s) (+ (* s 6364136223846793005L) 1442695040888963407L))
+
+(: seed-below (-> long long long))
+(defun (seed-below s n) (% (/ (if (< s 0L) (- -1L s) s) 65536L) n))
+
+(: date-from (-> long Date))
+(defun (date-from s) (+days (the (date 1 1 1)) (cast System.Int32 (seed-below s 3652059L))))
+
+(: time-from (-> long Time))
+(defun (time-from s)
+  (+duration (the (time 0 0)) (duration #:nanoseconds (* (seed-below s 864000000000L) 100L))))
+
+(: datetime-from (-> long DateTime))
+(defun (datetime-from s) (date+time->datetime (date-from s) (time-from (next-seed s))))
+
+;; Two days in from either end, so the local time is in range in every zone.
+(: moment-from (-> (Vec TimeZone) long Moment))
+(defun (moment-from zones s)
+  (def d (+days (the (date 1 1 3)) (cast System.Int32 (seed-below s 3652054L))))
+  (instant->moment (utc-datetime->instant (date+time->datetime d (time-from (next-seed s))))
+                   (vec-ref zones (cast System.Int32 (seed-below (next-seed (next-seed s))
+                                                                 (cast System.Int64 (vec-length zones)))))))
+
+;; How many of 3000 values do not come back from their text: made from a
+;; seeded sequence, written, read, and compared with what the format keeps
+;; of them.
+(: misses (-> (-> long %a) (-> %a string) (-> string (Option %a)) (-> %a %a) int) (where (Eq %a)))
+(defun (misses make write read kept)
+  (let loop ((i 0) (s 20261025L) (bad 0))
+    (if (= i 3000)
+        bad
+        (let ((v (make s)))
+          (loop (+ i 1) (next-seed (next-seed (next-seed s)))
+                (if (= (read (write v)) (Some (kept v))) bad (+ bad 1)))))))
+
+(: date-misses (-> (List DatePart) (-> Date Date) DateNames int))
+(defun (date-misses format kept names)
+  (misses date-from (fun (d) (date->text d format #:names names))
+          (fun (s) (text->date s format #:names names)) kept))
+
+(: time-misses (-> (List TimePart) (-> Time Time) DateNames int))
+(defun (time-misses format kept names)
+  (misses time-from (fun (t) (time->text t format #:names names))
+          (fun (s) (text->time s format #:names names)) kept))
+
+(: datetime-misses (-> (List DateTimePart) (-> DateTime DateTime) int))
+(defun (datetime-misses format kept)
+  (misses datetime-from (fun (dt) (datetime->text dt format)) (fun (s) (text->datetime s format))
+          kept))
+
+(: instant-misses (-> (List InstantPart) (-> Instant Instant) int))
+(defun (instant-misses format kept)
+  (misses (fun (s) (utc-datetime->instant (datetime-from s))) (fun (i) (instant->text i format))
+          (fun (s) (text->instant s format)) kept))
+
+(: moment-misses (-> (Vec TimeZone) (List MomentPart) (-> Moment Moment) int))
+(defun (moment-misses zones format kept)
+  (misses (fun (s) (moment-from zones s)) (fun (m) (moment->text m format))
+          (fun (s) (text->moment s format)) kept))
+
+(: same (-> %a %a))
+(defun (same x) x)
+
+(: to-minute (-> Time Time))
+(defun (to-minute t) (the (time (->hours t) (->minutes t))))
+
+(: to-second (-> Time Time))
+(defun (to-second t) (the (time (->hours t) (->minutes t) #:seconds (->seconds t))))
+
+(: to-millisecond (-> Time Time))
+(defun (to-millisecond t)
+  (the (time (->hours t) (->minutes t) #:seconds (->seconds t)
+             #:nanoseconds (* (->milliseconds t) 1000000))))
+
+;; Every value written with a format that can be read comes back from it,
+;; cut to what the format keeps.
+(: round-trips (-> void))
+(defun (round-trips)
+  (expect "dates, ISO" (date-misses '((year 4) "-" (month 2) "-" (day 2)) same english-names) 0)
+  (expect "without widths" (date-misses '(year "/" month "/" day) same english-names) 0)
+  (expect "with names"
+          (date-misses '(weekday-name ", " day " " month-name " " year) same english-names) 0)
+  (expect "in Swedish"
+          (date-misses '(weekday-abbr " " day " " month-abbr " " year) same swedish-names) 0)
+  (expect "week dates" (date-misses '((week-year 4) "-W" (week 2) "-" weekday) same english-names)
+          0)
+  (expect "ordinal dates" (date-misses '((year 4) "-" (yday 3)) same english-names) 0)
+  (expect "Roman" (date-misses '(day "." (roman month) "." (roman year)) same english-names) 0)
+  (expect "checked fields"
+          (date-misses '((year 4) (month 2) (day 2) " W" (week 2) " " weekday " " (yday 3)) same
+                       english-names)
+          0)
+  (expect "months, as their first day"
+          (date-misses '((year 4) "-" (month 2)) (fun (d) (the (date (->year d) (->month d) 1)))
+                       english-names)
+          0)
+  (expect "weeks, as their Monday"
+          (date-misses '((week-year 4) "-W" (week 2)) (fun (d) (-days d (- (->weekday d) 1)))
+                       english-names)
+          0)
+  (expect "times, ISO" (time-misses '((hours 2) ":" (minutes 2) ":" (seconds 2) fraction) same
+                                    english-names)
+          0)
+  (expect "on a twelve-hour clock"
+          (time-misses '(hours12 ":" (minutes 2) ":" (seconds 2) "." (fraction 7) " " am-pm) same
+                       english-names)
+          0)
+  (expect "in Swedish, to the hour"
+          (time-misses '(hours12 " " am-pm) (fun (t) (the (time (->hours t) 0))) swedish-names) 0)
+  (expect "to the minute" (time-misses '((hours 2) ":" (minutes 2)) to-minute english-names) 0)
+  (expect "to the millisecond"
+          (time-misses '((hours 2) (minutes 2) (seconds 2) "." (fraction 3)) to-millisecond
+                       english-names)
+          0)
+  (expect "datetimes, ISO"
+          (datetime-misses '((year 4) "-" (month 2) "-" (day 2) "T" (hours 2) ":" (minutes 2) ":"
+                             (seconds 2) fraction)
+                           same)
+          0)
+  (expect "to the second"
+          (datetime-misses '((year 4) (month 2) (day 2) (hours 2) (minutes 2) (seconds 2))
+                           (fun (dt) (date+time->datetime (->date dt) (to-second (->time dt)))))
+          0)
+  (expect "with names, to the minute"
+          (datetime-misses '(weekday-abbr " " (day 2) " " month-abbr " " (year 4) " " hours12 ":"
+                             (minutes 2) " " am-pm)
+                           (fun (dt) (date+time->datetime (->date dt) (to-minute (->time dt)))))
+          0)
+  (expect "instants, RFC 3339"
+          (instant-misses '((year 4) "-" (month 2) "-" (day 2) "T" (hours 2) ":" (minutes 2) ":"
+                            (seconds 2) fraction offset)
+                          same)
+          0)
+  (expect "Unix seconds, toward the past"
+          (instant-misses '(unix) (fun (i) (the (unix-seconds->instant (->unix i))))) 0)
+  (expect "Unix milliseconds"
+          (instant-misses '("@" unix-ms)
+                          (fun (i) (the (unix-milliseconds->instant (instant->unix-milliseconds i)))))
+          0)
+  (match (Tuple (Tuple (timezone "Europe/Stockholm") (timezone "America/New_York"))
+                (Tuple (timezone "Asia/Kathmandu") (timezone "Pacific/Chatham")))
+    ((Tuple (Tuple (Some a) (Some b)) (Tuple (Some c) (Some d)))
+     (def zones [a b c d])
+     (expect "moments, with offset and zone"
+             (moment-misses zones '((year 4) "-" (month 2) "-" (day 2) "T" (hours 2) ":" (minutes 2)
+                                    ":" (seconds 2) fraction offset "[" zone "]")
+                            same)
+             0)
+     (expect "Unix time and zone"
+             (moment-misses zones '(unix " " zone)
+                            (fun (m) (instant->moment (the (unix-seconds->instant (->unix m)))
+                                                      (->timezone m))))
+             0))
+    (_ (fail "no Europe/Stockholm, America/New_York, Asia/Kathmandu or Pacific/Chatham"))))
 
 (: arithmetic (-> void))
 (defun (arithmetic)
@@ -909,6 +1073,7 @@
   (reading-dates)
   (reading-times)
   (reading-instants)
+  (round-trips)
   (arithmetic)
   (differences)
   (zone-differences)

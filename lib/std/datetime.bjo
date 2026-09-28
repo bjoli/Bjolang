@@ -34,8 +34,9 @@
 ;;   does not have, where text->date refuses that format. Beside (month) and
 ;;   (day) the week is right, so the writer cannot refuse it by itself.
 ;; - A format is checked each time it reads, as a list cannot carry the
-;;   check, and reading has no optional parts, such as seconds that may be
-;;   missing; the ISO 8601 readers have those.
+;;   check, which is about a third of a reader's time; a reader costs about
+;;   ten times an iso8601-> one. Reading has no optional parts either, such
+;;   as seconds that may be missing; the ISO 8601 readers have those.
 ;; - utc-datetime->instant takes any DateTime, so a local time goes in and is
 ;;   read as UTC without a word.
 
@@ -2004,7 +2005,8 @@
 ;; are kept in a Seen, a struct, and put together at the end, so reading
 ;; allocates nothing but a zone id.
 
-;; What a part reads.
+;; What a part reads. A match on it tests its arms in order, so text,
+;; characters and the common fields come first where that matters.
 (type (: FieldKind (Union FText FChar
                           FYear FMonth FDay FWeekday FYday FWeek FWeekYear
                           FRomanYear FRomanMonth FRomanDay
@@ -2012,34 +2014,41 @@
                           FHours FHours12 FMinutes FSeconds FFraction FAmPm
                           FOffset FZone FUnix FUnixMs)))
 
-;; A part as a reader sees it: its width, 0 for none, and its text or
-;; character when it is one. A bare fraction, which can be nothing at all,
-;; has the width -1, so that it is told apart from (fraction 0).
-(type (: Field (Struct (: kind FieldKind) (: width int) (: text string) (: ch char))))
+;; A part as a reader sees it: its width, 0 for none; the most digits it
+;; reads, 0 when it is not a number; and its text or character when it is
+;; one. A bare fraction, which can be nothing at all, has the width -1, so
+;; that it is told apart from (fraction 0). The functions that make a Field
+;; know its kind, so they say its most digits, and no reader asks again.
+(type (: Field (Struct (: kind FieldKind) (: width int) (: most int) (: text string) (: ch char))))
 
 (: field (-> FieldKind int Field))
-(defun (field k w) (Field (kind k) (width w) (text "") (ch #\nul)))
+(defun (field k w) (Field (kind k) (width w) (most 0) (text "") (ch #\nul)))
+
+(: number-field (-> FieldKind int int Field))
+(defun (number-field k most w) (Field (kind k) (width w) (most most) (text "") (ch #\nul)))
 
 (: text-field (-> string Field))
-(defun (text-field s) (Field (kind FText) (width 0) (text s) (ch #\nul)))
+(defun (text-field s) (Field (kind FText) (width 0) (most 0) (text s) (ch #\nul)))
 
 (: char-field (-> char Field))
-(defun (char-field c) (Field (kind FChar) (width 0) (text "") (ch c)))
+(defun (char-field c) (Field (kind FChar) (width 0) (most 0) (text "") (ch c)))
 
 (: date-number-field (-> DateNumber Field))
 (defun (date-number-field n)
   (match n
-    ((NumYear w) (field FYear (part-width w "year")))
-    ((NumMonth w) (field FMonth (part-width w "month")))
-    ((NumDay w) (field FDay (part-width w "day")))
-    ((NumWeekday w) (field FWeekday (part-width w "weekday")))
-    ((NumYday w) (field FYday (part-width w "yday")))
-    ((NumWeek w) (field FWeek (part-width w "week")))
-    ((NumWeekYear w) (field FWeekYear (part-width w "week-year")))))
+    ((NumYear w) (number-field FYear 4 (part-width w "year")))
+    ((NumMonth w) (number-field FMonth 2 (part-width w "month")))
+    ((NumDay w) (number-field FDay 2 (part-width w "day")))
+    ((NumWeekday w) (number-field FWeekday 1 (part-width w "weekday")))
+    ((NumYday w) (number-field FYday 3 (part-width w "yday")))
+    ((NumWeek w) (number-field FWeek 2 (part-width w "week")))
+    ((NumWeekYear w) (number-field FWeekYear 4 (part-width w "week-year")))))
 
 (: date-part-field (-> DatePart Field))
 (defun (date-part-field p)
   (match p
+    ((DateText s) (text-field s))
+    ((DateChar c) (char-field c))
     ((DateNum n) (date-number-field n))
     ((DateRoman RomanYear) (field FRomanYear 0))
     ((DateRoman RomanMonth) (field FRomanMonth 0))
@@ -2047,54 +2056,53 @@
     (MonthName (field FMonthName 0))
     (MonthAbbr (field FMonthAbbr 0))
     (WeekdayName (field FWeekdayName 0))
-    (WeekdayAbbr (field FWeekdayAbbr 0))
-    ((DateText s) (text-field s))
-    ((DateChar c) (char-field c))))
+    (WeekdayAbbr (field FWeekdayAbbr 0))))
 
 (: time-part-field (-> TimePart Field))
 (defun (time-part-field p)
   (match p
-    ((TimeHours w) (field FHours (part-width w "hours")))
-    ((TimeHours12 w) (field FHours12 (part-width w "hours12")))
-    ((TimeMinutes w) (field FMinutes (part-width w "minutes")))
-    ((TimeSeconds w) (field FSeconds (part-width w "seconds")))
+    ((TimeText s) (text-field s))
+    ((TimeChar c) (char-field c))
+    ((TimeHours w) (number-field FHours 2 (part-width w "hours")))
+    ((TimeHours12 w) (number-field FHours12 2 (part-width w "hours12")))
+    ((TimeMinutes w) (number-field FMinutes 2 (part-width w "minutes")))
+    ((TimeSeconds w) (number-field FSeconds 2 (part-width w "seconds")))
     ((TimeFraction w)
      (field FFraction (if (list-empty? w) -1 (max (part-width w "fraction") 0))))
-    (TimeAmPm (field FAmPm 0))
-    ((TimeText s) (text-field s))
-    ((TimeChar c) (char-field c))))
+    (TimeAmPm (field FAmPm 0))))
 
 (: datetime-part-field (-> DateTimePart Field))
 (defun (datetime-part-field p)
   (match p
-    ((DateTimeDate dp) (date-part-field dp))
-    ((DateTimeTime tp) (time-part-field tp))
     ((DateTimeText s) (text-field s))
-    ((DateTimeChar c) (char-field c))))
+    ((DateTimeChar c) (char-field c))
+    ((DateTimeDate dp) (date-part-field dp))
+    ((DateTimeTime tp) (time-part-field tp))))
 
 (: moment-part-field (-> MomentPart Field))
 (defun (moment-part-field p)
   (match p
+    ((MomentText s) (text-field s))
+    ((MomentChar c) (char-field c))
     ((MomentDateTime dtp) (datetime-part-field dtp))
     (MomentOffset (field FOffset 0))
     (MomentZone (field FZone 0))
     (MomentUnix (field FUnix 0))
-    (MomentUnixMs (field FUnixMs 0))
-    ((MomentText s) (text-field s))
-    ((MomentChar c) (char-field c))))
+    (MomentUnixMs (field FUnixMs 0))))
 
 (: instant-part-field (-> InstantPart Field))
 (defun (instant-part-field p)
   (match p
+    ((InstantText s) (text-field s))
+    ((InstantChar c) (char-field c))
     ((InstantDateTime dtp) (datetime-part-field dtp))
     (InstantOffset (field FOffset 0))
     (InstantUnix (field FUnix 0))
-    (InstantUnixMs (field FUnixMs 0))
-    ((InstantText s) (text-field s))
-    ((InstantChar c) (char-field c))))
+    (InstantUnixMs (field FUnixMs 0))))
 
-;; Each format union's parts as Fields. A trait rather than a function
-;; argument, so that each reader is compiled for its own union.
+;; Each format union's parts as Fields, text first, as separators are the
+;; most common part. A trait rather than a function argument, so that each
+;; reader is compiled for its own union.
 (def/trait (FormatPart %p)
   (: part-field (-> %p Field)))
 
@@ -2112,23 +2120,6 @@
 
 (impl (FormatPart InstantPart)
   (defun (part-field p) (instant-part-field p)))
-
-;; The most digits a number reads, and 0 for a field that is not a number.
-(: kind-most (-> FieldKind int))
-(defun (kind-most k)
-  (match k
-    (FYear 4)
-    (FWeekYear 4)
-    (FYday 3)
-    (FMonth 2)
-    (FDay 2)
-    (FWeek 2)
-    (FWeekday 1)
-    (FHours 2)
-    (FHours12 2)
-    (FMinutes 2)
-    (FSeconds 2)
-    (_ 0)))
 
 (: with-width (-> string int string))
 (defun (with-width name w) (if (> w 0) (str "(" name " " (->str w) ")") name))
@@ -2280,10 +2271,12 @@
 (defun (field-takes f)
   (def k (struct-ref f kind))
   (def w (struct-ref f width))
-  (def most (kind-most k))
+  (def most (struct-ref f most))
   (if (> most 0)
       (if (< (max w 1) most) t-digits 0)
       (match k
+        (FText 0)
+        (FChar 0)
         (FRomanYear t-roman)
         (FRomanMonth t-roman)
         (FRomanDay t-roman)
@@ -2326,6 +2319,8 @@
 (: name-kind? (-> FieldKind bool))
 (defun (name-kind? k)
   (match k
+    (FText #f)
+    (FChar #f)
     (FMonthName #t)
     (FMonthAbbr #t)
     (FWeekdayName #t)
@@ -2339,7 +2334,7 @@
 (defun (starts-within? f names taken)
   (def k (struct-ref f kind))
   (def w (struct-ref f width))
-  (cond ((> (kind-most k) 0) (takes? taken #\0))
+  (cond ((> (struct-ref f most) 0) (takes? taken #\0))
         ((name-kind? k) (any-name-starts? (name-table names k) taken))
         (else
          (match k
@@ -2361,7 +2356,7 @@
 
 (: two-readings-error (-> Field Field %a))
 (defun (two-readings-error before after)
-  (def most (kind-most (struct-ref before kind)))
+  (def most (struct-ref before most))
   (argument-error
     (str (field-name before) " can be of more than one length, and " (field-name after)
          " after it can begin with a character " (field-name before)
@@ -2397,19 +2392,24 @@
 ;; The fields read so far, each -1 until it is read, or no-ticks for those
 ;; in ticks. pm is 0 for the morning's word and 1 for the afternoon's, the
 ;; fraction is in ticks, read to fraction-digits digits, and unix is the
-;; instant's UTC ticks, from either kind of Unix time.
+;; instant's UTC ticks, from either kind of Unix time. The zone is the span of
+;; text its id was read from, empty until then, and is looked up once at the
+;; end. So a Seen holds no reference, and .NET need not clear every copy of
+;; it a function might make each time the function is called.
 (type (: Seen (Struct (: year int) (: month int) (: day int) (: weekday int) (: yday int)
                       (: week int) (: week-year int)
                       (: hours int) (: hours12 int) (: pm int) (: minutes int) (: seconds int)
                       (: fraction long) (: fraction-digits int)
-                      (: offset long) (: unix long) (: zone (Option TimeZone)))))
+                      (: offset long) (: unix long)
+                      (: zone-start StringCursor) (: zone-end StringCursor))))
 
 (: unseen Seen)
 (def unseen
   (Seen (year -1) (month -1) (day -1) (weekday -1) (yday -1) (week -1) (week-year -1)
         (hours -1) (hours12 -1) (pm -1) (minutes -1) (seconds -1)
         (fraction -1L) (fraction-digits 0)
-        (offset no-ticks) (unix no-ticks) (zone None)))
+        (offset no-ticks) (unix no-ticks)
+        (zone-start (string-cursor-start "")) (zone-end (string-cursor-start ""))))
 
 ;; From least to most ASCII digits, as many as there are. The value stops
 ;; growing at eighteen digits, which no field reaches.
@@ -2498,16 +2498,24 @@
     (if ms (unix-milliseconds->instant signed) (unix-seconds->instant signed)) :propagate)
   (Some (Tuple (instant-ticks i) c1)))
 
-;; The longest run of the characters an IANA id is made of, as a zone: None
-;; for an id the machine does not know.
-(: read-zone (-> string StringCursor (Option (Tuple TimeZone StringCursor))))
-(defun (read-zone s c)
+;; The end of the longest run, at least one long, of the characters an IANA
+;; id is made of.
+(: skip-zone (-> string StringCursor (Option StringCursor)))
+(defun (skip-zone s c)
   (let loop ((e c))
     (cond ((and (not (string-cursor-end? s e)) (zone-char? (string-cursor-ref s e)))
            (loop (string-cursor-next s e)))
           ((string-cursor=? e c) None)
-          (:def (Some z) (timezone (substring/cursors s c e)) :propagate)
-          (else (Some (Tuple z e))))))
+          (else (Some e)))))
+
+;; Whether s has the same text from a to a-end as from b to b-end.
+(: same-span? (-> string StringCursor StringCursor StringCursor StringCursor bool))
+(defun (same-span? s a a-end b b-end)
+  (cond ((string-cursor=? a a-end) (string-cursor=? b b-end))
+        ((string-cursor=? b b-end) #f)
+        ((char=? (string-cursor-ref s a) (string-cursor-ref s b))
+         (same-span? s (string-cursor-next s a) a-end (string-cursor-next s b) b-end))
+        (else #f)))
 
 (: zero-after (-> (Option StringCursor) (Option (Tuple long StringCursor))))
 (defun (zero-after r)
@@ -2516,12 +2524,12 @@
     (None None)))
 
 ;; What one part reads at c, as a number, and the cursor after it. Text and
-;; characters read as 0, and a zone is read by read-zone.
+;; characters read as 0, and a zone is read by skip-zone.
 (: read-value (-> string StringCursor DateNames Field (Option (Tuple long StringCursor))))
 (defun (read-value s c names f)
   (def k (struct-ref f kind))
   (def w (struct-ref f width))
-  (def most (kind-most k))
+  (def most (struct-ref f most))
   (cond ((> most 0) (read-digits s c (max w 1) (max w most)))
         ((name-kind? k) (read-name s c (name-table names k)))
         (else
@@ -2540,13 +2548,8 @@
 (: agrees? (-> int int bool))
 (defun (agrees? old v) (or (< old 0) (= old v)))
 
-;; next, the fields with one more read as n, when a field read before as old
-;; agrees with it.
-(: put-if (-> int int Seen (Option Seen)))
-(defun (put-if old n next) (if (agrees? old n) (Some next) None))
-
-(: put-ticks-if (-> long long Seen (Option Seen)))
-(defun (put-ticks-if old t next) (if (or (= old no-ticks) (= old t)) (Some next) None))
+(: ticks-agree? (-> long long bool))
+(defun (ticks-agree? old t) (or (= old no-ticks) (= old t)))
 
 ;; The ticks in the last of 7 - digits places, which a fraction read to
 ;; digits digits does not say.
@@ -2568,69 +2571,78 @@
         (else None)))
 
 ;; seen with the field f read as v, or None when it was read before as
-;; something else. A value too large for any field stays too large.
+;; something else. A value too large for any field stays too large. The
+;; check comes first, so a Seen, which is large, is copied only to change it.
 (: put-value (-> Seen Field long (Option Seen)))
 (defun (put-value seen f v)
   (def n (if (or (> v 1000000000L) (< v 0L)) 1000000000 (int-of v)))
   (def w (struct-ref f width))
   (match (struct-ref f kind)
-    (FText (Some seen))
-    (FChar (Some seen))
-    (FYear (put-if (struct-ref seen year) n (record-set seen (year n))))
-    (FRomanYear (put-if (struct-ref seen year) n (record-set seen (year n))))
-    (FMonth (put-if (struct-ref seen month) n (record-set seen (month n))))
-    (FRomanMonth (put-if (struct-ref seen month) n (record-set seen (month n))))
-    (FMonthName (put-if (struct-ref seen month) n (record-set seen (month n))))
-    (FMonthAbbr (put-if (struct-ref seen month) n (record-set seen (month n))))
-    (FDay (put-if (struct-ref seen day) n (record-set seen (day n))))
-    (FRomanDay (put-if (struct-ref seen day) n (record-set seen (day n))))
-    (FWeekday (put-if (struct-ref seen weekday) n (record-set seen (weekday n))))
-    (FWeekdayName (put-if (struct-ref seen weekday) n (record-set seen (weekday n))))
-    (FWeekdayAbbr (put-if (struct-ref seen weekday) n (record-set seen (weekday n))))
-    (FYday (put-if (struct-ref seen yday) n (record-set seen (yday n))))
-    (FWeek (put-if (struct-ref seen week) n (record-set seen (week n))))
-    (FWeekYear (put-if (struct-ref seen week-year) n (record-set seen (week-year n))))
-    (FHours (put-if (struct-ref seen hours) n (record-set seen (hours n))))
-    (FHours12 (put-if (struct-ref seen hours12) n (record-set seen (hours12 n))))
-    (FAmPm (put-if (struct-ref seen pm) n (record-set seen (pm n))))
-    (FMinutes (put-if (struct-ref seen minutes) n (record-set seen (minutes n))))
-    (FSeconds (put-if (struct-ref seen seconds) n (record-set seen (seconds n))))
+    (FYear (if (agrees? (struct-ref seen year) n) (Some (record-set seen (year n))) None))
+    (FMonth (if (agrees? (struct-ref seen month) n) (Some (record-set seen (month n))) None))
+    (FDay (if (agrees? (struct-ref seen day) n) (Some (record-set seen (day n))) None))
+    (FHours (if (agrees? (struct-ref seen hours) n) (Some (record-set seen (hours n))) None))
+    (FMinutes (if (agrees? (struct-ref seen minutes) n) (Some (record-set seen (minutes n))) None))
+    (FSeconds (if (agrees? (struct-ref seen seconds) n) (Some (record-set seen (seconds n))) None))
     ;; A bare fraction says every digit there is: .5 is .5000000.
     (FFraction (put-fraction seen v (if (< w 0) 7 (min w 7))))
-    (FOffset (put-ticks-if (struct-ref seen offset) v (record-set seen (offset v))))
-    (FUnix (put-ticks-if (struct-ref seen unix) v (record-set seen (unix v))))
-    (FUnixMs (put-ticks-if (struct-ref seen unix) v (record-set seen (unix v))))
-    (FZone (Some seen))))
+    (FOffset (if (ticks-agree? (struct-ref seen offset) v) (Some (record-set seen (offset v))) None))
+    (FUnix (if (ticks-agree? (struct-ref seen unix) v) (Some (record-set seen (unix v))) None))
+    (FUnixMs (if (ticks-agree? (struct-ref seen unix) v) (Some (record-set seen (unix v))) None))
+    (FRomanYear (if (agrees? (struct-ref seen year) n) (Some (record-set seen (year n))) None))
+    (FRomanMonth (if (agrees? (struct-ref seen month) n) (Some (record-set seen (month n))) None))
+    (FRomanDay (if (agrees? (struct-ref seen day) n) (Some (record-set seen (day n))) None))
+    (FMonthName (if (agrees? (struct-ref seen month) n) (Some (record-set seen (month n))) None))
+    (FMonthAbbr (if (agrees? (struct-ref seen month) n) (Some (record-set seen (month n))) None))
+    (FWeekday (if (agrees? (struct-ref seen weekday) n) (Some (record-set seen (weekday n))) None))
+    (FWeekdayName
+     (if (agrees? (struct-ref seen weekday) n) (Some (record-set seen (weekday n))) None))
+    (FWeekdayAbbr
+     (if (agrees? (struct-ref seen weekday) n) (Some (record-set seen (weekday n))) None))
+    (FYday (if (agrees? (struct-ref seen yday) n) (Some (record-set seen (yday n))) None))
+    (FWeek (if (agrees? (struct-ref seen week) n) (Some (record-set seen (week n))) None))
+    (FWeekYear
+     (if (agrees? (struct-ref seen week-year) n) (Some (record-set seen (week-year n))) None))
+    (FHours12 (if (agrees? (struct-ref seen hours12) n) (Some (record-set seen (hours12 n))) None))
+    (FAmPm (if (agrees? (struct-ref seen pm) n) (Some (record-set seen (pm n))) None))
+    ;; Text is read by read-format, and a zone by put-zone.
+    (_ (Some seen))))
 
-(: put-zone (-> Seen TimeZone (Option Seen)))
-(defun (put-zone seen z)
-  (match (struct-ref seen zone)
-    ((Some old) (if (= old z) (Some seen) None))
-    (None (Some (record-set seen (zone (Some z)))))))
-
-;; seen with the part f read at c, and the cursor after it.
-(: read-field (-> string StringCursor DateNames Seen Field (Option (Tuple Seen StringCursor))))
-(defun (read-field s c names seen f)
-  (match (struct-ref f kind)
-    (FZone
-     (def* ((Some (Tuple z c1)) (read-zone s c) :propagate)
-           ((Some seen1) (put-zone seen z) :propagate))
-     (Some (Tuple seen1 c1)))
-    (_
-     (def* ((Some (Tuple v c1)) (read-value s c names f) :propagate)
-           ((Some seen1) (put-value seen f v) :propagate))
-     (Some (Tuple seen1 c1)))))
+;; seen with the zone read from c to e, when no other was read before.
+(: put-zone (-> string Seen StringCursor StringCursor (Option Seen)))
+(defun (put-zone s seen c e)
+  (def start (struct-ref seen zone-start))
+  (def end (struct-ref seen zone-end))
+  (cond ((string-cursor=? start end) (Some (record-set seen (zone-start c) (zone-end e))))
+        ((same-span? s start end c e) (Some seen))
+        (else None)))
 
 ;; The fields of a text in a format's parts, when the text has every part
-;; and nothing after.
+;; and nothing after. Text is only skipped, and a field's value is read
+;; before it is put, so a Seen is copied no more than it has to be.
 (: read-format (-> string (List %p) DateNames (Option Seen)) (where (FormatPart %p)))
 (defun (read-format s parts names)
   (let loop ((ps parts) (c (string-cursor-start s)) (seen unseen))
     (if (list-empty? ps)
         (if (string-cursor-end? s c) (Some seen) None)
-        (match (read-field s c names seen (part-field (list-head ps)))
-          ((Some (Tuple seen1 c1)) (loop (list-tail ps) c1 seen1))
-          (None None)))))
+        (let ((f (part-field (list-head ps))))
+          (match (struct-ref f kind)
+            (FText
+             (match (skip-string s c (struct-ref f text))
+               ((Some c1) (loop (list-tail ps) c1 seen))
+               (None None)))
+            (FChar
+             (match (skip-char s c (struct-ref f ch))
+               ((Some c1) (loop (list-tail ps) c1 seen))
+               (None None)))
+            (FZone
+             (def* ((Some c1) (skip-zone s c) :propagate)
+                   ((Some seen1) (put-zone s seen c c1) :propagate))
+             (loop (list-tail ps) c1 seen1))
+            (_
+             (def* ((Some (Tuple v c1)) (read-value s c names f) :propagate)
+                   ((Some seen1) (put-value seen f v) :propagate))
+             (loop (list-tail ps) c1 seen1)))))))
 
 ;; A date needs its largest unit. Month, day and yday count within year,
 ;; and week within week-year; either may be read beside a date the other
@@ -2720,16 +2732,17 @@
         ((>= y 0) (calendar-day y 1 1))
         (else None)))
 
-;; Whether every date field read is the date's own.
+;; Whether every date field read is the date's own. A field not read is -1,
+;; and its accessor is not called.
 (: date-agrees? (-> Seen Date bool))
 (defun (date-agrees? seen d)
-  (and (agrees? (struct-ref seen year) (->year d))
-       (agrees? (struct-ref seen month) (->month d))
-       (agrees? (struct-ref seen day) (->day d))
-       (agrees? (struct-ref seen weekday) (->weekday d))
-       (agrees? (struct-ref seen yday) (->yday d))
-       (agrees? (struct-ref seen week) (->week d))
-       (agrees? (struct-ref seen week-year) (->week-year d))))
+  (and (or (< (struct-ref seen year) 0) (= (struct-ref seen year) (->year d)))
+       (or (< (struct-ref seen month) 0) (= (struct-ref seen month) (->month d)))
+       (or (< (struct-ref seen day) 0) (= (struct-ref seen day) (->day d)))
+       (or (< (struct-ref seen weekday) 0) (= (struct-ref seen weekday) (->weekday d)))
+       (or (< (struct-ref seen yday) 0) (= (struct-ref seen yday) (->yday d)))
+       (or (< (struct-ref seen week) 0) (= (struct-ref seen week) (->week d)))
+       (or (< (struct-ref seen week-year) 0) (= (struct-ref seen week-year) (->week-year d)))))
 
 (: seen->date (-> Seen (Option Date)))
 (defun (seen->date seen)
@@ -2781,12 +2794,15 @@
     ((Ok m) (Some m))
     ((Err e) None)))
 
-;; A moment in the zone read: the Unix time's instant there; or the local
-;; time at the offset read, when the zone has that offset then; or the local
-;; time alone, which in a gap or an overlap is None unless a resolver says.
-(: seen->moment (-> Seen (Option Resolver) (Option Moment)))
-(defun (seen->moment seen r)
-  (def (Some z) (struct-ref seen zone) :propagate)
+;; A moment in the zone read from s: the Unix time's instant there; or the
+;; local time at the offset read, when the zone has that offset then; or the
+;; local time alone, which in a gap or an overlap is None unless a resolver
+;; says. An id the machine does not know is None.
+(: seen->moment (-> string Seen (Option Resolver) (Option Moment)))
+(defun (seen->moment s seen r)
+  (def (Some z)
+    (timezone (substring/cursors s (struct-ref seen zone-start) (struct-ref seen zone-end)))
+    :propagate)
   (def zi (struct-ref z tz))
   (def u (struct-ref seen unix))
   (def o (struct-ref seen offset))
@@ -2845,7 +2861,7 @@
 (defun (text->moment s parts #:names (parameter-ref current-date-names))
   (check-moment-bits (format-bits parts names))
   (def (Some seen) (read-format s parts names) :propagate)
-  (seen->moment seen None))
+  (seen->moment s seen None))
 
 ;; A local time without an offset found as the resolver says, as
 ;; datetime->moment finds it.
@@ -2853,4 +2869,4 @@
 (defun (text->moment/resolver s parts r #:names (parameter-ref current-date-names))
   (check-moment-bits (format-bits parts names))
   (def (Some seen) (read-format s parts names) :propagate)
-  (seen->moment seen (Some r)))
+  (seen->moment s seen (Some r)))
