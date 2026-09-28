@@ -263,6 +263,63 @@ not read.
 The digits are written and read by this module, not by .NET, so no culture is
 involved and nothing depends on the machine's locale.
 
+** Text of your own
+
+A format is a quoted list: a field's name, a string or a character, each
+written as it stands.
+
+#+BEGIN_SRC scheme
+(date->text d '((year 4) "-" (month 2) "-" (day 2)))            ;; 2026-10-25
+(date->text d '(weekday-name ", " day " " month-name " " year))  ;; Sunday, 25 October 2026
+(date->text d '(day "." (roman month) "." (roman year)))         ;; 25.X.MMXXVI
+(time->text t '(hours12 ":" (minutes 2) " " am-pm))              ;; 1:05 PM
+(moment->text m '((year 4) "-" (month 2) "-" (day 2) "T" (hours 2) ":" (minutes 2)
+                  ":" (seconds 2) offset))                       ;; 2026-10-25T02:30:00+01:00
+#+END_SRC
+
+- ~(date->text d format)~ for a ~Date~, ~(time->text t format)~ for a ~Time~,
+  ~(datetime->text dt format)~ for a ~DateTime~, and ~(moment->text m format)~
+  for a ~Moment~. Each takes ~#:names~, defaulting to the parameter
+  ~current-date-names~, which starts as ~english-names~; ~swedish-names~ is
+  the other one provided.
+- A number after a field's name is a width, filled with zeros: ~(month 2)~ is
+  ~03~. Without one, a number takes the digits it needs, and ~day~ and
+  ~(day)~ are the same.
+
+| Format        | Fields                                                              |
+|---------------+---------------------------------------------------------------------|
+| ~DatePart~     | ~year~, ~month~, ~day~, ~weekday~ (1 is Monday), ~yday~, ~week~, ~week-year~; ~(roman year)~, ~(roman month)~, ~(roman day)~; ~month-name~, ~month-abbr~, ~weekday-name~, ~weekday-abbr~ |
+| ~TimePart~     | ~hours~, ~hours12~ (12 for midnight's and noon's hour), ~minutes~, ~seconds~, ~fraction~, ~am-pm~ |
+| ~DateTimePart~ | both of those                                                       |
+| ~MomentPart~   | both, and ~offset~ (~+01:00~) and ~zone~ (~Europe/Stockholm~)          |
+
+- ~(fraction n)~ is ~n~ digits of the second's fraction, cut rather than
+  rounded, and zeros past the seventh: ~(fraction 9)~ is nanoseconds. A bare
+  ~fraction~ is ISO 8601's, point included: ~.5~, and nothing at all for a
+  whole second, so ~'((hours 2) ":" (minutes 2) fraction)~ reads well either
+  way.
+- ~(roman year)~ is ~MMXXVI~, and 1900 is ~MCM~. Numerals stop at ~MMMCMXCIX~,
+  so a later year goes on adding ~M~: 4000 is ~MMMM~. A numeral takes no
+  width.
+- A ~DateNames~ holds twelve months from January, seven weekdays from Monday,
+  and the two words ~am-pm~ writes; a table of your own for another language
+  is a ~DateNames~ with those six fields. One with the wrong number of names
+  raises an ~ArgumentException~ when a name is taken from it, as ~(year 4 2)~
+  does, with two widths.
+- A format kept in a variable says which kind it is, since nothing else tells
+  the list what it holds: ~(def (: stamp (List DateTimePart)) '(...))~.
+
+The mistakes are compile errors, with the list of the fields there are:
+
+#+BEGIN_SRC scheme
+(date->text d '((year 4) (hours 2)))        ;; `hours` is not a tag of the union DatePart …
+(datetime->text dt '((hours 2) offset))     ;; `offset` is not a tag of the union DateTimePart …
+(date->text d '((roman (year 4))))          ;; RomanYear takes no argument …
+(datetime->text some-moment '(year))        ;; a type error: write (->datetime some-moment)
+#+END_SRC
+
+Text of your own is written, not read: no reader takes a format yet.
+
 ** Range and errors
 
 Every value lies between 0001-01-01T00:00 and 9999-12-31T23:59:59.9999999. A
@@ -312,7 +369,9 @@ Near the two ends of the range, a local time and its instant cannot both fit:
   and Manila, Guam, Saipan and Palau before 1845 (Manila's −15:56:08 reads as
   −14:00, so the day it skipped is 22 hours and 3 minutes long rather than
   24). Those moments are off by up to two hours.
-- *No leap seconds*, no other calendars, no localized names, no custom formats.
+- *No leap seconds*, and no other calendars. Names come in English and
+  Swedish, or from a ~DateNames~ of your own, and formats of your own are
+  written but not read.
 
 ** How a local time finds its offset
 
@@ -380,6 +439,18 @@ Values are written as ISO text here for short.
   and 2025-12-29 week 1 of 2025, a year early. The two are separate functions
   rather than one pair, since "which week is it" usually wants the number
   only; the two years differ in at most three days at either end of a year.
+- *A format is a quoted list, not a pattern string.* In a pattern string a
+  letter's case changes its meaning: Java's ~YYYY~ is the week-based year
+  where ~yyyy~ is the year, so ~YYYY-MM-dd~ writes 2025-12-29 as 2026-12-29,
+  and ~mm~ is minutes where ~MM~ is months. Here a field has a name, a wrong
+  name is a compile error that lists the right ones, and text needs no
+  escaping, being a string of its own. The cost: a format is longer than
+  ~yyyy-MM-dd~, and cannot arrive as text from a configuration file; a
+  program chooses among formats it holds.
+- *One format union and one function per type.* That is what makes ~hours~ in
+  a date's format a compile error. A moment's date is written with
+  ~(date->text (->date m) ...)~, which says whose date it is, as a calendar
+  difference asks for ~->date~ too.
 - *A moment's ~=~ compares every field, and ~compare~ orders by instant, then
   local time, then zone id,* so the two agree. 12:00+02:00[Europe/Stockholm]
   and 10:00+00:00[UTC] are one instant and two values; a sorted set keeps both,

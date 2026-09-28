@@ -134,6 +134,77 @@
   (expect "and of the range's first ten" (week-mismatches (the (date 1 1 1)) 3652) 0)
   (expect "and last ten" (week-mismatches (the (date 9990 1 1)) 3652) 0))
 
+;; Formats written as quoted lists.
+(: own-text (-> void))
+(defun (own-text)
+  (def d (the (date 2026 10 25)))
+  (def early (the (date 2026 3 5)))
+  (expect "widths fill with zeros" (date->text early '((year 4) "-" (month 2) "-" (day 2)))
+          "2026-03-05")
+  (expect "text and characters as they are"
+          (date->text d '((year 4) #\: (month 2) "-WHAT-" day)) "2026:10-WHAT-25")
+  (expect "a bare field takes the digits it needs" (date->text early '(day "/" month)) "5/3")
+  (expect "names" (date->text d '(weekday-name ", " day " " month-name " " year))
+          "Sunday, 25 October 2026")
+  (expect "in Swedish, by #:names"
+          (date->text d '(weekday-abbr " " day " " month-abbr) #:names swedish-names) "sön 25 okt")
+  (expect "or by current-date-names"
+          (parameterize ((current-date-names swedish-names))
+            (date->text d '(weekday-name " " day " " month-name " " year)))
+          "söndag 25 oktober 2026")
+  (expect "a Roman year" (date->text d '((roman year))) "MMXXVI")
+  (expect "1999" (date->text (the (date 1999 1 1)) '((roman year))) "MCMXCIX")
+  (expect "1900" (date->text (the (date 1900 1 1)) '((roman year))) "MCM")
+  (expect "2000" (date->text (the (date 2000 1 1)) '((roman year))) "MM")
+  (expect "year 4" (date->text (the (date 4 1 1)) '((roman year))) "IV")
+  (expect "the last standard numeral" (date->text (the (date 3999 1 1)) '((roman year)))
+          "MMMCMXCIX")
+  (expect "then more Ms" (date->text (the (date 4000 1 1)) '((roman year))) "MMMM")
+  (expect "up to 9999" (date->text (the (date 9999 1 1)) '((roman year))) "MMMMMMMMMCMXCIX")
+  (expect "a Roman month" (date->text d '(day "." (roman month) "." year)) "25.X.2026")
+  (expect "a Roman day" (date->text (the (date 2026 10 14)) '((roman day))) "XIV")
+  (expect "a week date" (date->text (the (date 2027 1 1)) '(week-year "-W" (week 2) "-" weekday))
+          "2026-W53-5")
+  (expect "the day of the year" (date->text (the (date 2026 1 5)) '((yday 3))) "005")
+  (expect-true "one width to a field"
+               (refused? (fun () (date->text d '((year 4 2))))))
+  (def short (record-set english-names (months (vec-slice (record-ref english-names months) 0 11))))
+  (expect-true "a table without twelve months is refused"
+               (refused? (fun () (date->text d '(month-name) #:names short))))
+  (expect "when a month's name is taken from it" (date->text d '(day) #:names short) "25")
+
+  (def t (the (time 13 5 #:seconds 9 #:nanoseconds 123456700)))
+  (expect "a time" (time->text t '((hours 2) ":" (minutes 2) ":" (seconds 2) "." (fraction 3)))
+          "13:05:09.123")
+  (expect "fraction digits past the seventh are zeros" (time->text t '((fraction 9)))
+          "123456700")
+  (expect "a bare fraction is ISO 8601's" (time->text t '(fraction)) ".1234567")
+  (expect "and nothing for a whole second"
+          (time->text (the (time 9 7)) '((hours 2) ":" (minutes 2) fraction)) "09:07")
+  (expect "a twelve-hour clock" (time->text t '(hours12 ":" (minutes 2) " " am-pm)) "1:05 PM")
+  (expect "with 12 for midnight's hour" (time->text (the (time 0 30)) '(hours12 ":" (minutes 2) " " am-pm))
+          "12:30 AM")
+  (expect "and noon's" (time->text (the (time 12 0)) '(hours12 " " am-pm)) "12 PM")
+  (expect "in Swedish" (time->text t '(hours12 " " am-pm) #:names swedish-names) "1 em")
+
+  (expect "a date and a time"
+          (datetime->text (the (datetime 2026 3 5 #:hours 9 #:minutes 7))
+                          '((year 4) "-" (month 2) "-" (day 2) " " (hours 2) #\: (minutes 2)))
+          "2026-03-05 09:07")
+  (match (timezone "Europe/Stockholm")
+    ((Some z)
+     ;; A format kept in a variable says which union it is.
+     (def (: rfc3339 (List MomentPart))
+       '((year 4) "-" (month 2) "-" (day 2) "T" (hours 2) ":" (minutes 2) ":" (seconds 2) offset))
+     (def overlap (the (datetime 2026 10 25 #:hours 2 #:minutes 30)))
+     (expect "a moment with its offset, as RFC 3339 writes it"
+             (moment->text (datetime->moment overlap z earlier) rfc3339) "2026-10-25T02:30:00+02:00")
+     (expect "the same local time an hour later"
+             (moment->text (datetime->moment overlap z later) rfc3339) "2026-10-25T02:30:00+01:00")
+     (expect "and its zone" (moment->text (datetime->moment overlap z later) '(zone))
+             "Europe/Stockholm"))
+    (None (fail "no Europe/Stockholm"))))
+
 (: arithmetic (-> void))
 (defun (arithmetic)
   (expect "+months clamps to February's end"
@@ -541,6 +612,7 @@
   (construction)
   (accessors)
   (weeks)
+  (own-text)
   (arithmetic)
   (differences)
   (zone-differences)

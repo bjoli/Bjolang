@@ -3,6 +3,39 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std datetime)~ writes formats of your own, Roman years included
+
+A format is a quoted list of field names, strings and characters, which the
+language's tagged literals elaborate into one union per kind of value:
+
+#+BEGIN_SRC scheme
+(date->text d '(weekday-name ", " day " " month-name " " (roman year)))
+;; Sunday, 25 October MMXXVI
+#+END_SRC
+
+~date->text~, ~time->text~, ~datetime->text~ and ~moment->text~ take a
+~Date~, ~Time~, ~DateTime~ and ~Moment~. A number after a field is a width
+filled with zeros. The fields are the date's numbers (~year~ to
+~week-year~), ~(roman year)~, ~(roman month)~ and ~(roman day)~, month and
+weekday names and abbreviations, the hours on a 24- or 12-hour clock with
+~am-pm~, minutes, seconds, ~(fraction n)~ digits, and a moment's ~offset~ and
+~zone~, which also writes RFC 3339's ~2026-10-25T02:30:00+01:00~. Names come
+from ~#:names~ or the parameter ~current-date-names~: ~english-names~,
+~swedish-names~, or a ~DateNames~ of your own. Roman numerals go on adding
+~M~ past ~MMMCMXCIX~, so 4000 is ~MMMM~.
+
+A field a value does not have (~hours~ in a date's format, ~offset~ in a
+datetime's), a misspelled field, or a width on a numeral is a compile error
+naming the fields there are. Two widths on one field, or a names table
+without twelve months or seven weekdays, raises an ~ArgumentException~ when
+it is used. Formats are written, not read.
+
+Tested in ~245_datetime.bjo~ (33 checks, from widths and names through
+Roman years from I to 9999, week dates, the twelve-hour clock, fractions, and
+both offsets of an overlap) and in ~errors/datetime_text_hours_in_date.bjo~,
+~errors/datetime_text_offset_in_datetime.bjo~ and
+~errors/datetime_text_roman_width.bjo~.
+
 * A definition takes its name over from a ~defbjouble~, in a bjoroutine too
 
 Which names have a suspending copy, and which park a thread, was decided by

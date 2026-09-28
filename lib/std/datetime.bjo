@@ -29,9 +29,10 @@
 ;; - ->weekday answers an int, so (= (->weekday d) 0) compiles and is never
 ;;   true. A Weekday union, Monday to Sunday, would make it a type error, at
 ;;   the cost of arithmetic on weekdays.
-;; - Week text, 2026-W43 and 2026-W43-7, is neither written nor read. A writer
-;;   would keep ->week from being printed beside ->year instead of ->week-year,
-;;   and a reader would take what an HTML <input type="week"> sends.
+;; - Formats of your own are written, not read: no reader takes a format list,
+;;   so week text such as 2026-W43, which an HTML <input type="week"> sends,
+;;   cannot be read yet. date->text writes it, and cannot refuse (week) beside
+;;   (year) rather than (week-year), since "2026-12-31, week 53" is right.
 ;; - utc-datetime->instant takes any DateTime, so a local time goes in and is
 ;;   read as UTC without a word.
 
@@ -138,7 +139,11 @@
   ;; Text
   iso8601->date iso8601->time iso8601->datetime iso8601->instant iso8601->moment
   iso8601->duration iso8601->date-period iso8601->period
-  instant->http-date http-date->instant)
+  instant->http-date http-date->instant
+  ;; Text of your own
+  DateNumber RomanNumber DatePart TimePart DateTimePart MomentPart DateNames
+  date->text time->text datetime->text moment->text
+  english-names swedish-names current-date-names)
 
 
 ;; ===========================================================================
@@ -1688,3 +1693,247 @@
             (Some (Instant (ticks (+ (* day ticks-per-day) (time-of-day-ticks h mi sec 0)))))
             None))
       None))
+
+
+;; ===========================================================================
+;; Text of your own
+;; ===========================================================================
+;;
+;; A format is a quoted list, which elaborates into the parts below: a tag
+;; names a field, and a string or a character is written as it is.
+;;
+;;   (date->text d '((year 4) "-" (month 2) "-" (day 2)))      ;; 2026-03-05
+;;
+;; A number after a field's name is a width, filled with zeros. There is one
+;; union per kind of value, so a format that asks a date for its hours is a
+;; type error where it is written.
+
+;; The numbers of a date.
+(type (: DateNumber (Union (NumYear (List int) #:tag year #:rest)
+                           (NumMonth (List int) #:tag month #:rest)
+                           (NumDay (List int) #:tag day #:rest)
+                           (NumWeekday (List int) #:tag weekday #:rest)
+                           (NumYday (List int) #:tag yday #:rest)
+                           (NumWeek (List int) #:tag week #:rest)
+                           (NumWeekYear (List int) #:tag week-year #:rest))))
+
+;; What (roman ...) writes. No width, as a numeral has no zeros to fill with.
+(type (: RomanNumber (Union (RomanYear #:tag year) (RomanMonth #:tag month) (RomanDay #:tag day))))
+
+;; A date's numbers, through DateNumber's tags, and its names, from a
+;; DateNames.
+(type (: DatePart (Union (DateNum DateNumber)
+                         (DateRoman RomanNumber #:tag roman)
+                         (MonthName #:tag month-name)
+                         (MonthAbbr #:tag month-abbr)
+                         (WeekdayName #:tag weekday-name)
+                         (WeekdayAbbr #:tag weekday-abbr)
+                         (DateText string)
+                         (DateChar char))))
+
+;; (fraction n) is n digits of the second's fraction, cut rather than rounded,
+;; with zeros past the seventh. A bare fraction is ISO 8601's, point included:
+;; .5, and nothing for a whole second.
+(type (: TimePart (Union (TimeHours (List int) #:tag hours #:rest)
+                         (TimeHours12 (List int) #:tag hours12 #:rest)
+                         (TimeMinutes (List int) #:tag minutes #:rest)
+                         (TimeSeconds (List int) #:tag seconds #:rest)
+                         (TimeFraction (List int) #:tag fraction #:rest)
+                         (TimeAmPm #:tag am-pm)
+                         (TimeText string)
+                         (TimeChar char))))
+
+;; The tags of both, found through the two unions.
+(type (: DateTimePart (Union (DateTimeDate DatePart)
+                             (DateTimeTime TimePart)
+                             (DateTimeText string)
+                             (DateTimeChar char))))
+
+;; A date and a time, the offset as ISO 8601 writes it (+02:00), and the
+;; zone's id.
+(type (: MomentPart (Union (MomentDateTime DateTimePart)
+                           (MomentOffset #:tag offset)
+                           (MomentZone #:tag zone)
+                           (MomentText string)
+                           (MomentChar char))))
+
+;; Twelve months from January and seven weekdays from Monday, and what am-pm
+;; writes. A table of other lengths raises when a name is taken from it.
+(type (: DateNames (Struct (: months (Vec string)) (: months-short (Vec string))
+                           (: weekdays (Vec string)) (: weekdays-short (Vec string))
+                           (: am string) (: pm string))))
+
+(: english-names DateNames)
+(def english-names
+  (DateNames (months ["January" "February" "March" "April" "May" "June" "July"
+                      "August" "September" "October" "November" "December"])
+             (months-short ["Jan" "Feb" "Mar" "Apr" "May" "Jun" "Jul" "Aug" "Sep" "Oct"
+                            "Nov" "Dec"])
+             (weekdays ["Monday" "Tuesday" "Wednesday" "Thursday" "Friday" "Saturday"
+                        "Sunday"])
+             (weekdays-short ["Mon" "Tue" "Wed" "Thu" "Fri" "Sat" "Sun"])
+             (am "AM")
+             (pm "PM")))
+
+(: swedish-names DateNames)
+(def swedish-names
+  (DateNames (months ["januari" "februari" "mars" "april" "maj" "juni" "juli"
+                      "augusti" "september" "oktober" "november" "december"])
+             (months-short ["jan" "feb" "mar" "apr" "maj" "jun" "jul" "aug" "sep" "okt"
+                            "nov" "dec"])
+             (weekdays ["måndag" "tisdag" "onsdag" "torsdag" "fredag" "lördag" "söndag"])
+             (weekdays-short ["mån" "tis" "ons" "tor" "fre" "lör" "sön"])
+             (am "fm")
+             (pm "em")))
+
+;; After english-names, which is its first value.
+(: current-date-names (Param DateNames))
+(def current-date-names (make-parameter english-names))
+
+(: argument-error (-> string %a))
+(defun (argument-error what)
+  (raise (cast Exception (ArgumentException. (str "(std datetime): " what)))))
+
+;; The width a part was written with, 0 for none.
+(: part-width (-> (List int) string int))
+(defun (part-width ws tag)
+  (cond ((list-empty? ws) 0)
+        ((list-empty? (list-tail ws)) (list-head ws))
+        (else (argument-error (str "(" tag " ...) takes one width, and was given "
+                                   (->str (list-length ws)) ".")))))
+
+;; The i:th name, counting from 1, of a table that must have count of them.
+(: name-at (-> (Vec string) int int string string))
+(defun (name-at names count i what)
+  (if (= (vec-length names) count)
+      (vec-ref names (- i 1))
+      (argument-error (str "a DateNames has " (->str count) " " what ", and this one has "
+                           (->str (vec-length names)) "."))))
+
+;; MMXXVI. Numerals stop at MMMCMXCIX, and a larger year goes on adding Ms,
+;; 4000 being MMMM, since nothing else is standard.
+(: roman-steps (List (Tuple int string)))
+(def roman-steps
+  (list (Tuple 1000 "M") (Tuple 900 "CM") (Tuple 500 "D") (Tuple 400 "CD")
+        (Tuple 100 "C") (Tuple 90 "XC") (Tuple 50 "L") (Tuple 40 "XL")
+        (Tuple 10 "X") (Tuple 9 "IX") (Tuple 5 "V") (Tuple 4 "IV") (Tuple 1 "I")))
+
+(: add-roman! (-> TextBuilder int void))
+(defun (add-roman! sb n)
+  (let loop ((n n) (steps roman-steps))
+    (unless (list-empty? steps)
+      (match (list-head steps)
+        ((Tuple value numeral)
+         (if (>= n value)
+             (begin
+               (add-text! sb numeral)
+               (loop (- n value) steps))
+             (loop n (list-tail steps))))))))
+
+;; The first n digits of a second's fraction f, in ticks: cut, not rounded,
+;; and zeros past the seventh.
+(: add-fraction-digits! (-> TextBuilder long int void))
+(defun (add-fraction-digits! sb f n)
+  (let loop ((i 0) (scale 1000000L))
+    (when (< i n)
+      (add-digit! sb (if (> scale 0L) (% (/ f scale) 10L) 0L))
+      (loop (+ i 1) (/ scale 10L)))))
+
+(: add-date-number! (-> TextBuilder Date DateNumber void))
+(defun (add-date-number! sb d n)
+  (match n
+    ((NumYear w) (add-padded! sb (long-of (->year d)) (part-width w "year")))
+    ((NumMonth w) (add-padded! sb (long-of (->month d)) (part-width w "month")))
+    ((NumDay w) (add-padded! sb (long-of (->day d)) (part-width w "day")))
+    ((NumWeekday w) (add-padded! sb (long-of (->weekday d)) (part-width w "weekday")))
+    ((NumYday w) (add-padded! sb (long-of (->yday d)) (part-width w "yday")))
+    ((NumWeek w) (add-padded! sb (long-of (->week d)) (part-width w "week")))
+    ((NumWeekYear w) (add-padded! sb (long-of (->week-year d)) (part-width w "week-year")))))
+
+(: add-date-part! (-> TextBuilder Date DateNames DatePart void))
+(defun (add-date-part! sb d names p)
+  (match p
+    ((DateNum n) (add-date-number! sb d n))
+    ((DateRoman RomanYear) (add-roman! sb (->year d)))
+    ((DateRoman RomanMonth) (add-roman! sb (->month d)))
+    ((DateRoman RomanDay) (add-roman! sb (->day d)))
+    (MonthName (add-text! sb (name-at (record-ref names months) 12 (->month d) "months")))
+    (MonthAbbr (add-text! sb (name-at (record-ref names months-short) 12 (->month d) "months")))
+    (WeekdayName (add-text! sb (name-at (record-ref names weekdays) 7 (->weekday d) "weekdays")))
+    (WeekdayAbbr
+     (add-text! sb (name-at (record-ref names weekdays-short) 7 (->weekday d) "weekdays")))
+    ((DateText s) (add-text! sb s))
+    ((DateChar c) (add-text! sb (char->string c)))))
+
+;; t is the ticks since midnight.
+(: add-time-part! (-> TextBuilder long DateNames TimePart void))
+(defun (add-time-part! sb t names p)
+  (def h (/ t ticks-per-hour))
+  (match p
+    ((TimeHours w) (add-padded! sb h (part-width w "hours")))
+    ((TimeHours12 w) (add-padded! sb (if (= (% h 12L) 0L) 12L (% h 12L)) (part-width w "hours12")))
+    ((TimeMinutes w) (add-padded! sb (% (/ t ticks-per-minute) 60L) (part-width w "minutes")))
+    ((TimeSeconds w) (add-padded! sb (% (/ t ticks-per-second) 60L) (part-width w "seconds")))
+    ((TimeFraction w)
+     (if (list-empty? w)
+         (add-fraction! sb (% t ticks-per-second))
+         (add-fraction-digits! sb (% t ticks-per-second) (part-width w "fraction"))))
+    (TimeAmPm (add-text! sb (if (< h 12L) (record-ref names am) (record-ref names pm))))
+    ((TimeText s) (add-text! sb s))
+    ((TimeChar c) (add-text! sb (char->string c)))))
+
+;; t is local ticks.
+(: add-datetime-part! (-> TextBuilder long DateNames DateTimePart void))
+(defun (add-datetime-part! sb t names p)
+  (match p
+    ((DateTimeDate dp) (add-date-part! sb (day-number->date (/ t ticks-per-day)) names dp))
+    ((DateTimeTime tp) (add-time-part! sb (% t ticks-per-day) names tp))
+    ((DateTimeText s) (add-text! sb s))
+    ((DateTimeChar c) (add-text! sb (char->string c)))))
+
+(: add-moment-part! (-> TextBuilder Moment DateNames MomentPart void))
+(defun (add-moment-part! sb m names p)
+  (match p
+    ((MomentDateTime dtp) (add-datetime-part! sb (moment-local-ticks m) names dtp))
+    (MomentOffset (add-offset! sb (moment-offset-ticks m)))
+    (MomentZone (add-text! sb (timezone-id (struct-ref m zone))))
+    ((MomentText s) (add-text! sb s))
+    ((MomentChar c) (add-text! sb (char->string c)))))
+
+;; One function per type rather than one over the traits, so a moment's date
+;; is written with (date->text (->date m) ...), which says whose date it is.
+(: date->text (-> Date (List DatePart) (#:names DateNames) string))
+(defun (date->text d parts #:names (parameter-ref current-date-names))
+  (def sb (new-text 32))
+  (let loop ((ps parts))
+    (unless (list-empty? ps)
+      (add-date-part! sb d names (list-head ps))
+      (loop (list-tail ps))))
+  (text-of sb))
+
+(: time->text (-> Time (List TimePart) (#:names DateNames) string))
+(defun (time->text t parts #:names (parameter-ref current-date-names))
+  (def sb (new-text 32))
+  (let loop ((ps parts))
+    (unless (list-empty? ps)
+      (add-time-part! sb (clr-time-ticks (struct-ref t v)) names (list-head ps))
+      (loop (list-tail ps))))
+  (text-of sb))
+
+(: datetime->text (-> DateTime (List DateTimePart) (#:names DateNames) string))
+(defun (datetime->text dt parts #:names (parameter-ref current-date-names))
+  (def sb (new-text 48))
+  (let loop ((ps parts))
+    (unless (list-empty? ps)
+      (add-datetime-part! sb (datetime-ticks dt) names (list-head ps))
+      (loop (list-tail ps))))
+  (text-of sb))
+
+(: moment->text (-> Moment (List MomentPart) (#:names DateNames) string))
+(defun (moment->text m parts #:names (parameter-ref current-date-names))
+  (def sb (new-text 64))
+  (let loop ((ps parts))
+    (unless (list-empty? ps)
+      (add-moment-part! sb m names (list-head ps))
+      (loop (list-tail ps))))
+  (text-of sb))
