@@ -1,0 +1,218 @@
+;; (text xml write): escaping by XmlWriter, the prefixes chosen for names that
+;; carry none, the content XmlWriter would change rather than refuse, the
+;; indentation that stays out of mixed content, documents, and the round trip.
+
+(import (std prelude))
+(import (std simpletest))
+(import (text xml))
+(import (text xml read))
+(import (text xml write))
+
+(import/class
+  (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
+
+(: el (-> string (List Node) Node))
+(defun (el name kids) (xml-element (xml-name name) Nil kids))
+
+(: el/ns (-> string string (List Node) Node))
+(defun (el/ns uri name kids) (xml-element (xml-name name #:ns uri) Nil kids))
+
+(: t (-> string Node))
+(defun (t s) (xml-text s))
+
+(: written (-> Node (#:indent? bool) (#:prefixes (List (Tuple string string))) string))
+(defun (written n #:indent? #f #:prefixes Nil)
+  (match (node->xml-string n #:indent? indent? #:prefixes prefixes)
+    ((Ok s) s)
+    ((Err e) (str "error: " (->str e)))))
+
+(: refused? (-> Node bool))
+(defun (refused? n) (err? (node->xml-string n)))
+
+(: parsed-root (-> string (Option Node)))
+(defun (parsed-root s)
+  (match (parse-xml s #:max-depth 200000 #:comments? #t)
+    ((Ok d) (Some (document-root d)))
+    ((Err _) None)))
+
+(: round-trips? (-> Node (#:prefixes (List (Tuple string string))) bool))
+(defun (round-trips? n #:prefixes Nil)
+  (match (node->xml-string n #:prefixes prefixes)
+    ((Ok s) (match (parsed-root s) ((Some back) (node=? back n)) (None #f)))
+    ((Err _) #f)))
+
+(: atom string)
+(def atom "http://www.w3.org/2005/Atom")
+
+(: basics (-> void))
+(defun (basics)
+  (expect "an element" (written (xml-element (xml-name "p") (list (Tuple (xml-name "class") "x"))
+                                             (list (t "hi ") (el "b" (list (t "!"))))))
+          "<p class=\"x\">hi <b>!</b></p>")
+  (expect "an empty one" (written (el "br" Nil)) "<br />")
+  (expect "escaped by XmlWriter"
+          (written (xml-element (xml-name "a") (list (Tuple (xml-name "q") "\"<&>'")) (list (t "<&>]]>"))))
+          "<a q=\"&quot;&lt;&amp;&gt;'\">&lt;&amp;&gt;]]&gt;</a>")
+  (expect "a text on its own" (written (t "a&b")) "a&amp;b")
+  (expect "a comment and a PI" (written (el "a" (list (xml-comment " c ") (xml-pi "t" "d")))) "<a><!-- c --><?t d?></a>")
+  (def port (open-output-string))
+  (expect "to a port" (node->xml (el "a" (list (t "x"))) port) (Ok unit))
+  (expect "what the port holds" (get-output-string port) "<a>x</a>"))
+
+(: namespaces (-> void))
+(defun (namespaces)
+  (expect "an element gets a default namespace" (written (el/ns "u" "a" Nil)) "<a xmlns=\"u\" />")
+  (expect "its children share it" (written (el/ns "u" "a" (list (el/ns "u" "b" Nil)))) "<a xmlns=\"u\"><b /></a>")
+  (expect "no namespace inside one is xmlns=\"\""
+          (written (el/ns "u" "a" (list (el "b" Nil))))
+          "<a xmlns=\"u\"><b xmlns=\"\" /></a>")
+  (expect "an attribute in a namespace gets a prefix"
+          (written (xml-element (xml-name "a") (list (Tuple (xml-name "x" #:ns "v") "1")) Nil))
+          "<a ns1:x=\"1\" xmlns:ns1=\"v\" />")
+  (expect "even when the element is in that namespace"
+          (written (xml-element (xml-name "a" #:ns "v") (list (Tuple (xml-name "x" #:ns "v") "1")) Nil))
+          "<a ns1:x=\"1\" xmlns:ns1=\"v\" xmlns=\"v\" />")
+  (expect "xml:lang is never declared"
+          (written (xml-element (xml-name "a") (list (Tuple (xml-name "lang" #:ns xml-namespace) "sv")) Nil))
+          "<a xml:lang=\"sv\" />")
+  (expect "a hint is declared once, on the root"
+          (written (el/ns atom "feed" (list (el/ns atom "entry" Nil) (el/ns atom "entry" Nil)))
+                   #:prefixes (list (Tuple "atom" atom)))
+          "<atom:feed xmlns:atom=\"http://www.w3.org/2005/Atom\"><atom:entry /><atom:entry /></atom:feed>")
+  (expect "only for the namespaces used"
+          (written (el/ns "u" "a" (list (el/ns atom "entry" Nil)))
+                   #:prefixes (list (Tuple "atom" atom) (Tuple "x" "unused")))
+          "<a xmlns:atom=\"http://www.w3.org/2005/Atom\" xmlns=\"u\"><atom:entry /></a>")
+  (expect "a hint for an attribute"
+          (written (xml-element (xml-name "a") (list (Tuple (xml-name "href" #:ns "http://www.w3.org/1999/xlink") "#x")) Nil)
+                   #:prefixes (list (Tuple "xlink" "http://www.w3.org/1999/xlink")))
+          "<a xmlns:xlink=\"http://www.w3.org/1999/xlink\" xlink:href=\"#x\" />")
+  (expect "generated prefixes do not collide"
+          (written (xml-element (xml-name "a")
+                                (list (Tuple (xml-name "x" #:ns "v") "1") (Tuple (xml-name "y" #:ns "w") "2"))
+                                (list (xml-element (xml-name "b") (list (Tuple (xml-name "z" #:ns "w") "3")) Nil))))
+          "<a ns1:x=\"1\" ns2:y=\"2\" xmlns:ns2=\"w\" xmlns:ns1=\"v\"><b ns2:z=\"3\" /></a>")
+  (expect-true "a bad hint raises"
+               (err? (try (node->xml-string (el "a" Nil) #:prefixes (list (Tuple "xmlns" "u")))
+                       #:catch (System.ArgumentException))))
+  (expect-true "a round trip through prefixes of its own"
+               (round-trips? (xml-element (xml-name "a" #:ns "u")
+                                          (list (Tuple (xml-name "x" #:ns "u") "1") (Tuple (xml-name "y" #:ns "v") "2")
+                                                (Tuple (xml-name "lang" #:ns xml-namespace) "en"))
+                                          (list (el "b" Nil) (el/ns "v" "c" (list (el/ns "u" "d" Nil)))))))
+  (expect-true "and through hints that clash"
+               (round-trips? (xml-element (xml-name "a" #:ns "u") (list (Tuple (xml-name "x" #:ns "v") "1")) Nil)
+                             #:prefixes (list (Tuple "p" "u") (Tuple "p" "v")))))
+
+(: refusals (-> void))
+(defun (refusals)
+  (expect-true "U+0000 in text" (refused? (el "a" (list (t (list->string (list (integer->char 0))))))))
+  (expect-true "U+0001 in an attribute"
+               (refused? (xml-element (xml-name "a") (list (Tuple (xml-name "b") (list->string (list (integer->char 1))))) Nil)))
+  (expect-true "-- in a comment" (refused? (xml-comment "a--b")))
+  (expect-true "a comment ending in -" (refused? (xml-comment "a-")))
+  (expect-true "a PI named xml" (refused? (xml-pi "xml" "version=\"1.0\"")))
+  (expect-true "in any case" (refused? (xml-pi "XmL" "x")))
+  (expect-true "?> in PI data" (refused? (xml-pi "p" "a?>b")))
+  (expect-true "a PI target that is no name" (refused? (xml-pi "a b" "x")))
+  (expect "the error says why"
+          (match (node->xml-string (el "a" (list (xml-comment "a--b")))) ((Err e) (->str e)) ((Ok _) ""))
+          "a comment may not contain \"--\""))
+
+(: indentation (-> void))
+(defun (indentation)
+  (expect "elements indented, mixed content left alone"
+          (written (el "r" (list (el "a" (list (el "b" Nil)))
+                                 (el "p" (list (t "x ") (el "b" (list (el "i" (list (t "y")))))))
+                                 (el "c" Nil)))
+                   #:indent? #t)
+          "<r>\n  <a>\n    <b />\n  </a>\n  <p>x <b><i>y</i></b></p>\n  <c />\n</r>")
+  (expect "not inside xml:space=\"preserve\""
+          (written (xml-element (xml-name "pre") (list (Tuple (xml-name "space" #:ns xml-namespace) "preserve"))
+                                (list (el "a" Nil) (el "b" Nil)))
+                   #:indent? #t)
+          "<pre xml:space=\"preserve\"><a /><b /></pre>")
+  (expect "comments are indented like elements"
+          (written (el "r" (list (xml-comment "c") (el "a" Nil))) #:indent? #t)
+          "<r>\n  <!--c-->\n  <a />\n</r>")
+  (expect "off by default" (written (el "r" (list (el "a" Nil)))) "<r><a /></r>"))
+
+(: documents (-> void))
+(defun (documents)
+  (def doc (xml-document (el "root" (list (t "x")))
+                         #:prolog (list (xml-comment "before") (xml-pi "style" "a"))
+                         #:epilog (list (xml-comment "after"))))
+  (expect "a document, with the declaration"
+          (document->xml-string doc)
+          (Ok "<?xml version=\"1.0\"?><!--before--><?style a?><root>x</root><!--after-->"))
+  (expect "without it"
+          (document->xml-string (xml-document (el "r" Nil)) #:declaration? #f)
+          (Ok "<r />"))
+  (expect "indented, a line each"
+          (document->xml-string doc #:indent? #t)
+          (Ok "<?xml version=\"1.0\"?>\n<!--before-->\n<?style a?>\n<root>x</root>\n<!--after-->"))
+  (defun (with-doctype pub sys)
+    (match (document->xml-string (xml-document (el "html" Nil)
+                                               #:doctype (Some (Doctype (name "html") (public-id pub) (system-id sys))))
+                                 #:declaration? #f)
+      ((Ok s) s)
+      ((Err e) (str "error: " (->str e)))))
+  (expect "a doctype with no ids" (with-doctype None None) "<!DOCTYPE html><html />")
+  (expect "a system id" (with-doctype None (Some "a.dtd")) "<!DOCTYPE html SYSTEM \"a.dtd\"><html />")
+  (expect "a system id with a double quote in it" (with-doctype None (Some "a\"b.dtd")) "<!DOCTYPE html SYSTEM 'a\"b.dtd'><html />")
+  (expect "both"
+          (with-doctype (Some "-//W3C//DTD XHTML 1.0 Strict//EN") (Some "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"))
+          "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\"><html />")
+  (expect "a public id alone is refused"
+          (with-doctype (Some "-//P//EN") None)
+          "error: a doctype with a public id needs a system id too")
+  (expect "a public id with a bad character"
+          (string-starts-with? (with-doctype (Some "a\"b") (Some "s")) "error:")
+          #t)
+  (def source "<!--one--><?style a?><a xmlns='u' xmlns:p='v' p:k='1'>x<p:b>y<!--c--></p:b><![CDATA[z]]></a><!--two-->")
+  (expect-true "parse, write, parse is the same document"
+               (match (parse-xml source #:comments? #t)
+                 ((Ok d)
+                  (match (document->xml-string d)
+                    ((Ok s) (match (parse-xml s #:comments? #t) ((Ok again) (document=? d again)) (_ #f)))
+                    (_ #f)))
+                 (_ #f)))
+  (def with-dt (parse-xml "<!DOCTYPE a [<!ENTITY e 'x'>]><a>&e;</a>" #:dtd 'parse))
+  (expect "a parsed doctype is written back"
+          (match with-dt ((Ok d) (document->xml-string d #:declaration? #f)) ((Err e) (Ok (->str e))))
+          (Ok "<!DOCTYPE a><a>x</a>")))
+
+(: repeated (-> int string string))
+(defun (repeated n s)
+  (def sb (stringbuilder-empty))
+  (loop (:for i (range 0 n)) (:do (stringbuilder-add-string! sb s)))
+  (stringbuilder->string sb))
+
+;; n elements, each the only child of the one around it, with text at the
+;; bottom.
+(: nested (-> int Node))
+(defun (nested n)
+  (let loop ((i 0) (acc (t "bottom")))
+    (if (= i n) acc (loop (+ i 1) (el "d" (list acc))))))
+
+(: depth (-> void))
+(defun (depth)
+  (def deep (nested 100000))
+  (def s (written deep))
+  (expect "100 000 levels written" (string-length s) (+ (* 100000 7) 6))
+  (expect-true "and read back" (match (parsed-root s) ((Some back) (node=? back deep)) (None #f)))
+  ;; Every element but the innermost, whose child is text, puts its child and
+  ;; its end tag on lines of their own: 2n(n-1) characters more. Quadratic, so
+  ;; a thousand levels rather than 100 000.
+  (expect "indented, except around the text at the bottom"
+          (string-length (written (nested 1000) #:indent? #t))
+          (+ (* 1000 7) 6 (* 2 1000 999))))
+
+(defun (main)
+  (basics)
+  (namespaces)
+  (refusals)
+  (indentation)
+  (documents)
+  (depth)
+  0)

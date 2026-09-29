@@ -1,0 +1,84 @@
+;; (text xml read): xml-for-each, which builds one element at a time and hands
+;; it over, visiting only the outermost elements with the name.
+
+(import (std prelude))
+(import (std simpletest))
+(import (text xml))
+(import (text xml read))
+
+(import/class
+  (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
+
+(: repeated (-> int string string))
+(defun (repeated n s)
+  (def sb (stringbuilder-empty))
+  (loop (:for i (range 0 n)) (:do (stringbuilder-add-string! sb s)))
+  (stringbuilder->string sb))
+
+(: entry XmlName)
+(def entry (xml-name "entry"))
+
+;; The id of every element handed over, in order.
+(: ids (-> string (#:comments? bool) (Result XmlError (List string))))
+(defun (ids text #:comments? #f)
+  (def seen (listbuilder-empty))
+  (match (xml-for-each text entry
+                       (fun (n) (listbuilder-add! seen (option-value (attr-ref n (xml-name "id")) "?")))
+                       #:comments? comments?)
+    ((Ok _) (Ok (listbuilder->list seen)))
+    ((Err e) (Err e))))
+
+(defun (main)
+  (expect "only the outermost, wherever they are"
+          (ids "<feed><entry id='1'><entry id='inner'/></entry><x><entry id='2'/></x><entry id='3'/></feed>")
+          (Ok (list "1" "2" "3")))
+  (expect "none" (ids "<feed/>") (Ok Nil))
+  (expect "the root itself" (ids "<entry id='root'><entry id='no'/></entry>") (Ok (list "root")))
+
+  (def whole (make-box (xml-text "")))
+  (ignore (xml-for-each "<feed><entry id='1'>a<b>c</b><!--x--><?p d?><entry id='n'/>e</entry></feed>" entry
+                        (fun (n) (box-set! whole n))
+                        #:comments? #t))
+  (expect-true "the element is built whole"
+               (node=? (box-ref whole)
+                       (xml-element entry (list (Tuple (xml-name "id") "1"))
+                                    (list (xml-text "a")
+                                          (xml-element (xml-name "b") Nil (list (xml-text "c")))
+                                          (xml-comment "x")
+                                          (xml-pi "p" "d")
+                                          (xml-element entry (list (Tuple (xml-name "id") "n")) Nil)
+                                          (xml-text "e")))))
+  (expect-true "with its position" (some? (element-pos (box-ref whole))))
+
+  (expect "a namespaced name is its own"
+          (match (xml-for-each "<f xmlns:a='u'><entry/><a:entry/><a:entry/></f>" (xml-name "entry" #:ns "u")
+                               (fun (n) unit))
+            ((Ok _) "ok")
+            ((Err e) (->str e)))
+          "ok")
+
+  (def count (make-box 0))
+  (def result (xml-for-each "<feed><entry id='1'/><entry id='2'/><entry id='3'></feed>" entry
+                            (fun (n) (box-set! count (+ (box-ref count) 1)))))
+  (expect "an error" (err? result) #t)
+  (expect "after the elements before it were handed over" (box-ref count) 2)
+
+  (expect "an exception from f passes through"
+          (match (try (xml-for-each "<feed><entry/></feed>" entry
+                                    (fun (n) (raise (cast Exception (ArgumentException. "mine")))))
+                   #:catch (System.ArgumentException))
+            ((Err e) (.-Message e))
+            ((Ok _) "none"))
+          "mine")
+
+  (def many (make-box 0))
+  (ignore (xml-for-each (str "<feed>" (repeated 200000 "<entry><t>x</t></entry>") "</feed>") entry
+                        (fun (n) (box-set! many (+ (box-ref many) (string-length (text-content n)))))))
+  (expect "200 000 elements, one at a time" (box-ref many) 200000)
+
+  (def deep (make-box ""))
+  (ignore (xml-for-each (str "<r>" (repeated 100000 "<entry>") "x" (repeated 100000 "</entry>") "</r>") entry
+                        (fun (n) (box-set! deep (text-content n)))
+                        #:max-depth 200000))
+  (expect "an element 100 000 deep, built without recursion" (box-ref deep) "x")
+  0)

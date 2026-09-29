@@ -1,0 +1,682 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; text/xml.bjo — the module (text xml): names, nodes and documents.
+;;
+;; The tree is opaque, and its constructors enforce what every tree obeys,
+;; whoever built it: no two text children side by side, no empty text child,
+;; no duplicate attribute, and no namespace declaration among the attributes.
+;; The reader, the writer and the modules still to come — matching, paths,
+;; decoding, HTML — use only what is exported here, so the views below are
+;; the whole of the access there is.
+;;
+;; A tree can be built by hand as deep as memory allows, and a stack overflow
+;; cannot be caught in .NET. So nothing here recurses per nesting level: every
+;; walk keeps its own stack, a list of the child lists still to visit.
+;;
+;; See Docs/std/xml.org.
+;;
+;; Open:
+;; - The printed form does not read back. SXML literals and patterns for this
+;;   tree are (text xml match)'s, still to come.
+;; - Only an element carries a position; a text, a comment or a PI has none,
+;;   so a decoder can point no closer than the element around it.
+
+(export
+  ;; Names
+  XmlName xml-name xml-name-local xml-name-ns xml-namespace
+  ;; Small types
+  XmlPos XmlAttrs Doctype
+  ;; Nodes
+  Node xml-element xml-text xml-comment xml-pi
+  element? text? comment? pi?
+  element-name element-attrs element-children element-pos element-view
+  text-value comment-value pi-target pi-data
+  node-case
+  ;; Helpers
+  attr-ref element-children-only text-content descendants node=?
+  ;; Documents
+  Document xml-document document-root document-doctype document-prolog document-epilog
+  document=?)
+
+(import (std prelude))
+
+(import/class
+  (XName (: System.Xml.Linq.XName))
+  (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
+
+(import/extern
+  (clr-xname (: System.Xml.Linq.XName.Get (-> string string XName)))
+  (clr-xname-local (: System.Xml.Linq.XName.LocalName (-> XName string) #:get))
+  (clr-xname-ns (: System.Xml.Linq.XName.NamespaceName (-> XName string) #:get))
+  (clr-xname-hash (: System.Xml.Linq.XName.GetHashCode (-> XName int)))
+  (clr-xname-clark (: System.Xml.Linq.XName.ToString (-> XName string)))
+  (clr-verify-ncname (: System.Xml.XmlConvert.VerifyNCName (-> string string)
+                        #:exceptions (System.Xml.XmlException System.ArgumentNullException))))
+
+;; An ArgumentException, which is what a programming error raises here. Never
+;; an XmlException: the reader treats those as the document's errors.
+(: argument-error (-> string %a))
+(defun (argument-error message)
+  (raise (cast Exception (ArgumentException. (str "(text xml): " message)))))
+
+;; ===========================================================================
+;; Names
+;; ===========================================================================
+
+;; An XName, which .NET interns, so two names are equal exactly when they are
+;; the same object. No prefix: a prefix belongs to the text a name was read
+;; from or is written to, not to the name.
+(type (: XmlName #:opaque (Struct (: v XName))))
+
+(impl (Eq XmlName)
+  (defun (= a b) (eq? (struct-ref a v) (struct-ref b v)))
+  (defun (eq-hash n) (clr-xname-hash (struct-ref n v))))
+
+;; Clark notation: {uri}local, or local alone in no namespace.
+(impl (->str XmlName)
+  (defun (->str n) (clr-xname-clark (struct-ref n v))))
+
+(: xml-namespace string)
+(def xml-namespace "http://www.w3.org/XML/1998/namespace")
+
+;; What xmlns and xmlns:p are in. Nothing is ever named in it.
+(: xmlns-namespace string)
+(def xmlns-namespace "http://www.w3.org/2000/xmlns/")
+
+(: xml-name (-> string (#:ns string) XmlName))
+(defun (xml-name local #:ns "")
+  (match (clr-verify-ncname local)
+    ((Ok _) (XmlName (v (clr-xname local ns))))
+    ((Err e) (argument-error (str "xml-name: " (.-Message e))))))
+
+(: xml-name-local (-> XmlName string))
+(defun (xml-name-local n) (clr-xname-local (struct-ref n v)))
+
+;; "" when the name is in no namespace.
+(: xml-name-ns (-> XmlName string))
+(defun (xml-name-ns n) (clr-xname-ns (struct-ref n v)))
+
+;; ===========================================================================
+;; Small types
+;; ===========================================================================
+
+;; As .NET reports it: 1-based, and the column of the name after the '<'.
+(type (: XmlPos (Struct (: line int) (: column int))))
+
+;; In document order.
+(type (: XmlAttrs (Alias (List (Tuple XmlName string)))))
+
+;; Kept so that a document can be written back with it. Nothing validates
+;; against it.
+(type (: Doctype (Record (: name string)
+                         (: public-id (Option string))
+                         (: system-id (Option string)))))
+
+;; ===========================================================================
+;; Nodes
+;; ===========================================================================
+
+;; The case names are long because an importer receives them along with the
+;; type, although only this module may use them.
+(type-rec
+  (: Node #:opaque (Union (: XmlNodeElement XmlName XmlAttrs (List Node) (Option XmlPos))
+                          (: XmlNodeText string)
+                          (: XmlNodeComment string)
+                          (: XmlNodePI string string))))
+
+(: variant-name (-> Node string))
+(defun (variant-name n)
+  (match n
+    ((XmlNodeElement _ _ _ _) "an element")
+    ((XmlNodeText _) "a text")
+    ((XmlNodeComment _) "a comment")
+    ((XmlNodePI _ _) "a processing instruction")))
+
+(: wrong-variant (-> string Node string %a))
+(defun (wrong-variant who n wanted)
+  (argument-error (str who ": the node is " (variant-name n) ", not " wanted)))
+
+;; ---- Attributes -----------------------------------------------------------
+
+;; Above this many attributes, duplicates are found with a map rather than by
+;; comparing every pair.
+(: few-attributes int)
+(def few-attributes 16)
+
+(: namespace-declaration? (-> XmlName bool))
+(defun (namespace-declaration? name)
+  (or (= (xml-name-ns name) xmlns-namespace)
+      (and (= (xml-name-ns name) "") (= (xml-name-local name) "xmlns"))))
+
+(: attr-value (-> XmlName XmlAttrs (Option string)))
+(defun (attr-value name attrs)
+  (let loop ((xs attrs))
+    (match xs
+      (Nil None)
+      ((Cons (Tuple n value) rest) (if (= n name) (Some value) (loop rest))))))
+
+(: check-attr-name (-> XmlName void))
+(defun (check-attr-name name)
+  (when (namespace-declaration? name)
+    (argument-error
+      (str "xml-element: " (->str name) " is a namespace declaration, which is not an attribute. "
+           "The writer declares namespaces itself."))))
+
+(: duplicate-attr (-> XmlName %a))
+(defun (duplicate-attr name)
+  (argument-error (str "xml-element: the attribute " (->str name) " is given twice")))
+
+(: check-few-attrs (-> XmlAttrs void))
+(defun (check-few-attrs attrs)
+  (let loop ((xs attrs))
+    (match xs
+      (Nil unit)
+      ((Cons (Tuple name _) rest)
+       (check-attr-name name)
+       (when (some? (attr-value name rest)) (duplicate-attr name))
+       (loop rest)))))
+
+(: check-many-attrs (-> XmlAttrs void))
+(defun (check-many-attrs attrs)
+  (def seen (transientmap-empty))
+  (let loop ((xs attrs))
+    (match xs
+      (Nil unit)
+      ((Cons (Tuple name _) rest)
+       (check-attr-name name)
+       (when (transientmap-contains? seen name) (duplicate-attr name))
+       (transientmap-set! seen name #t)
+       (loop rest)))))
+
+(: check-attrs (-> XmlAttrs void))
+(defun (check-attrs attrs)
+  (if (> (list-length attrs) few-attributes)
+      (check-many-attrs attrs)
+      (check-few-attrs attrs)))
+
+;; ---- Children -------------------------------------------------------------
+
+;; Whether the children already obey the invariants, in which case the list
+;; is kept as it is. The parser's always do.
+(: children-normal? (-> (List Node) bool))
+(defun (children-normal? kids)
+  (let loop ((xs kids) (after-text #f))
+    (match xs
+      (Nil #t)
+      ((Cons (XmlNodeText s) rest)
+       (if (or after-text (string-empty? s)) #f (loop rest #t)))
+      ((Cons _ rest) (loop rest #f)))))
+
+(: normalize-children (-> (List Node) (List Node)))
+(defun (normalize-children kids)
+  (def out (listbuilder-empty))
+  (def pending (stringbuilder-empty))
+  (defun (flush)
+    (when (> (stringbuilder-length pending) 0)
+      (listbuilder-add! out (XmlNodeText (stringbuilder->string pending)))
+      (stringbuilder-clear! pending)))
+  (let loop ((xs kids))
+    (match xs
+      (Nil
+       (flush)
+       (listbuilder->list out))
+      ((Cons (XmlNodeText s) rest)
+       (stringbuilder-add-string! pending s)
+       (loop rest))
+      ((Cons n rest)
+       (flush)
+       (listbuilder-add! out n)
+       (loop rest)))))
+
+;; ---- Construction ---------------------------------------------------------
+
+;; Merges adjacent text children and drops empty ones. Raises on a duplicate
+;; attribute or a namespace declaration.
+(: xml-element (-> XmlName XmlAttrs (List Node) (#:pos (Option XmlPos)) Node))
+(defun (xml-element name attrs children #:pos None)
+  (check-attrs attrs)
+  (XmlNodeElement name attrs (if (children-normal? children) children (normalize-children children)) pos))
+
+;; Empty text is allowed on its own; an element drops it.
+(: xml-text (-> string Node))
+(defun (xml-text s) (XmlNodeText s))
+
+;; Not checked here: a comment with "--" in it is refused when it is written.
+(: xml-comment (-> string Node))
+(defun (xml-comment s) (XmlNodeComment s))
+
+;; Target, then data. Checked when it is written, as a comment is.
+(: xml-pi (-> string string Node))
+(defun (xml-pi target data) (XmlNodePI target data))
+
+;; ---- Views ----------------------------------------------------------------
+
+(: element? (-> Node bool))
+(defun (element? n) (match n ((XmlNodeElement _ _ _ _) #t) (_ #f)))
+
+(: text? (-> Node bool))
+(defun (text? n) (match n ((XmlNodeText _) #t) (_ #f)))
+
+(: comment? (-> Node bool))
+(defun (comment? n) (match n ((XmlNodeComment _) #t) (_ #f)))
+
+(: pi? (-> Node bool))
+(defun (pi? n) (match n ((XmlNodePI _ _) #t) (_ #f)))
+
+(: element-name (-> Node XmlName))
+(defun (element-name n)
+  (match n
+    ((XmlNodeElement name _ _ _) name)
+    (_ (wrong-variant "element-name" n "an element"))))
+
+(: element-attrs (-> Node XmlAttrs))
+(defun (element-attrs n)
+  (match n
+    ((XmlNodeElement _ attrs _ _) attrs)
+    (_ (wrong-variant "element-attrs" n "an element"))))
+
+(: element-children (-> Node (List Node)))
+(defun (element-children n)
+  (match n
+    ((XmlNodeElement _ _ kids _) kids)
+    (_ (wrong-variant "element-children" n "an element"))))
+
+(: element-pos (-> Node (Option XmlPos)))
+(defun (element-pos n)
+  (match n
+    ((XmlNodeElement _ _ _ pos) pos)
+    (_ (wrong-variant "element-pos" n "an element"))))
+
+;; The whole element in one call. Option is a struct and Tuple a value tuple,
+;; so this allocates nothing.
+(: element-view (-> Node (Option (Tuple XmlName XmlAttrs (List Node)))))
+(defun (element-view n)
+  (match n
+    ((XmlNodeElement name attrs kids _) (Some (Tuple name attrs kids)))
+    (_ None)))
+
+(: text-value (-> Node string))
+(defun (text-value n)
+  (match n
+    ((XmlNodeText s) s)
+    (_ (wrong-variant "text-value" n "a text"))))
+
+(: comment-value (-> Node string))
+(defun (comment-value n)
+  (match n
+    ((XmlNodeComment s) s)
+    (_ (wrong-variant "comment-value" n "a comment"))))
+
+(: pi-target (-> Node string))
+(defun (pi-target n)
+  (match n
+    ((XmlNodePI target _) target)
+    (_ (wrong-variant "pi-target" n "a processing instruction"))))
+
+(: pi-data (-> Node string))
+(defun (pi-data n)
+  (match n
+    ((XmlNodePI _ data) data)
+    (_ (wrong-variant "pi-data" n "a processing instruction"))))
+
+(: no-clause (-> Node %r))
+(defun (no-clause n)
+  (argument-error (str "node-case: no clause for " (variant-name n) ", and no #:else")))
+
+;; #:else is declared first because the other defaults call it.
+(: node-case (-> Node
+                 (#:else (-> Node %r))
+                 (#:element (-> XmlName XmlAttrs (List Node) (Option XmlPos) %r))
+                 (#:text (-> string %r))
+                 (#:comment (-> string %r))
+                 (#:pi (-> string string %r))
+                 %r))
+(defun (node-case n
+                  #:else (fun (m) (no-clause m))
+                  #:element (fun (name attrs kids pos) (else n))
+                  #:text (fun (s) (else n))
+                  #:comment (fun (s) (else n))
+                  #:pi (fun (target data) (else n)))
+  (match n
+    ((XmlNodeElement name attrs kids pos) (element name attrs kids pos))
+    ((XmlNodeText s) (text s))
+    ((XmlNodeComment s) (comment s))
+    ((XmlNodePI target data) (pi target data))))
+
+;; ===========================================================================
+;; Helpers
+;; ===========================================================================
+
+(: attr-ref (-> Node XmlName (Option string)))
+(defun (attr-ref n name)
+  (match n
+    ((XmlNodeElement _ attrs _ _) (attr-value name attrs))
+    (_ None)))
+
+(: element-children-only (-> Node (List Node)))
+(defun (element-children-only n)
+  (match n
+    ((XmlNodeElement _ _ kids _) (list-filter element? kids))
+    (_ Nil)))
+
+;; The text of every text node below, in document order. A text node's own
+;; value; "" for a comment or a processing instruction.
+(: text-content (-> Node string))
+(defun (text-content n)
+  (match n
+    ((XmlNodeText s) s)
+    ((XmlNodeElement _ _ kids _)
+     (def sb (stringbuilder-empty))
+     (let loop ((stack (list kids)))
+       (match stack
+         (Nil (stringbuilder->string sb))
+         ((Cons Nil rest) (loop rest))
+         ((Cons (Cons (XmlNodeText s) more) rest)
+          (stringbuilder-add-string! sb s)
+          (loop (Cons more rest)))
+         ((Cons (Cons (XmlNodeElement _ _ inner _) more) rest)
+          (loop (Cons inner (Cons more rest))))
+         ((Cons (Cons _ more) rest)
+          (loop (Cons more rest))))))
+    (_ "")))
+
+;; Every node below, in document order, not the node itself.
+(: descendants (-> Node (Seq Node)))
+(defun (descendants n)
+  (def top (match n ((XmlNodeElement _ _ kids _) kids) (_ Nil)))
+  (seq
+    (let loop ((stack (list top)))
+      (match stack
+        (Nil unit)
+        ((Cons Nil rest) (loop rest))
+        ((Cons (Cons k more) rest)
+         (yield k)
+         (match k
+           ((XmlNodeElement _ _ inner _) (loop (Cons inner (Cons more rest))))
+           (_ (loop (Cons more rest)))))))))
+
+;; ---- Equality -------------------------------------------------------------
+
+;; Pair by pair, which is the usual case when the lists are equal at all.
+(: attrs-in-order=? (-> XmlAttrs XmlAttrs bool))
+(defun (attrs-in-order=? xs ys)
+  (let loop ((xs xs) (ys ys))
+    (match (Tuple xs ys)
+      ((Tuple Nil Nil) #t)
+      ((Tuple (Cons (Tuple n1 v1) r1) (Cons (Tuple n2 v2) r2))
+       (if (and (= n1 n2) (= v1 v2)) (loop r1 r2) #f))
+      (_ #f))))
+
+;; Both lists are free of duplicates, so the same length and every attribute
+;; of one found in the other is the same set.
+(: attrs-found? (-> XmlAttrs XmlAttrs bool))
+(defun (attrs-found? xs ys)
+  (let loop ((xs xs))
+    (match xs
+      (Nil #t)
+      ((Cons (Tuple name value) rest)
+       (if (= (attr-value name ys) (Some value)) (loop rest) #f)))))
+
+(: attrs-mapped? (-> XmlAttrs XmlAttrs bool))
+(defun (attrs-mapped? xs ys)
+  (def m (transientmap-empty))
+  (let fill ((ys ys))
+    (match ys
+      (Nil unit)
+      ((Cons (Tuple name value) rest)
+       (transientmap-set! m name value)
+       (fill rest))))
+  (let loop ((xs xs))
+    (match xs
+      (Nil #t)
+      ((Cons (Tuple name value) rest)
+       (if (= (transientmap-try-ref m name) (Some value)) (loop rest) #f)))))
+
+;; In any order, as XML has them.
+(: attrs=? (-> XmlAttrs XmlAttrs bool))
+(defun (attrs=? xs ys)
+  (cond
+    ((attrs-in-order=? xs ys) #t)
+    (:def n (list-length xs))
+    ((not (= n (list-length ys))) #f)
+    ((> n few-attributes) (attrs-mapped? xs ys))
+    (else (attrs-found? xs ys))))
+
+;; Structure only: positions are not compared, and attributes in any order.
+;; The stack holds the pairs of child lists still to compare.
+(: node=? (-> Node Node bool))
+(defun (node=? a b)
+  (let loop ((stack (list (Tuple (list a) (list b)))))
+    (match stack
+      (Nil #t)
+      ((Cons (Tuple Nil Nil) rest) (loop rest))
+      ((Cons (Tuple (Cons x xs) (Cons y ys)) rest)
+       (match (Tuple x y)
+         ((Tuple (XmlNodeElement n1 a1 k1 _) (XmlNodeElement n2 a2 k2 _))
+          (if (and (= n1 n2) (attrs=? a1 a2))
+              (loop (Cons (Tuple k1 k2) (Cons (Tuple xs ys) rest)))
+              #f))
+         ((Tuple (XmlNodeText s1) (XmlNodeText s2))
+          (if (= s1 s2) (loop (Cons (Tuple xs ys) rest)) #f))
+         ((Tuple (XmlNodeComment s1) (XmlNodeComment s2))
+          (if (= s1 s2) (loop (Cons (Tuple xs ys) rest)) #f))
+         ((Tuple (XmlNodePI t1 d1) (XmlNodePI t2 d2))
+          (if (and (= t1 t2) (= d1 d2)) (loop (Cons (Tuple xs ys) rest)) #f))
+         (_ #f)))
+      (_ #f))))
+
+;; Summed, so that the order of the attributes does not change it.
+(: attrs-hash (-> XmlAttrs int))
+(defun (attrs-hash attrs)
+  (list-foldl (fun (a h) (def (Tuple name value) a) (+ h (hash-combine (eq-hash name) (eq-hash value))))
+              0
+              attrs))
+
+;; Agrees with node=?: positions and attribute order leave it alone. The end
+;; of each child list is hashed too, so that nesting is part of it.
+(: node-hash (-> Node int))
+(defun (node-hash n)
+  (let loop ((stack (list (list n))) (h 17))
+    (match stack
+      (Nil h)
+      ((Cons Nil rest) (loop rest (hash-combine h 1)))
+      ((Cons (Cons k more) rest)
+       (match k
+         ((XmlNodeElement name attrs kids _)
+          (loop (Cons kids (Cons more rest))
+                (hash-combine (hash-combine (hash-combine h 2) (eq-hash name)) (attrs-hash attrs))))
+         ((XmlNodeText s) (loop (Cons more rest) (hash-combine (hash-combine h 3) (eq-hash s))))
+         ((XmlNodeComment s) (loop (Cons more rest) (hash-combine (hash-combine h 4) (eq-hash s))))
+         ((XmlNodePI target data)
+          (loop (Cons more rest)
+                (hash-combine (hash-combine (hash-combine h 5) (eq-hash target)) (eq-hash data)))))))))
+
+;; Without this, = on a Node would be the C# record's own Equals, which
+;; recurses per nesting level and compares positions.
+(impl (Eq Node)
+  (defun (= a b) (node=? a b))
+  (defun (eq-hash n) (node-hash n)))
+
+;; ===========================================================================
+;; Documents
+;; ===========================================================================
+
+(type (: Document #:opaque (Record (: doctype (Option Doctype))
+                                   (: prolog (List Node))
+                                   (: root Node)
+                                   (: epilog (List Node)))))
+
+(: check-misc (-> string (List Node) void))
+(defun (check-misc where nodes)
+  (list-for-each
+    (fun (n)
+      (unless (or (comment? n) (pi? n))
+        (argument-error
+          (str "xml-document: the " where " may hold comments and processing instructions, and this is "
+               (variant-name n)))))
+    nodes))
+
+;; Raises if the root is not an element, or the prolog or epilog holds
+;; anything but comments and processing instructions.
+(: xml-document (-> Node (#:doctype (Option Doctype)) (#:prolog (List Node)) (#:epilog (List Node))
+                    Document))
+(defun (xml-document root #:doctype None #:prolog Nil #:epilog Nil)
+  (unless (element? root)
+    (argument-error (str "xml-document: the root has to be an element, and this is " (variant-name root))))
+  (check-misc "prolog" prolog)
+  (check-misc "epilog" epilog)
+  (Document (doctype doctype) (prolog prolog) (root root) (epilog epilog)))
+
+(: document-root (-> Document Node))
+(defun (document-root d) (record-ref d root))
+
+(: document-doctype (-> Document (Option Doctype)))
+(defun (document-doctype d) (record-ref d doctype))
+
+(: document-prolog (-> Document (List Node)))
+(defun (document-prolog d) (record-ref d prolog))
+
+(: document-epilog (-> Document (List Node)))
+(defun (document-epilog d) (record-ref d epilog))
+
+(: nodes=? (-> (List Node) (List Node) bool))
+(defun (nodes=? xs ys)
+  (match (Tuple xs ys)
+    ((Tuple Nil Nil) #t)
+    ((Tuple (Cons x xr) (Cons y yr)) (if (node=? x y) (nodes=? xr yr) #f))
+    (_ #f)))
+
+(: document=? (-> Document Document bool))
+(defun (document=? a b)
+  (and (= (record-ref a doctype) (record-ref b doctype))
+       (nodes=? (record-ref a prolog) (record-ref b prolog))
+       (node=? (record-ref a root) (record-ref b root))
+       (nodes=? (record-ref a epilog) (record-ref b epilog))))
+
+(impl (Eq Document)
+  (defun (= a b) (document=? a b))
+  (defun (eq-hash d)
+    (list-foldl (fun (n h) (hash-combine h (node-hash n)))
+                (node-hash (record-ref d root))
+                (list-append (record-ref d prolog) (record-ref d epilog)))))
+
+;; ===========================================================================
+;; The printer
+;; ===========================================================================
+;;
+;; SXML's look, for the REPL and for debugging:
+;;
+;;     (p (@ (class "x")) "hi" (b "!"))
+;;     (*COMMENT* " c ")  (*PI* target "data")
+;;     (*TOP* (*DOCTYPE* html SYSTEM "a.dtd") ... (root ...))
+;;
+;; A name in a namespace is written in Clark notation, {uri}local. Nothing
+;; promises yet that this reads back.
+
+(: add-quoted! (-> StringBuilder string void))
+(defun (add-quoted! sb s)
+  (stringbuilder-add! sb #\")
+  (loop (:for c s)
+        (:do (case c
+               ((#\") (stringbuilder-add-string! sb "\\\""))
+               ((#\\) (stringbuilder-add-string! sb "\\\\"))
+               ((#\newline) (stringbuilder-add-string! sb "\\n"))
+               ((#\tab) (stringbuilder-add-string! sb "\\t"))
+               (else (if (= (char->integer c) 13)
+                         (stringbuilder-add-string! sb "\\r")
+                         (stringbuilder-add! sb c))))))
+  (stringbuilder-add! sb #\"))
+
+;; A node still to print, or text that closes one.
+(type (: PrintItem (Union (: PrintNode Node) (: PrintText string))))
+
+(: print-node! (-> StringBuilder Node void))
+(defun (print-node! sb n)
+  (let loop ((items (list (PrintNode n))))
+    (match items
+      (Nil unit)
+      ((Cons (PrintText s) rest)
+       (stringbuilder-add-string! sb s)
+       (loop rest))
+      ((Cons (PrintNode (XmlNodeText s)) rest)
+       (add-quoted! sb s)
+       (loop rest))
+      ((Cons (PrintNode (XmlNodeComment s)) rest)
+       (stringbuilder-add-string! sb "(*COMMENT* ")
+       (add-quoted! sb s)
+       (stringbuilder-add! sb #\))
+       (loop rest))
+      ((Cons (PrintNode (XmlNodePI target data)) rest)
+       (stringbuilder-add-string! sb (str "(*PI* " target " "))
+       (add-quoted! sb data)
+       (stringbuilder-add! sb #\))
+       (loop rest))
+      ((Cons (PrintNode (XmlNodeElement name attrs kids _)) rest)
+       (stringbuilder-add! sb #\()
+       (stringbuilder-add-string! sb (->str name))
+       (unless (list-empty? attrs)
+         (stringbuilder-add-string! sb " (@")
+         (let each ((as attrs))
+           (match as
+             (Nil unit)
+             ((Cons (Tuple an value) more)
+              (stringbuilder-add-string! sb " (")
+              (stringbuilder-add-string! sb (->str an))
+              (stringbuilder-add! sb #\space)
+              (add-quoted! sb value)
+              (stringbuilder-add! sb #\))
+              (each more))))
+         (stringbuilder-add! sb #\)))
+       (loop (list-foldr (fun (k acc) (Cons (PrintText " ") (Cons (PrintNode k) acc)))
+                         (Cons (PrintText ")") rest)
+                         kids))))))
+
+(impl (->str Node)
+  (defun (->str n)
+    (def sb (stringbuilder-empty))
+    (print-node! sb n)
+    (stringbuilder->string sb)))
+
+(: print-doctype! (-> StringBuilder Doctype void))
+(defun (print-doctype! sb dt)
+  (stringbuilder-add-string! sb (str "(*DOCTYPE* " (record-ref dt name)))
+  (match (Tuple (record-ref dt public-id) (record-ref dt system-id))
+    ((Tuple (Some pub) (Some sys))
+     (stringbuilder-add-string! sb " PUBLIC ")
+     (add-quoted! sb pub)
+     (stringbuilder-add! sb #\space)
+     (add-quoted! sb sys))
+    ((Tuple (Some pub) None)
+     (stringbuilder-add-string! sb " PUBLIC ")
+     (add-quoted! sb pub))
+    ((Tuple None (Some sys))
+     (stringbuilder-add-string! sb " SYSTEM ")
+     (add-quoted! sb sys))
+    ((Tuple None None) unit))
+  (stringbuilder-add! sb #\)))
+
+(impl (->str Document)
+  (defun (->str d)
+    (def sb (stringbuilder-empty))
+    (stringbuilder-add-string! sb "(*TOP*")
+    (match (record-ref d doctype)
+      ((Some dt)
+       (stringbuilder-add! sb #\space)
+       (print-doctype! sb dt))
+      (None unit))
+    (list-for-each (fun (n)
+                     (stringbuilder-add! sb #\space)
+                     (print-node! sb n))
+                   (list-append (record-ref d prolog) (Cons (record-ref d root) (record-ref d epilog))))
+    (stringbuilder-add! sb #\))
+    (stringbuilder->string sb)))

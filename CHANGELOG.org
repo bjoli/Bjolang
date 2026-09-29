@@ -3,6 +3,33 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(text xml)~: XML, read as signals, folds or a tree, and written
+
+Three modules over ~System.Xml~ and ~System.Xml.Linq~, with no shim.
+~(text xml)~ is an opaque ~Node~ and ~Document~ whose constructors keep every
+tree to four rules (adjacent text merged, no empty text, no attribute twice,
+no namespace declaration as an attribute), the views and helpers later modules
+are to be built on, ~node=?~, and a printer in SXML's look. ~(text xml read)~
+is a pull stream of signals, Kiselyov's SSAX fold, a tree fold where the
+caller picks the tree type, ~parse-xml~, and ~xml-for-each~, which holds one
+element at a time. ~(text xml write)~ writes through ~XmlWriter~, chooses the
+prefixes names do not carry, refuses what ~XmlWriter~ would silently change,
+and indents without touching mixed content.
+
+The defaults are the safe ones: a DOCTYPE is refused, nothing external is ever
+resolved, entities expand to at most 10 000 000 characters, and nesting deeper
+than 512 is an error. Nothing recurses per level of nesting, so a tree 100 000
+deep reads, compares, prints and writes, and a flat document of a million
+elements folds, in a loop.
+
+See ~Docs/std/xml.org~. Tests: ~252_xml_nodes.bjo~ to ~258_xml_print.bjo~.
+
+Left open: ~#:dtd 'ignore~ loses the doctype, because ~XmlReader~ does not
+report it then; ~#:dtd 'parse~ refuses a DOCTYPE that names an external DTD,
+an XHTML one say; a DOCTYPE refused or a limit reached has no position, since
+.NET gives none; and ~xml-skip-element!~ does not check what it skips against
+~#:max-depth~.
+
 * A lambda's result is what its context expects of it
 
 A lambda checked against an expected function type had its parameters pinned

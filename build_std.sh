@@ -129,6 +129,19 @@ echo "Building standard library..."
 # written in.
 ./bjor --lib lib/text/bjodat.bjo
 
+# `text/xml` imports `prelude` and nothing else: names, nodes and documents.
+# It names System.Xml.Linq's `XName`, which is part of .NET itself.
+./bjor --lib lib/text/xml.bjo
+
+# `text/xml/read` imports `prelude` and `text/xml`, whose nodes it builds.
+# It binds `BjoByteInputPort` out of the runtime assembly for its byte-port
+# source, so a change to `BjolangRuntime/BjoBytePort.cs` has to reach the
+# compiler before this line, as for `run`.
+./bjor --lib lib/text/xml/read.bjo
+
+# `text/xml/write` imports `prelude` and `text/xml`, whose nodes it writes.
+./bjor --lib lib/text/xml/write.bjo
+
 # The package manifest is no longer part of the standard library: it is
 # `bjo/manifest.bjo`, built by `bjo` along with the rest of the driver. A
 # package name that `lib/` has a directory for is reserved, so a `(bjor)` here

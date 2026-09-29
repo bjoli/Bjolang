@@ -1,0 +1,100 @@
+;; (text xml read), the SSAX fold: the seed's path through the document, the
+;; handlers' defaults, errors, and the sizes that would overflow a recursive
+;; reader — a million elements side by side, and a hundred thousand nested.
+
+(import (std prelude))
+(import (std simpletest))
+(import (text xml))
+(import (text xml read))
+
+(import/class
+  (XmlException (: System.Xml.XmlException (-> string XmlException))))
+
+(: repeated (-> int string string))
+(defun (repeated n s)
+  (def sb (stringbuilder-empty))
+  (loop (:for i (range 0 n)) (:do (stringbuilder-add-string! sb s)))
+  (stringbuilder->string sb))
+
+(: kind-of (-> (Result XmlError %a) string))
+(defun (kind-of r)
+  (match r
+    ((Ok _) "ok")
+    ((Err e) (match (record-ref e kind)
+               (Malformed "malformed")
+               (DtdProhibited "dtd-prohibited")
+               (TooDeep "too-deep")
+               (LimitExceeded "limit-exceeded")))))
+
+;; An element becomes "(name children...)": new-level starts the element's own
+;; seed, finish appends the finished element to its parent's.
+(: sxml-ish (-> string (Result XmlError string)))
+(defun (sxml-ish text)
+  (xml-fold text ""
+            #:new-level (fun (name attrs pos seed) "")
+            #:finish (fun (name attrs pos parent seed) (str parent "(" (xml-name-local name) seed ")"))
+            #:text (fun (s seed) (str seed " " s))
+            #:comment (fun (s seed) (str seed " #" s))
+            #:pi (fun (target data seed) (str seed " ?" target))))
+
+(: shape (-> void))
+(defun (shape)
+  (expect "the seed's path" (sxml-ish "<a><b>x</b><c/>y</a>") (Ok "(a(b x)(c) y)"))
+  (expect "comments and PIs reach their handlers" (sxml-ish "<a><!--c--><?p d?></a>") (Ok "(a #c ?p)"))
+  (expect "and outside the root too" (sxml-ish "<!--top--><a/><?end?>") (Ok " #top(a) ?end"))
+  (expect "with no handlers, the seed comes back" (xml-fold "<a><b/></a>" 7) (Ok 7))
+  (expect "the attributes and position reach new-level"
+          (xml-fold "<a>\n <b k='v'/></a>" ""
+                    #:new-level (fun (name attrs pos seed)
+                                  (str seed (xml-name-local name)
+                                       (list->str (list-map (fun (a) (def (Tuple n v) a) (str (xml-name-local n) "=" v)) attrs))
+                                       (match pos ((Some p) (str "@" (int->string (struct-ref p line)) ":" (int->string (struct-ref p column)))) (None "")))))
+          (Ok "a()@1:2b'(k=v)@2:3"))
+  (expect "the doctype reaches its handler under 'parse"
+          (xml-fold "<!DOCTYPE a [<!ENTITY e 'x'>]><a>&e;</a>" ""
+                    #:doctype (fun (dt seed) (str seed "!" (record-ref dt name)))
+                    #:text (fun (s seed) (str seed s))
+                    #:dtd 'parse)
+          (Ok "!ax"))
+  (expect "'drop reaches the fold"
+          (xml-fold "<p><b>x</b> <i>y</i></p>" 0 #:text (fun (s n) (+ n 1)) #:whitespace 'drop)
+          (Ok 2)))
+
+(: failures (-> void))
+(defun (failures)
+  (def seen (make-box 0))
+  (def r (xml-fold "<a><b/><c/><d></a>" 0
+                   #:new-level (fun (name attrs pos n) (box-set! seen (+ (box-ref seen) 1)) n)))
+  (expect "a malformed document is an error" (kind-of r) "malformed")
+  (expect "after the handlers ran for what came before it" (box-ref seen) 4)
+  (expect "a handler's XmlException is its own, not an XmlError"
+          (match (try (xml-fold "<a/>" 0 #:new-level (fun (name attrs pos n) (raise (cast Exception (XmlException. "mine")))))
+                   #:catch (System.Xml.XmlException))
+            ((Err e) (.-Message e))
+            ((Ok _) "caught"))
+          "mine")
+  (expect "a DOCTYPE by default" (kind-of (xml-fold "<!DOCTYPE a><a/>" 0)) "dtd-prohibited"))
+
+(: sizes (-> void))
+(defun (sizes)
+  (def flat (str "<r>" (repeated 1000000 "<a/>") "</r>"))
+  (expect "a million elements side by side, counted"
+          (xml-fold flat 0 #:new-level (fun (name attrs pos n) (+ n 1)))
+          (Ok 1000001))
+  (def deep (str (repeated 100000 "<a>") "x" (repeated 100000 "</a>")))
+  (expect "100 000 levels are too deep by default" (kind-of (xml-fold deep 0)) "too-deep")
+  (expect "and fold under #:max-depth 200000"
+          (xml-fold deep 0 #:new-level (fun (name attrs pos n) (+ n 1)) #:max-depth 200000)
+          (Ok 100000))
+  (expect "every finish is called, innermost first"
+          (xml-fold deep 0
+                    #:new-level (fun (name attrs pos n) 0)
+                    #:finish (fun (name attrs pos parent n) (+ n 1))
+                    #:max-depth 200000)
+          (Ok 100000)))
+
+(defun (main)
+  (shape)
+  (failures)
+  (sizes)
+  0)

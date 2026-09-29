@@ -1,0 +1,358 @@
+* text/xml — XML
+
+Three modules. ~(text xml)~ is the tree: names, nodes, documents, and the views
+over them. ~(text xml read)~ reads XML, as a stream of signals, as a fold, as a
+tree of your own or as a ~Document~. ~(text xml write)~ writes it.
+
+#+BEGIN_SRC scheme
+(import (text xml) (text xml read) (text xml write))
+
+(match (parse-xml "<feed><entry id='1'>hello</entry></feed>")
+  ((Ok doc)
+   (def entry (list-head (element-children (document-root doc))))
+   (println (attr-ref entry (xml-name "id")))    ;; (Some 1)
+   (println (text-content entry))                ;; hello
+   (println (document-root doc)))                ;; (feed (entry (@ (id "1")) "hello"))
+  ((Err e) (println e)))
+
+(parse-xml "<feed><entry></feed>")
+;; (Err ...), which prints as
+;; malformed at line 1, column 16: The 'entry' start tag on line 1 position 8 does not ...
+#+END_SRC
+
+Only ~System.Xml~ and ~System.Xml.Linq~ are underneath: ~XmlReader~ reads,
+~XmlWriter~ writes and escapes, and ~XName~ is a name.
+
+** Names
+
+An ~XmlName~ is a namespace URI and a local name. It carries no prefix: a prefix
+belongs to the text a name was read from or is written to. So writing a parsed
+document may choose other prefixes than the input had, and means the same.
+
+| ~(xml-name local #:ns uri)~ | a name; ~#:ns~ defaults to ~""~, no namespace   |
+| ~(xml-name-local n)~        | the local name                                  |
+| ~(xml-name-ns n)~           | the namespace URI, ~""~ for none                |
+| ~xml-namespace~             | the URI of ~xml:lang~ and ~xml:space~           |
+
+The local name is checked, and a bad one — ~"a:b"~, ~""~, ~"1a"~ — raises an
+~ArgumentException~, as an index out of range does. Names are interned, so ~=~
+on two of them is a reference comparison, and ~->str~ writes Clark notation,
+~{http://www.w3.org/2005/Atom}entry~.
+
+** Nodes
+
+A ~Node~ is an element, a text, a comment or a processing instruction. The type
+is opaque: nodes are built by the functions below and taken apart by the views,
+which is what keeps every tree, whoever built it, to four rules:
+
+- no two text children side by side: ~xml-element~ merges them
+- no empty text child: ~xml-element~ drops it
+- no attribute twice: ~xml-element~ raises
+- no namespace declaration among the attributes: ~xml-element~ raises, and the
+  reader never gives one
+
+#+BEGIN_SRC scheme
+(xml-element (xml-name "p")
+             (list (Tuple (xml-name "class") "note"))
+             (list (xml-text "hi ") (xml-element (xml-name "b") Nil (list (xml-text "!")))))
+#+END_SRC
+
+| ~(xml-element name attrs children #:pos p)~ | an element; ~#:pos~ is an ~(Option XmlPos)~, ~None~ by default |
+| ~(xml-text s)~                              | text                                     |
+| ~(xml-comment s)~                           | a comment                                |
+| ~(xml-pi target data)~                      | a processing instruction                 |
+
+~XmlAttrs~ is ~(List (Tuple XmlName string))~, in document order. ~XmlPos~ is a
+line and a column, as .NET reports them: 1-based, and the column of the name,
+one past the ~<~.
+
+Whitespace is never dropped by a node: a tree read with the defaults has every
+character of text its document had.
+
+*** Views
+
+| ~(element? n)~ ~(text? n)~ ~(comment? n)~ ~(pi? n)~ | which of the four                    |
+| ~(element-name n)~ ~(element-attrs n)~ ~(element-children n)~ ~(element-pos n)~ | an element's parts |
+| ~(element-view n)~                     | ~(Some (Tuple name attrs children))~ for an element, ~None~ otherwise |
+| ~(text-value n)~ ~(comment-value n)~   | the string                             |
+| ~(pi-target n)~ ~(pi-data n)~          | the target and the data                |
+
+An accessor on the wrong kind of node raises. ~element-view~ is one call and
+allocates nothing, since ~Option~ is a struct and ~Tuple~ a value tuple, which
+makes it the view a pattern can be compiled into:
+
+#+BEGIN_SRC scheme
+(match n
+  ((:view element-view (Some (Tuple name attrs kids))) (list-length kids))
+  (_ 0))
+#+END_SRC
+
+~node-case~ takes a keyword per kind of node, and ~#:else~ for the rest. A call
+that writes ~#:else~ keeps working if a kind is ever added; one with no clause
+for the node it is given and no ~#:else~ raises.
+
+#+BEGIN_SRC scheme
+(node-case n
+  #:element (fun (name attrs kids pos) (xml-name-local name))
+  #:text (fun (s) s)
+  #:else (fun (other) ""))
+#+END_SRC
+
+*** Helpers
+
+| ~(attr-ref n name)~            | ~(Option string)~; ~None~ for a node that is not an element |
+| ~(element-children-only n)~    | the children that are elements                        |
+| ~(text-content n)~             | every text below, joined in document order            |
+| ~(descendants n)~              | every node below, in document order, as a lazy ~Seq~  |
+| ~(node=? a b)~                 | the same tree, positions and attribute order aside    |
+
+~=~ on two nodes is ~node=?~, and ~eq-hash~ agrees with it, so a node is a
+sound ~Map~ key.
+
+*** Deep trees
+
+Nothing here recurses per level of nesting. A tree can be built by hand as deep
+as memory allows, and a stack overflow is not something .NET lets a program
+catch, so every walk — ~node=?~, ~eq-hash~, ~text-content~, ~descendants~, the
+printer and the writer — keeps a stack of its own.
+
+** Documents
+
+A ~Document~ is a root element, the comments and processing instructions before
+it (the prolog) and after it (the epilog), and the doctype, if there was one.
+
+| ~(xml-document root #:doctype d #:prolog ps #:epilog es)~ | raises unless the root is an element, and the prolog and epilog hold only comments and PIs |
+| ~(document-root d)~ ~(document-prolog d)~ ~(document-epilog d)~ ~(document-doctype d)~ | the parts |
+| ~(document=? a b)~ | also ~=~ |
+
+A ~Doctype~ is a record of ~name~, ~public-id~ and ~system-id~, the last two
+~(Option string)~. It is kept so that a document can be written back with it.
+Nothing validates against it.
+
+** Printing
+
+~->str~ shows a node the way SXML writes one:
+
+#+BEGIN_SRC scheme
+(p (@ (class "note")) "hi " (b "!"))
+({http://www.w3.org/2005/Atom}entry (@ (href "#a")))
+(*COMMENT* " a comment ")
+(*PI* xml-stylesheet "href='a.css'")
+(*TOP* (*DOCTYPE* html) (html ...))
+#+END_SRC
+
+It is for the REPL and for debugging. Nothing promises yet that it reads back.
+
+** Reading
+
+Every reader takes a source and the same options.
+
+*** Sources
+
+A source is anything with an ~XmlSource~ implementation:
+
+| a ~string~                    | the XML itself                                              |
+| a ~TextInputPort~             | read as it is; left open                                    |
+| a ~Stream~                    | bytes, whose encoding the reader works out; left open       |
+| a ~ByteInputPort~             | the same, through the port, so nothing it buffered is lost  |
+| ~(xml-file path)~             | opened through the ~FS~ effect and closed again             |
+
+A port or stream you hand over stays open: whoever opens a resource closes it.
+A missing file raises, as ~file-read-text~ does; it is not an ~XmlError~. A type
+of your own gets an implementation by handing ~xml-input~ something that
+already has one:
+
+#+BEGIN_SRC scheme
+(impl (XmlSource Upload)
+  (defun (xml-input u) (xml-input (upload-stream u))))
+#+END_SRC
+
+*** Options
+
+| ~#:dtd~            | ~'prohibit~ | ~'ignore~ skips a DOCTYPE; ~'parse~ reads one           |
+| ~#:max-depth~      | ~512~       | more nesting than this is an error                      |
+| ~#:max-characters~ | ~0~         | a limit on the document's length; ~0~ is none          |
+| ~#:whitespace~     | ~'keep~     | ~'drop~ leaves out text that is only whitespace         |
+| ~#:comments?~      | ~#f~        | whether comments are read (signals, ~parse-xml~, ~xml-for-each~) |
+
+The defaults are the safe ones. ~'prohibit~ refuses a document with a DOCTYPE.
+~'ignore~ skips it — and then ~XmlReader~ does not report it at all, so the
+document has no doctype, and an entity it declared is an error. ~'parse~ reads
+it, never resolves anything external — an external DTD or entity is an error —
+and expands at most 10 000 000 characters of entities, which stops a "billion
+laughs" document quickly.
+
+~'drop~ drops text that is only spaces, tabs and line ends. That includes the
+space in ~<b>x</b> <i>y</i>~, which then reads ~xy~.
+
+The folds take a ~#:comment~ handler instead of ~#:comments?~.
+
+*** Errors
+
+An ~XmlError~ is a record of ~kind~, ~message~, ~line~ and ~column~:
+
+| ~Malformed~     | the document is not well-formed XML                                  |
+| ~DtdProhibited~ | a DOCTYPE under ~'prohibit~, or an external DTD or entity under ~'parse~ |
+| ~TooDeep~       | more nesting than ~#:max-depth~                                      |
+| ~LimitExceeded~ | ~#:max-characters~, or the entity limit under ~'parse~               |
+
+~line~ and ~column~ are ~0~ where .NET gives no position, which it does not for
+a DOCTYPE refused or a limit reached. ~->str~ writes all of it on one line.
+
+An exception your own handler raises is never an ~XmlError~: it passes through
+as it was, an ~XmlException~ of your own included.
+
+A reader streams, so one that fails at a node has already run its handlers for
+every node before it.
+
+*** Signals
+
+The bottom layer, as OCaml's Xmlm has it: a pull stream.
+
+#+BEGIN_SRC scheme
+(call-with-xml-signals source
+  (fun (signals)
+    (match (xml-next! signals)
+      ((Ok (Some (XmlStart name attrs pos))) ...)
+      ((Ok (Some XmlEnd)) ...)
+      ((Ok (Some (XmlData text))) ...)
+      ((Ok None) ...)                     ;; the end of the document
+      ((Err e) ...)
+      (_ ...))))
+#+END_SRC
+
+| ~XmlStart name attrs pos~ | an element begins                          |
+| ~XmlEnd~                  | the element last begun ends                |
+| ~XmlData s~               | text                                       |
+| ~XmlComment s~            | a comment, with ~#:comments? #t~           |
+| ~XmlPI target data~       | a processing instruction                   |
+| ~XmlDoctype d~            | the doctype, under ~'parse~                |
+
+- An empty element, ~<br/>~, is an ~XmlStart~ and an ~XmlEnd~ like any other.
+- Adjacent text, CDATA and whitespace are one ~XmlData~, even across a comment
+  that is not being read. ~a<![CDATA[b]]>c~ is ~"abc"~.
+- Whitespace outside the root element is not data.
+- ~(xml-skip-element! signals)~, right after an ~XmlStart~, skips the rest of
+  that element, its ~XmlEnd~ included. The skipped part is not checked against
+  ~#:max-depth~, though ~#:max-characters~ still counts it.
+
+After an error, ~xml-next!~ answers the same error again. The ~XmlSignals~ is
+closed when the function given to ~call-with-xml-signals~ returns.
+
+*** ~xml-fold~
+
+Kiselyov's SSAX fold. A seed is threaded through the document: going into an
+element, ~#:new-level~ turns the seed into the element's own; coming out,
+~#:finish~ is given the seed from before the element and the element's final
+seed, and answers the one to carry on with. Every handler passes the seed
+through unless it is given.
+
+#+BEGIN_SRC scheme
+(xml-fold source 0 #:new-level (fun (name attrs pos n) (+ n 1)))     ;; the number of elements
+
+;; "(a(b x)(c))"
+(xml-fold "<a><b>x</b><c/></a>" ""
+          #:new-level (fun (name attrs pos seed) "")
+          #:finish (fun (name attrs pos parent seed) (str parent "(" (xml-name-local name) seed ")"))
+          #:text (fun (s seed) (str seed " " s)))
+#+END_SRC
+
+| ~#:new-level~ | ~(-> XmlName XmlAttrs (Option XmlPos) seed seed)~        |
+| ~#:finish~    | ~(-> XmlName XmlAttrs (Option XmlPos) parent seed seed)~ |
+| ~#:text~      | ~(-> string seed seed)~                                  |
+| ~#:comment~   | ~(-> string seed seed)~                                  |
+| ~#:pi~        | ~(-> string string seed seed)~                           |
+| ~#:doctype~   | ~(-> Doctype seed seed)~                                 |
+
+The seed is an argument rather than a keyword, since a keyword needs a default
+and a seed of any type has none. The fold is a loop over the signals, with the
+open elements in a list, so a flat document of a million elements and one
+nested 100 000 deep are the same to it.
+
+*** ~xml-tree-fold~
+
+A tree of your own type, as Xmlm's ~input_tree~ builds one. The first function
+gets an element with its children already folded, the second a piece of text:
+
+#+BEGIN_SRC scheme
+(xml-tree-fold source
+               (fun (name attrs pos kids) (Branch (xml-name-local name) kids))
+               (fun (s) (Leaf s))
+               #:comment (fun (s) (Some (Note s))))
+#+END_SRC
+
+A ~#:comment~ or ~#:pi~ handler answers ~None~ to leave the node out, which is
+what the defaults do. The answer is the root element's; what is outside the
+root is not folded.
+
+*** ~parse-xml~
+
+A ~Document~, built with the node constructors, so it keeps their rules.
+Processing instructions are always kept, comments with ~#:comments? #t~, in the
+prolog and epilog as in the tree.
+
+*** ~xml-for-each~
+
+Burst mode: ~(xml-for-each source name f)~ builds a ~Node~ for each outermost
+element called ~name~, hands it to ~f~ and drops it. What is held at a time is
+one such element, never the whole document. One inside another is part of the
+outer one, and is not handed over by itself.
+
+#+BEGIN_SRC scheme
+(xml-for-each (xml-file "feed.xml") (xml-name "entry" #:ns atom)
+              (fun (entry) (store! (text-content entry))))
+#+END_SRC
+
+** Writing
+
+| ~(node->xml n port)~            | ~(Result XmlWriteError Unit)~   |
+| ~(node->xml-string n)~          | ~(Result XmlWriteError string)~ |
+| ~(document->xml d port)~        | ~(Result XmlWriteError Unit)~   |
+| ~(document->xml-string d)~      | ~(Result XmlWriteError string)~ |
+
+All four take ~#:indent?~ (~#f~) and ~#:prefixes~ (~Nil~); the document ones
+also ~#:declaration?~ (~#t~), which writes ~<?xml version="1.0"?>~ — with no
+encoding, since which one the text ends up in is the port's business.
+
+~XmlWriter~ does all the escaping. Content it cannot write is an
+~XmlWriteError~, not an exception: a character XML does not allow, U+0000 say,
+and three it would otherwise change or drop without a word — a comment
+containing ~--~ or ending in ~-~, a processing instruction named ~xml~ or with a
+target that is not a name, and processing instruction data containing ~?>~.
+Whatever was written to a port before the error stays written. An exception
+from the port itself, an ~IOException~, passes through.
+
+*** Prefixes
+
+A name has none, so the writer chooses:
+
+- an element uses a prefix already in scope for its namespace, then a hinted
+  one, then a default namespace declaration, ~xmlns="..."~; an element in no
+  namespace inside a default namespace gets ~xmlns=""~
+- an attribute in a namespace always needs a prefix, since the default
+  namespace does not apply to attributes: one in scope, then a hinted one, then
+  ~ns1~, ~ns2~ and so on
+- ~xml:lang~ and ~xml:space~ use ~xml~, which is never declared
+
+~#:prefixes~ is the hints, as ~(list (Tuple "atom" "http://www.w3.org/2005/Atom"))~.
+A hinted prefix is declared once, on the root, for the namespaces the tree
+uses. A hint that could not be a prefix — not a name, or ~xml~ or ~xmlns~ —
+raises.
+
+*** Indentation
+
+~#:indent? #t~ puts an element's children on lines of their own, two spaces a
+level, but never where the whitespace would be content: not inside an element
+that has text among its children, not anywhere below one, and not inside
+~xml:space="preserve"~. ~XmlWriter~'s own indentation is not used: it decides
+only when it meets the text, and by then has indented the elements before it.
+
+The doctype is the one piece of markup written by hand, because
+~XmlWriter.WriteDocType~ wants a C# null for an id that is not there and there
+is no null to give it. Its parts are checked instead of escaped.
+
+** Not here yet
+
+Pattern matching, typed paths, decoding into records, HTML and asynchronous
+reading are later modules, over the views above. HTML parsing, XML Schema,
+XSLT, XML 1.1 and DTD validation are not planned.

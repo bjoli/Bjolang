@@ -1,0 +1,480 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; text/xml/write.bjo — the module (text xml write).
+;;
+;; System.Xml.XmlWriter does the escaping. What it does not do is refuse all
+;; content it cannot write: a comment with "--" in it, PI data with "?>" in it
+;; and a PI named xml are silently changed or dropped rather than refused, so
+;; those are checked here first and are an XmlWriteError like the rest.
+;;
+;; A name carries no prefix, so the prefixes are chosen here: one already in
+;; scope for the namespace, then one the caller hinted at, then a default
+;; namespace declaration for an element, or a generated ns1, ns2 ... for an
+;; attribute, which the default namespace does not apply to. XmlWriter writes
+;; the declarations the chosen prefixes need.
+;;
+;; The tree is walked with a stack of its own, and indentation is written by
+;; hand: see `indents?`.
+;;
+;; See Docs/std/xml.org.
+;;
+;; Open:
+;; - The doctype is written with WriteRaw, after checking its parts, because
+;;   WriteDocType takes a null for an id that is not there and there is no
+;;   null to pass it.
+;; - A doctype's internal subset is not kept by the reader, so it is not
+;;   written back. Its entities were expanded while reading, but an attribute
+;;   default it declared is then an ordinary attribute of every element it
+;;   applied to.
+;; - What was written to a port before an error stays written, and nothing
+;;   says how far it got.
+;; - #:prefixes may give one prefix twice. The first one is used, and the
+;;   namespace of the second gets a generated prefix where the two meet.
+
+(export
+  XmlWriteError
+  node->xml node->xml-string
+  document->xml document->xml-string)
+
+(import (std prelude))
+(import (text xml))
+
+(import/class
+  (XmlWriter (: System.Xml.XmlWriter))
+  (XmlWriterSettings (: System.Xml.XmlWriterSettings (-> XmlWriterSettings)))
+  (ConformanceLevel (: System.Xml.ConformanceLevel))
+  (ClrBuilder (: System.Text.StringBuilder (-> ClrBuilder)))
+  (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
+
+(import/extern
+  (clr-writer-over-text (: System.Xml.XmlWriter.Create (-> TextOutputPort XmlWriterSettings XmlWriter)))
+  (clr-writer-over-builder (: System.Xml.XmlWriter.Create (-> ClrBuilder XmlWriterSettings XmlWriter)))
+  (clr-settings-omit-declaration! (: System.Xml.XmlWriterSettings.OmitXmlDeclaration
+                                     (-> XmlWriterSettings bool void) #:set))
+  (clr-settings-conformance! (: System.Xml.XmlWriterSettings.ConformanceLevel
+                                (-> XmlWriterSettings ConformanceLevel void) #:set))
+  (clr-settings-close-output! (: System.Xml.XmlWriterSettings.CloseOutput (-> XmlWriterSettings bool void) #:set))
+  (clr-settings-end-on-close! (: System.Xml.XmlWriterSettings.WriteEndDocumentOnClose
+                                 (-> XmlWriterSettings bool void) #:set))
+  (clr-conformance-document (: System.Xml.ConformanceLevel.Document #:get))
+  (clr-conformance-fragment (: System.Xml.ConformanceLevel.Fragment #:get))
+  (clr-start-element (: System.Xml.XmlWriter.WriteStartElement (-> XmlWriter string string string void)))
+  (clr-end-element (: System.Xml.XmlWriter.WriteEndElement (-> XmlWriter void)))
+  (clr-attribute (: System.Xml.XmlWriter.WriteAttributeString (-> XmlWriter string string string string void)))
+  (clr-string (: System.Xml.XmlWriter.WriteString (-> XmlWriter string void)))
+  (clr-comment (: System.Xml.XmlWriter.WriteComment (-> XmlWriter string void)))
+  (clr-pi (: System.Xml.XmlWriter.WriteProcessingInstruction (-> XmlWriter string string void)))
+  (clr-whitespace (: System.Xml.XmlWriter.WriteWhitespace (-> XmlWriter string void)))
+  (clr-raw (: System.Xml.XmlWriter.WriteRaw (-> XmlWriter string void)))
+  (clr-flush (: System.Xml.XmlWriter.Flush (-> XmlWriter void)))
+  (clr-verify-ncname (: System.Xml.XmlConvert.VerifyNCName (-> string string)
+                        #:exceptions (System.Xml.XmlException System.ArgumentNullException)))
+  (clr-verify-name (: System.Xml.XmlConvert.VerifyName (-> string string)
+                      #:exceptions (System.Xml.XmlException System.ArgumentNullException)))
+  (clr-verify-public-id (: System.Xml.XmlConvert.VerifyPublicId (-> string string)
+                           #:exceptions (System.Xml.XmlException System.ArgumentNullException)))
+  (clr-verify-xml-chars (: System.Xml.XmlConvert.VerifyXmlChars (-> string string)
+                           #:exceptions (System.Xml.XmlException System.ArgumentNullException))))
+
+;; ===========================================================================
+;; Errors
+;; ===========================================================================
+
+(type (: XmlWriteError (Record (: message string))))
+
+(impl (->str XmlWriteError)
+  (defun (->str e) (record-ref e message)))
+
+(: write-error (-> string (Result XmlWriteError %a)))
+(defun (write-error message)
+  (Err (XmlWriteError (message message))))
+
+(: done (Result XmlWriteError Unit))
+(def done (Ok unit))
+
+;; ===========================================================================
+;; Content XmlWriter would change rather than refuse
+;; ===========================================================================
+
+(: comment-problem (-> string (Option string)))
+(defun (comment-problem text)
+  (cond
+    ((string-contains? text "--") (Some "a comment may not contain \"--\""))
+    ((string-ends-with? text "-") (Some "a comment may not end in \"-\""))
+    (else None)))
+
+(: pi-problem (-> string string (Option string)))
+(defun (pi-problem target data)
+  (cond
+    ((err? (clr-verify-ncname target))
+     (Some (str "\"" target "\" is not a processing instruction target")))
+    ((= (string-downcase target) "xml")
+     (Some "a processing instruction may not be named xml; the XML declaration is #:declaration?"))
+    ((string-contains? data "?>") (Some "a processing instruction's data may not contain \"?>\""))
+    (else None)))
+
+;; ===========================================================================
+;; Namespaces
+;; ===========================================================================
+
+(: xmlns-namespace string)
+(def xmlns-namespace "http://www.w3.org/2000/xmlns/")
+
+;; The declarations in scope, innermost first, as (prefix . uri): one list per
+;; open element that declared anything, so that looking a prefix up costs the
+;; number of declaring elements around it rather than the depth. The default
+;; namespace is the prefix "".
+(type (: Scope (Alias (List (List (Tuple string string))))))
+
+;; Prefix to URI, as #:prefixes gives them.
+(type (: Hints (Alias (List (Tuple string string)))))
+
+(: bound-in (-> (List (Tuple string string)) string (Option string)))
+(defun (bound-in frame prefix)
+  (match frame
+    (Nil None)
+    ((Cons (Tuple p u) rest) (if (= p prefix) (Some u) (bound-in rest prefix)))))
+
+;; What a prefix means here. "xml" always means the xml namespace, and the
+;; default namespace is none until something declares one.
+(: scope-uri (-> Scope string (Option string)))
+(defun (scope-uri scope prefix)
+  (if (= prefix "xml")
+      (Some xml-namespace)
+      (let loop ((frames scope))
+        (match frames
+          (Nil (if (= prefix "") (Some "") None))
+          ((Cons frame rest)
+           (match (bound-in frame prefix)
+             ((Some u) (Some u))
+             (None (loop rest))))))))
+
+;; A prefix that means `uri` here, and is not hidden by a nearer declaration of
+;; the same prefix. The default namespace only when `default-ok`.
+(: scope-prefix (-> Scope string bool (Option string)))
+(defun (scope-prefix scope uri default-ok)
+  (let frames ((fs scope))
+    (match fs
+      (Nil None)
+      ((Cons frame rest)
+       (let bindings ((bs frame))
+         (match bs
+           (Nil (frames rest))
+           ((Cons (Tuple p u) more)
+            (if (and (= u uri)
+                     (or default-ok (not (string-empty? p)))
+                     (= (scope-uri scope p) (Some uri)))
+                (Some p)
+                (bindings more)))))))))
+
+(: hint-prefix (-> Hints string (Option string)))
+(defun (hint-prefix hints uri)
+  (match hints
+    (Nil None)
+    ((Cons (Tuple p u) rest) (if (= u uri) (Some p) (hint-prefix rest uri)))))
+
+(: hinted? (-> Hints string bool))
+(defun (hinted? hints prefix)
+  (match hints
+    (Nil #f)
+    ((Cons (Tuple p _) rest) (or (= p prefix) (hinted? rest prefix)))))
+
+;; A prefix that nothing here and nothing hinted uses: ns1, ns2 and so on.
+(: fresh-prefix (-> Scope Hints string))
+(defun (fresh-prefix scope hints)
+  (let loop ((n 1))
+    (def p (str "ns" (int->string n)))
+    (if (or (some? (scope-uri scope p)) (hinted? hints p))
+        (loop (+ n 1))
+        p)))
+
+;; An element's prefix, and the declaration it needs, if any. An element in no
+;; namespace inside a default namespace needs xmlns="".
+(: element-prefix (-> Scope Hints string (Tuple string (List (Tuple string string)))))
+(defun (element-prefix scope hints uri)
+  (cond
+    ((string-empty? uri)
+     (Tuple "" (if (= (scope-uri scope "") (Some "")) Nil (list (Tuple "" "")))))
+    (:match (Some p) (scope-prefix scope uri #t) (Tuple p Nil))
+    (:match (Some p) (hint-prefix hints uri) (Tuple p (list (Tuple p uri))))
+    (else (Tuple "" (list (Tuple "" uri))))))
+
+;; An attribute's prefix, given the declarations the element has made so far.
+;; A hinted prefix this element already uses for another namespace cannot be
+;; declared again on it, so a generated one is used instead.
+(: attribute-prefix (-> Scope (List (Tuple string string)) Hints string
+                        (Tuple string (List (Tuple string string)))))
+(defun (attribute-prefix scope frame hints uri)
+  (def here (Cons frame scope))
+  (cond
+    ((string-empty? uri) (Tuple "" frame))
+    ((= uri xml-namespace) (Tuple "xml" frame))
+    (:match (Some p) (scope-prefix here uri #f) (Tuple p frame))
+    (:match (Some p) (hint-prefix hints uri) #:when (none? (bound-in frame p))
+     (Tuple p (Cons (Tuple p uri) frame)))
+    (else
+     (def p (fresh-prefix here hints))
+     (Tuple p (Cons (Tuple p uri) frame)))))
+
+;; Every namespace a name in the tree is in.
+(: used-namespaces (-> Node (TransientMap string bool)))
+(defun (used-namespaces root)
+  (def used (transientmap-empty))
+  (let loop ((stack (list (list root))))
+    (match stack
+      (Nil used)
+      ((Cons Nil rest) (loop rest))
+      ((Cons (Cons n more) rest)
+       (match (element-view n)
+         ((Some (Tuple name attrs kids))
+          (transientmap-set! used (xml-name-ns name) #t)
+          (list-for-each (fun (a) (def (Tuple an _) a) (transientmap-set! used (xml-name-ns an) #t)) attrs)
+          (loop (Cons kids (Cons more rest))))
+         (None (loop (Cons more rest))))))))
+
+;; A bad hint is a programming error, as a bad name is.
+(: check-hints (-> Hints void))
+(defun (check-hints hints)
+  (list-for-each
+    (fun (h)
+      (def (Tuple p u) h)
+      (when (or (err? (clr-verify-ncname p)) (= p "xml") (= p "xmlns"))
+        (raise (cast Exception (ArgumentException. (str "(text xml write): #:prefixes: \"" p "\" cannot be a prefix")))))
+      (when (or (string-empty? u) (= u xml-namespace) (= u xmlns-namespace))
+        (raise (cast Exception (ArgumentException. (str "(text xml write): #:prefixes: \"" p "\" cannot name \"" u "\""))))))
+    hints))
+
+;; ===========================================================================
+;; The walk
+;; ===========================================================================
+
+;; A node to write, or an element to close. `newline` is whether an indent
+;; goes before it, and `mixed` whether its subtree may have whitespace added.
+;; An element closing says whether it put declarations in scope, which are
+;; then taken out again.
+(type (: Step (Union (: Visit Node int bool bool)
+                     (: Leave int bool bool))))
+
+(: xml-space XmlName)
+(def xml-space (xml-name "space" #:ns xml-namespace))
+
+(: has-text? (-> (List Node) bool))
+(defun (has-text? kids)
+  (match kids
+    (Nil #f)
+    ((Cons k rest) (or (text? k) (has-text? rest)))))
+
+;; Whether an element's children go on lines of their own. Never inside a
+;; subtree where whitespace would be content: an element with text among its
+;; children, what is below one, and xml:space="preserve".
+(: indents? (-> Node (List Node) bool bool))
+(defun (indents? n kids mixed)
+  (and (not mixed)
+       (not (list-empty? kids))
+       (not (has-text? kids))
+       (not (= (attr-ref n xml-space) (Some "preserve")))))
+
+(: newline-indent (-> int string))
+(defun (newline-indent depth)
+  (str "\n" (string-pad-left "" (* 2 depth))))
+
+;; The start tag and the attributes, and the declarations it made. The root
+;; also declares the hinted prefixes for the namespaces the tree uses.
+(: write-start (-> XmlWriter Scope Hints Hints XmlName XmlAttrs (List (Tuple string string))))
+(defun (write-start w scope hints root-hints name attrs)
+  (def uri (xml-name-ns name))
+  (def (Tuple prefix declared) (element-prefix scope hints uri))
+  (clr-start-element w prefix (xml-name-local name) uri)
+  (def with-hints
+    (list-foldl (fun (h frame)
+                  (def (Tuple p u) h)
+                  (cond
+                    ((some? (bound-in frame p)) frame)
+                    (else
+                     (clr-attribute w "xmlns" p xmlns-namespace u)
+                     (Cons (Tuple p u) frame))))
+                declared
+                root-hints))
+  (list-foldl (fun (a frame)
+                (def (Tuple an value) a)
+                (def auri (xml-name-ns an))
+                (def (Tuple ap frame2) (attribute-prefix scope frame hints auri))
+                (clr-attribute w ap (xml-name-local an) auri value)
+                frame2)
+              with-hints
+              attrs))
+
+(: write-tree (-> XmlWriter Node bool Hints (Result XmlWriteError Unit)))
+(defun (write-tree w root indent hints)
+  (def root-hints
+    (if (list-empty? hints)
+        Nil
+        (let ((used (used-namespaces root)))
+          (list-filter (fun (h) (def (Tuple _ u) h) (transientmap-contains? used u)) hints))))
+  (let loop ((steps (list (Visit root 0 #f (not indent)))) (scope Nil) (first #t))
+    (match steps
+      (Nil done)
+      ((Cons (Leave depth newline declared) rest)
+       (when newline (clr-whitespace w (newline-indent depth)))
+       (clr-end-element w)
+       (loop rest (match scope ((Cons _ outer) #:when declared outer) (_ scope)) #f))
+      ((Cons (Visit n depth newline mixed) rest)
+       (when newline (clr-whitespace w (newline-indent depth)))
+       (cond
+         ((text? n)
+          (clr-string w (text-value n))
+          (loop rest scope #f))
+         ((comment? n)
+          (match (comment-problem (comment-value n))
+            ((Some problem) (write-error problem))
+            (None (clr-comment w (comment-value n)) (loop rest scope #f))))
+         ((pi? n)
+          (match (pi-problem (pi-target n) (pi-data n))
+            ((Some problem) (write-error problem))
+            (None (clr-pi w (pi-target n) (pi-data n)) (loop rest scope #f))))
+         (else
+          (def kids (element-children n))
+          (def frame (write-start w scope hints (if first root-hints Nil) (element-name n) (element-attrs n)))
+          (def inside (indents? n kids mixed))
+          (def declared (not (list-empty? frame)))
+          (loop (list-append (list-map (fun (k) (Visit k (+ depth 1) inside (not inside))) kids)
+                             (Cons (Leave depth inside declared) rest))
+                (if declared (Cons frame scope) scope)
+                #f)))))))
+
+;; ===========================================================================
+;; Documents
+;; ===========================================================================
+
+;; Written raw, because WriteDocType takes null for an id that is not there and
+;; there is no null to pass. Nothing is escaped: each part is checked instead,
+;; and the system id quoted with whichever quote it does not contain.
+(: doctype-markup (-> Doctype (Result XmlWriteError string)))
+(defun (doctype-markup dt)
+  (def name (record-ref dt name))
+  (def system-literal
+    (match (record-ref dt system-id)
+      (None (Ok None))
+      ((Some sys)
+       (cond
+         ((err? (clr-verify-xml-chars sys)) (write-error "the doctype's system id has a character XML does not allow"))
+         ((not (string-contains? sys "\"")) (Ok (Some (str "\"" sys "\""))))
+         ((not (string-contains? sys "'")) (Ok (Some (str "'" sys "'"))))
+         (else (write-error "the doctype's system id has both kinds of quote in it"))))))
+  (cond
+    ((err? (clr-verify-name name)) (write-error (str "\"" name "\" is not a doctype name")))
+    (:def (Ok sys) system-literal :propagate)
+    (else
+     (match (Tuple (record-ref dt public-id) sys)
+       ((Tuple None None) (Ok (str "<!DOCTYPE " name ">")))
+       ((Tuple None (Some s)) (Ok (str "<!DOCTYPE " name " SYSTEM " s ">")))
+       ((Tuple (Some pub) (Some s))
+        (if (err? (clr-verify-public-id pub))
+            (write-error "the doctype's public id has a character a public id may not")
+            (Ok (str "<!DOCTYPE " name " PUBLIC \"" pub "\" " s ">"))))
+       ((Tuple (Some _) None) (write-error "a doctype with a public id needs a system id too"))))))
+
+(type (: TopItem (Union (: TopDoctype Doctype) (: TopNode Node))))
+
+(: top-items (-> Document (List TopItem)))
+(defun (top-items doc)
+  (def nodes (list-map TopNode (list-append (document-prolog doc)
+                                            (Cons (document-root doc) (document-epilog doc)))))
+  (match (document-doctype doc)
+    ((Some dt) (Cons (TopDoctype dt) nodes))
+    (None nodes)))
+
+(: write-document (-> XmlWriter Document bool Hints bool (Result XmlWriteError Unit)))
+(defun (write-document w doc indent hints declaration)
+  (when declaration (clr-pi w "xml" "version=\"1.0\""))
+  (let loop ((items (top-items doc)) (first (not declaration)))
+    (match items
+      (Nil done)
+      ((Cons item rest)
+       (when (and indent (not first)) (clr-whitespace w "\n"))
+       (def written
+         (match item
+           ((TopDoctype dt)
+            (match (doctype-markup dt)
+              ((Ok markup) (clr-raw w markup) done)
+              ((Err e) (Err e))))
+           ((TopNode n) (write-tree w n indent (if (element? n) hints Nil)))))
+       (match written
+         ((Ok _) (loop rest #f))
+         ((Err e) (Err e)))))))
+
+;; ===========================================================================
+;; Running a writer
+;; ===========================================================================
+
+(: writer-settings (-> bool bool XmlWriterSettings))
+(defun (writer-settings document declaration)
+  (def settings (XmlWriterSettings.))
+  (clr-settings-omit-declaration! settings (not declaration))
+  (clr-settings-conformance! settings (if document clr-conformance-document clr-conformance-fragment))
+  ;; The port is the caller's, and a write that failed half-way is not ended
+  ;; with end tags nobody asked for.
+  (clr-settings-close-output! settings #f)
+  (clr-settings-end-on-close! settings #f)
+  settings)
+
+;; What XmlWriter refuses is an ArgumentException, an XmlException or an
+;; InvalidOperationException. Anything else, an IOException from the port say,
+;; passes through. What was written before the error stays written.
+(: run-writer (-> XmlWriter (-> XmlWriter (Result XmlWriteError Unit)) (Result XmlWriteError Unit)))
+(defun (run-writer writer body)
+  (match (try (with-open ((w writer))
+                (def result (body w))
+                (when (ok? result) (clr-flush w))
+                result)
+              #:catch (System.ArgumentException System.Xml.XmlException System.InvalidOperationException))
+    ((Ok result) result)
+    ((Err e) (write-error (.-Message e)))))
+
+(: node->xml (-> Node TextOutputPort (#:indent? bool) (#:prefixes (List (Tuple string string)))
+                 (Result XmlWriteError Unit)))
+(defun (node->xml node port #:indent? #f #:prefixes Nil)
+  (check-hints prefixes)
+  (run-writer (clr-writer-over-text port (writer-settings #f #f))
+              (fun (w) (write-tree w node indent? prefixes))))
+
+(: node->xml-string (-> Node (#:indent? bool) (#:prefixes (List (Tuple string string)))
+                        (Result XmlWriteError string)))
+(defun (node->xml-string node #:indent? #f #:prefixes Nil)
+  (check-hints prefixes)
+  (def sb (ClrBuilder.))
+  (match (run-writer (clr-writer-over-builder sb (writer-settings #f #f))
+                     (fun (w) (write-tree w node indent? prefixes)))
+    ((Ok _) (Ok (.ToString sb)))
+    ((Err e) (Err e))))
+
+;; #:declaration? writes <?xml version="1.0"?>, with no encoding: which one the
+;; text ends up in is the port's business.
+(: document->xml (-> Document TextOutputPort (#:indent? bool) (#:prefixes (List (Tuple string string)))
+                     (#:declaration? bool)
+                     (Result XmlWriteError Unit)))
+(defun (document->xml doc port #:indent? #f #:prefixes Nil #:declaration? #t)
+  (check-hints prefixes)
+  (run-writer (clr-writer-over-text port (writer-settings #t declaration?))
+              (fun (w) (write-document w doc indent? prefixes declaration?))))
+
+(: document->xml-string (-> Document (#:indent? bool) (#:prefixes (List (Tuple string string)))
+                            (#:declaration? bool)
+                            (Result XmlWriteError string)))
+(defun (document->xml-string doc #:indent? #f #:prefixes Nil #:declaration? #t)
+  (check-hints prefixes)
+  (def sb (ClrBuilder.))
+  (match (run-writer (clr-writer-over-builder sb (writer-settings #t declaration?))
+                     (fun (w) (write-document w doc indent? prefixes declaration?)))
+    ((Ok _) (Ok (.ToString sb)))
+    ((Err e) (Err e))))

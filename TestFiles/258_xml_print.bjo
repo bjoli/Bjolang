@@ -1,0 +1,42 @@
+;; (text xml): the printer, which shows a node in SXML's look.
+
+(import (std prelude))
+(import (std simpletest))
+(import (text xml))
+(import (text xml read))
+
+(: el (-> string (List Node) Node))
+(defun (el name kids) (xml-element (xml-name name) Nil kids))
+
+(defun (main)
+  (expect "an element"
+          (->str (xml-element (xml-name "p") (list (Tuple (xml-name "class") "x"))
+                              (list (xml-text "hi") (el "b" (list (xml-text "!"))))))
+          "(p (@ (class \"x\")) \"hi\" (b \"!\"))")
+  (expect "an empty one" (->str (el "br" Nil)) "(br)")
+  (expect "a name in a namespace, in Clark notation"
+          (->str (xml-element (xml-name "entry" #:ns "http://www.w3.org/2005/Atom")
+                              (list (Tuple (xml-name "href" #:ns "http://www.w3.org/1999/xlink") "#a"))
+                              Nil))
+          "({http://www.w3.org/2005/Atom}entry (@ ({http://www.w3.org/1999/xlink}href \"#a\")))")
+  (expect "a name alone" (->str (xml-name "p" #:ns "u")) "{u}p")
+  (expect "a comment and a PI"
+          (->str (el "a" (list (xml-comment " c ") (xml-pi "t" "d e"))))
+          "(a (*COMMENT* \" c \") (*PI* t \"d e\"))")
+  (expect "quotes, backslashes and line ends in strings"
+          (->str (xml-text "say \"hi\" \\ \n\t\r"))
+          "\"say \\\"hi\\\" \\\\ \\n\\t\\r\"")
+  (expect "a document"
+          (match (parse-xml "<!DOCTYPE a [<!ENTITY e 'x'>]><?style a?><a>&e;</a><!--end-->" #:dtd 'parse #:comments? #t)
+            ((Ok d) (->str d))
+            ((Err e) (->str e)))
+          "(*TOP* (*DOCTYPE* a) (*PI* style \"a\") (a \"x\") (*COMMENT* \"end\"))")
+  (expect "a doctype with ids"
+          (->str (xml-document (el "html" Nil)
+                               #:doctype (Some (Doctype (name "html") (public-id (Some "-//P//EN")) (system-id (Some "h.dtd"))))))
+          "(*TOP* (*DOCTYPE* html PUBLIC \"-//P//EN\" \"h.dtd\") (html))")
+  (def deep (let loop ((i 0) (acc (xml-text "x")))
+              (if (= i 100000) acc (loop (+ i 1) (el "d" (list acc))))))
+  ;; "(d " and ")" a level, and "x" in quotes at the bottom.
+  (expect "100 000 levels" (string-length (->str deep)) (+ (* 100000 4) 3))
+  0)

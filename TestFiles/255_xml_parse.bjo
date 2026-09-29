@@ -1,0 +1,190 @@
+;; (text xml read): xml-tree-fold into a tree of the test's own, and parse-xml
+;; into a Document, from every kind of source.
+
+(import (std prelude))
+(import (std effect))
+(import (std simpletest))
+(import (std ports))
+(import (text xml))
+(import (text xml read))
+
+(import/class
+  (MemoryStream (: System.IO.MemoryStream (-> (Array byte) MemoryStream))))
+
+(import/extern
+  (latin1 (: System.Text.Encoding.Latin1 #:get))
+  (encode (: System.Text.Encoding.GetBytes (-> System.Text.Encoding string (Array byte)))))
+
+(: repeated (-> int string string))
+(defun (repeated n s)
+  (def sb (stringbuilder-empty))
+  (loop (:for i (range 0 n)) (:do (stringbuilder-add-string! sb s)))
+  (stringbuilder->string sb))
+
+(: kind-of (-> (Result XmlError %a) string))
+(defun (kind-of r)
+  (match r
+    ((Ok _) "ok")
+    ((Err e) (match (record-ref e kind)
+               (Malformed "malformed")
+               (DtdProhibited "dtd-prohibited")
+               (TooDeep "too-deep")
+               (LimitExceeded "limit-exceeded")))))
+
+;; A tree of this test's own, for xml-tree-fold to build.
+(type-rec
+  (: Tree (Union (: Branch string (List Tree))
+                 (: Leaf string))))
+
+(: render (-> Tree string))
+(defun (render t)
+  (match t
+    ((Leaf s) s)
+    ((Branch name kids) (str "(" name (string-join (list->vec (list-map (fun (k) (str " " (render k))) kids)) "") ")"))))
+
+(: tree-of (-> string (Result XmlError string)))
+(defun (tree-of text)
+  (match (xml-tree-fold text
+                        (fun (name attrs pos kids) (Branch (xml-name-local name) kids))
+                        (fun (s) (Leaf s))
+                        #:comment (fun (s) (Some (Leaf (str "#" s)))))
+    ((Ok t) (Ok (render t)))
+    ((Err e) (Err e))))
+
+(: tree-folds (-> void))
+(defun (tree-folds)
+  (expect "a tree of the caller's type" (tree-of "<a><b>x</b>y<c/></a>") (Ok "(a (b x) y (c))"))
+  (expect "a comment kept by its handler, inside the root only"
+          (tree-of "<!--before--><a>x<!--c-->y</a><!--after-->")
+          (Ok "(a x #c y)"))
+  (expect "PIs are left out by default" (tree-of "<a><?p d?></a>") (Ok "(a)"))
+  (expect "an error" (kind-of (tree-of "<a>")) "malformed")
+  (expect "'drop"
+          (match (xml-tree-fold "<p><b>x</b> <i>y</i></p>"
+                                (fun (name attrs pos kids) (list-length kids))
+                                (fun (s) 0)
+                                #:whitespace 'drop)
+            ((Ok n) n)
+            ((Err _) -1))
+          2)
+  (expect "100 000 levels"
+          (xml-tree-fold (str (repeated 100000 "<a>") (repeated 100000 "</a>"))
+                         (fun (name attrs pos kids) (+ 1 (list-foldl + 0 kids)))
+                         (fun (s) 0)
+                         #:max-depth 200000)
+          (Ok 100000)))
+
+(: root-of (-> (Result XmlError Document) Node))
+(defun (root-of r)
+  (match r
+    ((Ok d) (document-root d))
+    ((Err e) (xml-text (str "error: " (->str e))))))
+
+(: documents (-> void))
+(defun (documents)
+  (def d (parse-xml "<a href='x'>one <b>two</b> three</a>"))
+  (def root (root-of d))
+  (expect "the root's name" (xml-name-local (element-name root)) "a")
+  (expect "an attribute" (attr-ref root (xml-name "href")) (Some "x"))
+  (expect "the children" (list-length (element-children root)) 3)
+  (expect "the text" (text-content root) "one two three")
+  (expect-true "a position" (some? (element-pos root)))
+  (expect-true "the tree is the one built by hand"
+               (node=? root (xml-element (xml-name "a") (list (Tuple (xml-name "href") "x"))
+                                         (list (xml-text "one ")
+                                               (xml-element (xml-name "b") Nil (list (xml-text "two")))
+                                               (xml-text " three")))))
+  (expect "a text in pieces is one" (list-length (element-children (root-of (parse-xml "<a>a<![CDATA[b]]>c</a>")))) 1)
+  (expect "an empty CDATA leaves no text" (list-length (element-children (root-of (parse-xml "<a><![CDATA[]]></a>")))) 0)
+  (expect "comments are left out by default, and text around one is one"
+          (element-children (root-of (parse-xml "<a>x<!--c-->y</a>")))
+          (list (xml-text "xy")))
+  (def commented (parse-xml "<!--one--><?style a?><a>x<!--c-->y</a><!--two-->" #:comments? #t))
+  (expect "#:comments? keeps them in the tree"
+          (element-children (root-of commented))
+          (list (xml-text "x") (xml-comment "c") (xml-text "y")))
+  (expect "and in the prolog"
+          (match commented ((Ok doc) (document-prolog doc)) (_ Nil))
+          (list (xml-comment "one") (xml-pi "style" "a")))
+  (expect "and in the epilog"
+          (match commented ((Ok doc) (document-epilog doc)) (_ Nil))
+          (list (xml-comment "two")))
+  (expect "PIs are kept without it"
+          (match (parse-xml "<?style a?><a/>") ((Ok doc) (document-prolog doc)) (_ Nil))
+          (list (xml-pi "style" "a")))
+  (expect "'drop, and the space between inline elements"
+          (text-content (root-of (parse-xml "<p>\n  <b>x</b> <i>y</i>\n</p>" #:whitespace 'drop)))
+          "xy")
+  (expect "'keep is the default"
+          (text-content (root-of (parse-xml "<p><b>x</b> <i>y</i></p>")))
+          "x y")
+  (expect "a doctype under 'parse"
+          (match (parse-xml "<!DOCTYPE a [<!ENTITY e 'x'>]><a>&e;</a>" #:dtd 'parse)
+            ((Ok doc) (match (document-doctype doc) ((Some dt) (record-ref dt name)) (None "none")))
+            ((Err e) (->str e)))
+          "a")
+  (expect "none under 'ignore"
+          (match (parse-xml "<!DOCTYPE a><a/>" #:dtd 'ignore)
+            ((Ok doc) (document-doctype doc))
+            ((Err _) (Some (Doctype (name "error") (public-id None) (system-id None)))))
+          None)
+  (expect "a DOCTYPE by default" (kind-of (parse-xml "<!DOCTYPE a><a/>")) "dtd-prohibited")
+  (expect "namespaces"
+          (match (parse-xml "<a xmlns='u' xmlns:x='v'><x:b x:k='1' k='2'/></a>")
+            ((Ok doc)
+             (def b (list-head (element-children (document-root doc))))
+             (list (xml-name-ns (element-name (document-root doc)))
+                   (xml-name-ns (element-name b))
+                   (option-value (attr-ref b (xml-name "k" #:ns "v")) "-")
+                   (option-value (attr-ref b (xml-name "k")) "-")
+                   (int->string (list-length (element-attrs (document-root doc))))))
+            ((Err e) (list (->str e))))
+          (list "u" "v" "1" "2" "0")))
+
+(: laughs string)
+(def laughs
+  (str "<!DOCTYPE lolz [<!ENTITY lol \"lol\">"
+       "<!ENTITY lol1 \"&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;\">"
+       "<!ENTITY lol2 \"&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;\">"
+       "<!ENTITY lol3 \"&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;\">"
+       "<!ENTITY lol4 \"&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;\">"
+       "<!ENTITY lol5 \"&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;\">"
+       "<!ENTITY lol6 \"&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;\">"
+       "<!ENTITY lol7 \"&lol6;&lol6;&lol6;&lol6;&lol6;&lol6;&lol6;&lol6;&lol6;&lol6;\">"
+       "<!ENTITY lol8 \"&lol7;&lol7;&lol7;&lol7;&lol7;&lol7;&lol7;&lol7;&lol7;&lol7;\">"
+       "<!ENTITY lol9 \"&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;\">"
+       "]><lolz>&lol9;</lolz>"))
+
+(: safety (-> void))
+(defun (safety)
+  (def started (monotonic-ms))
+  (expect "billion laughs under 'parse is a limit" (kind-of (parse-xml laughs #:dtd 'parse)) "limit-exceeded")
+  (expect-true "and a quick one" (< (- (monotonic-ms) started) 5000L))
+  (expect "513 levels by default" (kind-of (parse-xml (str (repeated 513 "<a>") (repeated 513 "</a>")))) "too-deep")
+  (def deep (parse-xml (str (repeated 100000 "<a>") "bottom" (repeated 100000 "</a>")) #:max-depth 200000))
+  (expect "100 000 levels under #:max-depth 200000" (kind-of deep) "ok")
+  (expect "and walked" (text-content (root-of deep)) "bottom")
+  (expect "#:max-characters" (kind-of (parse-xml "<a>0123456789</a>" #:max-characters 4L)) "limit-exceeded"))
+
+(: sources (-> void))
+(defun (sources)
+  (def expected (xml-element (xml-name "a") Nil (list (xml-text "café"))))
+  (expect-true "a port" (node=? (root-of (parse-xml (open-input-string "<a>café</a>"))) expected))
+  (def bytes (encode latin1 "<?xml version='1.0' encoding='ISO-8859-1'?><a>café</a>"))
+  (expect-true "a stream, in the encoding it declares"
+               (node=? (root-of (parse-xml (cast Stream (MemoryStream. bytes)))) expected))
+  (def (Tuple in out) (byte-pipe))
+  (write-bytes! out bytes)
+  (close-byte-output-port! out)
+  (expect-true "a byte port" (node=? (root-of (parse-xml in)) expected))
+  (with-fake-fs (("doc.xml" "<a>café</a>"))
+    (expect-true "a file, through the FS effect" (node=? (root-of (parse-xml (xml-file "doc.xml"))) expected))
+    (expect-true "a missing file raises"
+                 (err? (try (parse-xml (xml-file "missing.xml")) #:catch (System.IO.IOException))))))
+
+(defun (main)
+  (tree-folds)
+  (documents)
+  (safety)
+  (sources)
+  0)

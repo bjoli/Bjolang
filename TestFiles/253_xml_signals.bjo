@@ -1,0 +1,239 @@
+;; (text xml read), the signal layer: what XmlReader's nodes become, the
+;; options, the limits, and the errors.
+
+(import (std prelude))
+(import (std simpletest))
+(import (text xml))
+(import (text xml read))
+
+(import/class
+  (Stream (: System.IO.Stream))
+  (MemoryStream (: System.IO.MemoryStream (-> (Array byte) MemoryStream)))
+  (XmlException (: System.Xml.XmlException (-> string XmlException))))
+
+(import/extern
+  (latin1 (: System.Text.Encoding.Latin1 #:get))
+  (encode (: System.Text.Encoding.GetBytes (-> System.Text.Encoding string (Array byte)))))
+
+(: name->string (-> XmlName string))
+(defun (name->string n)
+  (if (string-empty? (xml-name-ns n))
+      (xml-name-local n)
+      (str "{" (xml-name-ns n) "}" (xml-name-local n))))
+
+(: signal->string (-> XmlSignal string))
+(defun (signal->string s)
+  (match s
+    ((XmlStart name attrs pos)
+     (str "<" (name->string name)
+          (string-join (list->vec (list-map (fun (a) (def (Tuple n v) a) (str " " (name->string n) "=" v)) attrs)) "")
+          ">"))
+    (XmlEnd "</>")
+    ((XmlData d) (str "'" d "'"))
+    ((XmlComment c) (str "#" c))
+    ((XmlPI target data) (str "?" target " " data))
+    ((XmlDoctype dt)
+     (str "!" (record-ref dt name) " " (option-value (record-ref dt public-id) "-")
+          " " (option-value (record-ref dt system-id) "-")))))
+
+(: drain (-> XmlSignals (Result XmlError (List string))))
+(defun (drain sig)
+  (def out (listbuilder-empty))
+  (let loop ()
+    (match (xml-next! sig)
+      ((Err e) (Err e))
+      ((Ok None) (Ok (listbuilder->list out)))
+      ((Ok (Some s))
+       (listbuilder-add! out (signal->string s))
+       (loop)))))
+
+(: signals-of (-> string (#:dtd DtdMode) (#:whitespace WhitespaceMode) (#:comments? bool)
+                  (#:max-depth int) (#:max-characters long)
+                  (Result XmlError (List string))))
+(defun (signals-of text #:dtd 'prohibit #:whitespace 'keep #:comments? #f #:max-depth 512
+                   #:max-characters 0L)
+  (call-with-xml-signals text drain #:dtd dtd #:whitespace whitespace #:comments? comments?
+                         #:max-depth max-depth #:max-characters max-characters))
+
+(: kind-of (-> (Result XmlError %a) string))
+(defun (kind-of r)
+  (match r
+    ((Ok _) "ok")
+    ((Err e) (match (record-ref e kind)
+               (Malformed "malformed")
+               (DtdProhibited "dtd-prohibited")
+               (TooDeep "too-deep")
+               (LimitExceeded "limit-exceeded")))))
+
+(: nested (-> int string))
+(defun (nested n)
+  (def sb (stringbuilder-empty))
+  (loop (:for i (range 0 n)) (:do (stringbuilder-add-string! sb "<a>")))
+  (loop (:for i (range 0 n)) (:do (stringbuilder-add-string! sb "</a>")))
+  (stringbuilder->string sb))
+
+(: basics (-> void))
+(defun (basics)
+  (expect "an empty element is a start and an end" (signals-of "<br/>") (Ok (list "<br>" "</>")))
+  (expect "text and CDATA are one piece" (signals-of "<a>a<![CDATA[b]]>c</a>") (Ok (list "<a>" "'abc'" "</>")))
+  (expect "references are expanded" (signals-of "<a>&amp;&#233;&lt;</a>") (Ok (list "<a>" "'&é<'" "</>")))
+  (expect "namespace declarations are not attributes"
+          (signals-of "<a xmlns='u' xmlns:p='v' p:x='1' y='2'><p:b/><c/></a>")
+          (Ok (list "<{u}a {v}x=1 y=2>" "<{v}b>" "</>" "<{u}c>" "</>" "</>")))
+  (expect "a processing instruction" (signals-of "<a><?t d e?></a>") (Ok (list "<a>" "?t d e" "</>")))
+  (expect "whitespace outside the root is not data"
+          (signals-of "<?xml version='1.0'?>\n<!--c-->\n<a/>\n<?end?>\n" #:comments? #t)
+          (Ok (list "#c" "<a>" "</>" "?end ")))
+  (expect "comments are left out by default, and the text around one is one"
+          (signals-of "<a>x<!--c-->y</a>")
+          (Ok (list "<a>" "'xy'" "</>")))
+  (expect "#:comments? #t keeps them"
+          (signals-of "<a>x<!--c-->y</a>" #:comments? #t)
+          (Ok (list "<a>" "'x'" "#c" "'y'" "</>")))
+  (expect "whitespace is kept by default"
+          (signals-of "<p><b>x</b> <i>y</i></p>")
+          (Ok (list "<p>" "<b>" "'x'" "</>" "' '" "<i>" "'y'" "</>" "</>")))
+  (expect "'drop leaves out the space between inline elements too"
+          (signals-of "<p><b>x</b> <i>y</i>\n</p>" #:whitespace 'drop)
+          (Ok (list "<p>" "<b>" "'x'" "</>" "<i>" "'y'" "</>" "</>")))
+  (expect "'drop keeps text with whitespace around it"
+          (signals-of "<p> x </p>" #:whitespace 'drop)
+          (Ok (list "<p>" "' x '" "</>")))
+  (expect "a start carries its position"
+          (call-with-xml-signals "<a>\n  <b/></a>"
+                                 (fun (sig)
+                                   (ignore (xml-next! sig))
+                                   (ignore (xml-next! sig))
+                                   (match (xml-next! sig)
+                                     ((Ok (Some (XmlStart _ _ pos))) pos)
+                                     (_ None))))
+          (Some (XmlPos (line 2) (column 4)))))
+
+(: skipping (-> void))
+(defun (skipping)
+  ;; Skips every element named "skip", empty or not.
+  (defun (skipped sig)
+    (def out (listbuilder-empty))
+    (let loop ()
+      (match (xml-next! sig)
+        ((Err e) (Err e))
+        ((Ok None) (Ok (listbuilder->list out)))
+        ((Ok (Some s))
+         (listbuilder-add! out (signal->string s))
+         (def skip? (match s ((XmlStart name _ _) (= (xml-name-local name) "skip")) (_ #f)))
+         (if skip?
+             (match (xml-skip-element! sig)
+               ((Ok _) (loop))
+               ((Err e) (Err e)))
+             (loop))))))
+  (expect "a subtree is skipped, its end too"
+          (call-with-xml-signals "<r><skip><b/>t<c>u</c></skip>after<skip/><d/></r>" skipped)
+          (Ok (list "<r>" "<skip>" "'after'" "<skip>" "<d>" "</>" "</>")))
+  (expect "skipping the root ends the document"
+          (call-with-xml-signals "<skip><a/></skip><!--c-->" skipped #:comments? #t)
+          (Ok (list "<skip>" "#c")))
+  (expect-true "anywhere but after a start raises"
+               (err? (try (call-with-xml-signals "<a>t</a>"
+                                                 (fun (sig)
+                                                   (ignore (xml-next! sig))
+                                                   (ignore (xml-next! sig))
+                                                   (xml-skip-element! sig)))
+                       #:catch (System.InvalidOperationException)))))
+
+(: doctypes (-> void))
+(defun (doctypes)
+  (def doc "<!DOCTYPE a PUBLIC '-//P//EN' 'a.dtd' [<!ENTITY e 'x'>]><a>&e;</a>")
+  (expect "a DOCTYPE is refused by default" (kind-of (signals-of doc)) "dtd-prohibited")
+  ;; .NET gives none, and has reset the reader's own by then.
+  (expect "and has no position"
+          (match (signals-of doc) ((Err e) (Tuple (record-ref e line) (record-ref e column))) (_ (Tuple -1 -1)))
+          (Tuple 0 0))
+  (expect "an external DTD is refused under 'parse"
+          (kind-of (signals-of "<!DOCTYPE a SYSTEM 'a.dtd' [<!ENTITY e 'x'>]><a>&e;</a>" #:dtd 'parse))
+          "dtd-prohibited")
+  (expect "with no external subset it reads"
+          (signals-of "<!DOCTYPE a [<!ENTITY e 'x'>]><a>&e;</a>" #:dtd 'parse)
+          (Ok (list "!a - -" "<a>" "'x'" "</>")))
+  (expect "'ignore skips it, and it is gone"
+          (signals-of "<!DOCTYPE a><a>t</a>" #:dtd 'ignore)
+          (Ok (list "<a>" "'t'" "</>")))
+  (expect "an entity 'ignore did not read is malformed"
+          (kind-of (signals-of "<!DOCTYPE a [<!ENTITY e 'x'>]><a>&e;</a>" #:dtd 'ignore))
+          "malformed")
+  (expect "an external entity is refused under 'parse"
+          (kind-of (signals-of "<!DOCTYPE a [<!ENTITY e SYSTEM 'file:///etc/passwd'>]><a>&e;</a>" #:dtd 'parse))
+          "dtd-prohibited"))
+
+(: laughs string)
+(def laughs
+  (str "<!DOCTYPE lolz [<!ENTITY lol \"lol\">"
+       "<!ENTITY lol1 \"&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;\">"
+       "<!ENTITY lol2 \"&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;\">"
+       "<!ENTITY lol3 \"&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;\">"
+       "<!ENTITY lol4 \"&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;\">"
+       "<!ENTITY lol5 \"&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;\">"
+       "<!ENTITY lol6 \"&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;\">"
+       "<!ENTITY lol7 \"&lol6;&lol6;&lol6;&lol6;&lol6;&lol6;&lol6;&lol6;&lol6;&lol6;\">"
+       "<!ENTITY lol8 \"&lol7;&lol7;&lol7;&lol7;&lol7;&lol7;&lol7;&lol7;&lol7;&lol7;\">"
+       "<!ENTITY lol9 \"&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;\">"
+       "]><lolz>&lol9;</lolz>"))
+
+(: limits (-> void))
+(defun (limits)
+  (expect "512 levels are fine by default" (kind-of (signals-of (nested 512))) "ok")
+  (expect "513 are too deep" (kind-of (signals-of (nested 513))) "too-deep")
+  (expect "where the 513th starts"
+          (match (signals-of (nested 513)) ((Err e) (record-ref e column)) (_ 0))
+          (+ (* 512 3) 2))
+  (expect "#:max-depth" (kind-of (signals-of (nested 3) #:max-depth 2)) "too-deep")
+  (expect "#:max-characters" (kind-of (signals-of "<a>0123456789</a>" #:max-characters 5L)) "limit-exceeded")
+  (expect "billion laughs under 'parse" (kind-of (signals-of laughs #:dtd 'parse)) "limit-exceeded")
+  (expect-true "a #:max-depth below 1 raises"
+               (err? (try (signals-of "<a/>" #:max-depth 0) #:catch (System.ArgumentException)))))
+
+(: errors (-> void))
+(defun (errors)
+  (def bad (signals-of "<a>\n  <b>\n</a>"))
+  (expect "malformed" (kind-of bad) "malformed")
+  (expect "its line" (match bad ((Err e) (record-ref e line)) (_ 0)) 3)
+  (expect "its column" (match bad ((Err e) (record-ref e column)) (_ 0)) 3)
+  (expect "the same error again"
+          (call-with-xml-signals "<a><b></a>"
+                                 (fun (sig)
+                                   (def first (drain sig))
+                                   (def again (xml-next! sig))
+                                   (match (Tuple first again)
+                                     ((Tuple (Err e1) (Err e2)) (= e1 e2))
+                                     (_ #f))))
+          #t)
+  (expect "nothing at all" (kind-of (signals-of "")) "malformed")
+  (expect "two roots" (kind-of (signals-of "<a/><b/>")) "malformed")
+  (expect "a handler's own exception is not caught"
+          (match (try (call-with-xml-signals "<a/>" (fun (sig) (raise (cast Exception (XmlException. "mine")))))
+                   #:catch (System.Xml.XmlException))
+            ((Err e) (.-Message e))
+            ((Ok _) "none"))
+          "mine")
+  (expect "->str"
+          (match bad ((Err e) (string-starts-with? (->str e) "malformed at line 3, column 3: ")) (_ #f))
+          #t))
+
+(: sources (-> void))
+(defun (sources)
+  (expect "a port" (call-with-xml-signals (open-input-string "<a>p</a>") drain)
+          (Ok (list "<a>" "'p'" "</>")))
+  (def bytes (encode latin1 "<?xml version='1.0' encoding='ISO-8859-1'?><a>café</a>"))
+  (def stream (cast Stream (MemoryStream. bytes)))
+  (expect "a stream, in the encoding it declares"
+          (call-with-xml-signals stream drain)
+          (Ok (list "<a>" "'café'" "</>")))
+  (expect "the stream is left open" (.-CanRead stream) #t))
+
+(defun (main)
+  (basics)
+  (skipping)
+  (doctypes)
+  (limits)
+  (errors)
+  (sources)
+  0)
