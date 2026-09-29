@@ -14,7 +14,12 @@
 
 (export expect expect-true fail
         default-test-ms overran?
-        FakeFs fake-fs fake-fs-reader fake-fs-writer fake-fs-written)
+        FakeFs fake-fs fake-fs-written fake-fs-contents
+        ;; The handlers, one per `FS` operation. Exported because the
+        ;; `with-fake-fs` templates name them.
+        fake-fs-reader fake-fs-writer fake-fs-kind fake-fs-list
+        fake-fs-create-directory fake-fs-delete-file fake-fs-delete-directory
+        fake-fs-move)
 
 (import (std prelude))
 (import (std effect))
@@ -126,22 +131,33 @@
 ;; A filesystem that is not one
 ;; ---------------------------------------------------------------------------
 ;;
-;; `with-fake-fs` installs handlers for both halves of the prelude's `FS`
-;; effect, so `open-input-file` and `open-output-file` answer out of a map
-;; instead of off the disk:
+;; `with-fake-fs` installs a handler for every operation of the prelude's `FS`
+;; effect, so everything that reaches the disk through it - the text and byte
+;; openers, `file-read-text` and its neighbours, `file-exists?`, `file-delete`,
+;; `file-move` and the directory functions - answers out of a map instead:
 ;;
 ;;     (with-fake-fs (("notes.txt" "a b c")
 ;;                    ("empty.txt" ""))
 ;;       (expect "read it back" (call-with-input-file "notes.txt" read-all) (Ok "a b c")))
 ;;
-;; A path written earlier in the same `with-fake-fs` is readable afterwards, and
-;; `(fake-fs-written fs "out.txt")` gives what was written to it - which works
-;; after the port has been closed, because `StringWriter.ToString` does.
+;; A seeded path is a file, and every directory above one exists. A path
+;; written inside it is readable afterwards. `with-fake-fs-of` installs an
+;; existing `FakeFs`, so that `(fake-fs-written fs "out.txt")` can read back
+;; what was written - which works after the port has been closed, because
+;; `MemoryStream.ToArray` does.
 ;;
-;; The ports it hands out are *owned* like real ones. `open-input-file` adopts
-;; whatever its handler answered, so a fake port is registered on the scope the
-;; perform happened in, and a leak test over a fake filesystem means what it
-;; means over a real one.
+;; Paths are compared as text after one normalization: backslashes become
+;; slashes, and a leading "./" and a trailing "/" are dropped. "" and "." are
+;; the root. Nothing resolves "..", and a relative path is not made absolute, so
+;; "a.txt" and "/tmp/a.txt" are different files.
+;;
+;; A failure answers the exception type the .NET call would raise, so a test
+;; that matches on the error matches either way.
+;;
+;; The openers answer a `MemoryStream`, and the ports over it are built and
+;; owned by the same code that builds them over a file - so a fake port is
+;; registered on the scope the open happened in, and a leak test over a fake
+;; filesystem means what it means over a real one.
 ;;
 ;; `with-fake-fs` is a handler frame, not a scope: it does not wait for a fiber
 ;; spawned inside it. The fiber keeps the fake - a spawn takes the environment
@@ -151,70 +167,297 @@
 ;; opened here, because one would hide from `with-test` what the body left open.
 
 (import/class
-  (StringWriter (: System.IO.StringWriter (-> StringWriter)))
-  (FileNotFound (: System.IO.FileNotFoundException (-> string FileNotFound))))
+  (Stream (: System.IO.Stream))
+  (MemoryStream (: System.IO.MemoryStream (-> MemoryStream)))
+  (Encoding (: System.Text.Encoding))
+  (FileNotFound (: System.IO.FileNotFoundException (-> string FileNotFound)))
+  (DirectoryNotFound (: System.IO.DirectoryNotFoundException (-> string DirectoryNotFound)))
+  (IOException (: System.IO.IOException (-> string IOException)))
+  (AccessDenied (: System.UnauthorizedAccessException (-> string AccessDenied))))
 
-;; Reads and writes, keyed by path. Mutable because a write has to be visible to
-;; a later read, which is the one thing a map of strings could not do.
+(import/extern
+  (clr-utf8 (: System.Text.Encoding.UTF8 #:get))
+  (stream-position! (: System.IO.Stream.Position (-> Stream long void) #:set)))
+
+;; A seeded file holds its text. A written one holds the stream it was written
+;; through, which is read when the file is: the writer may still be open, and a
+;; read sees what has reached the stream so far, as a read of a real file sees
+;; what has been flushed.
+(type (: FakeEntry (Union (FakeText string) (FakeWritten MemoryStream) FakeDir)))
+
+;; Mutable because a write has to be visible to a later read.
 (type
   (: FakeFs #:opaque
-     (Record (: files (Map string string) #:mutable)
-             (: writers (Map string TextOutputPort) #:mutable))))
+     (Record (: entries (Map string FakeEntry) #:mutable))))
+
+(: fake-path (-> string string))
+(defun (fake-path path)
+  (let loop ((p (string-replace path "\\" "/")))
+    (cond
+      ((= p ".") "")
+      ((string-starts-with? p "./") (loop (.Substring p 2)))
+      ((and (string-ends-with? p "/") (> (string-length p) 1))
+       (loop (.Substring p 0 (- (string-length p) 1))))
+      (else p))))
+
+(: fake-parent (-> string string))
+(defun (fake-parent path)
+  (def at (.LastIndexOf path "/"))
+  (if (< at 0) "" (.Substring path 0 at)))
+
+;; "" for the root, so that a child of the root is its own name.
+(: fake-prefix (-> string string))
+(defun (fake-prefix path)
+  (if (string-empty? path) "" (str path "/")))
+
+;; Every directory above `path` gets an entry of its own, so that it outlives
+;; its contents: emptying a directory does not delete it.
+(: fake-with-ancestors (-> (Map string FakeEntry) string (Map string FakeEntry)))
+(defun (fake-with-ancestors m path)
+  (let loop ((m m) (dir (fake-parent path)))
+    (if (or (string-empty? dir) (map-has-key? m dir))
+        m
+        (loop (map-set m dir FakeDir) (fake-parent dir)))))
 
 (: fake-fs (-> (List (Tuple string string)) FakeFs))
-(defun (fake-fs entries)
-  (FakeFs (files (list-foldl (fun (entry m)
-                               (def (path text) entry)
-                               (map-set m path text))
-                             (map-empty)
-                             entries))
-          (writers (map-empty))))
+(defun (fake-fs seeds)
+  (FakeFs (entries (list-foldl (fun (seed m)
+                                 (def (raw text) seed)
+                                 (def path (fake-path raw))
+                                 (map-set (fake-with-ancestors m path) path (FakeText text)))
+                               (map-empty)
+                               seeds))))
 
-;; What `path` holds: what was written to it, else what it was seeded with. A
-;; write wins over a seed of the same path, as on a real filesystem.
+(: fake-entries (-> FakeFs (Map string FakeEntry)))
+(defun (fake-entries fs) (record-ref fs entries))
+
+(: fake-update! (-> FakeFs (Map string FakeEntry) void))
+(defun (fake-update! fs m) (record-set! fs (entries m)))
+
+(: fake-bytes->text (-> (Array byte) string))
+(defun (fake-bytes->text bytes) (.GetString (cast Encoding clr-utf8) bytes))
+
+(: fake-text->bytes (-> string (Array byte)))
+(defun (fake-text->bytes text) (.GetBytes (cast Encoding clr-utf8) text))
+
+;; What a file entry holds. `None` for a directory.
+(: fake-entry-text (-> FakeEntry (Option string)))
+(defun (fake-entry-text entry)
+  (match entry
+    ((FakeText text) (Some text))
+    ((FakeWritten s) (Some (fake-bytes->text (.ToArray s))))
+    (FakeDir None)))
+
+;; A path that is no entry of its own is still a directory when something is
+;; below it.
+(: fake-kind (-> FakeFs string (Option FsKind)))
+(defun (fake-kind fs path)
+  (if (string-empty? path)
+      (Some FsDirectory)
+      (match (map-try-ref (fake-entries fs) path)
+        ((Some FakeDir) (Some FsDirectory))
+        ((Some _) (Some FsFile))
+        (None (if (map-any? (fun (k v) (string-starts-with? k (fake-prefix path)))
+                            (fake-entries fs))
+                  (Some FsDirectory)
+                  None)))))
+
+(: fake-dir? (-> FakeFs string bool))
+(defun (fake-dir? fs path)
+  (match (fake-kind fs path)
+    ((Some FsDirectory) #t)
+    (_ #f)))
+
+;; What a file holds, whether it was seeded or written.
 (: fake-fs-contents (-> FakeFs string (Option string)))
 (defun (fake-fs-contents fs path)
-  (match (map-try-ref (record-ref fs writers) path)
-    ((Some w) (Some (get-output-string w)))
-    (None (map-try-ref (record-ref fs files) path))))
-
-;; The reader half. A missing path gives the same exception type the real
-;; constructor gives, so a test that matches on the error matches either way.
-(: fake-fs-reader (-> FakeFs (-> string (Result Exception TextInputPort))))
-(defun (fake-fs-reader fs)
-  (fun (path)
-    (match (fake-fs-contents fs path)
-      ((Some text) (Ok (open-input-string text)))
-      (None (Err (cast Exception (FileNotFound. #"the fake filesystem has no ${path}")))))))
-
-;; The writer half. The `StringWriter` is kept, so that a later read and
-;; `fake-fs-written` see what was written to it.
-(: fake-fs-writer (-> FakeFs (-> string (Result Exception TextOutputPort))))
-(defun (fake-fs-writer fs)
-  (fun (path)
-    (def w (cast TextOutputPort (StringWriter.)))
-    (record-set! fs (writers (map-set (record-ref fs writers) path w)))
-    (Ok w)))
-
-;; What was written to `path`, or `None` if nothing was.
-;;
-;; Valid after the port has been closed: closing a `StringWriter` does not
-;; discard what it collected.
-(: fake-fs-written (-> FakeFs string (Option string)))
-(defun (fake-fs-written fs path)
-  (match (map-try-ref (record-ref fs writers) path)
-    ((Some w) (Some (get-output-string w)))
+  (match (map-try-ref (fake-entries fs) (fake-path path))
+    ((Some entry) (fake-entry-text entry))
     (None None)))
 
-;; The two operation names go through `inject`, so they arrive at
-;; `with-handler` unrenamed. `with-handler` derives the cell it binds from the
-;; name it is given, and a renamed `open-input-file` would derive a cell nothing
+(: fake-memory-stream (-> string MemoryStream))
+(defun (fake-memory-stream text)
+  (def s (MemoryStream.))
+  (def bytes (fake-text->bytes text))
+  (.Write s bytes 0 (array-length bytes))
+  (stream-position! (cast Stream s) 0L)
+  s)
+
+(: fake-error (-> Exception (Result Exception %a)))
+(defun (fake-error e) (Err e))
+
+(: not-found (-> string (Result Exception %a)))
+(defun (not-found path)
+  (fake-error (cast Exception (FileNotFound. #"the fake filesystem has no file ${path}"))))
+
+(: no-directory (-> string (Result Exception %a)))
+(defun (no-directory path)
+  (fake-error (cast Exception (DirectoryNotFound. #"the fake filesystem has no directory ${path}"))))
+
+(: io-error (-> string (Result Exception %a)))
+(defun (io-error message)
+  (fake-error (cast Exception (IOException. message))))
+
+(: access-denied (-> string (Result Exception %a)))
+(defun (access-denied path)
+  (fake-error (cast Exception (AccessDenied. #"the fake filesystem cannot do that to directory ${path}"))))
+
+;; --- The handlers --------------------------------------------------------------
+
+(: fake-fs-reader (-> FakeFs (-> string (Result Exception Stream))))
+(defun (fake-fs-reader fs)
+  (fun (raw)
+    (def path (fake-path raw))
+    (match (fake-kind fs path)
+      ((Some FsDirectory) (access-denied path))
+      ((Some FsFile) (match (fake-fs-contents fs path)
+                       ((Some text) (Ok (cast Stream (fake-memory-stream text))))
+                       (None (not-found path))))
+      (None (if (fake-dir? fs (fake-parent path)) (not-found path) (no-directory path))))))
+
+;; `Append` starts the new stream with what the path held.
+(: fake-fs-writer (-> FakeFs (-> string WriteMode (Result Exception Stream))))
+(defun (fake-fs-writer fs)
+  (fun (raw mode)
+    (def path (fake-path raw))
+    (def kind (fake-kind fs path))
+    (cond
+      ((not (fake-dir? fs (fake-parent path))) (no-directory path))
+      (else
+       (match (Tuple mode kind)
+         ((Tuple _ (Some FsDirectory)) (access-denied path))
+         ((Tuple CreateNew (Some FsFile)) (io-error #"the fake filesystem already has ${path}"))
+         (_
+          (def s (match (Tuple mode (fake-fs-contents fs path))
+                   ((Tuple Append (Some text)) (let ((m (fake-memory-stream text)))
+                                                 (stream-position! (cast Stream m) (.-Length m))
+                                                 m))
+                   (_ (MemoryStream.))))
+          (fake-update! fs (map-set (fake-entries fs) path (FakeWritten s)))
+          (Ok (cast Stream s))))))))
+
+(: fake-fs-kind (-> FakeFs (-> string (Option FsKind))))
+(defun (fake-fs-kind fs)
+  (fun (raw) (fake-kind fs (fake-path raw))))
+
+;; Whole paths, as `Directory.GetFileSystemEntries` gives them, sorted.
+(: fake-fs-list (-> FakeFs (-> string (Result Exception (Vec string)))))
+(defun (fake-fs-list fs)
+  (fun (raw)
+    (def path (fake-path raw))
+    (def prefix (fake-prefix path))
+    (if (not (fake-dir? fs path))
+        (no-directory path)
+        (let ((children (map-fold (fun (k v found)
+                                    (if (and (string-starts-with? k prefix) (not (= k path)))
+                                        (let* ((rest (.Substring k (string-length prefix)))
+                                               (at (.IndexOf rest "/")))
+                                          (map-set found (str prefix (if (< at 0) rest (.Substring rest 0 at))) #t))
+                                        found))
+                                  (map-empty)
+                                  (fake-entries fs))))
+          (Ok (list->vec (list-sort (loop (:for child (map-keys children))
+                                          (:acc (listing child))))))))))
+
+;; Every missing directory along the path, as `Directory.CreateDirectory`.
+(: fake-fs-create-directory (-> FakeFs (-> string (Result Exception Unit))))
+(defun (fake-fs-create-directory fs)
+  (fun (raw)
+    (def path (fake-path raw))
+    (match (fake-kind fs path)
+      ((Some FsFile) (io-error #"the fake filesystem has a file at ${path}"))
+      ((Some FsDirectory) (Ok unit))
+      (None (fake-update! fs (map-set (fake-with-ancestors (fake-entries fs) path) path FakeDir))
+            (Ok unit)))))
+
+;; A missing file is not an error, as with `File.Delete`.
+(: fake-fs-delete-file (-> FakeFs (-> string (Result Exception Unit))))
+(defun (fake-fs-delete-file fs)
+  (fun (raw)
+    (def path (fake-path raw))
+    (match (fake-kind fs path)
+      ((Some FsDirectory) (access-denied path))
+      ((Some FsFile) (fake-update! fs (map-remove (fake-entries fs) path))
+                     (Ok unit))
+      (None (Ok unit)))))
+
+(: fake-fs-delete-directory (-> FakeFs (-> string (Result Exception Unit))))
+(defun (fake-fs-delete-directory fs)
+  (fun (raw)
+    (def path (fake-path raw))
+    (def prefix (fake-prefix path))
+    (match (fake-kind fs path)
+      ((Some FsFile) (io-error #"the fake filesystem has a file, not a directory, at ${path}"))
+      (None (no-directory path))
+      ((Some FsDirectory)
+       (cond
+         ((string-empty? path) (io-error "the fake filesystem's root cannot be deleted"))
+         ((map-any? (fun (k v) (string-starts-with? k prefix)) (fake-entries fs))
+          (io-error #"the fake directory ${path} is not empty"))
+         (else (fake-update! fs (map-remove (fake-entries fs) path))
+               (Ok unit)))))))
+
+;; A file, or a directory and everything below it. Fails if `to` exists.
+(: fake-fs-move (-> FakeFs (-> string string (Result Exception Unit))))
+(defun (fake-fs-move fs)
+  (fun (raw-from raw-to)
+    (def from (fake-path raw-from))
+    (def to (fake-path raw-to))
+    (def from-prefix (fake-prefix from))
+    (cond
+      ((some? (fake-kind fs to)) (io-error #"the fake filesystem already has ${to}"))
+      ((not (fake-dir? fs (fake-parent to))) (no-directory to))
+      ((none? (fake-kind fs from)) (not-found from))
+      (else
+       (fake-update! fs
+         (map-fold (fun (k v m)
+                     (cond
+                       ((= k from) (map-set m to v))
+                       ((string-starts-with? k from-prefix)
+                        (map-set m (str to "/" (.Substring k (string-length from-prefix))) v))
+                       (else (map-set m k v))))
+                   (map-empty)
+                   (fake-entries fs)))
+       (Ok unit)))))
+
+;; What was written to `path`, or `None` if nothing was. A seeded file nobody
+;; wrote is `None`.
+(: fake-fs-written (-> FakeFs string (Option string)))
+(defun (fake-fs-written fs path)
+  (match (map-try-ref (fake-entries fs) (fake-path path))
+    ((Some (FakeWritten s)) (Some (fake-bytes->text (.ToArray s))))
+    (_ None)))
+
+;; --- The forms -----------------------------------------------------------------
+;;
+;; The operation names go through `inject`, so they arrive at `with-handler`
+;; unrenamed. `with-handler` derives the cell it binds from the name it is
+;; given, and a renamed `open-read-stream` would derive a cell nothing
 ;; declares. Any macro that writes a `with-handler` has to do this.
+
+(: fake-op (-> (-> Symbol Syntax) string Syntax))
+(defun (fake-op inject name) (inject (string->symbol name)))
+
+;; `(with-fake-fs-of fs body ...)`: install `fs` for the body.
+(def/macro (with-fake-fs-of form inject compare)
+  (syntax-match form
+    ((_ fs first body ...)
+     #'(let ((the-fs ,fs))
+         (with-handler ((,(fake-op inject "open-read-stream") (fake-fs-reader the-fs))
+                        (,(fake-op inject "open-write-stream") (fake-fs-writer the-fs))
+                        (,(fake-op inject "fs-kind") (fake-fs-kind the-fs))
+                        (,(fake-op inject "fs-list") (fake-fs-list the-fs))
+                        (,(fake-op inject "fs-create-directory") (fake-fs-create-directory the-fs))
+                        (,(fake-op inject "fs-delete-file") (fake-fs-delete-file the-fs))
+                        (,(fake-op inject "fs-delete-directory") (fake-fs-delete-directory the-fs))
+                        (,(fake-op inject "fs-move") (fake-fs-move the-fs)))
+           ,first ,@body)))
+    (bad (syntax-error bad "with-fake-fs-of takes a FakeFs and a body: (with-fake-fs-of fs body ...)"))))
+
+;; `(with-fake-fs ((path contents) ...) body ...)`: a fresh one, seeded.
 (def/macro (with-fake-fs form inject compare)
   (syntax-match form
     ((_ ((path text) ...) first body ...)
-     #'(let ((fs (fake-fs (list ,@{listing #'(Tuple ,p ,t) (:for p path) (:for t text)}))))
-         (with-handler ((,(inject (string->symbol "open-input-file")) (fake-fs-reader fs))
-                        (,(inject (string->symbol "open-output-file")) (fake-fs-writer fs)))
-           ,first ,@body)))
+     #'(with-fake-fs-of (fake-fs (list ,@{listing #'(Tuple ,p ,t) (:for p path) (:for t text)}))
+         ,first ,@body))
     (bad (syntax-error bad "with-fake-fs takes a list of (path contents) pairs and a body: (with-fake-fs ((\"a.txt\" \"hello\")) body ...)"))))

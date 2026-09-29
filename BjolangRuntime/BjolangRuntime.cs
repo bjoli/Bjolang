@@ -47,26 +47,6 @@ public static partial class BjolangRuntime {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Unit newline() { Dyn.Current.Out.WriteLine(); return unit; }
 
-    // Interop maps a constructed generic type to a mangled name that will not
-    // unify with `(Seq string)`, so this wrapper stays while the rest of the
-    // whole-file operations live in `std/prelude`.
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static IEnumerable<string> filesubreadsublinesdivseq(string path) => System.IO.File.ReadLines(path);
-
-    // The same for an arbitrary read procedure: what `file->seq` is built on.
-    //
-    // A sequence is re-enumerable exactly to the extent that the state it walks
-    // is created *inside* the iterator; anything captured from outside is
-    // shared by every enumeration. So opening here rather than in a `seql` is
-    // what makes each enumeration a fresh read — the trick `File.ReadLines`
-    // plays by keeping the path rather than a handle. The `using` is the other
-    // half of owning the reader, releasing it on exhaustion and on early
-    // disposal alike. `Peek` is `port-eof?`.
-    public static IEnumerable<T> filesubreaddivseq<T>(Func<System.IO.TextReader, T> read, string path) {
-        using var reader = new System.IO.StreamReader(path);
-        while (reader.Peek() != -1) yield return read(reader);
-    }
-
     // `GetDirectoryName` answers null for a root and for a bare filename, and
     // Bjolang has no null to test against — so the sentinel is turned into the
     // `None` that means the same thing. That is also why this is the one path

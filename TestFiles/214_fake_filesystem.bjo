@@ -1,16 +1,16 @@
-;; Opening a file is an effect, so a test can answer for it.
+;; The filesystem is an effect, so a test can answer for it.
 ;;
-;; `open-input-file` and `open-output-file` read the filesystem through a
-;; handler. With nothing installed they are `open-input-file/raw`, which opens
-;; the real file - so the point of this file is that the two are
+;; Everything in the prelude and `(std ports)` that reaches the disk goes
+;; through the `FS` effect's operations. With nothing installed they do what
+;; the .NET calls do, so the point of this file is that a fake and the disk are
 ;; indistinguishable from the caller's side, ownership included.
 ;;
-;; That last part is what `#:adopt` buys. A real port is owned by the
-;; constructor that opened it; a fake one is owned by the scope the *perform*
-;; happened in. Either way it is on a scope's list, so the leak test below means
-;; the same thing over both.
+;; The openers answer a `Stream`, and the port over it is built and registered
+;; by the same code whichever it is. So a fake port is on the scope's list
+;; exactly as a real one is, and the leak test below means the same over both.
 
 (import (std prelude))
+(import (std ports))
 (import (std effect))
 (import (std simpletest))
 
@@ -55,8 +55,7 @@
 
   ;; --- Writing, and reading what was written -------------------------------
   (def fs (fake-fs (list (Tuple "seed.txt" "seeded"))))
-  (with-handler ((open-input-file (fake-fs-reader fs))
-                 (open-output-file (fake-fs-writer fs)))
+  (with-fake-fs-of fs
     (ignore (call-with-output-file "out.txt" (fun (w) (write-string w "written here"))))
     (expect "what was written can be read back" (shown (fake-fs-written fs "out.txt")) "written here")
     (expect "a path nothing wrote to is None" (shown (fake-fs-written fs "other.txt")) "#none")
@@ -66,11 +65,183 @@
     (ignore (call-with-output-file "seed.txt" (fun (w) (write-string w "overwritten"))))
     (expect "a write to a seeded path wins over the seed" (read-it "seed.txt") (Ok "overwritten")))
 
+  ;; --- Write modes, and the whole-file functions -----------------------------
+  ;;
+  ;; `file-write-text` and `file-append-text` open through the effect, so they
+  ;; land in the fake and not on the disk.
+  (with-test "the whole-file functions use the fake"
+    (with-fake-fs (("log.txt" "one\n"))
+      (file-append-text "log.txt" "two\n")
+      (expect "file-append-text appends to a seed" (file-read-text "log.txt") "one\ntwo\n")
+      (file-append-text "log.txt" "three\n")
+      (expect "and to its own earlier write" (file-read-text "log.txt") "one\ntwo\nthree\n")
+      (file-write-text "log.txt" "fresh")
+      (expect "file-write-text truncates" (file-read-text "log.txt") "fresh")
+      (file-append-text "new.txt" "made")
+      (expect "file-append-text creates a missing file" (file-read-text "new.txt") "made")
+      (expect-true "the fake says it exists" (file-exists? "new.txt"))
+      (expect-true "and the disk says it does not" (none? (fs-kind/raw "new.txt")))))
+
+  (with-fake-fs (("taken.txt" "x"))
+    (expect-true "CreateNew on a fake path that exists is an IOException"
+                 (match (open-output-file "taken.txt" #:mode CreateNew)
+                   ((Ok _) #f)
+                   ((Err e) (string-contains? (->str e) "IOException"))))
+    (expect "CreateNew on a free fake path writes"
+            (call-with-output-file "free.txt" #(write-string &1 "mine") #:mode CreateNew)
+            (Ok unit))
+    (expect "and it reads back" (read-it "free.txt") (Ok "mine")))
+
+  ;; --- Write modes on the disk ----------------------------------------------
+  (def real (path-combine "214_probe_dir" "modes.txt"))
+  (directory-create "214_probe_dir")
+  (file-write-text real "a")
+  (file-append-text real "b")
+  (expect "a real append" (file-read-text real) "ab")
+  (file-write-text real "c")
+  (expect "a real truncate" (file-read-text real) "c")
+  (expect-true "a real CreateNew on an existing file is an IOException"
+               (match (open-output-file real #:mode CreateNew)
+                 ((Ok p) (let () (close-output-port p) #f))
+                 ((Err e) (string-contains? (->str e) "IOException"))))
+  (file-delete real)
+  (expect "a real CreateNew on a free path"
+          (call-with-output-file real #(write-string &1 "d") #:mode CreateNew)
+          (Ok unit))
+  (expect "reads back" (file-read-text real) "d")
+  (file-move real (path-combine "214_probe_dir" "moved.txt"))
+  (expect-true "a real move takes the old name away" (not (file-exists? real)))
+  (expect "and the new one has the contents"
+          (file-read-text (path-combine "214_probe_dir" "moved.txt")) "d")
+  (directory-create (path-combine "214_probe_dir" "a" "b"))
+  (file-write-text (path-combine "214_probe_dir" "a" "b" "deep.txt") "deep")
+  (expect "a real listing"
+          (list-sort (vec->list (directory-files "214_probe_dir")))
+          (list (path-combine "214_probe_dir" "moved.txt")))
+  (directory-delete-tree "214_probe_dir")
+  (expect-true "a real tree delete, built from the operations"
+               (not (directory-exists? "214_probe_dir")))
+
+  ;; --- Bytes through the fake -----------------------------------------------
+  ;;
+  ;; The byte openers of `(std ports)` open through the same operations, so a
+  ;; seed reads as bytes and bytes written read back as text.
+  (with-test "the byte openers use the fake"
+    (with-fake-fs (("hi.txt" "hi"))
+      (match (open-byte-input-file "hi.txt")
+        ((Ok p) (with-open ((i p))
+                  (expect "a seed reads as bytes"
+                          (match (read-bytes i 2)
+                            ((Some bs) (str (byte->string (array-ref bs 0)) "." (byte->string (array-ref bs 1))))
+                            (None "none"))
+                          "104.105")))
+        ((Err e) (fail "the fake byte opener failed")))
+      (match (open-byte-output-file "out.bin")
+        ((Ok p) (with-open ((o p))
+                  (write-bytes! o (fake-text-bytes "ok"))
+                  (flush! o)))
+        ((Err e) (fail "the fake byte writer failed")))
+      (expect "bytes written read back as text" (file-read-text "out.bin") "ok")
+      (match (open-byte-output-file "out.bin" #:mode Append)
+        ((Ok p) (with-open ((o p))
+                  (write-bytes! o (fake-text-bytes "!"))
+                  (flush! o)))
+        ((Err e) (fail "the fake byte appender failed")))
+      (expect "and Append appends" (file-read-text "out.bin") "ok!")
+      (expect-true "a missing path is the real error type"
+                   (match (open-byte-input-file "nowhere.bin")
+                     ((Ok _) #f)
+                     ((Err (:is System.IO.FileNotFoundException _)) #t)
+                     ((Err e) #f)))))
+
+  ;; --- The lazy readers through the fake ------------------------------------
+  ;;
+  ;; The sequence opens the file on each walk, so it reads the fake exactly
+  ;; when it is walked inside one.
+  (with-test "the lazy readers use the fake"
+    (with-fake-fs (("lines.txt" "one\ntwo\nthree\n"))
+      (expect "file-read-lines/seq reads the fake"
+              (seq->list (file-read-lines/seq "lines.txt")) (list "one" "two" "three"))
+      (expect "file->seq checks the fake at the call"
+              (match (file->seq read-line "lines.txt")
+                ((Ok lines) (seq->list lines))
+                ((Err e) Nil))
+              (list "one" "two" "three"))
+      (expect-true "and a path only on the disk is missing"
+                   (match (file->seq read-line "214_fake_filesystem.bjo")
+                     ((Ok _) #f)
+                     ((Err e) #t)))))
+
+  ;; A walk that stops early still closes its port: the enumerator is disposed,
+  ;; and the `with-open` inside the `seq` closes the file through its owner
+  ;; handle, so the scope's list is back where it was.
+  (def early (make-box -1))
+  (with-fake-fs (("lines.txt" "one\ntwo\nthree\n"))
+    (with-scope
+      (let ((here (current-scope))
+            (start (scope-owned-count (current-scope))))
+        (expect "two lines of three"
+                (seq->list (seq-take (file-read-lines/seq "lines.txt") 2)) (list "one" "two"))
+        (box-set! early (- (scope-owned-count here) start)))))
+  (expect "a walk that stops early releases its port" (box-ref early) 0)
+
+  ;; --- Directories through the fake -----------------------------------------
+  (with-test "the directory functions use the fake"
+    (with-fake-fs (("src/main.bjo" "(main)")
+                   ("src/lib/util.bjo" "(util)")
+                   ("readme.txt" "hello"))
+      (expect-true "a seed's directory exists" (directory-exists? "src"))
+      (expect-true "and its parents'" (directory-exists? "src/lib"))
+      (expect-true "a file is not a directory" (not (directory-exists? "readme.txt")))
+      (expect-true "a directory is not a file" (not (file-exists? "src")))
+      (expect "the root lists its files" (vec->list (directory-files ".")) (list "readme.txt"))
+      (expect "and its directories" (vec->list (directory-subdirectories "")) (list "src"))
+      (expect "a directory lists whole paths" (vec->list (directory-files "src")) (list "src/main.bjo"))
+      (expect "a trailing slash is the same directory" (vec->list (directory-subdirectories "src/")) (list "src/lib"))
+
+      (directory-create "build/out")
+      (expect-true "create makes the parents" (directory-exists? "build"))
+      (expect-true "and the directory" (directory-exists? "build/out"))
+      (expect-true "none of it on the disk" (none? (fs-kind/raw "build")))
+      (file-write-text "build/out/a.txt" "a")
+      (expect "a write lands in a created directory" (file-read-text "build/out/a.txt") "a")
+      (expect-true "a write into a missing directory is the real error type"
+                   (match (open-output-file "nowhere/a.txt")
+                     ((Ok _) #f)
+                     ((Err (:is System.IO.DirectoryNotFoundException _)) #t)
+                     ((Err e) #f)))
+
+      (expect-true "a non-empty directory refuses a plain delete"
+                   (match (try (directory-delete "build") #:catch (System.IO.IOException))
+                     ((Ok _) #f)
+                     ((Err _) #t)))
+      (file-delete "build/out/a.txt")
+      (expect-true "a deleted file is gone" (not (file-exists? "build/out/a.txt")))
+      (file-delete "build/out/a.txt")
+      (expect-true "and deleting it again is not an error" #t)
+      (directory-delete "build/out")
+      (expect-true "an empty directory deletes" (not (directory-exists? "build/out")))
+
+      (file-move "readme.txt" "src/readme.txt")
+      (expect "a moved file keeps its contents" (file-read-text "src/readme.txt") "hello")
+      (expect-true "and leaves its old name" (not (file-exists? "readme.txt")))
+      (expect-true "a move onto an existing path refuses"
+                   (match (try (file-move "src/main.bjo" "src/readme.txt") #:catch (System.IO.IOException))
+                     ((Ok _) #f)
+                     ((Err _) #t)))
+      (file-move "src" "moved")
+      (expect "a moved directory takes everything below it"
+              (file-read-text "moved/lib/util.bjo") "(util)")
+      (expect-true "and leaves nothing behind" (not (directory-exists? "src")))
+
+      (directory-delete-tree "moved")
+      (expect-true "a tree delete empties the fake" (not (directory-exists? "moved")))))
+
   ;; --- The leak test --------------------------------------------------------
   ;;
-  ;; A fake port opened without `with-open`, inside a scope of its own. It is
-  ;; adopted at the perform, so the scope releases it - and the count comes back
-  ;; to where it started, exactly as it does for a real file.
+  ;; A fake port opened without `with-open`, inside a scope of its own. The
+  ;; opener registers it on that scope, so the scope releases it - and the
+  ;; count comes back to where it started, exactly as it does for a real file.
   (def counts (make-box ""))
   (with-fake-fs (("notes.txt" "some text"))
     (with-scope
@@ -147,6 +318,12 @@
     (expect "while the effect answers from the fake" (read-it "notes.txt") (Ok "only in the fake")))
 
   0)
+
+(import/extern
+  (utf8-encoding (: System.Text.Encoding.UTF8 #:get)))
+
+(: fake-text-bytes (-> string (Array byte)))
+(defun (fake-text-bytes s) (.GetBytes (cast Encoding utf8-encoding) s))
 
 (: read-into (-bjo-> (Box string) string void))
 (defbjo (read-into b path)

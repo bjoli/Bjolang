@@ -276,11 +276,16 @@ All six are *invariant*, for the reason the string comparisons are ordinal: they
 Whole-file operations, for when the contents fit in memory. They throw as the underlying .NET methods do; wrap a call in ~try~ to get a ~Result~ instead. Reach for the ports below when the file is too large to hold.
 - ~(file-read-text path)~ : The whole file, as one string.
 - ~(file-write-text path contents)~ : Writes ~contents~, truncating the file if it exists.
-- ~(file-append-text path contents)~ : Appends ~contents~.
-- ~(file-exists? path)~
-- ~(file-delete path)~
-- ~(file-read-lines/seq path)~ : The lines, pulled lazily. Builtin rather than =(std prelude)=.
-- ~(file-read/seq reader path)~ : The same, pulled through any ~(-> TextInputPort %a)~. Opens the file once per enumeration and disposes it, so the sequence may be walked more than once — what ~(std ports)~' ~file->seq~ is built on. Prefer ~file->seq~, which reports a missing file as a ~Result~ rather than throwing on the first pull.
+- ~(file-append-text path contents)~ : Appends ~contents~, creating the file if it is missing.
+
+The three whole-file reads and writes have suspending copies, so a bjoroutine calling one awaits the file rather than parking its thread.
+- ~(file-exists? path)~ : ~#f~ for a directory.
+- ~(file-delete path)~ : A missing file is not an error.
+- ~(file-move from to)~ : A file or a directory. Fails if ~to~ exists.
+
+Everything in this section and under Directories below reaches the disk through the ~FS~ effect (see "Files, and the ~FS~ effect"), so a handler — ~with-fake-fs~, say — answers for all of it.
+- ~(file-read-lines/seq path)~ : The lines, pulled lazily.
+- ~(file-read/seq reader path)~ : The same, pulled through any ~(-> TextInputPort %a)~. Opens the file once per walk and closes it when the walk ends — at the end, or when the walker stops early — so the sequence may be walked more than once. What ~(std ports)~' ~file->seq~ is built on. Prefer ~file->seq~, which reports a missing file as a ~Result~ rather than throwing on the first pull. A ~seq~ body cannot await, so each pull parks the thread it runs on.
 
 ** Paths =(std prelude)=
 Textual operations on path strings; none of them touches the file system.
@@ -297,8 +302,8 @@ They throw as the whole-file operations do; wrap a call in ~try~ for a ~Result~.
 - ~(directory-exists? path)~
 - ~(directory-create path)~ : Creates every missing directory along the path, and does nothing if it is already there — so it needs no guard.
 - ~(directory-delete path)~ : An *empty* directory.
-- ~(directory-delete-tree path)~ : Spelled differently because it is not a mistake anything can undo.
-- ~(directory-files path)~ / ~(directory-subdirectories path)~ : Whole paths, directly in ~path~, as a ~(Vec string)~.
+- ~(directory-delete-tree path)~ : Spelled differently because it is not a mistake anything can undo. Deletes one entry at a time through the ~FS~ operations, so a handler sees every deletion.
+- ~(directory-files path)~ / ~(directory-subdirectories path)~ : Whole paths, directly in ~path~, as a ~(Vec string)~, in the order the OS lists them.
 
 Listing is eager and takes no pattern argument — ~(vec-filter #(string-ends-with? &1 ".bjo") (directory-files dir))~ asks the same question in the language.
 
@@ -321,7 +326,10 @@ Only the drains — ~port->list~, ~port->vec~, ~port->seq~, ~file->seq~ and ~por
 
 - ~(open-input-file path)~ : ~(Result Exception TextInputPort)~. The ~Err~ carries the real .NET exception, so an arm can say ~(:is System.IO.FileNotFoundException e)~.
 - ~(open-input-string contents)~ : A string as an input port. Cannot fail, so no ~Result~.
-- ~(open-output-file path)~ : ~(Result Exception TextOutputPort)~, truncating the file if it exists.
+- ~(open-output-file path)~ : ~(Result Exception TextOutputPort)~, truncating the file if it exists. ~#:mode~ takes a ~WriteMode~:
+  - ~Truncate~ (the default): create the file, or empty it.
+  - ~Append~: create the file, or write after what it holds.
+  - ~CreateNew~: create the file, and fail with an ~IOException~ if it exists. The check and the create are one system call, so of two writers racing for a path exactly one wins.
 - ~(close-input-port p)~ / ~(close-output-port p)~ : Rarely needed — ~with-open~ disposes a port however the body ends.
 - ~(flush-port p)~
 - ~(port-eof? p)~ : Whether the port has no more input. Asking consumes nothing.
@@ -634,7 +642,7 @@ Every operation spends one of the dynamic environment's 31 cheap parameter ids. 
 
 *** ~#:adopt~, for an operation that hands back a resource
 
-~#:adopt ((op fn))~ passes a handler's returned value through ~fn~ before it reaches the caller, so a handler that returns a resource has it adopted into the current scope. The prelude's ~FS~ effect is the case it exists for; see the files section above.
+~#:adopt ((op fn))~ passes a handler's returned value through ~fn~ before it reaches the caller, so a handler that returns a resource has it adopted into the current scope. The prelude's ~FS~ effect does not need it: its openers answer a ~Stream~, and the port over it is registered by the function that builds the port.
 
 *** Forwarding
 
@@ -706,7 +714,7 @@ Both diagnostic operations are sync on purpose: a plain ~defun~ has to be able t
 
 - ~(expect label actual wanted)~ / ~(expect-true label ok)~ / ~(fail label)~ : the assertions. A line beginning ~FAILURE:~ is what the runner looks for.
 - ~(with-test "name" body ...)~ : run a body under ~(with-deadline ...)~. The test gets a timeout that names it, a fiber it spawned is waited for, resources it opened are released, and several failures are reported together. It also asserts the body left nothing open. ~#:within ms~ overrides the deadline; ~#:open-ok~ turns off the leak check.
-- ~(with-fake-fs ((path contents) ...) body ...)~ : install both halves of the ~FS~ effect out of a map. A path written inside it reads back afterwards, and a write to a seeded path replaces the seed. ~(fake-fs-written fs path)~ reads back what was written, and works after the port is closed.
+- ~(with-fake-fs ((path contents) ...) body ...)~ : install both halves of the ~FS~ effect out of a map. A path written inside it reads back afterwards, and a write to a seeded path replaces the seed. ~Append~ continues what the path held, and ~CreateNew~ on a path that holds anything is an ~IOException~, as on the disk. ~(fake-fs-written fs path)~ reads back what was written, and works after the port is closed.
 
 ~with-fake-fs~ is a handler frame, not a scope: a fiber spawned inside it keeps the fake, but nothing waits for it, so the body's assertions and ~with-test~'s leak check run before it is done. Spawn inside a ~with-scope~ of your own inside it.
 
@@ -855,18 +863,37 @@ A handle returned out of the block that owned it is dangling. Nothing checks tha
 
 *** Files, and the ~FS~ effect
 
-~open-input-file~ and ~open-output-file~ are *effect operations*. With no handler they are ~open-input-file/raw~ and ~open-output-file/raw~, which open the real file and register it on the ambient scope before the caller can lose it.
+Everything in the prelude and ~(std ports)~ that reaches the disk goes through the operations of the ~FS~ effect. With no handler each is its ~/raw~ default, which does what the .NET call does.
+
+| Operation                         | Answers                                |
+|-----------------------------------+----------------------------------------|
+| ~(open-read-stream path)~         | ~(Result Exception Stream)~            |
+| ~(open-write-stream path mode)~   | ~(Result Exception Stream)~            |
+| ~(fs-kind path)~                  | ~(Option FsKind)~: ~FsFile~ or ~FsDirectory~ |
+| ~(fs-list path)~                  | ~(Result Exception (Vec string))~: whole paths, files and directories |
+| ~(fs-create-directory path)~      | ~(Result Exception Unit)~              |
+| ~(fs-delete-file path)~           | ~(Result Exception Unit)~              |
+| ~(fs-delete-directory path)~      | ~(Result Exception Unit)~              |
+| ~(fs-move from to)~               | ~(Result Exception Unit)~              |
+
+The openers answer a ~Stream~, not a port. ~open-input-file~, ~open-output-file~ and ~(std ports)~' ~open-byte-input-file~ and ~open-byte-output-file~ build the port over it and register it on the ambient scope, so one handler serves text and bytes, and a ~MemoryStream~ a handler made is owned exactly as a file is. A handler is installed per operation:
+
+#+BEGIN_SRC scheme
+(with-handler ((open-write-stream (fun (path mode) ...))
+               (fs-delete-file (fun (path) (Err ...))))
+  ...)
+#+END_SRC
+
+The operations answer a ~Result~; the file and directory functions over them raise the ~Err~. The lazy readers — ~file-read/seq~, ~file-read-lines/seq~ and ~file->seq~ — open the file when the sequence is walked, so it is the handler installed at the walk that answers, not the one installed where the sequence was made.
 
 - A file port is owned. When its scope returns it is closed, said or not.
 - A *string* port is not. It is memory.
 - The three standard ports are not. ~close-output-port~ on one flushes and stops.
-- ~(call-with-input-file path proc)~ and ~(call-with-output-file path proc)~ open, hand the port over, and close however the body ends. ~proc~ is ~-?->~, so either colour works.
+- ~(call-with-input-file path proc)~ and ~(call-with-output-file path proc)~ open, hand the port over, and close however the body ends. ~proc~ is ~-?->~, so either colour works. ~call-with-output-file~ takes ~#:mode~ as ~open-output-file~ does.
 - ~close-input-port~, ~close-output-port~ and ~with-open~ all go through the owner handle. A direct ~.Dispose~ would close the stream and leave the registration on the list.
-- ~open-input-file/raw~ *bypasses the handler*. The ~/raw~ says so.
+- ~open-input-file/raw~, ~open-output-file/raw~ and each ~fs-*/raw~ *bypass the handler*. The ~/raw~ says so.
 
-A port that arrives *through the effect* is adopted: a real one is already owned, and one a handler built with ~open-input-string~ is registered on the scope the perform happened in. A port made *directly* with ~open-input-string~ is still unowned.
-
-~std/simpletest~ has ~with-fake-fs~, which installs both halves out of a map.
+~std/simpletest~ has ~with-fake-fs~, which installs every operation out of a map.
 
 *** Calling back from .NET
 

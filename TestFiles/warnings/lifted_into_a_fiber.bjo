@@ -20,17 +20,21 @@
 
 ;; --- Reported: a parking function lifted onto a fiber ------------------------
 ;;
-;; `slurp` is an ordinary function that waits on a file, and `run-on-fiber`
-;; takes a bjoroutine. Nothing in the program says the two meet, and nothing in
-;; the emitted C# does either — the name appears once, as an argument.
+;; `slurp` is an ordinary function that sleeps on its thread, and
+;; `run-on-fiber` takes a bjoroutine. Nothing in the program says the two
+;; meet, and nothing in the emitted C# does either — the name appears once, as
+;; an argument.
+
+(import/extern
+  (sleep-ms (: System.Threading.Thread.Sleep (-> int void) #:blocking)))
 
 ;; EXPECT-WARNING: 'reader' is a bjoroutine
-;; EXPECT-WARNING: reader -> slurp -> file-write-text
+;; EXPECT-WARNING: reader -> slurp -> System.Threading.Thread.Sleep
 ;; EXPECT-WARNING: parks the thread it runs on
 
 (: slurp (-> string int))
 (defun (slurp path)
-  (file-write-text path "x")
+  (sleep-ms (string-length path))
   0)
 
 (: run-on-fiber (-> (-bjo-> string int) string int))

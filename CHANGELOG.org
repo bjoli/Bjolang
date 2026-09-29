@@ -3,6 +3,78 @@
 
 What each change guarantees, and what it leaves open.
 
+* Everything that reaches the disk goes through the ~FS~ effect
+
+~FS~ had two operations, ~open-input-file~ and ~open-output-file~, and
+everything else went straight to .NET. Under ~with-fake-fs~ a program read the
+fake and wrote the real disk: ~file-write-text~, ~file-append-text~,
+~file-exists?~, ~file-delete~, the directory functions and ~(std ports)~' byte
+openers all bypassed it.
+
+~FS~ is now eight operations, and nothing in the prelude or ~(std ports)~
+reaches the disk any other way:
+
+- ~(open-read-stream path)~ and ~(open-write-stream path mode)~, answering
+  ~(Result Exception Stream)~;
+- ~(fs-kind path)~, answering ~(Option FsKind)~ — ~FsFile~ or ~FsDirectory~;
+- ~fs-list~, ~fs-create-directory~, ~fs-delete-file~, ~fs-delete-directory~
+  and ~fs-move~, answering a ~Result~.
+
+Each has a ~/raw~ default that does what the .NET call does, so a program
+that installs no handler behaves as before.
+
+The openers answer a ~Stream~, not a port. ~open-input-file~,
+~open-output-file~, ~open-byte-input-file~ and ~open-byte-output-file~ are
+ordinary functions that build the port over it and register it on the ambient
+scope. One handler therefore serves text and bytes, and a ~MemoryStream~ a
+handler made is owned exactly as a file is. That was what ~#:adopt~ did for
+the string ports the old handlers answered; ~FS~ no longer uses it, and
+~adopt-input~ and ~adopt-output~ are gone.
+
+An output file has a mode, ~WriteMode~: ~Truncate~, ~Append~ or ~CreateNew~.
+~open-output-file~, ~call-with-output-file~ and ~open-byte-output-file~ take it
+as ~#:mode~, defaulting to ~Truncate~, so existing calls are unchanged.
+~CreateNew~ fails with an ~IOException~ when the file exists, in the same
+system call that would create it.
+
+Over the operations: ~file-write-text~ and ~file-append-text~ open, write,
+flush and close a port, and so now have suspending copies — a bjoroutine that
+writes a whole file awaits it, and the blocking lint no longer reports it.
+Like ~file-read-text~ they now need an ambient scope. ~directory-delete-tree~
+deletes one entry at a time, so a handler sees every deletion. ~file-move~ is
+new.
+
+*Breaking.* A handler installed for ~open-input-file~ or ~open-output-file~
+has to be installed for ~open-read-stream~ or ~open-write-stream~ instead, and
+answer a ~Stream~. ~fake-fs-reader~ and ~fake-fs-writer~ are now handlers for
+those.
+
+~with-fake-fs~ installs all eight. A seeded path is a file and every directory
+above it exists; directories can be created, listed, emptied, deleted and
+moved; a failure is the exception type the .NET call raises. ~with-fake-fs-of~
+installs an existing ~FakeFs~, which replaces writing the ~with-handler~ out.
+
+~file-read/seq~ and ~file-read-lines/seq~ were builtins, with bodies in the
+runtime that opened the file by path. They are now ~(std prelude)~ functions: a
+~seq~ that opens through ~open-input-file~ inside a ~with-open~, so each walk
+opens the file afresh, a walk that stops early closes it, and ~file->seq~,
+built on the first, reads a fake like everything else. The file is opened when
+the sequence is walked, so the handler installed at the walk is the one that
+answers. The builtins, their runtime bodies and their entries in the compiler's
+blocking list are gone; the blocking lint still reports a bjoroutine that pulls
+from one, since a ~seq~ body cannot await.
+
+~stream->byte-input-port~ and
+~stream->byte-output-port~ are deliberately outside the effect: a stream
+somebody handed over is not a filesystem access.
+
+Tested in ~214_fake_filesystem.bjo~: each mode faked and on the disk; the
+whole-file functions, the byte openers, the lazy readers and the directory
+functions under a fake; a lazy walk that stops early leaving the scope's list
+as it was; a real move, listing and tree delete. The two warning tests that used
+~file-write-text~ as their blocking leaf now use ~Thread.Sleep~. bjoweb's
+~tests/html.bjo~ and ~tests/demo.bjo~ pass, and its two examples build.
+
 * A value of a union is no longer wrapped in one of its own cases
 
 Where a list, vector or array literal's element type is a union, an element

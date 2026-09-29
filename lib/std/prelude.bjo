@@ -118,7 +118,8 @@
   ;; Math.
   sqrt
   ;; Files
-  file-read-text file-write-text file-append-text file-exists? file-delete
+  file-read-text file-write-text file-append-text file-exists? file-delete file-move
+  file-read/seq file-read-lines/seq
   ;; Paths
   path-absolute path-combine path-filename path-file-extension
   ;; Directories
@@ -131,11 +132,19 @@
   open-input-file open-input-string open-output-file open-output-string
   ;; Ports — closing
   close-input-port close-output-port flush-port
-  ;; Ports — opening through the FS effect, and the raw openers it defaults to
-  open-input-file op/open-input-file open-input-file/raw
-  open-output-file op/open-output-file open-output-file/raw
+  ;; Ports — the openers past the FS effect
+  open-input-file/raw open-output-file/raw WriteMode
   call-with-input-file call-with-output-file
-  adopt-input adopt-output
+  ;; The FS effect: its operations, their cells, and the defaults
+  FsKind
+  open-read-stream op/open-read-stream open-read-stream/raw
+  open-write-stream op/open-write-stream open-write-stream/raw
+  fs-kind op/fs-kind fs-kind/raw
+  fs-list op/fs-list fs-list/raw
+  fs-create-directory op/fs-create-directory fs-create-directory/raw
+  fs-delete-file op/fs-delete-file fs-delete-file/raw
+  fs-delete-directory op/fs-delete-directory fs-delete-directory/raw
+  fs-move op/fs-move fs-move/raw
   ;; Ports — input
   port-eof? read-line read-line/opt read-char read-char/opt read-all port-fold
   ;; Ports — output
@@ -1328,11 +1337,30 @@
   (stringbuilder->string b))
 
 ;; --- File operations.
-(import/extern
-  (clr-write-all-text  (: System.IO.File.WriteAllText  #:blocking))
-  (clr-append-all-text (: System.IO.File.AppendAllText #:blocking))
-  (clr-file-exists     (: System.IO.File.Exists))
-  (clr-file-delete     (: System.IO.File.Delete)))
+;;
+;; Everything in this section and the directory one below reaches the disk
+;; through the operations of the `FS` effect, declared with the ports further
+;; down, so a fake filesystem answers for all of it.
+
+;; How an output file is opened.
+;;
+;; - `Truncate`: create the file, or empty it if it exists.
+;; - `Append`: create the file, or write after what it holds.
+;; - `CreateNew`: create the file, and fail if it exists. The check and the
+;;   create are one system call, so two writers cannot both succeed.
+(type (: WriteMode (Union Truncate Append CreateNew)))
+
+;; What a path names, when it names anything: `(fs-kind path)` answers
+;; `(Option FsKind)`.
+(type (: FsKind (Union FsFile FsDirectory)))
+
+;; The operations answer a `Result`; the functions in these two sections raise
+;; the `Err`, as the .NET methods they replaced did.
+(: raise-err (-> (Result System.Exception %a) %a))
+(defun (raise-err r)
+  (match r
+    ((Ok v) v)
+    ((Err e) (raise e))))
 
 ;; Read all text.
 (: file-read-text (-> string string))
@@ -1341,18 +1369,36 @@
     ((Ok opened) (with-open ((p opened)) (read-all p)))
     ((Err e) (raise e))))
 
+;; The flush is explicit so that the suspending copy awaits it. Closing would
+;; flush too, but synchronously, on whatever thread runs the close.
+(: write-whole-file (-> string string WriteMode void))
+(defun (write-whole-file path contents mode)
+  (match (open-output-file path #:mode mode)
+    ((Ok opened) (with-open ((p opened))
+                   (write-string p contents)
+                   (flush-port p)))
+    ((Err e) (raise e))))
+
 ;; Write text.
 (: file-write-text (-> string string void))
-(defun (file-write-text path contents) (clr-write-all-text path contents))
+(defun (file-write-text path contents) (write-whole-file path contents Truncate))
 
 (: file-append-text (-> string string void))
-(defun (file-append-text path contents) (clr-append-all-text path contents))
+(defun (file-append-text path contents) (write-whole-file path contents Append))
 
 (: file-exists? (-> string bool))
-(defun (file-exists? path) (clr-file-exists path))
+(defun (file-exists? path)
+  (match (fs-kind path)
+    ((Some FsFile) #t)
+    (_ #f)))
 
+;; A missing file is not an error, as with `File.Delete`.
 (: file-delete (-> string void))
-(defun (file-delete path) (clr-file-delete path))
+(defun (file-delete path) (raise-err (fs-delete-file path)))
+
+;; Moves or renames a file or a directory. Fails if `to` exists.
+(: file-move (-> string string void))
+(defun (file-move from to) (raise-err (fs-move from to)))
 
 ;; --- Paths ---
 ;; Path strings.
@@ -1384,37 +1430,45 @@
 
 ;; --- Directories ---
 
-(import/extern
-  (clr-dir-exists  (: System.IO.Directory.Exists))
-  (clr-dir-create  (: System.IO.Directory.CreateDirectory))
-  (clr-dir-delete  (: System.IO.Directory.Delete))
-  (clr-dir-files   (: System.IO.Directory.GetFiles))
-  (clr-dir-subdirs (: System.IO.Directory.GetDirectories)))
-
 (: directory-exists? (-> string bool))
-(defun (directory-exists? path) (clr-dir-exists path))
+(defun (directory-exists? path)
+  (match (fs-kind path)
+    ((Some FsDirectory) #t)
+    (_ #f)))
 
 ;; Create directory.
 (: directory-create (-> string void))
-(defun (directory-create path) (ignore (clr-dir-create path)))
+(defun (directory-create path) (raise-err (fs-create-directory path)))
 
 ;; Delete directory.
 (: directory-delete (-> string void))
-(defun (directory-delete path) (clr-dir-delete path))
+(defun (directory-delete path) (raise-err (fs-delete-directory path)))
 
+;; Built from the operations rather than handed to `Directory.Delete` with its
+;; recursive flag, so that a handler sees every deletion.
 (: directory-delete-tree (-> string void))
-(defun (directory-delete-tree path) (clr-dir-delete path #t))
+(defun (directory-delete-tree path)
+  (loop (:for entry (raise-err (fs-list path)))
+        (:do (match (fs-kind entry)
+               ((Some FsDirectory) (directory-delete-tree entry))
+               (_ (file-delete entry)))))
+  (directory-delete path))
+
+(: entries-of-kind (-> string FsKind (Vec string)))
+(defun (entries-of-kind path kind)
+  (loop (:for entry (raise-err (fs-list path)))
+        (:when (match (Tuple (fs-kind entry) kind)
+                 ((Tuple (Some FsFile) FsFile) #t)
+                 ((Tuple (Some FsDirectory) FsDirectory) #t)
+                 (_ #f)))
+        (:acc found (vecing entry))))
 
 ;; Directory files.
 (: directory-files (-> string (Vec string)))
-(defun (directory-files path)
-  (loop (:for file (clr-dir-files path))
-        (:acc files (vecing file))))
+(defun (directory-files path) (entries-of-kind path FsFile))
 
 (: directory-subdirectories (-> string (Vec string)))
-(defun (directory-subdirectories path)
-  (loop (:for dir (clr-dir-subdirs path))
-        (:acc dirs (vecing dir))))
+(defun (directory-subdirectories path) (entries-of-kind path FsDirectory))
 
 ;; --- The environment ---
 
@@ -1451,15 +1505,20 @@
   (TextReader (: System.IO.TextReader))
   (TextWriter (: System.IO.TextWriter))
 
-  ;; Concrete readers.
-  (StreamReader (: System.IO.StreamReader (-> string StreamReader)
-                   #:exceptions (System.IO.FileNotFoundException
-                                 System.IO.DirectoryNotFoundException
-                                 System.UnauthorizedAccessException)))
+  ;; Concrete readers and writers. The file ones are built over a `Stream`,
+  ;; which is what the `FS` effect's openers answer.
+  (Stream (: System.IO.Stream))
+  (StreamReader (: System.IO.StreamReader (-> Stream StreamReader)))
   (StringReader (: System.IO.StringReader (-> string StringReader)))
-  (StreamWriter (: System.IO.StreamWriter (-> string StreamWriter)
-                   #:exceptions (System.IO.DirectoryNotFoundException
-                                 System.UnauthorizedAccessException)))
+  (StreamWriter (: System.IO.StreamWriter (-> Stream StreamWriter)))
+  ;; `IOException` covers `CreateNew` finding the file already there, as well
+  ;; as the not-found exceptions below it.
+  (FileStream (: System.IO.FileStream (-> string FileMode FileAccess FileShare FileStream)
+                 #:exceptions (System.IO.IOException
+                               System.UnauthorizedAccessException)))
+  (FileMode (: System.IO.FileMode))
+  (FileAccess (: System.IO.FileAccess))
+  (FileShare (: System.IO.FileShare))
   ;; StringWriter.
   (StringWriter (: System.IO.StringWriter (-> StringWriter)))
 
@@ -1489,29 +1548,25 @@
   (close-in     (: BjolangRuntime.CloseInput  (-> TextInputPort void)))
   (close-out    (: BjolangRuntime.CloseOutput (-> TextOutputPort void))))
 
-;; `open-input-file/raw` opens the real file and bypasses the `FS` effect. The
-;; `/raw` says so, and it is the default handler for `open-input-file` below -
-;; so a program that installs no handler reaches this and nothing has changed.
-(: open-input-file/raw (-> string (Result Exception TextInputPort)))
-(defun (open-input-file/raw path)
-  ;; Raises here if there is no scope, before the file exists to leak.
-  (ignore (current-scope))
-  (match (StreamReader. path)
-    ((Ok r) (Ok (cast TextInputPort (own-port-in (BjoPort. (cast TextInputPort r))))))
+;; A text port over a stream an opener answered, registered on the ambient
+;; scope. Whatever the stream is - a file, or a `MemoryStream` a fake
+;; filesystem made - the port is owned the same way.
+(: stream->input-port (-> (Result Exception Stream) (Result Exception TextInputPort)))
+(defun (stream->input-port opened)
+  (match opened
+    ((Ok s) (Ok (cast TextInputPort (own-port-in (BjoPort. (cast TextInputPort (StreamReader. s)))))))
+    ((Err e) (Err e))))
+
+(: stream->output-port (-> (Result Exception Stream) (Result Exception TextOutputPort)))
+(defun (stream->output-port opened)
+  (match opened
+    ((Ok s) (Ok (cast TextOutputPort (own-port-out (BjoWriter. (cast TextOutputPort (StreamWriter. s)))))))
     ((Err e) (Err e))))
 
 ;; Open input string. Memory only, so nothing registers it.
 (: open-input-string (-> string TextInputPort))
 (defun (open-input-string contents)
   (cast TextInputPort (StringReader. contents)))
-
-;; Open output file. See `open-input-file/raw`.
-(: open-output-file/raw (-> string (Result Exception TextOutputPort)))
-(defun (open-output-file/raw path)
-  (ignore (current-scope))
-  (match (StreamWriter. path)
-    ((Ok w) (Ok (cast TextOutputPort (own-port-out (BjoWriter. (cast TextOutputPort w))))))
-    ((Err e) (Err e))))
 
 ;; Open output string. Memory only, so nothing registers it.
 (: open-output-string (-> TextOutputPort))
@@ -1534,54 +1589,157 @@
 (: close-output-port (-> TextOutputPort void))
 (defun (close-output-port p) (close-out p))
 
-;; --- Opening a file is an effect ---
+;; --- The filesystem is an effect ---
 ;;
-;; `open-input-file` and `open-output-file` read the filesystem through a
-;; handler, so a test can answer for them without touching the disk. With no
-;; handler installed they are `open-input-file/raw` and `open-output-file/raw`,
-;; which open the real file - so nothing about an existing program changes.
+;; Everything in this file that reaches the disk goes through these operations,
+;; so a handler can answer for the disk: a test runs against a fake, a sandbox
+;; refuses writes, a build step records what it read. With no handler installed
+;; each is its `/raw` default, which does what the .NET call does.
 ;;
-;; Opening a file is a synchronous operation (it doesn't pause execution). 
-;; 
-;; The actual reading and writing are the parts that might pause, but those 
-;; are handled later by the port's own async `read-line` and `write-string` methods. 
-;; Because the returned port object handles the async behavior itself, this 
-;; file-opening effect doesn't need to be async.
+;; The openers answer a `Stream` rather than a port. The port over it is built
+;; and registered on the ambient scope by `open-input-file` and its neighbours -
+;; and by `(std ports)`' byte openers - so one handler serves text and bytes
+;; alike, and a stream a handler made in memory is owned exactly as a file is.
 ;;
-;; Why `#:adopt`? 
-;; Real files are automatically tracked ("owned") by the scope they are opened in 
-;; to prevent resource leaks. Fake string ports (like `open-input-string`) are not.
-;; 
-;; `#:adopt` explicitly registers the fake port returned by the handler into the 
-;; current scope. This makes the fake port behave like a real one, ensuring that 
-;; resource leak tests fail correctly if a program forgets to close a fake file.
+;; All of them are synchronous. Reading and writing are what wait, and those are
+;; the ports' own suspending methods. None is performed in a loop, so all are
+;; `#:cold`.
 ;;
-;; A port made directly with `open-input-string` is still unowned. Only ports
-;; that arrive through the effect are adopted.
+;; The operations answer a `Result`. The functions above over them raise, as the
+;; .NET methods they replaced do.
+
+(import/class
+  (DirectoryInfo (: System.IO.DirectoryInfo)))
+
 (import/extern
-  (adopt-reader (: BjolangRuntime.AdoptReader (-> TextInputPort TextInputPort)))
-  (adopt-writer (: BjolangRuntime.AdoptWriter (-> TextOutputPort TextOutputPort))))
+  (clr-file-exists (: System.IO.File.Exists (-> string bool)))
+  (clr-dir-exists  (: System.IO.Directory.Exists (-> string bool)))
+  (clr-dir-entries (: System.IO.Directory.GetFileSystemEntries (-> string (Array string))
+                      #:exceptions (System.IO.IOException System.UnauthorizedAccessException)))
+  (clr-dir-create  (: System.IO.Directory.CreateDirectory (-> string DirectoryInfo)
+                      #:exceptions (System.IO.IOException System.UnauthorizedAccessException)))
+  (clr-file-delete (: System.IO.File.Delete (-> string void)
+                      #:exceptions (System.IO.IOException System.UnauthorizedAccessException)))
+  (clr-dir-delete  (: System.IO.Directory.Delete (-> string void)
+                      #:exceptions (System.IO.IOException System.UnauthorizedAccessException)))
+  (clr-file-move   (: System.IO.File.Move (-> string string void)
+                      #:exceptions (System.IO.IOException System.UnauthorizedAccessException)))
+  (clr-dir-move    (: System.IO.Directory.Move (-> string string void)
+                      #:exceptions (System.IO.IOException System.UnauthorizedAccessException))))
 
-(: adopt-input (-> (Result Exception TextInputPort) (Result Exception TextInputPort)))
-(defun (adopt-input r)
-  (match r
-    ((Ok p) (Ok (adopt-reader p)))
+;; Read-only, and other readers allowed alongside, as `StreamReader`'s own
+;; path constructor opens.
+(: open-read-stream/raw (-> string (Result Exception Stream)))
+(defun (open-read-stream/raw path)
+  (match (FileStream. path FileMode.Open FileAccess.Read FileShare.Read)
+    ((Ok s) (Ok (cast Stream s)))
     ((Err e) (Err e))))
 
-(: adopt-output (-> (Result Exception TextOutputPort) (Result Exception TextOutputPort)))
-(defun (adopt-output r)
-  (match r
-    ((Ok p) (Ok (adopt-writer p)))
+(: write-mode->file-mode (-> WriteMode FileMode))
+(defun (write-mode->file-mode mode)
+  (match mode
+    (Truncate FileMode.Create)
+    (Append FileMode.Append)
+    (CreateNew FileMode.CreateNew)))
+
+;; Write-only, readers allowed alongside, as `StreamWriter`'s path constructor
+;; opens.
+(: open-write-stream/raw (-> string WriteMode (Result Exception Stream)))
+(defun (open-write-stream/raw path mode)
+  (match (FileStream. path (write-mode->file-mode mode) FileAccess.Write FileShare.Read)
+    ((Ok s) (Ok (cast Stream s)))
     ((Err e) (Err e))))
+
+(: fs-kind/raw (-> string (Option FsKind)))
+(defun (fs-kind/raw path)
+  (if (clr-file-exists path)
+      (Some FsFile)
+      (if (clr-dir-exists path) (Some FsDirectory) None)))
+
+;; Whole paths, files and directories both, in the order the OS gives them.
+(: fs-list/raw (-> string (Result Exception (Vec string))))
+(defun (fs-list/raw path)
+  (match (clr-dir-entries path)
+    ((Ok names) (Ok (loop (:for name names) (:acc found (vecing name)))))
+    ((Err e) (Err e))))
+
+;; Creates every missing directory along the path. One that is already there is
+;; not an error.
+(: fs-create-directory/raw (-> string (Result Exception Unit)))
+(defun (fs-create-directory/raw path)
+  (match (clr-dir-create path)
+    ((Ok _) (Ok unit))
+    ((Err e) (Err e))))
+
+;; What a guarded `void` call answers, as the `Unit` an operation declares.
+(: unit-result (-> (Result Exception %a) (Result Exception Unit)))
+(defun (unit-result r)
+  (match r
+    ((Ok _) (Ok unit))
+    ((Err e) (Err e))))
+
+;; A missing file is not an error.
+(: fs-delete-file/raw (-> string (Result Exception Unit)))
+(defun (fs-delete-file/raw path) (unit-result (clr-file-delete path)))
+
+;; An empty directory. A missing or non-empty one is an `IOException`.
+(: fs-delete-directory/raw (-> string (Result Exception Unit)))
+(defun (fs-delete-directory/raw path) (unit-result (clr-dir-delete path)))
+
+;; A file or a directory. Fails if `to` exists.
+(: fs-move/raw (-> string string (Result Exception Unit)))
+(defun (fs-move/raw from to)
+  (unit-result (if (clr-dir-exists from)
+                   (clr-dir-move from to)
+                   (clr-file-move from to))))
 
 (defeffect FS
-  (open-input-file  (-> string (Result Exception TextInputPort)))
-  (open-output-file (-> string (Result Exception TextOutputPort)))
-  #:default ((open-input-file open-input-file/raw)
-             (open-output-file open-output-file/raw))
-  #:adopt ((open-input-file adopt-input)
-           (open-output-file adopt-output))
-  #:cold (open-input-file open-output-file))
+  (open-read-stream    (-> string (Result Exception Stream)))
+  (open-write-stream   (-> string WriteMode (Result Exception Stream)))
+  (fs-kind             (-> string (Option FsKind)))
+  (fs-list             (-> string (Result Exception (Vec string))))
+  (fs-create-directory (-> string (Result Exception Unit)))
+  (fs-delete-file      (-> string (Result Exception Unit)))
+  (fs-delete-directory (-> string (Result Exception Unit)))
+  (fs-move             (-> string string (Result Exception Unit)))
+  #:default ((open-read-stream open-read-stream/raw)
+             (open-write-stream open-write-stream/raw)
+             (fs-kind fs-kind/raw)
+             (fs-list fs-list/raw)
+             (fs-create-directory fs-create-directory/raw)
+             (fs-delete-file fs-delete-file/raw)
+             (fs-delete-directory fs-delete-directory/raw)
+             (fs-move fs-move/raw))
+  #:cold (open-read-stream open-write-stream fs-kind fs-list
+          fs-create-directory fs-delete-file fs-delete-directory fs-move))
+
+;; --- Opening a file port ---
+;;
+;; The scope is read before the perform, so a program with nowhere to put the
+;; port fails without having opened anything.
+
+(: open-input-file (-> string (Result Exception TextInputPort)))
+(defun (open-input-file path)
+  (ignore (current-scope))
+  (stream->input-port (open-read-stream path)))
+
+;; `(open-output-file path)` truncates; `#:mode Append` or `#:mode CreateNew`
+;; says otherwise.
+(: open-output-file (-> string (#:mode WriteMode) (Result Exception TextOutputPort)))
+(defun (open-output-file path #:mode Truncate)
+  (ignore (current-scope))
+  (stream->output-port (open-write-stream path mode)))
+
+;; The same, past whatever handler is installed. The `/raw` says so.
+(: open-input-file/raw (-> string (Result Exception TextInputPort)))
+(defun (open-input-file/raw path)
+  (ignore (current-scope))
+  (stream->input-port (open-read-stream/raw path)))
+
+(: open-output-file/raw (-> string WriteMode (Result Exception TextOutputPort)))
+(defun (open-output-file/raw path mode)
+  (ignore (current-scope))
+  (stream->output-port (open-write-stream/raw path mode)))
 
 ;; `(call-with-input-file path proc)` - open, hand the port to `proc`, close.
 ;;
@@ -1598,11 +1756,29 @@
     ((Ok p) (with-open ((it p)) (Ok (proc it))))
     ((Err e) (Err e))))
 
-(: call-with-output-file (-> string (-?-> TextOutputPort %a) (Result Exception %a)))
-(defun (call-with-output-file path proc)
-  (match (open-output-file path)
+(: call-with-output-file (-> string (-?-> TextOutputPort %a) (#:mode WriteMode) (Result Exception %a)))
+(defun (call-with-output-file path proc #:mode Truncate)
+  (match (open-output-file path #:mode mode)
     ((Ok p) (with-open ((it p)) (Ok (proc it))))
     ((Err e) (Err e))))
+ 
+;; The items `reader` reads, pulled lazily. The file is opened inside the `seq`,
+;; so every walk opens it afresh and reads from t he start, and closed when the
+;; walk ends - at the end of the file, or when the walker stops early. A missing
+;; file raises on the first pull; `(std ports)`' `file->seq` reports it at the
+;; call instead.
+(: file-read/seq #:sync (-> (-> TextInputPort %a) string (Seq %a)))
+(defun (file-read/seq reader path)
+  (seq
+    (def file (raise-err (open-input-file path)))
+    (with-open ((p file))
+      (let loop ()
+        (unless (port-eof? p)
+          (yield (reader p))
+          (loop))))))
+
+(: file-read-lines/seq #:sync (-> string (Seq string)))
+(defun (file-read-lines/seq path) (file-read/seq read-line path))
 
 ;; Flush.
 (import/extern
@@ -1615,7 +1791,7 @@
   (#:bjo  (clr-flush-await p)))
 
 ;; --- Input ---
-;; These are the leaves of our IO. The bottom calls, so to say.
+;; These are the leaves of our IO. The bottom calls, so to say. 
 (import/extern
   (clr-eof        (: Bjolang.Runtime.BjoPort.PortEof            (-> TextInputPort bool)   #:blocking))
   (clr-eof-await  (: Bjolang.Runtime.BjoPort.PortEofAsync       (-> TextInputPort bool)   #:async))

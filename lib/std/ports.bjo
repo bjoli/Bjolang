@@ -99,7 +99,7 @@
 ;; ---------------------------------------------------------------------------
 
 ;; Streams items from port as a Seq.
-(: port->seq (-> (-> TextInputPort %a) TextInputPort (Seq %a)))
+(: port->seq #:sync (-> (-> TextInputPort %a) TextInputPort (Seq %a)))
 (defun (port->seq reader p)
   (seql (:with i 0 0)
         (:break (port-eof? p))
@@ -136,7 +136,7 @@
                 (wrap (promise-join done) (fun (r) None)))))
 
 ;; Streams file contents as Seq.
-(: file->seq (-> (-> TextInputPort %a) string (Result Exception (Seq %a))))
+(: file->seq #:sync (-> (-> TextInputPort %a) string (Result Exception (Seq %a))))
 (defun (file->seq reader path)
   (match (open-input-file path)
     ((Ok probe)
@@ -172,15 +172,7 @@
   (Encoding       (: System.Text.Encoding)))
 
 (import/extern
-  ;; Sources. The two openers carry `#:exceptions` so that a missing file is a
-  ;; `Result` rather than a raise, exactly as `open-input-file` has it.
-  (clr-open-in   (: Bjolang.Runtime.BytePorts.OpenInput (-> string ByteInputPort)
-                    #:exceptions (System.IO.FileNotFoundException
-                                  System.IO.DirectoryNotFoundException
-                                  System.UnauthorizedAccessException)))
-  (clr-open-out  (: Bjolang.Runtime.BytePorts.OpenOutput (-> string ByteOutputPort)
-                    #:exceptions (System.IO.DirectoryNotFoundException
-                                  System.UnauthorizedAccessException)))
+  ;; Sources.
   (clr-from-stream (: Bjolang.Runtime.BytePorts.FromStream (-> Stream ByteInputPort)))
   (clr-to-stream   (: Bjolang.Runtime.BytePorts.ToStream   (-> Stream ByteOutputPort)))
   (clr-make-pipe   (: Bjolang.Runtime.BytePorts.MakePipe   (-> BytePipe)))
@@ -407,16 +399,25 @@
 ;; scope returns the handle is released, whether the program said so or not. The
 ;; scope is read before the file is opened, so a program with nowhere to put the
 ;; port fails without having opened anything.
+;;
+;; The file is opened through the prelude's `FS` effect, as the text openers
+;; open theirs, so a handler that answers for the disk answers for these too.
+;; The stream it answers is registered by `stream->byte-input-port`.
 
 (: open-byte-input-file (-> string (Result Exception ByteInputPort)))
 (defun (open-byte-input-file path)
   (ignore (current-scope))
-  (clr-open-in path))
+  (match (open-read-stream path)
+    ((Ok s) (Ok (clr-from-stream s)))
+    ((Err e) (Err e))))
 
-(: open-byte-output-file (-> string (Result Exception ByteOutputPort)))
-(defun (open-byte-output-file path)
+;; `#:mode` as for `open-output-file`: `Truncate` unless it says otherwise.
+(: open-byte-output-file (-> string (#:mode WriteMode) (Result Exception ByteOutputPort)))
+(defun (open-byte-output-file path #:mode Truncate)
   (ignore (current-scope))
-  (clr-open-out path))
+  (match (open-write-stream path mode)
+    ((Ok s) (Ok (clr-to-stream s)))
+    ((Err e) (Err e))))
 
 ;; A port over a `Stream` somebody else handed over — a `NetworkStream`, a
 ;; request body, a `MemoryStream`. This pair is what `(std net)` and a web

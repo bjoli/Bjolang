@@ -267,12 +267,7 @@ let blockingBuiltins : Set<string> =
           "reader-read-line!"
           "reader-read-char!"
           "reader->list"
-          "reader->vec"
-
-          // Whole-file reads, which wait per pull rather than all at once —
-          // still a parked thread, just a later one.
-          "file-read-lines/seq"
-          "file-read/seq" ]
+          "reader->vec" ]
 
 /// Builtins that run the function they are given somewhere else.
 ///
@@ -777,20 +772,6 @@ let prelude : Env =
         // `finally` is guarding.
         "parameter-push!", {Scheme = Scheme(["a"], [], makeFunType [makeParamType (TVar "a"); TVar "a"] dynEnvType); IsMutable = false }
         "dyn-restore!", {Scheme = Scheme([], [], makeFunType [dynEnvType] unitType); IsMutable = false }
-
-        // `File.ReadLines` gives back an `IEnumerable<string>`, and interop maps
-        // a constructed generic type to a name Bjolang cannot equate with
-        // `(Seq string)` — so this one stays here while the rest of the file
-        // operations live in `std/prelude`.
-        "file-read-lines/seq", {Scheme = Scheme([], [], makeFunType [stringType] (makeSeqType stringType)); IsMutable = false }
-
-        // The same, for an arbitrary read procedure: what `std/ports`' `file->seq`
-        // is built on. It opens the file *inside* the iterator, once per
-        // enumeration, and disposes it — which is what a sequence that owns its
-        // source has to do to be walkable more than once. A `seql` cannot: it
-        // would close over a reader opened before the sequence existed, and
-        // share that one spent reader with every enumeration.
-        "file-read/seq", {Scheme = Scheme(["a"], [], makeFunType [makeFunType [textInputPortType] (TVar "a"); stringType] (makeSeqType (TVar "a"))); IsMutable = false }
 
         // `Path.GetDirectoryName` answers null for a root and for a bare
         // filename. Bjolang has no null to test against, so that sentinel

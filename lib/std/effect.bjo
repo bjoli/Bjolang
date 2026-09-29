@@ -207,10 +207,10 @@
 ;; awaited when its callee is a name, so `((parameter-ref cell) x)` would emit a
 ;; `Fiber<T>` where the value was wanted.
 ;;
-;; `#:adopt` intercepts the value returned by a handler and passes it through a named
-;; function before returning it to the caller. This is crucial for operations that return 
-;; *resources* (like files). It allows the resource to be 'adopted' into the current scope 
-;; so it gets cleaned up properly, ensuring leak tests work for fake filesystems.
+;; `#:adopt` intercepts the value returned by a handler and passes it through a
+;; named function before returning it to the caller. It is for operations that
+;; return *resources*: the resource can be registered on the current scope, so
+;; that one a handler made is cleaned up as a real one would be.
 (: wrapper-body (-> Syntax Syntax (List Syntax) (List Syntax) Syntax))
 (defun (wrapper-body name cell args adopts)
   (match (default-for name adopts)
@@ -280,11 +280,14 @@
 ;; performed in a loop: the ids are a budget, and a program with many rarely
 ;; performed effects should not push its ports out of the cheap slots.
 ;;
-;; `#:adopt ((op fn))` intercepts the value returned by a handler and passes it through `fn` before
-;; returning it to the caller. This is crucial for operations that return *resources* (like files). If a test
-;; handler returns a fake resource (like a string port), it must be 'adopted' into the current scope so it
-;; gets cleaned up properly. Without this, handlers would return fake resources that never get released,
-;; breaking leak tests. The prelude's `FS` effect is the case it exists for.
+;; `#:adopt ((op fn))` intercepts the value returned by a handler and passes it
+;; through `fn` before returning it to the caller. An operation that returns a
+;; *resource* needs it when a handler may build one that nothing owns - a
+;; string port, say - since otherwise that resource is never released and a
+;; leak test over the handler means nothing. An operation that returns the raw
+;; material instead, and leaves building and registering the resource to the
+;; caller, does not: the prelude's `FS` openers answer a `Stream` for that
+;; reason.
 (def/macro (defeffect form inject compare)
   (syntax-match form
     ((_ name clause ...)
