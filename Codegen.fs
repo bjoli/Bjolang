@@ -1103,7 +1103,8 @@ let escapeStringLiteral (s: string) =
 /// A pattern that cannot fail.
 ///
 /// A tuple counts when its parts do: a tuple has exactly one shape, so there is
-/// nothing for the pattern to fail against. That is not a nicety — C# proves the
+/// nothing for the pattern to fail against. The same holds for a record or
+/// struct pattern. That is not a nicety — C# proves the
 /// same thing, and rejects the fallback arm of a switch expression whose arms
 /// already cover the type (CS8510). Anything else may fail: a list pattern can
 /// meet `Nil`, a vector pattern a shorter vector, a constructor pattern another
@@ -1113,6 +1114,7 @@ let rec private isIrrefutablePattern (p: TypedPattern) =
     | TPWildcard
     | TPIdent _ -> true
     | TPTuple items -> items |> List.forall isIrrefutablePattern
+    | TPRecord(_, fields) -> fields |> List.forall (snd >> isIrrefutablePattern)
     // Every conjunct has to match, so the conjunction fails as soon as any of
     // them can.
     | TPAnd alts -> alts |> List.forall isIrrefutablePattern
@@ -1533,6 +1535,26 @@ let rec generatePattern (ctx: CodegenContext) (views: ResizeArray<ViewFragment>)
         match binder with
         | Some n -> append ctx $" %s{sanitizeIdent n}"
         | None -> ()
+
+    // A property pattern over the fields that are matched. The type is left
+    // off, as for `Option`: the scrutinee already has it, and leaving it off
+    // means a generic record needs no type arguments spelled.
+    | TPRecord (_, fields) ->
+        let matched =
+            fields
+            |> List.filter (fun (_, p) ->
+                match p.Node with
+                | TPWildcard -> false
+                | _ -> true)
+        append ctx "{ "
+
+        matched
+        |> List.iteri (fun i (field, p) ->
+            if i > 0 then append ctx ", "
+            append ctx $"%s{sanitizeIdent field}: "
+            generatePattern ctx p)
+
+        append ctx " }"
 
     | TPConstruct (name, args) ->
         // Cons/Nil are now builtins backed by SchemeList.Cons<T>/SchemeList.Nil<T>,

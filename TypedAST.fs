@@ -768,6 +768,10 @@ and TPatternNode =
     | TPArray of TypedPattern list * TypedPattern option
     | TPTuple of TypedPattern list
     | TPConstruct of string * TypedPattern list
+    /// `(Record (field p) ...)`: the record or struct type's key and every one
+    /// of its fields, in declaration order. A field the source left out is a
+    /// `TPWildcard`.
+    | TPRecord of string * (string * TypedPattern) list
     /// `(:is Clr.Type binder)`. The string is the fully qualified .NET type
     /// name, already resolved and checked against the scrutinee's type; it is
     /// emitted as a C# type pattern.

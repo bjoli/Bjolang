@@ -180,6 +180,7 @@ let rec private alwaysMatches (pat: TypedPattern) : bool =
     | TPIdent _ -> true
     | TPAs(inner, _) -> alwaysMatches inner
     | TPTuple items -> List.forall alwaysMatches items
+    | TPRecord(_, fields) -> fields |> List.forall (snd >> alwaysMatches)
     | TPAnd alts -> List.forall alwaysMatches alts
     | _ -> false
 

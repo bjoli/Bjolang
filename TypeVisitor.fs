@@ -44,6 +44,7 @@ let mapPatternChildrenWith (f: TypedExpr -> TypedExpr) (fp: TypedPattern -> Type
         | TPArray(items, tailOpt) -> TPArray(List.map fp items, Option.map fp tailOpt)
         | TPTuple items -> TPTuple(List.map fp items)
         | TPConstruct(name, args) -> TPConstruct(name, List.map fp args)
+        | TPRecord(name, fields) -> TPRecord(name, fields |> List.map (fun (f, p) -> f, fp p))
         | TPTypeTest _ as leaf -> leaf
         | TPApp(expr, inner) -> TPApp(f expr, fp inner)
         | TPAs(inner, name) -> TPAs(fp inner, name)

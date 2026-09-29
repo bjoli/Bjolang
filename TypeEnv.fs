@@ -339,6 +339,33 @@ let internal currentSeqElement (env: Env) (formName: string) (r: Range) : HMType
         failwithf
             $"Type Error: '%s{formName}' only means something inside a (seq ...) body, and there is none here, at %s{Lexer.formatPos r}"
 
+/// Instantiates a record type with fresh type variables.
+///
+/// The record type and its field types have to be instantiated under the *same*
+/// substitution, or a field's type variable would be unrelated to the one in the
+/// record type it came from. Returns the instantiated record type, the declared
+/// fields as written, and the field types under that substitution.
+let internal instantiateRecord
+    (registry: TraitRegistry)
+    (recordTypeName: string)
+    : HMType * (string * HMType) list * Map<string, HMType> =
+
+    let tArgs, expectedFields = Map.find recordTypeName registry.Records
+
+    // The names are used exactly as they were registered, leading quote and
+    // all. Trimming it here bound the scheme over `a` while the field types
+    // resolved to `'a`, so the substitution matched nothing and a generic
+    // record's fields came back still holding the declaration's own variables.
+    let recordScheme = Scheme(tArgs, [], TCon(recordTypeName, tArgs |> List.map TVar))
+
+    let instantiatedRecordType, freshVars, _ = instantiate registry recordScheme
+    let fieldSubst = List.zip tArgs freshVars |> Map.ofList
+
+    let expectedFieldsInstantiated =
+        expectedFields |> List.map (fun (n, t) -> n, substTypeVars fieldSubst t) |> Map.ofList
+
+    instantiatedRecordType, expectedFields, expectedFieldsInstantiated
+
 /// Checks a pattern against the type of the value it will meet, answering the
 /// typed pattern and what it binds.
 ///
@@ -545,6 +572,73 @@ let rec checkPattern
         { Type = expectedType
           Range = r
           Node = TPApp(typedStep, typedInner) },
+        binders
+
+    // `(Car (brand b) (year 1999))`. The parser cannot tell a record from a
+    // union case, so it reads each field as a constructor pattern of one
+    // argument, and this branch reads it back as `(field pattern)`. Unlike
+    // construction, a field may be left out, and then matches anything.
+    | PConstruct(name, args, r) when
+        Map.containsKey name env.Registry.Records
+        || Map.containsKey (originalName env.Registry name) env.Registry.Records
+        ->
+        let recordTypeName =
+            if Map.containsKey name env.Registry.Records then name
+            else originalName env.Registry name
+
+        if not (representationVisible env.Registry (codeModule env r) recordTypeName) then
+            failwithf
+                $"Pattern Error at %s{Lexer.formatPos r}: '%s{Naming.showTypeName recordTypeName}' cannot be taken apart here. %s{opaqueTypeNote env.Registry recordTypeName}"
+
+        let shown = name
+
+        let recordType, declaredFields, fieldTypes = instantiateRecord env.Registry recordTypeName
+        unify env.Registry expectedType recordType
+
+        let fieldList = declaredFields |> List.map fst |> String.concat ", "
+
+        let written =
+            (Map.empty, args)
+            ||> List.fold (fun acc arg ->
+                match arg with
+                | PConstruct(field, [ inner ], fr) when field.Length > 0 && not (System.Char.IsUpper field[0]) ->
+                    if Map.containsKey field acc then
+                        failwithf
+                            $"Pattern Error at %s{Lexer.formatPos fr}: field '%s{field}' of '%s{shown}' is matched twice."
+
+                    match Map.tryFind field fieldTypes with
+                    | Some fieldType ->
+                        let typed, binders = checkPattern env fieldType inner
+                        Map.add field (typed, binders) acc
+                    | None ->
+                        failwithf
+                            $"Pattern Error at %s{Lexer.formatPos fr}: '%s{shown}' has no field '%s{field}'. Its fields are: %s{fieldList}."
+                | bad ->
+                    failwithf
+                        $"Pattern Error at %s{Lexer.formatPos (patternRange bad)}: '%s{shown}' is a record type, so each part of its pattern is one of its fields, written (field-name pattern).")
+
+        // Every field, in declaration order, with a wildcard for each one left
+        // out. The exhaustiveness checker then reads the record as a
+        // constructor with one argument per field.
+        let orderedFields =
+            declaredFields
+            |> List.map (fun (field, _) ->
+                match Map.tryFind field written with
+                | Some(typed, _) -> field, typed
+                | None ->
+                    field,
+                    { Type = fieldTypes[field]
+                      Range = r
+                      Node = TPWildcard })
+
+        let binders =
+            (Map.empty, written)
+            ||> Map.fold (fun acc _ (_, bound) ->
+                Map.fold (fun acc k v -> Map.add k v acc) acc bound)
+
+        { Type = recordType
+          Range = r
+          Node = TPRecord(recordTypeName, orderedFields) },
         binders
 
     | PConstruct(name, args, r) ->

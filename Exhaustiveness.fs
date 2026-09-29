@@ -55,6 +55,9 @@ type private Ctor =
     | CCase of string
     | CBool of bool
     | CTuple of int
+    /// A record or struct, the only constructor of its type. The field names
+    /// are carried for spelling a counterexample.
+    | CRecord of string * string list
     /// A literal of a type with no listable set of values, as written.
     | CConst of string
     /// A `Vec` or `Array` of exactly this many elements.
@@ -139,6 +142,11 @@ let private substitute (typeParams: string list) (typeArgs: HMType list) (t: HMT
 let private signatureOf (registry: TraitRegistry) (t: HMType) : Signature =
     match settle registry t with
     | TTuple items -> Closed [ CTuple items.Length, items ]
+    | TCon(name, args) when Map.containsKey name registry.Records ->
+        let typeParams, fields = registry.Records[name]
+
+        Closed
+            [ CRecord(name, List.map fst fields), fields |> List.map (snd >> substitute typeParams args) ]
     | TCon(name, args) ->
         match Map.tryFind name registry.Unions with
         | Some(typeParams, cases) ->
@@ -205,6 +213,7 @@ let rec private headOf (pat: TypedPattern) : Head =
     | TPSymbol s -> HCtor(CConst s, [])
     | TPTuple items -> HCtor(CTuple items.Length, items)
     | TPConstruct(name, args) -> HCtor(CCase name, args)
+    | TPRecord(name, fields) -> HCtor(CRecord(name, List.map fst fields), List.map snd fields)
     | TPOr alts -> HOr alts
     | TPTypeTest _
     | TPApp _ -> HNever
@@ -421,6 +430,7 @@ type private Witness =
     | WCase of string * Witness list
     | WBool of bool
     | WTuple of Witness list
+    | WRecord of string * (string * Witness) list
     /// Elements, and whether the last of them stands for a remainder.
     | WSeq of SeqKind * Witness list * bool
 
@@ -439,6 +449,13 @@ let rec private showWitness (w: Witness) : string =
     | WCase(name, args) ->
         "(" + writtenCase name + " " + (args |> List.map showWitness |> String.concat " ") + ")"
     | WTuple args -> "(Tuple " + (args |> List.map showWitness |> String.concat " ") + ")"
+    // Only the fields that pin something down; the rest may be left out.
+    | WRecord(name, fields) ->
+        match fields |> List.filter (fun (_, w) -> w <> WAny) with
+        | [] -> writtenCase name
+        | pinned ->
+            let shown = pinned |> List.map (fun (f, w) -> "(" + f + " " + showWitness w + ")")
+            "(" + writtenCase name + " " + String.concat " " shown + ")"
     | WSeq(kind, items, openEnded) ->
         let opening = match kind with VecSeq -> "[" | ArraySeq -> "#["
         let shown = items |> List.map showWitness
@@ -452,6 +469,7 @@ let private applyCtor (kind: SeqKind) (c: Ctor) (args: Witness list) : Witness =
     | CCase name -> WCase(name, args)
     | CBool b -> WBool b
     | CTuple _ -> WTuple args
+    | CRecord(name, fields) -> WRecord(name, List.zip fields args)
     | CConst _ -> WAny
     | CLen _ -> WSeq(kind, args, false)
     | CLenGe _ -> WSeq(kind, args, true)

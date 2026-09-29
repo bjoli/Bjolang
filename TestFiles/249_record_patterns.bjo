@@ -1,0 +1,83 @@
+;; Records and structs match by naming their type and the fields to look at:
+;; `(Car (brand b) (colour Red))`. A field left out matches anything.
+(import (std prelude))
+(import (std simpletest))
+
+(type (: Colour (Union Red Green Blue)))
+
+(type (: Car (Record (: brand string) (: colour Colour) (: year int))))
+
+(type (: Point (Struct (: x int) (: y int))))
+
+(type (: (Boxed %a) (Record (: item %a) (: count int))))
+
+(type (: Counter (Record (: name string) (: hits int #:mutable))))
+
+(: describe (-> Car string))
+(defun (describe c)
+  (match c
+    ((Car (colour Red) (brand b)) #"red ${b}")
+    ((Car (year 1999)) "a 1999 car")
+    ((Car (brand "volvo") (colour (or Green Blue))) "a cool volvo")
+    ((Car (brand b) (year y)) #:when (> y 2000) #"new ${b}")
+    (Car "some car")))
+
+;; No catch-all: the colour field is covered case by case.
+(: colour-name (-> Car string))
+(defun (colour-name c)
+  (match c
+    ((Car (colour Red)) "red")
+    ((Car (colour Green)) "green")
+    ((Car (colour Blue)) "blue")))
+
+(: quadrant (-> Point string))
+(defun (quadrant p)
+  (match p
+    ((Point (x 0) (y 0)) "origin")
+    ((Point (x 0)) "y axis")
+    ((Point (y 0)) "x axis")
+    ((Point (x x) (y y)) #"(${(int->string x)}, ${(int->string y)})")))
+
+(: unbox-car (-> (Boxed Car) string))
+(defun (unbox-car b)
+  (match b
+    ((Boxed (item (Car (brand br))) (count 1)) #"one ${br}")
+    ((Boxed (count n) (item (Car (brand br)))) #"${(int->string n)} ${br}")))
+
+(: sum-items (-> (List (Boxed int)) int))
+(defun (sum-items xs)
+  (match xs
+    (() 0)
+    ((List (Boxed (item i) (count c)) rest ...) (+ (* i c) (sum-items rest)))))
+
+(defun (main args)
+  (expect "field bound" (describe (Car (brand "saab") (colour Red) (year 1990))) "red saab")
+  (expect "literal field" (describe (Car (brand "fiat") (colour Blue) (year 1999))) "a 1999 car")
+  (expect "or in a field" (describe (Car (brand "volvo") (colour Green) (year 1980))) "a cool volvo")
+  (expect "guard" (describe (Car (brand "kia") (colour Blue) (year 2020))) "new kia")
+  (expect "bare type name" (describe (Car (brand "kia") (colour Blue) (year 1980))) "some car")
+
+  (expect "exhaustive over a field" (colour-name (Car (brand "a") (colour Green) (year 1))) "green")
+
+  (expect "struct origin" (quadrant (Point (x 0) (y 0))) "origin")
+  (expect "struct axis" (quadrant (Point (x 0) (y 5))) "y axis")
+  (expect "struct other axis" (quadrant (Point (x 5) (y 0))) "x axis")
+  (expect "struct binders" (quadrant (Point (x 2) (y 3))) "(2, 3)")
+
+  (def car (Car (brand "opel") (colour Red) (year 2001)))
+  (expect "nested generic" (unbox-car (Boxed (item car) (count 1))) "one opel")
+  (expect "nested generic, fields reordered" (unbox-car (Boxed (item car) (count 4))) "4 opel")
+
+  (expect "inside a list pattern"
+          (sum-items (list (Boxed (item 2) (count 3)) (Boxed (item 5) (count 1))))
+          11)
+
+  (def counter (Counter (name "clicks") (hits 3)))
+  (record-set! counter (hits 7))
+  (expect "mutable field"
+          (match counter ((Counter (name n) (hits h)) #"${n}=${(int->string h)}"))
+          "clicks=7")
+
+  (def (Point (x px) (y py)) (Point (x 10) (y 20)))
+  (expect "def destructures a struct" (+ px py) 30)
+  0)

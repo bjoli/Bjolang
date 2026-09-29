@@ -544,33 +544,6 @@ let internal traitCallType (env: Env) (traitName: string) (methodName: string) (
 
     methodType, tref
 
-/// Instantiates a record type with fresh type variables.
-///
-/// The record type and its field types have to be instantiated under the *same*
-/// substitution, or a field's type variable would be unrelated to the one in the
-/// record type it came from. Returns the instantiated record type, the declared
-/// fields as written, and the field types under that substitution.
-let internal instantiateRecord
-    (registry: TraitRegistry)
-    (recordTypeName: string)
-    : HMType * (string * HMType) list * Map<string, HMType> =
-
-    let tArgs, expectedFields = Map.find recordTypeName registry.Records
-
-    // The names are used exactly as they were registered, leading quote and
-    // all. Trimming it here bound the scheme over `a` while the field types
-    // resolved to `'a`, so the substitution matched nothing and a generic
-    // record's fields came back still holding the declaration's own variables.
-    let recordScheme = Scheme(tArgs, [], TCon(recordTypeName, tArgs |> List.map TVar))
-
-    let instantiatedRecordType, freshVars, _ = instantiate registry recordScheme
-    let fieldSubst = List.zip tArgs freshVars |> Map.ofList
-
-    let expectedFieldsInstantiated =
-        expectedFields |> List.map (fun (n, t) -> n, substTypeVars fieldSubst t) |> Map.ofList
-
-    instantiatedRecordType, expectedFields, expectedFieldsInstantiated
-
 /// The `#:mutable` fields of a record type, or `[]` for one that has none —
 /// which includes every type that is not a record at all.
 let mutableFieldsOf (registry: TraitRegistry) (recordTypeName: string) : string list =

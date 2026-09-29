@@ -58,6 +58,23 @@ A bare, capitalized identifier is a nullary constructor. To match a constructor 
   ((Some x) #"got ${x}"))
 #+END_SRC
 
+*** Records and Structs
+
+A record or struct is matched by its type name followed by the fields to look at, each written =(field-name pattern)=. Fields may be given in any order, and a field left out matches anything. A bare type name, like =Car=, matches every value of the type.
+
+#+BEGIN_SRC scheme
+(type (: Colour (Union Red Green Blue)))
+(type (: Car (Record (: brand string) (: colour Colour) (: year int))))
+
+(match car
+  ((Car (colour Red) (brand b)) #"a red ${b}")
+  ((Car (brand "volvo") (colour (or Green Blue))) "a cool volvo")
+  ((Car (year y)) #:when (> y 2000) "a new car")
+  (Car "some other car"))
+#+END_SRC
+
+Field patterns are checked for exhaustiveness like constructor arguments, so matching =(Car (colour Red))=, =(Car (colour Green))= and =(Car (colour Blue))= covers every =Car=. The fields of an =#:opaque= type can only be matched in the module that declares it.
+
 *** Collections
 
 Bjolang supports pattern matching on lists, vectors, arrays, and tuples.

@@ -97,6 +97,7 @@ let rec private typedPatternBinders (pat: TypedPattern) : string list =
         @ (tailOpt |> Option.map typedPatternBinders |> Option.defaultValue [])
     | TPTuple items -> items |> List.collect typedPatternBinders
     | TPConstruct(_, args) -> args |> List.collect typedPatternBinders
+    | TPRecord(_, fields) -> fields |> List.collect (snd >> typedPatternBinders)
     // `TPApp` holds an expression, not a binder; the pattern it wraps binds.
     | TPApp(_, inner) -> typedPatternBinders inner
     | TPAs(inner, n) -> n :: typedPatternBinders inner
