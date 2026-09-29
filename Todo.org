@@ -437,6 +437,21 @@ covering trait dispatch, extern resolution and keyword arguments. Renaming the
 shadow apart in the arguments instead does not work either — the binder keeps
 its spelling into the emitted C#, so only one end of the rename would move.
 
+* Inference faults found in passing
+
+** An accumulator's type is left unresolved in the generic original
+
+#+BEGIN_SRC scheme
+(: f (-> (Vec %a) int int) (where (Ord %a)))
+(defun (f v n)
+  (let loop ((i 0) (s (orderedset-empty)))
+    (if (= i n) (orderedset-length s) (loop (+ i 1) (orderedset-add s (vec-ref v i))))))
+#+END_SRC
+
+The monomorphised copy is right, but the generic original is emitted with
+~Empty<object /* unresolved meta */>()~ and fails in C# with CS0029. The same
+loop over a ~List~ with ~match~ compiles.
+
 * A lowercase union case cannot be matched by name
 
 Found while letting a binder shadow a union case constructor, and separate from
@@ -478,12 +493,27 @@ singleton, which carries the *default* comparer — so a collection built with o
 of its own silently reverted to .NET equality the moment it was emptied.
 ~TestFiles/186_collection_keys.bjo~ pins both.
 
-** A hand-written ~Eq~ is still not what a ~Map~ keys on
+** Where ~=~ and a ~Map~ can still disagree
 
-The gap the above only papers over. An ~Eq~ impl that departs from .NET's — a
-case-insensitive string, a record compared on one field, anything a user writes
-over a foreign type — is ignored by every hashed collection, and the symptom is
-a lookup that misses rather than anything that can be caught.
+A declared type's ~Eq~ and ~Ord~ are compiled into its ~Equals~,
+~GetHashCode~ and ~CompareTo~, a generic type's conditional ones included, and
+an ~Eq~ or ~Ord~ for a type declared elsewhere is refused. Three cases are left,
+each documented in ~Docs/prelude.org~, "Writing one by hand". In each the
+symptom is a lookup that misses rather than anything that can be caught.
+
+- *Two different cases of a union that ~=~ equates.* C# writes each case
+  record's ~Equals(Base?)~, and it answers false for another case before the
+  implementation runs; declaring it by hand is CS0111. ~(Cents 100)~ and
+  ~(Dollars 1)~ are two keys. Pinned in ~248_generic_materialization.bjo~.
+- *A specialized target*, ~(impl (Eq (Pair %a %a)))~ on a two-parameter
+  ~Pair~: the impl class instantiated at the type's own parameters is not the
+  impl the trait system would pick, so C#'s field-wise members stay.
+- *A ~(where ...)~ of another trait*, ~(where (->str %a))~: no .NET member can
+  stand in for the dictionary, so C#'s field-wise members stay.
+
+All three close with one design, which would also let a program key a map on
+an equality that is not the type's own: the key's evidence as the collection's
+comparer.
 
 The pieces are all in place. The CHAMP is comparer-parameterised end to end:
 ~TrieOps~ takes an ~IEqualityComparer<TK>~, ~Map<TK,TV>~ stores one and
@@ -516,10 +546,10 @@ devirtualisation the JIT gives the default comparer, which is a real cost on the
 structure whose whole point is speed. With the dictionary as the comparer that
 is one check at construction.
 
-The same is true of ~Ord~ and the ordered collections, and worse in one respect:
-~orderedmap-empty~ is a bare extern, ~OrderedMap~ keys on ~Comparer<T>.Default~,
-and a Bjolang ~Ord~ impl is ignored the same way — which is why ~std/clr-ord~
-has to exist at all.
+The same is true of ~Ord~ and the ordered collections: ~orderedmap-empty~ is a
+bare extern, and ~OrderedMap~ keys on ~Comparer<T>.Default~ (ordinal for a
+string), which reaches a Bjolang ~Ord~ only where it is compiled into the key
+type.
 
 Doing it for one trait and not the other is not worth it: both are one
 mechanism, ~evidence-as-comparer~, applied twice.
@@ -548,13 +578,6 @@ cannot be built at all. Deferred because moving the output means teaching
 staleness, the resolver table and the build record about a second directory, and
 none of that is needed to prove that identity no longer depends on location.
 
-** ~lib/text~ is a standard-library root of its own
-
-~(text json)~ is a package named ~text~, beside ~std~, because every
-top-level directory of ~lib~ is a root. Moving it under ~std~ would rename every
-module in it — ~BjoMod.text.json~ becomes ~BjoMod.std.text.json~ — and every
-assembly with it. Deferred as a rename with no technical content; the roots rule
-is indifferent to which of the two layouts is chosen.
 
 ** A relative import still means a path
 
