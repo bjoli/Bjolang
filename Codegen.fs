@@ -4675,9 +4675,10 @@ type private MaterializeTarget =
     /// `sealed override Equals(Base?)` the compiler still synthesizes is what
     /// routes a comparison at the base type through to here.
     | SealedCase
-    /// A union's abstract base. `Eq` writes nothing here and `Ord` writes
-    /// everything here — see the match in `materializedMembers` for why the
-    /// two go opposite ways.
+    /// A union's abstract base. `Eq` writes no member here and `Ord` writes
+    /// every member here — see the match in `materializedMembers` for why the
+    /// two go opposite ways. A conditional implementation's dictionary goes
+    /// here for both; see `materializedSupport`.
     | UnionBase
 
 /// The members `traitName`'s implementation becomes.
@@ -5163,10 +5164,10 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                     indent ctx
                     appendLine ctx $"private %s{declaredTypeName td.Name}() {{}}"
 
-                    // A materialized `Ord`'s `CompareTo` — and only that; `Eq`
-                    // writes nothing here. See `materializedMembers`. The
-                    // dictionaries go here too, for both: the cases reach them
-                    // as members of the type they are nested in.
+                    // A materialized `Ord`'s `CompareTo` — and no `Eq` member.
+                    // See `materializedMembers`. The dictionaries go here too,
+                    // for both: the cases reach them as members of the type
+                    // they are nested in.
                     for m in support @ materialized selfRef UnionBase do
                         indent ctx
                         appendLine ctx m

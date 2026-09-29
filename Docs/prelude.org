@@ -75,10 +75,48 @@ A hand-written implementation is how a type says its equality is not its fields:
                                    (eq-hash (record-ref p y)))))
 #+END_SRC
 
-The implementation *is* the type's .NET equality: its ~Equals~ and ~GetHashCode~ are emitted as calls to it, so ~Map~, ~Set~ and every other .NET consumer agree with ~=~. ~Ord~ becomes ~IComparable<T>~/~CompareTo~ the same way. A parameterized type materializes when its implementation is unconditional; one with a ~(where ...)~ keeps C#'s synthesized field-wise members, which reach each field's own implementation anyway.
+The implementation *is* the type's .NET equality: its ~Equals~ and ~GetHashCode~ are emitted as calls to it, so ~Map~, ~Set~ and every other .NET consumer agree with ~=~. ~Ord~ becomes ~IComparable<T>~/~CompareTo~ the same way, which is what ~OrderedMap~ and ~OrderedSet~ compare with.
 
 - An implementation that wants "the field-by-field comparison, plus one tweak" writes ~(structural-equals a b)~ and ~(structural-hash a)~: they compare the fields directly and never consult the receiver type's own ~Equals~, while each *field* still compares through its own type's equality.
 - The implementation is compiled into the type, so it must live in the module that declares the type. An ~Eq~ or ~Ord~ implementation for an imported type, an ~import/class~ alias, or (in the REPL) a type from an earlier entry is refused. The way out: the declaring module, the same REPL entry, or a wrapper type.
+
+A type with parameters is no different. Its implementation is usually *conditional* — it needs the element's equality:
+
+#+BEGIN_SRC scheme
+;; An undirected edge: (1 2) and (2 1) are one edge.
+(type (: (Edge %a) (Record (: from %a) (: to %a))))
+
+(impl (Eq (Edge %a)) (where (Eq %a))
+  (defun (= x y)
+    (or (and (= (record-ref x from) (record-ref y from)) (= (record-ref x to) (record-ref y to)))
+        (and (= (record-ref x from) (record-ref y to)) (= (record-ref x to) (record-ref y from)))))
+  (defun (eq-hash e)
+    (bitwise-xor (eq-hash (record-ref e from)) (eq-hash (record-ref e to)))))
+#+END_SRC
+
+Inside the type nobody hands it the ~Eq~ of ~%a~, so the type answers ~(where (Eq %a))~ itself, with ~%a~'s own ~Equals~ and ~GetHashCode~. That is right because they *are* ~%a~'s ~Eq~: compiled in for a type a module declares, and the same members for everything ~(std eq)~ implements. ~(where (Ord %a))~ is answered with ~%a~'s ~CompareTo~, and a string ordinally, as ~(Ord string)~ does. So a ~Set~ of the edges (1 2) and (2 1) has one element, and a ~Map~ finds either through the other.
+
+Where ~=~ and a ~Map~ can still disagree:
+
+- *An implementation with a ~(where ...)~ of another trait*, such as ~(where (->str %a))~. .NET has nothing to answer it with, so the type keeps the members C# writes, which compare field by field.
+- *An implementation for a specialized target*, such as ~(impl (Eq (Pair %a %a)))~ on a ~Pair~ with two parameters. The same.
+- *Two different cases of a union.* Each case is a C# record, and C# writes its ~Equals~ itself: asked about a value of another case, it answers false before the implementation runs. Two values of the *same* case do reach the implementation. A value with two spellings is normalized before it is a key:
+
+#+BEGIN_SRC scheme
+(type (: Money (Union (Cents int) (Dollars int))))
+
+(: money->cents (-> Money int))
+(defun (money->cents m)
+  (match m ((Cents c) c) ((Dollars d) (* d 100))))
+
+(impl (Eq Money)
+  (defun (= x y) (= (money->cents x) (money->cents y)))
+  (defun (eq-hash m) (eq-hash (money->cents m))))
+
+(= (Cents 100) (Dollars 1))                              ;; #t
+(set-length (list->set (list (Cents 100) (Dollars 1))))  ;; 2, not 1
+(set-length (list->set (list (Cents 100) (Cents (money->cents (Dollars 1))))))  ;; 1
+#+END_SRC
 
 *** ~type/derive~
 ~type/derive~ writes that out per field. A macro in ~(std prelude)~, and syntactic — where a declaration is read there is no registry to ask what a type's fields are, only the form that declares them.
@@ -90,7 +128,7 @@ The implementation *is* the type's .NET equality: its ~Equals~ and ~GetHashCode~
 
 - a record or struct compares its fields in declaration order
 - a union compares the case first: different cases are unequal, the same case compares its payload positionally
-- a type with parameters derives a *conditional* implementation, ~(impl (Eq (Box %a)) (where (Eq %a)) ...)~
+- a type with parameters derives a *conditional* implementation, ~(impl (Eq (Box %a)) (where (Eq %a)) ...)~, compiled into the type as above: a ~(Box int)~ is a ~Map~ key and an ~OrderedMap~ key
 - the traits are a list: ~(Eq)~, ~(Ord)~ or ~(Eq Ord)~, each deriving its own methods from the one declaration
 
 ~Ord~ reads the same declaration the same way round and answers a sign rather than a ~bool~: a record or struct compares its fields in declaration order and stops at the first that decides, a union compares the case index before the payload.
