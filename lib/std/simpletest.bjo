@@ -466,17 +466,27 @@
             (map-empty)
             m))
 
-;; A file, or a directory and everything below it. Fails if `to` exists.
-(: fake-fs-move (-> FakeFs (-> string string (Result Exception Unit))))
+;; A file, or a directory and everything below it. Fails if `to` exists,
+;; unless `MoveReplace` asks to replace a file there with a file. The source is
+;; checked first, as `File.Move` does.
+(: fake-fs-move (-> FakeFs (-> string string MoveMode (Result Exception Unit))))
 (defun (fake-fs-move fs)
-  (fun (raw-from raw-to)
+  (fun (raw-from raw-to mode)
     (def from (fake-path raw-from))
     (def to (fake-path raw-to))
+    (def from-kind (fake-kind fs from))
+    (def to-kind (fake-kind fs to))
+    (def replacing (match (Tuple mode from-kind to-kind)
+                     ((Tuple MoveReplace (Some FsFile) (Some FsFile)) #t)
+                     (_ #f)))
     (cond
-      ((some? (fake-kind fs to)) (io-error #"the fake filesystem already has ${to}"))
+      ((none? from-kind) (not-found from))
+      ((and (some? to-kind) (not replacing)) (io-error #"the fake filesystem already has ${to}"))
       ((not (fake-dir? fs (fake-parent to))) (no-directory to))
-      ((none? (fake-kind fs from)) (not-found from))
       (else
+       (when replacing
+         (fake-update! fs (map-remove (fake-entries fs) to))
+         (fake-forget-time! fs to))
        (fake-update! fs (fake-renamed (fake-entries fs) from to))
        (record-set! fs (modified (fake-renamed (record-ref fs modified) from to)))
        (Ok unit)))))

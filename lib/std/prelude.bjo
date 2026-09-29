@@ -137,7 +137,7 @@
   open-input-file/raw open-output-file/raw WriteMode
   call-with-input-file call-with-output-file
   ;; The FS effect: its operations, their cells, and the defaults
-  FsKind FsInfo
+  FsKind FsInfo MoveMode
   open-read-stream op/open-read-stream open-read-stream/raw
   open-write-stream op/open-write-stream open-write-stream/raw
   fs-info op/fs-info fs-info/raw
@@ -1354,6 +1354,14 @@
 ;; What a path names, when it names anything.
 (type (: FsKind (Union FsFile FsDirectory)))
 
+;; What a move does when something is already at the target.
+;;
+;; - `MoveNew`: fails, and changes nothing.
+;; - `MoveReplace`: a file at the target is replaced, in the one rename that
+;;   moves the new one there, so nothing ever sees the target missing. A
+;;   directory is never replaced, whichever of the two it is.
+(type (: MoveMode (Union MoveNew MoveReplace)))
+
 ;; What `(fs-info path)` answers about a path that names something. One answer
 ;; to one question, so that a handler cannot say a path is a file and then
 ;; forget to say how big it is.
@@ -1422,9 +1430,10 @@
 (: file-delete (-> string void))
 (defun (file-delete path) (raise-err (fs-delete-file path)))
 
-;; Moves or renames a file or a directory. Fails if `to` exists.
-(: file-move (-> string string void))
-(defun (file-move from to) (raise-err (fs-move from to)))
+;; Moves or renames a file or a directory. Fails if `to` exists, unless
+;; `#:mode MoveReplace` says to replace a file there.
+(: file-move (-> string string (#:mode MoveMode) void))
+(defun (file-move from to #:mode MoveNew) (raise-err (fs-move from to mode)))
 
 ;; --- Paths ---
 ;; Path strings.
@@ -1649,7 +1658,7 @@
                       #:exceptions (System.IO.IOException System.UnauthorizedAccessException)))
   (clr-dir-delete  (: System.IO.Directory.Delete (-> string void)
                       #:exceptions (System.IO.IOException System.UnauthorizedAccessException)))
-  (clr-file-move   (: System.IO.File.Move (-> string string void)
+  (clr-file-move   (: System.IO.File.Move (-> string string bool void)
                       #:exceptions (System.IO.IOException System.UnauthorizedAccessException)))
   (clr-dir-move    (: System.IO.Directory.Move (-> string string void)
                       #:exceptions (System.IO.IOException System.UnauthorizedAccessException))))
@@ -1774,12 +1783,13 @@
 (: fs-delete-directory/raw (-> string (Result Exception Unit)))
 (defun (fs-delete-directory/raw path) (unit-result (clr-dir-delete path)))
 
-;; A file or a directory. Fails if `to` exists.
-(: fs-move/raw (-> string string (Result Exception Unit)))
-(defun (fs-move/raw from to)
+;; A file or a directory. Fails if `to` exists, unless `MoveReplace` asks to
+;; replace a file there. `Directory.Move` never replaces, which is the rule.
+(: fs-move/raw (-> string string MoveMode (Result Exception Unit)))
+(defun (fs-move/raw from to mode)
   (unit-result (if (clr-dir-exists from)
                    (clr-dir-move from to)
-                   (clr-file-move from to))))
+                   (clr-file-move from to (match mode (MoveNew #f) (MoveReplace #t))))))
 
 (defeffect FS
   (open-read-stream    (-> string (Result Exception Stream)))
@@ -1789,7 +1799,7 @@
   (fs-create-directory (-> string (Result Exception Unit)))
   (fs-delete-file      (-> string (Result Exception Unit)))
   (fs-delete-directory (-> string (Result Exception Unit)))
-  (fs-move             (-> string string (Result Exception Unit)))
+  (fs-move             (-> string string MoveMode (Result Exception Unit)))
   #:default ((open-read-stream open-read-stream/raw)
              (open-write-stream open-write-stream/raw)
              (fs-info fs-info/raw)

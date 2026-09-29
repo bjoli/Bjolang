@@ -51,6 +51,10 @@
 (: in-probe (-> string string))
 (defun (in-probe name) (path-combine probe name))
 
+(: threw? (-> (Result System.Exception %a) bool))
+(defun (threw? r)
+  (match r ((Ok _) #f) ((Err _) #t)))
+
 ;; ---------------------------------------------------------------------------
 ;; file-info
 ;; ---------------------------------------------------------------------------
@@ -115,9 +119,43 @@
      (expect "and is what it points at" (described (in-probe "link.txt")) "file 3"))
     ((Err _) (println "ok: symbolic links are refused here, so not checked"))))
 
+;; ---------------------------------------------------------------------------
+;; file-move
+;; ---------------------------------------------------------------------------
+
+;; The same checks on the fake and on the disk: `where` says which.
+(: check-moves (-> string void))
+(defun (check-moves where)
+  (def a (in-probe "a.txt"))
+  (def b (in-probe "b.txt"))
+  (def c (in-probe "c.txt"))
+  (def d (in-probe "d"))
+  (directory-create d)
+  (file-write-text a "A")
+  (file-write-text b "B")
+  (expect-true #"${where}: MoveNew onto a file fails"
+               (threw? (try (file-move a b) #:catch (System.Exception))))
+  (expect #"${where}: and changes nothing" (str (file-read-text a) (file-read-text b)) "AB")
+  (file-move a b #:mode MoveReplace)
+  (expect #"${where}: MoveReplace replaces a file" (file-read-text b) "A")
+  (expect-true #"${where}: and the source is gone" (not (file-exists? a)))
+  (expect-true #"${where}: MoveReplace onto a directory fails"
+               (threw? (try (file-move b d #:mode MoveReplace) #:catch (System.Exception))))
+  (expect-true #"${where}: and the file is still there" (file-exists? b))
+  (expect-true #"${where}: a directory never replaces a file"
+               (threw? (try (file-move d b #:mode MoveReplace) #:catch (System.Exception))))
+  (expect-true #"${where}: and both are still there" (and (directory-exists? d) (file-exists? b)))
+  (expect-true #"${where}: a missing source fails, even replacing"
+               (threw? (try (file-move a b #:mode MoveReplace) #:catch (System.Exception))))
+  (expect #"${where}: and the target is intact" (file-read-text b) "A")
+  (file-move b c #:mode MoveReplace)
+  (expect #"${where}: MoveReplace onto a free path moves" (file-read-text c) "A"))
+
 (defun (main)
   (when (directory-exists? probe) (directory-delete-tree probe))
   (info-on-a-fake)
   (info-on-the-disk)
+  (with-fake-fs () (check-moves "fake"))
+  (check-moves "disk")
   (directory-delete-tree probe)
   0)

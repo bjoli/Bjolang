@@ -3,6 +3,25 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~file-move~ can replace a file
+
+~(file-move from to #:mode MoveReplace)~ replaces a file at ~to~, in the one
+rename that moves the new file there, so nothing ever sees ~to~ missing. That
+is what writing a file safely is built from: write a temporary file, then move
+it over the old one. ~MoveNew~, the default, fails when ~to~ exists, as
+~file-move~ always has.
+
+A directory is never replaced, and never replaces a file: ~MoveReplace~ onto a
+directory, or of a directory onto a file, fails and changes nothing.
+
+*Breaking.* The ~FS~ operation ~fs-move~ takes the ~MoveMode~ as a third
+argument; a handler for it takes three.
+
+Tested in ~249_files.bjo~, the same eleven checks on the fake and on the disk:
+~MoveNew~ refusing, ~MoveReplace~ replacing, neither replacing a directory or
+with one, a missing source failing even when replacing, and a move to a free
+path.
+
 * ~file-info~ says how big a file is and when it was written
 
 ~(file-info path)~ answers ~(Option FsInfo)~: the ~kind~ (~FsFile~ or
