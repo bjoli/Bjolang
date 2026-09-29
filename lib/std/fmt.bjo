@@ -193,15 +193,15 @@
 ;; Generates padding of specified width.
 (: padding (-> int string))
 (defun (padding w)
-  (let* ((c (parameter-ref current-pad))
-         (cw (width-of (char->string c)))
-         (b (stringbuilder-empty)))
-        (when (> cw 0)
-          (let loop ((room w))
-            (when (>= room cw)
-              (stringbuilder-add! b c)
-              (loop (- room cw)))))
-        (stringbuilder->string b)))
+  (def* (c (parameter-ref current-pad))
+        (cw (width-of (char->string c)))
+        (b (stringbuilder-empty)))
+  (when (> cw 0)
+    (let loop ((room w))
+      (when (>= room cw)
+        (stringbuilder-add! b c)
+        (loop (- room cw)))))
+  (stringbuilder->string b))
 
 ;; Gets prefix/suffix fitting w columns.
 (: prefix-of-width (-> string int string))
@@ -217,13 +217,20 @@
 (: suffix-of-width (-> string int string))
 (defun (suffix-of-width s w)
   (let loop ((c (string-cursor-end s)) (room w))
-    (if (string-cursor=? c (string-cursor-start s))
-        s
-        (let* ((p (string-cursor-prev s c))
-               (cw (width-of (char->string (string-cursor-ref s p)))))
-              (if (<= cw room)
-                  (loop p (- room cw))
-                  (substring/cursors s c (string-cursor-end s)))))))
+    (cond
+      ((string-cursor=? c (string-cursor-start s))
+       s)
+      (:def p (string-cursor-prev s c))
+      (:def cw (width-of (char->string (string-cursor-ref s p))))
+      ((<= cw room) (loop p (- room cw)))
+      (else (substring/cursors s c (string-cursor-end s))))))
+    ;; (if (string-cursor=? c (string-cursor-start s))
+    ;;     s
+    ;;     (let* ((p (string-cursor-prev s c))
+    ;;            (cw (width-of (char->string (string-cursor-ref s p)))))
+    ;;           (if (<= cw room)
+    ;;               (loop p (- room cw))
+    ;;               (substring/cursors s c (string-cursor-end s)))))))
 
 (: pad/left (-> int string string))
 (defun (pad/left w s) (string-append (padding (- w (width-of s))) s))
@@ -236,7 +243,7 @@
 (defun (pad/both w s)
   (let* ((missing (- w (width-of s)))
          (left (/ missing 2)))
-        (string-append (padding left) (string-append s (padding (- missing left))))))
+    (string-append (padding left) (string-append s (padding (- missing left))))))
 
 ;; Trims string to w columns.
 (: trim/left (-> int string string))
@@ -262,7 +269,7 @@
              (room (- w (* 2 (width-of e))))
              (dropped (- (width-of s) (max room 0)))
              (kept (suffix-of-width s (- (width-of s) (/ dropped 2)))))
-            (string-append e (string-append (prefix-of-width kept (max room 0)) e)))))
+        (string-append e (string-append (prefix-of-width kept (max room 0)) e)))))
 
 
 ;; --- The block algebra -----------------------------------------------------
@@ -474,17 +481,17 @@
 ;; The runs of non-whitespace in `s`, in order.
 (: words-of (-> string (Vec string)))
 (defun (words-of s)
-  (let ((out (vecbuilder-empty)))
-    (let lp ((c (string-cursor-start s)) (start (string-cursor-start s)) (in? #f))
-      (if (string-cursor-end? s c)
-          ;; todo: add a (cond ...) here
-          (when in? (vecbuilder-add! out (substring/cursors s start c)))
-          (if (char-whitespace? (string-cursor-ref s c))
-              (let ()
-                (when in? (vecbuilder-add! out (substring/cursors s start c)))
-                (lp (string-cursor-next s c) (string-cursor-next s c) #f))
-              (lp (string-cursor-next s c) (if in? start c) #t))))
-    (vecbuilder->vec out)))
+  (def out (vecbuilder-empty))
+  (let lp ((c (string-cursor-start s)) (start (string-cursor-start s)) (in? #f))
+    (if (string-cursor-end? s c)
+        ;; todo: add a (cond ...) here
+        (when in? (vecbuilder-add! out (substring/cursors s start c)))
+        (if (char-whitespace? (string-cursor-ref s c))
+            (let ()
+              (when in? (vecbuilder-add! out (substring/cursors s start c)))
+              (lp (string-cursor-next s c) (string-cursor-next s c) #f))
+            (lp (string-cursor-next s c) (if in? start c) #t))))
+  (vecbuilder->vec out))
 
 ;; Packs words into lines.
 (: packed (-> (Vec string) int int (List (List string))))
@@ -501,16 +508,14 @@
 ;; The words with a single pad character between them.
 (: spaced (-> (List string) string))
 (defun (spaced ws)
-  (let ((b (stringbuilder-empty))
-        (gap (padding 1)))
-    ;; rewrite as {folding }
-    (ignore (list-foldl (fun (w first?)
-                          (unless first? (stringbuilder-add-string! b gap))
-                          (stringbuilder-add-string! b w)
-                          #f)
-                        #t
-                        ws))
-    (stringbuilder->string b)))
+  (def b (stringbuilder-empty))
+  (def gap (padding 1))
+  (loop (:with first? #t #f)
+        (:for w ws)
+        (:do
+         (unless first? (stringbuilder-add-string! b gap))
+         (stringbuilder-add-string! b w)))
+  (stringbuilder->string b))
 
 ;; Stretches spaced words to budget.
 (: stretched (-> (List string) int string))
@@ -570,11 +575,11 @@
 ;; The lines of `s`, without the empty one a trailing newline leaves behind.
 (: lines-of (-> string (Vec string)))
 (defun (lines-of s)
-  (let* ((parts (string-split s "\n"))
-         (n (vec-length parts)))
-        (if (and (> n 1) (string-empty? (vec-ref parts (- n 1))))
-            (vec-slice parts 0 (- n 1))
-            parts)))
+  (def* (parts (string-split s "\n"))
+        (n (vec-length parts)))
+  (if (and (> n 1) (string-empty? (vec-ref parts (- n 1))))
+      (vec-slice parts 0 (- n 1))
+      parts))
 
 (: laid-out (-> (Vec (Vec string)) (Vec int) string bool Block))
 (defun (laid-out cells widths sep cut?)
@@ -592,23 +597,23 @@
 ;; Formats row string.
 (: row-of (-> (Vec (Vec string)) (Vec int) string bool int string))
 (defun (row-of cells widths sep cut? r)
-  (let ((b (stringbuilder-empty))
+  (def* (b (stringbuilder-empty))
         (n (vec-length cells)))
-    (let lp ((i 0))
-      (when (< i n)
-        (when (> i 0) (stringbuilder-add-string! b sep))
-        (let* ((ls (vec-ref cells i))
-               (text (if (< r (vec-length ls)) (vec-ref ls r) ""))
-               (w (vec-ref widths i))
-               (last? (= i (- n 1))))
-          (stringbuilder-add-string!
-           b
-           (cond (last? (if cut? (trim/right w text) text))
-                 (cut? (pad/right w (trim/right w text)))
-                 (else (pad/right w text)))))
-        (lp (+ i 1))))
-    (stringbuilder->string b)))
-
+  (let lp ((i 0))
+    (when (< i n)
+      (when (> i 0) (stringbuilder-add-string! b sep))
+      (def* (ls (vec-ref cells i))
+            (text (if (< r (vec-length ls)) (vec-ref ls r) ""))
+            (w (vec-ref widths i))
+            (last? (= i (- n 1))))
+        (stringbuilder-add-string!
+         b
+         (cond (last? (if cut? (trim/right w text) text))
+               (cut? (pad/right w (trim/right w text)))
+               (else (pad/right w text))))
+      (lp (+ i 1))))
+  (stringbuilder->string b))
+ 
 (: rendered-columns (-> (Vec (Vec Block)) (Vec (Vec string))))
 (defun (rendered-columns cols)
   (vec-map (fun (c) (lines-of (render->string c))) cols))

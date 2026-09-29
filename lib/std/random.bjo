@@ -13,8 +13,8 @@
 ;; std/random.bjo — random numbers.
 ;;
 ;; The default source is ChaCha20 seeded with 256 bits from the OS CSPRNG, one
-;; generator per thread, drawn from without a lock. A source of your own is
-;; locked instead. Every function here takes `#:rng`, defaulting to
+;; generator per thread, drawn from without a lock. Any user-supplied rng uses
+;; a lock. Every function here takes `#:rng`, defaulting to
 ;; `(parameter-ref current-random)`, so a program that wants a different source
 ;; binds the parameter and changes no call site.
 ;;
@@ -26,9 +26,7 @@
 ;; makes the default safe on a bjoroutine: a fiber may resume on a different
 ;; thread than it suspended on, so a source read out of the parameter before a
 ;; suspension would otherwise go on drawing from the old thread's generator
-;; while another fiber ran on that thread and drew from it too. There is nothing
-;; to race on, because the value that crosses the suspension names nothing —
-;; and nothing to lock, because no two threads can reach one generator.
+;; while another fiber ran on that thread and drew from it too. 
 ;;
 ;; A source from `make-random` and its neighbours does name a generator, and two
 ;; fibers may hold it at once, so every operation on one takes its lock. The
@@ -82,7 +80,9 @@
   (clr-random-shuffle (: Bjolang.Runtime.RandomModule.Shuffle (-> RandomSource (Array %a) void)))
   (clr-random-string  (: Bjolang.Runtime.RandomModule.Str     (-> RandomSource int string))))
 
-;; `make-parameter`. Takes a hot spot. 
+;; `make-parameter`. Takes a hot parameter.
+;; The default ambient-random is null, meaning every read reads the threadlocal.
+;; Parameterizing current-random to (ambient-random) is thus always safe.
 (: current-random (Param RandomSource))
 (def current-random (make-parameter (ambient-random)))
 
