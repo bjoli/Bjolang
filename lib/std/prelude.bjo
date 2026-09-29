@@ -126,7 +126,7 @@
   path-absolute path-combine path-filename path-file-extension
   ;; Directories
   directory-exists? directory-create directory-delete directory-delete-tree
-  directory-files directory-subdirectories
+  directory-files directory-subdirectories directory-walk
   ;; The environment
   get-environment-variable set-environment-variable!
   current-directory set-current-directory!
@@ -1482,13 +1482,32 @@
 
 ;; Built from the operations rather than handed to `Directory.Delete` with its
 ;; recursive flag, so that a handler sees every deletion.
+;;
+;; A symbolic link to a directory is removed as a link and never entered, and
+;; that includes `path` itself. Entering one would delete what it points at: a
+;; link to the home directory inside a build directory would empty the home
+;; directory, and a link back up the tree would never end.
 (: directory-delete-tree (-> string void))
 (defun (directory-delete-tree path)
-  (loop (:for entry (raise-err (fs-list path)))
-        (:do (match (kind-of entry)
-               ((Some FsDirectory) (directory-delete-tree entry))
-               (_ (file-delete entry)))))
-  (directory-delete path))
+  (if (directory-link? path)
+      (directory-delete path)
+      (let ()
+        (loop (:for entry (raise-err (fs-list path)))
+              (:do (match (fs-info entry)
+                     ((Some info)
+                      (match (record-ref info kind)
+                        (FsDirectory (directory-delete-tree entry))
+                        (FsFile (file-delete entry))))
+                     ;; A link to nothing, which `file-delete` removes.
+                     (None (file-delete entry)))))
+        (directory-delete path))))
+
+(: directory-link? (-> string bool))
+(defun (directory-link? path)
+  (match (fs-info path)
+    ((Some info) (and (record-ref info link?)
+                      (match (record-ref info kind) (FsDirectory #t) (FsFile #f))))
+    (None #f)))
 
 (: entries-of-kind (-> string FsKind (Vec string)))
 (defun (entries-of-kind path kind)
@@ -1976,6 +1995,41 @@
 
 (: file-read-lines/seq #:sync (-> string (Seq string)))
 (defun (file-read-lines/seq path) (file-read/seq read-line path))
+
+;; The files under `dir`, depth first, pulled lazily.
+;;
+;; Each directory's entries are taken in ordinal order, so a walk is the same
+;; on every OS and on a fake: a tool that hashes the files in walk order gets
+;; the same hash everywhere. `into?` is asked about each directory before the
+;; walk goes into it, which is how `.git` is left out. A directory that is a
+;; symbolic link is never entered, so a link back up the tree cannot loop the
+;; walk. Listing happens when the sequence is walked, so the handler installed
+;; at the walk answers, and a walk that stops early lists nothing more. An
+;; error on the way raises, as `directory-files` does.
+;;
+;; A `seq` body is one iterator, so the walk keeps its own list of what is
+;; left rather than recursing: a directory's entries go in front of the rest.
+(: sorted-entries (-> string (List string)))
+(defun (sorted-entries dir) (list-sort (vec->list (raise-err (fs-list dir)))))
+
+(: directory-walk #:sync (-> string (#:into? (-> string bool)) (Seq string)))
+(defun (directory-walk dir #:into? (fun (d) #t))
+  (seq
+    (let loop ((todo (sorted-entries dir)))
+      (unless (list-empty? todo)
+        (def entry (list-head todo))
+        (def rest (list-tail todo))
+        (match (fs-info entry)
+          ((Some info)
+           (match (record-ref info kind)
+             (FsFile (yield entry)
+                     (loop rest))
+             (FsDirectory
+              (if (and (not (record-ref info link?)) (into? entry))
+                  (loop (list-append (sorted-entries entry) rest))
+                  (loop rest)))))
+          ;; Gone since it was listed.
+          (None (loop rest)))))))
 
 ;; Flush.
 (import/extern

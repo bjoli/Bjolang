@@ -3,6 +3,37 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~directory-walk~ walks a tree, and ~directory-delete-tree~ no longer follows links
+
+~(directory-walk dir #:into? pred)~ is the files under ~dir~, depth first, as
+a lazy ~Seq~.
+
+- Each directory's entries are taken in ordinal order, so a walk is the same
+  on every OS and on a fake: a tool that hashes files in walk order gets the
+  same hash everywhere.
+- ~#:into?~ is asked about each directory before the walk goes into it:
+  ~(directory-walk "." #:into? (fun (d) (not (= (path-filename d) (Some ".git")))))~.
+- A directory that is a symbolic link is not entered, so a link back up the
+  tree cannot loop the walk.
+- Nothing is listed until the walk, and a walk that stops early lists nothing
+  more: ~(find pred (directory-walk dir))~ stops at the first match. The
+  handler installed where the sequence is walked is the one that answers.
+- No glob patterns: ~(filter #(string-ends-with? & ".bjo") (directory-walk "src"))~
+  asks the same question in the language.
+
+~directory-delete-tree~ followed symbolic links to directories since it was
+rebuilt from the ~FS~ operations, and so deleted what they pointed at: a link
+to the home directory inside a build directory would have emptied the home
+directory, and a link back up the tree never ended. A link to a directory is
+now removed as a link and never entered, including when it is the path given.
+
+Tested in ~249_files.bjo~: the walk's order, ~#:into?~, ~filter~ and an empty
+directory on the fake and on the disk; on the fake, counting listings, that
+making a walk lists nothing and stopping early lists only what was passed, and
+that the handler at the walk answers; on the disk, a link back up the tree not
+entered, and a tree holding a link out of it deleted without what the link
+points at.
+
 * Files can be copied, and read and written whole as bytes or as lines
 
 - ~(file-copy from to #:mode CreateNew)~. The mode is how ~to~ is opened:

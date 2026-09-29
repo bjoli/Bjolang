@@ -16,7 +16,9 @@
 
 (import/extern
   (clr-symlink (: System.IO.File.CreateSymbolicLink (-> string string FileSystemInfo)
-                  #:exceptions (System.IO.IOException System.UnauthorizedAccessException))))
+                  #:exceptions (System.IO.IOException System.UnauthorizedAccessException)))
+  (clr-dir-symlink (: System.IO.Directory.CreateSymbolicLink (-> string string FileSystemInfo)
+                      #:exceptions (System.IO.IOException System.UnauthorizedAccessException))))
 
 ;; What a path is, as one string a check can compare: "file 3", "dir 0" or
 ;; "none".
@@ -247,6 +249,105 @@
   (file-write-lines f (vec-of '()))
   (expect #"${where}: no lines make an empty file" (file-read-text f) ""))
 
+;; ---------------------------------------------------------------------------
+;; directory-walk
+;; ---------------------------------------------------------------------------
+
+;; A small tree with a `.git` in it, made the same way on the fake and the
+;; disk. Five directories: `dir`, `.git`, `a`, `a/m` and `empty`.
+(: make-tree (-> string void))
+(defun (make-tree dir)
+  (directory-create (path-combine dir ".git"))
+  (directory-create (path-combine dir "a" "m"))
+  (directory-create (path-combine dir "empty"))
+  (file-write-text (path-combine dir ".git" "HEAD") "ref")
+  (file-write-text (path-combine dir "a" "m" "k.txt") "k")
+  (file-write-text (path-combine dir "a" "z.txt") "z")
+  (file-write-text (path-combine dir "b.txt") "b")
+  (file-write-text (path-combine dir "c.bjo") "c"))
+
+(: not-git? (-> string bool))
+(defun (not-git? d) (not (= (path-filename d) (Some ".git"))))
+
+(: check-walk (-> string string void))
+(defun (check-walk where dir)
+  (make-tree dir)
+  ;; "." sorts before "a", so `.git` comes first.
+  (expect #"${where}: every file, depth first, each directory in order"
+          (seq->list (directory-walk dir))
+          (list (path-combine dir ".git" "HEAD")
+                (path-combine dir "a" "m" "k.txt")
+                (path-combine dir "a" "z.txt")
+                (path-combine dir "b.txt")
+                (path-combine dir "c.bjo")))
+  (expect #"${where}: into? leaves a directory out"
+          (seq->list (directory-walk dir #:into? not-git?))
+          (list (path-combine dir "a" "m" "k.txt")
+                (path-combine dir "a" "z.txt")
+                (path-combine dir "b.txt")
+                (path-combine dir "c.bjo")))
+  (expect #"${where}: filter asks what a glob would"
+          (seq->list (filter #(string-ends-with? & ".bjo") (directory-walk dir)))
+          (list (path-combine dir "c.bjo")))
+  (expect #"${where}: an empty directory has no files"
+          (list-length (seq->list (directory-walk (path-combine dir "empty"))))
+          0))
+
+;; On the fake, where every listing can be counted.
+(: walk-is-lazy (-> void))
+(defun (walk-is-lazy)
+  (def fs (fake-fs (list)))
+  (with-fake-fs-of fs
+    (make-tree "lazy")
+    (def listed (make-box 0))
+    (with-handler ((fs-list (fun (p)
+                              (ignore (box-set! listed (+ (box-ref listed) 1)))
+                              ((fake-fs-list fs) p))))
+      (def walk (directory-walk "lazy"))
+      (expect "making a walk lists nothing" (box-ref listed) 0)
+      ;; The first `.txt` is under `a/m`: the root, `.git`, `a` and `a/m` are
+      ;; listed on the way, and `empty` is not.
+      (expect "a walk stopped early" (find #(string-ends-with? & ".txt") walk)
+              (Some (path-combine "lazy" "a" "m" "k.txt")))
+      (expect "lists only what it passed" (box-ref listed) 4)
+      (ignore (seq->list walk))
+      (expect "and a whole walk lists every directory once more" (box-ref listed) 9)))
+  ;; Nothing is listed until the walk, so a walk made where there is no such
+  ;; directory is answered by the handler installed where it is walked.
+  (def elsewhere (directory-walk "249_nowhere"))
+  (with-fake-fs (("249_nowhere/x.txt" "x"))
+    (expect "the handler at the walk answers" (seq->list elsewhere)
+            (list (path-combine "249_nowhere" "x.txt")))))
+
+;; On the disk only: a link to a directory is never entered, by a walk or by
+;; a delete. Entering one to delete would delete what it points at. Some
+;; systems refuse an unprivileged symbolic link; there is nothing to check
+;; then.
+(: links-on-the-disk (-> void))
+(defun (links-on-the-disk)
+  (def dir (in-probe "linked"))
+  (def outside (in-probe "outside"))
+  (make-tree dir)
+  (directory-create outside)
+  (file-write-text (path-combine outside "keep.txt") "keep")
+  (match (clr-dir-symlink (path-combine dir "a" "up") "..")
+    ((Ok _)
+     (ignore (clr-dir-symlink (path-combine dir "a" "out") (path-combine ".." ".." "outside")))
+     (ignore (clr-dir-symlink (in-probe "to-outside") "outside"))
+     (expect-true "a link to a directory says so" (link? (path-combine dir "a" "up")))
+     (expect "a link back up the tree is not entered"
+             (list-length (seq->list (directory-walk dir)))
+             5)
+     (directory-delete-tree dir)
+     (expect-true "a tree with links in it is deleted" (not (directory-exists? dir)))
+     (expect-true "and what a link pointed at outside it is not"
+                  (file-exists? (path-combine outside "keep.txt")))
+     (directory-delete-tree (in-probe "to-outside"))
+     (expect-true "deleting a link as a tree removes the link"
+                  (none? (file-info (in-probe "to-outside"))))
+     (expect-true "and nothing it points at" (file-exists? (path-combine outside "keep.txt"))))
+    ((Err _) (println "ok: symbolic links are refused here, so not checked"))))
+
 ;; Once through the ordinary copies of the functions. `main` is a bjoroutine,
 ;; so what it calls directly runs their suspending copies; `#:sync` keeps this
 ;; one, and everything it calls, on the ordinary ones.
@@ -262,7 +363,11 @@
     (check-lines "fake" "lines"))
   (check-copies "disk" (in-probe "copies"))
   (check-bytes "disk" (in-probe "bytes"))
-  (check-lines "disk" (in-probe "lines")))
+  (check-lines "disk" (in-probe "lines"))
+  (with-fake-fs () (check-walk "fake" "walk"))
+  (check-walk "disk" (in-probe "walk"))
+  (walk-is-lazy)
+  (links-on-the-disk))
 
 (defbjo (main)
   (when (directory-exists? probe) (directory-delete-tree probe))
