@@ -277,15 +277,23 @@ Whole-file operations, for when the contents fit in memory. They throw as the un
 - ~(file-read-text path)~ : The whole file, as one string.
 - ~(file-write-text path contents)~ : Writes ~contents~, truncating the file if it exists.
 - ~(file-append-text path contents)~ : Appends ~contents~, creating the file if it is missing.
+- ~(file-read-lines path)~ : The lines, as a ~(Vec string)~, without their line ends. ~"\n"~ and ~"\r\n"~ both end a line, a last line needs none, and a final line end makes no empty line after it.
+- ~(file-write-lines path lines)~ : Writes a ~(Vec string)~, each line followed by ~"\n"~, the last one too, on every OS, so the same lines are the same bytes everywhere. ~file-read-lines~ reads back what it wrote, as long as no line holds a line end of its own.
+- ~(file-read-bytes path)~ : The whole file, as an ~(Array byte)~.
+- ~(file-write-bytes path bytes)~ / ~(file-append-bytes path bytes)~
+- ~(file-copy from to #:mode CreateNew)~ : ~#:mode~ is the ~WriteMode~ ~to~ is opened with. ~CreateNew~, the default, fails if ~to~ exists, so a copy never loses a file by accident; it is the one function whose ~WriteMode~ does not default to ~Truncate~. ~Truncate~ replaces ~to~, and ~Append~ adds to it. A missing source leaves ~to~ as it was. A copy onto its own path fails, as does a directory as the source. The copy is a new file, with a modified time of its own.
 
-The three whole-file reads and writes have suspending copies, so a bjoroutine calling one awaits the file rather than parking its thread.
+All of these have suspending copies, so a bjoroutine calling one awaits the file rather than parking its thread.
+- ~(file-info path)~ : ~(Option FsInfo)~, ~None~ when the path names nothing. ~FsInfo~ is a record of ~kind~ (~FsFile~ or ~FsDirectory~), ~size~ in bytes (0 for a directory), ~modified-ms~ (the last write, in Unix milliseconds, UTC) and ~link?~. A symbolic link's size and time are those of what it leads to, which is what reading it reads; ~link?~ says it is one. With ~(std datetime)~, ~(unix-milliseconds->instant (record-ref info modified-ms))~ answers the time as an ~(Option Instant)~, ~None~ only outside the years 1 to 9999.
 - ~(file-exists? path)~ : ~#f~ for a directory.
 - ~(file-delete path)~ : A missing file is not an error.
-- ~(file-move from to)~ : A file or a directory. Fails if ~to~ exists.
+- ~(file-move from to #:mode MoveNew)~ : A file or a directory. ~MoveNew~, the default, fails if ~to~ exists. ~MoveReplace~ replaces a file at ~to~, in the one rename that moves the new one there, so nothing ever sees ~to~ missing: write a temporary file, then move it over the old one. A directory is never replaced, and never replaces a file.
 
 Everything in this section and under Directories below reaches the disk through the ~FS~ effect (see "Files, and the ~FS~ effect"), so a handler — ~with-fake-fs~, say — answers for all of it.
 - ~(file-read-lines/seq path)~ : The lines, pulled lazily.
-- ~(file-read/seq reader path)~ : The same, pulled through any ~(-> TextInputPort %a)~. Opens the file once per walk and closes it when the walk ends — at the end, or when the walker stops early — so the sequence may be walked more than once. What ~(std ports)~' ~file->seq~ is built on. Prefer ~file->seq~, which reports a missing file as a ~Result~ rather than throwing on the first pull. A ~seq~ body cannot await, so each pull parks the thread it runs on.
+- ~(file-read/seq reader path)~ : The same, pulled through any ~(-> TextInputPort %a)~. Opens the file once per walk and closes it when the walk ends — at the end, or when the walker stops early — so the sequence may be walked more than once. What ~(std ports)~' ~file->seq~ is built on. Prefer ~file->seq~, which reports a missing file as a ~Result~ rather than throwing on the first pull.
+
+*The lazy ones never suspend.* ~file-read/seq~ and ~file-read-lines/seq~ here, ~directory-walk~ below, and ~(std ports)~' ~port->seq~ and ~file->seq~ are ~Seq~s, and a ~seq~ body cannot await: a bjoroutine pulling from one parks its thread on every pull. In a bjoroutine, read the whole file with ~file-read-lines~, or stream it with ~port->chan~.
 
 ** Paths =(std prelude)=
 Textual operations on path strings; none of them touches the file system.
@@ -302,10 +310,20 @@ They throw as the whole-file operations do; wrap a call in ~try~ for a ~Result~.
 - ~(directory-exists? path)~
 - ~(directory-create path)~ : Creates every missing directory along the path, and does nothing if it is already there — so it needs no guard.
 - ~(directory-delete path)~ : An *empty* directory.
-- ~(directory-delete-tree path)~ : Spelled differently because it is not a mistake anything can undo. Deletes one entry at a time through the ~FS~ operations, so a handler sees every deletion.
+- ~(directory-delete-tree path)~ : Spelled differently because it is not a mistake anything can undo. Deletes one entry at a time through the ~FS~ operations, so a handler sees every deletion. A symbolic link to a directory is removed as a link and never entered, the path given included, so nothing a link points at is deleted.
 - ~(directory-files path)~ / ~(directory-subdirectories path)~ : Whole paths, directly in ~path~, as a ~(Vec string)~, in the order the OS lists them.
+- ~(directory-walk dir #:into? pred)~ : The files under ~dir~, depth first, as a lazy ~Seq~. Each directory's entries come in ordinal order, so a walk is the same on every OS and on a fake. ~#:into?~ is asked about each directory before the walk enters it. A directory that is a symbolic link is not entered, so a link back up the tree cannot loop the walk. Nothing is listed until the sequence is walked, and a walk that stops early lists nothing more.
 
-Listing is eager and takes no pattern argument — ~(vec-filter #(string-ends-with? &1 ".bjo") (directory-files dir))~ asks the same question in the language.
+Listing takes no pattern argument. The language asks the same question:
+
+#+BEGIN_SRC scheme
+(vec-filter #(string-ends-with? &1 ".bjo") (directory-files dir))
+
+(filter #(string-ends-with? & ".bjo")
+        (directory-walk "." #:into? (fun (d) (not (= (path-filename d) (Some ".git"))))))
+
+(find #(string-ends-with? & ".bjo") (directory-walk "."))   ;; stops at the first
+#+END_SRC
 
 ** The environment =(std prelude)=
 - ~(get-environment-variable name)~ : ~(Option string)~. R7RS's name, and ~None~ where R7RS answers ~#f~.
@@ -714,7 +732,8 @@ Both diagnostic operations are sync on purpose: a plain ~defun~ has to be able t
 
 - ~(expect label actual wanted)~ / ~(expect-true label ok)~ / ~(fail label)~ : the assertions. A line beginning ~FAILURE:~ is what the runner looks for.
 - ~(with-test "name" body ...)~ : run a body under ~(with-deadline ...)~. The test gets a timeout that names it, a fiber it spawned is waited for, resources it opened are released, and several failures are reported together. It also asserts the body left nothing open. ~#:within ms~ overrides the deadline; ~#:open-ok~ turns off the leak check.
-- ~(with-fake-fs ((path contents) ...) body ...)~ : install both halves of the ~FS~ effect out of a map. A path written inside it reads back afterwards, and a write to a seeded path replaces the seed. ~Append~ continues what the path held, and ~CreateNew~ on a path that holds anything is an ~IOException~, as on the disk. ~(fake-fs-written fs path)~ reads back what was written, and works after the port is closed.
+- ~(with-fake-fs ((path contents) ...) body ...)~ : install every operation of the ~FS~ effect out of a map. A path written inside it reads back afterwards, and a write to a seeded path replaces the seed. ~Append~ continues what the path held, and ~CreateNew~ on a path that holds anything is an ~IOException~, as on the disk. Bytes are kept as written. ~(fake-fs-written fs path)~ reads back what was written, and works after the port is closed.
+- The fake has a clock of its own, so a test about modified times does not depend on how fast it runs. It starts at 2000-01-01T00:00:00Z, which is every seed's time; each write opened and each directory created moves it one second on and stamps the path, so what is written later is newer. A move keeps the times it moves, as a rename does. ~(fake-fs-set-modified! fs path ms)~ sets one by hand, for a test such as "skip what was written in the last five seconds".
 
 ~with-fake-fs~ is a handler frame, not a scope: a fiber spawned inside it keeps the fake, but nothing waits for it, so the body's assertions and ~with-test~'s leak check run before it is done. Spawn inside a ~with-scope~ of your own inside it.
 
@@ -869,12 +888,12 @@ Everything in the prelude and ~(std ports)~ that reaches the disk goes through t
 |-----------------------------------+----------------------------------------|
 | ~(open-read-stream path)~         | ~(Result Exception Stream)~            |
 | ~(open-write-stream path mode)~   | ~(Result Exception Stream)~            |
-| ~(fs-kind path)~                  | ~(Option FsKind)~: ~FsFile~ or ~FsDirectory~ |
+| ~(fs-info path)~                  | ~(Option FsInfo)~: see ~file-info~     |
 | ~(fs-list path)~                  | ~(Result Exception (Vec string))~: whole paths, files and directories |
 | ~(fs-create-directory path)~      | ~(Result Exception Unit)~              |
 | ~(fs-delete-file path)~           | ~(Result Exception Unit)~              |
 | ~(fs-delete-directory path)~      | ~(Result Exception Unit)~              |
-| ~(fs-move from to)~               | ~(Result Exception Unit)~              |
+| ~(fs-move from to mode)~          | ~(Result Exception Unit)~              |
 
 The openers answer a ~Stream~, not a port. ~open-input-file~, ~open-output-file~ and ~(std ports)~' ~open-byte-input-file~ and ~open-byte-output-file~ build the port over it and register it on the ambient scope, so one handler serves text and bytes, and a ~MemoryStream~ a handler made is owned exactly as a file is. A handler is installed per operation:
 
@@ -883,6 +902,8 @@ The openers answer a ~Stream~, not a port. ~open-input-file~, ~open-output-file~
                (fs-delete-file (fun (path) (Err ...))))
   ...)
 #+END_SRC
+
+~fs-move~'s ~mode~ is a ~MoveMode~, ~MoveNew~ or ~MoveReplace~, as ~file-move~ takes it. Copies, bytes, lines and walks are built over these eight, so a handler answers for them too.
 
 The operations answer a ~Result~; the file and directory functions over them raise the ~Err~. The lazy readers — ~file-read/seq~, ~file-read-lines/seq~ and ~file->seq~ — open the file when the sequence is walked, so it is the handler installed at the walk that answers, not the one installed where the sequence was made.
 
