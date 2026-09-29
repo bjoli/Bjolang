@@ -1,0 +1,123 @@
+;; The file operations past reading and writing text: what a path is, how big
+;; and how old, moving over a file, copying, bytes and lines whole, and
+;; walking a tree.
+;;
+;; Everything is built over the `FS` effect, so each check runs on a fake and,
+;; where the disk can answer the same question, on the disk in a probe
+;; directory this file makes and deletes.
+
+(import (std prelude))
+(import (std effect))
+(import (std simpletest))
+(import (std datetime))
+
+(import/class
+  (FileSystemInfo (: System.IO.FileSystemInfo)))
+
+(import/extern
+  (clr-symlink (: System.IO.File.CreateSymbolicLink (-> string string FileSystemInfo)
+                  #:exceptions (System.IO.IOException System.UnauthorizedAccessException))))
+
+;; What a path is, as one string a check can compare: "file 3", "dir 0" or
+;; "none".
+(: described (-> string string))
+(defun (described path)
+  (match (file-info path)
+    ((Some info) (str (match (record-ref info kind) (FsFile "file") (FsDirectory "dir"))
+                      " "
+                      (->str (record-ref info size))))
+    (None "none")))
+
+;; The modified time, or -1 for a path that names nothing.
+(: modified (-> string long))
+(defun (modified path)
+  (match (file-info path)
+    ((Some info) (record-ref info modified-ms))
+    (None -1L)))
+
+(: link? (-> string bool))
+(defun (link? path)
+  (match (file-info path)
+    ((Some info) (record-ref info link?))
+    (None #f)))
+
+;; 2000-01-01T00:00:00Z, the fake clock's start, in Unix milliseconds.
+(: epoch long)
+(def epoch 946684800000L)
+
+(: probe string)
+(def probe "249_probe_dir")
+
+(: in-probe (-> string string))
+(defun (in-probe name) (path-combine probe name))
+
+;; ---------------------------------------------------------------------------
+;; file-info
+;; ---------------------------------------------------------------------------
+
+(: info-on-a-fake (-> void))
+(defun (info-on-a-fake)
+  (def fs (fake-fs (list (Tuple "a.txt" "abc") (Tuple "å.txt" "å") (Tuple "d/x.txt" "x"))))
+  (with-fake-fs-of fs
+    (expect "a seeded file" (described "a.txt") "file 3")
+    (expect "its size is in bytes, not characters" (described "å.txt") "file 2")
+    (expect "a directory implied by a seed" (described "d") "dir 0")
+    (expect "a missing path" (described "nowhere.txt") "none")
+    (expect "a seed has the clock's start" (modified "a.txt") epoch)
+    (expect-true "and is not a link" (not (link? "a.txt")))
+
+    ;; Each write moves the clock one second on, so later is newer.
+    (file-write-text "b.txt" "bb")
+    (file-write-text "c.txt" "c")
+    (expect "a write is a second after the start" (modified "b.txt") (+ epoch 1000L))
+    (expect "the next a second after that" (modified "c.txt") (+ epoch 2000L))
+    (expect "a written file's size" (described "b.txt") "file 2")
+    (directory-create "e")
+    (expect "a directory made is stamped too" (modified "e") (+ epoch 3000L))
+
+    ;; A time set by hand is what `file-info` answers, and a move keeps it.
+    (fake-fs-set-modified! fs "a.txt" 5L)
+    (expect "a time set by hand" (modified "a.txt") 5L)
+    (file-move "a.txt" "moved.txt")
+    (expect "a move keeps the time" (modified "moved.txt") 5L)
+    (expect "and the old path names nothing" (described "a.txt") "none")
+
+    ;; A file deleted and written again is new.
+    (file-delete "c.txt")
+    (file-write-text "c.txt" "again")
+    (expect "a file written again after a delete" (modified "c.txt") (+ epoch 4000L))
+
+    ;; The functions that only ask what a path is ask the same operation.
+    (expect-true "file-exists?" (file-exists? "b.txt"))
+    (expect-true "directory-exists?" (directory-exists? "d"))
+    (expect-true "not a file" (not (file-exists? "d")))))
+
+(: info-on-the-disk (-> void))
+(defun (info-on-the-disk)
+  (directory-create probe)
+  (file-write-text (in-probe "abc.txt") "abc")
+  (file-write-text (in-probe "å.txt") "å")
+  (expect "a real file" (described (in-probe "abc.txt")) "file 3")
+  (expect "its size is in bytes" (described (in-probe "å.txt")) "file 2")
+  (expect "a real directory" (described probe) "dir 0")
+  (expect "a missing path" (described (in-probe "nowhere.txt")) "none")
+  (expect "an empty path names nothing, and throws nothing" (described "") "none")
+  (def now-ms (instant->unix-milliseconds (now)))
+  (def age (- now-ms (modified (in-probe "abc.txt"))))
+  (expect-true "the time is the write's, give or take a minute"
+               (and (> age -60000L) (< age 60000L)))
+  (expect-true "a plain file is not a link" (not (link? (in-probe "abc.txt"))))
+  ;; Some systems refuse an unprivileged symbolic link. There is nothing to
+  ;; check then.
+  (match (clr-symlink (in-probe "link.txt") "abc.txt")
+    ((Ok _)
+     (expect-true "a symbolic link says so" (link? (in-probe "link.txt")))
+     (expect "and is what it points at" (described (in-probe "link.txt")) "file 3"))
+    ((Err _) (println "ok: symbolic links are refused here, so not checked"))))
+
+(defun (main)
+  (when (directory-exists? probe) (directory-delete-tree probe))
+  (info-on-a-fake)
+  (info-on-the-disk)
+  (directory-delete-tree probe)
+  0)

@@ -3,6 +3,37 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~file-info~ says how big a file is and when it was written
+
+~(file-info path)~ answers ~(Option FsInfo)~: the ~kind~ (~FsFile~ or
+~FsDirectory~), the ~size~ in bytes (0 for a directory), the last write as
+~modified-ms~, Unix milliseconds in UTC, and ~link?~. A script can now skip a
+download that is still being written, or a build step an output that is newer
+than its input.
+
+- Milliseconds because ~(std datetime)~'s ~unix-milliseconds->instant~ takes
+  them; the prelude cannot name an ~Instant~. Two writes in the same
+  millisecond look equally old.
+- A symbolic link's size and time are those of the file it leads to, which is
+  what reading it reads, and ~link?~ says it is one. A link to nothing keeps
+  its own.
+
+*Breaking.* The ~FS~ operation ~fs-kind~ is gone. ~fs-info~ takes its place and
+answers the whole record, so a handler cannot say a path is a file and forget
+to say how big it is. A handler for ~fs-kind~ is now one for ~fs-info~;
+~fake-fs-kind~ is ~fake-fs-info~.
+
+The fake filesystem has a clock of its own. It starts at
+2000-01-01T00:00:00Z, which is every seed's time; each write opened and each
+directory created moves it one second on and stamps the path, so something
+written later is always newer, however fast the test runs. A move keeps the
+times it moves, as a rename does on a disk. ~(fake-fs-set-modified! fs path
+ms)~ sets one by hand.
+
+Tested in the new ~249_files.bjo~ (kind, size in bytes, times and the clock on
+the fake; the same on the disk, a path that is no path, and a symbolic link
+where the system allows one) and ~214_fake_filesystem.bjo~.
+
 * Records and structs can be matched by field
 
 ~(match car ((Car (brand b) (colour Red)) ...))~ matches a record or struct by

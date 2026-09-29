@@ -119,6 +119,7 @@
   sqrt
   ;; Files
   file-read-text file-write-text file-append-text file-exists? file-delete file-move
+  file-info
   file-read/seq file-read-lines/seq
   ;; Paths
   path-absolute path-combine path-filename path-file-extension
@@ -136,10 +137,10 @@
   open-input-file/raw open-output-file/raw WriteMode
   call-with-input-file call-with-output-file
   ;; The FS effect: its operations, their cells, and the defaults
-  FsKind
+  FsKind FsInfo
   open-read-stream op/open-read-stream open-read-stream/raw
   open-write-stream op/open-write-stream open-write-stream/raw
-  fs-kind op/fs-kind fs-kind/raw
+  fs-info op/fs-info fs-info/raw
   fs-list op/fs-list fs-list/raw
   fs-create-directory op/fs-create-directory fs-create-directory/raw
   fs-delete-file op/fs-delete-file fs-delete-file/raw
@@ -1350,9 +1351,24 @@
 ;;   create are one system call, so two writers cannot both succeed.
 (type (: WriteMode (Union Truncate Append CreateNew)))
 
-;; What a path names, when it names anything: `(fs-kind path)` answers
-;; `(Option FsKind)`.
+;; What a path names, when it names anything.
 (type (: FsKind (Union FsFile FsDirectory)))
+
+;; What `(fs-info path)` answers about a path that names something. One answer
+;; to one question, so that a handler cannot say a path is a file and then
+;; forget to say how big it is.
+;;
+;; - `size`: in bytes. 0 for a directory.
+;; - `modified-ms`: the last write, in Unix milliseconds, UTC. Milliseconds
+;;   because `(std datetime)`'s `unix-milliseconds->instant` takes them, and
+;;   the prelude cannot name an `Instant` itself.
+;; - `link?`: the path itself is a symbolic link. The other fields are what
+;;   .NET reports for it; `directory-walk` does not enter one, so a link back up
+;;   the tree cannot loop it.
+(type (: FsInfo (Record (: kind FsKind)
+                        (: size long)
+                        (: modified-ms long)
+                        (: link? bool))))
 
 ;; The operations answer a `Result`; the functions in these two sections raise
 ;; the `Err`, as the .NET methods they replaced did.
@@ -1386,9 +1402,19 @@
 (: file-append-text (-> string string void))
 (defun (file-append-text path contents) (write-whole-file path contents Append))
 
+(: file-info (-> string (Option FsInfo)))
+(defun (file-info path) (fs-info path))
+
+;; What a path names, for the functions below that only ask that.
+(: kind-of (-> string (Option FsKind)))
+(defun (kind-of path)
+  (match (fs-info path)
+    ((Some info) (Some (record-ref info kind)))
+    (None None)))
+
 (: file-exists? (-> string bool))
 (defun (file-exists? path)
-  (match (fs-kind path)
+  (match (kind-of path)
     ((Some FsFile) #t)
     (_ #f)))
 
@@ -1432,7 +1458,7 @@
 
 (: directory-exists? (-> string bool))
 (defun (directory-exists? path)
-  (match (fs-kind path)
+  (match (kind-of path)
     ((Some FsDirectory) #t)
     (_ #f)))
 
@@ -1449,7 +1475,7 @@
 (: directory-delete-tree (-> string void))
 (defun (directory-delete-tree path)
   (loop (:for entry (raise-err (fs-list path)))
-        (:do (match (fs-kind entry)
+        (:do (match (kind-of entry)
                ((Some FsDirectory) (directory-delete-tree entry))
                (_ (file-delete entry)))))
   (directory-delete path))
@@ -1457,7 +1483,7 @@
 (: entries-of-kind (-> string FsKind (Vec string)))
 (defun (entries-of-kind path kind)
   (loop (:for entry (raise-err (fs-list path)))
-        (:when (match (Tuple (fs-kind entry) kind)
+        (:when (match (Tuple (kind-of entry) kind)
                  ((Tuple (Some FsFile) FsFile) #t)
                  ((Tuple (Some FsDirectory) FsDirectory) #t)
                  (_ #f)))
@@ -1609,7 +1635,8 @@
 ;; .NET methods they replaced do.
 
 (import/class
-  (DirectoryInfo (: System.IO.DirectoryInfo)))
+  (DirectoryInfo (: System.IO.DirectoryInfo (-> string DirectoryInfo)))
+  (FileInfo (: System.IO.FileInfo (-> string FileInfo))))
 
 (import/extern
   (clr-file-exists (: System.IO.File.Exists (-> string bool)))
@@ -1650,11 +1677,72 @@
     ((Ok s) (Ok (cast Stream s)))
     ((Err e) (Err e))))
 
-(: fs-kind/raw (-> string (Option FsKind)))
-(defun (fs-kind/raw path)
+;; .NET ticks at 1970-01-01T00:00Z, and per millisecond.
+(: unix-epoch-ticks long)
+(def unix-epoch-ticks 621355968000000000L)
+
+;; Rounds toward the past, so a write just before 1970 is -1 and not 0.
+(: ticks->unix-ms (-> long long))
+(defun (ticks->unix-ms ticks)
+  (def d (- ticks unix-epoch-ticks))
+  (def q (/ d 10000L))
+  (if (< (% d 10000L) 0L) (- q 1L) q))
+
+;; `File.Exists` and `Directory.Exists` first, because they never throw: a
+;; path that is no path at all, "" say, is `None` rather than an
+;; `ArgumentException` out of the `FileInfo` constructor. The info object then
+;; reads the path once, on its first property, so size and time agree with
+;; each other; a file deleted in between is `None`.
+;; Where a chain of symbolic links ends: `path` itself when it is no link. A
+;; link's target is relative to the directory the link is in. At most 40
+;; steps, as Linux allows, so that a loop of links ends. Read step by step
+;; because `ResolveLinkTarget` answers null for a link to nothing, and there is
+;; no null to test here.
+(: link-end (-> string string))
+(defun (link-end path)
+  (let loop ((p path) (steps 0))
+    (def target (.-LinkTarget (FileInfo. p)))
+    (if (or (clr-empty? target) (= steps 40))
+        p
+        (loop (match (path-directory p)
+                ((Some dir) (path-combine dir target))
+                (None target))
+              (+ steps 1)))))
+
+;; A link's size and time are those of the file it leads to, which is what
+;; reading it reads; `link?` is what says it is one. A link to nothing keeps
+;; its own.
+(: file-info/raw (-> string (Option FsInfo)))
+(defun (file-info/raw path)
+  (def own (FileInfo. path))
+  (def link (not (clr-empty? (.-LinkTarget own))))
+  (def end (if link (FileInfo. (link-end path)) own))
+  (def f (if (.-Exists end) end own))
+  (if (.-Exists own)
+      (Some (FsInfo (kind FsFile)
+                    (size (.-Length f))
+                    (modified-ms (ticks->unix-ms (.-Ticks (.-LastWriteTimeUtc f))))
+                    (link? link)))
+      None))
+
+(: directory-info/raw (-> string (Option FsInfo)))
+(defun (directory-info/raw path)
+  (def own (DirectoryInfo. path))
+  (def link (not (clr-empty? (.-LinkTarget own))))
+  (def end (if link (DirectoryInfo. (link-end path)) own))
+  (def d (if (.-Exists end) end own))
+  (if (.-Exists own)
+      (Some (FsInfo (kind FsDirectory)
+                    (size 0L)
+                    (modified-ms (ticks->unix-ms (.-Ticks (.-LastWriteTimeUtc d))))
+                    (link? link)))
+      None))
+
+(: fs-info/raw (-> string (Option FsInfo)))
+(defun (fs-info/raw path)
   (if (clr-file-exists path)
-      (Some FsFile)
-      (if (clr-dir-exists path) (Some FsDirectory) None)))
+      (file-info/raw path)
+      (if (clr-dir-exists path) (directory-info/raw path) None)))
 
 ;; Whole paths, files and directories both, in the order the OS gives them.
 (: fs-list/raw (-> string (Result Exception (Vec string))))
@@ -1696,7 +1784,7 @@
 (defeffect FS
   (open-read-stream    (-> string (Result Exception Stream)))
   (open-write-stream   (-> string WriteMode (Result Exception Stream)))
-  (fs-kind             (-> string (Option FsKind)))
+  (fs-info             (-> string (Option FsInfo)))
   (fs-list             (-> string (Result Exception (Vec string))))
   (fs-create-directory (-> string (Result Exception Unit)))
   (fs-delete-file      (-> string (Result Exception Unit)))
@@ -1704,13 +1792,13 @@
   (fs-move             (-> string string (Result Exception Unit)))
   #:default ((open-read-stream open-read-stream/raw)
              (open-write-stream open-write-stream/raw)
-             (fs-kind fs-kind/raw)
+             (fs-info fs-info/raw)
              (fs-list fs-list/raw)
              (fs-create-directory fs-create-directory/raw)
              (fs-delete-file fs-delete-file/raw)
              (fs-delete-directory fs-delete-directory/raw)
              (fs-move fs-move/raw))
-  #:cold (open-read-stream open-write-stream fs-kind fs-list
+  #:cold (open-read-stream open-write-stream fs-info fs-list
           fs-create-directory fs-delete-file fs-delete-directory fs-move))
 
 ;; --- Opening a file port ---

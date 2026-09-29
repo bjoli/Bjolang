@@ -14,10 +14,10 @@
 
 (export expect expect-true fail
         default-test-ms overran?
-        FakeFs fake-fs fake-fs-written fake-fs-contents
+        FakeFs fake-fs fake-fs-written fake-fs-contents fake-fs-set-modified!
         ;; The handlers, one per `FS` operation. Exported because the
         ;; `with-fake-fs` templates name them.
-        fake-fs-reader fake-fs-writer fake-fs-kind fake-fs-list
+        fake-fs-reader fake-fs-writer fake-fs-info fake-fs-list
         fake-fs-create-directory fake-fs-delete-file fake-fs-delete-directory
         fake-fs-move)
 
@@ -154,6 +154,13 @@
 ;; A failure answers the exception type the .NET call would raise, so a test
 ;; that matches on the error matches either way.
 ;;
+;; The fake has a clock of its own, so that a test about modified times does
+;; not depend on how fast it runs. It starts at 2000-01-01T00:00:00Z, which is
+;; every seed's time, and each write opened and each directory created moves it
+;; one second on and stamps the path: something written later is always newer.
+;; A move keeps the times it moves, as a rename does on a disk.
+;; `(fake-fs-set-modified! fs path ms)` sets one by hand.
+;;
 ;; The openers answer a `MemoryStream`, and the ports over it are built and
 ;; owned by the same code that builds them over a file - so a fake port is
 ;; registered on the scope the open happened in, and a leak test over a fake
@@ -185,10 +192,18 @@
 ;; what has been flushed.
 (type (: FakeEntry (Union (FakeText string) (FakeWritten MemoryStream) FakeDir)))
 
-;; Mutable because a write has to be visible to a later read.
+;; Mutable because a write has to be visible to a later read. `modified` holds
+;; the time of every path something stamped; any other path has the clock's
+;; start.
 (type
   (: FakeFs #:opaque
-     (Record (: entries (Map string FakeEntry) #:mutable))))
+     (Record (: entries (Map string FakeEntry) #:mutable)
+             (: modified (Map string long) #:mutable)
+             (: clock long #:mutable))))
+
+;; 2000-01-01T00:00:00Z, in Unix milliseconds.
+(: fake-epoch-ms long)
+(def fake-epoch-ms 946684800000L)
 
 (: fake-path (-> string string))
 (defun (fake-path path)
@@ -226,13 +241,29 @@
                                  (def path (fake-path raw))
                                  (map-set (fake-with-ancestors m path) path (FakeText text)))
                                (map-empty)
-                               seeds))))
+                               seeds))
+          (modified (map-empty))
+          (clock fake-epoch-ms)))
 
 (: fake-entries (-> FakeFs (Map string FakeEntry)))
 (defun (fake-entries fs) (record-ref fs entries))
 
 (: fake-update! (-> FakeFs (Map string FakeEntry) void))
 (defun (fake-update! fs m) (record-set! fs (entries m)))
+
+;; Moves the clock one second on, and gives `path` the new time.
+(: fake-stamp! (-> FakeFs string void))
+(defun (fake-stamp! fs path)
+  (def now (+ (record-ref fs clock) 1000L))
+  (record-set! fs (clock now) (modified (map-set (record-ref fs modified) path now))))
+
+(: fake-forget-time! (-> FakeFs string void))
+(defun (fake-forget-time! fs path)
+  (record-set! fs (modified (map-remove (record-ref fs modified) path))))
+
+(: fake-fs-set-modified! (-> FakeFs string long void))
+(defun (fake-fs-set-modified! fs path ms)
+  (record-set! fs (modified (map-set (record-ref fs modified) (fake-path path) ms))))
 
 (: fake-bytes->text (-> (Array byte) string))
 (defun (fake-bytes->text bytes) (.GetString (cast Encoding clr-utf8) bytes))
@@ -248,6 +279,14 @@
     ((FakeWritten s) (Some (fake-bytes->text (.ToArray s))))
     (FakeDir None)))
 
+;; In bytes, as a file on a disk would be.
+(: fake-entry-size (-> FakeEntry long))
+(defun (fake-entry-size entry)
+  (match entry
+    ((FakeText text) (cast System.Int64 (array-length (fake-text->bytes text))))
+    ((FakeWritten s) (cast System.Int64 (array-length (.ToArray s))))
+    (FakeDir 0L)))
+
 ;; A path that is no entry of its own is still a directory when something is
 ;; below it.
 (: fake-kind (-> FakeFs string (Option FsKind)))
@@ -261,6 +300,18 @@
                             (fake-entries fs))
                   (Some FsDirectory)
                   None)))))
+
+(: fake-info (-> FakeFs string (Option FsInfo)))
+(defun (fake-info fs path)
+  (match (fake-kind fs path)
+    (None None)
+    ((Some k)
+     (Some (FsInfo (kind k)
+                   (size (match (map-try-ref (fake-entries fs) path)
+                           ((Some entry) (fake-entry-size entry))
+                           (None 0L)))
+                   (modified-ms (map-ref-or (record-ref fs modified) path fake-epoch-ms))
+                   (link? #f))))))
 
 (: fake-dir? (-> FakeFs string bool))
 (defun (fake-dir? fs path)
@@ -334,11 +385,12 @@
                                                  m))
                    (_ (MemoryStream.))))
           (fake-update! fs (map-set (fake-entries fs) path (FakeWritten s)))
+          (fake-stamp! fs path)
           (Ok (cast Stream s))))))))
 
-(: fake-fs-kind (-> FakeFs (-> string (Option FsKind))))
-(defun (fake-fs-kind fs)
-  (fun (raw) (fake-kind fs (fake-path raw))))
+(: fake-fs-info (-> FakeFs (-> string (Option FsInfo))))
+(defun (fake-fs-info fs)
+  (fun (raw) (fake-info fs (fake-path raw))))
 
 ;; Whole paths, as `Directory.GetFileSystemEntries` gives them, sorted.
 (: fake-fs-list (-> FakeFs (-> string (Result Exception (Vec string)))))
@@ -368,6 +420,7 @@
       ((Some FsFile) (io-error #"the fake filesystem has a file at ${path}"))
       ((Some FsDirectory) (Ok unit))
       (None (fake-update! fs (map-set (fake-with-ancestors (fake-entries fs) path) path FakeDir))
+            (fake-stamp! fs path)
             (Ok unit)))))
 
 ;; A missing file is not an error, as with `File.Delete`.
@@ -378,6 +431,7 @@
     (match (fake-kind fs path)
       ((Some FsDirectory) (access-denied path))
       ((Some FsFile) (fake-update! fs (map-remove (fake-entries fs) path))
+                     (fake-forget-time! fs path)
                      (Ok unit))
       (None (Ok unit)))))
 
@@ -395,7 +449,22 @@
          ((map-any? (fun (k v) (string-starts-with? k prefix)) (fake-entries fs))
           (io-error #"the fake directory ${path} is not empty"))
          (else (fake-update! fs (map-remove (fake-entries fs) path))
+               (fake-forget-time! fs path)
                (Ok unit)))))))
+
+;; `m` with `from`, and everything below it, renamed to `to`. Generic, because
+;; the entries and their times move by the same renaming.
+(: fake-renamed (-> (Map string %v) string string (Map string %v)))
+(defun (fake-renamed m from to)
+  (def from-prefix (fake-prefix from))
+  (map-fold (fun (k v acc)
+              (cond
+                ((= k from) (map-set acc to v))
+                ((string-starts-with? k from-prefix)
+                 (map-set acc (str to "/" (.Substring k (string-length from-prefix))) v))
+                (else (map-set acc k v))))
+            (map-empty)
+            m))
 
 ;; A file, or a directory and everything below it. Fails if `to` exists.
 (: fake-fs-move (-> FakeFs (-> string string (Result Exception Unit))))
@@ -403,21 +472,13 @@
   (fun (raw-from raw-to)
     (def from (fake-path raw-from))
     (def to (fake-path raw-to))
-    (def from-prefix (fake-prefix from))
     (cond
       ((some? (fake-kind fs to)) (io-error #"the fake filesystem already has ${to}"))
       ((not (fake-dir? fs (fake-parent to))) (no-directory to))
       ((none? (fake-kind fs from)) (not-found from))
       (else
-       (fake-update! fs
-         (map-fold (fun (k v m)
-                     (cond
-                       ((= k from) (map-set m to v))
-                       ((string-starts-with? k from-prefix)
-                        (map-set m (str to "/" (.Substring k (string-length from-prefix))) v))
-                       (else (map-set m k v))))
-                   (map-empty)
-                   (fake-entries fs)))
+       (fake-update! fs (fake-renamed (fake-entries fs) from to))
+       (record-set! fs (modified (fake-renamed (record-ref fs modified) from to)))
        (Ok unit)))))
 
 ;; What was written to `path`, or `None` if nothing was. A seeded file nobody
@@ -445,7 +506,7 @@
      #'(let ((the-fs ,fs))
          (with-handler ((,(fake-op inject "open-read-stream") (fake-fs-reader the-fs))
                         (,(fake-op inject "open-write-stream") (fake-fs-writer the-fs))
-                        (,(fake-op inject "fs-kind") (fake-fs-kind the-fs))
+                        (,(fake-op inject "fs-info") (fake-fs-info the-fs))
                         (,(fake-op inject "fs-list") (fake-fs-list the-fs))
                         (,(fake-op inject "fs-create-directory") (fake-fs-create-directory the-fs))
                         (,(fake-op inject "fs-delete-file") (fake-fs-delete-file the-fs))
