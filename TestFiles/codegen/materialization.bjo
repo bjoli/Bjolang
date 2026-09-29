@@ -101,6 +101,32 @@
 (type/derive (Ord)
   (: Level (Union Low (Mid int) High)))
 
+;; A conditional `Ord` materializes as a conditional `Eq` does, with a stand-in
+;; that compares through `T_a`'s own `IComparable<T_a>` — and a string
+;; ordinally, as `(Ord string)` does, where `Comparer<string>.Default` would
+;; follow the machine's culture.
+;; EXPECT-CS: public record materialization__Rank<T_a>\(int n, T_a tag\) : System.IComparable<materialization__Rank<T_a>> \{
+;; EXPECT-CS: private static readonly Ord_materialization__Rank<T_a> __Ord_impl = Ord_materialization__Rank<T_a>\.Make\(new __ClrOrd<T_a>\(\)\);
+;; EXPECT-CS: private sealed class __ClrOrd<X> : Ord<X> \{ public int compare\(X a, X b\) => typeof\(X\) == typeof\(string\) \? string\.CompareOrdinal\(\(string\?\)\(object\?\)a, \(string\?\)\(object\?\)b\) : System\.Collections\.Generic\.Comparer<X>\.Default\.Compare\(a, b\); \}
+;; EXPECT-CS: public int CompareTo\(materialization__Rank<T_a>\? other\) => other is null \? 1 : __Ord_impl\.compare\(this, other\);
+(type/derive (Ord)
+  (: (Rank %a) (Record (: n int) (: tag %a))))
+
+;; A record struct: no null to guard against.
+;; EXPECT-CS: public int CompareTo\(materialization__Deg<T_a> other\) => __Ord_impl\.compare\(this, other\);
+(type/derive (Ord)
+  (: (Deg %a) (Struct (: deg %a))))
+
+;; A generic union: the field goes on the base beside `CompareTo`, and no case
+;; class gets either.
+;; EXPECT-CS: public abstract record materialization__Tier<T_a> : System.IComparable<materialization__Tier<T_a>> \{
+;; EXPECT-CS: private static readonly Ord_materialization__Tier<T_a> __Ord_impl = Ord_materialization__Tier<T_a>\.Make\(new __ClrOrd<T_a>\(\)\);
+;; EXPECT-CS: public int CompareTo\(materialization__Tier<T_a>\? other\) => other is null \? 1 : __Ord_impl\.compare\(this, other\);
+;; EXPECT-NO-CS: CompareTo\(materialization__Bottom
+;; EXPECT-NO-CS: CompareTo\(materialization__Top
+(type/derive (Ord)
+  (: (Tier %a) (Union Bottom (Top %a))))
+
 ;; An *unconditional* implementation for a parameterized type materializes: its
 ;; class abstracts over exactly the type's parameters, so it is instantiated at
 ;; them. Equality by tag alone needs nothing of `%a`, hence no `(where ...)`.

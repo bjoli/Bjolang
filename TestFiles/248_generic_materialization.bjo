@@ -8,6 +8,8 @@
 ;; generic type too. See `Docs/prelude.org`, "Writing one by hand".
 (import (std prelude))
 (import (std set))
+(import (std orderedmap))
+(import (std orderedset))
 (import (std simpletest))
 (import (std mutable deque))
 
@@ -64,7 +66,7 @@
 (: label-set (-> (List (Label int)) (Set (Label int))))
 (defun (label-set xs) (list->set xs))
 
-(type/derive (Eq)
+(type/derive (Eq Ord)
   (: (Pair %a) (Record (: first %a) (: second %a))))
 
 (: pair (-> int int (Pair int)))
@@ -183,6 +185,71 @@
                (threw? (try (list->set (list a b)) #:catch (System.InvalidOperationException)))))
 
 ;; ---------------------------------------------------------------------------
+;; Ord
+;; ---------------------------------------------------------------------------
+
+;; `OrderedMap` and `OrderedSet` compare through `CompareTo`, which C# never
+;; writes: before, a generic key compiled and crashed at the first comparison.
+
+(: ord-derived (-> void))
+(defun (ord-derived)
+  (def om (orderedmap-set (orderedmap-set (orderedmap-set (orderedmap-empty)
+                                                          (pair 2 0) "c")
+                                          (pair 1 9) "b")
+                          (pair 1 2) "a"))
+  (expect "a derived generic key in an OrderedMap, in order"
+          (seq->list (orderedmap-values om)) (list "a" "b" "c"))
+  (expect-true "and found by an equal key" (some? (orderedmap-try-ref om (pair 1 9))))
+
+  (def os (orderedset-add-all (orderedset-empty) (list->seq (list (pair 3 1) (pair 1 1) (pair 2 5) (pair 1 1)))))
+  (expect "and in an OrderedSet" (orderedset-length os) 3)
+  (expect-true "in order" (= (orderedset->list os) (list (pair 1 1) (pair 2 5) (pair 3 1)))))
+
+;; Strings inside a generic key compare ordinally, as `compare` on strings
+;; does: "B" (66) before "a" (97), which a culture's order would reverse.
+(: ord-strings (-> void))
+(defun (ord-strings)
+  (def lower (Pair (first "a") (second "x")))
+  (def upper (Pair (first "B") (second "x")))
+  (expect-true "compare puts \"B\" first" (less? upper lower))
+  (def os (orderedset-add (orderedset-add (orderedset-empty) lower) upper))
+  (expect-true "and so does an OrderedSet" (= (orderedset->list os) (list upper lower))))
+
+;; Written by hand: highest priority first, and the label does not order, so
+;; two jobs of one priority are one key to an ordered collection.
+(type (: (Job %a) (Record (: priority int) (: label %a))))
+
+(impl (Ord (Job %a))
+  (where (Ord %a))
+  (defun (compare x y) (compare (record-ref y priority) (record-ref x priority))))
+
+(: priorities (-> (List (Job %a)) (List int)))
+(defun (priorities js) (list-map (fun (j) (record-ref j priority)) js))
+
+(: ord-by-hand (-> void))
+(defun (ord-by-hand)
+  (def jobs (list (Job (priority 1) (label "low"))
+                  (Job (priority 3) (label "high"))
+                  (Job (priority 2) (label "mid"))))
+  (def os (orderedset-add-all (orderedset-empty) (list->seq jobs)))
+  (expect "an OrderedSet in the implementation's order" (priorities (orderedset->list os)) (list 3 2 1))
+  (expect "list-sort agrees" (priorities (list-sort jobs)) (list 3 2 1))
+  (def om (orderedmap-set (orderedmap-set (orderedmap-empty) (Job (priority 2) (label "one")) 1)
+                          (Job (priority 2) (label "other")) 2))
+  (expect "one priority, one key" (orderedmap-length om) 1))
+
+;; A generic union orders by case, then payload.
+(type/derive (Eq Ord)
+  (: (Opt %a) (Union Nothing (Just %a))))
+
+(: ord-union (-> void))
+(defun (ord-union)
+  (def j1 (Just 1))
+  (def j2 (Just 2))
+  (def os (orderedset-add (orderedset-add (orderedset-add (orderedset-empty) j2) Nothing) j1))
+  (expect-true "a generic union in an OrderedSet" (= (orderedset->list os) (list Nothing j1 j2))))
+
+;; ---------------------------------------------------------------------------
 ;; The union rule
 ;; ---------------------------------------------------------------------------
 
@@ -220,5 +287,9 @@
   (eq-other-trait)
   (eq-mutable)
   (eq-deque)
+  (ord-derived)
+  (ord-strings)
+  (ord-by-hand)
+  (ord-union)
   (union-rule)
   0)

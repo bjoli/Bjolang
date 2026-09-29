@@ -4561,7 +4561,7 @@ let private generateMethod
 
 /// The traits a materialized implementation's `(where ...)` may ask for: the
 /// ones `standInClass` can build a dictionary for from inside the type.
-let private standInTraits = set [ "Eq" ]
+let private standInTraits = set [ "Eq"; "Ord" ]
 
 /// The implementation of `traitName` for `typeKey` that can be materialized, if
 /// there is one. `typeArity` is the number of type parameters the emitted type
@@ -4617,14 +4617,20 @@ let private materializedFieldName (traitName: string) = $"__%s{sanitizeIdent tra
 /// builds an implementation from it.
 let private standInName (traitName: string) = $"__Clr%s{sanitizeIdent traitName}"
 
-/// A dictionary for `(Eq %a)` that answers through `%a`'s own .NET members, for
-/// the `(where ...)` of a materialized conditional implementation.
+/// A dictionary for `(Eq %a)` or `(Ord %a)` that answers through `%a`'s own
+/// .NET members, for the `(where ...)` of a materialized conditional
+/// implementation.
 ///
-/// Right because every type's `Eq` *is* those members: materialized into a
-/// declared type, native for a primitive, and a delegation to the very same
-/// members for the .NET and runtime types `lib/std` implements it for — which
-/// `CheckDecl` refuses any other module to do. It is wrong only where
+/// Right because every type's `Eq` and `Ord` *are* those members: materialized
+/// into a declared type, native for a primitive, and a delegation to the very
+/// same members for the .NET and runtime types `lib/std` implements them for —
+/// which `CheckDecl` refuses any other module to do. It is wrong only where
 /// materialization already is: two cases of one union that `=` equates.
+///
+/// A string compares ordinally, as `(Ord string)` does and as the ordered
+/// collections' `DefaultOrder` chooses: `Comparer<string>.Default` would order
+/// by the machine's culture, and put "a" before "B" where `compare` puts it
+/// after.
 ///
 /// Nested and private in the type that uses it, because the `lib/std` modules
 /// share one namespace: a class there under a fixed name would be one more name
@@ -4637,6 +4643,10 @@ let private standInClass (traitName: string) : string =
         let eqHash = sanitizeIdent "eq-hash"
         let comparer = "System.Collections.Generic.EqualityComparer<X>.Default"
         $"private sealed class %s{name}<X> : Eq<X> {{ public bool eq(X a, X b) => %s{comparer}.Equals(a, b); public int %s{eqHash}(X a) => a is null ? 0 : %s{comparer}.GetHashCode(a); }}"
+    | "Ord" ->
+        let compare = sanitizeIdent "compare"
+        let ordinal = "string.CompareOrdinal((string?)(object?)a, (string?)(object?)b)"
+        $"private sealed class %s{name}<X> : Ord<X> {{ public int %s{compare}(X a, X b) => typeof(X) == typeof(string) ? %s{ordinal} : System.Collections.Generic.Comparer<X>.Default.Compare(a, b); }}"
     | other -> failwithf $"Internal error: no stand-in dictionary for '%s{other}'"
 
 /// What a materialized member calls the implementation through: the

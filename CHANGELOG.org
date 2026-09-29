@@ -3,6 +3,31 @@
 
 What each change guarantees, and what it leaves open.
 
+* A generic type's ~Ord~ is what ~OrderedMap~ and ~OrderedSet~ order by
+
+~OrderedMap~ and ~OrderedSet~ compare keys through ~IComparable<T>~, which C#
+never writes. A generic type's ~Ord~, derived or written by hand, was not
+compiled into it, so ~(type/derive (Eq Ord) (: (Pair %a) ...))~ as an
+~OrderedMap~ key compiled and crashed at the first comparison: "At least one
+object must implement IComparable".
+
+Now it is compiled in as a generic ~Eq~ is: the type implements
+~IComparable<T>~, and its ~CompareTo~ calls the implementation, built once per
+closed type from a stand-in that compares ~T~ through its own ~CompareTo~ —
+and a string ordinally, as ~(Ord string)~ and the ordered collections do, so
+~(Pair "B" ...)~ comes before ~(Pair "a" ...)~ in both ~compare~ and an
+~OrderedSet~, where the machine's culture would put it after.
+
+It costs nothing measurable: adding 100 000 shuffled keys to an ~OrderedSet~
+takes 757 ns per key for a derived ~(Pair int)~ and 753 ns for the same
+record written without a type parameter.
+
+Tested in ~248_generic_materialization.bjo~ (a derived ~(Pair %a)~ in an
+~OrderedMap~ and an ~OrderedSet~; strings inside it; a hand-written ~Ord~ on
+~(Job %a)~ that ignores the label, in both collections and agreeing with
+~list-sort~; a generic union), and in the codegen test ~materialization.bjo~
+(a generic record, record struct and union base).
+
 * A generic type's ~Eq~ is what ~Map~ and ~Set~ key on
 
 ~Map~ and ~Set~ are .NET collections: they never call ~=~, only the key
