@@ -133,27 +133,27 @@ let private warnAboutShadowedMethods (registry: TraitRegistry) (decls: TDecl lis
 
     go decls
 
-/// Every binding whose scheme quantifies a type variable that no *parameter*
-/// mentions. See `TraitRegistry.ReturnOnlyGenerics` for what reads it.
-///
 /// A variable is compared with its quote stripped, because the two spellings
 /// are both in use: `Prelude` writes `Scheme(["a"], …, TVar "a")` and a
 /// signature's `%a` arrives as `'a`.
-let private returnOnlyGenerics (env: Env) : Set<string> =
-    let bare (v: string) = v.TrimStart '\''
+let private bareTypeVar (v: string) = v.TrimStart '\''
 
-    let rec typeVars (t: HMType) : Set<string> =
-        match t with
-        | TVar name -> Set.singleton (bare name)
-        | TFun(args, ret, _) -> Set.unionMany (typeVars ret :: List.map typeVars args)
-        | TCon(_, args)
-        | TTuple args -> args |> List.fold (fun acc a -> Set.union acc (typeVars a)) Set.empty
-        | TMeta m ->
-            match m.Value with
-            | Some inner -> typeVars inner
-            | None -> Set.empty
-        | TAssoc(_, _, implementor) -> typeVars implementor
+let rec private typeVarsOf (t: HMType) : Set<string> =
+    match t with
+    | TVar name -> Set.singleton (bareTypeVar name)
+    | TFun(args, ret, _) -> Set.unionMany (typeVarsOf ret :: List.map typeVarsOf args)
+    | TCon(_, args)
+    | TTuple args -> args |> List.fold (fun acc a -> Set.union acc (typeVarsOf a)) Set.empty
+    | TMeta m ->
+        match m.Value with
+        | Some inner -> typeVarsOf inner
+        | None -> Set.empty
+    | TAssoc(_, _, implementor) -> typeVarsOf implementor
 
+/// The bindings whose scheme quantifies a variable that none of the parameters
+/// `inferableFrom` picks out of the flat parameter list mentions. A binding it
+/// answers `None` for is left out.
+let private genericsNotInferableFrom (env: Env) (inferableFrom: string -> HMType list -> HMType list option) : Set<string> =
     env.Bindings
     |> Map.toSeq
     |> Seq.choose (fun (name, binding) ->
@@ -161,14 +161,37 @@ let private returnOnlyGenerics (env: Env) : Set<string> =
 
         match Unification.prune env.Registry scheme with
         | TFun(args, _, _) ->
-            let inferable = args |> List.fold (fun acc a -> Set.union acc (typeVars a)) Set.empty
+            match inferableFrom name args with
+            | None -> None
+            | Some parameters ->
+                let inferable = parameters |> List.fold (fun acc a -> Set.union acc (typeVarsOf a)) Set.empty
 
-            if vars |> List.exists (fun v -> not (Set.contains (bare v) inferable)) then
-                Some name
-            else
-                None
+                if vars |> List.exists (fun v -> not (Set.contains (bareTypeVar v) inferable)) then
+                    Some name
+                else
+                    None
         | _ -> None)
     |> Set.ofSeq
+
+/// Every binding whose scheme quantifies a type variable that no *parameter*
+/// mentions. See `TraitRegistry.ReturnOnlyGenerics` for what reads it.
+let private returnOnlyGenerics (env: Env) : Set<string> =
+    genericsNotInferableFrom env (fun _ args -> Some args)
+
+/// Every binding with a type variable that only a keyword parameter mentions,
+/// among its parameters. See `TraitRegistry.KeywordOnlyGenerics` for what
+/// reads it.
+///
+/// The flat parameter list is laid out mandatory, then keyword, then the rest
+/// array.
+let private keywordOnlyGenerics (env: Env) (returnOnly: Set<string>) : Set<string> =
+    genericsNotInferableFrom env (fun name args ->
+        match Map.tryFind name env.FunMetas with
+        | Some meta when not meta.KeywordParams.IsEmpty && not (Set.contains name returnOnly) ->
+            let mandatory = args |> List.truncate meta.MandatoryCount
+            let rest = if meta.RestParam.IsSome && not args.IsEmpty then [ List.last args ] else []
+            Some(mandatory @ rest)
+        | _ -> None)
 
 /// Checks declarations that were generated *after* `checkProgram` returned.
 ///
@@ -205,8 +228,13 @@ let checkProgram (initialEnv: Env) (program: Decl list) : Env * TDecl list =
 
     // After everything, because it reads the bindings as they finally are: a
     // definition's scheme is not settled until its group has generalized.
+    let returnOnly = returnOnlyGenerics finalEnv
+
     let finalEnv =
         { finalEnv with
-            Registry = { finalEnv.Registry with ReturnOnlyGenerics = returnOnlyGenerics finalEnv } }
+            Registry =
+                { finalEnv.Registry with
+                    ReturnOnlyGenerics = returnOnly
+                    KeywordOnlyGenerics = keywordOnlyGenerics finalEnv returnOnly } }
 
     finalEnv, typedDecls

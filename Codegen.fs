@@ -2875,7 +2875,9 @@ and private generateApply
                 // arguments from them. The exception is when a type argument
                 // is only mentioned in the return type, which C# cannot infer.
                 // Such calls (tracked in `ReturnOnlyGenerics`) must explicitly
-                // emit their type arguments.
+                // emit their type arguments. So must a call where it is only
+                // mentioned by keyword parameters (`KeywordOnlyGenerics`),
+                // since C# does not infer through the `Option` those arrive in.
                 //
                 // A lambda argument is the other case: an anonymous function
                 // whose parameters have no written types contributes nothing to
@@ -2916,15 +2918,16 @@ and private generateApply
 
                 let uninferable =
                     Set.contains (Naming.writtenName name) ctx.Registry.ReturnOnlyGenerics
+                    || Set.contains (Naming.writtenName name) ctx.Registry.KeywordOnlyGenerics
 
                 // Keyword arguments do not stop C# reading type arguments —
                 // `f<int>(a, __kw_b: c)` is an ordinary call — and a diverging
                 // function may perfectly well take one, which `(panic! "..."
-                // #:exit-code 404)` does. They are only excluded from the two
-                // *guesses* above, where the arguments are what is being
-                // reasoned about.
-                if not tArgs.IsEmpty
-                   && (uninferable || ((args.IsEmpty || onlyLambdas) && kwArgs.IsEmpty)) then
+                // #:exit-code 404)` does. Nor do they help C# infer any: a
+                // generic keyword parameter is an `Option`, reached through an
+                // implicit conversion inference does not look through, so the
+                // two guesses above reason about the positional arguments alone.
+                if not tArgs.IsEmpty && (uninferable || args.IsEmpty || onlyLambdas) then
                     let tyArgsStr = tArgs |> List.map typeToString |> String.concat ", "
                     append ctx $"<%s{tyArgsStr}>"
         | TLambda _ ->
@@ -4369,6 +4372,20 @@ and private generateMergedLoop (ctx: CodegenContext) (members: TLoopMember list)
                 append ctx (if owned.Contains slotName then sanitizeIdent slotName else "default!")
             appendLine ctx ");"
 
+/// The context for the member that declares these keyword parameters: inside
+/// it, each of their names is a local.
+///
+/// `AlphaRename` renames a positional parameter that takes a module-level name,
+/// but leaves a keyword parameter alone, because its spelling is the calling
+/// convention. Without this, `(defun (f #:circle ...) (circle r))` in a module
+/// that also defines `circle` would call the module's function.
+and private withKeywordLocals (ctx: CodegenContext) (kwArgs: (string * HMType * TypedExpr) list) : CodegenContext =
+    if kwArgs.IsEmpty then
+        ctx
+    else
+        { ctx with
+            GlobalBindings = kwArgs |> List.fold (fun acc (n, _, _) -> Map.remove n acc) ctx.GlobalBindings }
+
 /// Emits the prologue that turns keyword parameters back into ordinary locals.
 ///
 /// A keyword parameter whose default is not a constant arrives as an `Option`,
@@ -4503,7 +4520,7 @@ and private generateLocalFunction
     // not: `async Fiber<Bjoml.Unit>` owes its builder a `SetResult(value)`, so
     // the body has to produce a unit rather than fall off the end.
     withIndent
-        { ctx with
+        { withKeywordLocals ctx fn.KeywordArgs with
             Loop = None
             InSeq = false
             ReturnsVoid = isVoidType retType && effect <> EAsync }
@@ -4568,7 +4585,7 @@ let private generateMethod
     // Fiber<Bjoml.Unit>` method owes its builder a `SetResult(value)`, so the
     // body has to produce a unit rather than fall off the end. That is the same
     // path a `(-> ... void)` ordinary function already takes.
-    let ctx = { ctx with ReturnsVoid = (effect = ESync && isVoidType retType) }
+    let ctx = { withKeywordLocals ctx kwArgs with ReturnsVoid = (effect = ESync && isVoidType retType) }
 
     withIndent ctx (fun c ->
         generateArgumentPrologue c kwArgs restArg entry

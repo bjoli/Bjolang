@@ -452,6 +452,26 @@ The monomorphised copy is right, but the generic original is emitted with
 ~Empty<object /* unresolved meta */>()~ and fails in C# with CS0029. The same
 loop over a ~List~ with ~match~ compiles.
 
+** Maybe: a signature's keywords are paired with the ~defun~'s by position
+
+#+BEGIN_SRC scheme
+(: tree-case (-> Tree (#:leaf (-> string %r)) (#:else (-> Tree %r)) %r))
+(defun (tree-case t #:else no-case #:leaf (fun (s) (else t)))
+  ...)
+;; Type error: these types do not match.  Tree  string
+#+END_SRC
+
+~checkDefun~ looks each keyword's type up in the signature by name, but lays
+the flat type out in the ~defun~'s order and unifies it with the signature's,
+which is in the signature's order. So the same keywords in another order are
+paired by position, and the error names two types from different keywords
+without saying why they met.
+
+Found writing ~(text xml)~'s ~node-case~, whose ~#:else~ has to come first in
+the ~defun~ because the other defaults call it. Writing the signature in the
+same order is the workaround. Either pair them by name, or refuse a different
+order with an error that says the order has to agree.
+
 * A lowercase union case cannot be matched by name
 
 Found while letting a binder shadow a union case constructor, and separate from

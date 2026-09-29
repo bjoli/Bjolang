@@ -1,0 +1,23 @@
+;; A library function whose result type only its keyword parameters mention,
+;; for 251_keyword_only_generics.bjo to call across a module boundary.
+
+(export Shape shape-case circle square)
+
+(import (std prelude))
+
+(type (: Shape #:opaque (Union (: Circle double) (: Square double))))
+
+(: circle (-> double Shape))
+(defun (circle r) (Circle r))
+
+(: square (-> double Shape))
+(defun (square s) (Square s))
+
+(: no-clause (-> Shape %r))
+(defun (no-clause s) (panic! "shape-case: no clause for this shape"))
+
+(: shape-case (-> Shape (#:else (-> Shape %r)) (#:circle (-> double %r)) (#:square (-> double %r)) %r))
+(defun (shape-case s #:else no-clause #:circle (fun (r) (else s)) #:square (fun (x) (else s)))
+  (match s
+    ((Circle r) (circle r))
+    ((Square x) (square x))))

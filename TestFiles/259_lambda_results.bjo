@@ -1,0 +1,87 @@
+;; A lambda's result is what its context expects of it.
+;;
+;; The body is checked against the expected result, as a defun's body is
+;; checked against its declared one, so a literal it ends in is elaborated:
+;; (fun (x) 'fast) is a Mode where a function answering one is wanted.
+;;
+;; A body that ends in a call to a .NET method returning void has System.Void
+;; for a type, which C# has no value of. A lambda or a local function like that
+;; returns the unit, so that it is the Func<..., Unit> a (-> ... void)
+;; parameter is, rather than an Action that C# will not convert.
+
+(import (std prelude))
+(import (std simpletest))
+
+(import/class
+  (ClrBuilder (: System.Text.StringBuilder (-> ClrBuilder))))
+
+(import/extern
+  (clr-append (: System.Text.StringBuilder.Append (-> ClrBuilder string ClrBuilder)))
+  (clr-length (: System.Text.StringBuilder.Length (-> ClrBuilder int) #:get))
+  (clr-length! (: System.Text.StringBuilder.Length (-> ClrBuilder int void) #:set))
+  (clr-clear (: System.Text.StringBuilder.Clear (-> ClrBuilder ClrBuilder)))
+  (clr-sleep (: System.Threading.Thread.Sleep (-> int void))))
+
+(type (: Mode (Union (: Fast #:tag fast) (: Safe #:tag safe))))
+
+(type-rec
+  (: Item (Union (: ISym Symbol) (: IStr string) (: ISub (List Item)))))
+
+(: mode-name (-> Mode string))
+(defun (mode-name m) (match m (Fast "fast") (Safe "safe")))
+
+(: twice (-> (-> int void) void))
+(defun (twice f) (f 1) (f 2))
+
+(: twice/kw (-> (#:each (-> int void)) void))
+(defun (twice/kw #:each (fun (n) unit)) (each 1) (each 2))
+
+(: pick (-> bool (-> bool Mode) string))
+(defun (pick b choose) (mode-name (choose b)))
+
+(: pick/kw (-> bool (#:choose (-> bool Mode)) string))
+(defun (pick/kw b #:choose (fun (x) 'safe)) (mode-name (choose b)))
+
+(: pick-later (-> (-> (-> bool Mode)) string))
+(defun (pick-later make) (mode-name ((make) #f)))
+
+(: item-count (-> (-> Item) int))
+(defun (item-count make)
+  (match (make) ((ISub xs) (list-length xs)) (_ -1)))
+
+(: void-calls (-> void))
+(defun (void-calls)
+  (def sb (ClrBuilder.))
+  (twice (fun (n) (clr-sleep 0)))
+  (twice (fun (n) (clr-length! sb n)))
+  (expect "a setter ending a lambda" (clr-length sb) 2)
+  (twice/kw #:each (fun (n) (clr-length! sb (+ n 10))))
+  (expect "and one passed by keyword" (clr-length sb) 12)
+  (list-for-each (fun (s) (ignore (clr-append sb s)) (clr-sleep 0)) (list "a" "b"))
+  (expect "at a parameter of either colour" (clr-length sb) 14)
+  (defun (shorten (: n int)) (clr-length! sb n))
+  (twice shorten)
+  (expect "a local function passed as a value" (clr-length sb) 2)
+  (def (: set-length (-> int void)) (fun (n) (clr-length! sb n)))
+  (set-length 5)
+  (expect "an annotated binding" (clr-length sb) 5)
+  (defun (clear) (clr-length! sb 0))
+  (clear)
+  (expect "a local function called" (clr-length sb) 0))
+
+(: literal-results (-> void))
+(defun (literal-results)
+  (expect "a symbol through an if" (pick #t (fun (x) (if x 'fast 'safe))) "fast")
+  (expect "a keyword default's" (pick/kw #t) "safe")
+  (expect "a lambda passed by keyword" (pick/kw #t #:choose (fun (x) 'fast)) "fast")
+  (expect "a list literal" (item-count (fun () '(a "b" (c)))) 3)
+  (def (: chosen (-> Mode)) (fun () 'fast))
+  (expect "an annotated binding" (mode-name (chosen)) "fast")
+  (expect "a lambda returning a lambda"
+          (pick-later (fun () (fun (x) (if x 'fast 'safe))))
+          "safe"))
+
+(defun (main)
+  (void-calls)
+  (literal-results)
+  0)

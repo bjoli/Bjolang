@@ -830,11 +830,12 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
     let bodyType, typedBody = inferChecked expectedRetType bodyEnv body
     unify env.Registry bodyType expectedRetType
 
-    // Type-check keyword default expressions
+    // Type-check keyword default expressions, each against its parameter's
+    // declared type, so `#:mode 'fast` elaborates as an argument would.
     let typedKeywordArgs, _ =
         List.zip keywordArgDefs keywordTypes
         |> List.fold (fun (typedArgs, currentEnv) ((kwName, defaultExpr), (_, kwType)) ->
-            let defaultType, typedDefault = infer currentEnv defaultExpr
+            let defaultType, typedDefault = inferChecked kwType currentEnv defaultExpr
             unify env.Registry defaultType kwType
             let nextEnv = addBinding kwName { Scheme = Scheme([], [], kwType); IsMutable = false } currentEnv
             (typedArgs @ [kwName, kwType, typedDefault], nextEnv)

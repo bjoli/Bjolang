@@ -3,6 +3,69 @@
 
 What each change guarantees, and what it leaves open.
 
+* A lambda's result is what its context expects of it
+
+A lambda checked against an expected function type had its parameters pinned
+and its body inferred on its own. Two things went wrong with that.
+
+A literal it ended in was not elaborated: ~(pick (fun (x) 'fast))~, with a
+~(-> bool Mode)~ parameter, was a type error, ~Mode~ against ~Symbol~. The body
+is now checked against the expected result, as a ~defun~'s body is against its
+declared one, so ~(fun (x) (if x 'fast 'safe))~ and ~(fun () '(a "b"))~ are
+elaborated into the union the result names. An unsolved result expects nothing.
+
+A body ending in a call to a .NET method returning void has ~System.Void~ for a
+type, and a lambda with that result was emitted as an ~Action~. Passed to a
+~(-> int void)~ parameter, which is a ~Func<int, Unit>~, it was C# error CS0126
+when written inline and CS1503 when bound first. Such a lambda now returns the
+unit, and so does a local function with no return type written. The one
+exception is a lambda whose expected type comes from a .NET parameter that
+really is an ~Action~. ~(twice (fun (n) (sb-length! sb n)))~ no longer needs a
+~unit~ at the end.
+
+Tested in ~259_lambda_results.bjo~.
+
+* A keyword argument is checked against its parameter's type
+
+~(f #:mode 'fast)~ was a type error, ~Mode~ against ~Symbol~, where
+~(g 'fast)~ elaborated the literal into the ~Fast~ case. A keyword argument
+was inferred on its own; it is now checked against the type the callee
+declares for it, as a positional argument is. So a quoted symbol or list, and
+an ~if~ or ~let~ ending in one, elaborates into the union the keyword names,
+and a lambda passed by keyword has its parameter types before its body is
+checked, so it can read a field that two record types share.
+
+A top-level function's keyword *default* is checked against the keyword's
+declared type the same way, so ~(defun (run #:mode 'safe) ...)~ works, as the
+body is already checked against the declared result.
+
+A lambda's *result* is checked too, by the entry above.
+
+Tested in ~250_keyword_literals.bjo~.
+
+* A type variable only keyword parameters mention is written out at the call
+
+~(: f (-> (#:seed %a) %a))~, and a case analysis whose handlers are all
+keywords, ~(: shape-case (-> Shape (#:else (-> Shape %r)) ... %r))~, compiled
+and then failed in C# with CS0411. A generic keyword parameter is an ~Option~
+in C#, reached through an implicit conversion that C# type inference does not
+look through, and an omitted keyword is no argument at all. Such bindings are
+now in ~TraitRegistry.KeywordOnlyGenerics~, and a call to one gets its type
+arguments written out, as a call to a ~ReturnOnlyGenerics~ one does. The set
+is separate because ~MustUse~ reads ~ReturnOnlyGenerics~ as "never returns".
+
+For the same reason keyword arguments no longer switch off the guess that
+writes type arguments for a call whose positional arguments are all lambdas:
+~(f (fun (x) (+ x 1)) #:seed 41)~ gave C# nothing to infer from.
+
+A keyword parameter named like a module-level function is a local inside the
+function that declares it. ~AlphaRename~ does not rename keyword parameters,
+their spelling being the calling convention, and ~(circle r)~ in a function
+with a ~#:circle~ parameter was emitted as a call to the module's ~circle~.
+
+Tested in ~251_keyword_only_generics.bjo~, across a module boundary through
+~inc/kwgeneric.bjo~.
+
 * A union case with a payload is written ~(: Case type ...)~
 
 ~(Union (Circle double) (Rect double double) Empty)~ is now

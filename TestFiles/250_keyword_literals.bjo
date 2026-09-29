@@ -1,0 +1,58 @@
+;; A literal passed by keyword is checked against the keyword parameter's type,
+;; as a positional one is against its parameter's, so a quoted symbol or list
+;; elaborates into the union the parameter names: `(f #:mode 'fast)` is the
+;; `Fast` case, as `(g 'fast)` is.
+
+(import (std prelude))
+(import (std simpletest))
+
+(type (: Mode (Union (: Fast #:tag fast) (: Safe #:tag safe))))
+
+(type-rec
+  (: Item (Union (: ISym Symbol) (: IStr string) (: ISub (List Item)))))
+
+(: mode-name (-> Mode string))
+(defun (mode-name m)
+  (match m (Fast "fast") (Safe "safe")))
+
+(: render (-> Item string))
+(defun (render i)
+  (match i
+    ((ISym s) (symbol->string s))
+    ((IStr s) (str "\"" s "\""))
+    ((ISub xs) (str "(" (string-join (list->vec (list-map render xs)) " ") ")"))))
+
+;; A keyword whose default is a constructor, so the parameter is the union.
+(: run (-> string (#:mode Mode) string))
+(defun (run name #:mode Safe)
+  (str name ":" (mode-name mode)))
+
+;; A list literal at a keyword, elaborated element by element.
+(: show (-> (#:form Item) string))
+(defun (show #:form (ISub Nil))
+  (render form))
+
+;; A lambda at a keyword has its parameter types before its body is checked, so
+;; the body can read a field that two record types share.
+(type (: Car (Record (: label string) (: wheels int))))
+(type (: Boat (Record (: label string) (: sails int))))
+
+(: describe-car (-> Car (#:describe (-> Car string)) string))
+(defun (describe-car c #:describe (fun (x) "a car"))
+  (describe c))
+
+(defun (main)
+  (expect "defaulted" (run "a") "a:safe")
+  (expect "a quoted symbol by keyword" (run "a" #:mode 'fast) "a:fast")
+  (expect "a constructor by keyword" (run "a" #:mode Fast) "a:fast")
+  (expect "an if ending in literals" (run "a" #:mode (if (> 2 1) 'fast 'safe)) "a:fast")
+  (expect "a list literal by keyword" (show #:form '(pipe "x" (ls))) "(pipe \"x\" (ls))")
+  (expect "a lambda reads a shared field"
+          (describe-car (Car (label "volvo") (wheels 4)) #:describe (fun (x) (record-ref x label)))
+          "volvo")
+  (expect "a boat is not a car" (record-ref (Boat (label "b") (sails 2)) sails) 2)
+
+  ;; A local function's keywords are declared the same way.
+  (defun (local-run #:mode Safe) (mode-name mode))
+  (expect "a local function's keyword" (local-run #:mode 'fast) "fast")
+  0)

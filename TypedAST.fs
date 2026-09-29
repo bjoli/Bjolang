@@ -1595,7 +1595,17 @@ type TraitRegistry =
       /// Tracks these functions because C# cannot infer such parameters, requiring
       /// `Codegen` to explicitly emit type arguments. Additionally, `MustUse` uses 
       /// this to skip discard checks since divergent functions yield no value.
-      ReturnOnlyGenerics: Set<string> }
+      ReturnOnlyGenerics: Set<string>
+
+      /// Bindings with a type parameter that only their keyword parameters and
+      /// their result mention.
+      ///
+      /// These return normally, so they are not `ReturnOnlyGenerics`, but C#
+      /// cannot infer the parameter either: a generic keyword parameter is an
+      /// `Option` that an argument reaches through an implicit conversion,
+      /// which C# type inference does not look through, and an omitted one is
+      /// no argument at all. `Codegen` emits their type arguments explicitly.
+      KeywordOnlyGenerics: Set<string> }
 
     member this.IsTraitDefinedLocally(name) = Set.contains name this.LocalTraits
     member this.IsTypeDefinedLocally(name) = Set.contains name this.LocalTypes

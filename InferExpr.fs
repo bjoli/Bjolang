@@ -1923,6 +1923,23 @@ and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Rang
         | None -> None
         | Some paramTy -> Some paramTy
 
+    /// The type the callee declares for keyword parameter `kwName`, for the
+    /// same use as `expectedParam`. In the flat parameter list the keyword
+    /// parameters follow the mandatory ones, in declaration order.
+    let expectedKeyword (kwName: string) : HMType option =
+        match funMeta with
+        | None -> None
+        | Some meta ->
+            match meta.KeywordParams |> List.tryFindIndex (fun (k, _) -> k = kwName) with
+            | None -> None
+            | Some k ->
+                match prune env.Registry targetType with
+                | TFun(paramTys, _, _) when meta.MandatoryCount + k < paramTys.Length ->
+                    match prune env.Registry paramTys[meta.MandatoryCount + k] with
+                    | TMeta _ -> None
+                    | paramTy -> Some paramTy
+                | _ -> None
+
     // Separate keyword args from positional args
     // Keyword args appear as EKeyword("name") followed by a value expr when matching a declared keyword parameter
     let rec splitArgs positional keywords remaining =
@@ -1961,50 +1978,75 @@ and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Rang
     /// exception `unify` makes for `TFun`: in `(fold + 0 v)` the folding
     /// function mentions `Foldable`'s associated type, which nothing knows
     /// until `v` has been inferred.
-    let pinToParam (i: int) (argType: HMType) =
-        match expectedParam i with
+    let pin (expected: HMType option) (argType: HMType) =
+        match expected with
         | Some paramTy when not (awaitsImplementor env.Registry paramTy || awaitsImplementor env.Registry argType) ->
             unify env.Registry paramTy argType
         | _ -> ()
+
+    /// An argument that is not a lambda, inferred against the type its
+    /// parameter declares.
+    let inferArg (arg: Expr) (expected: HMType option) =
+        match arg, expected with
+        // A literal is checked against the type its position expects
+        // rather than inferred on its own, so a union the parameter
+        // names can elaborate it: `(f 'x)` is a `T` because the
+        // signature says so, the same way `(f '(pipe …))` is a `Form`.
+        | (EList _ | EVec _ | EArray _ | EString _ | EQuotedSymbol _ | EInt _), Some paramTy ->
+            inferChecked paramTy env arg
+        // So is a form that ends in one, `(f (if c '(a) '(b)))`. Not
+        // at a parameter still waiting on an implementor, which
+        // `pin` leaves alone too: a lambda in a branch would
+        // be pinned to it.
+        | (EIf _ | ELet _ | ELetMono _ | ELetRec _ | ELetMutable _ | ELetTuple _ | EMatch _ | EDefMatch _),
+          Some paramTy when not (awaitsImplementor env.Registry paramTy) ->
+            inferChecked paramTy env arg
+        | _ -> infer env arg
+
+    /// A lambda argument, inferred once the other arguments have pinned
+    /// what its parameter says about it.
+    let inferLambdaArg (arg: Expr) (expected: HMType option) =
+        match expected with
+        | Some paramTy -> inferChecked paramTy env arg
+        | None -> infer env arg
 
     positionalExprs
     |> List.iteri (fun i arg ->
         match arg with
         | EFun _ -> ()
         | _ ->
-            let argType, typedArg =
-                match arg, expectedParam i with
-                // A literal is checked against the type its position expects
-                // rather than inferred on its own, so a union the parameter
-                // names can elaborate it: `(f 'x)` is a `T` because the
-                // signature says so, the same way `(f '(pipe …))` is a `Form`.
-                | (EList _ | EVec _ | EArray _ | EString _ | EQuotedSymbol _ | EInt _), Some paramTy ->
-                    inferChecked paramTy env arg
-                // So is a form that ends in one, `(f (if c '(a) '(b)))`. Not
-                // at a parameter still waiting on an implementor, which
-                // `pinToParam` leaves alone too: a lambda in a branch would
-                // be pinned to it.
-                | (EIf _ | ELet _ | ELetMono _ | ELetRec _ | ELetMutable _ | ELetTuple _ | EMatch _ | EDefMatch _),
-                  Some paramTy when not (awaitsImplementor env.Registry paramTy) ->
-                    inferChecked paramTy env arg
-                | _ -> infer env arg
-
-            pinToParam i argType
+            let argType, typedArg = inferArg arg (expectedParam i)
+            pin (expectedParam i) argType
             slots[i] <- Some(argType, typedArg))
 
-    let keywordArgs = keywordExprs |> List.map (fun (kwName, value) -> kwName, infer env value)
+    // Keyword arguments get the same treatment, so `(f #:mode 'fast)`
+    // elaborates the way `(f 'fast)` does. They are kept in the order they
+    // were written, which is the order codegen evaluates them in.
+    let keywordSlots: (HMType * TypedExpr) option array = Array.create (List.length keywordExprs) None
+
+    keywordExprs
+    |> List.iteri (fun i (kwName, value) ->
+        match value with
+        | EFun _ -> ()
+        | _ ->
+            let argType, typedArg = inferArg value (expectedKeyword kwName)
+            pin (expectedKeyword kwName) argType
+            keywordSlots[i] <- Some(argType, typedArg))
 
     positionalExprs
     |> List.iteri (fun i arg ->
         match arg with
-        | EFun _ ->
-            let inferred =
-                match expectedParam i with
-                | Some paramTy -> inferChecked paramTy env arg
-                | None -> infer env arg
-
-            slots[i] <- Some inferred
+        | EFun _ -> slots[i] <- Some(inferLambdaArg arg (expectedParam i))
         | _ -> ())
+
+    keywordExprs
+    |> List.iteri (fun i (kwName, value) ->
+        match value with
+        | EFun _ -> keywordSlots[i] <- Some(inferLambdaArg value (expectedKeyword kwName))
+        | _ -> ())
+
+    let keywordArgs =
+        List.zip (keywordExprs |> List.map fst) (keywordSlots |> Array.toList |> List.map Option.get)
 
     let positionalArgs = slots |> Array.toList |> List.map Option.get
     let retType = freshMeta ()
@@ -2736,8 +2778,14 @@ and private inferLocalFunBody
         | Some(n, t) -> bind n (TCon("Array", [ t ])) bodyEnv
         | None -> bodyEnv
 
-    // The return type is the body's expectation.
+    // The return type is the body's expectation. With none written, a body
+    // ending in a .NET void call returns the unit, as a lambda's does (see
+    // `functionResult`); a written `: void` already is the unit.
     let bodyType, typedBody = inferChecked shape.RetType bodyEnv value
+    let bodyType =
+        match prune env.Registry shape.RetType with
+        | TMeta _ -> functionResult env bodyType None
+        | _ -> bodyType
     unify env.Registry bodyType shape.RetType
 
     let typedKeywords, _ =
@@ -2821,9 +2869,9 @@ and private inferCheckedNode (expected: HMType) (env: Env) (expr: Expr) : HMType
         let typed = inferAndMaybeInject expected env expr
         typed.Type, typed
 
-    // A lambda whose parameters the expectation already names.
-    | EFun(args, body, colour, r), TFun(paramTys, _, _) when List.length paramTys = List.length args ->
-        inferLambda (Some paramTys) env args body colour r
+    // A lambda whose parameters and result the expectation already names.
+    | EFun(args, body, colour, r), TFun(paramTys, ret, _) when List.length paramTys = List.length args ->
+        inferLambda (Some(paramTys, ret)) env args body colour r
 
     // A form whose value is one of its tail positions passes the expectation
     // on, so `(if c '(from a) '(from b))` and a `let` body ending in a literal
@@ -2843,17 +2891,35 @@ and private inferCheckedNode (expected: HMType) (env: Env) (expr: Expr) : HMType
     | _ ->
         infer env expr
 
-/// A lambda. `pins` are the parameter types the context expects, when it
-/// expects any: unifying them before the body is inferred is what lets the body
-/// read a record field off a parameter, since `recordTypeOfField` needs the
-/// record type at the moment of the access.
+/// The result type of a function whose body has type `bodyType`, given the
+/// result the context expects, if it expects one.
+///
+/// A body that ends in a call to a .NET method returning void has
+/// `System.Void` for a type, which C# has no value of, and a function with that
+/// result is emitted as an `Action`. A Bjolang function returns the unit then,
+/// so that it is the `Func<..., Unit>` a `(-> ... void)` parameter is. Only a
+/// function that goes straight to a .NET parameter of delegate type `Action`
+/// stays one.
+and private functionResult (env: Env) (bodyType: HMType) (expected: HMType option) : HMType =
+    match prune env.Registry bodyType, expected |> Option.map (prune env.Registry) with
+    | TCon(TypeConstants.VoidName, []), Some(TCon(TypeConstants.VoidName, [])) -> bodyType
+    | TCon(TypeConstants.VoidName, []), _ -> TypeConstants.unitType
+    | _ -> bodyType
+
+/// A lambda. `expected` is the parameter and result types the context
+/// expects, when it expects any. Unifying the parameters before the body is
+/// inferred is what lets the body read a record field off a parameter, since
+/// `recordTypeOfField` needs the record type at the moment of the access. The
+/// body is checked against the result, as a `defun`'s body is checked against
+/// its declared one, so a literal it ends in is elaborated: `(fun (x) 'fast)`
+/// is a `Mode` where a function answering one is wanted.
 ///
 /// The effect is the lambda's own keyword and never comes from the context. A
 /// `fun` is `ESync` and a `bjoroutine` is `EAsync`, `ColourCheck` reads that off
 /// the node, and taking it from a `-bjo->` parameter instead would repaint the
 /// lambda and make the colour diagnostics wrong.
 and private inferLambda
-    (pins: HMType list option)
+    (expected: (HMType list * HMType) option)
     (env: Env)
     (args: string list)
     (body: Expr)
@@ -2862,9 +2928,11 @@ and private inferLambda
     : HMType * TypedExpr =
     let argTypes = args |> List.map (fun _ -> freshMeta ())
 
-    match pins with
-    | Some paramTys -> List.iter2 (fun argTy paramTy -> unify env.Registry argTy paramTy) argTypes paramTys
+    match expected with
+    | Some(paramTys, _) -> List.iter2 (fun argTy paramTy -> unify env.Registry argTy paramTy) argTypes paramTys
     | None -> ()
+
+    let expectedResult = expected |> Option.map snd
 
     let localEnv =
         List.zip args argTypes
@@ -2877,8 +2945,15 @@ and private inferLambda
                     acc)
             (withoutSeqElement env)
 
-    let bodyType, typedBody = infer localEnv body
-    let funType = TFun(argTypes, bodyType, colourEffect colour)
+    // An unsolved result expects nothing in particular, as an unsolved
+    // parameter type does for an argument.
+    let bodyType, typedBody =
+        match expectedResult |> Option.map (prune env.Registry) with
+        | None
+        | Some(TMeta _) -> infer localEnv body
+        | Some result -> inferChecked result localEnv body
+
+    let funType = TFun(argTypes, functionResult env bodyType expectedResult, colourEffect colour)
 
     funType,
     { Type = funType
