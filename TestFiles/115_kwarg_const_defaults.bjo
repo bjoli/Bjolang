@@ -72,6 +72,17 @@
 (defun (labelled x #:tag "t")
   tag)
 
+;; A function-typed slot, whose default is a lambda and so no constant. The
+;; parameter is an `Option` of the delegate, and a lambda passed to it inline
+;; is cast to its delegate type first: a bare C# lambda has no type for the
+;; runtime's conversion into the `Option` to start from.
+(: applied (-> int (#:f (-> int int)) int))
+(defun (applied n #:f (fun (x) x))
+  (f n))
+
+(: doubled (-> int int))
+(defun (doubled x) (* x 2))
+
 (defun (main)
   ;; --- constant defaults, omitted and supplied -----------------------------
   (expect "int defaulted" (scale 5) 10)
@@ -114,6 +125,11 @@
   ;; slot's own type is `string`, so it qualifies while the function does not.
   (expect "constant slot on a generic function" (labelled 1) "t")
   (expect "and supplied" (labelled 1 #:tag "u") "u")
+
+  (expect "a function slot defaulted" (applied 5) 5)
+  (expect "supplied a named function" (applied 5 #:f doubled) 10)
+  (expect "supplied a lambda inline" (applied 5 #:f (fun (x) (+ x 1))) 6)
+  (expect "supplied a # shorthand" (applied 5 #:f #(* & 3)) 15)
 
   ;; --- a local function gets the same treatment ----------------------------
   ;;

@@ -266,9 +266,6 @@
   (file-write-text (path-combine dir "b.txt") "b")
   (file-write-text (path-combine dir "c.bjo") "c"))
 
-(: not-git? (-> string bool))
-(defun (not-git? d) (not (= (path-filename d) (Some ".git"))))
-
 (: check-walk (-> string string void))
 (defun (check-walk where dir)
   (make-tree dir)
@@ -281,7 +278,7 @@
                 (path-combine dir "b.txt")
                 (path-combine dir "c.bjo")))
   (expect #"${where}: into? leaves a directory out"
-          (seq->list (directory-walk dir #:into? not-git?))
+          (seq->list (directory-walk dir #:into? (fun (d) (not (= (path-filename d) (Some ".git"))))))
           (list (path-combine dir "a" "m" "k.txt")
                 (path-combine dir "a" "z.txt")
                 (path-combine dir "b.txt")

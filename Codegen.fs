@@ -2813,7 +2813,21 @@ and private generateApply
         let positionalEmitters =
             argEmitters |> List.truncate args.Length |> List.mapi lifted
 
-        let keywordEmitters = argEmitters |> List.skip args.Length
+        // A lambda is cast to its own delegate type, as `lifted` casts one. A
+        // keyword parameter whose default C# cannot hold as a constant is an
+        // `Option`, which a typed value reaches through the runtime's implicit
+        // conversion; a bare lambda has no type to convert from, and
+        // `f(__kw_p: (d) => …)` is CS1660.
+        let keywordEmitters =
+            List.zip (kwArgs |> List.map snd) (argEmitters |> List.skip args.Length)
+            |> List.map (fun (kwExpr, emit) ->
+                match kwExpr.Node with
+                | TLambda _ ->
+                    fun (c: CodegenContext) ->
+                        append c $"((%s{typeToString kwExpr.Type})("
+                        emit c
+                        append c "))"
+                | _ -> emit)
 
         // A call to a bjoroutine is the yield point, and this is where it
         // becomes one. The method returns `Fiber<T>`, the language says the

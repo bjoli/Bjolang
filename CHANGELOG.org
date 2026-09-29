@@ -3,6 +3,20 @@
 
 What each change guarantees, and what it leaves open.
 
+* A lambda can be passed to a keyword parameter whose default is not a constant
+
+~(directory-walk "." #:into? (fun (d) ...))~ was C# error CS1660. A keyword
+parameter whose default C# cannot hold as a constant is an ~Option~ in C#, and
+a value reaches it through the runtime's implicit conversion; a C# lambda has
+no type until one is given, so there was nothing to convert from. A named
+function worked, because it is emitted cast to its delegate type. A lambda
+passed by keyword is now cast the same way, as one passed to ~Colour.Lift~
+already was.
+
+Tested in ~115_kwarg_const_defaults.bjo~ (a function-typed keyword defaulted,
+given a named function, a lambda and a ~#(...)~ shorthand) and
+~249_files.bjo~ (~#:into?~ given a lambda).
+
 * ~directory-walk~ walks a tree, and ~directory-delete-tree~ no longer follows links
 
 ~(directory-walk dir #:into? pred)~ is the files under ~dir~, depth first, as
