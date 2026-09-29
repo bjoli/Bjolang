@@ -50,7 +50,27 @@
     (() 0)
     ((List (Boxed (item i) (count c)) rest ...) (+ (* i c) (sum-items rest)))))
 
+;; A bare field name binds the field to that name.
+(: pun (-> Car string))
+(defun (pun c)
+  (match c
+    ((Car brand (colour Red)) #"red ${brand}")
+    ((Car brand year) #"${brand} from ${(int->string year)}")))
+
+;; The puns shadow a parameter and an outer binding of the same names.
+(: shadowed (-> string Point int))
+(defun (shadowed x p)
+  (let ((y 100))
+    (match p
+      ((Point x y) (+ x y)))))
+
 (defun (main args)
+  (expect "pun" (pun (Car (brand "saab") (colour Blue) (year 1990))) "saab from 1990")
+  (expect "pun beside a field pattern" (pun (Car (brand "saab") (colour Red) (year 1990))) "red saab")
+  (expect "shadowing puns" (shadowed "x" (Point (x 1) (y 2))) 3)
+  (def (Point x y) (Point (x 7) (y 8)))
+  (expect "def with puns" (* x y) 56)
+
   (expect "field bound" (describe (Car (brand "saab") (colour Red) (year 1990))) "red saab")
   (expect "literal field" (describe (Car (brand "fiat") (colour Blue) (year 1999))) "a 1999 car")
   (expect "or in a field" (describe (Car (brand "volvo") (colour Green) (year 1980))) "a cool volvo")

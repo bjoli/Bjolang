@@ -597,25 +597,40 @@ let rec checkPattern
 
         let fieldList = declaredFields |> List.map fst |> String.concat ", "
 
+        // A bare name is a pun: `(Car brand)` is `(Car (brand brand))`. The
+        // binder may have been freshened by hygiene or shadowing to
+        // `brand__12` before it gets here, so its base name is tried when the
+        // name itself is not a field.
+        let fieldAndPattern (arg: Pattern) : string * Pattern * Range =
+            match arg with
+            | PConstruct(field, [ inner ], fr) when field.Length > 0 && not (System.Char.IsUpper field[0]) ->
+                field, inner, fr
+            | PIdent(binder, br) ->
+                let field =
+                    if Map.containsKey binder fieldTypes then binder
+                    else Gensym.baseName binder
+
+                field, arg, br
+            | bad ->
+                failwithf
+                    $"Pattern Error at %s{Lexer.formatPos (patternRange bad)}: '%s{shown}' is a record type, so each part of its pattern is one of its fields, written (field-name pattern) or as a bare field name."
+
         let written =
             (Map.empty, args)
             ||> List.fold (fun acc arg ->
-                match arg with
-                | PConstruct(field, [ inner ], fr) when field.Length > 0 && not (System.Char.IsUpper field[0]) ->
-                    if Map.containsKey field acc then
-                        failwithf
-                            $"Pattern Error at %s{Lexer.formatPos fr}: field '%s{field}' of '%s{shown}' is matched twice."
+                let field, inner, fr = fieldAndPattern arg
 
-                    match Map.tryFind field fieldTypes with
-                    | Some fieldType ->
-                        let typed, binders = checkPattern env fieldType inner
-                        Map.add field (typed, binders) acc
-                    | None ->
-                        failwithf
-                            $"Pattern Error at %s{Lexer.formatPos fr}: '%s{shown}' has no field '%s{field}'. Its fields are: %s{fieldList}."
-                | bad ->
+                if Map.containsKey field acc then
                     failwithf
-                        $"Pattern Error at %s{Lexer.formatPos (patternRange bad)}: '%s{shown}' is a record type, so each part of its pattern is one of its fields, written (field-name pattern).")
+                        $"Pattern Error at %s{Lexer.formatPos fr}: field '%s{field}' of '%s{shown}' is matched twice."
+
+                match Map.tryFind field fieldTypes with
+                | Some fieldType ->
+                    let typed, binders = checkPattern env fieldType inner
+                    Map.add field (typed, binders) acc
+                | None ->
+                    failwithf
+                        $"Pattern Error at %s{Lexer.formatPos fr}: '%s{shown}' has no field '%s{field}'. Its fields are: %s{fieldList}.")
 
         // Every field, in declaration order, with a wildcard for each one left
         // out. The exhaustiveness checker then reads the record as a
