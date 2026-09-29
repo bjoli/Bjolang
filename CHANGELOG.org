@@ -3,6 +3,38 @@
 
 What each change guarantees, and what it leaves open.
 
+* Files can be copied, and read and written whole as bytes or as lines
+
+- ~(file-copy from to #:mode CreateNew)~. The mode is how ~to~ is opened:
+  ~CreateNew~, the default, fails if it exists, so a copy never loses a file by
+  accident; ~Truncate~ replaces it; ~Append~ adds to it. The default differs
+  from ~open-output-file~'s on purpose, and is ~File.Copy~'s. The source is
+  opened first, so a missing one leaves ~to~ as it was. A copy onto its own
+  path is refused before anything is opened, because opening the target would
+  empty the source; the check is on the path's text, so two names for one
+  file are not caught. A directory as the source fails. The copy is a new
+  file, with a modified time of its own.
+- ~(file-read-bytes path)~ → ~(Array byte)~, ~(file-write-bytes path bytes)~
+  and ~(file-append-bytes path bytes)~.
+- ~(file-read-lines path)~ → ~(Vec string)~ and ~(file-write-lines path
+  lines)~. Writing puts ~"\n"~ after every line, the last one too, on every
+  OS, so the same lines are the same bytes everywhere. Reading takes ~"\n"~
+  and ~"\r\n"~, a last line with no line end, and makes no empty line after
+  a final one, so what was written reads back unless a line held a line end
+  of its own.
+
+All of them open through the ~FS~ effect, so a fake answers for them, and
+each has a suspending copy: in a bjoroutine a copy awaits the disk rather
+than parking its thread.
+
+The fake filesystem kept a written file as text when it was read back or
+appended to, so bytes that are not UTF-8 came back changed: 256 bytes read
+back as 515. It keeps bytes now.
+
+Tested in ~249_files.bjo~: copies, bytes and lines on the fake and on the
+disk, each run once through the ordinary copies and once more from a
+bjoroutine through the suspending ones.
+
 * ~file-move~ can replace a file
 
 ~(file-move from to #:mode MoveReplace)~ replaces a file at ~to~, in the one

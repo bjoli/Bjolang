@@ -55,6 +55,29 @@
 (defun (threw? r)
   (match r ((Ok _) #f) ((Err _) #t)))
 
+(: under (-> string string string))
+(defun (under dir name) (path-combine dir name))
+
+;; Every byte value, 0 to 255, most of which is not UTF-8 on its own.
+(: all-bytes (Array byte))
+(def all-bytes
+  (let ((out (make-array 256)))
+    (let loop ((i 0))
+      (when (< i 256)
+        (array-set! out i (cast byte i))
+        (loop (+ i 1))))
+    out))
+
+(: same-bytes? (-> (Array byte) (Array byte) bool))
+(defun (same-bytes? a b)
+  (and (= (array-length a) (array-length b))
+       (let loop ((i 0))
+         (or (= i (array-length a))
+             (and (= (array-ref a i) (array-ref b i)) (loop (+ i 1)))))))
+
+(: vec-of (-> (List string) (Vec string)))
+(defun (vec-of xs) (list->vec xs))
+
 ;; ---------------------------------------------------------------------------
 ;; file-info
 ;; ---------------------------------------------------------------------------
@@ -151,11 +174,110 @@
   (file-move b c #:mode MoveReplace)
   (expect #"${where}: MoveReplace onto a free path moves" (file-read-text c) "A"))
 
-(defun (main)
-  (when (directory-exists? probe) (directory-delete-tree probe))
+;; ---------------------------------------------------------------------------
+;; file-copy, bytes and lines
+;; ---------------------------------------------------------------------------
+;;
+;; Each takes the directory to work in, so that a second run does not find
+;; the first one's files.
+
+(: check-copies (-> string string void))
+(defun (check-copies where dir)
+  (directory-create dir)
+  (def src (under dir "src.txt"))
+  (def dst (under dir "dst.txt"))
+  (file-write-text src "source")
+  (file-write-text dst "old")
+  (expect-true #"${where}: a copy refuses an existing target by default"
+               (threw? (try (file-copy src dst) #:catch (System.Exception))))
+  (expect #"${where}: and leaves it as it was" (file-read-text dst) "old")
+  (file-copy src dst #:mode Truncate)
+  (expect #"${where}: Truncate replaces it" (file-read-text dst) "source")
+  (file-copy src dst #:mode Append)
+  (expect #"${where}: Append adds to it" (file-read-text dst) "sourcesource")
+  (file-copy src (under dir "fresh.txt"))
+  (expect #"${where}: the default copies to a free path" (file-read-text (under dir "fresh.txt")) "source")
+  (expect-true #"${where}: a missing source fails"
+               (threw? (try (file-copy (under dir "missing.txt") dst #:mode Truncate) #:catch (System.Exception))))
+  (expect #"${where}: and leaves the target as it was" (file-read-text dst) "sourcesource")
+  (expect-true #"${where}: a copy onto itself fails"
+               (threw? (try (file-copy src src #:mode Truncate) #:catch (System.Exception))))
+  (expect #"${where}: and the file is intact" (file-read-text src) "source")
+  (directory-create (under dir "sub"))
+  (expect-true #"${where}: a directory as the source fails"
+               (threw? (try (file-copy (under dir "sub") (under dir "sub-copy")) #:catch (System.Exception))))
+  (file-write-bytes (under dir "all.bin") all-bytes)
+  (file-copy (under dir "all.bin") (under dir "all-copy.bin"))
+  (expect-true #"${where}: bytes that are not text survive a copy"
+               (same-bytes? (file-read-bytes (under dir "all-copy.bin")) all-bytes)))
+
+(: check-bytes (-> string string void))
+(defun (check-bytes where dir)
+  (directory-create dir)
+  (def f (under dir "bytes.bin"))
+  (file-write-bytes f all-bytes)
+  (expect-true #"${where}: every byte value round trips" (same-bytes? (file-read-bytes f) all-bytes))
+  (expect #"${where}: and the size is 256" (described f) "file 256")
+  (def three (make-array 3))
+  (array-set! three 0 (cast byte 7))
+  (array-set! three 1 (cast byte 8))
+  (array-set! three 2 (cast byte 9))
+  (file-append-bytes f three)
+  (def back (file-read-bytes f))
+  (expect #"${where}: append adds to the end" (array-length back) 259)
+  (expect-true #"${where}: in order"
+               (and (= (array-ref back 256) (cast byte 7)) (= (array-ref back 258) (cast byte 9))))
+  (file-write-bytes f three)
+  (expect #"${where}: a write replaces" (array-length (file-read-bytes f)) 3))
+
+(: check-lines (-> string string void))
+(defun (check-lines where dir)
+  (directory-create dir)
+  (def f (under dir "lines.txt"))
+  (def lines (vec-of (list "one" "" "three")))
+  (file-write-lines f lines)
+  (expect #"${where}: lines round trip" (vec->list (file-read-lines f)) (vec->list lines))
+  (expect #"${where}: each ends in a newline, the last too" (file-read-text f) "one\n\nthree\n")
+  (file-write-text f "x\ny")
+  (expect #"${where}: a last line without a newline" (vec->list (file-read-lines f)) (list "x" "y"))
+  (file-write-text f "x\r\ny\r\n")
+  (expect #"${where}: CRLF ends a line too" (vec->list (file-read-lines f)) (list "x" "y"))
+  (file-write-text f "")
+  (expect #"${where}: an empty file has no lines" (vec-length (file-read-lines f)) 0)
+  (file-write-lines f (vec-of '()))
+  (expect #"${where}: no lines make an empty file" (file-read-text f) ""))
+
+;; Once through the ordinary copies of the functions. `main` is a bjoroutine,
+;; so what it calls directly runs their suspending copies; `#:sync` keeps this
+;; one, and everything it calls, on the ordinary ones.
+(: ordinary-copies #:sync (-> void))
+(defun (ordinary-copies)
   (info-on-a-fake)
   (info-on-the-disk)
   (with-fake-fs () (check-moves "fake"))
   (check-moves "disk")
+  (with-fake-fs ()
+    (check-copies "fake" "copies")
+    (check-bytes "fake" "bytes")
+    (check-lines "fake" "lines"))
+  (check-copies "disk" (in-probe "copies"))
+  (check-bytes "disk" (in-probe "bytes"))
+  (check-lines "disk" (in-probe "lines")))
+
+(defbjo (main)
+  (when (directory-exists? probe) (directory-delete-tree probe))
+  ;; Off the fiber, since the ordinary copies park the thread they run on. A
+  ;; failure comes back as an `Err`, and is raised here.
+  (match (sync (blocking (fun () (ordinary-copies))))
+    ((Ok _) (ignore 0))
+    ((Err e) (raise e)))
+  ;; And once through the suspending copies.
+  (with-fake-fs ()
+    (check-copies "fake, suspending" "copies")
+    (check-bytes "fake, suspending" "bytes")
+    (check-lines "fake, suspending" "lines"))
+  (check-copies "disk, suspending" (in-probe "copies-bjo"))
+  (check-bytes "disk, suspending" (in-probe "bytes-bjo"))
+  (check-lines "disk, suspending" (in-probe "lines-bjo"))
   (directory-delete-tree probe)
   0)

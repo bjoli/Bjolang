@@ -279,13 +279,28 @@
     ((FakeWritten s) (Some (fake-bytes->text (.ToArray s))))
     (FakeDir None)))
 
+;; What a file entry holds, as bytes. Reading and appending go through this
+;; rather than through the text, so that bytes that are not UTF-8 come back as
+;; they were written.
+(: fake-entry-bytes (-> FakeEntry (Option (Array byte))))
+(defun (fake-entry-bytes entry)
+  (match entry
+    ((FakeText text) (Some (fake-text->bytes text)))
+    ((FakeWritten s) (Some (.ToArray s)))
+    (FakeDir None)))
+
+(: fake-bytes-at (-> FakeFs string (Option (Array byte))))
+(defun (fake-bytes-at fs path)
+  (match (map-try-ref (fake-entries fs) path)
+    ((Some entry) (fake-entry-bytes entry))
+    (None None)))
+
 ;; In bytes, as a file on a disk would be.
 (: fake-entry-size (-> FakeEntry long))
 (defun (fake-entry-size entry)
-  (match entry
-    ((FakeText text) (cast System.Int64 (array-length (fake-text->bytes text))))
-    ((FakeWritten s) (cast System.Int64 (array-length (.ToArray s))))
-    (FakeDir 0L)))
+  (match (fake-entry-bytes entry)
+    ((Some bytes) (cast System.Int64 (array-length bytes)))
+    (None 0L)))
 
 ;; A path that is no entry of its own is still a directory when something is
 ;; below it.
@@ -326,10 +341,9 @@
     ((Some entry) (fake-entry-text entry))
     (None None)))
 
-(: fake-memory-stream (-> string MemoryStream))
-(defun (fake-memory-stream text)
+(: fake-memory-stream (-> (Array byte) MemoryStream))
+(defun (fake-memory-stream bytes)
   (def s (MemoryStream.))
-  (def bytes (fake-text->bytes text))
   (.Write s bytes 0 (array-length bytes))
   (stream-position! (cast Stream s) 0L)
   s)
@@ -361,8 +375,8 @@
     (def path (fake-path raw))
     (match (fake-kind fs path)
       ((Some FsDirectory) (access-denied path))
-      ((Some FsFile) (match (fake-fs-contents fs path)
-                       ((Some text) (Ok (cast Stream (fake-memory-stream text))))
+      ((Some FsFile) (match (fake-bytes-at fs path)
+                       ((Some bytes) (Ok (cast Stream (fake-memory-stream bytes))))
                        (None (not-found path))))
       (None (if (fake-dir? fs (fake-parent path)) (not-found path) (no-directory path))))))
 
@@ -379,8 +393,8 @@
          ((Tuple _ (Some FsDirectory)) (access-denied path))
          ((Tuple CreateNew (Some FsFile)) (io-error #"the fake filesystem already has ${path}"))
          (_
-          (def s (match (Tuple mode (fake-fs-contents fs path))
-                   ((Tuple Append (Some text)) (let ((m (fake-memory-stream text)))
+          (def s (match (Tuple mode (fake-bytes-at fs path))
+                   ((Tuple Append (Some bytes)) (let ((m (fake-memory-stream bytes)))
                                                  (stream-position! (cast Stream m) (.-Length m))
                                                  m))
                    (_ (MemoryStream.))))

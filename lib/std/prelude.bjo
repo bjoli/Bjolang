@@ -119,7 +119,8 @@
   sqrt
   ;; Files
   file-read-text file-write-text file-append-text file-exists? file-delete file-move
-  file-info
+  file-info file-copy file-read-bytes file-write-bytes file-append-bytes
+  file-read-lines file-write-lines
   file-read/seq file-read-lines/seq
   ;; Paths
   path-absolute path-combine path-filename path-file-extension
@@ -1859,6 +1860,104 @@
   (match (open-output-file path #:mode mode)
     ((Ok p) (with-open ((it p)) (Ok (proc it))))
     ((Err e) (Err e))))
+
+;; --- Bytes, copies and lines ---
+;;
+;; Bytes and copies go over the streams the `FS` openers answer, since the
+;; prelude has no byte port. Each has a suspending copy through the streams'
+;; own async methods, as the text functions have through the ports'. A stream
+;; is disposed by `with-open` however the body ends; it is flushed first, so
+;; that the suspending copy awaits the write rather than leaving it to a
+;; synchronous dispose.
+
+(import/class
+  (MemoryStream (: System.IO.MemoryStream (-> MemoryStream)))
+  (IOException (: System.IO.IOException (-> string IOException))))
+
+(import/extern
+  (clr-copy-to            (: System.IO.Stream.CopyTo      (-> Stream Stream void) #:blocking))
+  (clr-copy-to-await      (: System.IO.Stream.CopyToAsync (-> Stream Stream void) #:async))
+  (clr-stream-write       (: System.IO.Stream.Write       (-> Stream (Array byte) int int void) #:blocking))
+  (clr-stream-write-await (: System.IO.Stream.WriteAsync  (-> Stream (Array byte) int int void) #:async))
+  (clr-stream-flush       (: System.IO.Stream.Flush       (-> Stream void) #:blocking))
+  (clr-stream-flush-await (: System.IO.Stream.FlushAsync  (-> Stream void) #:async)))
+
+(: stream-copy! (-> Stream Stream void))
+(defbjouble (stream-copy! from to)
+  (#:sync (clr-copy-to from to))
+  (#:bjo  (clr-copy-to-await from to)))
+
+(: stream-write! (-> Stream (Array byte) void))
+(defbjouble (stream-write! s bytes)
+  (#:sync (clr-stream-write s bytes 0 (array-length bytes)))
+  (#:bjo  (clr-stream-write-await s bytes 0 (array-length bytes))))
+
+(: stream-flush! (-> Stream void))
+(defbjouble (stream-flush! s)
+  (#:sync (clr-stream-flush s))
+  (#:bjo  (clr-stream-flush-await s)))
+
+;; Copies a file. `#:mode` is how `to` is opened: `CreateNew`, the default,
+;; fails if it exists, so a copy never loses a file by accident; `Truncate`
+;; replaces it and `Append` adds to it. The source is opened first, so a
+;; missing one leaves `to` as it was. A copy onto its own path is refused
+;; before anything is opened, since opening the target would empty the source;
+;; the check is on the path's text, so two names for one file are not caught.
+;; The copy is a new file, with a modified time of its own.
+(: file-copy (-> string string (#:mode WriteMode) void))
+(defun (file-copy from to #:mode CreateNew)
+  (when (= (path-absolute from) (path-absolute to))
+    (raise (cast Exception (IOException. (string-append "cannot copy a file onto itself: " from)))))
+  (with-open ((in (raise-err (open-read-stream from))))
+    (with-open ((out (raise-err (open-write-stream to mode))))
+      (stream-copy! in out)
+      (stream-flush! out))))
+
+(: file-read-bytes (-> string (Array byte)))
+(defun (file-read-bytes path)
+  (with-open ((in (raise-err (open-read-stream path))))
+    (def buffer (MemoryStream.))
+    (stream-copy! in (cast Stream buffer))
+    (.ToArray buffer)))
+
+(: write-whole-bytes (-> string (Array byte) WriteMode void))
+(defun (write-whole-bytes path bytes mode)
+  (with-open ((out (raise-err (open-write-stream path mode))))
+    (stream-write! out bytes)
+    (stream-flush! out)))
+
+(: file-write-bytes (-> string (Array byte) void))
+(defun (file-write-bytes path bytes) (write-whole-bytes path bytes Truncate))
+
+(: file-append-bytes (-> string (Array byte) void))
+(defun (file-append-bytes path bytes) (write-whole-bytes path bytes Append))
+
+;; The lines, without their line ends. "\n" and "\r\n" both end a line, a
+;; last line needs none, and a final line end makes no empty line after it.
+(: file-read-lines (-> string (Vec string)))
+(defun (file-read-lines path)
+  (match (open-input-file path)
+    ((Ok opened) (with-open ((p opened))
+                   (def lines (vecbuilder-empty))
+                   (let next ()
+                     (unless (port-eof? p)
+                       (vecbuilder-add! lines (read-line p))
+                       (next)))
+                   (vecbuilder->vec lines)))
+    ((Err e) (raise e))))
+
+;; Each line followed by "\n", the last one too, on every OS: the same lines
+;; make the same bytes wherever they are written, and `file-read-lines` gives
+;; them back as long as none holds a line end of its own.
+(: file-write-lines (-> string (Vec string) void))
+(defun (file-write-lines path lines)
+  (match (open-output-file path)
+    ((Ok opened) (with-open ((p opened))
+                   (loop (:for line lines)
+                         (:do (write-string p line)
+                              (write-string p "\n")))
+                   (flush-port p)))
+    ((Err e) (raise e))))
  
 ;; The items `reader` reads, pulled lazily. The file is opened inside the `seq`,
 ;; so every walk opens it afresh and reads from t he start, and closed when the
