@@ -3,6 +3,28 @@
 
 What each change guarantees, and what it leaves open.
 
+* A value of a union is no longer wrapped in one of its own cases
+
+Where a list, vector or array literal's element type is a union, an element
+that is not a literal is wrapped in the one case whose payload could hold it.
+A value that already had the union's type could be wrapped too, if a case's
+payload was a bare type variable or the union itself:
+
+#+BEGIN_SRC scheme
+(type (: Tree (Union (Leaf int) (Wrap Tree))))
+(list-map depth (list a b))   ;; two leaves: was '(0 1), now '(0 0)
+
+(type (: (Opt %a) (Union Nothing (Just %a))))
+(list-length (list (Just 7) (Just 8)))   ;; was a type error, now 2
+#+END_SRC
+
+The first was silent. Now a value whose type is already the union is an
+element as it stands; to wrap one, write the case.
+
+Tested in ~100_literal_elaboration.bjo~ (both unions, and a ~Wrap~ written by
+hand staying as written). ~248_generic_materialization.bjo~ no longer works
+around it.
+
 * The documentation says where ~=~ and a ~Map~ can still disagree
 
 ~Docs/prelude.org~, "Writing one by hand", said a generic type's

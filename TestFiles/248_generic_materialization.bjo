@@ -59,13 +59,6 @@
       ((Named _ a) (hash-combine 1 (eq-hash a)))
       ((Unnamed a) (hash-combine 2 (eq-hash a))))))
 
-;; Through a signature: a literal list of a generic union's values, handed
-;; straight to a generic function such as `list->set`, is refused by the type
-;; checker — each value is wrapped once more in `Unnamed`, whose payload is a
-;; bare type variable and so matches anything. A fault of its own.
-(: label-set (-> (List (Label int)) (Set (Label int))))
-(defun (label-set xs) (list->set xs))
-
 (type/derive (Eq Ord)
   (: (Pair %a) (Record (: first %a) (: second %a))))
 
@@ -90,10 +83,10 @@
 
   (def n1 (Named "first" 7))
   (def n2 (Named "second" 7))
-  (expect "a union's same-case values in a Set" (set-length (label-set (list n1 n2))) 1)
+  (expect "a union's same-case values in a Set" (set-length (list->set (list n1 n2))) 1)
   (expect-true "and in a Map" (some? (map-try-ref (map-set (map-empty) n1 1) n2)))
   (expect "and different payloads stay apart"
-          (set-length (label-set (list n1 (Named "first" 8) (Unnamed 7)))) 3))
+          (set-length (list->set (list n1 (Named "first" 8) (Unnamed 7)))) 3))
 
 ;; The element's own `Eq` is what the edge's is built from: here that is a
 ;; derived `Pair`'s, itself compiled into `Pair<int>`.

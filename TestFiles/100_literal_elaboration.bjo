@@ -109,6 +109,20 @@
     ((Cons x Nil) (show-item x))
     ((Cons x rest) (string-append (show-item x) (string-append " " (show-items rest))))))
 
+;; A value that already has the union's type is an element as it stands, never
+;; a payload. Two unions whose one-payload case would take any value of its own
+;; union, if asked: `Just` carries a bare type variable, and `Wrap` the tree
+;; itself. `(list (Just 7) (Just 8))` was refused, and `(list a b)` of two
+;; leaves wrapped `b` in `Wrap` without a word.
+(type (: (Opt %a) (Union Nothing (Just %a))))
+(type (: Tree (Union (Leaf int) (Wrap Tree))))
+
+(: depth (-> Tree int))
+(defun (depth t)
+  (match t
+    ((Leaf _) 0)
+    ((Wrap u) (+ 1 (depth u)))))
+
 (defun (main args)
   ;; As an argument, with nothing annotated anywhere.
   (expect "argument position"
@@ -167,4 +181,15 @@
   (expect "unmarked case written out"
           (show-items (list (Sym 'x) (Args (list "y" "z"))))
           "x args:2")
+
+  ;; Values of the union, listed where the union is the element type.
+  (expect "a generic union's values" (list-length (list (Just 7) (Just 8))) 2)
+  (def leaf-a (Leaf 1))
+  (def leaf-b (Leaf 2))
+  (expect "a recursive union's values are not wrapped"
+          (list-map depth (list leaf-a leaf-b))
+          (list 0 0))
+  (expect "and one wrapped by hand stays as written"
+          (list-map depth (list leaf-a (Wrap leaf-b)))
+          (list 0 1))
   0)

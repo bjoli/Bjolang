@@ -2974,6 +2974,16 @@ and private inferAndMaybeInject (expectedElem: HMType) (env: Env) (expr: Expr) :
         let pg = prune env.Registry elemTy
 
         match pe with
+        // A value of the union already is an element, never a payload, however
+        // its type arguments stand. Asked, `CandidateCases` would say yes to a
+        // case whose payload is a bare type variable, `(Unnamed %a)`, or the
+        // union itself, `(Wrap T)` — and wrap `b` in `(list a b)` once more.
+        | TCon(unionName, _) when Map.containsKey unionName env.Registry.Unions
+                                 && (match pg with
+                                     | TCon(elemHead, _) -> elemHead = unionName
+                                     | _ -> false) ->
+            unify env.Registry elemTy expectedElem
+            te
         | TCon(unionName, typeArgs) when Map.containsKey unionName env.Registry.Unions ->
             match env.Registry.CandidateCases unionName typeArgs pg with
             | [ (ctorName, [ payloadTy ]) ] ->
