@@ -35,15 +35,31 @@
 (type
   (: Point (Record (: x int) (: y int))))
 
-;; The case materialization cannot reach. A generic type's implementation is
-;; conditional, so no `Equals` or `GetHashCode` is emitted from it — and C#'s
-;; synthesized hash over `item` would be exactly the silent hazard above. The
-;; throw needs no dictionary, so it goes where materialization cannot.
+;; A generic record's derived implementation is conditional and materializes
+;; like any other, so its hash is the derived `eq-hash` — which refuses for a
+;; mutable record, as `Tally`'s below does — and the direct throw is not
+;; written.
 ;;
 ;; EXPECT-CS: public record mutable_fields__Box<T_a> \{
-;; EXPECT-CS: public override int GetHashCode\(\) => throw new System\.InvalidOperationException\("mutable_fields/Box has a mutable field
+;; EXPECT-CS: public override int GetHashCode\(\) => __Eq_impl\.eqsubhash\(this\);
+;; EXPECT-NO-CS: mutable_fields/Box has a mutable field
 (type/derive (Eq)
   (: (Box %a) (Record (: item %a #:mutable))))
+
+;; The case materialization cannot reach: an implementation whose `(where ...)`
+;; asks for a trait with no .NET member to stand in for it. C#'s synthesized
+;; hash over `item` would be exactly the silent hazard above; the throw needs no
+;; dictionary, so it goes where materialization cannot.
+;;
+;; EXPECT-CS: public record mutable_fields__Labelled<T_a> \{
+;; EXPECT-CS: public override int GetHashCode\(\) => throw new System\.InvalidOperationException\("mutable_fields/Labelled has a mutable field
+(type
+  (: (Labelled %a) (Record (: item %a #:mutable))))
+
+(impl (Eq (Labelled %a))
+  (where (->str %a))
+  (defun (= p q) (= (->str (record-ref p item)) (->str (record-ref q item))))
+  (defun (eq-hash p) (unhashable "Labelled")))
 
 ;; A derived `eq-hash` for a *non-generic* mutable record refuses in Bjolang, so
 ;; the materialized `GetHashCode` throws through the implementation rather than

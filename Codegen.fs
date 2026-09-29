@@ -4559,28 +4559,30 @@ let private generateMethod
 // for a type declared here is in this module too, so both are in hand at the
 // moment the type is emitted.
 
+/// The traits a materialized implementation's `(where ...)` may ask for: the
+/// ones `standInClass` can build a dictionary for from inside the type.
+let private standInTraits = set [ "Eq" ]
+
 /// The implementation of `traitName` for `typeKey` that can be materialized, if
 /// there is one. `typeArity` is the number of type parameters the emitted type
 /// declares.
 ///
-/// A *conditional* implementation cannot be. Its dictionary is built out of
-/// evidence for its `(where ...)`, and a C# type parameter carries none — there
-/// is nothing inside `Box<T>.Equals` that could produce the `Eq<T>` its own
-/// implementation needs. Such a type keeps C#'s synthesized equality, which is
-/// field-wise and therefore reaches each field type's own materialized
-/// `Equals` through `EqualityComparer<T>.Default` — composition works without
-/// a dictionary, so refusing the conditional case here is not a hole. Only a
-/// hand-written implementation that disagrees with the fields differs, and
-/// only for a generic type.
-///
-/// An *unconditional* implementation for a parameterized type —
-/// `(impl (Eq (Box %a)))` with no `where` — is materialized: its class takes
-/// the same type parameters the emitted type does and needs no dictionary. The
-/// target has to be fully generic for that: every argument a distinct type
+/// The target has to be fully generic: every argument a distinct type
 /// variable, one per parameter, so that instantiating the impl class with the
 /// type's own parameters, in order, is the impl the trait system would have
 /// picked. A specialized target (`(impl (Eq (Pair %a %a)))`) is left to the
 /// synthesized members.
+///
+/// A *conditional* implementation — every one a generic type derives — is
+/// built from dictionaries for its `(where ...)`, and a C# type parameter
+/// carries none: nothing inside `Edge<T>.Equals` is handed the `Eq<T>` the
+/// implementation needs. The type builds that dictionary itself, once per
+/// closed type, out of stand-ins that answer through `T`'s own .NET members
+/// (see `standInClass` and `materializedSupport`). That is only sound for a
+/// constraint on one of the type's own parameters, of a trait whose every
+/// implementation *is* such a member: `standInTraits`. A `(where (->str %a))`
+/// has nothing .NET could answer it with, so an implementation asking for one
+/// keeps C#'s synthesized members, and `=` and a `Set` can part ways on it.
 let private materializableImpl
     (registry: TraitRegistry)
     (traitName: string)
@@ -4595,11 +4597,60 @@ let private materializableImpl
                 | TVar v -> Some v
                 | _ -> None)
 
-        target.Constraints.IsEmpty
-        && target.FixedPrefix.Length = typeArity
+        let standsIn (c: TraitConstraint) =
+            Set.contains c.TraitName standInTraits
+            && (match c.TargetType with
+                | TVar v -> List.contains v vars
+                | _ -> false)
+
+        target.FixedPrefix.Length = typeArity
         && vars.Length = typeArity
         && (List.distinct vars).Length = typeArity
+        && List.forall standsIn target.Constraints
     | None -> false
+
+/// The static field a conditional implementation's dictionary is kept in, on
+/// the type it is materialized into.
+let private materializedFieldName (traitName: string) = $"__%s{sanitizeIdent traitName}_impl"
+
+/// The stand-in dictionary class for `traitName`, nested in the type that
+/// builds an implementation from it.
+let private standInName (traitName: string) = $"__Clr%s{sanitizeIdent traitName}"
+
+/// A dictionary for `(Eq %a)` that answers through `%a`'s own .NET members, for
+/// the `(where ...)` of a materialized conditional implementation.
+///
+/// Right because every type's `Eq` *is* those members: materialized into a
+/// declared type, native for a primitive, and a delegation to the very same
+/// members for the .NET and runtime types `lib/std` implements it for — which
+/// `CheckDecl` refuses any other module to do. It is wrong only where
+/// materialization already is: two cases of one union that `=` equates.
+///
+/// Nested and private in the type that uses it, because the `lib/std` modules
+/// share one namespace: a class there under a fixed name would be one more name
+/// two modules could both declare.
+let private standInClass (traitName: string) : string =
+    let name = standInName traitName
+
+    match traitName with
+    | "Eq" ->
+        let eqHash = sanitizeIdent "eq-hash"
+        let comparer = "System.Collections.Generic.EqualityComparer<X>.Default"
+        $"private sealed class %s{name}<X> : Eq<X> {{ public bool eq(X a, X b) => %s{comparer}.Equals(a, b); public int %s{eqHash}(X a) => a is null ? 0 : %s{comparer}.GetHashCode(a); }}"
+    | other -> failwithf $"Internal error: no stand-in dictionary for '%s{other}'"
+
+/// What a materialized member calls the implementation through: the
+/// implementation's singleton, or for a conditional one the static field
+/// `materializedSupport` declares.
+let private materializedReceiver
+    (registry: TraitRegistry)
+    (traitName: string)
+    (implKey: string)
+    (tyArgs: string)
+    : string =
+    match Map.tryFind (traitName, implKey) registry.ImplTargets with
+    | Some target when not target.Constraints.IsEmpty -> materializedFieldName traitName
+    | _ -> $"%s{implClassName (sanitizeIdent traitName) implKey}%s{tyArgs}.Instance"
 
 /// What a materialized member is being written into. The three differ in what
 /// C# would have synthesized in its place, which is what the replacement has to
@@ -4619,24 +4670,19 @@ type private MaterializeTarget =
     /// two go opposite ways.
     | UnionBase
 
-/// The members `traitName`'s implementation for `implKey` becomes.
+/// The members `traitName`'s implementation becomes.
 ///
 /// `selfType` is the C# type they are written into — the *case* class for a
-/// union — while `implKey` is the type the implementation was written for,
-/// which is the union itself in both cases. `tyArgs` is the emitted type's own
-/// `<T_a, ...>` list (or `""`): a fully generic impl's class abstracts over
-/// exactly the target's arguments in order, so the type's own parameters are
-/// the arguments to instantiate it at. A union's cases are nested in the
-/// generic base, so the parameters are in scope there too.
+/// union — and `instance` is what `materializedReceiver` answered for the type
+/// the implementation was written for, which is the union itself in both
+/// cases. A union's cases are nested in the generic base, so its parameters and
+/// its private static fields are in scope there too.
 let private materializedMembers
     (traitName: string)
-    (implKey: string)
+    (instance: string)
     (selfType: string)
-    (tyArgs: string)
     (target: MaterializeTarget)
     : string list =
-
-    let instance = $"%s{implClassName (sanitizeIdent traitName) implKey}%s{tyArgs}.Instance"
 
     match traitName, target with
     // `Eq` goes into every case class and never onto a union's base: a derived
@@ -4706,7 +4752,57 @@ let private materializedBody
     : string list =
     materializedTraits
     |> List.filter (fun t -> materializableImpl registry t implKey typeArity)
-    |> List.collect (fun t -> materializedMembers t implKey selfType tyArgs target)
+    |> List.collect (fun t ->
+        materializedMembers t (materializedReceiver registry t implKey tyArgs) selfType target)
+
+/// The static fields and stand-in classes a type carries so that its
+/// conditional implementations have a dictionary to be called through, or `[]`.
+///
+/// One dictionary per closed type, built on first use: a static field of a
+/// generic type exists once per instantiation, so `Pair<int>` and
+/// `Pair<string>` each hold their own, and no comparison allocates. It is built
+/// with the implementation's `Make`, the arguments in `Constraints` order,
+/// which is the order `CheckDecl` made the class's `dictFields` in, so the
+/// constructor and this call cannot disagree. A constraint names the impl's
+/// variable, and its position in the target is the type parameter it stands
+/// for: `(impl (Eq (Edge %b)) (where (Eq %b)))` on `(Edge %a)` is `T_a`.
+///
+/// Written on a record or a record struct, and on a union's abstract base,
+/// where the case classes nested in it can read a private member.
+let private materializedSupport
+    (registry: TraitRegistry)
+    (implKey: string)
+    (typeArgs: string list)
+    : string list =
+    let tyArgs =
+        if typeArgs.IsEmpty then ""
+        else "<" + (typeArgs |> List.map typeParamName |> String.concat ", ") + ">"
+
+    let conditional =
+        materializedTraits
+        |> List.filter (fun t -> materializableImpl registry t implKey typeArgs.Length)
+        |> List.choose (fun t ->
+            match Map.tryFind (t, implKey) registry.ImplTargets with
+            | Some target when not target.Constraints.IsEmpty -> Some(t, target)
+            | _ -> None)
+
+    let field (traitName: string, target: ImplTarget) =
+        let cls = $"%s{implClassName (sanitizeIdent traitName) implKey}%s{tyArgs}"
+
+        let standIn (c: TraitConstraint) =
+            let position = target.FixedPrefix |> List.findIndex ((=) c.TargetType)
+            $"new %s{standInName c.TraitName}<%s{typeParamName typeArgs[position]}>()"
+
+        let args = target.Constraints |> List.map standIn |> String.concat ", "
+        $"private static readonly %s{cls} %s{materializedFieldName traitName} = %s{cls}.Make(%s{args});"
+
+    let standIns =
+        conditional
+        |> List.collect (fun (_, target) -> target.Constraints |> List.map (fun c -> c.TraitName))
+        |> List.distinct
+        |> List.map standInClass
+
+    (conditional |> List.map field) @ standIns
 
 /// `;` for a type with nothing to carry, or the block that carries it.
 let private appendTypeBody (ctx: CodegenContext) (members: string list) : unit =
@@ -4937,12 +5033,15 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
             let tyArgsStr = 
                 if td.TypeArgs.IsEmpty then "" 
                 else "<" + (td.TypeArgs |> List.map typeParamName |> String.concat ", ") + ">"
-            // A parameterized type materializes too, provided its
-            // implementation is unconditional — `materializableImpl` is where
-            // a `(where ...)` clause, and a target that is not fully generic,
-            // fall back to C#'s synthesized members.
+            // A parameterized type materializes too — `materializableImpl`
+            // is where a `(where ...)` of another trait, and a target that is
+            // not fully generic, fall back to C#'s synthesized members.
             let materialized selfType target =
                 materializedBody ctx.Registry td.Name td.TypeArgs.Length selfType tyArgsStr target
+
+            // The dictionaries a conditional implementation is called through,
+            // declared on the type itself or on a union's base.
+            let support = materializedSupport ctx.Registry td.Name td.TypeArgs
 
             // The `: System.IComparable<T>` a materialized `Ord` adds. Written
             // where the declaration line is built, because the base clause
@@ -5006,14 +5105,12 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                     // The hash a mutable record does not have.
                     //
                     // Materialization already writes one where there is an
-                    // unconditional `Eq` implementation to write it from, and
-                    // for a derived implementation that one throws too. This is
-                    // the other two cases: a record with no implementation at
-                    // all, and a generic record whose implementation is
-                    // *conditional* — a `type/derive`d one — which
-                    // materialization skips because there is nothing inside
-                    // the type that could build the dictionary its
-                    // `(where ...)` asks for.
+                    // `Eq` implementation to write it from, and for a derived
+                    // implementation that one throws too. This is the other
+                    // two cases: a record with no implementation at all, and
+                    // one whose implementation materialization skips — a
+                    // `(where ...)` of a trait with no stand-in, or a target
+                    // that is not fully generic.
                     //
                     // Without it C# synthesizes a hash over all instance
                     // fields, the mutable one included, and a `Map` or a `Set`
@@ -5035,7 +5132,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
 
                     indent ctx
                     append ctx $"public record %s{selfType}%s{tyArgsStr}%s{baseClause selfRef}"
-                    appendTypeBody ctx (declarations @ [ constructor ] @ members @ hashed)
+                    appendTypeBody ctx (declarations @ [ constructor ] @ support @ members @ hashed)
                 else
                     indent ctx
                     let kind = if isStruct then "record struct" else "record"
@@ -5047,7 +5144,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                         append ctx (sanitizeIdent f.Name)
                     append ctx ")"
                     append ctx (baseClause selfRef)
-                    appendTypeBody ctx members
+                    appendTypeBody ctx (support @ members)
             | Union cases ->
                 let selfRef = $"%s{declaredTypeName td.Name}%s{tyArgsStr}"
                 indent ctx
@@ -5057,8 +5154,10 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                     appendLine ctx $"private %s{declaredTypeName td.Name}() {{}}"
 
                     // A materialized `Ord`'s `CompareTo` — and only that; `Eq`
-                    // writes nothing here. See `materializedMembers`.
-                    for m in materialized selfRef UnionBase do
+                    // writes nothing here. See `materializedMembers`. The
+                    // dictionaries go here too, for both: the cases reach them
+                    // as members of the type they are nested in.
+                    for m in support @ materialized selfRef UnionBase do
                         indent ctx
                         appendLine ctx m
 

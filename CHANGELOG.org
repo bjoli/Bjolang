@@ -3,6 +3,61 @@
 
 What each change guarantees, and what it leaves open.
 
+* A generic type's ~Eq~ is what ~Map~ and ~Set~ key on
+
+~Map~ and ~Set~ are .NET collections: they never call ~=~, only the key
+type's ~Equals~ and ~GetHashCode~. The compiler writes a declared type's ~Eq~
+into those two members, but it skipped a generic type's, because that
+implementation is conditional, ~(where (Eq %a))~, and nothing inside
+~Edge<T>.Equals~ is handed the ~Eq~ of ~T~. So an undirected ~(Edge %a)~,
+whose ~=~ says (1 2) is (2 1), made a set of both with 2 elements and a map
+that missed the lookup.
+
+Now the type builds that dictionary itself, once per closed type, in a static
+field: from a stand-in that answers through ~T~'s own ~Equals~ and
+~GetHashCode~, which is what ~T~'s ~Eq~ is for every type (compiled in for a
+declared type, native for a primitive, and a delegation to those members for
+what ~lib/std~ implements). This holds when every ~where~ is ~Eq~ or ~Ord~ on
+one of the type's own parameters. A ~(where (->str %a))~ has nothing .NET
+could answer it with, so such an implementation keeps C#'s field-wise
+members, as before.
+
+- A derived ~Eq~ on a generic type means what it did, field by field, but its
+  hash is now the derived ~eq-hash~, as a non-generic type's already was.
+- A generic record with a mutable field and a derived ~Eq~ still cannot be a
+  key: the refusal now comes from the derived ~eq-hash~.
+- ~(Deque %a)~: its ~Equals~ is now its ~=~, the same elements in the same
+  order. Before, it compared the ~front~ and ~back~ lists, so two equal deques
+  split differently were unequal to .NET. It is still not a key.
+- Two *different* cases of a union that ~=~ equates, such as ~(Cents 100)~
+  and ~(Dollars 1)~, are still two keys: C# writes each case's ~Equals~
+  itself, and it answers false for another case before any implementation
+  runs. Pinned by a test.
+
+The hash changes speed where keys are small consecutive numbers. C#'s hash
+of a record is a straight line in its fields, which fills the map's tree
+perfectly for 0, 1, 2, ...; ~hash-combine~ scatters it. Nanoseconds per
+element, on one machine:
+
+| Keys, ~type/derive (Eq)~                                  | Before | After |
+|-----------------------------------------------------------+--------+-------|
+| ~map-set~ and ~map-try-ref~ of 100 000 ~(Pair int)~, 0..n | 288    | 401   |
+| the same, a ~Struct~                                      | 240    | 310   |
+| ~list->set~ of 1 000 000 ~(Pair int)~, shuffled 0..n      | 144    | 154   |
+| the same, a ~Struct~                                      | 72     | 90    |
+| ~map-set~ and ~map-try-ref~, random ints                  | 397    | 393   |
+| ~list->set~, random ints                                  | 111    | 105   |
+| a non-generic derived record, 0..n, unchanged             | 411    | 381   |
+
+Tested in ~248_generic_materialization.bjo~ (an edge in a ~Set~ and a ~Map~,
+as a record, a record struct and a union's same-case values; nested in a
+derived ~Pair~; derived ~Eq~ unchanged; the ~->str~ exception; a mutable
+generic record; the deque; the union rule), and in the codegen tests
+~materialization.bjo~ (a generic record, record struct and union, the
+stand-in's parameter for a ~where~ on the second variable, the ~->str~
+exception) and ~mutable_fields.bjo~ (the generic ~Box~ now hashes through its
+implementation; the direct throw moves to the ~->str~ case).
+
 * ~(std datetime)~ reads back what it writes, and allocates nothing doing it
 
 What a writer writes with a format that can be read, the reader of the same

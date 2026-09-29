@@ -24,14 +24,57 @@
 (type/derive (Eq)
   (: Shape (Union (Circle int) (Square int))))
 
-;; A type whose implementation is *conditional* is left alone. Deriving a
-;; parameterized type constrains every parameter, and there is nothing inside
-;; `Box<T>` that could build the `Eq<T>` dictionary the `(where ...)` asks for
-;; — so it keeps C#'s synthesized equality, which is field-wise and therefore
-;; agrees with what was derived.
-;; EXPECT-CS: public record materialization__Box<T_a>\(T_a item\);
+;; A *conditional* implementation — every one a parameterized type derives —
+;; materializes too. Its `(where (Eq %a))` asks for an `Eq<T_a>` that nothing
+;; hands `Box<T_a>.Equals`, so the type builds the implementation itself, once
+;; per closed type, into a static field: from a stand-in that answers through
+;; `T_a`'s own `Equals` and `GetHashCode`, which is what `T_a`'s `Eq` is.
+;; EXPECT-CS: public record materialization__Box<T_a>\(T_a item\) \{
+;; EXPECT-CS: private static readonly Eq_materialization__Box<T_a> __Eq_impl = Eq_materialization__Box<T_a>\.Make\(new __ClrEq<T_a>\(\)\);
+;; EXPECT-CS: private sealed class __ClrEq<X> : Eq<X> \{ public bool eq\(X a, X b\) => System\.Collections\.Generic\.EqualityComparer<X>\.Default\.Equals\(a, b\); public int eqsubhash\(X a\) => a is null \? 0 : System\.Collections\.Generic\.EqualityComparer<X>\.Default\.GetHashCode\(a\); \}
+;; EXPECT-CS: public virtual bool Equals\(materialization__Box<T_a>\? other\) => other is not null && __Eq_impl\.eq\(this, other\);
+;; EXPECT-CS: public override int GetHashCode\(\) => __Eq_impl\.eqsubhash\(this\);
 (type/derive (Eq)
   (: (Box %a) (Record (: item %a))))
+
+;; A record struct: the same field, and members of the struct's own shape.
+;; EXPECT-CS: public record struct materialization__Cell<T_a>\(T_a v\) \{
+;; EXPECT-CS: private static readonly Eq_materialization__Cell<T_a> __Eq_impl = Eq_materialization__Cell<T_a>\.Make\(new __ClrEq<T_a>\(\)\);
+;; EXPECT-CS: public bool Equals\(materialization__Cell<T_a> other\) => __Eq_impl\.eq\(this, other\);
+(type/derive (Eq)
+  (: (Cell %a) (Struct (: v %a))))
+
+;; A union: the field goes on the abstract base, and every case class reads it
+;; as a private member of the type it is nested in.
+;; EXPECT-CS: public abstract record materialization__Maybe<T_a> \{
+;; EXPECT-CS: private static readonly Eq_materialization__Maybe<T_a> __Eq_impl = Eq_materialization__Maybe<T_a>\.Make\(new __ClrEq<T_a>\(\)\);
+;; EXPECT-CS: public bool Equals\(materialization__Nope\? other\) => other is not null && __Eq_impl\.eq\(this, other\);
+;; EXPECT-CS: public bool Equals\(materialization__Yep\? other\) => other is not null && __Eq_impl\.eq\(this, other\);
+(type/derive (Eq)
+  (: (Maybe %a) (Union Nope (Yep %a))))
+
+;; The stand-ins are passed in the `(where ...)`'s order, each at the type
+;; parameter its variable stands in the target: `%y` is the second, `T_b`,
+;; whatever the implementation called it.
+;; EXPECT-CS: private static readonly Eq_materialization__Two<T_a, T_b> __Eq_impl = Eq_materialization__Two<T_a, T_b>\.Make\(new __ClrEq<T_b>\(\)\);
+(type
+  (: (Two %a %b) (Record (: left %a) (: right %b))))
+
+(impl (Eq (Two %x %y))
+  (where (Eq %y))
+  (defun (= p q) (= (record-ref p right) (record-ref q right)))
+  (defun (eq-hash p) (eq-hash (record-ref p right))))
+
+;; A `(where ...)` of another trait has no .NET member to stand in for it, so
+;; that implementation keeps C#'s synthesized members.
+;; EXPECT-CS: public record materialization__Shown<T_a>\(T_a item\);
+(type
+  (: (Shown %a) (Record (: item %a))))
+
+(impl (Eq (Shown %a))
+  (where (->str %a))
+  (defun (= p q) (= (->str (record-ref p item)) (->str (record-ref q item))))
+  (defun (eq-hash p) (eq-hash (->str (record-ref p item)))))
 
 ;; `Ord` materializes as `IComparable<T>`: the interface in the base clause —
 ;; which is the part `Comparer<T>.Default` actually looks for — and a

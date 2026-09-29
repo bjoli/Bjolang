@@ -1,0 +1,224 @@
+;; A generic type's `Eq` and `Ord`, compiled into the type's own .NET members.
+;;
+;; `Map`, `Set`, `OrderedMap` and `OrderedSet` are .NET collections: they never
+;; call `=` or `compare`, only the key type's `Equals`, `GetHashCode` and
+;; `CompareTo`. An implementation for a generic type is conditional — it needs
+;; the element type's `Eq` or `Ord` — and the type builds that from the
+;; element type's own .NET members, so the collections agree with `=` for a
+;; generic type too. See `Docs/prelude.org`, "Writing one by hand".
+(import (std prelude))
+(import (std set))
+(import (std simpletest))
+(import (std mutable deque))
+
+(: threw? (-> (Result System.Exception %a) bool))
+(defun (threw? r)
+  (match r ((Ok _) #f) ((Err _) #t)))
+
+;; ---------------------------------------------------------------------------
+;; Eq
+;; ---------------------------------------------------------------------------
+
+;; An undirected edge: (1 2) and (2 1) are one edge, which the fields alone
+;; would not say.
+(type (: (Edge %a) (Record (: from %a) (: to %a))))
+
+(impl (Eq (Edge %a))
+  (where (Eq %a))
+  (defun (= x y)
+    (or (and (= (record-ref x from) (record-ref y from)) (= (record-ref x to) (record-ref y to)))
+        (and (= (record-ref x from) (record-ref y to)) (= (record-ref x to) (record-ref y from)))))
+  (defun (eq-hash e)
+    (bitwise-xor (eq-hash (record-ref e from)) (eq-hash (record-ref e to)))))
+
+;; The same edge as a record struct.
+(type (: (Link %a) (Struct (: from %a) (: to %a))))
+
+(impl (Eq (Link %a))
+  (where (Eq %a))
+  (defun (= x y)
+    (or (and (= (struct-ref x from) (struct-ref y from)) (= (struct-ref x to) (struct-ref y to)))
+        (and (= (struct-ref x from) (struct-ref y to)) (= (struct-ref x to) (struct-ref y from)))))
+  (defun (eq-hash e)
+    (bitwise-xor (eq-hash (struct-ref e from)) (eq-hash (struct-ref e to)))))
+
+;; A union whose equality ignores the name: two values of the same case reach
+;; the implementation.
+(type (: (Label %a) (Union (Named string %a) (Unnamed %a))))
+
+(impl (Eq (Label %a))
+  (where (Eq %a))
+  (defun (= x y)
+    (match x
+      ((Named _ a) (match y ((Named _ b) (= a b)) (_ #f)))
+      ((Unnamed a) (match y ((Unnamed b) (= a b)) (_ #f)))))
+  (defun (eq-hash x)
+    (match x
+      ((Named _ a) (hash-combine 1 (eq-hash a)))
+      ((Unnamed a) (hash-combine 2 (eq-hash a))))))
+
+;; Through a signature: a literal list of a generic union's values, handed
+;; straight to a generic function such as `list->set`, is refused by the type
+;; checker — each value is wrapped once more in `Unnamed`, whose payload is a
+;; bare type variable and so matches anything. A fault of its own.
+(: label-set (-> (List (Label int)) (Set (Label int))))
+(defun (label-set xs) (list->set xs))
+
+(type/derive (Eq)
+  (: (Pair %a) (Record (: first %a) (: second %a))))
+
+(: pair (-> int int (Pair int)))
+(defun (pair a b) (Pair (first a) (second b)))
+
+(: eq-edges (-> void))
+(defun (eq-edges)
+  (def e1 (Edge (from 1) (to 2)))
+  (def e2 (Edge (from 2) (to 1)))
+  (expect-true "= says the two edges are one" (= e1 e2))
+  (expect "and so does a Set" (set-length (list->set (list e1 e2))) 1)
+  (expect-true "a Map finds one edge through the other"
+               (some? (map-try-ref (map-set (map-empty) e1 "road") e2)))
+  (expect-true "and the Set still tells edges apart"
+               (not (set-contains? (list->set (list e1)) (Edge (from 1) (to 3)))))
+
+  (def l1 (Link (from "a") (to "b")))
+  (def l2 (Link (from "b") (to "a")))
+  (expect "a record struct in a Set" (set-length (list->set (list l1 l2))) 1)
+  (expect-true "and in a Map" (some? (map-try-ref (map-set (map-empty) l1 1) l2)))
+
+  (def n1 (Named "first" 7))
+  (def n2 (Named "second" 7))
+  (expect "a union's same-case values in a Set" (set-length (label-set (list n1 n2))) 1)
+  (expect-true "and in a Map" (some? (map-try-ref (map-set (map-empty) n1 1) n2)))
+  (expect "and different payloads stay apart"
+          (set-length (label-set (list n1 (Named "first" 8) (Unnamed 7)))) 3))
+
+;; The element's own `Eq` is what the edge's is built from: here that is a
+;; derived `Pair`'s, itself compiled into `Pair<int>`.
+(: eq-nested (-> void))
+(defun (eq-nested)
+  (def e1 (Edge (from (pair 1 2)) (to (pair 3 4))))
+  (def e2 (Edge (from (pair 3 4)) (to (pair 1 2))))
+  (expect-true "= on nested generic types" (= e1 e2))
+  (expect "a Set of nested edges" (set-length (list->set (list e1 e2))) 1)
+  (expect-true "a Map of nested edges" (some? (map-try-ref (map-set (map-empty) e1 1) e2))))
+
+;; A derived implementation says what C#'s own members said, field by field,
+;; so nothing a program can observe changes.
+(: eq-derived (-> void))
+(defun (eq-derived)
+  (expect "equal pairs are one" (set-length (list->set (list (pair 1 2) (pair 1 2)))) 1)
+  (expect "pairs differing in order are two" (set-length (list->set (list (pair 1 2) (pair 2 1)))) 2)
+  (expect-true "a Map finds a fresh equal pair"
+               (some? (map-try-ref (map-set (map-empty) (pair 5 6) 1) (pair 5 6))))
+  (def ps (list->set (list (Pair (first "x") (second "y")) (Pair (first "x") (second "y")))))
+  (expect "pairs of strings" (set-length ps) 1))
+
+;; A `(where ...)` of another trait has no .NET member to answer it, so this
+;; implementation is not compiled in: `=` compares by `->str` length, and a
+;; `Set` still compares field by field, as C# wrote it.
+(type (: (Loose %a) (Record (: item %a))))
+
+(impl (Eq (Loose %a))
+  (where (->str %a))
+  (defun (= x y) (= (string-length (->str (record-ref x item)))
+                    (string-length (->str (record-ref y item)))))
+  (defun (eq-hash x) (string-length (->str (record-ref x item)))))
+
+(: eq-other-trait (-> void))
+(defun (eq-other-trait)
+  (expect-true "= uses the implementation" (= (Loose (item 1)) (Loose (item 2))))
+  (expect "a Set does not" (set-length (list->set (list (Loose (item 1)) (Loose (item 2))))) 2))
+
+;; A generic record with a mutable field. Written by hand, reading only the
+;; field that does not move, it is a key, and stays found across a write.
+(type (: (Slot %a) (Record (: key %a) (: hits int #:mutable))))
+
+(impl (Eq (Slot %a))
+  (where (Eq %a))
+  (defun (= x y) (= (record-ref x key) (record-ref y key)))
+  (defun (eq-hash x) (eq-hash (record-ref x key))))
+
+;; Derived, its `eq-hash` refuses, and so does a `Set`.
+(type/derive (Eq)
+  (: (Tally %a) (Record (: key %a) (: hits int #:mutable))))
+
+(: eq-mutable (-> void))
+(defun (eq-mutable)
+  (def a (Slot (key "k") (hits 1)))
+  (def b (Slot (key "k") (hits 2)))
+  (expect "the implementation's Equals, not the fields'" (set-length (list->set (list a b))) 1)
+  (def m (map-set (map-empty) a "found"))
+  (record-set! a (hits 9))
+  (expect-true "and found after a write" (some? (map-try-ref m a)))
+
+  (def t (Tally (key 1) (hits 1)))
+  (expect-true "= on a derived mutable record" (= t (Tally (key 1) (hits 1))))
+  (expect-true "whose hash refuses"
+               (threw? (try (eq-hash t) #:catch (System.InvalidOperationException))))
+  (expect-true "and so does a Set, asking .NET"
+               (threw? (try (list->set (list t t)) #:catch (System.InvalidOperationException)))))
+
+;; A record with no `Eq` of its own compares by the blanket, which is .NET's
+;; `Equals`, field by field — so it reaches a `Deque`'s `Equals`. That is the
+;; deque's `=` now: the same elements in the same order, however they are
+;; split between its two halves.
+(type (: Holder (Record (: d (Deque int)))))
+
+(: eq-deque (-> void))
+(defun (eq-deque)
+  (def a (deque))
+  (deque-push-back! a 1)
+  (deque-push-back! a 2)
+  (deque-push-back! a 3)
+  (def b (deque))
+  (deque-push-front! b 3)
+  (deque-push-front! b 2)
+  (deque-push-front! b 1)
+  (expect-true "two deques split differently are =" (= a b))
+  (expect-true "and equal to .NET" (= (Holder (d a)) (Holder (d b))))
+  (deque-push-back! b 4)
+  (expect-true "until one is written" (not (= (Holder (d a)) (Holder (d b)))))
+  (expect-true "a deque is still not a key"
+               (threw? (try (list->set (list a b)) #:catch (System.InvalidOperationException)))))
+
+;; ---------------------------------------------------------------------------
+;; The union rule
+;; ---------------------------------------------------------------------------
+
+;; Two spellings of one amount. `=` equates them across cases, but each case
+;; is a C# record whose `Equals` C# writes itself, and it answers false for a
+;; value of another case before any implementation runs. So a `Set` keeps
+;; both: a value with two spellings is normalized before it is a key. See
+;; `Docs/prelude.org`, "Writing one by hand". If this starts answering 1, the
+;; rule has changed and the documentation with it.
+(type (: Money (Union (Cents int) (Dollars int))))
+
+(: money->cents (-> Money int))
+(defun (money->cents m)
+  (match m
+    ((Cents c) c)
+    ((Dollars d) (* d 100))))
+
+(impl (Eq Money)
+  (defun (= x y) (= (money->cents x) (money->cents y)))
+  (defun (eq-hash x) (eq-hash (money->cents x))))
+
+(: union-rule (-> void))
+(defun (union-rule)
+  (expect-true "= equates the two spellings" (= (Cents 100) (Dollars 1)))
+  (expect "a Set does not" (set-length (list->set (list (Cents 100) (Dollars 1)))) 2)
+  (expect "normalized, it does"
+          (set-length (list->set (list (Cents (money->cents (Cents 100)))
+                                       (Cents (money->cents (Dollars 1))))))
+          1))
+
+(defun (main)
+  (eq-edges)
+  (eq-nested)
+  (eq-derived)
+  (eq-other-trait)
+  (eq-mutable)
+  (eq-deque)
+  (union-rule)
+  0)

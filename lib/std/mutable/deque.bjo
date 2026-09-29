@@ -32,8 +32,7 @@
 ;; either end are free. Every operation is O(1) amortized.
 ;;
 ;; **Not a key.** `Deque` has mutable fields, so `eq-hash` refuses and a deque
-;; cannot go in a `Map` or a `Set`. That is deliberate — see the `Eq`
-;; implementation at the bottom for why it is also what keeps `=` honest.
+;; cannot go in a `Map` or a `Set`. See the `Eq` implementation at the bottom.
 (import (std prelude))
 
 (export
@@ -238,13 +237,11 @@
 ;; field-wise comparison of `front`, `back` and `size`. Two deques holding the
 ;; same elements but split differently would have compared unequal, silently.
 ;;
-;; `eq-hash` refuses. There is no honest number for a value whose fields move,
-;; and the refusal is what keeps the paragraph above true: a `Map` keyed on a
-;; deque would ask .NET rather than asking this, and .NET's answer is the
-;; field-wise one. Materialization cannot fix that for a generic type — there is
-;; nothing inside `Deque<T>` that could build the `Eq<T>` dictionary the
-;; `(where ...)` asks for — so the way to keep the two from disagreeing is to
-;; make sure nothing ever asks. Throwing does that, at the one call that would.
+;; `eq-hash` refuses. There is no honest number for a value whose fields move:
+;; a `Map` keyed on a deque would lose the entry at the next push. The
+;; implementation is compiled into `Deque<T>` as its `Equals` and
+;; `GetHashCode`, so .NET's equality is this one too, and a `Map` or a `Set`
+;; that asks for the hash gets the refusal.
 (impl (Eq (Deque %a))
   (where (Eq %a))
   (defun (= a b)
