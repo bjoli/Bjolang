@@ -12,10 +12,10 @@
 (import "inc/delegating.bjo")
 
 ;; The leaves: a column test, with a nullary tag and a rest tag among them.
-(type (: Leaf1 (Union (LId int #:tag id)
-                      (LName string #:tag name)
-                      (LNull #:tag nothing)
-                      (LIn (List int) #:tag in #:rest))))
+(type (: Leaf1 (Union (: LId int #:tag id)
+                      (: LName string #:tag name)
+                      (: LNull #:tag nothing)
+                      (: LIn (List int) #:tag in #:rest))))
 
 (: leaf1 (-> Leaf1 string))
 (defun (leaf1 l)
@@ -29,8 +29,8 @@
 (defun (show c) (render-cond leaf1 c))
 
 ;; Two levels: `Outer` delegates to `Middle`, which delegates to `Leaf1`.
-(type (: Middle (Union (MLeaf Leaf1) (MSkip #:tag skip))))
-(type (: Outer (Union (OMid Middle) (OStop #:tag stop))))
+(type (: Middle (Union (: MLeaf Leaf1) (: MSkip #:tag skip))))
+(type (: Outer (Union (: OMid Middle) (: OStop #:tag stop))))
 
 (: outer (-> Outer string))
 (defun (outer o)
@@ -40,7 +40,7 @@
     ((OStop) "stop")))
 
 ;; A tag of the outer union wins over a delegated one of the same name.
-(type (: Shadow (Union (SId int #:tag id) (SLeaf Leaf1))))
+(type (: Shadow (Union (: SId int #:tag id) (: SLeaf Leaf1))))
 
 (: shadow (-> Shadow string))
 (defun (shadow s)
@@ -51,7 +51,7 @@
 ;; A union whose untagged case carries the union itself is not entered twice:
 ;; the lookup ends, and the tag is found or reported as missing.
 (type-rec
-  (: Loop (Union (LoopSelf Loop) (LoopLeaf Leaf1) (LoopEnd #:tag end))))
+  (: Loop (Union (: LoopSelf Loop) (: LoopLeaf Leaf1) (: LoopEnd #:tag end))))
 
 (: loop->str (-> Loop string))
 (defun (loop->str l)

@@ -769,7 +769,7 @@ let metadata
                                    | None -> [])
                                 @ (if markers.IsRest then [ "#:rest" ] else [])
 
-                            $"({n} " + String.concat " " parts + ")"
+                            $"(: {n} " + String.concat " " parts + ")"
                     $"({head} (: {headStr}{opaqueStr} (Union\n  " + String.concat "\n  " (List.map serializeCase cases) + ")))"
                 // A record's *fields* are the part worth publishing.
                 // Without them an importer knows the name and nothing

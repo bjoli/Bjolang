@@ -1726,8 +1726,8 @@ type TraitRegistry =
                         let substituted = withTypeArgs typeParams typeArgs single
 
                         // Tagged cases are excluded, and that exclusion is what
-                        // makes `#:tag` additive: `(FPipe (List Form) #:tag
-                        // pipe)` beside `(FCmd (List Word))` would otherwise be
+                        // makes `#:tag` additive: `(: FPipe (List Form) #:tag
+                        // pipe)` beside `(: FCmd (List Word))` would otherwise be
                         // an ambiguity for every untagged list.
                         if headMatches substituted && markers.Tag.IsNone then
                             Some(caseName, substituted, markers)

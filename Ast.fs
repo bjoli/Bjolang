@@ -136,7 +136,7 @@ type FType =
 /// several cases with one payload head, which no shape can tell apart.
 ///
 /// `#:rest` says a tagged case's arguments are its payload rather than a fixed
-/// list of positions: with `(CSelect (Vec Col) #:tag select #:rest)`,
+/// list of positions: with `(: CSelect (Vec Col) #:tag select #:rest)`,
 /// `(select id name)` is a `(Vec Col)` and `(select [id name])` is not. The
 /// case's own type is unchanged — it is already the collection — so the marker
 /// decides how the form's arguments are read and nothing else.

@@ -52,52 +52,52 @@
 ;; A parameter. `,n` has no shape of its own, so it is selected by its *type*:
 ;; what the position expects is `SqlParam`, and an `int` is the case that holds
 ;; one.
-(type (: SqlParam (Union (PInt int) (PStr string) (PNull))))
+(type (: SqlParam (Union (: PInt int) (: PStr string) PNull)))
 
 (type-rec
-  (: UserTerm (Union (TUserId #:tag id)
-                     (TUserName #:tag name)
-                     (TUserEmail #:tag email)
+  (: UserTerm (Union (: TUserId #:tag id)
+                     (: TUserName #:tag name)
+                     (: TUserEmail #:tag email)
                      ;; A clause. `from` takes one declared argument, so
                      ;; `(from users)` is this case with `users` in it — where
                      ;; without a tag it would be a list of two symbols and
                      ;; `from` would be misspelled for free.
-                     (TFrom Symbol #:tag from)
+                     (: TFrom Symbol #:tag from)
                      ;; A clause whose payload is a union of its own: the
                      ;; sub-grammar a `where` takes. No literal's shape could
                      ;; select this case — a union's head is never a `List` —
                      ;; so a tag is the only way in, and the only way a
                      ;; condition language nests inside a query at all.
-                     (TWhere UserWhere #:tag where)
+                     (: TWhere UserWhere #:tag where)
                      ;; `#:rest`: the arguments are the payload, as many as are
                      ;; written.
-                     (TOrderBy (List UserOrder) #:tag order-by #:rest)
-                     (TLimit int #:tag limit)))
+                     (: TOrderBy (List UserOrder) #:tag order-by #:rest)
+                     (: TLimit int #:tag limit)))
 
-  (: UserOrder (Union (UAsc UserTerm #:tag asc)
-                      (UDesc UserTerm #:tag desc)))
+  (: UserOrder (Union (: UAsc UserTerm #:tag asc)
+                      (: UDesc UserTerm #:tag desc)))
 
-  (: UserWhere (Union (WIsNull UserTerm #:tag is-null)
-                      (WNotNull UserTerm #:tag not-null)
-                      (WEq UserTerm SqlParam #:tag =)
-                      (WAnd (List UserWhere) #:tag and #:rest))))
+  (: UserWhere (Union (: WIsNull UserTerm #:tag is-null)
+                      (: WNotNull UserTerm #:tag not-null)
+                      (: WEq UserTerm SqlParam #:tag =)
+                      (: WAnd (List UserWhere) #:tag and #:rest))))
 
 ;; One more table, so that the vocabulary being part of the query's type is
 ;; visible: `OrderTerm` has no case tagged `name`, and `UserTerm` none tagged
 ;; `cents`.
 (type-rec
-  (: OrderTerm (Union (TOrderId #:tag id)
-                      (TOrderAccount #:tag account)
-                      (TOrderCents #:tag cents)
-                      (TFromOrder Symbol #:tag from)
-                      (TWhereOrder OrderWhere #:tag where)))
+  (: OrderTerm (Union (: TOrderId #:tag id)
+                      (: TOrderAccount #:tag account)
+                      (: TOrderCents #:tag cents)
+                      (: TFromOrder Symbol #:tag from)
+                      (: TWhereOrder OrderWhere #:tag where)))
 
-  (: OrderWhere (Union (OAtLeast OrderTerm SqlParam #:tag >=)
-                       (OAnd (List OrderWhere) #:tag and #:rest))))
+  (: OrderWhere (Union (: OAtLeast OrderTerm SqlParam #:tag >=)
+                       (: OAnd (List OrderWhere) #:tag and #:rest))))
 
 ;; A query, and the row it answers with. `%term` is the vocabulary it is written
 ;; in, so a query of `Order` cannot name a column of `User`.
-(type (: (Select %term %row) (Union (SSelect (List %term) #:tag select #:rest))))
+(type (: (Select %term %row) (Union (: SSelect (List %term) #:tag select #:rest))))
 
 ;; ---------------------------------------------------------------------------
 ;; Rendering

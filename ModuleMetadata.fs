@@ -80,7 +80,9 @@ open System.Text
 /// as an `(Opaque ...)` head, and a published body marks the code another
 /// module wrote with `(%origin "key" ...)`. A reader of 12 would register the
 /// representation as visible to all code, and read a marker as a call.
-let currentVersion = 13
+/// 14: a published union case with a payload is written `(: Case type ...)`.
+/// A reader of 13 would refuse every such case as an unknown type form.
+let currentVersion = 14
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {

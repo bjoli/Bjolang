@@ -167,7 +167,7 @@ let parseUnionCase (s: SExpr) : UnionCase =
                 | None -> go types { markers with Tag = Some tag } tl
             | SAtom { Token = Keyword "tag" } :: _ ->
                 failwithf
-                    $"#:tag on the union case %s{name} at %s{Lexer.formatPos r} takes the name of the tag, as in (CFrom TableRef #:tag from)."
+                    $"#:tag on the union case %s{name} at %s{Lexer.formatPos r} takes the name of the tag, as in (: CFrom TableRef #:tag from)."
             // Named separately from the unknown markers because it is a thing
             // someone may reasonably expect to work: a record field can be
             // mutable and a case payload cannot. A payload is positional and
@@ -196,15 +196,25 @@ let parseUnionCase (s: SExpr) : UnionCase =
 
         types, markers
 
+    // A case with a payload is written `(: Name type ...)`, like a record
+    // field, so that a parenthesized form in a type is always a type
+    // application. The older `(Name type ...)` is refused with its rewrite.
     match s with
     | SAtom { Token = Symbol name } -> SimpleCase(name, r)
-    | SList([ SAtom { Token = Symbol name } ], _) -> SimpleCase(name, r)
-    | SList(SAtom { Token = Symbol name } :: tTypes, _) ->
+    | SList([ SAtom { Token = Colon }; SAtom { Token = Symbol name } ], _) ->
+        failwithf
+            $"Invalid union case at %s{Lexer.formatPos r}: (: %s{name}) declares no payload. A case that carries nothing is written as its bare name, %s{name}."
+    // `(: Name #:tag t)` is a tagged case that carries nothing.
+    | SList(SAtom { Token = Colon } :: SAtom { Token = Symbol name } :: tTypes, _) ->
         let types, markers = takeMarkers name tTypes
         DataCase(name, List.map parseType types, markers, r)
-    | _ ->
-        printfn $"%A{s}"
-        failwithf $"Invalid union case at %s{Lexer.formatPos r}"
+    | SList([ SAtom { Token = Symbol name } ], _) ->
+        failwithf
+            $"Invalid union case at %s{Lexer.formatPos r}: a case that carries nothing is written as its bare name, %s{name}, not (%s{name})."
+    | SList(SAtom { Token = Symbol name } :: _, _) ->
+        failwithf
+            $"Invalid union case at %s{Lexer.formatPos r}: a case with a payload is written (: %s{name} type ...), the way a record field is. (%s{name} ...) would read as a type applied to arguments."
+    | _ -> failwithf $"Invalid union case at %s{Lexer.formatPos r}"
 
 let parseRecordField (s: SExpr) : RecordField =
     let r = getRange s

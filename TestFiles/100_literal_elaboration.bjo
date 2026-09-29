@@ -18,11 +18,11 @@
 ;; the same head constructor. `ProcArgv`'s `(Vec string)` and `ProcSub`'s
 ;; `(List ProcItem)` are told apart by `[...]` versus `(...)`.
 (type-rec
-  (: ProcItem (Union (ProcSym Symbol)
-                     (ProcStr string)
-                     (ProcFn (-> string string))
-                     (ProcArgv (Vec string))
-                     (ProcSub (List ProcItem))))
+  (: ProcItem (Union (: ProcSym Symbol)
+                     (: ProcStr string)
+                     (: ProcFn (-> string string))
+                     (: ProcArgv (Vec string))
+                     (: ProcSub (List ProcItem))))
   (: ProcList (Alias (List ProcItem))))
 
 (: render (-> ProcItem string))
@@ -55,8 +55,8 @@
 ;; Mutually recursive unions. Each level is a fresh lookup, so nothing here is a
 ;; special case of self-recursion.
 (type-rec
-  (: Odd (Union (OddSym Symbol) (OddSub (List Even))))
-  (: Even (Union (EvenStr string) (EvenSub (List Odd)))))
+  (: Odd (Union (: OddSym Symbol) (: OddSub (List Even))))
+  (: Even (Union (: EvenStr string) (: EvenSub (List Odd)))))
 
 (: show-odd (-> Odd string))
 (defun (show-odd o)
@@ -89,10 +89,10 @@
 ;; `#:literal` answers it, and without it this union is ambiguous for every
 ;; nested literal written at it. See `errors/literal_ambiguous_case.bjo`.
 (type-rec
-  (: Item (Union (Sym Symbol)
-                 (Str string)
-                 (Sub (List Item) #:literal)
-                 (Args (List string)))))
+  (: Item (Union (: Sym Symbol)
+                 (: Str string)
+                 (: Sub (List Item) #:literal)
+                 (: Args (List string)))))
 
 (: show-item (-> Item string))
 (defun (show-item i)
@@ -114,8 +114,8 @@
 ;; union, if asked: `Just` carries a bare type variable, and `Wrap` the tree
 ;; itself. `(list (Just 7) (Just 8))` was refused, and `(list a b)` of two
 ;; leaves wrapped `b` in `Wrap` without a word.
-(type (: (Opt %a) (Union Nothing (Just %a))))
-(type (: Tree (Union (Leaf int) (Wrap Tree))))
+(type (: (Opt %a) (Union Nothing (: Just %a))))
+(type (: Tree (Union (: Leaf int) (: Wrap Tree))))
 
 (: depth (-> Tree int))
 (defun (depth t)

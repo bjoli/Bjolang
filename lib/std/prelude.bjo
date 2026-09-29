@@ -543,7 +543,7 @@
   (defun (collector-finish c acc) acc))
 
 ;; Folding.
-(type (: (Folding %a) (Union (folding %a))))
+(type (: (Folding %a) (Union (: folding %a))))
 
 (impl (Collector (Folding %a))
   (type %elem %a)
@@ -3084,17 +3084,27 @@
 
 ;; --- Unions ---
 
+;; A case is a bare name or `(: Name type ... markers ...)`.
 (: derive-case-name (-> Syntax Syntax))
 (defun (derive-case-name c)
   (def* ((SList items) c :leave-with c)
-        ((Cons head _) items :leave-with c))
-  head)
+        ((Cons _ (Cons name _)) items :leave-with c))
+  name)
 
+;; The payload types, which end at the first marker: `#:tag` takes a name after
+;; it, which is not a type.
 (: derive-payload (-> Syntax (List Syntax)))
 (defun (derive-payload c)
   (def* ((SList items) c :leave-with Nil)
-        ((Cons _ rest) items :leave-with Nil))
-  (list-filter #(match & ((SKey _) #f) (_ #t)) rest))
+        ((Cons _ (Cons _ rest)) items :leave-with Nil))
+  (derive-types-before-markers rest))
+
+(: derive-types-before-markers (-> (List Syntax) (List Syntax)))
+(defun (derive-types-before-markers items)
+  (match items
+    ((Cons (SKey _) _) Nil)
+    ((Cons t rest) (Cons t (derive-types-before-markers rest)))
+    (Nil Nil)))
 
 ;; Binders.
 (: derive-binders (-> string int int (List Syntax)))

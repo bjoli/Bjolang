@@ -115,10 +115,10 @@ Define one with ~def/hash-extend~; it arrives with an import, prefixed if the im
 A list is homogeneous. Where a union is expected, each piece is elaborated into the case that can hold it:
 #+BEGIN_SRC scheme
 (type-rec
-  (: ProcItem (Union (ProcSym Symbol)
-                     (ProcStr string)
-                     (ProcFn  (-> string string))
-                     (ProcSub (List ProcItem))))
+  (: ProcItem (Union (: ProcSym Symbol)
+                     (: ProcStr string)
+                     (: ProcFn  (-> string string))
+                     (: ProcSub (List ProcItem))))
   (: ProcList (Alias (List ProcItem))))
 
 (: run/lines (-> ProcList (List string)))
@@ -152,10 +152,10 @@ A generic parameter provides no expected type. Name the type first:
 Only the payload's head is compared. Marking one settles ambiguity:
 #+BEGIN_SRC scheme
 (type-rec
-  (: Item (Union (Sym Symbol)
-                 (Str string)
-                 (Sub (List Item) #:literal)   ;; nested (...) means this
-                 (Args (List string)))))       ;; written out by hand
+  (: Item (Union (: Sym Symbol)
+                 (: Str string)
+                 (: Sub (List Item) #:literal)   ;; nested (...) means this
+                 (: Args (List string)))))       ;; written out by hand
 #+END_SRC
 
 **** ~#:tag name~ — which case a form names
@@ -163,25 +163,25 @@ Only the payload's head is compared. Marking one settles ambiguity:
 
 #+BEGIN_SRC scheme
 (type-rec
-  (: Form (Union (FPipe (List Form) #:tag pipe #:rest)
-                 (FInto string Form #:tag into-file)
-                 (FCmd (List Word)))))         ;; not tagged: shape decides
+  (: Form (Union (: FPipe (List Form) #:tag pipe #:rest)
+                 (: FInto string Form #:tag into-file)
+                 (: FCmd (List Word)))))         ;; not tagged: shape decides
 
 '(pipe (cat "a") (wc -l))   ;; (FPipe (list …))
 '(into-file "o" (ls))       ;; (FInto "o" …)
 '(sort)                     ;; (FCmd …) — and `sort` is data
 #+END_SRC
 
-The tag is matched before any shape and is *consumed*, so what the case declares describes the form's *arguments*, not the whole form. A case carrying nothing is named by the symbol alone: ~'asc~ at a union with ~(Asc #:tag asc)~. A head that is not a tag is still data, so a bare tag can sit beside the ordinary commands of ~(std run)~, and a tagged case takes no part in shape selection, so the untagged case handling `(sort)` stays reachable.
+The tag is matched before any shape and is *consumed*, so what the case declares describes the form's *arguments*, not the whole form. A case carrying nothing is named by the symbol alone: ~'asc~ at a union with ~(: Asc #:tag asc)~. A head that is not a tag is still data, so a bare tag can sit beside the ordinary commands of ~(std run)~, and a tagged case takes no part in shape selection, so the untagged case handling `(sort)` stays reachable.
 
-Two cases of one union may not share a tag. No literal's shape can select a payload that is *itself* a union, so a tag is how one is reached: ~(CWhere (Cond %row) #:tag where)~ is a sub-grammar. The other way is an untagged case, below.
+Two cases of one union may not share a tag. No literal's shape can select a payload that is *itself* a union, so a tag is how one is reached: ~(: CWhere (Cond %row) #:tag where)~ is a sub-grammar. The other way is an untagged case, below.
 
 **** ~#:rest~ — how many arguments a tag takes
 A tagged case takes as many arguments as it declares payload types, so ~#:rest~ says "any number": the arguments are the payload, and the case's one type is the collection they are the elements of.
 
 #+BEGIN_SRC scheme
-(type (: Q (Union (CSelect (Vec Col) #:tag select #:rest)
-                  (CFrom Symbol #:tag from))))
+(type (: Q (Union (: CSelect (Vec Col) #:tag select #:rest)
+                  (: CFrom Symbol #:tag from))))
 
 '(select id name email)     ;; (CSelect [(Col id) (Col name) (Col email)])
 '(select)                   ;; (CSelect [])
@@ -196,11 +196,11 @@ An untagged case with one payload that is itself a union passes on the tags it d
 
 #+BEGIN_SRC scheme
 (type-rec
-  (: (Cond %leaf) (Union (And (List (Cond %leaf)) #:tag and #:rest)
-                         (Not (Cond %leaf) #:tag not)
-                         (Leaf %leaf))))          ;; untagged, carries a union
+  (: (Cond %leaf) (Union (: And (List (Cond %leaf)) #:tag and #:rest)
+                         (: Not (Cond %leaf) #:tag not)
+                         (: Leaf %leaf))))          ;; untagged, carries a union
 
-(type (: UserTest (Union (TId int #:tag id) (TName string #:tag name))))
+(type (: UserTest (Union (: TId int #:tag id) (: TName string #:tag name))))
 
 ;; at (Cond UserTest):
 '(id 3)                          ;; (Leaf (TId 3))
@@ -504,7 +504,7 @@ Any union works this way, not only ~Option~ and ~Result~, and a pattern may
 leave more than one case behind:
 
 #+BEGIN_SRC scheme
-(type (: Signal (Union (Data string) Idle Closed)))
+(type (: Signal (Union (: Data string) Idle Closed)))
 
 (: relabel (-> Signal Signal))
 (defun (relabel s)
@@ -1128,12 +1128,20 @@ When interfacing with true C# ~void~ methods, the call executes as a statement a
 (defun (close-input-port p) (.Dispose p))   ;; p.Dispose(); return default;
 #+END_SRC
 
+*** Unions
+~(: Name (Union case ...))~ defines a sum type. A case that carries nothing is its bare name. A case with a payload is written like a record field, ~(: Case type ...)~, followed by any markers (~#:literal~, ~#:tag name~, ~#:rest~):
+
+#+BEGIN_SRC scheme
+(type (: Shape (Union (: Circle double) (: Rect double double) Empty)))
+(type (: (Tree %a) (Union Leaf (: Node (Tree %a) %a (Tree %a)))))
+#+END_SRC
+
 *** ~#:opaque~ — a type whose representation stays home
 The ~#:opaque~ marker keeps the type's constructors and representation to the code of its own module:
 
 #+BEGIN_SRC scheme
 (export Handle)
-(type (: (Handle %a) #:opaque (Union (Live %a int) Closed)))
+(type (: (Handle %a) #:opaque (Union (: Live %a int) Closed)))
 #+END_SRC
 
 Importers can use the type name in signatures but cannot construct or pattern-match its cases/fields directly. Trait implementations on opaque types are still exported and functional. What is checked is whose code does it, so the declaring module's inlined or specialised bodies, and its macros' templates, may still use the representation where they land. See ~MODULES.org~.
