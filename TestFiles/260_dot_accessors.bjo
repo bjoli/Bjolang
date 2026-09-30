@@ -1,0 +1,64 @@
+;; `(.name target)` reads a field of a record or struct, exactly as
+;; `(record-ref target name)` does. On a .NET value it is still a method call,
+;; and `.-Name` still reads a property.
+
+(import (std prelude))
+(import (std simpletest))
+(import "inc/dot_macros.bjo")
+
+(type (: Car (Record (: brand string) (: year int))))
+(type (: Point (Struct (: x int) (: y int))))
+(type (: (Boxed %a) (Record (: item %a) (: count int))))
+
+;; `url` and `size` belong to two records each.
+(type (: Fetched (Record (: url string) (: size int))))
+(type (: Request (Record (: url string) (: size bool))))
+
+(: fetched (-> (Vec Fetched)))
+(defun (fetched)
+  [(Fetched (url "a") (size 1))
+   (Fetched (url "bb") (size 2))])
+
+;; A signature makes the target's type known.
+(: car-year (-> Car int))
+(defun (car-year c) (.year c))
+
+(defun (main args)
+  (def c (Car (brand "banana") (year 3000)))
+  (def p (Point (x 1) (y 2)))
+  (def boxed (Boxed (item "fig") (count 2)))
+
+  (expect "record field" (.brand c) "banana")
+  (expect "record field through a signature" (car-year c) 3000)
+  (expect "struct field" (.y p) 2)
+  (expect "generic record field" (.item boxed) "fig")
+  (expect "generic record, other field" (.count boxed) 2)
+  (expect "nested" (.brand (.item (Boxed (item c) (count 1)))) "banana")
+  (expect "the same as record-ref" (.year c) (record-ref c year))
+
+  ;; A local lambda has no signature, so the parameter's type is unknown when
+  ;; `.year` is checked. `year` has one owner, so the field-name fallback
+  ;; finds it, as it does for `record-ref`.
+  (def year-of (fun (v) (.year v)))
+  (expect "unknown type, one owner" (year-of c) 3000)
+
+  ;; `url` has two owners. The lambda's parameter is pinned by `(fetched)`
+  ;; before its body is checked, so there is nothing to guess.
+  (expect "unknown type, two owners, pinned" (vec-map (fun (r) (.url r)) (fetched)) ["a" "bb"])
+
+  ;; A bare `.name` is `(fun (x) (record-ref x name))`.
+  (expect "bare accessor" (list-map .brand (list c (Car (brand "kiwi") (year 1)))) '("banana" "kiwi"))
+  (expect "bare accessor, two owners, pinned" (vec-map .url (fetched)) ["a" "bb"])
+  (def brand-reader .brand)
+  (expect "bare accessor as a value" (brand-reader c) "banana")
+
+  ;; In macro templates.
+  (expect "in a template" (brand-of c) "banana")
+  (expect "bare, in a template" (brands-of (list c)) '("banana"))
+  (expect ".NET method in a template" (trimmed "  x  ") "x")
+
+  ;; .NET values are unchanged.
+  (expect ".Trim" (.Trim "  plum  ") "plum")
+  (expect ".-Length" (.-Length "plum") 4)
+  (expect ".ToString on a literal" (.ToString 5) "5")
+  0)

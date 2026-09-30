@@ -461,6 +461,9 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         failwithf
             $"Type Error at %s{Lexer.formatPos r}: 'apply' is a form, not a value, so it has no value form. Write the call out — (apply f xs) — or wrap it in a lambda over a function you name there."
 
+    | EIdent(name, r) when isDotName env name ->
+        inferDotValue env name r
+
     | EIdent(name, r) ->
         inferIdent env name r
 
@@ -524,6 +527,21 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         match args with
         | [ target ] ->
             let targetType, typedTarget = infer env target
+
+            // A record's fields are read with `.name`. Only said when the
+            // field exists: otherwise the hint would name a field that is not
+            // there, and the .NET error below is the accurate one.
+            match prune env.Registry targetType with
+            | TCon(recordTypeName, _) when
+                Map.containsKey recordTypeName env.Registry.Records
+                && (Map.tryFind propName env.Registry.RecordFields
+                    |> Option.defaultValue []
+                    |> List.contains recordTypeName)
+                ->
+                failwithf
+                    $"Type Error at %s{where}: '%s{name}' reads a .NET property, but its target has the record type %s{DotNetInterop.showType targetType}, where '%s{propName}' is a field. Write (.%s{propName} ...) to read it."
+            | _ -> ()
+
             let clrTarget = receiverClrType where name targetType
             let propType = DotNetInterop.resolveMemberRead where clrTarget propName false
 
@@ -535,6 +553,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
             failwithf
                 $"Type Error at %s{where}: '%s{name}' reads a property, so it takes exactly one argument — the object to read it from — but was given %d{args.Length}."
 
+    // `(.name target)` — a record or struct field, or an instance method call.
     | EApp(EIdent(name, _), args, r) when name.StartsWith "." && name.Length > 1 ->
         inferDotMethod env name args r
 
@@ -733,22 +752,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
 
     | EGetField(targetExpr, field, r) ->
         let targetType, typedTarget = infer env targetExpr
-        let recordTypeName = recordTypeOfField env.Registry (codeModule env r) "read" targetType field r
-
-        let instantiatedRecordType, _, expectedFieldsInstantiated =
-            instantiateRecord env.Registry recordTypeName
-
-        unify env.Registry targetType instantiatedRecordType
-
-        let fieldType =
-            match Map.tryFind field expectedFieldsInstantiated with
-            | Some t -> t
-            | None -> failwithf $"Type Error: Field '%s{field}' does not belong to record '%s{recordTypeName}' at %s{Lexer.formatPos r}"
-
-        fieldType,
-        { Type = fieldType
-          Range = r
-          Node = TGetField(typedTarget, field) }
+        inferFieldRead env targetType typedTarget field r
 
     | ERecordUpdate(targetName, fields, r) ->
         inferRecordUpdate env targetName fields r
@@ -1437,7 +1441,96 @@ and private inferRecordConstruct (env: Env) (recordTypeName: string) (args: Expr
       Range = r
       Node = TRecordMake orderedFields }
 
-// `(.Method target args...)` — an instance method call.
+// A field read from a target that has already been inferred. Shared by
+// `(record-ref target x)` and `(.x target)`, so that the two are the same
+// typing, the same errors and the same node.
+and private inferFieldRead
+    (env: Env)
+    (targetType: HMType)
+    (typedTarget: TypedExpr)
+    (field: string)
+    (r: Range)
+    : HMType * TypedExpr =
+    let recordTypeName = recordTypeOfField env.Registry (codeModule env r) "read" targetType field r
+
+    let instantiatedRecordType, _, expectedFieldsInstantiated =
+        instantiateRecord env.Registry recordTypeName
+
+    unify env.Registry targetType instantiatedRecordType
+
+    let fieldType =
+        match Map.tryFind field expectedFieldsInstantiated with
+        | Some t -> t
+        | None -> failwithf $"Type Error: Field '%s{field}' does not belong to record '%s{recordTypeName}' at %s{Lexer.formatPos r}"
+
+    fieldType,
+    { Type = fieldType
+      Range = r
+      Node = TGetField(typedTarget, field) }
+
+// Whether `(.x target)` reads the field `x`, rather than calling a .NET
+// method, going by the target's type as inference has it now.
+//
+// A record or struct always reads a field, even one it does not have, so a
+// missing field is reported the way `record-ref` reports it. The C# record
+// behind it has .NET methods, but `DotNetInterop` cannot resolve a Bjolang
+// record type, so `(.ToString r)` has never reached them.
+//
+// A type that is not known yet uses `record-ref`'s fallback when some record
+// declares a field `x`. When none does it stays a .NET call, and gets the
+// error an unknown receiver always gets.
+and private dotReadsField (env: Env) (field: string) (targetType: HMType) : bool =
+    match prune env.Registry targetType with
+    | TCon(name, _) -> Map.containsKey name env.Registry.Records
+    | TMeta _ as t -> not (isOpenLiteral t) && Map.containsKey field env.Registry.RecordFields
+    | _ -> false
+
+// `.x` or `.-x` written as a value, and not bound by anything.
+and private isDotName (env: Env) (name: string) : bool =
+    name.StartsWith "." && name.Length > 1 && not (Map.containsKey name env.Bindings)
+
+// A bare `.x` whose `x` is a record field, rewritten to the lambda
+// `(fun (r) (record-ref r x))`. Anything else comes back unchanged.
+//
+// Called before an argument is inferred as well as from `inferDotValue`, so
+// that `(vec-map .url v)` is a lambda argument to `inferGeneralApp`: that is
+// what makes it wait for `v` to say which record `url` is read from, as a
+// written `fun` does.
+and private fieldAccessorLambda (env: Env) (expr: Expr) : Expr =
+    match expr with
+    | EIdent(name, r) when
+        isDotName env name
+        && not (name.StartsWith ".-")
+        && Map.containsKey (name.Substring 1) env.Registry.RecordFields
+        ->
+        let p = Gensym.fresh "record"
+        EFun([ p ], EGetField(EIdent(p, r), name.Substring 1, r), Ordinary, r)
+    | _ -> expr
+
+// A bare `.x` or `.-x` in value position.
+//
+// A .NET member cannot be one: it is resolved against the receiver's type,
+// and there is no receiver until it is called.
+and private inferDotValue (env: Env) (name: string) (r: Range) : HMType * TypedExpr =
+    let where = Lexer.formatPos r
+
+    match fieldAccessorLambda env (EIdent(name, r)) with
+    | EFun _ as lambda -> infer env lambda
+    | _ when name.StartsWith ".-" && name.Length > 2 ->
+        let propName = name.Substring 2
+
+        if Map.containsKey propName env.Registry.RecordFields then
+            failwithf
+                $"Type Error at %s{where}: '%s{name}' reads a .NET property, and a property read is not a value. '%s{propName}' is a record field, so write .%s{propName} instead."
+        else
+            failwithf
+                $"Type Error at %s{where}: '%s{name}' reads a .NET property, and a property read is not a value. Write (fun (x) (%s{name} x)) instead."
+    | _ ->
+        failwithf
+            $"Type Error at %s{where}: '%s{name}' names a .NET method, and a method group is not a value. Write (fun (x) (%s{name} x)) instead."
+
+// `(.name target)` — a record or struct field, or else an instance method
+// call.
 and private inferDotMethod (env: Env) (name: string) (args: Expr list) (r: Range) : HMType * TypedExpr =
     let methodName = name.Substring 1
     let where = Lexer.formatPos r
@@ -1448,6 +1541,15 @@ and private inferDotMethod (env: Env) (name: string) (args: Expr list) (r: Range
             $"Type Error at %s{where}: '%s{name}' calls an instance method, so its first argument is the object to call it on, but it was given none."
     | target :: rest ->
         let targetType, typedTarget = infer env target
+
+        if dotReadsField env methodName targetType then
+            if not rest.IsEmpty then
+                failwithf
+                    $"Type Error at %s{where}: '%s{name}' reads a field, so it takes exactly one argument — the record or struct to read it from — but was given %d{args.Length}. To call a function stored in the field, write ((%s{name} target) args...)."
+
+            inferFieldRead env targetType typedTarget methodName r
+        else
+
         let clrTarget = receiverClrType where name targetType
 
         let typedArgs = rest |> List.map (infer env)
@@ -1952,6 +2054,10 @@ and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Rang
         | arg :: rest -> splitArgs (arg :: positional) keywords rest
 
     let positionalExprs, keywordExprs = splitArgs [] [] args
+
+    // A bare `.field` is a lambda, and is inferred with the lambdas below.
+    let positionalExprs = positionalExprs |> List.map (fieldAccessorLambda env)
+    let keywordExprs = keywordExprs |> List.map (fun (k, v) -> k, fieldAccessorLambda env v)
 
     // Positional arguments are inferred in two passes, lambdas last. A
     // lambda's parameter types come from what the callee declares for its
@@ -2849,6 +2955,9 @@ and internal inferChecked (expected: HMType) (env: Env) (expr: Expr) : HMType * 
         raise (Diagnostics.withLocation (exprRange expr) ex)
 
 and private inferCheckedNode (expected: HMType) (env: Env) (expr: Expr) : HMType * TypedExpr =
+    // A bare `.field` is checked as the lambda it stands for.
+    let expr = fieldAccessorLambda env expr
+
     match expr, prune env.Registry expected with
     | EList(exprs, r), TCon("List", [ elemTy ]) ->
         inferCheckedLiteral env "List" "list" TListMake elemTy exprs r

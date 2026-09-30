@@ -1,0 +1,19 @@
+;; `(.name r)` compiles to what `(record-ref r name)` compiles to: a C#
+;; member access, and no .NET call.
+
+(type (: Car (Record (: brand string) (: year int))))
+(type (: Point (Struct (: x int) (: y int))))
+
+;; EXPECT-CS: return c\.brand;
+(: brand-of (-> Car string))
+(defun (brand-of c) (.brand c))
+
+;; EXPECT-CS: return p\.y;
+(: y-of (-> Point int))
+(defun (y-of p) (.y p))
+
+;; A bare `.brand` is a lambda around the same member access.
+;; EXPECT-CS: return listsubmap\(\(record__[0-9]+\) => \{
+;; EXPECT-CS: return record__[0-9]+\.brand;
+(: brands (-> (List Car) (List string)))
+(defun (brands cs) (list-map .brand cs))

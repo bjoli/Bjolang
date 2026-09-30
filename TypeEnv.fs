@@ -218,6 +218,21 @@ let internal settleLiterals (types: HMType list) : unit =
             | TMeta m when Set.contains m.Id waiting -> m.Value <- Some TypeConstants.intType
             | _ -> ()
 
+/// Whether `t` is a numeric literal whose type is still open.
+///
+/// `(.x 5)` asks this before it chooses between a record field and a .NET
+/// member. A literal is never a record, so it stays a .NET receiver and is
+/// settled at `int` there, as it was before records could be read with `.x`.
+let internal isOpenLiteral (t: HMType) : bool =
+    match followMeta t with
+    | TMeta m ->
+        openLiterals
+        |> Seq.exists (fun (lit, _, _) ->
+            match followMeta lit with
+            | TMeta l -> l.Id = m.Id
+            | _ -> false)
+    | _ -> false
+
 /// The environment slot a `seq` records its element type in, so that the
 /// `yield`s in its body have something to unify against.
 ///

@@ -1,0 +1,26 @@
+;; Macros whose templates write `.name`. The expander renames every symbol a
+;; template writes, `.brand` included, and the third renaming rule strips the
+;; mark again, so the checker sees `.brand` and not `.brand__37`.
+;;
+;; No record here has a field `brand`: the field is looked up where the
+;; expansion lands.
+
+(import (std syntax-match))
+
+;; `(brand-of x)` is `(.brand x)`.
+(def/macro (brand-of form inject compare)
+  (syntax-match form
+    ((_ x) #'(.brand ,x))
+    (bad (syntax-error bad "(brand-of x) takes one argument."))))
+
+;; A bare `.brand` in a template, in value position.
+(def/macro (brands-of form inject compare)
+  (syntax-match form
+    ((_ xs) #'(list-map .brand ,xs))
+    (bad (syntax-error bad "(brands-of xs) takes one argument."))))
+
+;; A .NET method in a template, which keeps working as it did.
+(def/macro (trimmed form inject compare)
+  (syntax-match form
+    ((_ s) #'(.Trim ,s))
+    (bad (syntax-error bad "(trimmed s) takes one argument."))))
