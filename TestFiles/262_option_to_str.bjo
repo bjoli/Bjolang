@@ -1,0 +1,36 @@
+;; `->str` of an Option or a Result formats its payload with the payload's own
+;; `->str`. It used to fall to the blanket, whose C# ToString formats the payload
+;; with *its* ToString, so a type with a `->str` of its own printed as the C#
+;; record it compiles to.
+
+(import (std prelude))
+(import (std simpletest))
+
+(type (: Suit (Union Clubs Hearts)))
+(type (: Card (Struct (: rank int) (: suit Suit))))
+
+(impl (->str Suit)
+  (defun (->str s) (match s (Clubs "C") (Hearts "H"))))
+
+(impl (->str Card)
+  (defun (->str c) #"${(record-ref c rank)}${(record-ref c suit)}"))
+
+(: parsed (-> string (Result string Card)))
+(defun (parsed s)
+  (if (= s "7H") (Ok (Card (rank 7) (suit Hearts))) (Err #"cannot read ${s}")))
+
+(defun (main args)
+  (expect "Some of a type with its own ->str" (->str (Some (Card (rank 7) (suit Hearts)))) "(Some 7H)")
+  (expect "None" (->str (list-head (list None (Some Clubs)))) "None")
+  (expect "Ok" (->str (parsed "7H")) "(Ok 7H)")
+  (expect "Err" (->str (parsed "x")) "(Err cannot read x)")
+  (expect "nested" (->str (Some (Some Hearts))) "(Some (Some H))")
+  (expect "a list inside" (->str (Some (list 1 2))) "(Some '(1 2))")
+  (expect "interpolated" #"got ${(Some Clubs)}" "got (Some C)")
+
+  ;; A type argument nothing pins: the error type of an Ok, the element type of
+  ;; an empty list. No value of it exists, so the blanket answers for it.
+  (expect "Ok with an unpinned error type" (->str (Ok (Card (rank 3) (suit Clubs)))) "(Ok 3C)")
+  (expect "Err with an unpinned value type" (->str (Err "no")) "(Err no)")
+  (expect "an empty list" (->str (list)) "()")
+  0)

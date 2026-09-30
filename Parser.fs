@@ -1663,6 +1663,51 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
             | _ -> items
         | _ -> items
 
+    // A run of definitions becomes one recursive group, so that local
+    // functions can call each other whatever order they are written in. A
+    // group binds each name once, and every name in it is in scope in every
+    // value, so two kinds of definition cannot join the run:
+    //
+    //   - A name the run already defines. It starts a new group nested inside
+    //     the first, and shadows it for the rest of the body, as in `let*`.
+    //   - A value that reads its own name outside a lambda. In a group, that
+    //     read would be of the binding being defined, before it has a value.
+    //     `(def n (+ n 1))` means the `n` from before it, so it is bound with
+    //     a plain `let`, whose value does not see its own name.
+    let groupDefs (defs: (string * bool * DefunArg list * FType option * Expr) list) (sequel: Expr) (r: Range) =
+        let readsItself (name, isFun, _, _, value) =
+            let mutable found = false
+
+            if not isFun then
+                freeNamesWith (fun n _ guarded -> if n = name && not guarded then found <- true) false Set.empty value
+
+            found
+
+        // In source order. `Choice1Of2` is a group, `Choice2Of2` a lone value.
+        let segments =
+            let closed, run =
+                (([], []), defs)
+                ||> List.fold (fun (closed, run) def ->
+                    let (name, _, _, _, _) = def
+                    let close () = if List.isEmpty run then closed else Choice1Of2(List.rev run) :: closed
+
+                    if readsItself def then
+                        Choice2Of2 def :: close (), []
+                    elif run |> List.exists (fun (n, _, _, _, _) -> n = name) then
+                        close (), [ def ]
+                    else
+                        closed, def :: run)
+
+            List.rev (if List.isEmpty run then closed else Choice1Of2(List.rev run) :: closed)
+
+        List.foldBack
+            (fun segment inner ->
+                match segment with
+                | Choice1Of2 group -> ELetRec(group, inner, r)
+                | Choice2Of2(name, isFun, args, typeAnn, value) -> ELet(name, isFun, args, typeAnn, value, inner, r))
+            segments
+            sequel
+
     // A clause in front of its sequel: the rest of the body is what its
     // binders scope over.
     let bindDefTail (tail: DefTail) (sequel: Expr) (r: Range) =
@@ -1867,7 +1912,7 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
                 failwithf
                     $"Invalid def form at %s{Lexer.formatPos r}. Expected (def name expr), (def (: name type) expr), (def (a b ...) expr), (def pattern scrutinee ...) or (defun (name args...) body)."
 
-            ELetRec(defs, parseItems rest, fallbackRange)
+            groupDefs defs (parseItems rest) fallbackRange
 
         // A macro in body position, expanded here rather than left to
         // `parseExpr`, because it may expand to a definition and `def` and

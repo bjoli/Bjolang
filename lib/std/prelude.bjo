@@ -2981,6 +2981,24 @@
   (defun (->str m)
     (map->str m)))
 
+;; Option and Result, in the shape their C# ToString writes. Without these they
+;; fell to the blanket, and that ToString formats the payload with its own
+;; ToString rather than its ->str, so a type with a ->str of its own printed as
+;; the C# record it compiles to.
+(impl (->str (Option %a))
+  (where (->str %a))
+  (defun (->str o)
+    (match o
+      ((Some x) (str "(Some " (->str x) ")"))
+      (None "None"))))
+
+(impl (->str (Result %e %a))
+  (where (->str %e) (->str %a))
+  (defun (->str r)
+    (match r
+      ((Ok x) (str "(Ok " (->str x) ")"))
+      ((Err e) (str "(Err " (->str e) ")")))))
+
 ;; Sequential binding
 ;;
 ;; Sequential binding macros.

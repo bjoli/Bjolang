@@ -172,6 +172,28 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
                     | None -> tagsSeen <- Map.add tag caseRange tagsSeen
                 | None -> ()
 
+                // A case is a constructor bound at module level and a class
+                // nested in its union, so its name can only be used once per
+                // module. Keys carry the module, so a union from another
+                // module never collides here.
+                if caseTable |> List.exists (fun (c, _, _) -> c = caseName) then
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos caseRange}: %s{Naming.showTypeName td.Name} lists the case %s{Naming.bareTypeName env.CurrentModule caseName} twice. Remove one of them."
+
+                let otherOwner =
+                    finalRegistry.Unions
+                    |> Map.tryPick (fun unionKey (_, table) ->
+                        if unionKey <> td.Name && table |> List.exists (fun (c, _, _) -> c = caseName) then
+                            Some unionKey
+                        else
+                            None)
+
+                match otherOwner with
+                | Some owner ->
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos caseRange}: %s{Naming.bareTypeName env.CurrentModule caseName} is already a case of %s{Naming.showTypeName owner}, which is declared in the same module. A case is a constructor named at module level, so two unions in one module cannot share one. Rename one of them, or move one union to a module of its own."
+                | None -> ()
+
                 let schemeArgs = tArgs
                 let consScheme =
                     if resolvedArgs.IsEmpty then

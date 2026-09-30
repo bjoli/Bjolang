@@ -1,0 +1,51 @@
+;; A `def` of a name the body already defines shadows it for the rest of the
+;; body, as `let*` would, and its value reads the earlier one.
+;;
+;; A run of definitions is one recursive group, so that local functions can call
+;; each other in any order. A second definition of a name used to join the same
+;; group, where only one of the two could be kept; and a value reading its own
+;; name was read as recursion, which reads the binding before it has a value.
+
+(import (std prelude))
+(import (std simpletest))
+
+(defun (main args)
+  ;; Back to back, in one run of definitions.
+  (def m (map-set (map-empty) "a" 1))
+  (def m (map-set m "a" (+ 1 (map-ref m "a"))))
+  (expect "back to back" (map-ref m "a") 2)
+
+  ;; With a statement in between, so each is a run of its own.
+  (def n 1)
+  (expect "before" n 1)
+  (def n (+ n 1))
+  (expect "after" n 2)
+
+  ;; With a type written at the name.
+  (def (: k int) 10)
+  (def (: k int) (* k 3))
+  (expect "typed" k 30)
+
+  ;; Three in a row.
+  (def s "a")
+  (def s (string-append s "b"))
+  (def s (string-append s "c"))
+  (expect "three in a row" s "abc")
+
+  ;; Local functions still call each other, whichever comes first.
+  (defun (even-steps? n) (if (= n 0) #t (odd-steps? (- n 1))))
+  (defun (odd-steps? n) (if (= n 0) #f (even-steps? (- n 1))))
+  (expect-true "mutual recursion" (even-steps? 10))
+
+  ;; A value that is a lambda still reaches itself: the read is inside the
+  ;; lambda, so it happens after the binding has its value.
+  (def count-down (fun (i) (if (= i 0) "done" (count-down (- i 1)))))
+  (expect "recursive lambda value" (count-down 5) "done")
+
+  ;; A function defined before a redefinition keeps the name it saw.
+  (def level 1)
+  (defun (current-level) level)
+  (def level 2)
+  (expect "earlier function" (current-level) 1)
+  (expect "later value" level 2)
+  0)

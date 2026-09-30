@@ -314,6 +314,17 @@ let rec buildEvidence
               Range = range
               Node = TApply(callee, subEvidence, []) }
 
+    // A type nothing ever pinned, such as the error type of an `(Ok x)` or the
+    // element type of `(list)`. It is emitted as `object`, and no value of it
+    // can exist: it could only come from an empty container, a case that
+    // carries none, or a call that never returns. So which implementation
+    // answers is never observed, and the blanket, where the trait has one,
+    // is the one that can be named at `object`.
+    | TMeta _ when Map.containsKey traitName env.Registry.BlanketImpls ->
+        { Type = dictType
+          Range = range
+          Node = TIdent(implSingletonName traitName BlanketCtor, [ resolved ]) }
+
     // A structural type with no head constructor: a function, or a tuple of an
     // arity nothing implements. There is nothing to key an implementation by,
     // so not even a blanket is reachable — resolution needs a head to look up
