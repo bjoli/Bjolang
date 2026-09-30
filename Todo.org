@@ -472,6 +472,66 @@ the ~defun~ because the other defaults call it. Writing the signature in the
 same order is the workaround. Either pair them by name, or refuse a different
 order with an error that says the order has to agree.
 
+* Interop faults found in passing
+
+Both found writing textmate-bjolang, a wrapper over TextMateSharp. Neither was
+in the way: each has a workaround, given below.
+
+** A .NET indexer cannot be called
+
+#+BEGIN_SRC scheme
+(import/class ((ROD %k %v) (: System.Collections.ObjectModel.ReadOnlyDictionary)))
+
+(.get_Item colours "editor.background")
+;; error CS0571: 'ReadOnlyDictionary<string, string>.this[string].get':
+;; cannot explicitly call operator or accessor
+#+END_SRC
+
+The call type-checks: ~DotNetInterop.resolveMethod~ finds ~get_Item~ among
+~GetMethods~ and selects the overload by the argument types, as it would any
+method. ~TDotMethodCall~ in ~Codegen~ then emits ~colours.get_Item(...)~,
+which C# refuses for an accessor. ~string~'s indexer, ~get_Chars~, fails the
+same way.
+
+The fix is small. ~resolveMethod~ says in its ~ResolvedCall~ when the method
+is an indexer's getter or setter — ~IsSpecialName~, and the declaring type has
+a property with index parameters whose ~GetMethod~ or ~SetMethod~ it is — and
+~metadataOf~ carries that into ~DotNetMethodMetadata~ (about six places build
+one; it is not serialized). ~TDotMethodCall~'s plain and guarded paths then
+emit ~colours["editor.background"]~, and ~recv[k] = v~ for a setter. An
+~import/extern~ of ~get_Item~ goes through the same node and is covered too.
+
+A spelling of its own, ~(.-Item colours key)~, would be nicer and costs more:
+~resolveMemberRead~ reads properties only, ~findProperty~ leaves indexers out
+on purpose, and an indexer has overloads to choose between by the arguments.
+
+Workaround: ~TryGetValue~ imported with ~(out T)~, or walking the pairs.
+
+** An undeclared type in an ~import/extern~ signature is not reported as one
+
+#+BEGIN_SRC scheme
+(import/extern
+  (s-len (: System.String.Length (-> string int) #:get))
+  (bad (: System.Int32.TryParse (-> NOPE (out int) (Option int)))))
+;; The declared parameter types (Tuple NOPE int) do not match the method's
+;; (Tuple (System.ReadOnlySpan byte) int).
+;; Unbound variable: s-len
+#+END_SRC
+
+~NOPE~ names nothing, and nothing says so. It is taken as a type of that name,
+so an out import reports it as a mismatch against every overload, and a
+misspelt or missing ~import/class~ alias reads as a wrong signature. The failed
+clause also takes the rest of its ~import/extern~ with it: ~s-len~, which is
+fine, is reported unbound where it is used. In an ordinary import that is
+never called, nothing is reported at all, because the member is resolved at
+the first call.
+
+The fix is to check every type name in the signature when ~checkImportExtern~
+(~CheckDecl.fs~) processes the clause — against the aliases, the declared
+types and the .NET names that resolve — with an error that names the unknown
+one; and to let the other clauses stand when one fails, as a declaration
+group already does.
+
 * A lowercase union case cannot be matched by name
 
 Found while letting a binder shadow a union case constructor, and separate from
