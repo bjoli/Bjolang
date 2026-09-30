@@ -347,9 +347,19 @@ none of which blocks anything.
 
 ** A generated copy that never suspends is still emitted
 
-Size only. The copies that gain no yield point are async methods awaiting
-nothing. Pruning them needs call sites redirected back to the original *after*
+The copies that gain no yield point are async methods awaiting nothing.
+Pruning them needs call sites redirected back to the original *after*
 selection, which is a rewrite nothing so far has needed.
+
+Not only size, across a module boundary. The prelude's ~vec->list~ has a copy,
+because its body names ~vec-for-each~, a ~defbjouble~ of its own module — yet
+the lambda it passes is ordinary, so the copy never suspends. An importer's
+function that calls ~vec->list~ then gets a copy too, awaiting
+~vec->list__bjo~, and so on up; the same body written in the importer, calling
+~vec-for-each~ directly, gets none. samizdat 0.5.0's HTML writer uses
+~vec->list~ and ~list-map~, so every function of it has a copy, and so does
+anything that makes a page with it. glasnost's ~folder-page~ drew the blocking
+lint for a copy nobody calls, and needed ~#:sync~ to quiet it.
 
 ** Two lambda pins have no message of their own
 
