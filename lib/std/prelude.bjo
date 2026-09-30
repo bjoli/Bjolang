@@ -1158,15 +1158,13 @@
 
 ;; --- Splitting and joining -------------------------------------------------
 
-;; Split keep empty.
+;; String split, empty fields kept. The runtime gives the array .NET's Split
+;; makes to the vec without copying it, which only it can do safely.
 (import/extern
-  (clr-keep-empty-fields (: System.StringSplitOptions.None #:get)))
+  (clr-split (: BjolangRuntime.SplitToVec (-> string string (Vec string)))))
 
-;; String split.
 (: string-split (-> string string (Vec string)))
-(defun (string-split s sep)
-  (loop (:for field (.Split s sep clr-keep-empty-fields))
-        (:acc fields (vecing field))))
+(defun (string-split s sep) (clr-split s sep))
 
 (: string-join (-> (Vec string) string string))
 (defun (string-join parts sep)

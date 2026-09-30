@@ -773,6 +773,15 @@ public static partial class BjolangRuntime {
     public static Collections.RrbList<T> subarraysubgtvec<T>(T[] arr, int start, int count) where T : notnull =>
         Collections.RrbBuilder<T>.FromSpan(new ReadOnlySpan<T>(arr, start, count));
 
+    // `string-split`, empty fields kept. The array Split makes is new and only
+    // this method holds it, so up to a leaf's worth of fields it becomes the
+    // vec's tail as it is, without a copy. An array Bjolang code could still
+    // reach must be copied instead, since writing to it would change the vec:
+    // that is why this is not a prelude function over any array.
+    public static Collections.RrbList<string> SplitToVec(string s, string separator) =>
+        Collections.RrbBuilder<string>.FromArray(s.Split(separator, StringSplitOptions.None),
+                                                 reuseArrayIfShorterThan32: true);
+
     // The collection-to-rest-array conversions behind `apply`. Neither is
     // reachable from Bjolang source: `apply` is an intrinsic and builds the
     // call to one of these itself, so there is no prelude binding to spell.

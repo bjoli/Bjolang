@@ -3,6 +3,29 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~string-split~ gives its fields to the vec without copying them
+
+~string-split~ added each field of .NET's ~Split~ to a ~VecBuilder~, which
+copied them into its tail and copied the tail again when it froze. The runtime
+now does the split itself, and hands the array ~Split~ made to the vec: up to
+32 fields it becomes the vec's tail as it is, and past that it goes into leaves
+in one pass. This is safe only because nothing else ever holds that array, so
+it is done in ~BjolangRuntime.SplitToVec~ and not offered to Bjolang code: an
+array a program could still write to would change the vec under it. Measured
+on one machine, per call:
+
+| Split                       | Before         | After          |
+|-----------------------------+----------------+----------------|
+| ~"a,b,c"~ on ~","~          | 96 ns, 576 B   | 51 ns, 168 B   |
+| ~""~                        | 45 ns, 472 B   | 12 ns, 80 B    |
+| a path of five segments     | 120 ns, 672 B  | 79 ns, 248 B   |
+| 32 fields                   | 553 ns, 1712 B | 445 ns, 1352 B |
+| 200 fields                  | 3700 ns        | 3115 ns        |
+
+The fields are the same, empty ones included. ~067_chars_and_strings.bjo~
+adds the empty string, separators at both ends and nothing else, 32 and 33
+fields, and adding to and setting in a split's vec.
+
 * A vec builder costs what its vec needs
 
 Every ~VecBuilder~, and so every ~vecing~, ~vec-filter~ and string split,

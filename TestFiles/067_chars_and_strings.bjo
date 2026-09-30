@@ -461,6 +461,31 @@
   (expect "and an astral character is not cut in half"
           (int->string (length (string-split "a😀b" "😀"))) "2")
 
+  ;; Every separator ends a field, so one at either end makes an empty field
+  ;; there, and the empty string is one empty field.
+  (expect "the empty string is one empty field"
+          (string-join (vec-map (fun (f) (str "<" f ">")) (string-split "" ",")) "") "<>")
+  (expect "a separator at each end makes an empty field at each"
+          (string-join (vec-map (fun (f) (str "<" f ">")) (string-split ",a," ",")) "") "<><a><>")
+  (expect "nothing but separators is nothing but empty fields"
+          (length (string-split ",,," ",")) 4)
+
+  ;; Up to 32 fields and more than 32 are made into a vec differently, and
+  ;; make the same vec.
+  (def thirty-two (loop (:for i (range 0 32)) (:acc (vecing (int->string i)))))
+  (def thirty-three (vec-add thirty-two "32"))
+  (expect-true "32 fields" (= (string-split (string-join thirty-two ",") ",") thirty-two))
+  (expect-true "33 fields" (= (string-split (string-join thirty-three ",") ",") thirty-three))
+
+  ;; A split is a vec like any other: adding to it or setting a field in it
+  ;; makes a new vec, and leaves the split as it was.
+  (def abc (string-split "a,b,c" ","))
+  (def grown (vec-add abc "d"))
+  (def changed (vec-set abc 0 "z"))
+  (expect "adding to a split" (string-join grown ",") "a,b,c,d")
+  (expect "setting a field of one" (string-join changed ",") "z,b,c")
+  (expect "leaves the split as it was" (string-join abc ",") "a,b,c")
+
   ;; --- Composition ---------------------------------------------------------
   ;;
   ;; The wrappers are ordinary functions, so they compose with `->` and with
