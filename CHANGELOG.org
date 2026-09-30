@@ -3,6 +3,41 @@
 
 What each change guarantees, and what it leaves open.
 
+* A vec builder costs what its vec needs
+
+Every ~VecBuilder~, and so every ~vecing~, ~vec-filter~ and string split,
+allocated a 512-slot array for leaves and a 32-slot tail before its first
+item, and copied the tail when it was frozen: about 4.4 KB for a vec of any
+size, three items or none.
+
+The runtime's ~RrbBuilder~ (the ~RrbList~ submodule) now allocates when it has
+to. The tail starts empty and grows 4, 8, 16, 32; the array of full leaves is
+made with the first leaf and grows up to 512; a tail exactly as long as its
+count is handed to the vec rather than copied, and the builder copies it
+before changing it again. Measured on one machine, per build, medians of
+three runs:
+
+| Vec                 | Before           | After           |
+|---------------------+------------------+-----------------|
+| empty               | 143 ns, 4418 B   | 47 ns, 80 B     |
+| 3 ints              | 133 ns, 4424 B   | 33 ns, 208 B    |
+| 32 ints             | 189 ns, 4536 B   | 74 ns, 464 B    |
+| 100 ints            | 429 ns, 5424 B   | 335 ns, 1560 B  |
+| 1000 strings        | 3831 ns          | 2857 ns         |
+| a million ints      | 2.13 ms          | 1.82 ms         |
+
+A bjoweb server answering a short text went from 49 900 to 53 600 requests a
+second over 32 connections, and from 100 900 to 113 800 over 128.
+
+What a builder holds and gives did not change. ~BuilderGrowthTests~ checks
+the sizes around every step of the growth, vecs that must stay as they were
+while their builder goes on, and a seeded mix of adds, ranges, sets and
+freezes against a ~List<int>~.
+
+Left open: ~AddRange~ of about a hundred items is 35 ns slower than before,
+since its first leaf now goes through the tail. Setting an item in a leaf the
+builder did not make still clones that leaf every time, not once.
+
 * ~(text xml)~: XML, read as signals, folds or a tree, and written
 
 Three modules over ~System.Xml~ and ~System.Xml.Linq~, with no shim.
