@@ -34,6 +34,22 @@
   (clr-change-ext     (: System.IO.Path.ChangeExtension (-> string string string)))
   (clr-null-or-empty? (: System.String.IsNullOrEmpty (-> string bool))))
 
+(import/class
+  (ClrType (: System.Type))
+  (ClrAssembly (: System.Reflection.Assembly)))
+
+(import/extern
+  ;; Untyped: written (-> object ClrType), a use says object and object do
+  ;; not match.
+  (clr-type-of     (: System.Object.GetType))
+  (clr-assembly-of (: System.Type.Assembly (-> ClrType ClrAssembly) #:get))
+  (clr-location    (: System.Reflection.Assembly.Location (-> ClrAssembly string) #:get)))
+
+;; A value of a type this module defines, whose assembly is this module's.
+(type (: OwnMarker (Record (: unused int))))
+(: own-marker OwnMarker)
+(def own-marker (OwnMarker (unused 0)))
+
 (:doc #:module
   (summary "Where a module name leads: its package, its source and its dll.")
   (see find-module-assembly read-roots-file)
@@ -90,17 +106,36 @@
     ((Some dir) (Cons (path-absolute (if (= below "") dir (path-combine dir below))) Nil))
     (None Nil)))
 
+;; The lib this module was loaded from: lib/janitor/modules.dll. A program run
+;; from outside the installation finds no lib above itself or its working
+;; directory, but it does link this.
+(: own-lib (-> (List string)))
+(defun (own-lib)
+  (def own (clr-location (clr-assembly-of (clr-type-of own-marker))))
+  (if (clr-null-or-empty? own)
+      Nil
+      (match (parent-of own)
+        ((Some janitor) (match (parent-of janitor)
+                          ((Some lib) (Cons lib Nil))
+                          (None Nil)))
+        (None Nil))))
+
 (:doc lib-directory
   (summary "The installed lib directory, or None when there is none to find.")
   (returns "The first candidate with a std directory in it, as the compiler picks it.")
-  (see standard-roots))
+  (see standard-roots)
+  (reference """
+    The candidates are the compiler's, with one before them: the lib this
+    module was loaded from, which a program run from anywhere has.
+    """))
 (: lib-directory (-> (Option string)))
 (defun (lib-directory)
   (find #(directory-exists? (path-combine & "std"))
         (list-append (env-dir "BJOLANG_LIB" "")
                      (list-append (env-dir "BJOLANG_HOME" "lib")
-                                  (list-append (ancestor-libs clr-base-dir)
-                                               (ancestor-libs (current-directory)))))))
+                                  (list-append (own-lib)
+                                               (list-append (ancestor-libs clr-base-dir)
+                                                            (ancestor-libs (current-directory))))))))
 
 (:doc standard-roots
   (summary "The standard library's packages: one per directory of lib.")
