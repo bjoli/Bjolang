@@ -1914,21 +1914,54 @@
   (#:sync (clr-stream-flush s))
   (#:bjo  (clr-stream-flush-await s)))
 
-;; Copies a file. `#:mode` is how `to` is opened: `CreateNew`, the default,
+(import/extern
+  (clr-copy-count       (: Bjolang.Runtime.BjoStreams.CopyCount      (-> Stream Stream long void) #:blocking))
+  (clr-copy-count-await (: Bjolang.Runtime.BjoStreams.CopyCountAsync (-> Stream Stream long void) #:async))
+  (clr-stream-length    (: System.IO.Stream.Length (-> Stream long) #:get))
+  (clr-new-guid         (: System.Guid.NewGuid (-> System.Guid)))
+  (clr-guid-text        (: System.Guid.ToString (-> System.Guid string string))))
+
+;; At most `count` bytes: what the source held when it was opened.
+(: stream-copy-count! (-> Stream Stream long void))
+(defbjouble (stream-copy-count! from to count)
+  (#:sync (clr-copy-count from to count))
+  (#:bjo  (clr-copy-count-await from to count)))
+
+;; Copies a file. `#:mode` is how `to` is written: `CreateNew`, the default,
 ;; fails if it exists, so a copy never loses a file by accident; `Truncate`
 ;; replaces it and `Append` adds to it. The source is opened first, so a
-;; missing one leaves `to` as it was. A copy onto its own path is refused
-;; before anything is opened, since opening the target would empty the source;
-;; the check is on the path's text, so two names for one file are not caught.
+;; missing one leaves `to` as it was. A copy onto its own path is refused.
+;;
+;; `to` may be the source under another name - a link, or a path the
+;; filesystem folds to the same file - and the path's text cannot tell. So
+;; nothing is ever opened that could empty the source: `Truncate` copies into a
+;; new file beside `to` and moves it over `to`, and `Append` copies the length
+;; the source had when it was opened, so that appending a file to itself ends.
+;; Replacing by a move means a link at `to` is replaced, not written through.
 ;; The copy is a new file, with a modified time of its own.
 (: file-copy (-> string string (#:mode WriteMode) void))
 (defun (file-copy from to #:mode CreateNew)
   (when (= (path-absolute from) (path-absolute to))
     (raise (cast Exception (IOException. (string-append "cannot copy a file onto itself: " from)))))
   (with-open ((in (raise-err (open-read-stream from))))
-    (with-open ((out (raise-err (open-write-stream to mode))))
-      (stream-copy! in out)
-      (stream-flush! out))))
+    (def count (clr-stream-length in))
+    (match mode
+      (Truncate
+       (def fresh (str to ".copy-" (clr-guid-text (clr-new-guid) "N")))
+       (match (try (begin
+                     (with-open ((out (raise-err (open-write-stream fresh CreateNew))))
+                       (stream-copy-count! in out count)
+                       (stream-flush! out))
+                     (raise-err (fs-move fresh to MoveReplace)))
+                   #:catch (System.Exception))
+         ((Ok _) unit)
+         ((Err e)
+          (ignore (fs-delete-file fresh))
+          (raise e))))
+      (_
+       (with-open ((out (raise-err (open-write-stream to mode))))
+         (stream-copy-count! in out count)
+         (stream-flush! out))))))
 
 (: file-read-bytes (-> string (Array byte)))
 (defun (file-read-bytes path)

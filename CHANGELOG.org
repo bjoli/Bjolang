@@ -3,6 +3,33 @@
 
 What each change guarantees, and what it leaves open.
 
+* Four silent failures fixed: an operator's name, file-copy, by-lines, json-> int
+
+Each did the wrong thing without a word. All four were listed as open in
+earlier entries.
+
+- *A local or a parameter named like an operator is the one called.*
+  ~(let ((+ my-add)) (+ 1 2))~ added, because ~Codegen~ emits ~+~, ~negate~,
+  ~<~ and the rest infix on the name alone, after inference had resolved the
+  name to the local. Such binders are now renamed in ~Normalize~, before
+  inference, where a binding is still told apart from an operator the compiler
+  wrote (an ~EResolved~): ~(let ((negate 2)) (- 5))~ is still ~-5~. Renaming
+  after inference cannot work, since both are then ~TIdent "negate"~.
+  ~TestFiles/266_operator_shadow.bjo~; the ~Todo.org~ entry is gone.
+- *~file-copy~ never empties its source.* The target may be the source under
+  another name, which the path's text cannot tell, and opening it to truncate
+  emptied the source; appending a file to itself grew it until the disk was
+  full. ~Truncate~ now copies into a new file beside the target and moves it
+  over, so a link at the target is replaced rather than written through, and
+  ~Append~ copies the length the source had when it was opened, through
+  ~Bjolang.Runtime.BjoStreams.CopyCount~. Checked through symbolic links in
+  ~TestFiles/249_files.bjo~, blocking and suspending.
+- *~by-lines~ in ~(std run)~ streams.* It read the whole output before sending
+  the first line, so a program that kept running delivered nothing until it
+  stopped. ~TestFiles/134_run.bjo~ gets a line from a program that then sleeps.
+- *~json->~ for ~int~ refuses a number that does not fit,* rather than
+  wrapping it in the cast. ~TestFiles/170_json_type.bjo~.
+
 * ~(text json)~ and ~(text json-codec)~ are documented with ~(:doc ...)~
 
 Every export of both, in ~lib/text/json.bjodoc~ and

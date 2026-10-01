@@ -99,6 +99,14 @@
   (expect "a field of the wrong type names itself"
           (err-of (read-point "{\"x\":\"six\",\"the-label\":\"a\",\"nick\":null}"))
           "Point.x: expected an integer")
+  (expect "an int field refuses a number too big for an int, rather than wrapping it"
+          (err-of (read-point "{\"x\":4294967297,\"the-label\":\"a\",\"nick\":null}"))
+          "Point.x: expected an integer that fits in an int")
+  (expect "and takes the largest that fits"
+          (match (read-point "{\"x\":2147483647,\"the-label\":\"a\",\"nick\":null}")
+            ((Ok p) (record-ref p x))
+            ((Err e) 0))
+          2147483647)
   (expect "a required field may not be null"
           (err-of (read-point "{\"x\":1,\"the-label\":null,\"nick\":null}"))
           "Point.the-label: expected a string")

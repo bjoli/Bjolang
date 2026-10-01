@@ -213,6 +213,33 @@
   (expect-true #"${where}: bytes that are not text survive a copy"
                (same-bytes? (file-read-bytes (under dir "all-copy.bin")) all-bytes)))
 
+;; The source under another name, which the path's text cannot tell. Opening
+;; the target to truncate it used to empty the source, and appending a file to
+;; itself grew it until the disk was full. On the disk only: a link is real.
+(: check-copy-links (-> string string void))
+(defun (check-copy-links where dir)
+  (directory-create dir)
+  (def src (under dir "src.txt"))
+  (file-write-text src "source")
+  (match (clr-symlink (under dir "to-src.txt") (path-absolute src))
+    ((Ok _)
+     (file-copy src (under dir "to-src.txt") #:mode Truncate)
+     (expect #"${where}: Truncate onto a link to the source leaves the source whole"
+             (file-read-text src) "source")
+     (expect #"${where}: and replaces the link with the copy"
+             (match (file-info (under dir "to-src.txt"))
+               ((Some info) (record-ref info link?))
+               (None #t))
+             #f)
+     (expect #"${where}: which holds the source" (file-read-text (under dir "to-src.txt")) "source"))
+    ((Err _) unit))
+  (match (clr-symlink (under dir "again.txt") (path-absolute src))
+    ((Ok _)
+     (file-copy src (under dir "again.txt") #:mode Append)
+     (expect #"${where}: Append onto a link to the source adds the source once, and ends"
+             (file-read-text src) "sourcesource"))
+    ((Err _) unit)))
+
 (: check-bytes (-> string string void))
 (defun (check-bytes where dir)
   (directory-create dir)
@@ -359,6 +386,7 @@
     (check-bytes "fake" "bytes")
     (check-lines "fake" "lines"))
   (check-copies "disk" (in-probe "copies"))
+  (check-copy-links "disk" (in-probe "copy-links"))
   (check-bytes "disk" (in-probe "bytes"))
   (check-lines "disk" (in-probe "lines"))
   (with-fake-fs () (check-walk "fake" "walk"))
@@ -379,6 +407,7 @@
     (check-bytes "fake, suspending" "bytes")
     (check-lines "fake, suspending" "lines"))
   (check-copies "disk, suspending" (in-probe "copies-bjo"))
+  (check-copy-links "disk, suspending" (in-probe "copy-links-bjo"))
   (check-bytes "disk, suspending" (in-probe "bytes-bjo"))
   (check-lines "disk, suspending" (in-probe "lines-bjo"))
   (directory-delete-tree probe)

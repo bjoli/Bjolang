@@ -166,6 +166,20 @@
     ((Ok (Tuple items p))
      (expect "a reader of one's own" (collect items p) "A|B")))
 
+  ;; A line arrives while the program is still running. `by-lines` used to read
+  ;; the output to its end first, so a program that went on running delivered
+  ;; nothing until it stopped, and one that never stopped, nothing at all.
+  (match (run/channel '(sh "-c" "echo first; sleep 30") by-lines)
+    ((Err e) (fail "a form that goes on running"))
+    ((Ok (Tuple items p))
+     (expect "a line arrives before the program ends"
+             (match (sync (choose (wrap (chan-recv items) (fun (x) (Got x)))
+                                  (wrap (timeout 10000) (fun (u) Ended))))
+               ((Got x) x)
+               (Ended "nothing within ten seconds"))
+             "first")
+     (kill p)))
+
   ;; `with-run` reaps on the way out, including out of a raise.
   (expect "with-run kills on the way out"
           (with-run (p '(cat))

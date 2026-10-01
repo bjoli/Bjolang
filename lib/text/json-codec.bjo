@@ -67,7 +67,12 @@
 (impl (json-> int)
   (defun (json-> j)
     (match j
-      ((JsonInt n) (Ok (cast System.Int32 n)))
+      ;; A JsonInt is a long; one outside an int's range is refused rather
+      ;; than wrapped by the cast.
+      ((JsonInt n)
+       (if (and (>= n -2147483648L) (<= n 2147483647L))
+           (Ok (cast System.Int32 n))
+           (Err "expected an integer that fits in an int")))
       (_ (Err "expected an integer")))))
 
 

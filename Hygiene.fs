@@ -610,6 +610,37 @@ let freshen (roots: string list) (expr: Expr) : Expr * Map<string, string> =
 
     renameWith Set.empty (fun n -> if isRenamable n then Gensym.fresh n else n) rootSubst expr, rootSubst
 
+/// Freshens the parameters and the local binders of a function or value body
+/// whose names are in `names`, and every reference to them. An `EResolved`
+/// keeps its name, so a name the compiler wrote still means the module-level
+/// one under a local of the same spelling.
+///
+/// For the names `Codegen` emits by their spelling: after inference a local
+/// `+` and the builtin are both `TIdent "+"`, and only here, before inference,
+/// are they still told apart.
+let freshenNamed (names: Set<string>) (args: DefunArg list) (body: Expr) : DefunArg list * Expr =
+    let fresh n = if Set.contains n names then Gensym.fresh n else n
+
+    let renamedParams =
+        args
+        |> List.choose (function
+            | MandatoryArg(n, _)
+            | RestArg n when Set.contains n names -> Some(n, fresh n)
+            | _ -> None)
+        |> Map.ofList
+
+    let param n = Map.tryFind n renamedParams |> Option.defaultValue n
+    let go e = renameWith Set.empty fresh renamedParams e
+
+    let args' =
+        args
+        |> List.map (function
+            | MandatoryArg(n, t) -> MandatoryArg(param n, t)
+            | RestArg n -> RestArg(param n)
+            | KeywordArg(n, d) -> KeywordArg(n, go d))
+
+    args', go body
+
 /// Rewrites the *free* occurrences of the names in `subst`, leaving binders as
 /// they are.
 ///

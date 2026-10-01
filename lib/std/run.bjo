@@ -781,12 +781,17 @@
                      (with-wait p (bjo (read out items)))))))))))
 
 ;; The stock `Reader`: one item per line, `\r\n` and a missing last newline
-;; handled by `TextReader` rather than by guessing.
+;; handled by `TextReader` rather than by guessing. Each line is sent as soon
+;; as it is read: a program whose output does not end, `tail -f`, still
+;; delivers its lines, and the output is never held whole.
 (: by-lines (Reader string))
 (defbjo (by-lines out items)
-  (loop (:for line (read-lines out))
-        (:do (sync (chan-send items line))))
-  unit)
+  (let next ()
+    (match (read-line/opt out)
+      ((Some line)
+       (sync (chan-send items line))
+       (next))
+      (None unit))))
 
 
 ;; ===========================================================================

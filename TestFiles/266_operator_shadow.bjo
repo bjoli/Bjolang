@@ -1,0 +1,38 @@
+;; A local or a parameter named like an operator is what a call to that name
+;; reaches. Code generation used to emit `(+ a b)` as `a + b` on the name
+;; alone, so the binding inference had resolved was ignored, silently.
+
+(import (std prelude))
+(import (std simpletest))
+
+;; A parameter called `+`.
+(: fold-with (-> (-> int int int) int int int))
+(defun (fold-with + a b) (+ a b))
+
+;; A parameter called `<`, as a sort takes its ordering.
+(: smaller (-> (-> int int bool) int int int))
+(defun (smaller < a b) (if (< a b) a b))
+
+(defun (main args)
+  (expect "a let-bound + is called, not added"
+          (let ((+ (fun (a b) (* a b)))) (+ 3 4))
+          12)
+  (expect "a parameter called + is called"
+          (fold-with (fun (a b) (- a b)) 10 3)
+          7)
+  (expect "a parameter called < is called"
+          (smaller (fun (a b) (> a b)) 2 9)
+          9)
+  (expect "a let-bound negate is called"
+          (let ((negate (fun (n) (* n 10)))) (negate 4))
+          40)
+  (expect "a lambda parameter called * is called"
+          ((fun (*) (* 6 7)) (fun (a b) (+ a b)))
+          13)
+  (expect "a unary minus under a local negate is still a minus"
+          (let ((negate 2)) (- 5))
+          -5)
+  (expect "and the operators themselves still are"
+          (list (+ 3 4) (- 10 3) (negate 4))
+          (list 7 7 -4))
+  0)

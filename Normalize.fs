@@ -264,15 +264,44 @@ let normalizeExpr (expr: Expr) : Expr =
 
     go 1 expr
 
+/// The names `Codegen` emits by their spelling: an operator arm in
+/// `generateApply` turns `(+ a b)` into `a + b` on the name alone, whatever
+/// inference resolved `+` to. A parameter or a local of one of these names is
+/// renamed here, before inference, where it can still be told apart from the
+/// operator the compiler itself wrote. Keep in step with those arms.
+let private emittedBySpelling =
+    set [ "+"; "-"; "*"; "/"; "%"
+          "bitwise-and"; "bitwise-ior"; "bitwise-xor"
+          "shift-left"; "shift-right"; "shift-right-logical"
+          "negate"; "recip"; "bitwise-not"
+          "<"; ">"; "<="; ">="
+          "clr-eq" ]
+
+let private freshenOperators (args: DefunArg list) (body: Expr) : DefunArg list * Expr =
+    Hygiene.freshenNamed emittedBySpelling args body
+
+let private freshenOperatorsIn (body: Expr) : Expr = snd (freshenOperators [] body)
+
+/// What `freshenOperators` renamed the parameters to, as a substitution.
+let private operatorParams (before: DefunArg list) (after: DefunArg list) : Map<string, string> =
+    List.zip before after
+    |> List.choose (function
+        | MandatoryArg(a, _), MandatoryArg(b, _)
+        | RestArg a, RestArg b when a <> b -> Some(a, b)
+        | _ -> None)
+    |> Map.ofList
+
 /// Walks declarations, normalizing every body.
 let rec normalizeDecl (decl: Decl) : Decl =
     match decl with
-    | DDef(name, expr, r) -> DDef(name, normalizeExpr expr, r)
-    | DDefTuple(names, expr, r) -> DDefTuple(names, normalizeExpr expr, r)
+    | DDef(name, expr, r) -> DDef(name, normalizeExpr (freshenOperatorsIn expr), r)
+    | DDefTuple(names, expr, r) -> DDefTuple(names, normalizeExpr (freshenOperatorsIn expr), r)
     | DDefPattern(pattern, expr, r) ->
-        DDefPattern(Ast.mapPatternSteps normalizeExpr pattern, normalizeExpr expr, r)
-    | DDefMutable(name, expr, r) -> DDefMutable(name, normalizeExpr expr, r)
+        DDefPattern(Ast.mapPatternSteps normalizeExpr pattern, normalizeExpr (freshenOperatorsIn expr), r)
+    | DDefMutable(name, expr, r) -> DDefMutable(name, normalizeExpr (freshenOperatorsIn expr), r)
     | DDefun(name, args, body, colour, r) ->
+        let args, body = freshenOperators args body
+
         let normalizedArgs =
             args
             |> List.map (function
@@ -282,6 +311,11 @@ let rec normalizeDecl (decl: Decl) : Decl =
         DDefun(name, normalizedArgs, normalizeExpr body, colour, r)
 
     | DDefDouble(name, args, syncBody, bjoBody, r) ->
+        // Both bodies under one renaming of the parameters: they share them.
+        let args', syncBody = freshenOperators args syncBody
+        let bjoBody = freshenOperatorsIn (Hygiene.renameFree (operatorParams args args') bjoBody)
+        let args = args'
+
         let normalizedArgs =
             args
             |> List.map (function
