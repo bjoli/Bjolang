@@ -238,6 +238,31 @@ let rec private expandIncludes
                     "Include Error: malformed include at %s. Expected (include \"path\")"
                     (includedFrom r)
 
+            // `(:doc #:file "x.bjodoc")`: a file of docs, spliced as an
+            // include is, so that it is one of the module's sources and a
+            // change to it rebuilds the module.
+            | form when (Docs.fileForm form).IsSome ->
+                let rel, r = (Docs.fileForm form).Value
+                let target = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(filePath: string), rel))
+
+                if not (File.Exists target) then
+                    failwithf
+                        "Syntax error in (:doc #:file ...) at %s: cannot find '%s' (looked for %s)."
+                        (includedFrom r)
+                        rel
+                        target
+
+                let innerForms, _ = Lexer.tokenize target (File.ReadAllText target) |> read
+
+                for inner in innerForms do
+                    if not (Docs.isDocForm inner) || (Docs.fileForm inner).IsSome then
+                        failwithf
+                            "Syntax error at %s: a .bjodoc file holds (:doc name ...) and (:doc #:module ...) forms, and nothing else."
+                            (includedFrom (getRange inner))
+
+                visited <- Set.add target visited
+                innerForms
+
             | other -> [ other ])
 
     expanded, visited
@@ -1279,7 +1304,8 @@ let loadModuleGraph
       * string list
       * Set<string * (string * string)>
       * Set<string * (string * string)>
-      * Map<string, TypedAST.InlineTemplate> =
+      * Map<string, TypedAST.InlineTemplate>
+      * Docs.Entry list =
     // Unconditionally, not only when something publishes a macro: the expander
     // is also what reports a macro used in the module that defines it.
     Macro.install ()
@@ -1289,6 +1315,9 @@ let loadModuleGraph
     installAssemblyResolver ()
 
     let resolvedModules = System.Collections.Generic.Dictionary<string, LoadedModule>()
+
+    /// The `(:doc ...)` forms of the file being compiled, read but not checked.
+    let mainDocs = ResizeArray<Docs.Entry>()
 
     /// Which file each module key belongs to, for the length of one build.
     let claimedKeys = System.Collections.Generic.Dictionary<string, string>()
@@ -1686,6 +1715,17 @@ let loadModuleGraph
                     // this module's.
                     let forms = forms |> List.map (stampModule (Naming.moduleKeyOfPath absPath))
 
+                    // The docs leave here, and no parser sees them. Only the
+                    // file being compiled has its docs checked: everything it
+                    // imports is a `.dll`, whose docs were checked when it was
+                    // built.
+                    let docForms, forms = forms |> List.partition Docs.isDocForm
+
+                    if absPath = Path.GetFullPath mainFilePath then
+                        for f in docForms do
+                            Diagnostics.recover "parse" (Some(getRange f)) () (fun () ->
+                                mainDocs.Add(Docs.parseEntry f))
+
                     // Which of this module's own names are macros. Read off the
                     // S-expressions, like the imports: a `def/macro` is
                     // recognizable without parsing, and using one here has to
@@ -1925,7 +1965,8 @@ let loadModuleGraph
     dllDeps |> Seq.toList,
     Set.ofSeq blockingDefs,
     Set.ofSeq doubleDefs,
-    constrainedBodies |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
+    constrainedBodies |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq,
+    List.ofSeq mainDocs
 
 /// Which module each top-level name belongs to.
 ///
@@ -2016,8 +2057,12 @@ let private importOrigins (decls: Decl list) : Map<string, string * string> =
 let runFullFrontendPipeline (mainFilePath: string) =
     try
         Diagnostics.progress "=== Step 1: Parsing & Module Resolution ==="
-        let parsedModuleDecls, dllDeps, importedBlocking, importedDoubles, importedBodies =
+        let parsedModuleDecls, dllDeps, importedBlocking, importedDoubles, importedBodies, docEntries =
             Timing.phase "parse + module graph" (fun () -> loadModuleGraph mainFilePath)
+
+        // A dependency compiled while the graph was loaded has published its
+        // own docs and emitted them; nothing of them belongs to this module.
+        Docs.published <- ""
 
         // The macros *this* compilation publishes. The main module is last, and
         // is the only one being compiled — everything before it arrived as a
@@ -2140,6 +2185,18 @@ let runFullFrontendPipeline (mainFilePath: string) =
         // the reader is owed a report about, and a monomorphised copy would be
         // reported on once per instantiation under a name nobody wrote.
         Exhaustiveness.run env.Registry typedAst
+
+        // After type checking, which is when what a name is — and whether a
+        // name in `(see ...)` exists at all — can be asked; before the gate,
+        // so that a doc that does not match its definition stops the build.
+        //
+        // Published here rather than by `Exports`, which only a library runs:
+        // a program's docs are its own and go into its assembly too.
+        match List.tryLast parsedModuleDecls with
+        | Some(DModule(moduleKey, mainDecls, _)) ->
+            Docs.check env moduleKey mainDecls docEntries
+            Docs.published <- Docs.publish mainDecls docEntries
+        | _ -> Docs.published <- ""
 
         // The type-check gate. Everything from here down rewrites the checked
         // tree, and a declaration that failed to check contributed none of it:

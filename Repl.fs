@@ -218,8 +218,13 @@ type private Shape =
 let private shapeOf (forms: SExpr list) : Shape =
     let asDecls (form: SExpr) =
         try
-            DeclParser.tryParseDeclGroup form
-            |> Option.map (List.map (fun d -> d, form))
+            // A doc declares nothing: the pipeline takes it out and checks it
+            // against what the same entry defines.
+            if Docs.isDocForm form then
+                Some []
+            else
+                DeclParser.tryParseDeclGroup form
+                |> Option.map (List.map (fun d -> d, form))
         with _ ->
             // A declaration whose *body* is malformed still reads as one. The
             // real diagnostic comes from compiling it, where it has a position.
@@ -227,6 +232,11 @@ let private shapeOf (forms: SExpr list) : Shape =
 
     match forms with
     | [] -> Malformed "nothing to evaluate"
+    // Each entry is a module of its own, so a doc of an earlier entry's
+    // definition would be a doc of another module's.
+    | _ when forms |> List.forall Docs.isDocForm ->
+        Malformed
+            "(:doc ...) documents what its own entry defines. At the prompt, write it in the same entry as the definition, on the same line or inside (begin ...)."
     | _ ->
         let parsed = forms |> List.map asDecls
 

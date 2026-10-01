@@ -1,0 +1,225 @@
+* Documentation: ~(:doc ...)~
+
+A definition is documented with a ~(:doc ...)~ form in the module that defines
+it. The compiler checks the form against the definition, so documentation that
+no longer matches the code does not compile: a renamed parameter, a removed
+function or a misspelt reference is an error where the documentation is.
+
+#+BEGIN_SRC scheme
+(:doc random-int
+  (summary "A number from lo to hi, both included.")
+  (arg lo "The smallest number it may answer.")
+  (arg hi "The largest. Not less than lo.")
+  (key rng "The source to draw from.")
+  (returns "A number in [lo, hi].")
+  (raises System.ArgumentOutOfRangeException "When hi is less than lo.")
+  (see random-double shuffle-vec)
+  (example """
+    (random-int 1 6)   ; a die
+    """)
+  (reference """
+    Lemire's method, so every number in the range is equally likely.
+    """))
+(: random-int (-> int int (#:rng RandomSource) int))
+(defun (random-int lo hi #:rng (parameter-ref current-random))
+  (clr-random-range rng lo hi))
+#+END_SRC
+
+A doc says only what the compiler cannot know. The type, the keyword defaults,
+the ~(where ...)~ constraints, whether a call suspends or blocks, and whether
+the name is exported are all read from the definition, and the documentation
+tools show them beside the text. Nothing in a doc repeats them, so nothing in a
+doc can contradict them.
+
+Every text is a string, and markup in it is samizdat's. A text longer than a
+line is easiest as a raw string, ~"""..."""~, which needs no escapes (see
+~Syntax.org~, "Raw strings").
+
+A ~(:doc ...)~ form is data: it is also valid bjodat, so a tool can read one
+without the compiler.
+
+** The forms
+
+| ~(:doc name clause ...)~           | a definition of this module                     |
+| ~(:doc name #:reader clause ...)~  | the reader extension ~#name(...)~ of this module |
+| ~(:doc #:module clause ...)~       | the module itself                               |
+| ~(:doc #:file "random.bjodoc")~    | the forms in another file                       |
+
+A doc may stand anywhere among the module's top-level forms, and in a file the
+module ~include~ s. It attaches by name, as a signature does, not by position.
+
+~#:reader~ is needed because a reader extension's name is in a namespace of
+its own: ~#map(...)~ is not the function ~map~.
+
+*** ~.bjodoc~ files
+
+~(:doc #:file "random.bjodoc")~ reads that file, relative to the file the form
+is in, as if its forms were written in place. It may hold only ~(:doc ...)~
+forms, ~#:file~ excepted. The file is one of the module's sources: changing it
+rebuilds the module.
+
+** Clauses
+
+| clause                 | holds                                              |
+|------------------------+----------------------------------------------------|
+| ~(summary text)~       | one line: what lists, hovers and the REPL show     |
+| ~(arg name text)~      | a positional parameter                             |
+| ~(rest name text)~     | the ~#:rest~ parameter                             |
+| ~(key name text)~      | a keyword parameter, written ~rng~ or ~#:rng~      |
+| ~(returns text)~       | the result                                         |
+| ~(raises Type text)~   | an exception it raises on purpose, and when        |
+| ~(see name ...)~       | related names                                      |
+| ~(example text)~       | code                                               |
+| ~(reference text)~     | the long explanation                               |
+| ~(field name text)~    | a field of a record                                |
+| ~(case Name text)~     | a case of a union                                  |
+| ~(tparam %a text)~     | a type parameter                                   |
+| ~(form shape)~         | how a macro is written: ~(form (with-x name body ...))~ |
+| ~(literal name ...)~   | symbols in a macro's forms that are not variables  |
+
+Every clause applies to every kind of definition it makes sense for, and is
+refused on the rest, with a message saying which clauses that kind takes.
+
+These hold for all of them:
+
+- ~summary~ is required, once, on one line.
+- No text is empty.
+- ~summary~, ~returns~ and ~reference~ are written at most once. ~raises~,
+  ~see~, ~example~ and ~form~ may repeat.
+- A name is documented once: one ~arg~ per parameter, one ~field~ per field,
+  one ~case~ per case, one ~tparam~ per type parameter.
+- ~see~ names something in scope in the module: a binding, a type, a trait or
+  a macro.
+- ~raises~ names a .NET type deriving from ~System.Exception~, by its name or by
+  an ~import/class~ alias.
+- ~tparam~ names a type parameter the definition has.
+
+** What each kind of definition takes
+
+The compiler works out what a name is. A doc does not say.
+
+*** A function
+
+~defun~, ~defbjo~ and ~defbjouble~.
+
+- Each positional parameter has an ~arg~, in the order the definition takes
+  them, with the definition's names.
+- A ~#:rest~ parameter has a ~rest~, after the ~arg~ s.
+- ~returns~ is required, unless the result is ~void~.
+- ~key~ is optional, and names a keyword parameter the function has.
+- It may also have ~tparam~, ~raises~, ~see~, ~example~ and ~reference~.
+
+A function with two copies, one for each colour, has one doc for both.
+
+*** A function without parameter names
+
+A trait method, an ~import/extern~ binding, and a ~def~ whose signature is a
+function type have a type but no parameter names. Their doc *gives* the names:
+
+#+BEGIN_SRC scheme
+(:doc fmap
+  (summary "Applies a function inside a functor.")
+  (arg f "The function.")
+  (arg xs "What to apply it inside.")
+  (returns "The same shape, with f applied to each value."))
+#+END_SRC
+
+The rules are a function's, with the names free and their number checked: one
+~arg~ for each positional parameter of the type, and a ~rest~ if the type has
+one. ~key~ names a keyword the type has. An ~import/extern~ binding written
+without a type stands for every overload of its target, so the number of its
+~arg~ s is not checked and its ~returns~ is optional.
+
+*** A value
+
+A ~def~ of anything that is not a function, a parameter, an ~import/extern~
+property: ~summary~, and ~see~, ~example~ and ~reference~.
+
+*** A record
+
+- A ~field~ for each field, unless the record is ~#:opaque~.
+- An ~#:opaque~ record refuses ~field~: its fields are not part of what it
+  offers.
+- It may have ~tparam~, ~see~, ~example~ and ~reference~.
+
+*** A union
+
+~case~ is optional, but names a case the union has. An ~#:opaque~ union refuses
+it. A union takes ~tparam~, ~see~, ~example~ and ~reference~ as a record does.
+
+A case is documented in its union's doc, not with a doc of its own.
+
+*** A type alias, and an ~import/class~ alias
+
+~summary~, and ~tparam~, ~see~, ~example~ and ~reference~.
+
+*** A trait
+
+~summary~, and ~tparam~ for the implementor's variable, ~see~, ~example~ and
+~reference~. Each method is a name of its own and has a doc of its own, as a
+function without parameter names.
+
+*** A macro, and a reader extension
+
+~def/macro~, ~def/pattern~, and ~def/hash-extend~ documented with ~#:reader~.
+
+- At least one ~form~, saying how it is written. Its head is the macro's name,
+  without the ~#~ for a reader extension.
+- Every other symbol in the forms is a variable, and has an ~arg~. A variable
+  followed by ~...~ has a ~rest~ instead.
+- A symbol that is part of the syntax rather than a variable, such as ~else~,
+  is listed in a ~literal~ clause.
+- ~returns~ and ~key~ are refused; it may have ~see~, ~example~ and ~reference~.
+
+#+BEGIN_SRC scheme
+(:doc with-random-seed
+  (summary "Runs body with a reproducible source of random numbers.")
+  (form (with-random-seed seed body ...))
+  (arg seed "A ulong; the same seed draws the same numbers.")
+  (rest body "What to run with it."))
+#+END_SRC
+
+*** The module
+
+~(:doc #:module ...)~ takes ~summary~, ~see~, ~example~ and ~reference~, and is
+written once.
+
+** What cannot be documented here
+
+- A name another module defines, including one this module re-exports: its doc
+  is in the module that defines it.
+- A second name made with ~(:alias new old)~: document ~old~.
+- A union case on its own: it goes in its union's doc.
+- An ~impl~, which has no name. The trait's doc says what an implementation has
+  to do.
+
+** Undocumented exports
+
+A module with a ~(:doc #:module ...)~ is documented, and the compiler warns
+about each name it exports that has no doc, each method of an exported trait
+that has none, and each macro and reader extension that has none, since every
+one of those is published. A module with no module doc gets no warnings: documenting one
+function in a scratch file is not a promise to document the rest.
+
+** At the prompt
+
+Each REPL entry is compiled as a module of its own, so a doc documents what
+its own entry defines: write it on the same line as the definition, or with it
+inside a ~(begin ...)~. A doc entered on its own is refused, since what it
+names was defined by an earlier entry.
+
+** Where the documentation goes
+
+The compiler stores the module's documentation in its assembly, under the
+metadata key ~BjolangDocs~, beside what an importer reads. It is read only by
+whatever asks for it, so it costs an importing compilation nothing.
+
+It is one bjodat vec: each ~(:doc ...)~ form as it was written, raw strings
+and comments included, with clauses the compiler adds after the name:
+
+| ~(kind k)~             | ~function~, ~value~, ~record~, ~union~, ~alias~, ~trait~, ~macro~, ~reader~ or ~module~ |
+| ~(signature "type")~   | a function's or a value's type, as source writes it |
+| ~(definition "head")~  | a ~defun~'s head as written: ~"(random-int lo hi #:rng (parameter-ref current-random))"~ |
+
+None of these is a clause a doc may be written with, so a published form reads
+by the same rules as a written one. ~TestFiles/264_docs.bjo~ reads its own back.

@@ -1,0 +1,204 @@
+;; (:doc ...): one of every kind of definition, documented as
+;; Docs/Documentation.org says, so that this file compiles is the assertion.
+;; Each rule a doc can break has a test of its own in errors/doc_*.bjo, and
+;; warnings/doc_undocumented.bjo has the warnings.
+;;
+;; Some of the docs are in 264_docs.bjodoc, read through (:doc #:file ...).
+
+(import (std prelude))
+(import (std syntax-match))
+(import (std simpletest))
+(import (text bjodat-core))
+
+(export clamp-all Shape Point Box Named name-of origin abs-of larger inc verbose)
+
+(:doc #:module
+  (summary "Every kind of definition, documented.")
+  (see clamp-all Shape)
+  (reference """
+    A function, a record, a union, a type with a parameter, a trait and its
+    method, a value, a macro, a reader extension, two foreign bindings, a def
+    of a function, and a parameter.
+    """))
+
+(:doc #:file "264_docs.bjodoc")
+
+;; A function: arguments, a rest parameter, a keyword, a result, an exception.
+(:doc clamp-all
+  (summary "Clamps every number.")
+  (arg lo "The least it may answer.")
+  (arg hi "The most.")
+  (rest xs "The numbers.")
+  (key #:scale "Multiplied in before clamping.")
+  (returns "The clamped numbers, in order.")
+  (raises System.ArgumentException "When lo is more than hi.")
+  (example """
+    (clamp-all 0 10 -5 5 50)   ; [0 5 10]
+    """))
+(: clamp-all (-> int int (#:scale int) #:rest int (Vec int)))
+(defun (clamp-all lo hi #:scale 1 #:rest xs)
+  (vec-map (fun (x) (max lo (min hi (* scale x)))) (array->vec xs)))
+
+;; A record and a value, documented in the .bjodoc.
+(type (: Point (Record (: x int) (: y int))))
+
+(: origin Point)
+(def origin (Point (x 0) (y 0)))
+
+;; A union, with one of its cases documented. Cases are optional.
+(:doc Shape
+  (summary "A shape.")
+  (case Circle "A circle, by its radius."))
+(type (: Shape (Union (: Circle double) (: Square double))))
+
+;; A type with a parameter.
+(:doc Box
+  (summary "A box around anything.")
+  (tparam %a "What is in it.")
+  (field content "What is in it."))
+(type (: (Box %a) (Record (: content %a))))
+
+;; A trait, and its method, whose parameters have no names until its doc gives
+;; them.
+(:doc Named
+  (summary "Things with a name.")
+  (tparam %c "The implementor."))
+(def/trait (Named %c)
+  (: name-of (-> %c string)))
+
+(:doc name-of
+  (summary "The name.")
+  (arg thing "What to name.")
+  (returns "Its name."))
+
+(impl (Named Point)
+  (defun (name-of p) "a point"))
+
+;; A macro: its variables come from its forms.
+(:doc with-twice
+  (summary "Runs a body twice.")
+  (form (with-twice body ...))
+  (rest body "What to run."))
+(def/macro (with-twice form inject compare)
+  (syntax-match form
+    ((_ body ...) #'(begin ,@body ,@body))))
+
+;; A reader extension, in a namespace of its own.
+(:doc pair #:reader
+  (summary "A tuple of two.")
+  (form (pair a b))
+  (arg a "The first.")
+  (arg b "The second."))
+(def/hash-extend (pair form inject compare)
+  (syntax-match form
+    ((_ a b) #'(Tuple ,a ,b))))
+
+;; Foreign bindings: one with a type, whose arguments are counted, and one
+;; without, which stands for every overload and is not.
+(:doc abs-of
+  (summary "The absolute value.")
+  (arg n "A number.")
+  (returns "n without its sign."))
+(:doc larger
+  (summary "The larger of two numbers.")
+  (arg a "One.")
+  (arg b "The other."))
+(import/extern
+  (abs-of (: System.Math.Abs (-> int int)))
+  (larger (: System.Math.Max)))
+
+;; A def of a function type, which has no parameter names either.
+(:doc inc
+  (summary "One more.")
+  (arg n "A number.")
+  (returns "n + 1."))
+(: inc (-> int int))
+(def inc (fun (n) (+ n 1)))
+
+;; A parameter, which is a value.
+(:doc verbose
+  (summary "Whether to say more."))
+(: verbose (Param bool))
+(def verbose (make-parameter #f))
+
+;; --- What the assembly carries ----------------------------------------------
+;;
+;; The docs are published under the metadata key BjolangDocs, as a bjodat vec
+;; of the forms as written, each with (kind ...) added, and a function's
+;; (signature ...) and (definition ...). This program reads its own.
+
+(import/class
+  (Assembly (: System.Reflection.Assembly)))
+
+(import/extern
+  (entry-assembly (: System.Reflection.Assembly.GetEntryAssembly (-> Assembly)))
+  (attributes-of (: System.Reflection.Assembly.GetCustomAttributes)))
+
+(: published-docs (-> string))
+(defun (published-docs)
+  (loop (:for a (attributes-of (entry-assembly) #f))
+        (:acc found
+              (folding ""
+                       (match a
+                         ((:is System.Reflection.AssemblyMetadataAttribute m)
+                          (if (= (.-Key m) "BjolangDocs") (.-Value m) found))
+                         (_ found))))))
+
+;; The published form of one name, as bjodat reads it back.
+(: published-form (-> (Vec Bjodat) string (Option (List Bjodat))))
+(defun (published-form docs name)
+  (loop (:for d docs)
+        (:acc found
+              (folding None
+                       (match d
+                         ((BjoList (Cons _ (Cons (BjoSym s) rest)))
+                          (if (= (symbol->string s) name) (Some rest) found))
+                         (_ found))))))
+
+;; The value of the clause headed `head` in a published form, as text.
+(: clause-text (-> (List Bjodat) string string))
+(defun (clause-text clauses head)
+  (loop (:for c clauses)
+        (:acc found
+              (folding "<none>"
+                       (match c
+                         ((BjoList (Cons (BjoSym h) (Cons v _)))
+                          (if (= (symbol->string h) head)
+                              (match v
+                                ((BjoStr s) s)
+                                ((BjoSym s) (symbol->string s))
+                                (_ (bjodat->string v)))
+                              found))
+                         (_ found))))))
+
+(defun (main args)
+  (expect "clamp-all" (clamp-all 0 10 -5 5 50) [0 5 10])
+  (expect "name-of" (name-of origin) "a point")
+  (expect "abs-of" (abs-of -3) 3)
+  (expect "inc" (inc 1) 2)
+
+  (match (parse-bjodat (published-docs))
+    ((Err e) (expect "the published docs read as bjodat" e ""))
+    ((Ok (BjoVec docs))
+     (expect "every doc is published" (vec-length docs) 14)
+     (match (published-form docs "clamp-all")
+       (None (expect "clamp-all is published" #f #t))
+       ((Some form)
+        (expect "its kind" (clause-text form "kind") "function")
+        (expect "its signature, as source writes it"
+                (clause-text form "signature") "(-> int int (#:scale int) #:rest int (Vec int))")
+        (expect "its definition, defaults and all"
+                (clause-text form "definition") "(clamp-all lo hi #:scale 1 #:rest xs)")
+        (expect "its clauses, as written" (clause-text form "summary") "Clamps every number.")
+        (expect "a raw string, read back"
+                (clause-text form "example") "(clamp-all 0 10 -5 5 50)   ; [0 5 10]")))
+     (match (published-form docs "name-of")
+       (None (expect "name-of is published" #f #t))
+       ((Some form)
+        (expect "a trait method's signature comes from its trait"
+                (clause-text form "signature") "(-> %c string)")))
+     (match (published-form docs "Point")
+       (None (expect "Point, from the .bjodoc, is published" #f #t))
+       ((Some form) (expect "a record's kind" (clause-text form "kind") "record"))))
+    ((Ok other) (expect "the published docs are a vec" (bjodat->string other) "[...]")))
+  0)

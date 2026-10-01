@@ -6069,6 +6069,11 @@ let generateProgram
         let escaped = escapeAttribute (ModuleMetadata.serialize metadata)
         appendLine ctx $"[assembly: System.Reflection.AssemblyMetadata(\"BjolangMetadata\", \"%s{escaped}\")]"
 
+    // A key of its own, so that an importing compilation, which reads the one
+    // above, never parses the docs. See Docs/Documentation.org.
+    if Docs.published <> "" then
+        appendLine ctx $"[assembly: System.Reflection.AssemblyMetadata(\"BjolangDocs\", \"%s{escapeAttribute Docs.published}\")]"
+
     
     appendLine ctx ""
     // Only generate code for the main module (the last one).

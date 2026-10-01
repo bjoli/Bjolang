@@ -1,0 +1,44 @@
+;; A documented module documents what it offers. Each export without a doc is
+;; a warning, and so is each method of an exported trait and each macro, since
+;; every macro is published. What is documented is not mentioned.
+
+;; EXPECT-WARNING: and has no (:doc halve ...)
+;; EXPECT-WARNING: size-of, a method of the exported trait Sized, has no (:doc size-of ...)
+;; EXPECT-WARNING: has no (:doc twice-over ...). Every macro is published.
+;; EXPECT-NO-WARNING: (:doc double ...)
+;; EXPECT-NO-WARNING: (:doc Sized ...)
+;; EXPECT-NO-WARNING: size-of is exported
+;; EXPECT-NO-WARNING: helper
+
+(import (std prelude))
+(import (std syntax-match))
+
+(export double halve Sized size-of)
+
+(:doc #:module
+  (summary "Halving and doubling."))
+
+(:doc double
+  (summary "Twice the number.")
+  (arg x "A number.")
+  (returns "2x."))
+(: double (-> int int))
+(defun (double x) (* 2 x))
+
+(: halve (-> int int))
+(defun (halve x) (/ x 2))
+
+;; Not exported, so not warned about.
+(: helper (-> int int))
+(defun (helper x) x)
+
+(:doc Sized
+  (summary "Things with a size."))
+(def/trait (Sized %c)
+  (: size-of (-> %c int)))
+
+(def/macro (twice-over form inject compare)
+  (syntax-match form
+    ((_ body ...) #'(begin ,@body ,@body))))
+
+(defun (main args) 0)

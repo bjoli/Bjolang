@@ -3,6 +3,54 @@
 
 What each change guarantees, and what it leaves open.
 
+* Documentation: ~(:doc ...)~, checked against what it documents
+
+A definition is documented with ~(:doc name clause ...)~ in the module that
+defines it, and the compiler checks the doc against the definition: a renamed
+parameter, a removed function, a field nobody documented or a ~(see ...)~ of
+nothing is an error where the doc is. ~Docs/Documentation.org~ is the whole of
+it; the short version:
+
+- Clauses: ~summary~, ~arg~, ~rest~, ~key~, ~returns~, ~raises~, ~see~,
+  ~example~, ~reference~, and ~field~, ~case~, ~tparam~, ~form~ and ~literal~
+  for the kinds that have them. Every text is a string, raw ones included, with
+  samizdat markup in it.
+- The compiler works out what a name is. A function documents each argument
+  without a default in order, its rest parameter, and what it returns unless
+  that is ~void~; a keyword is optional. A record documents every field unless
+  it is ~#:opaque~. A union's cases are optional. A macro shows how it is
+  written with ~(form ...)~, and documents each variable in it. A trait method,
+  an ~import/extern~ and a ~def~ of a function have no parameter names, so their
+  doc gives them and the compiler counts them.
+- ~(:doc name #:reader ...)~ documents the reader extension ~#name(...)~;
+  ~(:doc #:module ...)~ the module; ~(:doc #:file "x.bjodoc")~ reads docs from
+  another file, which then counts as a source of the module.
+- A module with a module doc is documented, and the compiler warns about each
+  export, trait method, macro and reader extension of it that has no doc.
+
+The forms never reach the parser: ~Pipeline~ takes them out once includes are
+spliced, and ~Docs.check~ runs after type checking, before the gate that stops
+the build on an error. The docs are published in the assembly under a metadata
+key of their own, ~BjolangDocs~, as one bjodat vec of the forms as written plus
+~(kind ...)~, a function's ~(signature ...)~ and its ~(definition ...)~ head, so
+that an importing compilation, which reads ~BjolangMetadata~, never parses them.
+
+~TestFiles/264_docs.bjo~ documents one of every kind, part of it from
+~264_docs.bjodoc~, and reads its own published docs back with bjodat. Each rule
+has an error test, ~errors/doc_*.bjo~, 26 of them; the warnings are in
+~warnings/doc_undocumented.bjo~ and ~warnings/doc_quiet_without_module_doc.bjo~,
+and ~repl/docs.in~ is the prompt: a doc is checked against what its own entry
+defines.
+
+What it leaves open:
+
+- Builtins from ~Prelude.fs~ have no definition a doc can be checked against,
+  and cannot be documented yet.
+- Nothing reads the published docs yet but the test: the REPL has no ~:doc~
+  command, and there is no samizdat command for the manual.
+- A list's range ends at the token after it, which is the reader's doing, so
+  publishing finds a form's end by counting brackets in the file's tokens.
+
 * Raw strings: ~"""..."""~
 
 Three or more quotes open a string and the same number close it, and nothing
