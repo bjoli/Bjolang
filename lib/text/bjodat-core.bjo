@@ -382,9 +382,167 @@
                                    (found rd)))))
          (else (step! rd) (go (+ k 1) (+ (* acc 16) d))))))))
 
+;; A string, raw or escaped. `""` is the empty string, and a third quote after
+;; it opens a raw one.
 (: read-text (-> Reader (Result string string)))
 (defun (read-text rd)
   (step! rd)
+  (cond
+    ((not (= (held-code rd) 34)) (read-escaped-text rd))
+    (else
+     (step! rd)
+     (if (= (held-code rd) 34)
+         (read-raw-text rd)
+         (Ok "")))))
+
+;; ---------------------------------------------------------------------------
+;; Raw strings
+;; ---------------------------------------------------------------------------
+;; `"""..."""`, read by the rules `readRawString` in the compiler's Lexer.fs
+;; reads it by, which Docs/Syntax.org describes. The two have to agree, and
+;; TestFiles/263_raw_strings.bjo reads one file with both to show that they do.
+
+;; Steps over a run of quotes, and answers how long it was.
+(: skip-quotes! (-> Reader int))
+(defun (skip-quotes! rd)
+  (let go ((k 0))
+    (cond
+      ((= (held-code rd) 34) (step! rd) (go (+ k 1)))
+      (else k))))
+
+(: add-quotes! (-> StringBuilder int void))
+(defun (add-quotes! sb k)
+  (loop (:for i (range 0 k))
+        (:do (stringbuilder-add-code! sb 34))))
+
+(: too-many-quotes (-> Reader int int string))
+(defun (too-many-quotes rd n k)
+  (at rd (str "a raw string opened with " (int->string n) " quotes has " (int->string k)
+              " in a row. Open and close it with more quotes than it holds in a row")))
+
+;; The held quote is the third of the opening ones.
+(: read-raw-text (-> Reader (Result string string)))
+(defun (read-raw-text rd)
+  (def n (+ 2 (skip-quotes! rd)))
+  (def sb (buffer rd))
+  (let spaces ()
+    (def c (held-code rd))
+    (when (or (= c 32) (= c 9))
+      (stringbuilder-add-code! sb c)
+      (step! rd)
+      (spaces)))
+  (cond
+    ((= (held-code rd) 10) (newline! rd) (read-raw-lines rd n))
+    ((= (held-code rd) 13)
+     (step! rd)
+     (cond
+       ((= (held-code rd) 10) (newline! rd) (read-raw-lines rd n))
+       (else (stringbuilder-add-code! sb 13) (read-raw-line rd n sb))))
+    (else (read-raw-line rd n sb))))
+
+;; A raw string on the line of its opening quotes, which ends on that line.
+(: read-raw-line (-> Reader int StringBuilder (Result string string)))
+(defun (read-raw-line rd n sb)
+  (let go ()
+    (def c (held-code rd))
+    (cond
+      ((= c spent) (Err (at rd "the document ended inside a string")))
+      ((= c 10)
+       (Err (at rd (str "a raw string that begins on the line of its opening quotes ends on that line. "
+                        "One over several lines begins on the line after them"))))
+      ((= c 34)
+       (def k (skip-quotes! rd))
+       (cond
+         ((= k n) (Ok (stringbuilder->string sb)))
+         ((> k n) (Err (too-many-quotes rd n k)))
+         (else (add-quotes! sb k) (go))))
+      (else (stringbuilder-add-code! sb c) (step! rd) (go)))))
+
+;; A raw string over several lines. Each line is kept as it was written, with
+;; the row it is on, until the closing quotes say what the margin is.
+(: read-raw-lines (-> Reader int (Result string string)))
+(defun (read-raw-lines rd n)
+  (let next-line ((lines Nil))
+    (def row (record-ref rd row))
+    (def sb (stringbuilder-empty))
+    (let spaces ()
+      (def c (held-code rd))
+      (when (or (= c 32) (= c 9))
+        (stringbuilder-add-code! sb c)
+        (step! rd)
+        (spaces)))
+    (def lead (skip-quotes! rd))
+    (cond
+      ((= lead n) (strip-margin (stringbuilder->string sb) (list-reverse lines)))
+      ((> lead n) (Err (too-many-quotes rd n lead)))
+      (else
+       (add-quotes! sb lead)
+       (let go ()
+         (def c (held-code rd))
+         (cond
+           ((= c spent)
+            (Err (at rd (str "the document ended inside a raw string, which closes with "
+                             (int->string n) " quotes on a line of their own"))))
+           ((= c 10)
+            (newline! rd)
+            (next-line (Cons (Tuple row (stringbuilder->string sb)) lines)))
+           ((= c 13)
+            (step! rd)
+            (cond
+              ((= (held-code rd) 10)
+               (newline! rd)
+               (next-line (Cons (Tuple row (stringbuilder->string sb)) lines)))
+              (else (stringbuilder-add-code! sb 13) (go))))
+           ((= c 34)
+            (def k (skip-quotes! rd))
+            (cond
+              ((> k n) (Err (too-many-quotes rd n k)))
+              ((= k n)
+               (Err (at rd (str "a raw string closes only on a line of its own. For " (int->string n)
+                                " quotes in the text, open and close it with more"))))
+              (else (add-quotes! sb k) (go))))
+           (else (stringbuilder-add-code! sb c) (step! rd) (go))))))))
+
+(: begins-with-margin? (-> string string bool))
+(defun (begins-with-margin? s margin)
+  (def m (string-length margin))
+  (and (>= (string-length s) m)
+       (let go ((i 0))
+         (cond ((= i m) #t)
+               ((= (string-code-ref s i) (string-code-ref margin i)) (go (+ i 1)))
+               (else #f)))))
+
+(: blank? (-> string bool))
+(defun (blank? s)
+  (let go ((i 0))
+    (cond ((= i (string-length s)) #t)
+          ((let* ((c (string-code-ref s i))) (or (= c 32) (= c 9))) (go (+ i 1)))
+          (else #f))))
+
+;; The margin is the whitespace before the closing quotes. It comes off every
+;; line, and a line with text that does not begin with it is refused, since
+;; cutting it anyway would cut text.
+(: strip-margin (-> string (List (Tuple int string)) (Result string string)))
+(defun (strip-margin margin lines)
+  (def out (stringbuilder-empty))
+  (let go ((left lines) (first #t))
+    (match left
+      (Nil (Ok (stringbuilder->string out)))
+      ((Cons (Tuple row s) more)
+       (unless first (stringbuilder-add-code! out 10))
+       (cond
+         ((begins-with-margin? s margin)
+          (stringbuilder-add-string! out (.Substring s (string-length margin)))
+          (go more #f))
+         ((blank? s) (go more #f))
+         (else
+          (Err (str "line " (int->string row) ", column 1: this line of a raw string does not "
+                    "begin with its margin. The whitespace before the closing quotes is removed "
+                    "from every line, so every line with text in it begins with that whitespace"))))))))
+
+;; An escaped string, after its opening quote.
+(: read-escaped-text (-> Reader (Result string string)))
+(defun (read-escaped-text rd)
   (def sb (buffer rd))
   (let go ()
     (cond

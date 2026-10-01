@@ -1,0 +1,93 @@
+;; Raw strings, `"""..."""`, read by both readers that have to read them.
+;;
+;; `263_raw_strings.in` is read twice: included here, so the compiler's lexer
+;; reads it, and fed to this program as its standard input, so bjodat's reader
+;; reads it. Every case is checked against the text it should be, and bjodat's
+;; reading against the compiler's. A rule changed in one reader and not the
+;; other fails here.
+;;
+;; The compiler's refusals are in errors/raw_string_*.bjo. Bjodat's are below,
+;; and so is `\r\n`, which a fixture written with `\n` cannot hold.
+
+(import (std prelude))
+(import (std simpletest))
+(import (text bjodat-core))
+
+(: raw-cases (Vec (Vec string)))
+(include "263_raw_strings.in")
+
+(: bjodat-cases (-> Bjodat (Vec Bjodat)))
+(defun (bjodat-cases v)
+  (match v
+    ((BjoList form)
+     (match (vec-ref (list->vec form) 2)
+       ((BjoVec cases) cases)
+       (_ (vec-empty))))
+    (_ (vec-empty))))
+
+(: text-of (-> Bjodat string))
+(defun (text-of v)
+  (match v
+    ((BjoStr s) s)
+    (_ "<not a string>")))
+
+(: case-text (-> Bjodat int string))
+(defun (case-text c i)
+  (match c
+    ((BjoVec parts) (text-of (vec-ref parts i)))
+    (_ "<not a case>")))
+
+(: parsed (-> string string))
+(defun (parsed text)
+  (match (parse-bjodat text)
+    ((Ok v) (str "ok: " (text-of v)))
+    ((Err e) (str "err: " e))))
+
+(: refused-with (-> string string string bool))
+(defun (refused-with label text wanted)
+  (def got (parsed text))
+  (def ok (and (string-starts-with? got "err: ") (string-contains? got wanted)))
+  (unless ok (println (str "  " label ": " got)))
+  ok)
+
+(defun (main args)
+  (loop (:for c raw-cases)
+        (:do (expect (str (vec-ref c 0) ", as the compiler reads it") (vec-ref c 1) (vec-ref c 2))))
+
+  (match (read-bjodat (parameter-ref current-input-port))
+    ((Err e) (expect "bjodat reads the fixture" e ""))
+    ((Ok v)
+     (def cases (bjodat-cases v))
+     (expect "bjodat finds every case" (vec-length cases) (vec-length raw-cases))
+     (loop (:for i (range 0 (vec-length cases)))
+           (:do (let ((label (case-text (vec-ref cases i) 0))
+                      (read (case-text (vec-ref cases i) 1)))
+                  (expect (str label ", as bjodat reads it") read (case-text (vec-ref cases i) 2))
+                  (expect (str label ", the same in both") read (vec-ref (vec-ref raw-cases i) 1)))))))
+
+  ;; `\r\n` ends a line as `\n` does, and is not part of the text.
+  (expect "bjodat: \\r\\n ends a line"
+          (parsed "\"\"\"\r\n  a\r\n  b\r\n  \"\"\"") "ok: a\nb")
+  (expect "bjodat: a lone \\r is text"
+          (parsed "\"\"\"a\rb\"\"\"") "ok: a\rb")
+
+  ;; `""` is still the empty string, and so is `""` before anything else.
+  (expect "bjodat: \"\" is empty" (parsed "\"\"") "ok: ")
+  (expect "the compiler: \"\" is empty" (string-length "") 0)
+
+  ;; A raw string inside an interpolation hole is skipped whole, braces and all.
+  (expect "a raw string in a hole" #"x ${(string-length """}""")} y" "x 1 y")
+
+  (expect-true "bjodat: a line without the margin"
+               (refused-with "margin" "\"\"\"\n    a\n  b\n    \"\"\"" "does not begin with its margin"))
+  (expect-true "bjodat: more quotes than the delimiter"
+               (refused-with "too many" "\"\"\"a\"\"\"\"" "has 4 in a row"))
+  (expect-true "bjodat: the delimiter inside a line"
+               (refused-with "inside" "\"\"\"\n  a \"\"\" b\n  \"\"\"" "closes only on a line of its own"))
+  (expect-true "bjodat: one line that breaks"
+               (refused-with "breaks" "\"\"\"abc\ndef\"\"\"" "ends on that line"))
+  (expect-true "bjodat: never closed"
+               (refused-with "unclosed" "\"\"\"\n  abc\n" "ended inside a raw string"))
+  (expect-true "bjodat: an error names the line"
+               (refused-with "line" "\"\"\"\n    a\n    b\n  c\n    \"\"\"" "line 4"))
+  0)

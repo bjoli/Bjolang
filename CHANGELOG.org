@@ -3,6 +3,45 @@
 
 What each change guarantees, and what it leaves open.
 
+* Raw strings: ~"""..."""~
+
+Three or more quotes open a string and the same number close it, and nothing
+in it is an escape. On one line the text is what lies between the quotes:
+~"""say "hi" """~. Over several lines, the opening quotes end their line, the
+closing ones stand on a line of their own, and the whitespace before them is a
+margin that comes off every line, so the text indents with the code around it.
+A line with text that does not begin with the margin is refused rather than
+cut, and a run of quotes as long as the delimiter is refused anywhere in the
+text. Line breaks are ~\n~ whether the file has ~\n~ or ~\r\n~.
+~Docs/Syntax.org~, "Raw strings", has the rules.
+
+They are for text that is mostly quotes and backslashes: markup, SQL, regexes,
+Windows paths, and the documentation that ~(:doc ...)~ will hold.
+
+Both readers read them: the compiler's lexer, and bjodat's reader in
+~lib/text/bjodat-core.bjo~, so a ~.bjodat~ file can hold one. They are two
+implementations of one rule, and ~263_raw_strings.bjo~ keeps them together:
+its cases live in ~263_raw_strings.in~, which the compiler reads through
+~include~ and bjodat reads as the program's input, and every case is checked
+against its escaped spelling and bjodat's reading against the compiler's.
+The compiler's six refusals are in ~errors/raw_string_*.bjo~, and bjodat's,
+with ~\r\n~, are in the same test.
+
+What it leaves open:
+
+- bjodat's writer still writes every string escaped and on one line. A raw
+  string written back would need a margin that fits the text around it, and
+  ~bjodat->string~ writes a value on its own.
+- There is no raw interpolated string. ~#"""~ is refused, where before it read
+  as an empty interpolated string followed by the start of another string. No
+  file in the tree wrote ~"""~ before this.
+- A raw string inside an interpolation hole is skipped whole, so
+  ~#"${(f """}""")}"~ works.
+
+~bjomode.el~ fences a raw string so Emacs sees one string, inner quotes and
+semicolons included, and ~C-M-f~ steps over it. textmate-bjolang's grammar has
+a ~string.quoted.triple.bjolang~ scope, which is how samizdat highlights one.
+
 * A bjoroutine call that does not suspend allocates nothing
 
 Every call to a bjoroutine allocated its promise, a ~FiberCore~ of about 88 B,

@@ -3,6 +3,7 @@
 ** Literals
 - Numbers: ~42~, ~-100~, ~3.14159~, ~0x2A~, ~0b101010~
 - Strings: ~"hello world"~
+- Raw strings: ~"""say "hi" """~, and over several lines — see below
 - Interpolated strings: ~#"x is ${x}"~
 - Booleans: ~#t~, ~#f~
 - Characters: ~#\a~, ~#\newline~
@@ -31,6 +32,45 @@ Written *without* one, a number takes its type from context:
 #+END_SRC
 
 Where nothing says, it is an ~int~. See ~Numerics.org~.
+
+*** Raw strings
+Three or more quotes open a raw string, and the same number close it. Nothing
+in it is an escape: a backslash is a backslash and a quote is a quote, which is
+what text with quotes in it — markup, SQL, a regex, a Windows path — wants.
+
+#+BEGIN_SRC scheme
+"""say "hi" """                ;; "say \"hi\" "
+"""C:\new\table"""             ;; "C:\\new\\table"
+""""a """ in it""""            ;; "a \"\"\" in it": four quotes hold three
+#+END_SRC
+
+*Over several lines*, the opening quotes end their line and the closing ones
+stand on a line of their own. The whitespace before the closing quotes is the
+margin, and it comes off every line, so the text can be indented with the code
+around it:
+
+#+BEGIN_SRC scheme
+(: usage (-> void))
+(defun (usage)
+  (println """
+    usage: frob [--quiet] FILE
+
+      FILE  what to frob
+    """))
+;; prints "usage: frob [--quiet] FILE\n\n  FILE  what to frob"
+#+END_SRC
+
+- The line break after the opening quotes and the one before the closing quotes
+  are not part of the text. For a final newline, leave an empty line before the
+  closing quotes.
+- A line with text that does not begin with the margin is refused, because
+  cutting the margin off it would cut text. A blank line may be shorter.
+- Line breaks in the text are ~\n~, whether the file has ~\n~ or ~\r\n~.
+- A run of quotes as long as the delimiter is refused anywhere in the text,
+  closing quotes inside a line included. Open and close it with more.
+
+bjodat reads raw strings by the same rules, so a ~.bjodat~ file can hold them
+too. There is no raw interpolated string: ~#"""~ is refused.
 
 *** String interpolation
 A string written ~#"..."~ may contain ~${expression}~ holes.

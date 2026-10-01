@@ -148,6 +148,141 @@ module Lexer =
 
         sb.ToString()
 
+    /// A raw string, `"""..."""`, starting at `start`: its text, and the index
+    /// just past its closing quotes.
+    ///
+    /// Three or more quotes open it and the same number close it, and nothing
+    /// in it is an escape. On one line, the text is what lies between the
+    /// quotes. Over several lines, the opening quotes end their line, the
+    /// closing ones stand on a line of their own, and the whitespace before
+    /// the closing ones is the margin: it is removed from every line, and a
+    /// line with text that does not begin with it is refused. Lines are joined
+    /// with `\n` whatever the file used. Docs/Syntax.org describes it, and
+    /// `read-raw-text` in lib/text/bjodat-core.bjo reads the same syntax and
+    /// must agree with this.
+    let private readRawString (file: string) (input: string) (start: int) (line: int) (col: int) : string * int =
+        let length = input.Length
+
+        let posOf (i: int) =
+            let mutable l = line
+            let mutable c = col
+
+            for k = start to i - 1 do
+                if input[k] = '\n' then
+                    l <- l + 1
+                    c <- 0
+                else
+                    c <- c + 1
+
+            formatAt file l c
+
+        let quotesAt (i: int) =
+            let mutable k = i
+            while k < length && input[k] = '"' do
+                k <- k + 1
+            k - i
+
+        // A line break is `\n`, or `\r\n`.
+        let breakAt (i: int) =
+            i < length && (input[i] = '\n' || (input[i] = '\r' && i + 1 < length && input[i + 1] = '\n'))
+
+        let afterBreak (i: int) = if input[i] = '\r' then i + 2 else i + 1
+
+        let n = quotesAt start
+        let delimiter = String('"', n)
+        let opened = start + n
+
+        let tooMany (i: int) (k: int) =
+            failwithf
+                $"A raw string opened with %d{n} quotes has %d{k} in a row at %s{posOf i}. Open and close it with more quotes than it holds in a row."
+
+        let mutable afterOpening = opened
+        while afterOpening < length && (input[afterOpening] = ' ' || input[afterOpening] = '\t') do
+            afterOpening <- afterOpening + 1
+
+        if afterOpening >= length then
+            failwithf $"Unterminated raw string at %s{formatAt file line col}"
+
+        if not (breakAt afterOpening) then
+            // One line: the text runs to the closing quotes.
+            let sb = Text.StringBuilder()
+            let mutable p = opened
+            let mutable result = None
+
+            while result.IsNone do
+                if p >= length then
+                    failwithf $"Unterminated raw string at %s{formatAt file line col}"
+                elif breakAt p then
+                    failwithf
+                        $"The raw string at %s{formatAt file line col} begins on the line of its opening quotes, so it ends on that line, and it does not. A raw string over several lines begins on the line after its opening %s{delimiter}."
+                elif input[p] = '"' then
+                    let k = quotesAt p
+                    if k = n then result <- Some(sb.ToString(), p + k)
+                    elif k > n then tooMany p k
+                    else
+                        sb.Append('"', k) |> ignore
+                        p <- p + k
+                else
+                    sb.Append(input[p]) |> ignore
+                    p <- p + 1
+
+            result.Value
+        else
+            // Several lines, up to the one holding only the closing quotes.
+            let lines = ResizeArray<int * string>()
+            let mutable p = afterBreak afterOpening
+            let mutable closing = None
+
+            while closing.IsNone do
+                if p >= length then
+                    failwithf $"Unterminated raw string at %s{formatAt file line col}: it closes with %s{delimiter} on a line of its own."
+
+                let lineStart = p
+                let mutable w = p
+                while w < length && (input[w] = ' ' || input[w] = '\t') do
+                    w <- w + 1
+
+                let lead = quotesAt w
+
+                if lead = n then
+                    closing <- Some(input.Substring(lineStart, w - lineStart), w + n)
+                elif lead > n then
+                    tooMany w lead
+                else
+                    let mutable e = w + lead
+                    while e < length && not (breakAt e) do
+                        if input[e] = '"' then
+                            let k = quotesAt e
+                            if k > n then tooMany e k
+                            elif k = n then
+                                failwithf
+                                    $"The raw string at %s{formatAt file line col} has %s{delimiter} inside a line at %s{posOf e}. It closes only on a line of its own; for %s{delimiter} in the text, open and close it with more quotes."
+                            e <- e + k
+                        else
+                            e <- e + 1
+
+                    if e >= length then
+                        failwithf $"Unterminated raw string at %s{formatAt file line col}: it closes with %s{delimiter} on a line of its own."
+
+                    lines.Add(lineStart, input.Substring(lineStart, e - lineStart))
+                    p <- afterBreak e
+
+            let margin, past = closing.Value
+
+            let text =
+                lines
+                |> Seq.map (fun (at, s) ->
+                    if s.StartsWith(margin, StringComparison.Ordinal) then
+                        s.Substring(margin.Length)
+                    elif s |> Seq.forall (fun c -> c = ' ' || c = '\t') then
+                        ""
+                    else
+                        failwithf
+                            $"A line of the raw string at %s{formatAt file line col} does not begin with its margin, at %s{posOf at}. The whitespace before the closing %s{delimiter} is removed from every line, so every line with text in it begins with that whitespace.")
+                |> String.concat "\n"
+
+            text, past
+
     /// One piece of a `#"..."` string: literal text, or the source of a
     /// `${ ... }` hole together with where it starts in the enclosing file.
     ///
@@ -304,6 +439,10 @@ module Lexer =
                 | '.' -> emit Dot 1
 
                 // Strings
+                | '"' when following [ '"'; '"'; '"' ] pos ->
+                    let text, nextPos = readRawString file input pos line col
+                    emit (StringLit text) (nextPos - pos)
+
                 | '"' ->
                     let rec readString p =
                         if p >= length then
@@ -378,6 +517,10 @@ module Lexer =
                     match input[pos + 1] with
                     | '(' -> emit Hash 1
                     | '[' -> emit Hash 1
+
+                    | '"' when following [ '"'; '"'; '"' ] (pos + 1) ->
+                        failwithf
+                            $"An interpolated string cannot be a raw one, at %s{formatAt file line col}. Write the raw string, and join the values to it with str."
 
                     // `#"a ${x} b"` — an interpolated string. The reader
                     // expands it; `readInterpolatedString` below says what it
@@ -582,6 +725,11 @@ module Lexer =
                     // A brace inside a nested string literal is not a brace of
                     // the hole, so the string is skipped whole. Without this,
                     // `${(f "}")}` ends in the wrong place.
+                    | '"' when p + 2 < length && input[p + 1] = '"' && input[p + 2] = '"' ->
+                        let _, past = readRawString file input p l c
+                        while p < past do
+                            step input[p]
+
                     | '"' ->
                         step '"'
                         let mutable inString = true

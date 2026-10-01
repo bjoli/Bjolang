@@ -59,12 +59,35 @@
   "#\\\\\\([][(){};\"'`,]\\)"
   "A character literal whose character would otherwise be a delimiter.")
 
+(defun bjo--propertize-raw-strings (end)
+  "Mark raw strings, three or more quotes around text, up to END.
+
+Emacs reads `\"\"\"a\"\"\"' as three strings, and gets a quote inside one
+wrong. So the first opening quote and the last closing one become string
+fences, and everything between them is one string. The closing quotes are
+the next run of exactly as many as opened it: a run that long cannot be
+inside the text, so this finds the right one in any string that compiles."
+  (while (re-search-forward "\"\\{3,\\}" end t)
+    (let* ((open (match-beginning 0))
+           (n (- (match-end 0) open)))
+      (unless (or (nth 8 (save-excursion (syntax-ppss open)))
+                  (eq (char-before open) ?\\))
+        (put-text-property open (1+ open) 'syntax-table (string-to-syntax "|"))
+        (when (re-search-forward (format "[^\"]\\(\"\\{%d\\}\\)\\(?:[^\"]\\|\\'\\)" n) nil t)
+          (put-text-property (1- (match-end 1)) (match-end 1)
+                             'syntax-table (string-to-syntax "|"))
+          (goto-char (match-end 1)))))))
+
 (defun bjo-syntax-propertize (start end)
-  "Mark delimiters inside character literals as punctuation, between START and END."
+  "Mark character literals and raw strings between START and END.
+A delimiter in a character literal is punctuation, and a raw string is
+fenced; see `bjo--propertize-raw-strings'."
   (goto-char start)
   (while (re-search-forward bjo--char-literal-re end t)
     (put-text-property (match-beginning 1) (match-end 1)
-                       'syntax-table (string-to-syntax "."))))
+                       'syntax-table (string-to-syntax ".")))
+  (goto-char start)
+  (bjo--propertize-raw-strings end))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Indentation
